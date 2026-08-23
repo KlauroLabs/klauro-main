@@ -101,7 +101,7 @@ export function selectWorkspaceCrossRepoContracts(
 }
 
 export async function workspaceContractsHttpResponse(input: {
-  workspaceId: string;
+  route: string;
   userId: string;
   requestUrl: string;
   accounts: Pick<AccountStore, 'listProjects'>;
@@ -110,17 +110,20 @@ export async function workspaceContractsHttpResponse(input: {
     isPending(workspaceId: string): boolean;
   };
 }) {
-  await input.accounts.listProjects(input.userId, input.workspaceId);
-  if (!input.analyses) return { statusCode: 200, body: { status: 'none', workspace_id: input.workspaceId } };
-  const record = await input.analyses.load(input.workspaceId);
-  const pending = input.analyses.isPending(input.workspaceId);
-  if (!record) return { statusCode: 200, body: { status: pending ? 'pending' : 'none', workspace_id: input.workspaceId } };
+  const match = input.route.match(/^\/api\/workspaces\/([^/]+)\/contracts$/);
+  if (!match) return null;
+  const workspaceId = decodeURIComponent(match[1]);
+  await input.accounts.listProjects(input.userId, workspaceId);
+  if (!input.analyses) return { statusCode: 200, body: { status: 'none', workspace_id: workspaceId } };
+  const record = await input.analyses.load(workspaceId);
+  const pending = input.analyses.isPending(workspaceId);
+  if (!record) return { statusCode: 200, body: { status: pending ? 'pending' : 'none', workspace_id: workspaceId } };
   const params = new URL(input.requestUrl, 'http://localhost').searchParams;
   return {
     statusCode: 200,
     body: {
       status: pending ? 'pending' : 'ready',
-      workspace_id: input.workspaceId,
+      workspace_id: workspaceId,
       contracts: selectWorkspaceCrossRepoContracts(record.graph, {
         limit: positiveBoundedInt(params.get('limit'), 100, 500),
         offset: nonNegativeInt(params.get('offset'), 0),

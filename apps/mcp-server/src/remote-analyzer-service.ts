@@ -2328,17 +2328,9 @@ async function handleAccountApi(
         body: { project },
       };
     }
-
   }
-
-  const workspaceContractsMatch = route.match(/^\/api\/workspaces\/([^/]+)\/contracts$/);
-  if (workspaceContractsMatch && request.method === 'GET') {
-    return workspaceContractsHttpResponse({
-      workspaceId: decodeURIComponent(workspaceContractsMatch[1]), userId, requestUrl: request.url || '',
-      accounts, analyses: workspaceAnalyses,
-    });
-  }
-
+  const contractsResponse = request.method === 'GET' ? await workspaceContractsHttpResponse({ route, userId, requestUrl: request.url || '', accounts, analyses: workspaceAnalyses }) : null;
+  if (contractsResponse) return contractsResponse;
   const workspaceAnalysisMatch = route.match(/^\/api\/workspaces\/([^/]+)\/analysis$/);
   if (workspaceAnalysisMatch && request.method === 'GET') {
     const workspaceId = decodeURIComponent(workspaceAnalysisMatch[1]);
