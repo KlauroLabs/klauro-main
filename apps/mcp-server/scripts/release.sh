@@ -152,7 +152,7 @@ else
   check_live_distribution() {
     HOSTED="$(curl -fsS "https://mcp.klauro.com/dist/latest.json" | node -p "JSON.parse(require('fs').readFileSync(0)).version" 2>/dev/null || echo unknown)"
     TARBALL_CODE="$(curl -s -o /dev/null -w '%{http_code}' -r 0-0 "https://mcp.klauro.com/dist/klauro-latest.tgz" 2>/dev/null || echo 000)"
-    . "$(cd "$(dirname "$0")" && pwd)/verify-distribution-channel.sh"
+    . "$APP_DIR/scripts/verify-distribution-channel.sh"
     verify_distribution_channel "$HOSTED" "$VERSION" "$TARBALL_CODE"
   }
   retry_with_backoff "live distribution channel check" check_live_distribution || {
