@@ -90,7 +90,7 @@ test('capability repair facts carry bounded candidate-specific rejection constra
     { id: 'analysis', name: 'Analysis Tool Surface', category: 'core', evidence_kind: 'behavior-surface' },
   ] as SystemCapability[];
   const rejections = new Map();
-  recordCapabilityCatalogRejection(rejections, {
+  const recorded = recordCapabilityCatalogRejection(rejections, {
     candidateIds: ['agent'],
     name: 'Evaluate agent readiness and task proof',
     reason: 'outcome-scope-unsupported:readiness,task,proof',
@@ -104,6 +104,7 @@ test('capability repair facts carry bounded candidate-specific rejection constra
     forbidden_subject_terms: ['readiness', 'task', 'proof'],
   }]);
   assert.deepEqual(facts[1].prior_rejections, []);
+  assert.equal(recorded.added, true);
 });
 
 test('evidence batch collection preserves successful families when one focused call times out', async () => {

@@ -10407,7 +10407,7 @@ export class AnalyzerOrchestrator {
       const repairEvidenceFacts = capabilityCatalogRepairEvidenceFacts(evidenceCandidates, repairCandidateIds, entityNamesById, catalogRejectionsByCandidate); const evidenceScoped = repairEvidenceFacts.length > 0;
       const cycleNudge = (facts: typeof repairEvidenceFacts) => cycle === 1 && !evidenceScoped ? undefined
         : `${cycle === 1 ? 'Build the initial catalog from independently grounded evidence families.' : `Previous catalog failed a quality check (${qualityFailure}). ${audienceRepairFeedback || ''}`} ${evidenceScoped ? `Return only the evidence-grounded outcome requested in this family batch. Missing evidence facts: ${JSON.stringify(facts)}. Existing accepted outcomes: ${JSON.stringify(reconciled.slice(0, 12).map(capability => ({ name: capability.name, description: capability.description })))}. Each result must cite one or more of these candidate_ids and name the shared USER PURPOSE delivered by that evidence subject. Every new or rewritten capability name MUST contain at least one exact evidence_subject_terms token from its cited facts; a result that uses only unrelated global product vocabulary is invalid. A behavior-surface family label and its individual operation names are delivery evidence, never title templates: express their common purpose using first-party product language. Never begin a delivery-surface outcome with Get, List, Run, Release, Claim, Check, Extend, Install, Start, Stop, Sync, Fetch, Load, Read, or Show; those restate individual commands. Use a durable purpose verb such as Understand, Review, Assess, Coordinate, Correlate, Analyze, Explain, Explore, Track, or Visualize. Every subject noun after that verb must be a recurring evidence_subject_terms token or an explicit first-party product term; never narrow the title to a noun found in only one operation example. Preserve each rejected item's distinct product outcome when rewriting it; overlapping evidence does not make two different outcomes equivalent. If a missing delivery surface supports an existing accepted outcome, return that exact outcome name with the missing candidate_id so its evidence is merged. Do not restate an unrelated global product ability and do not enumerate individual response objects, commands, or configuration fields.` : 'Return a FULL replacement catalog.'} Cite every required behavior ID and at least one candidate ID from every required entity group in the structured facts. Merge groups only when their operations express the same product outcome. Name each result as a verb-headed purpose a PM would write. Entity labels establish evidence coverage but source type, class, interface, schema, and graph-model identifiers must never appear in names or descriptions; use PM-readable nouns from operations, journeys, and top-down product text.`;
-      let extracted: SystemCapability[], extractionRaw = ''; const extractionRejections: string[] = [];
+      let extracted: SystemCapability[], extractionRaw = '', learnedRejection = false; const extractionRejections: string[] = [];
       try {
         extracted = await collectCapabilityCatalogEvidenceBatches({
           facts: repairEvidenceFacts, evidenceScoped, hardDeadlineAt: args.hardDeadlineAt, batchBudgetMs: 18000,
@@ -10428,7 +10428,7 @@ export class AnalyzerOrchestrator {
           hardDeadlineAt, exactCapabilityLimit: evidenceScoped ? repairBatch.length : undefined,
           entryPoints: args.entryPoints,
           nodes: args.nodes,
-          onResponse: raw => { batchRaw = raw; }, onRejection: feedback => extractionRejections.push(recordCapabilityCatalogRejection(catalogRejectionsByCandidate, feedback)),
+          onResponse: raw => { batchRaw = raw; }, onRejection: feedback => { const recorded = recordCapabilityCatalogRejection(catalogRejectionsByCandidate, feedback); extractionRejections.push(recorded.explanation); learnedRejection ||= recorded.added; },
           ...(cycleNudge(repairBatch) ? { qualityNudge: cycleNudge(repairBatch) } : {}),
           });
           if (!extractionRaw) extractionRaw = batchRaw;
@@ -10485,7 +10485,7 @@ export class AnalyzerOrchestrator {
         retainedQualityFailure = undefined;
         break;
       }
-      const progress = repairProgress.observe(combinedReconciled);
+      const progress = repairProgress.observe(combinedReconciled, learnedRejection);
       if (targetedRepair || combinedReconciled.length > reconciled.length) {
         reconciled = combinedReconciled;
         if (!retainedInterpretationRaw) retainedInterpretationRaw = extractionRaw;

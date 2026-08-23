@@ -137,17 +137,19 @@ export function capabilityCatalogRepairEvidenceFacts(
 export function recordCapabilityCatalogRejection(
   rejectionsByCandidate: CapabilityCatalogRejectionsByCandidate,
   feedback: CapabilityCatalogRejection,
-): string {
+): { added: boolean; explanation: string } {
   const unsupported = feedback.reason.match(/^outcome-scope-unsupported:(.+)$/)?.[1]?.split(',') || [];
   const forbiddenSubjectTerms = unsupported.filter(token => !['delivery-operation-restatement', 'delivery-subject-missing'].includes(token));
+  let added = false;
   for (const candidateId of feedback.candidateIds) {
     const prior = rejectionsByCandidate.get(candidateId) || [];
     if (!prior.some(item => item.name === feedback.name && item.reason === feedback.reason)) {
       prior.push({ name: feedback.name, reason: feedback.reason, forbidden_subject_terms: forbiddenSubjectTerms });
       rejectionsByCandidate.set(candidateId, prior.slice(-4));
+      added = true;
     }
   }
-  return `The title "${feedback.name}" was rejected (${feedback.reason}); do not repeat it, and use only the recurring evidence subject terms for a broader shared outcome.`;
+  return { added, explanation: `The title "${feedback.name}" was rejected (${feedback.reason}); do not repeat it, and use only the recurring evidence subject terms for a broader shared outcome.` };
 }
 
 export function capabilityCatalogTargetedRepairBatches<T>(facts: readonly T[], targetedRepair: boolean): T[][] {
@@ -239,11 +241,11 @@ export function trackCapabilityCatalogRepair(
   let noProgressCycles = 0;
   return {
     maxCycles: budget.maxCycles,
-    observe(capabilities: SystemCapability[]) {
+    observe(capabilities: SystemCapability[], learnedConstraint = false) {
       const uncoveredCount = uncoveredCapabilityCatalogCandidateIds(
         capabilities, requiredBehaviorCandidateIds, requiredEntityCandidateGroups,
       ).length;
-      noProgressCycles = uncoveredCount < previousUncoveredCount ? 0 : noProgressCycles + 1;
+      noProgressCycles = uncoveredCount < previousUncoveredCount || learnedConstraint ? 0 : noProgressCycles + 1;
       previousUncoveredCount = uncoveredCount;
       return { noProgressCycles, uncoveredCount, stop: noProgressCycles >= budget.noProgressRetries };
     },

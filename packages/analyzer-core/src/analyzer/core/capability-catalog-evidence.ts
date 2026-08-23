@@ -131,9 +131,12 @@ export function capabilityOutcomeRestatesDeliveryOperation(
   const firstPartyTokens = new Set(outcomeIdentityTokens([
     signal?.productDocTitle, signal?.productDocSummary, signal?.manifestDescription, signal?.summary,
   ].filter(Boolean).join(' ')));
+  const usesDeliveryScaffolding = /\b(?:mcp|tools?|surface)\b/i.test(name);
+  const repeatsActionAsSubject = words.length === 2 && outcomeTokenMatches(words[0], new Set([words[1]]));
   const copiesOperationPhrase = operationPhrases.some(operation =>
     operation.every((token, index) => outcomeTokenMatches(words[index] || '', new Set([token]))));
-  return words.length === 0 || (copiesOperationPhrase && !outcomeTokenMatches(words[0], firstPartyTokens)) || /\b(?:at|by|for|from|in|of|on|to|via|with)$/i.test(name.trim());
+  return words.length === 0 || usesDeliveryScaffolding || repeatsActionAsSubject ||
+    (copiesOperationPhrase && !outcomeTokenMatches(words[0], firstPartyTokens)) || /\b(?:at|by|for|from|in|of|on|to|via|with)$/i.test(name.trim());
 }
 
 export function capabilityOutcomeUsesDeliverySubject(name: string, citedCandidates: SystemCapability[]): boolean {

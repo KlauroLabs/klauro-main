@@ -331,6 +331,8 @@ describe('capability evidence roles', () => {
     expect(capabilityOutcomeNameUnsupportedTokens('Analyze codebases', [surface], {})).toEqual([]);
     expect(capabilityOutcomeNameUnsupportedTokens('Analyze codebase configuration', [surface], {})).toEqual(['configuration']);
     expect(capabilityOutcomeNameUnsupportedTokens('Review codebase idioms', [surface], {})).toEqual(['idiom']);
+    expect(capabilityOutcomeRestatesDeliveryOperation('Evaluate agent tool surface', [{ ...surface, name: 'Agent Tool Surface' }], {})).toBe(true);
+    expect(capabilityOutcomeRestatesDeliveryOperation('Analyze analysis surface', [{ ...surface, name: 'Analysis Tool Surface' }], {})).toBe(true);
   });
 
   test('separates product outcomes from command, route, and analysis-layer names without deleting their evidence', () => {
