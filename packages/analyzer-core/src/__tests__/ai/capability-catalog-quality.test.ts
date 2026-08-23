@@ -504,7 +504,12 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
   it('constrains a history-family repair to its evidence subject instead of an unrelated global outcome', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const args: any = gateArgs(localOrch);
-    args.dataEntities = [{ id: 'entity_changehistoryentry', name: 'ChangeHistoryEntry', kind: 'record', fields: [] }];
+    args.dataEntities = [
+      { id: 'entity_changehistoryentry', name: 'ChangeHistoryEntry', kind: 'record', fields: [] },
+      { id: 'entity_unrelated', name: 'UnrelatedWorkspace', kind: 'record', fields: [] },
+    ];
+    args.userJourneys = [{ name: 'Configure unrelated workspace' }];
+    args.externalServices = ['UnrelatedService'];
     args.candidateSnapshot.push(cap({
       id: 'cap_history', name: 'History', structural_label: 'History Management',
       description: 'Tracks changes to analyzed software over time.',
@@ -531,6 +536,8 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(calls[1].qualityNudge).toContain('"candidate_id":"cap_history"');
     expect(calls[1].qualityNudge).toContain('"evidence_subject_terms":["change","history"]');
     expect(calls[1].qualityNudge).toContain('unrelated global product vocabulary is invalid');
+    expect(calls[1]).toMatchObject({ exactCapabilityLimit: 1, userJourneys: [], externalServices: [] });
+    expect(calls[1].dataEntities.map((entity: any) => entity.id)).toEqual(['entity_changehistoryentry']);
     expect(out.map(capability => capability.name)).toContain('Review codebase change history');
   });
 
