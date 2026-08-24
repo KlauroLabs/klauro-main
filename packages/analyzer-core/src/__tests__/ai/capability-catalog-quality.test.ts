@@ -944,13 +944,10 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
   it('does not publish a partial catalog that cannot satisfy required evidence coverage', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
-    const grounded = cap({
-      id: 'analyze-codebases',
-      name: 'Analyze codebases',
-      description: 'Explains observed code behavior and relationships for engineering teams.',
-      operations: anchorOp('analyze-codebases'),
-    });
-    localOrch.aiExtractCapabilityCatalog = async () => [grounded];
+    const grounded = ['Analyze codebases', 'Coordinate agent work', 'Correlate runtime signals'].map(name => cap({
+      id: name, name, description: `Grounded product outcome for ${name.toLowerCase()} across connected software.`, operations: anchorOp(name),
+    }));
+    localOrch.aiExtractCapabilityCatalog = async () => grounded;
     localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
     const args: any = gateArgs(localOrch);
 
@@ -960,6 +957,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(args.enhancedSystemPurpose.capability_catalog_coverage).toMatchObject({
       status: 'rejected',
       published_capabilities: 0,
+      actual_publishable_capabilities: 3,
     });
     expect(args.enhancedSystemPurpose.capability_catalog_coverage.reason).toBeDefined();
   });

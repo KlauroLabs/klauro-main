@@ -1,7 +1,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SystemCapability } from '../../types/cas.types';
-import { capabilityCatalogRepairPlan, preserveCapabilityCatalogDescriptionIdentity } from './capability-catalog-repair-plan';
+import { capabilityCatalogRepairPlan, preserveCapabilityCatalogDescriptionIdentity, supersedeUnboundPendingOutcomeDuplicates } from './capability-catalog-repair-plan';
 
 const capability = (id: string, factors: string[], description = '') => ({
   id, name: `Outcome ${id}`, description, category: 'core', criticality: 'high', criticality_factors: factors,
@@ -35,5 +35,14 @@ describe('capability catalog repair planning', () => {
     assert.equal(repaired.name, 'Outcome graph');
     assert.equal(repaired.description, 'Grounded product prose.');
     assert.deepEqual(repaired.criticality_factors, ['catalog-candidate:graph', 'catalog-outcome-requirement:graph-slot']);
+  });
+
+  test('successful bound repair supersedes only its unbound pending semantic duplicate', () => {
+    const requirement = { id: 'runtime', statement: 'correlates static runtime evidence', candidateIds: ['runtime'], subjectTokens: ['static', 'runtime'] };
+    const stale = { ...capability('stale', ['catalog-candidate:runtime']), name: 'Correlate static structure with runtime evidence' };
+    const unrelated = capability('architecture', ['catalog-candidate:architecture']);
+    const repaired = { ...capability('runtime', ['catalog-candidate:runtime', 'catalog-outcome-requirement:runtime'], 'Static software context is compared with runtime evidence.'), name: 'Correlate static context with runtime evidence' };
+
+    assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates([stale, unrelated], [repaired], [requirement]), [unrelated]);
   });
 });

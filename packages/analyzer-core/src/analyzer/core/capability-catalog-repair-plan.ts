@@ -1,6 +1,5 @@
 import type { SystemCapability } from '../../types/cas.types';
-import type { CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
-import { capabilityCatalogOutcomeRepairNudge } from './capability-catalog-outcome-coverage';
+import { capabilityCatalogOutcomeRepairNudge, capabilitySatisfiesCatalogOutcomeRequirement, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
 
 export type CapabilityCatalogRepairBatch =
   | { mode: 'outcome'; candidateIds: string[]; requirements: CapabilityCatalogOutcomeRequirement[] }
@@ -54,10 +53,25 @@ export function preserveCapabilityCatalogDescriptionIdentity(
   };
 }
 
-export function capabilityCatalogFocusedTask(mode: CapabilityCatalogRepairBatch['mode'] | undefined, identityName?: string): string {
+export function supersedeUnboundPendingOutcomeDuplicates(
+  existing: readonly SystemCapability[], incoming: readonly SystemCapability[], requirements: readonly CapabilityCatalogOutcomeRequirement[],
+): SystemCapability[] {
+  const repairedRequirements = new Set(incoming.flatMap(capability => factors(capability, 'catalog-outcome-requirement:')));
+  const repairedCandidates = new Set(incoming.flatMap(capability => factors(capability, 'catalog-candidate:')));
+  if (repairedRequirements.size === 0) return [...existing];
+  return existing.filter(capability => {
+    if (factors(capability, 'catalog-outcome-requirement:').length > 0 || (capability.description && capability.description_generation?.status !== 'ai_rejected')) return true;
+    if (!factors(capability, 'catalog-candidate:').some(candidate => repairedCandidates.has(candidate))) return true;
+    return !requirements.some(requirement => repairedRequirements.has(requirement.id) && capabilitySatisfiesCatalogOutcomeRequirement(capability, requirement));
+  });
+}
+
+export function capabilityCatalogFocusedTask(mode: CapabilityCatalogRepairBatch['mode'] | undefined, identityName?: string, acceptsExistingOutcome = false): string {
   if (mode === 'description') return `Rewrite only the description for the existing capability named ${JSON.stringify(identityName)}. Return exactly one object with that exact name and the supplied candidate_ids. Preserve any supplied requirement_id exactly. Do not rename, broaden, or replace the outcome. Remove every claim class and forbidden term named in prior_rejections.`;
   if (mode === 'outcome') return `Return exactly one object for the single required_outcomes entry and copy its requirement_id exactly. Independently express that entry's audience and outcome subjects. Use the supplied audience label itself when present; do not expand it into an inferred profession or role.`;
-  return 'Name only the common user or operator purpose of this evidence family. Do not emit requirement_id and do not reuse or restate an accepted global outcome.';
+  return acceptsExistingOutcome
+    ? 'Name only the common user or operator purpose of this evidence family. Reuse an accepted name only when its wording and evidence express that same outcome.'
+    : 'Name only the common user or operator purpose of this evidence family. Do not emit requirement_id and do not reuse or restate an accepted global outcome.';
 }
 
 export function capabilityCatalogRepairNudge(

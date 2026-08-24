@@ -175,12 +175,12 @@ import {
   synchronizeCapabilityCatalogCoverage,
 } from './capability-catalog-evidence';
 import { mergeCapabilityCatalogFlowEvidence } from './capability-catalog-flow-evidence';
-import { capabilityCatalogCoverageFailure, capabilityCatalogOutcomeBindingFailure, deriveCapabilityCatalogOutcomeRequirements, uncoveredCapabilityCatalogOutcomeRequirements, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
+import { bindUniquelySatisfiedCatalogOutcomeRequirements, capabilityCatalogCoverageFailure, capabilityCatalogOutcomeBindingFailure, deriveCapabilityCatalogOutcomeRequirements, uncoveredCapabilityCatalogOutcomeRequirements, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
 import { fitCapabilityCatalogContext } from './ai-context-budget';
 import { awaitAiOperation } from './ai-operation-timing';
 import { capabilityDescriptionBatchSize, resolveCapabilityCatalogRoute, resolveCapabilityDescriptionRoute, shouldReauthorCapabilityDescriptions, toAIContextRoute } from './ai-task-model-routing';
 import { capabilitiesWithoutDescriptionDisposition, type CapabilityCatalogRejection, type CapabilityCatalogRejectionsByCandidate, capabilityCatalogPendingRepairKeys, capabilityCatalogRepairCandidateIds, capabilityCatalogRepairEvidenceFacts, capabilityDescriptionsShareOutcome, capabilityIdentityPendingDescriptionRepair, capabilityOutcomeMatchesEvidence, capabilityTitlesShareOutcome, collectCapabilityCatalogEvidenceBatches, mergeCapabilityCatalogRepairResults, mergeUniquelyMatchedBehaviorEvidence, recordCapabilityCatalogRejection, recordCapabilityPublishabilityRejection, scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates, trackCapabilityCatalogRepair } from './capability-catalog-scheduling';
-import { capabilityCatalogFocusedTask, capabilityCatalogRepairNudge, capabilityCatalogRepairPlan, preserveCapabilityCatalogDescriptionIdentity, type CapabilityCatalogRepairBatch } from './capability-catalog-repair-plan';
+import { capabilityCatalogFocusedTask, capabilityCatalogRepairNudge, capabilityCatalogRepairPlan, preserveCapabilityCatalogDescriptionIdentity, supersedeUnboundPendingOutcomeDuplicates, type CapabilityCatalogRepairBatch } from './capability-catalog-repair-plan';
 import { TRACEABLE_NODE_TYPES, computeFlowConcepts, type FlowConcept } from './flow-concepts';
 import { capabilitySubjectTokens } from './capability-audience-test';
 import {
@@ -9265,7 +9265,7 @@ export class AnalyzerOrchestrator {
       }
     }
     const catalogDescriptionContract = 'Each description must be one sentence of 12-28 words and at least 55 characters. Start with a concrete PM-readable product or operational subject, then state its evidence-specific behavior or outcome. Do not start with actor scaffolding such as "Lets users", "Allows users", "Enables users", "Gives users", or "Provides users". The description must add concrete information beyond the capability name. State the observed result directly; never explain it with generic implementation scaffolding such as "by reading", "by processing", "by coordinating", "supports tasks", or "coordinates operations". Use PM-readable product nouns from cited operations, journeys, or first-party product text; do not replace them with generic "data" or "information". entity_names that look like source types are grounding labels only and must not appear in the prose. Translate internal inventory terms such as entities, nodes, entry points, capability maps, and analysis results into the concrete software behavior, risk, relationship, or change context visible to the user. Do not invent value claims such as accurate, up-to-date, efficient, effective, smooth, experience, insights, comprehensive, seamless, robust, decision-making, collaboration, metrics, or performance unless that exact claim appears in the cited evidence. Do not invent operating claims such as locking, exclusivity, or blocking unless that exact claim appears in the cited evidence. Do not name source-code types, interfaces, classes, UI widgets, graph-rendering structures, or other implementation artifacts, and never use "capability" or "lifecycle" as prose scaffolding.';
-    const focusedCatalogTask = capabilityCatalogFocusedTask(input.repairMode, input.repairIdentityName); const catalogTaskBase = input.exactCapabilityLimit ? `You are naming ${input.exactCapabilityLimit === 1 ? 'one evidence-grounded PRODUCT OUTCOME' : `${input.exactCapabilityLimit} distinct evidence-grounded PRODUCT OUTCOMES`} for one focused evidence family. Return ONLY valid JSON: {"capabilities":[{"requirement_id":"...","name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. ${focusedCatalogTask} Include at least one exact candidate_id.${input.repairMode === 'description' ? '' : ' Include at least one evidence_subject_terms token in a new name.'} Individual operation names are examples of delivery mechanics, not title templates. Do not discuss another product ability, write a system description, invent a broader claim, or return alternatives.`
+    const focusedCatalogTask = capabilityCatalogFocusedTask(input.repairMode || (input.requiredOutcomeRequirements?.length ? 'outcome' : undefined), input.repairIdentityName, Boolean(input.acceptedOutcomeNames?.length)); const catalogTaskBase = input.exactCapabilityLimit ? `You are naming ${input.exactCapabilityLimit === 1 ? 'one evidence-grounded PRODUCT OUTCOME' : `${input.exactCapabilityLimit} distinct evidence-grounded PRODUCT OUTCOMES`} for one focused evidence family. Return ONLY valid JSON: {"capabilities":[{"requirement_id":"...","name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. ${focusedCatalogTask} Include at least one exact candidate_id.${input.repairMode === 'description' ? '' : ' Include at least one evidence_subject_terms token in a new name.'} Individual operation names are examples of delivery mechanics, not title templates. Do not discuss another product ability, write a system description, invent a broader claim, or return alternatives.`
       : artifactType === 'infrastructure'
       ? `You are cataloging the OPERATIONAL RESPONSIBILITIES of an infrastructure codebase. Return ONLY valid JSON: {"system_description":"...","domain":"...","capabilities":[{"name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Name what operators accomplish with the declared infrastructure in product-neutral operational language. Every name must be a verb-headed operator outcome grounded in the supplied declarations. Never infer that a resource handles, processes, or manages a business concept merely because that concept appears in its resource name. Never name a script, file, command, handler, route, framework, or registration surface as the capability. Merge related deployment/configuration candidates. candidate_ids must be copied from supplied facts. Return ${catalogCountMin} to ${catalogCountMax} evidence-backed capabilities, ordered most central first.`
       : artifactType === 'library' || artifactType === 'client-sdk'
@@ -10455,10 +10455,9 @@ export class AnalyzerOrchestrator {
       const reconciledCandidates = extracted.length > 0
         ? this.reconcileCatalogedCapabilities(extracted, evidenceCandidates, args.dataEntities, args.entryPoints, args.nodes, args.enhancedSystemPurpose, args.libraryNames || [], args.projectTextSignal, args.externalServices)
         : [];
-      const publishabilityFailures = new Map<string, number>();
-      const publishabilityRejections: Array<{ name: string; description?: string; reason: string; requirement_id?: string; forbidden_terms?: string[] }> = [];
-      const rejectedCapabilities: SystemCapability[] = [];
-      const cycleReconciled = reconciledCandidates.flatMap(capability => {
+      const boundReconciledCandidates = cycle === 1 ? bindUniquelySatisfiedCatalogOutcomeRequirements(reconciledCandidates, requiredOutcomes) : reconciledCandidates;
+      const publishabilityFailures = new Map<string, number>(); const publishabilityRejections: Array<{ name: string; description?: string; reason: string; requirement_id?: string; forbidden_terms?: string[] }> = [];
+      const rejectedCapabilities: SystemCapability[] = []; const cycleReconciled = boundReconciledCandidates.flatMap(capability => {
         const descriptionTarget = this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById); const descriptionValidation = this.validateElementDescription(capability.description || '', descriptionTarget);
         const failure = this.capabilityPublishabilityFailure(capability) || (!descriptionValidation.ok ? `description-${descriptionValidation.reason}` : undefined);
         if (!failure) return [capability];
@@ -10469,7 +10468,7 @@ export class AnalyzerOrchestrator {
         return identity ? [identity] : [];
       });
       audienceRepairFeedback = [audienceRepairFeedback, capabilityPublishabilityRepairFeedback(publishabilityRejections)].filter(Boolean).join(' ') || undefined;
-      const combinedReconciled = targetedRepair ? this.dedupeSystemCapabilitiesByName(mergeCapabilityCatalogRepairResults(reconciled, cycleReconciled), true) : cycleReconciled;
+      const repairBase = targetedRepair ? supersedeUnboundPendingOutcomeDuplicates(reconciled, cycleReconciled, requiredOutcomes) : reconciled; const combinedReconciled = targetedRepair ? this.dedupeSystemCapabilitiesByName(mergeCapabilityCatalogRepairResults(repairBase, cycleReconciled), true) : cycleReconciled;
       const evidenceCompleteReconciled = mergeUniquelyMatchedBehaviorEvidence(combinedReconciled, evidenceCandidates, requiredBehaviorCandidateIds); const nonPublishable = evidenceCompleteReconciled.filter(capability => !this.isPublishableCapability(capability));
       const cycleQualityFailure = this.catalogQualityFailure(
         evidenceCompleteReconciled,
@@ -10539,6 +10538,7 @@ export class AnalyzerOrchestrator {
       verification_evidence_candidates: evidenceRoleSummary.verification,
       unresolved_evidence_candidates: evidenceRoleSummary.unresolved,
       candidate_dispositions: evidenceCandidates.map(candidate => ({ candidate_id: candidate.id, role: candidate.evidence_role || 'unresolved', reasons: candidate.evidence_role_reasons || [] })),
+      actual_publishable_capabilities: publishableReconciled.length,
       published_capabilities: publishGroundedPartial || (!deadlineExceeded && !qualityFailure) ? publishableReconciled.length : 0,
       minimum_published_capabilities: Math.ceil(Math.log2(distinctFamilyCount + 1)),
       status: publishGroundedPartial ? 'partial' : deadlineExceeded ? 'unavailable' : qualityFailure ? 'rejected' : 'accepted',

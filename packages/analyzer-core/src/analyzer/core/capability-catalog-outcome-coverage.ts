@@ -151,6 +151,30 @@ export function capabilitySatisfiesCatalogOutcomeRequirement(
   return requirement.subjectTokens.filter(token => capabilityTokens.has(token)).length >= requiredMatches;
 }
 
+export function bindUniquelySatisfiedCatalogOutcomeRequirements(
+  capabilities: readonly SystemCapability[],
+  requirements: readonly CapabilityCatalogOutcomeRequirement[],
+): SystemCapability[] {
+  const matches = requirements.map(requirement => capabilities.flatMap((capability, index) =>
+    capabilitySatisfiesCatalogOutcomeRequirement(capability, requirement) ? [index] : []));
+  const requirementMatchesByCapability = new Map<number, number[]>();
+  matches.forEach((capabilityIndexes, requirementIndex) => capabilityIndexes.forEach(capabilityIndex => {
+    const requirementIndexes = requirementMatchesByCapability.get(capabilityIndex) || [];
+    requirementIndexes.push(requirementIndex);
+    requirementMatchesByCapability.set(capabilityIndex, requirementIndexes);
+  }));
+  const bindings = new Map<number, string>();
+  matches.forEach((capabilityIndexes, requirementIndex) => {
+    if (capabilityIndexes.length !== 1 || requirementMatchesByCapability.get(capabilityIndexes[0])?.length !== 1) return;
+    bindings.set(capabilityIndexes[0], requirements[requirementIndex].id);
+  });
+  return capabilities.map((capability, index) => {
+    const requirementId = bindings.get(index);
+    if (!requirementId) return capability;
+    return { ...capability, criticality_factors: [...new Set([...(capability.criticality_factors || []), `catalog-outcome-requirement:${requirementId}`])] };
+  });
+}
+
 export function capabilityCatalogOutcomeBindingFailure(
   capability: Pick<SystemCapability, 'name' | 'description'>,
   candidateIds: readonly string[],

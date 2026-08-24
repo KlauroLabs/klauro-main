@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { SystemCapability } from '../../types/cas.types';
 import {
+  bindUniquelySatisfiedCatalogOutcomeRequirements,
   capabilityCatalogOutcomeCoverageFailure,
   capabilitySatisfiesCatalogOutcomeRequirement,
   deriveCapabilityCatalogOutcomeRequirements,
@@ -125,6 +126,21 @@ test('binds an audience-specific repair to its exact requested outcome', () => {
   humanOutcome.criticality_factors = [`catalog-outcome-requirement:${human.id}`];
   assert.equal(capabilitySatisfiesCatalogOutcomeRequirement(humanOutcome, human), true);
   assert.equal(capabilitySatisfiesCatalogOutcomeRequirement(humanOutcome, agent), false);
+});
+
+test('stamps only unambiguous initial audience and runtime outcomes', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, evidence);
+  const human = published('Help people understand software behavior', 'Human engineers understand connected software behavior before making changes.');
+  const agent = published('Ground agents in software behavior', 'AI agents understand connected software behavior before making changes.');
+  const runtime = published('Correlate static analysis with runtime evidence', 'Static software understanding is compared with runtime evidence.');
+  const ambiguous = published('Explain behavior to people and agents', 'People and AI agents understand connected software behavior.');
+  const bound = bindUniquelySatisfiedCatalogOutcomeRequirements([human, agent, runtime], requirements);
+  const ambiguousBound = bindUniquelySatisfiedCatalogOutcomeRequirements([ambiguous], requirements.filter(requirement => requirement.audience));
+
+  assert.equal(bound[0].criticality_factors.some(factor => factor.startsWith('catalog-outcome-requirement:human:')), true);
+  assert.equal(bound[1].criticality_factors.some(factor => factor.startsWith('catalog-outcome-requirement:agent:')), true);
+  assert.equal(bound[2].criticality_factors.some(factor => factor.startsWith('catalog-outcome-requirement:')), true);
+  assert.equal(ambiguousBound[0].criticality_factors.some(factor => factor.startsWith('catalog-outcome-requirement:')), false);
 });
 
 test('uses the product brief instead of treating package identity metadata as another outcome', () => {

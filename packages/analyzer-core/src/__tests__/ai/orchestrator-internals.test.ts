@@ -9909,6 +9909,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
 
     expect(systemCapabilities.map(capability => capability.id)).toEqual(['cap_published']);
     expect(purpose.capability_catalog_coverage).toMatchObject({
+      actual_publishable_capabilities: 1,
       published_capabilities: 1,
       status: 'rejected',
       reason: 'final catalog published 1 of at least 2 required capabilities',

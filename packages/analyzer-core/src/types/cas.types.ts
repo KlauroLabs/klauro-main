@@ -4079,6 +4079,7 @@ export interface EnhancedSystemPurpose extends SystemPurpose {
     verification_evidence_candidates?: number;
     unresolved_evidence_candidates?: number;
     candidate_dispositions?: Array<{ candidate_id: string; role: NonNullable<SystemCapability['evidence_role']>; reasons: string[] }>;
+    actual_publishable_capabilities?: number;
     published_capabilities: number;
     minimum_published_capabilities: number;
     status: 'accepted' | 'partial' | 'rejected' | 'unavailable';

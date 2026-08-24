@@ -44,6 +44,8 @@ export function synchronizeCapabilityCatalogCoverage(
 ): void {
   const coverage = purpose.capability_catalog_coverage;
   if (!coverage) return;
+  const preserveRejectedCandidates = coverage.status === 'rejected' && coverage.published_capabilities === 0;
+  coverage.actual_publishable_capabilities = preserveRejectedCandidates ? Math.max(coverage.actual_publishable_capabilities || 0, publishedCapabilities) : publishedCapabilities;
   coverage.published_capabilities = publishedCapabilities;
   if (excludedCapabilities > 0 && coverage.status === 'accepted') {
     coverage.status = 'partial';
