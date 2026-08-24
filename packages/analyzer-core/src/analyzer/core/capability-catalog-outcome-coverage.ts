@@ -9,17 +9,8 @@ export interface CapabilityCatalogOutcomeRequirement {
   subjectTokens: string[];
 }
 
-const ignoredTokens = new Set([
-  'a', 'an', 'and', 'any', 'as', 'at', 'by', 'even', 'for', 'from', 'in', 'into', 'is', 'it', 'of', 'on', 'or', 'the', 'that',
-  'their', 'this', 'through', 'to', 'when', 'while', 'with',
-  'allow', 'allows', 'build', 'builds', 'create', 'creates', 'enable', 'enables', 'help', 'helps', 'let', 'lets', 'provide',
-  'provides', 'support', 'supports', 'turn', 'turns',
-  'agent', 'agents', 'ai', 'customer', 'customers', 'developer', 'developers', 'engineer', 'engineers', 'human', 'humans',
-  'leader', 'leaders', 'operator', 'operators', 'people', 'person', 'reviewer', 'reviewers', 'user', 'users',
-]);
-
-const humanAudience = /\b(?:customers?|developers?|engineers?|humans?|leaders?|operators?|people|persons?|reviewers?|users?)\b/i;
-const agentAudience = /\b(?:ai\s+agents?|coding\s+agents?|software\s+agents?|agents?|assistants?)\b/i;
+const humanAudience = /\b(?:humans?|people|persons?|users?)\b/i;
+const agentAudience = /\b(?:agents?|assistants?)\b/i;
 
 function canonicalToken(token: string): string {
   const value = token.toLowerCase().replace(/(?:ing|ed|es|s)$/i, '');
@@ -32,14 +23,15 @@ function canonicalToken(token: string): string {
   return value;
 }
 
-function tokens(value: string, omitGenericSoftware = false): string[] {
-  return [...new Set(String(value || '')
+function tokens(value: string, omitAudience = false): string[] {
+  const source = omitAudience ? String(value || '').replace(humanAudience, ' ').replace(agentAudience, ' ') : String(value || '');
+  return [...new Set(source
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .toLowerCase()
     .split(/[^a-z0-9]+/)
-    .filter(token => token.length >= 3 && !ignoredTokens.has(token))
+    .filter(token => token.length >= 3)
     .map(canonicalToken)
-    .filter(token => token.length >= 3 && (!omitGenericSoftware || token !== 'software')))];
+    .filter(token => token.length >= 3))];
 }
 
 function candidateText(candidate: SystemCapability): string {
@@ -53,10 +45,24 @@ function candidateText(candidate: SystemCapability): string {
   ].filter(Boolean).join(' ');
 }
 
+function splitCoordinatedClause(value: string): string[] {
+  const conjunctions = [...value.matchAll(/\s+and\s+/gi)];
+  const boundary = conjunctions.find(match => {
+    const index = match.index || 0;
+    const left = value.slice(0, index).trim().split(/\s+/);
+    const right = value.slice(index + match[0].length).trim().split(/\s+/);
+    return left.length >= 3 && right.length >= 3;
+  });
+  if (!boundary) return [value];
+  const index = boundary.index || 0;
+  return [value.slice(0, index), ...splitCoordinatedClause(value.slice(index + boundary[0].length))];
+}
+
 function productClauses(signal?: CapabilityCatalogProjectSignal): string[] {
   return [signal?.productDocSummary, signal?.manifestDescription]
     .filter((value): value is string => Boolean(value))
-    .flatMap(value => value.split(/(?<=[.!?;])\s+|\s*,\s*(?:and\s+)?|\s+and\s+(?=(?:build|construct|correlat|creat|enable|explain|explor|help|provide|turn|understand)\w*\b)/i))
+    .flatMap(value => value.split(/(?<=[.!?;])\s+|\s*,\s*(?:and\s+)?/i))
+    .flatMap(splitCoordinatedClause)
     .map(value => value.trim().replace(/^[,;]\s*/, ''))
     .filter(value => value.length >= 20 && !/^.+?\s+(?:is|are)\s+(?:an?\s+|the\s+)?[^,.]+$/i.test(value));
 }
@@ -83,7 +89,7 @@ export function deriveCapabilityCatalogOutcomeRequirements(
   }));
   const requirements = new Map<string, CapabilityCatalogOutcomeRequirement>();
   for (const clause of productClauses(signal)) {
-    const subjectTokens = tokens(clause).filter(token => token !== 'software');
+    const subjectTokens = tokens(clause, true);
     if (subjectTokens.length === 0) continue;
     for (const audience of requirementAudiences(clause)) {
       const scored = candidateTokens.filter(item => !audience || (audience === 'human'

@@ -625,17 +625,17 @@ describe('capabilityDescriptionProductLanguageFailure', () => {
     expect(capabilityDescriptionProductLanguageFailure(
       'Get observations and correlate event data for each requested analysis.',
       [],
-      ['Get message get_observations', 'Correlate message correlate_event_data'],
+      ['["Get","get_observations",null,"message"]', '["Correlate","correlate_event_data",null,"message"]'],
     )).toBe('delivery-operation-restatement');
     expect(capabilityDescriptionProductLanguageFailure(
       'Connects production behavior to the software model so teams can investigate discrepancies.',
       [],
-      ['Get message get_observations', 'Correlate message correlate_event_data'],
+      ['["Get","get_observations",null,"message"]', '["Correlate","correlate_event_data",null,"message"]'],
     )).toBeUndefined();
     expect(capabilityDescriptionProductLanguageFailure(
       'Correlates event data with static behavior to reveal production discrepancies.',
       [],
-      ['Correlate message correlate_event_data'],
+      ['["Correlate","correlate_event_data",null,"message"]'],
     )).toBe('delivery-operation-restatement');
   });
 });

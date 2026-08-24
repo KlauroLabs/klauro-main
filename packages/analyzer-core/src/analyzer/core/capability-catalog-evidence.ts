@@ -284,13 +284,15 @@ export function capabilityDescriptionProductLanguageFailure(
   if (/\b(?:handles?|process(?:es|ed|ing)?)\s+(?:incoming\s+)?messages?\s+to\b/i.test(description)) return 'message-handler-scaffolding';
   const normalizedDescription = outcomeIdentityTokens(description);
   const copiedOperation = operations.some(operation => {
-    const allOperationTokens = outcomeIdentityTokens(operation);
-    const firstAction = allOperationTokens[0];
-    const operationTokens = [...new Set(allOperationTokens.filter(token => !/^(?:head|http|message|options|patch|post|put|route)$/.test(token)))];
-    const deliveryAction = /^(?:check|claim|delete|extend|fetch|get|install|list|load|read|release|run|show|start|stop|sync)$/.test(firstAction || '');
-    const phraseLength = deliveryAction ? 2 : 3;
-    const phrase = operationTokens.slice(0, phraseLength);
-    if (phrase.length < phraseLength) return false;
+    let operationParts: unknown;
+    try {
+      operationParts = JSON.parse(operation);
+    } catch {
+      operationParts = operation;
+    }
+    const pathOrCommand = Array.isArray(operationParts) ? operationParts[1] : operationParts;
+    const phrase = [...new Set(outcomeIdentityTokens(String(pathOrCommand || '')))];
+    if (phrase.length < 2) return false;
     return normalizedDescription.some((_, index) => phrase.every((token, offset) => normalizedDescription[index + offset] === token));
   });
   if (copiedOperation) return 'delivery-operation-restatement';

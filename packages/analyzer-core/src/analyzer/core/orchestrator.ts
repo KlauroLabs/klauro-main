@@ -11990,7 +11990,7 @@ export class AnalyzerOrchestrator {
       currentDescription: capability.description,
       category: capability.category,
       operations: capability.operations.slice(0, 8).map(operation =>
-        [operation.action, operation.trigger?.method, operation.entry_point_type, operation.path_or_command].filter(Boolean).join(' ')
+        JSON.stringify([operation.action, operation.path_or_command, operation.trigger?.method, operation.entry_point_type])
       ),
       sourceAreas,
       evidenceSummary: [
