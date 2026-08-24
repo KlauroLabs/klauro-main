@@ -198,3 +198,56 @@ test('concurrent flush requests serialize delivery', async () => {
   assert.equal(client.pending, 0);
   await client.shutdown();
 });
+
+test('chunks large queues and preserves stable event ids across retries', async () => {
+  const captures: Capture[] = [];
+  let attempt = 0;
+  const fetchImpl = (async (url: any, init: any) => {
+    const body = JSON.parse(init.body) as { events: CasRuntimeEvent[] };
+    captures.push({ url: String(url), body });
+    attempt += 1;
+    if (attempt === 1) throw new Error('ambiguous network failure');
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ event_count: body.events.length }),
+    } as unknown as Response;
+  }) as typeof fetch;
+  const client = new KlauroClient({
+    projectId: 'p',
+    flushInterval: 0,
+    batchSize: 10_000,
+    retryAttempts: 2,
+    retryBaseDelay: 0,
+    fetchImpl,
+  });
+  for (let i = 0; i < 1_205; i += 1) client.record(`event-${i}`);
+  await client.flush();
+  assert.deepEqual(captures.map(item => item.body.events.length), [1000, 1000, 205]);
+  assert.deepEqual(
+    captures[0].body.events.map(event => event.event_id),
+    captures[1].body.events.map(event => event.event_id),
+  );
+  assert.equal(new Set(captures.flatMap(item => item.body.events.map(event => event.event_id))).size, 1_205);
+  assert.equal(client.pending, 0);
+});
+
+test('requeues a chunk when the server acknowledges a partial batch', async () => {
+  const errors: unknown[] = [];
+  const client = new KlauroClient({
+    projectId: 'p',
+    flushInterval: 0,
+    retryAttempts: 1,
+    onError: error => errors.push(error),
+    fetchImpl: (async (_url: any, init: any) => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ event_count: JSON.parse(init.body).events.length - 1 }),
+    })) as typeof fetch,
+  });
+  client.record('one');
+  client.record('two');
+  await client.flush();
+  assert.equal(client.pending, 2);
+  assert.match(String(errors[0]), /acknowledged 1\/2/);
+});

@@ -158,3 +158,50 @@ def test_concurrent_flushes_serialize_transport_delivery():
     assert transport.maximum_active == 1
     assert client.pending == 0
     client.shutdown()
+
+
+def test_chunks_large_queues_and_preserves_event_ids_across_retry():
+    class RetryTransport:
+        def __init__(self):
+            self.batches = []
+
+        def send(self, events):
+            self.batches.append(list(events))
+            if len(self.batches) == 1:
+                raise RuntimeError("ambiguous network failure")
+            return len(events)
+
+    transport = RetryTransport()
+    client = make_client(
+        transport,
+        batch_size=10000,
+        retry_attempts=2,
+        retry_base_delay=0,
+    )
+    for index in range(1205):
+        client.record("event-{}".format(index))
+    client.flush()
+    assert [len(batch) for batch in transport.batches] == [1000, 1000, 205]
+    assert [event["event_id"] for event in transport.batches[0]] == [
+        event["event_id"] for event in transport.batches[1]
+    ]
+    assert len({event["event_id"] for batch in transport.batches[1:] for event in batch}) == 1205
+    assert client.pending == 0
+
+
+def test_requeues_chunk_when_server_acknowledges_partial_batch():
+    class PartialTransport:
+        def send(self, events):
+            return len(events) - 1
+
+    errors = []
+    client = make_client(
+        PartialTransport(),
+        retry_attempts=1,
+        on_error=lambda error: errors.append(error),
+    )
+    client.record("one")
+    client.record("two")
+    client.flush()
+    assert client.pending == 2
+    assert "acknowledged 1/2" in str(errors[0])

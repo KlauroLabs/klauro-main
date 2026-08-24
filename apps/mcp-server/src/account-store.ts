@@ -576,6 +576,11 @@ export class AccountStore {
     return db.projects.filter(project => project.analysis_id === analysisId);
   }
 
+  async getProjectById(projectId: string): Promise<AccountProject | null> {
+    const db = await this.load();
+    return db.projects.find(project => project.id === projectId) || null;
+  }
+
   async createProject(userId: string, workspaceId: string, input: { name: string; repo_url?: string; local_path?: string; analysis_id?: string }): Promise<AccountProject> {
     return this.mutate(db => {
       requireMembership(db, userId, workspaceId, ['owner', 'admin', 'member']);

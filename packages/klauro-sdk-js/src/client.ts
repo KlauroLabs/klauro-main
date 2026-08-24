@@ -8,6 +8,7 @@ import {
 import { nowMs, elapsedMs } from './clock';
 
 const activeClients = new Set<KlauroClient>();
+const MAX_INGEST_BATCH_SIZE = 1000;
 let lifecycleHookInstalled = false;
 
 function flushActiveClients(): void {
@@ -68,6 +69,8 @@ export class KlauroClient {
       batchSize: config.batchSize ?? 50,
       flushInterval: config.flushInterval ?? 5000,
       maxQueueSize: config.maxQueueSize ?? 10_000,
+      retryAttempts: Math.max(1, config.retryAttempts ?? 3),
+      retryBaseDelay: Math.max(0, config.retryBaseDelay ?? 100),
       fetchImpl: config.fetchImpl,
       onError:
         config.onError ||
@@ -164,32 +167,46 @@ export class KlauroClient {
   }
 
   private async deliverQueuedEvents(): Promise<void> {
-    if (this.queue.length === 0) return;
-    const batch = this.queue.splice(0, this.queue.length);
     const fetchImpl = this.config.fetchImpl || (globalThis.fetch as typeof fetch | undefined);
     if (!fetchImpl) {
-      this.requeue(batch);
       this.config.onError(new Error('[klauro] no fetch implementation available'));
       return;
     }
-    try {
-      const res = await fetchImpl(this.ingestUrl(), {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          ...(this.config.apiKey ? { authorization: `Bearer ${this.config.apiKey}` } : {}),
-        },
-        body: JSON.stringify({ events: batch }),
-      });
-      if (!res.ok) {
-        this.requeue(batch);
-        this.config.onError(new Error(`[klauro] ingest returned HTTP ${res.status}`));
-      } else if (this.config.debug) {
-        console.error(`[klauro] delivered ${batch.length} event(s)`);
+
+    while (this.queue.length > 0) {
+      const batch = this.queue.splice(0, MAX_INGEST_BATCH_SIZE);
+      let delivered = false;
+      let lastError: unknown;
+      for (let attempt = 0; attempt < this.config.retryAttempts; attempt += 1) {
+        try {
+          const res = await fetchImpl(this.ingestUrl(), {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              ...(this.config.apiKey ? { authorization: `Bearer ${this.config.apiKey}` } : {}),
+            },
+            body: JSON.stringify({ events: batch }),
+          });
+          if (!res.ok) throw new Error(`[klauro] ingest returned HTTP ${res.status}`);
+          const acknowledgement = await responseAcknowledgement(res);
+          if (acknowledgement !== undefined && acknowledgement !== batch.length) {
+            throw new Error(`[klauro] ingest acknowledged ${acknowledgement}/${batch.length} event(s)`);
+          }
+          delivered = true;
+          if (this.config.debug) console.error(`[klauro] delivered ${batch.length} event(s)`);
+          break;
+        } catch (error) {
+          lastError = error;
+          if (attempt + 1 < this.config.retryAttempts && this.config.retryBaseDelay > 0) {
+            await delay(this.config.retryBaseDelay * (2 ** attempt));
+          }
+        }
       }
-    } catch (err) {
-      this.requeue(batch);
-      this.config.onError(err);
+      if (!delivered) {
+        this.requeue(batch);
+        this.config.onError(lastError);
+        return;
+      }
     }
   }
 
@@ -228,6 +245,7 @@ export class KlauroClient {
       service_name: this.config.service,
       environment: this.config.environment,
       ...event,
+      event_id: event.event_id || randomHex(16),
     };
   }
 
@@ -237,4 +255,18 @@ export class KlauroClient {
     )}`;
   }
 
+}
+
+async function responseAcknowledgement(response: Response): Promise<number | undefined> {
+  if (typeof response.json !== 'function') return undefined;
+  try {
+    const body = await response.json() as { event_count?: unknown };
+    return typeof body?.event_count === 'number' ? body.event_count : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }

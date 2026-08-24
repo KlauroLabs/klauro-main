@@ -299,6 +299,7 @@ test('mapSdkEvent forwards every direct CAS-id field (static_id/node_id/entry_po
   const { mapSdkEvent } = await REQUIRE();
   const mapped = mapSdkEvent({
     type: 'request',
+    event_id: 'sdk-event-1',
     static_id: 'node:handleCreateOrder',
     node_id: 'n_handleCreateOrder',
     entry_point_id: 'ep_createOrder',
@@ -310,6 +311,7 @@ test('mapSdkEvent forwards every direct CAS-id field (static_id/node_id/entry_po
     duration_ms: 12,
   });
   assert.equal(mapped.static_id, 'node:handleCreateOrder');
+  assert.equal(mapped.event_id, 'sdk-event-1');
   assert.equal(mapped.node_id, 'n_handleCreateOrder');
   assert.equal(mapped.entry_point_id, 'ep_createOrder');
   assert.equal(mapped.exit_point_id, 'ex_notifyWarehouse');

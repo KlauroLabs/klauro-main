@@ -22,6 +22,7 @@ import { isCASSearchContentWord } from '../../../packages/analyzer-core/src/anal
 import type { CASProductMap } from '../../../packages/analyzer-core/src/types/cas.types';
 import { buildSystemFitSummary, buildCommunicationSeamSummary } from './context-fabric';
 import { getQueryTraversalIndex } from './query-traversal-index';
+import { capabilityRuntimeTelemetryById, observedRuntimeStaticLinks } from './runtime-query-overlays';
 import { resolveCodingContextTarget } from './coding-target-resolution';
 import { casEdgeCount, casNodeCount, casProjectionSummary, casSectionLoaded } from './cas-projection';
 import {
@@ -2479,9 +2480,11 @@ export function productMapToMarkdown(map: CASProductMap): string {
 
 export function getRuntimeStaticLinks(
   cas: CASOutput,
-  opts: { telemetryStatus?: string; kind?: string; limit?: number; offset?: number } = {}
+  opts: { telemetryStatus?: string; kind?: string; limit?: number; offset?: number } = {},
+  runtimeMetrics: RuntimeMetricLike[] = [],
 ) {
-  let links = cas.runtime_static_links || [];
+  const allLinks = observedRuntimeStaticLinks(cas, runtimeMetrics);
+  let links = allLinks;
   if (opts.telemetryStatus) {
     links = links.filter(link => link.telemetry_status === opts.telemetryStatus);
   }
@@ -2494,7 +2497,7 @@ export function getRuntimeStaticLinks(
   const offset = opts.offset || 0;
 
   const byStatus: Record<string, number> = {};
-  for (const link of cas.runtime_static_links || []) {
+  for (const link of allLinks) {
     byStatus[link.telemetry_status] = (byStatus[link.telemetry_status] || 0) + 1;
   }
 
@@ -2536,11 +2539,14 @@ export function getAnalysisFacts(
   };
 }
 
-export function getFlowGraph(cas: CASOutput) {
+export function getFlowGraph(cas: CASOutput, runtimeMetrics: RuntimeMetricLike[] = []) {
   const flowGraph = cas.flow_graph;
   if (!flowGraph) return null;
 
-  const capabilities = (flowGraph.capability_candidates || []).map(c => ({
+  const capabilityTelemetry = capabilityRuntimeTelemetryById(cas, flowGraph.capability_candidates || [], runtimeMetrics);
+  const capabilities = (flowGraph.capability_candidates || []).map(c => {
+    const telemetry = capabilityTelemetry.get(c.id);
+    return ({
     id: c.id,
     name: c.name,
     description: c.description,
@@ -2558,7 +2564,9 @@ export function getFlowGraph(cas: CASOutput) {
     call_chain_count: c.call_chain_ids?.length || 0,
     depends_on_count: c.depends_on?.length || 0,
     depended_by_count: c.depended_by?.length || 0,
-  }));
+    ...(telemetry ? { telemetry } : {}),
+  });
+  });
 
   const dependencies = (flowGraph.dependencies || []).map(d => ({
     from_capability: d.from_capability,

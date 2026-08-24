@@ -33,6 +33,7 @@ import { getMergelessMetrics } from './coordination/mergeless-metrics';
 import { planIntentMerge, planIntentMergeFromSubstrate, type MergePlan } from './coordination/intent-merge';
 import { ingestAndPersist, loadPersistedRuntimeFacts } from './telemetry-fusion';
 import { backfillIngestedTelemetry, ingestTelemetryBatch, loadTelemetryObservations, summarizeRouteMetrics } from './telemetry-ingestion';
+import { requireAuthorizedTelemetryProject, requireTelemetryBatchSize } from './telemetry-project-access';
 import { buildNodeRuntimeMetrics } from './product';
 import { getProductMap, getFlowConcepts, getArchitecturalConflicts, getParadigmConformance, getPerspectives, getCicdPipelines, getCommunicationSeams, buildOrientCapsule, getSemanticCoverage, getDataEntities } from './query';
 import type { SemanticRole } from './semantic-roles';
@@ -314,7 +315,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         writeJson(response, 200, { status: 'success', user_id: result.userId, email: result.email });
         return;
       }
-
       if (request.method === 'POST' && route.startsWith('/api/telemetry/runtime-events/')) {
         const reconAuth = await authorizeAnalyzerRequest(accounts, request, token);
         if (!reconAuth.authorized) {
@@ -327,13 +327,15 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           writeJson(response, 400, { status: 'error', error: 'projectId path segment is required' });
           return;
         }
+        const telemetryProject = await requireAuthorizedTelemetryProject(accounts, reconAuth.clientId, projectId);
         const body = await readJsonBody<{ events?: CasRuntimeEvent[] }>(request, maxBodyBytes);
         const events = Array.isArray(body.events) ? body.events : [];
-
-        const result = await ingestTelemetryBatch(null, projectId, events.map(mapSdkEvent), { persist: true });
+        requireTelemetryBatchSize(events.length);
+        const result = await ingestTelemetryBatch(null, telemetryProject.storage_id, events.map(mapSdkEvent), { persist: true });
         await appendAuditLog(dataDir, {
           event: 'telemetry_runtime_events',
           workspace: projectId,
+          analysis_id: telemetryProject.storage_id,
           received: events.length,
           ingested: result.event_count,
           matched: result.correlation_summary.matched,
@@ -342,7 +344,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         writeJson(response, 200, { status: 'success', ...result });
         return;
       }
-
       if (route.startsWith('/api/')) {
         const apiAuthorization = await authorizeAccountApiRequest(accounts, request, token);
         if (!apiAuthorization.authorized) {
@@ -1700,15 +1701,15 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         writeJson(response, 200, { status: 'success', participant_revision: snapshot.participant_revision });
         return;
       }
-
       if (request.method === 'POST' && route === '/v1/telemetry/ingest') {
         const body = await readJsonBody<{ workspace: string; spans: any[]; window?: string }>(request, maxBodyBytes);
         if (!body.workspace || !Array.isArray(body.spans)) {
           writeJson(response, 400, { status: 'error', error: 'workspace and spans[] are required' });
           return;
         }
-        const cas = await getAnalysis(body.workspace);
-        const result = await ingestAndPersist(dataDir, body.workspace, cas, body.spans, { window: body.window });
+        const telemetryProject = await requireAuthorizedTelemetryProject(accounts, clientId, body.workspace);
+        const cas = await getAnalysis(telemetryProject.storage_id);
+        const result = await ingestAndPersist(dataDir, telemetryProject.storage_id, cas, body.spans, { window: body.window });
         await appendAuditLog(dataDir, {
           event: 'telemetry_ingest',
           workspace: body.workspace,
@@ -1719,39 +1720,37 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         writeJson(response, 200, { status: 'success', ...result });
         return;
       }
-
       if (request.method === 'GET' && route === '/v1/telemetry/observations') {
         const workspace = requestUrl.searchParams.get('workspace') || '';
         if (!workspace) {
           writeJson(response, 400, { status: 'error', error: 'workspace query param is required' });
           return;
         }
+        const telemetryProject = await requireAuthorizedTelemetryProject(accounts, clientId, workspace);
+        const storageId = telemetryProject.storage_id;
         const limitParam = requestUrl.searchParams.get('limit');
         const limit = limitParam ? Number(limitParam) : undefined;
         const traceId = requestUrl.searchParams.get('trace_id') || undefined;
-        const loadObservations = () => loadTelemetryObservations(workspace, {
+        const loadObservations = () => loadTelemetryObservations(storageId, {
           source: 'ingested',
           ...(traceId ? { traceId } : {}),
           ...(limit && Number.isFinite(limit) && limit > 0 ? { limit } : {}),
         });
         let set = await loadObservations();
-
         try {
           const hasUnmatched = (set.observations || []).some(
             (observation: any) => observation?.correlation?.status === 'unmatched');
           if (hasUnmatched) {
-            const cas = await getAnalysis(workspace).catch(() => null);
+            const cas = await getAnalysis(storageId).catch(() => null);
             if (cas) {
-              const backfill = await backfillIngestedTelemetry(cas, workspace).catch(() => null);
+              const backfill = await backfillIngestedTelemetry(cas, storageId).catch(() => null);
               if (backfill && backfill.upgraded > 0) set = await loadObservations();
             }
           }
         } catch {
 
         }
-
-        const fused = await loadPersistedRuntimeFacts(dataDir, workspace).catch(() => null);
-
+        const fused = await loadPersistedRuntimeFacts(dataDir, storageId).catch(() => null);
         const routeMetrics = summarizeRouteMetrics(set.observations || []);
         writeJson(response, 200, {
           status: 'success',
@@ -1841,19 +1840,20 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         writeJson(response, 200, { status: 'success', workspace, ...result });
         return;
       }
-
       if (request.method === 'GET' && route === '/v1/telemetry/node-metrics') {
         const workspace = requestUrl.searchParams.get('workspace') || '';
         if (!workspace) {
           writeJson(response, 400, { status: 'error', error: 'workspace query param is required' });
           return;
         }
+        const telemetryProject = await requireAuthorizedTelemetryProject(accounts, clientId, workspace);
+        const storageId = telemetryProject.storage_id;
         const loadObservations = () =>
-          loadTelemetryObservations(workspace, { source: 'ingested', limit: 5000 });
+          loadTelemetryObservations(storageId, { source: 'ingested', limit: 5000 });
         let set = await loadObservations();
         let cas: any = null;
         try {
-          cas = await getAnalysis(workspace);
+          cas = await getAnalysis(storageId);
         } catch {
           cas = null;
         }
@@ -1861,12 +1861,11 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           writeJson(response, 200, { status: 'success', workspace, node_metrics: [], note: 'no analysis for workspace' });
           return;
         }
-
         try {
           const hasUnmatched = (set.observations || []).some(
             (observation: any) => observation?.correlation?.status === 'unmatched');
           if (hasUnmatched) {
-            const backfill = await backfillIngestedTelemetry(cas, workspace).catch(() => null);
+            const backfill = await backfillIngestedTelemetry(cas, storageId).catch(() => null);
             if (backfill && backfill.upgraded > 0) set = await loadObservations();
           }
         } catch {
@@ -1883,7 +1882,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         });
         return;
       }
-
       writeJson(response, 404, { status: 'error', error: 'Not found' });
     } catch (error) {
       if (error instanceof AccountHttpError) {

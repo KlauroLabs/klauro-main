@@ -1,6 +1,6 @@
 import * as fs from 'fs-extra';
-import * as os from 'os';
 import * as path from 'path';
+import { createHash } from 'crypto';
 import type { CASOutput, CASNode } from '../../../packages/analyzer-core/src/types/cas.types';
 import {
   correlateRuntimeEvent,
@@ -12,9 +12,10 @@ import {
   type RuntimeObservationSource,
 } from './product';
 import { getProjectStorageDir, loadRuntimeObservations } from './storage';
+import { writeCompressedChunksAtomic, writeJsonAtomic } from './json-storage-writer';
 
 export const TELEMETRY_SCHEMA_VERSION = 'ingested-1';
-const MAX_BATCH_SIZE = 1000;
+export const MAX_TELEMETRY_BATCH_SIZE = 1000;
 const MAX_OBSERVATIONS_PER_DAY = 5000;
 const RETENTION_DAYS = 14;
 const INGESTED_DIR = 'ingested-telemetry';
@@ -26,6 +27,7 @@ export interface TelemetryStackFrame {
 }
 
 export interface TelemetryEvent {
+  event_id?: string;
   kind: 'request' | 'error' | 'log' | 'metric';
   timestamp?: string;
   name?: string;
@@ -150,15 +152,19 @@ export async function ingestTelemetryBatch(
 ): Promise<TelemetryIngestionResult> {
   const persisted = options.persist !== false;
   const receivedAt = new Date().toISOString();
-  const accepted = (events || []).slice(0, MAX_BATCH_SIZE);
+  const accepted = events || [];
+  if (accepted.length > MAX_TELEMETRY_BATCH_SIZE) {
+    throw new RangeError(`Telemetry batches are limited to ${MAX_TELEMETRY_BATCH_SIZE} events`);
+  }
   const ingestionId = `ingest_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
   const observations: RuntimeObservation[] = [];
   const correlationCas = cas ?? emptyCasStub();
 
   for (let index = 0; index < accepted.length; index += 1) {
     const event = normalizeTelemetryEvent(correlationCas, accepted[index]);
+    const eventId = accepted[index].event_id;
     observations.push({
-      id: `${ingestionId}_${index + 1}`,
+      id: eventId ? stableObservationId(projectPath, eventId) : `${ingestionId}_${index + 1}`,
       project_path: projectPath,
       recorded_at: receivedAt,
       source: 'ingested',
@@ -238,6 +244,7 @@ export function normalizeTelemetryEvent(cas: CASOutput, event: TelemetryEvent): 
     stack: stackFromFrames(event.error),
     attributes: {
       ...event.attributes,
+      ...(event.event_id ? { telemetry_event_id: event.event_id } : {}),
       volume: volumeFor(event),
       ...(typeof event.p95_ms === 'number' ? { p95_ms: event.p95_ms } : {}),
       ...(typeof event.p99_ms === 'number' ? { p99_ms: event.p99_ms } : {}),
@@ -247,6 +254,10 @@ export function normalizeTelemetryEvent(cas: CASOutput, event: TelemetryEvent): 
       ...(event.function_hint ? { function_hint: event.function_hint } : {}),
     },
   };
+}
+
+function stableObservationId(projectPath: string, eventId: string): string {
+  return `ingested_${createHash('sha256').update(projectPath).update('\0').update(eventId).digest('hex').slice(0, 32)}`;
 }
 
 function validTimestamp(value?: string): string | undefined {
@@ -506,21 +517,69 @@ async function readDayObservations(filePath: string): Promise<RuntimeObservation
 
 export async function appendIngestedTelemetry(projectPath: string, observations: RuntimeObservation[]): Promise<void> {
   if (observations.length === 0) return;
-  const dir = ingestedTelemetryDir(projectPath);
-  await fs.ensureDir(dir);
+  await serializeTelemetryMutation(projectPath, async () => {
+    const dir = ingestedTelemetryDir(projectPath);
+    await fs.ensureDir(dir);
+    const byDay = new Map<string, RuntimeObservation[]>();
+    for (const observation of observations) {
+      const key = dayKey(observation.recorded_at);
+      byDay.set(key, [...(byDay.get(key) || []), observation]);
+    }
+    for (const [day, dayObservations] of byDay) {
+      const filePath = path.join(dir, `${day}.jsonl`);
+      const existing = await readDayObservations(filePath);
+      await writeObservationDay(filePath, mergeObservations(existing, dayObservations));
+    }
+    await removeExpiredIngestedTelemetryDays(dir, RETENTION_DAYS);
+  });
+}
 
-  const byDay = new Map<string, RuntimeObservation[]>();
+const telemetryMutations = new Map<string, Promise<unknown>>();
+
+async function serializeTelemetryMutation<T>(projectPath: string, operation: () => Promise<T>): Promise<T> {
+  const prior = telemetryMutations.get(projectPath) || Promise.resolve();
+  const pending = prior.catch(() => undefined).then(operation);
+  telemetryMutations.set(projectPath, pending);
+  try {
+    return await pending;
+  } finally {
+    if (telemetryMutations.get(projectPath) === pending) telemetryMutations.delete(projectPath);
+  }
+}
+
+function mergeObservations(existing: RuntimeObservation[], incoming: RuntimeObservation[]): RuntimeObservation[] {
+  return dedupeObservations([...incoming, ...existing]).slice(0, MAX_OBSERVATIONS_PER_DAY);
+}
+
+function dedupeObservations(observations: RuntimeObservation[]): RuntimeObservation[] {
+  const byId = new Map<string, RuntimeObservation>();
   for (const observation of observations) {
-    const key = dayKey(observation.recorded_at);
-    byDay.set(key, [...(byDay.get(key) || []), observation]);
+    const eventId = observation.event.attributes?.telemetry_event_id;
+    const key = typeof eventId === 'string' && eventId ? `event:${eventId}` : `observation:${observation.id}`;
+    if (!byId.has(key)) byId.set(key, observation);
   }
+  return [...byId.values()]
+    .sort((left, right) => right.recorded_at.localeCompare(left.recorded_at));
+}
 
-  for (const [day, dayObservations] of byDay) {
-    const lines = dayObservations.map(observation => `${JSON.stringify(observation)}\n`).join('');
-    await fs.appendFile(path.join(dir, `${day}.jsonl`), lines, 'utf8');
+export async function migrateIngestedTelemetryProject(fromProjectPath: string, toProjectPath: string): Promise<number> {
+  if (!fromProjectPath || fromProjectPath === toProjectPath) return 0;
+  return serializeTelemetryMutation(fromProjectPath, async () => {
+    const observations = await loadIngestedTelemetry(fromProjectPath);
+    if (observations.length === 0) return 0;
+    const migrated = observations.map(observation => ({ ...observation, project_path: toProjectPath }));
+    await appendIngestedTelemetry(toProjectPath, migrated);
+    await fs.remove(ingestedTelemetryDir(fromProjectPath));
+    return migrated.length;
+  });
+}
+
+async function writeObservationDay(filePath: string, newestFirst: RuntimeObservation[]): Promise<void> {
+  const chronological = [...newestFirst].reverse();
+  async function* lines(): AsyncGenerator<string> {
+    for (const observation of chronological) yield `${JSON.stringify(observation)}\n`;
   }
-
-  await removeExpiredIngestedTelemetryDays(dir, RETENTION_DAYS);
+  await writeCompressedChunksAtomic(filePath, lines());
 }
 
 async function removeExpiredIngestedTelemetryDays(dir: string, retentionDays: number): Promise<string[]> {
@@ -533,26 +592,21 @@ async function removeExpiredIngestedTelemetryDays(dir: string, retentionDays: nu
 }
 
 export async function compactIngestedTelemetry(projectPath: string, retentionDays = RETENTION_DAYS): Promise<{ removed_days: string[] }> {
-  const dir = ingestedTelemetryDir(projectPath);
-  if (!(await fs.pathExists(dir))) return { removed_days: [] };
-
-  const removedDays = await removeExpiredIngestedTelemetryDays(dir, retentionDays);
-  const allDayFiles = (await fs.readdir(dir)).filter(name => DAY_FILE_PATTERN.test(name));
-
-
-
-
-  for (const name of allDayFiles) {
-    if (!name.endsWith('.jsonl')) continue;
-    const filePath = path.join(dir, name);
-    const observations = await readDayObservations(filePath);
-    if (observations.length <= MAX_OBSERVATIONS_PER_DAY) continue;
-
-
-    const kept = observations.slice(0, MAX_OBSERVATIONS_PER_DAY).reverse();
-    await fs.writeFile(filePath, kept.map(item => `${JSON.stringify(item)}\n`).join(''), 'utf8');
-  }
-  return { removed_days: removedDays };
+  return serializeTelemetryMutation(projectPath, async () => {
+    const dir = ingestedTelemetryDir(projectPath);
+    if (!(await fs.pathExists(dir))) return { removed_days: [] };
+    const removedDays = await removeExpiredIngestedTelemetryDays(dir, retentionDays);
+    const allDayFiles = (await fs.readdir(dir)).filter(name => DAY_FILE_PATTERN.test(name));
+    for (const name of allDayFiles) {
+      if (!name.endsWith('.jsonl')) continue;
+      const filePath = path.join(dir, name);
+      const observations = await readDayObservations(filePath);
+      const compacted = mergeObservations([], observations);
+      if (compacted.length === observations.length) continue;
+      await writeObservationDay(filePath, compacted);
+    }
+    return { removed_days: removedDays };
+  });
 }
 
 
@@ -619,6 +673,13 @@ export async function backfillIngestedTelemetry(
   cas: CASOutput | null,
   projectPath: string,
 ): Promise<TelemetryBackfillResult> {
+  return serializeTelemetryMutation(projectPath, () => backfillIngestedTelemetryLocked(cas, projectPath));
+}
+
+async function backfillIngestedTelemetryLocked(
+  cas: CASOutput | null,
+  projectPath: string,
+): Promise<TelemetryBackfillResult> {
   const result: TelemetryBackfillResult = { scanned: 0, upgraded: 0, days_rewritten: [] };
   if (!cas || (cas.nodes || []).length === 0) return result;
 
@@ -667,10 +728,7 @@ export async function backfillIngestedTelemetry(
 
 
       if (filePath.endsWith('.jsonl')) {
-
-
-        const chronological = [...observations].reverse();
-        await fs.writeFile(filePath, chronological.map(item => `${JSON.stringify(item)}\n`).join(''), 'utf8');
+        await writeObservationDay(filePath, observations);
       } else {
         await writeJsonAtomic(filePath, observations);
       }
@@ -704,7 +762,7 @@ export async function loadIngestedTelemetry(projectPath: string, options: Teleme
     }
   }
 
-  observations = filterObservations(observations, options);
+  observations = filterObservations(dedupeObservations(observations), options);
   if (options.limit && options.limit > 0) {
     observations = observations.slice(0, options.limit);
   }
@@ -891,31 +949,4 @@ export async function loadTelemetryTrace(
     unmatched: set.observations.filter(observation => observation.correlation.status === 'unmatched').length,
     static_ids: [...staticIds],
   };
-}
-
-async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> {
-
-
-
-
-
-  await fs.mkdirp(path.dirname(filePath));
-  const tmpPath = path.join(os.tmpdir(), `klauro-telemetry-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`);
-  await fs.writeJson(tmpPath, value, { spaces: 2 });
-  try {
-    await fs.move(tmpPath, filePath, { overwrite: true });
-  } catch (error) {
-
-
-
-
-
-
-
-
-
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    await fs.mkdirp(path.dirname(filePath));
-    await fs.move(tmpPath, filePath, { overwrite: true });
-  }
 }

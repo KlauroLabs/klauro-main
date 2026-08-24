@@ -13,6 +13,7 @@ import {
   ingestedTelemetryDir,
   loadIngestedTelemetry,
   loadTelemetryObservations,
+  migrateIngestedTelemetryProject,
   summarizeRouteMetrics,
   type TelemetryEvent,
 } from './telemetry-ingestion';
@@ -279,6 +280,73 @@ test('backfillIngestedTelemetry upgrades pre-analysis unmatched observations onc
     const second = await backfillIngestedTelemetry(cas, root);
     assert.equal(second.upgraded, 0);
     assert.equal(second.days_rewritten.length, 0);
+  });
+});
+
+test('stable event ids make ambiguous delivery retries idempotent', async () => {
+  await withTempStorage(async root => {
+    const event: TelemetryEvent = {
+      event_id: 'sdk-event-stable-1',
+      kind: 'request',
+      method: 'POST',
+      route: '/invoices',
+      status: 201,
+    };
+    const [first, second] = await Promise.all([
+      ingestTelemetryBatch(null, root, [event]),
+      ingestTelemetryBatch(null, root, [event]),
+    ]);
+    assert.equal(first.observations[0].id, second.observations[0].id);
+    const stored = await loadIngestedTelemetry(root);
+    assert.equal(stored.length, 1);
+    assert.equal(stored[0].event.attributes?.telemetry_event_id, event.event_id);
+  });
+});
+
+test('serialized append and backfill preserve concurrent pre-analysis events', async () => {
+  await withTempStorage(async root => {
+    const first = ingestTelemetryBatch(null, root, [{
+      event_id: 'pre-analysis-first', kind: 'request', method: 'POST', route: '/invoices', trace_id: 'serial-first',
+    }]);
+    const second = ingestTelemetryBatch(null, root, [{
+      event_id: 'pre-analysis-second', kind: 'request', method: 'GET', route: '/ghost-route', trace_id: 'serial-second',
+    }]);
+    await Promise.all([first, second]);
+    const backfill = backfillIngestedTelemetry(buildCas(root), root);
+    const third = ingestTelemetryBatch(null, root, [{
+      event_id: 'pre-analysis-third', kind: 'request', method: 'POST', route: '/invoices', trace_id: 'serial-third',
+    }]);
+    await Promise.all([backfill, third]);
+    const stored = await loadIngestedTelemetry(root);
+    assert.equal(stored.length, 3);
+    assert.deepEqual(new Set(stored.map(item => item.event.trace_id)), new Set(['serial-first', 'serial-second', 'serial-third']));
+    assert.notEqual(stored.find(item => item.event.trace_id === 'serial-first')?.correlation.status, 'unmatched');
+  });
+});
+
+test('pre-analysis observations migrate idempotently to the canonical analysis bucket', async () => {
+  await withTempStorage(async root => {
+    await ingestTelemetryBatch(null, 'prj-pre-analysis', [{
+      event_id: 'migration-event', kind: 'request', method: 'POST', route: '/invoices',
+    }]);
+    assert.equal(await migrateIngestedTelemetryProject('prj-pre-analysis', root), 1);
+    assert.equal(await migrateIngestedTelemetryProject('prj-pre-analysis', root), 0);
+    const canonical = await loadIngestedTelemetry(root);
+    assert.equal(canonical.length, 1);
+    const backfill = await backfillIngestedTelemetry(buildCas(root), root);
+    assert.equal(backfill.upgraded, 1);
+    assert.notEqual((await loadIngestedTelemetry(root))[0].correlation.status, 'unmatched');
+  });
+});
+
+test('rejects oversized batches instead of acknowledging silent truncation', async () => {
+  await withTempStorage(async root => {
+    const events = Array.from({ length: 1001 }, (_, index): TelemetryEvent => ({
+      event_id: `oversized-${index}`,
+      kind: 'log',
+    }));
+    await assert.rejects(ingestTelemetryBatch(null, root, events), /limited to 1000 events/);
+    assert.equal((await loadIngestedTelemetry(root)).length, 0);
   });
 });
 

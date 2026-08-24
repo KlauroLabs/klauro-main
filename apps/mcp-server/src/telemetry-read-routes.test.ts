@@ -6,6 +6,8 @@ import * as path from 'node:path';
 
 import { createRemoteAnalyzerHttpServer } from './remote-analyzer-service';
 import { analyzeProject } from './analyzer';
+import { AccountStore } from './account-store';
+import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 
 /**
  * Focused HTTP tests for the telemetry read-back + ingest-reconcile routes
@@ -86,14 +88,94 @@ async function boot(opts: { preAnalyze?: boolean } = {}): Promise<Ctx> {
   };
 }
 
-async function getJson(base: string, p: string) {
-  const res = await fetch(`${base}${p}`);
+async function getJson(base: string, p: string, token?: string) {
+  const res = await fetch(`${base}${p}`, { headers: token ? { authorization: `Bearer ${token}` } : {} });
   return { status: res.status, body: await res.json().catch(() => null) as any };
 }
-async function postJson(base: string, p: string, body: unknown) {
-  const res = await fetch(`${base}${p}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+async function postJson(base: string, p: string, body: unknown, token?: string) {
+  const res = await fetch(`${base}${p}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    body: JSON.stringify(body),
+  });
   return { status: res.status, body: await res.json().catch(() => null) as any };
 }
+
+test('account telemetry routes reject cross-project access and migrate pre-analysis events to canonical analysis truth', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-telemetry-account-routes-'));
+  const storage = path.join(root, 'storage');
+  const remoteData = path.join(root, 'remote-data');
+  const previousStorage = process.env.KLAURO_STORAGE_PATH;
+  process.env.KLAURO_STORAGE_PATH = storage;
+  const accounts = new AccountStore(remoteData);
+  const owner = await accounts.register({ email: 'runtime-owner@example.com', password: 'password-1234', workspaceName: 'Runtime' });
+  const outsider = await accounts.register({ email: 'runtime-outsider@example.com', password: 'password-1234', workspaceName: 'Other' });
+  const workspace = (await accounts.listWorkspaces(owner.user.id))[0];
+  const project = await accounts.createProject(owner.user.id, workspace.id, { name: 'Orders API' });
+  const server = createRemoteAnalyzerHttpServer({ dataDir: remoteData, token: 'shared-test-token' });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  try {
+    const batch = { events: [{
+      event_id: 'pre-analysis-order-event',
+      type: 'request',
+      method: 'POST',
+      route: '/orders',
+      status_code: 201,
+      trace_id: 'account-pre-analysis',
+    }] };
+    const accepted = await postJson(base, `/api/telemetry/runtime-events/${project.id}`, batch, owner.token);
+    assert.equal(accepted.status, 200);
+    assert.equal(accepted.body.event_count, 1);
+
+    const rejectedPost = await postJson(base, `/api/telemetry/runtime-events/${project.id}`, batch, outsider.token);
+    assert.equal(rejectedPost.status, 404);
+    const rejectedRead = await getJson(base, `/v1/telemetry/observations?workspace=${project.id}`, outsider.token);
+    assert.equal(rejectedRead.status, 404);
+
+    const canonicalId = 'acct_runtime_orders';
+    const cas = {
+      cas_version: '1.11.0',
+      analysis_id: canonicalId,
+      analysis_timestamp: new Date().toISOString(),
+      system: { id: 'orders', name: 'Orders', type: 'service', root_path: '/orders' },
+      nodes: [{ id: 'node-orders', name: 'createOrder', type: 'function', source: { file: 'src/orders.ts', line: 1 } }],
+      edges: [],
+      entry_points: [{
+        id: 'entry-orders', name: 'POST /orders', type: 'http', source_node: 'node-orders',
+        trigger: { method: 'POST', path: '/orders' },
+        handler: { node_id: 'node-orders', method_name: 'createOrder', file: 'src/orders.ts', line: 1 },
+      }],
+      analyzer_contributions: [],
+    } as unknown as CASOutput;
+    const { saveAnalysis } = await import('./storage');
+    await saveAnalysis(canonicalId, cas);
+    await accounts.setProjectAnalysisId(owner.user.id, project.id, canonicalId);
+
+    const serviceAccepted = await postJson(base, `/api/telemetry/runtime-events/${project.id}`, { events: [{
+      event_id: 'post-analysis-service-event', type: 'request', method: 'POST', route: '/orders', trace_id: 'service-post-analysis',
+    }] }, 'shared-test-token');
+    assert.equal(serviceAccepted.status, 200);
+
+    const observations = await getJson(base, `/v1/telemetry/observations?workspace=${project.id}&trace_id=account-pre-analysis`, owner.token);
+    assert.equal(observations.status, 200);
+    assert.equal(observations.body.observations.length, 1);
+    assert.notEqual(observations.body.observations[0].correlation.status, 'unmatched');
+    const metrics = await getJson(base, `/v1/telemetry/node-metrics?workspace=${project.id}`, owner.token);
+    assert.equal(metrics.status, 200);
+    assert.ok(metrics.body.node_metrics.some((metric: any) => metric.request_count === 2));
+
+    const oversized = await postJson(base, `/api/telemetry/runtime-events/${project.id}`, {
+      events: Array.from({ length: 1001 }, (_, index) => ({ event_id: `too-many-${index}`, type: 'log' })),
+    }, owner.token);
+    assert.equal(oversized.status, 413);
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    if (previousStorage === undefined) delete process.env.KLAURO_STORAGE_PATH;
+    else process.env.KLAURO_STORAGE_PATH = previousStorage;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test('telemetry routes: reconcile POST → observations + node-metrics read-back', async () => {
   const ctx = await boot();

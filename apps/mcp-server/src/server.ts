@@ -5022,7 +5022,8 @@ function registerTools(server: McpServer) {
     } as any,
     async ({ path }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
-      return json(query.getFlowGraph(cas));
+      const runtimeMetrics = await runtimeMetricsForContract(cas, path);
+      return json(query.getFlowGraph(cas, runtimeMetrics));
     })
   );
 
@@ -5041,7 +5042,8 @@ function registerTools(server: McpServer) {
     } as any,
     async ({ path, telemetry_status, kind, limit, offset }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
-      return json(query.getRuntimeStaticLinks(cas, { telemetryStatus: telemetry_status, kind, limit, offset }));
+      const runtimeMetrics = await runtimeMetricsForContract(cas, path);
+      return json(query.getRuntimeStaticLinks(cas, { telemetryStatus: telemetry_status, kind, limit, offset }, runtimeMetrics));
     })
   );
 

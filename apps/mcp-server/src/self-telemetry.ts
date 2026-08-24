@@ -318,6 +318,7 @@ export function mapSdkEvent(event: CasRuntimeEvent): TelemetryEvent {
     event.type === 'request' ? 'request' : 'metric';
   return {
     kind,
+    event_id: event.event_id,
     timestamp: event.timestamp,
     name: event.signal,
     service_name: event.service_name || SERVICE_NAME,

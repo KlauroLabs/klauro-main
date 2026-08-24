@@ -4,6 +4,8 @@ export type CasRuntimeEventType = 'request' | 'error' | 'exit' | 'log' | 'custom
 
 export interface CasRuntimeEvent {
 
+  event_id?: string;
+
   type: CasRuntimeEventType;
 
   timestamp?: string;
@@ -69,6 +71,10 @@ export interface KlauroConfig {
 
   maxQueueSize?: number;
 
+  retryAttempts?: number;
+
+  retryBaseDelay?: number;
+
   fetchImpl?: typeof fetch;
 
   onError?: (err: unknown) => void;
@@ -85,6 +91,8 @@ export interface ResolvedConfig {
   batchSize: number;
   flushInterval: number;
   maxQueueSize: number;
+  retryAttempts: number;
+  retryBaseDelay: number;
   fetchImpl?: typeof fetch;
   onError: (err: unknown) => void;
   debug: boolean;

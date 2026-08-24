@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CASOutput, CASNode, CASEdge, CASEntryPoint } from '../../../packages/analyzer-core/src/types/cas.types';
-import { getCodingContext, getFlowConcepts, getCallers, assessChangeRisk, getConfiguration, buildSummary } from './query';
+import { getCodingContext, getFlowConcepts, getCallers, assessChangeRisk, getConfiguration, buildSummary, getFlowGraph, getRuntimeStaticLinks } from './query';
 import { attachCasProjection } from './cas-projection';
 
 // Builds a synthetic CAS with a single high-fanout "hub" node that has more
@@ -828,4 +828,57 @@ test('buildSummary recognizes a framework from its product entry points', () => 
   const summary: any = buildSummary(cas, { detail: 'compact' });
 
   assert.ok(summary.frameworks.includes('nextjs'));
+});
+
+test('runtime query overlays mark static links and capability evidence observed without mutating CAS', () => {
+  const cas = {
+    nodes: [],
+    edges: [],
+    runtime_static_links: [{
+      id: 'runtime-entry-orders',
+      kind: 'entry-point',
+      static_id: 'entry-orders',
+      telemetry_status: 'instrumentable',
+    }],
+    flow_graph: {
+      capability_candidates: [{
+        id: 'cap-orders',
+        name: 'Manage orders',
+        description: 'Manage orders',
+        entry_points: ['entry-orders'],
+        call_chain_ids: [],
+        services_used: [],
+        exit_points: [],
+        operations: [],
+        operation_patterns: [],
+        entry_point_summary: { types: ['http'], count: 1, primary_type: 'http' },
+        complexity_profile: {},
+        signals: {},
+      }],
+      dependencies: [],
+      topology: {},
+      primary_flow: {},
+      layers: [],
+    },
+  } as unknown as CASOutput;
+  const metrics = [{
+    static_id: 'runtime-entry-orders',
+    request_count: 20,
+    error_rate: 0.1,
+    latency: { p95_ms: 250 },
+  }];
+
+  const links = getRuntimeStaticLinks(cas, { telemetryStatus: 'observed' }, metrics);
+  assert.equal(links.total, 1);
+  assert.equal(links.links[0].telemetry_status, 'observed');
+  assert.equal(cas.runtime_static_links![0].telemetry_status, 'instrumentable');
+
+  const graph: any = getFlowGraph(cas, metrics);
+  assert.deepEqual(graph.capabilities[0].telemetry, {
+    observed: true,
+    matched_signal_count: 1,
+    request_count: 20,
+    error_rate: 0.1,
+    p95_ms: 250,
+  });
 });

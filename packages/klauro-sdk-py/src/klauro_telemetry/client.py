@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 
 from .contract import SCHEMA_VERSION, DEFAULT_ENDPOINT, ingest_path
 
+MAX_INGEST_BATCH_SIZE = 1000
+
 def _now_iso():
     return datetime.now(timezone.utc).isoformat()
 
@@ -32,6 +34,15 @@ class HttpTransport:
             status = getattr(resp, "status", None) or resp.getcode()
             if status < 200 or status >= 300:
                 raise RuntimeError("klauro ingest returned HTTP {}".format(status))
+            payload = resp.read()
+            if not payload:
+                return None
+            try:
+                acknowledgement = json.loads(payload.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                return None
+            count = acknowledgement.get("event_count") if isinstance(acknowledgement, dict) else None
+            return count if isinstance(count, int) else None
 
 class Span:
     def __init__(self, client, name, extra=None):
@@ -102,6 +113,8 @@ class KlauroClient:
         batch_size=50,
         flush_interval=5.0,
         max_queue_size=10000,
+        retry_attempts=3,
+        retry_base_delay=0.1,
         transport=None,
         on_error=None,
         debug=False,
@@ -116,6 +129,8 @@ class KlauroClient:
         self.batch_size = batch_size
         self.flush_interval = flush_interval
         self.max_queue_size = max_queue_size
+        self.retry_attempts = max(1, int(retry_attempts))
+        self.retry_base_delay = max(0.0, float(retry_base_delay))
         self.debug = debug
         self._on_error = on_error or self._default_on_error
         self._endpoint = (endpoint or DEFAULT_ENDPOINT).rstrip("/")
@@ -182,18 +197,33 @@ class KlauroClient:
 
     def flush(self):
         with self._flush_lock:
-            with self._lock:
-                batch = self._queue
-                self._queue = []
-            if not batch:
-                return
-            try:
-                self._transport.send(batch)
-                if self.debug:
-                    print("[klauro] delivered {} event(s)".format(len(batch)))
-            except Exception as exc:
-                self._requeue(batch)
-                self._on_error(exc)
+            while True:
+                with self._lock:
+                    batch = self._queue[:MAX_INGEST_BATCH_SIZE]
+                    del self._queue[:len(batch)]
+                if not batch:
+                    return
+                last_error = None
+                delivered = False
+                for attempt in range(self.retry_attempts):
+                    try:
+                        acknowledged = self._transport.send(batch)
+                        if acknowledged is not None and acknowledged != len(batch):
+                            raise RuntimeError(
+                                "klauro ingest acknowledged {}/{} event(s)".format(acknowledged, len(batch))
+                            )
+                        delivered = True
+                        if self.debug:
+                            print("[klauro] delivered {} event(s)".format(len(batch)))
+                        break
+                    except Exception as exc:
+                        last_error = exc
+                        if attempt + 1 < self.retry_attempts and self.retry_base_delay > 0:
+                            time.sleep(self.retry_base_delay * (2 ** attempt))
+                if not delivered:
+                    self._requeue(batch)
+                    self._on_error(last_error)
+                    return
 
     def shutdown(self):
         if self._stopped.is_set():
@@ -221,6 +251,7 @@ class KlauroClient:
         if self.environment is not None:
             out["environment"] = self.environment
         out.update(event)
+        out["event_id"] = event.get("event_id") or _rand_hex(16)
         return out
 
     def _run(self):
