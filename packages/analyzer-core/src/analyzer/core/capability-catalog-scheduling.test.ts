@@ -422,17 +422,27 @@ test('targeted catalog repair converges when full passes omit different families
 });
 
 test('semantic outcome progress prevents the repair loop from stopping while obligations shrink', () => {
-  const progress = trackCapabilityCatalogRepair(2, [], [], 2);
+  const progress = trackCapabilityCatalogRepair(2, [], [], ['human', 'runtime']);
 
-  assert.equal(progress.observe([], false, 1).stop, false);
-  assert.equal(progress.observe([], false, 1).stop, false);
-  assert.equal(progress.observe([], false, 0).stop, false);
+  assert.equal(progress.observe([], ['runtime']).stop, false);
+  assert.equal(progress.observe([], ['runtime']).stop, false);
+  assert.equal(progress.observe([], []).stop, false);
 });
 
 test('renaming a pending repair does not count as catalog progress', () => {
-  const progress = trackCapabilityCatalogRepair(1, [], [], 0);
+  const progress = trackCapabilityCatalogRepair(1, [], [], []);
 
-  assert.equal(progress.observe([], true, 0, ['requirement:human:understand']).stop, false);
-  assert.equal(progress.observe([], false, 0, ['requirement:human:understand']).stop, false);
-  assert.equal(progress.observe([], false, 0, ['requirement:human:understand']).stop, true);
+  assert.equal(progress.observe([], [], ['requirement:human:understand']).stop, false);
+  assert.equal(progress.observe([], [], ['requirement:human:understand']).stop, true);
+});
+
+test('novel rejected titles cannot extend repair to the full cycle budget', () => {
+  const progress = trackCapabilityCatalogRepair(13, [], [], ['human', 'runtime']);
+  let attempts = 0;
+  for (; attempts < progress.maxCycles; attempts++) {
+    if (progress.observe([], ['human', 'runtime'], []).stop) break;
+  }
+
+  assert.equal(progress.maxCycles, 16);
+  assert.equal(attempts, 1);
 });

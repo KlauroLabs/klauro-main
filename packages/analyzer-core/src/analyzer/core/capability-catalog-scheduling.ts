@@ -393,30 +393,31 @@ export function trackCapabilityCatalogRepair(
   distinctFamilyCount: number,
   requiredBehaviorCandidateIds: readonly string[],
   requiredEntityCandidateGroups: ReadonlyArray<ReadonlyArray<string>>,
-  requiredOutcomeCount = 0,
+  requiredOutcomeIds: readonly string[] = [],
 ) {
   const requiredFamilyCount = Math.max(
     distinctFamilyCount,
     requiredBehaviorCandidateIds.length + requiredEntityCandidateGroups.length,
-    requiredOutcomeCount,
+    requiredOutcomeIds.length,
   );
   const budget = capabilityCatalogRepairBudget(requiredFamilyCount);
   let previousUncoveredCount = uncoveredCapabilityCatalogCandidateIds(
     [], requiredBehaviorCandidateIds, requiredEntityCandidateGroups,
-  ).length + requiredOutcomeCount;
-  let previousPendingKeys = new Set<string>();
+  ).map(id => `candidate:${id}`).concat(requiredOutcomeIds.map(id => `requirement:${id}`));
+  let previousUnresolvedKeys = new Set(previousUncoveredCount);
   let noProgressCycles = 0;
   return {
     maxCycles: budget.maxCycles,
-    observe(capabilities: SystemCapability[], learnedConstraint = false, uncoveredOutcomeCount = 0, pendingIdentityKeys: readonly string[] = []) {
-      const pendingKeys = new Set(pendingIdentityKeys);
-      const uncoveredCount = uncoveredCapabilityCatalogCandidateIds(
-        capabilities, requiredBehaviorCandidateIds, requiredEntityCandidateGroups,
-      ).length + uncoveredOutcomeCount + pendingKeys.size;
-      const pendingShrank = pendingKeys.size < previousPendingKeys.size && [...pendingKeys].every(key => previousPendingKeys.has(key));
-      noProgressCycles = uncoveredCount < previousUncoveredCount || pendingShrank || learnedConstraint ? 0 : noProgressCycles + 1;
-      previousUncoveredCount = uncoveredCount;
-      previousPendingKeys = pendingKeys;
+    observe(capabilities: SystemCapability[], uncoveredOutcomeIds: readonly string[] = [], pendingIdentityKeys: readonly string[] = []) {
+      const unresolvedKeys = new Set([
+        ...uncoveredCapabilityCatalogCandidateIds(capabilities, requiredBehaviorCandidateIds, requiredEntityCandidateGroups).map(id => `candidate:${id}`),
+        ...uncoveredOutcomeIds.map(id => `requirement:${id}`),
+        ...pendingIdentityKeys,
+      ]);
+      const progressed = unresolvedKeys.size < previousUnresolvedKeys.size && [...unresolvedKeys].every(key => previousUnresolvedKeys.has(key));
+      noProgressCycles = progressed ? 0 : noProgressCycles + 1;
+      previousUnresolvedKeys = unresolvedKeys;
+      const uncoveredCount = unresolvedKeys.size;
       return { noProgressCycles, uncoveredCount, stop: noProgressCycles >= budget.noProgressRetries };
     },
   };

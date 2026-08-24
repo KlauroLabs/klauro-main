@@ -423,21 +423,14 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     localOrch.aiExtractCapabilityCatalog = async (input: any) => {
       calls.push(input);
       if (calls.length === 1) return initial;
-      const candidateId = input.candidateCapabilities[0]?.id;
-      return candidateId === 'graph'
-        ? [cap({ ...outcome('Build a trustworthy relationship graph'), criticality_factors: ['catalog-candidate:graph'] })]
-        : [
-          cap({
-            ...outcome('Help people understand software behavior'),
-            description: 'Human engineers explore connected software behavior and change risks.',
-            criticality_factors: ['catalog-candidate:understanding'],
-          }),
-          cap({
+      if (input.candidateCapabilities[0]?.id === 'graph') return [cap({ ...outcome('Build a trustworthy relationship graph'), criticality_factors: ['catalog-candidate:graph'] })];
+      return [input.requiredOutcomeRequirements?.[0]?.audience === 'human'
+        ? cap({ ...outcome('Help people understand software behavior'), description: 'Human engineers explore connected software behavior and change risks.', criticality_factors: ['catalog-candidate:understanding'] })
+        : cap({
             ...outcome('Give AI agents software comprehension'),
             description: 'AI agents understand connected software behavior before making changes.',
             criticality_factors: ['catalog-candidate:understanding'],
-          }),
-        ];
+          })];
     };
     localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
 
@@ -449,8 +442,9 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
       'Give AI agents software comprehension',
     ]));
     expect(calls.length).toBeGreaterThan(1);
-    expect(calls.slice(1).every(call => call.qualityNudge.includes('Distinct first-party outcomes'))).toBe(true);
-    expect(calls.find(call => call.candidateCapabilities[0]?.id === 'understanding')?.exactCapabilityLimit).toBe(2);
+    const understandingCalls = calls.filter(call => call.candidateCapabilities[0]?.id === 'understanding');
+    expect(understandingCalls).toHaveLength(2);
+    expect(understandingCalls.every(call => call.requiredOutcomeRequirements?.length === 1 && call.exactCapabilityLimit === 1)).toBe(true);
   });
 
   it('tells the next AI cycle exactly which audience failures require repair', async () => {
@@ -510,7 +504,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
     const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(gateArgs(localOrch));
 
-    expect(calls).toBe(2);
+    expect(calls).toBe(5);
     expect(out).toEqual([]);
   });
 
@@ -681,7 +675,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(calls).toHaveLength(2);
     expect(calls[1].qualityNudge).toContain('"candidate_id":"cap_history"');
     expect(calls[1].qualityNudge).toContain('"evidence_subject_terms":["change","history"]');
-    expect(calls[1].qualityNudge).toContain('an exact reuse of an existing accepted outcome is exempt');
+    expect(calls[1].qualityNudge).toContain('cannot reuse another accepted outcome');
     expect(calls[1]).toMatchObject({ exactCapabilityLimit: 1, userJourneys: [], externalServices: [] });
     expect(calls[1].dataEntities.map((entity: any) => entity.id)).toEqual(['entity_changehistoryentry']);
     expect(out.map(capability => capability.name)).toContain('Review codebase change history');
@@ -724,9 +718,10 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
     const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(args);
 
-    expect(calls).toHaveLength(3);
-    expect(out).toHaveLength(5);
-    expect(out.some(capability => capability.name === rejectedWorkspace.name)).toBe(false);
+    expect(calls).toHaveLength(2);
+    expect(out).toHaveLength(6);
+    expect(out.find(capability => capability.name === rejectedWorkspace.name)?.description).toBe(retained[0].description);
+    expect(calls[1]).toMatchObject({ repairMode: 'description', repairIdentityName: rejectedWorkspace.name });
   });
 
   it('preserves distinct accepted outcomes when the global catalog attaches supporting delivery evidence', async () => {
@@ -832,7 +827,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
     const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(args);
 
-    expect(calls).toHaveLength(3);
+    expect(calls).toHaveLength(2);
     expect(out).toEqual([]);
   });
 
