@@ -8189,6 +8189,7 @@ describe('top-down capability evidence (C2)', () => {
       });
 
       expect(catalog.map((capability: any) => capability.name)).toEqual(['Help people understand software behavior']);
+      expect(catalog[0].criticality_factors).toContain('catalog-outcome-requirement:human:behavior-understand');
       expect(context.facts.required_outcomes.map((requirement: any) => requirement.requirement_id)).toEqual([
         'human:behavior-understand', 'agent:behavior-understand',
       ]);

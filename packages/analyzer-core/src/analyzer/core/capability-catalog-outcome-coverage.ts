@@ -140,9 +140,10 @@ function capabilityMatchesAudience(capabilityText: string, audience?: 'agent' | 
 }
 
 export function capabilitySatisfiesCatalogOutcomeRequirement(
-  capability: Pick<SystemCapability, 'name' | 'description'>,
+  capability: Pick<SystemCapability, 'name' | 'description'> & Partial<Pick<SystemCapability, 'criticality_factors'>>,
   requirement: CapabilityCatalogOutcomeRequirement,
 ): boolean {
+  if (capability.criticality_factors?.includes(`catalog-outcome-requirement:${requirement.id}`)) return true;
   const capabilityText = `${capability.name || ''} ${capability.description || ''}`;
   if (!capabilityMatchesAudience(capabilityText, requirement.audience)) return false;
   const capabilityTokens = new Set(tokens(capabilityText));

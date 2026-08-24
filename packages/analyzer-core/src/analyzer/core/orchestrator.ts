@@ -9264,7 +9264,7 @@ export class AnalyzerOrchestrator {
       }
     }
     const catalogDescriptionContract = 'Each description must be one sentence of 12-28 words and at least 55 characters. Start with a concrete PM-readable product or operational subject, then state its evidence-specific behavior or outcome. Do not start with actor scaffolding such as "Lets users", "Allows users", "Enables users", "Gives users", or "Provides users". The description must add concrete information beyond the capability name. State the observed result directly; never explain it with generic implementation scaffolding such as "by reading", "by processing", "by coordinating", "supports tasks", or "coordinates operations". Use PM-readable product nouns from cited operations, journeys, or first-party product text; do not replace them with generic "data" or "information". entity_names that look like source types are grounding labels only and must not appear in the prose. Translate internal inventory terms such as entities, nodes, entry points, capability maps, and analysis results into the concrete software behavior, risk, relationship, or change context visible to the user. Do not invent value claims such as accurate, up-to-date, efficient, effective, smooth, experience, insights, comprehensive, seamless, robust, decision-making, collaboration, metrics, or performance unless that exact claim appears in the cited evidence. Do not invent operating claims such as locking, exclusivity, or blocking unless that exact claim appears in the cited evidence. Do not name source-code types, interfaces, classes, UI widgets, graph-rendering structures, or other implementation artifacts, and never use "capability" or "lifecycle" as prose scaffolding.';
-    const catalogTaskBase = input.exactCapabilityLimit ? `You are naming ${input.exactCapabilityLimit === 1 ? 'one evidence-grounded PRODUCT OUTCOME' : `${input.exactCapabilityLimit} distinct evidence-grounded PRODUCT OUTCOMES`} for one focused evidence family. Return ONLY valid JSON: {"capabilities":[{"requirement_id":"...","name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Return exactly one object for each required_outcomes entry and copy its requirement_id exactly. Each object must independently express that entry's audience and outcome subjects. For each required outcome, decide whether this delivery evidence implements one of accepted_outcome_names; reuse an accepted name only when its own wording satisfies that exact requirement_id, including its explicit audience. Otherwise name only the common user or operator purpose of that fact, include its exact candidate_id, and include at least one of its evidence_subject_terms in the name. Individual operation names are examples of delivery mechanics, not title templates. Do not discuss another product ability, write a system description, invent a broader claim, or return alternatives.`
+    const catalogTaskBase = input.exactCapabilityLimit ? `You are naming ${input.exactCapabilityLimit === 1 ? 'one evidence-grounded PRODUCT OUTCOME' : `${input.exactCapabilityLimit} distinct evidence-grounded PRODUCT OUTCOMES`} for one focused evidence family. Return ONLY valid JSON: {"capabilities":[{"requirement_id":"...","name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Return exactly one object for each required_outcomes entry and copy its requirement_id exactly. Each object must independently express that entry's audience and outcome subjects. Use the supplied audience label itself when present; do not expand it into an inferred profession or role. For each required outcome, decide whether this delivery evidence implements one of accepted_outcome_names; reuse an accepted name only when its own wording satisfies that exact requirement_id, including its explicit audience. Otherwise name only the common user or operator purpose of that fact, include its exact candidate_id, and include at least one of its evidence_subject_terms in the name. Individual operation names are examples of delivery mechanics, not title templates. Do not discuss another product ability, write a system description, invent a broader claim, or return alternatives.`
       : artifactType === 'infrastructure'
       ? `You are cataloging the OPERATIONAL RESPONSIBILITIES of an infrastructure codebase. Return ONLY valid JSON: {"system_description":"...","domain":"...","capabilities":[{"name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Name what operators accomplish with the declared infrastructure in product-neutral operational language. Every name must be a verb-headed operator outcome grounded in the supplied declarations. Never infer that a resource handles, processes, or manages a business concept merely because that concept appears in its resource name. Never name a script, file, command, handler, route, framework, or registration surface as the capability. Merge related deployment/configuration candidates. candidate_ids must be copied from supplied facts. Return ${catalogCountMin} to ${catalogCountMax} evidence-backed capabilities, ordered most central first.`
       : artifactType === 'library' || artifactType === 'client-sdk'
@@ -9481,7 +9481,7 @@ export class AnalyzerOrchestrator {
       entityNameSet: Set<string>;
       nameTokensAll: string[];
       journeys: unknown;
-      candidateIds: string[];
+      candidateIds: string[]; requirementId?: string;
     };
     const staged: StagedCatalogItem[] = [];
     let bareNounRejected = 0; const catalogRejectionFeedback: CapabilityCatalogRejection[] = [];
@@ -9511,7 +9511,7 @@ export class AnalyzerOrchestrator {
         continue;
       }
       const itemCandidateIds = Array.isArray(item.candidate_ids) ? item.candidate_ids.map(value => String(value || '')) : [];
-      const bindingFailure = capabilityCatalogOutcomeBindingFailure({ name, description }, itemCandidateIds, String(item.requirement_id || ''), input.requiredOutcomeRequirements || [], fulfilledOutcomeRequirements);
+      const boundRequirement = input.requiredOutcomeRequirements?.find(requirement => requirement.id === String(item.requirement_id || '')); const bindingFailure = capabilityCatalogOutcomeBindingFailure({ name, description }, itemCandidateIds, String(item.requirement_id || ''), input.requiredOutcomeRequirements || [], fulfilledOutcomeRequirements);
       if (bindingFailure) { debugCatalogRejection(name, bindingFailure, itemCandidateIds); continue; }
       if (input.requiredOutcomeRequirements?.length) boundRequirementId = String(item.requirement_id || '');
       if (/(->|→|»)/.test(name)) {
@@ -9594,7 +9594,7 @@ export class AnalyzerOrchestrator {
         debugCatalogRejection(name, 'accepted-outcome-evidence-mismatch', candidateIds);
         continue;
       }
-      const unsupportedOutcomeTokens = capabilityOutcomeScopeFailure(name, citedCandidates, signal, reusesAcceptedOutcome, description);
+      const unsupportedOutcomeTokens = capabilityOutcomeScopeFailure(name, citedCandidates, signal, reusesAcceptedOutcome, description, boundRequirement?.audience ? [boundRequirement.audience] : []);
       if (candidateIds.length > 0 && unsupportedOutcomeTokens.length > 0) {
         debugCatalogRejection(name, `outcome-scope-unsupported:${unsupportedOutcomeTokens.join(',')}`, candidateIds);
         continue;
@@ -9682,7 +9682,7 @@ export class AnalyzerOrchestrator {
           .filter(token => token.length > 3 && !GENERIC_CAPABILITY_NAME_TOKENS.has(token) &&
             (artifactType !== 'app' || !capabilityActionTokens.has(token))),
         journeys: item.journeys,
-        candidateIds,
+        candidateIds, requirementId: boundRequirementId,
       });
     }
     const tokenDf = new Map<string, number>();
@@ -9782,7 +9782,7 @@ export class AnalyzerOrchestrator {
     }
 
     for (let index = 0; index < staged.length; index++) {
-      const { name, description, category, relatedEntities, journeys } = staged[index];
+      const { name, description, category, relatedEntities, journeys, requirementId } = staged[index];
       const operations = opsByItemIndex.get(index) || [];
       const dedupedOps = Array.from(new Map(operations.map(op => [op.entry_point_id, op])).values()).slice(0, 64);
       const candidateEntityIds = entityIdsByItemIndex.get(index) || new Set<string>();
@@ -9816,7 +9816,7 @@ export class AnalyzerOrchestrator {
         related_domains: Array.isArray(journeys) ? journeys.map((value: unknown) => String(value || '')).filter(Boolean).slice(0, 6) : [],
         criticality: category === 'core' ? 'high' : 'medium',
         criticality_factors: Array.from(new Set([
-          'ai-extracted-from-journeys-and-entities',
+          'ai-extracted-from-journeys-and-entities', ...(requirementId ? [`catalog-outcome-requirement:${requirementId}`] : []),
           ...[...anchoredCandidateIds].map(candidateId => `catalog-candidate:${candidateId}`),
           ...(descriptionContradictsOperations ? ['catalog-description-rejected'] : []),
         ])),

@@ -120,6 +120,11 @@ test('binds an audience-specific repair to its exact requested outcome', () => {
 
   assert.equal(capabilitySatisfiesCatalogOutcomeRequirement(humanOutcome, human), true);
   assert.equal(capabilitySatisfiesCatalogOutcomeRequirement(humanOutcome, agent), false);
+  humanOutcome.name = 'Surface behavior-level comprehension';
+  humanOutcome.description = 'Connected software behavior remains understandable after description refinement.';
+  humanOutcome.criticality_factors = [`catalog-outcome-requirement:${human.id}`];
+  assert.equal(capabilitySatisfiesCatalogOutcomeRequirement(humanOutcome, human), true);
+  assert.equal(capabilitySatisfiesCatalogOutcomeRequirement(humanOutcome, agent), false);
 });
 
 test('uses the product brief instead of treating package identity metadata as another outcome', () => {

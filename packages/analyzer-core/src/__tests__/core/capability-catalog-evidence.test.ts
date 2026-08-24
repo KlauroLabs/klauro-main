@@ -450,6 +450,15 @@ describe('capability evidence roles', () => {
       ...fabric,
       evidence_examples: ['claim_work'],
     }], { productDocSummary: 'Fabric enables collaboration across overlapping work.' })).toEqual(['delivery-operation-restatement']);
+    const understanding = { ...fabric, name: 'Software behavior comprehension', structural_label: 'Software behavior comprehension', related_domains: ['software behavior'] };
+    expect(capabilityOutcomeScopeFailure(
+      'Help human understanding of software behavior', [understanding],
+      { productDocSummary: 'Helps people understand software behavior.' }, false, '', ['human'],
+    )).toEqual([]);
+    expect(capabilityOutcomeScopeFailure(
+      'Help human developers understand software behavior', [understanding],
+      { productDocSummary: 'Helps people understand software behavior.' }, false, '', ['human'],
+    )).toEqual(['developer']);
     expect(capabilityOutcomeNameUnsupportedTokens('Coordinate work across overlapping codebase areas', [{
       ...fabric,
       evidence_examples: ['fab_claim_work', 'fab_check_collision', 'fab_release_work'],

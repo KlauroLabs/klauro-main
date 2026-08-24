@@ -267,12 +267,15 @@ export function capabilityOutcomeScopeFailure(
   signal?: CapabilityCatalogProjectSignal,
   acceptedOutcome = false,
   description = '',
+  evidenceBackedAudienceTokens: readonly string[] = [],
 ): string[] {
   if (capabilityOutcomeRestatesDeliveryOperation(name, citedCandidates, signal, acceptedOutcome)) return ['delivery-operation-restatement'];
   if (capabilityOutcomeMisusesCoordination(name, citedCandidates)) return ['coordination-outcome-unsupported'];
   if (!capabilityOutcomeCorroboratedByProductText(name, citedCandidates, signal) && !capabilityOutcomeUsesDeliverySubject(name, citedCandidates, acceptedOutcome ? description : '')) return ['delivery-subject-missing'];
   if (acceptedOutcome) return [];
-  return capabilityOutcomeNameUnsupportedTokens(name, citedCandidates, signal);
+  const audienceTokens = new Set(evidenceBackedAudienceTokens.flatMap(outcomeIdentityTokens));
+  return capabilityOutcomeNameUnsupportedTokens(name, citedCandidates, signal)
+    .filter(token => !outcomeTokenMatches(token, audienceTokens));
 }
 
 export function capabilityDescriptionProductLanguageFailure(
