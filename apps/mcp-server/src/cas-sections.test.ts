@@ -9,6 +9,7 @@ import {
   selectExactCasSection,
   selectCasSections,
   CAS_SECTION_PROFILES,
+  validateCasTreeProjection,
 } from './cas-sections';
 import { getCallers, getFileNodes, getNode, searchNodes } from './query';
 
@@ -77,6 +78,29 @@ test('section parser rejects unknown names and deduplicates valid names', () => 
   assert.deepStrictEqual(parseCasSectionNames('graph,calls,graph'), ['graph', 'calls']);
   assert.throws(() => parseCasSectionNames('graph,__proto__'), /Unknown CAS section/);
   assert.deepStrictEqual(parseCasSectionNames(CAS_SECTION_NAMES.join(',')), CAS_SECTION_NAMES);
+});
+
+test('recursive section references reject malformed topology before artifact reads', () => {
+  const section = { name: 'identity' as const, fields: ['id'], bytes: 1, file: 'identity.json', sha256: 'a' };
+  const valid = {
+    format: 'recursive-cas-section-references' as const,
+    version: 2 as const,
+    root_id: 'root',
+    nodes: [
+      { id: 'root', parent_id: null, child_ids: ['child'], logical_fields: ['children', 'id'], sections: [section] },
+      { id: 'child', parent_id: 'root', child_ids: [], logical_fields: ['id'], sections: [section] },
+    ],
+  };
+  assert.doesNotThrow(() => validateCasTreeProjection(valid));
+  assert.throws(() => validateCasTreeProjection({ ...valid, nodes: [valid.nodes[0]] }), /missing child/);
+  assert.throws(() => validateCasTreeProjection({
+    ...valid,
+    nodes: [valid.nodes[0], { ...valid.nodes[1], parent_id: 'other' }],
+  }), /has parent other instead of root/);
+  assert.throws(() => validateCasTreeProjection({
+    ...valid,
+    nodes: [...valid.nodes, { ...valid.nodes[1] }],
+  }), /duplicate id child/);
 });
 
 test('section-hydrated MCP query answers equal full-CAS answers', () => {

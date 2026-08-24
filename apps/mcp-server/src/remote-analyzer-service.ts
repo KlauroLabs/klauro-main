@@ -47,12 +47,12 @@ import {
   resolveSegmentedAnalysisExportManifest,
   saveAnalysis,
 } from './storage';
-import { parseCasSectionNames, selectCasSections, type CasSectionName } from './cas-sections';
+import { parseCasSectionNames, type CasSectionName } from './cas-sections';
 import { clearFreshnessSummaryCache } from './freshness';
 import { descriptionStorePath, generateElementDescription } from './description-enrichment';
 import { isAnalysisFocus, withAnalysisFocus } from './analysis-focus';
 import { ResponseCache, responseCacheKey } from './response-cache';
-import { getCachedDeployableAnalyses, scopeCasToSubCasNode } from './deployable-analysis';
+import { getCachedDeployableAnalyses } from './deployable-analysis';
 import { initSelfTelemetry, instrumentHttpHandler, mapSdkEvent } from './self-telemetry';
 import type { CasRuntimeEvent } from '../../../packages/klauro-sdk-js/src/types';
 import { HOSTED_PROJECT_QUERY_SCHEMAS, HOSTED_PROJECT_QUERY_TOOL_NAMES, type HostedProjectQueryTool } from './hosted-project-query';
@@ -2722,23 +2722,13 @@ async function handleAccountApi(
         const cached = casReadResponseCache.get(cacheKey);
         if (cached !== undefined) return { statusCode: 200, body: JSON.parse(cached), serializedBody: cached };
       }
-      const sliceInputSections = [...new Set<CasSectionName>([
-        ...sections,
-        'graph',
-        'calls',
-        'runtime',
-        'supplemental',
-        'comprehension',
-      ])];
-      const fullEnough = await loadAnalysisSections(workspace, sliceInputSections);
-      if (!fullEnough) return { statusCode: 200, body: { status: 'no_analysis', project_id: project.id } };
       let scopedCas;
       try {
-
-        scopedCas = scopeCasToSubCasNode(fullEnough as CASOutput, { sub_cas_node_id: sectionsSubCasNodeId });
+        scopedCas = await loadAnalysisSections(workspace, sections, { cas_id: sectionsSubCasNodeId });
+        if (!scopedCas) return { statusCode: 200, body: { status: 'no_analysis', project_id: project.id } };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        throw new AccountHttpError(message.startsWith('Unknown scope.sub_cas_node_id') ? 404 : 400, message);
+        throw new AccountHttpError(message.startsWith('Unknown CAS id') ? 404 : 400, message);
       }
       const body = {
         status: 'ready',
@@ -2747,7 +2737,7 @@ async function handleAccountApi(
         analysis_timestamp: scopedCas.analysis_timestamp || null,
         sections,
         sub_cas_node_id: sectionsSubCasNodeId,
-        cas: selectCasSections(scopedCas, sections),
+        cas: scopedCas,
       };
       const serializedBody = JSON.stringify(body);
       if (cacheKey) casReadResponseCache.set(cacheKey, serializedBody);
@@ -2828,34 +2818,28 @@ async function handleAccountApi(
       }
       let cas;
       try {
-        cas = await getAnalysis(workspace);
+        cas = await getAnalysis(workspace, { cas_id: subCasNodeId });
       } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.startsWith('Unknown CAS id')) throw new AccountHttpError(404, message);
         return {
           statusCode: 200,
           body: {
             status: 'no_analysis',
             project_id: project.id,
             analysis_id: project.analysis_id,
-            error: error instanceof Error ? error.message : String(error),
+            error: message,
           },
         };
       }
 
-      let scopedCas;
-      try {
-        scopedCas = scopeCasToSubCasNode(cas, { sub_cas_node_id: subCasNodeId });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        const statusCode = message.startsWith('Unknown scope.sub_cas_node_id') ? 404 : 400;
-        throw new AccountHttpError(statusCode, message);
-      }
       const body = {
         status: 'ready',
         project_id: project.id,
         analysis_id: project.analysis_id,
-        analysis_timestamp: scopedCas.analysis_timestamp || null,
+        analysis_timestamp: cas.analysis_timestamp || null,
         sub_cas_node_id: subCasNodeId,
-        cas: scopedCas,
+        cas,
       };
       const serializedBody = JSON.stringify(body);
       if (cacheKey) casReadResponseCache.set(cacheKey, serializedBody);

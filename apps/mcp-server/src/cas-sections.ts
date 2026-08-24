@@ -1,4 +1,5 @@
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
+import type { SubCasNodeIndex } from './deployable-analysis';
 
 export const CAS_SECTION_NAMES = [
   'identity',
@@ -23,6 +24,66 @@ export interface CasSectionDescriptor {
   sha256?: string;
 }
 
+export interface CasTreeProjectionV1 {
+  format: 'derived-deployable-references';
+  version: 1;
+  children: Array<{ id: string; file: string; bytes: number; sha256: string }>;
+}
+
+export interface CasTreeNodeDescriptor {
+  id: string;
+  parent_id: string | null;
+  child_ids: string[];
+  logical_fields: string[];
+  sections: CasSectionDescriptor[];
+}
+
+export interface CasTreeProjectionV2 {
+  format: 'recursive-cas-section-references';
+  version: 2;
+  root_id: string;
+  nodes: CasTreeNodeDescriptor[];
+  sub_cas_nodes?: SubCasNodeIndex;
+}
+
+export function validateCasTreeProjection(projection: CasTreeProjectionV2): void {
+  if (!projection.root_id) throw new Error('Recursive CAS tree projection requires a root id');
+  const byId = new Map<string, CasTreeNodeDescriptor>();
+  for (const node of projection.nodes) {
+    if (!node.id) throw new Error('Recursive CAS tree projection contains a node without an id');
+    if (byId.has(node.id)) throw new Error(`Recursive CAS tree projection contains duplicate id ${node.id}`);
+    byId.set(node.id, node);
+  }
+  const root = byId.get(projection.root_id);
+  if (!root) throw new Error(`Recursive CAS tree projection root ${projection.root_id} is missing`);
+  if (root.parent_id !== null) throw new Error('Recursive CAS tree projection root cannot have a parent');
+  const visited = new Set<string>();
+  const active = new Set<string>();
+  const stack: Array<{ id: string; exit: boolean }> = [{ id: projection.root_id, exit: false }];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    if (current.exit) {
+      active.delete(current.id);
+      continue;
+    }
+    if (active.has(current.id)) throw new Error(`Recursive CAS tree projection contains a cycle at ${current.id}`);
+    if (visited.has(current.id)) throw new Error(`Recursive CAS tree projection reaches ${current.id} through more than one parent`);
+    const node = byId.get(current.id);
+    if (!node) throw new Error(`Recursive CAS tree projection references missing child ${current.id}`);
+    visited.add(current.id);
+    active.add(current.id);
+    stack.push({ id: current.id, exit: true });
+    for (let index = node.child_ids.length - 1; index >= 0; index -= 1) {
+      const childId = node.child_ids[index];
+      const child = byId.get(childId);
+      if (!child) throw new Error(`Recursive CAS tree projection references missing child ${childId}`);
+      if (child.parent_id !== node.id) throw new Error(`Recursive CAS tree projection child ${childId} has parent ${String(child.parent_id)} instead of ${node.id}`);
+      stack.push({ id: childId, exit: false });
+    }
+  }
+  if (visited.size !== projection.nodes.length) throw new Error('Recursive CAS tree projection contains unreachable nodes');
+}
+
 export interface CasSectionManifest {
   manifest_version: 1;
   cas_version: string;
@@ -30,11 +91,7 @@ export interface CasSectionManifest {
   analysis_timestamp: string;
   sections: CasSectionDescriptor[];
   logical_fields: string[];
-  tree_projection?: {
-    format: 'derived-deployable-references';
-    version: 1;
-    children: Array<{ id: string; file: string; bytes: number; sha256: string }>;
-  };
+  tree_projection?: CasTreeProjectionV1 | CasTreeProjectionV2;
   compact_graph?: {
     format: 'klauro-compact-cas-graph';
     version: 1;

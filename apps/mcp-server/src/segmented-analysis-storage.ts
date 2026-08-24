@@ -7,11 +7,15 @@ import * as zlib from 'node:zlib';
 import { spawn } from 'node:child_process';
 import pLimit from 'p-limit';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
+import type { SubCasNodeIndex } from './deployable-analysis';
 import {
   createCasSectionManifest,
   selectExactCasSection,
+  validateCasTreeProjection,
   type CasRawColumnDescriptor,
   type CasSectionManifest,
+  type CasTreeNodeDescriptor,
+  type CasTreeProjectionV2,
 } from './cas-sections';
 import {
   CompactCASGraph,
@@ -73,7 +77,7 @@ export async function writeSegmentedAnalysis(
   writeCompressedJson: JsonWriter,
   writeJson: JsonWriter,
   isCurrent: () => boolean = () => true,
-  options: { rootOnlyTree?: boolean; childProjections?: Iterable<CASOutput> } = {},
+  options: { rootOnlyTree?: boolean; childProjections?: Iterable<CASOutput>; subCasNodes?: SubCasNodeIndex } = {},
 ): Promise<void> {
   const root = segmentedAnalysisRoot(filePath);
   const previous = segmentedWriteLocks.get(root) || Promise.resolve();
@@ -154,14 +158,33 @@ async function writeSegmentedAnalysisUnlocked(
   writeCompressedJson: JsonWriter,
   writeJson: JsonWriter,
   isCurrent: () => boolean,
-  options: { rootOnlyTree?: boolean; childProjections?: Iterable<CASOutput> },
+  options: { rootOnlyTree?: boolean; childProjections?: Iterable<CASOutput>; subCasNodes?: SubCasNodeIndex },
 ): Promise<void> {
   if (!isCurrent()) return;
   const root = segmentedAnalysisRoot(filePath);
   const staging = `staging-${process.pid}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}`;
   const tmpDir = path.join(root, staging);
   const manifest = createCasSectionManifest(output);
-  if (options.rootOnlyTree) manifest.tree_projection = { format: 'derived-deployable-references', version: 1, children: [] };
+  const projectedChildren = options.rootOnlyTree ? [...(options.childProjections || [])] : [];
+  let recursiveProjection: CasTreeProjectionV2 | undefined;
+  if (options.rootOnlyTree) {
+    const rootId = output.id || output.analysis_id;
+    const rootFields = Object.entries(output).filter(([, value]) => value !== undefined).map(([field]) => field);
+    recursiveProjection = {
+      format: 'recursive-cas-section-references',
+      version: 2,
+      root_id: rootId,
+      ...(options.subCasNodes ? { sub_cas_nodes: options.subCasNodes } : {}),
+      nodes: [{
+        id: rootId,
+        parent_id: null,
+        child_ids: projectedChildren.map(child => child.id || child.analysis_id),
+        logical_fields: [...new Set([...rootFields, ...(projectedChildren.length > 0 ? ['children'] : [])])].sort(),
+        sections: manifest.sections,
+      }],
+    };
+    manifest.tree_projection = recursiveProjection;
+  }
   try {
     await fs.ensureDir(tmpDir);
     const sectionMetrics: Array<{ name: string; duration_ms: number; bytes: number }> = [];
@@ -177,21 +200,47 @@ async function writeSegmentedAnalysisUnlocked(
       descriptor.sha256 = await checksumFile(sectionPath);
       sectionMetrics.push({ name: descriptor.name, duration_ms: Date.now() - startedAt, bytes: stat.size });
     })));
-    let childOrdinal = 0;
-    for (const child of options.childProjections || []) {
-      const childStartedAt = Date.now();
-      const childFile = `tree.child.${childOrdinal}.json${extension}`;
-      const childPath = path.join(tmpDir, childFile);
-      await writeCompressedJson(childPath, child, { spaces: 0 });
-      const stat = await fs.stat(childPath);
-      manifest.tree_projection!.children.push({
-        id: child.id || child.analysis_id,
-        file: childFile,
-        bytes: stat.size,
-        sha256: await checksumFile(childPath),
-      });
-      sectionMetrics.push({ name: `tree.child.${childOrdinal}`, duration_ms: Date.now() - childStartedAt, bytes: stat.size });
-      childOrdinal += 1;
+    if (recursiveProjection) {
+      const seen = new Set<string>([recursiveProjection.root_id]);
+      const stack = projectedChildren.slice().reverse();
+      let childOrdinal = 0;
+      while (stack.length > 0) {
+        const child = stack.pop()!;
+        const childId = child.id || child.analysis_id;
+        if (seen.has(childId)) throw new Error(`Recursive CAS tree projection contains duplicate id ${childId}`);
+        seen.add(childId);
+        const nestedChildren = child.children || [];
+        const { children: _children, ...childBody } = child;
+        const childManifest = createCasSectionManifest(childBody as CASOutput);
+        const childFields = Object.entries(childBody).filter(([, value]) => value !== undefined).map(([field]) => field);
+        const descriptors: CasTreeNodeDescriptor['sections'] = childManifest.sections;
+        for (const descriptor of descriptors) {
+          const childStartedAt = Date.now();
+          const temporaryFile = `tree.tmp.${childOrdinal}.${descriptor.name}.json${extension}`;
+          const temporaryPath = path.join(tmpDir, temporaryFile);
+          await writeCompressedJson(temporaryPath, selectExactCasSection(childBody as CASOutput, descriptor.name), { spaces: 0 });
+          const stat = await fs.stat(temporaryPath);
+          const sha256 = await checksumFile(temporaryPath);
+          const childFile = `tree.${sha256}.json${extension}`;
+          const childPath = path.join(tmpDir, childFile);
+          if (await fs.pathExists(childPath)) await fs.remove(temporaryPath);
+          else await rename(temporaryPath, childPath);
+          descriptor.file = childFile;
+          descriptor.bytes = stat.size;
+          descriptor.sha256 = sha256;
+          sectionMetrics.push({ name: `tree.child.${childOrdinal}.${descriptor.name}`, duration_ms: Date.now() - childStartedAt, bytes: stat.size });
+        }
+        recursiveProjection.nodes.push({
+          id: childId,
+          parent_id: child.parent_id ?? null,
+          child_ids: nestedChildren.map(nested => nested.id || nested.analysis_id),
+          logical_fields: [...new Set([...childFields, ...(nestedChildren.length > 0 ? ['children'] : [])])].sort(),
+          sections: descriptors,
+        });
+        for (let index = nestedChildren.length - 1; index >= 0; index -= 1) stack.push(nestedChildren[index]);
+        childOrdinal += 1;
+      }
+      validateCasTreeProjection(recursiveProjection);
     }
     process.stderr.write(`${JSON.stringify({ event: 'segmented_cas_sections_written', sections: sectionMetrics.sort((left, right) => left.name.localeCompare(right.name)) })}\n`);
     const compactStartedAt = Date.now();
@@ -451,30 +500,89 @@ export async function writeSegmentedLegacyExport(
   if (!segmented) throw new Error('Canonical segmented analysis is unavailable for legacy export');
   try {
     const chunks = (async function* (): AsyncGenerator<Buffer | string> {
-      yield '{';
-      let first = true;
-      for (const descriptor of segmented.manifest.sections) {
-        if (!descriptor.file) throw new Error(`Segmented CAS section '${descriptor.name}' has no artifact`);
-        const sectionPath = await validateArtifact(
-          segmented.directory,
-          { ...descriptor, file: descriptor.file },
-          `Segmented CAS section '${descriptor.name}'`,
-        );
-        const interior = jsonObjectInterior(sectionPath)[Symbol.asyncIterator]();
-        const head = await interior.next();
-        if (head.done) continue;
-        if (!first) yield ',';
-        yield head.value;
-        while (true) {
-          const next = await interior.next();
-          if (next.done) break;
-          yield next.value;
-        }
-        first = false;
-      }
       const projection = segmented.manifest.tree_projection;
+      const emitFields = async function* (descriptors: CasTreeNodeDescriptor['sections']): AsyncGenerator<Buffer | string, boolean> {
+        let first = true;
+        for (const descriptor of descriptors) {
+          if (!descriptor.file) throw new Error(`Segmented CAS section '${descriptor.name}' has no artifact`);
+          const sectionPath = await validateArtifact(
+            segmented.directory,
+            { ...descriptor, file: descriptor.file },
+            `Segmented CAS section '${descriptor.name}'`,
+          );
+          const interior = jsonObjectInterior(sectionPath)[Symbol.asyncIterator]();
+          const head = await interior.next();
+          if (head.done) continue;
+          if (!first) yield ',';
+          yield head.value;
+          while (true) {
+            const next = await interior.next();
+            if (next.done) break;
+            yield next.value;
+          }
+          first = false;
+        }
+        return !first;
+      };
+
+      if (projection?.format === 'recursive-cas-section-references' && projection.version === 2) {
+        validateCasTreeProjection(projection);
+        const byId = new Map(projection.nodes.map(node => [node.id, node]));
+        const stack: Array<{ node: CasTreeNodeDescriptor; state: 'start' | 'children'; nextChild: number; hasFields: boolean }> = [{
+          node: byId.get(projection.root_id)!,
+          state: 'start',
+          nextChild: 0,
+          hasFields: false,
+        }];
+        while (stack.length > 0) {
+          const frame = stack[stack.length - 1];
+          if (frame.state === 'start') {
+            yield '{';
+            const fields = emitFields(frame.node.sections);
+            while (true) {
+              const next = await fields.next();
+              if (next.done) {
+                frame.hasFields = next.value;
+                break;
+              }
+              yield next.value;
+            }
+            if (frame.node.child_ids.length === 0) {
+              yield '}';
+              stack.pop();
+              continue;
+            }
+            if (frame.hasFields) yield ',';
+            yield '"children":[';
+            frame.state = 'children';
+            continue;
+          }
+          if (frame.nextChild >= frame.node.child_ids.length) {
+            yield ']}';
+            stack.pop();
+            continue;
+          }
+          if (frame.nextChild > 0) yield ',';
+          const childId = frame.node.child_ids[frame.nextChild++];
+          stack.push({ node: byId.get(childId)!, state: 'start', nextChild: 0, hasFields: false });
+        }
+        yield '\n';
+        return;
+      }
+
+      yield '{';
+      const rootFields = emitFields(segmented.manifest.sections);
+      let first = true;
+      while (true) {
+        const next = await rootFields.next();
+        if (next.done) {
+          first = !next.value;
+          break;
+        }
+        yield next.value;
+      }
       if (projection && (projection.format !== 'derived-deployable-references' || projection.version !== 1)) {
-        throw new Error('Deployable tree projection format or version is unsupported');
+        throw new Error('CAS tree projection format or version is unsupported');
       }
       const children = projection?.children || [];
       if (children.length > 0) {
@@ -785,6 +893,10 @@ export async function resolveSegmentedAnalysis(
       }
       const manifest = JSON.parse(manifestBytes.toString('utf8')) as CasSectionManifest;
       if (manifest.manifest_version !== 1) throw new Error('generation manifest version is unsupported');
+      if (manifest.tree_projection?.format === 'recursive-cas-section-references') {
+        if (manifest.tree_projection.version !== 2) throw new Error('recursive CAS tree projection version is unsupported');
+        validateCasTreeProjection(manifest.tree_projection);
+      }
       return { directory, manifest };
     } catch (error) {
       lastError = error;

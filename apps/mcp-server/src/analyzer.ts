@@ -34,6 +34,7 @@ import {
   saveAnalysis,
   loadAnalysis,
   loadAnalysisSections,
+  loadCompleteAnalysisFromSections,
   saveIncrementalState,
   loadIncrementalState,
   saveChangeHistoryEntry,
@@ -1302,13 +1303,26 @@ export async function analyzeProjectLayered(
 
 export async function getAnalysis(
   projectPath: string,
-  options?: { track?: import('./track').AnalysisTrack; sections?: readonly CasSectionName[] }
+  options?: { track?: import('./track').AnalysisTrack; sections?: readonly CasSectionName[]; cas_id?: string }
 ): Promise<CASOutput> {
-  if (options?.sections?.length && options.sections.length < CAS_SECTION_NAMES.length) {
+  if (options?.cas_id && !options.sections) {
+    const subtree = await loadCompleteAnalysisFromSections(projectPath, { track: options.track, cas_id: options.cas_id });
+    if (!subtree) throw new Error(`No analysis found for: ${projectPath}. Run analyze_codebase first.`);
+    assertAnalysisVersionSupported(subtree, projectPath);
+    return applyStoredElementDescriptions(projectPath, subtree);
+  }
+  if (options?.cas_id || options?.sections?.length && options.sections.length < CAS_SECTION_NAMES.length) {
 
 
 
-    const partial = await loadAnalysisSections(projectPath, options.sections, options.track ? { track: options.track } : undefined);
+    const partial = await loadAnalysisSections(
+      projectPath,
+      options.sections || CAS_SECTION_NAMES,
+      {
+        ...(options.track ? { track: options.track } : {}),
+        ...(options.cas_id ? { cas_id: options.cas_id } : {}),
+      },
+    );
     if (!partial) throw new Error(`No analysis found for: ${projectPath}. Run analyze_codebase first.`);
     assertAnalysisVersionSupported(partial as CASOutput, projectPath);
     return partial as CASOutput;

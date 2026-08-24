@@ -18,6 +18,7 @@ import type { AnalysisTrack } from './track';
 import { trackSuffix } from './track';
 import { resolveAnalysisScope, filterEntriesToScope, filterWorkspaceGraphsToScope } from './analysis-scope';
 import {
+  CAS_SECTION_NAMES,
   createCasSectionManifest,
   hydrateCasSections,
   selectCasSections,
@@ -41,6 +42,7 @@ import {
 } from './segmented-analysis-storage';
 import type { CompactCASGraph } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-graph';
 import type { LoadedCompactCASSearch } from './segmented-analysis-storage';
+import { findCasById, hydrateSegmentedCasTree, loadCasProjection, loadLegacyProjectedCas, type LoadedAnalysisProjection } from './recursive-cas-storage';
 import {
   compressLegacyJsonArtifact,
   compressedJsonExtension,
@@ -52,16 +54,13 @@ import {
 export { writeJsonAtomic } from './json-storage-writer';
 export { MINIMUM_COMPATIBLE_CAS_VERSION, parseCasVersion, compareCasVersions, describeAnalysisVersion } from './analysis-version';
 export type { AnalysisVersionInfo, AnalysisVersionStatus } from './analysis-version';
-
 const brotliDecompressAsync = promisify(zlib.brotliDecompress);
-
 const DEFAULT_STORAGE_PATH = path.join(
   process.env.HOME || process.env.USERPROFILE || '~',
   '.klauro',
   'analyses'
 );
 let resolvedDefaultStoragePath: string | null = null;
-
 interface AnalysisIndex {
   version?: string;
   updated_at?: string;
@@ -81,14 +80,10 @@ export interface AnalysisEntry {
   cas_version?: string;
   layers_ready?: CASOutput['layers_ready'];
   storage_format?: 'whole-json' | 'segmented-v2';
-
   track?: AnalysisTrack;
-
   base_commit?: string;
-
   branch?: string;
 }
-
 export function getAnalysisVersionInfo(cas: CASOutput): AnalysisVersionInfo {
   const tagged = (cas as CASOutput & { analysis_version_info?: AnalysisVersionInfo }).analysis_version_info;
   return tagged || describeAnalysisVersion(cas.cas_version);
@@ -707,7 +702,7 @@ export async function saveAnalysis(
         writeCompressedJsonAtomic,
         writeJsonAtomic,
         () => isSegmentedWriteCurrent(filePath, segmentedGeneration),
-        { rootOnlyTree: true, childProjections: iterateDeployableChildCas(output, canonicalProjection) },
+        { rootOnlyTree: true, childProjections: iterateDeployableChildCas(output, canonicalProjection), subCasNodes: canonicalProjection.analysis.sub_cas_nodes },
       );
       await fs.remove(filePath);
     } else {
@@ -873,21 +868,50 @@ export async function loadAnalysisSectionManifest(
 export async function loadAnalysisSections(
   projectPath: string,
   sections: readonly CasSectionName[],
-  options?: { track?: AnalysisTrack; pinned?: { filePath: string; segmented: ResolvedSegmentedAnalysis } },
+  options?: { track?: AnalysisTrack; cas_id?: string; pinned?: { filePath: string; segmented: ResolvedSegmentedAnalysis } },
 ): Promise<Partial<CASOutput> | null> {
   const current = options?.pinned ? null : await resolveAnalysisForLoad(projectPath, options?.track);
   const resolved = options?.pinned?.filePath || current?.filePath;
   if (!resolved) return null;
   const requested = [...new Set<CasSectionName>(['identity', ...sections])];
   const cached = options?.pinned ? null : await getValidCachedAnalysis(projectPath, resolved);
-  if (cached) return selectCasSections(cached, requested);
-  const segmented = options?.pinned?.segmented || await resolveCurrentSegmentedAnalysis(current!);
+  if (cached) {
+    const selected = options?.cas_id ? findCasById(cached, options.cas_id) : cached;
+    if (!selected) throw new Error(`Unknown CAS id '${options!.cas_id}'`);
+    return selectCasSections(selected, requested);
+  }
+  if (!options?.pinned && current) {
+    const leased = await acquireCurrentSegmentedAnalysisLease(current);
+    if (leased) {
+      try {
+        return await loadAnalysisSections(projectPath, sections, {
+          ...options,
+          pinned: { filePath: resolved, segmented: leased.segmented },
+        });
+      } finally {
+        await leased.release();
+      }
+    }
+  }
+  const segmented = options?.pinned?.segmented || null;
   if (!segmented) {
     const legacy = await readJsonMaybeCompressed(resolved) as CASOutput;
-    const parts = requested.map(section => selectExactCasSection(legacy, section));
+    const selected = options?.cas_id ? findCasById(legacy, options.cas_id) : legacy;
+    if (!selected) throw new Error(`Unknown CAS id '${options!.cas_id}'`);
+    const parts = requested.map(section => selectExactCasSection(selected, section));
     return hydrateCasSections(parts);
   }
-  const descriptorByName = new Map(segmented.manifest.sections.map(section => [section.name, section]));
+  const projection = segmented.manifest.tree_projection;
+  if (options?.cas_id && projection?.format === 'derived-deployable-references') {
+    return loadLegacyProjectedCas(projection, segmented.directory, options.cas_id, requested,
+      async filePath => await readJsonMaybeCompressed(filePath) as CASOutput);
+  }
+  const treeNode = options?.cas_id && projection?.format === 'recursive-cas-section-references'
+    ? projection.nodes.find(node => node.id === options.cas_id)
+    : undefined;
+  if (options?.cas_id && projection?.format === 'recursive-cas-section-references' && !treeNode) throw new Error(`Unknown CAS id '${options.cas_id}'`);
+  const descriptors = treeNode?.sections || segmented.manifest.sections;
+  const descriptorByName = new Map(descriptors.map(section => [section.name, section]));
   const expansion = Math.max(1, Number(process.env.KLAURO_SECTION_PARSE_EXPANSION) || 24);
   const configuredBudgetMb = Number(process.env.KLAURO_SECTION_PARSE_BUDGET_MB);
   const parsedSectionBudget = Number.isFinite(configuredBudgetMb) && configuredBudgetMb > 0
@@ -905,6 +929,9 @@ export async function loadAnalysisSections(
     if (!descriptor) return undefined;
     if (!descriptor.file) {
       throw new Error(`Segmented CAS section '${section}' is listed in the manifest for ${resolved} but has no file recorded`);
+    }
+    if (path.basename(descriptor.file) !== descriptor.file) {
+      throw new Error(`Segmented CAS section '${section}' has an invalid artifact path`);
     }
     const sectionPath = path.join(segmented.directory, descriptor.file);
     let sectionData: Partial<CASOutput>;
@@ -937,43 +964,18 @@ export async function loadAnalysisSections(
   return hydrateCasSections(parts);
 }
 
-export interface LoadedAnalysisProjection {
-  cas: Partial<CASOutput>;
-  manifest: CasSectionManifest;
-  inventory: { node_count: number; edge_count: number } | null;
-}
+export type { LoadedAnalysisProjection } from './recursive-cas-storage';
 
 export async function loadAnalysisProjection(
   projectPath: string,
   sections: readonly CasSectionName[],
-  options?: { track?: AnalysisTrack },
+  options?: { track?: AnalysisTrack; cas_id?: string; require_sub_cas_index?: boolean },
 ): Promise<LoadedAnalysisProjection | null> {
-  const resolved = await resolveAnalysisForLoad(projectPath, options?.track);
-  if (!resolved) return null;
-  const leased = await acquireCurrentSegmentedAnalysisLease(resolved);
-  if (leased) {
-    try {
-      const cas = await loadAnalysisSections(projectPath, sections, {
-        ...options,
-        pinned: { filePath: resolved.filePath, segmented: leased.segmented },
-      });
-      const graph = leased.segmented.manifest.compact_graph;
-      return cas ? {
-        cas,
-        manifest: leased.segmented.manifest,
-        inventory: graph ? { node_count: graph.node_count, edge_count: graph.edge_count } : null,
-      } : null;
-    } finally {
-      await leased.release();
-    }
-  }
-  const legacy = await readJsonMaybeCompressed(resolved.filePath) as CASOutput;
-  const requested = [...new Set<CasSectionName>(['identity', ...sections])];
-  return {
-    cas: hydrateCasSections(requested.map(section => selectExactCasSection(legacy, section))),
-    manifest: createCasSectionManifest(legacy),
-    inventory: { node_count: legacy.nodes.length, edge_count: legacy.edges.length },
-  };
+  return loadCasProjection(projectPath, sections, options,
+    () => resolveAnalysisForLoad(projectPath, options?.track),
+    acquireCurrentSegmentedAnalysisLease,
+    loadAnalysisSections,
+    async filePath => await readJsonMaybeCompressed(filePath) as CASOutput);
 }
 
 export async function loadCompactAnalysisGraph(projectPath: string): Promise<CompactCASGraph | null> {
@@ -990,18 +992,17 @@ export async function loadCompactAnalysisSearch(projectPath: string): Promise<Lo
 
 export async function loadCompleteAnalysisFromSections(
   projectPath: string,
-  options?: { track?: AnalysisTrack },
+  options?: { track?: AnalysisTrack; cas_id?: string },
 ): Promise<CASOutput | null> {
   const resolved = await resolveAnalysisForLoad(projectPath, options?.track);
   if (!resolved) return null;
-  const segmented = await resolveCurrentSegmentedAnalysis(resolved);
-  if (!segmented) return loadAnalysis(projectPath, { ...options, preferAuthoritative: true });
-  const output = await loadAnalysisSections(
-    projectPath,
-    segmented.manifest.sections.map(section => section.name),
-    { ...options, pinned: { filePath: resolved.filePath, segmented } },
-  ) as CASOutput | null;
-  return output ? materializeDeployableCasTree(output) : null;
+  const leased = await acquireCurrentSegmentedAnalysisLease(resolved);
+  if (!leased) return options?.cas_id ? await loadAnalysisSections(projectPath, CAS_SECTION_NAMES, options) as CASOutput | null : loadAnalysis(projectPath, { ...options, preferAuthoritative: true });
+  try {
+    return await hydrateSegmentedCasTree(projectPath, resolved.filePath, leased.segmented, loadAnalysisSections, options?.track, options?.cas_id);
+  } finally {
+    await leased.release();
+  }
 }
 
 export interface AnalysisExportArtifact {
@@ -1123,18 +1124,17 @@ async function loadCompleteAnalysis(
   track?: AnalysisTrack,
   preferAuthoritative = false,
 ): Promise<CASOutput | null> {
-  const segmented = preferAuthoritative && resolved.entry.storage_format !== 'segmented-v2' ? null : await resolveCurrentSegmentedAnalysis(resolved);
-  if (segmented) {
+  const leased = preferAuthoritative && resolved.entry.storage_format !== 'segmented-v2'
+    ? null
+    : await acquireCurrentSegmentedAnalysisLease(resolved);
+  if (leased) {
     try {
-      const output = await loadAnalysisSections(
-        projectPath,
-        segmented.manifest.sections.map(section => section.name),
-        { ...(track ? { track } : {}), pinned: { filePath: resolved.filePath, segmented } },
-      ) as CASOutput | null;
-      return output ? materializeDeployableCasTree(output) : null;
+      return await hydrateSegmentedCasTree(projectPath, resolved.filePath, leased.segmented, loadAnalysisSections, track);
     } catch (error) {
       if (resolved.entry.storage_format === 'segmented-v2') throw error;
       console.warn(`[Klauro] segmented analysis read failed for ${projectPath}; using authoritative analysis: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      await leased.release();
     }
   }
   return await readJsonMaybeCompressed(resolved.filePath) as CASOutput;

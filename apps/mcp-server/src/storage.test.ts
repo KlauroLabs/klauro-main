@@ -25,7 +25,7 @@ import {
   waitForPendingSegmentedWrites,
   writeJsonAtomic,
 } from './storage';
-import { materializeDeployableCasTree } from './deployable-analysis';
+import { getCachedDeployableAnalyses, materializeDeployableCasTree } from './deployable-analysis';
 import { compactCASPostingShard, searchCompactCAS } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-search';
 import { writeSegmentedLegacyExport } from './segmented-analysis-storage';
 import { writeCompressedJsonAtomic } from './json-storage-writer';
@@ -39,6 +39,16 @@ function casFixture(id: string): CASOutput {
     analysis_facts: [{ id: `${id}-fact`, subject_id: `${id}-node`, kind: 'test' }],
     analyzer_contributions: [], progressive_levels: [],
   } as unknown as CASOutput;
+}
+
+function recursiveCasFixture(): CASOutput {
+  const root = { ...casFixture('recursive-root'), id: 'cas:root', parent_id: null, label: 'root', composition_mode: 'composed' as const };
+  const child = { ...casFixture('recursive-child'), id: 'cas:child', parent_id: root.id, label: 'child', composition_mode: 'composed' as const };
+  const grandchild = { ...casFixture('recursive-grandchild'), id: 'cas:grandchild', parent_id: child.id, label: 'grandchild' };
+  const sibling = { ...casFixture('recursive-sibling'), id: 'cas:sibling', parent_id: root.id, label: 'sibling' };
+  child.children = [grandchild];
+  root.children = [child, sibling];
+  return root;
 }
 
 async function withStoragePath<T>(fn: (storagePath: string) => Promise<T>): Promise<T> {
@@ -545,7 +555,10 @@ test('canonical segmented storage publishes a hashed generation without a whole-
     assert.equal(pointer.manifest_version, 2);
     assert.match(pointer.current, /^gen-[a-f0-9]{64}$/);
     const manifest = await loadAnalysisSectionManifest(project);
-    assert.deepEqual(manifest?.tree_projection, { format: 'derived-deployable-references', version: 1, children: [] });
+    assert.equal(manifest?.tree_projection?.format, 'recursive-cas-section-references');
+    if (manifest?.tree_projection?.format !== 'recursive-cas-section-references') throw new Error('expected recursive projection');
+    assert.equal(manifest.tree_projection.root_id, 'cas:canonical-segmented');
+    assert.equal(manifest.tree_projection.nodes.length, 1);
     assert.equal((await loadAnalysisSections(project, ['tree']))?.children, undefined);
     clearLoadedAnalysisCache();
     const expectedExport = JSON.parse(JSON.stringify(materializeDeployableCasTree(cas)));
@@ -571,7 +584,7 @@ test('bounded section loads return inventory from the same pinned canonical gene
     cas.edges = [{ id: 'self', source: cas.nodes[0].id, target: cas.nodes[0].id, type: 'calls' }];
     await saveAnalysis(project, cas, 'main', { canonicalSegmented: true });
 
-    const loaded = await loadAnalysisProjection(project, ['comprehension', 'quality']);
+    const loaded = await loadAnalysisProjection(project, ['comprehension', 'quality'], { require_sub_cas_index: true });
 
     assert.ok(loaded);
     assert.equal(loaded.cas.analysis_id, 'canonical-projection');
@@ -580,6 +593,7 @@ test('bounded section loads return inventory from the same pinned canonical gene
     assert.equal(loaded.manifest.analysis_id, loaded.cas.analysis_id);
     assert.equal(loaded.manifest.analysis_timestamp, loaded.cas.analysis_timestamp);
     assert.equal(loaded.manifest.compact_graph?.node_count, 1);
+    assert.equal(loaded.manifest.tree_projection?.format, 'recursive-cas-section-references');
     assert.equal(loaded.manifest.compact_graph?.edge_count, 1);
     assert.deepEqual(loaded.inventory, { node_count: 1, edge_count: 1 });
   });
@@ -611,8 +625,11 @@ test('canonical legacy export reconstructs multiple referenced deployable childr
     const expected = materializeDeployableCasTree(cas);
     assert.equal(expected.children?.length, 2);
     const manifest = await loadAnalysisSectionManifest(project);
-    assert.equal(manifest?.tree_projection?.children.length, 2);
-    assert.ok(manifest?.tree_projection?.children.every(child => child.file.startsWith('tree.child.')));
+    assert.equal(manifest?.tree_projection?.format, 'recursive-cas-section-references');
+    if (manifest?.tree_projection?.format !== 'recursive-cas-section-references') throw new Error('expected recursive projection');
+    assert.equal(manifest.tree_projection.nodes.length, 3);
+    assert.deepEqual(manifest.tree_projection.sub_cas_nodes, getCachedDeployableAnalyses(expected).sub_cas_nodes);
+    assert.ok(manifest.tree_projection.nodes.slice(1).flatMap(node => node.sections).every(section => /^tree\.[a-f0-9]{64}\.json/.test(section.file || '')));
     assert.equal(await fs.pathExists(path.join(storagePath, entry.file)), false);
     const previousReserve = process.env.KLAURO_ANALYSIS_EXPORT_RESERVE_MB;
     process.env.KLAURO_ANALYSIS_EXPORT_RESERVE_MB = '128';
@@ -621,6 +638,77 @@ test('canonical legacy export reconstructs multiple referenced deployable childr
       else process.env.KLAURO_ANALYSIS_EXPORT_RESERVE_MB = previousReserve;
     });
     assert.deepEqual(await readExportArtifact(artifact!.filePath), expected);
+  });
+});
+
+test('recursive canonical storage hydrates exact descendants and bounded child reads avoid siblings', async () => {
+  await withStoragePath(async storagePath => {
+    const project = '/tmp/recursive-canonical-project';
+    const cas = recursiveCasFixture();
+    const entry = await saveAnalysis(project, cas, 'main', { canonicalSegmented: true });
+    const expected = materializeDeployableCasTree(cas);
+    const manifest = await loadAnalysisSectionManifest(project);
+    assert.equal(manifest?.tree_projection?.format, 'recursive-cas-section-references');
+    if (manifest?.tree_projection?.format !== 'recursive-cas-section-references') throw new Error('expected recursive projection');
+    assert.deepEqual(manifest.tree_projection.nodes.map(node => [node.id, node.parent_id, node.child_ids]), [
+      ['cas:root', null, ['cas:child', 'cas:sibling']],
+      ['cas:child', 'cas:root', ['cas:grandchild']],
+      ['cas:grandchild', 'cas:child', []],
+      ['cas:sibling', 'cas:root', []],
+    ]);
+    assert.deepEqual(await loadCompleteAnalysisFromSections(project), expected);
+    assert.deepEqual(
+      await loadCompleteAnalysisFromSections(project, { cas_id: 'cas:child' }),
+      expected.children![0],
+    );
+    const artifact = await resolveAnalysisExportArtifact(project);
+    assert.deepEqual(await readExportArtifact(artifact!.filePath), expected);
+
+    const sibling = manifest.tree_projection.nodes.find(node => node.id === 'cas:sibling')!;
+    const siblingGraph = sibling.sections.find(section => section.name === 'graph')!;
+    await fs.writeFile(path.join(storagePath, `${entry.file}.sections`, (await fs.readJson(path.join(storagePath, `${entry.file}.sections`, 'current.json'))).current, siblingGraph.file!), 'corrupt sibling');
+    const grandchild = await loadAnalysisSections(project, ['graph'], { cas_id: 'cas:grandchild' });
+    assert.deepEqual(grandchild?.nodes, cas.children![0].children![0].nodes);
+    assert.equal(grandchild?.children, undefined);
+    await assert.rejects(loadCompleteAnalysisFromSections(project), /byte length mismatch|checksum mismatch/);
+  });
+});
+
+test('canonical readers and export remain compatible with version one child artifacts', async () => {
+  await withStoragePath(async storagePath => {
+    const project = '/tmp/version-one-tree-project';
+    const cas = recursiveCasFixture();
+    const expected = materializeDeployableCasTree(cas);
+    const entry = await saveAnalysis(project, cas, 'main', { canonicalSegmented: true });
+    const root = path.join(storagePath, `${entry.file}.sections`);
+    const pointer = await fs.readJson(path.join(root, 'current.json'));
+    const originalDirectory = path.join(root, pointer.current);
+    const manifest = await fs.readJson(path.join(originalDirectory, 'manifest.json'));
+    const childFile = `legacy-child.json${entry.file.endsWith('.zst') ? '.zst' : entry.file.endsWith('.br') ? '.br' : ''}`;
+    const childPath = path.join(originalDirectory, childFile);
+    await writeCompressedJsonAtomic(childPath, expected.children![0]);
+    const bytes = (await fs.stat(childPath)).size;
+    const sha256 = crypto.createHash('sha256').update(await fs.readFile(childPath)).digest('hex');
+    manifest.tree_projection = {
+      format: 'derived-deployable-references',
+      version: 1,
+      children: [{ id: expected.children![0].id, file: childFile, bytes, sha256 }],
+    };
+    const manifestBytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`);
+    const generation = `gen-${crypto.createHash('sha256').update(manifestBytes).digest('hex')}`;
+    await fs.writeFile(path.join(originalDirectory, 'manifest.json'), manifestBytes);
+    await fs.rename(originalDirectory, path.join(root, generation));
+    await fs.writeJson(path.join(root, 'current.json'), { manifest_version: 2, current: generation });
+
+    const legacyProjection = await loadAnalysisProjection(project, ['comprehension'], { require_sub_cas_index: true });
+    assert.deepEqual(legacyProjection?.cas.nodes, expected.nodes);
+    const grandchild = await loadAnalysisSections(project, ['graph'], { cas_id: 'cas:grandchild' });
+    assert.deepEqual(grandchild?.nodes, expected.children![0].children![0].nodes);
+    assert.equal(grandchild?.children, undefined);
+    assert.deepEqual(await loadCompleteAnalysisFromSections(project, { cas_id: 'cas:child' }), expected.children![0]);
+    assert.deepEqual(await loadCompleteAnalysisFromSections(project), { ...expected, children: [expected.children![0]] });
+    const artifact = await resolveAnalysisExportArtifact(project);
+    assert.deepEqual(await readExportArtifact(artifact!.filePath), { ...expected, children: [expected.children![0]] });
   });
 });
 

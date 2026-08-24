@@ -54,6 +54,7 @@ function minimalCas(timestamp: string, name = 'truckspy-fixture'): CASOutput {
 interface FakeHostedServer {
   url: string;
   requests: string[];
+  urls: string[];
   close: () => Promise<void>;
   state: { status: string; analysis_timestamp?: string };
   casSupported: boolean;
@@ -63,6 +64,7 @@ async function startFakeHostedServer(options: { analysisTimestamp?: string; stat
   const fake: FakeHostedServer = {
     url: '',
     requests: [],
+    urls: [],
     close: async () => undefined,
     state: {
       status: options.status || 'ready',
@@ -73,6 +75,7 @@ async function startFakeHostedServer(options: { analysisTimestamp?: string; stat
   const server = http.createServer((req, res) => {
     const route = (req.url || '').split('?')[0];
     fake.requests.push(route);
+    fake.urls.push(req.url || '');
     const send = (statusCode: number, body: unknown) => {
       res.writeHead(statusCode, { 'content-type': 'application/json' });
       res.end(JSON.stringify(body));
@@ -230,6 +233,21 @@ test('bound section cache reuses one bounded response without downloading full C
     assert.strictEqual(second.cas.analysis_timestamp, HOSTED_TS);
     assert.strictEqual(server.requests.filter(r => r.endsWith('/cas/sections')).length, casDownloads, 'no second download');
     assert.strictEqual(getHostedSectionCacheStats().entries, 1);
+  } finally {
+    await server.close();
+  }
+});
+
+test('hosted child section reads forward the CAS id and isolate cache entries', async () => {
+  const server = await startFakeHostedServer();
+  try {
+    const dir = await makeBoundRepo(server.url);
+    const binding = (await resolveHostedProjectBinding(dir))!;
+    await resolveBoundAnalysis(binding, { sections: ['graph'], sub_cas_node_id: 'cas:child-a' });
+    await resolveBoundAnalysis(binding, { sections: ['graph'], sub_cas_node_id: 'cas:child-b' });
+    assert.ok(server.urls.some(url => url.includes('sub_cas_node_id=cas%3Achild-a')));
+    assert.ok(server.urls.some(url => url.includes('sub_cas_node_id=cas%3Achild-b')));
+    assert.strictEqual(getHostedSectionCacheStats().entries, 2);
   } finally {
     await server.close();
   }

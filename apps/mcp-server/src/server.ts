@@ -145,7 +145,7 @@ Watch for silent server staleness: \`klauro update\` overwrites the installed MC
 
 
 
-async function getFreshAnalysisForAgent(projectPath: string, sections?: readonly CasSectionName[]) {
+async function getFreshAnalysisForAgent(projectPath: string, sections?: readonly CasSectionName[], subCasNodeId?: string) {
 
 
 
@@ -155,10 +155,16 @@ async function getFreshAnalysisForAgent(projectPath: string, sections?: readonly
 
   const binding = await resolveHostedProjectBinding(projectPath).catch(() => null);
   if (binding) {
-    return (await resolveBoundAnalysis(binding, sections ? { sections } : undefined)).cas;
+    return (await resolveBoundAnalysis(binding, {
+      ...(sections ? { sections } : {}),
+      ...(subCasNodeId ? { sub_cas_node_id: subCasNodeId } : {}),
+    })).cas;
   }
 
-  return getStoredAnalysis(projectPath);
+  return getStoredAnalysis(projectPath, {
+    ...(sections ? { sections } : {}),
+    ...(subCasNodeId ? { cas_id: subCasNodeId } : {}),
+  });
 }
 
 
@@ -588,6 +594,17 @@ function buildSummaryWithSubCasNodeIndex(
 
 
   return { ...summary, sub_cas_nodes: das.sub_cas_nodes };
+}
+
+async function getAnalysisForScope(
+  path: string,
+  sections: readonly CasSectionName[],
+  scope: SubCasNodeScopeParam | undefined,
+): Promise<CASOutput> {
+  return getAnalysis(path, {
+    sections,
+    ...(scope?.sub_cas_node_id ? { cas_id: scope.sub_cas_node_id } : {}),
+  });
 }
 
 function json(data: unknown): { content: Array<{ type: 'text'; text: string }> } {
@@ -3972,11 +3989,12 @@ function registerTools(server: McpServer) {
     async ({ path, query: q, type, category, level, file, limit, mode, detail, scope }: any) => withErrorHandling(async () => {
       const resolvedMode = mode || 'hybrid';
       const resolvedDetail = detail || 'compact';
-      const scopedGetCas = async (p: string) => scopeCasToSubCasNode(
-        await getFreshAnalysisForAgent(p, resolvedMode === 'lexical'
+      const scopedGetCas = async (p: string) => getFreshAnalysisForAgent(
+        p,
+        resolvedMode === 'lexical'
           ? CAS_SECTION_PROFILES.graph_search
-          : ['identity', 'graph', 'supplemental']),
-        scope,
+          : ['identity', 'graph', 'supplemental'],
+        scope?.sub_cas_node_id,
       );
       if (resolvedMode === 'lexical') {
 
@@ -4079,7 +4097,7 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, file_path, scope }: any) => withErrorHandling(async () => {
-      const cas = scopeCasToSubCasNode(await getAnalysis(path, { sections: CAS_SECTION_PROFILES.graph_search }), scope);
+      const cas = await getAnalysisForScope(path, CAS_SECTION_PROFILES.graph_search, scope);
       return json(query.getFileNodes(cas, file_path, path));
     })
   );
@@ -4125,8 +4143,9 @@ function registerTools(server: McpServer) {
 
 
 
-      const cas = scopeCasToSubCasNode(
-        await getAnalysis(path, { sections: ['identity', 'graph', 'calls', 'runtime', 'quality', 'comprehension', 'supplemental'] }),
+      const cas = await getAnalysisForScope(
+        path,
+        ['identity', 'graph', 'calls', 'runtime', 'quality', 'comprehension', 'supplemental'],
         scope,
       );
       const result = query.getEntryPoints(cas, { type, limit, offset });
@@ -4716,8 +4735,9 @@ function registerTools(server: McpServer) {
 
 
 
-      const cas = scopeCasToSubCasNode(
-        await getAnalysis(path, { sections: ['identity', 'graph', 'calls', 'runtime', 'comprehension', 'supplemental'] }),
+      const cas = await getAnalysisForScope(
+        path,
+        ['identity', 'graph', 'calls', 'runtime', 'comprehension', 'supplemental'],
         scope,
       );
       return json(query.getDataEntities(cas, { entityName: entity_name, limit, offset, role }));

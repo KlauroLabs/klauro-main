@@ -5,6 +5,7 @@ import { loadKlauroConfig, resolveAnalyzerUrl } from './klauro-config';
 import { connectorToken, normalizeServerUrl } from './connector-auth';
 import { loadAnalysis } from './storage';
 import { selectCasSections, type CasSectionName } from './cas-sections';
+import { scopeCasToSubCasNode } from './deployable-analysis';
 
 
 
@@ -100,6 +101,7 @@ export interface BoundAnalysisResolution {
 
 export interface BoundAnalysisOptions {
   sections?: readonly CasSectionName[];
+  sub_cas_node_id?: string;
 }
 
 export interface AnalysisSourceStamp {
@@ -276,16 +278,17 @@ async function fetchHostedCasSections(
   binding: HostedProjectBinding,
   analysisTimestamp: string | undefined,
   sections: readonly CasSectionName[],
+  subCasNodeId?: string,
 ): Promise<Partial<CASOutput>> {
   const normalized = [...new Set(sections)].sort();
-  const cacheKey = `${binding.serverUrl}|${binding.projectId}|${analysisTimestamp || 'unknown'}|${normalized.join(',')}`;
+  const cacheKey = `${binding.serverUrl}|${binding.projectId}|${analysisTimestamp || 'unknown'}|${subCasNodeId || 'root'}|${normalized.join(',')}`;
   const cached = hostedSectionCache.get(cacheKey);
   if (cached) {
     hostedSectionCache.delete(cacheKey);
     hostedSectionCache.set(cacheKey, cached);
     return cached.cas;
   }
-  const route = `/api/projects/${encodeURIComponent(binding.projectId)}/cas/sections?sections=${encodeURIComponent(normalized.join(','))}`;
+  const route = `/api/projects/${encodeURIComponent(binding.projectId)}/cas/sections?sections=${encodeURIComponent(normalized.join(','))}${subCasNodeId ? `&sub_cas_node_id=${encodeURIComponent(subCasNodeId)}` : ''}`;
   const response = await fetch(`${binding.serverUrl}${route}`, {
     headers: { authorization: `Bearer ${binding.token}` },
     signal: AbortSignal.timeout(hostedFetchTimeoutMs()),
@@ -368,7 +371,7 @@ export async function resolveBoundAnalysis(
         throw new Error(`Hosted project ${binding.projectId} has no analysis yet`);
       }
       const hostedTimestamp = state.summary?.analysis_timestamp || undefined;
-      const cas = await fetchHostedCasSections(binding, hostedTimestamp, options.sections);
+      const cas = await fetchHostedCasSections(binding, hostedTimestamp, options.sections, options.sub_cas_node_id);
       return stampResolution(binding, {
         cas: cas as CASOutput,
         source: 'hosted',
@@ -378,8 +381,11 @@ export async function resolveBoundAnalysis(
       const { preferred, main } = await loadLocalCandidates(binding.projectPath);
       const local = preferred || main;
       if (local) {
+        const scoped = options.sub_cas_node_id
+          ? scopeCasToSubCasNode(local, { sub_cas_node_id: options.sub_cas_node_id })
+          : local;
         return stampResolution(binding, {
-          cas: selectCasSections(local, options.sections) as CASOutput,
+          cas: selectCasSections(scoped, options.sections) as CASOutput,
           source: 'local-cache-degraded',
           note: `hosted CAS sections unavailable (${describeError(error)}); serving the same sections from local cache ${local.analysis_timestamp || 'unknown date'}`,
         });
