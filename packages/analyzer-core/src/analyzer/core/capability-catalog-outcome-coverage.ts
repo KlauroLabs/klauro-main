@@ -13,7 +13,18 @@ const humanAudience = /\b(?:humans?|people|persons?|users?)\b/i;
 const agentAudience = /\b(?:agents?|assistants?)\b/i;
 
 function canonicalToken(token: string): string {
-  const value = token.toLowerCase().replace(/(?:ing|ed|es|s)$/i, '');
+  const source = token.toLowerCase();
+  const value = source.endsWith('ies') && source.length > 4
+    ? `${source.slice(0, -3)}y`
+    : /(?:ches|shes|sses|xes|zes)$/.test(source)
+      ? source.slice(0, -2)
+      : source.endsWith('ing') && source.length > 5
+        ? source.slice(0, -3)
+        : source.endsWith('ed') && source.length > 4
+          ? source.slice(0, -2)
+          : source.endsWith('s') && source.length > 4 && !/(?:sis|ss)$/.test(source)
+            ? source.slice(0, -1)
+            : source;
   if (/^(?:compreh|explain|explor|inspect|understand)/.test(value)) return 'understand';
   if (/^(?:accur|reliab|trust)/.test(value)) return 'trust';
   if (/^(?:collabor|coordin)/.test(value)) return 'collaborate';
@@ -29,9 +40,9 @@ function tokens(value: string, omitAudience = false): string[] {
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .toLowerCase()
     .split(/[^a-z0-9]+/)
-    .filter(token => token.length >= 3)
+    .filter(token => token.length >= 4)
     .map(canonicalToken)
-    .filter(token => token.length >= 3))];
+    .filter(token => token.length >= 4))];
 }
 
 function candidateText(candidate: SystemCapability): string {
@@ -63,7 +74,7 @@ function productClauses(signal?: CapabilityCatalogProjectSignal): string[] {
     .filter((value): value is string => Boolean(value))
     .flatMap(value => value.split(/(?<=[.!?;])\s+|\s*,\s*(?:and\s+)?/i))
     .flatMap(splitCoordinatedClause)
-    .map(value => value.trim().replace(/^[,;]\s*/, ''))
+    .map(value => value.trim().replace(/^[,;]\s*/, '').replace(/[.!?]+$/, ''))
     .filter(value => value.length >= 20 && !/^.+?\s+(?:is|are)\s+(?:an?\s+|the\s+)?[^,.]+$/i.test(value));
 }
 
@@ -98,8 +109,11 @@ export function deriveCapabilityCatalogOutcomeRequirements(
     tokens: new Set(tokens(candidateText(candidate), true)),
   }));
   const requirements = new Map<string, CapabilityCatalogOutcomeRequirement>();
+  const previousClauseTokens = new Set<string>();
   for (const clause of productClauses(signal)) {
-    const subjectTokens = tokens(clause, true);
+    const clauseTokens = tokens(clause, true);
+    const subjectTokens = clauseTokens.filter(token => !previousClauseTokens.has(token));
+    clauseTokens.forEach(token => previousClauseTokens.add(token));
     if (subjectTokens.length === 0) continue;
     for (const audience of requirementAudiences(clause)) {
       const scored = candidateTokens.filter(item => !audience || (audience === 'human'

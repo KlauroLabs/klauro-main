@@ -121,3 +121,27 @@ test('uses the product brief instead of treating package identity metadata as an
   assert.equal(requirements.some(requirement => requirement.candidateIds.includes('package')), false);
   assert.equal(requirements.some(requirement => requirement.candidateIds.includes('graph')), true);
 });
+
+test('removes identity prose and prior-clause references from broad supporting evidence', () => {
+  const umbrella = candidate('delivery', 'Product delivery context', [
+    'build_relationship_graph',
+    'graph_behavior_comprehension_for_agents',
+    'correlate_static_understanding_runtime_evidence',
+  ]);
+  const requirements = deriveCapabilityCatalogOutcomeRequirements({
+    productDocSummary: 'The platform is a software understanding system. It builds a relationship graph, turns that graph into behavior-level comprehension for people and AI agents, and correlates static understanding with runtime evidence.',
+  }, [umbrella]);
+
+  assert.deepEqual(requirements.map(requirement => requirement.statement), [
+    'builds relationship graph',
+    'behavior-level comprehension',
+    'behavior-level comprehension',
+    'correlates static runtime evidence',
+  ]);
+  assert.equal(capabilityCatalogOutcomeCoverageFailure([
+    published('Build a relationship graph', 'A relationship graph connects software structure and behavior.'),
+    published('Help people understand software behavior', 'Human engineers understand connected software behavior and change risks.'),
+    published('Give agents software comprehension', 'AI agents understand connected software behavior before making changes.'),
+    published('Correlate static analysis with runtime evidence', 'Static code structure and runtime evidence refine behavioral understanding.'),
+  ], requirements), undefined);
+});
