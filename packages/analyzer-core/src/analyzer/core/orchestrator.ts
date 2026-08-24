@@ -10467,17 +10467,17 @@ export class AnalyzerOrchestrator {
         publishabilityRejections.push({ name: capability.name, description: capability.description, reason: failure });
         const identity = capabilityIdentityPendingDescriptionRepair(capability, failure);
         return identity ? [identity] : [];
-      }); updateCapabilityCatalogPublishabilityRepairIds(publishabilityRepairCandidateIds, cycleReconciled, rejectedCapabilities);
+      }); updateCapabilityCatalogPublishabilityRepairIds(publishabilityRepairCandidateIds, cycleReconciled.filter(capability => this.isPublishableCapability(capability)), rejectedCapabilities);
       audienceRepairFeedback = [audienceRepairFeedback, capabilityPublishabilityRepairFeedback(publishabilityRejections)].filter(Boolean).join(' ') || undefined;
       const combinedReconciled = targetedRepair ? this.dedupeSystemCapabilitiesByName([...reconciled, ...cycleReconciled], true) : cycleReconciled;
-      const evidenceCompleteReconciled = mergeUniquelyMatchedBehaviorEvidence(combinedReconciled, evidenceCandidates, requiredBehaviorCandidateIds);
+      const evidenceCompleteReconciled = mergeUniquelyMatchedBehaviorEvidence(combinedReconciled, evidenceCandidates, requiredBehaviorCandidateIds); const nonPublishable = evidenceCompleteReconciled.filter(capability => !this.isPublishableCapability(capability));
       const cycleQualityFailure = this.catalogQualityFailure(
         evidenceCompleteReconciled,
         distinctFamilyCount,
         requiredBehaviorCandidateIds,
         requiredEntityCandidateGroups,
         requiredOutcomes,
-      );
+      ) || (nonPublishable.length > 0 ? `${nonPublishable.length} catalog capability ${nonPublishable.length === 1 ? 'requires' : 'require'} publishable description repair: ${nonPublishable.slice(0, 3).map(capability => capability.name).join(', ')}` : undefined);
       writeAnalyzerStatus(
         `[Klauro] capability catalog cycle ${cycle}/${repairProgress.maxCycles}${targetedRepair ? ' targeted-repair' : ''}: ${cycleQualityFailure ? `rejected (${cycleQualityFailure})` : `accepted (${evidenceCompleteReconciled.length} capabilities)`}${reconciledCandidates.length > cycleReconciled.length ? `; refused ${reconciledCandidates.length - cycleReconciled.length} non-publishable item(s): ${[...publishabilityFailures.entries()].map(([reason, count]) => `${reason}=${count}`).join(', ')}` : ''}`,
       );
@@ -10488,7 +10488,7 @@ export class AnalyzerOrchestrator {
         retainedQualityFailure = undefined;
         break;
       }
-      uncoveredOutcomes = uncoveredCapabilityCatalogOutcomeRequirements(evidenceCompleteReconciled, requiredOutcomes); const progress = repairProgress.observe(evidenceCompleteReconciled, learnedRejection, uncoveredOutcomes.length);
+      uncoveredOutcomes = uncoveredCapabilityCatalogOutcomeRequirements(evidenceCompleteReconciled, requiredOutcomes, capability => this.isPublishableCapability(capability)); const progress = repairProgress.observe(evidenceCompleteReconciled, learnedRejection, uncoveredOutcomes.length);
       if (targetedRepair || evidenceCompleteReconciled.length > reconciled.length) {
         reconciled = evidenceCompleteReconciled;
         if (!retainedInterpretationRaw) retainedInterpretationRaw = extractionRaw;
@@ -10509,7 +10509,7 @@ export class AnalyzerOrchestrator {
     const gateReason = deadlineExceeded
       ? `${AI_CATALOG_HARD_DEADLINE_MARKER}: capability-catalog AI enrichment abandoned after ${cyclesRun} cycle(s) to protect the overall analysis latency budget; structural capability candidates remain available${qualityFailure ? ` (last quality check: ${qualityFailure})` : ''}`
       : qualityFailure;
-    const publishGroundedPartial = Boolean(qualityFailure) && reconciled.length >= catalogMinimumCapabilityCount(distinctFamilyCount, requiredEntityCandidateGroups.length);
+    const publishableReconciled = reconciled.filter(capability => this.isPublishableCapability(capability)); const publishGroundedPartial = Boolean(qualityFailure) && publishableReconciled.length >= catalogMinimumCapabilityCount(distinctFamilyCount, requiredEntityCandidateGroups.length);
     if ((publishGroundedPartial || (!deadlineExceeded && !qualityFailure)) && retainedInterpretationRaw) {
       args.onInterpretationAccepted?.(retainedInterpretationRaw);
     }
@@ -10539,12 +10539,12 @@ export class AnalyzerOrchestrator {
       verification_evidence_candidates: evidenceRoleSummary.verification,
       unresolved_evidence_candidates: evidenceRoleSummary.unresolved,
       candidate_dispositions: evidenceCandidates.map(candidate => ({ candidate_id: candidate.id, role: candidate.evidence_role || 'unresolved', reasons: candidate.evidence_role_reasons || [] })),
-      published_capabilities: publishGroundedPartial || (!deadlineExceeded && !qualityFailure) ? reconciled.length : 0,
+      published_capabilities: publishGroundedPartial || (!deadlineExceeded && !qualityFailure) ? publishableReconciled.length : 0,
       minimum_published_capabilities: Math.ceil(Math.log2(distinctFamilyCount + 1)),
       status: publishGroundedPartial ? 'partial' : deadlineExceeded ? 'unavailable' : qualityFailure ? 'rejected' : 'accepted',
       ...(gateReason ? { reason: gateReason } : {}),
     };
-    return publishGroundedPartial || (!deadlineExceeded && !qualityFailure) ? reconciled : [];
+    return publishGroundedPartial || (!deadlineExceeded && !qualityFailure) ? publishableReconciled : [];
   }
 
   private finalizeSystemCapabilityNames(

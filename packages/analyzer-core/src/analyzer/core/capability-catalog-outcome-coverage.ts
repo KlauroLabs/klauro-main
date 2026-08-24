@@ -169,8 +169,10 @@ export function capabilityCatalogOutcomeBindingFailure(
 export function uncoveredCapabilityCatalogOutcomeRequirements(
   capabilities: readonly SystemCapability[],
   requirements: readonly CapabilityCatalogOutcomeRequirement[],
+  isEligible: (capability: SystemCapability) => boolean = () => true,
 ): CapabilityCatalogOutcomeRequirement[] {
   const matches = requirements.map(requirement => capabilities.flatMap((capability, index) => {
+    if (!isEligible(capability)) return [];
     return capabilitySatisfiesCatalogOutcomeRequirement(capability, requirement) ? [index] : [];
   }));
   const capabilityAssignments = new Map<number, number>();
