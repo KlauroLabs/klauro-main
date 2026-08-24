@@ -15,6 +15,10 @@ export interface ParticipantInFlightSnapshot {
   diff_context: string;
   updated_at: string;
   captured_at?: string;
+  client_persisted_at?: string;
+  server_persisted_at?: string;
+  source_identity?: string;
+  delivery_attempt?: number;
   participant_revision?: number;
   operation_id?: string;
   attribution_source: InFlightAttributionSource;
@@ -77,7 +81,7 @@ function latestByAgent(snapshots: ParticipantInFlightSnapshot[]): ParticipantInF
 export async function appendParticipantInFlightSnapshot(
   workspaceId: string,
   snapshot: ParticipantInFlightSnapshot
-): Promise<{ status: 'accepted' | 'duplicate' | 'stale'; participant_revision?: number }> {
+): Promise<{ status: 'accepted' | 'duplicate' | 'stale'; participant_revision?: number; server_persisted_at?: string }> {
   if (snapshot.workspace !== workspaceId) throw new Error('Snapshot workspace does not match the target workspace');
   return withWorkspaceLock(workspaceId, async () => {
     const file = logPath(workspaceId);
@@ -95,18 +99,20 @@ export async function appendParticipantInFlightSnapshot(
             ? 'duplicate'
             : 'stale',
         participant_revision: current.participant_revision,
+        server_persisted_at: current.server_persisted_at ?? current.updated_at,
       };
     }
+    snapshot.server_persisted_at = new Date().toISOString();
     await fsp.appendFile(file, `${JSON.stringify(snapshot)}\n`, 'utf8');
     const stat = await fsp.stat(file);
     if (stat.size <= COMPACT_AFTER_BYTES) {
-      return { status: 'accepted', participant_revision: snapshot.participant_revision };
+      return { status: 'accepted', participant_revision: snapshot.participant_revision, server_persisted_at: snapshot.server_persisted_at };
     }
     const compacted = latestByAgent(await readAll(workspaceId));
     const replacement = `${file}.compact-${process.pid}-${Date.now()}`;
     await fsp.writeFile(replacement, compacted.map((entry) => JSON.stringify(entry)).join('\n') + '\n', 'utf8');
     await fsp.rename(replacement, file);
-    return { status: 'accepted', participant_revision: snapshot.participant_revision };
+    return { status: 'accepted', participant_revision: snapshot.participant_revision, server_persisted_at: snapshot.server_persisted_at };
   });
 }
 

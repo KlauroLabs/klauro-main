@@ -46,6 +46,7 @@ test('durable operations retain order across failure and a later process-style d
 
 test('retrying an identical queued mutation reuses its durable operation identity', async () => {
   const directory = await isolatedStore();
+  process.env.KLAURO_SOURCE_IDENTITY = 'proof-source-identity';
   const first = await executeDurableRemoteOperation({
     workspace: 'workspace-retry',
     baseUrl: 'https://fabric.example',
@@ -54,7 +55,7 @@ test('retrying an identical queued mutation reuses its durable operation identit
     body: { agent_id: 'agent-a', intent: 'work' },
     send: async () => { throw new Error('offline'); },
   });
-  const sent: string[] = [];
+  const sent: Array<{ id: string; attempt: number; source: string }> = [];
   const retry = await executeDurableRemoteOperation<{ status: string }>({
     workspace: 'workspace-retry',
     baseUrl: 'https://fabric.example',
@@ -62,15 +63,20 @@ test('retrying an identical queued mutation reuses its durable operation identit
     route: '/claim',
     body: { agent_id: 'agent-a', intent: 'work' },
     send: async (_route, body) => {
-      sent.push(body.operation_id as string);
+      sent.push({
+        id: body.operation_id as string,
+        attempt: body.delivery_attempt as number,
+        source: body.source_identity as string,
+      });
       return { status: 'accepted' };
     },
   });
-  assert.deepEqual(sent, [first.operation_id]);
+  assert.deepEqual(sent, [{ id: first.operation_id, attempt: 2, source: 'proof-source-identity' }]);
   assert.equal(retry.operation_id, first.operation_id);
   assert.equal(retry.sequence, first.sequence);
   assert.deepEqual(retry.response, { status: 'accepted' });
   assert.equal(await pendingRemoteOperationCount('workspace-retry'), 0);
+  delete process.env.KLAURO_SOURCE_IDENTITY;
   await fsp.rm(directory, { recursive: true, force: true });
 });
 

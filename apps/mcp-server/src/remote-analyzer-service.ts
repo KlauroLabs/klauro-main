@@ -30,6 +30,7 @@ import {
 import { partitionTasks, type PartitionCas, type PartitionTask } from './coordination/partitioner';
 import { compareConceptualCoordinates } from './coordination/conceptual-scope';
 import { getMergelessMetrics } from './coordination/mergeless-metrics';
+import { recordVisibleFabricOperation, type FabricDeliveryMetadata } from './coordination/fabric-delivery-metrics';
 import { planIntentMerge, planIntentMergeFromSubstrate, type MergePlan } from './coordination/intent-merge';
 import { ingestAndPersist, loadPersistedRuntimeFacts } from './telemetry-fusion';
 import { backfillIngestedTelemetry, ingestTelemetryBatch, loadTelemetryObservations, summarizeRouteMetrics } from './telemetry-ingestion';
@@ -112,7 +113,6 @@ function broadcastCoordinationEvent(workspace: string, event: string, data: unkn
     }
   }
 }
-
 function publicParticipantSnapshot(snapshot: ParticipantInFlightSnapshot) {
   return {
     agent_id: snapshot.agent_id,
@@ -120,13 +120,14 @@ function publicParticipantSnapshot(snapshot: ParticipantInFlightSnapshot) {
     branch: snapshot.branch,
     updated_at: snapshot.updated_at,
     captured_at: snapshot.captured_at,
+    client_persisted_at: snapshot.client_persisted_at, server_persisted_at: snapshot.server_persisted_at,
+    source_identity: snapshot.source_identity, delivery_attempt: snapshot.delivery_attempt,
     participant_revision: snapshot.participant_revision,
     attribution_source: snapshot.attribution_source,
     changes_count: snapshot.changes?.length ?? 0,
     changes: snapshot.changes ?? [],
   };
 }
-
 interface RemoteAnalyzerServiceOptions {
   dataDir?: string;
   token?: string;
@@ -1055,24 +1056,18 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
       }
 
       if (request.method === 'POST' && route === '/v1/coordination/claim') {
-
         const body = await readJsonBody<{
           workspace: string; agent_id: string; intent: string; agent_kind?: AgentKind;
           paths?: string[]; symbols?: string[]; capability?: string; ttl_ms?: number;
           base_commit?: string; branch?: string; claim_id?: string;
-
           mode?: 'advisory' | 'grant';
-
           status?: 'active' | 'released';
           version?: number;
           kind?: ClaimLogEntry['kind'];
-          operation_id?: string;
-
           produces?: DeclaredContract[];
           consumes?: string[];
           concept?: ConceptualCoordinate;
-        }>(request, maxBodyBytes);
-
+        } & FabricDeliveryMetadata>(request, maxBodyBytes);
         if (!body.workspace || !body.agent_id || !body.intent) {
           writeJson(response, 400, { status: 'error', error: 'workspace, agent_id, and intent are required' });
           return;
@@ -1122,6 +1117,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
             verdict: 'granted',
             mode: 'advisory',
           });
+          await recordVisibleFabricOperation(workspace, 'claim', body.agent_id, body, entry.logged_at);
           writeJson(response, 200, {
             claim_id: entry.claim_id,
             seq: entry.seq,
@@ -1155,6 +1151,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           agent_id: body.agent_id,
           verdict: result.verdict,
         });
+        await recordVisibleFabricOperation(body.workspace, 'claim', body.agent_id, body);
         writeJson(response, 200, {
           claim_id: result.claim_id,
           verdict: result.verdict,
@@ -1167,9 +1164,8 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         });
         return;
       }
-
       if (request.method === 'POST' && route === '/v1/coordination/release') {
-        const body = await readJsonBody<{ workspace: string; claim_id?: string; agent_id?: string }>(request, maxBodyBytes);
+        const body = await readJsonBody<{ workspace: string; claim_id?: string; agent_id?: string } & FabricDeliveryMetadata>(request, maxBodyBytes);
         if (!body.agent_id) {
           writeJson(response, 400, { status: 'error', error: 'agent_id is required to release a grant', claim_id: body.claim_id });
           return;
@@ -1190,6 +1186,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
             status: 'released',
             mode: 'advisory',
           });
+          await recordVisibleFabricOperation(body.workspace, 'release', body.agent_id, body);
           writeJson(response, 200, {
             status: 'released',
             mode: 'advisory',
@@ -1210,6 +1207,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
             status: 'released',
             mode: 'advisory',
           });
+          await recordVisibleFabricOperation(body.workspace, 'release', body.agent_id, body, advisoryReleased.logged_at);
           writeJson(response, 200, { status: 'released', claim_id: body.claim_id, mode: 'advisory', tier: 'claim-log' });
           return;
         }
@@ -1221,6 +1219,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
             status: 'released',
             mode: 'claim-stream',
           });
+          await recordVisibleFabricOperation(body.workspace, 'release', body.agent_id, body);
           writeJson(response, 200, { status: 'released', claim_id: body.claim_id, mode: 'claim-stream', tier: 'fabric' });
           return;
         }
@@ -1275,7 +1274,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         });
         return;
       }
-
       if (request.method === 'POST' && route === '/v1/coordination/extend') {
         const body = await readJsonBody<{
           workspace: string;
@@ -1285,8 +1283,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           add_produces?: DeclaredContract[];
           add_consumes?: string[];
           concept?: ConceptualCoordinate;
-          operation_id?: string;
-        }>(request, maxBodyBytes);
+        } & FabricDeliveryMetadata>(request, maxBodyBytes);
         if (!body.workspace || !body.claim_id) {
           writeJson(response, 400, { status: 'error', error: 'workspace and claim_id are required' });
           return;
@@ -1308,6 +1305,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           consumes: outcome.claim.consumes ?? [],
           concept: outcome.claim.scope.concept,
         });
+        await recordVisibleFabricOperation(body.workspace, 'extend', outcome.claim.agent_id, body, outcome.claim.logged_at);
         writeJson(response, 200, {
           status: 'extended',
           workspace: body.workspace,
@@ -1608,15 +1606,14 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         });
         return;
       }
-
       if (request.method === 'POST' && route === '/v1/coordination/in-flight') {
         const body = await readJsonBody<{
           workspace: string; agent_id: string; org_id?: string;
           base_commit?: string; branch?: string; diff_context: string;
           attribution_source?: InFlightAttributionSource;
           changes?: SymbolChange[];
-          captured_at?: string; participant_revision?: number; operation_id?: string;
-        }>(request, maxBodyBytes);
+          captured_at?: string; participant_revision?: number;
+        } & FabricDeliveryMetadata>(request, maxBodyBytes);
         if (!body.workspace || !body.agent_id) {
           writeJson(response, 400, { status: 'error', error: 'workspace and agent_id are required' });
           return;
@@ -1651,6 +1648,9 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           diff_context: body.diff_context,
           updated_at: new Date().toISOString(),
           captured_at: body.captured_at,
+          client_persisted_at: body.client_persisted_at,
+          source_identity: body.source_identity,
+          delivery_attempt: body.delivery_attempt,
           participant_revision: body.participant_revision,
           operation_id: body.operation_id,
           attribution_source: attributionSource,
@@ -1666,6 +1666,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           return;
         }
         if (persistence.status === 'duplicate') {
+          await recordVisibleFabricOperation(body.workspace, 'in-flight', body.agent_id, body, persistence.server_persisted_at);
           writeJson(response, 200, {
             status: 'duplicate',
             participant_revision: persistence.participant_revision,
@@ -1683,6 +1684,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           changes_count: redactedChanges?.length,
           changes: redactedChanges ?? [],
         });
+        const visibleAt = await recordVisibleFabricOperation(body.workspace, 'in-flight', body.agent_id, body, persistence.server_persisted_at);
         await appendSecurityAudit(getSecurityStoreDir(body.workspace), {
           ts: snapshot.updated_at,
           actor: body.agent_id,
@@ -1698,7 +1700,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           changes_kept: redactedChanges?.length ?? 0,
           changes_dropped: droppedChangeCount,
         });
-        writeJson(response, 200, { status: 'success', participant_revision: snapshot.participant_revision });
+        writeJson(response, 200, { status: 'success', participant_revision: snapshot.participant_revision, visible_at: visibleAt });
         return;
       }
       if (request.method === 'POST' && route === '/v1/telemetry/ingest') {

@@ -35,6 +35,11 @@ export interface RemoteFabConfig {
   token?: string;
 }
 
+export interface RemoteDeliveryReceipt {
+  delivery_operation_id: string;
+  delivery_sequence: number;
+}
+
 
 
 
@@ -71,7 +76,7 @@ export const REMOTE_ADVISORY_DEFAULT_TTL_MS = 30 * 60 * 1000;
 
 const REQUEST_TIMEOUT_MS = Number(process.env.FAB_REMOTE_TIMEOUT_MS || 10_000);
 
-export interface RemoteClaimResult {
+export interface RemoteClaimResult extends RemoteDeliveryReceipt {
   claim_id: string;
   seq: number;
 
@@ -105,7 +110,7 @@ export interface RemoteCheckResult {
   server_time: string;
 }
 
-export interface RemoteReleaseResult {
+export interface RemoteReleaseResult extends RemoteDeliveryReceipt {
   status: 'released';
   mode: 'advisory';
   agent_id: string;
@@ -205,7 +210,13 @@ async function durableRequest<T>(
     coalesceKey,
     send: (pendingRoute, pendingBody) => request(config, 'POST', pendingRoute, pendingBody),
   });
-  if (result.response !== undefined) return result.response;
+  if (result.response !== undefined) {
+    return {
+      ...(result.response as object),
+      delivery_operation_id: result.operation_id,
+      delivery_sequence: result.sequence,
+    } as T;
+  }
   throw new RemoteFabricError(
     `remote fabric operation queued durably as ${result.operation_id}; ${result.pending} operation(s) pending`,
     result.error,
@@ -245,7 +256,7 @@ export async function remoteClaim(
   });
 }
 
-export interface RemoteExtendResult {
+export interface RemoteExtendResult extends RemoteDeliveryReceipt {
   status: 'extended';
   workspace: string;
   claim_id: string;
@@ -306,7 +317,7 @@ export async function remoteRelease(
   });
 }
 
-export interface RemoteInFlightResult {
+export interface RemoteInFlightResult extends RemoteDeliveryReceipt {
   status: 'success' | 'duplicate';
   participant_revision: number;
 }

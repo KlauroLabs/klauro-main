@@ -39,6 +39,8 @@ import {
 import { getAttributedInFlightState } from './in-flight-substrate';
 import { persistSurprise } from './local-store';
 import { getMergelessMetrics, recordMergelessObservation, type MergelessMetrics } from './mergeless-metrics';
+import { readParticipantInFlightSnapshots } from './participant-in-flight-store';
+import { recordFabricDeliveryStage } from './fabric-delivery-metrics';
 
 export interface AutoMergeableEntry {
   symbol: string;
@@ -429,16 +431,33 @@ export async function planIntentMergeFromSubstrate(
 
 
   await pushSurprisesToLog(workspace, plan.surprises);
+  const reconciledAt = new Date().toISOString();
   if (attributed.participants.length + attributed.tiebroken.length + attributed.unattributed.length > 0) {
     await recordMergelessObservation({
       workspace,
-      observed_at: new Date().toISOString(),
+      observed_at: reconciledAt,
       attribution_source: attributed.attribution_source,
       participant_count: attributed.participants.length + attributed.tiebroken.length,
       changed_symbol_count: plan.summary.total_symbols,
       merge_decisions_required: plan.merge_decisions_required,
       surprise_count: plan.surprises.length,
       unattributed_count: attributed.unattributed.length,
+    });
+  }
+  const snapshots = await readParticipantInFlightSnapshots(workspace);
+  for (const snapshot of snapshots) {
+    if (!snapshot.operation_id) continue;
+    await recordFabricDeliveryStage({
+      workspace,
+      operation_id: snapshot.operation_id,
+      operation_kind: 'in-flight',
+      participant_id: snapshot.agent_id,
+      captured_at: snapshot.captured_at,
+      client_persisted_at: snapshot.client_persisted_at,
+      acknowledged_at: snapshot.server_persisted_at ?? snapshot.updated_at,
+      reconciled_at: reconciledAt,
+      delivery_attempt: snapshot.delivery_attempt,
+      source_identity: snapshot.source_identity,
     });
   }
   const mergelessMetrics = await getMergelessMetrics(workspace);

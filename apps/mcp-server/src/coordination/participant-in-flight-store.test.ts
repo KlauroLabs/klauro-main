@@ -101,8 +101,12 @@ test('participant snapshot store rejects stale revisions and acknowledges exact 
     operation_id: 'operation-4',
   });
   assert.equal(accepted.status, 'accepted');
-  assert.deepEqual(stale, { status: 'stale', participant_revision: 4 });
-  assert.deepEqual(duplicate, { status: 'duplicate', participant_revision: 4 });
+  assert.ok(accepted.server_persisted_at);
+  assert.equal(stale.status, 'stale');
+  assert.equal(stale.participant_revision, 4);
+  assert.equal(duplicate.status, 'duplicate');
+  assert.equal(duplicate.participant_revision, 4);
+  assert.equal(duplicate.server_persisted_at, accepted.server_persisted_at);
   const snapshots = await readParticipantInFlightSnapshots('workspace-c', {
     nowMs: Date.parse('2026-01-01T00:03:00.000Z'),
   });

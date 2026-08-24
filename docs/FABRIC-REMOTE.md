@@ -99,7 +99,7 @@ transports.
 | `POST /v1/coordination/check` `{workspace, agent_id?, paths[]}` | Read-only overlap preflight against the shared log. Never a gate. |
 | `GET /v1/coordination/active?workspace=` | Active claims, contract/concept boards, and fresh redacted in-flight semantic streams. |
 | `POST /v1/coordination/release` `{workspace, agent_id}` (no `claim_id`) | Release **all** of the agent's active claims (fab `release` parity). With `claim_id` it remains the enforced-grant release. |
-| `GET /v1/coordination/metrics?workspace=` | Cumulative merge-decision, surprise, and unattributed-change counts and normalized rates. |
+| `GET /v1/coordination/metrics?workspace=` | Cumulative merge-decision, surprise, unattributed-change, delivery acknowledgement/retry/loss, and capture-to-reconciliation latency metrics. |
 | `GET /v1/coordination/state` / `GET /v1/coordination/stream` | Full state plus live claim and redacted semantic-delta SSE events. |
 
 ## TTL / heartbeat model
@@ -143,9 +143,9 @@ fast (10s timeout) rather than hanging an agent.
   re-claims successfully. The retry-queue write-through tier
   (`coordination/remote-store.ts`) exists for in-process consumers that want
   automatic catch-up.
-- **Single service process.** The SSE fanout and the per-workspace lockfile
-  assume one analyzer-service process owning the store dir (the deployed
-  shape today).
+- **Single service process is a beta constraint.** Beta supports exactly one
+  analyzer-service replica owning the coordination store. SSE fanout is
+  process-local; multi-replica Redis fanout is not implemented or implied.
 - **Shared working trees cannot reveal authorship from filesystem events alone.** Run
   `fab watch <agent> --participant-worktree` only when that checkout/worktree belongs to that
   participant. Without the flag, observations are labeled `workspace-tree` and remain visible but
@@ -168,6 +168,9 @@ fast (10s timeout) rather than hanging an agent.
   shared channel is HTTP, that the token never lands in `.klaurorc`, loud
   degrade, `fabric status`/`off`/`on` fine control, and the latency
   numbers above.
+- `apps/mcp-server/src/gauntlet/fabric-endurance-proof.ts` — independent client
+  processes, isolated durable outboxes, a stopped/restarted server fault, an
+  expected-operation ledger digest, source identity, and zero-loss recovery.
 - `apps/mcp-server/src/coordination/fabric-config.test.ts` — the resolution
   precedence contract (explicit > config > env > local; disabled-config beats
   env; token from the credential store, never the repo file) and the

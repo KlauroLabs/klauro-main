@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 import { getStoreDir } from './local-store';
+import { getBuildIdentity } from '../installed-client-runtime';
 
 export type RemoteOperationKind = 'claim' | 'extend' | 'release' | 'in-flight';
 
@@ -15,6 +16,9 @@ interface DurableRemoteOperation {
   route: string;
   body: Record<string, unknown>;
   created_at: string;
+  client_persisted_at: string;
+  source_identity: string;
+  delivery_attempt: number;
 }
 
 export interface DurableRemoteOperationResult<T> {
@@ -128,8 +132,18 @@ function operationId(sequence: number): string {
 }
 
 function comparableBody(body: Record<string, unknown>): string {
-  const { operation_id: _operationId, ...value } = body;
+  const {
+    operation_id: _operationId,
+    client_persisted_at: _clientPersistedAt,
+    source_identity: _sourceIdentity,
+    delivery_attempt: _deliveryAttempt,
+    ...value
+  } = body;
   return JSON.stringify(value);
+}
+
+function sourceIdentity(): string {
+  return process.env.KLAURO_SOURCE_IDENTITY || process.env.KLAURO_GIT_SHA || getBuildIdentity().git_sha;
 }
 
 export async function executeDurableRemoteOperation<T>(options: {
@@ -156,6 +170,8 @@ export async function executeDurableRemoteOperation<T>(options: {
       sequence = await nextSequence(options.workspace);
       id = operationId(sequence);
       const body = typeof options.body === 'function' ? options.body(sequence) : options.body;
+      const persistedAt = new Date().toISOString();
+      const identity = sourceIdentity();
       const operation: DurableRemoteOperation = {
         sequence,
         operation_id: id,
@@ -163,8 +179,17 @@ export async function executeDurableRemoteOperation<T>(options: {
         base_url: options.baseUrl,
         kind: options.kind,
         route: options.route,
-        body: { ...body, operation_id: id },
-        created_at: new Date().toISOString(),
+        body: {
+          ...body,
+          operation_id: id,
+          client_persisted_at: persistedAt,
+          source_identity: identity,
+          delivery_attempt: 0,
+        },
+        created_at: persistedAt,
+        client_persisted_at: persistedAt,
+        source_identity: identity,
+        delivery_attempt: 0,
       };
       if (options.coalesceKey) operation.body.coalesce_key = options.coalesceKey;
       await writeDurableFile(operationPath(options.workspace, operation), `${JSON.stringify(operation)}\n`);
@@ -187,6 +212,11 @@ export async function executeDurableRemoteOperation<T>(options: {
     for (const pending of await readOperations(options.workspace)) {
       if (pending.operation.base_url !== options.baseUrl) continue;
       try {
+        pending.operation.delivery_attempt = (pending.operation.delivery_attempt ?? 0) + 1;
+        pending.operation.body.delivery_attempt = pending.operation.delivery_attempt;
+        pending.operation.body.client_persisted_at = pending.operation.client_persisted_at ?? pending.operation.created_at;
+        pending.operation.body.source_identity = pending.operation.source_identity ?? 'unknown';
+        await writeDurableFile(pending.file, `${JSON.stringify(pending.operation)}\n`);
         const response = await options.send(pending.operation.route, pending.operation.body);
         if (pending.operation.operation_id === id) ownResponse = response as T;
         await fsp.rm(pending.file, { force: true });

@@ -8,6 +8,8 @@ import { planIntentMerge, planIntentMergeFromSubstrate, shouldUseSubstratePlan }
 import type { AgentInFlightState, ConflictCas } from './conceptual-conflict';
 import { saveAnalysis } from '../storage';
 import { appendClaim, readSurprisesFor } from './local-store';
+import { appendParticipantInFlightSnapshot } from './participant-in-flight-store';
+import { getFabricDeliveryMetrics, recordFabricDeliveryStage } from './fabric-delivery-metrics';
 import type { WorkClaim } from './types';
 
 const cas: ConflictCas = {
@@ -360,6 +362,49 @@ test('planIntentMergeFromSubstrate: disjoint claims + distinct deltas -> each at
   assert.deepEqual(billing.agents, ['agent-a']);
   assert.deepEqual(profile.agents, ['agent-b']);
 
+  await env.cleanup();
+});
+
+test('planIntentMergeFromSubstrate records visible in-flight operations as reconciled', async () => {
+  const env = await freshEnv();
+  const workspace = path.join(env.storageDir, 'proj-delivery-reconciliation');
+  const capturedAt = new Date(Date.now() - 30).toISOString();
+  const clientPersistedAt = new Date(Date.now() - 20).toISOString();
+  const serverPersistedAt = new Date(Date.now() - 10).toISOString();
+  const visibleAt = new Date().toISOString();
+  await appendClaim(workspace, makeClaim(workspace, {
+    claim_id: 'claim-a',
+    agent_id: 'agent-a',
+    scope: { repo: workspace, paths: ['src/a.ts'], symbols: [] },
+  }));
+  await appendParticipantInFlightSnapshot(workspace, {
+    workspace,
+    agent_id: 'agent-a',
+    base_commit: 'base',
+    diff_context: '{}',
+    updated_at: serverPersistedAt,
+    server_persisted_at: serverPersistedAt,
+    captured_at: capturedAt,
+    client_persisted_at: clientPersistedAt,
+    operation_id: 'operation-a',
+    delivery_attempt: 1,
+    source_identity: 'reconcile-proof',
+    attribution_source: 'participant-worktree',
+    changes: [{ symbol_id: 'sym:a', name: 'a', file: 'src/a.ts', change_kind: 'body' }],
+  });
+  await recordFabricDeliveryStage({
+    workspace,
+    operation_id: 'operation-a',
+    operation_kind: 'in-flight',
+    acknowledged_at: serverPersistedAt,
+    visible_at: visibleAt,
+  });
+  await planIntentMergeFromSubstrate(workspace, { nodes: [{ id: 'sym:a', name: 'a' }], edges: [] });
+  const metrics = await getFabricDeliveryMetrics(workspace);
+  assert.equal(metrics.ack_count, 1);
+  assert.equal(metrics.visible_count, 1);
+  assert.equal(metrics.reconciled_count, 1);
+  assert.equal(metrics.unreconciled_count, 0);
   await env.cleanup();
 });
 

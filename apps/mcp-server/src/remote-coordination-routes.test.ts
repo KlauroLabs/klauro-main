@@ -12,6 +12,7 @@ import {
   remoteCheck,
   remoteClaim,
   remoteExtend,
+  remoteMergelessMetrics,
   remoteRelease,
   RemoteFabricError,
 } from './coordination/remote-transport';
@@ -278,7 +279,7 @@ test('in-flight route acknowledges retries and rejects stale participant revisio
   const boot = await bootService();
   const workspace = 'ws-in-flight-revisions';
   const headers = { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` };
-  const publish = (participantRevision: number, symbolId: string) => fetch(`${boot.baseUrl}/v1/coordination/in-flight`, {
+  const publish = (participantRevision: number, symbolId: string, deliveryAttempt = 1) => fetch(`${boot.baseUrl}/v1/coordination/in-flight`, {
     method: 'POST',
     headers,
     body: JSON.stringify({
@@ -289,19 +290,28 @@ test('in-flight route acknowledges retries and rejects stale participant revisio
       attribution_source: 'participant-worktree',
       participant_revision: participantRevision,
       operation_id: `operation-${participantRevision}`,
+      client_persisted_at: `2026-01-01T00:00:0${participantRevision}.010Z`,
+      source_identity: 'route-proof-source',
+      delivery_attempt: deliveryAttempt,
       captured_at: `2026-01-01T00:00:0${participantRevision}.000Z`,
       changes: [{ symbol_id: symbolId, name: symbolId, file: 'src/shared.ts', change_kind: 'body' }],
     }),
   });
   try {
     assert.equal((await publish(2, 'new')).status, 200);
-    const duplicate = await publish(2, 'new');
+    const duplicate = await publish(2, 'new', 2);
     assert.equal(duplicate.status, 200);
     assert.equal((await duplicate.json() as { status: string }).status, 'duplicate');
     assert.equal((await publish(1, 'old')).status, 409);
     const active = await remoteActive({ baseUrl: boot.baseUrl, token: TOKEN }, workspace);
     assert.equal(active.in_flight?.[0].participant_revision, 2);
     assert.equal(active.in_flight?.[0].changes[0].symbol_id, 'new');
+    const metrics = await remoteMergelessMetrics({ baseUrl: boot.baseUrl, token: TOKEN }, workspace);
+    assert.equal(metrics.delivery.operation_count, 1);
+    assert.equal(metrics.delivery.ack_count, 1);
+    assert.equal(metrics.delivery.retry_count, 1);
+    assert.equal(metrics.delivery.transport_loss_count, 1);
+    assert.deepEqual(metrics.delivery.source_identities, ['route-proof-source']);
   } finally {
     boot.server.close();
     boot.restoreEnv();
