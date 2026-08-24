@@ -130,12 +130,22 @@ export function fitCapabilityCatalogContext<T extends Record<string, unknown>>(
     return compactCandidate(value, requiredIds.has(candidateId));
   });
   const topDownSignals = compactTopDownSignals(facts.top_down_signals);
+  const requiredOutcomes = (Array.isArray(facts.required_outcomes) ? facts.required_outcomes : []).slice(0, 16).map(value => {
+    const requirement = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+    return {
+      requirement_id: boundedText(requirement.requirement_id, 240),
+      audience: boundedText(requirement.audience, 40),
+      outcome: boundedText(requirement.outcome, 400),
+      candidate_ids: boundedTextArray(requirement.candidate_ids, candidateValues.length, 180).filter(candidateId => candidateIdSet.has(candidateId)),
+    };
+  });
   const boundedFacts: Record<string, unknown> = {
     user_journeys: (Array.isArray(facts.user_journeys) ? facts.user_journeys : []).slice(0, 12).map(compactJourney),
     entities: (Array.isArray(facts.entities) ? facts.entities : []).slice(0, 18).map(compactEntity),
     candidate_route_areas: [] as Record<string, unknown>[],
     required_behavior_candidate_ids: [] as string[],
     accepted_outcome_names: boundedTextArray(facts.accepted_outcome_names, 12, 180),
+    required_outcomes: requiredOutcomes,
     required_entity_candidate_groups: requiredEntityGroups,
     external_services: boundedTextArray(facts.external_services, 12, 180),
     ...(topDownSignals ? { top_down_signals: topDownSignals } : {}),

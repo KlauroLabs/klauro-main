@@ -139,17 +139,38 @@ function capabilityMatchesAudience(capabilityText: string, audience?: 'agent' | 
   return audience === 'human' ? humanAudience.test(capabilityText) : agentAudience.test(capabilityText);
 }
 
+export function capabilitySatisfiesCatalogOutcomeRequirement(
+  capability: Pick<SystemCapability, 'name' | 'description'>,
+  requirement: CapabilityCatalogOutcomeRequirement,
+): boolean {
+  const capabilityText = `${capability.name || ''} ${capability.description || ''}`;
+  if (!capabilityMatchesAudience(capabilityText, requirement.audience)) return false;
+  const capabilityTokens = new Set(tokens(capabilityText));
+  const requiredMatches = Math.min(2, requirement.subjectTokens.length);
+  return requirement.subjectTokens.filter(token => capabilityTokens.has(token)).length >= requiredMatches;
+}
+
+export function capabilityCatalogOutcomeBindingFailure(
+  capability: Pick<SystemCapability, 'name' | 'description'>,
+  candidateIds: readonly string[],
+  requirementId: string,
+  requirements: readonly CapabilityCatalogOutcomeRequirement[],
+  fulfilledRequirementIds: ReadonlySet<string>,
+): string | undefined {
+  if (requirements.length === 0) return undefined;
+  const requirement = requirements.find(candidate => candidate.id === requirementId);
+  return requirement && !fulfilledRequirementIds.has(requirementId) &&
+    candidateIds.some(candidateId => requirement.candidateIds.includes(candidateId)) &&
+    capabilitySatisfiesCatalogOutcomeRequirement(capability, requirement)
+    ? undefined : 'required-outcome-mismatch';
+}
+
 export function uncoveredCapabilityCatalogOutcomeRequirements(
   capabilities: readonly SystemCapability[],
   requirements: readonly CapabilityCatalogOutcomeRequirement[],
 ): CapabilityCatalogOutcomeRequirement[] {
   const matches = requirements.map(requirement => capabilities.flatMap((capability, index) => {
-    const capabilityText = `${capability.name || ''} ${capability.description || ''}`;
-    if (!capabilityMatchesAudience(capabilityText, requirement.audience)) return [];
-    const capabilityTokens = new Set(tokens(capabilityText));
-    const matchingSubjects = requirement.subjectTokens.filter(token => capabilityTokens.has(token));
-    const requiredMatches = Math.min(2, requirement.subjectTokens.length);
-    return matchingSubjects.length >= requiredMatches ? [index] : [];
+    return capabilitySatisfiesCatalogOutcomeRequirement(capability, requirement) ? [index] : [];
   }));
   const capabilityAssignments = new Map<number, number>();
   const assignedRequirements = new Set<number>();

@@ -23,6 +23,7 @@ describe('AI context budgeting', () => {
       candidate_route_areas: candidates,
       required_behavior_candidate_ids: candidates.slice(0, 20).map(candidate => candidate.candidate_id),
       accepted_outcome_names: ['Analyze codebases', 'Coordinate overlapping work'],
+      required_outcomes: [{ requirement_id: 'agent:behavior-understand', audience: 'agent', outcome: 'understand behavior', candidate_ids: ['candidate-0'] }],
       external_services: Array.from({ length: 30 }, (_, index) => `Service${index}`),
       top_down_signals: {
         product_title: 'Evidence platform',
@@ -40,6 +41,7 @@ describe('AI context budgeting', () => {
     expect(included[0]?.candidate_id).toBe('candidate-0');
     expect((first.context.facts.top_down_signals as Record<string, unknown>).product_title).toBe('Evidence platform');
     expect(first.context.facts.accepted_outcome_names).toEqual(['Analyze codebases', 'Coordinate overlapping work']);
+    expect(first.context.facts.required_outcomes).toEqual([{ requirement_id: 'agent:behavior-understand', audience: 'agent', outcome: 'understand behavior', candidate_ids: ['candidate-0'] }]);
     expect(first).toEqual(second);
   });
 

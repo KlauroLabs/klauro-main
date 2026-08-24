@@ -8142,8 +8142,57 @@ describe('top-down capability evidence (C2)', () => {
 
       expect(catalog.map((capability: any) => capability.name)).toEqual(['Analyze codebase']);
       expect(context.facts.accepted_outcome_names).toEqual(['Analyze codebase']);
-      expect(context.task).toMatch(/return that exact existing name/i);
+      expect(context.task).toMatch(/reuse an accepted name only/i);
       expect(context.task).toMatch(/Coordinate is valid only when .* collaboration/i);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
+  it('rejects a focused repair result assigned to the wrong audience requirement', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    let context: any;
+    (aiService as any).generateComponentDescription = async (input: any) => {
+      context = input.additionalContext;
+      return JSON.stringify({ capabilities: [
+        {
+          requirement_id: 'human:behavior-understand',
+          name: 'Help people understand software behavior',
+          description: 'Human engineers understand connected software behavior before making changes.',
+          category: 'core', candidate_ids: ['understanding'],
+        },
+        {
+          requirement_id: 'agent:behavior-understand',
+          name: 'Help people understand software behavior',
+          description: 'Human engineers understand connected software behavior before making changes.',
+          category: 'core', candidate_ids: ['understanding'],
+        },
+      ] });
+    };
+    const requirements: any[] = [
+      { id: 'human:behavior-understand', audience: 'human', statement: 'behavior understanding', subjectTokens: ['behavior', 'understand'], candidateIds: ['understanding'] },
+      { id: 'agent:behavior-understand', audience: 'agent', statement: 'behavior understanding', subjectTokens: ['behavior', 'understand'], candidateIds: ['understanding'] },
+    ];
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'software-platform',
+        enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: ['software behavior'] },
+        frameworks: [], userJourneys: [], dataEntities: [],
+        candidateCapabilities: [{
+          id: 'understanding', name: 'Explore connected software behavior', category: 'core',
+          related_entities: [], related_domains: ['software behavior'],
+          operations: [{ entry_point_id: 'understanding', entry_point_type: 'message', action: 'Explore' }],
+        }],
+        externalServices: [], flowGraph: { capability_candidates: [] },
+        projectTextSignal: { concepts: ['software behavior'], evidence: [], productDocSummary: 'Helps people and agents understand connected software behavior.' },
+        budgetMs: 30000, exactCapabilityLimit: 2, requiredOutcomeRequirements: requirements,
+      });
+
+      expect(catalog.map((capability: any) => capability.name)).toEqual(['Help people understand software behavior']);
+      expect(context.facts.required_outcomes.map((requirement: any) => requirement.requirement_id)).toEqual([
+        'human:behavior-understand', 'agent:behavior-understand',
+      ]);
+      expect(context.task).toMatch(/copy its requirement_id exactly/i);
     } finally {
       (aiService as any).generateComponentDescription = original;
     }

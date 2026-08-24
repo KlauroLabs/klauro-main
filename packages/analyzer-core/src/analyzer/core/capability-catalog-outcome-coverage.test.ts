@@ -3,6 +3,7 @@ import test from 'node:test';
 import type { SystemCapability } from '../../types/cas.types';
 import {
   capabilityCatalogOutcomeCoverageFailure,
+  capabilitySatisfiesCatalogOutcomeRequirement,
   deriveCapabilityCatalogOutcomeRequirements,
   uncoveredCapabilityCatalogOutcomeRequirements,
 } from './capability-catalog-outcome-coverage';
@@ -106,6 +107,19 @@ test('does not let one combined audience statement satisfy two explicitly distin
     'behavior-level comprehension',
   ]);
   assert.ok(audienceGaps.length >= 1);
+});
+
+test('binds an audience-specific repair to its exact requested outcome', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, evidence);
+  const human = requirements.find(requirement => requirement.audience === 'human')!;
+  const agent = requirements.find(requirement => requirement.audience === 'agent')!;
+  const humanOutcome = published(
+    'Help people understand software behavior',
+    'Human engineers understand connected software behavior before making changes.',
+  );
+
+  assert.equal(capabilitySatisfiesCatalogOutcomeRequirement(humanOutcome, human), true);
+  assert.equal(capabilitySatisfiesCatalogOutcomeRequirement(humanOutcome, agent), false);
 });
 
 test('uses the product brief instead of treating package identity metadata as another outcome', () => {
