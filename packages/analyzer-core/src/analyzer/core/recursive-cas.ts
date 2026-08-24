@@ -193,10 +193,12 @@ export function namespaceCasTree(root: CASOutput, namespace: string): CASOutput 
 export function reidentifyCasTree(root: CASOutput, rootId: string, label?: string): CASOutput {
   const normalizedRootId = rootId.trim();
   if (!normalizedRootId) throw new Error('CAS root id cannot be empty.');
+  const rootHasChildren = hasCasChildren(root);
   const normalizedRoot: CASOutput = {
     ...root,
     id: root.id || `cas:${root.analysis_id}`,
     parent_id: null,
+    ...(!rootHasChildren ? { children: undefined, composition_mode: undefined } : {}),
   };
   assertValidCasTree(normalizedRoot);
   return cloneCasTreeWithIds(

@@ -134,4 +134,14 @@ describe('recursive CAS conformance', () => {
     expect(root.id).toBe('cas:root');
     expect(child.id).toBe('cas:child');
   });
+
+  test('reidentifying a leaf clears stale composition markers from a previous parent state', () => {
+    const stale = { ...leaf('cas:stale', null), children: [], composition_mode: 'composed' as const };
+
+    const reidentified = reidentifyCasTree(stale, 'workspace:member', 'member');
+
+    expect(reidentified.children).toBeUndefined();
+    expect(reidentified.composition_mode).toBeUndefined();
+    expect(validateCasTree(reidentified).valid).toBe(true);
+  });
 });
