@@ -396,3 +396,69 @@ test('capability tests_present stays false when no test suite matches its own op
     'evidence-gated: an unrelated test suite must not make this capability look tested',
   );
 });
+
+test('product map excludes entity-overlap-only journeys from every capability sharing a structural entity', () => {
+  const relationship = (capability_id: string) => ({
+    capability_id,
+    role: 'supporting',
+    rationale: 'shared structural entity',
+    evidence: 'entity-overlap',
+  });
+  const cas = baseCas({
+    capabilities: [
+      {
+        id: 'inspect', name: 'Inspect software behavior', description: 'Shows software behavior to reviewers.',
+        category: 'core', criticality: 'high', operations: [], related_entities: ['entity_graph'],
+      },
+      {
+        id: 'runtime', name: 'Correlate runtime evidence', description: 'Connects runtime observations to static structure.',
+        category: 'core', criticality: 'high', operations: [], related_entities: ['entity_graph'],
+      },
+    ],
+    entities: [{ id: 'entity_graph', name: 'SoftwareGraph' } as any],
+    user_journeys: [{
+      id: 'journey_health', name: 'Check health', journey_kind: 'user-facing', entry_point_id: 'health',
+      entry: { type: 'message', name: 'health' }, steps: [],
+      terminal_effects: { entities_written: [], entities_read: ['SoftwareGraph'], external_services: [], messages_emitted: [] },
+      terminal_entities: [{ name: 'SoftwareGraph', access: 'read' }], security_boundaries: [], tests_covering: [],
+      risk: 'low', criticality: 'medium', call_chain_ids: [], exit_point_ids: [],
+      capability_relationships: [relationship('inspect'), relationship('runtime')],
+    }],
+  } as any);
+
+  const map = buildProductMap(cas);
+  assert.deepEqual(map.capabilities.map(capability => capability.journeys), [[], []]);
+});
+
+test('product map keeps direct operation relationships and uniquely owned entity fallbacks', () => {
+  const cas = baseCas({
+    capabilities: [
+      {
+        id: 'agent', name: 'Ground agents in code context', description: 'Returns grounded code context to software agents.',
+        category: 'core', criticality: 'high',
+        operations: [{ entry_point_id: 'agent_context', entry_point_type: 'message', action: 'Get context' }],
+        related_entities: ['entity_context'],
+      },
+    ],
+    entities: [{ id: 'entity_context', name: 'AgentContext' } as any],
+    user_journeys: [
+      {
+        id: 'journey_agent', name: 'Get agent context', journey_kind: 'user-facing', entry_point_id: 'agent_context',
+        entry: { type: 'message', name: 'get_agent_context' }, steps: [],
+        terminal_effects: { entities_written: [], entities_read: [], external_services: [], messages_emitted: [] },
+        terminal_entities: [], security_boundaries: [], tests_covering: [], risk: 'low', criticality: 'high',
+        call_chain_ids: [], exit_point_ids: [],
+      },
+      {
+        id: 'journey_context_read', name: 'Review context', journey_kind: 'user-facing', entry_point_id: 'review_context',
+        entry: { type: 'page', name: 'review_context' }, steps: [],
+        terminal_effects: { entities_written: [], entities_read: ['AgentContext'], external_services: [], messages_emitted: [] },
+        terminal_entities: [{ name: 'AgentContext', access: 'read' }], security_boundaries: [], tests_covering: [],
+        risk: 'low', criticality: 'medium', call_chain_ids: [], exit_point_ids: [],
+      },
+    ],
+  } as any);
+
+  const map = buildProductMap(cas);
+  assert.deepEqual(map.capabilities[0].journeys.map(journey => journey.id), ['journey_agent', 'journey_context_read']);
+});

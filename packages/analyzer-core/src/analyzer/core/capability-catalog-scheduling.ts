@@ -363,6 +363,46 @@ export function capabilityTitlesShareOutcome(left: SystemCapability, right: Syst
   return leftTokens[0] === rightTokens[0] && leftTokens.filter(token => rightTokens.includes(token)).length >= 4;
 }
 
+function outcomeMeaningTokens(value: string): Set<string> {
+  const ignored = new Set(['a', 'an', 'and', 'codebase', 'for', 'from', 'in', 'of', 'on', 'software', 'system', 'the', 'to', 'with']);
+  const stem = (token: string) => {
+    const normalized = token.replace(/(?:ing|ed|es|s)$/i, '');
+    return /^analy[sz]e?$/.test(normalized) ? 'analyz' : normalized;
+  };
+  return new Set(String(value || '')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(token => token.length >= 3 && !ignored.has(token))
+    .map(stem)
+    .filter(token => token.length >= 3));
+}
+
+function overlapAgainstSmaller(left: ReadonlySet<string>, right: ReadonlySet<string>): number {
+  if (left.size === 0 || right.size === 0) return 0;
+  return [...left].filter(value => right.has(value)).length / Math.min(left.size, right.size);
+}
+
+export function capabilityDescriptionsShareOutcome(left: SystemCapability, right: SystemCapability): boolean {
+  const leftTitle = outcomeMeaningTokens(left.name);
+  const rightTitle = outcomeMeaningTokens(right.name);
+  const leftDescription = outcomeMeaningTokens(left.description || '');
+  const rightDescription = outcomeMeaningTokens(right.description || '');
+  const mutuallyEntailed = overlapAgainstSmaller(leftTitle, rightDescription) >= 0.8 &&
+    overlapAgainstSmaller(rightTitle, leftDescription) >= 0.8;
+  if (!mutuallyEntailed) return false;
+
+  const operationIds = (capability: SystemCapability) => new Set(
+    (capability.operations || []).map(operation => operation.entry_point_id).filter(Boolean),
+  );
+  const entityIds = (capability: SystemCapability) => new Set(capability.related_entities || []);
+  const citations = (capability: SystemCapability) => new Set((capability.criticality_factors || [])
+    .filter(factor => factor.startsWith('catalog-candidate:')));
+  return overlapAgainstSmaller(operationIds(left), operationIds(right)) >= 0.6 ||
+    overlapAgainstSmaller(entityIds(left), entityIds(right)) >= 0.8 ||
+    overlapAgainstSmaller(citations(left), citations(right)) >= 0.6;
+}
+
 export function scheduleCapabilityCatalog<TTarget>(args: {
   outcome: Promise<CapabilityCatalogOutcome>;
   capabilities: SystemCapability[];

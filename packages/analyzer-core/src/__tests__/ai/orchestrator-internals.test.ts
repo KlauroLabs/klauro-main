@@ -1294,10 +1294,9 @@ describe('architecture and capability inference', () => {
     const labels = capabilities.map((capability: any) => capability.structural_label);
     const names = capabilities.map((capability: any) => capability.name);
 
-    // The Vehicle capability survives (structural label "Vehicle Management",
-    // display name "Vehicle"); DTO/support helper buckets are filtered out.
-    expect(labels).toContain('Vehicle Management');
-    expect(names).toContain('Vehicle');
+    // The evidence-specific Vehicle capability survives; DTO/support helper buckets are filtered out.
+    expect(labels).toContain('Vehicle Maintenance Capability');
+    expect(names).toContain('Vehicle Maintenance');
     expect(labels).not.toContain('Dto Management');
     expect(labels).not.toContain('Constants Capability');
     expect(labels).not.toContain('Handling Capability');
@@ -8288,10 +8287,20 @@ describe('top-down capability evidence (C2)', () => {
     }
   });
 
-  it('keeps first-party CAS and Fabric capabilities as separate product outcomes', async () => {
+  it('keeps first-party human, agent, truth-model, and collaboration outcomes separate', async () => {
     const original = (aiService as any).generateComponentDescription;
     (aiService as any).generateComponentDescription = async () => JSON.stringify({
       capabilities: [
+        {
+          name: 'Understand software behavior',
+          description: 'Software exploration reveals connected behavior, risks, and change paths to human reviewers.',
+          category: 'core', entities: [], journeys: [], candidate_ids: ['exploration'],
+        },
+        {
+          name: 'Ground software agents in code context',
+          description: 'Agent context connects requested changes to relevant behavior, risks, tests, and relationships.',
+          category: 'core', entities: [], journeys: [], candidate_ids: ['agent'],
+        },
         {
           name: 'Builds a trustworthy CAS relationship graph',
           description: 'Klauro constructs a comprehensive and accurate graph of software relationships.',
@@ -8317,9 +8326,11 @@ describe('top-down capability evidence (C2)', () => {
     try {
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'Klauro',
-        enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: ['CAS', 'Fabric'] },
+        enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: ['exploration', 'agent context', 'CAS', 'Fabric'] },
         frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [],
         behaviorSurfaces: [
+          surface('exploration', ['explore_connected_software_behavior', 'inspect_software_behavior']),
+          surface('agent', ['get_agent_context', 'assess_change_risk']),
           surface('cas', ['get_cas_graph', 'query_cas_relationships', 'inspect_cas_nodes']),
           surface('fabric', ['fab_claim_work', 'fab_check_collision', 'fab_extend', 'fab_release_work']),
           surface('flow', ['get_flow_graph', 'trace_flow', 'inspect_flow_coverage']),
@@ -8327,17 +8338,19 @@ describe('top-down capability evidence (C2)', () => {
         externalServices: [], flowGraph: { capability_candidates: [] },
         projectTextSignal: {
           concepts: ['CAS', 'Fabric'], evidence: [],
-          productDocSummary: 'Builds a trustworthy CAS relationship graph and coordinates concurrent work through Fabric.',
-          productVocabulary: ['trustworthy', 'cas', 'relationship', 'graph', 'concurrent', 'work', 'fabric'],
+          productDocSummary: 'Helps people understand and explore software behavior, grounds agents in code context, builds a trustworthy CAS relationship graph, and coordinates concurrent work through Fabric.',
+          productVocabulary: ['understand', 'explore', 'software', 'behavior', 'agent', 'context', 'trustworthy', 'cas', 'relationship', 'graph', 'concurrent', 'work', 'fabric'],
         },
         budgetMs: 30000,
       });
 
       expect(catalog.map((capability: any) => capability.name)).toEqual([
+        'Understand software behavior',
+        'Ground software agents in code context',
         'Builds a trustworthy CAS relationship graph',
         'Coordinates concurrent work through Fabric',
       ]);
-      expect(catalog[0].operations.map((operation: any) => operation.entry_point_id)).toEqual([
+      expect(catalog[2].operations.map((operation: any) => operation.entry_point_id)).toEqual([
         'get_cas_graph',
         'query_cas_relationships',
         'inspect_cas_nodes',
@@ -8604,6 +8617,9 @@ describe('top-down capability evidence (C2)', () => {
       expect(withCtx.facts.top_down_signals.product_terminology).toEqual(expect.arrayContaining(['arcane', 'commander', 'multiplayer']));
       expect(withCtx.facts.top_down_signals.product_terminology).not.toEqual(expect.arrayContaining(['search', 'nodes', 'install', 'default', 'config']));
       expect(withCtx.task).toMatch(/PURPOSE TEST/);
+      expect(withCtx.task).toMatch(/TOP-DOWN COVERAGE/);
+      expect(withCtx.task).toMatch(/human-facing exploration, agent-facing context, collaboration, and truth-model construction/);
+      expect(withCtx.task).toMatch(/Never return two capabilities whose descriptions assert the same result/);
       expect(withCtx.task).toMatch(/access control/i);
       expect(withCtx.task).toMatch(/12-28 words and at least 55 characters/);
       expect(withCtx.task).toMatch(/Do not start with actor scaffolding/);

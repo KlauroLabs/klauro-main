@@ -177,6 +177,7 @@ const TIER_REGISTRY: Record<string, Tier> = {
   'module-health.ts': 3,
   'in-repo-call-resolution.ts': 3,
   'orchestrator.ts': 3,
+  'product-map-journey-linking.ts': 3,
   'product-map.ts': 3,
   'previous-description-validation.ts': 3,
   'semantic-coverage.ts': 3,

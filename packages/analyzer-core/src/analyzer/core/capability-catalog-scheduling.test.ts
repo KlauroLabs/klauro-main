@@ -8,6 +8,7 @@ import {
   selectCapabilityCatalogPromptCandidates,
   uncoveredCapabilityCatalogCandidateIds,
   capabilityTitlesShareOutcome,
+  capabilityDescriptionsShareOutcome,
   capabilityCatalogTargetedRepairBatches,
   collectCapabilityCatalogEvidenceBatches,
   capabilityCatalogRepairEvidenceFacts,
@@ -220,6 +221,28 @@ test('recognizes analysis verb variants as the same product outcome without merg
   assert.equal(capabilityTitlesShareOutcome(
     { name: 'Generate codebase report' } as SystemCapability,
     { name: 'Analyze codebase report' } as SystemCapability,
+  ), false);
+});
+
+test('recognizes mutually entailed outcomes only when their structural evidence substantially overlaps', () => {
+  const analyze = catalogCapability({
+    id: 'analyze', name: 'Analyze codebase', description: 'Analyzes a codebase and builds a trustworthy relationship graph.',
+    related_entities: ['graph', 'node', 'edge'],
+  });
+  const graph = catalogCapability({
+    id: 'graph', name: 'Build trustworthy relationship graph', description: 'Builds the relationship graph by analyzing codebase behavior.',
+    related_entities: ['graph', 'node', 'edge'],
+  });
+  const agent = catalogCapability({
+    id: 'agent', name: 'Ground agents in code context', description: 'Gives software agents evidence for safe code changes.',
+    related_entities: ['graph', 'node', 'edge'],
+  });
+
+  assert.equal(capabilityDescriptionsShareOutcome(analyze, graph), true);
+  assert.equal(capabilityDescriptionsShareOutcome(analyze, agent), false);
+  assert.equal(capabilityDescriptionsShareOutcome(
+    analyze,
+    { ...graph, related_entities: ['unrelated'], operations: [] },
   ), false);
 });
 

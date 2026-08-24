@@ -12,6 +12,7 @@ import {
 } from '../../types/cas.types';
 import { exposureScore } from './data-lineage';
 import { partitionAnalysisDiagnostics } from './analysis-diagnostics';
+import { journeyPrimaryEntityNames, linkJourneysToCapability, normalizeProductMapEntityName } from './product-map-journey-linking';
 
 const CRITICALITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 const RISK_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
@@ -21,10 +22,6 @@ const TOP_RISK_LIMIT = 5;
 
 function criticalityRank(value: string | undefined): number {
   return value !== undefined && value in CRITICALITY_RANK ? CRITICALITY_RANK[value] : 4;
-}
-
-function normalizeEntityName(name: string): string {
-  return name.toLowerCase().replace(/^entity_/, '').replace(/[^a-z0-9]/g, '');
 }
 
 const TEST_FILE_SUFFIX = /(?:[._-]?(?:test|tests|spec|specs))$/i;
@@ -66,31 +63,11 @@ function resolveCapabilityDescriptionProvenance(
   return capability.description_source || 'deterministic';
 }
 
-function journeyPrimaryEntityNames(journey: CASUserJourney): Set<string> {
-  const written = new Set<string>();
-  for (const terminal of journey.terminal_entities || []) {
-    if (terminal.access !== 'read') written.add(normalizeEntityName(terminal.name));
-  }
-  for (const name of journey.terminal_effects?.entities_written || []) {
-    written.add(normalizeEntityName(name));
-  }
-  if (written.size > 0) return written;
-
-  const read = new Set<string>();
-  for (const terminal of journey.terminal_entities || []) {
-    read.add(normalizeEntityName(terminal.name));
-  }
-  for (const name of journey.terminal_effects?.entities_read || []) {
-    read.add(normalizeEntityName(name));
-  }
-  return read;
-}
-
 function journeyTouchedEntityNames(journey: CASUserJourney): Set<string> {
   const touched = new Set<string>();
-  for (const terminal of journey.terminal_entities || []) touched.add(normalizeEntityName(terminal.name));
-  for (const name of journey.terminal_effects?.entities_written || []) touched.add(normalizeEntityName(name));
-  for (const name of journey.terminal_effects?.entities_read || []) touched.add(normalizeEntityName(name));
+  for (const terminal of journey.terminal_entities || []) touched.add(normalizeProductMapEntityName(terminal.name));
+  for (const name of journey.terminal_effects?.entities_written || []) touched.add(normalizeProductMapEntityName(name));
+  for (const name of journey.terminal_effects?.entities_read || []) touched.add(normalizeProductMapEntityName(name));
   return touched;
 }
 
@@ -131,28 +108,6 @@ function capabilityHasTestEvidence(
   });
 }
 
-function linkJourneysToCapability(
-  capability: SystemCapability,
-  capabilityEntityNames: string[],
-  journeys: CASUserJourney[],
-  primaryNamesByJourney: Map<string, Set<string>>
-): CASUserJourney[] {
-  const entryPointIds = new Set(capability.operations.map(operation => operation.entry_point_id));
-  const capabilityEntities = new Set(capabilityEntityNames.map(normalizeEntityName));
-
-  return journeys.filter(journey => {
-    if (journey.capability_relationships?.some(rel => rel.capability_id === capability.id)) return true;
-    if (entryPointIds.has(journey.entry_point_id)) return true;
-    if (capabilityEntities.size === 0) return false;
-    const primaryNames = primaryNamesByJourney.get(journey.id);
-    if (!primaryNames) return false;
-    for (const name of primaryNames) {
-      if (capabilityEntities.has(name)) return true;
-    }
-    return false;
-  });
-}
-
 function capabilityRiskLevel(
   capability: SystemCapability,
   linkedJourneys: CASUserJourney[],
@@ -170,6 +125,13 @@ function buildCapabilities(cas: CASOutput): CASProductMapCapability[] {
   const journeys = cas.user_journeys || [];
   const primaryNamesByJourney = new Map(journeys.map(journey => [journey.id, journeyPrimaryEntityNames(journey)]));
   const entityNameById = new Map((cas.entities || []).map(entity => [entity.id, entity.name]));
+  const entityOwnerCounts = new Map<string, number>();
+  for (const capability of cas.capabilities || []) {
+    for (const reference of new Set(capability.related_entities || [])) {
+      const normalized = normalizeProductMapEntityName(entityNameById.get(reference) || reference);
+      entityOwnerCounts.set(normalized, (entityOwnerCounts.get(normalized) || 0) + 1);
+    }
+  }
   const capabilityOrder = new Map((cas.capabilities || []).map((capability, index) => [capability.name, index]));
   const nodesById = new Map((cas.nodes || []).map(node => [node.id, node]));
   const testedStems = testedFileStems(cas.test_suites);
@@ -184,11 +146,16 @@ function buildCapabilities(cas: CASOutput): CASProductMapCapability[] {
 
   const capabilities = (cas.capabilities || []).map(capability => {
     const entityNames = (capability.related_entities || []).map(reference => entityNameById.get(reference) || reference);
-    const linked = linkJourneysToCapability(capability, entityNames, journeys, primaryNamesByJourney);
+    const exclusivelyOwnedEntityNames = new Set(entityNames
+      .map(normalizeProductMapEntityName)
+      .filter(name => entityOwnerCounts.get(name) === 1));
+    const linked = linkJourneysToCapability(
+      capability, entityNames, exclusivelyOwnedEntityNames, journeys, primaryNamesByJourney,
+    );
     const linkedSorted = [...linked].sort(
       (a, b) => criticalityRank(a.criticality) - criticalityRank(b.criticality) || a.name.localeCompare(b.name)
     );
-    const capabilityEntities = new Set(entityNames.map(normalizeEntityName));
+    const capabilityEntities = new Set(entityNames.map(normalizeProductMapEntityName));
     const testsPresent = linked.some(journey =>
       (journey.tests_covering || []).length > 0 || journeyHasFileTestEvidence(journey, testedStems, nodesById)
     )

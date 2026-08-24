@@ -279,12 +279,13 @@ export function capabilityDescriptionProductLanguageFailure(
   description: string,
   relatedEntities: readonly string[],
 ): string | undefined {
+  if (/\bmcp\s+(?:tools?|surfaces?|endpoints?)\b|\bcli\s+(?:commands?|interfaces?|surfaces?)\b/i.test(description)) return 'delivery-surface-scaffolding';
   if (/\b(?:handles?|process(?:es|ed|ing)?)\s+(?:incoming\s+)?messages?\s+to\b/i.test(description)) return 'message-handler-scaffolding';
   if (relatedEntities.some(entity =>
     (/[a-z0-9][A-Z]|[_:$]/.test(entity) || /(?:Config|DTO|Entity|Entry|Model|Record|Schema)$/i.test(entity)) &&
     new RegExp(`\\b${entity.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(description)
   )) return 'raw-related-entity-identifier';
-  const graphInventoryTerms = description.match(/\b(?:entry points?|exit points?|method calls?|nodes?|edges?)\b/gi) || [];
+  const graphInventoryTerms = description.match(/\b(?:entry points?|exit points?|methods?|call chains?|method calls?|nodes?|edges?)\b/gi) || [];
   return new Set(graphInventoryTerms.map(term => term.toLowerCase())).size >= 2 ? 'implementation-graph-inventory' : undefined;
 }
 

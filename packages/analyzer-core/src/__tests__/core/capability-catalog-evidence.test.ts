@@ -1,5 +1,6 @@
 import {
   capabilityCatalogAiPhaseStatus,
+  capabilityDescriptionProductLanguageFailure,
   capabilityCitesRequiredEvidence,
   capabilityEvidenceSubjectTokens,
   capabilityOutcomeMisusesCoordination,
@@ -605,6 +606,19 @@ describe('hasFirstPartyCorroboratedCatalogOperations', () => {
     expect(hasFirstPartyCorroboratedCatalogOperations(authored, [surface], {
       productDocSummary: 'A software platform for agents and work.',
     })).toBe(false);
+  });
+});
+
+describe('capabilityDescriptionProductLanguageFailure', () => {
+  test('rejects delivery namespaces and implementation inventories', () => {
+    expect(capabilityDescriptionProductLanguageFailure(
+      'Connects runtime observations to static structure through runtime MCP surfaces.',
+      [],
+    )).toBe('delivery-surface-scaffolding');
+    expect(capabilityDescriptionProductLanguageFailure(
+      'Builds a graph from nodes, methods, and call chains discovered in source.',
+      [],
+    )).toBe('implementation-graph-inventory');
   });
 });
 
