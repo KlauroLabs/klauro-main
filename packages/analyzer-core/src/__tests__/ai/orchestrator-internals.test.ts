@@ -77,8 +77,9 @@ test('catalog quality repair targets and retains independently omitted evidence 
     budgetMs: 30000,
   });
 
-  expect(requested).toHaveLength(68);
-  expect(requested.every(ids => ids.length === 1)).toBe(true);
+  expect(requested).toHaveLength(32);
+  expect(requested[0]).toEqual(candidates.map(candidate => candidate.id));
+  expect(requested.slice(1).every(ids => ids.length === 1)).toBe(true);
   expect([...requestedById.values()].sort((left, right) => left - right)).toEqual([
     ...Array(20).fill(1), ...Array(9).fill(2), ...Array(4).fill(3), ...Array(2).fill(4), ...Array(2).fill(5),
   ]);
@@ -135,8 +136,9 @@ test('catalog repair stops after bounded no-progress retries', async () => {
     budgetMs: 30000,
   });
 
-  expect(requests).toHaveLength(16);
-  expect(requests.every(ids => ids.length === 1)).toBe(true);
+  expect(requests).toHaveLength(11);
+  expect(requests[0]).toEqual(candidates.map(candidate => candidate.id));
+  expect(requests.slice(1).every(ids => ids.length === 1)).toBe(true);
   expect(result).toHaveLength(0);
   expect(purpose.capability_catalog_coverage.status).toBe('rejected');
   expect(purpose.capability_catalog_coverage.reason).toMatch(/omitted 5 product-entity evidence families/);

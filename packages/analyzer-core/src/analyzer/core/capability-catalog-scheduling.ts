@@ -130,6 +130,18 @@ function evidenceTokenMatchesOutcomeName(token: string, outcomeNameTokens: reado
   );
 }
 
+export function capabilityOutcomeMatchesEvidence(
+  name: string,
+  evidenceCandidates: readonly SystemCapability[],
+): boolean {
+  const outcomeTokens = normalizedOutcomeNameTokens(name);
+  return evidenceCandidates.length > 0 && evidenceCandidates.every(candidate => {
+    const evidenceTokens = capabilityEvidenceSubjectTokens(candidate);
+    return evidenceTokens.length > 0 && evidenceTokens.some(token =>
+      evidenceTokenMatchesOutcomeName(token, outcomeTokens));
+  });
+}
+
 function mergeCapabilityEvidence(outcome: SystemCapability, evidence: SystemCapability): SystemCapability {
   const operationKey = (operation: SystemCapability['operations'][number]) => [
     operation.entry_point_id,

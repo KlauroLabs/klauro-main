@@ -11,6 +11,7 @@ import {
   capabilityCatalogTargetedRepairBatches,
   collectCapabilityCatalogEvidenceBatches,
   capabilityCatalogRepairEvidenceFacts,
+  capabilityOutcomeMatchesEvidence,
   mergeUniquelyMatchedBehaviorEvidence,
   recordCapabilityCatalogRejection,
   updateCapabilityCatalogPublishabilityRepairIds,
@@ -76,6 +77,18 @@ test('behavior evidence remains uncovered when its outcome match is ambiguous', 
   const merged = mergeUniquelyMatchedBehaviorEvidence(capabilities, [surface], [surface.id]);
 
   assert.ok(merged.every(capability => !capability.criticality_factors.includes(`catalog-candidate:${surface.id}`)));
+});
+
+test('an accepted outcome can absorb focused repair evidence only when its title names that evidence subject', () => {
+  const fabric = catalogCapability({
+    id: 'fabric',
+    name: 'Fabric Tool Surface',
+    evidence_kind: 'behavior-surface',
+    evidence_examples: ['claim_work', 'check_collision', 'release_work'],
+  });
+
+  assert.equal(capabilityOutcomeMatchesEvidence('Understand workspace capability map', [fabric]), false);
+  assert.equal(capabilityOutcomeMatchesEvidence('Coordinate overlapping agent work', [fabric]), true);
 });
 
 test('automatic evidence merge never absorbs entity evidence or an unrequired surface', () => {

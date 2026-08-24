@@ -460,6 +460,53 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(out).toHaveLength(6);
   });
 
+  it('builds the initial catalog from the complete evidence set before isolating missing-family repairs', async () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    const args: any = gateArgs(localOrch);
+    args.projectTextSignal = { concepts: ['software understanding', 'collaborative work'], evidence: [] };
+    args.behaviorSurfaces = [
+      {
+        id: 'workspace', name: 'Workspace Tool Surface', category: 'internal', evidence_kind: 'behavior-surface',
+        evidence_examples: ['get_agent_context', 'get_product_map'],
+        criticality_factors: ["2 message entry points form one cohesive behavior family ('workspace')"],
+        operations: anchorOp('workspace'), related_entities: [], related_domains: ['workspace'],
+      },
+      {
+        id: 'fabric', name: 'Fabric Tool Surface', category: 'internal', evidence_kind: 'behavior-surface',
+        evidence_examples: ['claim_work', 'check_collision', 'release_work'],
+        criticality_factors: ["3 message entry points form one cohesive behavior family ('fabric')"],
+        operations: anchorOp('fabric'), related_entities: [], related_domains: ['collaboration'],
+      },
+    ];
+    const complete = ['Understand software behavior', 'Coordinate collaborative work', 'Assess change risk', 'Correlate runtime signals']
+      .map((name, index) => cap({
+        id: name,
+        name,
+        description: `Grounded product outcome for ${name.toLowerCase()} across connected software systems.`,
+        operations: anchorOp(name),
+        criticality_factors: index === 0
+          ? ['catalog-candidate:workspace']
+          : index === 1
+            ? ['catalog-candidate:fabric']
+            : [],
+      }));
+    const calls: any[] = [];
+    localOrch.aiExtractCapabilityCatalog = async (input: any) => {
+      calls.push(input);
+      return complete;
+    };
+    localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
+
+    const out = await localOrch.runCapabilityCatalogWithQualityGate(args);
+
+    expect(out).toEqual(complete);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].exactCapabilityLimit).toBeUndefined();
+    expect(calls[0].qualityNudge).toBeUndefined();
+    expect(calls[0].behaviorSurfaces.map((surface: SystemCapability) => surface.id)).toEqual(['workspace', 'fabric']);
+    expect(calls[0].candidateCapabilities.length).toBeGreaterThan(1);
+  });
+
   it('retries when a passing-size catalog omits a behavior family citation', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const args: any = gateArgs(localOrch);
