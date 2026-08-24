@@ -999,7 +999,7 @@ export async function loadCompleteAnalysisFromSections(
   const leased = await acquireCurrentSegmentedAnalysisLease(resolved);
   if (!leased) return options?.cas_id ? await loadAnalysisSections(projectPath, CAS_SECTION_NAMES, options) as CASOutput | null : loadAnalysis(projectPath, { ...options, preferAuthoritative: true });
   try {
-    return await hydrateSegmentedCasTree(projectPath, resolved.filePath, leased.segmented, loadAnalysisSections, options?.track, options?.cas_id);
+    return await hydrateSegmentedCasTree(projectPath, resolved.filePath, leased.segmented, loadAnalysisSections, async filePath => await readJsonMaybeCompressed(filePath) as CASOutput, options?.track, options?.cas_id);
   } finally {
     await leased.release();
   }
@@ -1129,7 +1129,7 @@ async function loadCompleteAnalysis(
     : await acquireCurrentSegmentedAnalysisLease(resolved);
   if (leased) {
     try {
-      return await hydrateSegmentedCasTree(projectPath, resolved.filePath, leased.segmented, loadAnalysisSections, track);
+      return await hydrateSegmentedCasTree(projectPath, resolved.filePath, leased.segmented, loadAnalysisSections, async filePath => await readJsonMaybeCompressed(filePath) as CASOutput, track);
     } catch (error) {
       if (resolved.entry.storage_format === 'segmented-v2') throw error;
       console.warn(`[Klauro] segmented analysis read failed for ${projectPath}; using authoritative analysis: ${error instanceof Error ? error.message : String(error)}`);

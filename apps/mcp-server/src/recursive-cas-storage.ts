@@ -59,10 +59,16 @@ export async function hydrateSegmentedCasTree(
   filePath: string,
   segmented: ResolvedSegmentedAnalysis,
   loadSections: SectionLoader,
+  readArtifact: (filePath: string) => Promise<CASOutput>,
   track?: AnalysisTrack,
   casId?: string,
 ): Promise<CASOutput> {
   const projection = segmented.manifest.tree_projection;
+  if (casId && !projection) {
+    const subtree = findCasById(await readArtifact(filePath), casId);
+    if (!subtree) throw new Error(`Unknown CAS id '${casId}'`);
+    return subtree;
+  }
   if (projection?.format === 'recursive-cas-section-references') {
     const rootId = casId || projection.root_id;
     const byId = new Map(projection.nodes.map(node => [node.id, node]));

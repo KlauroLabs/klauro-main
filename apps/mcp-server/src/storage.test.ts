@@ -674,6 +674,18 @@ test('recursive canonical storage hydrates exact descendants and bounded child r
   });
 });
 
+test('child hydration scopes authoritative trees when a legacy sidecar has no projection', async () => {
+  await withStoragePath(async () => {
+    const project = '/tmp/legacy-sidecar-child-project';
+    const cas = recursiveCasFixture();
+    await saveAnalysis(project, cas);
+    assert.deepEqual(
+      await loadCompleteAnalysisFromSections(project, { cas_id: 'cas:child' }),
+      materializeDeployableCasTree(cas).children![0],
+    );
+  });
+});
+
 test('canonical readers and export remain compatible with version one child artifacts', async () => {
   await withStoragePath(async storagePath => {
     const project = '/tmp/version-one-tree-project';

@@ -52,13 +52,23 @@ import { clearFreshnessSummaryCache } from './freshness';
 import { descriptionStorePath, generateElementDescription } from './description-enrichment';
 import { isAnalysisFocus, withAnalysisFocus } from './analysis-focus';
 import { ResponseCache, responseCacheKey } from './response-cache';
-import { getCachedDeployableAnalyses } from './deployable-analysis';
+import { getCachedDeployableAnalyses, scopeCasToSubCasNode } from './deployable-analysis';
 import { initSelfTelemetry, instrumentHttpHandler, mapSdkEvent } from './self-telemetry';
 import type { CasRuntimeEvent } from '../../../packages/klauro-sdk-js/src/types';
 import { HOSTED_PROJECT_QUERY_SCHEMAS, HOSTED_PROJECT_QUERY_TOOL_NAMES, type HostedProjectQueryTool } from './hosted-project-query';
 import { beginHostedProjectQueryWarm, prewarmHostedProjectQueryWorker, runHostedProjectQueryWorker, warmHostedProjectAnalysisWorker, warmHostedProjectQueryWorker } from './hosted-project-query-process';
 
 export { prewarmHostedProjectQueryWorker };
+
+async function throwSubCasScopeError(workspace: string, subCasNodeId: string, fallback: string): Promise<never> {
+  try {
+    scopeCasToSubCasNode(await getAnalysis(workspace), { sub_cas_node_id: subCasNodeId });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new AccountHttpError(message.startsWith('Unknown scope.sub_cas_node_id') ? 404 : 400, message);
+  }
+  throw new AccountHttpError(400, fallback);
+}
 import { paginateConceptualCatalog, parseConceptualCatalogPage, unavailableComprehensionResponse, unavailableLatestAnalyzeAttempt } from './analysis-response-readiness';
 import { projectAttemptRecordPath, readAttemptRecord, writeAttemptRecord, type AnalysisAttemptRecord } from './analysis-attempt-record';
 import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
@@ -2728,7 +2738,8 @@ async function handleAccountApi(
         if (!scopedCas) return { statusCode: 200, body: { status: 'no_analysis', project_id: project.id } };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        throw new AccountHttpError(message.startsWith('Unknown CAS id') ? 404 : 400, message);
+        if (message.startsWith('Unknown CAS id')) return throwSubCasScopeError(workspace, sectionsSubCasNodeId, message);
+        throw new AccountHttpError(400, message);
       }
       const body = {
         status: 'ready',
@@ -2821,7 +2832,7 @@ async function handleAccountApi(
         cas = await getAnalysis(workspace, { cas_id: subCasNodeId });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        if (message.startsWith('Unknown CAS id')) throw new AccountHttpError(404, message);
+        if (message.startsWith('Unknown CAS id')) return throwSubCasScopeError(workspace, subCasNodeId, message);
         return {
           statusCode: 200,
           body: {
