@@ -126,6 +126,56 @@ test('oversized previous workspace state falls back to a complete rebuild instea
   }
 });
 
+test('workspace scheduler hides a prior record when a current member rebuild fails', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-was-current-failure-'));
+  const previousInProcess = process.env.KLAURO_WORKSPACE_ANALYSIS_IN_PROCESS;
+  delete process.env.KLAURO_WORKSPACE_ANALYSIS_IN_PROCESS;
+  const workspaceId = 'workspace-current-failure';
+  const recordDir = path.join(root, 'workspace-analyses');
+  const recordPath = path.join(recordDir, `${workspaceId}.json`);
+  const scheduler = new AccountWorkspaceAnalysisScheduler(root, {} as any, {
+    debounceMs: 0,
+    settleMs: 0,
+    runIsolated: async () => { throw new Error('member analysis failed'); },
+  });
+  try {
+    fs.mkdirSync(recordDir, { recursive: true });
+    fs.writeFileSync(recordPath, JSON.stringify({ workspace_id: workspaceId, graph: { nodes: [] } }));
+    assert.equal((await scheduler.load(workspaceId))?.workspace_id, workspaceId);
+    scheduler.notifyProjectAnalysisLanded(workspaceId);
+    assert.equal(await scheduler.load(workspaceId), null, 'a pending member generation must hide the prior workspace record');
+    await assert.rejects(scheduler.rebuild(workspaceId), /member analysis failed/);
+    assert.equal(await scheduler.load(workspaceId), null, 'a failed current rebuild must not restore the prior workspace record');
+    assert.match(scheduler.failureReason(workspaceId) || '', /member analysis failed/);
+  } finally {
+    scheduler.close();
+    if (previousInProcess === undefined) delete process.env.KLAURO_WORKSPACE_ANALYSIS_IN_PROCESS;
+    else process.env.KLAURO_WORKSPACE_ANALYSIS_IN_PROCESS = previousInProcess;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('workspace scheduler rejects a persisted record when a member has a failed latest attempt after restart', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-was-restart-failure-'));
+  const workspaceId = 'workspace-restart-failure';
+  const analysisId = 'analysis-restart-failure';
+  const scheduler = new AccountWorkspaceAnalysisScheduler(root, {
+    listProjectsForWorkspace: async () => [{ id: 'project-failed', name: 'Failed Project', analysis_id: analysisId }],
+  } as any);
+  try {
+    fs.mkdirSync(path.join(root, 'workspace-analyses'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'workspace-analyses', `${workspaceId}.json`), JSON.stringify({ workspace_id: workspaceId, graph: { nodes: [] } }));
+    const memberWorkspace = path.join(root, 'workspaces', analysisId);
+    fs.mkdirSync(memberWorkspace, { recursive: true });
+    fs.writeFileSync(path.join(memberWorkspace, '.reanalyze-attempt.json'), JSON.stringify({ state: 'failed', trigger: 'reanalyze', reason: 'latest member failed' }));
+    assert.equal(await scheduler.load(workspaceId), null);
+    assert.match(scheduler.failureReason(workspaceId) || '', /Failed Project.*latest member failed/);
+  } finally {
+    scheduler.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('workspace scheduler drains a project notification that arrives during an in-flight rebuild', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-was-dirty-drain-'));
   try {

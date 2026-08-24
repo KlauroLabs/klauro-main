@@ -516,8 +516,11 @@ function decodeUint32LittleEndian(bytes: Buffer, length: number, field: string):
   return values;
 }
 
-export async function loadCompactCASGraph(filePath: string): Promise<CompactCASGraph | null> {
-  const segmented = await resolveSegmentedAnalysis(filePath);
+export async function loadCompactCASGraph(
+  filePath: string,
+  pinned?: ResolvedSegmentedAnalysis,
+): Promise<CompactCASGraph | null> {
+  const segmented = pinned || await resolveSegmentedAnalysis(filePath);
   return segmented ? loadCompactCASGraphFromGeneration(segmented) : null;
 }
 
@@ -573,8 +576,11 @@ export interface ResolvedSegmentedAnalysis {
   manifest: CasSectionManifest;
 }
 
-export async function loadCompactCASSearch(filePath: string): Promise<LoadedCompactCASSearch | null> {
-  const segmented = await resolveSegmentedAnalysis(filePath);
+export async function loadCompactCASSearch(
+  filePath: string,
+  pinned?: ResolvedSegmentedAnalysis,
+): Promise<LoadedCompactCASSearch | null> {
+  const segmented = pinned || await resolveSegmentedAnalysis(filePath);
   const descriptor = segmented?.manifest.compact_search;
   if (!segmented || !descriptor) return null;
   if (descriptor.format !== 'klauro-compact-cas-search' || ![2, 3].includes(descriptor.version)) {

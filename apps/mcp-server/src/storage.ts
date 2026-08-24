@@ -72,6 +72,7 @@ export interface AnalysisEntry {
   name: string;
   path: string;
   file: string;
+  analysis_id?: string;
   analyzed_at: string;
   system_type: string;
   frameworks: string[];
@@ -747,6 +748,7 @@ export async function saveAnalysis(
     name: persistedOutput.system.name,
     path: projectPath,
     file: fileName,
+    analysis_id: persistedOutput.analysis_id,
     analyzed_at: persistedOutput.analysis_timestamp,
     system_type: persistedOutput.system.type,
     frameworks,
@@ -778,10 +780,20 @@ export async function saveAnalysis(
   return entry;
 }
 
-async function resolveAnalysisFileForLoad(
+interface ResolvedAnalysisForLoad {
+  entry: AnalysisEntry;
+  filePath: string;
+}
+
+function hasFailedStructuralLayer(entry: AnalysisEntry): boolean {
+  const structuralLayers = new Set(['L0', 'L1', 'L2', 'L3', 'L4']);
+  return Boolean(entry.layers_ready?.layers.some(layer => structuralLayers.has(layer.layer) && layer.status === 'error'));
+}
+
+async function resolveAnalysisForLoad(
   projectPath: string,
   requestedTrack?: AnalysisTrack
-): Promise<string | null> {
+): Promise<ResolvedAnalysisForLoad | null> {
   const index = await loadIndex();
 
   const track: AnalysisTrack = requestedTrack
@@ -789,31 +801,72 @@ async function resolveAnalysisFileForLoad(
 
   const entry = index.analyses[analysisIndexKey(projectPath, track)];
 
-  if (!entry) return null;
+  if (!entry || hasFailedStructuralLayer(entry)) return null;
 
   const storagePath = getStoragePath();
   const filePath = path.join(storagePath, entry.file);
   let resolved = await resolveJsonStoragePath(filePath);
 
-  if (!resolved && await fs.pathExists(path.join(segmentedAnalysisRoot(filePath), 'current.json'))) resolved = filePath;
+  if (!resolved && entry.storage_format !== 'whole-json' && await fs.pathExists(path.join(segmentedAnalysisRoot(filePath), 'current.json'))) resolved = filePath;
 
   if (!resolved && track === 'main') {
     const legacyName = `${projectSlug(projectPath)}.json${compressedJsonExtension()}`;
     resolved = await resolveJsonStoragePath(path.join(storagePath, legacyName));
   }
-  return resolved;
+  return resolved ? { entry, filePath: resolved } : null;
+}
+
+async function resolveCurrentSegmentedAnalysis(
+  resolved: ResolvedAnalysisForLoad,
+): Promise<ResolvedSegmentedAnalysis | null> {
+  let segmented: ResolvedSegmentedAnalysis | null;
+  try {
+    segmented = await resolveSegmentedAnalysis(resolved.filePath);
+  } catch (error) {
+    if (resolved.entry.storage_format === 'segmented-v2') throw error;
+    return null;
+  }
+  if (!segmented && resolved.entry.storage_format === 'segmented-v2') throw new Error(`Current segmented analysis for ${resolved.entry.path} is unavailable.`);
+  if (!segmented) return null;
+  if (segmented.manifest.analysis_timestamp !== resolved.entry.analyzed_at
+    || (resolved.entry.analysis_id && segmented.manifest.analysis_id !== resolved.entry.analysis_id)) {
+    if (resolved.entry.storage_format === 'segmented-v2') throw new Error(`Current segmented analysis for ${resolved.entry.path} does not match the analysis index.`);
+    return null;
+  }
+  return segmented;
+}
+
+async function acquireCurrentSegmentedAnalysisLease(
+  resolved: ResolvedAnalysisForLoad,
+): Promise<{ segmented: ResolvedSegmentedAnalysis; release: () => Promise<void> } | null> {
+  let lease: Awaited<ReturnType<typeof acquireSegmentedAnalysisLease>>;
+  try {
+    lease = await acquireSegmentedAnalysisLease(resolved.filePath);
+  } catch (error) {
+    if (resolved.entry.storage_format === 'segmented-v2') throw error;
+    return null;
+  }
+  if (!lease && resolved.entry.storage_format === 'segmented-v2') throw new Error(`Current segmented analysis for ${resolved.entry.path} is unavailable.`);
+  if (!lease) return null;
+  if (lease.segmented.manifest.analysis_timestamp !== resolved.entry.analyzed_at
+    || (resolved.entry.analysis_id && lease.segmented.manifest.analysis_id !== resolved.entry.analysis_id)) {
+    await lease.release();
+    if (resolved.entry.storage_format === 'segmented-v2') throw new Error(`Current segmented analysis for ${resolved.entry.path} does not match the analysis index.`);
+    return null;
+  }
+  return lease;
 }
 
 export async function loadAnalysisSectionManifest(
   projectPath: string,
   options?: { track?: AnalysisTrack },
 ): Promise<CasSectionManifest | null> {
-  const resolved = await resolveAnalysisFileForLoad(projectPath, options?.track);
+  const resolved = await resolveAnalysisForLoad(projectPath, options?.track);
   if (!resolved) return null;
-  const segmented = await resolveSegmentedAnalysis(resolved);
+  const segmented = await resolveCurrentSegmentedAnalysis(resolved);
   if (segmented) return segmented.manifest;
 
-  const legacy = await readJsonMaybeCompressed(resolved) as CASOutput;
+  const legacy = await readJsonMaybeCompressed(resolved.filePath) as CASOutput;
   return createCasSectionManifest(legacy);
 }
 
@@ -822,12 +875,13 @@ export async function loadAnalysisSections(
   sections: readonly CasSectionName[],
   options?: { track?: AnalysisTrack; pinned?: { filePath: string; segmented: ResolvedSegmentedAnalysis } },
 ): Promise<Partial<CASOutput> | null> {
-  const resolved = options?.pinned?.filePath || await resolveAnalysisFileForLoad(projectPath, options?.track);
+  const current = options?.pinned ? null : await resolveAnalysisForLoad(projectPath, options?.track);
+  const resolved = options?.pinned?.filePath || current?.filePath;
   if (!resolved) return null;
   const requested = [...new Set<CasSectionName>(['identity', ...sections])];
   const cached = options?.pinned ? null : await getValidCachedAnalysis(projectPath, resolved);
   if (cached) return selectCasSections(cached, requested);
-  const segmented = options?.pinned?.segmented || await resolveSegmentedAnalysis(resolved);
+  const segmented = options?.pinned?.segmented || await resolveCurrentSegmentedAnalysis(current!);
   if (!segmented) {
     const legacy = await readJsonMaybeCompressed(resolved) as CASOutput;
     const parts = requested.map(section => selectExactCasSection(legacy, section));
@@ -894,14 +948,14 @@ export async function loadAnalysisProjection(
   sections: readonly CasSectionName[],
   options?: { track?: AnalysisTrack },
 ): Promise<LoadedAnalysisProjection | null> {
-  const resolved = await resolveAnalysisFileForLoad(projectPath, options?.track);
+  const resolved = await resolveAnalysisForLoad(projectPath, options?.track);
   if (!resolved) return null;
-  const leased = await acquireSegmentedAnalysisLease(resolved);
+  const leased = await acquireCurrentSegmentedAnalysisLease(resolved);
   if (leased) {
     try {
       const cas = await loadAnalysisSections(projectPath, sections, {
         ...options,
-        pinned: { filePath: resolved, segmented: leased.segmented },
+        pinned: { filePath: resolved.filePath, segmented: leased.segmented },
       });
       const graph = leased.segmented.manifest.compact_graph;
       return cas ? {
@@ -913,7 +967,7 @@ export async function loadAnalysisProjection(
       await leased.release();
     }
   }
-  const legacy = await readJsonMaybeCompressed(resolved) as CASOutput;
+  const legacy = await readJsonMaybeCompressed(resolved.filePath) as CASOutput;
   const requested = [...new Set<CasSectionName>(['identity', ...sections])];
   return {
     cas: hydrateCasSections(requested.map(section => selectExactCasSection(legacy, section))),
@@ -923,27 +977,29 @@ export async function loadAnalysisProjection(
 }
 
 export async function loadCompactAnalysisGraph(projectPath: string): Promise<CompactCASGraph | null> {
-  const resolved = await resolveAnalysisFileForLoad(projectPath, 'main');
-  return resolved ? loadCompactCASGraph(resolved) : null;
+  const resolved = await resolveAnalysisForLoad(projectPath, 'main');
+  const segmented = resolved ? await resolveCurrentSegmentedAnalysis(resolved) : null;
+  return segmented ? loadCompactCASGraph(resolved!.filePath, segmented) : null;
 }
 
 export async function loadCompactAnalysisSearch(projectPath: string): Promise<LoadedCompactCASSearch | null> {
-  const resolved = await resolveAnalysisFileForLoad(projectPath, 'main');
-  return resolved ? loadCompactCASSearch(resolved) : null;
+  const resolved = await resolveAnalysisForLoad(projectPath, 'main');
+  const segmented = resolved ? await resolveCurrentSegmentedAnalysis(resolved) : null;
+  return segmented ? loadCompactCASSearch(resolved!.filePath, segmented) : null;
 }
 
 export async function loadCompleteAnalysisFromSections(
   projectPath: string,
   options?: { track?: AnalysisTrack },
 ): Promise<CASOutput | null> {
-  const resolved = await resolveAnalysisFileForLoad(projectPath, options?.track);
+  const resolved = await resolveAnalysisForLoad(projectPath, options?.track);
   if (!resolved) return null;
-  const segmented = await resolveSegmentedAnalysis(resolved);
+  const segmented = await resolveCurrentSegmentedAnalysis(resolved);
   if (!segmented) return loadAnalysis(projectPath, { ...options, preferAuthoritative: true });
   const output = await loadAnalysisSections(
     projectPath,
     segmented.manifest.sections.map(section => section.name),
-    { ...options, pinned: { filePath: resolved, segmented } },
+    { ...options, pinned: { filePath: resolved.filePath, segmented } },
   ) as CASOutput | null;
   return output ? materializeDeployableCasTree(output) : null;
 }
@@ -958,9 +1014,9 @@ export async function resolveSegmentedAnalysisExportManifest(
   projectPath: string,
   options?: { track?: AnalysisTrack },
 ): Promise<CasSectionManifest | null> {
-  const resolved = await resolveAnalysisFileForLoad(projectPath, options?.track);
+  const resolved = await resolveAnalysisForLoad(projectPath, options?.track);
   if (!resolved) return null;
-  return (await resolveSegmentedAnalysis(resolved))?.manifest || null;
+  return (await resolveCurrentSegmentedAnalysis(resolved))?.manifest || null;
 }
 
 export async function resolveAnalysisSectionExportArtifact(
@@ -968,9 +1024,9 @@ export async function resolveAnalysisSectionExportArtifact(
   section: CasSectionName,
   options?: { track?: AnalysisTrack },
 ): Promise<AnalysisExportArtifact | null> {
-  const resolved = await resolveAnalysisFileForLoad(projectPath, options?.track);
+  const resolved = await resolveAnalysisForLoad(projectPath, options?.track);
   if (!resolved) return null;
-  const segmented = await resolveSegmentedAnalysis(resolved);
+  const segmented = await resolveCurrentSegmentedAnalysis(resolved);
   const descriptor = segmented?.manifest.sections.find(item => item.name === section);
   if (!segmented || !descriptor?.file || path.basename(descriptor.file) !== descriptor.file) return null;
   const filePath = path.join(segmented.directory, descriptor.file);
@@ -983,11 +1039,11 @@ export async function resolveAnalysisExportArtifact(
   projectPath: string,
   options?: { track?: AnalysisTrack },
 ): Promise<AnalysisExportArtifact | null> {
-  const resolved = await resolveAnalysisFileForLoad(projectPath, options?.track);
+  const resolved = await resolveAnalysisForLoad(projectPath, options?.track);
   if (!resolved) return null;
-  const segmented = await resolveSegmentedAnalysis(resolved);
+  const segmented = await resolveCurrentSegmentedAnalysis(resolved);
   if (segmented) {
-    const exportPath = segmentedLegacyExportPath(resolved, path.basename(segmented.directory));
+    const exportPath = segmentedLegacyExportPath(resolved.filePath, path.basename(segmented.directory));
     const exportStat = await fs.stat(exportPath).catch(() => null);
     if (!exportStat) {
       const { runIsolatedAnalysisExport } = await import('./analysis-export-process');
@@ -995,23 +1051,23 @@ export async function resolveAnalysisExportArtifact(
     }
     return { filePath: exportPath, codec: compressionCodecForPath(exportPath), bytes: exportStat.size };
   }
-  const stat = await fs.stat(resolved).catch(() => null);
-  return stat ? { filePath: resolved, codec: compressionCodecForPath(resolved), bytes: stat.size } : null;
+  const stat = await fs.stat(resolved.filePath).catch(() => null);
+  return stat ? { filePath: resolved.filePath, codec: compressionCodecForPath(resolved.filePath), bytes: stat.size } : null;
 }
 
 export async function materializeAnalysisExportArtifact(
   projectPath: string,
   options?: { track?: AnalysisTrack },
 ): Promise<AnalysisExportArtifact | null> {
-  const resolved = await resolveAnalysisFileForLoad(projectPath, options?.track);
+  const resolved = await resolveAnalysisForLoad(projectPath, options?.track);
   if (!resolved) return null;
-  const lease = await acquireSegmentedAnalysisLease(resolved);
+  const lease = await acquireCurrentSegmentedAnalysisLease(resolved);
   if (lease) {
     try {
-      const exportPath = segmentedLegacyExportPath(resolved, path.basename(lease.segmented.directory));
+      const exportPath = segmentedLegacyExportPath(resolved.filePath, path.basename(lease.segmented.directory));
       let stat = await fs.stat(exportPath).catch(() => null);
       if (!stat) {
-        await writeSegmentedLegacyExport(resolved, exportPath, lease.segmented);
+        await writeSegmentedLegacyExport(resolved.filePath, exportPath, lease.segmented);
         stat = await fs.stat(exportPath).catch(() => null);
       }
       return stat ? { filePath: exportPath, codec: compressionCodecForPath(exportPath), bytes: stat.size } : null;
@@ -1019,19 +1075,22 @@ export async function materializeAnalysisExportArtifact(
       await lease.release();
     }
   }
-  const stat = await fs.stat(resolved).catch(() => null);
-  return stat ? { filePath: resolved, codec: compressionCodecForPath(resolved), bytes: stat.size } : null;
+  const stat = await fs.stat(resolved.filePath).catch(() => null);
+  return stat ? { filePath: resolved.filePath, codec: compressionCodecForPath(resolved.filePath), bytes: stat.size } : null;
 }
 
 export async function getAnalysisFileFingerprint(
   projectPath: string,
   options?: { track?: AnalysisTrack }
 ): Promise<string | null> {
-  const resolved = await resolveAnalysisFileForLoad(projectPath, options?.track);
+  const resolved = await resolveAnalysisForLoad(projectPath, options?.track);
   if (!resolved) return null;
   try {
-    const pointer = path.join(segmentedAnalysisRoot(resolved), 'current.json');
-    const stat = await fs.stat(await fs.pathExists(pointer) ? pointer : resolved);
+    const segmented = await resolveCurrentSegmentedAnalysis(resolved);
+    const fingerprintPath = segmented
+      ? path.join(segmentedAnalysisRoot(resolved.filePath), 'current.json')
+      : resolved.filePath;
+    const stat = await fs.stat(fingerprintPath);
     return `${stat.mtimeMs}:${stat.size}`;
   } catch {
     return null;
@@ -1042,43 +1101,43 @@ export async function loadAnalysis(
   projectPath: string,
   options?: { preferCache?: boolean; track?: AnalysisTrack; preferAuthoritative?: boolean }
 ): Promise<CASOutput | null> {
-  const resolved = await resolveAnalysisFileForLoad(projectPath, options?.track);
+  const resolved = await resolveAnalysisForLoad(projectPath, options?.track);
   if (!resolved) return null;
 
   if (options?.preferCache) {
-    const cached = await getValidCachedAnalysis(projectPath, resolved);
+    const cached = await getValidCachedAnalysis(projectPath, resolved.filePath);
     if (cached) return tagAnalysisVersion(cached);
     const output = await loadCompleteAnalysis(projectPath, resolved, options.track, options.preferAuthoritative);
     if (output) {
-      await rememberLoadedAnalysis(projectPath, resolved, output);
+      await rememberLoadedAnalysis(projectPath, resolved.filePath, output);
     }
     return output ? tagAnalysisVersion(output) : output;
   }
-
   const output = await loadCompleteAnalysis(projectPath, resolved, options?.track, options?.preferAuthoritative);
   return output ? tagAnalysisVersion(output) : output;
 }
 
 async function loadCompleteAnalysis(
   projectPath: string,
-  resolved: string,
+  resolved: ResolvedAnalysisForLoad,
   track?: AnalysisTrack,
   preferAuthoritative = false,
 ): Promise<CASOutput | null> {
-  const segmented = preferAuthoritative ? null : await resolveSegmentedAnalysis(resolved);
+  const segmented = preferAuthoritative && resolved.entry.storage_format !== 'segmented-v2' ? null : await resolveCurrentSegmentedAnalysis(resolved);
   if (segmented) {
     try {
       const output = await loadAnalysisSections(
         projectPath,
         segmented.manifest.sections.map(section => section.name),
-        { ...(track ? { track } : {}), pinned: { filePath: resolved, segmented } },
+        { ...(track ? { track } : {}), pinned: { filePath: resolved.filePath, segmented } },
       ) as CASOutput | null;
       return output ? materializeDeployableCasTree(output) : null;
     } catch (error) {
+      if (resolved.entry.storage_format === 'segmented-v2') throw error;
       console.warn(`[Klauro] segmented analysis read failed for ${projectPath}; using authoritative analysis: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  return await readJsonMaybeCompressed(resolved) as CASOutput;
+  return await readJsonMaybeCompressed(resolved.filePath) as CASOutput;
 }
 
 export async function listAnalyses(options: { scopeCwd?: string } = {}): Promise<AnalysisEntry[]> {

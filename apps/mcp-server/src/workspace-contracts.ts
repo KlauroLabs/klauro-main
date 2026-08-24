@@ -108,6 +108,7 @@ export async function workspaceContractsHttpResponse(input: {
   analyses?: {
     load(workspaceId: string): Promise<{ graph: CrossCodebaseSystemGraph } | null>;
     isPending(workspaceId: string): boolean;
+    failureReason(workspaceId: string): string | undefined;
   };
 }) {
   const match = input.route.match(/^\/api\/workspaces\/([^/]+)\/contracts$/);
@@ -117,7 +118,8 @@ export async function workspaceContractsHttpResponse(input: {
   if (!input.analyses) return { statusCode: 200, body: { status: 'none', workspace_id: workspaceId } };
   const record = await input.analyses.load(workspaceId);
   const pending = input.analyses.isPending(workspaceId);
-  if (!record) return { statusCode: 200, body: { status: pending ? 'pending' : 'none', workspace_id: workspaceId } };
+  const failure = input.analyses.failureReason(workspaceId);
+  if (!record) return { statusCode: 200, body: { status: pending ? 'pending' : failure ? 'failed' : 'none', workspace_id: workspaceId, ...(failure && !pending ? { error: failure } : {}) } };
   const params = new URL(input.requestUrl, 'http://localhost').searchParams;
   return {
     statusCode: 200,

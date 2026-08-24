@@ -9,6 +9,7 @@ import { waitForForegroundAnalysisIdle } from './foreground-analysis';
 import { resolveWorkspacePreviousRecordMaxBytes, runAccountWorkspaceAnalysisWorker, WorkspaceAnalysisPreemptedError } from './account-workspace-analysis-process';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import type { CasSectionName } from './cas-sections';
+import { projectAttemptRecordPath, readAttemptRecord } from './analysis-attempt-record';
 
 export const WORKSPACE_MEMBER_SECTIONS = [
   'facts', 'comprehension', 'runtime', 'quality', 'supplemental',
@@ -84,6 +85,7 @@ export class AccountWorkspaceAnalysisScheduler {
   private readonly pending = new Map<string, PendingRebuild>();
   private readonly inFlight = new Map<string, Promise<void>>();
   private readonly forceRequested = new Set<string>();
+  private readonly failures = new Map<string, string>();
   private closed = false;
 
   constructor(
@@ -109,6 +111,7 @@ export class AccountWorkspaceAnalysisScheduler {
 
   notifyProjectAnalysisLanded(workspaceId: string): void {
     if (!workspaceId || this.closed) return;
+    this.failures.set(workspaceId, 'Workspace analysis is waiting for current member analyses.');
     this.dirty.add(workspaceId);
     if (this.inFlight.has(workspaceId)) return;
     const existing = this.pending.get(workspaceId);
@@ -131,16 +134,27 @@ export class AccountWorkspaceAnalysisScheduler {
     return this.pending.has(workspaceId) || this.inFlight.has(workspaceId) || this.dirty.has(workspaceId);
   }
 
+  failureReason(workspaceId: string): string | undefined {
+    return this.failures.get(workspaceId);
+  }
+
   close(): void {
     this.closed = true;
     for (const rebuild of this.pending.values()) clearTimeout(rebuild.timer);
     this.pending.clear();
     this.dirty.clear();
     this.forceRequested.clear();
+    this.failures.clear();
   }
 
 
   async load(workspaceId: string): Promise<WorkspaceAnalysisRecord | null> {
+    if (this.failures.has(workspaceId)) return null;
+    const memberFailure = await this.currentMemberFailure(workspaceId);
+    if (memberFailure) {
+      this.failures.set(workspaceId, memberFailure);
+      return null;
+    }
     const file = this.recordPath(workspaceId);
     if (!(await fs.pathExists(file))) return null;
     try {
@@ -148,6 +162,20 @@ export class AccountWorkspaceAnalysisScheduler {
     } catch {
       return null;
     }
+  }
+
+  private async currentMemberFailure(workspaceId: string): Promise<string | null> {
+    if (typeof this.accounts.listProjectsForWorkspace !== 'function') return null;
+    const projects = await this.accounts.listProjectsForWorkspace(workspaceId);
+    for (const project of projects) {
+      if (!project.analysis_id) continue;
+      const memberWorkspace = this.workspacePathFor(project.analysis_id);
+      const attempt = await readAttemptRecord(projectAttemptRecordPath(memberWorkspace));
+      if (attempt?.state === 'failed') {
+        return `Workspace member ${project.name} (${project.id}) is unavailable: ${attempt.reason || 'latest analysis attempt failed'}`;
+      }
+    }
+    return null;
   }
 
   private async loadPreviousForIncrementalRebuild(workspaceId: string): Promise<WorkspaceAnalysisRecord | null> {
@@ -163,7 +191,11 @@ export class AccountWorkspaceAnalysisScheduler {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
       throw error;
     }
-    return this.load(workspaceId);
+    try {
+      return await fs.readJson(file);
+    } catch {
+      return null;
+    }
   }
 
 
@@ -208,8 +240,12 @@ export class AccountWorkspaceAnalysisScheduler {
     try {
       await run;
     } catch (error) {
-      if (!(error instanceof WorkspaceAnalysisPreemptedError)) throw error;
-      this.dirty.add(workspaceId);
+      if (error instanceof WorkspaceAnalysisPreemptedError) {
+        this.dirty.add(workspaceId);
+      } else {
+        this.failures.set(workspaceId, error instanceof Error ? error.message : String(error));
+        throw error;
+      }
     } finally {
       this.inFlight.delete(workspaceId);
     }
@@ -217,6 +253,7 @@ export class AccountWorkspaceAnalysisScheduler {
 
 
     if (!this.closed && (this.dirty.has(workspaceId) || this.forceRequested.has(workspaceId))) return this.rebuild(workspaceId);
+    this.failures.delete(workspaceId);
     return this.load(workspaceId);
   }
 
@@ -242,8 +279,11 @@ export class AccountWorkspaceAnalysisScheduler {
     for (const project of projects) {
       if (!project.analysis_id) continue;
       try {
-        const cas = await loadAnalysisSections(this.workspacePathFor(project.analysis_id), WORKSPACE_MEMBER_SECTIONS);
-        if (!cas) continue;
+        const memberWorkspace = this.workspacePathFor(project.analysis_id);
+        const attempt = await readAttemptRecord(projectAttemptRecordPath(memberWorkspace));
+        if (attempt?.state === 'failed') throw new Error(attempt.reason || 'latest analysis attempt failed');
+        const cas = await loadAnalysisSections(memberWorkspace, WORKSPACE_MEMBER_SECTIONS);
+        if (!cas) throw new Error('current analysis is unavailable');
         inputs.push({
           path: `account-project:${project.id}`,
           name: project.name,
@@ -252,9 +292,8 @@ export class AccountWorkspaceAnalysisScheduler {
         memberIds.push(project.id);
         memberNames.push(project.name);
         memberComprehensionSettled = memberComprehensionSettled && isCasComprehensionSettled(cas);
-      } catch {
-
-
+      } catch (error) {
+        throw new Error(`Workspace member ${project.name} (${project.id}) is unavailable: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
 

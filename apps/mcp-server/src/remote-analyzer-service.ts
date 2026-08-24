@@ -46,7 +46,6 @@ import {
   resolveAnalysisExportArtifact,
   resolveSegmentedAnalysisExportManifest,
   saveAnalysis,
-  writeJsonAtomic,
 } from './storage';
 import { parseCasSectionNames, selectCasSections, type CasSectionName } from './cas-sections';
 import { clearFreshnessSummaryCache } from './freshness';
@@ -61,6 +60,7 @@ import { beginHostedProjectQueryWarm, prewarmHostedProjectQueryWorker, runHosted
 
 export { prewarmHostedProjectQueryWorker };
 import { paginateConceptualCatalog, parseConceptualCatalogPage, unavailableComprehensionResponse, unavailableLatestAnalyzeAttempt } from './analysis-response-readiness';
+import { projectAttemptRecordPath, readAttemptRecord, writeAttemptRecord, type AnalysisAttemptRecord } from './analysis-attempt-record';
 import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
 import { getStageFingerprints } from '../../../packages/analyzer-core/src/analyzer/core/stage-fingerprint';
 import {
@@ -547,7 +547,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           const attemptRecordPath = projectAttemptRecordPath(acceptedWorkspace);
           const attemptQueuedAt = new Date().toISOString();
           const acceptedRevision = Date.now();
-          const attemptSnapshot: ReanalyzeAttemptRecord = {
+          const attemptSnapshot: AnalysisAttemptRecord = {
             state: 'in-progress',
             trigger: 'analyze',
             queued_at: attemptQueuedAt,
@@ -751,6 +751,8 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           writeJson(response, 404, { status: 'error', error: 'Analysis not found' });
           return;
         }
+        const lastAttempt = await readAttemptRecord(projectAttemptRecordPath(workspacePath(dataDir, analysisId)));
+        if (lastAttempt?.state === 'failed') { writeJson(response, 409, { status: 'failed', error: lastAttempt.reason || 'The latest committed-source analysis failed.', last_attempt: lastAttempt }); return; }
         const manifest = await resolveSegmentedAnalysisExportManifest(workspacePath(dataDir, analysisId));
         if (!manifest) {
           writeJson(response, 404, { status: 'error', error: 'Segmented analysis is not ready' });
@@ -771,6 +773,8 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           writeJson(response, 404, { status: 'error', error: 'Analysis not found' });
           return;
         }
+        const lastAttempt = await readAttemptRecord(projectAttemptRecordPath(workspacePath(dataDir, analysisId)));
+        if (lastAttempt?.state === 'failed') { writeJson(response, 409, { status: 'failed', error: lastAttempt.reason || 'The latest committed-source analysis failed.', last_attempt: lastAttempt }); return; }
         let section: CasSectionName;
         try {
           section = parseCasSectionNames(decodeURIComponent(rawAnalysisSectionMatch[2]))[0];
@@ -812,6 +816,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           writeJson(response, 409, { status: 'error', error: 'Analysis is still populating' });
           return;
         }
+        if (lastAttempt?.state === 'failed') { writeJson(response, 409, { status: 'failed', error: lastAttempt.reason || 'The latest committed-source analysis failed.', last_attempt: lastAttempt }); return; }
         const artifact = await resolveAnalysisExportArtifact(analysisWorkspace);
         if (!artifact) {
           writeJson(response, 404, { status: 'error', error: 'Analysis is not ready' });
@@ -941,7 +946,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           });
           setImmediate(async () => {
             const startedAt = new Date().toISOString();
-            const syncAttemptSnapshot: ReanalyzeAttemptRecord = {
+            const syncAttemptSnapshot: AnalysisAttemptRecord = {
               state: 'in-progress',
               trigger: 'sync',
               queued_at: queuedAt,
@@ -2340,6 +2345,7 @@ async function handleAccountApi(
     }
     const record = await workspaceAnalyses.load(workspaceId);
     const pending = workspaceAnalyses.isPending(workspaceId);
+    const workspaceFailure = workspaceAnalyses.failureReason(workspaceId);
 
     const workspaceLastAttempt = dataDir
       ? await readAttemptRecord(workspaceAttemptRecordPath(dataDir, workspaceId))
@@ -2348,8 +2354,9 @@ async function handleAccountApi(
       return {
         statusCode: 200,
         body: {
-          status: pending ? 'pending' : 'none',
+          status: pending ? 'pending' : workspaceFailure ? 'failed' : 'none',
           workspace_id: workspaceId,
+          ...(workspaceFailure && !pending ? { error: workspaceFailure } : {}),
           ...(workspaceLastAttempt ? { last_attempt: workspaceLastAttempt } : {}),
         },
       };
@@ -2671,6 +2678,9 @@ async function handleAccountApi(
     if (!project) throw new AccountHttpError(404, 'Project not found');
     if (!project.analysis_id) return { statusCode: 200, body: { status: 'no_analysis', project_id: project.id } };
     const workspace = workspacePath(dataDir, project.analysis_id);
+    const lastAttempt = await readAttemptRecord(projectAttemptRecordPath(workspace));
+    const unavailable = unavailableLatestAnalyzeAttempt(lastAttempt, { project_id: project.id, analysis_id: project.analysis_id });
+    if (unavailable) return { statusCode: 200, body: unavailable };
     const manifest = await loadAnalysisSectionManifest(workspace);
     if (!manifest) return { statusCode: 200, body: { status: 'no_analysis', project_id: project.id } };
     return {
@@ -2694,6 +2704,9 @@ async function handleAccountApi(
     }
     if (sections.length === 0) throw new AccountHttpError(400, 'At least one CAS section is required');
     const workspace = workspacePath(dataDir, project.analysis_id);
+    const lastAttempt = await readAttemptRecord(projectAttemptRecordPath(workspace));
+    const unavailable = unavailableLatestAnalyzeAttempt(lastAttempt, { project_id: project.id, analysis_id: project.analysis_id });
+    if (unavailable) return { statusCode: 200, body: unavailable };
     const sectionsSubCasNodeId = url.searchParams.get('sub_cas_node_id') || undefined;
 
     if (sectionsSubCasNodeId) {
@@ -2762,7 +2775,11 @@ async function handleAccountApi(
     const project = await accounts.getProjectForUser(userId, decodeURIComponent(projectCasExportMatch[1]));
     if (!project) throw new AccountHttpError(404, 'Project not found');
     if (!project.analysis_id) return { statusCode: 200, body: { status: 'no_analysis', project_id: project.id } };
-    const artifact = await resolveAnalysisExportArtifact(workspacePath(dataDir, project.analysis_id));
+    const workspace = workspacePath(dataDir, project.analysis_id);
+    const lastAttempt = await readAttemptRecord(projectAttemptRecordPath(workspace));
+    const unavailable = unavailableLatestAnalyzeAttempt(lastAttempt, { project_id: project.id, analysis_id: project.analysis_id });
+    if (unavailable) return { statusCode: 200, body: unavailable };
+    const artifact = await resolveAnalysisExportArtifact(workspace);
     if (!artifact) return { statusCode: 200, body: { status: 'no_analysis', project_id: project.id } };
     const extension = artifact.codec === 'brotli' ? 'json.br' : artifact.codec === 'zstd' ? 'json.zst' : 'json';
     return {
@@ -3259,7 +3276,7 @@ async function handleAccountApi(
           }
           return;
         }
-      const reanalyzeAttemptSnapshot: ReanalyzeAttemptRecord = {
+      const reanalyzeAttemptSnapshot: AnalysisAttemptRecord = {
         state: 'in-progress',
         trigger: 'reanalyze',
         queued_at: attemptQueuedAt,
@@ -4135,28 +4152,10 @@ function makeAnalysisId(value: string): string {
   return crypto.createHash('sha256').update(value).digest('hex').slice(0, 24);
 }
 
-type ReanalyzeAttemptState = 'in-progress' | 'succeeded' | 'failed';
-
-interface ReanalyzeAttemptRecord {
-  state: ReanalyzeAttemptState;
-  trigger: 'reanalyze' | 'sync' | 'analyze';
-  analysis_revision?: number;
-  queued_at?: string;
-  queue_position?: number;
-  estimated_wait_ms?: number;
-  started_at?: string;
-  finished_at?: string;
-  duration_ms?: number;
-  reason?: string;
-  heartbeat_at?: string;
-  stored_version?: string;
-  current_version?: string;
-}
-
 const ATTEMPT_HEARTBEAT_INTERVAL_MS = 20_000;
 const ATTEMPT_STALE_THRESHOLD_MS = 90_000;
 
-function startAttemptHeartbeat(filePath: string, snapshot: ReanalyzeAttemptRecord): () => void {
+function startAttemptHeartbeat(filePath: string, snapshot: AnalysisAttemptRecord): () => void {
   const timer = setInterval(() => {
     void writeAttemptRecord(filePath, { ...snapshot, heartbeat_at: new Date().toISOString() });
   }, ATTEMPT_HEARTBEAT_INTERVAL_MS);
@@ -4227,27 +4226,6 @@ async function reapStaleAttemptRecordsOnStartup(dataDir: string): Promise<void> 
 }
 
 let inFlightReanalyzeCount = 0;
-
-async function writeAttemptRecord(filePath: string, record: ReanalyzeAttemptRecord): Promise<void> {
-  try {
-    await writeJsonAtomic(filePath, record);
-  } catch {
-
-  }
-}
-
-async function readAttemptRecord(filePath: string): Promise<ReanalyzeAttemptRecord | null> {
-  try {
-    if (!(await fs.pathExists(filePath))) return null;
-    return await fs.readJson(filePath);
-  } catch {
-    return null;
-  }
-}
-
-function projectAttemptRecordPath(workspace: string): string {
-  return path.join(workspace, '.reanalyze-attempt.json');
-}
 
 function workspaceAttemptRecordPath(dataDir: string, workspaceId: string): string {
   return path.join(dataDir, 'workspace-attempts', `${safeName(workspaceId)}.json`);

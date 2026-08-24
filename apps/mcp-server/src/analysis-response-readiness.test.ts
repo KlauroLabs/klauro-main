@@ -107,7 +107,7 @@ test('a failed latest committed-source attempt cannot expose a prior ready gener
   assert.equal(unavailableLatestAnalyzeAttempt(
     { state: 'failed', trigger: 'reanalyze', reason: 'retry failed' },
     { project_id: 'project', analysis_id: 'analysis' },
-  ), undefined, 'a failed reanalysis may continue serving the explicitly stale prior generation as degraded');
+  )?.status, 'failed', 'a failed reanalysis must not expose the prior generation as current');
 });
 
 test('legacy CAS without a layer manifest remains queryable', () => {

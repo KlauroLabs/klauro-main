@@ -28,6 +28,7 @@ import {
 import { materializeDeployableCasTree } from './deployable-analysis';
 import { compactCASPostingShard, searchCompactCAS } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-search';
 import { writeSegmentedLegacyExport } from './segmented-analysis-storage';
+import { writeCompressedJsonAtomic } from './json-storage-writer';
 
 function casFixture(id: string): CASOutput {
   return {
@@ -623,7 +624,7 @@ test('canonical legacy export reconstructs multiple referenced deployable childr
   });
 });
 
-test('canonical segmented storage recovers only to the previous checksum-valid generation', async () => {
+test('canonical segmented storage never exposes the previous generation as current', async () => {
   await withStoragePath(async storagePath => {
     const project = '/tmp/canonical-recovery-project';
     const first = casFixture('canonical-first');
@@ -635,9 +636,64 @@ test('canonical segmented storage recovers only to the previous checksum-valid g
     const root = path.join(storagePath, `${entry.file}.sections`);
     const pointer = await fs.readJson(path.join(root, 'current.json'));
     assert.match(pointer.previous, /^gen-[a-f0-9]{64}$/);
+    await writeCompressedJsonAtomic(path.join(storagePath, entry.file), first);
     await fs.writeFile(path.join(root, pointer.current, 'manifest.json'), '{"corrupt":true}\n');
     clearLoadedAnalysisCache();
-    assert.equal((await loadAnalysis(project))?.analysis_id, first.analysis_id);
+    await assert.rejects(loadAnalysis(project), /does not match the analysis index/);
+    await assert.rejects(loadAnalysis(project, { preferAuthoritative: true }), /does not match the analysis index/);
+    await assert.rejects(loadCompleteAnalysisFromSections(project), /does not match the analysis index/);
+  });
+});
+
+test('a failed whole analysis never falls through to an older canonical generation', async () => {
+  await withStoragePath(async storagePath => {
+    const project = '/tmp/canonical-failed-current-project';
+    const prior = casFixture('prior-canonical');
+    await saveAnalysis(project, prior, 'main', { canonicalSegmented: true });
+    const failed = casFixture('failed-current');
+    failed.analysis_timestamp = '2026-07-24T00:00:00.000Z';
+    failed.layers_ready = {
+      complete: false,
+      layers: [
+        { layer: 'L0', status: 'ready' },
+        { layer: 'L1', status: 'ready' },
+        { layer: 'L2', status: 'ready' },
+        { layer: 'L3', status: 'ready' },
+        { layer: 'L4', status: 'error', error: 'capability comprehension failed' },
+      ],
+    } as CASOutput['layers_ready'];
+    const failedEntry = await saveAnalysis(project, failed, 'main', { canonicalSegmented: true });
+    assert.equal(failedEntry.storage_format, 'whole-json');
+    assert.equal(await fs.pathExists(path.join(storagePath, `${failedEntry.file}.sections`, 'current.json')), true);
+    clearLoadedAnalysisCache();
+    assert.equal(await loadAnalysisSectionManifest(project), null);
+    assert.equal(await loadAnalysisSections(project, ['graph']), null);
+    assert.equal(await loadCompleteAnalysisFromSections(project), null);
+    assert.equal(await loadAnalysis(project), null);
+    assert.equal(await resolveAnalysisExportArtifact(project), null);
+    assert.equal(await loadCompactAnalysisGraph(project), null);
+    assert.equal(await loadCompactAnalysisSearch(project), null);
+  });
+});
+
+test('a newer valid whole analysis wins over an older corrupt canonical pointer', async () => {
+  await withStoragePath(async storagePath => {
+    const project = '/tmp/canonical-newer-whole-project';
+    const priorEntry = await saveAnalysis(project, casFixture('prior-canonical'), 'main', { canonicalSegmented: true });
+    const current = casFixture('current-whole');
+    current.analysis_timestamp = '2026-07-25T00:00:00.000Z';
+    await saveAnalysis(project, current, 'main', { writeSegmentedAnalysis: false });
+    const sectionRoot = path.join(storagePath, `${priorEntry.file}.sections`);
+    const pointer = await fs.readJson(path.join(sectionRoot, 'current.json'));
+    await fs.writeFile(path.join(sectionRoot, pointer.current, 'manifest.json'), '{"corrupt":true}\n');
+    clearLoadedAnalysisCache();
+    assert.equal((await loadAnalysisSectionManifest(project))?.analysis_id, current.analysis_id);
+    assert.equal((await loadAnalysisSections(project, ['graph']))?.analysis_id, current.analysis_id);
+    assert.equal((await loadCompleteAnalysisFromSections(project))?.analysis_id, current.analysis_id);
+    assert.equal((await loadAnalysis(project))?.analysis_id, current.analysis_id);
+    assert.match((await resolveAnalysisExportArtifact(project))?.filePath || '', /\.json(?:\.zst|\.br)?$/);
+    assert.equal(await loadCompactAnalysisGraph(project), null);
+    assert.equal(await loadCompactAnalysisSearch(project), null);
   });
 });
 

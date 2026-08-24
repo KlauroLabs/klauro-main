@@ -97,7 +97,7 @@ export function unavailableLatestAnalyzeAttempt(
   attempt: LatestAnalysisAttempt | null | undefined,
   identity: AnalysisResponseIdentity,
 ): (AnalysisResponseIdentity & { status: 'failed'; error: string; last_attempt: LatestAnalysisAttempt; result?: LegacyQueryFailureResult }) | undefined {
-  if (attempt?.state !== 'failed' || attempt.trigger !== 'analyze') return undefined;
+  if (attempt?.state !== 'failed') return undefined;
   const error = attempt.reason || 'The latest committed-source analysis failed.';
   const response = { ...identity, status: 'failed' as const, error, last_attempt: attempt };
   return identity.tool ? { ...response, result: { status: 'failed' as const, error } } : response;

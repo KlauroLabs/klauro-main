@@ -118,7 +118,7 @@ test('reanalyze failure surfaces last_attempt.state=failed with a reason; recove
     fs.rmSync(serverWorkspace, { recursive: true, force: true });
 
     let failedAttempt: { status?: string; last_attempt?: { state?: string; reason?: string; started_at?: string; finished_at?: string } } | undefined;
-    for (let attempt = 0; attempt < 80; attempt++) {
+    for (let attempt = 0; attempt < 200; attempt++) {
       const analysisRes = await request(port, 'GET', `/api/projects/${project.id}/analysis`, undefined, token);
       const analysisBody = JSON.parse(analysisRes.body);
       if (analysisBody.last_attempt?.state === 'failed') {
@@ -128,10 +128,30 @@ test('reanalyze failure surfaces last_attempt.state=failed with a reason; recove
       await new Promise<void>(resolve => setTimeout(resolve, 100));
     }
     assert.ok(failedAttempt, 'poller must observe last_attempt.state=failed after the background reanalyze throws');
-    assert.equal(failedAttempt!.status, 'degraded', 'the prior structural analysis remains queryable while the failed reanalyze stays visible');
+    assert.equal(failedAttempt!.status, 'failed', 'the prior structural analysis must not be exposed as current after a failed reanalysis');
     assert.match(failedAttempt!.last_attempt!.reason || '', /Project path does not exist/, 'the failure reason must be surfaced, not just a bare failed flag');
     assert.ok(failedAttempt!.last_attempt!.started_at, 'started_at must be recorded');
     assert.ok(failedAttempt!.last_attempt!.finished_at, 'finished_at must be recorded on a terminal state');
+
+    for (const route of [
+      `/api/projects/${project.id}/cas/manifest`,
+      `/api/projects/${project.id}/cas/sections?sections=graph`,
+      `/api/projects/${project.id}/cas/export`,
+    ]) {
+      const unavailableRes = await request(port, 'GET', route, undefined, token);
+      assert.equal(unavailableRes.statusCode, 200);
+      const unavailable = JSON.parse(unavailableRes.body) as { status?: string; error?: string };
+      assert.equal(unavailable.status, 'failed', `${route} must fail closed instead of serving the prior generation`);
+      assert.match(unavailable.error || '', /Project path does not exist/);
+    }
+    for (const route of [`/api/workspaces/${workspaceId}/analysis`, `/api/workspaces/${workspaceId}/contracts`]) {
+      const unavailableRes = await request(port, 'GET', route, undefined, token);
+      assert.equal(unavailableRes.statusCode, 200);
+      const unavailable = JSON.parse(unavailableRes.body) as { status?: string; analysis?: unknown; contracts?: unknown };
+      assert.ok(['pending', 'failed'].includes(unavailable.status || ''), `${route} must report unavailable while the failed member rebuild settles`);
+      assert.equal(unavailable.analysis, undefined);
+      assert.equal(unavailable.contracts, undefined);
+    }
 
     // --- RECOVERY CASE: restore the workspace snapshot (same content the
     // original upload wrote) and reanalyze again. We recreate it directly at
