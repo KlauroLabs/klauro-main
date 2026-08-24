@@ -84,8 +84,15 @@ function outcomeTokenMatches(token: string, evidence: Set<string>): boolean {
   const equivalents: Record<string, string[]> = {
     code: ['codebase', 'software', 'source'],
     codebase: ['code', 'software', 'source'],
+    collaborate: ['collaboration', 'coordinate'],
+    collaboration: ['collaborate', 'coordinate'],
+    coordinate: ['collaborate', 'collaboration'],
+    collision: ['conflict', 'overlap'],
+    conflict: ['collision', 'overlap'],
     evolution: ['change', 'history'],
     history: ['change', 'evolution'],
+    overlap: ['collision', 'conflict'],
+    overlapping: ['collision', 'conflict'],
   };
   if ((equivalents[token] || []).some(candidate => evidence.has(candidate))) return true;
   return evidence.has(token) || [...evidence].some(candidate =>
@@ -101,6 +108,7 @@ function capabilityOutcomeCorroboratedByProductText(
 ): boolean {
   const words = outcomeIdentityTokens(name);
   const productTokens = new Set(outcomeIdentityTokens([
+    ...(signal?.concepts || []),
     signal?.productDocTitle,
     signal?.productDocSummary,
     signal?.manifestDescription,
@@ -112,6 +120,27 @@ function capabilityOutcomeCorroboratedByProductText(
   const evidenceTokens = new Set(citedCandidates.flatMap(candidate => capabilityEvidenceSubjectTokens(candidate)));
   return subjects.every(token =>
     outcomeTokenMatches(token, productTokens) || outcomeTokenMatches(token, evidenceTokens));
+}
+
+function capabilityOutcomeHasSpecificFirstPartySupport(
+  name: string,
+  citedCandidates: SystemCapability[],
+  signal?: CapabilityCatalogProjectSignal,
+): boolean {
+  const subjects = outcomeIdentityTokens(name).slice(1);
+  const productTokens = new Set(outcomeIdentityTokens([
+    ...(signal?.concepts || []),
+    signal?.productDocTitle,
+    signal?.productDocSummary,
+    signal?.manifestDescription,
+    signal?.summary,
+  ].filter(Boolean).join(' ')));
+  const genericSubjects = new Set(['agent', 'code', 'codebase', 'people', 'platform', 'software', 'system', 'user', 'work']);
+  const hasSpecificProductSubject = subjects.some(token =>
+    !genericSubjects.has(token) && outcomeTokenMatches(token, productTokens));
+  if (!hasSpecificProductSubject) return false;
+  const evidenceTokens = new Set(citedCandidates.flatMap(candidate => capabilityEvidenceSubjectTokens(candidate)));
+  return subjects.some(token => outcomeTokenMatches(token, evidenceTokens));
 }
 
 export function capabilityEvidenceSubjectTokens(
@@ -280,13 +309,18 @@ export function hasFirstPartyCorroboratedCatalogOperations(
   candidates: SystemCapability[],
   signal?: CapabilityCatalogProjectSignal,
 ): boolean {
-  if (!productTextCorroboratesCapability(capability, signal)) return false;
   const citedCandidateIds = new Set((capability.criticality_factors || [])
     .filter(factor => factor.startsWith('catalog-candidate:'))
     .map(factor => factor.slice('catalog-candidate:'.length)));
-  return candidates.some(candidate =>
-    citedCandidateIds.has(candidate.id) && (candidate.operations || []).length > 0
-  );
+  const citedCandidates = candidates.filter(candidate => citedCandidateIds.has(candidate.id));
+  if (!capabilityOutcomeHasSpecificFirstPartySupport(capability.name, citedCandidates, signal)) return false;
+  return citedCandidates.some(candidate => {
+    if ((candidate.operations || []).length === 0) return false;
+    if (candidate.evidence_role === 'verification-harness') return false;
+    if (candidate.evidence_kind !== 'behavior-surface') return true;
+    return capabilityOutcomeUsesDeliverySubject(capability.name, [candidate], capability.description || '') &&
+      !capabilityOutcomeMisusesCoordination(capability.name, [candidate]);
+  });
 }
 
 function hasLifecycleEvidence(entity: CASDataEntity): boolean {
@@ -407,11 +441,11 @@ export function classifyCapabilityEvidence(
     if (capabilityIsVerificationHarness(candidate, entryPointById, nodeById)) {
       evidenceRole = 'verification-harness';
       reasons.push('all-resolved-operation-anchors-are-test-or-scaffold');
-    } else if (candidate.evidence_kind === 'behavior-surface' || candidate.category === 'internal') {
+    } else if ((candidate.evidence_kind === 'behavior-surface' && candidate.category !== 'core') || candidate.category === 'internal') {
       const firstParty = productTextCorroboratesCapability(candidate, projectTextSignal);
-      evidenceRole = firstParty ? 'unresolved' : 'supporting-mechanism';
+      evidenceRole = 'supporting-mechanism';
       reasons.push(firstParty
-        ? 'first-party-product-delivery-surface-requires-outcome-mapping'
+        ? 'first-party-product-delivery-surface-supports-outcome'
         : 'delivery-surface-is-evidence-not-product-outcome');
     } else {
       const firstParty = productTextCorroboratesCapability(candidate, projectTextSignal);
@@ -447,9 +481,7 @@ export function capabilityRequiresCatalogCoverage(candidate: SystemCapability): 
   const requiredRole = candidate.evidence_role === undefined ||
     candidate.evidence_role === 'product-outcome' ||
     candidate.evidence_role === 'unresolved';
-  if (!requiredRole) return false;
-  if (candidate.category !== 'internal') return true;
-  return (candidate.evidence_role_reasons || []).includes('first-party-product-delivery-surface-requires-outcome-mapping');
+  return requiredRole && candidate.category !== 'internal';
 }
 
 export function capabilityCitesRequiredEvidence(
@@ -462,17 +494,27 @@ export function capabilityCitesRequiredEvidence(
 export function capabilityEvidencePublicationFailure(
   capability: SystemCapability,
   candidates: SystemCapability[],
+  signal?: CapabilityCatalogProjectSignal,
 ): 'uncited-candidate-evidence' | 'supporting-or-verification-evidence-only' | undefined {
-  const roleById = new Map(candidates.map(candidate => [candidate.id, candidate.evidence_role]));
+  const candidateById = new Map(candidates.map(candidate => [candidate.id, candidate]));
   const citedIds = (capability.criticality_factors || [])
     .filter(factor => factor.startsWith('catalog-candidate:'))
     .map(factor => factor.slice('catalog-candidate:'.length));
   if (citedIds.length === 0) return 'uncited-candidate-evidence';
-  const required = citedIds.some(id => {
-    const role = roleById.get(id);
+  const citedCandidates = citedIds
+    .map(id => candidateById.get(id))
+    .filter((candidate): candidate is SystemCapability => Boolean(candidate));
+  const required = citedCandidates.some(candidate => {
+    const role = candidate.evidence_role;
     return role === undefined || role === 'product-outcome' || role === 'unresolved';
   });
-  return required ? undefined : 'supporting-or-verification-evidence-only';
+  if (required) return undefined;
+  const firstPartyDeliveryEvidence = citedCandidates.some(candidate =>
+    candidate.evidence_kind === 'behavior-surface' && candidate.evidence_role === 'supporting-mechanism'
+  );
+  return firstPartyDeliveryEvidence && hasFirstPartyCorroboratedCatalogOperations(capability, candidates, signal)
+    ? undefined
+    : 'supporting-or-verification-evidence-only';
 }
 
 export function summarizeCapabilityEvidenceRoles(candidates: SystemCapability[]): CapabilityEvidenceRoleSummary {

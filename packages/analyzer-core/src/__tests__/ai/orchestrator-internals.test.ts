@@ -8127,8 +8127,8 @@ describe('top-down capability evidence (C2)', () => {
         frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [],
         behaviorSurfaces: [{
           id: 'agent-surface', name: 'Agent MCP Tool Surface', structural_label: 'Agent MCP Tool Surface',
-          category: 'internal', evidence_kind: 'behavior-surface', evidence_role: 'unresolved',
-          evidence_role_reasons: ['first-party-product-delivery-surface-requires-outcome-mapping'],
+          category: 'internal', evidence_kind: 'behavior-surface', evidence_role: 'supporting-mechanism',
+          evidence_role_reasons: ['first-party-product-delivery-surface-supports-outcome'],
           evidence_examples: ['analyze_codebase', 'get_codebase_agent_rules'], related_domains: ['codebase'],
           criticality_factors: ["2 message entry points form one cohesive behavior family ('agent')"],
           operations: [
@@ -8166,8 +8166,8 @@ describe('top-down capability evidence (C2)', () => {
         frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [],
         behaviorSurfaces: [{
           id: 'fabric-surface', name: 'Fab MCP Tool Surface', structural_label: 'Fab MCP Tool Surface',
-          category: 'internal', evidence_kind: 'behavior-surface', evidence_role: 'unresolved',
-          evidence_role_reasons: ['first-party-product-delivery-surface-requires-outcome-mapping'],
+          category: 'internal', evidence_kind: 'behavior-surface', evidence_role: 'supporting-mechanism',
+          evidence_role_reasons: ['first-party-product-delivery-surface-supports-outcome'],
           evidence_examples: ['claim_work', 'release_work'], related_domains: ['work'],
           criticality_factors: [], operations: [],
         }],
@@ -8196,7 +8196,7 @@ describe('top-down capability evidence (C2)', () => {
         frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [],
         behaviorSurfaces: [{
           id: 'fabric-surface', name: 'Fab MCP Tool Surface', structural_label: 'Fab MCP Tool Surface',
-          category: 'internal', evidence_kind: 'behavior-surface', evidence_role: 'unresolved',
+          category: 'internal', evidence_kind: 'behavior-surface', evidence_role: 'supporting-mechanism',
           evidence_role_reasons: [], evidence_examples: ['claim_work', 'release_work'], related_domains: ['work'],
           criticality_factors: [], operations: [],
         }],

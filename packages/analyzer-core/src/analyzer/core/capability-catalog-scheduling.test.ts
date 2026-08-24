@@ -139,16 +139,16 @@ test('prompt selection retains nonmandatory supporting and verification surfaces
   assert.deepEqual(selected.map(candidate => candidate.id), ['required', 'support', 'proof']);
 });
 
-test('prompt selection requires a first-party-backed internal surface to be mapped to an outcome', () => {
+test('prompt selection retains first-party internal surfaces as context without elevating them above other delivery evidence', () => {
   const selected = selectCapabilityCatalogPromptCandidates([
+    { id: 'bootstrap', name: 'Bootstrap Surface', category: 'internal', evidence_kind: 'behavior-surface', evidence_role: 'supporting-mechanism' },
     {
       id: 'fabric', name: 'Fabric MCP Tool Surface', category: 'internal', evidence_kind: 'behavior-surface',
-      evidence_role: 'unresolved', evidence_role_reasons: ['first-party-product-delivery-surface-requires-outcome-mapping'],
+      evidence_role: 'supporting-mechanism', evidence_role_reasons: ['first-party-product-delivery-surface-supports-outcome'],
     },
-    { id: 'bootstrap', name: 'Bootstrap Surface', category: 'internal', evidence_kind: 'behavior-surface', evidence_role: 'unresolved' },
   ] as any[]);
 
-  assert.equal(selected[0].id, 'fabric');
+  assert.deepEqual(selected.map(candidate => candidate.id), ['bootstrap', 'fabric']);
 });
 
 test('targeted repair isolates evidence families while a full pass remains one batch', () => {

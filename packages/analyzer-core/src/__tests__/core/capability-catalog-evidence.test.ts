@@ -118,7 +118,7 @@ describe('catalogEvidenceCandidates', () => {
       { productDocSummary: 'A platform for reviewing and understanding software workspaces.' },
     ).map(item => [item.id, item.evidence_role])).toEqual([
       ['delivery', 'unresolved'],
-      ['workspace-ui', 'unresolved'],
+      ['workspace-ui', 'product-outcome'],
     ]);
   });
 
@@ -278,7 +278,7 @@ describe('capability evidence roles', () => {
     expect(classified.evidence_role).toBe('product-outcome');
   });
 
-  test('keeps delivery surfaces as evidence even when their tools have terminal user journeys', () => {
+  test('keeps first-party delivery surfaces as supporting context without making each namespace a mandatory capability', () => {
     const surface = candidate('agent-tools', 'Agent MCP Tool Surface', 'internal', ['Handle']);
     surface.evidence_kind = 'behavior-surface';
     surface.operations[0].entry_point_id = 'search-nodes';
@@ -293,9 +293,9 @@ describe('capability evidence roles', () => {
       }],
     });
 
-    expect(classified.evidence_role).toBe('unresolved');
-    expect(classified.evidence_role_reasons).toEqual(['first-party-product-delivery-surface-requires-outcome-mapping']);
-    expect(capabilityRequiresCatalogCoverage(classified)).toBe(true);
+    expect(classified.evidence_role).toBe('supporting-mechanism');
+    expect(classified.evidence_role_reasons).toEqual(['first-party-product-delivery-surface-supports-outcome']);
+    expect(capabilityRequiresCatalogCoverage(classified)).toBe(false);
   });
 
   test('rejects a single tool name masquerading as the outcome of a broader cited surface', () => {
@@ -471,6 +471,25 @@ describe('capability evidence roles', () => {
     expect(capabilityEvidencePublicationFailure(authored, [supporting, verification, product]))
       .toBe('uncited-candidate-evidence');
   });
+
+  test('publishes a first-party outcome grounded by supporting delivery evidence without promoting the delivery namespace itself', () => {
+    const surface = {
+      ...candidate('fabric', 'Fabric MCP Tool Surface', 'internal', ['Claim', 'Check', 'Release']),
+      evidence_kind: 'behavior-surface' as const,
+      evidence_role: 'supporting-mechanism' as const,
+      evidence_examples: ['claim_work', 'check_collision', 'release_work'],
+    };
+    const authored = candidate('authored', 'Coordinate overlapping agent work', 'core', ['Coordinate']);
+    authored.criticality_factors = ['catalog-candidate:fabric'];
+
+    expect(capabilityEvidencePublicationFailure(authored, [surface], {
+      productDocSummary: 'Fabric coordinates real-time collaboration across overlapping agent work.',
+    })).toBeUndefined();
+    expect(capabilityRequiresCatalogCoverage(surface)).toBe(false);
+    expect(capabilityEvidencePublicationFailure(authored, [surface], {
+      productDocSummary: 'A parcel tracking application for dispatch teams.',
+    })).toBe('supporting-or-verification-evidence-only');
+  });
 });
 
 describe('catalogEntityCandidateGroups', () => {
@@ -544,6 +563,47 @@ describe('hasFirstPartyCorroboratedCatalogOperations', () => {
       criticality_factors: [],
     }, [structural], {
       productDocSummary: 'The system provides fallback routing for resilient operations.',
+    })).toBe(false);
+  });
+
+  test('requires the same cited delivery surface to support the first-party outcome', () => {
+    const health = {
+      ...candidate('health', 'Health MCP Tool Surface', 'internal', ['Check']),
+      evidence_kind: 'behavior-surface' as const,
+      evidence_role: 'supporting-mechanism' as const,
+      evidence_examples: ['health_check'],
+    };
+    const proof = {
+      ...candidate('proof', 'Coordination proof', 'supporting', ['Coordinate']),
+      evidence_role: 'verification-harness' as const,
+    };
+    const authored = candidate('authored', 'Coordinate overlapping agent work', 'core', ['Coordinate']);
+    authored.criticality_factors = ['catalog-candidate:health', 'catalog-candidate:proof'];
+
+    expect(hasFirstPartyCorroboratedCatalogOperations(authored, [health, proof], {
+      productDocSummary: 'Fabric coordinates real-time collaboration across overlapping agent work.',
+    })).toBe(false);
+    expect(capabilityEvidencePublicationFailure(authored, [health, proof], {
+      productDocSummary: 'Fabric coordinates real-time collaboration across overlapping agent work.',
+    })).toBe('supporting-or-verification-evidence-only');
+  });
+
+  test('requires operation-bearing delivery evidence and specific first-party product language', () => {
+    const surface = {
+      ...candidate('fabric', 'Fabric MCP Tool Surface', 'internal', []),
+      evidence_kind: 'behavior-surface' as const,
+      evidence_role: 'supporting-mechanism' as const,
+      evidence_examples: ['claim_work', 'check_collision', 'release_work'],
+    };
+    const authored = candidate('authored', 'Coordinate overlapping agent work', 'core', ['Coordinate']);
+    authored.criticality_factors = ['catalog-candidate:fabric'];
+
+    expect(hasFirstPartyCorroboratedCatalogOperations(authored, [surface], {
+      productDocSummary: 'Fabric coordinates real-time collaboration across overlapping agent work.',
+    })).toBe(false);
+    surface.operations = candidate('fabric', 'Fabric MCP Tool Surface', 'internal', ['Claim', 'Check', 'Release']).operations;
+    expect(hasFirstPartyCorroboratedCatalogOperations(authored, [surface], {
+      productDocSummary: 'A software platform for agents and work.',
     })).toBe(false);
   });
 });

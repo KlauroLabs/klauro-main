@@ -507,7 +507,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(calls[0].candidateCapabilities.length).toBeGreaterThan(1);
   });
 
-  it('retries when a passing-size catalog omits a behavior family citation', async () => {
+  it('does not force a first-party delivery namespace into an otherwise complete product catalog', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const args: any = gateArgs(localOrch);
     args.projectTextSignal = { concepts: ['concurrent work'], evidence: [] };
@@ -528,25 +528,18 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     }];
     const rich = ['Analyze codebases', 'Serve agent context over MCP', 'Coordinate agent fleets', 'Detect deployables', 'Correlate runtime telemetry', 'Store analyses']
       .map(name => cap({ id: name, name, description: `Grounded prose about ${name} and why the ability exists in the product.`, operations: anchorOp(name) }));
-    const covered = rich.map(capability => ({ ...capability }));
-    covered[2].criticality_factors = ['catalog-candidate:fabric'];
     const calls: any[] = [];
     localOrch.aiExtractCapabilityCatalog = async (input: any) => {
       calls.push(input);
-      return calls.length === 1 ? rich : covered;
+      return rich;
     };
     localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
 
     const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(args);
-    expect(calls).toHaveLength(2);
-    expect(calls[1].qualityNudge).toContain('fabric');
-    expect(calls[1].qualityNudge).toContain('claim_work');
-    expect(calls[1].qualityNudge).toContain('evidence_subject');
-    expect(calls[1].qualityNudge).toContain('evidence_subject_terms');
-    expect(calls[1].qualityNudge).toContain('MUST contain at least one exact evidence_subject_terms token');
-    expect(out).toEqual(covered);
+    expect(calls).toHaveLength(1);
+    expect(out).toEqual(rich);
     expect(args.enhancedSystemPurpose.capability_catalog_coverage.candidate_dispositions).toEqual(
-      expect.arrayContaining([expect.objectContaining({ candidate_id: 'fabric', role: 'unresolved' })]),
+      expect.arrayContaining([expect.objectContaining({ candidate_id: 'fabric', role: 'supporting-mechanism' })]),
     );
   });
 
@@ -636,7 +629,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(out[out.length - 1]?.description).toBe('');
   });
 
-  it('adds targeted evidence without collapsing distinct accepted outcomes', async () => {
+  it('preserves distinct accepted outcomes when the global catalog attaches supporting delivery evidence', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const args: any = gateArgs(localOrch);
     args.projectTextSignal = { concepts: ['workspace', 'codebase relationships'], evidence: [] };
@@ -658,17 +651,20 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
       criticality_factors: [...retained[0].criticality_factors, 'catalog-candidate:workspace'],
     });
     let calls = 0;
-    localOrch.aiExtractCapabilityCatalog = async () => ++calls === 1 ? retained : [repaired];
+    localOrch.aiExtractCapabilityCatalog = async () => {
+      calls++;
+      return [repaired, ...retained.slice(1)];
+    };
     localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
 
     const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(args);
 
-    expect(calls).toBe(2);
+    expect(calls).toBe(1);
     expect(out.map(capability => capability.name)).toEqual(retained.map(capability => capability.name));
     expect(out[0].criticality_factors).toContain('catalog-candidate:workspace');
   });
 
-  it('carries a rejected focused title into the next repair instruction', async () => {
+  it('carries a rejected optional delivery title into a full-catalog quality retry', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const args: any = gateArgs(localOrch);
     args.projectTextSignal = { concepts: ['codebase', 'software understanding'], evidence: [] };
@@ -695,7 +691,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
         });
         return retained;
       }
-      return [repaired];
+      return [repaired, ...retained];
     };
     localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
 
@@ -703,7 +699,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
     expect(calls).toHaveLength(2);
     expect(calls[1].qualityNudge).toContain('Analyze codebase configuration');
-    expect(calls[1].qualityNudge).toContain('"forbidden_subject_terms":["configuration"]');
+    expect(calls[1].qualityNudge).toContain('do not repeat it');
     expect(out.some(capability => capability.name === 'Analyze codebases')).toBe(true);
   });
 
@@ -809,7 +805,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(args.enhancedSystemPurpose.capability_catalog_coverage.status).toBe('accepted');
   });
 
-  it('retains the quality reason associated with the best grounded catalog when a later retry is empty', async () => {
+  it('does not degrade a grounded catalog because an optional delivery surface is uncited', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const args: any = gateArgs(localOrch);
     args.projectTextSignal = { concepts: ['notebook execution'], evidence: [] };
@@ -836,7 +832,9 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     const out = await localOrch.runCapabilityCatalogWithQualityGate(args);
 
     expect(out).toEqual(grounded);
-    expect(args.enhancedSystemPurpose.capability_catalog_coverage.reason).toContain('catalog omitted');
+    expect(calls).toBe(1);
+    expect(args.enhancedSystemPurpose.capability_catalog_coverage).toMatchObject({ status: 'accepted' });
+    expect(args.enhancedSystemPurpose.capability_catalog_coverage.reason).toBeUndefined();
   });
 
   it('returns no canonical capabilities after all authored catalog cycles fail', async () => {

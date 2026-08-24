@@ -9887,7 +9887,7 @@ export class AnalyzerOrchestrator {
     const hasClassifiedEvidence = candidates.some(candidate => candidate.evidence_role !== undefined);
     const gated = hasClassifiedEvidence
       ? purposeGated.map(capability => {
-          const failure = capabilityEvidencePublicationFailure(capability, candidates);
+          const failure = capabilityEvidencePublicationFailure(capability, candidates, projectTextSignal);
           return failure ? {
             ...capability,
             criticality_factors: [...(capability.criticality_factors || []), `catalog-evidence-rejected:${failure}`],
