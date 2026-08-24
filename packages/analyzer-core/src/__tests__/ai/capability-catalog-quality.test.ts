@@ -1,5 +1,6 @@
 import { AnalyzerOrchestrator } from '../../analyzer/core/orchestrator';
 import { evaluateCapabilityCatalogAudience } from '../../analyzer/core/capability-catalog-audience';
+import { deriveCapabilityCatalogOutcomeRequirements } from '../../analyzer/core/capability-catalog-outcome-coverage';
 import type { SystemCapability } from '../../types/cas.types';
 
 // Private-method tests (same convention as orchestrator-internals.test.ts):
@@ -225,6 +226,21 @@ describe('catalogQualityFailure (post-reconcile gate, defect #33)', () => {
       ['reservation'],
     ])).toBeUndefined();
   });
+
+  it('rejects a citation-complete catalog that omits corroborated first-party audience outcomes', () => {
+    const evidence = [
+      cap({ id: 'understanding', name: 'Explore connected software behavior', structural_label: 'Software behavior exploration', evidence_examples: ['inspect_behavior'] }),
+      cap({ id: 'graph', name: 'Relationship graph analysis', structural_label: 'Trustworthy relationship graph', evidence_examples: ['query_relationships'] }),
+    ];
+    const requirements = deriveCapabilityCatalogOutcomeRequirements({
+      productDocSummary: 'Builds a trustworthy relationship graph and turns it into behavior comprehension for people and AI agents.',
+    }, evidence);
+    const agentOnly = purposeful('Give AI agents software comprehension');
+    agentOnly.description = 'AI agents understand connected software behavior before making changes.';
+    agentOnly.criticality_factors = ['catalog-candidate:understanding', 'catalog-candidate:graph'];
+
+    expect(orch.catalogQualityFailure([agentOnly], 1, [], [], requirements)).toContain('first-party product outcomes');
+  });
 });
 
 describe('capability catalog entity grounding', () => {
@@ -371,6 +387,61 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(calls).toHaveLength(2);
     expect(calls[0].qualityNudge).toBeUndefined();
     expect(calls[1].qualityNudge).toContain('quality check');
+  });
+
+  it('repairs omitted first-party human and truth outcomes even when the initial catalog cites every family', async () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    const outcome = (name: string) => cap({
+      id: name,
+      name,
+      description: `Grounded prose about ${name.toLowerCase()} and why the ability exists in the product.`,
+      operations: anchorOp(name),
+    });
+    const args: any = gateArgs(localOrch);
+    args.candidateSnapshot = [
+      cap({ id: 'graph', name: 'Trustworthy relationship graph', structural_label: 'Trustworthy relationship graph', operations: anchorOp('graph') }),
+      cap({ id: 'understanding', name: 'Explore connected software behavior', structural_label: 'Software behavior exploration', operations: anchorOp('understanding') }),
+      cap({ id: 'collaboration', name: 'Concurrent collaboration', structural_label: 'Real-time collaboration', operations: anchorOp('collaboration') }),
+      cap({ id: 'runtime', name: 'Runtime evidence correlation', structural_label: 'Runtime evidence correlation', operations: anchorOp('runtime') }),
+    ];
+    args.projectTextSignal = {
+      concepts: [], evidence: [],
+      productDocSummary: 'Builds a trustworthy relationship graph, turns that graph into behavior comprehension for people and AI agents, enables real-time collaboration, and correlates static understanding with runtime evidence.',
+    };
+    const initial = [
+      outcome('Track change history'),
+      outcome('Coordinate real-time collaboration'),
+      outcome('Give AI agents software comprehension'),
+      outcome('Correlate runtime evidence'),
+    ];
+    initial[0].criticality_factors = ['catalog-candidate:graph'];
+    initial[1].criticality_factors = ['catalog-candidate:collaboration'];
+    initial[2].criticality_factors = ['catalog-candidate:understanding'];
+    initial[2].description = 'AI agents understand connected software behavior before making changes.';
+    initial[3].criticality_factors = ['catalog-candidate:runtime'];
+    const calls: any[] = [];
+    localOrch.aiExtractCapabilityCatalog = async (input: any) => {
+      calls.push(input);
+      if (calls.length === 1) return initial;
+      const candidateId = input.candidateCapabilities[0]?.id;
+      return candidateId === 'graph'
+        ? [cap({ ...outcome('Build a trustworthy relationship graph'), criticality_factors: ['catalog-candidate:graph'] })]
+        : [cap({
+          ...outcome('Help people understand software behavior'),
+          description: 'Human engineers explore connected software behavior and change risks.',
+          criticality_factors: ['catalog-candidate:understanding'],
+        })];
+    };
+    localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
+
+    const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(args);
+
+    expect(out.map(capability => capability.name)).toEqual(expect.arrayContaining([
+      'Build a trustworthy relationship graph',
+      'Help people understand software behavior',
+    ]));
+    expect(calls.length).toBeGreaterThan(1);
+    expect(calls.slice(1).every(call => call.qualityNudge.includes('Distinct first-party outcomes'))).toBe(true);
   });
 
   it('tells the next AI cycle exactly which audience failures require repair', async () => {

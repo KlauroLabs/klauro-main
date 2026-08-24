@@ -278,9 +278,22 @@ export function capabilityOutcomeScopeFailure(
 export function capabilityDescriptionProductLanguageFailure(
   description: string,
   relatedEntities: readonly string[],
+  operations: readonly string[] = [],
 ): string | undefined {
   if (/\bmcp\s+(?:tools?|surfaces?|endpoints?)\b|\bcli\s+(?:commands?|interfaces?|surfaces?)\b/i.test(description)) return 'delivery-surface-scaffolding';
   if (/\b(?:handles?|process(?:es|ed|ing)?)\s+(?:incoming\s+)?messages?\s+to\b/i.test(description)) return 'message-handler-scaffolding';
+  const normalizedDescription = outcomeIdentityTokens(description);
+  const copiedOperation = operations.some(operation => {
+    const allOperationTokens = outcomeIdentityTokens(operation);
+    const firstAction = allOperationTokens[0];
+    const operationTokens = [...new Set(allOperationTokens.filter(token => !/^(?:head|http|message|options|patch|post|put|route)$/.test(token)))];
+    const deliveryAction = /^(?:check|claim|delete|extend|fetch|get|install|list|load|read|release|run|show|start|stop|sync)$/.test(firstAction || '');
+    const phraseLength = deliveryAction ? 2 : 3;
+    const phrase = operationTokens.slice(0, phraseLength);
+    if (phrase.length < phraseLength) return false;
+    return normalizedDescription.some((_, index) => phrase.every((token, offset) => normalizedDescription[index + offset] === token));
+  });
+  if (copiedOperation) return 'delivery-operation-restatement';
   if (relatedEntities.some(entity =>
     (/[a-z0-9][A-Z]|[_:$]/.test(entity) || /(?:Config|DTO|Entity|Entry|Model|Record|Schema)$/i.test(entity)) &&
     new RegExp(`\\b${entity.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(description)
@@ -616,9 +629,9 @@ export function catalogCandidateEntityFacts(
 }
 
 export function catalogEvidenceCoverageFailure(
-  reconciled: SystemCapability[],
-  requiredBehaviorCandidateIds: string[],
-  requiredEntityCandidateGroups: string[][],
+  reconciled: readonly SystemCapability[],
+  requiredBehaviorCandidateIds: readonly string[],
+  requiredEntityCandidateGroups: ReadonlyArray<ReadonlyArray<string>>,
 ): string | undefined {
   const citedCandidateIds = new Set(reconciled.flatMap(capability => (capability.criticality_factors || [])
     .filter(factor => factor.startsWith('catalog-candidate:'))

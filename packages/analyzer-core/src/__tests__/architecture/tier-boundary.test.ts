@@ -166,6 +166,7 @@ const TIER_REGISTRY: Record<string, Tier> = {
   'capability-audience-test.ts': 3,
   'capability-catalog-audience.ts': 3,
   'capability-catalog-evidence.ts': 3,
+  'capability-catalog-outcome-coverage.ts': 3,
   'capability-catalog-flow-evidence.ts': 3,
   'capability-catalog-scheduling.ts': 3,
   'capability-description.ts': 3,

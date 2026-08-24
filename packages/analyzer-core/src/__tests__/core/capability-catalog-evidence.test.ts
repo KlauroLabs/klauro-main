@@ -620,6 +620,24 @@ describe('capabilityDescriptionProductLanguageFailure', () => {
       [],
     )).toBe('implementation-graph-inventory');
   });
+
+  test('rejects copied operation phrases while preserving independently phrased product value', () => {
+    expect(capabilityDescriptionProductLanguageFailure(
+      'Get observations and correlate event data for each requested analysis.',
+      [],
+      ['Get message get_observations', 'Correlate message correlate_event_data'],
+    )).toBe('delivery-operation-restatement');
+    expect(capabilityDescriptionProductLanguageFailure(
+      'Connects production behavior to the software model so teams can investigate discrepancies.',
+      [],
+      ['Get message get_observations', 'Correlate message correlate_event_data'],
+    )).toBeUndefined();
+    expect(capabilityDescriptionProductLanguageFailure(
+      'Correlates event data with static behavior to reveal production discrepancies.',
+      [],
+      ['Correlate message correlate_event_data'],
+    )).toBe('delivery-operation-restatement');
+  });
 });
 
 describe('capabilityCatalogAiPhaseStatus', () => {

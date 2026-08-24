@@ -164,7 +164,7 @@ import {
   capabilityDescriptionProductLanguageFailure, capabilityOutcomeScopeFailure,
   capabilityEvidencePublicationFailure,
   catalogCandidateTerminality as analyzeCatalogCandidateTerminality,
-  catalogCountBounds, catalogEntityCandidateGroups, catalogEvidenceCoverageFailure,
+  catalogCountBounds, catalogEntityCandidateGroups,
   catalogEvidenceCandidates as selectCatalogEvidenceCandidates,
   catalogRequiredEvidenceCandidates,
   catalogMinimumCapabilityCount, catalogPromptEntities, catalogRelatedEntityIds,
@@ -175,6 +175,7 @@ import {
   synchronizeCapabilityCatalogCoverage,
 } from './capability-catalog-evidence';
 import { mergeCapabilityCatalogFlowEvidence } from './capability-catalog-flow-evidence';
+import { capabilityCatalogCoverageFailure, capabilityCatalogOutcomeRepairCandidateIds, deriveCapabilityCatalogOutcomeRequirements, uncoveredCapabilityCatalogOutcomeRequirements, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
 import { fitCapabilityCatalogContext } from './ai-context-budget';
 import { awaitAiOperation } from './ai-operation-timing';
 import { capabilityDescriptionBatchSize, resolveCapabilityCatalogRoute, resolveCapabilityDescriptionRoute, shouldReauthorCapabilityDescriptions, toAIContextRoute } from './ai-task-model-routing';
@@ -10225,17 +10226,13 @@ export class AnalyzerOrchestrator {
     reconciled: SystemCapability[],
     distinctFamilyCount: number,
     requiredBehaviorCandidateIds: string[] = [],
-    requiredEntityCandidateGroups: string[][] = [],
+    requiredEntityCandidateGroups: string[][] = [], requiredOutcomes: readonly CapabilityCatalogOutcomeRequirement[] = [],
   ): string | undefined {
     if (reconciled.length === 0) {
       return distinctFamilyCount === 0 ? undefined : 'empty catalog after reconciliation';
     }
-    const evidenceCoverageFailure = catalogEvidenceCoverageFailure(
-      reconciled,
-      requiredBehaviorCandidateIds,
-      requiredEntityCandidateGroups,
-    );
-    if (evidenceCoverageFailure) return evidenceCoverageFailure;
+    const coverageFailure = capabilityCatalogCoverageFailure(reconciled, requiredBehaviorCandidateIds, requiredEntityCandidateGroups, requiredOutcomes);
+    if (coverageFailure) return coverageFailure;
     const evidenceRejected = reconciled.filter(capability =>
       (capability.criticality_factors || []).some(factor => factor.startsWith('catalog-evidence-rejected:')));
     if (evidenceRejected.length > 0) {
@@ -10388,7 +10385,7 @@ export class AnalyzerOrchestrator {
     const requiredBehaviorCandidateIds = requiredEvidenceCandidates
       .filter(candidate => candidate.evidence_kind === 'behavior-surface' && capabilityRequiresCatalogCoverage(candidate) && candidate.id)
       .map(candidate => candidate.id);
-    const requiredEntityCandidateGroups = catalogEntityCandidateGroups(requiredEvidenceCandidates);
+    const requiredEntityCandidateGroups = catalogEntityCandidateGroups(requiredEvidenceCandidates); const requiredOutcomes = deriveCapabilityCatalogOutcomeRequirements(args.projectTextSignal, evidenceCandidates);
     const { entityNamesById, entityFieldsById, entityEvidenceById } = capabilityDescriptionEvidenceMaps(args.dataEntities);
     let reconciled: SystemCapability[] = [];
     let qualityFailure: string | undefined;
@@ -10398,7 +10395,7 @@ export class AnalyzerOrchestrator {
     let deadlineExceeded = false;
     let retainedInterpretationRaw = ''; const catalogRejectionsByCandidate: CapabilityCatalogRejectionsByCandidate = new Map();
     const publishabilityRepairCandidateIds = new Set<string>();
-    const repairProgress = trackCapabilityCatalogRepair(distinctFamilyCount, requiredBehaviorCandidateIds, requiredEntityCandidateGroups);
+    let uncoveredOutcomes = requiredOutcomes; const repairProgress = trackCapabilityCatalogRepair(distinctFamilyCount, requiredBehaviorCandidateIds, requiredEntityCandidateGroups, requiredOutcomes.length);
     for (let cycle = 1; cycle <= repairProgress.maxCycles; cycle++) {
       if (args.hardDeadlineAt !== undefined && Date.now() >= args.hardDeadlineAt) {
         deadlineExceeded = true;
@@ -10406,9 +10403,11 @@ export class AnalyzerOrchestrator {
         break;
       }
       cyclesRun = cycle;
-      const repairCandidateIds = capabilityCatalogRepairCandidateIds(reconciled, requiredBehaviorCandidateIds, requiredEntityCandidateGroups, publishabilityRepairCandidateIds);
+      const repairCandidateIds = [...new Set([...capabilityCatalogRepairCandidateIds(reconciled, requiredBehaviorCandidateIds, requiredEntityCandidateGroups, publishabilityRepairCandidateIds), ...capabilityCatalogOutcomeRepairCandidateIds(uncoveredOutcomes)])];
       const targetedRepair = cycle > 1 && reconciled.length > 0 && repairCandidateIds.length > 0;
       const repairEvidenceFacts = capabilityCatalogRepairEvidenceFacts(evidenceCandidates, repairCandidateIds, entityNamesById, catalogRejectionsByCandidate); const evidenceScoped = targetedRepair && repairEvidenceFacts.length > 0;
+      const outcomeCoverageNudge = uncoveredOutcomes.length > 0 ? `Distinct first-party outcomes still required by corroborated structural evidence: ${JSON.stringify(uncoveredOutcomes.map(requirement => ({ audience: requirement.audience, outcome: requirement.statement, candidate_ids: requirement.candidateIds })))}. Do not merge outcomes for different explicit audiences.` : '';
+      if (cycle > 1 && outcomeCoverageNudge) audienceRepairFeedback = [audienceRepairFeedback, outcomeCoverageNudge].filter(Boolean).join(' ');
       const cycleNudge = (facts: typeof repairEvidenceFacts) => cycle === 1 && !evidenceScoped ? undefined
         : `${cycle === 1 ? 'Build the initial catalog from independently grounded evidence families.' : `Previous catalog failed a quality check (${qualityFailure}). ${audienceRepairFeedback || ''}`} ${evidenceScoped ? `Return only the evidence-grounded outcome requested in this family batch. Missing evidence facts: ${JSON.stringify(facts)}. Existing accepted outcomes: ${JSON.stringify(reconciled.slice(0, 12).map(capability => ({ name: capability.name, description: capability.description })))}. Each result must cite one or more of these candidate_ids and name the shared USER PURPOSE delivered by that evidence subject. A genuinely new or rewritten capability name MUST contain at least one exact evidence_subject_terms token from its cited facts; an exact reuse of an existing accepted outcome is exempt and preferred when that outcome already describes the delivered purpose. Prefer the product's exact phrasing from top_down_signals when it describes this evidence family. A behavior-surface family label and its individual operation names are delivery evidence, never title templates: express their common purpose using first-party product language. Never use MCP, tool, or surface as a capability title or description noun. Never begin a delivery-surface outcome with Get, List, Run, Release, Claim, Check, Extend, Install, Start, Stop, Sync, Fetch, Load, Read, or Show; those restate individual commands. Use a durable purpose verb such as Understand, Review, Assess, Coordinate, Correlate, Analyze, Explain, Explore, Track, or Visualize. Every subject noun after that verb must be a recurring evidence_subject_terms token or an explicit first-party product term; never narrow the title to a noun found in only one operation example. Preserve each rejected item's distinct product outcome when rewriting it; overlapping evidence does not make two different outcomes equivalent. If a missing delivery surface supports an existing accepted outcome, return that exact outcome name with the missing candidate_id so its evidence is merged. Do not restate an unrelated global product ability and do not enumerate individual response objects, commands, or configuration fields.` : 'Return a FULL replacement catalog.'} Cite every required behavior ID and at least one candidate ID from every required entity group in the structured facts. Merge groups only when their operations express the same product outcome. Name each result as a verb-headed purpose a PM would write. Entity labels establish evidence coverage but source type, class, interface, schema, and graph-model identifiers must never appear in names or descriptions; use PM-readable nouns from operations, journeys, and top-down product text.`;
       let extracted: SystemCapability[], extractionRaw = '', learnedRejection = false; const extractionRejections: string[] = [];
@@ -10477,6 +10476,7 @@ export class AnalyzerOrchestrator {
         distinctFamilyCount,
         requiredBehaviorCandidateIds,
         requiredEntityCandidateGroups,
+        requiredOutcomes,
       );
       writeAnalyzerStatus(
         `[Klauro] capability catalog cycle ${cycle}/${repairProgress.maxCycles}${targetedRepair ? ' targeted-repair' : ''}: ${cycleQualityFailure ? `rejected (${cycleQualityFailure})` : `accepted (${evidenceCompleteReconciled.length} capabilities)`}${reconciledCandidates.length > cycleReconciled.length ? `; refused ${reconciledCandidates.length - cycleReconciled.length} non-publishable item(s): ${[...publishabilityFailures.entries()].map(([reason, count]) => `${reason}=${count}`).join(', ')}` : ''}`,
@@ -10488,7 +10488,7 @@ export class AnalyzerOrchestrator {
         retainedQualityFailure = undefined;
         break;
       }
-      const progress = repairProgress.observe(evidenceCompleteReconciled, learnedRejection);
+      uncoveredOutcomes = uncoveredCapabilityCatalogOutcomeRequirements(evidenceCompleteReconciled, requiredOutcomes); const progress = repairProgress.observe(evidenceCompleteReconciled, learnedRejection, uncoveredOutcomes.length);
       if (targetedRepair || evidenceCompleteReconciled.length > reconciled.length) {
         reconciled = evidenceCompleteReconciled;
         if (!retainedInterpretationRaw) retainedInterpretationRaw = extractionRaw;
@@ -12174,7 +12174,7 @@ export class AnalyzerOrchestrator {
       return { ok: false, reason: 'raw-route-restatement' };
     }
     if (target.kind === 'capability') {
-      const productLanguageFailure = capabilityDescriptionProductLanguageFailure(cleaned, target.relatedEntities || []); if (productLanguageFailure) return { ok: false, reason: productLanguageFailure };
+      const productLanguageFailure = capabilityDescriptionProductLanguageFailure(cleaned, target.relatedEntities || [], target.operations || []); if (productLanguageFailure) return { ok: false, reason: productLanguageFailure };
       if (
         target.artifactType === 'infrastructure' &&
         /\b(?:shell|batch|powershell)\s+(?:scripts?|commands?)\b|\b(?:scripts?|source files?)\s+to\s+(?:provision|deploy|configure|manage|create|update)\b/i.test(cleaned)

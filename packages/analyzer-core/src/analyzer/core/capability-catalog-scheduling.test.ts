@@ -15,6 +15,7 @@ import {
   capabilityOutcomeMatchesEvidence,
   mergeUniquelyMatchedBehaviorEvidence,
   recordCapabilityCatalogRejection,
+  trackCapabilityCatalogRepair,
   updateCapabilityCatalogPublishabilityRepairIds,
 } from './capability-catalog-scheduling';
 
@@ -345,4 +346,12 @@ test('targeted catalog repair converges when full passes omit different families
   assert.equal(firstRepairIds.length, 17);
   assert.equal(secondRepairIds.length, 8);
   assert.deepEqual(uncoveredCapabilityCatalogCandidateIds(fullyRepaired, [], requiredGroups), []);
+});
+
+test('semantic outcome progress prevents the repair loop from stopping while obligations shrink', () => {
+  const progress = trackCapabilityCatalogRepair(2, [], [], 2);
+
+  assert.equal(progress.observe([], false, 1).stop, false);
+  assert.equal(progress.observe([], false, 1).stop, false);
+  assert.equal(progress.observe([], false, 0).stop, false);
 });

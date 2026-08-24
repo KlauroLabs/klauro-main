@@ -319,22 +319,24 @@ export function trackCapabilityCatalogRepair(
   distinctFamilyCount: number,
   requiredBehaviorCandidateIds: readonly string[],
   requiredEntityCandidateGroups: ReadonlyArray<ReadonlyArray<string>>,
+  requiredOutcomeCount = 0,
 ) {
   const requiredFamilyCount = Math.max(
     distinctFamilyCount,
     requiredBehaviorCandidateIds.length + requiredEntityCandidateGroups.length,
+    requiredOutcomeCount,
   );
   const budget = capabilityCatalogRepairBudget(requiredFamilyCount);
   let previousUncoveredCount = uncoveredCapabilityCatalogCandidateIds(
     [], requiredBehaviorCandidateIds, requiredEntityCandidateGroups,
-  ).length;
+  ).length + requiredOutcomeCount;
   let noProgressCycles = 0;
   return {
     maxCycles: budget.maxCycles,
-    observe(capabilities: SystemCapability[], learnedConstraint = false) {
+    observe(capabilities: SystemCapability[], learnedConstraint = false, uncoveredOutcomeCount = 0) {
       const uncoveredCount = uncoveredCapabilityCatalogCandidateIds(
         capabilities, requiredBehaviorCandidateIds, requiredEntityCandidateGroups,
-      ).length;
+      ).length + uncoveredOutcomeCount;
       noProgressCycles = uncoveredCount < previousUncoveredCount || learnedConstraint ? 0 : noProgressCycles + 1;
       previousUncoveredCount = uncoveredCount;
       return { noProgressCycles, uncoveredCount, stop: noProgressCycles >= budget.noProgressRetries };
