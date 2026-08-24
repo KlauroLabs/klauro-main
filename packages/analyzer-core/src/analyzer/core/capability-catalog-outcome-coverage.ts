@@ -155,8 +155,14 @@ export function bindUniquelySatisfiedCatalogOutcomeRequirements(
   capabilities: readonly SystemCapability[],
   requirements: readonly CapabilityCatalogOutcomeRequirement[],
 ): SystemCapability[] {
-  const matches = requirements.map(requirement => capabilities.flatMap((capability, index) =>
-    capabilitySatisfiesCatalogOutcomeRequirement(capability, requirement) ? [index] : []));
+  const factors = (capability: SystemCapability, prefix: string) => (capability.criticality_factors || [])
+    .filter(value => value.startsWith(prefix)).map(value => value.slice(prefix.length));
+  const matches = requirements.map(requirement => capabilities.flatMap((capability, index) => {
+    if (factors(capability, 'catalog-outcome-requirement:').length > 0) return [];
+    const citedCandidates = factors(capability, 'catalog-candidate:');
+    return citedCandidates.some(candidateId => requirement.candidateIds.includes(candidateId)) &&
+      capabilitySatisfiesCatalogOutcomeRequirement(capability, requirement) ? [index] : [];
+  }));
   const requirementMatchesByCapability = new Map<number, number[]>();
   matches.forEach((capabilityIndexes, requirementIndex) => capabilityIndexes.forEach(capabilityIndex => {
     const requirementIndexes = requirementMatchesByCapability.get(capabilityIndex) || [];

@@ -134,6 +134,13 @@ test('stamps only unambiguous initial audience and runtime outcomes', () => {
   const agent = published('Ground agents in software behavior', 'AI agents understand connected software behavior before making changes.');
   const runtime = published('Correlate static analysis with runtime evidence', 'Static software understanding is compared with runtime evidence.');
   const ambiguous = published('Explain behavior to people and agents', 'People and AI agents understand connected software behavior.');
+  const humanRequirement = requirements.find(requirement => requirement.audience === 'human')!;
+  const agentRequirement = requirements.find(requirement => requirement.audience === 'agent')!;
+  const runtimeRequirement = requirements.find(requirement => requirement.subjectTokens.includes('runtime'))!;
+  human.criticality_factors = [`catalog-candidate:${humanRequirement.candidateIds[0]}`];
+  agent.criticality_factors = [`catalog-candidate:${agentRequirement.candidateIds[0]}`];
+  runtime.criticality_factors = [`catalog-candidate:${runtimeRequirement.candidateIds[0]}`];
+  ambiguous.criticality_factors = [`catalog-candidate:${humanRequirement.candidateIds[0]}`];
   const bound = bindUniquelySatisfiedCatalogOutcomeRequirements([human, agent, runtime], requirements);
   const ambiguousBound = bindUniquelySatisfiedCatalogOutcomeRequirements([ambiguous], requirements.filter(requirement => requirement.audience));
 
@@ -141,6 +148,20 @@ test('stamps only unambiguous initial audience and runtime outcomes', () => {
   assert.equal(bound[1].criticality_factors.some(factor => factor.startsWith('catalog-outcome-requirement:agent:')), true);
   assert.equal(bound[2].criticality_factors.some(factor => factor.startsWith('catalog-outcome-requirement:')), true);
   assert.equal(ambiguousBound[0].criticality_factors.some(factor => factor.startsWith('catalog-outcome-requirement:')), false);
+});
+
+test('does not bind unique prose across candidate families or reassign an existing requirement', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, evidence);
+  const human = requirements.find(requirement => requirement.audience === 'human')!;
+  const agent = requirements.find(requirement => requirement.audience === 'agent')!;
+  const wrongCandidate = published('Help people understand software behavior', 'Human engineers understand connected software behavior before making changes.');
+  wrongCandidate.criticality_factors = ['catalog-candidate:unrelated'];
+  const alreadyBound = published('Help people understand software behavior', 'Human engineers and AI agents understand connected software behavior.');
+  alreadyBound.criticality_factors = [`catalog-candidate:${agent.candidateIds[0]}`, `catalog-outcome-requirement:${human.id}`];
+  const result = bindUniquelySatisfiedCatalogOutcomeRequirements([wrongCandidate, alreadyBound], [human, agent]);
+
+  assert.deepEqual(result[0].criticality_factors, ['catalog-candidate:unrelated']);
+  assert.deepEqual(result[1].criticality_factors, [`catalog-candidate:${agent.candidateIds[0]}`, `catalog-outcome-requirement:${human.id}`]);
 });
 
 test('uses the product brief instead of treating package identity metadata as another outcome', () => {
