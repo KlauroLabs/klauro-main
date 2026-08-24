@@ -915,7 +915,7 @@ export async function loadAnalysisSections(
         if (hash.digest('hex') !== descriptor.sha256) throw new Error('checksum mismatch');
       }
       sectionData = await readJsonMaybeCompressed(sectionPath, {
-        maxBufferedZstdBytes: memoryBoundRead ? 0 : undefined,
+        maxBufferedZstdBytes: (descriptor.bytes || 0) * expansion > parsedSectionBudget ? 0 : undefined,
       }) as Partial<CASOutput>;
     } catch (error) {
       throw new Error(`Segmented CAS section '${section}' (${sectionPath}) could not be read: ${error instanceof Error ? error.message : String(error)}`);
