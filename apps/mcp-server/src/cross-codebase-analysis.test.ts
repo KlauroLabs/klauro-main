@@ -108,7 +108,7 @@ test('builds outer graph with http, sdk, message, passive data, and unmatched in
   assert.equal(validateCasTree(graph as unknown as CASOutput).valid, true);
   assert.equal(graph.children.length, graph.codebase_count);
   assert.ok(graph.children.every(child => child.parent_id === graph.id));
-  assert.ok(graph.children.every(child => child.nodes.length === 0 && child.edges.length === 0));
+  assert.deepEqual(graph.children.map(child => child.nodes.length), [1, 1, 1, 1]);
   assert.ok(graph.children.every(child => child.analysis_id === 'analysis'));
   assert.ok(graph.edges.every(edge => graph.children.some(child => child.id === edge.source)));
   assert.ok(graph.edges.every(edge => graph.children.some(child => child.id === edge.target)));
@@ -118,19 +118,32 @@ test('builds outer graph with http, sdk, message, passive data, and unmatched in
   assert.ok(graph.terminality.flows.length === graph.flows.length);
 });
 
-test('workspace composition preserves normalized contracts without member graph arrays', () => {
+test('workspace composition preserves complete member CAS trees with isolated identities', () => {
+  const nested = cas({
+    id: 'nested',
+    parent_id: 'repository',
+    label: 'nested deployable',
+    nodes: [{ id: 'nested-node', name: 'nested', type: 'function', source: { file: 'src/nested.ts', line: 1 } } as any],
+  });
   const provider = cas({
+    id: 'repository',
+    composition_mode: 'composed',
+    children: [nested],
     analysis_id: 'provider-analysis',
     system: { id: 'provider', name: 'provider', type: 'service', root_path: '/tmp/provider' },
+    nodes: [{ id: 'provider-node', name: 'provider', type: 'function', source: { file: 'src/provider.ts', line: 1 } } as any],
+    dependencies: { manager: 'npm', packages: [{ name: 'provider-dependency', version: '1.0.0', direct: true }] },
     entry_points: [{
-      id: 'entry:health', source_node: '', type: 'http', name: 'GET /health', trigger: { method: 'GET', path: '/health' },
+      id: 'entry:health', source_node: 'provider-node', type: 'http', name: 'GET /health', trigger: { method: 'GET', path: '/health' },
     }],
   });
   const consumer = cas({
+    id: 'repository',
     analysis_id: 'consumer-analysis',
     system: { id: 'consumer', name: 'consumer', type: 'application', root_path: '/tmp/consumer' },
+    nodes: [{ id: 'consumer-node', name: 'consumer', type: 'function', source: { file: 'src/consumer.ts', line: 1 } } as any],
     exit_points: [{
-      id: 'exit:health', source_node: '', type: 'api', name: 'fetch health', target: { endpoint: 'http://provider/health', service_id: 'provider' }, operation: { method: 'GET' },
+      id: 'exit:health', source_node: 'consumer-node', type: 'api', name: 'fetch health', target: { endpoint: 'http://provider/health', service_id: 'provider' }, operation: { method: 'GET' },
     }],
   });
 
@@ -140,10 +153,18 @@ test('workspace composition preserves normalized contracts without member graph 
   ]);
 
   assert.ok(graph.links.some(link => link.kind === 'http-call'));
-  assert.deepEqual(graph.children.map(child => ({ analysis_id: child.analysis_id, nodes: child.nodes.length, edges: child.edges.length })), [
-    { analysis_id: 'provider-analysis', nodes: 0, edges: 0 },
-    { analysis_id: 'consumer-analysis', nodes: 0, edges: 0 },
-  ]);
+  const providerChild = graph.children.find(child => child.analysis_id === 'provider-analysis')!;
+  const consumerChild = graph.children.find(child => child.analysis_id === 'consumer-analysis')!;
+  assert.deepEqual(providerChild.nodes, provider.nodes);
+  assert.equal(providerChild.dependencies, provider.dependencies);
+  assert.equal(providerChild.children?.length, 1);
+  assert.equal(providerChild.children?.[0].parent_id, providerChild.id);
+  assert.ok(providerChild.children?.[0].id?.startsWith(`${providerChild.id}:`));
+  assert.deepEqual(providerChild.children?.[0].nodes, nested.nodes);
+  assert.deepEqual(consumerChild.nodes, consumer.nodes);
+  assert.notEqual(providerChild.id, consumerChild.id);
+  assert.equal(provider.id, 'repository');
+  assert.equal(nested.id, 'nested');
 });
 
 test('shared data links preserve writer-to-reader direction from entity lifecycle evidence', () => {

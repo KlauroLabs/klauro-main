@@ -130,12 +130,13 @@ export function assertValidCasTree(root: CASOutput): void {
   throw new Error(`Recursive CAS conformance failed with ${result.issues.length} issue(s):\n${detail}`);
 }
 
-export function namespaceCasTree(root: CASOutput, namespace: string): CASOutput {
-  assertValidCasTree(root);
-  const normalizedNamespace = namespace.trim();
-  if (!normalizedNamespace) throw new Error('CAS namespace cannot be empty.');
+function cloneCasTreeWithIds(
+  root: CASOutput,
+  idFor: (cas: CASOutput, depth: number) => string,
+  label?: string,
+): CASOutput {
   const idMap = new Map<string, string>();
-  for (const { cas } of walkCasTree(root)) idMap.set(cas.id!, `${normalizedNamespace}:${cas.id}`);
+  for (const { cas, depth } of walkCasTree(root)) idMap.set(cas.id!, idFor(cas, depth));
 
   const clone = (cas: CASOutput, parentId: string | null): CASOutput => {
     const id = idMap.get(cas.id!)!;
@@ -144,6 +145,7 @@ export function namespaceCasTree(root: CASOutput, namespace: string): CASOutput 
       ...cas,
       id,
       parent_id: parentId,
+      ...(parentId === null && label ? { label } : {}),
       nodes: (cas.nodes || []).map(node => {
         const namespacedNodeId = node.type === 'cas' ? idMap.get(node.id) : undefined;
         if (!namespacedNodeId) return node;
@@ -179,4 +181,27 @@ export function namespaceCasTree(root: CASOutput, namespace: string): CASOutput 
   const namespaced = clone(root, null);
   assertValidCasTree(namespaced);
   return namespaced;
+}
+
+export function namespaceCasTree(root: CASOutput, namespace: string): CASOutput {
+  assertValidCasTree(root);
+  const normalizedNamespace = namespace.trim();
+  if (!normalizedNamespace) throw new Error('CAS namespace cannot be empty.');
+  return cloneCasTreeWithIds(root, cas => `${normalizedNamespace}:${cas.id}`);
+}
+
+export function reidentifyCasTree(root: CASOutput, rootId: string, label?: string): CASOutput {
+  const normalizedRootId = rootId.trim();
+  if (!normalizedRootId) throw new Error('CAS root id cannot be empty.');
+  const normalizedRoot: CASOutput = {
+    ...root,
+    id: root.id || `cas:${root.analysis_id}`,
+    parent_id: null,
+  };
+  assertValidCasTree(normalizedRoot);
+  return cloneCasTreeWithIds(
+    normalizedRoot,
+    (cas, depth) => depth === 0 ? normalizedRootId : `${normalizedRootId}:${cas.id}`,
+    label,
+  );
 }

@@ -1,5 +1,5 @@
 import type { CASOutput } from '../../types/cas.types';
-import { assertValidCasTree, namespaceCasTree, validateCasTree, walkCasTree } from '../../analyzer/core/recursive-cas';
+import { assertValidCasTree, namespaceCasTree, reidentifyCasTree, validateCasTree, walkCasTree } from '../../analyzer/core/recursive-cas';
 
 function leaf(id: string, parentId: string | null): CASOutput {
   return {
@@ -97,5 +97,41 @@ describe('recursive CAS conformance', () => {
     });
     expect(validateCasTree(namespaced).valid).toBe(true);
     expect(root.id).toBe('cas:root');
+  });
+
+  test('reidentifies a complete CAS tree while preserving non-identity fields', () => {
+    const child = leaf('cas:child', 'cas:root');
+    child.nodes = [{ id: 'child-node', name: 'child node', type: 'function' }];
+    const root = parent('cas:root', null, [child]);
+    root.nodes = [{
+      id: 'cas:child',
+      name: 'child',
+      type: 'cas',
+      metadata: { attributes: { cas_id: 'cas:child' } },
+    }];
+    root.edges = [{ id: 'edge:child', source: 'cas:root', target: 'cas:child', type: 'contains' }];
+    root.dependencies = { manager: 'npm', packages: [{ name: 'dependency', version: '1.0.0', direct: true }] };
+
+    const reidentified = reidentifyCasTree(root, 'workspace:member', 'member');
+
+    expect(reidentified.id).toBe('workspace:member');
+    expect(reidentified.label).toBe('member');
+    expect(reidentified.dependencies).toBe(root.dependencies);
+    expect(reidentified.children?.[0]).toMatchObject({
+      id: 'workspace:member:cas:child',
+      parent_id: 'workspace:member',
+      nodes: child.nodes,
+    });
+    expect(reidentified.nodes[0]).toMatchObject({
+      id: 'workspace:member:cas:child',
+      metadata: { attributes: { cas_id: 'workspace:member:cas:child' } },
+    });
+    expect(reidentified.edges[0]).toMatchObject({
+      source: 'workspace:member',
+      target: 'workspace:member:cas:child',
+    });
+    expect(validateCasTree(reidentified).valid).toBe(true);
+    expect(root.id).toBe('cas:root');
+    expect(child.id).toBe('cas:child');
   });
 });

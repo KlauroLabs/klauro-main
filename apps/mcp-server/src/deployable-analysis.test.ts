@@ -555,15 +555,54 @@ test('resolveSubCasNodeScope: looks up a unit by id, undefined for unknown/non-p
 
 test('sliceDeployableAnalysis: single-unit call still produces a CASOutput-shaped slice (no new object model)', () => {
   const cas = buildFixtureCas();
+  cas.dependencies = { manager: 'npm', packages: [{ name: 'dependency', version: '1.0.0', direct: true }] };
+  cas.external_services = [{ id: 'external', name: 'external', type: 'api' }];
+  cas.configuration = { environment_variables: [], config_files: [] } as any;
+  cas.runtime = { platform: 'node', version: '22' } as any;
   const apiEvidence = cas.deployable_evidence!.find(e => e.name === 'api')!;
   const slice = sliceDeployableAnalysis(cas, apiEvidence);
 
   assert.equal(slice.unit_name, 'api');
   assert.equal(slice.root_path, 'apps/api');
+  assert.equal(slice.slice.id, slice.sub_cas_node_id);
+  assert.equal(slice.slice.parent_id, 'cas:sys1');
+  assert.equal(slice.slice.analysis_id, `test-analysis:${slice.sub_cas_node_id}`);
   assert.ok(Array.isArray(slice.slice.nodes));
   assert.ok(Array.isArray(slice.slice.edges));
   assert.ok(Array.isArray(slice.slice.entry_points));
-  assert.equal(slice.slice.system, cas.system);
+  assert.equal(slice.slice.system.name, 'api');
+  assert.equal(slice.slice.system.root_path, 'apps/api');
+  assert.equal(slice.slice.dependencies, cas.dependencies);
+  assert.equal(slice.slice.external_services, cas.external_services);
+  assert.equal(slice.slice.configuration, cas.configuration);
+  assert.equal(slice.slice.runtime, cas.runtime);
+});
+
+test('materialization preserves authoritative recursive children instead of replacing them with derived deployables', () => {
+  const cas = buildFixtureCas();
+  const child: CASOutput = {
+    cas_version: cas.cas_version,
+    id: 'authoritative-child',
+    parent_id: 'cas:sys1',
+    label: 'authoritative child',
+    analysis_timestamp: cas.analysis_timestamp,
+    analysis_id: 'authoritative-child-analysis',
+    system: { id: 'child-system', name: 'child', type: 'service', root_path: 'apps/child' },
+    nodes: [node('C1', 'apps/child/index.ts')],
+    edges: [],
+    analyzer_contributions: [],
+    progressive_levels: { total_levels: 1 },
+  };
+  cas.id = 'cas:sys1';
+  cas.children = [child];
+  cas.composition_mode = 'composed';
+
+  const tree = materializeDeployableCasTree(cas);
+
+  assert.equal(tree.composition_mode, 'composed');
+  assert.equal(tree.children?.length, 1);
+  assert.equal(tree.children?.[0].id, 'authoritative-child');
+  assert.deepEqual(tree.children?.[0].nodes, child.nodes);
 });
 
 // ---------------------------------------------------------------------------

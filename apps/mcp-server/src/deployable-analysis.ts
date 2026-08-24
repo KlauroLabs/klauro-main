@@ -23,6 +23,7 @@ import {
 import { assertValidCasTree } from '../../../packages/analyzer-core/src/analyzer/core/recursive-cas';
 import { buildCasTerminality } from '../../../packages/analyzer-core/src/analyzer/core/terminality';
 import { deployableAnalysisCache } from './deployable-analysis-cache';
+import { projectCasChild, type CASChildProjectedValues } from './cas-child-projection';
 
 
 
@@ -1159,49 +1160,7 @@ export interface SubCasNodeSlice {
 
 
 
-  slice: Pick<
-    CASOutput,
-    | 'cas_version'
-    | 'analyzer_build'
-    | 'analysis_timestamp'
-    | 'analysis_id'
-    | 'system'
-    | 'nodes'
-    | 'edges'
-    | 'entry_points'
-    | 'exit_points'
-    | 'entities'
-    | 'data_lineage'
-    | 'capabilities'
-    | 'flows'
-    | 'steps'
-    | 'behavior_surfaces'
-    | 'flow_graph'
-    | 'user_journeys'
-    | 'communication_seams'
-    | 'method_calls'
-    | 'call_chains'
-    | 'intents'
-    | 'change_risks'
-    | 'change_risk_summary'
-    | 'behavioral_invariants'
-    | 'behavioral_invariant_summary'
-    | 'security_boundaries'
-    | 'security_summary'
-    | 'security_contexts'
-    | 'flow_coverage'
-    | 'test_gaps'
-    | 'temporal_stability'
-    | 'stability_summary'
-    | 'test_suites'
-    | 'test_summary'
-    | 'idiom_violations'
-    | 'principle_violations'
-    | 'module_health'
-    | 'analysis_facts'
-    | 'runtime_static_links'
-    | 'terminality'
-  > & { deployable_evidence: DeployableEvidence[] };
+  slice: CASOutput;
 }
 
 export interface BuildDeployableAnalysesResult {
@@ -1215,25 +1174,10 @@ function rootCasId(cas: CASOutput): string {
   return `cas:${cas.system.id || cas.analysis_id}`;
 }
 
-function omitUndefined<T extends object>(value: T): T {
-  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined)) as T;
-}
-
 function buildDeployableChildCas(parent: CASOutput, unit: SubCasNodeSlice): CASOutput {
   return {
-    id: unit.sub_cas_node_id,
+    ...unit.slice,
     parent_id: rootCasId(parent),
-    label: unit.unit_name,
-    ...omitUndefined(unit.slice),
-    analysis_id: `${parent.analysis_id}:${unit.sub_cas_node_id}`,
-    system: {
-      ...parent.system,
-      id: `${parent.system.id || rootCasId(parent)}:${unit.sub_cas_node_id}`,
-      name: unit.unit_name,
-      root_path: unit.root_path,
-    },
-    analyzer_contributions: parent.analyzer_contributions,
-    progressive_levels: parent.progressive_levels,
   };
 }
 
@@ -1253,6 +1197,7 @@ export function materializeDeployableCasRoot(cas: CASOutput, id = rootCasId(cas)
 export interface PreparedDeployableCasProjection {
   root: CASOutput;
   analysis: BuildDeployableAnalysesResult;
+  children: readonly CASOutput[];
 }
 
 export function prepareDeployableCasProjection(cas: CASOutput, id = rootCasId(cas)): PreparedDeployableCasProjection {
@@ -1264,17 +1209,28 @@ export function prepareDeployableCasProjection(cas: CASOutput, id = rootCasId(ca
     label: cas.label || cas.system.name,
   };
   const result = getCachedDeployableAnalyses(root);
+  if (cas.children && cas.children.length > 0) {
+    root.composition_mode = cas.composition_mode;
+    return {
+      root,
+      analysis: result,
+      children: cas.children.map(child => ({ ...child, parent_id: id })),
+    };
+  }
   if (!result.promoted) {
-    return { root, analysis: result };
+    return { root, analysis: result, children: [] };
   }
   root.composition_mode = 'derived';
-  return { root, analysis: result };
+  return {
+    root,
+    analysis: result,
+    children: result.units.map(unit => buildDeployableChildCas(root, unit)),
+  };
 }
 
 export function* iterateDeployableChildCas(cas: CASOutput, prepared?: PreparedDeployableCasProjection): Generator<CASOutput> {
-  const { root, analysis: result } = prepared || prepareDeployableCasProjection(cas);
-  if (!result.promoted) return;
-  for (const unit of result.units) yield buildDeployableChildCas(root, unit);
+  const { children } = prepared || prepareDeployableCasProjection(cas);
+  yield* children;
 }
 export function sliceDeployableAnalysis(cas: CASOutput, deployable: DeployableEvidence): SubCasNodeSlice {
   const allEvidence = cas.deployable_evidence || [];
@@ -1341,12 +1297,7 @@ export function sliceDeployableAnalysis(cas: CASOutput, deployable: DeployableEv
     Boolean(gap.location.call_chain_id && callChainIds.has(gap.location.call_chain_id)),
   );
   const idiomViolations = filterIdiomViolations(cas.idiom_violations, reachable, reachableFiles);
-  const scopedSlice: SubCasNodeSlice['slice'] = {
-    cas_version: cas.cas_version,
-    analyzer_build: cas.analyzer_build,
-    analysis_timestamp: cas.analysis_timestamp,
-    analysis_id: cas.analysis_id,
-    system: cas.system,
+  const projected: CASChildProjectedValues = {
     nodes,
     edges,
     entry_points: seedEntryPoints,
@@ -1399,7 +1350,6 @@ export function sliceDeployableAnalysis(cas: CASOutput, deployable: DeployableEv
       legacy_areas: (cas.stability_summary?.legacy_areas || []).filter(file => reachableFiles.has(file)),
     } : undefined,
     test_suites: testSuites,
-    test_summary: undefined,
     idiom_violations: idiomViolations,
     principle_violations: (cas.principle_violations || []).filter(violation => reachable.has(violation.node_id) || reachableFiles.has(violation.file)),
     module_health: scopedModuleHealth(cas.module_health, reachableFiles),
@@ -1410,8 +1360,21 @@ export function sliceDeployableAnalysis(cas: CASOutput, deployable: DeployableEv
       reachable.has(link.static_id) || includedEntryPointIds.has(link.static_id) || includedExitPointIds.has(link.static_id) || callChainIds.has(link.static_id),
     ),
     deployable_evidence: [deployable, ...bundledMembersOf(deployable, allEvidence)],
+    terminality: undefined,
   };
-  scopedSlice.terminality = buildCasTerminality(scopedSlice as CASOutput);
+  const scopedSlice = projectCasChild(cas, {
+    id: unitId,
+    parent_id: rootCasId(cas),
+    label: deployable.name,
+    analysis_id: `${cas.analysis_id}:${unitId}`,
+    system: {
+      ...cas.system,
+      id: `${cas.system.id || rootCasId(cas)}:${unitId}`,
+      name: deployable.name,
+      root_path: deployable.root_path,
+    },
+  }, projected);
+  scopedSlice.terminality = buildCasTerminality(scopedSlice);
 
   return {
     sub_cas_node_id: unitId,
@@ -1855,5 +1818,5 @@ export function scopeCasToSubCasNode(cas: CASOutput, scope: SubCasNodeScopeParam
     const available = sub_cas_nodes.units.map(u => `${u.id} (${u.name})`).join(', ') || 'none';
     throw new Error(`Unknown scope.sub_cas_node_id '${scope.sub_cas_node_id}'. Available sub-CAS-node units for this analysis: ${available}.`);
   }
-  return { ...cas, ...unit.slice } as CASOutput;
+  return buildDeployableChildCas(cas, unit);
 }
