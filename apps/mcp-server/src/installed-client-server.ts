@@ -15,6 +15,7 @@ import * as watcher from './watcher';
 import { summarizeUploadManifest } from './upload-manifest-summary';
 import { boundToolPayload } from './response-budget';
 import { isInstalledToolName } from './installed-tool-registry';
+import { executeDurableRemoteOperation, type RemoteOperationKind } from './coordination/durable-remote-operations';
 export { summarizeUploadManifest } from './upload-manifest-summary';
 export { INSTALLED_TOOL_NAMES } from './installed-tool-registry';
 
@@ -173,6 +174,36 @@ async function hostedCoordinationCall(projectPath: string, route: string, body: 
   }, { operation });
   if (!response.ok) throw new Error(await describeHttpFailure(response, { url, operation }));
   return readHostedJson(response, { url, operation });
+}
+
+async function hostedDurableCoordinationCall(
+  projectPath: string,
+  workspace: string,
+  kind: RemoteOperationKind,
+  route: string,
+  body: Record<string, unknown>,
+) {
+  const { serverUrl, token } = await hostedServerAndToken(projectPath);
+  const result = await executeDurableRemoteOperation({
+    workspace,
+    baseUrl: serverUrl,
+    kind,
+    route,
+    body,
+    send: async (pendingRoute, pendingBody) => {
+      const url = `${serverUrl}${pendingRoute}`;
+      const operation = `POST ${pendingRoute}`;
+      const response = await hostedFetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify(pendingBody),
+      }, { operation });
+      if (!response.ok) throw new Error(await describeHttpFailure(response, { url, operation }));
+      return readHostedJson(response, { url, operation });
+    },
+  });
+  if (result.response !== undefined) return result.response;
+  throw new Error(`Hosted Fabric operation queued durably as ${result.operation_id}; ${result.pending} operation(s) pending. ${result.error ?? ''}`.trim());
 }
 
 async function hostedCoordinationGet(projectPath: string, route: string, params: Record<string, unknown> = {}) {
@@ -621,7 +652,7 @@ export function createServer(): McpServer {
     },
   }, async ({ path: projectPath, agent_id, intent, paths, symbols, workspace, agent_kind, ttl_ms }: any) => {
     const ws = await resolveCoordinationWorkspace(projectPath, workspace);
-    const result: any = await hostedCoordinationCall(projectPath, '/v1/coordination/claim', {
+    const result: any = await hostedDurableCoordinationCall(projectPath, ws, 'claim', '/v1/coordination/claim', {
       mode: 'advisory', workspace: ws, agent_id, intent, paths: paths || [], symbols: symbols || [],
       agent_kind: agent_kind || 'claude', ttl_ms,
     });
@@ -641,7 +672,7 @@ export function createServer(): McpServer {
     const mine = (active?.active || []).find((c: any) => c.agent_id === agent_id);
     const paths = [...new Set([...(mine?.paths || []), ...(add_paths || [])])];
     const symbols = [...new Set([...(mine?.symbols || []), ...(add_symbols || [])])];
-    const result: any = await hostedCoordinationCall(projectPath, '/v1/coordination/claim', {
+    const result: any = await hostedDurableCoordinationCall(projectPath, ws, 'extend', '/v1/coordination/claim', {
       mode: 'advisory', workspace: ws, agent_id, intent: mine?.intent || '',
       claim_id: mine?.claim_id, paths, symbols, agent_kind: mine?.agent_kind || 'claude',
     });
@@ -669,7 +700,7 @@ export function createServer(): McpServer {
     },
   }, async ({ path: projectPath, agent_id, workspace }: any) => {
     const ws = await resolveCoordinationWorkspace(projectPath, workspace);
-    const result = await hostedCoordinationCall(projectPath, '/v1/coordination/release', { workspace: ws, agent_id });
+    const result = await hostedDurableCoordinationCall(projectPath, ws, 'release', '/v1/coordination/release', { workspace: ws, agent_id });
     return json({ ...(result as any), workspace: ws });
   });
 

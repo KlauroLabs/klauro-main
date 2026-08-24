@@ -118,6 +118,8 @@ function publicParticipantSnapshot(snapshot: ParticipantInFlightSnapshot) {
     base_commit: snapshot.base_commit,
     branch: snapshot.branch,
     updated_at: snapshot.updated_at,
+    captured_at: snapshot.captured_at,
+    participant_revision: snapshot.participant_revision,
     attribution_source: snapshot.attribution_source,
     changes_count: snapshot.changes?.length ?? 0,
     changes: snapshot.changes ?? [],
@@ -1063,6 +1065,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           status?: 'active' | 'released';
           version?: number;
           kind?: ClaimLogEntry['kind'];
+          operation_id?: string;
 
           produces?: DeclaredContract[];
           consumes?: string[];
@@ -1102,6 +1105,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
             status: body.status === 'released' ? 'released' : 'active',
             version: typeof body.version === 'number' ? body.version : undefined,
             kind: body.kind,
+            operation_id: body.operation_id,
             created_at: now,
             ttl_ms: body.ttl_ms ?? REMOTE_ADVISORY_DEFAULT_TTL_MS,
             heartbeat_at: now,
@@ -1280,6 +1284,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           add_produces?: DeclaredContract[];
           add_consumes?: string[];
           concept?: ConceptualCoordinate;
+          operation_id?: string;
         }>(request, maxBodyBytes);
         if (!body.workspace || !body.claim_id) {
           writeJson(response, 400, { status: 'error', error: 'workspace and claim_id are required' });
@@ -1291,7 +1296,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           body.claim_id,
           body.add_paths ?? [],
           body.add_symbols ?? [],
-          { produces: body.add_produces, consumes: body.add_consumes, concept: body.concept }
+          { produces: body.add_produces, consumes: body.add_consumes, concept: body.concept, operationId: body.operation_id }
         );
         broadcastCoordinationEvent(body.workspace, 'extend', {
           claim_id: outcome.claim.claim_id,
@@ -1609,6 +1614,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           base_commit?: string; branch?: string; diff_context: string;
           attribution_source?: InFlightAttributionSource;
           changes?: SymbolChange[];
+          captured_at?: string; participant_revision?: number; operation_id?: string;
         }>(request, maxBodyBytes);
         if (!body.workspace || !body.agent_id) {
           writeJson(response, 400, { status: 'error', error: 'workspace and agent_id are required' });
@@ -1643,15 +1649,35 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           branch: body.branch,
           diff_context: body.diff_context,
           updated_at: new Date().toISOString(),
+          captured_at: body.captured_at,
+          participant_revision: body.participant_revision,
+          operation_id: body.operation_id,
           attribution_source: attributionSource,
           ...(redactedChanges !== undefined ? { changes: redactedChanges } : {}),
         };
-        await appendParticipantInFlightSnapshot(body.workspace, snapshot);
+        const persistence = await appendParticipantInFlightSnapshot(body.workspace, snapshot);
+        if (persistence.status === 'stale') {
+          writeJson(response, 409, {
+            status: 'stale_revision',
+            participant_revision: body.participant_revision,
+            current_revision: persistence.participant_revision,
+          });
+          return;
+        }
+        if (persistence.status === 'duplicate') {
+          writeJson(response, 200, {
+            status: 'duplicate',
+            participant_revision: persistence.participant_revision,
+          });
+          return;
+        }
         broadcastCoordinationEvent(body.workspace, 'in-flight', {
           agent_id: snapshot.agent_id,
           base_commit: snapshot.base_commit,
           branch: snapshot.branch,
           updated_at: snapshot.updated_at,
+          captured_at: snapshot.captured_at,
+          participant_revision: snapshot.participant_revision,
           attribution_source: snapshot.attribution_source,
           changes_count: redactedChanges?.length,
           changes: redactedChanges ?? [],
@@ -1671,7 +1697,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           changes_kept: redactedChanges?.length ?? 0,
           changes_dropped: droppedChangeCount,
         });
-        writeJson(response, 200, { status: 'success' });
+        writeJson(response, 200, { status: 'success', participant_revision: snapshot.participant_revision });
         return;
       }
 

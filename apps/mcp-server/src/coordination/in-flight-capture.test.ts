@@ -80,7 +80,7 @@ test('captureInFlightChanges: new function is reported as an add', async () => {
   }
 });
 
-test('captureInFlightChanges: unchanged body-only edits produce no signature-level change for that symbol', async () => {
+test('captureInFlightChanges: body-only edits remain attributed to the containing symbol', async () => {
   const repo = await freshGitRepo();
   try {
     await fsp.writeFile(
@@ -99,7 +99,39 @@ test('captureInFlightChanges: unchanged body-only edits produce no signature-lev
 
     const changes = await captureInFlightChanges({ repoPath: repo });
     const addChange = changes.find((c) => c.name === 'add');
-    assert.equal(addChange, undefined, 'a pure comment/body-only edit with unchanged signature should not surface a signature-level change');
+    assert.ok(addChange);
+    assert.equal(addChange.change_kind, 'body');
+  } finally {
+    await fsp.rm(repo, { recursive: true, force: true });
+  }
+});
+
+test('captureInFlightChanges: unsupported changed files remain visible as file-level deltas', async () => {
+  const repo = await freshGitRepo();
+  try {
+    await fsp.writeFile(path.join(repo, 'service.yaml'), 'enabled: false\n', 'utf8');
+    await commitAll(repo, 'initial');
+    await fsp.writeFile(path.join(repo, 'service.yaml'), 'enabled: true\n', 'utf8');
+    const changes = await captureInFlightChanges({ repoPath: repo });
+    assert.deepEqual(changes.map((change) => ({ file: change.file, kind: change.change_kind })), [
+      { file: 'service.yaml', kind: 'body' },
+    ]);
+  } finally {
+    await fsp.rm(repo, { recursive: true, force: true });
+  }
+});
+
+test('captureInFlightChanges: structural parse bounds degrade overflow files without omitting them', async () => {
+  const repo = await freshGitRepo();
+  try {
+    await fsp.writeFile(path.join(repo, 'a.ts'), 'export const a = () => 1;\n', 'utf8');
+    await fsp.writeFile(path.join(repo, 'b.ts'), 'export const b = () => 1;\n', 'utf8');
+    await commitAll(repo, 'initial');
+    await fsp.writeFile(path.join(repo, 'a.ts'), 'export const a = () => 2;\n', 'utf8');
+    await fsp.writeFile(path.join(repo, 'b.ts'), 'export const b = () => 2;\n', 'utf8');
+    const changes = await captureInFlightChanges({ repoPath: repo, maxFiles: 1 });
+    assert.deepEqual(new Set(changes.map((change) => change.file)), new Set(['a.ts', 'b.ts']));
+    assert.ok(changes.some((change) => change.file === 'b.ts' && change.name === 'b.ts'));
   } finally {
     await fsp.rm(repo, { recursive: true, force: true });
   }
@@ -139,12 +171,6 @@ test('integration: two agents\' AMBIENT snapshots (one drops getUser nullability
     );
     const changesA = await captureInFlightChanges({ repoPath: repoA });
 
-    // Agent B's repo: a caller of getUser is concurrently edited — its own
-    // signature changes too (a new `locale` param), which is what makes this
-    // an ambiently-CAPTURED SymbolChange for renderProfile (a pure body-only
-    // edit with unchanged signature wouldn't register at all with a
-    // syntactic signature extractor — see the "unchanged body-only edits"
-    // test above). B never coordinated with A about getUser's contract.
     const beforeProfile = `export function renderProfile(id: string) {\n  const user = getUser(id);\n  if (!user) return null;\n  return user.name;\n}\n`;
     await fsp.writeFile(path.join(repoB, 'profile.ts'), beforeProfile, 'utf8');
     await commitAll(repoB, 'initial');

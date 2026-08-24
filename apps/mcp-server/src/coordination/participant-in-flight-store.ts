@@ -14,6 +14,9 @@ export interface ParticipantInFlightSnapshot {
   branch?: string;
   diff_context: string;
   updated_at: string;
+  captured_at?: string;
+  participant_revision?: number;
+  operation_id?: string;
   attribution_source: InFlightAttributionSource;
   changes?: SymbolChange[];
 }
@@ -58,7 +61,13 @@ function latestByAgent(snapshots: ParticipantInFlightSnapshot[]): ParticipantInF
   const latest = new Map<string, ParticipantInFlightSnapshot>();
   for (const snapshot of snapshots) {
     const current = latest.get(snapshot.agent_id);
-    if (!current || Date.parse(snapshot.updated_at) >= Date.parse(current.updated_at)) {
+    const currentRevision = current?.participant_revision;
+    const snapshotRevision = snapshot.participant_revision;
+    const isNewer = current === undefined
+      || (snapshotRevision !== undefined && currentRevision !== undefined && snapshotRevision > currentRevision)
+      || (snapshotRevision !== undefined && currentRevision === undefined)
+      || (snapshotRevision === undefined && currentRevision === undefined && Date.parse(snapshot.updated_at) >= Date.parse(current.updated_at));
+    if (isNewer) {
       latest.set(snapshot.agent_id, snapshot);
     }
   }
@@ -68,17 +77,36 @@ function latestByAgent(snapshots: ParticipantInFlightSnapshot[]): ParticipantInF
 export async function appendParticipantInFlightSnapshot(
   workspaceId: string,
   snapshot: ParticipantInFlightSnapshot
-): Promise<void> {
+): Promise<{ status: 'accepted' | 'duplicate' | 'stale'; participant_revision?: number }> {
   if (snapshot.workspace !== workspaceId) throw new Error('Snapshot workspace does not match the target workspace');
-  await withWorkspaceLock(workspaceId, async () => {
+  return withWorkspaceLock(workspaceId, async () => {
     const file = logPath(workspaceId);
+    const current = latestByAgent(await readAll(workspaceId)).find((entry) => entry.agent_id === snapshot.agent_id);
+    if (
+      snapshot.participant_revision !== undefined &&
+      current?.participant_revision !== undefined &&
+      snapshot.participant_revision <= current.participant_revision
+    ) {
+      return {
+        status:
+          snapshot.participant_revision === current.participant_revision &&
+          snapshot.operation_id !== undefined &&
+          snapshot.operation_id === current.operation_id
+            ? 'duplicate'
+            : 'stale',
+        participant_revision: current.participant_revision,
+      };
+    }
     await fsp.appendFile(file, `${JSON.stringify(snapshot)}\n`, 'utf8');
     const stat = await fsp.stat(file);
-    if (stat.size <= COMPACT_AFTER_BYTES) return;
+    if (stat.size <= COMPACT_AFTER_BYTES) {
+      return { status: 'accepted', participant_revision: snapshot.participant_revision };
+    }
     const compacted = latestByAgent(await readAll(workspaceId));
     const replacement = `${file}.compact-${process.pid}-${Date.now()}`;
     await fsp.writeFile(replacement, compacted.map((entry) => JSON.stringify(entry)).join('\n') + '\n', 'utf8');
     await fsp.rename(replacement, file);
+    return { status: 'accepted', participant_revision: snapshot.participant_revision };
   });
 }
 

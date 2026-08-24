@@ -450,16 +450,15 @@ async function primeCacheAfterWrite(logPath: string, entries: ClaimLogEntry[]): 
 
 
 
-
-
-
-
-
 async function appendClaimLocked(
   workspaceId: string,
   claim: Omit<WorkClaim, 'seq'> & { seq?: number; kind?: ClaimLogEntry['kind']; surprise?: ClaimLogEntry['surprise']; candidate_agent_ids?: string[] },
   existing: ClaimLogEntry[]
 ): Promise<ClaimLogEntry> {
+  if (claim.operation_id) {
+    const replay = existing.find((entry) => entry.operation_id === claim.operation_id);
+    if (replay) return replay;
+  }
   const nextSeq = existing.reduce((max, e) => Math.max(max, e.seq), 0) + 1;
 
 
@@ -747,7 +746,7 @@ export async function releaseAgent(workspaceId: string, agentId: string): Promis
     const now = new Date().toISOString();
     const released: ClaimLogEntry[] = [];
     for (const c of mine) {
-      const { seq: _priorSeq, version: _priorVersion, ...rest } = c as ClaimLogEntry;
+      const { seq: _priorSeq, version: _priorVersion, operation_id: _operationId, ...rest } = c as ClaimLogEntry;
       released.push(
         await appendClaimLocked(workspaceId, { ...rest, status: 'released', heartbeat_at: now }, existing)
       );
@@ -780,7 +779,7 @@ export async function releaseClaimById(
     const now = new Date(nowMs).toISOString();
 
 
-    const { seq: _priorSeq, version: _priorVersion, ...rest } = active as ClaimLogEntry;
+    const { seq: _priorSeq, version: _priorVersion, operation_id: _operationId, ...rest } = active as ClaimLogEntry;
     return append({ ...rest, status: 'released', heartbeat_at: now });
   });
 }
@@ -1114,14 +1113,7 @@ export async function extendClaim(
   claimId: string,
   addPaths: string[],
   addSymbols: string[] = [],
-
-
-
-
-
-
-
-  addContracts: { produces?: DeclaredContract[]; consumes?: string[]; concept?: ConceptualCoordinate } = {}
+  addContracts: { produces?: DeclaredContract[]; consumes?: string[]; concept?: ConceptualCoordinate; operationId?: string } = {}
 ): Promise<{ claim: ClaimLogEntry; conflicts: EditLockConflict[] }> {
   return withWorkspaceLock(workspaceId, async ({ log, append }) => {
     const nowMs = Date.now();
@@ -1175,6 +1167,7 @@ export async function extendClaim(
       base_commit: prior.base_commit,
       branch: prior.branch,
       org_id: prior.org_id,
+      operation_id: addContracts.operationId,
       ...mergedContractFields(prior, addContracts),
     });
     return { claim: entry, conflicts };

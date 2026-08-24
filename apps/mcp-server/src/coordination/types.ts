@@ -116,6 +116,7 @@ export interface WorkClaim {
 
 
   version?: number;
+  operation_id?: string;
   workspace_id: string;
   agent_id: string;
   agent_kind: AgentKind;

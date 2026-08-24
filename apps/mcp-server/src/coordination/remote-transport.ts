@@ -27,6 +27,7 @@ import type { EditLockConflict } from './local-store';
 import type { SymbolChange } from './conceptual-conflict';
 import type { InFlightAttributionSource } from './participant-in-flight-store';
 import type { MergelessMetrics } from './mergeless-metrics';
+import { executeDurableRemoteOperation, type RemoteOperationKind } from './durable-remote-operations';
 
 
 export interface RemoteFabConfig {
@@ -144,6 +145,8 @@ export interface RemoteActiveResult {
     base_commit: string;
     branch?: string;
     updated_at: string;
+    captured_at?: string;
+    participant_revision?: number;
     attribution_source: InFlightAttributionSource;
     changes_count: number;
     changes: SymbolChange[];
@@ -185,6 +188,30 @@ async function request<T>(config: RemoteFabConfig, method: 'GET' | 'POST', route
   }
 }
 
+async function durableRequest<T>(
+  config: RemoteFabConfig,
+  workspace: string,
+  kind: RemoteOperationKind,
+  route: string,
+  body: Record<string, unknown> | ((sequence: number) => Record<string, unknown>),
+  coalesceKey?: string,
+): Promise<T> {
+  const result = await executeDurableRemoteOperation<T>({
+    workspace,
+    baseUrl: config.baseUrl,
+    kind,
+    route,
+    body,
+    coalesceKey,
+    send: (pendingRoute, pendingBody) => request(config, 'POST', pendingRoute, pendingBody),
+  });
+  if (result.response !== undefined) return result.response;
+  throw new RemoteFabricError(
+    `remote fabric operation queued durably as ${result.operation_id}; ${result.pending} operation(s) pending`,
+    result.error,
+  );
+}
+
 
 export async function remoteClaim(
   config: RemoteFabConfig,
@@ -202,7 +229,7 @@ export async function remoteClaim(
     concept?: ConceptualCoordinate;
   }
 ): Promise<RemoteClaimResult> {
-  return request<RemoteClaimResult>(config, 'POST', '/v1/coordination/claim', {
+  return durableRequest<RemoteClaimResult>(config, input.workspace, 'claim', '/v1/coordination/claim', {
     mode: 'advisory',
     workspace: input.workspace,
     agent_id: input.agentId,
@@ -245,7 +272,7 @@ export async function remoteExtend(
     concept?: ConceptualCoordinate;
   }
 ): Promise<RemoteExtendResult> {
-  return request<RemoteExtendResult>(config, 'POST', '/v1/coordination/extend', {
+  return durableRequest<RemoteExtendResult>(config, input.workspace, 'extend', '/v1/coordination/extend', {
     workspace: input.workspace,
     claim_id: input.claimId,
     add_paths: input.addPaths ?? [],
@@ -273,10 +300,50 @@ export async function remoteRelease(
   config: RemoteFabConfig,
   input: { workspace: string; agentId: string }
 ): Promise<RemoteReleaseResult> {
-  return request<RemoteReleaseResult>(config, 'POST', '/v1/coordination/release', {
+  return durableRequest<RemoteReleaseResult>(config, input.workspace, 'release', '/v1/coordination/release', {
     workspace: input.workspace,
     agent_id: input.agentId,
   });
+}
+
+export interface RemoteInFlightResult {
+  status: 'success' | 'duplicate';
+  participant_revision: number;
+}
+
+export async function remotePublishInFlight(
+  config: RemoteFabConfig,
+  input: {
+    workspace: string;
+    agentId: string;
+    orgId?: string;
+    baseCommit?: string;
+    branch?: string;
+    attributionSource: InFlightAttributionSource;
+    diffContext: string;
+    changes?: SymbolChange[];
+    capturedAt: string;
+  },
+): Promise<RemoteInFlightResult> {
+  return durableRequest<RemoteInFlightResult>(
+    config,
+    input.workspace,
+    'in-flight',
+    '/v1/coordination/in-flight',
+    (sequence) => ({
+      workspace: input.workspace,
+      agent_id: input.agentId,
+      org_id: input.orgId,
+      base_commit: input.baseCommit,
+      branch: input.branch,
+      attribution_source: input.attributionSource,
+      diff_context: input.diffContext,
+      changes: input.changes,
+      captured_at: input.capturedAt,
+      participant_revision: sequence,
+    }),
+    input.agentId,
+  );
 }
 
 

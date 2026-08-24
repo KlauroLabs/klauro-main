@@ -22,6 +22,7 @@ import * as fs from 'node:fs';
 import { loadRedactionRules, redactInFlightDiff, redactInFlightChanges, type InFlightDiffFile } from './security';
 import type { SymbolChange } from './conceptual-conflict';
 import type { InFlightAttributionSource } from './participant-in-flight-store';
+import { RemoteFabricError, remotePublishInFlight } from './remote-transport';
 
 
 export interface PublishInFlightResult {
@@ -84,40 +85,24 @@ export async function publishInFlight(
   const { kept, dropped } = redactInFlightDiff(diffFiles, rules, { diffOnly: options.diffOnly });
   const { kept: keptChanges, dropped: droppedChanges } = redactInFlightChanges(extra.changes ?? [], rules);
 
-  let response: Response;
   try {
-    response = await fetch(`${baseUrl.replace(/\/+$/, '')}/v1/coordination/in-flight`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...(token ? { authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify({
-        workspace: workspaceId,
-        agent_id: agentId,
-        org_id: options.orgId,
-        base_commit: extra.baseCommit,
-        branch: extra.branch,
-        attribution_source: options.attributionSource ?? 'workspace-tree',
-        diff_context: JSON.stringify({ files: kept, dropped_count: dropped.length }),
-        ...(extra.changes !== undefined ? { changes: keptChanges } : {}),
-      }),
+    await remotePublishInFlight({ baseUrl, token }, {
+      workspace: workspaceId,
+      agentId,
+      orgId: options.orgId,
+      baseCommit: extra.baseCommit,
+      branch: extra.branch,
+      attributionSource: options.attributionSource ?? 'workspace-tree',
+      diffContext: JSON.stringify({ files: kept, dropped_count: dropped.length }),
+      ...(extra.changes !== undefined ? { changes: keptChanges } : {}),
+      capturedAt: new Date().toISOString(),
     });
   } catch (err) {
-    throw new InFlightPublishError(`publishInFlight: network error POSTing to ${baseUrl}`, err);
+    const detail = err instanceof RemoteFabricError ? err.message : `remote operation failed: ${String(err)}`;
+    throw new InFlightPublishError(`publishInFlight: ${detail}`, err);
   }
-  if (!response.ok) {
-    let bodyText: string | undefined;
-    try {
-      bodyText = await response.text();
-    } catch {
-
-    }
-    throw new InFlightPublishError(`publishInFlight: remote responded ${response.status}`, bodyText);
-  }
-  const parsed = (await response.json()) as { status: 'success' };
   return {
-    status: parsed.status,
+    status: 'success',
     workspace: workspaceId,
     agent_id: agentId,
     kept_files: kept.length,
@@ -168,10 +153,18 @@ export function startInFlightWatcher(
   const debounceMs = options.debounceMs ?? 2000;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let stopped = false;
+  let running = false;
+  let pending = false;
 
-  const flush = () => {
+  const flush = async () => {
     if (stopped) return;
-    void (async () => {
+    if (running) {
+      pending = true;
+      return;
+    }
+    running = true;
+    do {
+      pending = false;
       try {
         const [diffFiles, changes] = await Promise.all([
           buildDiff(),
@@ -191,13 +184,14 @@ export function startInFlightWatcher(
       } catch (err) {
         options.onError?.(err);
       }
-    })();
+    } while (!stopped && pending);
+    running = false;
   };
 
   const schedule = () => {
     if (stopped) return;
     if (timer) clearTimeout(timer);
-    timer = setTimeout(flush, debounceMs);
+    timer = setTimeout(() => void flush(), debounceMs);
   };
 
   const watcher = fs.watch(projectRoot, { recursive: true }, () => schedule());

@@ -10,8 +10,17 @@ import { InFlightPublishError, publishInFlight, startInFlightWatcher } from './i
 import type { InFlightDiffFile } from './security';
 import type { SymbolChange } from './conceptual-conflict';
 
+let coordinationDir: string | undefined;
+
+test.afterEach(async () => {
+  if (coordinationDir) await fsp.rm(coordinationDir, { recursive: true, force: true });
+  coordinationDir = undefined;
+});
+
 async function freshProjectDir(withIgnore?: string): Promise<string> {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'klauro-inflight-test-'));
+  coordinationDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'klauro-inflight-coordination-'));
+  process.env.KLAURO_COORD_DIR = coordinationDir;
   if (withIgnore !== undefined) {
     await fsp.writeFile(path.join(dir, '.klauroignore'), withIgnore, 'utf8');
   }
@@ -20,7 +29,7 @@ async function freshProjectDir(withIgnore?: string): Promise<string> {
 
 /** A tiny throwaway HTTP server standing in for POST /v1/coordination/in-flight. */
 async function startThrowawayServer(
-  handler: (req: http.IncomingMessage, body: any) => { status: number; body: unknown }
+  handler: (req: http.IncomingMessage, body: any) => { status: number; body: unknown } | Promise<{ status: number; body: unknown }>
 ): Promise<{ baseUrl: string; close: () => Promise<void>; requests: Array<{ url: string; rawBody: string; body: any }> }> {
   const requests: Array<{ url: string; rawBody: string; body: any }> = [];
   const server = http.createServer(async (req, res) => {
@@ -29,7 +38,7 @@ async function startThrowawayServer(
     const rawBody = Buffer.concat(chunks).toString('utf8');
     const body = rawBody ? JSON.parse(rawBody) : undefined;
     requests.push({ url: req.url || '', rawBody, body });
-    const result = handler(req, body);
+    const result = await handler(req, body);
     res.writeHead(result.status, { 'content-type': 'application/json' });
     res.end(JSON.stringify(result.body));
   });
@@ -263,6 +272,47 @@ test('startInFlightWatcher debounces filesystem changes into a single publish ca
     assert.equal(server.requests.length, 1);
   } finally {
     stop();
+    await server.close();
+    await fsp.rm(projectDir, { recursive: true, force: true });
+  }
+});
+
+test('startInFlightWatcher serializes a change that arrives during publication', async () => {
+  const projectDir = await freshProjectDir();
+  let releaseFirst!: () => void;
+  const firstBlocked = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  let concurrent = 0;
+  let maxConcurrent = 0;
+  let requests = 0;
+  const server = await startThrowawayServer(async () => {
+    requests += 1;
+    concurrent += 1;
+    maxConcurrent = Math.max(maxConcurrent, concurrent);
+    if (requests === 1) await firstBlocked;
+    concurrent -= 1;
+    return { status: 200, body: { status: 'success' } };
+  });
+  const { stop } = startInFlightWatcher(
+    projectDir,
+    server.baseUrl,
+    undefined,
+    'ws-serialized',
+    'agent-a',
+    () => [{ path: 'src/foo.ts', content: String(requests) }],
+    { debounceMs: 20 },
+  );
+  try {
+    await fsp.writeFile(path.join(projectDir, 'a.txt'), '1');
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    await fsp.writeFile(path.join(projectDir, 'a.txt'), '2');
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    releaseFirst();
+    await new Promise((resolve) => setTimeout(resolve, 160));
+    assert.equal(requests, 2);
+    assert.equal(maxConcurrent, 1);
+  } finally {
+    stop();
+    releaseFirst();
     await server.close();
     await fsp.rm(projectDir, { recursive: true, force: true });
   }

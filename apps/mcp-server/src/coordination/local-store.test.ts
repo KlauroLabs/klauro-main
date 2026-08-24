@@ -575,6 +575,18 @@ test('writer-owned version: appendClaim mints a monotonic per-claim version; a s
   await fsp.rm(dir, { recursive: true, force: true });
 });
 
+test('appendClaim returns the original entry when an operation id is retried', async () => {
+  const dir = await freshCoordDir();
+  const first = await appendClaim('ws-test', makeClaim({ claim_id: 'operation-claim', operation_id: 'operation-a' }));
+  const replay = await appendClaim('ws-test', makeClaim({ claim_id: 'operation-claim', operation_id: 'operation-a' }));
+  assert.equal(replay.seq, first.seq);
+  assert.equal((await readClaimLog('ws-test')).length, 1);
+  const released = await releaseAgent('ws-test', 'agent-a');
+  assert.equal(released.length, 1);
+  assert.equal((await getActiveClaims('ws-test')).length, 0);
+  await fsp.rm(dir, { recursive: true, force: true });
+});
+
 test('releaseAgent releases a TTL-expired claim (v3 §6.3 released_count:0 defect)', async () => {
   const dir = await freshCoordDir();
   // A claim that was definitely made, whose TTL lapsed before the agent released.

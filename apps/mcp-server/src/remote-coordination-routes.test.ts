@@ -274,6 +274,40 @@ test('two machines retain distinct semantic streams while editing the same symbo
   }
 });
 
+test('in-flight route acknowledges retries and rejects stale participant revisions', async () => {
+  const boot = await bootService();
+  const workspace = 'ws-in-flight-revisions';
+  const headers = { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` };
+  const publish = (participantRevision: number, symbolId: string) => fetch(`${boot.baseUrl}/v1/coordination/in-flight`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      workspace,
+      agent_id: 'agent-A',
+      base_commit: 'base',
+      diff_context: '{}',
+      attribution_source: 'participant-worktree',
+      participant_revision: participantRevision,
+      operation_id: `operation-${participantRevision}`,
+      captured_at: `2026-01-01T00:00:0${participantRevision}.000Z`,
+      changes: [{ symbol_id: symbolId, name: symbolId, file: 'src/shared.ts', change_kind: 'body' }],
+    }),
+  });
+  try {
+    assert.equal((await publish(2, 'new')).status, 200);
+    const duplicate = await publish(2, 'new');
+    assert.equal(duplicate.status, 200);
+    assert.equal((await duplicate.json() as { status: string }).status, 'duplicate');
+    assert.equal((await publish(1, 'old')).status, 409);
+    const active = await remoteActive({ baseUrl: boot.baseUrl, token: TOKEN }, workspace);
+    assert.equal(active.in_flight?.[0].participant_revision, 2);
+    assert.equal(active.in_flight?.[0].changes[0].symbol_id, 'new');
+  } finally {
+    boot.server.close();
+    boot.restoreEnv();
+  }
+});
+
 test('cross-machine advisory claims surface conceptual overlap across disjoint files', async () => {
   const boot = await bootService();
   const config = { baseUrl: boot.baseUrl, token: TOKEN };
@@ -416,6 +450,35 @@ test('20 concurrent remote claims across 2 simulated machines: none lost, distin
 
     const active = await remoteActive(config, ws);
     assert.equal(active.count, 20, 'all 20 claims are visible in the shared awareness view');
+  } finally {
+    boot.server.close();
+    boot.restoreEnv();
+  }
+});
+
+test('remote claim operation retries are idempotent', async () => {
+  const boot = await bootService();
+  const workspace = 'ws-idempotent-claim';
+  const headers = { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` };
+  const body = JSON.stringify({
+    mode: 'advisory',
+    workspace,
+    agent_id: 'agent-a',
+    intent: 'idempotent work',
+    paths: ['src/a.ts'],
+    operation_id: 'operation-a',
+  });
+  try {
+    const first = await fetch(`${boot.baseUrl}/v1/coordination/claim`, { method: 'POST', headers, body });
+    const second = await fetch(`${boot.baseUrl}/v1/coordination/claim`, { method: 'POST', headers, body });
+    assert.equal(first.status, 200);
+    assert.equal(second.status, 200);
+    const firstBody = await first.json() as { seq: number };
+    const secondBody = await second.json() as { seq: number };
+    assert.equal(secondBody.seq, firstBody.seq);
+    const active = await remoteActive({ baseUrl: boot.baseUrl, token: TOKEN }, workspace);
+    assert.equal(active.count, 1);
+    assert.equal(active.max_seq, firstBody.seq);
   } finally {
     boot.server.close();
     boot.restoreEnv();

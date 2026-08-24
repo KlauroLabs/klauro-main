@@ -146,6 +146,7 @@ interface ExtractedSymbol {
   nullable?: boolean;
   params: string[];
   kind: 'function' | 'method' | 'arrow';
+  body: string;
 }
 
 function scriptKindFor(file: string): ts.ScriptKind {
@@ -191,7 +192,8 @@ function extractSymbols(sourceText: string, file: string): ExtractedSymbol[] {
     kind: ExtractedSymbol['kind'],
     params: ts.NodeArray<ts.ParameterDeclaration>,
     returnTypeNode: ts.TypeNode | undefined,
-    fullSignatureText: string
+    fullSignatureText: string,
+    bodyText: string,
   ) {
     const return_type = typeNodeToString(returnTypeNode, sourceText);
     out.push({
@@ -202,24 +204,25 @@ function extractSymbols(sourceText: string, file: string): ExtractedSymbol[] {
       nullable: looksNullable(return_type),
       params: paramListToStrings(params, sourceText),
       kind,
+      body: bodyText,
     });
   }
 
   function visit(node: ts.Node, className?: string) {
     if (ts.isFunctionDeclaration(node) && node.name) {
       const sigEnd = node.body ? node.body.pos : node.end;
-      addFunctionLike(node.name.text, 'function', node.parameters, node.type, sourceText.slice(node.pos, sigEnd));
+      addFunctionLike(node.name.text, 'function', node.parameters, node.type, sourceText.slice(node.pos, sigEnd), node.body ? sourceText.slice(node.body.pos, node.body.end) : '');
     } else if (ts.isMethodDeclaration(node) && ts.isIdentifier(node.name)) {
       const sigEnd = node.body ? node.body.pos : node.end;
       const name = className ? `${className}.${node.name.text}` : node.name.text;
-      addFunctionLike(name, 'method', node.parameters, node.type, sourceText.slice(node.pos, sigEnd));
+      addFunctionLike(name, 'method', node.parameters, node.type, sourceText.slice(node.pos, sigEnd), node.body ? sourceText.slice(node.body.pos, node.body.end) : '');
     } else if (ts.isVariableStatement(node)) {
       for (const decl of node.declarationList.declarations) {
         if (!ts.isIdentifier(decl.name) || !decl.initializer) continue;
         if (ts.isArrowFunction(decl.initializer) || ts.isFunctionExpression(decl.initializer)) {
           const fn = decl.initializer;
           const sigEnd = fn.body ? fn.body.pos : fn.end;
-          addFunctionLike(decl.name.text, 'arrow', fn.parameters, fn.type, sourceText.slice(node.pos, sigEnd));
+          addFunctionLike(decl.name.text, 'arrow', fn.parameters, fn.type, sourceText.slice(node.pos, sigEnd), sourceText.slice(fn.body.pos, fn.body.end));
         }
       }
     }
@@ -256,7 +259,7 @@ function classifyChange(before: ExtractedSymbol, after: ExtractedSymbol): { kind
   if (before.signature !== after.signature) {
     return { kind: 'signature', changed: true };
   }
-  return { kind: 'body', changed: false };
+  return { kind: 'body', changed: before.body !== after.body };
 }
 
 
@@ -352,18 +355,19 @@ export async function captureInFlightChanges(opts: CaptureOpts): Promise<SymbolC
   let analyzed = 0;
 
   for (const { file, status } of changedFiles) {
-    if (opts.maxFiles !== undefined && analyzed >= opts.maxFiles) break;
     const ext = path.extname(file);
     if (!ANALYZABLE_EXTENSIONS.has(ext)) {
 
 
 
+      changes.push(...unknownChangeFallback(file, status));
       continue;
     }
-    analyzed++;
+    const parseStructurally = opts.maxFiles === undefined || analyzed < opts.maxFiles;
+    if (parseStructurally) analyzed++;
 
     if (status === 'deleted') {
-      if (TS_JS_EXTENSIONS.has(ext)) {
+      if (TS_JS_EXTENSIONS.has(ext) && parseStructurally) {
         const beforeText = await readBeforeContent(repoPath, baseRef, file);
         if (beforeText !== undefined) {
           changes.push(...diffTsJsFile(file, beforeText, undefined));
@@ -374,7 +378,7 @@ export async function captureInFlightChanges(opts: CaptureOpts): Promise<SymbolC
       continue;
     }
 
-    if (!TS_JS_EXTENSIONS.has(ext)) {
+    if (!TS_JS_EXTENSIONS.has(ext) || !parseStructurally) {
       changes.push(...unknownChangeFallback(file, status));
       continue;
     }
