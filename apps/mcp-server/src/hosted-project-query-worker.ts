@@ -5,7 +5,8 @@ import { unavailableComprehensionResponse } from './analysis-response-readiness'
 import type { HostedProjectQueryWorkerRequest } from './hosted-project-query-process';
 import { getAnalysisFileFingerprint, loadAnalysisProjection } from './storage';
 import type { CasSectionName } from './cas-sections';
-import { attachCasProjection } from './cas-projection';
+import { attachCasProjection, casProjection } from './cas-projection';
+import type { SubCasNodeIndex } from './deployable-analysis';
 
 if (!process.send) {
   process.stderr.write('hosted-project-query-worker must be started through child_process.fork.\n');
@@ -16,6 +17,7 @@ let cachedWorkspace = '';
 let cachedFingerprint = '';
 let cachedCas: CASOutput | undefined;
 let cachedSections = new Set<CasSectionName>();
+let cachedSubCasNodes: SubCasNodeIndex | undefined;
 let work = Promise.resolve();
 const WARM_SECTIONS: readonly CasSectionName[] = [
   'comprehension', 'tests', 'runtime', 'quality', 'supplemental',
@@ -56,6 +58,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
       if (cachedWorkspace !== request.workspace || cachedFingerprint !== fingerprint) {
         cachedCas = undefined;
         cachedSections = new Set<CasSectionName>();
+        cachedSubCasNodes = undefined;
       }
       const queryModule = request.type === 'query'
         ? await loadHostedProjectQueryModule()
@@ -64,31 +67,41 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
         ? [...queryModule!.hostedProjectQuerySections(request.tool, request.args as any)]
         : [...WARM_SECTIONS];
       const sameProfile = cachedSections.size === requiredSections.length
-        && requiredSections.every(section => cachedSections.has(section));
+        && requiredSections.every(section => cachedSections.has(section))
+        && (request.type !== 'analysis-status' || Boolean(cachedSubCasNodes));
       if (!cachedCas || !sameProfile) {
         cachedCas = undefined;
         cachedSections = new Set<CasSectionName>();
         const loadStartedAt = Date.now();
-        const loaded = await loadAnalysisProjection(request.workspace, requiredSections);
+        const loaded = await loadAnalysisProjection(request.workspace, requiredSections, {
+          require_sub_cas_index: request.type === 'analysis-status',
+        });
         debugMemory('sections');
         if (!loaded) throw new Error(`No analysis found for: ${request.workspace}. Run analyze_codebase first.`);
+        const persistedSubCasNodes = loaded.manifest.tree_projection?.format === 'recursive-cas-section-references'
+          ? loaded.manifest.tree_projection.sub_cas_nodes
+          : undefined;
+        if (persistedSubCasNodes) cachedSubCasNodes = persistedSubCasNodes;
+        const loadedSections = request.type === 'analysis-status' && !persistedSubCasNodes
+          ? [...requiredSections, 'graph'] as CasSectionName[]
+          : requiredSections;
         cachedCas = attachCasProjection({
           nodes: [],
           edges: [],
           analyzer_contributions: [],
           ...loaded.cas,
         } as CASOutput, {
-          loaded_sections: ['identity', ...requiredSections],
+          loaded_sections: ['identity', ...loadedSections],
           node_count: loaded.inventory?.node_count,
           edge_count: loaded.inventory?.edge_count,
         });
-        cachedSections = new Set(requiredSections);
+        cachedSections = new Set(loadedSections);
         cachedWorkspace = request.workspace;
         cachedFingerprint = fingerprint;
         process.stderr.write(`${JSON.stringify({
           event: 'hosted_query_cas_loaded',
           duration_ms: Date.now() - loadStartedAt,
-          sections: requiredSections,
+          sections: loadedSections,
           compact_search: false,
           worker_uptime_ms: Math.round(process.uptime() * 1000),
           rss_mb: Math.round(process.memoryUsage().rss / 1024 / 1024),
@@ -102,7 +115,27 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
       }
       if (request.type === 'analysis-status') {
         const { buildHostedProjectAnalysisStatus } = await import('./hosted-project-analysis-status.js');
-        const analysisStatus = buildHostedProjectAnalysisStatus(activeCas, request.projectId, request.analysisId);
+        const statusSubCasNodes = cachedSubCasNodes || (
+          await import('./deployable-analysis.js')
+        ).buildDeployableAnalyses(activeCas).sub_cas_nodes;
+        const analysisStatus = buildHostedProjectAnalysisStatus(
+          activeCas,
+          request.projectId,
+          request.analysisId,
+          statusSubCasNodes,
+        );
+        cachedSubCasNodes = statusSubCasNodes;
+        cachedCas = attachCasProjection({
+          ...activeCas,
+          nodes: [],
+          edges: [],
+          index: undefined,
+        } as CASOutput, {
+          loaded_sections: ['identity', ...WARM_SECTIONS],
+          node_count: loadedInventory(activeCas, 'node_count'),
+          edge_count: loadedInventory(activeCas, 'edge_count'),
+        });
+        cachedSections = new Set(WARM_SECTIONS);
         if (Date.now() - startedAt >= 1_000) {
           process.stderr.write(`${JSON.stringify({ event: 'hosted_query_warm_slow', duration_ms: Date.now() - startedAt })}\n`);
         }
@@ -145,3 +178,8 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
     }
   });
 });
+
+function loadedInventory(cas: CASOutput, field: 'node_count' | 'edge_count'): number | undefined {
+  const projection = casProjection(cas);
+  return projection?.[field];
+}

@@ -1,11 +1,16 @@
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { unavailableComprehensionResponse } from './analysis-response-readiness';
-import { getCachedDeployableAnalyses } from './deployable-analysis';
+import { getCachedDeployableAnalyses, type SubCasNodeIndex } from './deployable-analysis';
 import { buildSummary, getProductMap } from './query';
 
-export function buildHostedProjectAnalysisStatus(cas: CASOutput, projectId: string, analysisId: string): Record<string, unknown> {
+export function buildHostedProjectAnalysisStatus(
+  cas: CASOutput,
+  projectId: string,
+  analysisId: string,
+  subCasNodes?: SubCasNodeIndex,
+): Record<string, unknown> {
   const summary = buildSummary(cas, { detail: 'compact' }) as Record<string, unknown>;
-  summary.sub_cas_nodes = getCachedDeployableAnalyses(cas).sub_cas_nodes;
+  summary.sub_cas_nodes = subCasNodes || getCachedDeployableAnalyses(cas).sub_cas_nodes;
   const layers = cas.layers_ready?.layers || [];
   const pending = layers.some(layer => layer.status === 'pending');
   const errors = layers.filter(layer => layer.status === 'error');
