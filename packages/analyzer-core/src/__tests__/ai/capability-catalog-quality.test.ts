@@ -389,7 +389,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(calls[1].qualityNudge).toContain('quality check');
   });
 
-  it('repairs omitted first-party human and truth outcomes even when the initial catalog cites every family', async () => {
+  it('repairs paired audience and truth outcomes even when they share one evidence family', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const outcome = (name: string) => cap({
       id: name,
@@ -411,14 +411,11 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     const initial = [
       outcome('Track change history'),
       outcome('Coordinate real-time collaboration'),
-      outcome('Give AI agents software comprehension'),
       outcome('Correlate runtime evidence'),
     ];
     initial[0].criticality_factors = ['catalog-candidate:graph'];
     initial[1].criticality_factors = ['catalog-candidate:collaboration'];
-    initial[2].criticality_factors = ['catalog-candidate:understanding'];
-    initial[2].description = 'AI agents understand connected software behavior before making changes.';
-    initial[3].criticality_factors = ['catalog-candidate:runtime'];
+    initial[2].criticality_factors = ['catalog-candidate:runtime'];
     const calls: any[] = [];
     localOrch.aiExtractCapabilityCatalog = async (input: any) => {
       calls.push(input);
@@ -426,11 +423,18 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
       const candidateId = input.candidateCapabilities[0]?.id;
       return candidateId === 'graph'
         ? [cap({ ...outcome('Build a trustworthy relationship graph'), criticality_factors: ['catalog-candidate:graph'] })]
-        : [cap({
-          ...outcome('Help people understand software behavior'),
-          description: 'Human engineers explore connected software behavior and change risks.',
-          criticality_factors: ['catalog-candidate:understanding'],
-        })];
+        : [
+          cap({
+            ...outcome('Help people understand software behavior'),
+            description: 'Human engineers explore connected software behavior and change risks.',
+            criticality_factors: ['catalog-candidate:understanding'],
+          }),
+          cap({
+            ...outcome('Give AI agents software comprehension'),
+            description: 'AI agents understand connected software behavior before making changes.',
+            criticality_factors: ['catalog-candidate:understanding'],
+          }),
+        ];
     };
     localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
 
@@ -439,9 +443,11 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(out.map(capability => capability.name)).toEqual(expect.arrayContaining([
       'Build a trustworthy relationship graph',
       'Help people understand software behavior',
+      'Give AI agents software comprehension',
     ]));
     expect(calls.length).toBeGreaterThan(1);
     expect(calls.slice(1).every(call => call.qualityNudge.includes('Distinct first-party outcomes'))).toBe(true);
+    expect(calls.find(call => call.candidateCapabilities[0]?.id === 'understanding')?.exactCapabilityLimit).toBe(2);
   });
 
   it('tells the next AI cycle exactly which audience failures require repair', async () => {

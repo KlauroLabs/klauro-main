@@ -93,6 +93,7 @@ test('supporting delivery evidence can corroborate a first-party outcome but ver
 
 test('does not let one combined audience statement satisfy two explicitly distinct audience outcomes', () => {
   const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, evidence);
+  const audienceRequirements = requirements.filter(requirement => requirement.audience);
   const combined = published(
     'Explain software behavior to people and AI agents',
     'Human engineers and AI agents understand connected software behavior from the same context.',
@@ -100,5 +101,23 @@ test('does not let one combined audience statement satisfy two explicitly distin
   const audienceGaps = uncoveredCapabilityCatalogOutcomeRequirements([combined], requirements)
     .filter(requirement => requirement.audience);
 
+  assert.deepEqual(audienceRequirements.map(requirement => requirement.statement), [
+    'behavior-level comprehension',
+    'behavior-level comprehension',
+  ]);
   assert.ok(audienceGaps.length >= 1);
+});
+
+test('uses the product brief instead of treating package identity metadata as another outcome', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements({
+    productDocSummary: 'Builds a connected relationship graph for software behavior.',
+    manifestDescription: 'Workspace collection for graph analysis and package tooling.',
+  }, [
+    candidate('graph', 'Connected relationship graph', ['inspect_graph_relationships']),
+    candidate('package', 'Workspace package analysis', ['analyze_package_workspace']),
+  ]);
+
+  assert.equal(requirements.some(requirement => requirement.statement.includes('Workspace')), false);
+  assert.equal(requirements.some(requirement => requirement.candidateIds.includes('package')), false);
+  assert.equal(requirements.some(requirement => requirement.candidateIds.includes('graph')), true);
 });

@@ -59,12 +59,22 @@ function splitCoordinatedClause(value: string): string[] {
 }
 
 function productClauses(signal?: CapabilityCatalogProjectSignal): string[] {
-  return [signal?.productDocSummary, signal?.manifestDescription]
+  return [signal?.productDocSummary || signal?.manifestDescription]
     .filter((value): value is string => Boolean(value))
     .flatMap(value => value.split(/(?<=[.!?;])\s+|\s*,\s*(?:and\s+)?/i))
     .flatMap(splitCoordinatedClause)
     .map(value => value.trim().replace(/^[,;]\s*/, ''))
     .filter(value => value.length >= 20 && !/^.+?\s+(?:is|are)\s+(?:an?\s+|the\s+)?[^,.]+$/i.test(value));
+}
+
+function conciseOutcomeStatement(clause: string, subjectTokens: ReadonlySet<string>): string {
+  return String(clause || '')
+    .replace(humanAudience, ' ')
+    .replace(agentAudience, ' ')
+    .split(/\s+/)
+    .filter(word => tokens(word).some(token => subjectTokens.has(token)))
+    .join(' ')
+    .replace(/^[^a-z0-9]+|[^a-z0-9]+$/gi, '');
 }
 
 function requirementAudiences(clause: string): Array<'agent' | 'human' | undefined> {
@@ -101,8 +111,10 @@ export function deriveCapabilityCatalogOutcomeRequirements(
       if (scored.length === 0) continue;
       const bestScore = scored[0].score;
       const candidateIds = scored.filter(item => item.score === bestScore).slice(0, 3).map(item => item.id);
-      const id = requirementId(audience, subjectTokens);
-      requirements.set(id, { audience, candidateIds, id, statement: clause, subjectTokens });
+      const candidateIdSet = new Set(candidateIds);
+      const groundedSubjectTokens = subjectTokens.filter(token => candidateTokens.some(item => candidateIdSet.has(item.candidate.id) && item.tokens.has(token)));
+      const id = requirementId(audience, groundedSubjectTokens);
+      requirements.set(id, { audience, candidateIds, id, statement: conciseOutcomeStatement(clause, new Set(groundedSubjectTokens)), subjectTokens: groundedSubjectTokens });
     }
   }
   return [...requirements.values()];
@@ -167,4 +179,22 @@ export function capabilityCatalogOutcomeRepairCandidateIds(
   requirements: readonly CapabilityCatalogOutcomeRequirement[],
 ): string[] {
   return [...new Set(requirements.flatMap(requirement => requirement.candidateIds))];
+}
+
+export function capabilityCatalogOutcomeRequirementsForCandidates(
+  requirements: readonly CapabilityCatalogOutcomeRequirement[],
+  candidateIds: readonly string[],
+): CapabilityCatalogOutcomeRequirement[] {
+  const ids = new Set(candidateIds);
+  return requirements.filter(requirement => requirement.candidateIds.some(candidateId => ids.has(candidateId)));
+}
+
+export function capabilityCatalogOutcomeRepairNudge(
+  requirements: readonly CapabilityCatalogOutcomeRequirement[],
+  candidateIds: readonly string[],
+): string {
+  const relevant = capabilityCatalogOutcomeRequirementsForCandidates(requirements, candidateIds);
+  return relevant.length > 0
+    ? `Distinct first-party outcomes still required by corroborated structural evidence: ${JSON.stringify(relevant.map(requirement => ({ audience: requirement.audience, outcome: requirement.statement, candidate_ids: requirement.candidateIds })))}. Return one distinct outcome for each entry, including separate outcomes for different explicit audiences.`
+    : '';
 }
