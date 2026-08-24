@@ -724,7 +724,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
     const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(args);
 
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(3);
     expect(out).toHaveLength(5);
     expect(out.some(capability => capability.name === rejectedWorkspace.name)).toBe(false);
   });
@@ -832,7 +832,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
     const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(args);
 
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(3);
     expect(out).toEqual([]);
   });
 

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import type { SystemCapability } from '../../types/cas.types';
 import {
   capabilitiesWithoutDescriptionDisposition,
+  capabilityCatalogPendingRepairKeys,
   capabilityIdentityPendingDescriptionRepair,
   scheduleRejectedCapabilityDescriptions,
   selectCapabilityCatalogPromptCandidates,
@@ -14,10 +15,12 @@ import {
   capabilityCatalogRepairEvidenceFacts,
   capabilityOutcomeMatchesEvidence,
   mergeUniquelyMatchedBehaviorEvidence,
+  mergeCapabilityCatalogRepairResults,
   recordCapabilityCatalogRejection,
   trackCapabilityCatalogRepair,
   updateCapabilityCatalogPublishabilityRepairIds,
 } from './capability-catalog-scheduling';
+import { capabilityDescriptionProductLanguageViolation } from './capability-catalog-evidence';
 
 const catalogCapability = (overrides: Partial<SystemCapability>): SystemCapability => ({
   id: 'capability',
@@ -198,6 +201,76 @@ test('capability repair facts carry bounded candidate-specific rejection constra
   assert.equal(recorded.added, true);
 });
 
+test('publishability repair facts carry the exact requirement reason and validator-derived forbidden terms', () => {
+  const candidates = [{ id: 'shared', name: 'Software Understanding', category: 'core', evidence_kind: 'behavior-surface' }] as SystemCapability[];
+  const rejections = new Map();
+  recordCapabilityCatalogRejection(rejections, {
+    candidateIds: ['shared'], requirementId: 'human:understand', name: 'Surface comprehension for people',
+    reason: 'description-implementation-graph-inventory', forbiddenSubjectTerms: ['nodes', 'entry points'],
+  });
+
+  const [fact] = capabilityCatalogRepairEvidenceFacts(candidates, ['shared'], new Map(), rejections);
+
+  assert.deepEqual(fact.prior_rejections, [{
+    name: 'Surface comprehension for people', reason: 'description-implementation-graph-inventory',
+    forbidden_subject_terms: ['nodes', 'entry points'], requirement_id: 'human:understand',
+  }]);
+});
+
+test('product-language violations expose the exact copied terms for all live repair classes', () => {
+  assert.deepEqual(
+    capabilityDescriptionProductLanguageViolation('People inspect nodes, entry points, and method calls to understand behavior.', [], []),
+    { reason: 'implementation-graph-inventory', forbiddenTerms: ['nodes', 'entry points', 'method calls'] },
+  );
+  assert.deepEqual(
+    capabilityDescriptionProductLanguageViolation('ChangeHistoryEntry shows how behavior evolved.', ['ChangeHistoryEntry'], []),
+    { reason: 'raw-related-entity-identifier', forbiddenTerms: ['ChangeHistoryEntry'] },
+  );
+  assert.deepEqual(
+    capabilityDescriptionProductLanguageViolation('People click architecture diagram to inspect changes.', [], ['["click","architecture diagram"]']),
+    { reason: 'delivery-operation-restatement', forbiddenTerms: ['click', 'architecture', 'diagram'] },
+  );
+  assert.deepEqual(
+    capabilityDescriptionProductLanguageViolation('Agents inspect edges and call chains before changes.', [], []),
+    { reason: 'implementation-graph-inventory', forbiddenTerms: ['edges', 'call chains'] },
+  );
+});
+
+test('renamed repairs replace pending identities by stable requirement without crossing shared-candidate slots', () => {
+  const pending = (id: string, name: string, requirement: string) => catalogCapability({
+    id, name, description: '', description_generation: { status: 'ai_rejected', attempted: true },
+    criticality_factors: [`catalog-candidate:shared`, `catalog-outcome-requirement:${requirement}`],
+  });
+  const human = pending('human-old', 'Surface comprehension for people', 'human:understand');
+  const agent = pending('agent-old', 'Give agents comprehension', 'agent:understand');
+  const repaired = catalogCapability({
+    id: 'human-new', name: 'Help people understand software behavior',
+    description: 'People explore connected software behavior and understand the impact of changes.',
+    description_generation: { status: 'ai_applied', attempted: true },
+    criticality_factors: ['catalog-candidate:shared', 'catalog-outcome-requirement:human:understand'],
+  });
+
+  const merged = mergeCapabilityCatalogRepairResults([human, agent], [repaired]);
+
+  assert.deepEqual(merged.map(capability => capability.id), ['agent-old', 'human-new']);
+  assert.deepEqual(capabilityCatalogPendingRepairKeys(merged), ['requirement:agent:understand']);
+});
+
+test('candidate identity replaces a renamed pending repair but never overwrites a valid prior description', () => {
+  const pending = catalogCapability({
+    id: 'old', name: 'Surface architecture change through diagram click', description: '',
+    description_generation: { status: 'ai_rejected', attempted: true }, criticality_factors: ['catalog-candidate:architecture'],
+  });
+  const repaired = catalogCapability({
+    id: 'new', name: 'Explore architectural change', description: 'People compare connected software structure across revisions.',
+    criticality_factors: ['catalog-candidate:architecture'],
+  });
+  const invalidReplacement = { ...pending, id: 'new-invalid', name: 'Click architecture diagram' };
+
+  assert.deepEqual(mergeCapabilityCatalogRepairResults([pending], [repaired]).map(capability => capability.id), ['new']);
+  assert.deepEqual(mergeCapabilityCatalogRepairResults([repaired], [invalidReplacement]).map(capability => capability.id), ['new']);
+});
+
 test('evidence batch collection preserves successful families when one focused call times out', async () => {
   const calls: string[][] = [];
   const values = await collectCapabilityCatalogEvidenceBatches({
@@ -354,4 +427,12 @@ test('semantic outcome progress prevents the repair loop from stopping while obl
   assert.equal(progress.observe([], false, 1).stop, false);
   assert.equal(progress.observe([], false, 1).stop, false);
   assert.equal(progress.observe([], false, 0).stop, false);
+});
+
+test('renaming a pending repair does not count as catalog progress', () => {
+  const progress = trackCapabilityCatalogRepair(1, [], [], 0);
+
+  assert.equal(progress.observe([], true, 0, ['requirement:human:understand']).stop, false);
+  assert.equal(progress.observe([], false, 0, ['requirement:human:understand']).stop, false);
+  assert.equal(progress.observe([], false, 0, ['requirement:human:understand']).stop, true);
 });

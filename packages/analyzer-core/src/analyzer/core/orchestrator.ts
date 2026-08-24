@@ -161,7 +161,7 @@ import { buildCasTerminality } from './terminality';
 import { rollupSystemCapabilityDependencies } from './system-capability-dependencies';
 import {
   behaviorSurfaceEntryCount as countBehaviorSurfaceEntries, catalogCandidateEntityFacts,
-  capabilityDescriptionProductLanguageFailure, capabilityOutcomeScopeFailure,
+  capabilityDescriptionProductLanguageFailure, capabilityDescriptionProductLanguageViolation, capabilityOutcomeScopeFailure,
   capabilityEvidencePublicationFailure,
   catalogCandidateTerminality as analyzeCatalogCandidateTerminality,
   catalogCountBounds, catalogEntityCandidateGroups,
@@ -179,7 +179,7 @@ import { capabilityCatalogCoverageFailure, capabilityCatalogOutcomeBindingFailur
 import { fitCapabilityCatalogContext } from './ai-context-budget';
 import { awaitAiOperation } from './ai-operation-timing';
 import { capabilityDescriptionBatchSize, resolveCapabilityCatalogRoute, resolveCapabilityDescriptionRoute, shouldReauthorCapabilityDescriptions, toAIContextRoute } from './ai-task-model-routing';
-import { capabilitiesWithoutDescriptionDisposition, type CapabilityCatalogRejection, type CapabilityCatalogRejectionsByCandidate, capabilityCatalogRepairCandidateIds, capabilityCatalogRepairEvidenceFacts, capabilityDescriptionsShareOutcome, capabilityIdentityPendingDescriptionRepair, capabilityOutcomeMatchesEvidence, capabilityTitlesShareOutcome, collectCapabilityCatalogEvidenceBatches, mergeUniquelyMatchedBehaviorEvidence, recordCapabilityCatalogRejection, scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates, trackCapabilityCatalogRepair, updateCapabilityCatalogPublishabilityRepairIds } from './capability-catalog-scheduling';
+import { capabilitiesWithoutDescriptionDisposition, type CapabilityCatalogRejection, type CapabilityCatalogRejectionsByCandidate, capabilityCatalogPendingRepairKeys, capabilityCatalogRepairCandidateIds, capabilityCatalogRepairEvidenceFacts, capabilityDescriptionsShareOutcome, capabilityIdentityPendingDescriptionRepair, capabilityOutcomeMatchesEvidence, capabilityTitlesShareOutcome, collectCapabilityCatalogEvidenceBatches, mergeCapabilityCatalogRepairResults, mergeUniquelyMatchedBehaviorEvidence, recordCapabilityCatalogRejection, recordCapabilityPublishabilityRejection, scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates, trackCapabilityCatalogRepair, updateCapabilityCatalogPublishabilityRepairIds } from './capability-catalog-scheduling';
 import { TRACEABLE_NODE_TYPES, computeFlowConcepts, type FlowConcept } from './flow-concepts';
 import { capabilitySubjectTokens } from './capability-audience-test';
 import {
@@ -10456,20 +10456,20 @@ export class AnalyzerOrchestrator {
         ? this.reconcileCatalogedCapabilities(extracted, evidenceCandidates, args.dataEntities, args.entryPoints, args.nodes, args.enhancedSystemPurpose, args.libraryNames || [], args.projectTextSignal, args.externalServices)
         : [];
       const publishabilityFailures = new Map<string, number>();
-      const publishabilityRejections: Array<{ name: string; description?: string; reason: string }> = [];
+      const publishabilityRejections: Array<{ name: string; description?: string; reason: string; requirement_id?: string; forbidden_terms?: string[] }> = [];
       const rejectedCapabilities: SystemCapability[] = [];
       const cycleReconciled = reconciledCandidates.flatMap(capability => {
-        const descriptionValidation = this.validateElementDescription(capability.description || '', this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById));
+        const descriptionTarget = this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById); const descriptionValidation = this.validateElementDescription(capability.description || '', descriptionTarget);
         const failure = this.capabilityPublishabilityFailure(capability) || (!descriptionValidation.ok ? `description-${descriptionValidation.reason}` : undefined);
         if (!failure) return [capability];
-        rejectedCapabilities.push(capability);
-        publishabilityFailures.set(failure, (publishabilityFailures.get(failure) || 0) + 1);
-        publishabilityRejections.push({ name: capability.name, description: capability.description, reason: failure });
+        rejectedCapabilities.push(capability); publishabilityFailures.set(failure, (publishabilityFailures.get(failure) || 0) + 1);
+        const violation = capabilityDescriptionProductLanguageViolation(capability.description || '', descriptionTarget.relatedEntities || [], descriptionTarget.operations || []); const forbiddenTerms = violation?.reason && failure.endsWith(violation.reason) ? violation.forbiddenTerms : [];
+        const recorded = recordCapabilityPublishabilityRejection(catalogRejectionsByCandidate, capability, failure, forbiddenTerms); publishabilityRejections.push(recorded.feedback); learnedRejection ||= recorded.added;
         const identity = capabilityIdentityPendingDescriptionRepair(capability, failure);
         return identity ? [identity] : [];
       }); updateCapabilityCatalogPublishabilityRepairIds(publishabilityRepairCandidateIds, cycleReconciled.filter(capability => this.isPublishableCapability(capability)), rejectedCapabilities);
       audienceRepairFeedback = [audienceRepairFeedback, capabilityPublishabilityRepairFeedback(publishabilityRejections)].filter(Boolean).join(' ') || undefined;
-      const combinedReconciled = targetedRepair ? this.dedupeSystemCapabilitiesByName([...reconciled, ...cycleReconciled], true) : cycleReconciled;
+      const combinedReconciled = targetedRepair ? this.dedupeSystemCapabilitiesByName(mergeCapabilityCatalogRepairResults(reconciled, cycleReconciled), true) : cycleReconciled;
       const evidenceCompleteReconciled = mergeUniquelyMatchedBehaviorEvidence(combinedReconciled, evidenceCandidates, requiredBehaviorCandidateIds); const nonPublishable = evidenceCompleteReconciled.filter(capability => !this.isPublishableCapability(capability));
       const cycleQualityFailure = this.catalogQualityFailure(
         evidenceCompleteReconciled,
@@ -10488,7 +10488,7 @@ export class AnalyzerOrchestrator {
         retainedQualityFailure = undefined;
         break;
       }
-      uncoveredOutcomes = uncoveredCapabilityCatalogOutcomeRequirements(evidenceCompleteReconciled, requiredOutcomes, capability => this.isPublishableCapability(capability)); const progress = repairProgress.observe(evidenceCompleteReconciled, learnedRejection, uncoveredOutcomes.length);
+      uncoveredOutcomes = uncoveredCapabilityCatalogOutcomeRequirements(evidenceCompleteReconciled, requiredOutcomes, capability => this.isPublishableCapability(capability)); const progress = repairProgress.observe(evidenceCompleteReconciled, learnedRejection, uncoveredOutcomes.length, capabilityCatalogPendingRepairKeys(nonPublishable));
       if (targetedRepair || evidenceCompleteReconciled.length > reconciled.length) {
         reconciled = evidenceCompleteReconciled;
         if (!retainedInterpretationRaw) retainedInterpretationRaw = extractionRaw;

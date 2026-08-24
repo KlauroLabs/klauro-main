@@ -283,10 +283,20 @@ export function capabilityDescriptionProductLanguageFailure(
   relatedEntities: readonly string[],
   operations: readonly string[] = [],
 ): string | undefined {
-  if (/\bmcp\s+(?:tools?|surfaces?|endpoints?)\b|\bcli\s+(?:commands?|interfaces?|surfaces?)\b/i.test(description)) return 'delivery-surface-scaffolding';
-  if (/\b(?:handles?|process(?:es|ed|ing)?)\s+(?:incoming\s+)?messages?\s+to\b/i.test(description)) return 'message-handler-scaffolding';
+  return capabilityDescriptionProductLanguageViolation(description, relatedEntities, operations)?.reason;
+}
+
+export function capabilityDescriptionProductLanguageViolation(
+  description: string,
+  relatedEntities: readonly string[],
+  operations: readonly string[] = [],
+): { reason: string; forbiddenTerms: string[] } | undefined {
+  const surfaceScaffolding = description.match(/\bmcp\s+(?:tools?|surfaces?|endpoints?)\b|\bcli\s+(?:commands?|interfaces?|surfaces?)\b/i);
+  if (surfaceScaffolding) return { reason: 'delivery-surface-scaffolding', forbiddenTerms: [surfaceScaffolding[0]] };
+  const messageScaffolding = description.match(/\b(?:handles?|process(?:es|ed|ing)?)\s+(?:incoming\s+)?messages?\s+to\b/i);
+  if (messageScaffolding) return { reason: 'message-handler-scaffolding', forbiddenTerms: [messageScaffolding[0]] };
   const normalizedDescription = outcomeIdentityTokens(description);
-  const copiedOperation = operations.some(operation => {
+  const copiedOperation = operations.find(operation => {
     let operationParts: unknown;
     try {
       operationParts = JSON.parse(operation);
@@ -298,13 +308,15 @@ export function capabilityDescriptionProductLanguageFailure(
     if (phrase.length < 2) return false;
     return normalizedDescription.some((_, index) => phrase.every((token, offset) => normalizedDescription[index + offset] === token));
   });
-  if (copiedOperation) return 'delivery-operation-restatement';
-  if (relatedEntities.some(entity =>
+  if (copiedOperation) return { reason: 'delivery-operation-restatement', forbiddenTerms: outcomeIdentityTokens(copiedOperation) };
+  const copiedEntity = relatedEntities.find(entity =>
     (/[a-z0-9][A-Z]|[_:$]/.test(entity) || /(?:Config|DTO|Entity|Entry|Model|Record|Schema)$/i.test(entity)) &&
     new RegExp(`\\b${entity.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(description)
-  )) return 'raw-related-entity-identifier';
-  const graphInventoryTerms = description.match(/\b(?:entry points?|exit points?|methods?|call chains?|method calls?|nodes?|edges?)\b/gi) || [];
-  return new Set(graphInventoryTerms.map(term => term.toLowerCase())).size >= 2 ? 'implementation-graph-inventory' : undefined;
+  );
+  if (copiedEntity) return { reason: 'raw-related-entity-identifier', forbiddenTerms: [copiedEntity] };
+  const graphInventoryTerms = description.match(/\b(?:entry points?|exit points?|method calls?|call chains?|methods?|nodes?|edges?)\b/gi) || [];
+  const uniqueGraphTerms = [...new Set(graphInventoryTerms.map(term => term.toLowerCase()))];
+  return uniqueGraphTerms.length >= 2 ? { reason: 'implementation-graph-inventory', forbiddenTerms: uniqueGraphTerms } : undefined;
 }
 
 export function productTextCorroboratesCapability(candidate: SystemCapability, signal?: CapabilityCatalogProjectSignal): boolean {

@@ -20,12 +20,15 @@ export interface CapabilityCatalogRejection {
   candidateIds: string[];
   name: string;
   reason: string;
+  requirementId?: string;
+  forbiddenSubjectTerms?: string[];
 }
 
 export interface CapabilityCatalogPriorRejection {
   name: string;
   reason: string;
   forbidden_subject_terms: string[];
+  requirement_id?: string;
 }
 
 export type CapabilityCatalogRejectionsByCandidate = Map<string, CapabilityCatalogPriorRejection[]>;
@@ -229,17 +232,88 @@ export function recordCapabilityCatalogRejection(
   feedback: CapabilityCatalogRejection,
 ): { added: boolean; explanation: string } {
   const unsupported = feedback.reason.match(/^outcome-scope-unsupported:(.+)$/)?.[1]?.split(',') || [];
-  const forbiddenSubjectTerms = unsupported.filter(token => !['delivery-operation-restatement', 'delivery-subject-missing'].includes(token));
+  const forbiddenSubjectTerms = [...new Set([
+    ...unsupported.filter(token => !['delivery-operation-restatement', 'delivery-subject-missing'].includes(token)),
+    ...(feedback.forbiddenSubjectTerms || []),
+  ].map(term => String(term).trim()).filter(Boolean))];
   let added = false;
   for (const candidateId of feedback.candidateIds) {
     const prior = rejectionsByCandidate.get(candidateId) || [];
     if (!prior.some(item => item.name === feedback.name && item.reason === feedback.reason)) {
-      prior.push({ name: feedback.name, reason: feedback.reason, forbidden_subject_terms: forbiddenSubjectTerms });
+      prior.push({ name: feedback.name, reason: feedback.reason, forbidden_subject_terms: forbiddenSubjectTerms, ...(feedback.requirementId ? { requirement_id: feedback.requirementId } : {}) });
       rejectionsByCandidate.set(candidateId, prior.slice(-4));
       added = true;
     }
   }
   return { added, explanation: `The title "${feedback.name}" was rejected (${feedback.reason}); do not repeat it, and use only the recurring evidence subject terms for a broader shared outcome.` };
+}
+
+export function recordCapabilityPublishabilityRejection(
+  rejectionsByCandidate: CapabilityCatalogRejectionsByCandidate,
+  capability: SystemCapability,
+  reason: string,
+  forbiddenTerms: string[],
+): { added: boolean; feedback: { name: string; description?: string; reason: string; requirement_id?: string; forbidden_terms: string[] } } {
+  const identity = capabilityCatalogRepairIdentity(capability);
+  const requirementId = identity.requirements[0];
+  const recorded = recordCapabilityCatalogRejection(rejectionsByCandidate, {
+    candidateIds: identity.candidates, name: capability.name, reason, requirementId, forbiddenSubjectTerms: forbiddenTerms,
+  });
+  return {
+    added: recorded.added,
+    feedback: { name: capability.name, description: capability.description, reason, ...(requirementId ? { requirement_id: requirementId } : {}), forbidden_terms: forbiddenTerms },
+  };
+}
+
+const capabilityCatalogFactors = (capability: SystemCapability, prefix: string): string[] =>
+  (capability.criticality_factors || []).filter(factor => factor.startsWith(prefix)).map(factor => factor.slice(prefix.length));
+
+function capabilityCatalogRepairIdentity(capability: SystemCapability): { requirements: string[]; candidates: string[] } {
+  return {
+    requirements: capabilityCatalogFactors(capability, 'catalog-outcome-requirement:'),
+    candidates: capabilityCatalogFactors(capability, 'catalog-candidate:'),
+  };
+}
+
+function capabilityCatalogDescriptionPending(capability: SystemCapability): boolean {
+  return !capability.description || capability.description_generation?.status === 'ai_rejected';
+}
+
+export function mergeCapabilityCatalogRepairResults(
+  existing: SystemCapability[], incoming: SystemCapability[],
+): SystemCapability[] {
+  const merged = [...existing];
+  for (const replacement of incoming) {
+    const replacementIdentity = capabilityCatalogRepairIdentity(replacement);
+    let matching = replacementIdentity.requirements.length > 0
+      ? merged.flatMap((capability, index) => {
+        const identity = capabilityCatalogRepairIdentity(capability);
+        return identity.requirements.some(requirement => replacementIdentity.requirements.includes(requirement)) ? [index] : [];
+      })
+      : [];
+    if (matching.length === 0 && replacementIdentity.requirements.length === 0) {
+      const allCandidateMatches = merged.flatMap((capability, index) => {
+        const identity = capabilityCatalogRepairIdentity(capability);
+        return identity.requirements.length === 0 && identity.candidates.some(candidate => replacementIdentity.candidates.includes(candidate)) ? [index] : [];
+      });
+      const candidateMatches = allCandidateMatches.filter(index => capabilityCatalogDescriptionPending(merged[index]));
+      if (candidateMatches.length === 1) matching = candidateMatches;
+      else if (capabilityCatalogDescriptionPending(replacement) && allCandidateMatches.some(index => !capabilityCatalogDescriptionPending(merged[index]))) continue;
+    }
+    if (matching.some(index => !capabilityCatalogDescriptionPending(merged[index]))) continue;
+    for (const index of matching.sort((left, right) => right - left)) merged.splice(index, 1);
+    merged.push(replacement);
+  }
+  return merged;
+}
+
+export function capabilityCatalogPendingRepairKeys(capabilities: readonly SystemCapability[]): string[] {
+  return [...new Set(capabilities.filter(capabilityCatalogDescriptionPending).flatMap(capability => {
+    const identity = capabilityCatalogRepairIdentity(capability);
+    if (identity.requirements.length > 0) return identity.requirements.map(requirement => `requirement:${requirement}`);
+    if (identity.candidates.length > 0) return identity.candidates.map(candidate => `candidate:${candidate}`);
+    return [`capability:${capability.id}`];
+  }))].sort();
 }
 
 export function capabilityCatalogTargetedRepairBatches<T>(facts: readonly T[], targetedRepair: boolean): T[][] {
@@ -330,15 +404,19 @@ export function trackCapabilityCatalogRepair(
   let previousUncoveredCount = uncoveredCapabilityCatalogCandidateIds(
     [], requiredBehaviorCandidateIds, requiredEntityCandidateGroups,
   ).length + requiredOutcomeCount;
+  let previousPendingKeys = new Set<string>();
   let noProgressCycles = 0;
   return {
     maxCycles: budget.maxCycles,
-    observe(capabilities: SystemCapability[], learnedConstraint = false, uncoveredOutcomeCount = 0) {
+    observe(capabilities: SystemCapability[], learnedConstraint = false, uncoveredOutcomeCount = 0, pendingIdentityKeys: readonly string[] = []) {
+      const pendingKeys = new Set(pendingIdentityKeys);
       const uncoveredCount = uncoveredCapabilityCatalogCandidateIds(
         capabilities, requiredBehaviorCandidateIds, requiredEntityCandidateGroups,
-      ).length + uncoveredOutcomeCount;
-      noProgressCycles = uncoveredCount < previousUncoveredCount || learnedConstraint ? 0 : noProgressCycles + 1;
+      ).length + uncoveredOutcomeCount + pendingKeys.size;
+      const pendingShrank = pendingKeys.size < previousPendingKeys.size && [...pendingKeys].every(key => previousPendingKeys.has(key));
+      noProgressCycles = uncoveredCount < previousUncoveredCount || pendingShrank || learnedConstraint ? 0 : noProgressCycles + 1;
       previousUncoveredCount = uncoveredCount;
+      previousPendingKeys = pendingKeys;
       return { noProgressCycles, uncoveredCount, stop: noProgressCycles >= budget.noProgressRetries };
     },
   };
