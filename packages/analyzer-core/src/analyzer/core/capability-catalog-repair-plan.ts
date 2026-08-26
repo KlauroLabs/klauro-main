@@ -55,15 +55,32 @@ export function preserveCapabilityCatalogDescriptionIdentity(
 
 export function supersedeUnboundPendingOutcomeDuplicates(
   existing: readonly SystemCapability[], incoming: readonly SystemCapability[], requirements: readonly CapabilityCatalogOutcomeRequirement[],
-): SystemCapability[] {
-  const repairedRequirements = new Set(incoming.flatMap(capability => factors(capability, 'catalog-outcome-requirement:')));
-  const repairedCandidates = new Set(incoming.flatMap(capability => factors(capability, 'catalog-candidate:')));
-  if (repairedRequirements.size === 0) return [...existing];
-  return existing.filter(capability => {
-    if (factors(capability, 'catalog-outcome-requirement:').length > 0 || (capability.description && capability.description_generation?.status !== 'ai_rejected')) return true;
-    if (!factors(capability, 'catalog-candidate:').some(candidate => repairedCandidates.has(candidate))) return true;
-    return !requirements.some(requirement => repairedRequirements.has(requirement.id) && capabilitySatisfiesCatalogOutcomeRequirement(capability, requirement));
-  });
+): { existing: SystemCapability[]; incoming: SystemCapability[] } {
+  const requirementById = new Map(requirements.map(requirement => [requirement.id, requirement]));
+  const repairedRequirements = new Set(incoming.flatMap(capability => {
+    if (!capability.description || capability.description_generation?.status === 'ai_rejected') return [];
+    const candidateIds = factors(capability, 'catalog-candidate:');
+    return factors(capability, 'catalog-outcome-requirement:').filter(requirementId => {
+      const requirement = requirementById.get(requirementId);
+      return Boolean(requirement && candidateIds.some(candidateId => requirement.candidateIds.includes(candidateId))
+        && capabilitySatisfiesCatalogOutcomeRequirement(capability, requirement));
+    });
+  }));
+  if (repairedRequirements.size === 0) return { existing: [...existing], incoming: [...incoming] };
+  const isSupersededPendingIdentity = (capability: SystemCapability): boolean => {
+    if (factors(capability, 'catalog-outcome-requirement:').length > 0
+      || (capability.description && capability.description_generation?.status !== 'ai_rejected')) return false;
+    const candidateIds = factors(capability, 'catalog-candidate:');
+    const matchedRequirements = requirements.filter(requirement =>
+      repairedRequirements.has(requirement.id)
+      && candidateIds.some(candidateId => requirement.candidateIds.includes(candidateId))
+      && capabilitySatisfiesCatalogOutcomeRequirement(capability, requirement));
+    return matchedRequirements.length === 1;
+  };
+  return {
+    existing: existing.filter(capability => !isSupersededPendingIdentity(capability)),
+    incoming: incoming.filter(capability => !isSupersededPendingIdentity(capability)),
+  };
 }
 
 export function capabilityCatalogFocusedTask(mode: CapabilityCatalogRepairBatch['mode'] | undefined, identityName?: string, acceptsExistingOutcome = false): string {
