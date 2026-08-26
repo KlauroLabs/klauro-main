@@ -7,6 +7,7 @@ import {
   capabilitySatisfiesCatalogOutcomeRequirement,
   deriveCapabilityCatalogOutcomeRequirements,
   uncoveredCapabilityCatalogOutcomeRequirements,
+  type CapabilityCatalogOutcomeRequirement,
 } from './capability-catalog-outcome-coverage';
 
 const candidate = (id: string, name: string, examples: string[]): SystemCapability => ({
@@ -41,6 +42,11 @@ const published = (name: string, description: string): SystemCapability => ({
   operations: [],
 } as SystemCapability);
 
+const cited = (capability: SystemCapability, requirement: CapabilityCatalogOutcomeRequirement): SystemCapability => ({
+  ...capability,
+  criticality_factors: [`catalog-candidate:${requirement.candidateIds[0]}`],
+});
+
 const signal = {
   productDocSummary: 'The product builds a trustworthy relationship graph, turns that graph into behavior-level comprehension for people and AI agents, enables real-time collaboration, and correlates static understanding with runtime evidence.',
 };
@@ -48,16 +54,21 @@ const signal = {
 const evidence = [
   candidate('graph', 'Relationship graph analysis', ['query_graph_relationships']),
   candidate('understanding', 'Explore connected software behavior', ['inspect_behavior', 'explain_change_risk']),
-  candidate('collaboration', 'Concurrent collaboration', ['coordinate_overlapping_work']),
+  candidate('collaboration', 'Coordinate real-time collaboration', ['coordinate_overlapping_work']),
   candidate('runtime', 'Runtime evidence correlation', ['correlate_runtime_evidence']),
 ];
 
 test('requires separately stated first-party human, agent, and truth outcomes when structural evidence corroborates them', () => {
   const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, evidence);
+  const human = requirements.find(requirement => requirement.audience === 'human')!;
+  const agent = requirements.find(requirement => requirement.audience === 'agent')!;
+  const graph = requirements.find(requirement => requirement.subjectTokens.includes('relation'))!;
+  const collaboration = requirements.find(requirement => requirement.subjectTokens.includes('collaborate'))!;
+  const runtime = requirements.find(requirement => requirement.subjectTokens.includes('runtime'))!;
   const incomplete = [
-    published('Give AI agents software comprehension', 'Agents understand connected software behavior before changing code.'),
-    published('Coordinate concurrent work', 'Collaborators coordinate overlapping changes in real time.'),
-    published('Correlate runtime evidence', 'Runtime telemetry is correlated with static software understanding.'),
+    cited(published('Give AI agents software comprehension', 'Agents understand connected software behavior before changing code.'), agent),
+    cited(published('Coordinate concurrent work', 'Collaborators coordinate overlapping changes in real time.'), collaboration),
+    cited(published('Correlate runtime evidence', 'Runtime telemetry is correlated with static software understanding.'), runtime),
   ];
   const uncovered = uncoveredCapabilityCatalogOutcomeRequirements(incomplete, requirements);
 
@@ -66,10 +77,23 @@ test('requires separately stated first-party human, agent, and truth outcomes wh
 
   const complete = [
     ...incomplete,
-    published('Explore software behavior', 'Human engineers explore connected software behavior and change risks.'),
-    published('Build a trustworthy relationship graph', 'A trustworthy relationship graph connects the software structure and behavior.'),
+    cited(published('Explore software behavior', 'Human engineers explore connected software behavior and change risks.'), human),
+    cited(published('Build a trustworthy relationship graph', 'A trustworthy relationship graph connects the software structure and behavior.'), graph),
   ];
   assert.equal(capabilityCatalogOutcomeCoverageFailure(complete, requirements), undefined);
+});
+
+test('does not satisfy an outcome with matching prose cited to the wrong candidate', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, evidence);
+  const human = requirements.find(requirement => requirement.audience === 'human')!;
+  const runtime = requirements.find(requirement => requirement.subjectTokens.includes('runtime'))!;
+  const wrongCandidate = cited(
+    published('Help people understand software behavior', 'Human engineers understand connected software behavior before changing code.'),
+    runtime,
+  );
+
+  assert.equal(capabilitySatisfiesCatalogOutcomeRequirement(wrongCandidate, human), true);
+  assert.equal(uncoveredCapabilityCatalogOutcomeRequirements([wrongCandidate], [human]).length, 1);
 });
 
 test('does not turn uncorroborated first-party aspirations into mandatory catalog outcomes', () => {
@@ -96,10 +120,10 @@ test('supporting delivery evidence can corroborate a first-party outcome but ver
 test('does not let one combined audience statement satisfy two explicitly distinct audience outcomes', () => {
   const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, evidence);
   const audienceRequirements = requirements.filter(requirement => requirement.audience);
-  const combined = published(
+  const combined = cited(published(
     'Explain software behavior to people and AI agents',
     'Human engineers and AI agents understand connected software behavior from the same context.',
-  );
+  ), audienceRequirements[0]);
   const audienceGaps = uncoveredCapabilityCatalogOutcomeRequirements([combined], requirements)
     .filter(requirement => requirement.audience);
 
@@ -194,10 +218,11 @@ test('removes identity prose and prior-clause references from broad supporting e
     'behavior-level comprehension',
     'correlates static runtime evidence',
   ]);
+  const [graph, human, agent, runtime] = requirements;
   assert.equal(capabilityCatalogOutcomeCoverageFailure([
-    published('Build a relationship graph', 'A relationship graph connects software structure and behavior.'),
-    published('Help people understand software behavior', 'Human engineers understand connected software behavior and change risks.'),
-    published('Give agents software comprehension', 'AI agents understand connected software behavior before making changes.'),
-    published('Correlate static analysis with runtime evidence', 'Static code structure and runtime evidence refine behavioral understanding.'),
+    cited(published('Build a relationship graph', 'A relationship graph connects software structure and behavior.'), graph),
+    cited(published('Help people understand software behavior', 'Human engineers understand connected software behavior and change risks.'), human),
+    cited(published('Give agents software comprehension', 'AI agents understand connected software behavior before making changes.'), agent),
+    cited(published('Correlate static analysis with runtime evidence', 'Static code structure and runtime evidence refine behavioral understanding.'), runtime),
   ], requirements), undefined);
 });

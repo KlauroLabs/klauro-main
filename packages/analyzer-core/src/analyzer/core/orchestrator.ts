@@ -9183,7 +9183,7 @@ export class AnalyzerOrchestrator {
     behaviorSurfaces?: SystemCapability[]; externalServices: string[];
     flowGraph: CASFlowGraph; projectTextSignal?: ProjectTextSignal;
     budgetMs: number;
-    qualityNudge?: string; exactCapabilityLimit?: number; acceptedOutcomeNames?: string[]; requiredOutcomeRequirements?: CapabilityCatalogOutcomeRequirement[]; repairMode?: CapabilityCatalogRepairBatch['mode']; repairIdentityName?: string;
+    qualityNudge?: string; exactCapabilityLimit?: number; acceptedOutcomeNames?: string[]; requiredOutcomeCount?: number; requiredOutcomeRequirements?: CapabilityCatalogOutcomeRequirement[]; repairMode?: CapabilityCatalogRepairBatch['mode']; repairIdentityName?: string;
     hardDeadlineAt?: number;
     onResponse?: (raw: string) => void; onRejection?: (feedback: CapabilityCatalogRejection) => void;
     entryPoints?: CASEntryPoint[];
@@ -9211,7 +9211,6 @@ export class AnalyzerOrchestrator {
     const requiredCandidatePool = catalogRequiredEvidenceCandidates(candidatePoolForRanking);
     const entities = catalogPromptEntities(input.dataEntities || [], candidatePoolForRanking);
     const rankedCandidateAreas = this.rankCatalogPromptCandidates(candidatePoolForRanking, input.userJourneys || []);
-    const behaviorCandidateAreas = rankedCandidateAreas.filter(candidate => candidate.evidence_kind === 'behavior-surface');
     const requiredBehaviorCandidateAreas = requiredCandidatePool
       .filter(candidate => candidate.evidence_kind === 'behavior-surface' && capabilityRequiresCatalogCoverage(candidate));
     const requiredEntityCandidateGroups = catalogEntityCandidateGroups(requiredCandidatePool);
@@ -9242,9 +9241,7 @@ export class AnalyzerOrchestrator {
       });
     const services = (input.externalServices || []).slice(0, 12);
     const promptFamilyCount = this.catalogDistinctFamilyCount(requiredCandidatePool);
-    const { min: catalogCountMin, max: catalogCountMax } = catalogCountBounds(
-      promptFamilyCount, behaviorCandidateAreas.length, requiredEntityCandidateGroups.length,
-    );
+    const { min: catalogCountMin, max: catalogCountMax } = catalogCountBounds(promptFamilyCount, requiredBehaviorCandidateAreas.length, requiredEntityCandidateGroups.length, input.requiredOutcomeCount || 0);
     const infrastructureResponsibilityTokens = new Set([
       'environment', 'infrastructure', 'platform', 'provision', 'resource',
       'runtime', 'service', 'topology', 'workload',
@@ -9302,7 +9299,7 @@ export class AnalyzerOrchestrator {
         requestTimeoutMs: 65000,
         requestRetries: 0,
         ...((hintOverride || attempt > 1) ? { retry_hint: hintOverride || `Previous answer returned fewer than ${catalogCountMin} capabilities for a platform whose facts name ${candidateAreas.length} distinct route areas. Cover the DISTINCT product areas in candidate_route_areas; merge related ones, but do not collapse unrelated areas.` } : {}),
-        task: `${catalogTask} ${requiredBehaviorCandidateAreas.length > 0 ? `Every product-significant behavior-surface candidate_id in required_behavior_candidate_ids must appear in at least one result; related surfaces may share one result when they express the same user outcome.` : ''} ${requiredEntityCandidateGroups.length > 0 ? `For each group in required_entity_candidate_groups, at least one candidate_id from that group must appear in a result. A result may cite several groups only when their operations support the same product outcome.` : ''} Evidence roles are authoritative constraints: product-outcome and unresolved facts require coverage; supporting-mechanism facts may support or merge into a product outcome but must not become standalone capabilities; verification-harness facts must never become product capabilities. Internal behavior surfaces are structural evidence, not mandatory capabilities, and must be omitted unless other evidence proves they are part of the product's purpose. Product text may rank, name, or merge an ability only when at least one cited candidate's operations support that ability; never attach a product claim to an unrelated candidate. Terminality is relational evidence, not a naming template: terminal and proximal-terminal candidate areas are more likely to express what the codebase was built to deliver; upstream areas are more likely to be prerequisites. Use it for ranking and grouping, but never override contradictory product text, journey, entity, or operation evidence. ENTITY LANGUAGE CHECK: entity_names establish which evidence belongs together but may be source-level type identifiers. Names and descriptions must use PM-readable nouns from cited operations, journeys, or top_down_signals and must never expose class, interface, schema, or graph-model identifiers. Do not lead a capability name with Handle, Process, or Manage; Coordinate is valid only when evidence establishes collaboration as the outcome.`,
+        task: `${catalogTask} ${requiredBehaviorCandidateAreas.length > 0 ? `Every product-significant behavior-surface candidate_id in required_behavior_candidate_ids must appear in at least one result; related surfaces may share one result when they express the same user outcome.` : ''} ${requiredEntityCandidateGroups.length > 0 ? `For each group in required_entity_candidate_groups, at least one candidate_id from that group must appear in a result. A result may cite several groups only when their operations support the same product outcome.` : ''} Evidence roles are authoritative constraints: product-outcome facts require coverage; unresolved and supporting-mechanism facts remain grounding evidence but are not mandatory and must not become standalone capabilities without product-outcome evidence; verification-harness facts must never become product capabilities. Internal behavior surfaces are structural evidence, not mandatory capabilities, and must be omitted unless other evidence proves they are part of the product's purpose. Product text may rank, name, or merge an ability only when at least one cited candidate's operations support that ability; never attach a product claim to an unrelated candidate. Terminality is relational evidence, not a naming template: terminal and proximal-terminal candidate areas are more likely to express what the codebase was built to deliver; upstream areas are more likely to be prerequisites. Use it for ranking and grouping, but never override contradictory product text, journey, entity, or operation evidence. ENTITY LANGUAGE CHECK: entity_names establish which evidence belongs together but may be source-level type identifiers. Names and descriptions must use PM-readable nouns from cited operations, journeys, or top_down_signals and must never expose class, interface, schema, or graph-model identifiers. Do not lead a capability name with Handle, Process, or Manage; Coordinate is valid only when evidence establishes collaboration as the outcome.`,
         style: 'Write like a product engineer or PM. Plain language. No markdown. Begin each description with its concrete product subject, never an actor scaffold. Prefer precise behavior verbs such as tracks, surfaces, exposes, manages, monitors, secures, settles, and enforces. No CRUD inventory, no "lifecycle", no route counts, no file paths, no marketing fluff. Do not use vague value nouns such as insights or metrics unless the cited evidence names them. Never expand an abbreviation from an operation identifier unless first-party product text explicitly supplies that expansion; describe the evidenced actions instead. Each description names the concrete user-facing concept the evidence supports and adds evidence-specific information beyond the capability name.',
         product: {
           name: input.systemName, domain: purpose.primary_domain,
@@ -10241,7 +10238,7 @@ export class AnalyzerOrchestrator {
     if (evidenceRejected.length > 0) {
       return `catalog contains ${evidenceRejected.length} authored capability ${evidenceRejected.length === 1 ? 'claim' : 'claims'} without product-outcome evidence: ${evidenceRejected.slice(0, 3).map(capability => capability.name).join(', ')}`;
     }
-    const minimumCapabilities = catalogMinimumCapabilityCount(distinctFamilyCount, requiredEntityCandidateGroups.length);
+    const minimumCapabilities = catalogMinimumCapabilityCount(distinctFamilyCount, requiredEntityCandidateGroups.length, requiredOutcomes.length);
     if (reconciled.length < minimumCapabilities) {
       return `catalog collapse: ${reconciled.length} capabilities against ${distinctFamilyCount} distinct deterministic candidate families; at least ${minimumCapabilities} independently expressed outcomes are required`;
     }
@@ -10389,6 +10386,7 @@ export class AnalyzerOrchestrator {
       .filter(candidate => candidate.evidence_kind === 'behavior-surface' && capabilityRequiresCatalogCoverage(candidate) && candidate.id)
       .map(candidate => candidate.id);
     const requiredEntityCandidateGroups = catalogEntityCandidateGroups(requiredEvidenceCandidates); const requiredOutcomes = deriveCapabilityCatalogOutcomeRequirements(args.projectTextSignal, evidenceCandidates);
+    const minimumCapabilities = catalogMinimumCapabilityCount(distinctFamilyCount, requiredEntityCandidateGroups.length, requiredOutcomes.length);
     const { entityNamesById, entityFieldsById, entityEvidenceById } = capabilityDescriptionEvidenceMaps(args.dataEntities);
     let reconciled: SystemCapability[] = [];
     let qualityFailure: string | undefined;
@@ -10397,7 +10395,7 @@ export class AnalyzerOrchestrator {
     let cyclesRun = 0;
     let deadlineExceeded = false;
     let retainedInterpretationRaw = ''; const catalogRejectionsByCandidate: CapabilityCatalogRejectionsByCandidate = new Map();
-    let uncoveredOutcomes = requiredOutcomes; const repairProgress = trackCapabilityCatalogRepair(distinctFamilyCount, requiredBehaviorCandidateIds, requiredEntityCandidateGroups, requiredOutcomes.map(requirement => requirement.id));
+    let uncoveredOutcomes = requiredOutcomes; const repairProgress = trackCapabilityCatalogRepair(Math.max(1, distinctFamilyCount), requiredBehaviorCandidateIds, requiredEntityCandidateGroups, requiredOutcomes.map(requirement => requirement.id));
     for (let cycle = 1; cycle <= repairProgress.maxCycles; cycle++) {
       if (args.hardDeadlineAt !== undefined && Date.now() >= args.hardDeadlineAt) {
         deadlineExceeded = true;
@@ -10425,7 +10423,7 @@ export class AnalyzerOrchestrator {
           flowGraph: args.flowGraph,
           projectTextSignal: args.projectTextSignal,
           budgetMs: args.budgetMs,
-          hardDeadlineAt, exactCapabilityLimit: targetedRepair ? 1 : undefined, requiredOutcomeRequirements: mode?.requirements.length ? mode.requirements : undefined, repairMode: mode?.mode, repairIdentityName: mode?.mode === 'description' ? mode.identity.name : undefined,
+          hardDeadlineAt, exactCapabilityLimit: targetedRepair ? 1 : undefined, requiredOutcomeCount: targetedRepair ? mode?.requirements.length || 0 : requiredOutcomes.length, requiredOutcomeRequirements: mode?.requirements.length ? mode.requirements : undefined, repairMode: mode?.mode, repairIdentityName: mode?.mode === 'description' ? mode.identity.name : undefined,
           entryPoints: args.entryPoints,
           nodes: args.nodes,
           onResponse: raw => { batchRaw = raw; }, onRejection: feedback => { const recorded = recordCapabilityCatalogRejection(catalogRejectionsByCandidate, feedback); extractionRejections.push(recorded.explanation); },
@@ -10508,7 +10506,8 @@ export class AnalyzerOrchestrator {
     const gateReason = deadlineExceeded
       ? `${AI_CATALOG_HARD_DEADLINE_MARKER}: capability-catalog AI enrichment abandoned after ${cyclesRun} cycle(s) to protect the overall analysis latency budget; structural capability candidates remain available${qualityFailure ? ` (last quality check: ${qualityFailure})` : ''}`
       : qualityFailure;
-    const publishableReconciled = reconciled.filter(capability => this.isPublishableCapability(capability)); const publishGroundedPartial = Boolean(qualityFailure) && publishableReconciled.length >= catalogMinimumCapabilityCount(distinctFamilyCount, requiredEntityCandidateGroups.length);
+    const publishableReconciled = reconciled.filter(capability => this.isPublishableCapability(capability)); const requiredCoverageFailure = capabilityCatalogCoverageFailure(publishableReconciled, requiredBehaviorCandidateIds, requiredEntityCandidateGroups, requiredOutcomes);
+    const publishGroundedPartial = Boolean(qualityFailure) && !requiredCoverageFailure && publishableReconciled.length >= minimumCapabilities;
     if ((publishGroundedPartial || (!deadlineExceeded && !qualityFailure)) && retainedInterpretationRaw) {
       args.onInterpretationAccepted?.(retainedInterpretationRaw);
     }
@@ -10540,7 +10539,7 @@ export class AnalyzerOrchestrator {
       candidate_dispositions: evidenceCandidates.map(candidate => ({ candidate_id: candidate.id, role: candidate.evidence_role || 'unresolved', reasons: candidate.evidence_role_reasons || [] })),
       actual_publishable_capabilities: publishableReconciled.length,
       published_capabilities: publishGroundedPartial || (!deadlineExceeded && !qualityFailure) ? publishableReconciled.length : 0,
-      minimum_published_capabilities: Math.ceil(Math.log2(distinctFamilyCount + 1)),
+      minimum_published_capabilities: minimumCapabilities,
       status: publishGroundedPartial ? 'partial' : deadlineExceeded ? 'unavailable' : qualityFailure ? 'rejected' : 'accepted',
       ...(gateReason ? { reason: gateReason } : {}),
     };

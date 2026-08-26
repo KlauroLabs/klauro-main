@@ -240,15 +240,39 @@ describe('capability evidence roles', () => {
     expect(catalogRequiredEvidenceCandidates(classified).map(item => item.id)).toEqual(['review']);
   });
 
-  test('keeps ambiguous product-entity evidence mandatory instead of silently dropping it', () => {
-    const ambiguous = candidate('history', 'Inspect recorded history', 'supporting', ['Read']);
-    ambiguous.related_entities = ['entity_history'];
+  test('keeps internal supporting history available without making its entity family mandatory', () => {
+    const ambiguous = candidate('cap_history', 'History', 'supporting', ['Coordinate', 'Read']);
+    ambiguous.structural_label = 'History Management';
+    ambiguous.related_entities = ['entity_changehistoryentry'];
     const [classified] = classifyCapabilityEvidence(
       [ambiguous],
-      [entity('entity_history', 'History', 'persisted-entity', true)],
+      [entity('entity_changehistoryentry', 'ChangeHistoryEntry', 'domain-shape', true)],
     );
 
     expect(classified.evidence_role).toBe('unresolved');
+    expect(catalogRequiredEvidenceCandidates([classified])).toEqual([]);
+    expect(catalogEvidenceCandidates([ambiguous], [], [entity(
+      'entity_changehistoryentry', 'ChangeHistoryEntry', 'domain-shape', true,
+    )])).toEqual([classified]);
+  });
+
+  test('keeps a user-facing terminal entity outcome mandatory', () => {
+    const outcome = candidate('orders', 'Review customer orders', 'supporting', ['Read']);
+    outcome.related_entities = ['entity_order'];
+    outcome.operations[0].entry_point_id = 'orders-page';
+    const [classified] = classifyCapabilityEvidence(
+      [outcome],
+      [entity('entity_order', 'Order', 'persisted-entity', true)],
+      undefined,
+      { userJourneys: [{
+        id: 'orders-journey', name: 'Review orders', journey_kind: 'user-facing', entry_point_id: 'orders-page',
+        entry: { type: 'page', name: 'orders' }, steps: [],
+        terminal_effects: { entities_written: [], entities_read: ['Order'], external_services: [], messages_emitted: [] },
+        terminal_entities: [], security_boundaries: [], tests_covering: [], criticality: 'high', call_chain_ids: [], exit_point_ids: [],
+      }] },
+    );
+
+    expect(classified.evidence_role).toBe('product-outcome');
     expect(catalogRequiredEvidenceCandidates([classified])).toEqual([classified]);
   });
 
@@ -468,17 +492,18 @@ describe('capability evidence roles', () => {
   test('refuses to publish an authored capability grounded only in supporting or verification candidates', () => {
     const authored = candidate('authored', 'Expose product result', 'core', ['Expose']);
     const supporting = { ...candidate('support', 'Warm cache', 'supporting', ['Warm']), evidence_role: 'supporting-mechanism' as const };
+    const unresolved = { ...candidate('ambiguous', 'Inspect recorded state', 'supporting', ['Read']), evidence_role: 'unresolved' as const };
     const verification = { ...candidate('proof', 'Exercise proof', 'supporting', ['Run']), evidence_role: 'verification-harness' as const };
     const product = { ...candidate('product', 'Review result', 'core', ['Review']), evidence_role: 'product-outcome' as const };
 
-    authored.criticality_factors = ['catalog-candidate:support', 'catalog-candidate:proof'];
-    expect(capabilityCitesRequiredEvidence(authored, [supporting, verification, product])).toBe(false);
-    expect(capabilityEvidencePublicationFailure(authored, [supporting, verification, product]))
+    authored.criticality_factors = ['catalog-candidate:support', 'catalog-candidate:ambiguous', 'catalog-candidate:proof'];
+    expect(capabilityCitesRequiredEvidence(authored, [supporting, unresolved, verification, product])).toBe(false);
+    expect(capabilityEvidencePublicationFailure(authored, [supporting, unresolved, verification, product]))
       .toBe('supporting-or-verification-evidence-only');
     authored.criticality_factors.push('catalog-candidate:product');
-    expect(capabilityCitesRequiredEvidence(authored, [supporting, verification, product])).toBe(true);
+    expect(capabilityCitesRequiredEvidence(authored, [supporting, unresolved, verification, product])).toBe(true);
     authored.criticality_factors = [];
-    expect(capabilityEvidencePublicationFailure(authored, [supporting, verification, product]))
+    expect(capabilityEvidencePublicationFailure(authored, [supporting, unresolved, verification, product]))
       .toBe('uncited-candidate-evidence');
   });
 
@@ -506,6 +531,8 @@ describe('catalogEntityCandidateGroups', () => {
   test('allows one authored capability to cover several related entity families', () => {
     expect(catalogCountBounds(37, 0, 37)).toEqual({ min: 6, max: 20 });
     expect(catalogMinimumCapabilityCount(37, 37)).toBe(6);
+    expect(catalogCountBounds(2, 1, 1, 5)).toEqual({ min: 5, max: 5 });
+    expect(catalogMinimumCapabilityCount(2, 1, 5)).toBe(5);
   });
 
   test('groups candidates sharing an entity while preserving unrelated product families', () => {

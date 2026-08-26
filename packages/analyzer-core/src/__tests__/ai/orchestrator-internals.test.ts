@@ -10927,7 +10927,7 @@ describe('catalog completeness (live truckspy: fuel/safety/ELD rich evidence, 9-
     expect(ranked.indexOf('Drive Alert')).toBeLessThan(ranked.indexOf('Cleanup'));
   });
 
-  it('catalog size guidance and window scale with the candidate pool; candidates_considered surfaces in the decision digest', async () => {
+  it('keeps supporting evidence in the prompt window without inflating required product outcomes', async () => {
     const captured: any[] = [];
     const original = (aiService as any).generateComponentDescription;
     (aiService as any).generateComponentDescription = async (args: any) => {
@@ -10937,9 +10937,8 @@ describe('catalog completeness (live truckspy: fuel/safety/ELD rich evidence, 9-
       ] });
     };
     try {
-      // 180-candidate pool (live truckspy scale) -> window widens past 24 and
-      // the prompt asks for proportionally more capabilities than the 6-12
-      // small-repo default.
+      // Supporting evidence remains available to ground the catalog but does
+      // not create mandatory product outcomes.
       const bigPool = Array.from({ length: 180 }, (_, i) => ({
         name: `Area ${i}`, category: 'supporting', related_entities: [], related_domains: [`area-${i}`],
         operations: [{ entry_point_id: `ep_${i}`, entry_point_type: 'http', action: 'Handle', path_or_command: `/a/${i}` }],
@@ -10954,12 +10953,9 @@ describe('catalog completeness (live truckspy: fuel/safety/ELD rich evidence, 9-
       });
       const bigCtx = captured[captured.length - 1].additionalContext;
       expect(bigCtx.facts.candidate_route_areas.length).toBe(30); // ceil(180/6)
-      expect(bigCtx.task).toMatch(/Return 5 to 12 capabilities|Return \d+ to \d+ capabilities/);
       const bigCounts = bigCtx.task.match(/Return (\d+) to (\d+) capabilities/);
-      expect(Number(bigCounts[2])).toBeGreaterThan(12);
+      expect(bigCounts.slice(1)).toEqual(['0', '1']);
 
-      // A small pool uses evidence-proportional guidance rather than forcing
-      // six capabilities out of ten candidate families.
       const smallPool = bigPool.slice(0, 10);
       await orch.aiExtractCapabilityCatalog({
         systemName: 'small',
@@ -10972,8 +10968,7 @@ describe('catalog completeness (live truckspy: fuel/safety/ELD rich evidence, 9-
       const smallCtx = captured[captured.length - 1].additionalContext;
       expect(smallCtx.facts.candidate_route_areas.length).toBe(10);
       const smallCounts = smallCtx.task.match(/Return (\d+) to (\d+) capabilities/);
-      expect(Number(smallCounts[1])).toBe(4);
-      expect(Number(smallCounts[2])).toBe(10);
+      expect(smallCounts.slice(1)).toEqual(['0', '1']);
     } finally {
       (aiService as any).generateComponentDescription = original;
     }

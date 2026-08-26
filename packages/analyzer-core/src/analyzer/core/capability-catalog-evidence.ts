@@ -511,10 +511,7 @@ export function catalogRequiredEvidenceCandidates(candidates: SystemCapability[]
 }
 
 export function capabilityRequiresCatalogCoverage(candidate: SystemCapability): boolean {
-  const requiredRole = candidate.evidence_role === undefined ||
-    candidate.evidence_role === 'product-outcome' ||
-    candidate.evidence_role === 'unresolved';
-  return requiredRole && candidate.category !== 'internal';
+  return candidate.evidence_role === 'product-outcome';
 }
 
 export function capabilityCitesRequiredEvidence(
@@ -537,10 +534,7 @@ export function capabilityEvidencePublicationFailure(
   const citedCandidates = citedIds
     .map(id => candidateById.get(id))
     .filter((candidate): candidate is SystemCapability => Boolean(candidate));
-  const required = citedCandidates.some(candidate => {
-    const role = candidate.evidence_role;
-    return role === undefined || role === 'product-outcome' || role === 'unresolved';
-  });
+  const required = citedCandidates.some(candidate => candidate.evidence_role === 'product-outcome');
   if (required) return undefined;
   const firstPartyDeliveryEvidence = citedCandidates.some(candidate =>
     candidate.evidence_kind === 'behavior-surface' && candidate.evidence_role === 'supporting-mechanism'
@@ -670,18 +664,29 @@ export function catalogCountBounds(
   distinctFamilyCount: number,
   behaviorFamilyCount: number,
   entityFamilyCount: number,
+  requiredOutcomeCount = 0,
 ): { min: number; max: number } {
-  const max = Math.max(1, Math.min(20, Math.max(distinctFamilyCount, behaviorFamilyCount, entityFamilyCount)));
-  const min = Math.min(max, Math.max(
-    1,
-    Math.ceil(Math.log2(distinctFamilyCount + 1)),
-    Math.ceil(Math.log2(entityFamilyCount + 1)),
+  const max = Math.max(1, Math.min(20, Math.max(
+    distinctFamilyCount,
+    behaviorFamilyCount,
+    entityFamilyCount,
+    requiredOutcomeCount,
+  )));
+  const min = Math.min(max, catalogMinimumCapabilityCount(
+    distinctFamilyCount,
+    entityFamilyCount,
+    requiredOutcomeCount,
   ));
   return { min, max };
 }
 
-export function catalogMinimumCapabilityCount(distinctFamilyCount: number, entityFamilyCount: number): number {
+export function catalogMinimumCapabilityCount(
+  distinctFamilyCount: number,
+  entityFamilyCount: number,
+  requiredOutcomeCount = 0,
+): number {
   return Math.max(
+    requiredOutcomeCount,
     Math.ceil(Math.log2(distinctFamilyCount + 1)),
     Math.ceil(Math.log2(entityFamilyCount + 1)),
   );

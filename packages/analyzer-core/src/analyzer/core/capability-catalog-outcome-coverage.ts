@@ -203,7 +203,13 @@ export function uncoveredCapabilityCatalogOutcomeRequirements(
 ): CapabilityCatalogOutcomeRequirement[] {
   const matches = requirements.map(requirement => capabilities.flatMap((capability, index) => {
     if (!isEligible(capability)) return [];
-    return capabilitySatisfiesCatalogOutcomeRequirement(capability, requirement) ? [index] : [];
+    const factors = capability.criticality_factors || [];
+    const bound = factors.includes(`catalog-outcome-requirement:${requirement.id}`);
+    const citedCandidates = factors
+      .filter(factor => factor.startsWith('catalog-candidate:'))
+      .map(factor => factor.slice('catalog-candidate:'.length));
+    const grounded = bound || citedCandidates.some(candidateId => requirement.candidateIds.includes(candidateId));
+    return grounded && capabilitySatisfiesCatalogOutcomeRequirement(capability, requirement) ? [index] : [];
   }));
   const capabilityAssignments = new Map<number, number>();
   const assignedRequirements = new Set<number>();

@@ -1,6 +1,6 @@
 import { AnalyzerOrchestrator } from '../../analyzer/core/orchestrator';
 import { evaluateCapabilityCatalogAudience } from '../../analyzer/core/capability-catalog-audience';
-import { deriveCapabilityCatalogOutcomeRequirements } from '../../analyzer/core/capability-catalog-outcome-coverage';
+import { capabilityCatalogOutcomeCoverageFailure, deriveCapabilityCatalogOutcomeRequirements } from '../../analyzer/core/capability-catalog-outcome-coverage';
 import type { SystemCapability } from '../../types/cas.types';
 
 // Private-method tests (same convention as orchestrator-internals.test.ts):
@@ -361,11 +361,14 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
       'Manage orders', 'Track portfolios', 'Settle payments', 'Review invoices',
       'Enroll devices', 'Authorize access', 'Publish messages', 'Schedule jobs',
       'Analyze risks', 'Generate reports', 'Sync inventory', 'Configure policies',
-    ].map((name, index) => cap({ id: `cand_${index}`, name, operations: anchorOp(name) })),
+    ].map((name, index) => cap({ id: `cand_${index}`, name, category: 'core', operations: anchorOp(name) })),
     behaviorSurfaces: [],
     externalServices: [],
     flowGraph: { capability_candidates: [] },
-    projectTextSignal: { concepts: [], evidence: [] },
+    projectTextSignal: {
+      concepts: ['manage orders', 'track portfolios', 'settle payments', 'review invoices', 'enroll devices', 'authorize access', 'publish messages', 'schedule jobs', 'analyze risks', 'generate reports', 'sync inventory', 'configure policies'],
+      evidence: [],
+    },
     entryPoints: [],
     nodes: [],
     budgetMs: 1000,
@@ -641,7 +644,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     );
   });
 
-  it('constrains a history-family repair to its evidence subject instead of an unrelated global outcome', async () => {
+  it('does not require an internal supporting history entity as a product family', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const args: any = gateArgs(localOrch);
     args.dataEntities = [
@@ -658,27 +661,21 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     }));
     const accepted = ['Analyze codebases', 'Coordinate agent work', 'Correlate runtime signals', 'Assess change risk']
       .map(name => cap({ id: name, name, description: `Grounded product outcome for ${name.toLowerCase()} across connected software.`, operations: anchorOp(name) }));
-    const repaired = cap({
-      id: 'review-history', name: 'Review codebase change history',
-      description: 'Lets engineers review how analyzed software changed across saved codebase revisions.',
-      operations: anchorOp('history'), criticality_factors: ['catalog-candidate:cap_history'],
-    });
     const calls: any[] = [];
     localOrch.aiExtractCapabilityCatalog = async (input: any) => {
       calls.push(input);
-      return calls.length === 1 ? accepted : [repaired];
+      return accepted;
     };
     localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
 
     const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(args);
 
-    expect(calls).toHaveLength(2);
-    expect(calls[1].qualityNudge).toContain('"candidate_id":"cap_history"');
-    expect(calls[1].qualityNudge).toContain('"evidence_subject_terms":["change","history"]');
-    expect(calls[1].qualityNudge).toContain('cannot reuse another accepted outcome');
-    expect(calls[1]).toMatchObject({ exactCapabilityLimit: 1, userJourneys: [], externalServices: [] });
-    expect(calls[1].dataEntities.map((entity: any) => entity.id)).toEqual(['entity_changehistoryentry']);
-    expect(out.map(capability => capability.name)).toContain('Review codebase change history');
+    expect(calls).toHaveLength(1);
+    expect(out).toEqual(accepted);
+    expect(args.enhancedSystemPurpose.capability_catalog_coverage.candidate_dispositions).toEqual(
+      expect.arrayContaining([expect.objectContaining({ candidate_id: 'cap_history', role: 'unresolved' })]),
+    );
+    expect(args.enhancedSystemPurpose.capability_catalog_coverage.evidence_families).toBe(12);
   });
 
   it('preserves a cited behavior identity for the dedicated description repair stage', async () => {
@@ -759,7 +756,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(out[0].criticality_factors).toContain('catalog-candidate:workspace');
   });
 
-  it('carries a rejected optional delivery title into a full-catalog quality retry', async () => {
+  it('does not promote a rejected optional delivery title into a product-catalog repair', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const args: any = gateArgs(localOrch);
     args.projectTextSignal = { concepts: ['codebase', 'software understanding'], evidence: [] };
@@ -792,10 +789,8 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
     const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(args);
 
-    expect(calls).toHaveLength(2);
-    expect(calls[1].qualityNudge).toContain('Analyze codebase configuration');
-    expect(calls[1].qualityNudge).toContain('do not repeat it');
-    expect(out.some(capability => capability.name === 'Analyze codebases')).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(out.map(capability => capability.name)).toEqual(retained.map(capability => capability.name));
   });
 
   it('does not publish a rejected description identity when its evidence family is already covered', async () => {
@@ -828,7 +823,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(args);
 
     expect(calls).toHaveLength(2);
-    expect(out).toEqual([]);
+    expect(out.map(capability => capability.name)).toEqual(accepted.map(capability => capability.name));
   });
 
   it('does not make an uncorroborated delivery surface a mandatory product family', async () => {
@@ -960,6 +955,53 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
       actual_publishable_capabilities: 3,
     });
     expect(args.enhancedSystemPurpose.capability_catalog_coverage.reason).toBeDefined();
+  });
+
+  it('does not publish a full-sized catalog missing one first-party outcome slot', async () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    const args: any = gateArgs(localOrch);
+    args.projectTextSignal = {
+      productDocSummary: 'The product builds a trustworthy relationship graph, turns that graph into behavior-level comprehension for people and AI agents, enables real-time collaboration, and correlates static understanding with runtime evidence.',
+      evidence: [],
+    };
+    args.candidateSnapshot = [
+      cap({ id: 'graph', name: 'Relationship graph analysis', category: 'core', evidence_examples: ['query_graph_relationships'], operations: anchorOp('query graph relationships') }),
+      cap({ id: 'understanding', name: 'Explore connected software behavior', category: 'core', evidence_examples: ['inspect_behavior', 'explain_change_risk'], operations: anchorOp('inspect behavior') }),
+      cap({ id: 'collaboration', name: 'Coordinate real-time collaboration', category: 'core', evidence_examples: ['coordinate_overlapping_work'], operations: anchorOp('coordinate overlapping work') }),
+      cap({ id: 'runtime', name: 'Runtime evidence correlation', category: 'core', evidence_examples: ['correlate_runtime_evidence'], operations: anchorOp('correlate runtime evidence') }),
+    ];
+    const requirements = deriveCapabilityCatalogOutcomeRequirements(args.projectTextSignal, args.candidateSnapshot);
+    const factor = (candidateId: string) => [`catalog-candidate:${candidateId}`];
+    const incomplete = [
+      cap({ name: 'Build a trustworthy relationship graph', description: 'A trustworthy relationship graph connects software structure and behavior.', operations: anchorOp('graph'), criticality_factors: factor('graph') }),
+      cap({ name: 'Give AI agents software comprehension', description: 'AI agents understand connected software behavior before changing code.', operations: anchorOp('agent'), criticality_factors: factor('understanding') }),
+      cap({ name: 'Coordinate concurrent work', description: 'Collaborators coordinate overlapping changes in real time.', operations: anchorOp('collaboration'), criticality_factors: factor('collaboration') }),
+      cap({ name: 'Correlate runtime evidence', description: 'Runtime telemetry is correlated with static software understanding.', operations: anchorOp('runtime'), criticality_factors: factor('runtime') }),
+      cap({ name: 'Review change impact', description: 'Engineers review the impact of connected changes before proceeding.', operations: anchorOp('impact') }),
+    ];
+    const complete = [...incomplete.slice(0, 4), cap({
+      name: 'Help people understand software behavior',
+      description: 'Human engineers understand connected software behavior before changing code.',
+      operations: anchorOp('human'),
+      criticality_factors: factor('understanding'),
+    })];
+    expect(requirements).toHaveLength(5);
+    complete.forEach((_: SystemCapability, index: number) => expect(capabilityCatalogOutcomeCoverageFailure(
+      complete.filter((__: SystemCapability, candidateIndex: number) => candidateIndex !== index), requirements,
+    )).toContain('first-party product outcome'));
+    localOrch.aiExtractCapabilityCatalog = async () => incomplete;
+    localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
+
+    const out = await localOrch.runCapabilityCatalogWithQualityGate(args);
+
+    expect(out).toEqual([]);
+    expect(args.enhancedSystemPurpose.capability_catalog_coverage).toMatchObject({
+      actual_publishable_capabilities: 5,
+      published_capabilities: 0,
+      minimum_published_capabilities: 5,
+      status: 'rejected',
+    });
+    expect(args.enhancedSystemPurpose.capability_catalog_coverage.reason).toContain('first-party product outcome');
   });
 
   it('accepts a smaller passing retry instead of retaining a larger rejected catalog', async () => {
