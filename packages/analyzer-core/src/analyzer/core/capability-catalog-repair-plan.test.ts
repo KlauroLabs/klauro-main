@@ -38,14 +38,27 @@ describe('capability catalog repair planning', () => {
   });
 
   test('successful bound repair supersedes only its unbound pending semantic duplicate', () => {
-    const requirement = { id: 'graph', statement: 'build trustworthy relationship graph', candidateIds: ['graph-source', 'shared-surface'], subjectTokens: ['build', 'graph'] };
-    const stale = { ...capability('stale', ['catalog-candidate:graph-source']), name: 'Build a trustworthy relationship graph' };
+    const requirement = { id: 'graph', statement: 'build trustworthy relationship graph', candidateIds: ['capability_mcp'], subjectTokens: ['build', 'graph'] };
+    const stale = { ...capability('stale', ['catalog-candidate:cap_cas']), name: 'Build a trustworthy relationship graph' };
     const incomingStale = { ...stale, id: 'incoming-stale' };
     const unrelated = capability('architecture', ['catalog-candidate:architecture']);
-    const repaired = { ...capability('graph', ['catalog-candidate:shared-surface', 'catalog-outcome-requirement:graph'], 'The product maps connected software behavior and relationships for inspection.'), name: 'Builds a trustworthy relationship graph' };
+    const repaired = { ...capability('graph', ['catalog-candidate:capability_mcp', 'catalog-outcome-requirement:graph'], 'The product maps connected software behavior and relationships for inspection.'), name: 'Builds a trustworthy relationship graph' };
+    const graphEvidence = { ...capability('cap_cas', []), name: 'Build code relationship graph' };
+    const surfaceEvidence = { ...capability('capability_mcp', []), name: 'Inspect software behavior' };
 
-    assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates([stale, unrelated], [incomingStale, repaired], [requirement]), {
+    assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates([stale, unrelated], [incomingStale, repaired], [requirement], [graphEvidence, surfaceEvidence]), {
       existing: [unrelated], incoming: [repaired],
+    });
+  });
+
+  test('does not supersede a same-title pending identity without corroborating candidate evidence', () => {
+    const requirement = { id: 'graph', statement: 'build trustworthy relationship graph', candidateIds: ['capability_mcp'], subjectTokens: ['build', 'graph'] };
+    const pending = { ...capability('pending', ['catalog-candidate:unrelated']), name: 'Build a trustworthy relationship graph' };
+    const repaired = { ...capability('graph', ['catalog-candidate:capability_mcp', 'catalog-outcome-requirement:graph'], 'The product maps connected software behavior and relationships for inspection.'), name: 'Builds a trustworthy relationship graph' };
+    const unrelatedEvidence = { ...capability('unrelated', []), name: 'Operate deployment transport' };
+
+    assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates([pending], [repaired], [requirement], [unrelatedEvidence]), {
+      existing: [pending], incoming: [repaired],
     });
   });
 
@@ -55,7 +68,7 @@ describe('capability catalog repair planning', () => {
     const unrelated = { ...capability('unrelated', ['catalog-candidate:other']), name: 'Build a relationship graph' };
     const invalidBound = { ...capability('invalid', ['catalog-candidate:shared', 'catalog-outcome-requirement:graph']), name: 'Build a relationship graph' };
 
-    assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates([pending, unrelated], [invalidBound], [requirement]), {
+    assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates([pending, unrelated], [invalidBound], [requirement], []), {
       existing: [pending, unrelated], incoming: [invalidBound],
     });
   });
@@ -67,7 +80,7 @@ describe('capability catalog repair planning', () => {
     const humanBound = { ...capability('human', ['catalog-candidate:shared', 'catalog-outcome-requirement:human'], 'People understand connected software behavior.'), name: 'Help people understand behavior' };
     const agentBound = { ...capability('agent', ['catalog-candidate:shared', 'catalog-outcome-requirement:agent'], 'Agents understand connected software behavior.'), name: 'Help agents understand behavior' };
 
-    assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates([pending], [humanBound, agentBound], [human, agent]), {
+    assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates([pending], [humanBound, agentBound], [human, agent], []), {
       existing: [pending], incoming: [humanBound, agentBound],
     });
   });
@@ -79,7 +92,7 @@ describe('capability catalog repair planning', () => {
     const pendingAgent = { ...capability('pending-agent', ['catalog-candidate:shared']), name: 'Explain behavior without naming an audience' };
     const humanBound = { ...capability('human', ['catalog-candidate:shared', 'catalog-outcome-requirement:human'], 'People understand connected software behavior.'), name: 'Help people understand behavior' };
 
-    assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates([pendingHuman, pendingAgent], [humanBound], [human, agent]), {
+    assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates([pendingHuman, pendingAgent], [humanBound], [human, agent], []), {
       existing: [pendingAgent], incoming: [humanBound],
     });
   });

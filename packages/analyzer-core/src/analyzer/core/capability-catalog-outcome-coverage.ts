@@ -175,6 +175,16 @@ export function capabilitySatisfiesCatalogOutcomeRequirement(
   return requiredTerms.filter(token => capabilityTokens.has(token)).length >= requiredMatches;
 }
 
+export function capabilityCandidateCorroboratesCatalogOutcomeRequirement(
+  candidate: SystemCapability,
+  requirement: CapabilityCatalogOutcomeRequirement,
+): boolean {
+  const candidateTokens = new Set(tokens(candidateText(candidate), true));
+  const requiredTerms = requirement.requiredSubjectTerms || requirement.subjectTokens;
+  const requiredMatches = requirement.minimumSubjectMatches ?? Math.min(2, requiredTerms.length);
+  return requiredTerms.filter(token => candidateTokens.has(canonicalToken(token))).length >= requiredMatches;
+}
+
 export function bindUniquelySatisfiedCatalogOutcomeRequirements(
   capabilities: readonly SystemCapability[],
   requirements: readonly CapabilityCatalogOutcomeRequirement[],

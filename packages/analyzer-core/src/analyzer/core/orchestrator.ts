@@ -10466,7 +10466,7 @@ export class AnalyzerOrchestrator {
         return identity ? [identity] : [];
       });
       audienceRepairFeedback = [audienceRepairFeedback, capabilityPublishabilityRepairFeedback(publishabilityRejections)].filter(Boolean).join(' ') || undefined;
-      const superseded = targetedRepair ? supersedeUnboundPendingOutcomeDuplicates(reconciled, cycleReconciled, requiredOutcomes) : { existing: reconciled, incoming: cycleReconciled }; const combinedReconciled = targetedRepair ? this.dedupeSystemCapabilitiesByName(mergeCapabilityCatalogRepairResults(superseded.existing, superseded.incoming), true) : cycleReconciled;
+      const superseded = targetedRepair ? supersedeUnboundPendingOutcomeDuplicates(reconciled, cycleReconciled, requiredOutcomes, evidenceCandidates) : { existing: reconciled, incoming: cycleReconciled }; const combinedReconciled = targetedRepair ? this.dedupeSystemCapabilitiesByName(mergeCapabilityCatalogRepairResults(superseded.existing, superseded.incoming), true) : cycleReconciled;
       const evidenceCompleteReconciled = mergeUniquelyMatchedBehaviorEvidence(combinedReconciled, evidenceCandidates, requiredBehaviorCandidateIds); const nonPublishable = evidenceCompleteReconciled.filter(capability => !this.isPublishableCapability(capability));
       const cycleQualityFailure = this.catalogQualityFailure(
         evidenceCompleteReconciled,

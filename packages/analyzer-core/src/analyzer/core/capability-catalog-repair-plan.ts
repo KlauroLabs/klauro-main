@@ -1,5 +1,5 @@
 import type { SystemCapability } from '../../types/cas.types';
-import { capabilityCatalogOutcomeRepairNudge, capabilitySatisfiesCatalogOutcomeRequirement, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
+import { capabilityCandidateCorroboratesCatalogOutcomeRequirement, capabilityCatalogOutcomeRepairNudge, capabilitySatisfiesCatalogOutcomeRequirement, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
 
 export type CapabilityCatalogRepairBatch =
   | { mode: 'outcome'; candidateIds: string[]; requirements: CapabilityCatalogOutcomeRequirement[] }
@@ -55,8 +55,10 @@ export function preserveCapabilityCatalogDescriptionIdentity(
 
 export function supersedeUnboundPendingOutcomeDuplicates(
   existing: readonly SystemCapability[], incoming: readonly SystemCapability[], requirements: readonly CapabilityCatalogOutcomeRequirement[],
+  evidenceCandidates: readonly SystemCapability[],
 ): { existing: SystemCapability[]; incoming: SystemCapability[] } {
   const requirementById = new Map(requirements.map(requirement => [requirement.id, requirement]));
+  const evidenceById = new Map(evidenceCandidates.map(candidate => [candidate.id, candidate]));
   const repairedRequirements = new Set(incoming.flatMap(capability => {
     if (!capability.description || capability.description_generation?.status === 'ai_rejected') return [];
     const candidateIds = factors(capability, 'catalog-candidate:');
@@ -73,7 +75,9 @@ export function supersedeUnboundPendingOutcomeDuplicates(
     const candidateIds = factors(capability, 'catalog-candidate:');
     const matchedRequirements = requirements.filter(requirement =>
       repairedRequirements.has(requirement.id)
-      && candidateIds.some(candidateId => requirement.candidateIds.includes(candidateId))
+      && candidateIds.some(candidateId => requirement.candidateIds.includes(candidateId)
+        || Boolean(evidenceById.get(candidateId)
+          && capabilityCandidateCorroboratesCatalogOutcomeRequirement(evidenceById.get(candidateId)!, requirement)))
       && capabilitySatisfiesCatalogOutcomeRequirement(capability, requirement));
     return matchedRequirements.length === 1;
   };
