@@ -74,12 +74,11 @@ export function supersedeUnboundPendingOutcomeDuplicates(
       || (capability.description && capability.description_generation?.status !== 'ai_rejected')) return false;
     const candidateIds = factors(capability, 'catalog-candidate:');
     const matchedRequirements = requirements.filter(requirement =>
-      repairedRequirements.has(requirement.id)
-      && candidateIds.some(candidateId => requirement.candidateIds.includes(candidateId)
+      candidateIds.some(candidateId => requirement.candidateIds.includes(candidateId)
         || Boolean(evidenceById.get(candidateId)
           && capabilityCandidateCorroboratesCatalogOutcomeRequirement(evidenceById.get(candidateId)!, requirement)))
       && capabilitySatisfiesCatalogOutcomeRequirement(capability, requirement));
-    return matchedRequirements.length === 1;
+    return matchedRequirements.length === 1 && repairedRequirements.has(matchedRequirements[0].id);
   };
   return {
     existing: existing.filter(capability => !isSupersededPendingIdentity(capability)),

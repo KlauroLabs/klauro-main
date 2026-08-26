@@ -179,7 +179,11 @@ export function capabilityCandidateCorroboratesCatalogOutcomeRequirement(
   candidate: SystemCapability,
   requirement: CapabilityCatalogOutcomeRequirement,
 ): boolean {
-  const candidateTokens = new Set(tokens(candidateText(candidate), true));
+  if (candidate.evidence_role === 'verification-harness') return false;
+  const text = candidateText(candidate);
+  if (requirement.audience === 'human' && agentAudience.test(text) && !humanAudience.test(text)) return false;
+  if (requirement.audience === 'agent' && humanAudience.test(text) && !agentAudience.test(text)) return false;
+  const candidateTokens = new Set(tokens(text, true));
   const requiredTerms = requirement.requiredSubjectTerms || requirement.subjectTokens;
   const requiredMatches = requirement.minimumSubjectMatches ?? Math.min(2, requiredTerms.length);
   return requiredTerms.filter(token => candidateTokens.has(canonicalToken(token))).length >= requiredMatches;

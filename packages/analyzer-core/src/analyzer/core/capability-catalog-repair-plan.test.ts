@@ -78,11 +78,25 @@ describe('capability catalog repair planning', () => {
     const agent = { id: 'agent', statement: 'agents understand behavior', audience: 'agent' as const, candidateIds: ['shared'], subjectTokens: ['understand', 'behavior'] };
     const pending = { ...capability('pending', ['catalog-candidate:shared']), name: 'Help people and agents understand behavior' };
     const humanBound = { ...capability('human', ['catalog-candidate:shared', 'catalog-outcome-requirement:human'], 'People understand connected software behavior.'), name: 'Help people understand behavior' };
-    const agentBound = { ...capability('agent', ['catalog-candidate:shared', 'catalog-outcome-requirement:agent'], 'Agents understand connected software behavior.'), name: 'Help agents understand behavior' };
 
-    assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates([pending], [humanBound, agentBound], [human, agent], []), {
-      existing: [pending], incoming: [humanBound, agentBound],
+    assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates([pending], [humanBound], [human, agent], []), {
+      existing: [pending], incoming: [humanBound],
     });
+  });
+
+  test('does not use verification or cross-audience evidence to supersede a pending identity', () => {
+    const graph = { id: 'graph', statement: 'build trustworthy relationship graph', candidateIds: ['surface'], subjectTokens: ['build', 'graph'] };
+    const human = { id: 'human', statement: 'people understand behavior', audience: 'human' as const, candidateIds: ['surface'], subjectTokens: ['understand', 'behavior'] };
+    const pendingGraph = { ...capability('pending-graph', ['catalog-candidate:proof']), name: 'Build a trustworthy relationship graph' };
+    const pendingHuman = { ...capability('pending-human', ['catalog-candidate:agent-evidence']), name: 'Help people understand behavior' };
+    const graphBound = { ...capability('graph', ['catalog-candidate:surface', 'catalog-outcome-requirement:graph'], 'The product maps connected software behavior and relationships for inspection.'), name: 'Builds a trustworthy relationship graph' };
+    const humanBound = { ...capability('human', ['catalog-candidate:surface', 'catalog-outcome-requirement:human'], 'People understand connected software behavior.'), name: 'Help people understand behavior' };
+    const proof = { ...capability('proof', []), name: 'Build relationship graph proof', evidence_role: 'verification-harness' as const };
+    const agentEvidence = { ...capability('agent-evidence', []), name: 'Agents understand software behavior' };
+
+    assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates(
+      [pendingGraph, pendingHuman], [graphBound, humanBound], [graph, human], [proof, agentEvidence],
+    ), { existing: [pendingGraph, pendingHuman], incoming: [graphBound, humanBound] });
   });
 
   test('isolates separate shared-candidate slots while superseding a uniquely matched pending identity', () => {
