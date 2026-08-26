@@ -190,10 +190,24 @@ export function capabilityCatalogOutcomeBindingFailure(
 ): string | undefined {
   if (requirements.length === 0) return undefined;
   const requirement = requirements.find(candidate => candidate.id === requirementId);
-  return requirement && !fulfilledRequirementIds.has(requirementId) &&
-    candidateIds.some(candidateId => requirement.candidateIds.includes(candidateId)) &&
-    capabilitySatisfiesCatalogOutcomeRequirement(capability, requirement)
-    ? undefined : 'required-outcome-mismatch';
+  if (!requirement) return `required-outcome-requirement-mismatch:${requirementId || 'missing'}`;
+  if (fulfilledRequirementIds.has(requirementId)) return `required-outcome-already-fulfilled:${requirementId}`;
+  if (!candidateIds.some(candidateId => requirement.candidateIds.includes(candidateId))) return `required-outcome-candidate-mismatch:${requirementId}`;
+  const capabilityText = `${capability.name || ''} ${capability.description || ''}`;
+  if (!capabilityMatchesAudience(capabilityText, requirement.audience)) return `required-outcome-audience-missing:${requirement.audience}`;
+  return capabilitySatisfiesCatalogOutcomeRequirement(capability, requirement) ? undefined : `required-outcome-subject-mismatch:${requirementId}`;
+}
+
+export function capabilityCatalogOutcomesMayMerge(
+  left: Pick<SystemCapability, 'criticality_factors'>,
+  right: Pick<SystemCapability, 'criticality_factors'>,
+): boolean {
+  const ids = (capability: Pick<SystemCapability, 'criticality_factors'>) => [...new Set((capability.criticality_factors || [])
+    .filter(factor => factor.startsWith('catalog-outcome-requirement:'))
+    .map(factor => factor.slice('catalog-outcome-requirement:'.length)))].sort();
+  const leftIds = ids(left); const rightIds = ids(right);
+  return leftIds.length === 0 || rightIds.length === 0 ||
+    (leftIds.length === rightIds.length && leftIds.every((id, index) => id === rightIds[index]));
 }
 
 export function uncoveredCapabilityCatalogOutcomeRequirements(
@@ -204,11 +218,12 @@ export function uncoveredCapabilityCatalogOutcomeRequirements(
   const matches = requirements.map(requirement => capabilities.flatMap((capability, index) => {
     if (!isEligible(capability)) return [];
     const factors = capability.criticality_factors || [];
-    const bound = factors.includes(`catalog-outcome-requirement:${requirement.id}`);
+    const boundRequirements = factors.filter(factor => factor.startsWith('catalog-outcome-requirement:'));
+    const bound = boundRequirements.includes(`catalog-outcome-requirement:${requirement.id}`);
     const citedCandidates = factors
       .filter(factor => factor.startsWith('catalog-candidate:'))
       .map(factor => factor.slice('catalog-candidate:'.length));
-    const grounded = bound || citedCandidates.some(candidateId => requirement.candidateIds.includes(candidateId));
+    const grounded = boundRequirements.length > 0 ? bound : citedCandidates.some(candidateId => requirement.candidateIds.includes(candidateId));
     return grounded && capabilitySatisfiesCatalogOutcomeRequirement(capability, requirement) ? [index] : [];
   }));
   const capabilityAssignments = new Map<number, number>();

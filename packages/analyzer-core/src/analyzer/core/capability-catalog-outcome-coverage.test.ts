@@ -3,6 +3,7 @@ import test from 'node:test';
 import type { SystemCapability } from '../../types/cas.types';
 import {
   bindUniquelySatisfiedCatalogOutcomeRequirements,
+  capabilityCatalogOutcomeBindingFailure,
   capabilityCatalogOutcomeCoverageFailure,
   capabilitySatisfiesCatalogOutcomeRequirement,
   deriveCapabilityCatalogOutcomeRequirements,
@@ -134,6 +135,16 @@ test('does not let one combined audience statement satisfy two explicitly distin
   assert.ok(audienceGaps.length >= 1);
 });
 
+test('does not assign a bound capability to a different shared-candidate slot', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, evidence).filter(requirement => requirement.audience);
+  const human = requirements.find(requirement => requirement.audience === 'human')!;
+  const combined = ['first', 'second'].map(id => ({
+    ...published(id, 'People and AI agents understand connected software behavior before making changes.'),
+    criticality_factors: [`catalog-candidate:${human.candidateIds[0]}`, `catalog-outcome-requirement:${human.id}`],
+  }));
+  assert.deepEqual(uncoveredCapabilityCatalogOutcomeRequirements(combined, requirements).map(requirement => requirement.audience), ['agent']);
+});
+
 test('binds an audience-specific repair to its exact requested outcome', () => {
   const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, evidence);
   const human = requirements.find(requirement => requirement.audience === 'human')!;
@@ -150,6 +161,19 @@ test('binds an audience-specific repair to its exact requested outcome', () => {
   humanOutcome.criticality_factors = [`catalog-outcome-requirement:${human.id}`];
   assert.equal(capabilitySatisfiesCatalogOutcomeRequirement(humanOutcome, human), true);
   assert.equal(capabilitySatisfiesCatalogOutcomeRequirement(humanOutcome, agent), false);
+});
+
+test('reports the exact failed audience, candidate, and subject binding', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, evidence);
+  const human = requirements.find(requirement => requirement.audience === 'human')!;
+  const actorless = published('Surface behavior comprehension', 'Connected software behavior is explained before changes.');
+  assert.equal(capabilityCatalogOutcomeBindingFailure(actorless, human.candidateIds, human.id, [human], new Set()), 'required-outcome-audience-missing:human');
+  const wrongCandidate = published('Help people understand software behavior', 'Human engineers understand connected software behavior before making changes.');
+  assert.equal(capabilityCatalogOutcomeBindingFailure(wrongCandidate, ['runtime'], human.id, [human], new Set()), `required-outcome-candidate-mismatch:${human.id}`);
+  const wrongSubject = published('Help people review changes', 'Human engineers review changes before making decisions.');
+  assert.equal(capabilityCatalogOutcomeBindingFailure(wrongSubject, human.candidateIds, human.id, [human], new Set()), `required-outcome-subject-mismatch:${human.id}`);
+  const corrected = published('Help people understand software behavior', 'Human engineers understand connected software behavior before making changes.');
+  assert.equal(capabilityCatalogOutcomeBindingFailure(corrected, human.candidateIds, human.id, [human], new Set()), undefined);
 });
 
 test('stamps only unambiguous initial audience and runtime outcomes', () => {

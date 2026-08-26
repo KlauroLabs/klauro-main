@@ -448,6 +448,8 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     const understandingCalls = calls.filter(call => call.candidateCapabilities[0]?.id === 'understanding');
     expect(understandingCalls).toHaveLength(2);
     expect(understandingCalls.every(call => call.requiredOutcomeRequirements?.length === 1 && call.exactCapabilityLimit === 1)).toBe(true);
+    expect(understandingCalls.map(call => call.requiredOutcomeRequirements[0].audience).sort()).toEqual(['agent', 'human']);
+    expect(understandingCalls.every(call => call.qualityNudge.includes(`\"audience\":\"${call.requiredOutcomeRequirements[0].audience}\"`))).toBe(true);
   });
 
   it('tells the next AI cycle exactly which audience failures require repair', async () => {

@@ -6241,6 +6241,21 @@ describe('capability hygiene: entity-set dedup', () => {
     expect(merged[0].related_domains.sort()).toEqual(['report', 'task']);
   });
 
+  it('preserves distinct bound outcome slots over identical evidence while merging same-slot duplicates', async () => {
+    const operation = { entry_point_id: 'shared', entry_point_type: 'message', action: 'explain' };
+    const names = ['Build trustworthy graph', 'Help people understand behavior', 'Ground agents in behavior', 'Coordinate collaborative work', 'Correlate runtime evidence'];
+    const bound = ['graph', 'human', 'agent', 'collaboration', 'runtime'].map((requirement, index) => capFixture({
+      id: requirement,
+      name: names[index],
+      description: 'Explains connected software behavior from the same trusted evidence.',
+      related_entities: ['SoftwareGraph'],
+      operations: [operation],
+      criticality_factors: [`catalog-candidate:shared`, `catalog-outcome-requirement:${requirement}`],
+    }));
+    expect(orch.dedupeSystemCapabilitiesByName(bound)).toHaveLength(5);
+    expect(orch.dedupeSystemCapabilitiesByName([bound[0], { ...bound[0], id: 'graph-copy', name: 'Create trustworthy graph' }])).toHaveLength(1);
+  });
+
   it('keeps two DIFFERENT purposes over the SAME entity set (rung-5 washup: exact-set dedupe collapsed 6 purpose caps to 3), while still merging a CRUD verb-variant pair', async () => {
     const merged = orch.dedupeSystemCapabilitiesByName([
       // Same entity set {Task, TaskList}, DIFFERENT purpose subjects — both live.

@@ -175,7 +175,7 @@ import {
   synchronizeCapabilityCatalogCoverage,
 } from './capability-catalog-evidence';
 import { mergeCapabilityCatalogFlowEvidence } from './capability-catalog-flow-evidence';
-import { bindUniquelySatisfiedCatalogOutcomeRequirements, capabilityCatalogCoverageFailure, capabilityCatalogOutcomeBindingFailure, deriveCapabilityCatalogOutcomeRequirements, uncoveredCapabilityCatalogOutcomeRequirements, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
+import { bindUniquelySatisfiedCatalogOutcomeRequirements, capabilityCatalogCoverageFailure, capabilityCatalogOutcomeBindingFailure, capabilityCatalogOutcomesMayMerge, deriveCapabilityCatalogOutcomeRequirements, uncoveredCapabilityCatalogOutcomeRequirements, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
 import { fitCapabilityCatalogContext } from './ai-context-budget';
 import { awaitAiOperation } from './ai-operation-timing';
 import { capabilityDescriptionBatchSize, resolveCapabilityCatalogRoute, resolveCapabilityDescriptionRoute, shouldReauthorCapabilityDescriptions, toAIContextRoute } from './ai-task-model-routing';
@@ -18295,9 +18295,10 @@ export class AnalyzerOrchestrator {
       medium: 2,
       low: 1,
     };
-
     for (const capability of capabilities) {
-      const key = capability.name.trim().toLowerCase();
+      const baseKey = capability.name.trim().toLowerCase(); const baseMatch = byName.get(baseKey);
+      const requirementKey = (capability.criticality_factors || []).filter(factor => factor.startsWith('catalog-outcome-requirement:')).sort().join('|');
+      const key = baseMatch && !capabilityCatalogOutcomesMayMerge(baseMatch, capability) ? `${baseKey}::${requirementKey}` : baseKey;
       const existing = byName.get(key);
       if (!existing) {
         byName.set(key, { ...capability });
@@ -18323,7 +18324,6 @@ export class AnalyzerOrchestrator {
         ? existing.category
         : capability.category;
     }
-
     return exactNamesOnly ? Array.from(byName.values()) : this.dedupeSystemCapabilitiesByEntitySet(Array.from(byName.values()));
   }
 
@@ -18353,6 +18353,7 @@ export class AnalyzerOrchestrator {
 
     const removed = new Set<SystemCapability>();
     const mergeInto = (winner: SystemCapability, loser: SystemCapability) => {
+      if (!capabilityCatalogOutcomesMayMerge(winner, loser)) return;
       if (winner.description_source !== 'ai' && loser.description_source === 'ai') {
         winner.description = loser.description;
         winner.description_source = loser.description_source;
