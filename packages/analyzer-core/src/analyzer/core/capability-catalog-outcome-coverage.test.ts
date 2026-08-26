@@ -85,6 +85,40 @@ test('requires separately stated first-party human, agent, and truth outcomes wh
   assert.equal(capabilityCatalogOutcomeCoverageFailure(complete, requirements), undefined);
 });
 
+test('preserves evidence-grounded original-clause aliases for compressed outcome subjects', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements({
+    productDocSummary: 'The product provides real-time collaboration. It exposes shared work concepts for real-time collaboration.',
+  }, [candidate('coordination', 'Shared work concepts for real-time collaboration', ['coordinate_overlapping_work'])]);
+  const collaboration = requirements.find(requirement => requirement.subjectTokens.includes('concept'))!;
+
+  assert.equal(collaboration.subjectTokenAliases?.some(alias => alias.includes('collaborate')), true);
+  assert.equal(collaboration.subjectAliasAnchorTokens?.flat().includes('collaborate'), true);
+});
+
+test('matches a grounded original-clause alias without admitting unrelated prose', () => {
+  const requirement: CapabilityCatalogOutcomeRequirement = {
+    id: 'collaboration-slot',
+    statement: 'work concepts',
+    candidateIds: ['coordination'],
+    subjectTokens: ['work', 'concept'],
+    requiredSubjectTerms: ['work', 'concept'],
+    minimumSubjectMatches: 2,
+    subjectAliasAnchorTokens: [['collaborate']],
+    subjectTokenAliases: [['real', 'time', 'collaborate', 'overlap', 'software', 'concept']],
+  };
+  const collaboration = published(
+    'Enable real-time collaboration across overlapping code concepts',
+    'Teams coordinate concurrent changes across connected software boundaries.',
+  );
+  const unrelated = cited(published(
+    'Review real-time deployment concepts',
+    'Operators inspect release configuration before deployment.',
+  ), requirement);
+
+  assert.equal(capabilitySatisfiesCatalogOutcomeRequirement(collaboration, requirement), true);
+  assert.equal(capabilitySatisfiesCatalogOutcomeRequirement(unrelated, requirement), false);
+});
+
 test('does not satisfy an outcome with matching prose cited to the wrong candidate', () => {
   const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, evidence);
   const human = requirements.find(requirement => requirement.audience === 'human')!;

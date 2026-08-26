@@ -63,6 +63,18 @@ export function capabilityCatalogPendingRequirementIds(
     .map(requirement => requirement.id);
 }
 
+export function captureCapabilityCatalogPendingRequirements(
+  pendingRequirementIdsByCapabilityId: Map<string, string[]>,
+  capabilities: readonly SystemCapability[],
+  requirements: readonly CapabilityCatalogOutcomeRequirement[],
+): void {
+  for (const capability of capabilities) {
+    if (!pendingRequirementIdsByCapabilityId.has(capability.id)) {
+      pendingRequirementIdsByCapabilityId.set(capability.id, capabilityCatalogPendingRequirementIds(capability, requirements));
+    }
+  }
+}
+
 export function supersedeUnboundPendingOutcomeDuplicates(
   existing: readonly SystemCapability[], incoming: readonly SystemCapability[], requirements: readonly CapabilityCatalogOutcomeRequirement[],
   pendingRequirementIdsByCapabilityId: ReadonlyMap<string, readonly string[]>,

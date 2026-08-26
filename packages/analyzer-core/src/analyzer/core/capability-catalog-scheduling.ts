@@ -1,5 +1,6 @@
 import type { SystemCapability } from '../../types/cas.types';
 import { capabilityEvidenceSubjectTokens, capabilityRequiresCatalogCoverage } from './capability-catalog-evidence';
+import type { CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
 
 export type CapabilityCatalogOutcome =
   | { status: 'fulfilled'; value: SystemCapability[] }
@@ -33,6 +34,41 @@ export interface CapabilityCatalogPriorRejection {
   reason: string;
   forbidden_subject_terms: string[];
   requirement_id?: string;
+}
+
+export function capabilityCatalogOutcomeCorrectiveRetryFeedback(
+  rejections: readonly CapabilityCatalogRejection[],
+  requirement: CapabilityCatalogOutcomeRequirement,
+  candidateIds: readonly string[],
+): CapabilityCatalogRejection {
+  const observed = rejections[rejections.length - 1];
+  return {
+    candidateIds: [...candidateIds],
+    name: observed?.name || requirement.statement,
+    reason: observed?.reason || 'required-outcome-zero-result',
+    requirementId: requirement.id,
+    ...(observed?.missingAudience ? { missingAudience: observed.missingAudience } : {}),
+    ...(observed?.missingSubjectTerms?.length ? { missingSubjectTerms: observed.missingSubjectTerms } : {}),
+  };
+}
+
+export async function retryEmptyCapabilityCatalogOutcome<T>(args: {
+  candidateIds: readonly string[];
+  initial: T[];
+  rejections: CapabilityCatalogRejection[];
+  requirement?: CapabilityCatalogOutcomeRequirement;
+  record: (feedback: CapabilityCatalogRejection) => void;
+  retry: () => Promise<T[]>;
+}): Promise<T[]> {
+  if (args.initial.length > 0 || !args.requirement) return args.initial;
+  const expectedFeedbackExists = args.rejections.some(rejection => rejection.requirementId === args.requirement?.id &&
+    args.candidateIds.every(candidateId => rejection.candidateIds.includes(candidateId)));
+  if (!expectedFeedbackExists) {
+    const feedback = capabilityCatalogOutcomeCorrectiveRetryFeedback(args.rejections, args.requirement, args.candidateIds);
+    args.rejections.push(feedback);
+    args.record(feedback);
+  }
+  return args.retry();
 }
 
 export type CapabilityCatalogRejectionsByCandidate = Map<string, CapabilityCatalogPriorRejection[]>;
@@ -427,23 +463,32 @@ export function trackCapabilityCatalogRepair(
     requiredOutcomeIds.length,
   );
   const budget = capabilityCatalogRepairBudget(requiredFamilyCount);
-  let previousUncoveredCount = uncoveredCapabilityCatalogCandidateIds(
+  let previousEvidenceKeys = new Set(uncoveredCapabilityCatalogCandidateIds(
     [], requiredBehaviorCandidateIds, requiredEntityCandidateGroups,
-  ).map(id => `candidate:${id}`).concat(requiredOutcomeIds.map(id => `requirement:${id}`));
-  let previousUnresolvedKeys = new Set(previousUncoveredCount);
+  ));
+  let previousOutcomeKeys = new Set(requiredOutcomeIds);
+  let previousPendingKeys = new Set<string>();
   let noProgressCycles = 0;
+  const strictlyReduced = (current: ReadonlySet<string>, previous: ReadonlySet<string>) =>
+    current.size < previous.size && [...current].every(key => previous.has(key));
+  const unchanged = (current: ReadonlySet<string>, previous: ReadonlySet<string>) =>
+    current.size === previous.size && [...current].every(key => previous.has(key));
   return {
     maxCycles: budget.maxCycles,
     observe(capabilities: SystemCapability[], uncoveredOutcomeIds: readonly string[] = [], pendingIdentityKeys: readonly string[] = []) {
-      const unresolvedKeys = new Set([
-        ...uncoveredCapabilityCatalogCandidateIds(capabilities, requiredBehaviorCandidateIds, requiredEntityCandidateGroups).map(id => `candidate:${id}`),
-        ...uncoveredOutcomeIds.map(id => `requirement:${id}`),
-        ...pendingIdentityKeys,
-      ]);
-      const progressed = unresolvedKeys.size < previousUnresolvedKeys.size && [...unresolvedKeys].every(key => previousUnresolvedKeys.has(key));
+      const evidenceKeys = new Set(uncoveredCapabilityCatalogCandidateIds(
+        capabilities, requiredBehaviorCandidateIds, requiredEntityCandidateGroups,
+      ));
+      const outcomeKeys = new Set(uncoveredOutcomeIds);
+      const pendingKeys = new Set(pendingIdentityKeys);
+      const mandatoryProgress = strictlyReduced(evidenceKeys, previousEvidenceKeys) || strictlyReduced(outcomeKeys, previousOutcomeKeys);
+      const mandatoryUnchanged = unchanged(evidenceKeys, previousEvidenceKeys) && unchanged(outcomeKeys, previousOutcomeKeys);
+      const progressed = mandatoryProgress || (mandatoryUnchanged && strictlyReduced(pendingKeys, previousPendingKeys));
       noProgressCycles = progressed ? 0 : noProgressCycles + 1;
-      previousUnresolvedKeys = unresolvedKeys;
-      const uncoveredCount = unresolvedKeys.size;
+      previousEvidenceKeys = evidenceKeys;
+      previousOutcomeKeys = outcomeKeys;
+      previousPendingKeys = pendingKeys;
+      const uncoveredCount = evidenceKeys.size + outcomeKeys.size + pendingKeys.size;
       return { noProgressCycles, uncoveredCount, stop: noProgressCycles >= budget.noProgressRetries };
     },
   };

@@ -1,7 +1,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SystemCapability } from '../../types/cas.types';
-import { capabilityCatalogPendingRequirementIds, capabilityCatalogRepairPlan, preserveCapabilityCatalogDescriptionIdentity, supersedeUnboundPendingOutcomeDuplicates } from './capability-catalog-repair-plan';
+import { capabilityCatalogPendingRequirementIds, capabilityCatalogRepairPlan, captureCapabilityCatalogPendingRequirements, preserveCapabilityCatalogDescriptionIdentity, supersedeUnboundPendingOutcomeDuplicates } from './capability-catalog-repair-plan';
 
 const capability = (id: string, factors: string[], description = '') => ({
   id, name: `Outcome ${id}`, description, category: 'core', criticality: 'high', criticality_factors: factors,
@@ -51,6 +51,24 @@ describe('capability catalog repair planning', () => {
     assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates([stale, unrelated], [incomingStale, repaired], [requirement], pendingMatches), {
       existing: [unrelated], incoming: [repaired],
     });
+  });
+
+  test('captures every unbound semantic identity before publishability mutation and preserves its first-seen slots', () => {
+    const human = { id: 'human', statement: 'people understand behavior', audience: 'human' as const, candidateIds: ['shared'], subjectTokens: ['understand', 'behavior'] };
+    const agent = { id: 'agent', statement: 'agents understand behavior', audience: 'agent' as const, candidateIds: ['shared'], subjectTokens: ['understand', 'behavior'] };
+    const combined = { ...capability('combined', ['catalog-candidate:legacy'], 'People and agents understand connected software behavior.'), name: 'Behavior comprehension for people and agents' };
+    const map = new Map<string, string[]>();
+
+    captureCapabilityCatalogPendingRequirements(map, [combined], [human, agent]);
+    captureCapabilityCatalogPendingRequirements(map, [{ ...combined, name: 'Unrelated renamed identity', description: 'No semantic match remains.' }], [human, agent]);
+
+    assert.deepEqual(map.get('combined'), ['human', 'agent']);
+    const incomingCombined = { ...combined };
+    const humanBound = { ...capability('human', ['catalog-candidate:shared', 'catalog-outcome-requirement:human'], 'People understand connected software behavior.'), name: 'People understand behavior' };
+    const agentBound = { ...capability('agent', ['catalog-candidate:shared', 'catalog-outcome-requirement:agent'], 'Agents understand connected software behavior.'), name: 'Agents understand behavior' };
+    assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates(
+      [combined], [incomingCombined, humanBound, agentBound], [human, agent], map,
+    ), { existing: [], incoming: [humanBound, agentBound] });
   });
 
   test('retains pending identities for empty matches and invalid bound replacements', () => {

@@ -424,10 +424,14 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     initial[2].description = 'Runtime evidence reveals how observed software behavior compares with its analyzed structure.';
     const calls: any[] = [];
     const attemptsByRequirement = new Map<string, number>();
+    let emptyGraphAttempts = 0;
     localOrch.aiExtractCapabilityCatalog = async (input: any) => {
       calls.push(input);
       if (calls.length === 1) return initial;
-      if (input.candidateCapabilities[0]?.id === 'graph') return [cap({ ...outcome('Build a trustworthy relationship graph'), criticality_factors: ['catalog-candidate:graph'] })];
+      if (input.candidateCapabilities[0]?.id === 'graph') {
+        emptyGraphAttempts++;
+        return emptyGraphAttempts === 1 ? [] : [cap({ ...outcome('Build a trustworthy relationship graph'), criticality_factors: ['catalog-candidate:graph'] })];
+      }
       const requirement = input.requiredOutcomeRequirements?.[0];
       const attempts = (attemptsByRequirement.get(requirement.id) || 0) + 1;
       attemptsByRequirement.set(requirement.id, attempts);
@@ -465,6 +469,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(understandingCalls.every(call => call.qualityNudge.includes('required_audience_label') && call.qualityNudge.includes('required_subject_terms'))).toBe(true);
     expect(understandingCalls.filter(call => call.requiredOutcomeRequirements[0].audience === 'human')[1].qualityNudge).toContain('missing_audience');
     expect(understandingCalls.filter(call => call.requiredOutcomeRequirements[0].audience === 'agent')[1].qualityNudge).toContain('missing_subject_terms');
+    expect(emptyGraphAttempts).toBe(2);
   });
 
   it('tells the next AI cycle exactly which audience failures require repair', async () => {

@@ -8,6 +8,8 @@ export interface CapabilityCatalogOutcomeRequirement {
   id: string;
   minimumSubjectMatches?: number;
   requiredSubjectTerms?: string[];
+  subjectAliasAnchorTokens?: string[][];
+  subjectTokenAliases?: string[][];
   statement: string;
   subjectTokens: string[];
 }
@@ -130,9 +132,10 @@ export function deriveCapabilityCatalogOutcomeRequirements(
     clauseTokens.forEach(token => previousClauseTokens.add(token));
     if (subjectTokens.length === 0) continue;
     for (const audience of requirementAudiences(clause)) {
-      const scored = candidateTokens.filter(item => !audience || (audience === 'human'
+      const audienceCandidates = candidateTokens.filter(item => !audience || (audience === 'human'
         ? !agentAudience.test(item.text) || humanAudience.test(item.text)
-        : !humanAudience.test(item.text) || agentAudience.test(item.text))).map(item => ({
+        : !humanAudience.test(item.text) || agentAudience.test(item.text)));
+      const scored = audienceCandidates.map(item => ({
         id: item.candidate.id,
         score: subjectTokens.filter(token => item.tokens.has(token)).length,
       })).filter(item => item.id && item.score >= Math.min(2, subjectTokens.length)).sort((left, right) => right.score - left.score || left.id.localeCompare(right.id));
@@ -141,6 +144,15 @@ export function deriveCapabilityCatalogOutcomeRequirements(
       const candidateIds = scored.filter(item => item.score === bestScore).slice(0, 3).map(item => item.id);
       const candidateIdSet = new Set(candidateIds);
       const groundedSubjectTokens = subjectTokens.filter(token => candidateTokens.some(item => candidateIdSet.has(item.candidate.id) && item.tokens.has(token)));
+      const originalClauseAlias = clauseTokens
+        .filter(token => audienceCandidates.some(item => candidateIdSet.has(item.candidate.id) && item.tokens.has(token)))
+        .slice(0, 8);
+      const recoveredAliasTokens = originalClauseAlias.filter(token => !groundedSubjectTokens.includes(token));
+      const aliasAnchor = recoveredAliasTokens.slice().sort((left, right) => {
+        const occurrences = (token: string) => audienceCandidates.filter(item => item.tokens.has(token)).length;
+        return occurrences(left) - occurrences(right) || right.length - left.length || left.localeCompare(right);
+      })[0];
+      const subjectTokenAliases = originalClauseAlias.some(token => groundedSubjectTokens.includes(token)) && aliasAnchor ? [originalClauseAlias] : undefined;
       const id = requirementId(audience, groundedSubjectTokens);
       requirements.set(id, {
         audience,
@@ -149,6 +161,8 @@ export function deriveCapabilityCatalogOutcomeRequirements(
         id,
         minimumSubjectMatches: Math.min(2, groundedSubjectTokens.length),
         requiredSubjectTerms: groundedSubjectTokens,
+        ...(subjectTokenAliases && aliasAnchor ? { subjectAliasAnchorTokens: [[aliasAnchor]] } : {}),
+        ...(subjectTokenAliases ? { subjectTokenAliases } : {}),
         statement: conciseOutcomeStatement(clause, new Set(groundedSubjectTokens)),
         subjectTokens: groundedSubjectTokens,
       });
@@ -160,6 +174,18 @@ export function deriveCapabilityCatalogOutcomeRequirements(
 function capabilityMatchesAudience(capabilityText: string, audience?: 'agent' | 'human'): boolean {
   if (!audience) return true;
   return audience === 'human' ? humanAudience.test(capabilityText) : agentAudience.test(capabilityText);
+}
+
+function capabilityMatchesSubjectAlias(
+  capabilityTokens: ReadonlySet<string>,
+  primaryTerms: readonly string[],
+  aliases: readonly string[][] = [],
+  aliasAnchors: readonly string[][] = [],
+): boolean {
+  const primary = new Set(primaryTerms);
+  return aliases.some((alias, index) => alias.filter(token => capabilityTokens.has(token)).length >= Math.min(2, alias.length) &&
+    alias.some(token => primary.has(token) && capabilityTokens.has(token)) &&
+    (aliasAnchors[index] || []).some(token => capabilityTokens.has(token)));
 }
 
 export function capabilitySatisfiesCatalogOutcomeRequirement(
@@ -179,7 +205,8 @@ export function capabilitySemanticallySatisfiesCatalogOutcomeRequirement(
   const capabilityTokens = new Set(tokens(capabilityText));
   const requiredTerms = requirement.requiredSubjectTerms || requirement.subjectTokens;
   const requiredMatches = requirement.minimumSubjectMatches ?? Math.min(2, requiredTerms.length);
-  return requiredTerms.filter(token => capabilityTokens.has(token)).length >= requiredMatches;
+  if (requiredTerms.filter(token => capabilityTokens.has(token)).length >= requiredMatches) return true;
+  return capabilityMatchesSubjectAlias(capabilityTokens, requiredTerms, requirement.subjectTokenAliases, requirement.subjectAliasAnchorTokens);
 }
 
 export function capabilityCandidateCorroboratesCatalogOutcomeRequirement(
@@ -260,9 +287,10 @@ export function capabilityCatalogOutcomeBindingFailureDetail(
     ? undefined
     : requirement.audienceLabel || requirement.audience;
   if (missingAudience) return { missingAudience, missingSubjectTerms, reason: `required-outcome-audience-missing:${requirement.audience}` };
+  const aliasMatches = capabilityMatchesSubjectAlias(capabilityTokens, requiredTerms, requirement.subjectTokenAliases, requirement.subjectAliasAnchorTokens);
   const matches = requiredTerms.length - missingSubjectTerms.length;
   const minimumMatches = requirement.minimumSubjectMatches ?? Math.min(2, requiredTerms.length);
-  return matches >= minimumMatches ? undefined : { missingSubjectTerms, reason: `required-outcome-subject-mismatch:${requirementId}` };
+  return matches >= minimumMatches || aliasMatches ? undefined : { missingSubjectTerms, reason: `required-outcome-subject-mismatch:${requirementId}` };
 }
 
 export function capabilityCatalogOutcomesMayMerge(

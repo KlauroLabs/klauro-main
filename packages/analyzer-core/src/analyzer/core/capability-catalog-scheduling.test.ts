@@ -5,6 +5,7 @@ import {
   capabilitiesWithoutDescriptionDisposition,
   capabilityCatalogPendingRepairKeys,
   capabilityCatalogCycleDiagnostic,
+  capabilityCatalogOutcomeCorrectiveRetryFeedback,
   capabilityIdentityPendingDescriptionRepair,
   scheduleRejectedCapabilityDescriptions,
   selectCapabilityCatalogPromptCandidates,
@@ -18,6 +19,7 @@ import {
   mergeUniquelyMatchedBehaviorEvidence,
   mergeCapabilityCatalogRepairResults,
   recordCapabilityCatalogRejection,
+  retryEmptyCapabilityCatalogOutcome,
   trackCapabilityCatalogRepair,
   updateCapabilityCatalogPublishabilityRepairIds,
 } from './capability-catalog-scheduling';
@@ -34,6 +36,41 @@ const catalogCapability = (overrides: Partial<SystemCapability>): SystemCapabili
   criticality: 'high',
   criticality_factors: [],
   ...overrides,
+});
+
+test('scopes every focused zero-result rejection class to exactly one outcome retry', async () => {
+  const requirement = { id: 'human-slot', statement: 'people understand behavior', audience: 'human' as const, candidateIds: ['shared'], subjectTokens: ['understand', 'behavior'] };
+  const reasons = [
+    'malformed-response',
+    'required-outcome-requirement-mismatch:wrong',
+    'required-outcome-candidate-mismatch:human-slot',
+    'required-outcome-audience-missing:human',
+    'outcome-scope-unsupported:inventory',
+    'grounding-missing',
+    'description-delivery-operation-restatement',
+  ];
+
+  for (const reason of reasons) {
+    const rejections = [
+      { candidateIds: ['wrong'], name: 'Rejected result', reason, requirementId: requirement.id },
+    ];
+    const feedback = capabilityCatalogOutcomeCorrectiveRetryFeedback(rejections, requirement, ['shared']);
+    assert.equal(feedback.requirementId, 'human-slot');
+    assert.equal(feedback.reason, reason);
+    assert.deepEqual(feedback.candidateIds, ['shared']);
+    let retries = 0;
+    const recorded: Array<{ candidateIds: string[]; requirementId?: string }> = [];
+    const result = await retryEmptyCapabilityCatalogOutcome({
+      candidateIds: ['shared'], initial: [], rejections, requirement,
+      record: scoped => recorded.push(scoped),
+      retry: async () => { retries++; return ['corrected']; },
+    });
+    assert.deepEqual(result, ['corrected']);
+    assert.equal(retries, 1);
+    assert.deepEqual(recorded[0]?.candidateIds, ['shared']);
+    assert.equal(recorded[0]?.requirementId, requirement.id);
+  }
+  assert.equal(capabilityCatalogOutcomeCorrectiveRetryFeedback([], requirement, ['shared']).reason, 'required-outcome-zero-result');
 });
 
 test('uniquely matched behavior evidence enriches an accepted product outcome without replacing its authored identity', () => {
@@ -465,6 +502,26 @@ test('semantic outcome progress prevents the repair loop from stopping while obl
   assert.equal(progress.observe([], ['runtime']).stop, false);
   assert.equal(progress.observe([], ['runtime']).stop, false);
   assert.equal(progress.observe([], []).stop, false);
+});
+
+test('mandatory outcome reduction resets progress despite pending identity churn', () => {
+  const progress = trackCapabilityCatalogRepair(4, [], [], ['graph', 'human', 'agent', 'runtime']);
+
+  const reduced = progress.observe([], ['runtime'], ['pending:new-title']);
+  const unchanged = progress.observe([], ['runtime'], ['pending:another-title']);
+
+  assert.equal(reduced.noProgressCycles, 0);
+  assert.equal(reduced.stop, false);
+  assert.equal(unchanged.noProgressCycles, 1);
+});
+
+test('pending reduction resets progress only while mandatory sets are unchanged', () => {
+  const progress = trackCapabilityCatalogRepair(2, [], [], ['human']);
+
+  assert.equal(progress.observe([], ['human'], ['pending:one', 'pending:two']).noProgressCycles, 1);
+  assert.equal(progress.observe([], ['human'], ['pending:one']).noProgressCycles, 0);
+  assert.equal(progress.observe([], ['human'], ['pending:novel']).noProgressCycles, 1);
+  assert.equal(progress.observe([], ['human'], ['pending:newer']).stop, true);
 });
 
 test('renaming a pending repair does not count as catalog progress', () => {

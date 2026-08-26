@@ -179,8 +179,8 @@ import { bindUniquelySatisfiedCatalogOutcomeRequirements, capabilityCatalogCover
 import { fitCapabilityCatalogContext } from './ai-context-budget';
 import { awaitAiOperation } from './ai-operation-timing';
 import { capabilityDescriptionBatchSize, resolveCapabilityCatalogRoute, resolveCapabilityDescriptionRoute, shouldReauthorCapabilityDescriptions, toAIContextRoute } from './ai-task-model-routing';
-import { capabilitiesWithoutDescriptionDisposition, type CapabilityCatalogRejection, type CapabilityCatalogRejectionsByCandidate, capabilityCatalogCycleDiagnostic, capabilityCatalogPendingRepairKeys, capabilityCatalogRepairCandidateIds, capabilityCatalogRepairEvidenceFacts, capabilityDescriptionsShareOutcome, capabilityIdentityPendingDescriptionRepair, capabilityOutcomeMatchesEvidence, capabilityTitlesShareOutcome, collectCapabilityCatalogEvidenceBatches, mergeCapabilityCatalogRepairResults, mergeUniquelyMatchedBehaviorEvidence, recordCapabilityCatalogRejection, recordCapabilityPublishabilityRejection, scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates, trackCapabilityCatalogRepair } from './capability-catalog-scheduling';
-import { capabilityCatalogFocusedTask, capabilityCatalogPendingRequirementIds, capabilityCatalogRepairNudge, capabilityCatalogRepairPlan, preserveCapabilityCatalogDescriptionIdentity, supersedeUnboundPendingOutcomeDuplicates, type CapabilityCatalogRepairBatch } from './capability-catalog-repair-plan';
+import { capabilitiesWithoutDescriptionDisposition, type CapabilityCatalogRejection, type CapabilityCatalogRejectionsByCandidate, capabilityCatalogCycleDiagnostic, capabilityCatalogPendingRepairKeys, capabilityCatalogRepairCandidateIds, capabilityCatalogRepairEvidenceFacts, capabilityDescriptionsShareOutcome, capabilityIdentityPendingDescriptionRepair, capabilityOutcomeMatchesEvidence, capabilityTitlesShareOutcome, collectCapabilityCatalogEvidenceBatches, mergeCapabilityCatalogRepairResults, mergeUniquelyMatchedBehaviorEvidence, recordCapabilityCatalogRejection, recordCapabilityPublishabilityRejection, retryEmptyCapabilityCatalogOutcome, scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates, trackCapabilityCatalogRepair } from './capability-catalog-scheduling';
+import { capabilityCatalogFocusedTask, capabilityCatalogRepairNudge, capabilityCatalogRepairPlan, captureCapabilityCatalogPendingRequirements, preserveCapabilityCatalogDescriptionIdentity, supersedeUnboundPendingOutcomeDuplicates, type CapabilityCatalogRepairBatch } from './capability-catalog-repair-plan';
 import { TRACEABLE_NODE_TYPES, computeFlowConcepts, type FlowConcept } from './flow-concepts';
 import { capabilitySubjectTokens } from './capability-audience-test';
 import {
@@ -10428,7 +10428,7 @@ export class AnalyzerOrchestrator {
           ...(qualityNudge ? { qualityNudge } : {}),
           });
           const initialNudge = mode ? capabilityCatalogRepairNudge(mode, repairBatch, qualityFailure, audienceRepairFeedback) : cycle > 1 ? `Previous catalog failed a quality check (${qualityFailure}). ${audienceRepairFeedback || ''} Return a full replacement catalog.` : undefined; let batchExtracted = await extractBatch(initialNudge);
-          const exactBindingMiss = mode?.mode === 'outcome' && batchRejections.some(rejection => rejection.requirementId === mode.requirements[0]?.id && (rejection.missingAudience || rejection.missingSubjectTerms?.length)); if (batchExtracted.length === 0 && exactBindingMiss) { repairBatch = capabilityCatalogRepairEvidenceFacts(evidenceCandidates, [...batchIds], entityNamesById, catalogRejectionsByCandidate, mode.requirements.map(requirement => requirement.id)); batchExtracted = await extractBatch(capabilityCatalogRepairNudge(mode, repairBatch, qualityFailure)); }
+          batchExtracted = await retryEmptyCapabilityCatalogOutcome({ initial: batchExtracted, candidateIds: [...batchIds], rejections: batchRejections, requirement: mode?.mode === 'outcome' ? mode.requirements[0] : undefined, record: feedback => { const recorded = recordCapabilityCatalogRejection(catalogRejectionsByCandidate, feedback); extractionRejections.push(recorded.explanation); }, retry: async () => { repairBatch = capabilityCatalogRepairEvidenceFacts(evidenceCandidates, [...batchIds], entityNamesById, catalogRejectionsByCandidate, mode?.requirements.map(requirement => requirement.id)); return extractBatch(capabilityCatalogRepairNudge(mode!, repairBatch, qualityFailure)); } });
           if (!extractionRaw) extractionRaw = batchRaw;
           return mode?.mode === 'description' && batchExtracted[0]
             ? [preserveCapabilityCatalogDescriptionIdentity(mode.identity, batchExtracted[0])]
@@ -10452,6 +10452,7 @@ export class AnalyzerOrchestrator {
       const reconciledCandidates = extracted.length > 0
         ? this.reconcileCatalogedCapabilities(extracted, evidenceCandidates, args.dataEntities, args.entryPoints, args.nodes, args.enhancedSystemPurpose, args.libraryNames || [], args.projectTextSignal, args.externalServices)
         : [];
+      captureCapabilityCatalogPendingRequirements(pendingRequirementIdsByCapabilityId, reconciledCandidates, requiredOutcomes);
       const boundReconciledCandidates = cycle === 1 ? bindUniquelySatisfiedCatalogOutcomeRequirements(reconciledCandidates, requiredOutcomes) : reconciledCandidates;
       const publishabilityFailures = new Map<string, number>(); const publishabilityRejections: Array<{ name: string; description?: string; reason: string; requirement_id?: string; forbidden_terms?: string[] }> = [];
       const rejectedCapabilities: SystemCapability[] = []; const cycleReconciled = boundReconciledCandidates.flatMap(capability => {
@@ -10461,7 +10462,6 @@ export class AnalyzerOrchestrator {
         rejectedCapabilities.push(capability); publishabilityFailures.set(failure, (publishabilityFailures.get(failure) || 0) + 1);
         const violation = capabilityDescriptionProductLanguageViolation(capability.description || '', descriptionTarget.relatedEntities || [], descriptionTarget.operations || []); const forbiddenTerms = violation?.reason && failure.endsWith(violation.reason) ? violation.forbiddenTerms : [];
         const recorded = recordCapabilityPublishabilityRejection(catalogRejectionsByCandidate, capability, failure, forbiddenTerms); publishabilityRejections.push(recorded.feedback);
-        if (!pendingRequirementIdsByCapabilityId.has(capability.id)) pendingRequirementIdsByCapabilityId.set(capability.id, capabilityCatalogPendingRequirementIds(capability, requiredOutcomes));
         const identity = capabilityIdentityPendingDescriptionRepair(capability, failure);
         return identity ? [identity] : [];
       });
