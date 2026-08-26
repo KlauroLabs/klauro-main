@@ -4,6 +4,7 @@ import type { SystemCapability } from '../../types/cas.types';
 import {
   bindUniquelySatisfiedCatalogOutcomeRequirements,
   capabilityCatalogOutcomeBindingFailure,
+  capabilityCatalogOutcomeBindingFailureDetail,
   capabilityCatalogOutcomeCoverageFailure,
   capabilitySatisfiesCatalogOutcomeRequirement,
   deriveCapabilityCatalogOutcomeRequirements,
@@ -174,6 +175,25 @@ test('reports the exact failed audience, candidate, and subject binding', () => 
   assert.equal(capabilityCatalogOutcomeBindingFailure(wrongSubject, human.candidateIds, human.id, [human], new Set()), `required-outcome-subject-mismatch:${human.id}`);
   const corrected = published('Help people understand software behavior', 'Human engineers understand connected software behavior before making changes.');
   assert.equal(capabilityCatalogOutcomeBindingFailure(corrected, human.candidateIds, human.id, [human], new Set()), undefined);
+  assert.deepEqual(capabilityCatalogOutcomeBindingFailureDetail(actorless, human.candidateIds, human.id, [human], new Set()), {
+    missingAudience: human.audienceLabel,
+    missingSubjectTerms: [],
+    reason: 'required-outcome-audience-missing:human',
+  });
+  assert.deepEqual(capabilityCatalogOutcomeBindingFailureDetail(wrongSubject, human.candidateIds, human.id, [human], new Set()), {
+    missingSubjectTerms: human.requiredSubjectTerms,
+    reason: `required-outcome-subject-mismatch:${human.id}`,
+  });
+});
+
+test('derives machine-readable extraction requirements from first-party audience and subjects', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, evidence).filter(requirement => requirement.audience);
+  const human = requirements.find(requirement => requirement.audience === 'human')!;
+  const agent = requirements.find(requirement => requirement.audience === 'agent')!;
+  assert.equal(human.audienceLabel, 'people');
+  assert.equal(agent.audienceLabel, 'agents');
+  assert.deepEqual(human.requiredSubjectTerms, human.subjectTokens);
+  assert.equal(human.minimumSubjectMatches, Math.min(2, human.subjectTokens.length));
 });
 
 test('stamps only unambiguous initial audience and runtime outcomes', () => {

@@ -3,10 +3,19 @@ import { catalogEvidenceCoverageFailure, type CapabilityCatalogProjectSignal } f
 
 export interface CapabilityCatalogOutcomeRequirement {
   audience?: 'agent' | 'human';
+  audienceLabel?: string;
   candidateIds: string[];
   id: string;
+  minimumSubjectMatches?: number;
+  requiredSubjectTerms?: string[];
   statement: string;
   subjectTokens: string[];
+}
+
+export interface CapabilityCatalogOutcomeBindingFailure {
+  missingAudience?: string;
+  missingSubjectTerms: string[];
+  reason: string;
 }
 
 const humanAudience = /\b(?:humans?|people|persons?|users?)\b/i;
@@ -95,6 +104,11 @@ function requirementAudiences(clause: string): Array<'agent' | 'human' | undefin
   return audiences.length > 0 ? audiences : [undefined];
 }
 
+function requirementAudienceLabel(clause: string, audience?: 'agent' | 'human'): string | undefined {
+  if (!audience) return undefined;
+  return clause.match(audience === 'human' ? humanAudience : agentAudience)?.[0]?.toLowerCase();
+}
+
 function requirementId(audience: string | undefined, subjectTokens: readonly string[]): string {
   return `${audience || 'all'}:${subjectTokens.slice().sort().join('-')}`;
 }
@@ -128,7 +142,16 @@ export function deriveCapabilityCatalogOutcomeRequirements(
       const candidateIdSet = new Set(candidateIds);
       const groundedSubjectTokens = subjectTokens.filter(token => candidateTokens.some(item => candidateIdSet.has(item.candidate.id) && item.tokens.has(token)));
       const id = requirementId(audience, groundedSubjectTokens);
-      requirements.set(id, { audience, candidateIds, id, statement: conciseOutcomeStatement(clause, new Set(groundedSubjectTokens)), subjectTokens: groundedSubjectTokens });
+      requirements.set(id, {
+        audience,
+        audienceLabel: requirementAudienceLabel(clause, audience),
+        candidateIds,
+        id,
+        minimumSubjectMatches: Math.min(2, groundedSubjectTokens.length),
+        requiredSubjectTerms: groundedSubjectTokens,
+        statement: conciseOutcomeStatement(clause, new Set(groundedSubjectTokens)),
+        subjectTokens: groundedSubjectTokens,
+      });
     }
   }
   return [...requirements.values()];
@@ -147,8 +170,9 @@ export function capabilitySatisfiesCatalogOutcomeRequirement(
   const capabilityText = `${capability.name || ''} ${capability.description || ''}`;
   if (!capabilityMatchesAudience(capabilityText, requirement.audience)) return false;
   const capabilityTokens = new Set(tokens(capabilityText));
-  const requiredMatches = Math.min(2, requirement.subjectTokens.length);
-  return requirement.subjectTokens.filter(token => capabilityTokens.has(token)).length >= requiredMatches;
+  const requiredTerms = requirement.requiredSubjectTerms || requirement.subjectTokens;
+  const requiredMatches = requirement.minimumSubjectMatches ?? Math.min(2, requiredTerms.length);
+  return requiredTerms.filter(token => capabilityTokens.has(token)).length >= requiredMatches;
 }
 
 export function bindUniquelySatisfiedCatalogOutcomeRequirements(
@@ -188,14 +212,36 @@ export function capabilityCatalogOutcomeBindingFailure(
   requirements: readonly CapabilityCatalogOutcomeRequirement[],
   fulfilledRequirementIds: ReadonlySet<string>,
 ): string | undefined {
+  return capabilityCatalogOutcomeBindingFailureDetail(
+    capability, candidateIds, requirementId, requirements, fulfilledRequirementIds,
+  )?.reason;
+}
+
+export function capabilityCatalogOutcomeBindingFailureDetail(
+  capability: Pick<SystemCapability, 'name' | 'description'>,
+  candidateIds: readonly string[],
+  requirementId: string,
+  requirements: readonly CapabilityCatalogOutcomeRequirement[],
+  fulfilledRequirementIds: ReadonlySet<string>,
+): CapabilityCatalogOutcomeBindingFailure | undefined {
   if (requirements.length === 0) return undefined;
   const requirement = requirements.find(candidate => candidate.id === requirementId);
-  if (!requirement) return `required-outcome-requirement-mismatch:${requirementId || 'missing'}`;
-  if (fulfilledRequirementIds.has(requirementId)) return `required-outcome-already-fulfilled:${requirementId}`;
-  if (!candidateIds.some(candidateId => requirement.candidateIds.includes(candidateId))) return `required-outcome-candidate-mismatch:${requirementId}`;
+  if (!requirement) return { missingSubjectTerms: [], reason: `required-outcome-requirement-mismatch:${requirementId || 'missing'}` };
+  if (fulfilledRequirementIds.has(requirementId)) return { missingSubjectTerms: [], reason: `required-outcome-already-fulfilled:${requirementId}` };
+  if (!candidateIds.some(candidateId => requirement.candidateIds.includes(candidateId))) {
+    return { missingSubjectTerms: [], reason: `required-outcome-candidate-mismatch:${requirementId}` };
+  }
   const capabilityText = `${capability.name || ''} ${capability.description || ''}`;
-  if (!capabilityMatchesAudience(capabilityText, requirement.audience)) return `required-outcome-audience-missing:${requirement.audience}`;
-  return capabilitySatisfiesCatalogOutcomeRequirement(capability, requirement) ? undefined : `required-outcome-subject-mismatch:${requirementId}`;
+  const capabilityTokens = new Set(tokens(capabilityText));
+  const requiredTerms = requirement.requiredSubjectTerms || requirement.subjectTokens;
+  const missingSubjectTerms = requiredTerms.filter(token => !capabilityTokens.has(token));
+  const missingAudience = capabilityMatchesAudience(capabilityText, requirement.audience)
+    ? undefined
+    : requirement.audienceLabel || requirement.audience;
+  if (missingAudience) return { missingAudience, missingSubjectTerms, reason: `required-outcome-audience-missing:${requirement.audience}` };
+  const matches = requiredTerms.length - missingSubjectTerms.length;
+  const minimumMatches = requirement.minimumSubjectMatches ?? Math.min(2, requiredTerms.length);
+  return matches >= minimumMatches ? undefined : { missingSubjectTerms, reason: `required-outcome-subject-mismatch:${requirementId}` };
 }
 
 export function capabilityCatalogOutcomesMayMerge(
@@ -283,6 +329,6 @@ export function capabilityCatalogOutcomeRepairNudge(
 ): string {
   const relevant = capabilityCatalogOutcomeRequirementsForCandidates(requirements, candidateIds);
   return relevant.length > 0
-    ? `Distinct first-party outcomes still required by corroborated structural evidence: ${JSON.stringify(relevant.map(requirement => ({ audience: requirement.audience, outcome: requirement.statement, candidate_ids: requirement.candidateIds })))}. Return one distinct outcome for each entry, including separate outcomes for different explicit audiences.`
+    ? `Distinct first-party outcomes still required by corroborated structural evidence: ${JSON.stringify(relevant.map(requirement => ({ requirement_id: requirement.id, required_audience_label: requirement.audienceLabel || requirement.audience, required_subject_terms: requirement.requiredSubjectTerms || requirement.subjectTokens, minimum_subject_matches: requirement.minimumSubjectMatches ?? Math.min(2, requirement.subjectTokens.length), outcome: requirement.statement, candidate_ids: requirement.candidateIds })))}. Return one distinct outcome for each entry, including separate outcomes for different explicit audiences. Copy the literal required_audience_label and enough required_subject_terms, or their canonical validator forms, across the name and description.`
     : '';
 }

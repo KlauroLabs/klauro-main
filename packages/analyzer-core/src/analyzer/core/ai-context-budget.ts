@@ -135,6 +135,9 @@ export function fitCapabilityCatalogContext<T extends Record<string, unknown>>(
     return {
       requirement_id: boundedText(requirement.requirement_id, 240),
       audience: boundedText(requirement.audience, 40),
+      required_audience_label: boundedText(requirement.required_audience_label, 80),
+      required_subject_terms: boundedTextArray(requirement.required_subject_terms, 16, 80),
+      minimum_subject_matches: Math.max(0, Math.min(16, Number(requirement.minimum_subject_matches) || 0)),
       outcome: boundedText(requirement.outcome, 400),
       candidate_ids: boundedTextArray(requirement.candidate_ids, candidateValues.length, 180).filter(candidateId => candidateIdSet.has(candidateId)),
     };

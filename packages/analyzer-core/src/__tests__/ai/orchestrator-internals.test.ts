@@ -8187,8 +8187,8 @@ describe('top-down capability evidence (C2)', () => {
       ] });
     };
     const requirements: any[] = [
-      { id: 'human:behavior-understand', audience: 'human', statement: 'behavior understanding', subjectTokens: ['behavior', 'understand'], candidateIds: ['understanding'] },
-      { id: 'agent:behavior-understand', audience: 'agent', statement: 'behavior understanding', subjectTokens: ['behavior', 'understand'], candidateIds: ['understanding'] },
+      { id: 'human:behavior-understand', audience: 'human', audienceLabel: 'human', statement: 'behavior understanding', subjectTokens: ['behavior', 'understand'], requiredSubjectTerms: ['behavior', 'understand'], minimumSubjectMatches: 2, candidateIds: ['understanding'] },
+      { id: 'agent:behavior-understand', audience: 'agent', audienceLabel: 'agent', statement: 'behavior understanding', subjectTokens: ['behavior', 'understand'], requiredSubjectTerms: ['behavior', 'understand'], minimumSubjectMatches: 2, candidateIds: ['understanding'] },
     ];
     try {
       const catalog = await orch.aiExtractCapabilityCatalog({
@@ -8210,6 +8210,10 @@ describe('top-down capability evidence (C2)', () => {
       expect(context.facts.required_outcomes.map((requirement: any) => requirement.requirement_id)).toEqual([
         'human:behavior-understand', 'agent:behavior-understand',
       ]);
+      expect(context.facts.required_outcomes).toEqual(expect.arrayContaining([
+        expect.objectContaining({ required_audience_label: 'human', required_subject_terms: ['behavior', 'understand'], minimum_subject_matches: 2 }),
+        expect.objectContaining({ required_audience_label: 'agent', required_subject_terms: ['behavior', 'understand'], minimum_subject_matches: 2 }),
+      ]));
       expect(context.task).toMatch(/copy its requirement_id exactly/i);
     } finally {
       (aiService as any).generateComponentDescription = original;
@@ -8234,6 +8238,39 @@ describe('top-down capability evidence (C2)', () => {
         });
         expect(catalog).toEqual([]);
       }
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
+  it('returns exact audience and subject misses for a scoped corrective retry', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    const requirement: any = {
+      id: 'agent:behavior-understand', audience: 'agent', audienceLabel: 'agents',
+      statement: 'behavior understanding', subjectTokens: ['behavior', 'understand'],
+      requiredSubjectTerms: ['behavior', 'understand'], minimumSubjectMatches: 2,
+      candidateIds: ['understanding'],
+    };
+    const rejections: any[] = [];
+    try {
+      (aiService as any).generateComponentDescription = async () => JSON.stringify({ capabilities: [{
+        requirement_id: requirement.id,
+        name: 'Explain behavioral relationships',
+        description: 'Connected relationships provide context before software changes are made.',
+        category: 'core', candidate_ids: ['understanding'],
+      }] });
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'software-platform', enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: ['software behavior'] },
+        frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [{ id: 'understanding', name: 'Explore connected software behavior', category: 'core', related_entities: [], related_domains: ['software behavior'], operations: [] }],
+        externalServices: [], flowGraph: { capability_candidates: [] }, projectTextSignal: { concepts: ['software behavior'], evidence: [], productDocSummary: 'Helps agents understand connected software behavior.' },
+        budgetMs: 30000, exactCapabilityLimit: 1, requiredOutcomeRequirements: [requirement], onRejection: (feedback: any) => rejections.push(feedback),
+      });
+      expect(catalog).toEqual([]);
+      expect(rejections).toEqual([expect.objectContaining({
+        requirementId: requirement.id,
+        missingAudience: 'agents',
+        missingSubjectTerms: ['behavior'],
+      })]);
     } finally {
       (aiService as any).generateComponentDescription = original;
     }

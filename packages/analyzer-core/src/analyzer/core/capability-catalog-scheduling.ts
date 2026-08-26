@@ -18,6 +18,8 @@ export type CapabilityDescriptionRepairOutcome =
 
 export interface CapabilityCatalogRejection {
   candidateIds: string[];
+  missingAudience?: string;
+  missingSubjectTerms?: string[];
   name: string;
   reason: string;
   requirementId?: string;
@@ -25,6 +27,8 @@ export interface CapabilityCatalogRejection {
 }
 
 export interface CapabilityCatalogPriorRejection {
+  missing_audience?: string;
+  missing_subject_terms?: string[];
   name: string;
   reason: string;
   forbidden_subject_terms: string[];
@@ -245,11 +249,29 @@ export function recordCapabilityCatalogRejection(
     const prior = rejectionsByCandidate.get(candidateId) || [];
     if (!prior.some(item => item.name === feedback.name && item.reason === feedback.reason && item.requirement_id === feedback.requirementId)) {
       const scope = feedback.requirementId || ''; const sameScope = prior.filter(item => (item.requirement_id || '') === scope);
-      rejectionsByCandidate.set(candidateId, [...prior.filter(item => (item.requirement_id || '') !== scope), ...sameScope.slice(-3), { name: feedback.name, reason: feedback.reason, forbidden_subject_terms: forbiddenSubjectTerms, ...(feedback.requirementId ? { requirement_id: feedback.requirementId } : {}) }]);
+      rejectionsByCandidate.set(candidateId, [...prior.filter(item => (item.requirement_id || '') !== scope), ...sameScope.slice(-3), {
+        name: feedback.name,
+        reason: feedback.reason,
+        forbidden_subject_terms: forbiddenSubjectTerms,
+        ...(feedback.missingAudience ? { missing_audience: feedback.missingAudience } : {}),
+        ...(feedback.missingSubjectTerms?.length ? { missing_subject_terms: feedback.missingSubjectTerms } : {}),
+        ...(feedback.requirementId ? { requirement_id: feedback.requirementId } : {}),
+      }]);
       added = true;
     }
   }
-  return { added, explanation: `The title "${feedback.name}" was rejected (${feedback.reason}); do not repeat it, and use only the recurring evidence subject terms for a broader shared outcome.` };
+  const correction = [
+    feedback.missingAudience ? `include audience ${JSON.stringify(feedback.missingAudience)}` : '',
+    feedback.missingSubjectTerms?.length ? `include subject terms ${JSON.stringify(feedback.missingSubjectTerms)}` : '',
+  ].filter(Boolean).join(' and ');
+  return { added, explanation: `The title "${feedback.name}" was rejected (${feedback.reason}); ${correction || 'do not repeat it, and use only the recurring evidence subject terms for a broader shared outcome'}.` };
+}
+
+export function capabilityCatalogCycleDiagnostic(capabilities: readonly SystemCapability[]): Array<{ name: string; requirement_ids: string[] }> {
+  return capabilities.slice(0, 12).map(capability => ({
+    name: String(capability.name || '').replace(/[\r\n\t]+/g, ' ').slice(0, 120),
+    requirement_ids: capabilityCatalogRepairIdentity(capability).requirements.slice(0, 4).map(requirement => requirement.slice(0, 160)),
+  }));
 }
 
 export function recordCapabilityPublishabilityRejection(

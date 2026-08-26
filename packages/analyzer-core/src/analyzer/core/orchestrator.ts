@@ -175,19 +175,18 @@ import {
   synchronizeCapabilityCatalogCoverage,
 } from './capability-catalog-evidence';
 import { mergeCapabilityCatalogFlowEvidence } from './capability-catalog-flow-evidence';
-import { bindUniquelySatisfiedCatalogOutcomeRequirements, capabilityCatalogCoverageFailure, capabilityCatalogOutcomeBindingFailure, capabilityCatalogOutcomesMayMerge, deriveCapabilityCatalogOutcomeRequirements, uncoveredCapabilityCatalogOutcomeRequirements, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
+import { bindUniquelySatisfiedCatalogOutcomeRequirements, capabilityCatalogCoverageFailure, capabilityCatalogOutcomeBindingFailureDetail, capabilityCatalogOutcomesMayMerge, deriveCapabilityCatalogOutcomeRequirements, uncoveredCapabilityCatalogOutcomeRequirements, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
 import { fitCapabilityCatalogContext } from './ai-context-budget';
 import { awaitAiOperation } from './ai-operation-timing';
 import { capabilityDescriptionBatchSize, resolveCapabilityCatalogRoute, resolveCapabilityDescriptionRoute, shouldReauthorCapabilityDescriptions, toAIContextRoute } from './ai-task-model-routing';
-import { capabilitiesWithoutDescriptionDisposition, type CapabilityCatalogRejection, type CapabilityCatalogRejectionsByCandidate, capabilityCatalogPendingRepairKeys, capabilityCatalogRepairCandidateIds, capabilityCatalogRepairEvidenceFacts, capabilityDescriptionsShareOutcome, capabilityIdentityPendingDescriptionRepair, capabilityOutcomeMatchesEvidence, capabilityTitlesShareOutcome, collectCapabilityCatalogEvidenceBatches, mergeCapabilityCatalogRepairResults, mergeUniquelyMatchedBehaviorEvidence, recordCapabilityCatalogRejection, recordCapabilityPublishabilityRejection, scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates, trackCapabilityCatalogRepair } from './capability-catalog-scheduling';
+import { capabilitiesWithoutDescriptionDisposition, type CapabilityCatalogRejection, type CapabilityCatalogRejectionsByCandidate, capabilityCatalogCycleDiagnostic, capabilityCatalogPendingRepairKeys, capabilityCatalogRepairCandidateIds, capabilityCatalogRepairEvidenceFacts, capabilityDescriptionsShareOutcome, capabilityIdentityPendingDescriptionRepair, capabilityOutcomeMatchesEvidence, capabilityTitlesShareOutcome, collectCapabilityCatalogEvidenceBatches, mergeCapabilityCatalogRepairResults, mergeUniquelyMatchedBehaviorEvidence, recordCapabilityCatalogRejection, recordCapabilityPublishabilityRejection, scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates, trackCapabilityCatalogRepair } from './capability-catalog-scheduling';
 import { capabilityCatalogFocusedTask, capabilityCatalogRepairNudge, capabilityCatalogRepairPlan, preserveCapabilityCatalogDescriptionIdentity, supersedeUnboundPendingOutcomeDuplicates, type CapabilityCatalogRepairBatch } from './capability-catalog-repair-plan';
 import { TRACEABLE_NODE_TYPES, computeFlowConcepts, type FlowConcept } from './flow-concepts';
 import { capabilitySubjectTokens } from './capability-audience-test';
 import {
   capabilityAudienceRepairFeedback,
   capabilityPublishabilityRepairFeedback, capabilityCatalogProductTerms,
-  evaluateCapabilityCatalogAudience,
-  unsupportedCapabilityOperationalClaims,
+  evaluateCapabilityCatalogAudience, unsupportedCapabilityOperationalClaims,
 } from './capability-catalog-audience';
 import {
   attachFlowContract,
@@ -9262,7 +9261,7 @@ export class AnalyzerOrchestrator {
       }
     }
     const catalogDescriptionContract = 'Each description must be one sentence of 12-28 words and at least 55 characters. Start with a concrete PM-readable product or operational subject, then state its evidence-specific behavior or outcome. Do not start with actor scaffolding such as "Lets users", "Allows users", "Enables users", "Gives users", or "Provides users". The description must add concrete information beyond the capability name. State the observed result directly; never explain it with generic implementation scaffolding such as "by reading", "by processing", "by coordinating", "supports tasks", or "coordinates operations". Use PM-readable product nouns from cited operations, journeys, or first-party product text; do not replace them with generic "data" or "information". entity_names that look like source types are grounding labels only and must not appear in the prose. Translate internal inventory terms such as entities, nodes, entry points, capability maps, and analysis results into the concrete software behavior, risk, relationship, or change context visible to the user. Do not invent value claims such as accurate, up-to-date, efficient, effective, smooth, experience, insights, comprehensive, seamless, robust, decision-making, collaboration, metrics, or performance unless that exact claim appears in the cited evidence. Do not invent operating claims such as locking, exclusivity, or blocking unless that exact claim appears in the cited evidence. Do not name source-code types, interfaces, classes, UI widgets, graph-rendering structures, or other implementation artifacts, and never use "capability" or "lifecycle" as prose scaffolding.';
-    const focusedCatalogTask = capabilityCatalogFocusedTask(input.repairMode || (input.requiredOutcomeRequirements?.length ? 'outcome' : undefined), input.repairIdentityName, Boolean(input.acceptedOutcomeNames?.length)); const catalogTaskBase = input.exactCapabilityLimit ? `You are naming ${input.exactCapabilityLimit === 1 ? 'one evidence-grounded PRODUCT OUTCOME' : `${input.exactCapabilityLimit} distinct evidence-grounded PRODUCT OUTCOMES`} for one focused evidence family. Return ONLY valid JSON: {"capabilities":[{"requirement_id":"...","name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. ${focusedCatalogTask} Include at least one exact candidate_id.${input.repairMode === 'description' ? '' : ' Include at least one evidence_subject_terms token in a new name.'} Individual operation names are examples of delivery mechanics, not title templates. Do not discuss another product ability, write a system description, invent a broader claim, or return alternatives.`
+    const focusedCatalogTask = capabilityCatalogFocusedTask(input.repairMode || (input.requiredOutcomeRequirements?.length ? 'outcome' : undefined), input.repairIdentityName, Boolean(input.acceptedOutcomeNames?.length)); const catalogTaskBase = input.exactCapabilityLimit ? `You are naming ${input.exactCapabilityLimit === 1 ? 'one evidence-grounded PRODUCT OUTCOME' : `${input.exactCapabilityLimit} distinct evidence-grounded PRODUCT OUTCOMES`} for one focused evidence family. Return ONLY valid JSON: {"capabilities":[{"requirement_id":"...","name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. ${focusedCatalogTask} Include at least one exact candidate_id.${input.repairMode === 'description' ? '' : ' Across the name and description, include the literal required_audience_label and at least minimum_subject_matches required_subject_terms, or canonical validator forms of those terms.'} Individual operation names are examples of delivery mechanics, not title templates. Do not discuss another product ability, write a system description, invent a broader claim, or return alternatives.`
       : artifactType === 'infrastructure'
       ? `You are cataloging the OPERATIONAL RESPONSIBILITIES of an infrastructure codebase. Return ONLY valid JSON: {"system_description":"...","domain":"...","capabilities":[{"name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Name what operators accomplish with the declared infrastructure in product-neutral operational language. Every name must be a verb-headed operator outcome grounded in the supplied declarations. Never infer that a resource handles, processes, or manages a business concept merely because that concept appears in its resource name. Never name a script, file, command, handler, route, framework, or registration surface as the capability. Merge related deployment/configuration candidates. candidate_ids must be copied from supplied facts. Return ${catalogCountMin} to ${catalogCountMax} evidence-backed capabilities, ordered most central first.`
       : artifactType === 'library' || artifactType === 'client-sdk'
@@ -9311,7 +9310,7 @@ export class AnalyzerOrchestrator {
       const budgetedContext = fitCapabilityCatalogContext(additionalContextWithoutFacts, {
         user_journeys: journeys, entities,
         candidate_route_areas: candidateAreaFacts,
-        required_behavior_candidate_ids: requiredBehaviorCandidateAreas.map(candidate => candidate.id), accepted_outcome_names: input.acceptedOutcomeNames, required_outcomes: input.requiredOutcomeRequirements?.map(requirement => ({ requirement_id: requirement.id, audience: requirement.audience, outcome: requirement.statement, candidate_ids: requirement.candidateIds })),
+        required_behavior_candidate_ids: requiredBehaviorCandidateAreas.map(candidate => candidate.id), accepted_outcome_names: input.acceptedOutcomeNames, required_outcomes: input.requiredOutcomeRequirements?.map(requirement => ({ requirement_id: requirement.id, audience: requirement.audience, required_audience_label: requirement.audienceLabel || requirement.audience, required_subject_terms: requirement.requiredSubjectTerms || requirement.subjectTokens, minimum_subject_matches: requirement.minimumSubjectMatches ?? Math.min(2, requirement.subjectTokens.length), outcome: requirement.statement, candidate_ids: requirement.candidateIds })),
         required_entity_candidate_groups: requiredEntityCandidateGroups,
         external_services: services,
         ...(hasTopDown ? { top_down_signals: topDownSignals } : {}),
@@ -9483,9 +9482,9 @@ export class AnalyzerOrchestrator {
     };
     const staged: StagedCatalogItem[] = []; let activeRequirementId: string | undefined; let bareNounRejected = 0; const catalogRejectionFeedback: CapabilityCatalogRejection[] = [];
     const catalogRejectionReasons = new Map<string, number>();
-    const debugCatalogRejection = (name: string, reason: string, candidateIds: string[] = []): void => {
+    const debugCatalogRejection = (name: string, reason: string, candidateIds: string[] = [], missingAudience?: string, missingSubjectTerms?: string[]): void => {
       catalogRejectionReasons.set(reason, (catalogRejectionReasons.get(reason) || 0) + 1);
-      catalogRejectionFeedback.push({ candidateIds, name, reason, ...(activeRequirementId ? { requirementId: activeRequirementId } : {}) });
+      catalogRejectionFeedback.push({ candidateIds, name, reason, ...(missingAudience ? { missingAudience } : {}), ...(missingSubjectTerms?.length ? { missingSubjectTerms } : {}), ...(activeRequirementId ? { requirementId: activeRequirementId } : {}) });
       if (process.env.KLAURO_DEBUG_CATALOG) {
         writeAnalyzerStatus('[catalog-debug] rejected catalog item:', { name, reason });
       }
@@ -9510,8 +9509,8 @@ export class AnalyzerOrchestrator {
       }
       const itemCandidateIds = Array.isArray(item.candidate_ids) ? item.candidate_ids.map(value => String(value || '')) : [];
       if (input.repairMode === 'evidence' && item.requirement_id) { debugCatalogRejection(name, 'unexpected-requirement-id', itemCandidateIds); continue; }
-      const boundRequirement = input.requiredOutcomeRequirements?.find(requirement => requirement.id === activeRequirementId); const bindingFailure = capabilityCatalogOutcomeBindingFailure({ name, description }, itemCandidateIds, rawRequirementId || '', input.requiredOutcomeRequirements || [], fulfilledOutcomeRequirements);
-      if (bindingFailure) { debugCatalogRejection(name, bindingFailure, itemCandidateIds); continue; }
+      const boundRequirement = input.requiredOutcomeRequirements?.find(requirement => requirement.id === activeRequirementId); const bindingFailure = capabilityCatalogOutcomeBindingFailureDetail({ name, description }, itemCandidateIds, rawRequirementId || '', input.requiredOutcomeRequirements || [], fulfilledOutcomeRequirements);
+      if (bindingFailure) { debugCatalogRejection(name, bindingFailure.reason, itemCandidateIds, bindingFailure.missingAudience, bindingFailure.missingSubjectTerms); continue; }
       if (input.requiredOutcomeRequirements?.length) boundRequirementId = activeRequirementId;
       if (/(->|→|»)/.test(name)) {
         if (/^run\s+[a-z_$][\w$.]*/i.test(name) || /\b[a-z][a-z0-9]*_[a-z0-9]+\b/.test(name)) continue;
@@ -10408,11 +10407,11 @@ export class AnalyzerOrchestrator {
       let extracted: SystemCapability[], extractionRaw = ''; const extractionRejections: string[] = [];
       try {
         extracted = await collectCapabilityCatalogEvidenceBatches({
-          facts: targetedRepair ? repairPlan : [], evidenceScoped: targetedRepair, hardDeadlineAt: args.hardDeadlineAt, batchBudgetMs: 18000,
+          facts: targetedRepair ? repairPlan : [], evidenceScoped: targetedRepair, hardDeadlineAt: args.hardDeadlineAt, batchBudgetMs: 36000,
           isDeadlineError: isAiCatalogHardDeadlineExceeded,
           extract: async (plannedBatch, hardDeadlineAt) => {
-          const mode = plannedBatch[0]; const batchIds = new Set(mode?.candidateIds || []); const repairBatch = capabilityCatalogRepairEvidenceFacts(evidenceCandidates, [...batchIds], entityNamesById, catalogRejectionsByCandidate, mode?.requirements.map(requirement => requirement.id)); let batchRaw = ''; const batchEntityIds = new Set(evidenceCandidates.filter(candidate => batchIds.has(candidate.id)).flatMap(candidate => candidate.related_entities || []));
-          const batchExtracted = await this.aiExtractCapabilityCatalog({
+          const mode = plannedBatch[0]; const batchIds = new Set(mode?.candidateIds || []); let repairBatch = capabilityCatalogRepairEvidenceFacts(evidenceCandidates, [...batchIds], entityNamesById, catalogRejectionsByCandidate, mode?.requirements.map(requirement => requirement.id)); let batchRaw = ''; const batchEntityIds = new Set(evidenceCandidates.filter(candidate => batchIds.has(candidate.id)).flatMap(candidate => candidate.related_entities || [])); const batchRejections: CapabilityCatalogRejection[] = [];
+          const extractBatch = (qualityNudge?: string) => this.aiExtractCapabilityCatalog({
           systemName: args.systemName,
           enhancedSystemPurpose: args.enhancedSystemPurpose,
           frameworks: args.frameworks,
@@ -10426,10 +10425,11 @@ export class AnalyzerOrchestrator {
           hardDeadlineAt, exactCapabilityLimit: targetedRepair ? 1 : undefined, requiredOutcomeCount: targetedRepair ? mode?.requirements.length || 0 : requiredOutcomes.length, requiredOutcomeRequirements: mode?.requirements.length ? mode.requirements : undefined, repairMode: mode?.mode, repairIdentityName: mode?.mode === 'description' ? mode.identity.name : undefined,
           entryPoints: args.entryPoints,
           nodes: args.nodes,
-          onResponse: raw => { batchRaw = raw; }, onRejection: feedback => { const recorded = recordCapabilityCatalogRejection(catalogRejectionsByCandidate, feedback); extractionRejections.push(recorded.explanation); },
-          ...(mode ? { qualityNudge: capabilityCatalogRepairNudge(mode, repairBatch, qualityFailure, audienceRepairFeedback) }
-            : cycle > 1 ? { qualityNudge: `Previous catalog failed a quality check (${qualityFailure}). ${audienceRepairFeedback || ''} Return a full replacement catalog.` } : {}),
+          onResponse: raw => { batchRaw = raw; }, onRejection: feedback => { batchRejections.push(feedback); const recorded = recordCapabilityCatalogRejection(catalogRejectionsByCandidate, feedback); extractionRejections.push(recorded.explanation); },
+          ...(qualityNudge ? { qualityNudge } : {}),
           });
+          const initialNudge = mode ? capabilityCatalogRepairNudge(mode, repairBatch, qualityFailure, audienceRepairFeedback) : cycle > 1 ? `Previous catalog failed a quality check (${qualityFailure}). ${audienceRepairFeedback || ''} Return a full replacement catalog.` : undefined; let batchExtracted = await extractBatch(initialNudge);
+          const exactBindingMiss = mode?.mode === 'outcome' && batchRejections.some(rejection => rejection.requirementId === mode.requirements[0]?.id && (rejection.missingAudience || rejection.missingSubjectTerms?.length)); if (batchExtracted.length === 0 && exactBindingMiss) { repairBatch = capabilityCatalogRepairEvidenceFacts(evidenceCandidates, [...batchIds], entityNamesById, catalogRejectionsByCandidate, mode.requirements.map(requirement => requirement.id)); batchExtracted = await extractBatch(capabilityCatalogRepairNudge(mode, repairBatch, qualityFailure)); }
           if (!extractionRaw) extractionRaw = batchRaw;
           return mode?.mode === 'description' && batchExtracted[0]
             ? [preserveCapabilityCatalogDescriptionIdentity(mode.identity, batchExtracted[0])]
@@ -10477,7 +10477,7 @@ export class AnalyzerOrchestrator {
       ) || (nonPublishable.length > 0 ? `${nonPublishable.length} catalog capability ${nonPublishable.length === 1 ? 'requires' : 'require'} publishable description repair: ${nonPublishable.slice(0, 3).map(capability => capability.name).join(', ')}` : undefined);
       writeAnalyzerStatus(
         `[Klauro] capability catalog cycle ${cycle}/${repairProgress.maxCycles}${targetedRepair ? ' targeted-repair' : ''}: ${cycleQualityFailure ? `rejected (${cycleQualityFailure})` : `accepted (${evidenceCompleteReconciled.length} capabilities)`}${reconciledCandidates.length > cycleReconciled.length ? `; refused ${reconciledCandidates.length - cycleReconciled.length} non-publishable item(s): ${[...publishabilityFailures.entries()].map(([reason, count]) => `${reason}=${count}`).join(', ')}` : ''}`,
-      );
+      ); writeAnalyzerStatus('[Klauro] capability catalog retained identities:', capabilityCatalogCycleDiagnostic(evidenceCompleteReconciled));
       if (!cycleQualityFailure) {
         reconciled = evidenceCompleteReconciled;
         if (!retainedInterpretationRaw) retainedInterpretationRaw = extractionRaw;

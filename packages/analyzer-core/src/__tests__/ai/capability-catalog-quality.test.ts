@@ -423,11 +423,24 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     initial[1].description = 'Coordinate overlapping work warns collaborators about conflicting changes while they continue working in parallel.';
     initial[2].description = 'Runtime evidence reveals how observed software behavior compares with its analyzed structure.';
     const calls: any[] = [];
+    const attemptsByRequirement = new Map<string, number>();
     localOrch.aiExtractCapabilityCatalog = async (input: any) => {
       calls.push(input);
       if (calls.length === 1) return initial;
       if (input.candidateCapabilities[0]?.id === 'graph') return [cap({ ...outcome('Build a trustworthy relationship graph'), criticality_factors: ['catalog-candidate:graph'] })];
-      return [input.requiredOutcomeRequirements?.[0]?.audience === 'human'
+      const requirement = input.requiredOutcomeRequirements?.[0];
+      const attempts = (attemptsByRequirement.get(requirement.id) || 0) + 1;
+      attemptsByRequirement.set(requirement.id, attempts);
+      if (attempts === 1) {
+        input.onRejection?.({
+          candidateIds: ['understanding'], requirementId: requirement.id,
+          name: requirement.audience === 'human' ? 'Surface behavior understanding' : 'Explain behavioral relationships to agents',
+          reason: requirement.audience === 'human' ? 'required-outcome-audience-missing:human' : `required-outcome-subject-mismatch:${requirement.id}`,
+          ...(requirement.audience === 'human' ? { missingAudience: requirement.audienceLabel } : { missingSubjectTerms: requirement.requiredSubjectTerms }),
+        });
+        return [];
+      }
+      return [requirement.audience === 'human'
         ? cap({ ...outcome('Help people understand software behavior'), description: 'Human engineers explore connected software behavior and change risks.', criticality_factors: ['catalog-candidate:understanding'] })
         : cap({
             ...outcome('Give AI agents software comprehension'),
@@ -446,10 +459,12 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     ]));
     expect(calls.length).toBeGreaterThan(1);
     const understandingCalls = calls.filter(call => call.candidateCapabilities[0]?.id === 'understanding');
-    expect(understandingCalls).toHaveLength(2);
+    expect(understandingCalls).toHaveLength(4);
     expect(understandingCalls.every(call => call.requiredOutcomeRequirements?.length === 1 && call.exactCapabilityLimit === 1)).toBe(true);
-    expect(understandingCalls.map(call => call.requiredOutcomeRequirements[0].audience).sort()).toEqual(['agent', 'human']);
-    expect(understandingCalls.every(call => call.qualityNudge.includes(`\"audience\":\"${call.requiredOutcomeRequirements[0].audience}\"`))).toBe(true);
+    expect([...new Set(understandingCalls.map(call => call.requiredOutcomeRequirements[0].audience))].sort()).toEqual(['agent', 'human']);
+    expect(understandingCalls.every(call => call.qualityNudge.includes('required_audience_label') && call.qualityNudge.includes('required_subject_terms'))).toBe(true);
+    expect(understandingCalls.filter(call => call.requiredOutcomeRequirements[0].audience === 'human')[1].qualityNudge).toContain('missing_audience');
+    expect(understandingCalls.filter(call => call.requiredOutcomeRequirements[0].audience === 'agent')[1].qualityNudge).toContain('missing_subject_terms');
   });
 
   it('tells the next AI cycle exactly which audience failures require repair', async () => {

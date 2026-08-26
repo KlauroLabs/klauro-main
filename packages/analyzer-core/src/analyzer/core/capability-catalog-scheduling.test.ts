@@ -4,6 +4,7 @@ import type { SystemCapability } from '../../types/cas.types';
 import {
   capabilitiesWithoutDescriptionDisposition,
   capabilityCatalogPendingRepairKeys,
+  capabilityCatalogCycleDiagnostic,
   capabilityIdentityPendingDescriptionRepair,
   scheduleRejectedCapabilityDescriptions,
   selectCapabilityCatalogPromptCandidates,
@@ -186,6 +187,8 @@ test('capability repair facts carry bounded candidate-specific rejection constra
   const rejections = new Map();
   const recorded = recordCapabilityCatalogRejection(rejections, {
     candidateIds: ['agent'],
+    missingAudience: 'agents',
+    missingSubjectTerms: ['understand', 'behavior'],
     name: 'Evaluate agent readiness and task proof',
     reason: 'outcome-scope-unsupported:readiness,task,proof',
   });
@@ -196,6 +199,8 @@ test('capability repair facts carry bounded candidate-specific rejection constra
     name: 'Evaluate agent readiness and task proof',
     reason: 'outcome-scope-unsupported:readiness,task,proof',
     forbidden_subject_terms: ['readiness', 'task', 'proof'],
+    missing_audience: 'agents',
+    missing_subject_terms: ['understand', 'behavior'],
   }]);
   assert.deepEqual(facts[1].prior_rejections, []);
   assert.equal(recorded.added, true);
@@ -235,6 +240,19 @@ test('shared candidates retain bounded feedback independently for every outcome 
     recordCapabilityCatalogRejection(rejections, { candidateIds: ['shared'], requirementId, name: `Rejected ${requirementId}`, reason: 'required-outcome-mismatch' });
   }
   assert.deepEqual((rejections.get('shared') || []).map(rejection => rejection.requirement_id), ['graph', 'human', 'agent', 'collaboration', 'runtime']);
+});
+
+test('cycle diagnostics expose only bounded names and requirement identities', () => {
+  const capabilities = Array.from({ length: 14 }, (_, index) => catalogCapability({
+    id: `cap-${index}`,
+    name: `${'Outcome '.repeat(20)}${index}\nsecret`,
+    criticality_factors: [`catalog-outcome-requirement:slot-${index}`],
+  }));
+  const diagnostic = capabilityCatalogCycleDiagnostic(capabilities);
+  assert.equal(diagnostic.length, 12);
+  assert.equal(diagnostic[0].name.length, 120);
+  assert.equal(diagnostic[0].name.includes('\n'), false);
+  assert.deepEqual(diagnostic[0].requirement_ids, ['slot-0']);
 });
 
 test('product-language violations expose the exact copied terms for all live repair classes', () => {
