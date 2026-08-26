@@ -167,6 +167,13 @@ export function capabilitySatisfiesCatalogOutcomeRequirement(
   requirement: CapabilityCatalogOutcomeRequirement,
 ): boolean {
   if (capability.criticality_factors?.includes(`catalog-outcome-requirement:${requirement.id}`)) return true;
+  return capabilitySemanticallySatisfiesCatalogOutcomeRequirement(capability, requirement);
+}
+
+export function capabilitySemanticallySatisfiesCatalogOutcomeRequirement(
+  capability: Pick<SystemCapability, 'name' | 'description'>,
+  requirement: CapabilityCatalogOutcomeRequirement,
+): boolean {
   const capabilityText = `${capability.name || ''} ${capability.description || ''}`;
   if (!capabilityMatchesAudience(capabilityText, requirement.audience)) return false;
   const capabilityTokens = new Set(tokens(capabilityText));

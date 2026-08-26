@@ -1,7 +1,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SystemCapability } from '../../types/cas.types';
-import { capabilityCatalogRepairPlan, preserveCapabilityCatalogDescriptionIdentity, supersedeUnboundPendingOutcomeDuplicates } from './capability-catalog-repair-plan';
+import { capabilityCatalogPendingRequirementIds, capabilityCatalogRepairPlan, preserveCapabilityCatalogDescriptionIdentity, supersedeUnboundPendingOutcomeDuplicates } from './capability-catalog-repair-plan';
 
 const capability = (id: string, factors: string[], description = '') => ({
   id, name: `Outcome ${id}`, description, category: 'core', criticality: 'high', criticality_factors: factors,
@@ -37,77 +37,107 @@ describe('capability catalog repair planning', () => {
     assert.deepEqual(repaired.criticality_factors, ['catalog-candidate:graph', 'catalog-outcome-requirement:graph-slot']);
   });
 
-  test('successful bound repair supersedes only its unbound pending semantic duplicate', () => {
+  test('supersedes a pending identity from a different candidate when its semantic slot is replaced', () => {
     const requirement = { id: 'graph', statement: 'build trustworthy relationship graph', candidateIds: ['capability_mcp'], subjectTokens: ['build', 'graph'] };
     const stale = { ...capability('stale', ['catalog-candidate:cap_cas']), name: 'Build a trustworthy relationship graph' };
     const incomingStale = { ...stale, id: 'incoming-stale' };
     const unrelated = capability('architecture', ['catalog-candidate:architecture']);
     const repaired = { ...capability('graph', ['catalog-candidate:capability_mcp', 'catalog-outcome-requirement:graph'], 'The product maps connected software behavior and relationships for inspection.'), name: 'Builds a trustworthy relationship graph' };
-    const graphEvidence = { ...capability('cap_cas', []), name: 'Build code relationship graph' };
-    const surfaceEvidence = { ...capability('capability_mcp', []), name: 'Inspect software behavior' };
+    const pendingMatches = new Map([
+      ['stale', capabilityCatalogPendingRequirementIds(stale, [requirement])],
+      ['incoming-stale', capabilityCatalogPendingRequirementIds(incomingStale, [requirement])],
+    ]);
 
-    assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates([stale, unrelated], [incomingStale, repaired], [requirement], [graphEvidence, surfaceEvidence]), {
+    assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates([stale, unrelated], [incomingStale, repaired], [requirement], pendingMatches), {
       existing: [unrelated], incoming: [repaired],
     });
   });
 
-  test('does not supersede a same-title pending identity without corroborating candidate evidence', () => {
-    const requirement = { id: 'graph', statement: 'build trustworthy relationship graph', candidateIds: ['capability_mcp'], subjectTokens: ['build', 'graph'] };
-    const pending = { ...capability('pending', ['catalog-candidate:unrelated']), name: 'Build a trustworthy relationship graph' };
-    const repaired = { ...capability('graph', ['catalog-candidate:capability_mcp', 'catalog-outcome-requirement:graph'], 'The product maps connected software behavior and relationships for inspection.'), name: 'Builds a trustworthy relationship graph' };
-    const unrelatedEvidence = { ...capability('unrelated', []), name: 'Operate deployment transport' };
-
-    assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates([pending], [repaired], [requirement], [unrelatedEvidence]), {
-      existing: [pending], incoming: [repaired],
-    });
-  });
-
-  test('does not supersede pending identities without a valid bound replacement', () => {
+  test('retains pending identities for empty matches and invalid bound replacements', () => {
     const requirement = { id: 'graph', statement: 'build trustworthy relationship graph', candidateIds: ['graph', 'shared'], subjectTokens: ['build', 'graph'] };
-    const pending = { ...capability('pending', ['catalog-candidate:graph']), name: 'Build a relationship graph' };
-    const unrelated = { ...capability('unrelated', ['catalog-candidate:other']), name: 'Build a relationship graph' };
+    const pending = { ...capability('pending', ['catalog-candidate:other']), name: 'Build a relationship graph' };
+    const empty = capability('empty', ['catalog-candidate:other']);
     const invalidBound = { ...capability('invalid', ['catalog-candidate:shared', 'catalog-outcome-requirement:graph']), name: 'Build a relationship graph' };
 
-    assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates([pending, unrelated], [invalidBound], [requirement], []), {
-      existing: [pending, unrelated], incoming: [invalidBound],
+    assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates(
+      [pending, empty], [invalidBound], [requirement], new Map([['pending', ['graph']], ['empty', []]]),
+    ), {
+      existing: [pending, empty], incoming: [invalidBound],
     });
   });
 
-  test('does not supersede an unbound identity that matches multiple shared-candidate audience requirements', () => {
+  test('requires every audience slot matched by a combined pending identity to be replaced', () => {
     const human = { id: 'human', statement: 'people understand behavior', audience: 'human' as const, candidateIds: ['shared'], subjectTokens: ['understand', 'behavior'] };
     const agent = { id: 'agent', statement: 'agents understand behavior', audience: 'agent' as const, candidateIds: ['shared'], subjectTokens: ['understand', 'behavior'] };
     const pending = { ...capability('pending', ['catalog-candidate:shared']), name: 'Help people and agents understand behavior' };
     const humanBound = { ...capability('human', ['catalog-candidate:shared', 'catalog-outcome-requirement:human'], 'People understand connected software behavior.'), name: 'Help people understand behavior' };
+    const agentBound = { ...capability('agent', ['catalog-candidate:shared', 'catalog-outcome-requirement:agent'], 'Agents understand connected software behavior.'), name: 'Help agents understand behavior' };
+    const pendingMatches = new Map([['pending', ['human', 'agent']]]);
 
-    assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates([pending], [humanBound], [human, agent], []), {
+    assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates([pending], [humanBound], [human, agent], pendingMatches), {
       existing: [pending], incoming: [humanBound],
     });
-  });
-
-  test('does not use verification or cross-audience evidence to supersede a pending identity', () => {
-    const graph = { id: 'graph', statement: 'build trustworthy relationship graph', candidateIds: ['surface'], subjectTokens: ['build', 'graph'] };
-    const human = { id: 'human', statement: 'people understand behavior', audience: 'human' as const, candidateIds: ['surface'], subjectTokens: ['understand', 'behavior'] };
-    const pendingGraph = { ...capability('pending-graph', ['catalog-candidate:proof']), name: 'Build a trustworthy relationship graph' };
-    const pendingHuman = { ...capability('pending-human', ['catalog-candidate:agent-evidence']), name: 'Help people understand behavior' };
-    const graphBound = { ...capability('graph', ['catalog-candidate:surface', 'catalog-outcome-requirement:graph'], 'The product maps connected software behavior and relationships for inspection.'), name: 'Builds a trustworthy relationship graph' };
-    const humanBound = { ...capability('human', ['catalog-candidate:surface', 'catalog-outcome-requirement:human'], 'People understand connected software behavior.'), name: 'Help people understand behavior' };
-    const proof = { ...capability('proof', []), name: 'Build relationship graph proof', evidence_role: 'verification-harness' as const };
-    const agentEvidence = { ...capability('agent-evidence', []), name: 'Agents understand software behavior' };
-
-    assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates(
-      [pendingGraph, pendingHuman], [graphBound, humanBound], [graph, human], [proof, agentEvidence],
-    ), { existing: [pendingGraph, pendingHuman], incoming: [graphBound, humanBound] });
-  });
-
-  test('isolates separate shared-candidate slots while superseding a uniquely matched pending identity', () => {
-    const human = { id: 'human', statement: 'people understand behavior', audience: 'human' as const, candidateIds: ['shared'], subjectTokens: ['understand', 'behavior'] };
-    const agent = { id: 'agent', statement: 'agents understand behavior', audience: 'agent' as const, candidateIds: ['shared'], subjectTokens: ['understand', 'behavior'] };
-    const pendingHuman = { ...capability('pending-human', ['catalog-candidate:shared']), name: 'Help people understand behavior' };
-    const pendingAgent = { ...capability('pending-agent', ['catalog-candidate:shared']), name: 'Explain behavior without naming an audience' };
-    const humanBound = { ...capability('human', ['catalog-candidate:shared', 'catalog-outcome-requirement:human'], 'People understand connected software behavior.'), name: 'Help people understand behavior' };
-
-    assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates([pendingHuman, pendingAgent], [humanBound], [human, agent], []), {
-      existing: [pendingAgent], incoming: [humanBound],
+    assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates([pending], [humanBound, agentBound], [human, agent], pendingMatches), {
+      existing: [], incoming: [humanBound, agentBound],
     });
+  });
+
+  test('supersedes combined graph and runtime wording only when both bound replacements are valid', () => {
+    const graph = { id: 'graph', statement: 'build trustworthy relationship graph', candidateIds: ['surface'], subjectTokens: ['build', 'graph'] };
+    const runtime = { id: 'runtime', statement: 'correlate static analysis with runtime evidence', candidateIds: ['surface'], subjectTokens: ['runtime', 'evidence'] };
+    const pending = { ...capability('pending', ['catalog-candidate:unrelated']), name: 'Build a graph and correlate runtime evidence' };
+    const graphBound = { ...capability('graph', ['catalog-candidate:surface', 'catalog-outcome-requirement:graph'], 'The product maps connected software behavior and relationships for inspection.'), name: 'Builds a trustworthy relationship graph' };
+    const runtimeBound = { ...capability('runtime', ['catalog-candidate:surface', 'catalog-outcome-requirement:runtime'], 'Runtime evidence is correlated with static analysis.'), name: 'Correlate runtime evidence' };
+    const pendingMatches = new Map([['pending', ['graph', 'runtime']]]);
+
+    assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates([pending], [graphBound], [graph, runtime], pendingMatches), {
+      existing: [pending], incoming: [graphBound],
+    });
+    assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates([pending], [graphBound, runtimeBound], [graph, runtime], pendingMatches), {
+      existing: [], incoming: [graphBound, runtimeBound],
+    });
+  });
+
+  test('preserves pending matches from rejected description prose through a publishable incoming repair', () => {
+    const human = { id: 'human', statement: 'people understand behavior', audience: 'human' as const, candidateIds: ['surface'], subjectTokens: ['understand', 'behavior'] };
+    const original = { ...capability('pending', ['catalog-candidate:legacy'], 'The graph helps people understand software behavior.'), name: 'Behavior comprehension' };
+    const cleared = { ...original, description: '', description_generation: { attempted: true, status: 'ai_rejected' as const } };
+    const incomingRepair = { ...cleared, description: 'A clearer product description.', description_generation: { attempted: true, status: 'ai_applied' as const } };
+    const humanBound = { ...capability('human', ['catalog-candidate:surface', 'catalog-outcome-requirement:human'], 'People understand connected software behavior.'), name: 'Help people understand behavior' };
+    const matched = capabilityCatalogPendingRequirementIds(original, [human]);
+
+    assert.deepEqual(matched, ['human']);
+    assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates([cleared], [incomingRepair, humanBound], [human], new Map([['pending', matched]])), {
+      existing: [], incoming: [humanBound],
+    });
+  });
+
+  test('keeps unrelated evidence-family identities and leaves bound replacements unchanged', () => {
+    const graph = { id: 'graph', statement: 'build trustworthy relationship graph', candidateIds: ['surface'], subjectTokens: ['build', 'graph'] };
+    const pending = { ...capability('pending', ['catalog-candidate:legacy']), name: 'Build a trustworthy relationship graph' };
+    const evidenceGap = capability('evidence-gap', ['catalog-candidate:architecture']);
+    const bound = { ...capability('graph', ['catalog-candidate:surface', 'catalog-outcome-requirement:graph'], 'The product maps connected software behavior and relationships for inspection.'), name: 'Builds a trustworthy relationship graph' };
+
+    const result = supersedeUnboundPendingOutcomeDuplicates(
+      [pending, evidenceGap], [bound], [graph], new Map([['pending', ['graph']]]),
+    );
+    assert.deepEqual(result, { existing: [evidenceGap], incoming: [bound] });
+    assert.strictEqual(result.incoming[0], bound);
+  });
+
+  test('rejects wrong requirement IDs, wrong primary candidates, nonpublishable, and semantically invalid replacements', () => {
+    const graph = { id: 'graph', statement: 'build trustworthy relationship graph', candidateIds: ['surface'], subjectTokens: ['build', 'graph'] };
+    const pending = { ...capability('pending', ['catalog-candidate:legacy']), name: 'Build a trustworthy relationship graph' };
+    const wrongId = capability('wrong-id', ['catalog-candidate:surface', 'catalog-outcome-requirement:other'], 'Builds a trustworthy graph.');
+    const wrongCandidate = capability('wrong-candidate', ['catalog-candidate:legacy', 'catalog-outcome-requirement:graph'], 'Builds a trustworthy graph.');
+    const nonpublishable = capability('nonpublishable', ['catalog-candidate:surface', 'catalog-outcome-requirement:graph']);
+    const invalidProse = capability('invalid-prose', ['catalog-candidate:surface', 'catalog-outcome-requirement:graph'], 'Provides a concise product summary.');
+    const pendingMatches = new Map([['pending', ['graph']]]);
+
+    for (const replacement of [wrongId, wrongCandidate, nonpublishable, invalidProse]) {
+      assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates([pending], [replacement], [graph], pendingMatches), {
+        existing: [pending], incoming: [replacement],
+      });
+    }
   });
 });
