@@ -209,12 +209,32 @@ test('publishability repair facts carry the exact requirement reason and validat
     reason: 'description-implementation-graph-inventory', forbiddenSubjectTerms: ['nodes', 'entry points'],
   });
 
-  const [fact] = capabilityCatalogRepairEvidenceFacts(candidates, ['shared'], new Map(), rejections);
+  const [fact] = capabilityCatalogRepairEvidenceFacts(candidates, ['shared'], new Map(), rejections, ['human:understand']);
 
   assert.deepEqual(fact.prior_rejections, [{
     name: 'Surface comprehension for people', reason: 'description-implementation-graph-inventory',
     forbidden_subject_terms: ['nodes', 'entry points'], requirement_id: 'human:understand',
   }]);
+});
+
+test('shared candidates expose only rejection feedback for the current outcome slot', () => {
+  const candidates = [{ id: 'shared', name: 'Software Understanding', category: 'core', evidence_kind: 'behavior-surface' }] as SystemCapability[];
+  const rejections = new Map();
+  recordCapabilityCatalogRejection(rejections, { candidateIds: ['shared'], name: 'Explain behavior', reason: 'description-too-short' });
+  recordCapabilityCatalogRejection(rejections, { candidateIds: ['shared'], requirementId: 'human:understand', name: 'Explain behavior', reason: 'required-outcome-mismatch' });
+  recordCapabilityCatalogRejection(rejections, { candidateIds: ['shared'], requirementId: 'agent:understand', name: 'Explain behavior', reason: 'required-outcome-mismatch' });
+  const [human] = capabilityCatalogRepairEvidenceFacts(candidates, ['shared'], new Map(), rejections, ['human:understand']);
+  const [agent] = capabilityCatalogRepairEvidenceFacts(candidates, ['shared'], new Map(), rejections, ['agent:understand']);
+  assert.deepEqual(human.prior_rejections.map(rejection => rejection.requirement_id), [undefined, 'human:understand']);
+  assert.deepEqual(agent.prior_rejections.map(rejection => rejection.requirement_id), [undefined, 'agent:understand']);
+});
+
+test('shared candidates retain bounded feedback independently for every outcome slot', () => {
+  const rejections = new Map();
+  for (const requirementId of ['graph', 'human', 'agent', 'collaboration', 'runtime']) {
+    recordCapabilityCatalogRejection(rejections, { candidateIds: ['shared'], requirementId, name: `Rejected ${requirementId}`, reason: 'required-outcome-mismatch' });
+  }
+  assert.deepEqual((rejections.get('shared') || []).map(rejection => rejection.requirement_id), ['graph', 'human', 'agent', 'collaboration', 'runtime']);
 });
 
 test('product-language violations expose the exact copied terms for all live repair classes', () => {

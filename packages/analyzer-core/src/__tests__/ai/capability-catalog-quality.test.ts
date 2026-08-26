@@ -998,7 +998,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
     expect(out).toEqual([]);
     expect(args.enhancedSystemPurpose.capability_catalog_coverage).toMatchObject({
-      actual_publishable_capabilities: 5,
+      actual_publishable_capabilities: 9,
       published_capabilities: 0,
       minimum_published_capabilities: 5,
       status: 'rejected',

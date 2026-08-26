@@ -9481,17 +9481,17 @@ export class AnalyzerOrchestrator {
       journeys: unknown;
       candidateIds: string[]; requirementId?: string;
     };
-    const staged: StagedCatalogItem[] = [];
-    let bareNounRejected = 0; const catalogRejectionFeedback: CapabilityCatalogRejection[] = [];
+    const staged: StagedCatalogItem[] = []; let activeRequirementId: string | undefined; let bareNounRejected = 0; const catalogRejectionFeedback: CapabilityCatalogRejection[] = [];
     const catalogRejectionReasons = new Map<string, number>();
     const debugCatalogRejection = (name: string, reason: string, candidateIds: string[] = []): void => {
       catalogRejectionReasons.set(reason, (catalogRejectionReasons.get(reason) || 0) + 1);
-      catalogRejectionFeedback.push({ candidateIds, name, reason });
+      catalogRejectionFeedback.push({ candidateIds, name, reason, ...(activeRequirementId ? { requirementId: activeRequirementId } : {}) });
       if (process.env.KLAURO_DEBUG_CATALOG) {
         writeAnalyzerStatus('[catalog-debug] rejected catalog item:', { name, reason });
       }
     };
     for (const item of catalog) {
+      const rawRequirementId = String(item.requirement_id || '') || undefined; activeRequirementId = input.requiredOutcomeRequirements?.length === 1 ? input.requiredOutcomeRequirements[0].id : rawRequirementId;
       let boundRequirementId: string | undefined; let name = String(item.name || '').replace(/\s+/g, ' ').trim();
       const itemEntityNamesRaw = (Array.isArray(item.entities) ? item.entities : []).map((value: unknown) => String(value || '')).filter(Boolean);
       let description = String(item.description || '');
@@ -9510,9 +9510,9 @@ export class AnalyzerOrchestrator {
       }
       const itemCandidateIds = Array.isArray(item.candidate_ids) ? item.candidate_ids.map(value => String(value || '')) : [];
       if (input.repairMode === 'evidence' && item.requirement_id) { debugCatalogRejection(name, 'unexpected-requirement-id', itemCandidateIds); continue; }
-      const boundRequirement = input.requiredOutcomeRequirements?.find(requirement => requirement.id === String(item.requirement_id || '')); const bindingFailure = capabilityCatalogOutcomeBindingFailure({ name, description }, itemCandidateIds, String(item.requirement_id || ''), input.requiredOutcomeRequirements || [], fulfilledOutcomeRequirements);
+      const boundRequirement = input.requiredOutcomeRequirements?.find(requirement => requirement.id === activeRequirementId); const bindingFailure = capabilityCatalogOutcomeBindingFailure({ name, description }, itemCandidateIds, rawRequirementId || '', input.requiredOutcomeRequirements || [], fulfilledOutcomeRequirements);
       if (bindingFailure) { debugCatalogRejection(name, bindingFailure, itemCandidateIds); continue; }
-      if (input.requiredOutcomeRequirements?.length) boundRequirementId = String(item.requirement_id || '');
+      if (input.requiredOutcomeRequirements?.length) boundRequirementId = activeRequirementId;
       if (/(->|→|»)/.test(name)) {
         if (/^run\s+[a-z_$][\w$.]*/i.test(name) || /\b[a-z][a-z0-9]*_[a-z0-9]+\b/.test(name)) continue;
         const head = name.split(/->|→|»/)[0].trim().replace(/[:\-–—\s]+$/, '');
@@ -10411,7 +10411,7 @@ export class AnalyzerOrchestrator {
           facts: targetedRepair ? repairPlan : [], evidenceScoped: targetedRepair, hardDeadlineAt: args.hardDeadlineAt, batchBudgetMs: 18000,
           isDeadlineError: isAiCatalogHardDeadlineExceeded,
           extract: async (plannedBatch, hardDeadlineAt) => {
-          const mode = plannedBatch[0]; const batchIds = new Set(mode?.candidateIds || []); const repairBatch = capabilityCatalogRepairEvidenceFacts(evidenceCandidates, [...batchIds], entityNamesById, catalogRejectionsByCandidate); let batchRaw = ''; const batchEntityIds = new Set(evidenceCandidates.filter(candidate => batchIds.has(candidate.id)).flatMap(candidate => candidate.related_entities || []));
+          const mode = plannedBatch[0]; const batchIds = new Set(mode?.candidateIds || []); const repairBatch = capabilityCatalogRepairEvidenceFacts(evidenceCandidates, [...batchIds], entityNamesById, catalogRejectionsByCandidate, mode?.requirements.map(requirement => requirement.id)); let batchRaw = ''; const batchEntityIds = new Set(evidenceCandidates.filter(candidate => batchIds.has(candidate.id)).flatMap(candidate => candidate.related_entities || []));
           const batchExtracted = await this.aiExtractCapabilityCatalog({
           systemName: args.systemName,
           enhancedSystemPurpose: args.enhancedSystemPurpose,

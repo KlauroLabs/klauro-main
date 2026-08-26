@@ -209,8 +209,10 @@ export function mergeUniquelyMatchedBehaviorEvidence(
 export function capabilityCatalogRepairEvidenceFacts(
   candidates: SystemCapability[], repairCandidateIds: readonly string[], entityNamesById: ReadonlyMap<string, string>,
   rejectionsByCandidate: ReadonlyMap<string, CapabilityCatalogPriorRejection[]> = new Map(),
+  requirementIds: readonly string[] = [],
 ) {
   const repairIds = new Set(repairCandidateIds);
+  const scopedRequirements = new Set(requirementIds);
   return candidates.filter(candidate => repairIds.has(candidate.id)).map(candidate => {
     const entityNames = (candidate.related_entities || []).map(entityId => entityNamesById.get(entityId) || entityId);
     const subjectEntityNames = candidate.evidence_kind === 'behavior-surface' ? [] : entityNames;
@@ -222,7 +224,9 @@ export function capabilityCatalogRepairEvidenceFacts(
       entity_names: subjectEntityNames,
       operations: (candidate.operations || []).slice(0, 8).map(operation => ({ action: operation.action, surface: operation.path_or_command })),
       examples: (candidate.evidence_examples || []).slice(0, 8),
-      prior_rejections: rejectionsByCandidate.get(candidate.id) || [],
+      prior_rejections: (rejectionsByCandidate.get(candidate.id) || []).filter(rejection => scopedRequirements.size > 0
+        ? !rejection.requirement_id || scopedRequirements.has(rejection.requirement_id)
+        : !rejection.requirement_id),
     };
   });
 }
@@ -239,9 +243,9 @@ export function recordCapabilityCatalogRejection(
   let added = false;
   for (const candidateId of feedback.candidateIds) {
     const prior = rejectionsByCandidate.get(candidateId) || [];
-    if (!prior.some(item => item.name === feedback.name && item.reason === feedback.reason)) {
-      prior.push({ name: feedback.name, reason: feedback.reason, forbidden_subject_terms: forbiddenSubjectTerms, ...(feedback.requirementId ? { requirement_id: feedback.requirementId } : {}) });
-      rejectionsByCandidate.set(candidateId, prior.slice(-4));
+    if (!prior.some(item => item.name === feedback.name && item.reason === feedback.reason && item.requirement_id === feedback.requirementId)) {
+      const scope = feedback.requirementId || ''; const sameScope = prior.filter(item => (item.requirement_id || '') === scope);
+      rejectionsByCandidate.set(candidateId, [...prior.filter(item => (item.requirement_id || '') !== scope), ...sameScope.slice(-3), { name: feedback.name, reason: feedback.reason, forbidden_subject_terms: forbiddenSubjectTerms, ...(feedback.requirementId ? { requirement_id: feedback.requirementId } : {}) }]);
       added = true;
     }
   }

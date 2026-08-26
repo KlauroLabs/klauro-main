@@ -6254,6 +6254,8 @@ describe('capability hygiene: entity-set dedup', () => {
     }));
     expect(orch.dedupeSystemCapabilitiesByName(bound)).toHaveLength(5);
     expect(orch.dedupeSystemCapabilitiesByName([bound[0], { ...bound[0], id: 'graph-copy', name: 'Create trustworthy graph' }])).toHaveLength(1);
+    const unboundAgent = { ...bound[2], id: 'agent-unbound', criticality_factors: ['catalog-candidate:shared'] };
+    expect(orch.dedupeSystemCapabilitiesByName([bound[1], unboundAgent])).toHaveLength(2);
   });
 
   it('keeps two DIFFERENT purposes over the SAME entity set (rung-5 washup: exact-set dedupe collapsed 6 purpose caps to 3), while still merging a CRUD verb-variant pair', async () => {
@@ -8209,6 +8211,29 @@ describe('top-down capability evidence (C2)', () => {
         'human:behavior-understand', 'agent:behavior-understand',
       ]);
       expect(context.task).toMatch(/copy its requirement_id exactly/i);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
+  it('rejects a focused repair result that omits or changes its requested requirement id', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    const responses = [undefined, 'agent:behavior-understand'];
+    const requirement: any = { id: 'human:behavior-understand', audience: 'human', statement: 'behavior understanding', subjectTokens: ['behavior', 'understand'], candidateIds: ['understanding'] };
+    try {
+      for (const requirementId of responses) {
+        (aiService as any).generateComponentDescription = async () => JSON.stringify({ capabilities: [{
+          ...(requirementId ? { requirement_id: requirementId } : {}), name: 'Help people understand software behavior',
+          description: 'Human engineers understand connected software behavior before making changes.', category: 'core', candidate_ids: ['understanding'],
+        }] });
+        const catalog = await orch.aiExtractCapabilityCatalog({
+          systemName: 'software-platform', enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: ['software behavior'] },
+          frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [{ id: 'understanding', name: 'Explore connected software behavior', category: 'core', related_entities: [], related_domains: ['software behavior'], operations: [] }],
+          externalServices: [], flowGraph: { capability_candidates: [] }, projectTextSignal: { concepts: ['software behavior'], evidence: [], productDocSummary: 'Helps people understand connected software behavior.' },
+          budgetMs: 30000, exactCapabilityLimit: 1, requiredOutcomeRequirements: [requirement],
+        });
+        expect(catalog).toEqual([]);
+      }
     } finally {
       (aiService as any).generateComponentDescription = original;
     }
