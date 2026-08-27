@@ -1,6 +1,8 @@
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import * as os from 'node:os';
 import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
 import { listActiveSessions } from './session-lock';
 import { isNewerVersion } from './stale-client-hint';
@@ -23,6 +25,7 @@ import { isNewerVersion } from './stale-client-hint';
 
 export interface ReleaseManifest {
   version: string | null;
+  tarball_sha256?: string;
   tarball?: string;
   tarball_path?: string;
   min_node?: number;
@@ -108,6 +111,31 @@ export function resolveTarballUrl(serverUrl: string, manifest: ReleaseManifest |
   return `${base}/dist/klauro-latest.tgz`;
 }
 
+
+export async function downloadVerifiedTarball(
+  tarballUrl: string,
+  expectedSha256: string | undefined,
+): Promise<{ directory: string; file: string }> {
+  if (!/^[0-9a-f]{64}$/i.test(String(expectedSha256 || ''))) {
+    throw new Error('The release manifest has no valid npm tarball SHA-256 digest; refusing an unverified update.');
+  }
+  const response = await fetch(tarballUrl, { headers: { 'cache-control': 'no-cache' } });
+  if (!response.ok) throw new Error(`Failed to download the update tarball (HTTP ${response.status}).`);
+  const bytes = Buffer.from(await response.arrayBuffer());
+  const actualSha256 = createHash('sha256').update(bytes).digest('hex');
+  if (actualSha256 !== expectedSha256!.toLowerCase()) {
+    throw new Error('The downloaded npm tarball checksum does not match the release manifest; the existing installation was left unchanged.');
+  }
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-update-'));
+  const file = path.join(directory, 'klauro.tgz');
+  try {
+    fs.writeFileSync(file, bytes, { flag: 'wx' });
+    return { directory, file };
+  } catch (error) {
+    fs.rmSync(directory, { recursive: true, force: true });
+    throw error;
+  }
+}
 
 
 
@@ -335,20 +363,21 @@ export async function runSelfUpdate(options: SelfUpdateOptions): Promise<SelfUpd
     `(${target.prefixSource === 'cli-realpath' ? 'resolved from the installed bin realpath' : 'resolved from the running node'}; npm: ${target.npmBin}${target.nodeBin ? ` run with ${target.nodeBin}` : ''})\n`,
   );
   write('(this may take a minute -- native tree-sitter deps compile)\n\n');
-  const installArgs = ['install', '-g', tarballUrl, '--force', '--prefix', target.prefix];
+  const verifiedTarball = await downloadVerifiedTarball(tarballUrl, manifest?.tarball_sha256);
+  const installArgs = ['install', '-g', verifiedTarball.file, '--force', '--prefix', target.prefix];
   const installEnv = buildUpdateSpawnEnv(target);
-  const result = target.nodeBin
-    ? spawnSync(target.nodeBin, [target.npmBin, ...installArgs], {
-      stdio: ['inherit', 'pipe', 'pipe'],
-      encoding: 'utf8',
-      env: installEnv,
-    })
-    : spawnSync(target.npmBin, installArgs, {
-      stdio: ['inherit', 'pipe', 'pipe'],
-      encoding: 'utf8',
-      shell: process.platform === 'win32',
-      env: installEnv,
-    });
+  let result;
+  try {
+    result = target.nodeBin
+      ? spawnSync(target.nodeBin, [target.npmBin, ...installArgs], {
+        stdio: ['inherit', 'pipe', 'pipe'], encoding: 'utf8', env: installEnv,
+      })
+      : spawnSync(target.npmBin, installArgs, {
+        stdio: ['inherit', 'pipe', 'pipe'], encoding: 'utf8', shell: process.platform === 'win32', env: installEnv,
+      });
+  } finally {
+    fs.rmSync(verifiedTarball.directory, { recursive: true, force: true });
+  }
   const npmOutput = filterNpmNoise(`${result.stdout || ''}${result.stderr || ''}`);
   if (npmOutput) write(npmOutput.endsWith('\n') ? npmOutput : `${npmOutput}\n`);
   if (result.status !== 0) {

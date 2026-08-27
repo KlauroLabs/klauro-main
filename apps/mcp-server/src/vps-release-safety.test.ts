@@ -63,7 +63,10 @@ test('release artifacts are built, verified, and published from the VPS candidat
   const sea = releaseFile('build-sea-binaries.mjs');
   const publish = releaseFile('publish-release-artifacts.mjs');
   assert.match(release, /sync-gate-candidate\.sh" --commit "\$RELEASE_SHA_FULL"/);
-  assert.match(release, /gate\.sh .*--run-as-root .*build-release-artifacts\.sh/);
+  const proof = releaseFile('release-proof-receipt.mjs');
+  const installer = releaseFile('install.sh');
+  assert.match(release, /gate\.sh .*--run-as-root .*prove-release-candidate\.sh/);
+  const powershellInstaller = releaseFile('install.ps1');
   assert.doesNotMatch(release, /^npm run /m);
   assert.doesNotMatch(release, /^npx tsx /m);
   assert.match(build, /KLAURO_GIT_SHA:\?KLAURO_GIT_SHA is required/);
@@ -72,4 +75,16 @@ test('release artifacts are built, verified, and published from the VPS candidat
   assert.match(sea, /spawnSync\(outPath, \['version'\]/);
   assert.doesNotMatch(sea, /ran natively on this machine/);
   assert.ok(publish.indexOf("replace(path.join(destination, 'latest.json')") > publish.indexOf("replace(path.join(destination, 'klauro-latest.tgz')"));
+  assert.match(release, /KLAURO_RELEASE_SHA=\$RELEASE_SHA_FULL/);
+  assert.match(release, /release-proof-receipt\.mjs verify/);
+  assert.match(release, /HOSTED_SHA.*RELEASE_SHA_FULL/);
+  assert.match(release, /HOSTED_TARBALL_SHA.*ACTUAL_TARBALL_SHA/);
+  assert.match(proof, /Release proof identity does not match/);
+  assert.match(proof, /Release proof artifact digests do not match/);
+  assert.match(proof, /complete required gate set/);
+  assert.match(installer, /npm tarball checksum mismatch/);
+  assert.doesNotMatch(installer, /npm install -g "\$\{KLAURO_URL\}\/dist\/klauro-latest\.tgz"/);
+  assert.match(powershellInstaller, /Get-FileHash .*SHA256/);
+  assert.match(powershellInstaller, /npm install -g \$tmpTarball\.FullName/);
+  assert.doesNotMatch(powershellInstaller, /npm install -g "\$KlauroUrl\/dist\/klauro-latest\.tgz"/);
 });

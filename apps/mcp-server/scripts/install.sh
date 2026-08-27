@@ -46,6 +46,7 @@ case "${MIN_NODE}" in
   ''|*[!0-9]*) MIN_NODE=20 ;;
 esac
 
+TARBALL_SHA256="$(manifest_str_field tarball_sha256)"
 BINARY_PATH=""
 BINARY_SHA256=""
 if [ -n "${PLATFORM_KEY}" ]; then
@@ -127,8 +128,46 @@ install_via_npm_fallback() {
       ;;
   esac
   echo "  Using Node.js ${NODE_VERSION}"
+  if [ "${#TARBALL_SHA256}" -ne 64 ]; then
+    echo "Error: the release manifest has no valid npm tarball SHA-256 digest. Refusing an unverified install."
+    return 1
+  fi
+  case "${TARBALL_SHA256}" in
+    *[!0-9a-fA-F]*)
+      echo "Error: the release manifest has no valid npm tarball SHA-256 digest. Refusing an unverified install."
+      return 1
+      ;;
+  esac
+  NPM_TMP_DIR="$(mktemp -d)"
+  NPM_TARBALL="${NPM_TMP_DIR}/klauro.tgz"
+  if ! curl -fsSL --max-time 300 -o "${NPM_TARBALL}" "${KLAURO_URL}/dist/klauro-latest.tgz"; then
+    rm -rf "${NPM_TMP_DIR}"
+    echo "Error: failed to download the npm fallback tarball."
+    return 1
+  fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    NPM_ACTUAL_SHA256="$(sha256sum "${NPM_TARBALL}" | cut -d' ' -f1)"
+  elif command -v shasum >/dev/null 2>&1; then
+    NPM_ACTUAL_SHA256="$(shasum -a 256 "${NPM_TARBALL}" | cut -d' ' -f1)"
+  else
+    rm -rf "${NPM_TMP_DIR}"
+    echo "Error: no SHA-256 utility is available. Refusing an unverified npm install."
+    return 1
+  fi
+  if [ "$(printf '%s' "${NPM_ACTUAL_SHA256}" | tr 'A-F' 'a-f')" != "$(printf '%s' "${TARBALL_SHA256}" | tr 'A-F' 'a-f')" ]; then
+    rm -rf "${NPM_TMP_DIR}"
+    echo "Error: npm tarball checksum mismatch. Existing installation was left unchanged."
+    return 1
+  fi
   echo "  Installing @klauro/mcp-server globally via npm..."
-  npm install -g "${KLAURO_URL}/dist/klauro-latest.tgz"
+  if npm install -g "${NPM_TARBALL}"; then
+    rm -rf "${NPM_TMP_DIR}"
+  else
+    NPM_STATUS=$?
+    rm -rf "${NPM_TMP_DIR}"
+    echo "Error: npm install failed. Existing installation may still be active; no unverified package was installed."
+    return "${NPM_STATUS}"
+  fi
 }
 
 KLAURO_OWNED_MARKERS="node_modules/@klauro/mcp-server /Cellar/klauro/"

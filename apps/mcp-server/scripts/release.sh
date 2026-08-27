@@ -139,24 +139,30 @@ SSH="sshpass -e ssh $SSHOPTS"
 DEST="$VPS_USER@$VPS_HOST"
 
 echo "==> Building and verifying release artifacts on the VPS"
-$SSH "$DEST" "cd /opt/klauro/devgate && GATE_TIMEOUT_S=3600 bash infrastructure/vps/gate.sh --allow-source-mismatch --run-as-root apps/mcp-server 'npx tsx src/spec-purity-gate-cli.ts ../.. && bash scripts/build-release-artifacts.sh'"
+$SSH "$DEST" "cd /opt/klauro/devgate && KLAURO_GIT_SHA=$RELEASE_SHA_FULL GATE_TIMEOUT_S=3600 bash infrastructure/vps/gate.sh --allow-source-mismatch --run-as-root apps/mcp-server 'KLAURO_RELEASE_VERSION=$VERSION KLAURO_RELEASE_SHA=$RELEASE_SHA_FULL bash scripts/prove-release-candidate.sh'"
 mark_step "remote-build-and-verification"
 
 if [ "${RELEASE_SKIP_UPLOAD:-0}" = "1" ]; then
   echo "==> RELEASE_SKIP_UPLOAD=1 — verified artifacts remain in /opt/klauro/devgate/apps/mcp-server"
 else
   echo "==> Publishing verified artifacts from the VPS candidate"
-  $SSH "$DEST" "mkdir -p /opt/klauro/downloads && docker run --rm -v /opt/klauro/devgate:/gate -v /opt/klauro/downloads:/downloads -w /gate/apps/mcp-server klauro-gate node scripts/publish-release-artifacts.mjs /downloads"
+  $SSH "$DEST" "mkdir -p /opt/klauro/downloads && docker run --rm -e KLAURO_RELEASE_VERSION=$VERSION -e KLAURO_RELEASE_SHA=$RELEASE_SHA_FULL -v /opt/klauro/devgate:/gate -v /opt/klauro/downloads:/downloads -w /gate/apps/mcp-server klauro-gate node scripts/publish-release-artifacts.mjs /downloads"
   mark_step "publish"
 
   check_live_distribution() {
-    HOSTED="$(curl -fsS "https://mcp.klauro.com/dist/latest.json" | node -p "JSON.parse(require('fs').readFileSync(0)).version" 2>/dev/null || echo unknown)"
+    LIVE_MANIFEST="$(curl -fsS "https://mcp.klauro.com/dist/latest.json")"
+    HOSTED="$(printf '%s' "$LIVE_MANIFEST" | node -p "JSON.parse(require('fs').readFileSync(0)).version")"
+    HOSTED_SHA="$(printf '%s' "$LIVE_MANIFEST" | node -p "JSON.parse(require('fs').readFileSync(0)).git_sha")"
+    HOSTED_TARBALL_SHA="$(printf '%s' "$LIVE_MANIFEST" | node -p "JSON.parse(require('fs').readFileSync(0)).tarball_sha256")"
     TARBALL_CODE="$(curl -s -o /dev/null -w '%{http_code}' -r 0-0 "https://mcp.klauro.com/dist/klauro-latest.tgz" 2>/dev/null || echo 000)"
+    ACTUAL_TARBALL_SHA="$(curl -fsS "https://mcp.klauro.com/dist/klauro-latest.tgz" | node -e "const c=require('crypto'),b=[];process.stdin.on('data',x=>b.push(x)).on('end',()=>process.stdout.write(c.createHash('sha256').update(Buffer.concat(b)).digest('hex')))" )"
     . "$APP_DIR/scripts/verify-distribution-channel.sh"
     verify_distribution_channel "$HOSTED" "$VERSION" "$TARBALL_CODE"
+    [ "$HOSTED_SHA" = "$RELEASE_SHA_FULL" ]
+    [ "$HOSTED_TARBALL_SHA" = "$ACTUAL_TARBALL_SHA" ]
   }
   retry_with_backoff "live distribution channel check" check_live_distribution || {
-    echo "ERROR: live distribution reports version $HOSTED and tarball HTTP $TARBALL_CODE; expected $VERSION and 200 or 206." >&2
+    echo "ERROR: live distribution identity or tarball digest does not match $VERSION+$RELEASE_SHA_FULL." >&2
     exit 1
   }
 
@@ -171,9 +177,18 @@ else
   mark_step "verify-live-artifacts"
 fi
 
+$SSH "$DEST" "docker run --rm -e KLAURO_RELEASE_VERSION=$VERSION -e KLAURO_RELEASE_SHA=$RELEASE_SHA_FULL -v /opt/klauro/devgate:/gate -w /gate/apps/mcp-server klauro-gate node scripts/release-proof-receipt.mjs verify"
+
 echo "==> Tagging v$VERSION"
 cd "$REPO_ROOT"
-git tag -a "v$VERSION" -m "klauro v$VERSION" 2>/dev/null && echo "    tagged v$VERSION" || echo "    tag v$VERSION already exists"
+if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+  TAG_SHA="$(git rev-list -n 1 "v$VERSION")"
+  [ "$TAG_SHA" = "$RELEASE_SHA_FULL" ] || { echo "ERROR: existing v$VERSION tag points to $TAG_SHA, not $RELEASE_SHA_FULL." >&2; exit 1; }
+  echo "    tag v$VERSION already exists at the verified release commit"
+else
+  git tag -a "v$VERSION" -m "klauro v$VERSION"
+  echo "    tagged v$VERSION"
+fi
 mark_step "tag(v$VERSION)"
 
 echo "==> Done. v$VERSION released."

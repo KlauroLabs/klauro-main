@@ -1,11 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import * as http from 'node:http';
 import * as path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import * as fs from 'node:fs/promises';
 import { REMOTE_ANALYSIS_PROTOCOL_VERSION, clientUpgradeRequiredMessage } from './remote-analyzer-protocol';
-import { KLAURO_INSTALL_ONELINER, SELF_UPDATE_COMMANDS, resolveTarballUrl } from './self-update';
+import { KLAURO_INSTALL_ONELINER, SELF_UPDATE_COMMANDS, downloadVerifiedTarball, resolveTarballUrl } from './self-update';
 
 // --- P0 (2026-07-27 live comprehension audit) --------------------------------
 // The hosted server started rejecting protocol-1 clients with HTTP 426 and the
@@ -48,8 +50,14 @@ function runInstalledCli(args: string[]): Promise<{ status: number | null; stdou
 async function withManifestServer<T>(
   manifest: unknown,
   body: (baseUrl: string) => Promise<T>,
+  tarball?: Buffer,
 ): Promise<T> {
   const server = http.createServer((request, response) => {
+    if (request.url === '/dist/klauro-latest.tgz' && tarball) {
+      response.writeHead(200, { 'content-type': 'application/gzip' });
+      response.end(tarball);
+      return;
+    }
     if (request.url === '/dist/latest.json') {
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(JSON.stringify(manifest));
@@ -132,4 +140,39 @@ test('resolveTarballUrl honours the hosted manifest tarball_path instead of alwa
     resolveTarballUrl('https://mcp.klauro.com', null),
     'https://mcp.klauro.com/dist/klauro-latest.tgz',
   );
+});
+
+test('self-update downloads a verified tarball to a private temporary path', async () => {
+  const contents = 'verified update';
+  const digest = createHash('sha256').update(contents).digest('hex');
+  const downloaded = await downloadVerifiedTarball(`data:application/octet-stream,${contents}`, digest);
+  try {
+    assert.equal(await fs.readFile(downloaded.file, 'utf8'), contents);
+  } finally {
+    await fs.rm(downloaded.directory, { recursive: true, force: true });
+  }
+});
+
+test('self-update rejects missing and corrupt tarball digests before invoking npm', async () => {
+  await assert.rejects(
+    () => downloadVerifiedTarball('data:application/octet-stream,verified', undefined),
+    /no valid npm tarball SHA-256 digest/,
+  );
+  await assert.rejects(
+    () => downloadVerifiedTarball('data:application/octet-stream,corrupt', '0'.repeat(64)),
+    /checksum does not match/,
+  );
+});
+
+test('the shipped self-update command rejects a corrupt tarball before installation', async () => {
+  const tarball = Buffer.from('corrupt release tarball');
+  await withManifestServer({
+    version: '9.9.9',
+    tarball_path: '/dist/klauro-latest.tgz',
+    tarball_sha256: '0'.repeat(64),
+  }, async baseUrl => {
+    const result = await runInstalledCli(['update', '--force', '--server-url', baseUrl]);
+    assert.notEqual(result.status, 0);
+    assert.match(`${result.stdout}${result.stderr}`, /checksum does not match/);
+  }, tarball);
 });

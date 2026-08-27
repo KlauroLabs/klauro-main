@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 if (-not $env:KLAURO_URL) { $KlauroUrl = 'https://mcp.klauro.com' } else { $KlauroUrl = $env:KLAURO_URL }
 $InstallDir = if ($env:KLAURO_INSTALL_DIR) { $env:KLAURO_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Klauro\bin' }
 $MinNode = 20
+$TarballSha256 = $null
 
 Write-Host ''
 Write-Host '  Klauro installer'
@@ -36,12 +37,27 @@ function Install-NpmFallback {
     }
   }
   Write-Host "  Using Node.js $nodeVersion"
-  Write-Host '  Installing @klauro/mcp-server globally via npm...'
-  & npm install -g "$KlauroUrl/dist/klauro-latest.tgz"
-  if ($LASTEXITCODE -ne 0) {
-    Write-Host ''
-    Write-Host 'Error: npm install failed. See the output above.'
-    exit $LASTEXITCODE
+  if (-not $TarballSha256 -or $TarballSha256 -notmatch '^[0-9a-fA-F]{64}$') {
+    Write-Host 'Error: the release manifest has no valid npm tarball SHA-256 digest. Refusing an unverified install.'
+    exit 1
+  }
+  $tmpTarball = New-TemporaryFile
+  try {
+    Invoke-WebRequest -Uri "$KlauroUrl/dist/klauro-latest.tgz" -OutFile $tmpTarball.FullName -TimeoutSec 300
+    $actualTarballHash = (Get-FileHash -Path $tmpTarball.FullName -Algorithm SHA256).Hash.ToLower()
+    if ($actualTarballHash -ne $TarballSha256.ToLower()) {
+      Write-Host 'Error: npm tarball checksum mismatch. Existing installation was left unchanged.'
+      exit 1
+    }
+    Write-Host '  Installing @klauro/mcp-server globally via npm...'
+    & npm install -g $tmpTarball.FullName
+    if ($LASTEXITCODE -ne 0) {
+      Write-Host ''
+      Write-Host 'Error: npm install failed. No unverified package was installed.'
+      exit $LASTEXITCODE
+    }
+  } finally {
+    Remove-Item -Force -ErrorAction SilentlyContinue $tmpTarball.FullName
   }
 }
 
@@ -49,11 +65,13 @@ $installedVia = $null
 try {
   $manifestJson = Invoke-RestMethod -Uri "$KlauroUrl/dist/latest.json" -TimeoutSec 10 -ErrorAction Stop
   if ($manifestJson.min_node -as [int]) { $MinNode = [int]$manifestJson.min_node }
+  $TarballSha256 = $manifestJson.tarball_sha256
   $binaryPath = $manifestJson.'bin_win_x64_path'
   $binarySha256 = $manifestJson.'bin_win_x64_sha256'
 } catch {
   $binaryPath = $null
   $binarySha256 = $null
+  $TarballSha256 = $null
 }
 
 if ($binaryPath) {

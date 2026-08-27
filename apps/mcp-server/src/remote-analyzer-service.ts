@@ -4080,7 +4080,7 @@ async function serveLatestManifest(request: http.IncomingMessage, response: http
     tarball: `${base}/dist/klauro-latest.tgz`,
     tarball_path: '/dist/klauro-latest.tgz',
     min_node: minNode,
-
+    tarball_sha256: (manifest.tarball_sha256 as string) || null,
     max_node: maxNode,
     supported_node_range: maxNode === null ? `${minNode}+` : `${minNode}-${maxNode}`,
     published_at: (manifest.published_at as string) || null,

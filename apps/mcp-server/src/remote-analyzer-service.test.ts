@@ -81,6 +81,10 @@ test('public release artifacts answer HEAD without authentication or a response 
   const downloads = path.join(root, 'downloads');
   fs.mkdirSync(downloads);
   fs.writeFileSync(path.join(downloads, 'klauro-latest.tgz'), 'artifact');
+  const tarballSha256 = 'a'.repeat(64);
+  fs.writeFileSync(path.join(downloads, 'latest.json'), JSON.stringify({
+    version: '9.9.9', git_sha: 'b'.repeat(40), tarball_sha256: tarballSha256,
+  }));
   const previousDownloads = process.env.KLAURO_DOWNLOADS_DIR;
   const previousCoordination = process.env.KLAURO_COORD_DIR;
   process.env.KLAURO_DOWNLOADS_DIR = downloads;
@@ -96,6 +100,10 @@ test('public release artifacts answer HEAD without authentication or a response 
     const response = await fetch(`http://127.0.0.1:${address && typeof address === 'object' ? address.port : 0}/dist/klauro-latest.tgz`, { method: 'HEAD' });
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('content-length'), '8');
+    const manifestResponse = await fetch(`http://127.0.0.1:${address && typeof address === 'object' ? address.port : 0}/dist/latest.json`);
+    const manifest = await manifestResponse.json() as Record<string, unknown>;
+    assert.equal(manifest.tarball_sha256, tarballSha256);
+    assert.equal(manifest.git_sha, 'b'.repeat(40));
     assert.equal(await response.text(), '');
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));

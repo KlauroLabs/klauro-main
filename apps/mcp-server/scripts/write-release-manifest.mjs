@@ -15,6 +15,7 @@
 
 
 
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -99,7 +100,9 @@ const versionedTarballPath = path.join(dir, `klauro-mcp-server-${version}.tgz`);
 if (!existsSync(versionedTarballPath)) {
   throw new Error(`write-release-manifest.mjs: ${versionedTarballPath} is missing — run "npm pack" first.`);
 }
-writeAtomically(path.join(dir, 'klauro-latest.tgz'), readFileSync(versionedTarballPath));
+const tarball = readFileSync(versionedTarballPath);
+manifest.tarball_sha256 = createHash('sha256').update(tarball).digest('hex');
+writeAtomically(path.join(dir, 'klauro-latest.tgz'), tarball);
 writeAtomically(path.join(dir, 'latest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
 process.stdout.write(`latest.json: version ${manifest.version} sha ${manifest.git_sha} published_at ${manifest.published_at}, ${Object.keys(binaries).length} platform binaries\n`);
 

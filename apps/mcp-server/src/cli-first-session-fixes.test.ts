@@ -416,11 +416,14 @@ async function runInstallSh(options: {
     const dist = path.join(dir, 'dist');
     await fs.mkdir(dist, { recursive: true });
     await fs.chmod(dist, 0o755);
+    const crypto = await import('node:crypto');
+    const tarball = Buffer.from('verified npm fallback tarball');
+    await fs.writeFile(path.join(dist, 'klauro-latest.tgz'), tarball);
+    (manifest as Record<string, string>).tarball_sha256 ??= crypto.createHash('sha256').update(tarball).digest('hex');
     if (options.fakeBinary && platformKey) {
       const binaryPath = path.join(dist, `klauro-${platformKey.replace('_', '-')}`);
       await fs.writeFile(binaryPath, options.fakeBinary, { mode: 0o755 });
       await fs.chmod(binaryPath, 0o755);
-      const crypto = await import('node:crypto');
       const sha256 = crypto.createHash('sha256').update(await fs.readFile(binaryPath)).digest('hex');
       (manifest as Record<string, string>)[`bin_${platformKey}_path`] = `/dist/klauro-${platformKey.replace('_', '-')}`;
       (manifest as Record<string, string>)[`bin_${platformKey}_sha256`] = sha256;
@@ -500,9 +503,13 @@ test('install.sh: checksum mismatch refuses the binary and falls back to npm', a
     await fs.writeFile(path.join(bin, 'npm'), `#!/bin/sh\ntouch "${npmMarker}"\nexit 0\n`, { mode: 0o755 });
     const platformKey = currentPlatformKey();
     await fs.mkdir(path.join(dir, 'dist'), { recursive: true });
+    const tarball = Buffer.from('verified npm fallback tarball');
+    await fs.writeFile(path.join(dir, 'dist', 'klauro-latest.tgz'), tarball);
+    const crypto = await import('node:crypto');
     await fs.writeFile(path.join(dir, 'dist', `klauro-${platformKey.replace('_', '-')}`), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
     await fs.writeFile(path.join(dir, 'dist', 'latest.json'), JSON.stringify({
       version: '9.9.9',
+      tarball_sha256: crypto.createHash('sha256').update(tarball).digest('hex'),
       [`bin_${platformKey}_path`]: `/dist/klauro-${platformKey.replace('_', '-')}`,
       [`bin_${platformKey}_sha256`]: '0'.repeat(64), // definitely wrong
     }));
@@ -520,7 +527,7 @@ test('install.sh: checksum mismatch refuses the binary and falls back to npm', a
 });
 
 test('install.sh: no binary published for this platform falls back to npm and tells the user Node.js is required', async () => {
-  const run = await runInstallSh({ fakeNode: { version: 'v20.10.0' } });
+  const run = await runInstallSh({ manifest: { version: '9.9.9' }, fakeNode: { version: 'v20.10.0' } });
   assert.equal(run.status, 0, run.output);
   assert.equal(run.npmCalled, true);
   assert.match(run.output, /No prebuilt klauro is available/);
@@ -531,6 +538,19 @@ test('install.sh: no binary published for this platform falls back to npm and te
 // PATH-resolution takeover: a successful "Installed klauro" message that a
 // stale `klauro` earlier on PATH still shadows is not a success — see the
 // real incident this reproduces at the top of this suite's git history.
+test('install.sh: corrupt npm fallback tarball is rejected before npm and preserves the existing install', async () => {
+  const run = await runInstallSh({
+    manifest: { version: '9.9.9', tarball_sha256: '0'.repeat(64) },
+    fakeNode: { version: 'v20.10.0' },
+    existingKlauro: { kind: 'owned-symlink' },
+  });
+  assert.notEqual(run.status, 0, run.output);
+  assert.equal(run.npmCalled, false, 'checksum failure must occur before npm can replace anything');
+  assert.match(run.output, /npm tarball checksum mismatch/);
+  assert.match(String(run.existingKlauroRanOutput), /1\.0\.99/);
+  assert.doesNotMatch(String(run.existingKlauroRanOutput), /9\.9\.9/);
+});
+
 // install.sh must resolve what `klauro` will actually execute, take over
 // its own prior npm-global install when it finds one (verified by symlink
 // target, not by path guessing), and refuse to claim success otherwise.
@@ -594,13 +614,13 @@ test('install.sh: a klauro-owned symlink in an unwritable directory fails loudly
 });
 
 test('install.sh: npm fallback with no Node at all fails loudly with an actionable message (no silent hang)', async () => {
-  const run = await runInstallSh({}); // no manifest, no fakeNode — nothing on PATH
+  const run = await runInstallSh({ manifest: { version: '9.9.9' } });
   assert.notEqual(run.status, 0);
   assert.match(run.output, /can't be installed on .* without Node\.js/);
 });
 
 test('install.sh: npm fallback refuses a runtime below the declared Node floor', async () => {
-  const run = await runInstallSh({ fakeNode: { version: 'v16.20.0' } });
+  const run = await runInstallSh({ manifest: { version: '9.9.9' }, fakeNode: { version: 'v16.20.0' } });
   assert.notEqual(run.status, 0);
   assert.match(run.output, /Error:.*older than this Klauro release's minimum \(20\)/);
   assert.equal(run.npmCalled, false, 'an incompatible runtime must be rejected before npm installs a broken CLI');
@@ -614,7 +634,7 @@ test('install.sh: the release manifest can raise the Node floor', async () => {
 });
 
 test('install.sh: KLAURO_SKIP_NODE_CHECK is gone — setting it does nothing (no upper bound left to skip)', async () => {
-  const run = await runInstallSh({ fakeNode: { version: 'v20.10.0' }, env: { KLAURO_SKIP_NODE_CHECK: '1' } });
+  const run = await runInstallSh({ manifest: { version: '9.9.9' }, fakeNode: { version: 'v20.10.0' }, env: { KLAURO_SKIP_NODE_CHECK: '1' } });
   assert.doesNotMatch(run.output, /KLAURO_SKIP_NODE_CHECK/, 'the escape hatch text must not appear anywhere — there is nothing left to skip');
 });
 
