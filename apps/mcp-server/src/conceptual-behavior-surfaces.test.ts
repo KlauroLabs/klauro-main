@@ -8,6 +8,8 @@ import { execFileSync } from 'node:child_process';
 import { createRemoteAnalyzerHttpServer } from './remote-analyzer-service';
 import { analyzeCodebaseRemotely } from './remote-sync-client';
 import { getAnalysis } from './analyzer';
+import { saveAnalysis } from './storage';
+import { acceptedComprehensionFixture } from './accepted-comprehension-test-fixture';
 
 function git(repo: string, args: string[]): void {
   execFileSync('git', args, { cwd: repo, stdio: 'ignore' });
@@ -109,6 +111,11 @@ test('conceptual endpoint exposes behavior_surfaces so flow capability_relations
     // Project creation returns the account-scoped storage ID for the authorized attachment.
     const workspace = path.join(remoteData, 'workspaces', project.analysis_id);
     const cas = await getAnalysis(workspace);
+    const unavailable = await request(port, 'GET', `/api/projects/${project.id}/conceptual?max_flows=50`, undefined, token);
+    assert.equal(unavailable.statusCode, 200);
+    assert.notEqual(JSON.parse(unavailable.body).status, 'ready', 'L5-error comprehension must fail closed');
+    const acceptedCas = acceptedComprehensionFixture(cas);
+    await saveAnalysis(workspace, acceptedCas);
     const toolEntryPoint = cas.entry_points?.find(entryPoint => entryPoint.name === 'get_summary');
     assert.ok(toolEntryPoint);
     const storedSurface = cas.behavior_surfaces?.find(surface =>

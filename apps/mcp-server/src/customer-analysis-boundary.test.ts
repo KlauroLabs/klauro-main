@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import * as ts from 'typescript';
 import { assertLocalAnalysisAllowed, defaultKlauroConfig } from './klauro-config';
 import { createRemoteAnalyzerHttpServer } from './remote-analyzer-service';
 
@@ -11,6 +12,18 @@ const sourceRoot = path.resolve(__dirname);
 
 function source(file: string): string {
   return fs.readFileSync(path.join(sourceRoot, file), 'utf8');
+}
+
+function callArguments(file: string, functionName: string): readonly ts.Expression[] {
+  const parsed = ts.createSourceFile(file, source(file), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  let match: ts.CallExpression | undefined;
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === functionName) match = node;
+    ts.forEachChild(node, visit);
+  };
+  visit(parsed);
+  assert.ok(match, `${file} must call ${functionName}`);
+  return match.arguments;
 }
 
 test('customer MCP, CLI, and watcher paths do not launch analyzer internals', () => {
@@ -42,8 +55,8 @@ test('telemetry ingestion is CAS-free and cannot bootstrap analysis', () => {
     assert.doesNotMatch(text, /from ['"]\.\/analyzer['"]/, `${file} must not import analyzer entrypoints`);
     assert.doesNotMatch(text, /\b(?:analyzeProject|runAnalysis)\s*\(/, `${file} must not trigger analysis`);
   }
-  const service = source('remote-analyzer-service.ts');
-  assert.match(service, /ingestTelemetryBatch\(null, projectId/, 'HTTP telemetry ingest must persist without loading CAS');
+  const args = callArguments('remote-analyzer-service.ts', 'ingestTelemetryBatch');
+  assert.equal(args[0]?.kind, ts.SyntaxKind.NullKeyword, 'HTTP telemetry ingest must persist without loading CAS');
 });
 
 test('customer uploads default to asynchronous acceptance and local-path reanalysis has no override', () => {

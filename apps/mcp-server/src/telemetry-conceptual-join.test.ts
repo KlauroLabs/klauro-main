@@ -8,6 +8,7 @@ import * as http from 'node:http';
 import { createRemoteAnalyzerHttpServer } from './remote-analyzer-service';
 import { analyzeProject } from './analyzer';
 import { saveAnalysis } from './storage';
+import { acceptedComprehensionFixture } from './accepted-comprehension-test-fixture';
 
 /**
  * TELEMETRY-JOIN regression (ICELOT facet 6 on the hosted /conceptual read
@@ -107,6 +108,10 @@ test('GET /api/projects/:id/conceptual joins real ingested telemetry onto a flow
     const project = JSON.parse(createRes.body).project as { id: string; analysis_id: string };
     const accountWorkspace = path.join(remoteData, 'workspaces', project.analysis_id);
     await saveAnalysis(accountWorkspace, cas);
+    const unavailable = await request(port, 'GET', `/api/projects/${project.id}/conceptual`, undefined, token);
+    assert.equal(unavailable.statusCode, 200);
+    assert.notEqual(JSON.parse(unavailable.body).status, 'ready', 'unaccepted comprehension must fail closed');
+    await saveAnalysis(accountWorkspace, acceptedComprehensionFixture(cas));
 
     // Sanity: before any telemetry is ingested, no flow carries a telemetry
     // facet — nothing fabricated. (Compact projection — a distinct cache key
@@ -119,12 +124,11 @@ test('GET /api/projects/:id/conceptual joins real ingested telemetry onto a flow
     assert.equal(beforeFlows.length, 2, 'fixture must produce both /items/:id and /widgets route flows');
     assert.ok(beforeFlows.every(f => f.contract?.telemetry === undefined), 'no telemetry facet before any observation exists');
 
-    // Ingest real runtime telemetry for the SAME workspace key the read path
-    // resolves this project's CAS under — the same key
-    // `/api/telemetry/runtime-events/:projectId` and the self-telemetry loop
-    // both key their store off (see remote-analyzer-service.ts ingest-
+    // Ingest real runtime telemetry through the authorized project identity the read path
+    // resolves to this project's CAS storage key. The endpoint accepts the public
+    // project ID, then resolves the account-owned storage identity (see remote-analyzer-service.ts ingest-
     // reconcile route and self-telemetry.ts).
-    const recon = await request(port, 'POST', `/api/telemetry/runtime-events/${encodeURIComponent(accountWorkspace)}`, {
+    const recon = await request(port, 'POST', `/api/telemetry/runtime-events/${encodeURIComponent(project.id)}`, {
       events: [
         { type: 'request', method: 'GET', route: '/items/:id', path: '/items/7', status_code: 200, duration_ms: 15, trace_id: 't-ok', service_name: 'customer-svc' },
         { type: 'request', method: 'GET', route: '/items/:id', path: '/items/8', status_code: 200, duration_ms: 25, trace_id: 't-ok2', service_name: 'customer-svc' },

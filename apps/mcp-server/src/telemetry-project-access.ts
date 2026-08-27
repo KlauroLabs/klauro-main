@@ -45,3 +45,33 @@ export function requireTelemetryBatchSize(count: number): void {
   if (count <= MAX_TELEMETRY_BATCH_SIZE) return;
   throw new AccountHttpError(413, `Telemetry batches are limited to ${MAX_TELEMETRY_BATCH_SIZE} events`);
 }
+
+export interface AuthorizedHostedTelemetryStorage {
+  requested_id: string;
+  analysis_id: string;
+  storage_key: string;
+}
+
+export async function resolveAuthorizedHostedTelemetryStorage(
+  accounts: AccountStore,
+  clientId: string | undefined,
+  requestedId: string,
+  workspaceForAnalysisId: (analysisId: string) => string,
+): Promise<AuthorizedHostedTelemetryStorage | null> {
+  const project = await resolveAuthorizedTelemetryProject(accounts, clientId, requestedId);
+  if (!project) return null;
+  const storageKey = workspaceForAnalysisId(project.storage_id);
+  await migrateIngestedTelemetryProject(project.storage_id, storageKey);
+  return { requested_id: project.requested_id, analysis_id: project.storage_id, storage_key: storageKey };
+}
+
+export async function requireAuthorizedHostedTelemetryStorage(
+  accounts: AccountStore,
+  clientId: string | undefined,
+  requestedId: string,
+  workspaceForAnalysisId: (analysisId: string) => string,
+): Promise<AuthorizedHostedTelemetryStorage> {
+  const storage = await resolveAuthorizedHostedTelemetryStorage(accounts, clientId, requestedId, workspaceForAnalysisId);
+  if (storage) return storage;
+  throw new AccountHttpError(404, 'Project not found, or your account is not a member of its workspace.');
+}

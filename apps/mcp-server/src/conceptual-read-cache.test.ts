@@ -7,6 +7,9 @@ import * as http from 'node:http';
 import { execFileSync } from 'node:child_process';
 import { createRemoteAnalyzerHttpServer, getCasReadResponseCacheStats } from './remote-analyzer-service';
 import { analyzeCodebaseRemotely } from './remote-sync-client';
+import { getAnalysis } from './analyzer';
+import { saveAnalysis } from './storage';
+import { acceptedComprehensionFixture } from './accepted-comprehension-test-fixture';
 
 /**
  * TASK (server read-paths starve during whale re-analysis): the /conceptual
@@ -91,7 +94,12 @@ test('conceptual + semantic-coverage responses are cached byte-identical and inv
       analysis_id: analyzeResult.analysis_id,
     }, token);
     assert.equal(createRes.statusCode, 201);
-    const project = JSON.parse(createRes.body).project as { id: string };
+    const project = JSON.parse(createRes.body).project as { id: string; analysis_id: string };
+    const analysisWorkspace = path.join(remoteData, 'workspaces', project.analysis_id);
+    const unavailable = await request(port, 'GET', `/api/projects/${project.id}/conceptual`, undefined, token);
+    assert.equal(unavailable.statusCode, 200);
+    assert.notEqual(JSON.parse(unavailable.body).status, 'ready', 'L5-error comprehension must fail closed');
+    await saveAnalysis(analysisWorkspace, acceptedComprehensionFixture(await getAnalysis(analysisWorkspace)));
 
     // --- byte-identity + real hit accounting on /conceptual ---
     const statsBefore = getCasReadResponseCacheStats();
@@ -128,6 +136,7 @@ test('conceptual + semantic-coverage responses are cached byte-identical and inv
     git(repo, ['commit', '-m', 'add billing module']);
     const reAnalyzeResult = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, analysisId: analyzeResult.analysis_id, wait: true, readinessRequirement: 'structural' });
     assert.equal(reAnalyzeResult.status, 'success');
+    await saveAnalysis(analysisWorkspace, acceptedComprehensionFixture(await getAnalysis(analysisWorkspace)));
 
     const statsBeforeCoverageRefresh = getCasReadResponseCacheStats();
     const afterReanalyze = await request(port, 'GET', `/api/projects/${project.id}/semantic-coverage`, undefined, token);

@@ -1,5 +1,7 @@
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { evaluateComprehensionReadiness } from './comprehension-readiness';
+import { isStructuralAnalysisLayer } from './analysis-layer-contract';
+export { isStructuralAnalysisLayer } from './analysis-layer-contract';
 
 export interface AnalysisResponseReadiness {
   status: 'ready' | 'populating' | 'partial' | 'failed';
@@ -120,10 +122,6 @@ export function unavailableStructuralAnalysisResponse(
     failed_layers: structuralErrors.map(layer => layer.layer),
     ...(lastAttempt ? { last_attempt: lastAttempt } : {}),
   };
-}
-
-export function isStructuralAnalysisLayer(layer: string): boolean {
-  return layer !== 'L4' && layer !== 'L5';
 }
 
 export function completedAnalysisLandedAfterAttempt(

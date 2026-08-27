@@ -502,7 +502,7 @@ test('an INCOMPLETE layered CAS skips the sidecar but stays fully readable', asy
   });
 });
 
-test('a structurally queryable CAS writes sections when enrichment is incomplete', async () => {
+test('a structurally queryable CAS writes sections and remains loadable when comprehension fails', async () => {
   await withStoragePath(async storagePath => {
     const cas = casFixture('structurally-queryable-cas');
     (cas as unknown as { layers_ready: unknown }).layers_ready = {
@@ -512,12 +512,14 @@ test('a structurally queryable CAS writes sections when enrichment is incomplete
         { layer: 'L1', status: 'ready' },
         { layer: 'L2', status: 'ready' },
         { layer: 'L3', status: 'ready' },
-        { layer: 'L4', status: 'ready' },
+        { layer: 'L4', status: 'error' },
         { layer: 'L5', status: 'error' },
       ],
     };
     await saveAnalysis('/tmp/structurally-queryable-project', cas);
     assert.equal(await savedSectionsExist(storagePath, '/tmp/structurally-queryable-project'), true);
+    clearLoadedAnalysisCache();
+    assert.equal((await loadAnalysis('/tmp/structurally-queryable-project'))?.analysis_id, 'structurally-queryable-cas');
   });
 });
 
@@ -757,9 +759,9 @@ test('a failed whole analysis never falls through to an older canonical generati
       layers: [
         { layer: 'L0', status: 'ready' },
         { layer: 'L1', status: 'ready' },
-        { layer: 'L2', status: 'ready' },
+        { layer: 'L2', status: 'error', error: 'graph construction failed' },
         { layer: 'L3', status: 'ready' },
-        { layer: 'L4', status: 'error', error: 'capability comprehension failed' },
+        { layer: 'L4', status: 'ready' },
       ],
     } as CASOutput['layers_ready'];
     const failedEntry = await saveAnalysis(project, failed, 'main', { canonicalSegmented: true });

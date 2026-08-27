@@ -42,6 +42,7 @@ import {
 } from './segmented-analysis-storage';
 import type { CompactCASGraph } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-graph';
 import type { LoadedCompactCASSearch } from './segmented-analysis-storage';
+import { STRUCTURAL_ANALYSIS_LAYERS, isStructuralAnalysisLayer } from './analysis-layer-contract';
 import { findCasById, hydrateSegmentedCasTree, loadCasProjection, loadLegacyProjectedCas, type LoadedAnalysisProjection } from './recursive-cas-storage';
 import {
   compressLegacyJsonArtifact,
@@ -675,8 +676,7 @@ export async function saveAnalysis(
   const filePath = path.join(storagePath, fileName);
   const layersReady = output.layers_ready;
   const completedOutput = !layersReady || layersReady.complete === true;
-  const structuralLayers = ['L0', 'L1', 'L2', 'L3', 'L4'];
-  const structurallyQueryable = !layersReady || layersReady.complete === true || structuralLayers.every(layer =>
+  const structurallyQueryable = !layersReady || layersReady.complete === true || STRUCTURAL_ANALYSIS_LAYERS.every(layer =>
     layersReady.layers.some(candidate => candidate.layer === layer && candidate.status === 'ready')
   );
   const segmentsWorthWriting = structurallyQueryable && options.writeSegmentedAnalysis !== false;
@@ -781,8 +781,7 @@ interface ResolvedAnalysisForLoad {
 }
 
 function hasFailedStructuralLayer(entry: AnalysisEntry): boolean {
-  const structuralLayers = new Set(['L0', 'L1', 'L2', 'L3', 'L4']);
-  return Boolean(entry.layers_ready?.layers.some(layer => structuralLayers.has(layer.layer) && layer.status === 'error'));
+  return Boolean(entry.layers_ready?.layers.some(layer => isStructuralAnalysisLayer(layer.layer) && layer.status === 'error'));
 }
 
 async function resolveAnalysisForLoad(
