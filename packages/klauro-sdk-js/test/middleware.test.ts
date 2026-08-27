@@ -15,8 +15,9 @@ function collector() {
     projectId: 'p',
     flushInterval: 0,
     fetchImpl: (async (_u: any, init: any) => {
-      JSON.parse(init.body).events.forEach((e: CasRuntimeEvent) => events.push(e));
-      return { ok: true, status: 200 } as Response;
+      const body = JSON.parse(init.body);
+      body.events.forEach((e: CasRuntimeEvent) => events.push(e));
+      return { ok: true, status: 200, json: async () => ({ event_count: body.events.length }) } as unknown as Response;
     }) as unknown as typeof fetch,
   });
   return { events, client };

@@ -14,6 +14,7 @@ class RecordingTransport:
     def send(self, events):
         self.batches.append(list(events))
 
+        return len(events)
 
 def collector():
     t = RecordingTransport()

@@ -36,13 +36,15 @@ class HttpTransport:
                 raise RuntimeError("klauro ingest returned HTTP {}".format(status))
             payload = resp.read()
             if not payload:
-                return None
+                raise RuntimeError("klauro ingest response did not include a JSON acknowledgement")
             try:
                 acknowledgement = json.loads(payload.decode("utf-8"))
             except (ValueError, UnicodeDecodeError):
-                return None
+                raise RuntimeError("klauro ingest response was not valid JSON")
             count = acknowledgement.get("event_count") if isinstance(acknowledgement, dict) else None
-            return count if isinstance(count, int) else None
+            if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+                raise RuntimeError("klauro ingest response did not include an integer event_count")
+            return count
 
 class Span:
     def __init__(self, client, name, extra=None):
@@ -208,7 +210,9 @@ class KlauroClient:
                 for attempt in range(self.retry_attempts):
                     try:
                         acknowledged = self._transport.send(batch)
-                        if acknowledged is not None and acknowledged != len(batch):
+                        if not isinstance(acknowledged, int) or isinstance(acknowledged, bool):
+                            raise RuntimeError("klauro ingest response did not include an integer event_count")
+                        if acknowledged != len(batch):
                             raise RuntimeError(
                                 "klauro ingest acknowledged {}/{} event(s)".format(acknowledged, len(batch))
                             )

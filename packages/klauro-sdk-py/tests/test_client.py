@@ -16,6 +16,7 @@ class RecordingTransport:
         if self.fail:
             raise RuntimeError("network down")
 
+        return len(events)
 
 def make_client(transport, **kwargs):
     # flush_interval=0 disables the background worker so tests are deterministic.
@@ -145,6 +146,7 @@ def test_concurrent_flushes_serialize_transport_delivery():
             with self.lock:
                 self.active -= 1
 
+            return len(events)
     transport = ConcurrentTransport()
     client = make_client(transport)
     client.record("first")
@@ -205,3 +207,81 @@ def test_requeues_chunk_when_server_acknowledges_partial_batch():
     client.flush()
     assert client.pending == 2
     assert "acknowledged 1/2" in str(errors[0])
+
+@pytest.mark.parametrize("acknowledgement", [None, "1", 0.5, True])
+def test_retries_then_requeues_invalid_acknowledgement_with_stable_ids(acknowledgement):
+    class InvalidTransport:
+        def __init__(self):
+            self.batches = []
+
+        def send(self, events):
+            self.batches.append(list(events))
+            return acknowledgement
+
+    transport = InvalidTransport()
+    errors = []
+    client = make_client(
+        transport,
+        retry_attempts=2,
+        retry_base_delay=0,
+        on_error=lambda error: errors.append(error),
+    )
+    client.record("one")
+    client.flush()
+    assert len(transport.batches) == 2
+    assert [event["event_id"] for event in transport.batches[0]] == [
+        event["event_id"] for event in transport.batches[1]
+    ]
+    assert client.pending == 1
+    assert "integer event_count" in str(errors[0])
+
+
+def test_ambiguous_acknowledgement_retries_with_same_ids_then_succeeds():
+    class RetryTransport:
+        def __init__(self):
+            self.batches = []
+
+        def send(self, events):
+            self.batches.append(list(events))
+            return None if len(self.batches) == 1 else len(events)
+
+    transport = RetryTransport()
+    client = make_client(transport, retry_attempts=2, retry_base_delay=0)
+    client.record("one")
+    client.flush()
+    assert [event["event_id"] for event in transport.batches[0]] == [
+        event["event_id"] for event in transport.batches[1]
+    ]
+    assert client.pending == 0
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        (b"", "JSON acknowledgement"),
+        (b"{", "not valid JSON"),
+        (b"{}", "integer event_count"),
+        (b'{"event_count": "1"}', "integer event_count"),
+        (b'{"event_count": true}', "integer event_count"),
+    ],
+)
+def test_http_transport_rejects_missing_or_malformed_acknowledgements(monkeypatch, payload, message):
+    class Response:
+        status = 200
+
+        def getcode(self):
+            return self.status
+
+        def read(self):
+            return payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda *_args, **_kwargs: Response())
+    from klauro_telemetry.client import HttpTransport
+
+    with pytest.raises(RuntimeError, match=message):
+        HttpTransport("https://example.invalid", "project").send([{"event_id": "event-1"}])

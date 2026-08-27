@@ -14,14 +14,15 @@ function makeFetch(
   opts: { fail?: boolean; status?: number } = {},
 ): typeof fetch {
   return (async (url: any, init: any) => {
+    const body = JSON.parse(init.body);
     captures.push({
       url: String(url),
-      body: JSON.parse(init.body),
+      body,
       auth: init.headers?.authorization,
     });
     if (opts.fail) throw new Error('network down');
     const status = opts.status ?? 200;
-    return { ok: status >= 200 && status < 300, status } as Response;
+    return { ok: status >= 200 && status < 300, status, json: async () => ({ event_count: body.events.length }) } as unknown as Response;
   }) as unknown as typeof fetch;
 }
 
@@ -181,12 +182,12 @@ test('many clients share one lifecycle hook and never intercept process signals'
 test('concurrent flush requests serialize delivery', async () => {
   let activeDeliveries = 0;
   let maximumConcurrentDeliveries = 0;
-  const fetchImpl = (async () => {
+  const fetchImpl = (async (_url: any, init: any) => {
     activeDeliveries += 1;
     maximumConcurrentDeliveries = Math.max(maximumConcurrentDeliveries, activeDeliveries);
     await new Promise((resolve) => setImmediate(resolve));
     activeDeliveries -= 1;
-    return { ok: true, status: 200 } as Response;
+    return { ok: true, status: 200, json: async () => ({ event_count: JSON.parse(init.body).events.length }) } as unknown as Response;
   }) as typeof fetch;
   const client = new KlauroClient({ projectId: 'p', flushInterval: 0, fetchImpl });
   client.record('first');
@@ -250,4 +251,50 @@ test('requeues a chunk when the server acknowledges a partial batch', async () =
   await client.flush();
   assert.equal(client.pending, 2);
   assert.match(String(errors[0]), /acknowledged 1\/2/);
+});
+for (const [label, response, expected] of [
+  ['missing JSON reader', { ok: true, status: 200 }, /JSON acknowledgement/],
+  ['malformed JSON', { ok: true, status: 200, json: async () => { throw new SyntaxError('bad json'); } }, /not valid JSON/],
+  ['missing count', { ok: true, status: 200, json: async () => ({ status: 'success' }) }, /integer event_count/],
+  ['string count', { ok: true, status: 200, json: async () => ({ event_count: '1' }) }, /integer event_count/],
+  ['fractional count', { ok: true, status: 200, json: async () => ({ event_count: 0.5 }) }, /integer event_count/],
+] as const) {
+  test(`retries then requeues a batch after ${label}`, async () => {
+    const attempts: string[][] = [];
+    const errors: unknown[] = [];
+    const client = new KlauroClient({
+      projectId: 'p',
+      flushInterval: 0,
+      retryAttempts: 2,
+      retryBaseDelay: 0,
+      onError: error => errors.push(error),
+      fetchImpl: (async (_url: any, init: any) => {
+        attempts.push(JSON.parse(init.body).events.map((event: CasRuntimeEvent) => event.event_id));
+        return response as unknown as Response;
+      }) as typeof fetch,
+    });
+    client.record('one');
+    await client.flush();
+    assert.equal(attempts.length, 2);
+    assert.deepEqual(attempts[0], attempts[1], 'retry keeps the preassigned event id');
+    assert.equal(client.pending, 1);
+    assert.match(String(errors[0]), expected);
+  });
+}
+
+test('an ambiguous acknowledgement retries with the same ids and succeeds exactly once', async () => {
+  const attempts: string[][] = [];
+  const client = new KlauroClient({
+    projectId: 'p', flushInterval: 0, retryAttempts: 2, retryBaseDelay: 0,
+    fetchImpl: (async (_url: any, init: any) => {
+      const ids = JSON.parse(init.body).events.map((event: CasRuntimeEvent) => event.event_id);
+      attempts.push(ids);
+      if (attempts.length === 1) return { ok: true, status: 200, json: async () => ({}) } as unknown as Response;
+      return { ok: true, status: 200, json: async () => ({ event_count: ids.length }) } as unknown as Response;
+    }) as typeof fetch,
+  });
+  client.record('one');
+  await client.flush();
+  assert.deepEqual(attempts[0], attempts[1]);
+  assert.equal(client.pending, 0);
 });

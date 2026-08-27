@@ -22,8 +22,9 @@ test('init() returns a client and getClient() exposes it', async () => {
     projectId: 'p',
     flushInterval: 0,
     fetchImpl: (async (_u: any, init: any) => {
-      captures.push(JSON.parse(init.body));
-      return { ok: true, status: 200 } as Response;
+      const body = JSON.parse(init.body);
+      captures.push(body);
+      return { ok: true, status: 200, json: async () => ({ event_count: body.events.length }) } as unknown as Response;
     }) as unknown as typeof fetch,
   });
   assert.equal(klauro.getClient(), client);

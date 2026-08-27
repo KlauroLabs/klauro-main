@@ -33,7 +33,7 @@ def test_events_round_trip_over_the_wire():
             self.send_response(200)
             self.send_header("content-type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps({"matched": len(body["events"]), "unmatched": 0}).encode())
+            self.wfile.write(json.dumps({"event_count": len(body["events"]), "matched": len(body["events"]), "unmatched": 0}).encode())
 
     server = HTTPServer(("127.0.0.1", 0), Handler)
     port = server.server_address[1]

@@ -32,7 +32,7 @@ test('events round-trip over the wire to a contract-shaped ingest endpoint', asy
       });
       res.statusCode = 200;
       res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify({ matched: parsed.events.length, unmatched: 0 }));
+      res.end(JSON.stringify({ event_count: parsed.events.length, matched: parsed.events.length, unmatched: 0 }));
     });
   });
 

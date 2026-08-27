@@ -12,6 +12,7 @@ class RecordingTransport:
     def send(self, events):
         self.batches.append(list(events))
 
+        return len(events)
 
 def test_noop_before_init():
     klauro.shutdown()  # ensure clean

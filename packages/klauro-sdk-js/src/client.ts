@@ -189,7 +189,7 @@ export class KlauroClient {
           });
           if (!res.ok) throw new Error(`[klauro] ingest returned HTTP ${res.status}`);
           const acknowledgement = await responseAcknowledgement(res);
-          if (acknowledgement !== undefined && acknowledgement !== batch.length) {
+          if (acknowledgement !== batch.length) {
             throw new Error(`[klauro] ingest acknowledged ${acknowledgement}/${batch.length} event(s)`);
           }
           delivered = true;
@@ -257,13 +257,19 @@ export class KlauroClient {
 
 }
 
-async function responseAcknowledgement(response: Response): Promise<number | undefined> {
-  if (typeof response.json !== 'function') return undefined;
+async function responseAcknowledgement(response: Response): Promise<number> {
+  if (typeof response.json !== 'function') {
+    throw new Error('[klauro] ingest response did not include a JSON acknowledgement');
+  }
   try {
     const body = await response.json() as { event_count?: unknown };
-    return typeof body?.event_count === 'number' ? body.event_count : undefined;
-  } catch {
-    return undefined;
+    if (!Number.isInteger(body?.event_count) || Number(body.event_count) < 0) {
+      throw new Error('[klauro] ingest response did not include an integer event_count');
+    }
+    return Number(body.event_count);
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('[klauro]')) throw error;
+    throw new Error('[klauro] ingest response was not valid JSON');
   }
 }
 
