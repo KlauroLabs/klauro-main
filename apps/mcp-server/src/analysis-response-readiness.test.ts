@@ -7,7 +7,9 @@ import {
   paginateConceptualCatalog,
   parseConceptualCatalogPage,
   unavailableComprehensionResponse,
+  failedAttemptHasQueryableAnalysis,
   unavailableLatestAnalyzeAttempt,
+  unavailableStructuralQueryResponse,
 } from './analysis-response-readiness';
 import { evaluateComprehensionReadiness } from './comprehension-readiness';
 
@@ -70,6 +72,35 @@ test('readiness gating is scoped to comprehension-dependent hosted queries', () 
   assert.equal(hostedQueryResponseReadiness(failed, 'run_answer_pack').status, 'failed');
   assert.equal(hostedQueryResponseReadiness(failed, 'get_product_map').status, 'failed');
   assert.equal(hostedQueryResponseReadiness(failed, 'search_nodes').status, 'ready');
+});
+
+test('an L4-only failure does not block structural hosted queries', () => {
+  const layers = [
+    { layer: 'L0', status: 'ready' },
+    { layer: 'L1', status: 'ready' },
+    { layer: 'L2', status: 'ready' },
+    { layer: 'L3', status: 'ready' },
+    { layer: 'L4', status: 'error', error: 'catalog failed' },
+  ];
+  assert.equal(unavailableStructuralQueryResponse(layers, {
+    project_id: 'project', analysis_id: 'analysis', tool: 'search_nodes',
+  }), undefined);
+  assert.equal(unavailableStructuralQueryResponse(layers, {
+    project_id: 'project', analysis_id: 'analysis', tool: 'run_answer_pack',
+  })?.status, undefined, 'L4 remains governed by the comprehension readiness response, not structural failure handling');
+});
+
+test('a failed attempt cannot degrade onto a current entry whose structural layers are still pending', () => {
+  const attempt = { state: 'failed', started_at: '2026-08-27T10:00:00.000Z' };
+  const entry = {
+    analyzed_at: '2026-08-27T10:00:01.000Z',
+    layers_ready: { layers: [
+      { layer: 'L0', status: 'ready' }, { layer: 'L1', status: 'ready' },
+      { layer: 'L2', status: 'pending' }, { layer: 'L3', status: 'ready' },
+      { layer: 'L4', status: 'pending' }, { layer: 'L5', status: 'pending' },
+    ] },
+  };
+  assert.equal(failedAttemptHasQueryableAnalysis(entry, attempt), false);
 });
 
 test('failed hosted queries include a compact legacy-client result without partial analysis data', () => {

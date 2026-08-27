@@ -71,7 +71,7 @@ async function throwSubCasScopeError(workspace: string, subCasNodeId: string, fa
   }
   throw new AccountHttpError(400, fallback);
 }
-import { paginateConceptualCatalog, parseConceptualCatalogPage, unavailableComprehensionResponse, unavailableLatestAnalyzeAttempt, unavailableStructuralAnalysisResponse, unavailableStructuralQueryResponse } from './analysis-response-readiness';
+import { completedAnalysisLandedAfterAttempt, failedAttemptHasQueryableAnalysis, isStructuralAnalysisLayer, paginateConceptualCatalog, parseConceptualCatalogPage, unavailableComprehensionResponse, unavailableFailedAttemptWithStaleAnalysis, unavailableLatestAnalyzeAttempt, unavailableStructuralAnalysisResponse, unavailableStructuralQueryResponse } from './analysis-response-readiness';
 import { projectAttemptRecordPath, readAttemptRecord, writeAttemptRecord, type AnalysisAttemptRecord } from './analysis-attempt-record';
 import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
 import { getStageFingerprints } from '../../../packages/analyzer-core/src/analyzer/core/stage-fingerprint';
@@ -2574,15 +2574,17 @@ async function handleAccountApi(
       };
     }
     const layers = entry.layers_ready?.layers || [];
-    const structuralErrors = layers.filter(layer => layer.layer !== 'L5' && layer.status === 'error');
+    const structuralErrors = layers.filter(layer => isStructuralAnalysisLayer(layer.layer) && layer.status === 'error');
     const pending = layers.some(layer => layer.status === 'pending');
-
-    const l5Errored = layers.some(layer => layer.layer === 'L5' && layer.status === 'error');
+    const comprehensionErrors = layers.filter(layer => (layer.layer === 'L4' || layer.layer === 'L5') && layer.status === 'error');
+    const failedAttemptHasCurrentEntry = failedAttemptHasQueryableAnalysis(entry, lastAttempt);
     const status = structuralErrors.length > 0
       ? 'failed'
-      : pending
-        ? 'populating'
-        : l5Errored || lastAttempt?.state === 'failed'
+      : lastAttempt?.state === 'failed'
+        ? failedAttemptHasCurrentEntry ? 'degraded' : 'failed'
+        : pending
+          ? 'populating'
+          : comprehensionErrors.length > 0
           ? 'degraded'
           : 'ready';
     if (status === 'degraded') {
@@ -2624,20 +2626,19 @@ async function handleAccountApi(
         project_id: project.id,
         analysis_id: project.analysis_id,
         ...(lastAttempt ? { last_attempt: lastAttempt } : {}),
-        ...(l5Errored && structuralErrors.length === 0 ? { degraded_layers: ['L5'] } : {}),
+        ...(comprehensionErrors.length > 0 && structuralErrors.length === 0 ? { degraded_layers: comprehensionErrors.map(layer => layer.layer) } : {}),
         ...(structuralErrors.length > 0 ? { failed_layers: structuralErrors.map(layer => layer.layer) } : {}),
-        summary: {
+        ...(status !== 'failed' ? { summary: {
           name: entry.name,
           analysis_timestamp: entry.analyzed_at,
           node_count: entry.node_count,
           edge_count: entry.edge_count,
           cas_version: entry.cas_version,
           layers_ready: entry.layers_ready,
-        },
+        } } : {}),
       },
     };
   }
-
   const projectAnalysisMatch = route.match(/^\/api\/projects\/([^/]+)\/analysis$/);
   if (projectAnalysisMatch && request.method === 'GET') {
     if (!dataDir) throw new AccountHttpError(500, 'Analysis storage unavailable');
@@ -2678,6 +2679,9 @@ async function handleAccountApi(
         body: { status: 'populating', project_id: project.id, analysis_id: project.analysis_id, last_attempt: earlyLastAttempt },
       };
     }
+    const staleAttempt = unavailableFailedAttemptWithStaleAnalysis(await getAnalysisEntry(analysisWorkspace).catch(() => null), earlyLastAttempt,
+      { project_id: project.id, analysis_id: project.analysis_id });
+    if (staleAttempt) return { statusCode: 200, body: staleAttempt };
     try {
       const analysisStatus = await warmHostedProjectAnalysisWorker({
         workspace: analysisWorkspace,
@@ -4168,8 +4172,8 @@ export function structuralReadinessDuringAttempt(
   if (!generatedAt || !startedAt) return null;
   if (Date.parse(generatedAt) < Date.parse(startedAt)) return null;
   const layers = entry?.layers_ready?.layers || [];
-  const structuralErrors = layers.some(layer => layer.layer !== 'L5' && layer.status === 'error');
-  const structuralPending = layers.some(layer => layer.layer !== 'L5' && layer.status === 'pending');
+  const structuralErrors = layers.some(layer => isStructuralAnalysisLayer(layer.layer) && layer.status === 'error');
+  const structuralPending = layers.some(layer => isStructuralAnalysisLayer(layer.layer) && layer.status === 'pending');
   if (structuralErrors || structuralPending) return null;
   const l5 = layers.find(layer => layer.layer === 'L5');
   if (!l5 || l5.status !== 'pending') return null;
@@ -4200,8 +4204,12 @@ async function reapAbandonedAttempt(workspace: string, attemptRecordPath: string
     const heartbeatMs = Date.parse(heartbeatIso);
     const ageMs = Number.isFinite(heartbeatMs) ? Date.now() - heartbeatMs : Infinity;
     if (ageMs < ATTEMPT_STALE_THRESHOLD_MS) return;
-
     const finishedAt = new Date().toISOString();
+    const entry = await getAnalysisEntry(workspace).catch(() => null);
+    if (completedAnalysisLandedAfterAttempt(entry, record)) {
+      await writeAttemptRecord(attemptRecordPath, { ...record, state: 'succeeded', finished_at: finishedAt, reason: undefined });
+      return;
+    }
     const detail = `Analysis attempt was interrupted by a server restart (no heartbeat since ${heartbeatIso}).`;
     await writeAttemptRecord(attemptRecordPath, {
       ...record,

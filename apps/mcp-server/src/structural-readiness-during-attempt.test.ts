@@ -44,7 +44,7 @@ function layers(overrides: Partial<Record<'L0' | 'L1' | 'L2' | 'L3' | 'L4' | 'L5
   return (Object.keys(merged) as Array<keyof typeof merged>).map(layer => ({ layer, status: merged[layer] }));
 }
 
-test('reports structural readiness when L0-L4 landed after the attempt started and only L5 is pending', () => {
+test('reports structural readiness when L0-L3 landed after the attempt started and comprehension is pending', () => {
   const startedAt = '2026-08-10T06:55:12.690Z';
   const generatedAt = '2026-08-10T06:55:33.063Z'; // after startedAt — this attempt's own output
   const result = structuralReadinessDuringAttempt(
@@ -54,6 +54,14 @@ test('reports structural readiness when L0-L4 landed after the attempt started a
   assert.ok(result, 'expected structural readiness to be reported');
   assert.equal(result!.generatedAt, generatedAt);
   assert.equal(result!.layers.length, 6);
+});
+
+test('L4 and L5 pending do not hide freshly landed L0-L3 structural readiness', () => {
+  const result = structuralReadinessDuringAttempt(
+    { layers_ready: { layers: layers({ L4: 'pending', L5: 'pending' }), generated_at: '2026-08-10T06:55:33.063Z' } },
+    { started_at: '2026-08-10T06:55:12.690Z' },
+  );
+  assert.ok(result);
 });
 
 test('stays null (populating) when the landed entry predates the in-progress attempt — the #129 stale case', () => {
@@ -66,7 +74,7 @@ test('stays null (populating) when the landed entry predates the in-progress att
   assert.equal(result, null);
 });
 
-test('stays null while any structural (L0-L4) layer is still pending', () => {
+test('stays null while any structural (L0-L3) layer is still pending', () => {
   const startedAt = '2026-08-10T06:55:12.690Z';
   const generatedAt = '2026-08-10T06:55:33.063Z';
   const result = structuralReadinessDuringAttempt(

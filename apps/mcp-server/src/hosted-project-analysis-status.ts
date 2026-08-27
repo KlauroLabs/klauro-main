@@ -1,5 +1,5 @@
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
-import { unavailableComprehensionResponse } from './analysis-response-readiness';
+import { isStructuralAnalysisLayer, unavailableComprehensionResponse } from './analysis-response-readiness';
 import { getCachedDeployableAnalyses, type SubCasNodeIndex } from './deployable-analysis';
 import { buildSummary, getProductMap } from './query';
 
@@ -14,8 +14,8 @@ export function buildHostedProjectAnalysisStatus(
   const layers = cas.layers_ready?.layers || [];
   const pending = layers.some(layer => layer.status === 'pending');
   const errors = layers.filter(layer => layer.status === 'error');
-  const structuralErrors = errors.filter(layer => layer.layer !== 'L5');
-  const aiDegraded = cas.ai_enrichment === 'error' || (errors.some(layer => layer.layer === 'L5') && !pending);
+  const structuralErrors = errors.filter(layer => isStructuralAnalysisLayer(layer.layer));
+  const aiDegraded = cas.ai_enrichment === 'error' || (errors.some(layer => layer.layer === 'L4' || layer.layer === 'L5') && !pending);
   const naming = cas.enhanced_system_purpose?.capability_naming_coverage;
   const nameDegradations = cas.enhanced_system_purpose?.capability_name_degradations || [];
   const descriptionDegradations = cas.enhanced_system_purpose?.capability_description_degradations || [];

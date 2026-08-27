@@ -55,3 +55,33 @@ test('hosted analysis status uses the persisted exact sub-CAS index for a graph-
   const status = buildHostedProjectAnalysisStatus(cas, 'project', 'analysis', subCasNodes);
   assert.deepEqual((status.summary as Record<string, unknown>).sub_cas_nodes, subCasNodes);
 });
+
+test('an L4-only failure degrades comprehension without failing the structural analysis', () => {
+  const cas = {
+    cas_version: '1.11.0',
+    analysis_id: 'analysis',
+    analysis_timestamp: '2026-08-24T00:00:00.000Z',
+    system: { id: 'system', name: 'system', type: 'service', root_path: '.' },
+    nodes: [],
+    edges: [],
+    entry_points: [],
+    exit_points: [],
+    analyzer_contributions: [],
+    progressive_levels: { total_levels: 1 },
+    layers_ready: {
+      complete: false,
+      layers: [
+        { layer: 'L0', name: 'Inventory', status: 'ready', fields: [] },
+        { layer: 'L1', name: 'Structure', status: 'ready', fields: [] },
+        { layer: 'L2', name: 'Relationships', status: 'ready', fields: [] },
+        { layer: 'L3', name: 'Behavior', status: 'ready', fields: [] },
+        { layer: 'L4', name: 'Flows', status: 'error', error: 'comprehension failed', fields: [] },
+      ],
+    },
+  } as unknown as CASOutput;
+
+  const status = buildHostedProjectAnalysisStatus(cas, 'project', 'analysis');
+  assert.equal(status.status, 'degraded');
+  assert.equal(status.ai_enrichment, 'error');
+  assert.equal('failed_layers' in status, false);
+});

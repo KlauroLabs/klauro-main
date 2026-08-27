@@ -20,6 +20,8 @@ export interface LatestAnalysisAttempt {
   state?: string;
   trigger?: string;
   reason?: string;
+  started_at?: string;
+  queued_at?: string;
 }
 
 export interface LegacyQueryFailureResult {
@@ -94,7 +96,7 @@ export function unavailableStructuralQueryResponse(
   layers: AnalysisLayerFailure[],
   identity: AnalysisResponseIdentity & { tool: string },
 ): Record<string, unknown> | undefined {
-  const structuralError = layers.find(layer => layer.layer !== 'L5' && layer.status === 'error');
+  const structuralError = layers.find(layer => isStructuralAnalysisLayer(layer.layer) && layer.status === 'error');
   if (!structuralError) return undefined;
   const relevantError = hostedQueryRequiresComprehension(identity.tool)
     ? layers.find(layer => (layer.layer === 'L4' || layer.layer === 'L5') && layer.status === 'error') || structuralError
@@ -109,7 +111,7 @@ export function unavailableStructuralAnalysisResponse(
   fallbackError: string,
   lastAttempt?: LatestAnalysisAttempt | null,
 ): Record<string, unknown> | undefined {
-  const structuralErrors = layers.filter(layer => layer.layer !== 'L5' && layer.status === 'error');
+  const structuralErrors = layers.filter(layer => isStructuralAnalysisLayer(layer.layer) && layer.status === 'error');
   if (structuralErrors.length === 0) return undefined;
   return {
     ...identity,
@@ -118,6 +120,49 @@ export function unavailableStructuralAnalysisResponse(
     failed_layers: structuralErrors.map(layer => layer.layer),
     ...(lastAttempt ? { last_attempt: lastAttempt } : {}),
   };
+}
+
+export function isStructuralAnalysisLayer(layer: string): boolean {
+  return layer !== 'L4' && layer !== 'L5';
+}
+
+export function completedAnalysisLandedAfterAttempt(
+  entry: { analyzed_at?: string; layers_ready?: { complete?: boolean; layers?: Array<{ status: string }> } } | null,
+  attempt: { started_at?: string; queued_at?: string },
+): boolean {
+  const layers = entry?.layers_ready?.layers || [];
+  return Boolean(analysisLandedAfterAttempt(entry, attempt)
+    && entry?.layers_ready?.complete
+    && layers.length > 0
+    && layers.every(layer => layer.status === 'ready'));
+}
+
+export function analysisLandedAfterAttempt(
+  entry: { analyzed_at?: string } | null,
+  attempt: { started_at?: string; queued_at?: string },
+): boolean {
+  const startedAt = Date.parse(attempt.started_at || attempt.queued_at || '');
+  const analyzedAt = Date.parse(entry?.analyzed_at || '');
+  return Boolean(entry && Number.isFinite(startedAt) && Number.isFinite(analyzedAt) && analyzedAt >= startedAt);
+}
+
+export function unavailableFailedAttemptWithStaleAnalysis(
+  entry: { analyzed_at?: string; layers_ready?: { layers?: Array<{ layer: string; status: string }> } } | null,
+  attempt: LatestAnalysisAttempt | null | undefined,
+  identity: AnalysisResponseIdentity,
+): ReturnType<typeof unavailableLatestAnalyzeAttempt> {
+  if (attempt?.state !== 'failed' || !entry || failedAttemptHasQueryableAnalysis(entry, attempt)) return undefined;
+  return unavailableLatestAnalyzeAttempt(attempt, identity);
+}
+
+export function failedAttemptHasQueryableAnalysis(
+  entry: { analyzed_at?: string; layers_ready?: { layers?: Array<{ layer: string; status: string }> } } | null,
+  attempt: LatestAnalysisAttempt | null | undefined,
+): boolean {
+  const structural = (entry?.layers_ready?.layers || []).filter(layer => isStructuralAnalysisLayer(layer.layer));
+  return Boolean(attempt?.state === 'failed'
+    && analysisLandedAfterAttempt(entry, attempt)
+    && ['L0', 'L1', 'L2', 'L3'].every(required => structural.some(layer => layer.layer === required && layer.status === 'ready')));
 }
 
 export function unavailableComprehensionResponse(

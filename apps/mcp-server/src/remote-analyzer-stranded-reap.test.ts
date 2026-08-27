@@ -112,6 +112,31 @@ test('first-analyze async path writes a succeeded attempt record (regression: it
     assert.equal(record.trigger, 'analyze');
     assert.ok(record.started_at);
     assert.ok(record.finished_at);
+
+    const storageRoot = process.env.KLAURO_STORAGE_PATH || path.join(process.env.HOME || process.env.USERPROFILE || '~', '.klauro', 'analyses');
+    const indexPath = path.join(storageRoot, 'index.json');
+    const index = JSON.parse(fs.readFileSync(indexPath, 'utf8')) as { analyses: Record<string, any> };
+    const entry = index.analyses[workspace];
+    assert.ok(entry, 'the landed CAS must have an authoritative storage entry');
+    entry.analyzed_at = new Date().toISOString();
+    entry.layers_ready = {
+      complete: true,
+      layers: ['L0', 'L1', 'L2', 'L3', 'L4', 'L5'].map(layer => ({ layer, status: 'ready' })),
+    };
+    fs.writeFileSync(indexPath, JSON.stringify(index));
+    const staleHeartbeat = new Date(Date.now() - 10 * 60_000).toISOString();
+    fs.writeFileSync(recordPath, JSON.stringify({
+      ...record,
+      state: 'in-progress',
+      started_at: staleHeartbeat,
+      heartbeat_at: staleHeartbeat,
+      finished_at: undefined,
+    }));
+
+    const statusRes = await request(port, 'GET', `/v1/analyses/${encodeURIComponent(analyzeResult.analysis_id)}/status`, undefined, token);
+    assert.equal(statusRes.statusCode, 200);
+    const completed = JSON.parse(statusRes.body) as { last_attempt?: { state?: string } };
+    assert.equal(completed.last_attempt?.state, 'succeeded', 'a complete current-generation CAS landed before the crash must make the stale attempt succeeded');
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));
     if (previousRemoteData === undefined) delete process.env.KLAURO_REMOTE_ANALYZER_DATA;
@@ -289,6 +314,11 @@ test('a structurally landed CAS with a stale in-progress record remains degraded
     const body = JSON.parse(analysisRes.body) as { status?: string; last_attempt?: { state?: string } };
     assert.equal(body.status, 'degraded', 'reaping a stale record must preserve the structurally complete analysis without hiding failed comprehension');
     assert.equal(body.last_attempt?.state, 'failed', 'the reaper must recover the failed L5 attempt without invalidating its structural CAS');
+
+    const statusRes = await request(port, 'GET', `/api/projects/${project.id}/analysis-status`, undefined, token);
+    const statusBody = JSON.parse(statusRes.body) as { status?: string; last_attempt?: { state?: string } };
+    assert.equal(statusBody.status, 'degraded', 'a terminal failed attempt must beat residual pending comprehension layers');
+    assert.equal(statusBody.last_attempt?.state, 'failed');
 
     const queryRes = await request(port, 'POST', `/api/projects/${project.id}/query`, {
       tool: 'search_nodes',
