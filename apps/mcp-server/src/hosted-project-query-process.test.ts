@@ -23,9 +23,11 @@ process.on('message', request => {
 });
 `);
   const previousEntry = process.env.KLAURO_HOSTED_QUERY_WORKER_ENTRY;
+  const previousSearchEntry = process.env.KLAURO_HOSTED_SEARCH_WORKER_ENTRY;
   const previousIdle = process.env.KLAURO_HOSTED_QUERY_IDLE_MS;
   const previousBackgroundGrace = process.env.KLAURO_HOSTED_QUERY_BACKGROUND_GRACE_MS;
   process.env.KLAURO_HOSTED_QUERY_WORKER_ENTRY = worker;
+  process.env.KLAURO_HOSTED_SEARCH_WORKER_ENTRY = worker;
   process.env.KLAURO_HOSTED_QUERY_IDLE_MS = '60000';
   process.env.KLAURO_HOSTED_QUERY_BACKGROUND_GRACE_MS = '0';
   const request = {
@@ -49,6 +51,8 @@ process.on('message', request => {
     await withHostedBackgroundPermit(async () => undefined, { releaseForegroundMemory: true });
     if (previousEntry === undefined) delete process.env.KLAURO_HOSTED_QUERY_WORKER_ENTRY;
     else process.env.KLAURO_HOSTED_QUERY_WORKER_ENTRY = previousEntry;
+    if (previousSearchEntry === undefined) delete process.env.KLAURO_HOSTED_SEARCH_WORKER_ENTRY;
+    else process.env.KLAURO_HOSTED_SEARCH_WORKER_ENTRY = previousSearchEntry;
     if (previousIdle === undefined) delete process.env.KLAURO_HOSTED_QUERY_IDLE_MS;
     else process.env.KLAURO_HOSTED_QUERY_IDLE_MS = previousIdle;
     if (previousBackgroundGrace === undefined) delete process.env.KLAURO_HOSTED_QUERY_BACKGROUND_GRACE_MS;
