@@ -1,7 +1,6 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { createHash } from 'crypto';
-import { open } from 'node:fs/promises';
 import type { CASOutput, CASNode } from '../../../packages/analyzer-core/src/types/cas.types';
 import {
   correlateRuntimeEvent,
@@ -13,13 +12,17 @@ import {
   type RuntimeObservationSource,
 } from './product';
 import { getProjectStorageDir, loadRuntimeObservations } from './storage';
-import { writeCompressedChunksAtomic, writeJsonAtomic } from './json-storage-writer';
+import { writeJsonAtomic } from './json-storage-writer';
+import { ensureDurableDirectory, serializeFilesystemMutation } from './filesystem-mutation-lock';
+import { appendTelemetryJournal, compactTelemetryObservations, dedupeTelemetryObservations, readTelemetryJournal, writeTelemetryJournal } from './telemetry-journal-storage';
 
 export const TELEMETRY_SCHEMA_VERSION = 'ingested-1';
 export const MAX_TELEMETRY_BATCH_SIZE = 1000;
 const MAX_OBSERVATIONS_PER_DAY = 5000;
 const RETENTION_DAYS = 14;
 const INGESTED_DIR = 'ingested-telemetry';
+const TELEMETRY_LOCK_DIR = '.mutation-lock';
+const MAX_TELEMETRY_DAY_BYTES = 32 * 1024 * 1024;
 
 export interface TelemetryStackFrame {
   file: string;
@@ -37,17 +40,6 @@ export interface TelemetryEvent {
   trace_id?: string;
   span_id?: string;
   parent_span_id?: string;
-
-
-
-
-
-
-
-
-
-
-
   static_id?: string;
   node_id?: string;
   entry_point_id?: string;
@@ -476,131 +468,99 @@ function dayFromFileName(name: string): string {
   return name.replace(/\.jsonl?$/, '');
 }
 
-async function readDayObservations(filePath: string): Promise<RuntimeObservation[]> {
-  try {
-    if (filePath.endsWith('.jsonl')) {
-      const raw = await fs.readFile(filePath, 'utf8');
-      const parsed: RuntimeObservation[] = [];
-      for (const line of raw.split('\n')) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        try {
-          parsed.push(JSON.parse(trimmed) as RuntimeObservation);
-        } catch {
-
-
-
-        }
-      }
-
-      return parsed.reverse();
-    }
-    const array = await fs.readJson(filePath);
-    return Array.isArray(array) ? array : [];
-  } catch {
-    return [];
-  }
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 export async function appendIngestedTelemetry(projectPath: string, observations: RuntimeObservation[]): Promise<void> {
   if (observations.length === 0) return;
-  await serializeTelemetryMutation(projectPath, async () => {
-    const dir = ingestedTelemetryDir(projectPath);
-    await fs.ensureDir(dir);
-    const byDay = new Map<string, RuntimeObservation[]>();
-    for (const observation of observations) {
-      const key = dayKey(observation.recorded_at);
-      byDay.set(key, [...(byDay.get(key) || []), observation]);
-    }
-    for (const [day, dayObservations] of byDay) {
-      const filePath = path.join(dir, `${day}.jsonl`);
-      await appendObservationDay(filePath, dayObservations);
-    }
-    await removeExpiredIngestedTelemetryDays(dir, RETENTION_DAYS);
-  });
+  await serializeTelemetryMutation(projectPath, assertOwned =>
+    appendIngestedTelemetryLocked(projectPath, observations, assertOwned));
 }
 
-async function appendObservationDay(filePath: string, observations: RuntimeObservation[]): Promise<void> {
-  let separatesIncompleteRecord = false;
-  try {
-    const handle = await open(filePath, 'r');
-    try {
-      const { size } = await handle.stat();
-      if (size > 0) {
-        const lastByte = Buffer.allocUnsafe(1);
-        await handle.read(lastByte, 0, 1, size - 1);
-        separatesIncompleteRecord = lastByte[0] !== 0x0a;
-      }
-    } finally {
-      await handle.close();
-    }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-  }
-  const lines = observations.map(observation => `${JSON.stringify(observation)}\n`).join('');
-  await fs.appendFile(filePath, `${separatesIncompleteRecord ? '\n' : ''}${lines}`, 'utf8');
-}
-
-const telemetryMutations = new Map<string, Promise<unknown>>();
-
-async function serializeTelemetryMutation<T>(projectPath: string, operation: () => Promise<T>): Promise<T> {
-  const prior = telemetryMutations.get(projectPath) || Promise.resolve();
-  const pending = prior.catch(() => undefined).then(operation);
-  telemetryMutations.set(projectPath, pending);
-  try {
-    return await pending;
-  } finally {
-    if (telemetryMutations.get(projectPath) === pending) telemetryMutations.delete(projectPath);
-  }
-}
-
-function mergeObservations(existing: RuntimeObservation[], incoming: RuntimeObservation[]): RuntimeObservation[] {
-  return dedupeObservations([...incoming, ...existing]).slice(0, MAX_OBSERVATIONS_PER_DAY);
-}
-
-function dedupeObservations(observations: RuntimeObservation[]): RuntimeObservation[] {
-  const byId = new Map<string, RuntimeObservation>();
+async function appendIngestedTelemetryLocked(
+  projectPath: string,
+  observations: RuntimeObservation[],
+  assertOwned: () => Promise<void>,
+): Promise<void> {
+  const dir = ingestedTelemetryDir(projectPath);
+  await ensureDurableDirectory(dir);
+  const byDay = new Map<string, RuntimeObservation[]>();
   for (const observation of observations) {
-    const eventId = observation.event.attributes?.telemetry_event_id;
-    const key = typeof eventId === 'string' && eventId ? `event:${eventId}` : `observation:${observation.id}`;
-    if (!byId.has(key)) byId.set(key, observation);
+    const key = dayKey(observation.recorded_at);
+    byDay.set(key, [...(byDay.get(key) || []), observation]);
   }
-  return [...byId.values()]
-    .sort((left, right) => right.recorded_at.localeCompare(left.recorded_at));
+  for (const [day, dayObservations] of byDay) {
+    await assertOwned();
+    const filePath = path.join(dir, `${day}.jsonl`);
+    await appendTelemetryJournal(filePath, dayObservations, telemetryCompactionTargetBytes(), assertOwned);
+  }
+  await assertOwned();
+  await removeExpiredIngestedTelemetryDays(dir, RETENTION_DAYS);
+  if (await telemetryCompactionRequired(dir)) {
+    await compactIngestedTelemetryLocked(dir, RETENTION_DAYS, assertOwned);
+  }
+}
+
+async function serializeTelemetryMutation<T>(projectPath: string, operation: (assertOwned: () => Promise<void>) => Promise<T>): Promise<T> {
+  return serializeFilesystemMutation(
+    ingestedTelemetryDir(projectPath),
+    path.join(ingestedTelemetryDir(projectPath), TELEMETRY_LOCK_DIR),
+    operation,
+  );
+}
+
+async function serializeTelemetryMutations<T>(
+  projectPaths: string[],
+  operation: (ownership: ReadonlyMap<string, () => Promise<void>>) => Promise<T>,
+): Promise<T> {
+  const ordered = [...new Set(projectPaths)].sort((left, right) =>
+    ingestedTelemetryDir(left).localeCompare(ingestedTelemetryDir(right)));
+  const ownership = new Map<string, () => Promise<void>>();
+  const acquire = (index: number): Promise<T> => {
+    if (index >= ordered.length) return operation(ownership);
+    const projectPath = ordered[index];
+    return serializeTelemetryMutation(projectPath, assertOwned => {
+      ownership.set(projectPath, assertOwned);
+      return acquire(index + 1);
+    });
+  };
+  return acquire(0);
+}
+
+async function telemetryCompactionRequired(dir: string): Promise<boolean> {
+  const triggerBytes = telemetryDayByteLimit();
+  const names = await fs.readdir(dir).catch(() => [] as string[]);
+  for (const name of names) {
+    if (!name.endsWith('.jsonl') || !DAY_FILE_PATTERN.test(name)) continue;
+    const stat = await fs.stat(path.join(dir, name)).catch(() => null);
+    if (stat && stat.size >= triggerBytes) return true;
+  }
+  return false;
+}
+
+function telemetryDayByteLimit(): number {
+  const configuredBytes = Number(process.env.KLAURO_TELEMETRY_COMPACTION_BYTES);
+  return Number.isFinite(configuredBytes) && configuredBytes >= 1024
+    ? Math.floor(configuredBytes)
+    : MAX_TELEMETRY_DAY_BYTES;
+}
+
+function telemetryCompactionTargetBytes(): number {
+  return Math.floor(telemetryDayByteLimit() * 0.75);
 }
 
 export async function migrateIngestedTelemetryProject(fromProjectPath: string, toProjectPath: string): Promise<number> {
   if (!fromProjectPath || fromProjectPath === toProjectPath) return 0;
-  return serializeTelemetryMutation(fromProjectPath, async () => {
+  return serializeTelemetryMutations([fromProjectPath, toProjectPath], async ownership => {
     const observations = await loadIngestedTelemetry(fromProjectPath);
     if (observations.length === 0) return 0;
     const migrated = observations.map(observation => ({ ...observation, project_path: toProjectPath }));
-    await appendIngestedTelemetry(toProjectPath, migrated);
-    await fs.remove(ingestedTelemetryDir(fromProjectPath));
+    await appendIngestedTelemetryLocked(toProjectPath, migrated, ownership.get(toProjectPath)!);
+    const sourceDir = ingestedTelemetryDir(fromProjectPath);
+    await ownership.get(fromProjectPath)!();
+    const sourceEntries = await fs.readdir(sourceDir).catch(() => [] as string[]);
+    await Promise.all(sourceEntries
+      .filter(name => name !== TELEMETRY_LOCK_DIR)
+      .map(name => fs.remove(path.join(sourceDir, name))));
     return migrated.length;
   });
-}
-
-async function writeObservationDay(filePath: string, newestFirst: RuntimeObservation[]): Promise<void> {
-  const chronological = [...newestFirst].reverse();
-  async function* lines(): AsyncGenerator<string> {
-    for (const observation of chronological) yield `${JSON.stringify(observation)}\n`;
-  }
-  await writeCompressedChunksAtomic(filePath, lines());
 }
 
 async function removeExpiredIngestedTelemetryDays(dir: string, retentionDays: number): Promise<string[]> {
@@ -613,21 +573,33 @@ async function removeExpiredIngestedTelemetryDays(dir: string, retentionDays: nu
 }
 
 export async function compactIngestedTelemetry(projectPath: string, retentionDays = RETENTION_DAYS): Promise<{ removed_days: string[] }> {
-  return serializeTelemetryMutation(projectPath, async () => {
-    const dir = ingestedTelemetryDir(projectPath);
-    if (!(await fs.pathExists(dir))) return { removed_days: [] };
-    const removedDays = await removeExpiredIngestedTelemetryDays(dir, retentionDays);
-    const allDayFiles = (await fs.readdir(dir)).filter(name => DAY_FILE_PATTERN.test(name));
-    for (const name of allDayFiles) {
-      if (!name.endsWith('.jsonl')) continue;
-      const filePath = path.join(dir, name);
-      const observations = await readDayObservations(filePath);
-      const compacted = mergeObservations([], observations);
-      if (compacted.length === observations.length) continue;
-      await writeObservationDay(filePath, compacted);
-    }
-    return { removed_days: removedDays };
-  });
+  return serializeTelemetryMutation(projectPath, assertOwned => compactIngestedTelemetryLocked(
+    ingestedTelemetryDir(projectPath),
+    retentionDays,
+    assertOwned,
+  ));
+}
+
+async function compactIngestedTelemetryLocked(
+  dir: string,
+  retentionDays: number,
+  assertOwned: () => Promise<void>,
+): Promise<{ removed_days: string[] }> {
+  if (!(await fs.pathExists(dir))) return { removed_days: [] };
+  await assertOwned();
+  const removedDays = await removeExpiredIngestedTelemetryDays(dir, retentionDays);
+  const allDayFiles = (await fs.readdir(dir)).filter(name => DAY_FILE_PATTERN.test(name));
+  for (const name of allDayFiles) {
+    if (!name.endsWith('.jsonl')) continue;
+    const filePath = path.join(dir, name);
+    const observations = await readTelemetryJournal(filePath);
+    const compacted = compactTelemetryObservations(observations, MAX_OBSERVATIONS_PER_DAY, telemetryCompactionTargetBytes());
+    const currentBytes = await fs.stat(filePath).then(stat => stat.size).catch(() => 0);
+    if (compacted.length === observations.length && currentBytes <= telemetryDayByteLimit()) continue;
+    await assertOwned();
+    await writeTelemetryJournal(filePath, compacted, assertOwned);
+  }
+  return { removed_days: removedDays };
 }
 
 
@@ -694,12 +666,13 @@ export async function backfillIngestedTelemetry(
   cas: CASOutput | null,
   projectPath: string,
 ): Promise<TelemetryBackfillResult> {
-  return serializeTelemetryMutation(projectPath, () => backfillIngestedTelemetryLocked(cas, projectPath));
+  return serializeTelemetryMutation(projectPath, assertOwned => backfillIngestedTelemetryLocked(cas, projectPath, assertOwned));
 }
 
 async function backfillIngestedTelemetryLocked(
   cas: CASOutput | null,
   projectPath: string,
+  assertOwned: () => Promise<void>,
 ): Promise<TelemetryBackfillResult> {
   const result: TelemetryBackfillResult = { scanned: 0, upgraded: 0, days_rewritten: [] };
   if (!cas || (cas.nodes || []).length === 0) return result;
@@ -717,7 +690,7 @@ async function backfillIngestedTelemetryLocked(
     const filePath = path.join(dir, name);
     let observations: RuntimeObservation[];
     try {
-      observations = await readDayObservations(filePath);
+      observations = await readTelemetryJournal(filePath);
     } catch {
       continue;
     }
@@ -749,7 +722,7 @@ async function backfillIngestedTelemetryLocked(
 
 
       if (filePath.endsWith('.jsonl')) {
-        await writeObservationDay(filePath, observations);
+        await writeTelemetryJournal(filePath, observations, assertOwned);
       } else {
         await writeJsonAtomic(filePath, observations);
       }
@@ -773,17 +746,14 @@ export async function loadIngestedTelemetry(projectPath: string, options: Teleme
   let observations: RuntimeObservation[] = [];
   for (const name of dayFiles) {
     try {
-      const dayObservations = await readDayObservations(path.join(dir, name));
+      const dayObservations = await readTelemetryJournal(path.join(dir, name));
       observations.push(...dayObservations);
     } catch {
       continue;
     }
-    if (options.limit && !options.since && !options.type && !options.staticId && !options.traceId && !options.spanId && observations.length >= options.limit) {
-      break;
-    }
   }
 
-  observations = filterObservations(dedupeObservations(observations), options);
+  observations = filterObservations(dedupeTelemetryObservations(observations), options);
   if (options.limit && options.limit > 0) {
     observations = observations.slice(0, options.limit);
   }

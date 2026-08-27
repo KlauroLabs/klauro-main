@@ -15,6 +15,7 @@ services:
       - /opt/klauro/.env
     environment:
       KLAURO_SELF_TELEMETRY: "1"
+      KLAURO_TELEMETRY_LOCK_INSTANCE: "hosted-api"
       KLAURO_COORD_DIR: /data/coordination
       KLAURO_SELF_TELEMETRY_PROJECT: /data/workspaces/prj_wbW33m-wfETn1N41
       KLAURO_TS_EXTRACTION_CACHE_PATH: /data/cache/ts-extractions
