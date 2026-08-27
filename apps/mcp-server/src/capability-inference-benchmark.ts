@@ -154,10 +154,19 @@ async function seedSymfonyFleetFixture(root: string): Promise<void> {
   await fs.outputFile(path.join(root, 'src/Controller/FleetController.php'), [
     '<?php',
     'namespace App\\Controller;',
+    'use App\\Entity\\FuelPurchase;',
+    'use App\\Entity\\Invoice;',
+    'use App\\Service\\FuelPurchaseService;',
+    'use App\\Service\\InvoiceSettlementService;',
+    'use App\\Service\\VehicleService;',
+    'use Symfony\\Component\\Routing\\Annotation\\Route;',
     'class FleetController {',
-    '  public function vehicles() {}',
-    '  public function invoices() {}',
-    '  public function fuel() {}',
+    "  #[Route('/vehicles', name: 'fleet_vehicles', methods: ['GET'])]",
+    '  public function vehicles(VehicleService $vehicles): array { return $vehicles->listVehicles(); }',
+    "  #[Route('/fuel-purchases', name: 'record_fuel_purchase', methods: ['POST'])]",
+    '  public function fuel(FuelPurchaseService $fuel, FuelPurchase $purchase): FuelPurchase { return $fuel->recordFuelPurchase($purchase); }',
+    "  #[Route('/invoices/{id}/settle', name: 'settle_invoice', methods: ['POST'])]",
+    '  public function invoices(InvoiceSettlementService $invoices, Invoice $invoice): Invoice { return $invoices->settleInvoice($invoice); }',
     '}',
   ].join('\n'));
   await fs.outputFile(path.join(root, 'src/EventHandler/InvoiceSettledHandler.php'), [
@@ -168,13 +177,14 @@ async function seedSymfonyFleetFixture(root: string): Promise<void> {
   await fs.outputFile(path.join(root, 'src/Service/InvoiceSettlementService.php'), [
     '<?php',
     'namespace App\\Service;',
-    'class InvoiceSettlementService { public function settleInvoice() {} public function captureInvoicePayment() {} }',
+    'use App\\Entity\\Invoice;',
+    'class InvoiceSettlementService { public function settleInvoice(Invoice $invoice): Invoice { return $invoice; } public function captureInvoicePayment() {} }',
   ].join('\n'));
   await fs.outputFile(path.join(root, 'src/Service/VehicleService.php'), [
     '<?php',
     'namespace App\\Service;',
     'use App\\Entity\\Vehicle;',
-    'class VehicleService { public function findVehicle(Vehicle $vehicle): Vehicle { return $vehicle; } public function updateVehicle(Vehicle $vehicle): Vehicle { return $vehicle; } }',
+    'class VehicleService { public function listVehicles(): array { return []; } public function findVehicle(Vehicle $vehicle): Vehicle { return $vehicle; } public function updateVehicle(Vehicle $vehicle): Vehicle { return $vehicle; } }',
   ].join('\n'));
   await fs.outputFile(path.join(root, 'src/Service/FuelPurchaseService.php'), [
     '<?php',

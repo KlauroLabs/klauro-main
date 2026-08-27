@@ -8,23 +8,31 @@ test('capability inference benchmark prefers domain capabilities over framework 
   const previousKey = process.env.OPENAI_API_KEY;
   const previousInProcess = process.env.KLAURO_ANALYSIS_IN_PROCESS;
   let catalogFacts: any;
+  let catalogCitations: string[][] = [];
   process.env.OPENAI_API_KEY = 'capability-benchmark-mock';
   process.env.KLAURO_ANALYSIS_IN_PROCESS = '1';
   aiService.generateComponentDescription = async (request: any) => {
     const context = request?.additionalContext || {};
     if (/cataloging the/i.test(String(context.task || ''))) {
-      catalogFacts = context.facts;
+      catalogFacts ||= context.facts;
+      const requiredCandidateIds = new Set((context.facts?.required_entity_candidate_groups || []).flat());
+      const candidateIdsFor = (subject: string): string[] => (context.facts?.candidate_route_areas || [])
+        .filter((candidate: any) => requiredCandidateIds.has(candidate.candidate_id)
+          && [candidate.family, candidate.name, ...(candidate.entity_names || [])]
+          .join(' ').toLowerCase().includes(subject))
+        .map((candidate: any) => candidate.candidate_id);
+      catalogCitations = [candidateIdsFor('vehicle'), candidateIdsFor('fuel'), candidateIdsFor('invoice')];
       return JSON.stringify({ capabilities: [
-        { name: 'Track fleet vehicles', description: 'Keeps vehicle records current for daily fleet operations and dispatch decisions.', category: 'core', entities: ['Vehicle'], journeys: [] },
-        { name: 'Record fuel purchases', description: 'Captures fuel purchase details for fleet cost and consumption tracking.', category: 'core', entities: ['FuelPurchase'], journeys: [] },
-        { name: 'Settle customer invoices', description: 'Marks invoices settled after payments are captured and recorded.', category: 'core', entities: ['Invoice'], journeys: [] },
+        { name: 'List vehicles', description: 'Lists vehicle records for operators requesting current vehicle information.', category: 'core', entities: ['Vehicle'], journeys: [], candidate_ids: catalogCitations[0] },
+        { name: 'Record fuel purchases', description: 'Preserves each purchase entered by fleet operators as fuel activity.', category: 'core', entities: ['FuelPurchase'], journeys: [], candidate_ids: catalogCitations[1] },
+        { name: 'Create invoice settlements', description: 'Creates settled invoice records after billing staff capture customer payments.', category: 'core', entities: ['Invoice'], journeys: [], candidate_ids: catalogCitations[2] },
       ] });
     }
     const items: Array<{ id: string; name?: string }> = Array.isArray(context.items) ? context.items : [];
     const descriptionFor = (item: { name?: string; relatedEntities?: string[] }): string => {
       const subject = [item.name, ...(item.relatedEntities || [])].join(' ').toLowerCase();
       if (subject.includes('vehicle')) return 'Vehicle records retain the vehicles identified for daily fleet operations.';
-      if (subject.includes('fuel')) return 'Fuel purchase records capture each fuel purchase recorded by the product.';
+      if (subject.includes('fuel')) return 'Preserves each purchase entered by fleet operators as fuel activity.';
       if (subject.includes('invoice')) return 'Invoice records preserve the invoices marked settled after their payments are captured.';
       return 'Product records retain the evidenced subjects and actions represented by this product behavior.';
     };
@@ -48,6 +56,14 @@ test('capability inference benchmark prefers domain capabilities over framework 
 
   assert.equal(report.status, 'pass', JSON.stringify({ report, catalogFacts }));
   assert.equal(report.score, 100);
+  const requiredGroups = catalogFacts.required_entity_candidate_groups as string[][];
+  assert.equal(requiredGroups.length, 3, JSON.stringify(catalogFacts));
+  assert.equal(catalogCitations.length, 3);
+  assert.ok(catalogCitations.every(ids => ids.length > 0), JSON.stringify({ catalogFacts, catalogCitations }));
+  assert.ok(requiredGroups.every(group =>
+    catalogCitations.some(citations => citations.some(candidateId => group.includes(candidateId))),
+  ), JSON.stringify({ requiredGroups, catalogCitations }));
+  assert.ok(new Set(catalogCitations.flat()).size >= 3, JSON.stringify(catalogCitations));
   assert.equal(report.summary.generic_capability_count, 0);
   const capabilityText = report.capabilities.map(capability => `${capability.name} ${capability.description || ''}`.toLowerCase());
   assert.ok(capabilityText.some(text => /fuel/.test(text)), `no fuel capability: ${capabilityText.join(' | ')}`);
