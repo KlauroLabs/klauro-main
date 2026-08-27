@@ -313,7 +313,11 @@ export async function waitForRemoteAnalysis(
       error?: string;
       failed_layers?: Array<{ layer?: string; error?: string }>;
       last_attempt?: { state?: string; error?: string; reason?: string };
-      summary?: { node_count?: number; edge_count?: number };
+      summary?: {
+        node_count?: number;
+        edge_count?: number;
+        layers_ready?: { layers?: Array<{ layer?: string; status?: string }> };
+      };
     };
     if (!statusResponse.ok) {
       const detail = statusPayload.error ? `: ${statusPayload.error}` : '';
@@ -335,9 +339,17 @@ export async function waitForRemoteAnalysis(
     }
     const comprehensionOnlyFailure = Boolean(statusPayload.failed_layers?.length)
       && statusPayload.failed_layers!.every(layer => layer.layer === 'L4' || layer.layer === 'L5');
+    const structuralLayersReady = ['L0', 'L1', 'L2', 'L3'].every(requiredLayer =>
+      statusPayload.summary?.layers_ready?.layers?.some(layer =>
+        layer.layer === requiredLayer && layer.status === 'ready',
+      ),
+    );
+    const terminalAttempt = statusPayload.last_attempt?.state === 'succeeded'
+      || statusPayload.last_attempt?.state === 'failed';
     const structuralResultAvailable = lastStatus === 'failed'
       && readinessRequirement === 'structural'
-      && statusPayload.last_attempt?.state === 'succeeded'
+      && terminalAttempt
+      && structuralLayersReady
       && comprehensionOnlyFailure;
     if (lastStatus === 'failed'
       && readinessRequirement === 'structural'

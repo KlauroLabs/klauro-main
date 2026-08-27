@@ -349,13 +349,29 @@ test('segmented CAS retrieval retries a dropped section response', async (t) => 
 
 test('structural readiness retrieves CAS when only AI comprehension failed', async (t) => {
   const analysisId = 'structural-readiness';
+  let statusMode: 'terminal-comprehension' | 'active' | 'structural-failure' = 'terminal-comprehension';
+  let statusRequests = 0;
   const server = http.createServer((req, res) => {
     if (req.url === `/v1/analyses/${analysisId}/status`) {
+      statusRequests++;
+      const attemptActive = statusMode === 'active' && statusRequests === 1;
+      const structuralFailure = statusMode === 'structural-failure';
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({
         status: 'failed',
         analysis_id: analysisId,
-        failed_layers: [{ layer: 'L5', error: 'AI comprehension is disabled' }],
+        failed_layers: structuralFailure
+          ? [{ layer: 'L2', error: 'Structural publication failed' }]
+          : [{ layer: 'L5', error: 'AI comprehension is disabled' }],
+        last_attempt: { state: attemptActive ? 'in-progress' : 'failed', error: 'Analysis did not fully complete' },
+        summary: {
+          layers_ready: {
+            layers: ['L0', 'L1', 'L2', 'L3'].map(layer => ({
+              layer,
+              status: structuralFailure && layer === 'L2' ? 'error' : 'ready',
+            })),
+          },
+        },
       }));
       return;
     }
@@ -399,6 +415,27 @@ test('structural readiness retrieves CAS when only AI comprehension failed', asy
   );
 
   assert.equal(cas.system.name, 'structurally-ready');
+
+  statusMode = 'active';
+  statusRequests = 0;
+  const casAfterActiveAttempt = await waitForRemoteAnalysis(
+    serverUrl,
+    analysisId,
+    undefined,
+    undefined,
+    30_000,
+    ['identity'],
+    'structural',
+  );
+  assert.equal(statusRequests, 2);
+  assert.equal(casAfterActiveAttempt.system.name, 'structurally-ready');
+
+  statusMode = 'structural-failure';
+  statusRequests = 0;
+  await assert.rejects(
+    waitForRemoteAnalysis(serverUrl, analysisId, undefined, undefined, 30_000, ['identity'], 'structural'),
+    /L2: Structural publication failed/,
+  );
 });
 
 test('whole CAS retrieval retries a dropped export response', async (t) => {
