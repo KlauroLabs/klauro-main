@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { buildOrientCapsule } from './query';
 import { buildSystemFitSummary } from './context-fabric';
+import { attachCasProjection } from './cas-projection';
 
 // orient_capsule (get_summary) and system_fit (get_system_overview) both surface
 // the fabric on the summary path. They must stay DISTINCT and non-redundant:
-//   - orient_capsule = a pure {available, count, tool} INDEX: what is pullable,
-//     how much, and which tool pulls it — near-zero tokens, NO narrative.
+//   - orient_capsule = a pure {available, count, tool, evidence_state} INDEX:
+//     what is pullable, how much, whether it was measured, and which tool pulls it.
 //   - system_fit = the woven NARRATIVE (headline + compacted per-layer content).
 // These tests lock that split so neither drifts into the other's job.
 
@@ -60,22 +61,39 @@ test('orient_capsule stays a small index (byte budget) even on a rich system', (
   assert.ok(bytes < 1500, `orient_capsule is ${bytes} bytes — too large for a pure index; did narrative content leak in?`);
 });
 
-test('orient_capsule is an INDEX: every dimension is exactly {available,count,tool}', () => {
+test('orient_capsule is an INDEX: every measured dimension reports availability and evidence state', () => {
   const capsule = buildOrientCapsule(richCas());
   const dims = (capsule as any).dimensions as Record<string, unknown>;
   assert.ok(dims && Object.keys(dims).length >= 8, 'capsule should index many dimensions');
   for (const [name, value] of Object.entries(dims)) {
     const v = value as Record<string, unknown>;
-    // Exactly the three index keys — no narrative fields, no nested content.
+    // Exactly the index keys — no narrative fields or nested content.
     assert.deepEqual(
       Object.keys(v).sort(),
-      ['available', 'count', 'tool'],
-      `dimension ${name} must be a pure {available,count,tool} index, got keys ${Object.keys(v).join(',')}`
+      ['available', 'count', 'evidence_state', 'tool'],
+      `dimension ${name} must be a pure availability index, got keys ${Object.keys(v).join(',')}`
     );
     assert.equal(typeof v.available, 'boolean');
     assert.equal(typeof v.count, 'number');
+    assert.ok(v.evidence_state === 'present' || v.evidence_state === 'absent');
     assert.equal(typeof v.tool, 'string');
   }
+});
+
+test('orient_capsule distinguishes an absent graph fact from a graph section that was not loaded', () => {
+  const projected = attachCasProjection(richCas(), {
+    loaded_sections: ['identity'],
+    node_count: 6,
+    edge_count: 0,
+  });
+  const capsule = buildOrientCapsule(projected);
+
+  assert.deepEqual(capsule.dimensions.cicd_pipelines, {
+    available: null,
+    count: null,
+    tool: 'get_cicd_pipelines',
+    evidence_state: 'not-loaded',
+  });
 });
 
 test('orient_capsule carries NO narrative fields (headline/bundles/story)', () => {
