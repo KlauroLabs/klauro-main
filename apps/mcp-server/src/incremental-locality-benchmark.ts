@@ -62,7 +62,7 @@ export async function runIncrementalLocalityBenchmark(
         await replaceText(workspace, 'src/catalog.ts', 'return value.trim();', 'return value.trim().toUpperCase();');
       }),
       await measureRepositoryScope(benchmark.source, 'file', async workspace => {
-        await fs.outputFile(path.join(workspace, 'src', 'validation.ts'), 'export function hasValue(value: string): boolean { return value.length > 0; }\n');
+        await replaceText(workspace, 'src/validation.ts', 'return value.length > 0;', 'return value.trim().length > 0;');
       }),
       await measureRepositoryScope(benchmark.source, 'package', async workspace => {
         await replaceText(workspace, 'packages/core/src/index.ts', 'return `record:${id}`;', 'return `record:${id.trim()}`;');
@@ -255,6 +255,7 @@ async function createBenchmarkWorkspace(): Promise<{ root: string; source: strin
     workspaces: ['packages/*', 'services/*']
   });
   await fs.outputFile(path.join(source, 'src', 'catalog.ts'), 'export function normalizeValue(value: string): string { return value.trim(); }\n');
+  await fs.outputFile(path.join(source, 'src', 'validation.ts'), 'export function hasValue(value: string): boolean { return value.length > 0; }\n');
   await fs.outputJson(path.join(source, 'packages', 'core', 'package.json'), { name: '@local/core', version: '1.0.0' });
   await fs.outputFile(path.join(source, 'packages', 'core', 'src', 'index.ts'), 'export function formatRecord(id: string): string { return `record:${id}`; }\n');
   await fs.outputJson(path.join(source, 'services', 'api', 'package.json'), {
