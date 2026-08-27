@@ -66,6 +66,7 @@
     "fabric-remote-e2e": "tsx scripts/fab-remote-e2e.ts",
     "fabric-fleet-proof": "tsx src/gauntlet/fabric-fleet-proof.ts",
     "fabric-endurance-proof": "tsx src/gauntlet/fabric-endurance-proof.ts",
+    "fabric-external-proof": "tsx src/gauntlet/fabric-external-proof.ts",
     "runtime-impact-benchmark": "tsx src/runtime-impact-benchmark.ts",
     "impact-benchmark": "tsx src/new-context-impact-benchmark.ts",
     "discover-real-repos": "tsx src/repo-discovery.ts",
