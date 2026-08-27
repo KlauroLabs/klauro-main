@@ -132,6 +132,7 @@ import {
   createIncrementalAnalysisSnapshot,
   graphItemAnalyzers,
   indexIncrementalAnalyzersByFile,
+  indexIncrementalGraphItemsByFile,
   refreshProjectScopedContributions,
   mergeIncrementalFileAnalysisResult,
   reusedIncrementalFileResult,
@@ -141,6 +142,7 @@ import {
   shouldPreferFullRebuildForFanout,
   stampAnalyzerAttribution,
   updatedIncrementalFileRecord,
+  type ProjectContributionRefreshFailure,
 } from './incremental-contribution-refresh';
 import { previousDescriptionNeedsCurrentValidation } from './previous-description-validation';
 import { projectCapabilityCatalogPromptEvidence } from './capability-catalog-prompt-evidence';
@@ -2560,6 +2562,7 @@ export class AnalyzerOrchestrator {
     );
 
     const projectScopedAnalyzerIds = new Set(promotedProjectAnalyzerIds);
+    const filesWithWhollyDeferredAnalyzerOwnership = new Set<string>();
     const directlyChangedFiles = new Set([...changeSet.added, ...changeSet.modified]);
     const registeredAnalyzerIds = new Set(detectedAnalyzers.map(registration => registration.id));
     const allNodes = [...previousOutput.nodes];
@@ -2662,7 +2665,15 @@ export class AnalyzerOrchestrator {
             importedFiles: priorResult.imports,
             exportedSymbols: priorResult.exports,
           } : previousRecord;
-          if (replacementRecord && !removeReplaceableFileScopedGraphItems(filteredGraph, replacementRecord, analyzerIds)) {
+          if (replacementRecord && !removeReplaceableFileScopedGraphItems(
+            filteredGraph,
+            replacementRecord,
+            analyzerIds,
+            deferred => {
+              if (!deferred.some(analyzerId => analyzerIds.has(analyzerId))) filesWithWhollyDeferredAnalyzerOwnership.add(relativePath);
+              for (const analyzerId of deferred) projectScopedAnalyzerIds.add(analyzerId);
+            }
+          )) {
             failedFiles.push(relativePath);
             break;
           }
@@ -2839,9 +2850,17 @@ export class AnalyzerOrchestrator {
         ...record.entryPointIds.map(id => previousEntryPointsById.get(id)),
         ...record.exitPointIds.map(id => previousExitPointsById.get(id)),
       ].filter((item): item is CASEdge | CASEntryPoint | CASExitPoint => Boolean(item));
+      const result = fileResults.get(relativePath);
+      const currentGraphItemIds = new Set([
+        ...(result?.edges || []).map(item => item.id),
+        ...(result?.entryPoints || []).map(item => item.id),
+        ...(result?.exitPoints || []).map(item => item.id),
+      ]);
       for (const item of graphItems) {
+        const attributes = item.metadata?.attributes as Record<string, unknown> | undefined;
+        const missingNonDerivedFact = !currentGraphItemIds.has(item.id) && attributes?.contribution_scope !== 'derived-rebuild';
         for (const analyzerId of graphItemAnalyzers(item)) {
-          if (!registeredAnalyzerIds.has(analyzerId) || coveredAnalyzers.has(analyzerId)) continue;
+          if (!registeredAnalyzerIds.has(analyzerId) || (coveredAnalyzers.has(analyzerId) && !missingNonDerivedFact)) continue;
           projectScopedAnalyzerIds.add(analyzerId);
           unsupported = true;
         }
@@ -2859,10 +2878,11 @@ export class AnalyzerOrchestrator {
       ? this.getLocalizedIncrementalMergeEligibility(previousOutput, previousState, changeSet, fileResults)
       : { allowed: false, reason: 'added or deleted files require project contribution refresh' };
     if (process.env.KLAURO_DEBUG_INCREMENTAL_PHASES === '1') writeAnalyzerStatus(`[Klauro] incremental localized eligibility: ${localizedEligibility.allowed ? 'allowed' : localizedEligibility.reason}`);
-    const needsProjectContributionRefresh = filesWithUnsupportedDerivedFacts.length > 0 && !localizedEligibility.allowed;
+    const needsProjectContributionRefresh = filesWithWhollyDeferredAnalyzerOwnership.size > 0 || (filesWithUnsupportedDerivedFacts.length > 0 && !localizedEligibility.allowed);
     let rebuiltIncrementalState = false;
     if (needsProjectContributionRefresh) {
       let refreshMergeIndexes: AnalysisMergeIndexes | undefined;
+      let refreshFailure: ProjectContributionRefreshFailure | undefined;
       const refreshed = await refreshProjectScopedContributions({
         projectPath,
         registrations: detectedAnalyzers,
@@ -2898,6 +2918,7 @@ export class AnalyzerOrchestrator {
           await this.mergeAnalysisResult(target, contribution, { analyzerId, mergeIndexes: refreshMergeIndexes });
           return graph;
         },
+        onFailure: failure => { refreshFailure = failure; },
       });
       if (!refreshed) {
         const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
@@ -2905,7 +2926,7 @@ export class AnalyzerOrchestrator {
           output,
           fileResults: new Map(),
           wasFullRebuild: true,
-          fullRebuildReason: `Changed files affect non-replaceable project-scoped analyzer contributions: ${[...projectScopedAnalyzerIds].sort().join(', ')}`,
+          fullRebuildReason: `Changed files require a full project contribution rebuild (${refreshFailure?.reason || 'unknown'}): ${[...projectScopedAnalyzerIds].sort().join(', ')}`,
         };
       }
       replaceArrayContents(filteredNodes, refreshed.nodes);
@@ -3439,62 +3460,8 @@ export class AnalyzerOrchestrator {
   ): IncrementalState {
     const files: Record<string, FileAnalysisRecord> = {};
 
-    const nodesByFile = new Map<string, CASNode[]>();
-    const edgesByFile = new Map<string, CASEdge[]>();
-    const entryPointsByFile = new Map<string, CASEntryPoint[]>();
-    const exitPointsByFile = new Map<string, CASExitPoint[]>();
-    const nodesById = new Map(output.nodes.map(node => [node.id, node]));
-
-    for (const node of output.nodes) {
-      if (node.source?.file) {
-        const relativePath = path.isAbsolute(node.source.file)
-          ? path.relative(projectPath, node.source.file)
-          : node.source.file;
-        if (!nodesByFile.has(relativePath)) {
-          nodesByFile.set(relativePath, []);
-        }
-        nodesByFile.get(relativePath)!.push(node);
-      }
-    }
-
-    for (const edge of output.edges) {
-      const sourceNode = nodesById.get(edge.source);
-      if (sourceNode?.source?.file) {
-        const relativePath = path.isAbsolute(sourceNode.source.file)
-          ? path.relative(projectPath, sourceNode.source.file)
-          : sourceNode.source.file;
-        if (!edgesByFile.has(relativePath)) {
-          edgesByFile.set(relativePath, []);
-        }
-        edgesByFile.get(relativePath)!.push(edge);
-      }
-    }
-
-    for (const ep of output.entry_points || []) {
-      const sourceNode = nodesById.get(ep.source_node);
-      if (sourceNode?.source?.file) {
-        const relativePath = path.isAbsolute(sourceNode.source.file)
-          ? path.relative(projectPath, sourceNode.source.file)
-          : sourceNode.source.file;
-        if (!entryPointsByFile.has(relativePath)) {
-          entryPointsByFile.set(relativePath, []);
-        }
-        entryPointsByFile.get(relativePath)!.push(ep);
-      }
-    }
-
-    for (const ex of output.exit_points || []) {
-      const sourceNode = nodesById.get(ex.source_node);
-      if (sourceNode?.source?.file) {
-        const relativePath = path.isAbsolute(sourceNode.source.file)
-          ? path.relative(projectPath, sourceNode.source.file)
-          : sourceNode.source.file;
-        if (!exitPointsByFile.has(relativePath)) {
-          exitPointsByFile.set(relativePath, []);
-        }
-        exitPointsByFile.get(relativePath)!.push(ex);
-      }
-    }
+    const { nodesByFile, edgesByFile, entryPointsByFile, exitPointsByFile } =
+      indexIncrementalGraphItemsByFile(projectPath, output);
 
     for (const [filePath, fileNodes] of nodesByFile) {
       const fullPath = path.join(projectPath, filePath);
@@ -3765,6 +3732,7 @@ export class AnalyzerOrchestrator {
     const enrichmentNodes = selectLocalizedIncrementalEnrichmentNodes(previousOutput.nodes, nodes, directlyModifiedFiles);
     this.removeTestEntryPoints(nodes, edges, entryPoints);
     this.normalizeNodeMetrics(enrichmentNodes);
+    linkStructuralOwnership(nodes, edges);
     this.deriveParentFromContainsEdges(enrichmentNodes, edges);
     this.enrichNodePerspectives(enrichmentNodes, previousOutput.perspectives || [], nodes);
     const structuralImportance = this.computeAndStampStructuralImportance(isolateLocalizedStructuralImportanceNodes(nodes, enrichmentNodes), edges, entryPoints);

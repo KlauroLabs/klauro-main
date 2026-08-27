@@ -21,11 +21,53 @@ interface RefreshRegistration {
   };
 }
 
+export type ProjectContributionRefreshFailure =
+  | { reason: 'registration-missing'; analyzerIds: string[] }
+  | { reason: 'non-replaceable-ownership'; analyzerIds: string[] }
+  | { reason: 'non-refreshable-contribution'; analyzerId: string }
+  | { reason: 'retained-field-mismatch'; analyzerId: string }
+  | { reason: 'analyzer-error'; message: string };
+
 export interface IncrementalGraph {
   nodes: CASNode[];
   edges: CASEdge[];
   entryPoints: CASEntryPoint[];
   exitPoints: CASExitPoint[];
+}
+
+export function indexIncrementalGraphItemsByFile(
+  projectPath: string,
+  output: Pick<CASOutput, 'nodes' | 'edges' | 'entry_points' | 'exit_points'>
+): {
+  nodesByFile: Map<string, CASNode[]>;
+  edgesByFile: Map<string, CASEdge[]>;
+  entryPointsByFile: Map<string, CASEntryPoint[]>;
+  exitPointsByFile: Map<string, CASExitPoint[]>;
+} {
+  const nodesByFile = new Map<string, CASNode[]>();
+  const edgesByFile = new Map<string, CASEdge[]>();
+  const entryPointsByFile = new Map<string, CASEntryPoint[]>();
+  const exitPointsByFile = new Map<string, CASExitPoint[]>();
+  const relativeFile = (file?: string): string | undefined => file
+    ? (path.isAbsolute(file) ? path.relative(projectPath, file) : file)
+    : undefined;
+  const add = <T>(index: Map<string, T[]>, file: string | undefined, item: T): void => {
+    if (!file) return;
+    const items = index.get(file) || [];
+    items.push(item);
+    index.set(file, items);
+  };
+  const nodesById = new Map(output.nodes.map(node => [node.id, node]));
+  for (const node of output.nodes) add(nodesByFile, relativeFile(node.source?.file), node);
+  for (const edge of output.edges) {
+    const attachedFiles = new Set([edge.source, edge.target]
+      .map(id => relativeFile(nodesById.get(id)?.source?.file))
+      .filter((file): file is string => Boolean(file)));
+    for (const file of attachedFiles) add(edgesByFile, file, edge);
+  }
+  for (const item of output.entry_points || []) add(entryPointsByFile, relativeFile(nodesById.get(item.source_node)?.source?.file), item);
+  for (const item of output.exit_points || []) add(exitPointsByFile, relativeFile(nodesById.get(item.source_node)?.source?.file), item);
+  return { nodesByFile, edgesByFile, entryPointsByFile, exitPointsByFile };
 }
 
 export function shouldPromoteIncrementalAnalyzerRefresh(
@@ -173,18 +215,26 @@ export function removeFileScopedGraphItems(
 export function removeReplaceableFileScopedGraphItems(
   graph: IncrementalGraph,
   record: FileAnalysisRecord,
-  analyzerIds: ReadonlySet<string>
+  analyzerIds: ReadonlySet<string>,
+  onDeferredOwnership?: (analyzerIds: readonly string[]) => void
 ): boolean {
   const ownedNodeIds = new Set(record.nodeIds);
+  const deferredNodeIds = new Set<string>();
   for (const node of graph.nodes) {
     if (!ownedNodeIds.has(node.id)) continue;
     const analyzers = nodeAnalyzers(node);
-    if (analyzers.length === 0 || !analyzers.some(analyzer => analyzerIds.has(analyzer)) ||
-      analyzers.some(analyzer => !analyzerIds.has(analyzer))) return false;
+    if (analyzers.length === 0) return false;
+    if (analyzers.some(analyzer => !analyzerIds.has(analyzer))) {
+      if (!onDeferredOwnership) return false;
+      onDeferredOwnership(analyzers);
+      deferredNodeIds.add(node.id);
+      continue;
+    }
   }
   removeFileScopedGraphItemsBatch(graph, [{ record, analyzerIds }]);
   const removedNodeIds = new Set(graph.nodes
-    .filter(node => ownedNodeIds.has(node.id) && nodeAnalyzers(node).some(analyzer => analyzerIds.has(analyzer)))
+    .filter(node => !deferredNodeIds.has(node.id) && ownedNodeIds.has(node.id) &&
+      nodeAnalyzers(node).some(analyzer => analyzerIds.has(analyzer)))
     .map(node => node.id));
   replaceArrayContents(graph.nodes, graph.nodes.filter(node => !removedNodeIds.has(node.id)));
   replaceArrayContents(graph.edges, graph.edges.filter(edge =>
@@ -557,6 +607,7 @@ export function isRefreshableContribution(
   ]);
   return Object.entries(contribution).every(([key, value]) =>
     allowed.has(key) || retainedFields.has(key as keyof CASContribution) ||
+      (key === 'provided_perspectives' && retainedFields.has('perspectives')) ||
       value === undefined || (Array.isArray(value) && value.length === 0)
   );
 }
@@ -577,6 +628,19 @@ export function retainedContributionFieldsMatch(
       const perspectiveIds = new Set((contribution.perspectives || []).map(item => item.id));
       if (!(current as string[]).every(id => perspectiveIds.has(id))) return false;
       if (!isDeepStrictEqual([...(current as string[])].sort(), [...(previous as string[])].sort())) return false;
+      continue;
+    }
+    if (field === 'perspectives' && Array.isArray(current) && Array.isArray(previous)) {
+      const currentPerspectives = current as NonNullable<CASContribution['perspectives']>;
+      const previousPerspectives = previous as NonNullable<CASContribution['perspectives']>;
+      const analyzerIds = new Set(currentPerspectives
+        .map(item => item?.analyzer_id)
+        .filter((value): value is string => typeof value === 'string'));
+      if (analyzerIds.size === 0) return false;
+      const priorForAnalyzers = previousPerspectives.filter(item => analyzerIds.has(item.analyzer_id));
+      const previousById = new Map(priorForAnalyzers.map(item => [item.id, item]));
+      if (previousById.size !== priorForAnalyzers.length || currentPerspectives.length !== priorForAnalyzers.length ||
+        currentPerspectives.some(item => !isDeepStrictEqual(previousById.get(item.id), item))) return false;
       continue;
     }
     if (Array.isArray(current)) {
@@ -703,12 +767,27 @@ export async function refreshProjectScopedContributions(options: {
     contribution: CASContribution,
     analyzerId: string
   ) => Promise<IncrementalGraph>;
+  onFailure?: (failure: ProjectContributionRefreshFailure) => void;
 }): Promise<IncrementalGraph | null> {
+  const reportFailure = (failure: ProjectContributionRefreshFailure): void => {
+    try {
+      options.onFailure?.(failure);
+    } catch {
+      return;
+    }
+  };
   try {
     const availableAnalyzerIds = new Set(options.registrations.map(registration => registration.id));
     const analyzerIds = analyzerOwnershipClosure(options.ownershipGraph, options.analyzerIds, availableAnalyzerIds);
     const selected = options.registrations.filter(registration => analyzerIds.has(registration.id));
-    if (selected.length !== analyzerIds.size || !canReplaceAnalyzerContributions(options.ownershipGraph, analyzerIds)) return null;
+    if (selected.length !== analyzerIds.size) {
+      reportFailure({ reason: 'registration-missing', analyzerIds: [...analyzerIds].sort() });
+      return null;
+    }
+    if (!canReplaceAnalyzerContributions(options.ownershipGraph, analyzerIds)) {
+      reportFailure({ reason: 'non-replaceable-ownership', analyzerIds: [...analyzerIds].sort() });
+      return null;
+    }
 
     let graph = removeAnalyzerContributions(options.graph, analyzerIds);
     const analyze = async (
@@ -727,8 +806,14 @@ export async function refreshProjectScopedContributions(options: {
         process.stderr.write(`[Klauro] incremental project analyzer ${registration.id}: ${Date.now() - startedAt}ms\n`);
       }
       const retainedFields = new Set(registration.analyzer.incrementalSourceInvariantContributionFields?.() || []);
-      if (!isRefreshableContribution(contribution, retainedFields) ||
-        !retainedContributionFieldsMatch(contribution, options.retainedContribution || {}, retainedFields)) return null;
+      if (!isRefreshableContribution(contribution, retainedFields)) {
+        reportFailure({ reason: 'non-refreshable-contribution', analyzerId: registration.id });
+        return null;
+      }
+      if (!retainedContributionFieldsMatch(contribution, options.retainedContribution || {}, retainedFields)) {
+        reportFailure({ reason: 'retained-field-mismatch', analyzerId: registration.id });
+        return null;
+      }
       options.normalizeContribution(contribution, analyzerRoot);
       return contribution;
     };
@@ -760,7 +845,8 @@ export async function refreshProjectScopedContributions(options: {
       graph = await options.mergeContribution(graph, contribution, registration.id);
     }
     return graph;
-  } catch {
+  } catch (error) {
+    reportFailure({ reason: 'analyzer-error', message: error instanceof Error ? error.message : String(error) });
     return null;
   }
 }

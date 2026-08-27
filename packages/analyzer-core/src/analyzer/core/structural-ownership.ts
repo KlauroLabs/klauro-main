@@ -30,6 +30,8 @@ export function linkStructuralOwnership(nodes: CASNode[], edges: CASEdge[]): voi
       type: 'contains',
       metadata: {
         attributes: {
+          source_analyzer: 'orchestrator',
+          contribution_scope: 'derived-rebuild',
           relationship: 'structural_ownership',
           resolution,
         },

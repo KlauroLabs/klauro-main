@@ -130,7 +130,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
   }
 
   supportsIncrementalAnalysis(): boolean { return false; }
-
+  incrementalSourceInvariantContributionFields(): readonly (keyof CASContribution)[] { return ['perspectives']; }
   async getRelevantFiles(projectPath: string): Promise<string[]> {
     return glob(['**/*.{ts,js}'], {
       cwd: projectPath,

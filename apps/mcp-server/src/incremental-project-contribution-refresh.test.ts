@@ -76,7 +76,7 @@ async function expectIncrementalColdEquivalence(
   state: ReturnType<ReturnType<typeof createOrchestrator>['createIncrementalBaseline']>
 ): Promise<{ output: CASOutput; state: typeof state }> {
   const incremental = await createOrchestrator().orchestrateIncrementalAnalysis(root, previous, state);
-  assert.equal(incremental.wasFullRebuild, false);
+  assert.equal(incremental.wasFullRebuild, false, incremental.fullRebuildReason);
   assert.equal(incremental.changeReport.locality?.strategy, 'project-contribution-refresh');
   assert.ok((incremental.changeReport.locality?.reusedFiles || 0) > 0);
   assert.ok((incremental.changeReport.locality?.reuseRatio || 0) > 0);

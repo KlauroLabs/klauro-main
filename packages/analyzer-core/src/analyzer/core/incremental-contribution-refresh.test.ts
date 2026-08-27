@@ -6,6 +6,7 @@ import {
   canReplaceAnalyzerContributions,
   createIncrementalAnalysisSnapshot,
   createIncrementalGraphAccumulator,
+  indexIncrementalGraphItemsByFile,
   refreshProjectScopedContributions,
   isRefreshableContribution,
   removeAnalyzerContributions,
@@ -18,6 +19,7 @@ import {
   shouldPreferFullRebuildForFanout,
   updatedIncrementalFileRecord,
 } from './incremental-contribution-refresh';
+import { linkStructuralOwnership } from './structural-ownership';
 
 function node(id: string, analyzers: string[]): CASNode {
   return {
@@ -50,6 +52,16 @@ function entry(source: string, analyzer: string, merged: string[] = []): CASEntr
   } as CASEntryPoint;
 }
 
+test('incremental file index owns edges through source and target file identities', () => {
+  const fileNode = { ...node('file', ['language']), type: 'file', source: { file: 'src/file.ts', line: 1 } } as CASNode;
+  const aggregateNode = node('module', ['language']);
+  const attached = edge('module_contains_file', aggregateNode.id, fileNode.id, 'language');
+  const index = indexIncrementalGraphItemsByFile('/workspace', {
+    nodes: [aggregateNode, fileNode], edges: [attached], entry_points: [], exit_points: [],
+  });
+  assert.deepEqual(index.edgesByFile.get('src/file.ts')?.map(item => item.id), [attached.id]);
+});
+
 test('derived graph items attached to replaced nodes do not expand analyzer ownership', () => {
   const derivedEdge = edge('derived_edge', 'owned', 'retained', 'orchestrator');
   derivedEdge.metadata!.attributes!.contribution_scope = 'derived-rebuild';
@@ -76,6 +88,45 @@ test('derived graph items attached to replaced nodes do not expand analyzer owne
   });
 });
 
+test('derived structural ownership does not make analyzer contributions non-replaceable', () => {
+  const owned = node('owned', ['framework']);
+  owned.parent = 'retained';
+  const retained = node('retained', ['language']);
+  const graph = { nodes: [owned, retained], edges: [] as CASEdge[], entryPoints: [], exitPoints: [] };
+
+  linkStructuralOwnership(graph.nodes, graph.edges);
+
+  assert.equal(graph.edges.length, 1);
+  assert.deepEqual(graph.edges[0].metadata?.attributes, {
+    source_analyzer: 'orchestrator',
+    contribution_scope: 'derived-rebuild',
+    relationship: 'structural_ownership',
+    resolution: 'declared-parent',
+  });
+  assert.equal(canReplaceAnalyzerContributions(graph, new Set(['framework'])), true);
+});
+
+test('project refresh reports a classified ownership failure without running analyzers', async () => {
+  const failures: Array<{ reason: string }> = [];
+  const graph = {
+    nodes: [node('owned', ['framework']), node('retained', ['language'])],
+    edges: [{ id: 'unknown', source: 'owned', target: 'retained', type: 'calls' } as CASEdge],
+    entryPoints: [],
+    exitPoints: [],
+  };
+  const refreshed = await refreshProjectScopedContributions({
+    projectPath: '/workspace',
+    registrations: [{ id: 'framework', type: 'framework', analyzer: { analyze: async () => { throw new Error('must not run'); } } }],
+    analyzerIds: new Set(['framework']), graph, ownershipGraph: graph,
+    analyzerRoot: () => '/workspace', analysisFilters: [], scopeFilters: () => [],
+    normalizeContribution: () => undefined, mergeContribution: async current => current,
+    onFailure: failure => failures.push(failure),
+  });
+
+  assert.equal(refreshed, null);
+  assert.deepEqual(failures, [{ reason: 'non-replaceable-ownership', analyzerIds: ['framework'] }]);
+});
+
 test('unmarked non-registered graph ownership still fails closed', () => {
   const graph = {
     nodes: [node('owned', ['framework']), node('retained', ['language'])],
@@ -85,6 +136,43 @@ test('unmarked non-registered graph ownership still fails closed', () => {
   };
 
   assert.equal(canReplaceAnalyzerContributions(graph, new Set(['framework'])), false);
+});
+
+test('file replacement retains nodes wholly owned by a project-scoped analyzer', () => {
+  const graph = {
+    nodes: [node('language-node', ['language']), node('framework-node', ['framework'])],
+    edges: [],
+    entryPoints: [],
+    exitPoints: [],
+  };
+  const record = {
+    filePath: 'controller.rb', contentHash: 'old', mtimeMs: 1, lastAnalyzed: '', analyzerId: 'language',
+    nodeIds: ['language-node', 'framework-node'], edgeIds: [], entryPointIds: [], exitPointIds: [],
+    importedFiles: [], exportedSymbols: [],
+  };
+
+  assert.equal(removeReplaceableFileScopedGraphItems(graph, record, new Set(['language'])), false);
+  const deferred: string[][] = [];
+  assert.equal(removeReplaceableFileScopedGraphItems(
+    graph, record, new Set(['language']), analyzerIds => deferred.push([...analyzerIds])
+  ), true);
+  assert.deepEqual(graph.nodes.map(item => item.id), ['framework-node']);
+  assert.deepEqual(deferred, [['framework']]);
+});
+
+test('explicit deferral retains a shared node and reports its complete ownership set', () => {
+  const graph = { nodes: [node('shared', ['language', 'framework'])], edges: [], entryPoints: [], exitPoints: [] };
+  const record = {
+    filePath: 'controller.java', contentHash: 'old', mtimeMs: 1, lastAnalyzed: '', analyzerId: 'language',
+    nodeIds: ['shared'], edgeIds: [], entryPointIds: [], exitPointIds: [], importedFiles: [], exportedSymbols: [],
+  };
+  const deferred: string[][] = [];
+
+  assert.equal(removeReplaceableFileScopedGraphItems(
+    graph, record, new Set(['language']), analyzerIds => deferred.push([...analyzerIds])
+  ), true);
+  assert.deepEqual(graph.nodes.map(item => item.id), ['shared']);
+  assert.deepEqual(deferred, [['language', 'framework']]);
 });
 
 test('shared node ownership still expands the replaceable analyzer closure', () => {
@@ -316,6 +404,22 @@ test('retained array comparison rejects removed identified items', () => {
     { nodes: [], libraries: [{ id: 'one', name: 'One' }] },
     { libraries: [{ id: 'one', name: 'One' }, { id: 'two', name: 'Two' }] },
     new Set(['libraries'])
+  ), false);
+});
+
+test('retained perspectives compare only the declaring analyzer slice', () => {
+  const current = { id: 'nestjs-flow', name: 'Request Flow', description: 'Nest flow', analyzer_id: 'nestjs', type: 'flow' as const };
+  const other = { id: 'other-flow', name: 'Other Flow', description: 'Other flow', analyzer_id: 'other', type: 'flow' as const };
+  assert.equal(isRefreshableContribution({ nodes: [], perspectives: [current], provided_perspectives: [current.id] }, new Set(['perspectives'])), true);
+  assert.equal(retainedContributionFieldsMatch(
+    { nodes: [], perspectives: [current] },
+    { perspectives: [other, current] },
+    new Set(['perspectives'])
+  ), true);
+  assert.equal(retainedContributionFieldsMatch(
+    { nodes: [], perspectives: [{ ...current, description: 'Changed' }] },
+    { perspectives: [current] },
+    new Set(['perspectives'])
   ), false);
 });
 
