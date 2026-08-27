@@ -3,6 +3,13 @@ import * as fs from 'fs-extra';
 import * as path from 'node:path';
 import { detectRemoteProvider } from './remote-provider';
 import type { RepoFacts } from './remote-source';
+import {
+  issueProjectTelemetryCredentialRecord,
+  projectTelemetryCredentialMatches,
+  TELEMETRY_INGEST_SCOPE,
+  type IssuedProjectTelemetryCredential,
+  type ProjectTelemetryCredentialRecord,
+} from './telemetry-project-credentials';
 
 export type WorkspaceRole = 'owner' | 'admin' | 'member';
 
@@ -37,24 +44,8 @@ export interface AccountProject {
   analysis_id?: string;
   created_at: string;
 
-
-
-
-
-
-
   moved_at?: string;
   moved_from_workspace_id?: string;
-
-
-
-
-
-
-
-
-
-
 
   repo_facts?: RepoFacts;
 }
@@ -65,27 +56,8 @@ export interface AccountSession {
   created_at: string;
   expires_at: string;
 
-
-
-
-
-
-
-
-
-
-
   absolute_expires_at?: string;
 }
-
-
-
-
-
-
-
-
-
 
 export interface AccountPasswordResetToken {
   token_hash: string;
@@ -96,16 +68,6 @@ export interface AccountPasswordResetToken {
 
   minted_by: string;
 }
-
-
-
-
-
-
-
-
-
-
 
 interface AccountLoginThrottle {
   email: string;
@@ -121,6 +83,7 @@ interface AccountDatabase {
   workspace_users: AccountWorkspaceUser[];
   projects: AccountProject[];
   sessions: AccountSession[];
+  telemetry_credentials: ProjectTelemetryCredentialRecord[];
 
   password_reset_tokens: AccountPasswordResetToken[];
 
@@ -141,61 +104,17 @@ export interface AccountSessionResult {
 
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 14;
 
-
-
-
-
-
-
-
-
-
-
-
 const ABSOLUTE_SESSION_MAX_MS = 1000 * 60 * 60 * 24 * 90;
-
-
-
-
-
-
-
-
-
 
 const SESSION_SLIDING_WRITE_THRESHOLD_MS = 1000 * 60 * 60;
 
-
-
-
-
-
-
-
-
-
-
 const RESET_TOKEN_TTL_MS = 1000 * 60 * 30;
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 function loginBackoffMs(failedCount: number): number {
   const BASE_MS = 1000;
   const CAP_MS = 1000 * 60 * 15;
   return Math.min(CAP_MS, BASE_MS * Math.pow(2, Math.max(0, failedCount - 1)));
 }
-
 
 const LOGIN_THROTTLE_DECAY_MS = 1000 * 60 * 60;
 
@@ -212,14 +131,8 @@ export class AccountStore {
     const name = cleanName(input.name || email.split('@')[0]);
     assertPassword(input.password);
 
-
-
-
     const passwordHash = await hashPassword(input.password);
     return this.mutate(db => {
-
-
-
 
       if (db.users.some(user => user.email === email)) {
         throw httpError(409, 'A user with that email already exists');
@@ -259,9 +172,6 @@ export class AccountStore {
   async login(input: { email: string; password: string; source?: string }): Promise<AccountSessionResult> {
     const email = normalizeEmail(input.email);
 
-
-
-
     const preDb = await this.load();
     const throttle = preDb.login_throttles.find(candidate => candidate.email === email);
     if (throttle && !throttleIsStale(throttle) && Date.parse(throttle.next_attempt_at) > Date.now()) {
@@ -269,7 +179,6 @@ export class AccountStore {
       await this.appendAudit({ event: 'auth_login_throttled', email, retry_after_ms: retryAfterMs, source: input.source });
       throw httpError(429, `Too many failed login attempts for this account. Retry in ${Math.max(1, Math.ceil(retryAfterMs / 1000))}s.`);
     }
-
 
     const user = preDb.users.find(candidate => candidate.email === email);
     const passwordOk = user ? await verifyPassword(input.password, user.password_hash) : false;
@@ -300,23 +209,9 @@ export class AccountStore {
     const user = db.users.find(candidate => candidate.id === session.user_id);
     if (!user) return null;
 
-
-
-
     this.maybeExtendSession(session, tokenHash).catch(() => undefined);
     return publicUser(user);
   }
-
-
-
-
-
-
-
-
-
-
-
 
   private async maybeExtendSession(session: AccountSession, tokenHash: string): Promise<void> {
     const now = Date.now();
@@ -338,15 +233,6 @@ export class AccountStore {
     });
   }
 
-
-
-
-
-
-
-
-
-
   async changePassword(userId: string, currentToken: string | undefined, input: { currentPassword: string; newPassword: string }): Promise<AccountSessionResult> {
     const db = await this.load();
     const user = db.users.find(candidate => candidate.id === userId);
@@ -361,8 +247,6 @@ export class AccountStore {
       if (!freshUser) throw httpError(404, 'Account not found');
       freshUser.password_hash = newHash;
 
-
-
       freshDb.sessions = freshDb.sessions.filter(candidate => candidate.user_id !== userId);
       const session = createSession(userId);
       freshDb.sessions.push(session.record);
@@ -371,19 +255,6 @@ export class AccountStore {
     await this.appendAudit({ event: 'auth_password_changed', user_id: userId, revoked_prior_session: Boolean(currentToken) });
     return result;
   }
-
-
-
-
-
-
-
-
-
-
-
-
-
 
   async mintPasswordResetToken(input: { email: string; mintedBy: string }): Promise<{ token: string; userId: string; expiresAt: string }> {
     const email = normalizeEmail(input.email);
@@ -409,16 +280,6 @@ export class AccountStore {
     });
   }
 
-
-
-
-
-
-
-
-
-
-
   async redeemPasswordResetToken(input: { token: string; newPassword: string }): Promise<{ userId: string; email: string }> {
     assertPassword(input.newPassword);
     const newHash = await hashPassword(input.newPassword);
@@ -442,7 +303,6 @@ export class AccountStore {
     await this.appendAudit({ event: 'auth_reset_token_redeemed', user_id: result.userId, revoked_sessions: result.revokedSessions });
     return { userId: result.userId, email: result.email };
   }
-
 
   async revokeAllSessions(userId: string, reason: string): Promise<number> {
     const count = await this.mutate(db => {
@@ -538,14 +398,6 @@ export class AccountStore {
       .sort((left, right) => left.name.localeCompare(right.name));
   }
 
-
-
-
-
-
-
-
-
   async listProjectsForWorkspace(workspaceId: string): Promise<AccountProject[]> {
     const db = await this.load();
     return db.projects
@@ -553,22 +405,10 @@ export class AccountStore {
       .sort((left, right) => left.name.localeCompare(right.name));
   }
 
-
   async getWorkspaceById(workspaceId: string): Promise<AccountWorkspace | null> {
     const db = await this.load();
     return db.workspaces.find(candidate => candidate.id === workspaceId) || null;
   }
-
-
-
-
-
-
-
-
-
-
-
 
   async findProjectsByAnalysisId(analysisId: string): Promise<AccountProject[]> {
     if (!analysisId) return [];
@@ -598,23 +438,6 @@ export class AccountStore {
     });
   }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
   async getProjectForUser(userId: string, projectId: string): Promise<AccountProject | null> {
     const db = await this.load();
     const project = db.projects.find(candidate => candidate.id === projectId);
@@ -629,14 +452,6 @@ export class AccountStore {
     }
     return project;
   }
-
-
-
-
-
-
-
-
 
   async findProjectByRepoUrl(userId: string, repoUrl: string): Promise<{ project: AccountProject; workspace: AccountWorkspace; role: WorkspaceRole } | null> {
     const normalized = normalizeRepoUrlForMatch(repoUrl);
@@ -657,15 +472,6 @@ export class AccountStore {
     return { project: match, workspace, role };
   }
 
-
-
-
-
-
-
-
-
-
   async findProjectsByRepoUrlForUser(userId: string, repoUrl: string | undefined): Promise<AccountProject[]> {
     const normalized = normalizeRepoUrlForMatch(repoUrl);
     if (!normalized) return [];
@@ -677,18 +483,6 @@ export class AccountStore {
       memberWorkspaceIds.has(project.workspace_id) && normalizeRepoUrlForMatch(project.repo_url) === normalized,
     );
   }
-
-
-
-
-
-
-
-
-
-
-
-
 
   async attachProjectToWorkspace(userId: string, targetWorkspaceId: string, projectId: string): Promise<{
     project: AccountProject;
@@ -711,14 +505,6 @@ export class AccountStore {
     });
   }
 
-
-
-
-
-
-
-
-
   async setProjectAnalysisId(userId: string, projectId: string, analysisId: string): Promise<AccountProject> {
     return this.mutate(db => {
       const project = db.projects.find(candidate => candidate.id === projectId);
@@ -729,18 +515,60 @@ export class AccountStore {
     });
   }
 
+  async issueProjectTelemetryCredential(userId: string, projectId: string): Promise<IssuedProjectTelemetryCredential> {
+    return this.mutate(db => {
+      const project = db.projects.find(candidate => candidate.id === projectId);
+      if (!project) throw httpError(404, 'Project not found');
+      requireMembership(db, userId, project.workspace_id, ['owner', 'admin']);
+      const { record, issued } = issueProjectTelemetryCredentialRecord(projectId);
+      db.telemetry_credentials.push(record);
+      return issued;
+    });
+  }
 
+  async rotateProjectTelemetryCredential(
+    userId: string,
+    projectId: string,
+    credentialId: string,
+  ): Promise<IssuedProjectTelemetryCredential> {
+    return this.mutate(db => {
+      const project = db.projects.find(candidate => candidate.id === projectId);
+      if (!project) throw httpError(404, 'Project not found');
+      requireMembership(db, userId, project.workspace_id, ['owner', 'admin']);
+      const previous = db.telemetry_credentials.find(candidate =>
+        candidate.id === credentialId && candidate.project_id === projectId && !candidate.revoked_at);
+      if (!previous) throw httpError(404, 'Telemetry credential not found');
+      previous.revoked_at = new Date().toISOString();
+      const { record, issued } = issueProjectTelemetryCredentialRecord(projectId, new Date(), previous.id);
+      db.telemetry_credentials.push(record);
+      return issued;
+    });
+  }
 
+  async revokeProjectTelemetryCredential(userId: string, projectId: string, credentialId: string): Promise<void> {
+    await this.mutate(db => {
+      const project = db.projects.find(candidate => candidate.id === projectId);
+      if (!project) throw httpError(404, 'Project not found');
+      requireMembership(db, userId, project.workspace_id, ['owner', 'admin']);
+      const credential = db.telemetry_credentials.find(candidate =>
+        candidate.id === credentialId && candidate.project_id === projectId && !candidate.revoked_at);
+      if (!credential) throw httpError(404, 'Telemetry credential not found');
+      credential.revoked_at = new Date().toISOString();
+    });
+  }
 
-
-
-
-
-
-
-
-
-
+  async authenticateProjectTelemetryCredential(
+    token: string | undefined,
+    projectId: string,
+  ): Promise<{ id: string; project_id: string; scope: typeof TELEMETRY_INGEST_SCOPE } | null> {
+    if (!token?.startsWith('kt_')) return null;
+    const db = await this.load();
+    const credential = db.telemetry_credentials.find(candidate =>
+      projectTelemetryCredentialMatches(candidate, token, projectId));
+    return credential
+      ? { id: credential.id, project_id: credential.project_id, scope: credential.scope }
+      : null;
+  }
   async setProjectRepoFacts(projectId: string, facts: RepoFacts | undefined): Promise<void> {
     if (!facts || (facts.contributor_count === undefined && !facts.first_commit_at && !facts.last_commit_at)) return;
     await this.mutate(db => {
@@ -752,7 +580,7 @@ export class AccountStore {
 
   private async load(): Promise<AccountDatabase> {
     if (!(await fs.pathExists(this.filePath))) {
-      return { version: 1, users: [], workspaces: [], workspace_users: [], projects: [], sessions: [], password_reset_tokens: [], login_throttles: [] };
+      return { version: 1, users: [], workspaces: [], workspace_users: [], projects: [], sessions: [], telemetry_credentials: [], password_reset_tokens: [], login_throttles: [] };
     }
     const db = await fs.readJson(this.filePath) as AccountDatabase;
     return {
@@ -763,12 +591,12 @@ export class AccountStore {
       projects: Array.isArray(db.projects) ? db.projects : [],
       sessions: pruneSessions(Array.isArray(db.sessions) ? db.sessions : []),
 
+      telemetry_credentials: Array.isArray(db.telemetry_credentials) ? db.telemetry_credentials : [],
 
       password_reset_tokens: pruneResetTokens(Array.isArray(db.password_reset_tokens) ? db.password_reset_tokens : []),
       login_throttles: Array.isArray(db.login_throttles) ? db.login_throttles : [],
     };
   }
-
 
   private async appendAudit(event: Record<string, unknown>): Promise<void> {
     try {
@@ -781,33 +609,6 @@ export class AccountStore {
     }
   }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
   private async mutate<T>(fn: (db: AccountDatabase) => T | Promise<T>): Promise<T> {
     const task = this.writeQueue.then(async () => {
       const db = await this.load();
@@ -816,16 +617,9 @@ export class AccountStore {
       return result;
     });
 
-
     this.writeQueue = task.then(() => undefined, () => undefined);
     return task;
   }
-
-
-
-
-
-
 
   private async writeToDisk(db: AccountDatabase): Promise<void> {
     await fs.ensureDir(path.dirname(this.filePath));
@@ -872,7 +666,6 @@ function pruneSessions(sessions: AccountSession[]): AccountSession[] {
   return sessions.filter(session => new Date(session.expires_at).getTime() > now);
 }
 
-
 function pruneResetTokens(tokens: AccountPasswordResetToken[]): AccountPasswordResetToken[] {
   const now = Date.now();
   return tokens.filter(token => Date.parse(token.expires_at) > now);
@@ -881,7 +674,6 @@ function pruneResetTokens(tokens: AccountPasswordResetToken[]): AccountPasswordR
 function throttleIsStale(throttle: { updated_at: string }): boolean {
   return Date.now() - Date.parse(throttle.updated_at) > LOGIN_THROTTLE_DECAY_MS;
 }
-
 
 function recordLoginFailure(db: AccountDatabase, email: string): void {
   const existing = db.login_throttles.find(candidate => candidate.email === email);
@@ -946,7 +738,6 @@ function hashToken(token: string): string {
 function id(prefix: string): string {
   return `${prefix}_${crypto.randomBytes(12).toString('base64url')}`;
 }
-
 
 function normalizeRepoUrlForMatch(value: string | undefined): string | undefined {
   const trimmed = String(value || '').trim();
