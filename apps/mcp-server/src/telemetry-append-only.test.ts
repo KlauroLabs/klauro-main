@@ -120,9 +120,12 @@ test('child-process writers and compaction serialize without losing observations
   const day = recentDay();
   const moduleUrl = pathToFileURL(path.join(process.cwd(), 'src', 'telemetry-ingestion.ts')).href;
   const childScript = [
-    `import { appendIngestedTelemetry } from ${JSON.stringify(moduleUrl)};`,
+    `import * as importedTelemetry from ${JSON.stringify(moduleUrl)};`,
+    `const telemetry = typeof importedTelemetry.appendIngestedTelemetry === "function"`,
+    `  ? importedTelemetry : importedTelemetry.default;`,
+    `if (!telemetry || typeof telemetry.appendIngestedTelemetry !== "function") throw new Error("telemetry ingestion module is unavailable");`,
     `const [projectPath, id, recordedAt] = process.argv.slice(1);`,
-    `await appendIngestedTelemetry(projectPath, [{ id, project_path: projectPath, recorded_at: recordedAt, source: 'ingested', event: { type: 'request', timestamp: recordedAt, schema_version: 'ingested-1' }, correlation: { status: 'unmatched' } }]);`,
+    `await telemetry.appendIngestedTelemetry(projectPath, [{ id, project_path: projectPath, recorded_at: recordedAt, source: 'ingested', event: { type: 'request', timestamp: recordedAt, schema_version: 'ingested-1' }, correlation: { status: 'unmatched' } }]);`,
   ].join('\n');
   const childAppend = (id: string) => new Promise<void>((resolve, reject) => {
     const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '--eval', childScript, projectPath, id, day], {
