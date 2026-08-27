@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SystemCapability } from '../../types/cas.types';
-import { capabilityCatalogRepairPromptEnvelope } from './capability-catalog-repair-context';
+import { capabilityCatalogFirstPartyFallback, capabilityCatalogRepairPromptEnvelope } from './capability-catalog-repair-context';
 
 test('targeted repair exposes opaque ids and customer-language facts without raw structural evidence', () => {
   const candidates = [{
@@ -20,6 +20,7 @@ test('targeted repair exposes opaque ids and customer-language facts without raw
     statement: 'people understand software behavior',
     firstPartyOutcomeText: 'People inspect software behavior and change risk before modifying connected code.',
     subjectTokens: ['understand', 'software', 'behavior'], requiredSubjectTerms: ['understand', 'behavior'],
+    visibleActionTerms: ['inspect'],
     minimumSubjectMatches: 2, candidateIds: ['capability_mcp'],
   }];
   const rejections = new Map([['capability_mcp', [{
@@ -36,6 +37,7 @@ test('targeted repair exposes opaque ids and customer-language facts without raw
   assert.deepEqual(envelope.facts[0].first_party_outcomes, [requirements[0].firstPartyOutcomeText]);
   assert.deepEqual(envelope.facts[0].required_audience_labels, ['people']);
   assert.deepEqual(envelope.facts[0].required_subject_terms, ['understand', 'behavior']);
+  assert.deepEqual(envelope.facts[0].required_visible_actions, ['inspect']);
   assert.deepEqual(envelope.facts[0].observable_actions, ['inspect software behavior']);
   for (const raw of ['capability_mcp', 'CrossCodebaseSystemGraph', 'CASEdge', 'KlauroConfig', 'get_cross_codebase_system_graph', 'cas edges', 'internal schema']) {
     assert.equal(serialized.includes(raw), false);
@@ -60,6 +62,21 @@ test('targeted repair omits unsafe operation identifiers instead of translating 
 
   assert.deepEqual(envelope.facts, [{
     candidate_id: 'candidate_1', first_party_outcomes: [], observable_actions: [], prior_rejections: [],
-    required_audience_labels: [], required_subject_terms: [], minimum_subject_matches: 0,
+    required_audience_labels: [], required_subject_terms: [], required_visible_actions: [], minimum_subject_matches: 0,
   }]);
+});
+
+test('first-party fallback requires one explicit visible action and normalizes it to an imperative', () => {
+  const requirement = {
+    id: 'graph', statement: 'builds trustworthy relationship graph', candidateIds: ['candidate'],
+    subjectTokens: ['trust', 'relation'], visibleActionTerms: ['build'],
+    firstPartyOutcomeText: 'The product builds a trustworthy relationship graph.',
+  };
+
+  assert.deepEqual(capabilityCatalogFirstPartyFallback(requirement), {
+    requirement_id: 'graph', name: 'Build a trustworthy relationship graph',
+    description: requirement.firstPartyOutcomeText, category: 'core', candidate_ids: ['candidate'],
+  });
+  assert.equal(capabilityCatalogFirstPartyFallback({ ...requirement, visibleActionTerms: [] }), undefined);
+  assert.equal(capabilityCatalogFirstPartyFallback({ ...requirement, visibleActionTerms: ['build', 'inspect'] }), undefined);
 });

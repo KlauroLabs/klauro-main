@@ -144,6 +144,7 @@ export function fitCapabilityCatalogContext<T extends Record<string, unknown>>(
       audience: boundedText(requirement.audience, 40),
       required_audience_label: boundedText(requirement.required_audience_label, 80),
       required_subject_terms: boundedTextArray(requirement.required_subject_terms, 16, 80),
+      required_visible_actions: boundedTextArray(requirement.required_visible_actions, 8, 80),
       minimum_subject_matches: Math.max(0, Math.min(16, Number(requirement.minimum_subject_matches) || 0)),
       outcome: boundedText(requirement.outcome, 400),
       ...(requirement.first_party_outcome_text ? { first_party_outcome_text: boundedText(requirement.first_party_outcome_text, 1200) } : {}),

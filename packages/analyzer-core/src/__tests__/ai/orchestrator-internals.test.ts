@@ -8285,7 +8285,7 @@ describe('top-down capability evidence (C2)', () => {
       statement: 'Explore software behavior for people',
       firstPartyOutcomeText: 'People explore connected software behavior and change risk before modifying related components.',
       subjectTokens: ['understand', 'software', 'behavior'], requiredSubjectTerms: ['understand', 'behavior'],
-      minimumSubjectMatches: 2, candidateIds: ['capability_mcp'],
+      visibleActionTerms: ['understand'], minimumSubjectMatches: 2, candidateIds: ['capability_mcp'],
     };
     try {
       const results = [];
@@ -8314,7 +8314,7 @@ describe('top-down capability evidence (C2)', () => {
           targetedRepairFacts: [{
             candidate_id: 'candidate_1', first_party_outcomes: [requirement.firstPartyOutcomeText],
             observable_actions: ['inspect software behavior'], prior_rejections: [], required_audience_labels: ['people'],
-            required_subject_terms: ['understand', 'behavior'], minimum_subject_matches: 2,
+            required_subject_terms: ['understand', 'behavior'], required_visible_actions: ['understand'], minimum_subject_matches: 2,
           }], targetedRepairCandidateMap: { candidate_1: 'capability_mcp' },
         }));
       }
@@ -8341,7 +8341,7 @@ describe('top-down capability evidence (C2)', () => {
     const baseRequirement: any = {
       id: 'human:behavior-understand', audience: 'human', audienceLabel: 'people',
       statement: 'Explore software behavior for people', subjectTokens: ['understand', 'software', 'behavior'],
-      requiredSubjectTerms: ['understand', 'behavior'], minimumSubjectMatches: 2, candidateIds: ['understanding'],
+      requiredSubjectTerms: ['understand', 'behavior'], visibleActionTerms: ['understand'], minimumSubjectMatches: 2, candidateIds: ['understanding'],
     };
     const baseInput: any = {
       systemName: 'Product', enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: [] },

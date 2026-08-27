@@ -68,6 +68,11 @@ test('requires separately stated first-party human, agent, and truth outcomes wh
   const graph = requirements.find(requirement => requirement.subjectTokens.includes('relation'))!;
   const collaboration = requirements.find(requirement => requirement.subjectTokens.includes('collaborate'))!;
   const runtime = requirements.find(requirement => requirement.subjectTokens.includes('runtime'))!;
+  assert.deepEqual(graph.visibleActionTerms, ['build']);
+  assert.deepEqual(human.visibleActionTerms, ['turn']);
+  assert.deepEqual(agent.visibleActionTerms, ['turn']);
+  assert.deepEqual(collaboration.visibleActionTerms, ['enable']);
+  assert.deepEqual(runtime.visibleActionTerms, ['correlate']);
   const incomplete = [
     cited(published('Give AI agents software comprehension', 'Agents understand connected software behavior before changing code.'), agent),
     cited(published('Coordinate concurrent work', 'Collaborators coordinate overlapping changes in real time.'), collaboration),
@@ -84,6 +89,55 @@ test('requires separately stated first-party human, agent, and truth outcomes wh
     cited(published('Build a trustworthy relationship graph', 'A trustworthy relationship graph connects the software structure and behavior.'), graph),
   ];
   assert.equal(capabilityCatalogOutcomeCoverageFailure(complete, requirements), undefined);
+});
+
+test('derives visible actions only from canonical purpose verbs after plural and shared audiences', () => {
+  const cases = [
+    {
+      summary: 'Humans inspect connected software behavior before making changes.',
+      candidates: [candidate('human', 'People understand connected software behavior', ['inspect_behavior'])],
+      expected: ['understand'],
+      audiences: ['human'],
+    },
+    {
+      summary: 'Software provides grounded change context for reviewers.',
+      candidates: [candidate('context', 'Provide grounded software change context', ['provide_context'])],
+      expected: ['provide'],
+      audiences: [undefined],
+    },
+    {
+      summary: 'Humans and AI agents inspect connected software behavior before making changes.',
+      candidates: [candidate('shared', 'People and agents understand connected software behavior', ['inspect_behavior'])],
+      expected: ['understand', 'understand'],
+      audiences: ['human', 'agent'],
+    },
+    {
+      summary: 'Analyzes connected software behavior for change risk.',
+      candidates: [candidate('analysis', 'Analyze connected software behavior for change risk', ['analyze_behavior'])],
+      expected: ['analyze'],
+      audiences: [undefined],
+    },
+  ];
+
+  for (const entry of cases) {
+    const requirements = deriveCapabilityCatalogOutcomeRequirements({ productDocSummary: entry.summary }, entry.candidates);
+    assert.deepEqual(requirements.map(requirement => requirement.visibleActionTerms?.[0]), entry.expected);
+    assert.deepEqual(requirements.map(requirement => requirement.audience), entry.audiences);
+  }
+});
+
+test('requires the immutable audience-slot action without allowing a sibling slot action', () => {
+  const human: CapabilityCatalogOutcomeRequirement = {
+    id: 'human:understand', audience: 'human', audienceLabel: 'people', candidateIds: ['shared'],
+    statement: 'behavior comprehension', subjectTokens: ['behavior', 'understand'],
+    requiredSubjectTerms: ['behavior', 'understand'], visibleActionTerms: ['turn'],
+  };
+  const agent = { ...human, id: 'agent:understand', audience: 'agent' as const, audienceLabel: 'agents', visibleActionTerms: ['ground'] };
+
+  assert.equal(capabilityCatalogOutcomeNameFailure('Behavior comprehension for people', human), 'required-outcome-visible-action-missing:human:understand');
+  assert.equal(capabilityCatalogOutcomeNameFailure('Turn behavior comprehension toward people', human), undefined);
+  assert.equal(capabilityCatalogOutcomeNameFailure('Ground behavior comprehension for agents', agent), undefined);
+  assert.equal(capabilityCatalogOutcomeNameFailure('Turn behavior comprehension for agents', agent), 'required-outcome-visible-action-missing:agent:understand');
 });
 
 test('preserves evidence-grounded original-clause aliases for compressed outcome subjects', () => {

@@ -330,6 +330,7 @@ test('preview and compare wording requires a narrowly cited operation family', (
     operations: [
       { action: 'Handle', path_or_command: 'preview_codebase_iteration', entry_point_id: 'preview', entry_point_type: 'message' },
       { action: 'Handle', path_or_command: 'get_agent_context', entry_point_id: 'inspect', entry_point_type: 'message' },
+      { action: 'Get agent context', path_or_command: 'get_agent_context', entry_point_id: 'context', entry_point_type: 'message' },
       { action: 'Handle', path_or_command: 'assess_change_risk', entry_point_id: 'validate', entry_point_type: 'message' },
     ],
   });
@@ -372,6 +373,28 @@ test('the seven-capability live catalog keeps outcomes and rejects implementatio
   assert.equal(capabilityDescriptionProductLanguageViolation('CASEdge exposes connected behavior.', [], [], ['CASEdge'], ['CAS edge relationships'])?.reason, 'raw-related-entity-identifier');
   assert.equal(capabilityDescriptionProductLanguageViolation('SystemCapability exposes connected behavior.', [], [], ['SystemCapability'], ['The system supports a product capability'])?.reason, 'raw-related-entity-identifier');
   assert.equal(capabilityDescriptionProductLanguageViolation('Users manage project access across teams.', [], [], ['UserConfig', 'ProjectConfig']), undefined);
+});
+
+test('only an exact bound first-party action bypasses broad delivery evidence', () => {
+  const broad = catalogCapability({
+    id: 'aggregate', name: 'Relationship graph agent context operations', structural_label: 'Relationship graph agent context operations', evidence_kind: 'behavior-surface',
+    operations: [
+      { action: 'Build', path_or_command: 'build_graph', entry_point_id: 'build', entry_point_type: 'message' },
+      { action: 'Correlate', path_or_command: 'correlate_runtime', entry_point_id: 'runtime', entry_point_type: 'message' },
+      { action: 'Handle', path_or_command: 'get_agent_context', entry_point_id: 'inspect', entry_point_type: 'message' },
+      { action: 'Handle', path_or_command: 'assess_change_risk', entry_point_id: 'risk', entry_point_type: 'message' },
+      { action: 'Handle', path_or_command: 'find_tests', entry_point_id: 'tests', entry_point_type: 'message' },
+    ],
+  });
+  const graph = { id: 'graph', visibleActionTerms: ['build'] };
+  const runtime = { id: 'runtime', visibleActionTerms: ['correlate'] };
+  const signal = { productDocSummary: 'The product builds a trustworthy relationship graph and correlates static understanding with runtime evidence.' };
+
+  assert.deepEqual(capabilityOutcomeScopeFailure('Build a trustworthy relationship graph', [broad], signal, true), ['delivery-action-evidence-too-broad']);
+  assert.deepEqual(capabilityOutcomeScopeFailure('Build a trustworthy relationship graph', [broad], signal, false, '', [], graph), []);
+  assert.deepEqual(capabilityOutcomeScopeFailure('Correlate static understanding with runtime evidence', [broad], signal, false, '', [], runtime), []);
+  assert.deepEqual(capabilityOutcomeScopeFailure('Build banana vacation graph', [broad], signal, false, '', [], graph), ['banana', 'vacation']);
+  assert.deepEqual(capabilityOutcomeScopeFailure('Handle agent context', [broad], undefined, true, '', [], { id: 'tool', visibleActionTerms: ['handle'] }), ['delivery-operation-restatement']);
 });
 
 test('renamed repairs replace pending identities by stable requirement without crossing shared-candidate slots', () => {

@@ -286,10 +286,13 @@ export function capabilityOutcomeScopeFailure(
   acceptedOutcome = false,
   description = '',
   evidenceBackedAudienceTokens: readonly string[] = [],
+  boundRequirement?: { id: string; visibleActionTerms?: readonly string[] },
 ): string[] {
   if (capabilityOutcomeRestatesDeliveryOperation(name, citedCandidates, signal, acceptedOutcome)) return ['delivery-operation-restatement'];
   if (capabilityOutcomeMisusesCoordination(name, citedCandidates)) return ['coordination-outcome-unsupported'];
-  if (capabilityOutcomeUsesBroadDeliveryAction(name, citedCandidates)) return ['delivery-action-evidence-too-broad'];
+  const leading = outcomeIdentityTokens(name)[0];
+  const boundVisibleActions = new Set((boundRequirement?.visibleActionTerms || []).flatMap(outcomeIdentityTokens));
+  if (capabilityOutcomeUsesBroadDeliveryAction(name, citedCandidates) && !boundVisibleActions.has(leading || '')) return ['delivery-action-evidence-too-broad'];
   if (!capabilityOutcomeCorroboratedByProductText(name, citedCandidates, signal) && !capabilityOutcomeUsesDeliverySubject(name, citedCandidates, acceptedOutcome ? description : '')) return ['delivery-subject-missing'];
   if (acceptedOutcome) return [];
   const audienceTokens = new Set(evidenceBackedAudienceTokens.flatMap(outcomeIdentityTokens));
@@ -382,7 +385,7 @@ export function capabilityDescriptionProductLanguageViolation(
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_:$./-]+/g, ' ').toLowerCase().split(/\s+/).filter(Boolean));
   const recurringNamespaces = new Set(identifierParts.flatMap(parts => parts.slice(0, 1)).filter((part, index, all) =>
     part.length >= 2 && all.indexOf(part) !== index));
-  const structuralParts = new Set(identifierParts.flat().filter(part => /^(?:graph|node|edge|entry|exit|point|method|call|chain|capability|relation)/.test(part)));
+  const structuralParts = new Set(identifierParts.flat());
   const structuralPhrases = description.match(/\b(?:relationship\s+graphs?|graphs?\s+(?:nodes?|edges?|transitions?)|capability\s+maps?|entry\s+points?|exit\s+points?|method\s+calls?|call\s+chains?)\b/gi) || [];
   const groundedStructuralPhrases = structuralPhrases.filter(phrase => phrase.toLowerCase().split(/\s+/)
     .map(token => token.endsWith('s') ? token.slice(0, -1) : token)

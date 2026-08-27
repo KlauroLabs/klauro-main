@@ -445,9 +445,9 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
         return [];
       }
       return [requirement.audience === 'human'
-        ? cap({ ...outcome('Help people understand software behavior'), description: 'Human engineers explore connected software behavior and change risks.', criticality_factors: ['catalog-candidate:understanding'] })
+        ? cap({ ...outcome('Turn software behavior into comprehension for people'), description: 'Human engineers explore connected software behavior and change risks.', criticality_factors: ['catalog-candidate:understanding'] })
         : cap({
-            ...outcome('Give AI agents software comprehension'),
+            ...outcome('Turn software behavior into comprehension for AI agents'),
             description: 'AI agents understand connected software behavior before making changes.',
             criticality_factors: ['catalog-candidate:understanding'],
           })];
@@ -458,8 +458,8 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
     expect(out.map(capability => capability.name)).toEqual(expect.arrayContaining([
       'Build a trustworthy relationship graph',
-      'Help people understand software behavior',
-      'Give AI agents software comprehension',
+      'Turn software behavior into comprehension for people',
+      'Turn software behavior into comprehension for AI agents',
     ]));
     expect(calls.length).toBeGreaterThan(1);
     const understandingCalls = calls.filter(call => call.candidateCapabilities[0]?.id === 'understanding');
@@ -467,6 +467,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(understandingCalls.every(call => call.requiredOutcomeRequirements?.length === 1 && call.exactCapabilityLimit === 1)).toBe(true);
     expect([...new Set(understandingCalls.map(call => call.requiredOutcomeRequirements[0].audience))].sort()).toEqual(['agent', 'human']);
     expect(understandingCalls.every(call => call.qualityNudge.includes('required_audience_label') && call.qualityNudge.includes('required_subject_terms'))).toBe(true);
+    expect(understandingCalls.every(call => call.requiredOutcomeRequirements[0].visibleActionTerms?.includes('turn'))).toBe(true);
     expect(understandingCalls.filter(call => call.requiredOutcomeRequirements[0].audience === 'human')[1].qualityNudge).toContain('missing_audience');
     expect(understandingCalls.filter(call => call.requiredOutcomeRequirements[0].audience === 'agent')[1].qualityNudge).toContain('missing_subject_terms');
     const targetedPromptFacts = JSON.stringify(calls.slice(1).flatMap(call => call.targetedRepairFacts || []));

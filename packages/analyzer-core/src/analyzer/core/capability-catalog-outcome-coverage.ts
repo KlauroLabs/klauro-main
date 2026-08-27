@@ -10,6 +10,7 @@ export interface CapabilityCatalogOutcomeRequirement {
   firstPartyOutcomeText?: string;
   minimumSubjectMatches?: number;
   requiredSubjectTerms?: string[];
+  visibleActionTerms?: string[];
   subjectAliasAnchorTokens?: string[][];
   subjectTokenAliases?: string[][];
   statement: string;
@@ -27,7 +28,7 @@ const agentAudience = /\b(?:agents?|assistants?)\b/i;
 
 function canonicalToken(token: string): string {
   const source = token.toLowerCase();
-  const value = source.endsWith('ies') && source.length > 4
+  let value = source.endsWith('ies') && source.length > 4
     ? `${source.slice(0, -3)}y`
     : /(?:ches|shes|sses|xes|zes)$/.test(source)
       ? source.slice(0, -2)
@@ -38,6 +39,7 @@ function canonicalToken(token: string): string {
           : source.endsWith('s') && source.length > 4 && !/(?:sis|ss)$/.test(source)
             ? source.slice(0, -1)
             : source;
+  if (!CAPABILITY_PURPOSE_VERBS.has(value) && CAPABILITY_PURPOSE_VERBS.has(`${value}e`)) value = `${value}e`;
   if (/^(?:compreh|explain|explor|inspect|understand)/.test(value)) return 'understand';
   if (/^(?:accur|reliab|trust)/.test(value)) return 'trust';
   if (/^(?:collabor|coordin)/.test(value)) return 'collaborate';
@@ -45,6 +47,10 @@ function canonicalToken(token: string): string {
   if (/^(?:code|codebase|source|software)$/.test(value)) return 'software';
   if (/^(?:event|observ|runtime|telemetry)/.test(value)) return value.startsWith('runtime') ? 'runtime' : 'telemetry';
   return value;
+}
+
+export function canonicalCapabilityCatalogOutcomeToken(token: string): string {
+  return canonicalToken(token);
 }
 
 function tokens(value: string, omitAudience = false): string[] {
@@ -117,6 +123,14 @@ function requirementId(audience: string | undefined, subjectTokens: readonly str
   return `${audience || 'all'}:${subjectTokens.slice().sort().join('-')}`;
 }
 
+function clauseVisibleActionTerms(clause: string, statement: string): string[] {
+  const words = String(clause || '').match(/[A-Za-z][A-Za-z'-]*/g) || [];
+  const action = words.map(canonicalToken).find(token => CAPABILITY_PURPOSE_VERBS.has(token));
+  if (action) return [action];
+  const statementLeading = canonicalToken((String(statement || '').match(/[A-Za-z][A-Za-z'-]*/)?.[0]) || '');
+  return CAPABILITY_PURPOSE_VERBS.has(statementLeading) ? [statementLeading] : [];
+}
+
 export function deriveCapabilityCatalogOutcomeRequirements(
   signal: CapabilityCatalogProjectSignal | undefined,
   candidates: readonly SystemCapability[],
@@ -156,17 +170,21 @@ export function deriveCapabilityCatalogOutcomeRequirements(
       })[0];
       const subjectTokenAliases = originalClauseAlias.some(token => groundedSubjectTokens.includes(token)) && aliasAnchor ? [originalClauseAlias] : undefined;
       const id = requirementId(audience, groundedSubjectTokens);
+      const statement = conciseOutcomeStatement(clause, new Set(groundedSubjectTokens));
+      const audienceLabel = requirementAudienceLabel(clause, audience);
+      const visibleActionTerms = clauseVisibleActionTerms(clause, statement);
       requirements.set(id, {
         audience,
-        audienceLabel: requirementAudienceLabel(clause, audience),
+        audienceLabel,
         candidateIds,
         id,
         firstPartyOutcomeText: clause,
         minimumSubjectMatches: Math.min(2, groundedSubjectTokens.length),
         requiredSubjectTerms: groundedSubjectTokens,
+        visibleActionTerms,
         ...(subjectTokenAliases && aliasAnchor ? { subjectAliasAnchorTokens: [[aliasAnchor]] } : {}),
         ...(subjectTokenAliases ? { subjectTokenAliases } : {}),
-        statement: conciseOutcomeStatement(clause, new Set(groundedSubjectTokens)),
+        statement,
         subjectTokens: groundedSubjectTokens,
       });
     }
@@ -223,6 +241,8 @@ export function capabilityCatalogOutcomeNameFailure(
   const rawLeading = String(name || '').toLowerCase().match(/[a-z][a-z0-9]*/)?.[0] || '';
   const actionStem = rawLeading.replace(/(?:ing|ed|es|s)$/, '');
   const actionHeaded = CAPABILITY_PURPOSE_VERBS.has(leading || '') || CAPABILITY_PURPOSE_VERBS.has(rawLeading) || CAPABILITY_PURPOSE_VERBS.has(actionStem);
+  const requiredAction = new Set((requirement.visibleActionTerms || []).map(canonicalToken));
+  if (requiredAction.size > 0 && !requiredAction.has(leading || '')) return `required-outcome-visible-action-missing:${requirement.id}`;
   if (leading && subjectTerms.has(leading) && !actionHeaded && recoveredAnchors.length > 0 && !recoveredAnchors.some(anchor => orderedNameTokens.includes(anchor))) {
     return `required-outcome-visible-action-missing:${requirement.id}`;
   }

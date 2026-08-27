@@ -41,7 +41,7 @@ describe('AI context budgeting', () => {
     expect(included[0]?.candidate_id).toBe('candidate-0');
     expect((first.context.facts.top_down_signals as Record<string, unknown>).product_title).toBe('Evidence platform');
     expect(first.context.facts.accepted_outcome_names).toEqual(['Analyze codebases', 'Coordinate overlapping work']);
-    expect(first.context.facts.required_outcomes).toEqual([{ requirement_id: 'agent:behavior-understand', audience: 'agent', required_audience_label: 'agents', required_subject_terms: ['understand', 'behavior'], minimum_subject_matches: 2, outcome: 'understand behavior', candidate_ids: ['candidate-0'] }]);
+    expect(first.context.facts.required_outcomes).toEqual([{ requirement_id: 'agent:behavior-understand', audience: 'agent', required_audience_label: 'agents', required_subject_terms: ['understand', 'behavior'], required_visible_actions: [], minimum_subject_matches: 2, outcome: 'understand behavior', candidate_ids: ['candidate-0'] }]);
     expect(first).toEqual(second);
   });
 
@@ -94,6 +94,7 @@ describe('AI context budgeting', () => {
         observable_actions: ['compare proposed changes', 'inspect software behavior'],
         required_audience_labels: ['people'],
         required_subject_terms: ['understand', 'behavior'],
+        required_visible_actions: ['inspect'],
         minimum_subject_matches: 2,
         prior_rejections: [{ reason: 'outcome-scope-unsupported', requirement_id: 'human:understand', missing_audience: 'people' }],
         family: 'CrossCodebaseSystemGraph', entity_names: ['CASEdge'], operations: ['read KlauroConfig'],
@@ -102,6 +103,7 @@ describe('AI context budgeting', () => {
       required_outcomes: [{
         requirement_id: 'human:understand', audience: 'human', required_audience_label: 'people',
         required_subject_terms: ['understand', 'behavior'], minimum_subject_matches: 2,
+        required_visible_actions: ['inspect'],
         outcome: 'people understand behavior',
         first_party_outcome_text: 'People inspect software behavior and change risk before modifying connected code.',
         candidate_ids: ['candidate_1'],
@@ -113,7 +115,7 @@ describe('AI context budgeting', () => {
 
     expect(candidate).toEqual(expect.objectContaining({
       candidate_id: 'candidate_1', required_audience_labels: ['people'],
-      required_subject_terms: ['understand', 'behavior'], minimum_subject_matches: 2,
+      required_subject_terms: ['understand', 'behavior'], required_visible_actions: ['inspect'], minimum_subject_matches: 2,
     }));
     expect(result.context.facts.required_outcomes).toEqual([expect.objectContaining({
       first_party_outcome_text: 'People inspect software behavior and change risk before modifying connected code.',
@@ -130,6 +132,7 @@ describe('AI context budgeting', () => {
       first_party_outcomes: [`People inspect software behavior ${'safeword '.repeat(180)}`],
       observable_actions: Array.from({ length: 8 }, () => `inspect software behavior ${'detail '.repeat(20)}`),
       required_audience_labels: ['people'], required_subject_terms: ['inspect', 'software', 'behavior'],
+      required_visible_actions: ['inspect'],
       minimum_subject_matches: 2,
       prior_rejections: Array.from({ length: 4 }, () => ({ reason: `missing-subject-${'detail'.repeat(20)}`, missing_audience: 'people', missing_subject_terms: ['inspect', 'behavior'] })),
     }));
@@ -139,6 +142,7 @@ describe('AI context budgeting', () => {
       required_outcomes: [{
         requirement_id: 'human:understand', audience: 'human', required_audience_label: 'people',
         required_subject_terms: ['inspect', 'software', 'behavior'], minimum_subject_matches: 2,
+        required_visible_actions: ['inspect'],
         outcome: 'people inspect software behavior', first_party_outcome_text: `People inspect software behavior ${'context '.repeat(300)}`,
         candidate_ids: candidates.map(candidate => candidate.candidate_id),
       }],

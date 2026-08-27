@@ -1,5 +1,5 @@
 import type { SystemCapability } from '../../types/cas.types';
-import type { CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
+import { canonicalCapabilityCatalogOutcomeToken, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
 import type { CapabilityCatalogPriorRejection } from './capability-catalog-scheduling';
 
 export interface CapabilityCatalogRepairPromptFact {
@@ -14,6 +14,7 @@ export interface CapabilityCatalogRepairPromptFact {
   }>;
   required_audience_labels: string[];
   required_subject_terms: string[];
+  required_visible_actions: string[];
   minimum_subject_matches: number;
 }
 
@@ -30,6 +31,7 @@ export function compactCapabilityCatalogRepairPromptFact(value: unknown, require
     observable_actions: boundedArray(fact.observable_actions, required ? 6 : 8, 160),
     required_audience_labels: boundedArray(fact.required_audience_labels, 4, 80),
     required_subject_terms: boundedArray(fact.required_subject_terms, 16, 80),
+    required_visible_actions: boundedArray(fact.required_visible_actions, 8, 80),
     minimum_subject_matches: Math.max(0, Math.min(16, Number(fact.minimum_subject_matches) || 0)),
     prior_rejections: (Array.isArray(fact.prior_rejections) ? fact.prior_rejections : []).slice(-4).map(value => {
       const rejection = value && typeof value === 'object' ? value as Record<string, unknown> : {};
@@ -117,6 +119,7 @@ export function capabilityCatalogRepairPromptFacts(
         String(requirement.audienceLabel || requirement.audience || '').trim()).filter(Boolean))],
       required_subject_terms: [...new Set(candidateRequirements.flatMap(requirement =>
         requirement.requiredSubjectTerms || requirement.subjectTokens))].slice(0, 16),
+      required_visible_actions: [...new Set(candidateRequirements.flatMap(requirement => requirement.visibleActionTerms || []))].slice(0, 8),
       minimum_subject_matches: candidateRequirements.reduce((minimum, requirement) => Math.max(minimum,
         requirement.minimumSubjectMatches ?? Math.min(2, requirement.subjectTokens.length)), 0),
       prior_rejections: (rejectionsByCandidate.get(candidate.id) || [])
@@ -150,8 +153,16 @@ export function capabilityCatalogRepairPromptEnvelope(
 
 export function capabilityCatalogFirstPartyFallback(requirement?: CapabilityCatalogOutcomeRequirement): Record<string, unknown> | undefined {
   const description = String(requirement?.firstPartyOutcomeText || '').trim();
-  return requirement && description ? {
-    requirement_id: requirement.id, name: requirement.statement, description,
+  const actions = [...new Set((requirement?.visibleActionTerms || []).filter(Boolean))];
+  if (!requirement || !description || actions.length !== 1) return undefined;
+  const words = description.match(/[A-Za-z][A-Za-z'-]*/g) || [];
+  const action = actions[0];
+  const actionIndex = words.findIndex(word => canonicalCapabilityCatalogOutcomeToken(word) === canonicalCapabilityCatalogOutcomeToken(action));
+  if (actionIndex < 0) return undefined;
+  const clause = words.slice(actionIndex).join(' ');
+  const name = `${action.charAt(0).toUpperCase()}${action.slice(1)}${clause.slice(words[actionIndex].length)}`.trim();
+  return {
+    requirement_id: requirement.id, name, description,
     category: 'core', candidate_ids: requirement.candidateIds,
-  } : undefined;
+  };
 }

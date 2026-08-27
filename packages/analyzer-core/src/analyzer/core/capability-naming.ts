@@ -33,6 +33,7 @@ export const CAPABILITY_PURPOSE_VERBS = new Set<string>([
   'search', 'index',
   'visualize',
   'offer',
+  'ground', 'help', 'surface', 'turn', 'understand',
 ]);
 
 
