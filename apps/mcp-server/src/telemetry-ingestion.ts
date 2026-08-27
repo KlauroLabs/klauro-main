@@ -1,6 +1,7 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { createHash } from 'crypto';
+import { open } from 'node:fs/promises';
 import type { CASOutput, CASNode } from '../../../packages/analyzer-core/src/types/cas.types';
 import {
   correlateRuntimeEvent,
@@ -527,11 +528,31 @@ export async function appendIngestedTelemetry(projectPath: string, observations:
     }
     for (const [day, dayObservations] of byDay) {
       const filePath = path.join(dir, `${day}.jsonl`);
-      const existing = await readDayObservations(filePath);
-      await writeObservationDay(filePath, mergeObservations(existing, dayObservations));
+      await appendObservationDay(filePath, dayObservations);
     }
     await removeExpiredIngestedTelemetryDays(dir, RETENTION_DAYS);
   });
+}
+
+async function appendObservationDay(filePath: string, observations: RuntimeObservation[]): Promise<void> {
+  let separatesIncompleteRecord = false;
+  try {
+    const handle = await open(filePath, 'r');
+    try {
+      const { size } = await handle.stat();
+      if (size > 0) {
+        const lastByte = Buffer.allocUnsafe(1);
+        await handle.read(lastByte, 0, 1, size - 1);
+        separatesIncompleteRecord = lastByte[0] !== 0x0a;
+      }
+    } finally {
+      await handle.close();
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  const lines = observations.map(observation => `${JSON.stringify(observation)}\n`).join('');
+  await fs.appendFile(filePath, `${separatesIncompleteRecord ? '\n' : ''}${lines}`, 'utf8');
 }
 
 const telemetryMutations = new Map<string, Promise<unknown>>();

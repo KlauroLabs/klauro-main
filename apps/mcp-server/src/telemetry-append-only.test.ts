@@ -27,12 +27,17 @@ async function scratchProject(): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), 'klauro-telemetry-'));
 }
 
+function recentDay(daysAgo = 0): string {
+  const date = new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000);
+  return `${date.toISOString().slice(0, 10)}T10:00:00.000Z`;
+}
+
 test('appending does not rewrite prior observations (append-only, O(new))', async () => {
   const projectPath = await scratchProject();
-  const day = '2026-08-11T10:00:00.000Z';
+  const day = recentDay();
   await appendIngestedTelemetry(projectPath, [observation('first', day)]);
   const dir = ingestedTelemetryDir(projectPath);
-  const file = path.join(dir, '2026-08-11.jsonl');
+  const file = path.join(dir, `${day.slice(0, 10)}.jsonl`);
   const afterFirst = await fs.readFile(file, 'utf8');
 
   await appendIngestedTelemetry(projectPath, [observation('second', day)]);
@@ -48,10 +53,12 @@ test('appending does not rewrite prior observations (append-only, O(new))', asyn
 test('legacy .json day files stay readable alongside new .jsonl', async () => {
   const projectPath = await scratchProject();
   const dir = ingestedTelemetryDir(projectPath);
+  const legacyDay = recentDay(1);
+  const modernDay = recentDay();
   await fs.ensureDir(dir);
   // A day written by the OLD implementation.
-  await fs.writeJson(path.join(dir, '2026-08-09.json'), [observation('legacy', '2026-08-09T10:00:00.000Z')]);
-  await appendIngestedTelemetry(projectPath, [observation('modern', '2026-08-11T10:00:00.000Z')]);
+  await fs.writeJson(path.join(dir, `${legacyDay.slice(0, 10)}.json`), [observation('legacy', legacyDay)]);
+  await appendIngestedTelemetry(projectPath, [observation('modern', modernDay)]);
 
   const loaded = await loadIngestedTelemetry(projectPath);
   const ids = loaded.map(item => item.id);
@@ -62,7 +69,7 @@ test('legacy .json day files stay readable alongside new .jsonl', async () => {
 
 test('the per-day cap still holds, enforced during compaction not on every write', async () => {
   const projectPath = await scratchProject();
-  const day = '2026-08-11T10:00:00.000Z';
+  const day = recentDay();
   // 5,001 observations: one over MAX_OBSERVATIONS_PER_DAY.
   const batch = Array.from({ length: 5001 }, (_, index) => observation(`obs-${index}`, day));
   await appendIngestedTelemetry(projectPath, batch);
@@ -73,5 +80,29 @@ test('the per-day cap still holds, enforced during compaction not on every write
   const afterCompaction = await loadIngestedTelemetry(projectPath);
   assert.equal(afterCompaction.length, 5000, 'compaction restores the storage bound');
   assert.equal(afterCompaction[0].id, 'obs-5000', 'the NEWEST observations are the ones kept');
+  await fs.remove(projectPath);
+});
+
+test('concurrent appends serialize without losing observations', async () => {
+  const projectPath = await scratchProject();
+  const day = recentDay();
+  await Promise.all(Array.from({ length: 16 }, (_, index) =>
+    appendIngestedTelemetry(projectPath, [observation(`concurrent-${index}`, day)])));
+
+  const loaded = await loadIngestedTelemetry(projectPath);
+  assert.deepEqual(new Set(loaded.map(item => item.id)), new Set(Array.from({ length: 16 }, (_, index) => `concurrent-${index}`)));
+  await fs.remove(projectPath);
+});
+
+test('a truncated final record cannot hide prior or later telemetry', async () => {
+  const projectPath = await scratchProject();
+  const day = recentDay();
+  await appendIngestedTelemetry(projectPath, [observation('before-crash', day)]);
+  const file = path.join(ingestedTelemetryDir(projectPath), `${day.slice(0, 10)}.jsonl`);
+  await fs.appendFile(file, '{"truncated":', 'utf8');
+  await appendIngestedTelemetry(projectPath, [observation('after-crash', day)]);
+
+  const loaded = await loadIngestedTelemetry(projectPath);
+  assert.deepEqual(new Set(loaded.map(item => item.id)), new Set(['before-crash', 'after-crash']));
   await fs.remove(projectPath);
 });
