@@ -2,7 +2,7 @@ import * as crypto from 'node:crypto';
 import * as path from 'node:path';
 import * as fs from 'fs-extra';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
-import { assertValidCasTree } from '../../../packages/analyzer-core/src/analyzer/core/recursive-cas';
+import { assertValidCasTree } from '../../../packages/analyzer-core/src/types/cas-tree-validation';
 import { materializeDeployableCasTree } from './deployable-analysis';
 import {
   CAS_SECTION_NAMES,
