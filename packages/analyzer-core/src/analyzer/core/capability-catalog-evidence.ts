@@ -208,6 +208,22 @@ export function capabilityOutcomeMisusesCoordination(
   );
 }
 
+function capabilityOutcomeUsesBroadDeliveryAction(name: string, citedCandidates: SystemCapability[]): boolean {
+  const leading = outcomeIdentityTokens(name)[0];
+  if (!leading) return false;
+  const matching = citedCandidates.filter(candidate => (candidate.operations || []).some(operation =>
+    outcomeTokenMatches(leading, new Set(outcomeIdentityTokens([operation.action, operation.path_or_command, operation.trigger?.path].filter(Boolean).join(' '))))));
+  if (matching.length === 0) return false;
+  return !matching.some(candidate => {
+    const identity = new Set(outcomeIdentityTokens([candidate.name, candidate.structural_label].filter(Boolean).join(' ')));
+    if (outcomeTokenMatches(leading, identity)) return true;
+    const actions = (candidate.operations || []).map(operation => new Set(outcomeIdentityTokens([
+      operation.action, operation.path_or_command, operation.trigger?.path,
+    ].filter(Boolean).join(' ')))).filter(value => value.size > 0);
+    return actions.length > 0 && actions.filter(action => outcomeTokenMatches(leading, action)).length * 2 >= actions.length;
+  });
+}
+
 export function capabilityOutcomeUsesDeliverySubject(name: string, citedCandidates: SystemCapability[], description = ''): boolean {
   if (citedCandidates.length !== 1 || citedCandidates[0].evidence_kind !== 'behavior-surface') return true;
   const nameTokens = outcomeIdentityTokens(name).slice(1);
@@ -273,6 +289,7 @@ export function capabilityOutcomeScopeFailure(
 ): string[] {
   if (capabilityOutcomeRestatesDeliveryOperation(name, citedCandidates, signal, acceptedOutcome)) return ['delivery-operation-restatement'];
   if (capabilityOutcomeMisusesCoordination(name, citedCandidates)) return ['coordination-outcome-unsupported'];
+  if (capabilityOutcomeUsesBroadDeliveryAction(name, citedCandidates)) return ['delivery-action-evidence-too-broad'];
   if (!capabilityOutcomeCorroboratedByProductText(name, citedCandidates, signal) && !capabilityOutcomeUsesDeliverySubject(name, citedCandidates, acceptedOutcome ? description : '')) return ['delivery-subject-missing'];
   if (acceptedOutcome) return [];
   const audienceTokens = new Set(evidenceBackedAudienceTokens.flatMap(outcomeIdentityTokens));
@@ -284,14 +301,18 @@ export function capabilityDescriptionProductLanguageFailure(
   description: string,
   relatedEntities: readonly string[],
   operations: readonly string[] = [],
+  evidenceIdentifiers: readonly string[] = [],
+  firstPartyOutcomeText: readonly string[] = [],
 ): string | undefined {
-  return capabilityDescriptionProductLanguageViolation(description, relatedEntities, operations)?.reason;
+  return capabilityDescriptionProductLanguageViolation(description, relatedEntities, operations, evidenceIdentifiers, firstPartyOutcomeText)?.reason;
 }
 
 export function capabilityDescriptionProductLanguageViolation(
   description: string,
   relatedEntities: readonly string[],
   operations: readonly string[] = [],
+  evidenceIdentifiers: readonly string[] = [],
+  firstPartyOutcomeText: readonly string[] = [],
 ): { reason: string; forbiddenTerms: string[] } | undefined {
   const surfaceScaffolding = description.match(/\bmcp\s+(?:tools?|surfaces?|endpoints?)\b|\bcli\s+(?:commands?|interfaces?|surfaces?)\b/i);
   if (surfaceScaffolding) return { reason: 'delivery-surface-scaffolding', forbiddenTerms: [surfaceScaffolding[0]] };
@@ -311,11 +332,69 @@ export function capabilityDescriptionProductLanguageViolation(
     return normalizedDescription.some((_, index) => phrase.every((token, offset) => normalizedDescription[index + offset] === token));
   });
   if (copiedOperation) return { reason: 'delivery-operation-restatement', forbiddenTerms: outcomeIdentityTokens(copiedOperation) };
-  const copiedEntity = relatedEntities.find(entity =>
-    (/[a-z0-9][A-Z]|[_:$]/.test(entity) || /(?:Config|DTO|Entity|Entry|Model|Record|Schema)$/i.test(entity)) &&
+  const firstPartyPhrases = firstPartyOutcomeText.map(outcomeIdentityTokens);
+  const establishedByFirstParty = (value: string): boolean => {
+    const valueTokens = outcomeIdentityTokens(value);
+    return valueTokens.length > 0 && firstPartyPhrases.some(phrase => phrase.some((_, index) =>
+      valueTokens.every((token, offset) => phrase[index + offset] && outcomeTokenMatches(token, new Set([phrase[index + offset]])))));
+  };
+  const identifiers = [...new Set([...relatedEntities, ...evidenceIdentifiers].map(value => String(value || '')).filter(Boolean))];
+  const copiedEntity = identifiers.find(entity =>
+    /[a-z0-9][A-Z]|[A-Z]{2,}[A-Z][a-z]|[_:$]/.test(entity) &&
     new RegExp(`\\b${entity.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(description)
   );
   if (copiedEntity) return { reason: 'raw-related-entity-identifier', forbiddenTerms: [copiedEntity] };
+  const normalizedDescriptionText = description.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase();
+  const implementationPhrases = identifiers.flatMap(identifier => {
+    if (!/[a-z0-9][A-Z]|[A-Z]{2,}[A-Z][a-z]|[_:$./-]/.test(identifier)) return [];
+    const phrase = identifier.replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2').replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .replace(/[_:$./-]+/g, ' ').toLowerCase().replace(/\s+/g, ' ').trim();
+    return phrase.split(' ').length >= 2 ? [{ phrase, acronymPrefixed: /^[A-Z]{2,}[A-Z][a-z]/.test(identifier) }] : [];
+  });
+  const copiedInventoryPhrases = implementationPhrases.filter(({ phrase }) => {
+    const pattern = phrase.split(' ').map(token => `${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}s?`).join('\\s+');
+    return new RegExp(`\\b${pattern}\\b`, 'i').test(normalizedDescriptionText);
+  });
+  const copiedPhrases = [...new Set(copiedInventoryPhrases.map(item => item.phrase))];
+  if (copiedPhrases.length >= 2) {
+    return { reason: 'implementation-graph-inventory', forbiddenTerms: copiedPhrases };
+  }
+  if (copiedInventoryPhrases.some(item => item.acronymPrefixed)) {
+    return { reason: 'raw-related-entity-identifier', forbiddenTerms: copiedPhrases };
+  }
+  const fragmentSources = new Map<string, Set<string>>();
+  for (const identifier of identifiers.filter(value => /[a-z0-9][A-Z]|[A-Z]{2,}[A-Z][a-z]|[_:$./-]/.test(value))) {
+    const parts = identifier.replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2').replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .replace(/[_:$./-]+/g, ' ').toLowerCase().split(/\s+/).filter(Boolean);
+    const fragments = parts.slice(0, -1).map((part, index) => `${part} ${parts[index + 1]}`);
+    for (const fragment of fragments) {
+      const pattern = fragment.split(' ').map(token => `${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}s?`).join('\\s+');
+      if (establishedByFirstParty(fragment) || !new RegExp(`\\b${pattern}\\b`, 'i').test(normalizedDescriptionText)) continue;
+      const sources = fragmentSources.get(fragment) || new Set<string>(); sources.add(identifier); fragmentSources.set(fragment, sources);
+    }
+  }
+  const matchedFragments = [...fragmentSources.keys()];
+  const matchedSources = new Set([...fragmentSources.values()].flatMap(sources => [...sources]));
+  if (matchedFragments.length >= 2 && matchedSources.size >= 2) {
+    return { reason: 'implementation-graph-inventory', forbiddenTerms: matchedFragments };
+  }
+  const identifierParts = identifiers.map(identifier => identifier.replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_:$./-]+/g, ' ').toLowerCase().split(/\s+/).filter(Boolean));
+  const recurringNamespaces = new Set(identifierParts.flatMap(parts => parts.slice(0, 1)).filter((part, index, all) =>
+    part.length >= 2 && all.indexOf(part) !== index));
+  const structuralParts = new Set(identifierParts.flat().filter(part => /^(?:graph|node|edge|entry|exit|point|method|call|chain|capability|relation)/.test(part)));
+  const structuralPhrases = description.match(/\b(?:relationship\s+graphs?|graphs?\s+(?:nodes?|edges?|transitions?)|capability\s+maps?|entry\s+points?|exit\s+points?|method\s+calls?|call\s+chains?)\b/gi) || [];
+  const groundedStructuralPhrases = structuralPhrases.filter(phrase => phrase.toLowerCase().split(/\s+/)
+    .map(token => token.endsWith('s') ? token.slice(0, -1) : token)
+    .some(token => [...structuralParts].some(part => outcomeTokenMatches(token, new Set([part])))) && !establishedByFirstParty(phrase));
+  const namespacePhrases = [...recurringNamespaces].flatMap(namespace => {
+    const match = description.match(new RegExp(`\\b${namespace.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s+(?:relationship\\s+)?graphs?(?:\\s+(?:nodes?|edges?|transitions?))?\\b`, 'i'));
+    return match && !establishedByFirstParty(match[0]) ? [match[0].toLowerCase()] : [];
+  });
+  const evidenceStructuralTerms = [...new Set([...groundedStructuralPhrases.map(phrase => phrase.toLowerCase()), ...namespacePhrases])];
+  if (evidenceStructuralTerms.length >= 2 || namespacePhrases.length > 0) {
+    return { reason: 'implementation-graph-inventory', forbiddenTerms: evidenceStructuralTerms };
+  }
   const graphInventoryTerms = description.match(/\b(?:entry points?|exit points?|method calls?|call chains?|methods?|nodes?|edges?)\b/gi) || [];
   const uniqueGraphTerms = [...new Set(graphInventoryTerms.map(term => term.toLowerCase()))];
   return uniqueGraphTerms.length >= 2 ? { reason: 'implementation-graph-inventory', forbiddenTerms: uniqueGraphTerms } : undefined;

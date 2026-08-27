@@ -175,7 +175,7 @@ import {
   synchronizeCapabilityCatalogCoverage,
 } from './capability-catalog-evidence';
 import { mergeCapabilityCatalogFlowEvidence } from './capability-catalog-flow-evidence';
-import { bindUniquelySatisfiedCatalogOutcomeRequirements, capabilityCatalogCoverageFailure, capabilityCatalogOutcomeBindingFailureDetail, capabilityCatalogOutcomesMayMerge, deriveCapabilityCatalogOutcomeRequirements, uncoveredCapabilityCatalogOutcomeRequirements, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
+import { bindUniquelySatisfiedCatalogOutcomeRequirements, capabilityCatalogCoverageFailure, capabilityCatalogOutcomeBindingFailureDetail, capabilityCatalogOutcomeNameFailure, capabilityCatalogOutcomesMayMerge, deriveCapabilityCatalogOutcomeRequirements, uncoveredCapabilityCatalogOutcomeRequirements, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
 import { fitCapabilityCatalogContext } from './ai-context-budget';
 import { awaitAiOperation } from './ai-operation-timing';
 import { capabilityDescriptionBatchSize, resolveCapabilityCatalogRoute, resolveCapabilityDescriptionRoute, shouldReauthorCapabilityDescriptions, toAIContextRoute } from './ai-task-model-routing';
@@ -414,7 +414,7 @@ interface DescriptionTarget {
   operations?: string[];
   sourceAreas?: string[];
   evidenceSummary?: string[];
-  relatedEntities?: string[]; unrelatedEntities?: string[];
+  relatedEntities?: string[]; unrelatedEntities?: string[]; rawIdentifiers?: string[]; productOutcomeTerms?: string[];
   relatedDomains?: string[];
   readOnly?: boolean;
   artifactType?: string;
@@ -9586,7 +9586,7 @@ export class AnalyzerOrchestrator {
       const candidateIds = (Array.isArray(item.candidate_ids) ? item.candidate_ids : [])
         .map((value: unknown) => String(value || ''))
         .filter(value => candidatePoolForRanking.some(candidate => candidate.id === value));
-      const citedCandidates = candidatePoolForRanking.filter(candidate => candidateIds.includes(candidate.id));
+      const citedCandidates = candidatePoolForRanking.filter(candidate => candidateIds.includes(candidate.id)); const outcomeNameFailure = boundRequirement ? capabilityCatalogOutcomeNameFailure(name, boundRequirement) : undefined; if (outcomeNameFailure) { debugCatalogRejection(name, outcomeNameFailure, candidateIds); continue; }
       const reusesAcceptedOutcome = input.acceptedOutcomeNames?.some(existing => existing.toLowerCase() === name.toLowerCase()) === true;
       if (reusesAcceptedOutcome && !capabilityOutcomeMatchesEvidence(name, citedCandidates)) {
         debugCatalogRejection(name, 'accepted-outcome-evidence-mismatch', candidateIds);
@@ -10456,11 +10456,11 @@ export class AnalyzerOrchestrator {
       const boundReconciledCandidates = cycle === 1 ? bindUniquelySatisfiedCatalogOutcomeRequirements(reconciledCandidates, requiredOutcomes) : reconciledCandidates;
       const publishabilityFailures = new Map<string, number>(); const publishabilityRejections: Array<{ name: string; description?: string; reason: string; requirement_id?: string; forbidden_terms?: string[] }> = [];
       const rejectedCapabilities: SystemCapability[] = []; const cycleReconciled = boundReconciledCandidates.flatMap(capability => {
-        const descriptionTarget = this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById); const descriptionValidation = this.validateElementDescription(capability.description || '', descriptionTarget);
+      const descriptionTarget = this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById); const requirementIds = new Set((capability.criticality_factors || []).filter(factor => factor.startsWith('catalog-outcome-requirement:')).map(factor => factor.slice('catalog-outcome-requirement:'.length))); descriptionTarget.productOutcomeTerms = requiredOutcomes.filter(requirement => requirementIds.has(requirement.id)).map(requirement => requirement.firstPartyOutcomeText || requirement.statement); const descriptionValidation = this.validateElementDescription(capability.description || '', descriptionTarget);
         const failure = this.capabilityPublishabilityFailure(capability) || (!descriptionValidation.ok ? `description-${descriptionValidation.reason}` : undefined);
         if (!failure) return [capability];
         rejectedCapabilities.push(capability); publishabilityFailures.set(failure, (publishabilityFailures.get(failure) || 0) + 1);
-        const violation = capabilityDescriptionProductLanguageViolation(capability.description || '', descriptionTarget.relatedEntities || [], descriptionTarget.operations || []); const forbiddenTerms = violation?.reason && failure.endsWith(violation.reason) ? violation.forbiddenTerms : [];
+        const violation = capabilityDescriptionProductLanguageViolation(capability.description || '', descriptionTarget.relatedEntities || [], descriptionTarget.operations || [], descriptionTarget.rawIdentifiers || [], descriptionTarget.productOutcomeTerms || []); const forbiddenTerms = violation?.reason && failure.endsWith(violation.reason) ? violation.forbiddenTerms : [];
         const recorded = recordCapabilityPublishabilityRejection(catalogRejectionsByCandidate, capability, failure, forbiddenTerms); publishabilityRejections.push(recorded.feedback);
         const identity = capabilityIdentityPendingDescriptionRepair(capability, failure);
         return identity ? [identity] : [];
@@ -11997,7 +11997,7 @@ export class AnalyzerOrchestrator {
         sourceAreas.length > 0 ? `owned by: ${sourceAreas.join(', ')}` : '',
         capability.criticality ? `criticality: ${capability.criticality}` : '',
       ].filter(Boolean),
-      relatedEntities: proseEntityIds.map(id => entityNamesById?.get(id) || id),
+      relatedEntities: proseEntityIds.map(id => entityNamesById?.get(id) || id), rawIdentifiers: capability.related_entities.map(id => entityNamesById?.get(id) || id),
       unrelatedEntities: entityNamesById ? [...entityNamesById].filter(([id]) => !proseEntityIds.includes(id)).map(([, name]) => name) : [],
       relatedDomains: capability.related_domains,
       readOnly,
@@ -12173,7 +12173,7 @@ export class AnalyzerOrchestrator {
       return { ok: false, reason: 'raw-route-restatement' };
     }
     if (target.kind === 'capability') {
-      const productLanguageFailure = capabilityDescriptionProductLanguageFailure(cleaned, target.relatedEntities || [], target.operations || []); if (productLanguageFailure) return { ok: false, reason: productLanguageFailure };
+      const productLanguageFailure = capabilityDescriptionProductLanguageFailure(cleaned, target.relatedEntities || [], target.operations || [], target.rawIdentifiers || [], target.productOutcomeTerms || []); if (productLanguageFailure) return { ok: false, reason: productLanguageFailure };
       if (
         target.artifactType === 'infrastructure' &&
         /\b(?:shell|batch|powershell)\s+(?:scripts?|commands?)\b|\b(?:scripts?|source files?)\s+to\s+(?:provision|deploy|configure|manage|create|update)\b/i.test(cleaned)

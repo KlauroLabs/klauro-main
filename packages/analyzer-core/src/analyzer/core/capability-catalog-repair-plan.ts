@@ -80,8 +80,9 @@ export function supersedeUnboundPendingOutcomeDuplicates(
   pendingRequirementIdsByCapabilityId: ReadonlyMap<string, readonly string[]>,
 ): { existing: SystemCapability[]; incoming: SystemCapability[] } {
   const requirementById = new Map(requirements.map(requirement => [requirement.id, requirement]));
-  const repairedRequirements = new Set(incoming.flatMap(capability => {
-    if (!capability.description || capability.description_generation?.status === 'ai_rejected') return [];
+  const repairedRequirements = new Set([...existing, ...incoming].flatMap(capability => {
+    if (!capability.description || capability.description_generation?.status === 'ai_rejected' ||
+        capability.criticality_factors?.some(factor => factor.startsWith('catalog-evidence-rejected:'))) return [];
     const candidateIds = factors(capability, 'catalog-candidate:');
     return factors(capability, 'catalog-outcome-requirement:').filter(requirementId => {
       const requirement = requirementById.get(requirementId);

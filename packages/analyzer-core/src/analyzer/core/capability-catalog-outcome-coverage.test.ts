@@ -6,6 +6,7 @@ import {
   capabilityCatalogOutcomeBindingFailure,
   capabilityCatalogOutcomeBindingFailureDetail,
   capabilityCatalogOutcomeCoverageFailure,
+  capabilityCatalogOutcomeNameFailure,
   capabilitySatisfiesCatalogOutcomeRequirement,
   deriveCapabilityCatalogOutcomeRequirements,
   uncoveredCapabilityCatalogOutcomeRequirements,
@@ -303,4 +304,28 @@ test('removes identity prose and prior-clause references from broad supporting e
     cited(published('Give agents software comprehension', 'AI agents understand connected software behavior before making changes.'), agent),
     cited(published('Correlate static analysis with runtime evidence', 'Static code structure and runtime evidence refine behavioral understanding.'), runtime),
   ], requirements), undefined);
+});
+
+test('requires an evidence-grounded outcome anchor when a name starts with an internal subsystem identity', () => {
+  const requirement: CapabilityCatalogOutcomeRequirement = {
+    id: 'all:concept-fabric-work', statement: 'Fabric work concepts', candidateIds: ['coordination'],
+    subjectTokens: ['fabric', 'work'], subjectTokenAliases: [['fabric', 'work', 'collaborate', 'conflict']],
+    subjectAliasAnchorTokens: [['collaborate']],
+  };
+  const coordination = candidate('coordination', 'Fabric work concepts', ['reserve_overlapping_concepts', 'detect_conflicts']);
+
+  assert.equal(capabilityCatalogOutcomeNameFailure('Fabric work concepts across codebase changes', requirement),
+    'required-outcome-visible-action-missing:all:concept-fabric-work');
+  assert.equal(capabilityCatalogOutcomeNameFailure('Collaborate across overlapping code concepts', requirement), undefined);
+  assert.equal(capabilityCatalogOutcomeNameFailure('Manage Fabric work across overlapping concepts', requirement), undefined);
+  assert.equal(capabilityCatalogOutcomeNameFailure('Build a trustworthy relationship graph', {
+    id: 'graph', statement: 'build trustworthy relationship graph', candidateIds: ['graph'],
+    subjectTokens: ['build', 'graph'], requiredSubjectTerms: ['build', 'graph'],
+    subjectTokenAliases: [['build', 'graph', 'codebase']], subjectAliasAnchorTokens: [['codebase']],
+  }), undefined);
+  assert.equal(capabilityCatalogOutcomeNameFailure('Correlates static codebase analysis with runtime evidence', {
+    id: 'runtime', statement: 'correlates static runtime evidence', candidateIds: ['runtime'],
+    subjectTokens: ['correlate', 'runtime'], requiredSubjectTerms: ['correlate', 'runtime'],
+    subjectTokenAliases: [['correlate', 'runtime', 'telemetry']], subjectAliasAnchorTokens: [['telemetry']],
+  }), undefined);
 });

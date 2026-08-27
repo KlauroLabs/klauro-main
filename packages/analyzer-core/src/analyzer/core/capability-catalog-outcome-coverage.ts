@@ -1,11 +1,13 @@
 import type { SystemCapability } from '../../types/cas.types';
 import { catalogEvidenceCoverageFailure, type CapabilityCatalogProjectSignal } from './capability-catalog-evidence';
+import { CAPABILITY_PURPOSE_VERBS } from './capability-naming';
 
 export interface CapabilityCatalogOutcomeRequirement {
   audience?: 'agent' | 'human';
   audienceLabel?: string;
   candidateIds: string[];
   id: string;
+  firstPartyOutcomeText?: string;
   minimumSubjectMatches?: number;
   requiredSubjectTerms?: string[];
   subjectAliasAnchorTokens?: string[][];
@@ -159,6 +161,7 @@ export function deriveCapabilityCatalogOutcomeRequirements(
         audienceLabel: requirementAudienceLabel(clause, audience),
         candidateIds,
         id,
+        firstPartyOutcomeText: clause,
         minimumSubjectMatches: Math.min(2, groundedSubjectTokens.length),
         requiredSubjectTerms: groundedSubjectTokens,
         ...(subjectTokenAliases && aliasAnchor ? { subjectAliasAnchorTokens: [[aliasAnchor]] } : {}),
@@ -207,6 +210,23 @@ export function capabilitySemanticallySatisfiesCatalogOutcomeRequirement(
   const requiredMatches = requirement.minimumSubjectMatches ?? Math.min(2, requiredTerms.length);
   if (requiredTerms.filter(token => capabilityTokens.has(token)).length >= requiredMatches) return true;
   return capabilityMatchesSubjectAlias(capabilityTokens, requiredTerms, requirement.subjectTokenAliases, requirement.subjectAliasAnchorTokens);
+}
+
+export function capabilityCatalogOutcomeNameFailure(
+  name: string,
+  requirement: CapabilityCatalogOutcomeRequirement,
+): string | undefined {
+  const orderedNameTokens = tokens(name);
+  const leading = orderedNameTokens[0];
+  const recoveredAnchors = [...new Set((requirement.subjectAliasAnchorTokens || []).flat().map(canonicalToken))];
+  const subjectTerms = new Set((requirement.requiredSubjectTerms || requirement.subjectTokens).map(canonicalToken));
+  const rawLeading = String(name || '').toLowerCase().match(/[a-z][a-z0-9]*/)?.[0] || '';
+  const actionStem = rawLeading.replace(/(?:ing|ed|es|s)$/, '');
+  const actionHeaded = CAPABILITY_PURPOSE_VERBS.has(leading || '') || CAPABILITY_PURPOSE_VERBS.has(rawLeading) || CAPABILITY_PURPOSE_VERBS.has(actionStem);
+  if (leading && subjectTerms.has(leading) && !actionHeaded && recoveredAnchors.length > 0 && !recoveredAnchors.some(anchor => orderedNameTokens.includes(anchor))) {
+    return `required-outcome-visible-action-missing:${requirement.id}`;
+  }
+  return undefined;
 }
 
 export function capabilityCandidateCorroboratesCatalogOutcomeRequirement(

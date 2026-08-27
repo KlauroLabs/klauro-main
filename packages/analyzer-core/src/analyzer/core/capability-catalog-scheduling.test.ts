@@ -23,7 +23,8 @@ import {
   trackCapabilityCatalogRepair,
   updateCapabilityCatalogPublishabilityRepairIds,
 } from './capability-catalog-scheduling';
-import { capabilityDescriptionProductLanguageViolation } from './capability-catalog-evidence';
+import { capabilityDescriptionProductLanguageViolation, capabilityOutcomeScopeFailure } from './capability-catalog-evidence';
+import { capabilityCatalogOutcomeNameFailure } from './capability-catalog-outcome-coverage';
 
 const catalogCapability = (overrides: Partial<SystemCapability>): SystemCapability => ({
   id: 'capability',
@@ -309,6 +310,68 @@ test('product-language violations expose the exact copied terms for all live rep
     capabilityDescriptionProductLanguageViolation('Agents inspect edges and call chains before changes.', [], []),
     { reason: 'implementation-graph-inventory', forbiddenTerms: ['edges', 'call chains'] },
   );
+  assert.deepEqual(
+    capabilityDescriptionProductLanguageViolation('Runtime evidence maps CASEdge transitions to observed states.', [], [], ['CASEdge']),
+    { reason: 'raw-related-entity-identifier', forbiddenTerms: ['CASEdge'] },
+  );
+  assert.deepEqual(
+    capabilityDescriptionProductLanguageViolation('Changes resolve conflicts by analyzing CAS graph transitions.', [], [], ['CASGraphTransition']),
+    { reason: 'raw-related-entity-identifier', forbiddenTerms: ['cas graph transition'] },
+  );
+  assert.deepEqual(
+    capabilityDescriptionProductLanguageViolation('People compare capability maps and entry points across changes.', [], [], ['CapabilityMap', 'EntryPoint']),
+    { reason: 'implementation-graph-inventory', forbiddenTerms: ['capability map', 'entry point'] },
+  );
+});
+
+test('preview and compare wording requires a narrowly cited operation family', () => {
+  const broad = catalogCapability({
+    id: 'aggregate', name: 'Agent context operations', structural_label: 'Agent context operations', evidence_kind: 'behavior-surface',
+    operations: [
+      { action: 'Handle', path_or_command: 'preview_codebase_iteration', entry_point_id: 'preview', entry_point_type: 'message' },
+      { action: 'Handle', path_or_command: 'get_agent_context', entry_point_id: 'inspect', entry_point_type: 'message' },
+      { action: 'Handle', path_or_command: 'assess_change_risk', entry_point_id: 'validate', entry_point_type: 'message' },
+    ],
+  });
+  const focused = catalogCapability({
+    id: 'preview', name: 'Iteration preview', structural_label: 'Iteration preview', evidence_kind: 'behavior-surface',
+    operations: [{ action: 'Handle', path_or_command: 'preview_codebase_iteration', entry_point_id: 'preview', entry_point_type: 'message' }],
+  });
+
+  assert.deepEqual(capabilityOutcomeScopeFailure('Preview and compare codebase iterations', [broad], undefined, true), ['delivery-action-evidence-too-broad']);
+  assert.deepEqual(capabilityOutcomeScopeFailure('Preview and compare codebase iterations', [focused], undefined, true), []);
+});
+
+test('the seven-capability live catalog keeps outcomes and rejects implementation-shaped prose', () => {
+  const liveIdentifiers = ['CASEdge', 'CASNode', 'SystemCapability', 'CASEntryPoint', 'CrossCodebaseSystemGraph'];
+  const broad = catalogCapability({
+    id: 'aggregate', name: 'Agent context operations', structural_label: 'Agent context operations', evidence_kind: 'behavior-surface',
+    operations: [
+      { action: 'Handle', path_or_command: 'preview_codebase_iteration', entry_point_id: 'preview', entry_point_type: 'message' },
+      { action: 'Handle', path_or_command: 'get_agent_context', entry_point_id: 'inspect', entry_point_type: 'message' },
+      { action: 'Handle', path_or_command: 'assess_change_risk', entry_point_id: 'validate', entry_point_type: 'message' },
+    ],
+  });
+  const coordination = catalogCapability({ id: 'coordination', name: 'Fabric work concepts', structural_label: 'Fabric work concepts' });
+  const collaboration = {
+    id: 'collaboration', statement: 'collaboration across overlapping concepts', candidateIds: ['coordination'],
+    subjectTokens: ['fabric', 'work'], subjectTokenAliases: [['fabric', 'work', 'collaborate', 'conflict']],
+    subjectAliasAnchorTokens: [['collaborate']],
+  };
+
+  assert.equal(capabilityDescriptionProductLanguageViolation('Changes resolve conflicts through CAS graph transitions.', [], [], liveIdentifiers)?.reason, 'implementation-graph-inventory');
+  assert.deepEqual(capabilityOutcomeScopeFailure('Preview and compare codebase analysis iterations', [broad], undefined, true), ['delivery-action-evidence-too-broad']);
+  assert.equal(capabilityDescriptionProductLanguageViolation('People inspect CAS relationship graphs before changes.', [], [], liveIdentifiers)?.reason, 'implementation-graph-inventory');
+  assert.equal(capabilityCatalogOutcomeNameFailure('Fabric work concepts across codebase changes', collaboration), 'required-outcome-visible-action-missing:collaboration');
+  assert.equal(capabilityDescriptionProductLanguageViolation('Collaboration exposes conflicts across CAS graph nodes.', [], [], liveIdentifiers)?.reason, 'implementation-graph-inventory');
+  assert.equal(capabilityDescriptionProductLanguageViolation('Static structure maps CASEdge transitions to runtime states.', [], [], liveIdentifiers)?.reason, 'raw-related-entity-identifier');
+  assert.equal(capabilityDescriptionProductLanguageViolation('People compare capability maps and entry points across changes.', [], [], liveIdentifiers)?.reason, 'implementation-graph-inventory');
+  assert.equal(capabilityDescriptionProductLanguageViolation('Connected software relationships expose change impact and conceptual conflicts.', [], [], ['CASRelationshipGraph']), undefined);
+  assert.equal(capabilityDescriptionProductLanguageViolation('Agents understand connected software behavior before changing code.', [], [], ['AgentContext']), undefined);
+  assert.equal(capabilityDescriptionProductLanguageViolation('The CAS graph exposes connected behavior.', [], [], liveIdentifiers, ['CAS graph']), undefined);
+  assert.equal(capabilityDescriptionProductLanguageViolation('CASEdge exposes connected behavior.', [], [], ['CASEdge'], ['CAS edge relationships'])?.reason, 'raw-related-entity-identifier');
+  assert.equal(capabilityDescriptionProductLanguageViolation('SystemCapability exposes connected behavior.', [], [], ['SystemCapability'], ['The system supports a product capability'])?.reason, 'raw-related-entity-identifier');
+  assert.equal(capabilityDescriptionProductLanguageViolation('Users manage project access across teams.', [], [], ['UserConfig', 'ProjectConfig']), undefined);
 });
 
 test('renamed repairs replace pending identities by stable requirement without crossing shared-candidate slots', () => {

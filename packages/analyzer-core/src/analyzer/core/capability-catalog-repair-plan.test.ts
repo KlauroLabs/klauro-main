@@ -100,6 +100,25 @@ describe('capability catalog repair planning', () => {
     });
   });
 
+  test('uses strict bound replacements accumulated across repair cycles', () => {
+    const human = { id: 'human', statement: 'people understand behavior', audience: 'human' as const, candidateIds: ['shared'], subjectTokens: ['understand', 'behavior'] };
+    const agent = { id: 'agent', statement: 'agents understand behavior', audience: 'agent' as const, candidateIds: ['shared'], subjectTokens: ['understand', 'behavior'] };
+    const pending = { ...capability('pending', ['catalog-candidate:shared']), name: 'People and agents understand behavior' };
+    const humanBound = { ...capability('human', ['catalog-candidate:shared', 'catalog-outcome-requirement:human'], 'People understand connected software behavior.'), name: 'People understand behavior' };
+    const agentBound = { ...capability('agent', ['catalog-candidate:shared', 'catalog-outcome-requirement:agent'], 'Agents understand connected software behavior.'), name: 'Agents understand behavior' };
+    const pendingMatches = new Map([['pending', ['human', 'agent']]]);
+
+    assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates([pending, humanBound], [agentBound], [human, agent], pendingMatches), {
+      existing: [humanBound], incoming: [agentBound],
+    });
+    assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates([pending, agentBound], [humanBound], [human, agent], pendingMatches), {
+      existing: [agentBound], incoming: [humanBound],
+    });
+    assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates([pending, humanBound], [], [human, agent], pendingMatches), {
+      existing: [pending, humanBound], incoming: [],
+    });
+  });
+
   test('supersedes combined graph and runtime wording only when both bound replacements are valid', () => {
     const graph = { id: 'graph', statement: 'build trustworthy relationship graph', candidateIds: ['surface'], subjectTokens: ['build', 'graph'] };
     const runtime = { id: 'runtime', statement: 'correlate static analysis with runtime evidence', candidateIds: ['surface'], subjectTokens: ['runtime', 'evidence'] };
@@ -150,9 +169,10 @@ describe('capability catalog repair planning', () => {
     const wrongCandidate = capability('wrong-candidate', ['catalog-candidate:legacy', 'catalog-outcome-requirement:graph'], 'Builds a trustworthy graph.');
     const nonpublishable = capability('nonpublishable', ['catalog-candidate:surface', 'catalog-outcome-requirement:graph']);
     const invalidProse = capability('invalid-prose', ['catalog-candidate:surface', 'catalog-outcome-requirement:graph'], 'Provides a concise product summary.');
+    const rejectedEvidence = { ...capability('rejected-evidence', ['catalog-candidate:surface', 'catalog-outcome-requirement:graph', 'catalog-evidence-rejected:uncited'], 'Builds a trustworthy relationship graph.'), name: 'Builds a trustworthy relationship graph' };
     const pendingMatches = new Map([['pending', ['graph']]]);
 
-    for (const replacement of [wrongId, wrongCandidate, nonpublishable, invalidProse]) {
+    for (const replacement of [wrongId, wrongCandidate, nonpublishable, invalidProse, rejectedEvidence]) {
       assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates([pending], [replacement], [graph], pendingMatches), {
         existing: [pending], incoming: [replacement],
       });
