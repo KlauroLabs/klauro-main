@@ -1,7 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildCampALangsReport, _resetCampALangsCache } from './camp-a-langs-bench';
+import { assertCampLanguageParsersAvailable, buildCampALangsReport, _resetCampALangsCache } from './camp-a-langs-bench';
 import { TOP_LANGS } from './camp-a-langs';
+
+test('camp-a-langs rejects a missing promised parser before scoring', () => {
+  assert.throws(
+    () => assertCampLanguageParsersAvailable(['typescript', 'fortran'], language => language !== 'fortran'),
+    /Required structural parsers unavailable: fortran; refusing to score missing parser artifacts as semantic misses/
+  );
+});
 
 // The per-language Camp A (embeddings-RAG) vs Klauro head-to-head. Klauro answers
 // "which function calls `helper`?" structurally via extractStructure (real AST

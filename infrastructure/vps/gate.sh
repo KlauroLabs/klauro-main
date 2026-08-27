@@ -9,7 +9,7 @@ DOCKERFILE_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 GATE_MAX_AGE_MIN="${GATE_MAX_AGE_MIN:-30}"
 GATE_TIMEOUT_S="${GATE_TIMEOUT_S:-3600}"
-NATIVE_PARSER_CACHE="/opt/klauro/.gate-tools/klauro-parse"
+NATIVE_PARSER_CACHE_ROOT="/opt/klauro/.gate-tools/native-parser"
 BENCH_CAS_CACHE="/opt/klauro/.gate-tools/bench-cas"
 
 reap_stale_containers() {
@@ -129,17 +129,30 @@ if [ "$REBUILD" = "1" ] || ! docker image inspect "$GATE_IMAGE" >/dev/null 2>&1;
     "$DOCKERFILE_DIR"
 fi
 
-GATE_IMAGE_ID="$(docker image inspect -f '{{.Id}}' "$GATE_IMAGE")"
-NATIVE_PARSER_STAMP="${NATIVE_PARSER_CACHE}.image-id"
-if [ ! -x "$NATIVE_PARSER_CACHE" ] || [ "$(cat "$NATIVE_PARSER_STAMP" 2>/dev/null || true)" != "$GATE_IMAGE_ID" ]; then
+NATIVE_SOURCE_DIGEST="$(
+  cd "$DEVGATE_DIR"
+  find packages/analyzer-core/native/klauro-parse -type f ! -path '*/target/*' -print0 |
+    sort -z |
+    xargs -0 sha256sum |
+    sha256sum |
+    awk '{print $1}'
+)"
+NATIVE_ARCH="$(docker info --format '{{.Architecture}}')"
+NATIVE_CACHE_KEY="${KLAURO_GIT_SHA}-${NATIVE_ARCH}-${NATIVE_SOURCE_DIGEST}"
+NATIVE_PARSER_CACHE="${NATIVE_PARSER_CACHE_ROOT}/${NATIVE_CACHE_KEY}/klauro-parse"
+NATIVE_PARSER_DIGEST="${NATIVE_PARSER_CACHE}.sha256"
+ACTUAL_NATIVE_DIGEST="$(sha256sum "$NATIVE_PARSER_CACHE" 2>/dev/null | awk '{print $1}' || true)"
+if [ ! -x "$NATIVE_PARSER_CACHE" ] || [ "$ACTUAL_NATIVE_DIGEST" != "$(cat "$NATIVE_PARSER_DIGEST" 2>/dev/null || true)" ]; then
+  NATIVE_IMAGE="klauro-native-parser:${KLAURO_GIT_SHA}-${NATIVE_SOURCE_DIGEST:0:16}"
+  docker build --target native-parser-builder -f "$DEVGATE_DIR/apps/api/Dockerfile" -t "$NATIVE_IMAGE" "$DEVGATE_DIR"
   mkdir -p "$(dirname "$NATIVE_PARSER_CACHE")"
-  PARSER_CONTAINER="$(docker create "$GATE_IMAGE")"
+  PARSER_CONTAINER="$(docker create "$NATIVE_IMAGE")"
   trap 'docker rm -f "$PARSER_CONTAINER" >/dev/null 2>&1 || true' EXIT
-  docker cp "$PARSER_CONTAINER:/app/packages/analyzer-core/native/klauro-parse/target/release/klauro-parse" "$NATIVE_PARSER_CACHE"
+  docker cp "$PARSER_CONTAINER:/build/klauro-parse/target/release/klauro-parse" "$NATIVE_PARSER_CACHE"
   docker rm "$PARSER_CONTAINER" >/dev/null
   trap - EXIT
   chmod 755 "$NATIVE_PARSER_CACHE"
-  printf '%s' "$GATE_IMAGE_ID" > "$NATIVE_PARSER_STAMP"
+  sha256sum "$NATIVE_PARSER_CACHE" | awk '{print $1}' > "$NATIVE_PARSER_DIGEST"
 fi
 mkdir -p "$DEVGATE_DIR/packages/analyzer-core/native/klauro-parse/target/release"
 mkdir -p "$BENCH_CAS_CACHE"

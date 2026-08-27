@@ -80,7 +80,7 @@ $SSH "$DEST" '
 '
 $SSH "$DEST" "mkdir -p /opt/klauro/devgate/.proof-output && chmod a+rwx /opt/klauro/devgate/.proof-output"
 $SSH "$DEST" "cat > /opt/klauro/devgate/apps/mcp-server/.klauro-build-stamp.json" <<STAMP
-{"git_sha":"$CANDIDATE_SHORT_SHA","build_time":"$CANDIDATE_TIME"}
+{"git_sha":"$CANDIDATE_SHA","build_time":"$CANDIDATE_TIME"}
 STAMP
 
 echo "Synced gate candidate $CANDIDATE_SHORT_SHA from $CANDIDATE_SOURCE."

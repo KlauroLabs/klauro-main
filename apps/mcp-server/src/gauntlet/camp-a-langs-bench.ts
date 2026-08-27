@@ -103,6 +103,16 @@ function langSupported(lang: string): boolean {
   return !!specFor(lang) && (hasWasmGrammar(lang) || hasNativeGrammar(lang));
 }
 
+export function assertCampLanguageParsersAvailable(
+  languages: readonly string[],
+  supports: (language: string) => boolean = langSupported
+): void {
+  const missing = languages.filter(language => !supports(language));
+  if (missing.length > 0) {
+    throw new Error(`Required structural parsers unavailable: ${missing.join(', ')}; refusing to score missing parser artifacts as semantic misses`);
+  }
+}
+
 
 async function ollamaUp(): Promise<boolean> {
   try {
@@ -187,21 +197,17 @@ let cache: CampALangsReport | null = null;
 
 export async function buildCampALangsReport(): Promise<CampALangsReport> {
   if (cache) return cache;
+  assertCampLanguageParsersAvailable(TOP_LANGS.map(language => language.lang));
 
   const haveOllama = await ollamaUp();
   const models = haveOllama ? await availableEmbedModels() : [];
 
   const perLanguage: CampALangRow[] = [];
   for (const tl of TOP_LANGS) {
-
-    let klauroF1 = 0;
-    let extractedFns: { name: string; line: number }[] = [];
-    if (langSupported(tl.lang)) {
-      const ex = await extractStructure(tl.lang, tl.sample);
-      extractedFns = ex?.functions ?? [];
-      const resolved = await klauroResolve(tl);
-      klauroF1 = resolved ? f1(resolved, [tl.truth]) : 0;
-    }
+    const ex = await extractStructure(tl.lang, tl.sample);
+    const extractedFns: { name: string; line: number }[] = ex?.functions ?? [];
+    const resolved = await klauroResolve(tl);
+    const klauroF1 = resolved ? f1(resolved, [tl.truth]) : 0;
 
 
     let embeddingF1 = 0;

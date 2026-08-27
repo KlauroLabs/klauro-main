@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as path from 'path';
 import { grammarHealth } from '../../../../packages/analyzer-core/src/analyzer/core/wasm-tree-sitter';
+import { hasNativeGrammar } from '../../../../packages/analyzer-core/src/analyzer/core/native-parse';
 
 // Regression guard for the tree-sitter packaging bug that shipped grammar-less to
 // the wild: the bundle resolved `__dirname/../../../vendored-grammars`, which only
@@ -27,6 +28,13 @@ test('grammarHealth resolves the full breadth grammar set from the source tree',
   const sample = new Set(h.sample);
   assert.ok(h.dirs.length > 0, 'at least one grammar dir must resolve');
   assert.ok(sample.size >= 0); // sample is a slice; the real assertion is count above.
+});
+
+test('the exact-platform native parser artifact covers representative caller grammars', () => {
+  for (const grammar of ['r', 'erlang', 'fortran', 'powershell', 'scheme']) {
+    assert.equal(hasNativeGrammar(grammar), true,
+      `required native parser artifact is missing or built for another architecture: ${grammar}`);
+  }
 });
 
 test('a hosted analyzer build ships grammars next to dist-hosted/analyzer-service.cjs', () => {
