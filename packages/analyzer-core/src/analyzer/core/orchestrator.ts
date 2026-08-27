@@ -180,6 +180,7 @@ import { fitCapabilityCatalogContext } from './ai-context-budget';
 import { awaitAiOperation } from './ai-operation-timing';
 import { capabilityDescriptionBatchSize, resolveCapabilityCatalogRoute, resolveCapabilityDescriptionRoute, shouldReauthorCapabilityDescriptions, toAIContextRoute } from './ai-task-model-routing';
 import { capabilitiesWithoutDescriptionDisposition, type CapabilityCatalogRejection, type CapabilityCatalogRejectionsByCandidate, capabilityCatalogCycleDiagnostic, capabilityCatalogPendingRepairKeys, capabilityCatalogRepairCandidateIds, capabilityCatalogRepairEvidenceFacts, capabilityDescriptionsShareOutcome, capabilityIdentityPendingDescriptionRepair, capabilityOutcomeMatchesEvidence, capabilityTitlesShareOutcome, collectCapabilityCatalogEvidenceBatches, mergeCapabilityCatalogRepairResults, mergeUniquelyMatchedBehaviorEvidence, recordCapabilityCatalogRejection, recordCapabilityPublishabilityRejection, retryEmptyCapabilityCatalogOutcome, scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates, trackCapabilityCatalogRepair } from './capability-catalog-scheduling';
+import { capabilityCatalogFirstPartyFallback, capabilityCatalogRepairPromptEnvelope, type CapabilityCatalogRepairPromptFact } from './capability-catalog-repair-context';
 import { capabilityCatalogFocusedTask, capabilityCatalogRepairNudge, capabilityCatalogRepairPlan, captureCapabilityCatalogPendingRequirements, preserveCapabilityCatalogDescriptionIdentity, supersedeUnboundPendingOutcomeDuplicates, type CapabilityCatalogRepairBatch } from './capability-catalog-repair-plan';
 import { TRACEABLE_NODE_TYPES, computeFlowConcepts, type FlowConcept } from './flow-concepts';
 import { capabilitySubjectTokens } from './capability-audience-test';
@@ -9182,13 +9183,13 @@ export class AnalyzerOrchestrator {
     behaviorSurfaces?: SystemCapability[]; externalServices: string[];
     flowGraph: CASFlowGraph; projectTextSignal?: ProjectTextSignal;
     budgetMs: number;
-    qualityNudge?: string; exactCapabilityLimit?: number; acceptedOutcomeNames?: string[]; requiredOutcomeCount?: number; requiredOutcomeRequirements?: CapabilityCatalogOutcomeRequirement[]; repairMode?: CapabilityCatalogRepairBatch['mode']; repairIdentityName?: string;
+    qualityNudge?: string; exactCapabilityLimit?: number; acceptedOutcomeNames?: string[]; requiredOutcomeCount?: number; requiredOutcomeRequirements?: CapabilityCatalogOutcomeRequirement[]; repairMode?: CapabilityCatalogRepairBatch['mode']; repairIdentityName?: string; targetedRepairFacts?: CapabilityCatalogRepairPromptFact[]; targetedRepairCandidateMap?: Readonly<Record<string, string>>; allowDeterministicFallback?: boolean; catalogOverride?: Array<Record<string, unknown>>;
     hardDeadlineAt?: number;
     onResponse?: (raw: string) => void; onRejection?: (feedback: CapabilityCatalogRejection) => void;
     entryPoints?: CASEntryPoint[];
     nodes?: CASNode[];
   }): Promise<SystemCapability[]> {
-    const purpose = input.enhancedSystemPurpose || ({} as EnhancedSystemPurpose);
+    const purpose = input.enhancedSystemPurpose || ({} as EnhancedSystemPurpose); const targetedRepair = Boolean(input.targetedRepairFacts);
     const journeys = (input.userJourneys || [])
       .filter(journey => journey.journey_kind === 'user-facing' || journey.criticality === 'critical' || journey.criticality === 'high')
       .filter(journey => !/^run\s+(?:main|application|server)\b/i.test(journey.name))
@@ -9207,8 +9208,7 @@ export class AnalyzerOrchestrator {
       input.projectTextSignal,
       { entryPoints: input.entryPoints, nodes: input.nodes, userJourneys: input.userJourneys },
     );
-    const requiredCandidatePool = catalogRequiredEvidenceCandidates(candidatePoolForRanking);
-    const entities = catalogPromptEntities(input.dataEntities || [], candidatePoolForRanking);
+    const requiredCandidatePool = catalogRequiredEvidenceCandidates(candidatePoolForRanking); const entities = catalogPromptEntities(input.dataEntities || [], candidatePoolForRanking);
     const rankedCandidateAreas = this.rankCatalogPromptCandidates(candidatePoolForRanking, input.userJourneys || []);
     const requiredBehaviorCandidateAreas = requiredCandidatePool
       .filter(candidate => candidate.evidence_kind === 'behavior-surface' && capabilityRequiresCatalogCoverage(candidate));
@@ -9238,8 +9238,7 @@ export class AnalyzerOrchestrator {
           evidence_role_reasons: capability.evidence_role_reasons,
         };
       });
-    const services = (input.externalServices || []).slice(0, 12);
-    const promptFamilyCount = this.catalogDistinctFamilyCount(requiredCandidatePool);
+    const services = (input.externalServices || []).slice(0, 12); const promptFamilyCount = this.catalogDistinctFamilyCount(requiredCandidatePool);
     const { min: catalogCountMin, max: catalogCountMax } = catalogCountBounds(promptFamilyCount, requiredBehaviorCandidateAreas.length, requiredEntityCandidateGroups.length, input.requiredOutcomeCount || 0);
     const infrastructureResponsibilityTokens = new Set([
       'environment', 'infrastructure', 'platform', 'provision', 'resource',
@@ -9277,17 +9276,10 @@ export class AnalyzerOrchestrator {
     ].flatMap(term => String(term || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').split(/[^A-Za-z0-9]+/))
       .map(term => term.toLowerCase().trim())
       .filter(term => term.length >= 3))).slice(0, 80);
-    const topDownSignals: Record<string, unknown> = {};
-    if (signal?.productDocTitle) topDownSignals.product_title = signal.productDocTitle;
-    if (signal?.productDocSummary) topDownSignals.product_overview = signal.productDocSummary;
-    if (signal?.manifestDescription) topDownSignals.product_self_description = signal.manifestDescription;
-    const hasFirstPartyProductText = Boolean(signal?.productDocTitle || signal?.productDocSummary || signal?.manifestDescription || signal?.summary);
-    if (!hasFirstPartyProductText && purpose.inferred_description) {
-      topDownSignals.inferred_product_description = purpose.inferred_description;
-    }
-    if (productTerminology.length) topDownSignals.product_terminology = productTerminology;
-    const hasTopDown = Object.keys(topDownSignals).length > 0;
-    const aiBudget = Math.max(75000, Math.floor(input.budgetMs * 0.6));
+    const topDownSignals: Record<string, unknown> = {}; if (!targetedRepair && signal?.productDocTitle) topDownSignals.product_title = signal.productDocTitle; if (!targetedRepair && signal?.productDocSummary) topDownSignals.product_overview = signal.productDocSummary; if (!targetedRepair && signal?.manifestDescription) topDownSignals.product_self_description = signal.manifestDescription;
+    const hasFirstPartyProductText = Boolean(signal?.productDocTitle || signal?.productDocSummary || signal?.manifestDescription || signal?.summary); if (!targetedRepair && !hasFirstPartyProductText && purpose.inferred_description) topDownSignals.inferred_product_description = purpose.inferred_description;
+    if (!targetedRepair && productTerminology.length) topDownSignals.product_terminology = productTerminology;
+    const hasTopDown = Object.keys(topDownSignals).length > 0; const aiBudget = Math.max(75000, Math.floor(input.budgetMs * 0.6));
     const CATALOG_ATTEMPT_BOUND_MS = 70000;
     const CATALOG_MAX_BOUNDED_ATTEMPTS = 3;
     const requestCatalog = async (attempt: number, hintOverride?: string): Promise<string> => {
@@ -9300,7 +9292,7 @@ export class AnalyzerOrchestrator {
         ...((hintOverride || attempt > 1) ? { retry_hint: hintOverride || `Previous answer returned fewer than ${catalogCountMin} capabilities for a platform whose facts name ${candidateAreas.length} distinct route areas. Cover the DISTINCT product areas in candidate_route_areas; merge related ones, but do not collapse unrelated areas.` } : {}),
         task: `${catalogTask} ${requiredBehaviorCandidateAreas.length > 0 ? `Every product-significant behavior-surface candidate_id in required_behavior_candidate_ids must appear in at least one result; related surfaces may share one result when they express the same user outcome.` : ''} ${requiredEntityCandidateGroups.length > 0 ? `For each group in required_entity_candidate_groups, at least one candidate_id from that group must appear in a result. A result may cite several groups only when their operations support the same product outcome.` : ''} Evidence roles are authoritative constraints: product-outcome facts require coverage; unresolved and supporting-mechanism facts remain grounding evidence but are not mandatory and must not become standalone capabilities without product-outcome evidence; verification-harness facts must never become product capabilities. Internal behavior surfaces are structural evidence, not mandatory capabilities, and must be omitted unless other evidence proves they are part of the product's purpose. Product text may rank, name, or merge an ability only when at least one cited candidate's operations support that ability; never attach a product claim to an unrelated candidate. Terminality is relational evidence, not a naming template: terminal and proximal-terminal candidate areas are more likely to express what the codebase was built to deliver; upstream areas are more likely to be prerequisites. Use it for ranking and grouping, but never override contradictory product text, journey, entity, or operation evidence. ENTITY LANGUAGE CHECK: entity_names establish which evidence belongs together but may be source-level type identifiers. Names and descriptions must use PM-readable nouns from cited operations, journeys, or top_down_signals and must never expose class, interface, schema, or graph-model identifiers. Do not lead a capability name with Handle, Process, or Manage; Coordinate is valid only when evidence establishes collaboration as the outcome.`,
         style: 'Write like a product engineer or PM. Plain language. No markdown. Begin each description with its concrete product subject, never an actor scaffold. Prefer precise behavior verbs such as tracks, surfaces, exposes, manages, monitors, secures, settles, and enforces. No CRUD inventory, no "lifecycle", no route counts, no file paths, no marketing fluff. Do not use vague value nouns such as insights or metrics unless the cited evidence names them. Never expand an abbreviation from an operation identifier unless first-party product text explicitly supplies that expansion; describe the evidenced actions instead. Each description names the concrete user-facing concept the evidence supports and adds evidence-specific information beyond the capability name.',
-        product: {
+        product: targetedRepair ? { name: input.systemName } : {
           name: input.systemName, domain: purpose.primary_domain,
           concepts: (purpose.core_concepts || []).slice(0, 12),
           description: hasFirstPartyProductText ? undefined : purpose.inferred_description,
@@ -9308,11 +9300,11 @@ export class AnalyzerOrchestrator {
         },
       };
       const budgetedContext = fitCapabilityCatalogContext(additionalContextWithoutFacts, {
-        user_journeys: journeys, entities,
-        candidate_route_areas: candidateAreaFacts,
-        required_behavior_candidate_ids: requiredBehaviorCandidateAreas.map(candidate => candidate.id), accepted_outcome_names: input.acceptedOutcomeNames, required_outcomes: input.requiredOutcomeRequirements?.map(requirement => ({ requirement_id: requirement.id, audience: requirement.audience, required_audience_label: requirement.audienceLabel || requirement.audience, required_subject_terms: requirement.requiredSubjectTerms || requirement.subjectTokens, minimum_subject_matches: requirement.minimumSubjectMatches ?? Math.min(2, requirement.subjectTokens.length), outcome: requirement.statement, candidate_ids: requirement.candidateIds })),
-        required_entity_candidate_groups: requiredEntityCandidateGroups,
-        external_services: services,
+        user_journeys: targetedRepair ? [] : journeys, entities: targetedRepair ? [] : entities,
+        candidate_route_areas: input.targetedRepairFacts || candidateAreaFacts,
+        required_behavior_candidate_ids: targetedRepair ? [] : requiredBehaviorCandidateAreas.map(candidate => candidate.id), accepted_outcome_names: targetedRepair ? [] : input.acceptedOutcomeNames, required_outcomes: input.requiredOutcomeRequirements?.map(requirement => ({ requirement_id: requirement.id, audience: requirement.audience, required_audience_label: requirement.audienceLabel || requirement.audience, required_subject_terms: requirement.requiredSubjectTerms || requirement.subjectTokens, minimum_subject_matches: requirement.minimumSubjectMatches ?? Math.min(2, requirement.subjectTokens.length), outcome: requirement.statement, first_party_outcome_text: requirement.firstPartyOutcomeText, candidate_ids: targetedRepair ? Object.entries(input.targetedRepairCandidateMap || {}).filter(([, rawId]) => requirement.candidateIds.includes(rawId)).map(([opaqueId]) => opaqueId) : requirement.candidateIds })),
+        required_entity_candidate_groups: targetedRepair ? [] : requiredEntityCandidateGroups,
+        external_services: targetedRepair ? [] : services,
         ...(hasTopDown ? { top_down_signals: topDownSignals } : {}),
       });
       return this.awaitAiBoundedThenUncapped(
@@ -9329,13 +9321,13 @@ export class AnalyzerOrchestrator {
         },
       );
     };
-    let catalog: Array<Record<string, unknown>> = [];
-    let raw = '';
+    let catalog: Array<Record<string, unknown>> = input.catalogOverride || [];
+    let raw = ''; let usedDeterministicFallback = Boolean(input.catalogOverride);
     const maxInitialAttempts = input.qualityNudge ? 1 : 2;
-    for (let attempt = 1; attempt <= maxInitialAttempts; attempt++) {
+    for (let attempt = 1; !input.catalogOverride && attempt <= maxInitialAttempts; attempt++) {
       try {
         raw = await requestCatalog(attempt, input.qualityNudge);
-        const parsed = this.parseCapabilityCatalog(raw);
+        const parsed = this.parseCapabilityCatalog(raw).map(item => targetedRepair ? { ...item, candidate_ids: (Array.isArray(item.candidate_ids) ? item.candidate_ids : []).map(value => input.targetedRepairCandidateMap?.[String(value)] || '') } : item);
         if (parsed.length > catalog.length) catalog = parsed;
       } catch (error) {
         if (process.env.KLAURO_DEBUG_CATALOG) console.error(`[catalog-debug] attempt ${attempt} failed:`, error instanceof Error ? error.message : String(error));
@@ -9346,6 +9338,8 @@ export class AnalyzerOrchestrator {
         console.error(`[catalog-debug] attempt ${attempt} under-count: got ${catalog.length}, evidence-derived min ${catalogCountMin}`);
       }
     }
+    const firstPartyFallback = input.requiredOutcomeRequirements?.length === 1 ? capabilityCatalogFirstPartyFallback(input.requiredOutcomeRequirements[0]) : undefined;
+    if (!catalog.length && input.allowDeterministicFallback && firstPartyFallback) { catalog = [firstPartyFallback]; usedDeterministicFallback = true; }
     const effectiveSize = (items: Array<Record<string, unknown>>): number => {
       const sets = new Set(items.map((item, index) => {
         const entities = Array.isArray(item.entities)
@@ -9360,7 +9354,7 @@ export class AnalyzerOrchestrator {
       rankedCandidateAreas.map(candidate => String(candidate.name || '').trim()).filter(Boolean)
     ));
     const nudgeCeiling = Math.max(3, Math.floor(promptFamilyCount / 3));
-    if (!input.qualityNudge && effectiveCatalogSize >= 1 && effectiveCatalogSize <= nudgeCeiling) {
+    if (!targetedRepair && !input.qualityNudge && effectiveCatalogSize >= 1 && effectiveCatalogSize <= nudgeCeiling) {
       const distinctFamilies = allDistinctFamilies.slice(0, 10);
       const familyThreshold = effectiveCatalogSize === 1 ? 2 : effectiveCatalogSize * 3;
       if (promptFamilyCount >= familyThreshold) {
@@ -9846,7 +9840,13 @@ export class AnalyzerOrchestrator {
 
     for (const feedback of catalogRejectionFeedback.slice(0, 4)) input.onRejection?.(feedback);
     input.onResponse?.(raw);
-    return out.slice(0, input.exactCapabilityLimit ?? Math.max(16, catalogCountMax));
+    const boundedOutput = out.slice(0, input.exactCapabilityLimit ?? Math.max(16, catalogCountMax)); if (!usedDeterministicFallback && boundedOutput.length === 0 && input.allowDeterministicFallback && firstPartyFallback) return this.aiExtractCapabilityCatalog({ ...input, allowDeterministicFallback: false, catalogOverride: [firstPartyFallback] });
+    if (!usedDeterministicFallback) return boundedOutput;
+    const { entityNamesById, entityFieldsById, entityEvidenceById } = capabilityDescriptionEvidenceMaps(input.dataEntities); const fallbackOutputTerms = input.requiredOutcomeRequirements?.map(requirement => requirement.firstPartyOutcomeText || requirement.statement) || [];
+    return this.reconcileCatalogedCapabilities(boundedOutput, candidatePoolForRanking, input.dataEntities, input.entryPoints, input.nodes, input.enhancedSystemPurpose, [], input.projectTextSignal || { concepts: [], evidence: [] }, input.externalServices).filter(capability => {
+      const target = this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById);
+      target.productOutcomeTerms = fallbackOutputTerms; return this.isPublishableCapability(capability) && this.validateElementDescription(capability.description || '', target).ok && !capabilityDescriptionProductLanguageViolation(capability.description || '', target.relatedEntities || [], target.operations || [], target.rawIdentifiers || [], target.productOutcomeTerms) && !capability.criticality_factors?.some(factor => factor.startsWith('catalog-evidence-rejected:'));
+    });
   }
   private reconcileCatalogedCapabilities(
     cataloged: SystemCapability[],
@@ -10409,8 +10409,8 @@ export class AnalyzerOrchestrator {
           facts: targetedRepair ? repairPlan : [], evidenceScoped: targetedRepair, hardDeadlineAt: args.hardDeadlineAt, batchBudgetMs: 36000,
           isDeadlineError: isAiCatalogHardDeadlineExceeded,
           extract: async (plannedBatch, hardDeadlineAt) => {
-          const mode = plannedBatch[0]; const batchIds = new Set(mode?.candidateIds || []); let repairBatch = capabilityCatalogRepairEvidenceFacts(evidenceCandidates, [...batchIds], entityNamesById, catalogRejectionsByCandidate, mode?.requirements.map(requirement => requirement.id)); let batchRaw = ''; const batchEntityIds = new Set(evidenceCandidates.filter(candidate => batchIds.has(candidate.id)).flatMap(candidate => candidate.related_entities || [])); const batchRejections: CapabilityCatalogRejection[] = [];
-          const extractBatch = (qualityNudge?: string) => this.aiExtractCapabilityCatalog({
+          const mode = plannedBatch[0]; const batchIds = new Set(mode?.candidateIds || []); const buildPromptRepairEnvelope = () => capabilityCatalogRepairPromptEnvelope(evidenceCandidates, [...batchIds], mode?.requirements || [], catalogRejectionsByCandidate, entityNamesById); let promptRepairEnvelope = buildPromptRepairEnvelope(); let repairBatch = capabilityCatalogRepairEvidenceFacts(evidenceCandidates, [...batchIds], entityNamesById, catalogRejectionsByCandidate, mode?.requirements.map(requirement => requirement.id)); let batchRaw = ''; const batchEntityIds = new Set(evidenceCandidates.filter(candidate => batchIds.has(candidate.id)).flatMap(candidate => candidate.related_entities || [])); const batchRejections: CapabilityCatalogRejection[] = [];
+          const extractBatch = (qualityNudge?: string, allowDeterministicFallback = false) => this.aiExtractCapabilityCatalog({
           systemName: args.systemName,
           enhancedSystemPurpose: args.enhancedSystemPurpose,
           frameworks: args.frameworks,
@@ -10421,14 +10421,14 @@ export class AnalyzerOrchestrator {
           flowGraph: args.flowGraph,
           projectTextSignal: args.projectTextSignal,
           budgetMs: args.budgetMs,
-          hardDeadlineAt, exactCapabilityLimit: targetedRepair ? 1 : undefined, requiredOutcomeCount: targetedRepair ? mode?.requirements.length || 0 : requiredOutcomes.length, requiredOutcomeRequirements: mode?.requirements.length ? mode.requirements : undefined, repairMode: mode?.mode, repairIdentityName: mode?.mode === 'description' ? mode.identity.name : undefined,
+          hardDeadlineAt, exactCapabilityLimit: targetedRepair ? 1 : undefined, requiredOutcomeCount: targetedRepair ? mode?.requirements.length || 0 : requiredOutcomes.length, requiredOutcomeRequirements: mode?.requirements.length ? mode.requirements : undefined, repairMode: mode?.mode, repairIdentityName: mode?.mode === 'description' ? mode.identity.name : undefined, targetedRepairFacts: targetedRepair ? promptRepairEnvelope.facts : undefined, targetedRepairCandidateMap: targetedRepair ? promptRepairEnvelope.candidateMap : undefined, allowDeterministicFallback,
           entryPoints: args.entryPoints,
           nodes: args.nodes,
           onResponse: raw => { batchRaw = raw; }, onRejection: feedback => { batchRejections.push(feedback); const recorded = recordCapabilityCatalogRejection(catalogRejectionsByCandidate, feedback); extractionRejections.push(recorded.explanation); },
           ...(qualityNudge ? { qualityNudge } : {}),
           });
-          const initialNudge = mode ? capabilityCatalogRepairNudge(mode, repairBatch, qualityFailure, audienceRepairFeedback) : cycle > 1 ? `Previous catalog failed a quality check (${qualityFailure}). ${audienceRepairFeedback || ''} Return a full replacement catalog.` : undefined; let batchExtracted = await extractBatch(initialNudge);
-          batchExtracted = await retryEmptyCapabilityCatalogOutcome({ initial: batchExtracted, candidateIds: [...batchIds], rejections: batchRejections, requirement: mode?.mode === 'outcome' ? mode.requirements[0] : undefined, record: feedback => { const recorded = recordCapabilityCatalogRejection(catalogRejectionsByCandidate, feedback); extractionRejections.push(recorded.explanation); }, retry: async () => { repairBatch = capabilityCatalogRepairEvidenceFacts(evidenceCandidates, [...batchIds], entityNamesById, catalogRejectionsByCandidate, mode?.requirements.map(requirement => requirement.id)); return extractBatch(capabilityCatalogRepairNudge(mode!, repairBatch, qualityFailure)); } });
+          const initialNudge = mode ? capabilityCatalogRepairNudge(mode, promptRepairEnvelope.facts) : cycle > 1 ? 'Previous catalog failed a quality check. Return a full replacement catalog.' : undefined; let batchExtracted = await extractBatch(initialNudge);
+          batchExtracted = await retryEmptyCapabilityCatalogOutcome({ initial: batchExtracted, candidateIds: [...batchIds], rejections: batchRejections, requirement: mode?.mode === 'outcome' ? mode.requirements[0] : undefined, record: feedback => { const recorded = recordCapabilityCatalogRejection(catalogRejectionsByCandidate, feedback); extractionRejections.push(recorded.explanation); }, retry: async () => { repairBatch = capabilityCatalogRepairEvidenceFacts(evidenceCandidates, [...batchIds], entityNamesById, catalogRejectionsByCandidate, mode?.requirements.map(requirement => requirement.id)); promptRepairEnvelope = buildPromptRepairEnvelope(); return extractBatch(capabilityCatalogRepairNudge(mode!, promptRepairEnvelope.facts), true); } });
           if (!extractionRaw) extractionRaw = batchRaw;
           return mode?.mode === 'description' && batchExtracted[0]
             ? [preserveCapabilityCatalogDescriptionIdentity(mode.identity, batchExtracted[0])]

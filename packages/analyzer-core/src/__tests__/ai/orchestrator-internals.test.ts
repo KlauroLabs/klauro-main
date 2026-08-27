@@ -8276,6 +8276,106 @@ describe('top-down capability evidence (C2)', () => {
     }
   });
 
+  it('keeps raw repair evidence server-side while resolving opaque prompt candidate ids for validation', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    const contexts: any[] = [];
+    const responses = ['candidate_1', 'capability_mcp'];
+    const requirement: any = {
+      id: 'human:behavior-understand', audience: 'human', audienceLabel: 'people',
+      statement: 'Explore software behavior for people',
+      firstPartyOutcomeText: 'People explore connected software behavior and change risk before modifying related components.',
+      subjectTokens: ['understand', 'software', 'behavior'], requiredSubjectTerms: ['understand', 'behavior'],
+      minimumSubjectMatches: 2, candidateIds: ['capability_mcp'],
+    };
+    try {
+      const results = [];
+      for (const candidateId of responses) {
+        (aiService as any).generateComponentDescription = async (input: any) => {
+          contexts.push(input.additionalContext);
+          return JSON.stringify({ capabilities: [{
+            requirement_id: requirement.id, name: requirement.statement,
+            description: requirement.firstPartyOutcomeText, category: 'core', candidate_ids: [candidateId],
+          }] });
+        };
+        results.push(await orch.aiExtractCapabilityCatalog({
+          systemName: 'Product', enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: ['CrossCodebaseSystemGraph'] },
+          frameworks: ['KlauroConfig'], userJourneys: [], dataEntities: [{ id: 'CASEdge', name: 'CASEdge' }],
+          candidateCapabilities: [{
+            id: 'capability_mcp', name: 'Explore connected software behavior', structural_label: 'CrossCodebaseSystemGraph', category: 'core',
+            related_entities: ['CASEdge'], related_domains: ['CAS'], evidence_examples: ['get_cross_codebase_system_graph'],
+            operations: [{ entry_point_id: 'graph', entry_point_type: 'message', action: 'Inspect software behavior' }],
+          }, ...['RawArchitectureFamily', 'RawRuntimeFamily', 'RawStorageFamily', 'RawDeliveryFamily'].map((name, index) => ({
+            id: `raw_family_${index}`, name, category: 'core' as const, evidence_role: 'product-outcome' as const,
+            related_entities: [], related_domains: [], operations: [{ entry_point_id: `raw_${index}`, entry_point_type: 'message' as const, action: `HandleInternalFamily${index}` }],
+          }))],
+          externalServices: [], flowGraph: { capability_candidates: [] }, projectTextSignal: {
+            concepts: [], evidence: [], productDocSummary: requirement.firstPartyOutcomeText,
+          }, budgetMs: 30000, exactCapabilityLimit: 1, requiredOutcomeRequirements: [requirement], repairMode: 'outcome',
+          targetedRepairFacts: [{
+            candidate_id: 'candidate_1', first_party_outcomes: [requirement.firstPartyOutcomeText],
+            observable_actions: ['inspect software behavior'], prior_rejections: [], required_audience_labels: ['people'],
+            required_subject_terms: ['understand', 'behavior'], minimum_subject_matches: 2,
+          }], targetedRepairCandidateMap: { candidate_1: 'capability_mcp' },
+        }));
+      }
+
+      expect(results[0]).toHaveLength(1);
+      expect(results[0][0].criticality_factors).toContain('catalog-candidate:capability_mcp');
+      expect(results[1]).toEqual([]);
+      const serialized = JSON.stringify(contexts[0]);
+      expect(serialized).toContain('candidate_1');
+      expect(serialized).not.toContain('capability_mcp');
+      expect(serialized).not.toContain('CrossCodebaseSystemGraph');
+      expect(serialized).not.toContain('CASEdge');
+      expect(serialized).not.toContain('KlauroConfig');
+      expect(serialized).not.toContain('RawArchitectureFamily');
+      expect(contexts).toHaveLength(2);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
+  it('uses exact first-party outcome text as a deterministic fallback only through the normal validators', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({ capabilities: [] });
+    const baseRequirement: any = {
+      id: 'human:behavior-understand', audience: 'human', audienceLabel: 'people',
+      statement: 'Explore software behavior for people', subjectTokens: ['understand', 'software', 'behavior'],
+      requiredSubjectTerms: ['understand', 'behavior'], minimumSubjectMatches: 2, candidateIds: ['understanding'],
+    };
+    const baseInput: any = {
+      systemName: 'Product', enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: [] },
+      frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [{
+        id: 'understanding', name: 'Explore software behavior', category: 'core', related_entities: [], related_domains: ['software'],
+        operations: [{ entry_point_id: 'explore', entry_point_type: 'message', action: 'Inspect software behavior' }],
+      }], externalServices: [], flowGraph: { capability_candidates: [] }, projectTextSignal: { concepts: [], evidence: [] },
+      budgetMs: 30000, exactCapabilityLimit: 1, repairMode: 'outcome', allowDeterministicFallback: true,
+    };
+    try {
+      const safe = await orch.aiExtractCapabilityCatalog({
+        ...baseInput, projectTextSignal: { concepts: [], evidence: [], productDocSummary: 'People explore connected software behavior and change risk before modifying related components.' }, requiredOutcomeRequirements: [{
+          ...baseRequirement,
+          firstPartyOutcomeText: 'People explore connected software behavior and change risk before modifying related components.',
+        }],
+      });
+      const unsafe = await orch.aiExtractCapabilityCatalog({
+        ...baseInput,
+        dataEntities: [{ id: 'edge', name: 'CASEdge' }, { id: 'graph', name: 'CrossCodebaseSystemGraph' }, { id: 'config', name: 'KlauroConfig' }],
+        candidateCapabilities: [{ ...baseInput.candidateCapabilities[0], related_entities: ['edge', 'graph', 'config'] }],
+        projectTextSignal: { concepts: [], evidence: [], productDocSummary: 'People inspect software behavior before changing it.' }, requiredOutcomeRequirements: [{
+          ...baseRequirement,
+          firstPartyOutcomeText: 'People inspect CASEdge nodes and CrossCodebaseSystemGraph entry points before changing KlauroConfig.',
+        }],
+      });
+
+      expect(safe).toHaveLength(1);
+      expect(safe[0].description).toContain('People explore connected software behavior');
+      expect(unsafe).toEqual([]);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
   it('does not preserve an accepted delivery-surface title that still fails the product outcome contract', async () => {
     const original = (aiService as any).generateComponentDescription;
     (aiService as any).generateComponentDescription = async () => JSON.stringify({

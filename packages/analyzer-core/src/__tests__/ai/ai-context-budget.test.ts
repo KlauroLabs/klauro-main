@@ -81,4 +81,74 @@ describe('AI context budgeting', () => {
     expect(retainedGroups).toHaveLength(37);
     expect(retainedGroups.every(group => group.some(candidateId => includedIds.has(candidateId)))).toBe(true);
   });
+
+  it('preserves sanitized targeted-repair facts under budget pressure without restoring raw evidence fields', () => {
+    const result = fitCapabilityCatalogContext({
+      task: 'Repair one required product outcome.',
+    }, {
+      user_journeys: Array.from({ length: 40 }, (_, index) => ({ name: `Journey ${index} ${'x'.repeat(200)}` })),
+      entities: Array.from({ length: 40 }, (_, index) => ({ name: `RawEntity${index}`, fields: ['secret'] })),
+      candidate_route_areas: [{
+        candidate_id: 'candidate_1',
+        first_party_outcomes: ['People inspect software behavior and change risk before modifying connected code.'],
+        observable_actions: ['compare proposed changes', 'inspect software behavior'],
+        required_audience_labels: ['people'],
+        required_subject_terms: ['understand', 'behavior'],
+        minimum_subject_matches: 2,
+        prior_rejections: [{ reason: 'outcome-scope-unsupported', requirement_id: 'human:understand', missing_audience: 'people' }],
+        family: 'CrossCodebaseSystemGraph', entity_names: ['CASEdge'], operations: ['read KlauroConfig'],
+      }],
+      required_behavior_candidate_ids: ['candidate_1'],
+      required_outcomes: [{
+        requirement_id: 'human:understand', audience: 'human', required_audience_label: 'people',
+        required_subject_terms: ['understand', 'behavior'], minimum_subject_matches: 2,
+        outcome: 'people understand behavior',
+        first_party_outcome_text: 'People inspect software behavior and change risk before modifying connected code.',
+        candidate_ids: ['candidate_1'],
+      }],
+      external_services: [],
+    }, { AI_MAX_CONTEXT_LENGTH: '4096' } as NodeJS.ProcessEnv);
+    const serialized = JSON.stringify(result.context);
+    const [candidate] = result.context.facts.candidate_route_areas as Array<Record<string, unknown>>;
+
+    expect(candidate).toEqual(expect.objectContaining({
+      candidate_id: 'candidate_1', required_audience_labels: ['people'],
+      required_subject_terms: ['understand', 'behavior'], minimum_subject_matches: 2,
+    }));
+    expect(result.context.facts.required_outcomes).toEqual([expect.objectContaining({
+      first_party_outcome_text: 'People inspect software behavior and change risk before modifying connected code.',
+    })]);
+    expect(serialized).not.toContain('CrossCodebaseSystemGraph');
+    expect(serialized).not.toContain('CASEdge');
+    expect(serialized).not.toContain('KlauroConfig');
+    expect(result.byteLength).toBeLessThanOrEqual(resolveAIInputByteBudget({ AI_MAX_CONTEXT_LENGTH: '4096' } as NodeJS.ProcessEnv));
+  });
+
+  it('keeps every opaque repair id and required binding field within the aggregate byte cap', () => {
+    const candidates = Array.from({ length: 12 }, (_, index) => ({
+      candidate_id: `candidate_${index + 1}`,
+      first_party_outcomes: [`People inspect software behavior ${'safeword '.repeat(180)}`],
+      observable_actions: Array.from({ length: 8 }, () => `inspect software behavior ${'detail '.repeat(20)}`),
+      required_audience_labels: ['people'], required_subject_terms: ['inspect', 'software', 'behavior'],
+      minimum_subject_matches: 2,
+      prior_rejections: Array.from({ length: 4 }, () => ({ reason: `missing-subject-${'detail'.repeat(20)}`, missing_audience: 'people', missing_subject_terms: ['inspect', 'behavior'] })),
+    }));
+    const env = { AI_MAX_CONTEXT_LENGTH: '4096' } as NodeJS.ProcessEnv;
+    const result = fitCapabilityCatalogContext({ task: `Repair outcomes ${'instruction '.repeat(900)}` }, {
+      candidate_route_areas: candidates,
+      required_outcomes: [{
+        requirement_id: 'human:understand', audience: 'human', required_audience_label: 'people',
+        required_subject_terms: ['inspect', 'software', 'behavior'], minimum_subject_matches: 2,
+        outcome: 'people inspect software behavior', first_party_outcome_text: `People inspect software behavior ${'context '.repeat(300)}`,
+        candidate_ids: candidates.map(candidate => candidate.candidate_id),
+      }],
+    }, env);
+
+    const retained = result.context.facts.candidate_route_areas as Array<Record<string, unknown>>;
+    expect(result.byteLength).toBeLessThanOrEqual(resolveAIInputByteBudget(env));
+    expect(retained.map(candidate => candidate.candidate_id)).toEqual(candidates.map(candidate => candidate.candidate_id));
+    expect(retained.every(candidate => Array.isArray(candidate.required_audience_labels) && candidate.required_audience_labels[0] === 'people')).toBe(true);
+    expect(retained.every(candidate => candidate.minimum_subject_matches === 2)).toBe(true);
+    expect(retained.every(candidate => JSON.stringify(candidate).includes('CrossCodebaseSystemGraph'))).toBe(false);
+  });
 });

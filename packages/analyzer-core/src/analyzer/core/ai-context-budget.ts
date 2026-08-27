@@ -1,3 +1,5 @@
+import { compactCapabilityCatalogRepairPromptFact, shrinkCapabilityCatalogRepairPromptToBudget } from './capability-catalog-repair-context';
+
 const DEFAULT_INPUT_TOKEN_BUDGET = 8000;
 const DEFAULT_BYTES_PER_TOKEN = 3;
 const PROMPT_ENVELOPE_BYTES = 2000;
@@ -48,6 +50,8 @@ function boundedTextArray(value: unknown, limit: number, maxLength: number): str
 
 function compactCandidate(value: unknown, required: boolean): Record<string, unknown> {
   const candidate = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  const repairFact = compactCapabilityCatalogRepairPromptFact(candidate, required);
+  if (repairFact) return repairFact;
   return {
     candidate_id: boundedText(candidate.candidate_id, 180),
     family: boundedText(candidate.family, required ? 120 : 180),
@@ -121,7 +125,10 @@ export function fitCapabilityCatalogContext<T extends Record<string, unknown>>(
       .slice(0, 1))
     .filter(group => group.length > 0);
   const requiredBehaviorIdSet = new Set(requiredBehaviorIds);
-  const requiredIds = new Set([...requiredBehaviorIds, ...requiredEntityGroups.flat()]);
+  const targetedRepairIds = candidateValues.flatMap(value => value && typeof value === 'object' &&
+    ('first_party_outcomes' in value || 'observable_actions' in value || 'required_subject_terms' in value)
+    ? [boundedText((value as Record<string, unknown>).candidate_id, 180)] : []);
+  const requiredIds = new Set([...requiredBehaviorIds, ...requiredEntityGroups.flat(), ...targetedRepairIds]);
   const candidates = candidateValues.map(value => {
     const candidateId = boundedText(
       value && typeof value === 'object' ? (value as Record<string, unknown>).candidate_id : '',
@@ -139,6 +146,7 @@ export function fitCapabilityCatalogContext<T extends Record<string, unknown>>(
       required_subject_terms: boundedTextArray(requirement.required_subject_terms, 16, 80),
       minimum_subject_matches: Math.max(0, Math.min(16, Number(requirement.minimum_subject_matches) || 0)),
       outcome: boundedText(requirement.outcome, 400),
+      ...(requirement.first_party_outcome_text ? { first_party_outcome_text: boundedText(requirement.first_party_outcome_text, 1200) } : {}),
       candidate_ids: boundedTextArray(requirement.candidate_ids, candidateValues.length, 180).filter(candidateId => candidateIdSet.has(candidateId)),
     };
   });
@@ -187,6 +195,7 @@ export function fitCapabilityCatalogContext<T extends Record<string, unknown>>(
     const candidateId = String(removed.candidate_id || '');
     omittedCandidateIds.unshift(candidateId);
   }
+  if (targetedRepairIds.length > 0) shrinkCapabilityCatalogRepairPromptToBudget(compactBase, boundedFacts, maxBytes, () => byteLength(buildContext()));
   const context = buildContext();
   return {
     context,

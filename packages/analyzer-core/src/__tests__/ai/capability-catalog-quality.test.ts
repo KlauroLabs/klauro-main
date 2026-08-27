@@ -402,8 +402,8 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     });
     const args: any = gateArgs(localOrch);
     args.candidateSnapshot = [
-      cap({ id: 'graph', name: 'Trustworthy relationship graph', structural_label: 'Trustworthy relationship graph', operations: anchorOp('graph') }),
-      cap({ id: 'understanding', name: 'Explore connected software behavior', structural_label: 'Software behavior exploration', operations: anchorOp('understanding') }),
+      cap({ id: 'graph', name: 'Trustworthy relationship graph', structural_label: 'Trustworthy relationship graph', evidence_examples: ['CrossCodebaseSystemGraph', 'CASEdge'], operations: anchorOp('graph') }),
+      cap({ id: 'understanding', name: 'Explore connected software behavior', structural_label: 'Software behavior exploration', evidence_examples: ['KlauroConfig'], operations: anchorOp('understanding') }),
       cap({ id: 'collaboration', name: 'Concurrent collaboration', structural_label: 'Real-time collaboration', operations: anchorOp('collaboration') }),
       cap({ id: 'runtime', name: 'Runtime evidence correlation', structural_label: 'Runtime evidence correlation', operations: anchorOp('runtime') }),
     ];
@@ -469,6 +469,11 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(understandingCalls.every(call => call.qualityNudge.includes('required_audience_label') && call.qualityNudge.includes('required_subject_terms'))).toBe(true);
     expect(understandingCalls.filter(call => call.requiredOutcomeRequirements[0].audience === 'human')[1].qualityNudge).toContain('missing_audience');
     expect(understandingCalls.filter(call => call.requiredOutcomeRequirements[0].audience === 'agent')[1].qualityNudge).toContain('missing_subject_terms');
+    const targetedPromptFacts = JSON.stringify(calls.slice(1).flatMap(call => call.targetedRepairFacts || []));
+    expect(targetedPromptFacts).toContain('candidate_1');
+    expect(targetedPromptFacts).not.toContain('CrossCodebaseSystemGraph');
+    expect(targetedPromptFacts).not.toContain('CASEdge');
+    expect(targetedPromptFacts).not.toContain('KlauroConfig');
     expect(emptyGraphAttempts).toBe(2);
   });
 
@@ -507,10 +512,9 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
     expect(out).toEqual(repaired);
     expect(calls).toHaveLength(2);
-    expect(calls[1].qualityNudge).toContain('View industry reports');
-    expect(calls[1].qualityNudge).toContain('marketing-language');
-    expect(calls[1].qualityNudge).toContain('Browse products');
-    expect(calls[1].qualityNudge).toContain('missing');
+    expect(calls[1].qualityNudge).toBe('Previous catalog failed a quality check. Return a full replacement catalog.');
+    expect(calls[1].qualityNudge).not.toContain('View industry reports');
+    expect(calls[1].qualityNudge).not.toContain('Browse products');
   });
 
   it('does not accept grounded identities until their descriptions are publishable', async () => {
@@ -552,7 +556,8 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(args);
 
     expect(calls).toHaveLength(2);
-    expect(calls[1].qualityNudge).toContain('publishable description repair');
+    expect(calls[1].qualityNudge).toContain('stable accepted identity');
+    expect(calls[1].qualityNudge).not.toContain(initial[0].name);
     expect(out).toHaveLength(6);
     expect(out.find(capability => capability.name === repaired.name)?.description).toBe(repaired.description);
     localOrch.finalizeSystemCapabilityNames(out, [], args.enhancedSystemPurpose);
