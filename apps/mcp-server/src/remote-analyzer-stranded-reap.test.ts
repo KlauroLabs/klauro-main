@@ -5,7 +5,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as http from 'node:http';
 import { execFileSync } from 'node:child_process';
-import { createRemoteAnalyzerHttpServer } from './remote-analyzer-service';
+import { analysisAttemptFenceResponse } from './analysis-attempt-fence';
+import { createRemoteAnalyzerHttpServer, firstFailedStructuralAnalysisLayer } from './remote-analyzer-service';
 import { analyzeCodebaseRemotely } from './remote-sync-client';
 
 function git(repo: string, args: string[]): void {
@@ -32,6 +33,70 @@ function request(port: number, method: string, route: string, body?: unknown, to
     else req.end();
   });
 }
+
+test('only failed structural layers abort background publication', () => {
+  assert.equal(firstFailedStructuralAnalysisLayer([
+    { layer: 'L4', error: 'capability comprehension failed' },
+    { layer: 'L5', error: 'narrative enrichment failed' },
+  ]), undefined);
+  assert.deepEqual(firstFailedStructuralAnalysisLayer([
+    { layer: 'L4', error: 'capability comprehension failed' },
+    { layer: 'L2', error: 'relationship extraction failed' },
+  ]), { layer: 'L2', error: 'relationship extraction failed' });
+});
+
+test('attempt fence never publishes a response from a superseded generation', () => {
+  const before = {
+    state: 'succeeded' as const,
+    trigger: 'analyze' as const,
+    analysis_revision: 10,
+    started_at: '2026-08-27T10:00:00.000Z',
+    finished_at: '2026-08-27T10:01:00.000Z',
+  };
+  const identity = { project_id: 'project-1', analysis_id: 'analysis-1' };
+  const readyLayers = ['L0', 'L1', 'L2', 'L3'].map(layer => ({ layer, status: 'ready' }));
+
+  const failed = analysisAttemptFenceResponse(before, {
+    state: 'failed',
+    trigger: 'analyze',
+    analysis_revision: 11,
+    started_at: '2026-08-27T11:00:00.000Z',
+    finished_at: '2026-08-27T11:01:00.000Z',
+    reason: 'new generation failed',
+  }, {
+    analyzed_at: '2026-08-27T10:00:30.000Z',
+    layers_ready: { layers: readyLayers },
+  }, '2026-08-27T10:00:30.000Z', identity);
+  assert.equal(failed?.status, 'failed');
+
+  const succeeded = {
+    state: 'succeeded' as const,
+    trigger: 'analyze' as const,
+    analysis_revision: 12,
+    started_at: '2026-08-27T12:00:00.000Z',
+    finished_at: '2026-08-27T12:01:00.000Z',
+  };
+  const currentEntry = {
+    analyzed_at: '2026-08-27T12:00:30.000Z',
+    layers_ready: { layers: readyLayers },
+  };
+  const staleSucceeded = analysisAttemptFenceResponse(
+    before,
+    succeeded,
+    currentEntry,
+    '2026-08-27T10:00:30.000Z',
+    identity,
+  );
+  assert.equal(staleSucceeded?.status, 'populating');
+  const currentSucceeded = analysisAttemptFenceResponse(
+    before,
+    succeeded,
+    currentEntry,
+    currentEntry.analyzed_at,
+    identity,
+  );
+  assert.equal(currentSucceeded, undefined);
+});
 
 /** Mirrors remote-analyzer-service.ts's own (unexported) workspacePath/
  *  projectAttemptRecordPath/safeName — the on-disk sidecar layout is a

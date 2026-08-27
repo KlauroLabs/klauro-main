@@ -20,7 +20,7 @@ test('account telemetry access resolves canonical analysis ids and rejects cross
     const project = await accounts.createProject(owner.user.id, workspace.id, { name: 'Runtime API' });
 
     const preAnalysis = await resolveAuthorizedTelemetryProject(accounts, `user:${owner.user.id}`, project.id);
-    assert.deepEqual(preAnalysis, { requested_id: project.id, storage_id: project.id });
+    assert.deepEqual(preAnalysis, { kind: 'hosted_project', requested_id: project.id, storage_id: project.id });
     assert.deepEqual(await resolveAuthorizedTelemetryProject(accounts, 'shared-token', project.id), preAnalysis);
     assert.equal(await resolveAuthorizedTelemetryProject(accounts, `user:${outsider.user.id}`, project.id), null);
     assert.equal(await resolveAuthorizedTelemetryProject(accounts, `user:${owner.user.id}`, '/arbitrary/server/path'), null);
@@ -28,12 +28,33 @@ test('account telemetry access resolves canonical analysis ids and rejects cross
     await ingestTelemetryBatch(null, project.id, [{ event_id: 'before-analysis', kind: 'request', route: '/orders' }]);
     await accounts.setProjectAnalysisId(owner.user.id, project.id, 'acct_canonical_analysis');
     const analyzed = await resolveAuthorizedTelemetryProject(accounts, `user:${owner.user.id}`, project.id);
-    assert.deepEqual(analyzed, { requested_id: project.id, storage_id: 'acct_canonical_analysis' });
+    assert.deepEqual(analyzed, { kind: 'hosted_project', requested_id: project.id, storage_id: 'acct_canonical_analysis' });
     assert.deepEqual(await resolveAuthorizedTelemetryProject(accounts, 'shared-token', project.id), analyzed);
     assert.equal((await loadIngestedTelemetry('acct_canonical_analysis')).length, 1);
   } finally {
     if (previousStorage === undefined) delete process.env.KLAURO_STORAGE_PATH;
     else process.env.KLAURO_STORAGE_PATH = previousStorage;
+    await fs.remove(root);
+  }
+});
+
+test('hosted telemetry storage preserves an authorized explicit workspace key', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-explicit-telemetry-storage-'));
+  try {
+    const accounts = new AccountStore(root);
+    const explicitWorkspace = path.join(root, 'project');
+    const resolved = await resolveAuthorizedHostedTelemetryStorage(
+      accounts,
+      '127.0.0.1',
+      explicitWorkspace,
+      id => path.join(root, 'workspaces', id),
+    );
+    assert.deepEqual(resolved, {
+      requested_id: explicitWorkspace,
+      analysis_id: explicitWorkspace,
+      storage_key: explicitWorkspace,
+    });
+  } finally {
     await fs.remove(root);
   }
 });
@@ -50,6 +71,8 @@ test('hosted telemetry storage migrates legacy identities into the canonical ana
     const workspace = (await accounts.listWorkspaces(owner.user.id))[0];
     const project = await accounts.createProject(owner.user.id, workspace.id, { name: 'Runtime API' });
     await ingestTelemetryBatch(null, project.id, [{ event_id: 'project-key', kind: 'request', route: '/orders' }]);
+    const projectWorkspace = path.join(root, 'workspaces', project.id);
+    await ingestTelemetryBatch(null, projectWorkspace, [{ event_id: 'project-workspace-key', kind: 'request', route: '/orders' }]);
     const analysisId = 'acct_canonical_analysis';
     await accounts.setProjectAnalysisId(owner.user.id, project.id, analysisId);
     await resolveAuthorizedTelemetryProject(accounts, `user:${owner.user.id}`, project.id);
@@ -66,8 +89,9 @@ test('hosted telemetry storage migrates legacy identities into the canonical ana
       analysis_id: analysisId,
       storage_key: canonicalWorkspace,
     });
-    assert.equal((await loadIngestedTelemetry(canonicalWorkspace)).length, 2);
+    assert.equal((await loadIngestedTelemetry(canonicalWorkspace)).length, 3);
     assert.equal((await loadIngestedTelemetry(project.id)).length, 0);
+    assert.equal((await loadIngestedTelemetry(projectWorkspace)).length, 0);
     assert.equal((await loadIngestedTelemetry(analysisId)).length, 0);
     assert.equal(await resolveAuthorizedHostedTelemetryStorage(
       accounts,

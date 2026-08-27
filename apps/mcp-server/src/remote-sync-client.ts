@@ -312,7 +312,7 @@ export async function waitForRemoteAnalysis(
       analysis_revision?: number;
       error?: string;
       failed_layers?: Array<{ layer?: string; error?: string }>;
-      last_attempt?: { error?: string; reason?: string };
+      last_attempt?: { state?: string; error?: string; reason?: string };
       summary?: { node_count?: number; edge_count?: number };
     };
     if (!statusResponse.ok) {
@@ -333,10 +333,20 @@ export async function waitForRemoteAnalysis(
       });
       lastStatusTimingAt = Date.now();
     }
+    const comprehensionOnlyFailure = Boolean(statusPayload.failed_layers?.length)
+      && statusPayload.failed_layers!.every(layer => layer.layer === 'L4' || layer.layer === 'L5');
     const structuralResultAvailable = lastStatus === 'failed'
       && readinessRequirement === 'structural'
-      && Boolean(statusPayload.failed_layers?.length)
-      && statusPayload.failed_layers!.every(layer => layer.layer === 'L5');
+      && statusPayload.last_attempt?.state === 'succeeded'
+      && comprehensionOnlyFailure;
+    if (lastStatus === 'failed'
+      && readinessRequirement === 'structural'
+      && statusPayload.last_attempt?.state === 'in-progress'
+      && comprehensionOnlyFailure) {
+      lastStatus = 'waiting for the accepted analysis transaction to finish';
+      await sleep(100);
+      continue;
+    }
     if (lastStatus === 'failed' && !structuralResultAvailable) {
       const detail = statusPayload.failed_layers?.map(layer => `${layer.layer || 'unknown'}: ${layer.error || 'failed'}`).join(', ')
         || statusPayload.last_attempt?.error

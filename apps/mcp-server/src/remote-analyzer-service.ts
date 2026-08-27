@@ -34,7 +34,7 @@ import { recordVisibleFabricOperation, type FabricDeliveryMetadata } from './coo
 import { planIntentMerge, planIntentMergeFromSubstrate, type MergePlan } from './coordination/intent-merge';
 import { ingestAndPersist, loadPersistedRuntimeFacts } from './telemetry-fusion';
 import { backfillIngestedTelemetry, ingestTelemetryBatch, loadTelemetryObservations, summarizeRouteMetrics } from './telemetry-ingestion';
-import { requireAuthorizedTelemetryProject, requireTelemetryBatchSize } from './telemetry-project-access';
+import { requireAuthorizedHostedTelemetryStorage, requireTelemetryBatchSize } from './telemetry-project-access';
 import { buildNodeRuntimeMetrics } from './product';
 import { getProductMap, getFlowConcepts, getArchitecturalConflicts, getParadigmConformance, getPerspectives, getCicdPipelines, getCommunicationSeams, buildOrientCapsule, getSemanticCoverage, getDataEntities } from './query';
 import type { SemanticRole } from './semantic-roles';
@@ -42,6 +42,7 @@ import {
   getAnalysisEntry,
   getAnalysisFileFingerprint,
   loadAnalysis,
+  loadAnalysisProjection,
   loadAnalysisSectionManifest,
   loadAnalysisSections,
   resolveAnalysisSectionExportArtifact,
@@ -50,15 +51,17 @@ import {
   saveAnalysis,
 } from './storage';
 import { parseCasSectionNames, type CasSectionName } from './cas-sections';
+import { attachCasProjection } from './cas-projection';
 import { clearFreshnessSummaryCache } from './freshness';
 import { descriptionStorePath, generateElementDescription } from './description-enrichment';
 import { isAnalysisFocus, withAnalysisFocus } from './analysis-focus';
 import { ResponseCache, responseCacheKey } from './response-cache';
-import { getCachedDeployableAnalyses, scopeCasToSubCasNode } from './deployable-analysis';
+import { buildDeployableAnalyses, getCachedDeployableAnalyses, scopeCasToSubCasNode } from './deployable-analysis';
 import { initSelfTelemetry, instrumentHttpHandler, mapSdkEvent } from './self-telemetry';
 import type { CasRuntimeEvent } from '../../../packages/klauro-sdk-js/src/types';
 import { HOSTED_PROJECT_QUERY_SCHEMAS, HOSTED_PROJECT_QUERY_TOOL_NAMES, type HostedProjectQueryTool } from './hosted-project-query';
-import { beginHostedProjectQueryWarm, prewarmHostedProjectQueryWorker, runHostedProjectQueryWorker, warmHostedProjectAnalysisWorker, warmHostedProjectQueryWorker } from './hosted-project-query-process';
+import { prewarmHostedProjectQueryWorker, runHostedProjectQueryWorker } from './hosted-project-query-process';
+import { buildHostedProjectAnalysisStatus } from './hosted-project-analysis-status';
 
 export { prewarmHostedProjectQueryWorker };
 
@@ -72,6 +75,7 @@ async function throwSubCasScopeError(workspace: string, subCasNodeId: string, fa
   throw new AccountHttpError(400, fallback);
 }
 import { completedAnalysisLandedAfterAttempt, failedAttemptHasQueryableAnalysis, isStructuralAnalysisLayer, paginateConceptualCatalog, parseConceptualCatalogPage, unavailableComprehensionResponse, unavailableFailedAttemptWithStaleAnalysis, unavailableLatestAnalyzeAttempt, unavailableStructuralAnalysisResponse, unavailableStructuralQueryResponse } from './analysis-response-readiness';
+import { analysisAttemptFenceResponse } from './analysis-attempt-fence';
 import { projectAttemptRecordPath, readAttemptRecord, writeAttemptRecord, type AnalysisAttemptRecord } from './analysis-attempt-record';
 import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
 import { getStageFingerprints } from '../../../packages/analyzer-core/src/analyzer/core/stage-fingerprint';
@@ -188,18 +192,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
     if (!analysisId) return;
     try {
       const projects = await accounts.findProjectsByAnalysisId(analysisId);
-      const analysisWorkspace = workspacePath(dataDir, analysisId);
-      const version = await getAnalysisFileFingerprint(analysisWorkspace);
-      if (version) {
-        for (const project of projects) {
-          beginHostedProjectQueryWarm({
-            workspace: analysisWorkspace,
-            projectId: project.id,
-            analysisId,
-            version,
-          });
-        }
-      }
       const workspaceIds = new Set(projects.map(project => project.workspace_id));
       for (const workspaceId of workspaceIds) workspaceAnalyses.notifyProjectAnalysisLanded(workspaceId);
     } catch (error) {
@@ -328,15 +320,20 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           writeJson(response, 400, { status: 'error', error: 'projectId path segment is required' });
           return;
         }
-        const telemetryProject = await requireAuthorizedTelemetryProject(accounts, reconAuth.clientId, projectId);
+        const telemetryProject = await requireAuthorizedHostedTelemetryStorage(
+          accounts,
+          reconAuth.clientId,
+          projectId,
+          id => workspacePath(dataDir, id),
+        );
         const body = await readJsonBody<{ events?: CasRuntimeEvent[] }>(request, maxBodyBytes);
         const events = Array.isArray(body.events) ? body.events : [];
         requireTelemetryBatchSize(events.length);
-        const result = await ingestTelemetryBatch(null, telemetryProject.storage_id, events.map(mapSdkEvent), { persist: true });
+        const result = await ingestTelemetryBatch(null, telemetryProject.storage_key, events.map(mapSdkEvent), { persist: true });
         await appendAuditLog(dataDir, {
           event: 'telemetry_runtime_events',
           workspace: projectId,
-          analysis_id: telemetryProject.storage_id,
+          analysis_id: telemetryProject.analysis_id,
           received: events.length,
           ingested: result.event_count,
           matched: result.correlation_summary.matched,
@@ -640,7 +637,11 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
                     })();
                   }
                 },
-              }); const failedComprehension = summary.failedLayers?.find(layer => layer.layer === 'L4'); if (failedComprehension) throw new Error(failedComprehension.error || summary.aiEnrichmentError || 'Capability comprehension did not reach readiness.');
+              });
+              const failedStructuralLayer = firstFailedStructuralAnalysisLayer(summary.failedLayers);
+              if (failedStructuralLayer) {
+                throw new Error(failedStructuralLayer.error || 'Structural analysis did not reach readiness.');
+              }
               if (l0Attach) await l0Attach;
               await appendProjectRevision(dataDir, {
                 status: 'success',
@@ -1709,9 +1710,14 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           writeJson(response, 400, { status: 'error', error: 'workspace and spans[] are required' });
           return;
         }
-        const telemetryProject = await requireAuthorizedTelemetryProject(accounts, clientId, body.workspace);
-        const cas = await getAnalysis(telemetryProject.storage_id);
-        const result = await ingestAndPersist(dataDir, telemetryProject.storage_id, cas, body.spans, { window: body.window });
+        const telemetryProject = await requireAuthorizedHostedTelemetryStorage(
+          accounts,
+          clientId,
+          body.workspace,
+          id => workspacePath(dataDir, id),
+        );
+        const cas = await getAnalysis(telemetryProject.storage_key);
+        const result = await ingestAndPersist(dataDir, telemetryProject.storage_key, cas, body.spans, { window: body.window });
         await appendAuditLog(dataDir, {
           event: 'telemetry_ingest',
           workspace: body.workspace,
@@ -1728,12 +1734,17 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           writeJson(response, 400, { status: 'error', error: 'workspace query param is required' });
           return;
         }
-        const telemetryProject = await requireAuthorizedTelemetryProject(accounts, clientId, workspace);
-        const storageId = telemetryProject.storage_id;
+        const telemetryProject = await requireAuthorizedHostedTelemetryStorage(
+          accounts,
+          clientId,
+          workspace,
+          id => workspacePath(dataDir, id),
+        );
+        const storageKey = telemetryProject.storage_key;
         const limitParam = requestUrl.searchParams.get('limit');
         const limit = limitParam ? Number(limitParam) : undefined;
         const traceId = requestUrl.searchParams.get('trace_id') || undefined;
-        const loadObservations = () => loadTelemetryObservations(storageId, {
+        const loadObservations = () => loadTelemetryObservations(storageKey, {
           source: 'ingested',
           ...(traceId ? { traceId } : {}),
           ...(limit && Number.isFinite(limit) && limit > 0 ? { limit } : {}),
@@ -1743,16 +1754,16 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           const hasUnmatched = (set.observations || []).some(
             (observation: any) => observation?.correlation?.status === 'unmatched');
           if (hasUnmatched) {
-            const cas = await getAnalysis(storageId).catch(() => null);
+            const cas = await getAnalysis(storageKey).catch(() => null);
             if (cas) {
-              const backfill = await backfillIngestedTelemetry(cas, storageId).catch(() => null);
+              const backfill = await backfillIngestedTelemetry(cas, storageKey).catch(() => null);
               if (backfill && backfill.upgraded > 0) set = await loadObservations();
             }
           }
         } catch {
 
         }
-        const fused = await loadPersistedRuntimeFacts(dataDir, storageId).catch(() => null);
+        const fused = await loadPersistedRuntimeFacts(dataDir, storageKey).catch(() => null);
         const routeMetrics = summarizeRouteMetrics(set.observations || []);
         writeJson(response, 200, {
           status: 'success',
@@ -1848,14 +1859,19 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           writeJson(response, 400, { status: 'error', error: 'workspace query param is required' });
           return;
         }
-        const telemetryProject = await requireAuthorizedTelemetryProject(accounts, clientId, workspace);
-        const storageId = telemetryProject.storage_id;
+        const telemetryProject = await requireAuthorizedHostedTelemetryStorage(
+          accounts,
+          clientId,
+          workspace,
+          id => workspacePath(dataDir, id),
+        );
+        const storageKey = telemetryProject.storage_key;
         const loadObservations = () =>
-          loadTelemetryObservations(storageId, { source: 'ingested', limit: 5000 });
+          loadTelemetryObservations(storageKey, { source: 'ingested', limit: 5000 });
         let set = await loadObservations();
         let cas: any = null;
         try {
-          cas = await getAnalysis(storageId);
+          cas = await getAnalysis(storageKey);
         } catch {
           cas = null;
         }
@@ -1867,7 +1883,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           const hasUnmatched = (set.observations || []).some(
             (observation: any) => observation?.correlation?.status === 'unmatched');
           if (hasUnmatched) {
-            const backfill = await backfillIngestedTelemetry(cas, storageId).catch(() => null);
+            const backfill = await backfillIngestedTelemetry(cas, storageKey).catch(() => null);
             if (backfill && backfill.upgraded > 0) set = await loadObservations();
           }
         } catch {
@@ -2481,6 +2497,24 @@ async function handleAccountApi(
       const tool = body.tool as HostedProjectQueryTool;
       const entry = await getAnalysisEntry(workspace).catch(() => null);
       const layers = entry?.layers_ready?.layers || [];
+      const lastAttempt = await readAttemptRecord(projectAttemptRecordPath(workspace));
+      if (lastAttempt?.state === 'in-progress') {
+        return {
+          statusCode: 200,
+          body: {
+            status: 'populating',
+            project_id: project.id,
+            analysis_id: project.analysis_id,
+            last_attempt: lastAttempt,
+          },
+        };
+      }
+      const staleAttempt = unavailableFailedAttemptWithStaleAnalysis(entry, lastAttempt, {
+        project_id: project.id,
+        analysis_id: project.analysis_id,
+        tool,
+      });
+      if (staleAttempt) return { statusCode: 200, body: staleAttempt };
       const unavailable = unavailableStructuralQueryResponse(layers, { project_id: project.id, analysis_id: project.analysis_id, tool });
       if (unavailable) return { statusCode: 200, body: unavailable };
       const query = await runHostedProjectQueryWorker({
@@ -2490,6 +2524,16 @@ async function handleAccountApi(
         projectId: project.id,
         analysisId: project.analysis_id,
       });
+      const completedAgainstAttempt = await readAttemptRecord(projectAttemptRecordPath(workspace));
+      const completedEntry = await getAnalysisEntry(workspace).catch(() => null);
+      const attemptFence = analysisAttemptFenceResponse(
+        lastAttempt,
+        completedAgainstAttempt,
+        completedEntry,
+        query.analysisTimestamp,
+        { project_id: project.id, analysis_id: project.analysis_id, tool },
+      );
+      if (attemptFence) return { statusCode: 200, body: attemptFence };
       if (query.unavailable) return { statusCode: 200, body: query.unavailable };
       return {
         statusCode: 200,
@@ -2521,37 +2565,6 @@ async function handleAccountApi(
     const entry = await getAnalysisEntry(analysisWorkspace);
     const lastAttempt = await readAttemptRecord(projectAttemptRecordPath(analysisWorkspace));
     if (lastAttempt?.state === 'in-progress') {
-      prewarmHostedProjectQueryWorker();
-      const structural = structuralReadinessDuringAttempt(entry, lastAttempt);
-      if (structural) {
-        const queryReady = beginHostedProjectQueryWarm({
-          workspace: analysisWorkspace,
-          projectId: project.id,
-          analysisId: project.analysis_id,
-          version: await getAnalysisFileFingerprint(analysisWorkspace) || entry!.analyzed_at,
-        });
-        if (!queryReady) return {
-          statusCode: 200,
-          body: { status: 'populating', project_id: project.id, analysis_id: project.analysis_id, last_attempt: lastAttempt },
-        };
-        return {
-          statusCode: 200,
-          body: {
-            status: 'queryable',
-            project_id: project.id,
-            analysis_id: project.analysis_id,
-            last_attempt: lastAttempt,
-            summary: {
-              name: entry!.name,
-              analysis_timestamp: entry!.analyzed_at,
-              node_count: entry!.node_count,
-              edge_count: entry!.edge_count,
-              cas_version: entry!.cas_version,
-              layers_ready: entry!.layers_ready,
-            },
-          },
-        };
-      }
       return {
         statusCode: 200,
         body: {
@@ -2587,38 +2600,6 @@ async function handleAccountApi(
           : comprehensionErrors.length > 0
           ? 'degraded'
           : 'ready';
-    if (status === 'degraded') {
-      await warmHostedProjectQueryWorker({
-        workspace: analysisWorkspace,
-        projectId: project.id,
-        analysisId: project.analysis_id,
-      });
-    }
-    if (status === 'ready') {
-      const queryReady = beginHostedProjectQueryWarm({
-          workspace: analysisWorkspace,
-          projectId: project.id,
-          analysisId: project.analysis_id,
-          version: await getAnalysisFileFingerprint(analysisWorkspace) || entry.analyzed_at,
-      });
-      if (!queryReady) return {
-        statusCode: 200,
-        body: {
-          status: 'populating',
-          project_id: project.id,
-          analysis_id: project.analysis_id,
-          ...(lastAttempt ? { last_attempt: lastAttempt } : {}),
-          summary: {
-            name: entry.name,
-            analysis_timestamp: entry.analyzed_at,
-            node_count: entry.node_count,
-            edge_count: entry.edge_count,
-            cas_version: entry.cas_version,
-            layers_ready: entry.layers_ready,
-          },
-        },
-      };
-    }
     return {
       statusCode: 200,
       body: {
@@ -2653,27 +2634,6 @@ async function handleAccountApi(
 
     const earlyLastAttempt = await readAttemptRecord(projectAttemptRecordPath(analysisWorkspace));
     if (earlyLastAttempt?.state === 'in-progress') {
-      prewarmHostedProjectQueryWorker();
-
-      const earlyEntry = await getAnalysisEntry(analysisWorkspace).catch(() => null);
-      const structural = structuralReadinessDuringAttempt(earlyEntry, earlyLastAttempt);
-      if (structural) {
-        const warmed = await warmHostedProjectAnalysisWorker({
-          workspace: analysisWorkspace,
-          projectId: project.id,
-          analysisId: project.analysis_id,
-        });
-        return {
-          statusCode: 200,
-          body: {
-            status: 'queryable',
-            project_id: project.id,
-            analysis_id: project.analysis_id,
-            last_attempt: earlyLastAttempt,
-            summary: { ...(warmed.summary as Record<string, unknown>), layers_ready: earlyEntry!.layers_ready },
-          },
-        };
-      }
       return {
         statusCode: 200,
         body: { status: 'populating', project_id: project.id, analysis_id: project.analysis_id, last_attempt: earlyLastAttempt },
@@ -2683,12 +2643,40 @@ async function handleAccountApi(
       { project_id: project.id, analysis_id: project.analysis_id });
     if (staleAttempt) return { statusCode: 200, body: staleAttempt };
     try {
-      const analysisStatus = await warmHostedProjectAnalysisWorker({
-        workspace: analysisWorkspace,
-        projectId: project.id,
-        analysisId: project.analysis_id,
+      const loaded = await loadAnalysisProjection(analysisWorkspace, [
+        'comprehension', 'tests', 'runtime', 'quality', 'supplemental',
+      ], { require_sub_cas_index: true });
+      if (!loaded) throw new Error(`No analysis found for: ${analysisWorkspace}. Run analyze_codebase first.`);
+      const statusCas = attachCasProjection({
+        nodes: [],
+        edges: [],
+        analyzer_contributions: [],
+        ...loaded.cas,
+      } as CASOutput, {
+        loaded_sections: ['identity', 'comprehension', 'tests', 'runtime', 'quality', 'supplemental'],
+        node_count: loaded.inventory?.node_count,
+        edge_count: loaded.inventory?.edge_count,
       });
+      const treeProjection = loaded.manifest.tree_projection;
+      const persistedSubCasNodes = treeProjection?.format === 'recursive-cas-section-references'
+        ? treeProjection.sub_cas_nodes
+        : undefined;
+      const analysisStatus = buildHostedProjectAnalysisStatus(
+        statusCas,
+        project.id,
+        project.analysis_id,
+        persistedSubCasNodes || buildDeployableAnalyses(statusCas).sub_cas_nodes,
+      );
       const lastAttempt = await readAttemptRecord(projectAttemptRecordPath(analysisWorkspace));
+      const currentEntry = await getAnalysisEntry(analysisWorkspace).catch(() => null);
+      const attemptFence = analysisAttemptFenceResponse(
+        earlyLastAttempt,
+        lastAttempt,
+        currentEntry,
+        loaded.cas.analysis_timestamp,
+        { project_id: project.id, analysis_id: project.analysis_id },
+      );
+      if (attemptFence) return { statusCode: 200, body: attemptFence };
       return {
         statusCode: 200,
         body: {
@@ -4178,6 +4166,12 @@ export function structuralReadinessDuringAttempt(
   const l5 = layers.find(layer => layer.layer === 'L5');
   if (!l5 || l5.status !== 'pending') return null;
   return { layers, generatedAt };
+}
+
+export function firstFailedStructuralAnalysisLayer(
+  failedLayers: Array<{ layer: string; error?: string }> | undefined,
+): { layer: string; error?: string } | undefined {
+  return failedLayers?.find(layer => isStructuralAnalysisLayer(layer.layer));
 }
 
 function makeAnalysisId(value: string): string {

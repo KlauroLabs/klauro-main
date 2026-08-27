@@ -149,7 +149,7 @@ test('account telemetry routes reject cross-project access and migrate pre-analy
       analyzer_contributions: [],
     } as unknown as CASOutput;
     const { saveAnalysis } = await import('./storage');
-    await saveAnalysis(canonicalId, cas);
+    await saveAnalysis(path.join(remoteData, 'workspaces', canonicalId), cas);
     await accounts.setProjectAnalysisId(owner.user.id, project.id, canonicalId);
 
     const serviceAccepted = await postJson(base, `/api/telemetry/runtime-events/${project.id}`, { events: [{

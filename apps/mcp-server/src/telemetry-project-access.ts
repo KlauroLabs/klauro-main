@@ -2,6 +2,7 @@ import { AccountHttpError, type AccountStore } from './account-store';
 import { MAX_TELEMETRY_BATCH_SIZE, migrateIngestedTelemetryProject } from './telemetry-ingestion';
 
 export interface AuthorizedTelemetryProject {
+  kind: 'hosted_project' | 'explicit_workspace';
   requested_id: string;
   storage_id: string;
 }
@@ -12,7 +13,7 @@ export async function resolveAuthorizedTelemetryProject(
   requestedId: string,
 ): Promise<AuthorizedTelemetryProject | null> {
   if (clientId !== 'shared-token' && !clientId?.startsWith('user:')) {
-    return { requested_id: requestedId, storage_id: requestedId };
+    return { kind: 'explicit_workspace', requested_id: requestedId, storage_id: requestedId };
   }
   if (!requestedId.startsWith('prj_')) return null;
   try {
@@ -24,7 +25,7 @@ export async function resolveAuthorizedTelemetryProject(
     if (storageId !== project.id) {
       await migrateIngestedTelemetryProject(project.id, storageId);
     }
-    return { requested_id: requestedId, storage_id: storageId };
+    return { kind: 'hosted_project', requested_id: requestedId, storage_id: storageId };
   } catch (error) {
     if (error instanceof AccountHttpError && error.statusCode === 404) return null;
     throw error;
@@ -60,8 +61,18 @@ export async function resolveAuthorizedHostedTelemetryStorage(
 ): Promise<AuthorizedHostedTelemetryStorage | null> {
   const project = await resolveAuthorizedTelemetryProject(accounts, clientId, requestedId);
   if (!project) return null;
-  const storageKey = workspaceForAnalysisId(project.storage_id);
-  await migrateIngestedTelemetryProject(project.storage_id, storageKey);
+  const storageKey = project.kind === 'hosted_project'
+    ? workspaceForAnalysisId(project.storage_id)
+    : project.storage_id;
+  if (project.kind === 'hosted_project') {
+    const requestedStorageKey = workspaceForAnalysisId(project.requested_id);
+    if (requestedStorageKey !== storageKey) {
+      await migrateIngestedTelemetryProject(requestedStorageKey, storageKey);
+    }
+  }
+  if (storageKey !== project.storage_id) {
+    await migrateIngestedTelemetryProject(project.storage_id, storageKey);
+  }
   return { requested_id: project.requested_id, analysis_id: project.storage_id, storage_key: storageKey };
 }
 

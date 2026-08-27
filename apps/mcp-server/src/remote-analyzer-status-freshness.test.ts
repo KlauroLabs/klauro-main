@@ -30,6 +30,8 @@ import * as http from 'node:http';
 import { execFileSync } from 'node:child_process';
 import { createRemoteAnalyzerHttpServer } from './remote-analyzer-service';
 import { analyzeCodebaseRemotely } from './remote-sync-client';
+import { loadAnalysisSectionManifest } from './storage';
+import { withHostedBackgroundPermit } from './hosted-background-queue';
 
 function soleWorkspace(remoteData: string): string {
   const dir = path.join(remoteData, 'workspaces');
@@ -105,10 +107,62 @@ test('status never reports a stale analysis as fresh while a new attempt is in f
     }, token);
     const project = JSON.parse(linkRes.body).project as { id: string };
 
+    const workspace = soleWorkspace(remoteData);
     const degradedStatus = JSON.parse((await request(port, 'GET', `/api/projects/${project.id}/analysis-status`, undefined, token)).body);
     assert.equal(degradedStatus.status, 'degraded');
     const degradedAnalysis = JSON.parse((await request(port, 'GET', `/api/projects/${project.id}/analysis`, undefined, token)).body);
-    assert.equal(degradedAnalysis.status, 'degraded');
+    assert.equal(degradedAnalysis.status, 'degraded', JSON.stringify(degradedAnalysis));
+    assert.equal(degradedAnalysis.summary.nodes, degradedStatus.summary.node_count);
+    assert.equal(degradedAnalysis.summary.edges, degradedStatus.summary.edge_count);
+    const manifest = await loadAnalysisSectionManifest(workspace);
+    if (manifest?.tree_projection?.format === 'recursive-cas-section-references') {
+      assert.deepEqual(degradedAnalysis.summary.sub_cas_nodes, manifest.tree_projection.sub_cas_nodes);
+    }
+
+    const queryStarted = path.join(root, 'query-started');
+    const queryRelease = path.join(root, 'query-release');
+    const queryWorker = path.join(root, 'query-worker.cjs');
+    fs.writeFileSync(queryWorker, `
+const fs = require('node:fs');
+process.on('message', request => {
+  fs.writeFileSync(${JSON.stringify(queryStarted)}, 'started');
+  const wait = () => {
+    if (!fs.existsSync(${JSON.stringify(queryRelease)})) return setTimeout(wait, 5);
+    process.send({ type: 'result', id: request.id, analysisTimestamp: 'stale', result: { stale: true } });
+  };
+  wait();
+});
+`);
+    const previousSearchWorker = process.env.KLAURO_HOSTED_SEARCH_WORKER_ENTRY;
+    process.env.KLAURO_HOSTED_SEARCH_WORKER_ENTRY = queryWorker;
+    const attemptRecordPath = path.join(workspace, '.reanalyze-attempt.json');
+    const originalAttempt = fs.readFileSync(attemptRecordPath, 'utf8');
+    try {
+      const queryPromise = request(port, 'POST', `/api/projects/${project.id}/query`, {
+        tool: 'search_nodes',
+        args: { query: 'handler' },
+      }, token);
+      for (let attempt = 0; attempt < 200 && !fs.existsSync(queryStarted); attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, 5));
+      }
+      assert.equal(fs.existsSync(queryStarted), true, 'the query must reach the worker before the attempt transition');
+      fs.writeFileSync(attemptRecordPath, JSON.stringify({
+        state: 'in-progress',
+        trigger: 'analyze',
+        analysis_revision: 20,
+        started_at: new Date().toISOString(),
+        heartbeat_at: new Date().toISOString(),
+      }));
+      fs.writeFileSync(queryRelease, 'release');
+      const fencedQuery = JSON.parse((await queryPromise).body);
+      assert.equal(fencedQuery.status, 'populating', 'a query cannot publish a stale result after a newer attempt starts');
+      assert.equal(fencedQuery.last_attempt?.analysis_revision, 20);
+    } finally {
+      fs.writeFileSync(attemptRecordPath, originalAttempt);
+      await withHostedBackgroundPermit(async () => undefined, { releaseForegroundMemory: true });
+      if (previousSearchWorker === undefined) delete process.env.KLAURO_HOSTED_SEARCH_WORKER_ENTRY;
+      else process.env.KLAURO_HOSTED_SEARCH_WORKER_ENTRY = previousSearchWorker;
+    }
 
     // Simulate a SECOND push that has been accepted (its attempt record is
     // 'in-progress') but has not yet overwritten the CAS on disk — the exact
@@ -116,11 +170,10 @@ test('status never reports a stale analysis as fresh while a new attempt is in f
     // fresh. Write the sidecar directly rather than reaching into the
     // running server's in-memory state (this repo's own gate: tests only
     // drive the real HTTP surface, not engine internals).
-    const workspace = soleWorkspace(remoteData);
-    const attemptRecordPath = path.join(workspace, '.reanalyze-attempt.json');
     fs.writeFileSync(attemptRecordPath, JSON.stringify({
       state: 'in-progress',
       trigger: 'analyze',
+      analysis_revision: 21,
       started_at: new Date().toISOString(),
       heartbeat_at: new Date().toISOString(),
     }));
@@ -128,11 +181,17 @@ test('status never reports a stale analysis as fresh while a new attempt is in f
     const midWriteStatus = JSON.parse((await request(port, 'GET', `/api/projects/${project.id}/analysis-status`, undefined, token)).body);
     assert.equal(midWriteStatus.status, 'populating', 'an in-progress attempt must win over a landed-but-stale entry');
     assert.equal(midWriteStatus.last_attempt?.state, 'in-progress');
+    assert.equal(midWriteStatus.last_attempt?.analysis_revision, 21);
     assert.equal(midWriteStatus.summary, undefined, 'must not carry a stale summary that reads as fresh');
 
     const midWriteAnalysis = JSON.parse((await request(port, 'GET', `/api/projects/${project.id}/analysis`, undefined, token)).body);
     assert.equal(midWriteAnalysis.status, 'populating', 'the /analysis route must agree — a client polling either surface gets the same verdict');
     assert.equal(midWriteAnalysis.last_attempt?.state, 'in-progress');
+    const midWriteQuery = JSON.parse((await request(port, 'POST', `/api/projects/${project.id}/query`, {
+      tool: 'search_nodes',
+      args: { query: 'handler' },
+    }, token)).body);
+    assert.equal(midWriteQuery.status, 'populating', 'a query cannot serve a prior CAS while the accepted attempt is in progress');
 
     fs.writeFileSync(attemptRecordPath, JSON.stringify({
       state: 'failed',
