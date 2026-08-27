@@ -161,6 +161,81 @@ test('unrelated frontend paths do not link to backend routes', () => {
   assert.equal(result.links.filter(link => link.type === 'api').length, 0);
 });
 
+test('single-segment routes require independent domain evidence in both repositories', () => {
+  const routeConcept = (id: string, name: string) => ({
+    id,
+    name,
+    frequency: 2,
+    appears_in: { entry_points: [], entities: [], nodes: [] },
+    classification: 'core' as const,
+  });
+  const consumer = frontendCas({
+    domain_concepts: [routeConcept('concept-consumer-shipment', 'Shipment')],
+    exit_points: [{
+      id: 'exit-shipments',
+      type: 'api',
+      name: 'loadShipments',
+      source_node: 'node-things-service-method',
+      target: { endpoint: '/shipments' },
+      operation: { method: 'GET' },
+    }],
+  });
+  const producer = backendCas({
+    domain_concepts: [routeConcept('concept-producer-shipment', 'Shipments')],
+    entry_points: [{
+      id: 'entry-shipments',
+      type: 'http',
+      name: 'GET /shipments',
+      source_node: 'node-things-handler',
+      trigger: { method: 'GET', path: '/shipments' },
+    }],
+  });
+
+  const links = buildCrossRepositoryLinks([repo('consumer', consumer), repo('producer', producer)]).links;
+  assert.equal(links.filter(link => link.type === 'api').length, 1);
+});
+
+test('an exact ubiquitous single-segment route is not linked without independent domain evidence', () => {
+  const consumer = frontendCas({
+    domain_concepts: [],
+    exit_points: [{
+      id: 'exit-records',
+      type: 'api',
+      name: 'loadRecords',
+      source_node: 'node-things-service-method',
+      target: { endpoint: '/api/v1/records' },
+      operation: { method: 'GET' },
+    }],
+  });
+  const producer = backendCas({
+    domain_concepts: [],
+    entry_points: [{
+      id: 'entry-records',
+      type: 'http',
+      name: 'GET /api/v1/records',
+      source_node: 'node-things-handler',
+      trigger: { method: 'GET', path: '/api/v1/records' },
+    }],
+  });
+
+  const links = buildCrossRepositoryLinks([repo('consumer', consumer), repo('producer', producer)]).links;
+  assert.equal(links.filter(link => link.type === 'api').length, 0);
+});
+
+test('provider domain evidence resolves a single-segment seam without client-side concepts', () => {
+  const consumer = frontendCas({
+    domain_concepts: [],
+    exit_points: [{ id: 'exit-jobs', type: 'api', name: 'jobs', source_node: 'node-things-service-method', target: { endpoint: '/jobs' }, operation: { method: 'GET' } }],
+  });
+  const producer = backendCas({
+    domain_concepts: [{ id: 'concept-jobs', name: 'Jobs', frequency: 2, appears_in: { entry_points: [], entities: [], nodes: [] }, classification: 'core' }],
+    entry_points: [{ id: 'entry-jobs', type: 'http', name: 'GET /jobs', source_node: 'node-things-handler', trigger: { method: 'GET', path: '/jobs' } }],
+  });
+
+  const links = buildCrossRepositoryLinks([repo('consumer', consumer), repo('producer', producer)]).links;
+  assert.equal(links.filter(link => link.type === 'api').length, 1);
+});
+
 test('a shared generic workspace parent does not create repository affinity', () => {
   const consumer = {
     path: '/tmp/analysis-input/consumer',

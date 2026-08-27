@@ -33,6 +33,7 @@ import {
   entityShapesCompatible,
   entityTypeNodes,
   entityVocabulary,
+  hasRouteDomainContractEvidence,
   isNonRuntimeSourceFile,
   type EntityContractEvidence,
 } from './cross-repository-evidence';
@@ -960,6 +961,8 @@ function detectApiLinks(
       if (!methodCompatible) continue;
 
       if (!hasConcreteRouteAgreement(exitRoute, entryRoute)) continue;
+      if (!hasRouteDomainContractEvidence(consumer.cas, exitRoute) &&
+        !hasRouteDomainContractEvidence(producer.cas, entryRoute)) continue;
 
       const routeScore = routeMatchScore(exitRoute, entryRoute);
       const methodScore = !exitMethod || exitMethod === 'FETCH' || !entryMethod || entryMethod === 'ALL' ? 0.86 : 1;
