@@ -116,6 +116,38 @@ test('account telemetry routes reject cross-project access and migrate pre-analy
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   try {
+    const secondProject = await accounts.createProject(owner.user.id, workspace.id, { name: 'Other API' });
+    const issued = await postJson(base, `/api/projects/${project.id}/telemetry-credentials`, {}, owner.token);
+    assert.equal(issued.status, 201);
+    assert.match(issued.body.credential.token, /^kt_/);
+    const projectToken = issued.body.credential.token as string;
+    const credentialId = issued.body.credential.id as string;
+    const listed = await getJson(base, `/api/projects/${project.id}/telemetry-credentials`, owner.token);
+    assert.equal(listed.status, 200);
+    assert.equal(listed.body.credentials[0].id, credentialId);
+    assert.equal('token' in listed.body.credentials[0], false);
+    assert.equal('token_hash' in listed.body.credentials[0], false);
+    assert.equal((await getJson(base, '/api/me', projectToken)).status, 401);
+
+    const credentialBatch = { events: [{ event_id: 'project-token-event', type: 'request', method: 'POST', route: '/credential-proof' }] };
+    assert.equal((await postJson(base, `/api/telemetry/runtime-events/${project.id}`, credentialBatch, projectToken)).status, 200);
+    assert.equal((await postJson(base, `/api/telemetry/runtime-events/${secondProject.id}`, credentialBatch, projectToken)).status, 401);
+    const rotated = await postJson(
+      base,
+      `/api/projects/${project.id}/telemetry-credentials/${credentialId}/rotate`,
+      {},
+      owner.token,
+    );
+    assert.equal(rotated.status, 200);
+    assert.equal((await postJson(base, `/api/telemetry/runtime-events/${project.id}`, credentialBatch, projectToken)).status, 401);
+    const rotatedToken = rotated.body.credential.token as string;
+    assert.equal((await postJson(base, `/api/telemetry/runtime-events/${project.id}`, credentialBatch, rotatedToken)).status, 200);
+    const revoked = await fetch(`${base}/api/projects/${project.id}/telemetry-credentials/${rotated.body.credential.id}`, {
+      method: 'DELETE', headers: { authorization: `Bearer ${owner.token}` },
+    });
+    assert.equal(revoked.status, 204);
+    assert.equal((await postJson(base, `/api/telemetry/runtime-events/${project.id}`, credentialBatch, rotatedToken)).status, 401);
+
     const batch = { events: [{
       event_id: 'pre-analysis-order-event',
       type: 'request',

@@ -515,6 +515,19 @@ export class AccountStore {
     });
   }
 
+  async listProjectTelemetryCredentials(userId: string, projectId: string): Promise<Array<{
+    id: string; project_id: string; scope: 'telemetry:ingest'; created_at: string;
+    revoked_at?: string; rotated_from_id?: string;
+  }>> {
+    const db = await this.load();
+    const project = db.projects.find(candidate => candidate.id === projectId);
+    if (!project) throw httpError(404, 'Project not found');
+    requireMembership(db, userId, project.workspace_id, ['owner', 'admin']);
+    return db.telemetry_credentials
+      .filter(candidate => candidate.project_id === projectId)
+      .map(({ token_hash: _tokenHash, ...metadata }) => metadata);
+  }
+
   async issueProjectTelemetryCredential(userId: string, projectId: string): Promise<IssuedProjectTelemetryCredential> {
     return this.mutate(db => {
       const project = db.projects.find(candidate => candidate.id === projectId);

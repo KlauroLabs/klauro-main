@@ -35,6 +35,7 @@ import { planIntentMerge, planIntentMergeFromSubstrate, type MergePlan } from '.
 import { ingestAndPersist, loadPersistedRuntimeFacts } from './telemetry-fusion';
 import { backfillIngestedTelemetry, ingestTelemetryBatch, loadTelemetryObservations, summarizeRouteMetrics } from './telemetry-ingestion';
 import { requireAuthorizedHostedTelemetryStorage, requireTelemetryBatchSize } from './telemetry-project-access';
+import { handleTelemetryCredentialHttp } from './telemetry-credential-http';
 import { buildNodeRuntimeMetrics } from './product';
 import { getProductMap, getFlowConcepts, getArchitecturalConflicts, getParadigmConformance, getPerspectives, getCicdPipelines, getCommunicationSeams, buildOrientCapsule, getSemanticCoverage, getDataEntities } from './query';
 import type { SemanticRole } from './semantic-roles';
@@ -309,20 +310,23 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         return;
       }
       if (request.method === 'POST' && route.startsWith('/api/telemetry/runtime-events/')) {
-        const reconAuth = await authorizeAnalyzerRequest(accounts, request, token);
-        if (!reconAuth.authorized) {
-          writeJson(response, 401, { status: 'error', error: 'Unauthorized telemetry ingest request' });
-          return;
-        }
         const rawProjectId = route.slice('/api/telemetry/runtime-events/'.length);
         const projectId = decodeURIComponent(rawProjectId);
         if (!projectId) {
           writeJson(response, 400, { status: 'error', error: 'projectId path segment is required' });
           return;
         }
+        const presentedToken = bearerToken(request);
+        const projectCredential = await accounts.authenticateProjectTelemetryCredential(presentedToken, projectId);
+        if (presentedToken?.startsWith('kt_') && !projectCredential) return writeJson(response, 401, { status: 'error', error: 'Unauthorized telemetry ingest request' });
+        const reconAuth = projectCredential ? { authorized: true, clientId: `telemetry-project:${projectId}` } : await authorizeAnalyzerRequest(accounts, request, token);
+        if (!reconAuth.authorized) {
+          writeJson(response, 401, { status: 'error', error: 'Unauthorized telemetry ingest request' });
+          return;
+        }
         const telemetryProject = await requireAuthorizedHostedTelemetryStorage(
           accounts,
-          reconAuth.clientId,
+          projectCredential ? 'shared-token' : reconAuth.clientId,
           projectId,
           id => workspacePath(dataDir, id),
         );
@@ -2475,6 +2479,8 @@ async function handleAccountApi(
     };
   }
 
+  const telemetryCredentialResponse = await handleTelemetryCredentialHttp({ accounts, userId, route, method: request.method, sharedToken });
+  if (telemetryCredentialResponse) return telemetryCredentialResponse;
   const projectMatch = route.match(/^\/api\/projects\/([^/]+)$/);
   if (projectMatch && request.method === 'GET') {
     const project = await accounts.getProjectForUser(userId, decodeURIComponent(projectMatch[1]));
