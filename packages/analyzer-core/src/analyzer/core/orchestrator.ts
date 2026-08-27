@@ -12189,11 +12189,11 @@ export class AnalyzerOrchestrator {
         ...(target.relatedEntities || []),
         ...(target.relatedDomains || []),
       ].filter(Boolean).join(' ').toLowerCase();
-      const unsupportedClaims = cleaned.match(/\b(?:decision[- ]making|collaboration|metrics?|tracking|monitoring|performance|costs?|expenses?|transactions?)\b/gi) || [];
-      for (const claim of unsupportedClaims) {
-        const normalizedClaim = claim.toLowerCase().replace(/[- ]/g, '');
-        const evidenceSupportsClaim = ownEvidence.replace(/[- ]/g, '').includes(normalizedClaim) ||
-          (normalizedClaim.startsWith('metric') && /\b(?:metric|prometheus|telemetry)\b/.test(ownEvidence));
+      const valueClaimPattern = /\b(?:decision[- ]making|collaboration|metrics?|tracking|monitoring|performance|costs?|expenses?|transactions?)\b/gi;
+      const normalizeValueClaim = (claim: string): string => claim.toLowerCase().replace(/[- ]/g, '').replace(/s$/, ''); const firstPartyValueClaims = new Set((target.productOutcomeTerms || []).flatMap(term => String(term || '').match(valueClaimPattern) || []).map(normalizeValueClaim));
+      for (const claim of cleaned.match(valueClaimPattern) || []) {
+        const normalizedClaim = normalizeValueClaim(claim);
+        const evidenceSupportsClaim = ownEvidence.replace(/[- ]/g, '').includes(normalizedClaim) || firstPartyValueClaims.has(normalizedClaim) || (normalizedClaim.startsWith('metric') && /\b(?:metric|prometheus|telemetry)\b/.test(ownEvidence));
         if (!evidenceSupportsClaim) return { ok: false, reason: `unsupported-target-value-claim:${claim.toLowerCase()}` };
       }
       const unsupportedOperationalClaims = [...unsupportedCapabilityOperationalClaims(cleaned, target.operations || []), ...(cleaned.match(/\b(?:high availability|resource utili[sz]ation|fault tolerance|auto[- ]scaling|scalability|resilien(?:ce|t))\b/gi) || [])];

@@ -11265,6 +11265,27 @@ describe('enterprise AI semantic guards', () => {
     ).ok).toBe(true);
   });
 
+  it('grounds target value claims only in exact strictly bound first-party outcomes', () => {
+    const target = {
+      id: 'cap_collaboration', name: 'Enable real-time collaboration', kind: 'capability',
+      operations: ['Handle analysis request'], evidenceSummary: ['Analyze codebase'],
+      relatedEntities: [], relatedDomains: [],
+      productOutcomeTerms: ['The product enables real-time collaboration across overlapping software concepts.'],
+    };
+    const description = 'Real-time collaboration keeps overlapping software changes visible to participants before they commit conflicting work.';
+
+    expect(orch.validateElementDescription(description, target).ok).toBe(true);
+    expect(orch.validateElementDescription(description, { ...target, productOutcomeTerms: [] }).ok).toBe(false);
+    expect(orch.validateElementDescription(description, {
+      ...target,
+      productOutcomeTerms: ['The product enables collaborative review across overlapping software concepts.'],
+    }).ok).toBe(false);
+    expect(orch.validateElementDescription(description, {
+      ...target,
+      productOutcomeTerms: ['The product correlates runtime evidence with static understanding.'],
+    }).ok).toBe(false);
+  });
+
   it('rejects mutation semantics for access/view capabilities even when the surface is a page', () => {
     const target = {
       id: 'cap_dashboard', name: 'Access Enterprise Dashboard', kind: 'capability',
