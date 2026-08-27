@@ -8243,6 +8243,45 @@ describe('top-down capability evidence (C2)', () => {
     }
   });
 
+  it('grounds extraction value nouns only from an exactly bound first-party outcome', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    const requirement = {
+      id: 'all:concept-fabric-work', statement: 'Fabric work concepts',
+      firstPartyOutcomeText: 'The product enables real-time collaboration through Fabric when participants work on overlapping concepts.',
+      subjectTokens: ['concept', 'fabric', 'work'], requiredSubjectTerms: ['concept', 'fabric', 'work'],
+      visibleActionTerms: ['enable'], minimumSubjectMatches: 2, candidateIds: ['capability_mcp'],
+    };
+    const extract = async (firstPartyOutcomeText: string | undefined, requirementId = requirement.id, candidateId = 'capability_mcp', name = 'Enable real-time collaboration through Fabric', description = 'The product enables real-time collaboration through Fabric when participants work on overlapping concepts.') => {
+      (aiService as any).generateComponentDescription = async () => JSON.stringify({ capabilities: [{
+        requirement_id: requirementId, name, description, category: 'core', candidate_ids: [candidateId],
+      }] });
+      return orch.aiExtractCapabilityCatalog({
+        systemName: 'Product', enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: [] },
+        frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [{
+          id: 'capability_mcp', name: 'Analyze codebase', category: 'core', related_entities: [], related_domains: ['work', 'concepts'],
+          evidence_examples: ['Fabric work concepts'], operations: [{ entry_point_id: 'analysis', entry_point_type: 'message', action: 'Enable real-time collaboration' }],
+        }], externalServices: [], flowGraph: { capability_candidates: [] },
+        projectTextSignal: { concepts: [], evidence: [], productDocSummary: '' },
+        budgetMs: 30000, exactCapabilityLimit: 1,
+        acceptedOutcomeNames: [name],
+        requiredOutcomeRequirements: [{ ...requirement, ...(firstPartyOutcomeText ? { firstPartyOutcomeText } : { firstPartyOutcomeText: undefined }) }],
+      });
+    };
+    try {
+      expect(await extract(requirement.firstPartyOutcomeText)).toHaveLength(1);
+      expect(await extract('The product enables collaborative review through Fabric for overlapping work concepts.')).toEqual([]);
+      expect(await extract('The product correlates static understanding with runtime evidence for Fabric work concepts.')).toEqual([]);
+      expect(await extract(undefined)).toEqual([]);
+      expect(await extract(requirement.firstPartyOutcomeText, 'all:wrong-outcome')).toEqual([]);
+      expect(await extract(requirement.firstPartyOutcomeText, requirement.id, 'wrong_candidate')).toEqual([]);
+      expect(await extract('The product enables metrics for Fabric work concepts.', requirement.id, 'capability_mcp', 'Enable Fabric work metrics', 'The product enables metrics for Fabric work concepts.')).toHaveLength(1);
+      expect(await extract('The product enables a metric for Fabric work concepts.', requirement.id, 'capability_mcp', 'Enable Fabric work metrics', 'The product enables metrics for Fabric work concepts.')).toEqual([]);
+      expect(await extract('The product enables metrics for Fabric work concepts.', requirement.id, 'capability_mcp', 'Enable a Fabric work metric', 'The product enables a metric for Fabric work concepts.')).toEqual([]);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
   it('returns exact audience and subject misses for a scoped corrective retry', async () => {
     const original = (aiService as any).generateComponentDescription;
     const requirement: any = {

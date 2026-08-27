@@ -9538,12 +9538,11 @@ export class AnalyzerOrchestrator {
         debugCatalogRejection(name, 'infrastructure-mechanism-name');
         continue;
       }
-      const unsupportedValueNouns = new Set([
-        'collaboration', 'decisionmaking', 'insight', 'metric', 'monitoring',
-        'performance', 'productivity', 'tracking',
-      ].map(token => this.stemTerminologyToken(token)));
+      const unsupportedValueNouns = new Set(['collaboration', 'decisionmaking', 'insight', 'metric', 'monitoring', 'performance', 'productivity', 'tracking'].map(token => this.stemTerminologyToken(token)));
+      const boundOutcomeTerms = new Set(String(boundRequirement?.firstPartyOutcomeText || '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean));
+      const boundOutcomePurposeNouns = new Set(name.toLowerCase().split(/[^a-z0-9]+/).filter(token => boundOutcomeTerms.has(token)).map(token => this.stemTerminologyToken(token)));
       if (purposeNouns.some(token =>
-        unsupportedValueNouns.has(token) && !capabilityEvidenceVocabulary.has(token)
+        unsupportedValueNouns.has(token) && !capabilityEvidenceVocabulary.has(token) && !boundOutcomePurposeNouns.has(token)
       )) {
         debugCatalogRejection(name, 'unsupported-value-noun');
         continue;
