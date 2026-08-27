@@ -440,7 +440,10 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
           candidateIds: ['understanding'], requirementId: requirement.id,
           name: requirement.audience === 'human' ? 'Surface behavior understanding' : 'Explain behavioral relationships to agents',
           reason: requirement.audience === 'human' ? 'required-outcome-audience-missing:human' : `required-outcome-subject-mismatch:${requirement.id}`,
-          ...(requirement.audience === 'human' ? { missingAudience: requirement.audienceLabel } : { missingSubjectTerms: requirement.requiredSubjectTerms }),
+          ...(requirement.audience === 'human' ? {
+            missingAudience: requirement.audienceLabel, missingAudienceLocations: ['name'],
+            oppositeAudienceLabels: ['agents'], oppositeAudienceLocations: ['description'],
+          } : { missingSubjectTerms: requirement.requiredSubjectTerms }),
         });
         return [];
       }
@@ -469,7 +472,14 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(understandingCalls.every(call => call.qualityNudge.includes('required_audience_label') && call.qualityNudge.includes('required_subject_terms'))).toBe(true);
     expect(understandingCalls.every(call => call.requiredOutcomeRequirements[0].visibleActionTerms?.includes('turn'))).toBe(true);
     expect(understandingCalls.filter(call => call.requiredOutcomeRequirements[0].audience === 'human')[1].qualityNudge).toContain('missing_audience');
+    expect(understandingCalls.filter(call => call.requiredOutcomeRequirements[0].audience === 'human')[1].qualityNudge).toContain('opposite_audience_labels');
     expect(understandingCalls.filter(call => call.requiredOutcomeRequirements[0].audience === 'agent')[1].qualityNudge).toContain('missing_subject_terms');
+    for (const call of understandingCalls) {
+      const [requirement] = call.requiredOutcomeRequirements;
+      const promptText = call.targetedRepairFacts[0].first_party_outcomes[0];
+      if (requirement.audience === 'human') { expect(promptText).toContain('people'); expect(promptText).not.toContain('agents'); }
+      if (requirement.audience === 'agent') { expect(promptText).toContain('agents'); expect(promptText).not.toContain('people'); }
+    }
     const targetedPromptFacts = JSON.stringify(calls.slice(1).flatMap(call => call.targetedRepairFacts || []));
     expect(targetedPromptFacts).toContain('candidate_1');
     expect(targetedPromptFacts).not.toContain('CrossCodebaseSystemGraph');

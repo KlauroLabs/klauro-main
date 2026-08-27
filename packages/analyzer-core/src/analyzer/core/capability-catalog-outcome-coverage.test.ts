@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { SystemCapability } from '../../types/cas.types';
 import {
+  audienceScopedCapabilityCatalogOutcomeText,
   bindUniquelySatisfiedCatalogOutcomeRequirements,
   capabilityCatalogOutcomeBindingFailure,
   capabilityCatalogOutcomeBindingFailureDetail,
@@ -69,6 +70,9 @@ test('requires separately stated first-party human, agent, and truth outcomes wh
   const graph = requirements.find(requirement => requirement.subjectTokens.includes('relation'))!;
   const collaboration = requirements.find(requirement => requirement.subjectTokens.includes('collaborate'))!;
   const runtime = requirements.find(requirement => requirement.subjectTokens.includes('runtime'))!;
+  assert.match(human.firstPartyOutcomeText || '', /people and AI agents/i);
+  assert.equal(human.audienceScopedOutcomeText, 'turns that graph into behavior-level comprehension for people');
+  assert.equal(agent.audienceScopedOutcomeText, 'turns that graph into behavior-level comprehension for agents');
   assert.deepEqual(graph.visibleActionTerms, ['build']);
   assert.deepEqual(human.visibleActionTerms, ['turn']);
   assert.deepEqual(agent.visibleActionTerms, ['turn']);
@@ -125,6 +129,26 @@ test('derives visible actions only from canonical purpose verbs after plural and
     assert.deepEqual(requirements.map(requirement => requirement.visibleActionTerms?.[0]), entry.expected);
     assert.deepEqual(requirements.map(requirement => requirement.audience), entry.audiences);
   }
+});
+
+test('projects only a syntactic coordinated audience list into an exact slot-specific clause', () => {
+  const forward = 'Turns the graph into behavior-level comprehension for people, and AI agents.';
+  const reverse = 'Turns the graph into behavior-level comprehension for agents & people.';
+  const relational = 'People help agents understand connected software behavior.';
+  const between = 'People inspect dependencies between users and AI agents.';
+  const among = 'Agents compare changes among assistants and people.';
+  const subject = 'People and agents inspect connected software behavior.';
+
+  assert.equal(audienceScopedCapabilityCatalogOutcomeText(forward, 'human', 'people'), 'Turns the graph into behavior-level comprehension for people.');
+  assert.equal(audienceScopedCapabilityCatalogOutcomeText(forward, 'agent', 'agents'), 'Turns the graph into behavior-level comprehension for agents.');
+  assert.equal(audienceScopedCapabilityCatalogOutcomeText(reverse, 'human', 'people'), 'Turns the graph into behavior-level comprehension for people.');
+  assert.equal(audienceScopedCapabilityCatalogOutcomeText(reverse, 'agent', 'agents'), 'Turns the graph into behavior-level comprehension for agents.');
+  assert.equal(audienceScopedCapabilityCatalogOutcomeText(relational, 'human', 'people'), undefined);
+  assert.equal(audienceScopedCapabilityCatalogOutcomeText(relational, 'agent', 'agents'), undefined);
+  assert.equal(audienceScopedCapabilityCatalogOutcomeText(between, 'human', 'people'), undefined);
+  assert.equal(audienceScopedCapabilityCatalogOutcomeText(among, 'agent', 'agents'), undefined);
+  assert.equal(audienceScopedCapabilityCatalogOutcomeText(subject, 'human', 'people'), 'people inspect connected software behavior.');
+  assert.equal(audienceScopedCapabilityCatalogOutcomeText(subject, 'agent', 'agents'), 'agents inspect connected software behavior.');
 });
 
 test('requires the immutable audience-slot action without allowing a sibling slot action', () => {
@@ -267,7 +291,19 @@ test('reports the exact failed audience, candidate, and subject binding', () => 
   assert.equal(capabilityCatalogOutcomeBindingFailure(corrected, human.candidateIds, human.id, [human], new Set()), undefined);
   assert.deepEqual(capabilityCatalogOutcomeBindingFailureDetail(actorless, human.candidateIds, human.id, [human], new Set()), {
     missingAudience: human.audienceLabel,
+    missingAudienceLocations: ['name', 'description'],
     missingSubjectTerms: [],
+    reason: 'required-outcome-audience-missing:human',
+  });
+  const mixed = published('Help people and agents understand software behavior', 'People and agents understand connected software behavior.');
+  assert.deepEqual(capabilityCatalogOutcomeBindingFailureDetail(mixed, human.candidateIds, human.id, [human], new Set()), {
+    missingSubjectTerms: [], oppositeAudienceLabels: ['agents'], oppositeAudienceLocations: ['name', 'description'],
+    reason: 'required-outcome-audience-conflict:human',
+  });
+  const actorlessMixed = published('Turn behavior into comprehension', 'Turns behavior into comprehension for people and AI agents.');
+  assert.deepEqual(capabilityCatalogOutcomeBindingFailureDetail(actorlessMixed, human.candidateIds, human.id, [human], new Set()), {
+    missingAudience: human.audienceLabel, missingAudienceLocations: ['name'], missingSubjectTerms: [],
+    oppositeAudienceLabels: ['agents'], oppositeAudienceLocations: ['description'],
     reason: 'required-outcome-audience-missing:human',
   });
   assert.deepEqual(capabilityCatalogOutcomeBindingFailureDetail(wrongSubject, human.candidateIds, human.id, [human], new Set()), {
@@ -290,8 +326,8 @@ test('requires audience identity in both the bound title and description', () =>
   assert.equal(capabilityCatalogOutcomeBindingFailure(actorlessDescription, human.candidateIds, human.id, [human], new Set()), 'required-outcome-audience-missing:human');
   assert.equal(capabilityCatalogOutcomeBindingFailure(people, human.candidateIds, human.id, [human], new Set()), undefined);
   assert.equal(capabilityCatalogOutcomeBindingFailure(agents, agent.candidateIds, agent.id, [agent], new Set()), undefined);
-  assert.equal(capabilityCatalogOutcomeBindingFailure(mixed, human.candidateIds, human.id, [human], new Set()), 'required-outcome-audience-missing:human');
-  assert.equal(capabilityCatalogOutcomeBindingFailure(mixed, agent.candidateIds, agent.id, [agent], new Set()), 'required-outcome-audience-missing:agent');
+  assert.equal(capabilityCatalogOutcomeBindingFailure(mixed, human.candidateIds, human.id, [human], new Set()), 'required-outcome-audience-conflict:human');
+  assert.equal(capabilityCatalogOutcomeBindingFailure(mixed, agent.candidateIds, agent.id, [agent], new Set()), 'required-outcome-audience-conflict:agent');
   assert.equal(capabilitySatisfiesCatalogOutcomeRequirement({
     ...actorlessTitle,
     criticality_factors: [`catalog-outcome-requirement:${human.id}`],

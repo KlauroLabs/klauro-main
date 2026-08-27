@@ -175,7 +175,7 @@ import {
   synchronizeCapabilityCatalogCoverage,
 } from './capability-catalog-evidence';
 import { mergeCapabilityCatalogFlowEvidence } from './capability-catalog-flow-evidence';
-import { bindUniquelySatisfiedCatalogOutcomeRequirements, capabilityCatalogCoverageFailure, capabilityCatalogOutcomeBindingFailureDetail, capabilityCatalogOutcomeNameFailure, capabilityCatalogOutcomesMayMerge, deriveCapabilityCatalogOutcomeRequirements, uncoveredCapabilityCatalogOutcomeRequirements, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
+import { bindUniquelySatisfiedCatalogOutcomeRequirements, capabilityCatalogCoverageFailure, capabilityCatalogOutcomeBindingFailureDetail, capabilityCatalogOutcomeNameFailure, capabilityCatalogOutcomesMayMerge, capabilityCatalogTargetedOutcomeText, deriveCapabilityCatalogOutcomeRequirements, uncoveredCapabilityCatalogOutcomeRequirements, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
 import { fitCapabilityCatalogContext } from './ai-context-budget';
 import { awaitAiOperation } from './ai-operation-timing';
 import { capabilityDescriptionBatchSize, resolveCapabilityCatalogRoute, resolveCapabilityDescriptionRoute, shouldReauthorCapabilityDescriptions, toAIContextRoute } from './ai-task-model-routing';
@@ -9302,7 +9302,7 @@ export class AnalyzerOrchestrator {
       const budgetedContext = fitCapabilityCatalogContext(additionalContextWithoutFacts, {
         user_journeys: targetedRepair ? [] : journeys, entities: targetedRepair ? [] : entities,
         candidate_route_areas: input.targetedRepairFacts || candidateAreaFacts,
-        required_behavior_candidate_ids: targetedRepair ? [] : requiredBehaviorCandidateAreas.map(candidate => candidate.id), accepted_outcome_names: targetedRepair ? [] : input.acceptedOutcomeNames, required_outcomes: input.requiredOutcomeRequirements?.map(requirement => ({ requirement_id: requirement.id, audience: requirement.audience, required_audience_label: requirement.audienceLabel || requirement.audience, required_subject_terms: requirement.requiredSubjectTerms || requirement.subjectTokens, required_visible_actions: requirement.visibleActionTerms || [], minimum_subject_matches: requirement.minimumSubjectMatches ?? Math.min(2, requirement.subjectTokens.length), outcome: requirement.statement, first_party_outcome_text: requirement.firstPartyOutcomeText, candidate_ids: targetedRepair ? Object.entries(input.targetedRepairCandidateMap || {}).filter(([, rawId]) => requirement.candidateIds.includes(rawId)).map(([opaqueId]) => opaqueId) : requirement.candidateIds })),
+        required_behavior_candidate_ids: targetedRepair ? [] : requiredBehaviorCandidateAreas.map(candidate => candidate.id), accepted_outcome_names: targetedRepair ? [] : input.acceptedOutcomeNames, required_outcomes: input.requiredOutcomeRequirements?.map(requirement => ({ requirement_id: requirement.id, audience: requirement.audience, required_audience_label: requirement.audienceLabel || requirement.audience, required_subject_terms: requirement.requiredSubjectTerms || requirement.subjectTokens, required_visible_actions: requirement.visibleActionTerms || [], minimum_subject_matches: requirement.minimumSubjectMatches ?? Math.min(2, requirement.subjectTokens.length), outcome: requirement.statement, first_party_outcome_text: targetedRepair ? capabilityCatalogTargetedOutcomeText(requirement) : requirement.firstPartyOutcomeText, candidate_ids: targetedRepair ? Object.entries(input.targetedRepairCandidateMap || {}).filter(([, rawId]) => requirement.candidateIds.includes(rawId)).map(([opaqueId]) => opaqueId) : requirement.candidateIds })),
         required_entity_candidate_groups: targetedRepair ? [] : requiredEntityCandidateGroups,
         external_services: targetedRepair ? [] : services,
         ...(hasTopDown ? { top_down_signals: topDownSignals } : {}),
@@ -9476,9 +9476,9 @@ export class AnalyzerOrchestrator {
     };
     const staged: StagedCatalogItem[] = []; let activeRequirementId: string | undefined; let bareNounRejected = 0; const catalogRejectionFeedback: CapabilityCatalogRejection[] = [];
     const catalogRejectionReasons = new Map<string, number>();
-    const debugCatalogRejection = (name: string, reason: string, candidateIds: string[] = [], missingAudience?: string, missingSubjectTerms?: string[]): void => {
+    const debugCatalogRejection = (name: string, reason: string, candidateIds: string[] = [], details: Partial<CapabilityCatalogRejection> = {}): void => {
       catalogRejectionReasons.set(reason, (catalogRejectionReasons.get(reason) || 0) + 1);
-      catalogRejectionFeedback.push({ candidateIds, name, reason, ...(missingAudience ? { missingAudience } : {}), ...(missingSubjectTerms?.length ? { missingSubjectTerms } : {}), ...(activeRequirementId ? { requirementId: activeRequirementId } : {}) });
+      catalogRejectionFeedback.push({ candidateIds, name, reason, ...details, ...(activeRequirementId ? { requirementId: activeRequirementId } : {}) });
       if (process.env.KLAURO_DEBUG_CATALOG) {
         writeAnalyzerStatus('[catalog-debug] rejected catalog item:', { name, reason });
       }
@@ -9505,7 +9505,7 @@ export class AnalyzerOrchestrator {
       const itemCandidateIds = Array.isArray(item.candidate_ids) ? item.candidate_ids.map(value => String(value || '')) : [];
       if (input.repairMode === 'evidence' && item.requirement_id) { debugCatalogRejection(name, 'unexpected-requirement-id', itemCandidateIds); continue; }
       const boundRequirement = input.requiredOutcomeRequirements?.find(requirement => requirement.id === activeRequirementId); const bindingFailure = capabilityCatalogOutcomeBindingFailureDetail({ name, description }, itemCandidateIds, rawRequirementId || '', input.requiredOutcomeRequirements || [], fulfilledOutcomeRequirements);
-      if (bindingFailure) { debugCatalogRejection(name, bindingFailure.reason, itemCandidateIds, bindingFailure.missingAudience, bindingFailure.missingSubjectTerms); continue; }
+      if (bindingFailure) { debugCatalogRejection(name, bindingFailure.reason, itemCandidateIds, bindingFailure); continue; }
       if (input.requiredOutcomeRequirements?.length) boundRequirementId = activeRequirementId;
       if (/(->|→|»)/.test(name)) {
         if (/^run\s+[a-z_$][\w$.]*/i.test(name) || /\b[a-z][a-z0-9]*_[a-z0-9]+\b/.test(name)) continue;

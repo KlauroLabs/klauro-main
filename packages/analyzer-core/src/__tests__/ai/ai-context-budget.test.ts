@@ -134,7 +134,17 @@ describe('AI context budgeting', () => {
       required_audience_labels: ['people'], required_subject_terms: ['inspect', 'software', 'behavior'],
       required_visible_actions: ['inspect'],
       minimum_subject_matches: 2,
-      prior_rejections: Array.from({ length: 4 }, () => ({ reason: `missing-subject-${'detail'.repeat(20)}`, missing_audience: 'people', missing_subject_terms: ['inspect', 'behavior'] })),
+      prior_rejections: [
+        {
+          reason: 'required-outcome-audience-conflict', missing_audience: 'people',
+          missing_audience_locations: ['name'], opposite_audience_labels: ['agents'],
+          opposite_audience_locations: ['description'],
+        },
+        ...Array.from({ length: 3 }, () => ({
+          reason: `missing-subject-${'detail'.repeat(20)}`,
+          missing_subject_terms: ['inspect', 'behavior'],
+        })),
+      ],
     }));
     const env = { AI_MAX_CONTEXT_LENGTH: '4096' } as NodeJS.ProcessEnv;
     const result = fitCapabilityCatalogContext({ task: `Repair outcomes ${'instruction '.repeat(900)}` }, {
@@ -153,6 +163,10 @@ describe('AI context budgeting', () => {
     expect(retained.map(candidate => candidate.candidate_id)).toEqual(candidates.map(candidate => candidate.candidate_id));
     expect(retained.every(candidate => Array.isArray(candidate.required_audience_labels) && candidate.required_audience_labels[0] === 'people')).toBe(true);
     expect(retained.every(candidate => candidate.minimum_subject_matches === 2)).toBe(true);
+    expect(retained.every(candidate => (candidate.prior_rejections as Array<Record<string, unknown>>).some(rejection =>
+      JSON.stringify(rejection.missing_audience_locations) === '["name"]' &&
+      JSON.stringify(rejection.opposite_audience_labels) === '["agents"]' &&
+      JSON.stringify(rejection.opposite_audience_locations) === '["description"]'))).toBe(true);
     expect(retained.every(candidate => JSON.stringify(candidate).includes('CrossCodebaseSystemGraph'))).toBe(false);
   });
 });

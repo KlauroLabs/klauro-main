@@ -1,5 +1,5 @@
 import type { SystemCapability } from '../../types/cas.types';
-import { canonicalCapabilityCatalogOutcomeToken, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
+import { canonicalCapabilityCatalogOutcomeToken, capabilityCatalogTargetedOutcomeText, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
 import type { CapabilityCatalogPriorRejection } from './capability-catalog-scheduling';
 
 export interface CapabilityCatalogRepairPromptFact {
@@ -9,7 +9,10 @@ export interface CapabilityCatalogRepairPromptFact {
   prior_rejections: Array<{
     forbidden_subject_terms?: string[];
     missing_audience?: string;
+    missing_audience_locations?: string[];
     missing_subject_terms?: string[];
+    opposite_audience_labels?: string[];
+    opposite_audience_locations?: string[];
     reason: string;
     requirement_id?: string;
   }>;
@@ -36,11 +39,17 @@ export function compactCapabilityCatalogRepairPromptFact(value: unknown, require
     minimum_subject_matches: Math.max(0, Math.min(16, Number(fact.minimum_subject_matches) || 0)),
     prior_rejections: (Array.isArray(fact.prior_rejections) ? fact.prior_rejections : []).slice(-4).map(value => {
       const rejection = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+      const missingAudienceLocations = boundedArray(rejection.missing_audience_locations, 2, 20);
+      const oppositeAudienceLabels = boundedArray(rejection.opposite_audience_labels, 4, 80);
+      const oppositeAudienceLocations = boundedArray(rejection.opposite_audience_locations, 2, 20);
       return {
         reason: bounded(rejection.reason, 180), requirement_id: bounded(rejection.requirement_id, 240),
         forbidden_subject_terms: boundedArray(rejection.forbidden_subject_terms, 12, 120),
         missing_audience: bounded(rejection.missing_audience, 80),
+        ...(missingAudienceLocations.length ? { missing_audience_locations: missingAudienceLocations } : {}),
         missing_subject_terms: boundedArray(rejection.missing_subject_terms, 16, 80),
+        ...(oppositeAudienceLabels.length ? { opposite_audience_labels: oppositeAudienceLabels } : {}),
+        ...(oppositeAudienceLocations.length ? { opposite_audience_locations: oppositeAudienceLocations } : {}),
       };
     }),
   };
@@ -50,17 +59,42 @@ export function shrinkCapabilityCatalogRepairPromptToBudget(
   base: Record<string, unknown>, facts: Record<string, unknown>, maxBytes: number, measure: () => number,
 ): void {
   const candidates = Array.isArray(facts.candidate_route_areas) ? facts.candidate_route_areas as Record<string, unknown>[] : [];
+  const isAudienceCorrection = (rejection: Record<string, unknown>): boolean => Boolean(String(rejection.missing_audience || '').trim()) ||
+    [rejection.missing_audience_locations, rejection.opposite_audience_labels, rejection.opposite_audience_locations]
+      .some(value => Array.isArray(value) && value.length > 0);
   const removeLargest = (key: 'prior_rejections' | 'observable_actions' | 'first_party_outcomes'): boolean => {
-    const target = candidates.filter(candidate => Array.isArray(candidate[key]) && (candidate[key] as unknown[]).length > 0)
-      .sort((left, right) => JSON.stringify(right[key]).length - JSON.stringify(left[key]).length)[0];
+    const removable = candidates.flatMap(candidate => {
+      const values = Array.isArray(candidate[key]) ? candidate[key] as unknown[] : [];
+      let protectedIndex = -1;
+      if (key === 'prior_rejections') values.forEach((value, index) => {
+        const rejection = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+        if (isAudienceCorrection(rejection)) protectedIndex = index;
+      });
+      return values.flatMap((value, index) => index === protectedIndex ? [] : [{ candidate, index, size: JSON.stringify(value).length }]);
+    }).sort((left, right) => right.size - left.size);
+    const target = removable[0];
     if (!target) return false;
-    (target[key] as unknown[]).pop();
+    (target.candidate[key] as unknown[]).splice(target.index, 1);
     return true;
   };
   for (const key of ['prior_rejections', 'observable_actions', 'first_party_outcomes'] as const) {
     while (measure() > maxBytes && removeLargest(key)) {
       if (measure() <= maxBytes) break;
     }
+  }
+  for (const removableField of ['forbidden_subject_terms', 'missing_subject_terms'] as const) {
+    for (const candidate of candidates) {
+      if (measure() <= maxBytes) break;
+      const rejections = Array.isArray(candidate.prior_rejections) ? candidate.prior_rejections as Record<string, unknown>[] : [];
+      const protectedRejection = [...rejections].reverse().find(isAudienceCorrection);
+      if (protectedRejection) delete protectedRejection[removableField];
+    }
+  }
+  for (const candidate of candidates) {
+    if (measure() <= maxBytes) break;
+    const rejections = Array.isArray(candidate.prior_rejections) ? candidate.prior_rejections as Record<string, unknown>[] : [];
+    const protectedRejection = [...rejections].reverse().find(isAudienceCorrection);
+    if (protectedRejection) protectedRejection.reason = bounded(protectedRejection.reason, 48);
   }
   for (const [key, limit] of [['retry_hint', 800], ['style', 800], ['task', 3200]] as const) {
     if (measure() <= maxBytes || !base[key]) continue;
@@ -108,7 +142,7 @@ export function capabilityCatalogRepairPromptFacts(
   return candidates.filter(candidate => repairIds.has(candidate.id)).map(candidate => {
     const candidateRequirements = requirements.filter(requirement => requirement.candidateIds.includes(candidate.id));
     const groundedTerms = new Set(candidateRequirements.flatMap(requirement => [
-      requirement.firstPartyOutcomeText || '', ...(requirement.requiredSubjectTerms || requirement.subjectTokens),
+      capabilityCatalogTargetedOutcomeText(requirement) || '', ...(requirement.requiredSubjectTerms || requirement.subjectTokens),
     ]).flatMap(value => String(value).toLowerCase().split(/[^a-z0-9]+/)).filter(word => word.length >= 3));
     const internalPhrases = [candidate.name, candidate.structural_label, ...(candidate.evidence_examples || []),
       ...(candidate.related_entities || []).map(entityId => entityNamesById.get(entityId) || entityId)]
@@ -121,7 +155,7 @@ export function capabilityCatalogRepairPromptFacts(
     return {
       candidate_id: candidate.id,
       first_party_outcomes: [...new Set(candidateRequirements.map(requirement =>
-        String(requirement.firstPartyOutcomeText || '').trim()).filter(Boolean))].slice(0, 4),
+        String(capabilityCatalogTargetedOutcomeText(requirement) || '').trim()).filter(Boolean))].slice(0, 4),
       observable_actions: [...new Set((candidate.operations || []).flatMap(operation => [
         ...safeOperation(operation.action),
       ]))].slice(0, 8),
@@ -143,7 +177,10 @@ export function capabilityCatalogRepairPromptFacts(
           reason: customerSafeRepairReason(rejection.reason),
           ...(forbiddenSubjectTerms.length ? { forbidden_subject_terms: forbiddenSubjectTerms } : {}),
           ...(rejection.missing_audience ? { missing_audience: rejection.missing_audience } : {}),
+          ...(rejection.missing_audience_locations?.length ? { missing_audience_locations: rejection.missing_audience_locations } : {}),
           ...(rejection.missing_subject_terms?.length ? { missing_subject_terms: rejection.missing_subject_terms.slice(0, 16) } : {}),
+          ...(rejection.opposite_audience_labels?.length ? { opposite_audience_labels: rejection.opposite_audience_labels } : {}),
+          ...(rejection.opposite_audience_locations?.length ? { opposite_audience_locations: rejection.opposite_audience_locations } : {}),
           ...(rejection.requirement_id ? { requirement_id: rejection.requirement_id } : {}),
         };
         }),
@@ -166,7 +203,7 @@ export function capabilityCatalogRepairPromptEnvelope(
 }
 
 export function capabilityCatalogFirstPartyFallback(requirement?: CapabilityCatalogOutcomeRequirement): Record<string, unknown> | undefined {
-  const description = String(requirement?.firstPartyOutcomeText || '').trim();
+  const description = requirement ? String(capabilityCatalogTargetedOutcomeText(requirement) || '').trim() : '';
   const actions = [...new Set((requirement?.visibleActionTerms || []).filter(Boolean))];
   if (!requirement || !description || actions.length !== 1) return undefined;
   const words = description.match(/[A-Za-z][A-Za-z'-]*/g) || [];

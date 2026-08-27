@@ -5,6 +5,7 @@ import { CAPABILITY_PURPOSE_VERBS } from './capability-naming';
 export interface CapabilityCatalogOutcomeRequirement {
   audience?: 'agent' | 'human';
   audienceLabel?: string;
+  audienceScopedOutcomeText?: string;
   candidateIds: string[];
   id: string;
   firstPartyOutcomeText?: string;
@@ -19,12 +20,21 @@ export interface CapabilityCatalogOutcomeRequirement {
 
 export interface CapabilityCatalogOutcomeBindingFailure {
   missingAudience?: string;
+  missingAudienceLocations?: Array<'description' | 'name'>;
   missingSubjectTerms: string[];
+  oppositeAudienceLabels?: string[];
+  oppositeAudienceLocations?: Array<'description' | 'name'>;
   reason: string;
 }
 
-const humanAudience = /\b(?:humans?|people|persons?|users?)\b/i;
-const agentAudience = /\b(?:agents?|assistants?)\b/i;
+const humanAudienceSource = '(?:humans?|people|persons?|users?)';
+const agentAudienceSource = '(?:agents?|assistants?)';
+const humanAudience = new RegExp(`\\b${humanAudienceSource}\\b`, 'i');
+const agentAudience = new RegExp(`\\b${agentAudienceSource}\\b`, 'i');
+const coordinatedAudienceList = new RegExp(
+  `\\b(?:${humanAudienceSource}\\s*(?:,\\s*(?:and\\s+)?|\\s+and\\s+|\\s*&\\s*|\\s*\\/\\s*)(?:AI\\s+)?${agentAudienceSource}|(?:AI\\s+)?${agentAudienceSource}\\s*(?:,\\s*(?:and\\s+)?|\\s+and\\s+|\\s*&\\s*|\\s*\\/\\s*)${humanAudienceSource})\\b`,
+  'i',
+);
 
 function canonicalToken(token: string): string {
   const source = token.toLowerCase();
@@ -119,6 +129,29 @@ function requirementAudienceLabel(clause: string, audience?: 'agent' | 'human'):
   return clause.match(audience === 'human' ? humanAudience : agentAudience)?.[0]?.toLowerCase();
 }
 
+export function audienceScopedCapabilityCatalogOutcomeText(
+  clause: string,
+  audience?: 'agent' | 'human',
+  audienceLabel?: string,
+): string | undefined {
+  if (!audience || !audienceLabel || !humanAudience.test(clause) || !agentAudience.test(clause)) return undefined;
+  const coordinated = clause.match(coordinatedAudienceList);
+  const index = coordinated?.index;
+  if (!coordinated || index === undefined) return undefined;
+  const governingText = clause.slice(0, index);
+  const isClauseSubject = governingText.trim().length === 0;
+  const hasAudienceMarker = /\b(?:for|to|by)\s*$/i.test(governingText);
+  if (!isClauseSubject && !hasAudienceMarker) return undefined;
+  return governingText + audienceLabel + clause.slice(index + coordinated[0].length);
+}
+
+export function capabilityCatalogTargetedOutcomeText(requirement: CapabilityCatalogOutcomeRequirement): string | undefined {
+  const raw = String(requirement.firstPartyOutcomeText || '').trim();
+  if (!raw) return undefined;
+  if (!requirement.audience || !humanAudience.test(raw) || !agentAudience.test(raw)) return raw;
+  return requirement.audienceScopedOutcomeText || audienceScopedCapabilityCatalogOutcomeText(raw, requirement.audience, requirement.audienceLabel);
+}
+
 function requirementId(audience: string | undefined, subjectTokens: readonly string[]): string {
   return `${audience || 'all'}:${subjectTokens.slice().sort().join('-')}`;
 }
@@ -172,10 +205,12 @@ export function deriveCapabilityCatalogOutcomeRequirements(
       const id = requirementId(audience, groundedSubjectTokens);
       const statement = conciseOutcomeStatement(clause, new Set(groundedSubjectTokens));
       const audienceLabel = requirementAudienceLabel(clause, audience);
+      const audienceScopedOutcomeText = audienceScopedCapabilityCatalogOutcomeText(clause, audience, audienceLabel);
       const visibleActionTerms = clauseVisibleActionTerms(clause, statement);
       requirements.set(id, {
         audience,
         audienceLabel,
+        ...(audienceScopedOutcomeText ? { audienceScopedOutcomeText } : {}),
         candidateIds,
         id,
         firstPartyOutcomeText: clause,
@@ -206,6 +241,31 @@ function capabilityMatchesBoundAudience(
   return capabilityMatchesAudience(capability.name || '', audience) &&
     capabilityMatchesAudience(capability.description || '', audience) &&
     !opposite.test(capability.name || '') && !opposite.test(capability.description || '');
+}
+
+function capabilityAudienceBindingFailure(
+  capability: Pick<SystemCapability, 'name' | 'description'>,
+  requirement: CapabilityCatalogOutcomeRequirement,
+): Omit<CapabilityCatalogOutcomeBindingFailure, 'missingSubjectTerms'> | undefined {
+  if (!requirement.audience) return undefined;
+  const required = requirement.audience === 'human' ? humanAudience : agentAudience;
+  const opposite = requirement.audience === 'human' ? agentAudience : humanAudience;
+  const missingAudienceLocations = (['name', 'description'] as const).filter(location => !required.test(capability[location] || ''));
+  const oppositeAudienceLocations = (['name', 'description'] as const).filter(location => opposite.test(capability[location] || ''));
+  const oppositeAudienceLabels = [...new Set(oppositeAudienceLocations.map(location =>
+    (capability[location] || '').match(opposite)?.[0]?.toLowerCase()).filter((label): label is string => Boolean(label)))];
+  if (missingAudienceLocations.length > 0) return {
+    missingAudience: requirement.audienceLabel || requirement.audience,
+    missingAudienceLocations: [...missingAudienceLocations],
+    ...(oppositeAudienceLabels.length ? { oppositeAudienceLabels, oppositeAudienceLocations: [...oppositeAudienceLocations] } : {}),
+    reason: `required-outcome-audience-missing:${requirement.audience}`,
+  };
+  if (oppositeAudienceLocations.length > 0) return {
+    oppositeAudienceLabels,
+    oppositeAudienceLocations: [...oppositeAudienceLocations],
+    reason: `required-outcome-audience-conflict:${requirement.audience}`,
+  };
+  return undefined;
 }
 
 function capabilityMatchesSubjectAlias(
@@ -352,10 +412,8 @@ export function capabilityCatalogOutcomeBindingFailureDetail(
   const capabilityTokens = new Set(tokens(capabilityText));
   const requiredTerms = requirement.requiredSubjectTerms || requirement.subjectTokens;
   const missingSubjectTerms = requiredTerms.filter(token => !capabilityTokens.has(token));
-  const missingAudience = capabilityMatchesBoundAudience(capability, requirement.audience)
-    ? undefined
-    : requirement.audienceLabel || requirement.audience;
-  if (missingAudience) return { missingAudience, missingSubjectTerms, reason: `required-outcome-audience-missing:${requirement.audience}` };
+  const audienceFailure = capabilityAudienceBindingFailure(capability, requirement);
+  if (audienceFailure) return { ...audienceFailure, missingSubjectTerms };
   const aliasMatches = capabilityMatchesSubjectAlias(capabilityTokens, requiredTerms, requirement.subjectTokenAliases, requirement.subjectAliasAnchorTokens);
   const matches = requiredTerms.length - missingSubjectTerms.length;
   const minimumMatches = requirement.minimumSubjectMatches ?? Math.min(2, requiredTerms.length);
@@ -447,6 +505,6 @@ export function capabilityCatalogOutcomeRepairNudge(
 ): string {
   const relevant = capabilityCatalogOutcomeRequirementsForCandidates(requirements, candidateIds);
   return relevant.length > 0
-    ? `Distinct first-party outcomes still required by corroborated evidence: ${JSON.stringify(relevant.map(requirement => ({ requirement_id: requirement.id, first_party_outcome_text: requirement.firstPartyOutcomeText, required_audience_label: requirement.audienceLabel || requirement.audience, required_subject_terms: requirement.requiredSubjectTerms || requirement.subjectTokens, minimum_subject_matches: requirement.minimumSubjectMatches ?? Math.min(2, requirement.subjectTokens.length), outcome: requirement.statement })))}. Return one distinct outcome for each entry, including separate outcomes for different explicit audiences. Cite only opaque candidate_ids supplied in the repair facts. Copy the literal required_audience_label and enough required_subject_terms, or their canonical validator forms, across the name and description.`
+    ? `Distinct first-party outcomes still required by corroborated evidence: ${JSON.stringify(relevant.map(requirement => ({ requirement_id: requirement.id, first_party_outcome_text: capabilityCatalogTargetedOutcomeText(requirement), required_audience_label: requirement.audienceLabel || requirement.audience, required_subject_terms: requirement.requiredSubjectTerms || requirement.subjectTokens, minimum_subject_matches: requirement.minimumSubjectMatches ?? Math.min(2, requirement.subjectTokens.length), outcome: requirement.statement })))}. Return one distinct outcome for each entry, including separate outcomes for different explicit audiences. Cite only opaque candidate_ids supplied in the repair facts. Include the literal required_audience_label in both name and description, omit every opposite audience named by prior_rejections, and copy enough required_subject_terms or their canonical validator forms.`
     : '';
 }

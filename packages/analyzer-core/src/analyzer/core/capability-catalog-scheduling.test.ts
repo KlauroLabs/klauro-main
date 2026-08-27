@@ -228,7 +228,10 @@ test('capability repair facts carry bounded candidate-specific rejection constra
   const recorded = recordCapabilityCatalogRejection(rejections, {
     candidateIds: ['agent'],
     missingAudience: 'agents',
+    missingAudienceLocations: ['name'],
     missingSubjectTerms: ['understand', 'behavior'],
+    oppositeAudienceLabels: ['people'],
+    oppositeAudienceLocations: ['description'],
     name: 'Evaluate agent readiness and task proof',
     reason: 'outcome-scope-unsupported:readiness,task,proof',
   });
@@ -240,7 +243,10 @@ test('capability repair facts carry bounded candidate-specific rejection constra
     reason: 'outcome-scope-unsupported:readiness,task,proof',
     forbidden_subject_terms: ['readiness', 'task', 'proof'],
     missing_audience: 'agents',
+    missing_audience_locations: ['name'],
     missing_subject_terms: ['understand', 'behavior'],
+    opposite_audience_labels: ['people'],
+    opposite_audience_locations: ['description'],
   }]);
   assert.deepEqual(facts[1].prior_rejections, []);
   assert.equal(recorded.added, true);

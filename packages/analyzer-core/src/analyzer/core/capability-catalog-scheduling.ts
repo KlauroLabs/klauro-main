@@ -20,20 +20,26 @@ export type CapabilityDescriptionRepairOutcome =
 export interface CapabilityCatalogRejection {
   candidateIds: string[];
   missingAudience?: string;
+  missingAudienceLocations?: Array<'description' | 'name'>;
   missingSubjectTerms?: string[];
   name: string;
   reason: string;
   requirementId?: string;
   forbiddenSubjectTerms?: string[];
+  oppositeAudienceLabels?: string[];
+  oppositeAudienceLocations?: Array<'description' | 'name'>;
 }
 
 export interface CapabilityCatalogPriorRejection {
   missing_audience?: string;
+  missing_audience_locations?: Array<'description' | 'name'>;
   missing_subject_terms?: string[];
   name: string;
   reason: string;
   forbidden_subject_terms: string[];
   requirement_id?: string;
+  opposite_audience_labels?: string[];
+  opposite_audience_locations?: Array<'description' | 'name'>;
 }
 
 export function capabilityCatalogOutcomeCorrectiveRetryFeedback(
@@ -48,7 +54,10 @@ export function capabilityCatalogOutcomeCorrectiveRetryFeedback(
     reason: observed?.reason || 'required-outcome-zero-result',
     requirementId: requirement.id,
     ...(observed?.missingAudience ? { missingAudience: observed.missingAudience } : {}),
+    ...(observed?.missingAudienceLocations?.length ? { missingAudienceLocations: observed.missingAudienceLocations } : {}),
     ...(observed?.missingSubjectTerms?.length ? { missingSubjectTerms: observed.missingSubjectTerms } : {}),
+    ...(observed?.oppositeAudienceLabels?.length ? { oppositeAudienceLabels: observed.oppositeAudienceLabels } : {}),
+    ...(observed?.oppositeAudienceLocations?.length ? { oppositeAudienceLocations: observed.oppositeAudienceLocations } : {}),
   };
 }
 
@@ -290,14 +299,18 @@ export function recordCapabilityCatalogRejection(
         reason: feedback.reason,
         forbidden_subject_terms: forbiddenSubjectTerms,
         ...(feedback.missingAudience ? { missing_audience: feedback.missingAudience } : {}),
+        ...(feedback.missingAudienceLocations?.length ? { missing_audience_locations: feedback.missingAudienceLocations } : {}),
         ...(feedback.missingSubjectTerms?.length ? { missing_subject_terms: feedback.missingSubjectTerms } : {}),
+        ...(feedback.oppositeAudienceLabels?.length ? { opposite_audience_labels: feedback.oppositeAudienceLabels } : {}),
+        ...(feedback.oppositeAudienceLocations?.length ? { opposite_audience_locations: feedback.oppositeAudienceLocations } : {}),
         ...(feedback.requirementId ? { requirement_id: feedback.requirementId } : {}),
       }]);
       added = true;
     }
   }
   const correction = [
-    feedback.missingAudience ? `include audience ${JSON.stringify(feedback.missingAudience)}` : '',
+    feedback.missingAudience ? `include audience ${JSON.stringify(feedback.missingAudience)} in ${JSON.stringify(feedback.missingAudienceLocations || ['name', 'description'])}` : '',
+    feedback.oppositeAudienceLabels?.length ? `omit opposite audience ${JSON.stringify(feedback.oppositeAudienceLabels)} from ${JSON.stringify(feedback.oppositeAudienceLocations || ['name', 'description'])}` : '',
     feedback.missingSubjectTerms?.length ? `include subject terms ${JSON.stringify(feedback.missingSubjectTerms)}` : '',
   ].filter(Boolean).join(' and ');
   return { added, explanation: `The title "${feedback.name}" was rejected (${feedback.reason}); ${correction || 'do not repeat it, and use only the recurring evidence subject terms for a broader shared outcome'}.` };

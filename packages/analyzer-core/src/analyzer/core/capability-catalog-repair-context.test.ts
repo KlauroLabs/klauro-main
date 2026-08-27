@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SystemCapability } from '../../types/cas.types';
+import { capabilityCatalogOutcomeBindingFailure } from './capability-catalog-outcome-coverage';
 import { capabilityCatalogFirstPartyFallback, capabilityCatalogRepairPromptEnvelope } from './capability-catalog-repair-context';
 
 test('targeted repair exposes opaque ids and customer-language facts without raw structural evidence', () => {
@@ -26,7 +27,9 @@ test('targeted repair exposes opaque ids and customer-language facts without raw
   const rejections = new Map([['capability_mcp', [{
     name: 'Inspect CASEdge transitions', reason: 'outcome-scope-unsupported:CASEdge,KlauroConfig',
     forbidden_subject_terms: ['CASEdge', 'KlauroConfig'], requirement_id: 'human:understand',
-    missing_audience: 'people', missing_subject_terms: ['understand', 'behavior'],
+    missing_audience: 'people', missing_audience_locations: ['name'] as const,
+    missing_subject_terms: ['understand', 'behavior'], opposite_audience_labels: ['agents'],
+    opposite_audience_locations: ['description'] as const,
   }]]]);
 
   const envelope = capabilityCatalogRepairPromptEnvelope(candidates, ['capability_mcp'], requirements, rejections);
@@ -44,7 +47,9 @@ test('targeted repair exposes opaque ids and customer-language facts without raw
   }
   assert.deepEqual(envelope.facts[0].prior_rejections, [{
     reason: 'outcome-scope-unsupported', requirement_id: 'human:understand',
-    missing_audience: 'people', missing_subject_terms: ['understand', 'behavior'],
+    missing_audience: 'people', missing_audience_locations: ['name'],
+    missing_subject_terms: ['understand', 'behavior'], opposite_audience_labels: ['agents'],
+    opposite_audience_locations: ['description'],
   }]);
 });
 
@@ -91,4 +96,32 @@ test('first-party fallback carries an audience-specific outcome into its title',
     requirement_id: 'human', name: 'Understand connected software behavior before making changes for people',
     description: requirement.firstPartyOutcomeText, category: 'core', candidate_ids: ['candidate'],
   });
+});
+
+test('first-party fallback uses only an unambiguous audience-scoped coordinated clause', () => {
+  const shared = {
+    id: 'human', statement: 'behavior comprehension', audience: 'human' as const, audienceLabel: 'people',
+    candidateIds: ['candidate'], subjectTokens: ['understand', 'behavior'], visibleActionTerms: ['turn'],
+    firstPartyOutcomeText: 'Turns the graph into behavior-level comprehension for people and AI agents.',
+    audienceScopedOutcomeText: 'Turns the graph into behavior-level comprehension for people.',
+  };
+  const humanFallback = capabilityCatalogFirstPartyFallback(shared);
+  assert.deepEqual(humanFallback, {
+    requirement_id: 'human', name: 'Turn the graph into behavior-level comprehension for people',
+    description: shared.audienceScopedOutcomeText, category: 'core', candidate_ids: ['candidate'],
+  });
+  assert.equal(capabilityCatalogOutcomeBindingFailure(
+    humanFallback as SystemCapability, ['candidate'], 'human', [shared], new Set(),
+  ), undefined);
+  const agent = {
+    ...shared, id: 'agent', audience: 'agent' as const, audienceLabel: 'agents',
+    audienceScopedOutcomeText: 'Turns the graph into behavior-level comprehension for agents.',
+  };
+  const agentFallback = capabilityCatalogFirstPartyFallback(agent);
+  assert.equal(capabilityCatalogOutcomeBindingFailure(
+    agentFallback as SystemCapability, ['candidate'], 'agent', [agent], new Set(),
+  ), undefined);
+  assert.equal(capabilityCatalogFirstPartyFallback({
+    ...shared, firstPartyOutcomeText: 'People help agents understand connected software behavior.', audienceScopedOutcomeText: undefined,
+  }), undefined);
 });
