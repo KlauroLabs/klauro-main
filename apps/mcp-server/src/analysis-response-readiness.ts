@@ -74,10 +74,50 @@ export function comprehensionResponseReadiness(cas: CASOutput): AnalysisResponse
 }
 
 export function hostedQueryResponseReadiness(cas: CASOutput, tool: string): AnalysisResponseReadiness {
-  if (tool === 'get_product_map' || tool === 'run_answer_pack') {
+  if (hostedQueryRequiresComprehension(tool)) {
     return comprehensionResponseReadiness(cas);
   }
   return { status: 'ready', ready: true };
+}
+
+export function hostedQueryRequiresComprehension(tool: string): boolean {
+  return tool === 'get_product_map' || tool === 'run_answer_pack';
+}
+
+interface AnalysisLayerFailure {
+  layer: string;
+  status: string;
+  error?: string;
+}
+
+export function unavailableStructuralQueryResponse(
+  layers: AnalysisLayerFailure[],
+  identity: AnalysisResponseIdentity & { tool: string },
+): Record<string, unknown> | undefined {
+  const structuralError = layers.find(layer => layer.layer !== 'L5' && layer.status === 'error');
+  if (!structuralError) return undefined;
+  const relevantError = hostedQueryRequiresComprehension(identity.tool)
+    ? layers.find(layer => (layer.layer === 'L4' || layer.layer === 'L5') && layer.status === 'error') || structuralError
+    : structuralError;
+  const error = relevantError.error || 'The analysis failed before the requested result could be produced.';
+  return { ...identity, status: 'failed', error, result: { status: 'failed', error } };
+}
+
+export function unavailableStructuralAnalysisResponse(
+  layers: AnalysisLayerFailure[],
+  identity: AnalysisResponseIdentity,
+  fallbackError: string,
+  lastAttempt?: LatestAnalysisAttempt | null,
+): Record<string, unknown> | undefined {
+  const structuralErrors = layers.filter(layer => layer.layer !== 'L5' && layer.status === 'error');
+  if (structuralErrors.length === 0) return undefined;
+  return {
+    ...identity,
+    status: 'failed',
+    analysis_error: structuralErrors.map(layer => layer.error).filter(Boolean).join('; ') || fallbackError,
+    failed_layers: structuralErrors.map(layer => layer.layer),
+    ...(lastAttempt ? { last_attempt: lastAttempt } : {}),
+  };
 }
 
 export function unavailableComprehensionResponse(

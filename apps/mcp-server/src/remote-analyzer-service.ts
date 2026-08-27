@@ -71,7 +71,7 @@ async function throwSubCasScopeError(workspace: string, subCasNodeId: string, fa
   }
   throw new AccountHttpError(400, fallback);
 }
-import { paginateConceptualCatalog, parseConceptualCatalogPage, unavailableComprehensionResponse, unavailableLatestAnalyzeAttempt } from './analysis-response-readiness';
+import { paginateConceptualCatalog, parseConceptualCatalogPage, unavailableComprehensionResponse, unavailableLatestAnalyzeAttempt, unavailableStructuralAnalysisResponse, unavailableStructuralQueryResponse } from './analysis-response-readiness';
 import { projectAttemptRecordPath, readAttemptRecord, writeAttemptRecord, type AnalysisAttemptRecord } from './analysis-attempt-record';
 import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
 import { getStageFingerprints } from '../../../packages/analyzer-core/src/analyzer/core/stage-fingerprint';
@@ -2479,8 +2479,10 @@ async function handleAccountApi(
     try {
       const workspace = workspacePath(dataDir, project.analysis_id);
       const tool = body.tool as HostedProjectQueryTool;
-      const lastAttempt = await readAttemptRecord(projectAttemptRecordPath(workspace));
-      const failedAttempt = unavailableLatestAnalyzeAttempt(lastAttempt, { project_id: project.id, analysis_id: project.analysis_id, tool }); if (failedAttempt) return { statusCode: 200, body: failedAttempt };
+      const entry = await getAnalysisEntry(workspace).catch(() => null);
+      const layers = entry?.layers_ready?.layers || [];
+      const unavailable = unavailableStructuralQueryResponse(layers, { project_id: project.id, analysis_id: project.analysis_id, tool });
+      if (unavailable) return { statusCode: 200, body: unavailable };
       const query = await runHostedProjectQueryWorker({
         workspace,
         tool,
@@ -2518,7 +2520,6 @@ async function handleAccountApi(
     await reapAbandonedAttempt(analysisWorkspace, projectAttemptRecordPath(analysisWorkspace));
     const entry = await getAnalysisEntry(analysisWorkspace);
     const lastAttempt = await readAttemptRecord(projectAttemptRecordPath(analysisWorkspace));
-    const failedAttempt = unavailableLatestAnalyzeAttempt(lastAttempt, { project_id: project.id, analysis_id: project.analysis_id }); if (failedAttempt) return { statusCode: 200, body: failedAttempt };
     if (lastAttempt?.state === 'in-progress') {
       prewarmHostedProjectQueryWorker();
       const structural = structuralReadinessDuringAttempt(entry, lastAttempt);
@@ -2581,7 +2582,7 @@ async function handleAccountApi(
       ? 'failed'
       : pending
         ? 'populating'
-        : l5Errored
+        : l5Errored || lastAttempt?.state === 'failed'
           ? 'degraded'
           : 'ready';
     if (status === 'degraded') {
@@ -2650,7 +2651,6 @@ async function handleAccountApi(
     await reapAbandonedAttempt(analysisWorkspace, projectAttemptRecordPath(analysisWorkspace));
 
     const earlyLastAttempt = await readAttemptRecord(projectAttemptRecordPath(analysisWorkspace));
-    const failedAttempt = unavailableLatestAnalyzeAttempt(earlyLastAttempt, { project_id: project.id, analysis_id: project.analysis_id }); if (failedAttempt) return { statusCode: 200, body: failedAttempt };
     if (earlyLastAttempt?.state === 'in-progress') {
       prewarmHostedProjectQueryWorker();
 
@@ -2689,11 +2689,18 @@ async function handleAccountApi(
         statusCode: 200,
         body: {
           ...analysisStatus,
+          ...(lastAttempt?.state === 'failed' ? { status: 'degraded' } : {}),
           ...(lastAttempt ? { last_attempt: lastAttempt } : {}),
         },
       };
     } catch (error) {
       const lastAttemptOnError = await readAttemptRecord(projectAttemptRecordPath(analysisWorkspace));
+      const failedEntry = await getAnalysisEntry(analysisWorkspace).catch(() => null);
+      const unavailable = unavailableStructuralAnalysisResponse(failedEntry?.layers_ready?.layers || [], {
+        project_id: project.id,
+        analysis_id: project.analysis_id,
+      }, error instanceof Error ? error.message : String(error), lastAttemptOnError);
+      if (unavailable) return { statusCode: 200, body: unavailable };
       return {
         statusCode: 200,
         body: {
@@ -4194,22 +4201,8 @@ async function reapAbandonedAttempt(workspace: string, attemptRecordPath: string
     const ageMs = Number.isFinite(heartbeatMs) ? Date.now() - heartbeatMs : Infinity;
     if (ageMs < ATTEMPT_STALE_THRESHOLD_MS) return;
 
-    const entry = await getAnalysisEntry(workspace).catch(() => null);
-    const landed = Boolean(entry && (entry.layers_ready?.complete ?? true));
     const finishedAt = new Date().toISOString();
-    if (landed) {
-
-      await writeAttemptRecord(attemptRecordPath, {
-        ...record,
-        state: 'succeeded',
-        finished_at: finishedAt,
-        reason: undefined,
-      });
-      return;
-    }
     const detail = `Analysis attempt was interrupted by a server restart (no heartbeat since ${heartbeatIso}).`;
-
-    await markBackgroundAnalysisFailed(workspace, detail);
     await writeAttemptRecord(attemptRecordPath, {
       ...record,
       state: 'failed',
