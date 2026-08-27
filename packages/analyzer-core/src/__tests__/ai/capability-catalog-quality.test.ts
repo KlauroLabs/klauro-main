@@ -749,6 +749,54 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(calls[1]).toMatchObject({ repairMode: 'description', repairIdentityName: rejectedWorkspace.name });
   });
 
+  it('carries operational guarantee phrases into the next description repair fact', async () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    const args: any = gateArgs(localOrch);
+    args.projectTextSignal = { concepts: ['overlapping work', 'collaboration'], evidence: [] };
+    const coordinationEvidence = {
+      id: 'coordination', name: 'Coordinate overlapping work', category: 'internal', evidence_kind: 'behavior-surface',
+      evidence_examples: ['surface overlapping changes'],
+      criticality_factors: ["1 message entry point forms one cohesive behavior family ('coordination')"],
+      operations: [{ entry_point_id: 'observe', entry_point_type: 'message', action: 'Surface overlapping changes' }],
+      related_entities: [], related_domains: [],
+    };
+    const safeCoordinationEvidence = { ...coordinationEvidence, id: 'coordination-safe' };
+    args.behaviorSurfaces = [coordinationEvidence, safeCoordinationEvidence];
+    args.candidateSnapshot.push(coordinationEvidence, safeCoordinationEvidence);
+    const retained = ['Analyze codebases', 'Serve agent context', 'Correlate runtime signals', 'Assess change risk', 'Explain system behavior']
+      .map(name => cap({ id: name, name, description: `Grounded product outcome for ${name.toLowerCase()} across connected software.`, operations: anchorOp(name) }));
+    const rejected = cap({
+      id: 'coordination', name: 'Coordinate overlapping work',
+      description: 'Surfaces synchronized changes across overlapping work while ensuring participants remain aligned.',
+      operations: [{ entry_point_id: 'observe', entry_point_type: 'message', action: 'Surface overlapping changes' }],
+      criticality_factors: ['catalog-candidate:coordination'],
+    });
+    const sameTitleAccepted = cap({
+      id: rejected.id, name: rejected.name,
+      description: 'Surfaces overlapping changes so participants can coordinate their work.',
+      operations: rejected.operations,
+      criticality_factors: ['catalog-candidate:coordination-safe'],
+    });
+    const repaired = { ...rejected, description: 'Surfaces overlapping changes so participants can coordinate their work.' };
+    const calls: any[] = [];
+    localOrch.aiExtractCapabilityCatalog = async (input: any) => {
+      calls.push(input);
+      return calls.length === 1 ? [...retained, sameTitleAccepted, rejected] : [repaired];
+    };
+    localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
+
+    const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(args);
+
+    expect(out.length).toBeGreaterThan(0);
+    const repairCall = calls.find(call => call.repairIdentityName === rejected.name);
+    const prior = repairCall.targetedRepairFacts[0].prior_rejections;
+    expect(prior).toEqual(expect.arrayContaining([expect.objectContaining({
+      forbidden_subject_terms: expect.arrayContaining(['synchronized changes', 'ensuring participants remain aligned']),
+    })]));
+    expect(repairCall.targetedRepairFacts[0].candidate_id).toBe('candidate_1');
+    expect(repairCall.targetedRepairCandidateMap).toEqual({ candidate_1: 'coordination' });
+  });
+
   it('preserves distinct accepted outcomes when the global catalog attaches supporting delivery evidence', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const args: any = gateArgs(localOrch);

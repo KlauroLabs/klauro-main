@@ -197,6 +197,17 @@ function capabilityMatchesAudience(capabilityText: string, audience?: 'agent' | 
   return audience === 'human' ? humanAudience.test(capabilityText) : agentAudience.test(capabilityText);
 }
 
+function capabilityMatchesBoundAudience(
+  capability: Pick<SystemCapability, 'name' | 'description'>,
+  audience?: 'agent' | 'human',
+): boolean {
+  if (!audience) return true;
+  const opposite = audience === 'human' ? agentAudience : humanAudience;
+  return capabilityMatchesAudience(capability.name || '', audience) &&
+    capabilityMatchesAudience(capability.description || '', audience) &&
+    !opposite.test(capability.name || '') && !opposite.test(capability.description || '');
+}
+
 function capabilityMatchesSubjectAlias(
   capabilityTokens: ReadonlySet<string>,
   primaryTerms: readonly string[],
@@ -213,7 +224,9 @@ export function capabilitySatisfiesCatalogOutcomeRequirement(
   capability: Pick<SystemCapability, 'name' | 'description'> & Partial<Pick<SystemCapability, 'criticality_factors'>>,
   requirement: CapabilityCatalogOutcomeRequirement,
 ): boolean {
-  if (capability.criticality_factors?.includes(`catalog-outcome-requirement:${requirement.id}`)) return true;
+  if (capability.criticality_factors?.includes(`catalog-outcome-requirement:${requirement.id}`)) {
+    return capabilityMatchesBoundAudience(capability, requirement.audience);
+  }
   return capabilitySemanticallySatisfiesCatalogOutcomeRequirement(capability, requirement);
 }
 
@@ -222,7 +235,23 @@ export function capabilitySemanticallySatisfiesCatalogOutcomeRequirement(
   requirement: CapabilityCatalogOutcomeRequirement,
 ): boolean {
   const capabilityText = `${capability.name || ''} ${capability.description || ''}`;
+  if (!capabilityMatchesBoundAudience(capability, requirement.audience)) return false;
+  return capabilityTextMatchesCatalogOutcomeRequirement(capabilityText, requirement);
+}
+
+export function capabilityPotentiallySatisfiesCatalogOutcomeRequirement(
+  capability: Pick<SystemCapability, 'name' | 'description'>,
+  requirement: CapabilityCatalogOutcomeRequirement,
+): boolean {
+  const capabilityText = `${capability.name || ''} ${capability.description || ''}`;
   if (!capabilityMatchesAudience(capabilityText, requirement.audience)) return false;
+  return capabilityTextMatchesCatalogOutcomeRequirement(capabilityText, requirement);
+}
+
+function capabilityTextMatchesCatalogOutcomeRequirement(
+  capabilityText: string,
+  requirement: CapabilityCatalogOutcomeRequirement,
+): boolean {
   const capabilityTokens = new Set(tokens(capabilityText));
   const requiredTerms = requirement.requiredSubjectTerms || requirement.subjectTokens;
   const requiredMatches = requirement.minimumSubjectMatches ?? Math.min(2, requiredTerms.length);
@@ -323,7 +352,7 @@ export function capabilityCatalogOutcomeBindingFailureDetail(
   const capabilityTokens = new Set(tokens(capabilityText));
   const requiredTerms = requirement.requiredSubjectTerms || requirement.subjectTokens;
   const missingSubjectTerms = requiredTerms.filter(token => !capabilityTokens.has(token));
-  const missingAudience = capabilityMatchesAudience(capabilityText, requirement.audience)
+  const missingAudience = capabilityMatchesBoundAudience(capability, requirement.audience)
     ? undefined
     : requirement.audienceLabel || requirement.audience;
   if (missingAudience) return { missingAudience, missingSubjectTerms, reason: `required-outcome-audience-missing:${requirement.audience}` };

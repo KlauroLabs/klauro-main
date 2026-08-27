@@ -18,6 +18,8 @@ export interface CapabilityCatalogProductText {
 }
 
 export interface CapabilityAudienceRejection {
+  capabilityId: string;
+  capabilityIndex: number;
   description?: string;
   flaggedTokens: string[];
   name: string;
@@ -92,10 +94,16 @@ function capabilityNameProductLanguageFailures(name: string, productTerms: strin
 }
 
 export function unsupportedCapabilityOperationalClaims(description: string, evidenceTerms: string[]): string[] {
-  const claims = (description || '').match(/\b(?:locks?|locked|locking|exclusive(?:ly| ownership)?|mutual exclusion|blocks? parallel|prevents? (?:concurrent|conflicts?|collisions?|overlaps?)|ensur(?:e|es|ed|ing) (?:a )?(?:consistent|conflict-free|exclusive|safe) state|ensur(?:e|es|ed|ing) [^.;]{0,40}\balignment|reduc(?:e|es|ed|ing) [^.;]{0,24}\b(?:conflicts?|collisions?|overlaps?)|manag(?:e|es|ed|ing)(?=\s+and\s+synchroniz)|synchroniz(?:e|es|ed|ing) (?:tasks?|work)|manag(?:e|es|ed|ing) (?:agent )?tasks?|reserv(?:e|es|ed|ing|ation)|assign(?:s|ed|ing|ment)?|ownership|every|all)\b/gi) || [];
+  const claims = (description || '').match(/\b(?:locks?|locked|locking|exclusive(?:ly| ownership)?|mutual exclusion|blocks? parallel|prevents? (?:concurrent|conflicts?|collisions?|overlaps?)|ensur(?:e|es|ed|ing) (?:a )?(?:consistent|conflict-free|exclusive|safe) state|ensur(?:e|es|ed|ing) [^.;]{0,60}\balign(?:ed|ment)?|reduc(?:e|es|ed|ing) [^.;]{0,24}\b(?:conflicts?|collisions?|overlaps?)|manag(?:e|es|ed|ing)(?=\s+and\s+synchroniz)|synchroniz(?:e|es|ed|ing) (?:tasks?|work|changes?|state)|manag(?:e|es|ed|ing) (?:agent )?tasks?|reserv(?:e|es|ed|ing|ation)|assign(?:s|ed|ing|ment)?|ownership|every|all)\b/gi) || [];
   const evidence = normalizedEntityPhrase(evidenceTerms.join(' '));
   const evidenceIsAdvisory = /\b(?:advisory|non locking|non exclusive|never block)\b/.test(evidence);
-  return claims.filter(claim => evidenceIsAdvisory || !evidence.includes(normalizedEntityPhrase(claim)));
+  const operationalKey = (value: string): string => normalizedEntityPhrase(value)
+    .replace(/\bsynchroniz(?:e|es|ed|ing)\b/g, 'synchronize')
+    .replace(/\bensur(?:e|es|ed|ing)\b/g, 'ensure')
+    .replace(/\balign(?:ed|ment)?\b/g, 'align')
+    .replace(/\b(tasks?|changes?)\b/g, token => token.replace(/s$/, ''));
+  const evidenceKey = operationalKey(evidence);
+  return claims.filter(claim => evidenceIsAdvisory || !evidenceKey.includes(operationalKey(claim)));
 }
 
 export function capabilityCatalogProductTerms(
@@ -143,7 +151,7 @@ export function evaluateCapabilityCatalogAudience(
   const descriptionRepairCandidates: SystemCapability[] = [];
   const rejections: CapabilityAudienceRejection[] = [];
 
-  for (const capability of capabilities) {
+  for (const [capabilityIndex, capability] of capabilities.entries()) {
     const relatedEntityIds = new Set(capability.related_entities || []);
     const operationTerms = (capability.operations || []).flatMap(operation => [
       operation.action,
@@ -158,6 +166,8 @@ export function evaluateCapabilityCatalogAudience(
     const productLanguageFailures = capabilityNameProductLanguageFailures(capability.name, productTerms);
     if (productLanguageFailures.reasons.length > 0) {
       rejections.push({
+        capabilityId: capability.id,
+        capabilityIndex,
         name: capability.name,
         description: capability.description,
         target: 'name',
@@ -169,6 +179,8 @@ export function evaluateCapabilityCatalogAudience(
     const narrowingEntities = aggregateNameEntityNarrowing(capability, entityNamesById);
     if (narrowingEntities.length > 0) {
       rejections.push({
+        capabilityId: capability.id,
+        capabilityIndex,
         name: capability.name,
         description: capability.description,
         target: 'name',
@@ -180,6 +192,8 @@ export function evaluateCapabilityCatalogAudience(
     const unrelatedNameEntities = unrelatedEntityReferences(capability.name, relatedEntityIds, dataEntities);
     if (unrelatedNameEntities.length > 0) {
       rejections.push({
+        capabilityId: capability.id,
+        capabilityIndex,
         name: capability.name,
         description: capability.description,
         target: 'name',
@@ -198,6 +212,8 @@ export function evaluateCapabilityCatalogAudience(
       );
       if (nameVerdict.failsIdentifierTest) {
         rejections.push({
+          capabilityId: capability.id,
+          capabilityIndex,
           name: capability.name,
           description: capability.description,
           target: 'name',
@@ -221,7 +237,7 @@ export function evaluateCapabilityCatalogAudience(
       descriptionVerdict.reasons.push('internal-mechanism-language');
       descriptionVerdict.flaggedTokens.push('message handling');
     }
-    const unsupportedExclusivity = unsupportedCapabilityOperationalClaims(capability.description, capabilityProductTerms);
+    const unsupportedExclusivity = unsupportedCapabilityOperationalClaims(capability.description, operationTerms);
     if (unsupportedExclusivity.length > 0) {
       descriptionVerdict.failsAudienceTest = true;
       descriptionVerdict.reasons.push('unsupported-exclusivity-claim');
@@ -236,6 +252,8 @@ export function evaluateCapabilityCatalogAudience(
     if (descriptionVerdict.failsAudienceTest) {
       const reason = `catalog-audience:${descriptionVerdict.reasons.join(',')}`;
       rejections.push({
+        capabilityId: capability.id,
+        capabilityIndex,
         name: capability.name,
         description: capability.description,
         target: 'description',

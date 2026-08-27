@@ -9486,6 +9486,7 @@ export class AnalyzerOrchestrator {
     for (const item of catalog) {
       const rawRequirementId = String(item.requirement_id || '') || undefined; activeRequirementId = input.requiredOutcomeRequirements?.length === 1 ? input.requiredOutcomeRequirements[0].id : rawRequirementId;
       let boundRequirementId: string | undefined; let name = String(item.name || '').replace(/\s+/g, ' ').trim();
+      if (input.repairMode === 'description' && input.repairIdentityName) name = input.repairIdentityName;
       const itemEntityNamesRaw = (Array.isArray(item.entities) ? item.entities : []).map((value: unknown) => String(value || '')).filter(Boolean);
       let description = String(item.description || '');
       if (description.includes('{') || /"description"\s*:|key_capabilities/i.test(description)) description = '';
@@ -10442,12 +10443,12 @@ export class AnalyzerOrchestrator {
         }
         throw error;
       }
-      audienceRepairFeedback = [extractionRejections.join(' '), capabilityAudienceRepairFeedback(evaluateCapabilityCatalogAudience(
-          extracted,
-          args.dataEntities,
-          args.libraryNames || [],
-          [...capabilityCatalogProductTerms(args.enhancedSystemPurpose, args.projectTextSignal), ...args.externalServices],
-        ).rejections)].filter(Boolean).join(' ') || undefined;
+      const audienceEvaluation = evaluateCapabilityCatalogAudience(extracted, args.dataEntities, args.libraryNames || [], [...capabilityCatalogProductTerms(args.enhancedSystemPurpose, args.projectTextSignal), ...args.externalServices]);
+      for (const rejection of audienceEvaluation.rejections) {
+        const rejected = extracted[rejection.capabilityIndex];
+        if (rejected?.id === rejection.capabilityId) recordCapabilityPublishabilityRejection(catalogRejectionsByCandidate, rejected, `catalog-audience:${rejection.reasons.join(',')}`, rejection.flaggedTokens);
+      }
+      audienceRepairFeedback = [extractionRejections.join(' '), capabilityAudienceRepairFeedback(audienceEvaluation.rejections)].filter(Boolean).join(' ') || undefined;
       const reconciledCandidates = extracted.length > 0
         ? this.reconcileCatalogedCapabilities(extracted, evidenceCandidates, args.dataEntities, args.entryPoints, args.nodes, args.enhancedSystemPurpose, args.libraryNames || [], args.projectTextSignal, args.externalServices)
         : [];
@@ -10459,7 +10460,7 @@ export class AnalyzerOrchestrator {
         const failure = this.capabilityPublishabilityFailure(capability) || (!descriptionValidation.ok ? `description-${descriptionValidation.reason}` : undefined);
         if (!failure) return [capability];
         rejectedCapabilities.push(capability); publishabilityFailures.set(failure, (publishabilityFailures.get(failure) || 0) + 1);
-        const violation = capabilityDescriptionProductLanguageViolation(capability.description || '', descriptionTarget.relatedEntities || [], descriptionTarget.operations || [], descriptionTarget.rawIdentifiers || [], descriptionTarget.productOutcomeTerms || []); const forbiddenTerms = violation?.reason && failure.endsWith(violation.reason) ? violation.forbiddenTerms : [];
+        const violation = capabilityDescriptionProductLanguageViolation(capability.description || '', descriptionTarget.relatedEntities || [], descriptionTarget.operations || [], descriptionTarget.rawIdentifiers || [], descriptionTarget.productOutcomeTerms || []); const forbiddenTerms = descriptionValidation.offendingTerms?.length ? descriptionValidation.offendingTerms : violation?.reason && failure.endsWith(violation.reason) ? violation.forbiddenTerms : [];
         const recorded = recordCapabilityPublishabilityRejection(catalogRejectionsByCandidate, capability, failure, forbiddenTerms); publishabilityRejections.push(recorded.feedback);
         const identity = capabilityIdentityPendingDescriptionRepair(capability, failure);
         return identity ? [identity] : [];
@@ -12149,7 +12150,7 @@ export class AnalyzerOrchestrator {
     }
   }
 
-  private validateElementDescription(description: string, target: DescriptionTarget): { ok: boolean; reason?: string } {
+  private validateElementDescription(description: string, target: DescriptionTarget): { ok: boolean; reason?: string; offendingTerms?: string[] } {
     const cleaned = this.cleanGeneratedDescriptionText(description);
     if (target.kind === 'capability' && (target.operations || []).length > 0 && /\bno operations?\b/i.test(cleaned)) return { ok: false, reason: 'contradicts-resolved-operations' };
     if (target.kind === 'capability' && (target.relatedEntities || []).length > 0 && /\bno (?:(?:operations?\s+or\s+))?(?:related )?(?:data )?entit(?:y|ies)\b/i.test(cleaned)) return { ok: false, reason: 'contradicts-resolved-entities' };
@@ -12199,7 +12200,7 @@ export class AnalyzerOrchestrator {
       for (const claim of unsupportedOperationalClaims) {
         const normalizedClaim = claim.toLowerCase().replace(/[- ]/g, '');
         if (!ownEvidence.replace(/[- ]/g, '').includes(normalizedClaim)) {
-          return { ok: false, reason: `unsupported-target-operational-claim:${claim.toLowerCase()}` };
+          return { ok: false, reason: `unsupported-target-operational-claim:${claim.toLowerCase()}`, offendingTerms: [claim.toLowerCase()] };
         }
       }
       const observedHttpMethods = (target.operations || [])

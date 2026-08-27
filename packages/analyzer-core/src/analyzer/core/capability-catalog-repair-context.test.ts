@@ -80,3 +80,15 @@ test('first-party fallback requires one explicit visible action and normalizes i
   assert.equal(capabilityCatalogFirstPartyFallback({ ...requirement, visibleActionTerms: [] }), undefined);
   assert.equal(capabilityCatalogFirstPartyFallback({ ...requirement, visibleActionTerms: ['build', 'inspect'] }), undefined);
 });
+
+test('first-party fallback carries an audience-specific outcome into its title', () => {
+  const requirement = {
+    id: 'human', statement: 'people understand behavior', audience: 'human' as const, audienceLabel: 'people',
+    candidateIds: ['candidate'], subjectTokens: ['understand', 'behavior'], visibleActionTerms: ['understand'],
+    firstPartyOutcomeText: 'People understand connected software behavior before making changes.',
+  };
+  assert.deepEqual(capabilityCatalogFirstPartyFallback(requirement), {
+    requirement_id: 'human', name: 'Understand connected software behavior before making changes for people',
+    description: requirement.firstPartyOutcomeText, category: 'core', candidate_ids: ['candidate'],
+  });
+});

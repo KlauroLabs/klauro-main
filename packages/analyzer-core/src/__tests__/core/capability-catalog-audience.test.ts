@@ -60,6 +60,8 @@ describe('capability catalog audience evaluation', () => {
 
   it('builds bounded corrective feedback with evidence-preserving instructions', () => {
     const feedback = capabilityAudienceRepairFeedback([{
+      capabilityId: 'browse-products',
+      capabilityIndex: 0,
       name: 'Browse products',
       description: 'Provides seamless insights into available products.',
       target: 'description',
@@ -76,6 +78,8 @@ describe('capability catalog audience evaluation', () => {
 
   it('directs unsupported guarantees toward advisory truth instead of synonym replacement', () => {
     const feedback = capabilityAudienceRepairFeedback([{
+      capabilityId: 'coordinate-overlapping-work',
+      capabilityIndex: 0,
       name: 'Coordinate overlapping work',
       description: 'Prevents conflicts and ensures consistent state.',
       target: 'description',
@@ -345,6 +349,31 @@ describe('capability catalog audience evaluation', () => {
       reasons: expect.arrayContaining(['unsupported-exclusivity-claim']),
       flaggedTokens: expect.arrayContaining(['manage', 'synchronize tasks']),
     }));
+  });
+
+  it('requires cited operations for synchronization and alignment guarantees', () => {
+    const synchronized = capability(
+      'Coordinate overlapping work',
+      'Surfaces synchronized changes across overlapping work while ensuring participants remain aligned.',
+    );
+    synchronized.operations = [{ entry_point_id: 'observe', entry_point_type: 'message', action: 'Surface overlapping changes' }];
+    const rejected = evaluateCapabilityCatalogAudience(
+      [synchronized], [], [], ['real-time collaboration across overlapping concepts'],
+    );
+    expect(rejected.accepted).toEqual([]);
+    expect(rejected.rejections[0]).toEqual(expect.objectContaining({
+      reasons: expect.arrayContaining(['unsupported-exclusivity-claim']),
+      flaggedTokens: expect.arrayContaining(['synchronized changes', 'ensuring participants remain aligned']),
+    }));
+
+    synchronized.description = 'Surfaces overlapping changes so participants can coordinate their work.';
+    expect(evaluateCapabilityCatalogAudience(
+      [synchronized], [], [], ['real-time collaboration across overlapping concepts'],
+    ).accepted).toHaveLength(1);
+
+    synchronized.description = 'Surfaces synchronized changes across overlapping work.';
+    synchronized.operations = [{ entry_point_id: 'sync', entry_point_type: 'message', action: 'Synchronize changes' }];
+    expect(evaluateCapabilityCatalogAudience([synchronized], [], [], []).accepted).toHaveLength(1);
   });
 
   it('rejects internal mechanisms in otherwise grounded product descriptions', () => {

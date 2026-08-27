@@ -23,6 +23,17 @@ export interface ElementDescriptionValidationOptions {
   isGenericToken?: (token: string) => boolean;
 }
 
+export interface ElementDescriptionValidationResult {
+  ok: boolean;
+  reason?: string;
+  offendingTerms?: string[];
+}
+
+function descriptionFailure(reason: string, offendingTerms: string[] = []): ElementDescriptionValidationResult {
+  const terms = [...new Set(offendingTerms.map(term => term.trim()).filter(Boolean))];
+  return { ok: false, reason, ...(terms.length ? { offendingTerms: terms } : {}) };
+}
+
 export function capabilityDescriptionEvidenceFields(
   fields: ReadonlyArray<{ name: string; type?: string }>,
 ): string[] {
@@ -302,7 +313,7 @@ export function validateElementDescription(
   description: string,
   subject: ElementDescriptionSubject,
   options: ElementDescriptionValidationOptions = {},
-): { ok: boolean; reason?: string } {
+): ElementDescriptionValidationResult {
   const minLength = options.minLength ?? 50;
   const maxLength = options.maxLength ?? 420;
   const normalizeToken = options.normalizeToken ?? ((token: string) => token);
@@ -323,18 +334,22 @@ export function validateElementDescription(
   if (subject.kind === 'capability' && /^[a-z]+\s/.test(cleaned)) {
     return { ok: false, reason: 'missing-subject' };
   }
-  if (subject.kind === 'capability' &&
-    /\b(?:coordinates?|generates?|manages?|supports?|organizes?|executes?) (?:and )?(?:generates?|coordinates?|manages?|executes?)? ?(?:specific )?functions?\b|\bfunctions? (?:to|like|such as) (?:process|format|render|parse|count|[a-zA-Z0-9_, ]+)\b|\b(?:these|specific) functions?\b|\bargument parsing\b|\btable formatting\b|\brow rendering\b|\bstructured data handling\b|\bprocess and structure data\b/i.test(cleaned)) {
-    return { ok: false, reason: 'implementation-function-restatement' };
+  const implementationFunction = subject.kind === 'capability' && cleaned.match(
+    /\b(?:coordinates?|generates?|manages?|supports?|organizes?|executes?) (?:and )?(?:generates?|coordinates?|manages?|executes?)? ?(?:specific )?functions?\b|\bfunctions? (?:to|like|such as) (?:process|format|render|parse|count|[a-zA-Z0-9_, ]+)\b|\b(?:these|specific) functions?\b|\bargument parsing\b|\btable formatting\b|\brow rendering\b|\bstructured data handling\b|\bprocess and structure data\b/i,
+  );
+  if (implementationFunction) {
+    return descriptionFailure('implementation-function-restatement', [implementationFunction[0]]);
   }
   if (subject.kind === 'capability') {
     const codeIdentifierMatches = cleaned.match(/\b[A-Za-z][a-z0-9]+[A-Z][A-Za-z0-9]*\b/g) || [];
     if (codeIdentifierMatches.length >= 2 ||
       codeIdentifierMatches.some(identifier => /(?:Service|Controller|Repository|Handler|Manager|Client|Provider)$/.test(identifier)) ||
       /\b(?:functions?|helpers?|methods?)\b/i.test(cleaned) && codeIdentifierMatches.length > 0) {
-      return { ok: false, reason: 'implementation-identifier-restatement' };
+      const mechanismTerms = cleaned.match(/\b(?:functions?|helpers?|methods?(?:\s+calls?)?)\b/gi) || [];
+      return descriptionFailure('implementation-identifier-restatement', [...codeIdentifierMatches, ...mechanismTerms]);
     }
-    if (/\b(?:data )?entit(?:y|ies)\b/i.test(cleaned)) return { ok: false, reason: 'internal-analysis-vocabulary' };
+    const entityVocabulary = cleaned.match(/\b(?:data )?entit(?:y|ies)\b/i);
+    if (entityVocabulary) return descriptionFailure('internal-analysis-vocabulary', [entityVocabulary[0]]);
     const titleCaseInventoryItems = cleaned.match(/\b[A-Z][a-z0-9]+(?:\s+[A-Z][a-z0-9]+){1,4}\b/g) || [];
     const uniqueInventoryItems = new Set(titleCaseInventoryItems.filter(item =>
       !new RegExp(`^${escapeRegExp(subject.name)}$`, 'i').test(item) &&
@@ -374,11 +389,12 @@ export function validateElementDescription(
       ? withoutGroundedRuntimeBehavior.replace(ENTITY_LEGITIMATE_STATE_PATTERN, ' ')
       : withoutGroundedRuntimeBehavior;
     const fillerRemains = FILLER_PHRASE_PATTERN.test(fillerCandidate);
-    if (fillerRemains) return { ok: false, reason: 'generic-structural-phrase' };
+    if (fillerRemains) return descriptionFailure('generic-structural-phrase', [fillerCandidate.match(FILLER_PHRASE_PATTERN)?.[0] || '']);
   }
   if (/\borientation entry\b/i.test(cleaned)) return { ok: false, reason: 'source-bucket-restatement' };
-  if (subject.kind === 'capability' && /\bcoordinates?\s+(?:scripts?|functions?|helpers?|files?|modules?|operations?)\b/i.test(cleaned)) {
-    return { ok: false, reason: 'generic-structural-phrase' };
+  const genericCoordination = subject.kind === 'capability' && cleaned.match(/\bcoordinates?\s+(?:scripts?|functions?|helpers?|files?|modules?|operations?)\b/i);
+  if (genericCoordination) {
+    return descriptionFailure('generic-structural-phrase', [genericCoordination[0]]);
   }
   if (subject.kind === 'capability' &&
     (/\bthrough\s+[^.]{0,140}\b(?:handlers?|controllers?|routes?|pages?|components?|ws operations)\b/i.test(cleaned) ||

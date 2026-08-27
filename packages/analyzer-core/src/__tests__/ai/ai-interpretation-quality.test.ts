@@ -42,7 +42,7 @@ describe('shared element description validator', () => {
       'Session Authentication connects session records with runtime behavior across different system components.',
       subject,
     );
-    expect(result).toEqual({ ok: false, reason: 'generic-structural-phrase' });
+    expect(result).toEqual({ ok: false, reason: 'generic-structural-phrase', offendingTerms: ['runtime behavior'] });
   });
 
   it('rejects structural house-style operation lists', () => {
@@ -335,7 +335,7 @@ describe('shared element description validator', () => {
     expect(validateElementDescription(
       'Track vehicle information enables users to read and update details related to vehicles.',
       { name: 'Track vehicle information', kind: 'capability', relatedEntities: ['Vehicle'] },
-    )).toEqual({ ok: false, reason: 'generic-structural-phrase' });
+    )).toEqual({ ok: false, reason: 'generic-structural-phrase', offendingTerms: ['details related to'] });
   });
 
   it('is the validator used by both the combined path and the orchestrator wrapper', () => {

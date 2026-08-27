@@ -7,6 +7,7 @@ export interface CapabilityCatalogRepairPromptFact {
   first_party_outcomes: string[];
   observable_actions: string[];
   prior_rejections: Array<{
+    forbidden_subject_terms?: string[];
     missing_audience?: string;
     missing_subject_terms?: string[];
     reason: string;
@@ -37,6 +38,7 @@ export function compactCapabilityCatalogRepairPromptFact(value: unknown, require
       const rejection = value && typeof value === 'object' ? value as Record<string, unknown> : {};
       return {
         reason: bounded(rejection.reason, 180), requirement_id: bounded(rejection.requirement_id, 240),
+        forbidden_subject_terms: boundedArray(rejection.forbidden_subject_terms, 12, 120),
         missing_audience: bounded(rejection.missing_audience, 80),
         missing_subject_terms: boundedArray(rejection.missing_subject_terms, 16, 80),
       };
@@ -87,6 +89,14 @@ function customerSafeRepairReason(value: unknown): string {
   return String(value || 'rejected').toLowerCase().split(':', 1)[0].replace(/[^a-z0-9-]+/g, '-').slice(0, 120);
 }
 
+function customerSafeForbiddenSubjectTerms(values: readonly string[]): string[] {
+  return values.filter(value => {
+    const source = String(value || '').trim();
+    return source.length > 0 && /^[A-Za-z][A-Za-z ]+$/.test(source) &&
+      !/(?:[a-z0-9][A-Z]|[A-Z]{2,}[a-z]|\b[A-Z]{2,}\b)/.test(source);
+  }).slice(0, 12);
+}
+
 export function capabilityCatalogRepairPromptFacts(
   candidates: readonly SystemCapability[], repairCandidateIds: readonly string[],
   requirements: readonly CapabilityCatalogOutcomeRequirement[],
@@ -127,12 +137,16 @@ export function capabilityCatalogRepairPromptFacts(
           ? Boolean(rejection.requirement_id && scopedRequirementIds.has(rejection.requirement_id))
           : !rejection.requirement_id)
         .slice(-4)
-        .map(rejection => ({
+        .map(rejection => {
+          const forbiddenSubjectTerms = customerSafeForbiddenSubjectTerms(rejection.forbidden_subject_terms);
+          return {
           reason: customerSafeRepairReason(rejection.reason),
+          ...(forbiddenSubjectTerms.length ? { forbidden_subject_terms: forbiddenSubjectTerms } : {}),
           ...(rejection.missing_audience ? { missing_audience: rejection.missing_audience } : {}),
           ...(rejection.missing_subject_terms?.length ? { missing_subject_terms: rejection.missing_subject_terms.slice(0, 16) } : {}),
           ...(rejection.requirement_id ? { requirement_id: rejection.requirement_id } : {}),
-        })),
+        };
+        }),
     };
   });
 }
@@ -160,7 +174,10 @@ export function capabilityCatalogFirstPartyFallback(requirement?: CapabilityCata
   const actionIndex = words.findIndex(word => canonicalCapabilityCatalogOutcomeToken(word) === canonicalCapabilityCatalogOutcomeToken(action));
   if (actionIndex < 0) return undefined;
   const clause = words.slice(actionIndex).join(' ');
-  const name = `${action.charAt(0).toUpperCase()}${action.slice(1)}${clause.slice(words[actionIndex].length)}`.trim();
+  const audience = requirement.audienceLabel || requirement.audience || '';
+  const audiencePattern = requirement.audience === 'human' ? /\b(?:humans?|people|persons?|users?)\b/i : requirement.audience === 'agent' ? /\b(?:agents?|assistants?)\b/i : undefined;
+  const baseName = `${action.charAt(0).toUpperCase()}${action.slice(1)}${clause.slice(words[actionIndex].length)}`.trim();
+  const name = audience && !audiencePattern?.test(baseName) ? `${baseName} for ${audience}` : baseName;
   return {
     requirement_id: requirement.id, name, description,
     category: 'core', candidate_ids: requirement.candidateIds,

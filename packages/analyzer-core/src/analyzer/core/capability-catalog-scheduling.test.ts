@@ -19,12 +19,14 @@ import {
   mergeUniquelyMatchedBehaviorEvidence,
   mergeCapabilityCatalogRepairResults,
   recordCapabilityCatalogRejection,
+  recordCapabilityPublishabilityRejection,
   retryEmptyCapabilityCatalogOutcome,
   trackCapabilityCatalogRepair,
   updateCapabilityCatalogPublishabilityRepairIds,
 } from './capability-catalog-scheduling';
 import { capabilityDescriptionProductLanguageViolation, capabilityOutcomeScopeFailure } from './capability-catalog-evidence';
 import { capabilityCatalogOutcomeNameFailure } from './capability-catalog-outcome-coverage';
+import { validateElementDescription } from '../../ai/element-description-validator';
 
 const catalogCapability = (overrides: Partial<SystemCapability>): SystemCapability => ({
   id: 'capability',
@@ -322,6 +324,23 @@ test('product-language violations expose the exact copied terms for all live rep
     capabilityDescriptionProductLanguageViolation('People compare capability maps and entry points across changes.', [], [], ['CapabilityMap', 'EntryPoint']),
     { reason: 'implementation-graph-inventory', forbiddenTerms: ['capability map', 'entry point'] },
   );
+});
+
+test('shared description failures preserve their exact offending terms in focused repair facts', () => {
+  const rejected = catalogCapability({
+    id: 'graph', name: 'Build a trustworthy relationship graph',
+    description: 'Builds connected system components so people can inspect software relationships before making changes.',
+    criticality_factors: ['catalog-candidate:graph', 'catalog-outcome-requirement:graph-slot'],
+  });
+  const validation = validateElementDescription(rejected.description || '', {
+    name: rejected.name, kind: 'capability', relatedDomains: ['software relationships'],
+  });
+  const rejections = new Map();
+  recordCapabilityPublishabilityRejection(
+    rejections, rejected, `description-${validation.reason}`, validation.offendingTerms || [],
+  );
+  const [fact] = capabilityCatalogRepairEvidenceFacts([rejected], ['graph'], new Map(), rejections, ['graph-slot']);
+  assert.deepEqual(fact.prior_rejections[0].forbidden_subject_terms, ['system components']);
 });
 
 test('preview and compare wording requires a narrowly cited operation family', () => {

@@ -8374,6 +8374,57 @@ describe('top-down capability evidence (C2)', () => {
     }
   });
 
+  it('validates description repair against its stable identity before name and binding gates', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    const requirement: any = {
+      id: 'graph:trust-relation', statement: 'Build a trustworthy relationship graph',
+      firstPartyOutcomeText: 'Build a trustworthy relationship graph that shows connected software behavior.',
+      subjectTokens: ['build', 'trust', 'relation'], requiredSubjectTerms: ['trust', 'relation'],
+      minimumSubjectMatches: 2, candidateIds: ['graph'],
+    };
+    const input: any = {
+      systemName: 'Product', enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: ['software relationships'] },
+      frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [{
+        id: 'graph', name: 'Relationship analysis', category: 'core', related_entities: [], related_domains: ['software relationships'],
+        operations: [{ entry_point_id: 'graph', entry_point_type: 'message', action: 'Build relationship graph' }],
+      }], externalServices: [], flowGraph: { capability_candidates: [] },
+      projectTextSignal: { concepts: [], evidence: [], productDocSummary: requirement.firstPartyOutcomeText },
+      budgetMs: 30000, exactCapabilityLimit: 1, requiredOutcomeRequirements: [requirement], repairMode: 'description',
+      repairIdentityName: 'Build a trustworthy relationship graph',
+    };
+    try {
+      (aiService as any).generateComponentDescription = async () => JSON.stringify({ capabilities: [{
+        requirement_id: requirement.id, name: 'candidate_1',
+        description: 'Builds trustworthy software relationships so people can inspect connected behavior before making changes.',
+        category: 'core', candidate_ids: ['graph'],
+      }] });
+      const repaired = await orch.aiExtractCapabilityCatalog(input);
+      expect(repaired).toHaveLength(1);
+      expect(repaired[0].name).toBe(input.repairIdentityName);
+      expect(repaired[0].criticality_factors).toEqual(expect.arrayContaining([
+        'catalog-candidate:graph', `catalog-outcome-requirement:${requirement.id}`,
+      ]));
+
+      expect(validateElementDescription(
+        'Builds system components from data entities and method calls.',
+        { name: repaired[0].name, kind: 'capability', relatedDomains: ['software relationships'] },
+      ).ok).toBe(false);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
+  it('reports exact shared-description terms for focused repair feedback', () => {
+    expect(validateElementDescription(
+      'Builds connected system components so people can inspect software relationships before making changes.',
+      { name: 'Build a trustworthy relationship graph', kind: 'capability', relatedDomains: ['software relationships'] },
+    )).toEqual(expect.objectContaining({ reason: 'generic-structural-phrase', offendingTerms: ['system components'] }));
+    expect(validateElementDescription(
+      'Builds trustworthy relationships from DataEntity method calls so people can inspect connected behavior.',
+      { name: 'Build a trustworthy relationship graph', kind: 'capability', relatedDomains: ['software relationships'] },
+    )).toEqual(expect.objectContaining({ reason: 'implementation-identifier-restatement', offendingTerms: expect.arrayContaining(['DataEntity', 'method calls']) }));
+  });
+
   it('uses exact first-party outcome text as a deterministic fallback only through the normal validators', async () => {
     const original = (aiService as any).generateComponentDescription;
     (aiService as any).generateComponentDescription = async () => JSON.stringify({ capabilities: [] });

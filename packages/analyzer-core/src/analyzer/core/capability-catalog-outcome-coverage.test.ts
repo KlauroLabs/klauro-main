@@ -7,6 +7,7 @@ import {
   capabilityCatalogOutcomeBindingFailureDetail,
   capabilityCatalogOutcomeCoverageFailure,
   capabilityCatalogOutcomeNameFailure,
+  capabilityCatalogOutcomesMayMerge,
   capabilitySatisfiesCatalogOutcomeRequirement,
   deriveCapabilityCatalogOutcomeRequirements,
   uncoveredCapabilityCatalogOutcomeRequirements,
@@ -85,7 +86,7 @@ test('requires separately stated first-party human, agent, and truth outcomes wh
 
   const complete = [
     ...incomplete,
-    cited(published('Explore software behavior', 'Human engineers explore connected software behavior and change risks.'), human),
+    cited(published('Help people explore software behavior', 'Human engineers explore connected software behavior and change risks.'), human),
     cited(published('Build a trustworthy relationship graph', 'A trustworthy relationship graph connects the software structure and behavior.'), graph),
   ];
   assert.equal(capabilityCatalogOutcomeCoverageFailure(complete, requirements), undefined);
@@ -232,7 +233,7 @@ test('does not assign a bound capability to a different shared-candidate slot', 
     ...published(id, 'People and AI agents understand connected software behavior before making changes.'),
     criticality_factors: [`catalog-candidate:${human.candidateIds[0]}`, `catalog-outcome-requirement:${human.id}`],
   }));
-  assert.deepEqual(uncoveredCapabilityCatalogOutcomeRequirements(combined, requirements).map(requirement => requirement.audience), ['agent']);
+  assert.deepEqual(uncoveredCapabilityCatalogOutcomeRequirements(combined, requirements).map(requirement => requirement.audience), ['human', 'agent']);
 });
 
 test('binds an audience-specific repair to its exact requested outcome', () => {
@@ -249,7 +250,7 @@ test('binds an audience-specific repair to its exact requested outcome', () => {
   humanOutcome.name = 'Surface behavior-level comprehension';
   humanOutcome.description = 'Connected software behavior remains understandable after description refinement.';
   humanOutcome.criticality_factors = [`catalog-outcome-requirement:${human.id}`];
-  assert.equal(capabilitySatisfiesCatalogOutcomeRequirement(humanOutcome, human), true);
+  assert.equal(capabilitySatisfiesCatalogOutcomeRequirement(humanOutcome, human), false);
   assert.equal(capabilitySatisfiesCatalogOutcomeRequirement(humanOutcome, agent), false);
 });
 
@@ -273,6 +274,44 @@ test('reports the exact failed audience, candidate, and subject binding', () => 
     missingSubjectTerms: human.requiredSubjectTerms,
     reason: `required-outcome-subject-mismatch:${human.id}`,
   });
+});
+
+test('requires audience identity in both the bound title and description', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, evidence);
+  const human = requirements.find(requirement => requirement.audience === 'human')!;
+  const agent = requirements.find(requirement => requirement.audience === 'agent')!;
+  const actorlessTitle = published('Understand connected software behavior', 'People understand connected software behavior before changing it.');
+  const actorlessDescription = published('Help people understand connected software behavior', 'Connected software behavior is explained before changes.');
+  const people = published('Help people understand connected software behavior', 'People understand connected software behavior before changing it.');
+  const agents = published('Help agents understand connected software behavior', 'Agents understand connected software behavior before changing it.');
+  const mixed = published('Help people and agents understand connected software behavior', 'People and agents understand connected software behavior before changing it.');
+
+  assert.equal(capabilityCatalogOutcomeBindingFailure(actorlessTitle, human.candidateIds, human.id, [human], new Set()), 'required-outcome-audience-missing:human');
+  assert.equal(capabilityCatalogOutcomeBindingFailure(actorlessDescription, human.candidateIds, human.id, [human], new Set()), 'required-outcome-audience-missing:human');
+  assert.equal(capabilityCatalogOutcomeBindingFailure(people, human.candidateIds, human.id, [human], new Set()), undefined);
+  assert.equal(capabilityCatalogOutcomeBindingFailure(agents, agent.candidateIds, agent.id, [agent], new Set()), undefined);
+  assert.equal(capabilityCatalogOutcomeBindingFailure(mixed, human.candidateIds, human.id, [human], new Set()), 'required-outcome-audience-missing:human');
+  assert.equal(capabilityCatalogOutcomeBindingFailure(mixed, agent.candidateIds, agent.id, [agent], new Set()), 'required-outcome-audience-missing:agent');
+  assert.equal(capabilitySatisfiesCatalogOutcomeRequirement({
+    ...actorlessTitle,
+    criticality_factors: [`catalog-outcome-requirement:${human.id}`],
+  }, human), false);
+  assert.equal(capabilityCatalogOutcomesMayMerge(
+    { ...people, criticality_factors: [`catalog-outcome-requirement:${human.id}`] },
+    { ...agents, criticality_factors: [`catalog-outcome-requirement:${agent.id}`] },
+  ), false);
+});
+
+test('initial one-to-one stamping cannot bind actorless or mixed-audience identities', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, evidence);
+  const human = requirements.find(requirement => requirement.audience === 'human')!;
+  const actorless = cited(published('Understand connected software behavior', 'People understand connected software behavior before changing it.'), human);
+  const mixed = cited(published('Help people and agents understand software behavior', 'People and agents understand connected software behavior.'), human);
+  const specific = cited(published('Help people understand software behavior', 'People understand connected software behavior before changing it.'), human);
+  for (const capability of bindUniquelySatisfiedCatalogOutcomeRequirements([actorless, mixed], [human])) {
+    assert.equal(capability.criticality_factors.some(factor => factor.startsWith('catalog-outcome-requirement:')), false);
+  }
+  assert.equal(bindUniquelySatisfiedCatalogOutcomeRequirements([specific], [human])[0].criticality_factors.includes(`catalog-outcome-requirement:${human.id}`), true);
 });
 
 test('derives machine-readable extraction requirements from first-party audience and subjects', () => {

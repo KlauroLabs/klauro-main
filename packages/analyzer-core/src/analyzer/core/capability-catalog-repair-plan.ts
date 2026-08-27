@@ -1,5 +1,5 @@
 import type { SystemCapability } from '../../types/cas.types';
-import { capabilityCatalogOutcomeRepairNudge, capabilitySemanticallySatisfiesCatalogOutcomeRequirement, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
+import { capabilityCatalogOutcomeRepairNudge, capabilityPotentiallySatisfiesCatalogOutcomeRequirement, capabilitySemanticallySatisfiesCatalogOutcomeRequirement, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
 
 export type CapabilityCatalogRepairBatch =
   | { mode: 'outcome'; candidateIds: string[]; requirements: CapabilityCatalogOutcomeRequirement[] }
@@ -59,7 +59,7 @@ export function capabilityCatalogPendingRequirementIds(
 ): string[] {
   if (factors(capability, 'catalog-outcome-requirement:').length > 0) return [];
   return requirements
-    .filter(requirement => capabilitySemanticallySatisfiesCatalogOutcomeRequirement(capability, requirement))
+    .filter(requirement => capabilityPotentiallySatisfiesCatalogOutcomeRequirement(capability, requirement))
     .map(requirement => requirement.id);
 }
 
