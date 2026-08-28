@@ -1,6 +1,10 @@
 # @klauro/telemetry
 
 Runtime telemetry SDK for Node.js / TypeScript. Emits **CAS-correlated runtime events** — requests, errors, spans, counters, gauges — so production signal maps straight back onto your Klauro static analysis. This is the runtime counterpart to Klauro's static instrumentation inventory: events carry the same identifiers (`entry_point_id`, `route`, `signal`, `node_id`) the backend correlates on.
+Release status: **private-beta release candidate**. The source-bound npm tarball passes build, archive allowlist, digest, and clean-install verification. Registry publication is not yet proven; use `npm install @klauro/telemetry` only after the release receipt and registry publication are completed for the same source SHA.
+
+Delivery succeeds only when the server returns JSON with an integer `event_count` exactly equal to the submitted batch length. Missing, malformed, or partial acknowledgements retry the same preassigned event IDs.
+
 
 ## Install
 

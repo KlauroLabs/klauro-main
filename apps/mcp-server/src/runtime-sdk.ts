@@ -1,6 +1,7 @@
 import * as crypto from 'crypto';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { getRuntimeEventContract } from './runtime-contract';
+import { telemetrySdkReadiness } from './telemetry-sdk-readiness';
 
 interface RuntimeSdkFile {
   path: string;
@@ -182,10 +183,15 @@ function snippetFor(framework: string, service: string): FrameworkSnippet {
   }
 }
 
-export function getRuntimeSdkPackage(cas: CASOutput, opts: { limit?: number } = {}) {
+export function getRuntimeSdkPackage(cas: CASOutput, opts: {
+  limit?: number;
+  releaseCandidateDir?: string;
+  releaseSourceSha?: string;
+} = {}) {
   const contract = getRuntimeEventContract(cas, { limit: opts.limit || 25 });
   const { stack, framework } = detectStack(cas);
   const service = cas.system.name;
+  const release = telemetrySdkReadiness(stack, { candidateDir: opts.releaseCandidateDir, sourceSha: opts.releaseSourceSha });
   const snippet = snippetFor(framework, service);
   const pkg = stack === 'python' ? PY_PACKAGE : JS_PACKAGE;
 
@@ -240,7 +246,10 @@ export function getRuntimeSdkPackage(cas: CASOutput, opts: { limit?: number } = 
       body_shape: '{ "events": [ CasRuntimeEvent, ... ] }',
     },
     proof: {
-      installable: true,
+      installable: release.installable,
+      release_status: release.status,
+      release_reason: release.reason,
+      ...(release.artifact_sha256 ? { artifact_sha256: release.artifact_sha256, source_sha: release.source_sha } : {}),
       runtime_static_links: contract.totals.runtime_static_links,
       included_contracts: contract.contracts.length,
       sdk_methods:

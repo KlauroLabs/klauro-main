@@ -71,13 +71,13 @@ reading alone in the time available, it is marked UNSURE rather than guessed.
   which tool surfaces which facet — a spike against the live MCP tool list
   would settle this in under an hour.
 
-### What is absent
+### What was absent in that historical path
 
 - No compile-time or lint-time enforcement of the tier boundary (nothing stops
   a new tier-3 pass from reading `node.type` directly instead of going through
   a tier-2 role lookup — the exact defect class the spec names).
 
-### Effort to close
+### Historical estimate to close
 
 - Splitting the boundary enforcement out of one file is a **weeks**-scale
   refactor by itself (31k lines, high blast radius, currently the single point
@@ -89,7 +89,7 @@ reading alone in the time available, it is marked UNSURE rather than guessed.
   days** once confirmed absent (a spike, not a build, if the six facets already
   exist as separate fields — this would just be a join).
 
-### Blocks the tier above?
+### Historical tier impact
 
 Not currently — tier 1's own invariants (referential integrity, determinism)
 are solid and gated. The risk this tier poses to tier 2/3 is architectural
@@ -345,7 +345,9 @@ reading, not just repeating the ground truth.
 - **Installable SDKs exist** (`packages/klauro-sdk-js`, `packages/klauro-sdk-py`)
   giving codebases a path to emit spans in the first place.
 
-### What is weak — this is the answer the brief asked me to establish
+### Historical pre-fix finding — superseded by the addendum below
+
+The following diagnosis describes the older node-only fusion path. It is retained as investigation history, not current product status. The customer SDK path now joins ingested observations through node runtime metrics into observed runtime links and flow-derived capability telemetry.
 
 - **Observed telemetry is attached to CAS nodes, not to comprehension.**
   Direct read of `RuntimeFact` (`telemetry-fusion.ts:39-51`): the interface is
@@ -417,7 +419,7 @@ node-only exactly as described above — re-confirmed, unchanged.
 Investigation into whether `telemetry-fusion.ts` should be retired, merged,
 or kept as a deliberate lighter-weight signal found:
 
-- **No real producer posts to it.** The actual installed customer SDK
+- **No real producer posts to it.** The actual customer SDK source and verified release-candidate artifacts
   (`@klauro/telemetry`, `packages/klauro-sdk-js`) POSTs to
   `/api/telemetry/runtime-events/:projectId`, which `remote-analyzer-service.ts`
   explicitly routes through the *other* pipeline (`ingestTelemetryBatch` via

@@ -33,7 +33,8 @@ test('serves a real npm install command and Express init for an Express app', ()
   assert.equal(out.install.command, 'npm install @klauro/telemetry');
   assert.match(out.quick_start.instrument_in_3_lines, /@klauro\/telemetry\/express/);
   assert.match(out.quick_start.instrument_in_3_lines, /klauroExpress\(\)/);
-  assert.equal(out.proof.installable, true);
+  assert.equal(out.proof.installable, false);
+  assert.equal(out.proof.release_status, 'release_candidate');
 });
 
 test('picks the NestJS interceptor snippet when Nest is detected', () => {
@@ -87,5 +88,5 @@ test('emits a pinned per-analysis contract file and correct verify endpoint', ()
   assert.ok(contractFile!.sha256.length === 64);
   assert.match(out.verify.endpoint, /\/api\/telemetry\/runtime-events\/<project id>/);
   assert.equal(out.transport.batch_key, 'events');
-  assert.equal(isRuntimeSdkPackageReady(out), true);
+  assert.equal(isRuntimeSdkPackageReady(out), false);
 });

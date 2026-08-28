@@ -152,6 +152,15 @@ The shape is deliberately span-like so an exporter is a thin transform:
 A custom SDK does the same: wrap request handlers, emit one event per request or error, and batch them to `ingest_telemetry`. `get_runtime_event_contract` and `get_runtime_sdk_package` generate CAS-specific signal names and a TypeScript client whose `runtime_signal` values (`name`) correlate exactly.
 
 ## Supported SDKs and middleware
+### Release and hosted-proof status
+
+- The JavaScript and Python SDK source is implemented and tested. Exact-SHA npm tarball and wheel release candidates can be produced with `scripts/prove-telemetry-sdk-release-candidate.sh`; their manifest and receipt bind source SHA, package versions, archive inventories, clean installs, and artifact SHA-256 digests.
+- npm and PyPI publication has **not** been performed. Package metadata still requires license-policy review, so package-manager install commands below describe the intended published names rather than current registry availability.
+- Hosted projects can issue, list metadata for, rotate, and revoke `telemetry:ingest` credentials. Plaintext is returned only at issue/rotation; stored records contain only hashes. These credentials authenticate only the matching project ingest route and are rejected by other account APIs and other projects.
+- Both SDKs require an exact integer acknowledgement equal to the submitted batch length. Missing, malformed, or partial acknowledgements retry the same preassigned event IDs.
+- `apps/mcp-server/src/gauntlet/telemetry-external-proof.ts` is the two-phase production proof. It refuses fake/local endpoints, verifies exact server and package receipts, performs isolated installs, injects a real response-loss retry, checks exact-once read-back, then requires pre-analysis-to-analysis backfill plus observed runtime-link and flow/capability evidence.
+- The external production proof has **not** been executed because no authorized public proof project and endpoint were supplied in this change. Unit, route, artifact, and ephemeral storage behavior are proven separately; they do not substitute for the external receipt.
+
 
 The JavaScript package is `packages/klauro-sdk-js` (`@klauro/telemetry`). It supports Node HTTP, Express, Fastify, Koa, and NestJS. The Python package is `packages/klauro-sdk-py` (`klauro-telemetry`). It supports FastAPI/Starlette, Flask, and Django. Both packages emit the canonical runtime-event contract, batch delivery without blocking the request path, bound retry queues, and POST directly to:
 
