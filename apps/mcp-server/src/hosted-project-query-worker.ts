@@ -7,6 +7,8 @@ import { getAnalysisFileFingerprint, loadAnalysisProjection } from './storage';
 import type { CasSectionName } from './cas-sections';
 import { attachCasProjection, casProjection } from './cas-projection';
 import type { SubCasNodeIndex } from './deployable-analysis';
+import { loadTelemetryObservations } from './telemetry-ingestion';
+import { buildNodeRuntimeMetrics } from './product';
 
 if (!process.send) {
   process.stderr.write('hosted-project-query-worker must be started through child_process.fork.\n');
@@ -154,6 +156,10 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
         tool: request.tool,
       }, request.tool);
       debugMemory('readiness');
+      const needsRuntimeMetrics = request.tool === 'get_runtime_static_links' || request.tool === 'get_flow_graph';
+      const runtimeSet = !unavailable && needsRuntimeMetrics
+        ? await loadTelemetryObservations(request.workspace, { source: 'ingested', limit: 5000 }) : null;
+      const runtimeMetrics = runtimeSet ? buildNodeRuntimeMetrics(activeCas, runtimeSet.observations || []) : [];
       const result = unavailable
         ? undefined
         : await queryModule!.executeHostedProjectQuery({
@@ -161,6 +167,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
             tool: request.tool,
             args: request.args,
             projectPath: request.workspace,
+            runtimeMetrics,
           });
       debugMemory('result');
       process.send!({

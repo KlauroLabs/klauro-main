@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
+import type { RuntimeMetricLike } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';
 import * as agentAdoption from './agent-adoption';
 import * as analysisMastery from './analysis-mastery';
 import * as idiomQuery from './idiom-query';
@@ -109,6 +110,11 @@ export const HOSTED_PROJECT_QUERY_SCHEMAS = {
   get_runtime_instrumentation_plan: z.object({
     limit: z.number().int().positive().max(500).optional(),
   }).strict(),
+  get_runtime_static_links: z.object({
+    telemetry_status: z.string().optional(), kind: z.string().optional(),
+    limit: z.number().int().positive().max(500).optional(), offset: z.number().int().nonnegative().optional(),
+  }).strict(),
+  get_flow_graph: z.object({}).strict(),
   evaluate_agent_task_proof: z.object({ tasks: z.array(taskSchema).min(1).max(20).optional() }).strict(),
   evaluate_agent_readiness: z.object({}).strict(),
 } as const;
@@ -140,6 +146,8 @@ export function hostedProjectQuerySections(tool: string, args: HostedQuerySectio
     case 'evaluate_analysis_truth': return ['graph', 'calls', 'facts', 'runtime', 'supplemental'];
     case 'get_semantic_map': return ['graph', 'calls', 'facts', 'supplemental'];
     case 'get_framework_depth_report': return ['graph', 'facts', 'runtime', 'supplemental'];
+    case 'get_runtime_static_links': return ['facts', 'runtime'];
+    case 'get_flow_graph': return ['comprehension', 'facts', 'runtime'];
     case 'get_runtime_instrumentation_plan': return ['graph', 'runtime'];
     case 'evaluate_agent_task_proof': return ['graph', 'calls', ...ORIENTATION_SECTIONS];
     case 'evaluate_agent_readiness': return ['graph', 'calls', ...ORIENTATION_SECTIONS];
@@ -178,6 +186,7 @@ export async function executeHostedProjectQuery(input: {
   tool: string;
   args?: unknown;
   projectPath: string;
+  runtimeMetrics?: RuntimeMetricLike[];
 }): Promise<unknown> {
   if (!Object.prototype.hasOwnProperty.call(HOSTED_PROJECT_QUERY_SCHEMAS, input.tool)) {
     throw new Error(`Unsupported hosted query tool '${input.tool}'`);
@@ -284,6 +293,14 @@ export async function executeHostedProjectQuery(input: {
       break;
     case 'get_runtime_instrumentation_plan':
       result = analysisMastery.getRuntimeInstrumentationPlan(input.cas, { limit: args.limit });
+      break;
+    case 'get_runtime_static_links':
+      result = query.getRuntimeStaticLinks(input.cas, {
+        telemetryStatus: args.telemetry_status, kind: args.kind, limit: args.limit, offset: args.offset,
+      }, input.runtimeMetrics || []);
+      break;
+    case 'get_flow_graph':
+      result = query.getFlowGraph(input.cas, input.runtimeMetrics || []);
       break;
     case 'evaluate_agent_task_proof':
       result = await analysisMastery.evaluateAgentTaskProof(input.cas, input.projectPath, args.tasks || [{ task_type: 'orient' }]);
