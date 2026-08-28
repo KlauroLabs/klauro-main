@@ -1,7 +1,7 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import { CAS_VERSION, type CASDataEntity, type CASEdge, type CASEntryPoint, type CASExitPoint, type CASNode, type CASOutput, type CASProgressiveLevels, type CASSystem, type CASTemporalStability, type CASTerminality, type FlowConcept, type FlowStep, type SystemCapability } from '../../../packages/analyzer-core/src/types/cas.types';
-import { composeCas, type CASCompositionRelation, type CASComprehension } from '../../../packages/analyzer-core/src/analyzer/core/cas-composition';
+import { composeCas, type CASCompositionContext, type CASComprehension } from '../../../packages/analyzer-core/src/analyzer/core/cas-composition';
 import { buildCasTerminality } from '../../../packages/analyzer-core/src/analyzer/core/terminality';
 import { partitionAnalysisDiagnostics } from '../../../packages/analyzer-core/src/analyzer/core/analysis-diagnostics';
 import type {
@@ -18,7 +18,8 @@ import { getCachedDeployableAnalyses } from './deployable-analysis';
 import { estimatedJsonTokens } from './json-size';
 import { isRuntimeEndpointSemanticName } from './semantic-roles';
 import { buildPassiveDataLinks, passiveDataLifecycleRole, passiveDataOperationRole } from './workspace-passive-data';
-import { workspaceMemberReference } from './workspace-member-reference';
+import { buildWorkspaceCapabilityProvenance, buildWorkspaceCompositionTerminality, mergeWorkspaceCapabilityProvenance, terminalWorkspaceSystemCapabilities, type WorkspaceCapabilityProvenance } from './workspace-composition-terminality';
+export type { WorkspaceCapabilityProvenance } from './workspace-composition-terminality';
 export { estimatedJsonTokens } from './json-size';
 
 export type SystemInterfaceKind =
@@ -407,6 +408,7 @@ export interface WorkspaceRiskArea {
   next_mcp_calls: Array<{ tool: string; args: Record<string, unknown> }>;
 }
 
+
 export interface WorkspaceCapability {
   id: string;
   name: string;
@@ -423,6 +425,7 @@ export interface WorkspaceCapability {
   criticality: 'critical' | 'high' | 'medium' | 'low';
   evidence: string[];
   source_capability_ids?: string[];
+  composition_provenance?: WorkspaceCapabilityProvenance[];
 }
 
 export interface WorkspaceWorkflow {
@@ -1340,6 +1343,8 @@ export function buildCrossCodebaseSystemGraph(
   const distributionUnits = buildWorkspaceDistributionUnits(repositories, applications, codebases);
   const appByIdForLinks = new Map(applications.map(app => [app.id, app]));
   const allLinks = buildLinks(interfaces, appByIdForLinks);
+  const { links, childrenByCodebase, relations, childTerminalityByCodebase } =
+    buildWorkspaceCompositionTerminality(repositories, codebases, allLinks);
   const runtimeLinks = buildRuntimeLinks(runtimeComponents, interfaces, allLinks, repositories);
   const applicationLinks = buildApplicationLinks(allLinks, runtimeLinks, interfaces, runtimeComponents, applications, codebases, repositories);
   const sharedCodeRollup = buildSharedCodeRollup(repositories, applications, applicationLinks);
@@ -1358,14 +1363,13 @@ export function buildCrossCodebaseSystemGraph(
   const ownership = buildWorkspaceOwnership(applications, codebases, repositories);
   const activity = buildWorkspaceActivity(repositories, applications);
   const telemetry = buildWorkspaceTelemetry(repositories, applications);
-  const capabilities = buildWorkspaceCapabilities(repositories, applications, lookupIndexes);
+  const capabilities = buildWorkspaceCapabilities(repositories, applications, lookupIndexes, childTerminalityByCodebase, childrenByCodebase);
 
   const workflowsAll = buildWorkspaceWorkflows(repositories, applications, interfaces, applicationLinks, lookupIndexes);
   const workflows = workflowsAll.slice(0, WORKSPACE_WORKFLOWS_MAX);
   const domains = buildWorkspaceDomains(repositories, codebases, name);
   const environments = buildWorkspaceEnvironments(runtimeComponents, applications, repositories);
   const infrastructureOverlay = buildWorkspaceInfrastructureOverlay(runtimeComponents, runtimeLinks, applications);
-  const links = allLinks.filter(link => link.source_codebase_id !== link.target_codebase_id);
   const dataFlowPaths = links.map(link => toDataFlowPath(link, interfaces, applications));
   const entityMap = buildWorkspaceEntities(repositories, applications, capabilities, workflows, dataFlowPaths);
   systemInsights = dedupeInsights([...systemInsights, ...inferEntityGapInsights(entityMap.entities)]);
@@ -1379,26 +1383,6 @@ export function buildCrossCodebaseSystemGraph(
   const workspaceComplexity = computeWorkspaceComplexity(codebases, repositories, applications, runtimeLinks);
   const communicationSeams = buildWorkspaceCommunicationSeams(codebases, applicationLinks, repositories);
   const graphId = options.id || crossCodebaseSystemGraphId(name);
-  const childrenByCodebase = new Map<string, CASOutput>();
-  repositories.forEach((repository, index) => {
-    const codebase = codebases[index];
-    if (!codebase) return;
-    childrenByCodebase.set(codebase.id, workspaceMemberReference(repository, codebase.id));
-  });
-  const relations: CASCompositionRelation[] = links.flatMap(link => {
-    const source = childrenByCodebase.get(link.source_codebase_id);
-    const target = childrenByCodebase.get(link.target_codebase_id);
-    if (!source?.id || !target?.id) return [];
-    return [{
-      id: link.id,
-      source_cas_id: source.id,
-      target_cas_id: target.id,
-      type: link.kind,
-      confidence: link.confidence,
-      evidence: link.evidence,
-      metadata: { mode: link.mode, evidence_quality: link.evidence_quality },
-    }];
-  });
   const composedCas = composeCas({
     id: graphId,
     label: name,
@@ -1408,7 +1392,7 @@ export function buildCrossCodebaseSystemGraph(
     system: { id: `system:${graphId}`, name, type: 'monorepo', root_path: '.' },
     children: [...childrenByCodebase.values()],
     relations,
-    derive_comprehension: () => deriveWorkspaceComprehension(workflows, entityMap.entities),
+    derive_comprehension: context => deriveWorkspaceComprehension(workflows, entityMap.entities, capabilities, context),
   });
 
   const graph: CrossCodebaseSystemGraph = {
@@ -1486,6 +1470,8 @@ export const buildWorkspaceAnalysis = buildCrossCodebaseSystemGraph;
 function deriveWorkspaceComprehension(
   workflows: WorkspaceWorkflow[],
   workspaceEntities: WorkspaceEntity[],
+  workspaceCapabilities: WorkspaceCapability[],
+  context: CASCompositionContext,
 ): CASComprehension {
   const entities: CASDataEntity[] = workspaceEntities.map(entity => {
     const referencedIds = entity.entity_refs.map(ref => `${ref.project_id}:${ref.entity_id}`);
@@ -1515,8 +1501,9 @@ function deriveWorkspaceComprehension(
   const flows: FlowConcept[] = workflows
     .filter(workflow => workflow.project_ids.length > 1)
     .map(workflow => deriveWorkspaceFlow(workflow, entityIdsByWorkflow.get(workflow.id) || []));
+  const capabilities = terminalWorkspaceSystemCapabilities(workspaceCapabilities, context.child_terminality);
   return {
-    capabilities: [],
+    capabilities,
     flows,
     steps: flows.flatMap(flow => flow.steps),
     entities,
@@ -1606,6 +1593,7 @@ function synchronizeCanonicalWorkspaceComprehension(graph: WorkspaceAnalysisGrap
     (capability.semantic_role === 'core' ? 20 : capability.semantic_role === 'supporting' ? 10 : 0) +
     criticalityRank(capability.criticality);
   const published = graph.workspace_capabilities.filter(capability =>
+    capability.composition_provenance?.some(item => item.disposition === 'promoted') &&
     capability.description_source === 'ai' && capability.name.trim().length > 0 && capability.description.trim().length > 0
   );
   const primaryByFlowId = new Map<string, string>();
@@ -1662,6 +1650,7 @@ function synchronizeCanonicalWorkspaceComprehension(graph: WorkspaceAnalysisGrap
         .map(domain => domain.name),
       criticality: capability.criticality,
       criticality_factors: capability.terminal_evidence || [],
+      composition_provenance: capability.composition_provenance,
       ...(relatedFlows.length > 0 ? { related_flows: relatedFlows } : {}),
     };
   });
@@ -1712,7 +1701,7 @@ function synchronizeCanonicalWorkspaceComprehension(graph: WorkspaceAnalysisGrap
 
   graph.capabilities = canonicalCapabilities;
   graph.steps = graph.flows.flatMap(flow => flow.steps);
-  graph.terminality = buildCasTerminality(graph as unknown as CASOutput);
+  graph.terminality = { ...buildCasTerminality(graph as unknown as CASOutput), nodes: graph.terminality.nodes };
   graph.summary.capabilities = canonicalCapabilities.length;
 }
 
@@ -2014,8 +2003,10 @@ async function generateWorkspaceAiText(additionalContext: Record<string, unknown
 }
 
 async function aiMergeWorkspaceCapabilities(graph: WorkspaceAnalysisGraph): Promise<WorkspaceCapability[]> {
-  const capabilities = graph.workspace_capabilities || [];
-  if (capabilities.length < 4) return capabilities;
+  const sourceCapabilities = graph.workspace_capabilities || [];
+  const capabilities = sourceCapabilities.filter(capability => capability.composition_provenance?.some(item => item.disposition === 'promoted'));
+  const absorbedCapabilities = sourceCapabilities.filter(capability => !capabilities.includes(capability));
+  if (capabilities.length < 4) return sourceCapabilities;
   const codebaseNameById = new Map((graph.codebases || []).map(codebase => [codebase.id, codebase.name]));
   const entitiesOf = (capability: WorkspaceCapability) => mergeStrings([], [
     ...capability.evidence.filter(item => item.startsWith('entity:')).map(item => item.replace(/^entity:/, '')),
@@ -2108,10 +2099,11 @@ async function aiMergeWorkspaceCapabilities(graph: WorkspaceAnalysisGraph): Prom
       criticality: role === 'core' ? 'high' : 'medium',
       evidence: mergeStrings([], sources.flatMap(source => source.evidence)).slice(0, 12),
       source_capability_ids: mergeStrings([], sources.flatMap(source => source.source_capability_ids || [source.id])),
+      composition_provenance: sources.flatMap(source => source.composition_provenance || []),
     });
   }
   if (merged.length < 3) return capabilities;
-  return merged.slice(0, 24);
+  return [...merged.slice(0, 24), ...absorbedCapabilities];
 }
 
 function useDirectOllamaWorkspaceAi(): boolean {
@@ -6709,6 +6701,8 @@ function buildWorkspaceCapabilities(
   repositories: CrossCodebaseInput[],
   applications: SystemApplication[],
   lookupIndexes: Map<CASOutput, CrossCodebaseLookupIndex>,
+  childTerminalityByCodebase: Map<string, CASTerminality['nodes'][number]>,
+  childrenByCodebase: Map<string, CASOutput>,
 ): WorkspaceCapability[] {
   const terminalProfiles = buildWorkspaceTerminalProfiles(repositories);
   const appByEntry = new Map<string, SystemApplication>();
@@ -6729,6 +6723,10 @@ function buildWorkspaceCapabilities(
     const projectId = codebaseId(repository.path);
     const infrastructureArtifact = repository.cas.enhanced_system_purpose?.artifact_type === 'infrastructure';
     const terminalProfile = terminalProfiles.get(projectId) || emptyTerminalSemanticProfile(projectId);
+    const compositionMember = childTerminalityByCodebase.get(projectId);
+    if (!compositionMember) continue;
+    const sourceChild = childrenByCodebase.get(projectId);
+    const entryPointsById = new Map((repository.cas.entry_points || []).map(entry => [entry.id, entry]));
     for (const capability of repository.cas.capabilities || []) {
       const apps = capability.operations
         .map(operation => appByEntry.get(`${projectId}:${operation.entry_point_id}`))
@@ -6746,7 +6744,7 @@ function buildWorkspaceCapabilities(
         ...(capability.operations || []).map(operation => `${operation.action}:${operation.path_or_command || operation.entry_point_id}`),
       ].slice(0, 10);
       const infrastructureOnly = infrastructureArtifact || capability.evidence_kind === 'infrastructure' || capability.category === 'internal';
-      const semanticRole = infrastructureOnly
+      const semanticRole = infrastructureOnly || !compositionMember.terminal
         ? 'infrastructure'
         : semanticRoleFromTerminalScore(terminalSignal.score, fallbackRole);
       const deployableIds = [...new Set(apps.map(app => app.id))];
@@ -6759,7 +6757,7 @@ function buildWorkspaceCapabilities(
           ai_required: true,
           generation_pass: 'default-summary',
           semantic_role: semanticRole,
-          terminal_score: roundTerminalScore(infrastructureOnly ? Math.min(0, terminalSignal.score) : terminalSignal.score),
+          terminal_score: roundTerminalScore(infrastructureOnly || !compositionMember.terminal ? Math.min(0, terminalSignal.score) : terminalSignal.score),
           terminal_evidence: infrastructureOnly ? mergeStrings(terminalSignal.evidence, ['infrastructure-only-evidence']).slice(0, 10) : terminalSignal.evidence,
           project_ids: [projectId],
           deployable_ids: deployableIds,
@@ -6767,6 +6765,7 @@ function buildWorkspaceCapabilities(
           evidence,
         }, capability.description, 'capability');
       const workspaceCapabilityId = `${projectId}:capability:${slugify(capability.id || capability.name)}`;
+      const compositionProvenance = buildWorkspaceCapabilityProvenance(repository.cas, sourceChild!, capability, compositionMember, entryPointsById);
       capabilities.push({
         id: workspaceCapabilityId,
         name: capability.name,
@@ -6777,13 +6776,14 @@ function buildWorkspaceCapabilities(
         degraded_reason: repoAiDescriptionReady ? undefined :
           'Whole-workspace capability descriptions require grounded AI enrichment from deterministic workspace-level CAS facts.',
         semantic_role: semanticRole,
-        terminal_score: roundTerminalScore(infrastructureOnly ? Math.min(0, terminalSignal.score) : terminalSignal.score),
+        terminal_score: roundTerminalScore(infrastructureOnly || !compositionMember.terminal ? Math.min(0, terminalSignal.score) : terminalSignal.score),
         terminal_evidence: infrastructureOnly ? mergeStrings(terminalSignal.evidence, ['infrastructure-only-evidence']).slice(0, 10) : terminalSignal.evidence,
         project_ids: [projectId],
         deployable_ids: deployableIds,
         criticality: capability.criticality,
         evidence,
         source_capability_ids: [workspaceCapabilityId],
+        composition_provenance: compositionProvenance,
       });
     }
   }
@@ -6801,6 +6801,7 @@ function dedupeWorkspaceCapabilities(capabilities: WorkspaceCapability[]): Works
       deployable_ids: mergeStrings(existing.deployable_ids, capability.deployable_ids),
       evidence: mergeStrings(existing.evidence, capability.evidence).slice(0, 12),
 	  source_capability_ids: mergeStrings(existing.source_capability_ids || [existing.id], capability.source_capability_ids || [capability.id]),
+      composition_provenance: mergeWorkspaceCapabilityProvenance(existing.composition_provenance, capability.composition_provenance),
 	    criticality: criticalityRank(capability.criticality) > criticalityRank(existing.criticality) ? capability.criticality : existing.criticality,
 	      semantic_role: strongerSemanticRole(existing.semantic_role, capability.semantic_role),
 	      terminal_score: Math.max(existing.terminal_score || 0, capability.terminal_score || 0),

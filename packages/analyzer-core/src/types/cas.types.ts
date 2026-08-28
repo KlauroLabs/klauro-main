@@ -1,4 +1,6 @@
 import { createHash } from 'crypto';
+import type { CASComposedClaimProvenance, CASTerminalityProvenance } from './cas-composition.types';
+export type { CASComposedClaimProvenance, CASTerminalityEdge, CASTerminalityProvenance, CASTerminalityRelationEvidence } from './cas-composition.types';
 
 export interface CASOutput {
   id?: string;
@@ -3679,6 +3681,7 @@ export interface SystemCapability {
   related_domains: string[];
   criticality: 'critical' | 'high' | 'medium' | 'low';
   criticality_factors: string[];
+  composition_provenance?: CASComposedClaimProvenance[];
 
 
 
@@ -4418,10 +4421,6 @@ export interface ComputeFlowConceptsOptions {
   nameStep?: (step: FlowStep, ctx: { flowEntryPoint: CASEntryPoint }) => { name?: string; description?: string } | undefined;
 }
 
-export interface CASTerminalityEdge {
-  source: string;
-  target: string;
-}
 
 export interface CASTerminalityMember {
   id: string;
@@ -4431,6 +4430,7 @@ export interface CASTerminalityMember {
   incoming: number;
   outgoing: number;
   strongly_connected_size: number;
+  composition_provenance?: CASTerminalityProvenance;
 }
 
 export interface CASTerminality {

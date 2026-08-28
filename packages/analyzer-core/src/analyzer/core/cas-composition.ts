@@ -4,17 +4,20 @@ import type {
   CASNode,
   CASOutput,
   CASSystem,
+  CASTerminalityMember,
   FlowConcept,
   FlowStep,
   SystemCapability,
 } from '../../types/cas.types';
 import { assertValidCasTree } from './recursive-cas';
-import { buildCasTerminality } from './terminality';
+import { analyzeTerminality, buildCasTerminality } from './terminality';
 
 export interface CASCompositionRelation {
   id?: string;
   source_cas_id: string;
   target_cas_id: string;
+  terminality_source_cas_id?: string;
+  terminality_target_cas_id?: string;
   type: string;
   confidence?: number;
   evidence?: string[];
@@ -49,6 +52,7 @@ export interface CASCompositionContext {
   relations: ReadonlyArray<CASCompositionRelation>;
   nodes: ReadonlyArray<CASNode>;
   edges: ReadonlyArray<CASEdge>;
+  child_terminality: ReadonlyArray<CASTerminalityMember>;
 }
 
 function stableHash(value: string): string {
@@ -62,6 +66,69 @@ function stableHash(value: string): string {
 
 function relationKey(relation: CASCompositionRelation): string {
   return [relation.source_cas_id, relation.target_cas_id, relation.type].join('\u0000');
+}
+
+export function classifyCompositionChildren(
+  childIds: Iterable<string>,
+  relations: ReadonlyArray<CASCompositionRelation>,
+): CASTerminalityMember[] {
+  const ids = [...new Set(childIds)].sort();
+  const bySource = new Map<string, CASCompositionRelation[]>();
+  const byTarget = new Map<string, CASCompositionRelation[]>();
+  const terminalitySource = (relation: CASCompositionRelation) => relation.terminality_source_cas_id || relation.source_cas_id;
+  const terminalityTarget = (relation: CASCompositionRelation) => relation.terminality_target_cas_id || relation.target_cas_id;
+  for (const relation of relations) {
+    const source = terminalitySource(relation);
+    const target = terminalityTarget(relation);
+    bySource.set(source, [...(bySource.get(source) || []), relation]);
+    byTarget.set(target, [...(byTarget.get(target) || []), relation]);
+  }
+  for (const values of [...bySource.values(), ...byTarget.values()]) {
+    values.sort((left, right) => relationKey(left).localeCompare(relationKey(right)));
+  }
+  const members = analyzeTerminality(ids, relations.map(relation => ({
+    source: terminalitySource(relation),
+    target: terminalityTarget(relation),
+  })));
+  const terminalIds = new Set(members.filter(member => member.terminal).map(member => member.id));
+  const relationEvidence = (relation: CASCompositionRelation) => ({
+    relation_id: relation.id || `cas-relation:${stableHash(relationKey(relation))}`,
+    source_id: terminalitySource(relation),
+    target_id: terminalityTarget(relation),
+    evidence_ids: [...new Set(relation.evidence || [])].sort(),
+    confidence: Math.max(0, Math.min(1, relation.confidence ?? 1)),
+  });
+  const pathToTerminal = (start: string): CASCompositionRelation[] => {
+    const queue: Array<{ id: string; path: CASCompositionRelation[] }> = [{ id: start, path: [] }];
+    const visited = new Set([start]);
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      if (current.id !== start && terminalIds.has(current.id)) return current.path;
+      for (const relation of bySource.get(current.id) || []) {
+        const target = terminalityTarget(relation);
+        if (visited.has(target)) continue;
+        visited.add(target);
+        queue.push({ id: target, path: [...current.path, relation] });
+      }
+    }
+    return [];
+  };
+  return members.map(member => {
+    const path = member.terminal ? [] : pathToTerminal(member.id);
+    const supporting = member.terminal ? (byTarget.get(member.id) || []) : path;
+    const evidence = (member.terminal ? supporting : path).map(relationEvidence);
+    return {
+      ...member,
+      composition_provenance: {
+        source_child_id: member.id,
+        relation_path: evidence,
+        supporting_source_ids: [...new Set(supporting.map(relation => terminalitySource(relation)).filter(id => id !== member.id))].sort(),
+        confidence: evidence.length > 0 ? Math.min(...evidence.map(item => item.confidence)) : 1,
+        ...(member.incoming === 0 && member.outgoing === 0 ? { abstention_reason: 'isolated-child' as const } : {}),
+        ...(!member.terminal && path.length === 0 ? { abstention_reason: 'unresolved-relation-path' as const } : {}),
+      },
+    };
+  });
 }
 
 function assertUniqueIds(values: string[], section: keyof CASComprehension): void {
@@ -96,6 +163,10 @@ export function composeCas(input: CASCompositionInput): CASOutput {
     if (!childIds.has(relation.source_cas_id) || !childIds.has(relation.target_cas_id)) {
       throw new Error(`CAS composition relation ${relation.type} references a child outside the composition.`);
     }
+    if ((relation.terminality_source_cas_id && !childIds.has(relation.terminality_source_cas_id)) ||
+        (relation.terminality_target_cas_id && !childIds.has(relation.terminality_target_cas_id))) {
+      throw new Error(`CAS composition terminality direction for ${relation.type} references a child outside the composition.`);
+    }
     relationMap.set(relationKey(relation), relation);
   }
 
@@ -119,12 +190,14 @@ export function composeCas(input: CASCompositionInput): CASOutput {
       },
     },
   }));
+  const childTerminality = classifyCompositionChildren(children.map(child => child.id!), [...relationMap.values()]);
   const comprehension = input.derive_comprehension({
     parent_id: input.id,
     children,
     relations: [...relationMap.values()],
     nodes,
     edges,
+    child_terminality: childTerminality,
   });
   assertValidComprehension(comprehension);
   const root: CASOutput = {
@@ -149,7 +222,7 @@ export function composeCas(input: CASCompositionInput): CASOutput {
     ...(input.parser_fingerprint ? { parser_fingerprint: input.parser_fingerprint } : {}),
     ...(input.derived_fingerprint ? { derived_fingerprint: input.derived_fingerprint } : {}),
   };
-  root.terminality = buildCasTerminality(root);
+  root.terminality = { ...buildCasTerminality(root), nodes: childTerminality };
   assertValidCasTree(root);
   return root;
 }

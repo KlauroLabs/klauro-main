@@ -1,175 +1,97 @@
+import { classifyCompositionChildren, type CASCompositionRelation } from '../../../../packages/analyzer-core/src/analyzer/core/cas-composition';
+import type { CASComposedClaimProvenance } from '../../../../packages/analyzer-core/src/types/cas.types';
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+export interface RepoCapabilityFact {
+  id: string;
+  name: string;
+  sourceNodeIds: string[];
+  sourceFlowIds: string[];
+}
 
 export interface RepoCapabilityFacts {
-
-
-
-
-
-
-
   repoId: string;
-
-
-
-
-
-
-  capabilities: Array<{ name: string; category?: string; entities?: string[] }>;
-
-
-
-
-
-  declaredTypeNames: string[];
+  knownNodeIds: string[];
+  knownFlowIds: string[];
+  capabilities: RepoCapabilityFact[];
 }
 
 export interface ComposedCapability {
+  id: string;
   name: string;
-  category?: string;
   fromRepoId: string;
+  provenance: CASComposedClaimProvenance;
 }
 
 export interface TerminalCapabilityGateResult {
   pass: boolean;
-
   substrateRepoIds: string[];
-
   terminalRepoIds: string[];
   composedCapabilities: ComposedCapability[];
+  absorbedCapabilities: ComposedCapability[];
   violations: string[];
 }
 
-const IDENTITY_AUTH_SHAPE =
-  /\b(log[- ]?in|sign[- ]?up|authenticat\w*|password|credential|session[- ]?token|user\s+ident(?:ity|ities)|register\s+user|user\s+account|\bsso\b|\boauth\b)\b/i;
+export function runTerminalCapabilityGate(
+  repos: RepoCapabilityFacts[],
+  relations: CASCompositionRelation[],
+): TerminalCapabilityGateResult {
+  const repoById = new Map(repos.map(repo => [repo.repoId, repo]));
+  const members = classifyCompositionChildren(repos.map(repo => repo.repoId), relations);
+  const terminalRepoIds = members.filter(member => member.terminal).map(member => member.id);
+  const substrateRepoIds = members.filter(member => !member.terminal).map(member => member.id);
+  const composedCapabilities: ComposedCapability[] = [];
+  const absorbedCapabilities: ComposedCapability[] = [];
+  const violations: string[] = relations
+    .filter(relation => !repoById.has(relation.source_cas_id) || !repoById.has(relation.target_cas_id))
+    .map(relation => `composition relation ${relation.id || relation.type} references an unknown child`);
 
-function anchoringTypes(repo: RepoCapabilityFacts): Set<string> {
-  const out = new Set<string>();
-  for (const cap of repo.capabilities) {
-    for (const e of cap.entities ?? []) out.add(e);
-  }
-  return out;
-}
-
-
-
-
-
-
-
-export function findSubstrateRepoIds(repos: RepoCapabilityFacts[]): Set<string> {
-  const substrate = new Set<string>();
-  const anchors = new Map<string, Set<string>>();
-  for (const r of repos) anchors.set(r.repoId, anchoringTypes(r));
-
-  for (const producer of repos) {
-    const ownAnchors = anchors.get(producer.repoId)!;
-    if (ownAnchors.size === 0) continue;
-    const dependedOnElsewhere = repos.some(consumer => {
-      if (consumer.repoId === producer.repoId) return false;
-      const consumerAnchors = anchors.get(consumer.repoId)!;
-      return consumer.declaredTypeNames.some(
-        t => ownAnchors.has(t) && !consumerAnchors.has(t),
-      );
-    });
-    if (dependedOnElsewhere) substrate.add(producer.repoId);
-  }
-  return substrate;
-}
-
-
-
-
-
-
-
-
-export function composeParentCapabilities(repos: RepoCapabilityFacts[]): ComposedCapability[] {
-  const substrate = findSubstrateRepoIds(repos);
-  const composed: ComposedCapability[] = [];
-  for (const repo of repos) {
-    if (substrate.has(repo.repoId)) continue;
-    for (const cap of repo.capabilities) {
-      composed.push({ name: cap.name, category: cap.category, fromRepoId: repo.repoId });
+  for (const member of members) {
+    const repo = repoById.get(member.id);
+    if (!repo) {
+      violations.push(`terminality member ${member.id} has no source repository`);
+      continue;
+    }
+    const knownNodes = new Set(repo.knownNodeIds);
+    const knownFlows = new Set(repo.knownFlowIds);
+    for (const capability of repo.capabilities) {
+      const fabricatedNodes = capability.sourceNodeIds.filter(id => !knownNodes.has(id));
+      const fabricatedFlows = capability.sourceFlowIds.filter(id => !knownFlows.has(id));
+      const relationPath = member.composition_provenance?.relation_path || [];
+      if (capability.sourceNodeIds.length + capability.sourceFlowIds.length === 0) {
+        violations.push(`${repo.repoId}:${capability.id} has no source node or flow evidence`);
+        continue;
+      }
+      if (fabricatedNodes.length + fabricatedFlows.length > 0) {
+        violations.push(`${repo.repoId}:${capability.id} cites evidence outside its source CAS or composition relations`);
+        continue;
+      }
+      const claim: ComposedCapability = {
+        id: capability.id,
+        name: capability.name,
+        fromRepoId: repo.repoId,
+        provenance: {
+          source_child_id: repo.repoId,
+          source_capability_id: capability.id,
+          source_node_ids: [...new Set(capability.sourceNodeIds)].sort(),
+          source_flow_ids: [...new Set(capability.sourceFlowIds)].sort(),
+          relation_path: relationPath,
+          confidence: member.composition_provenance?.confidence ?? 1,
+          disposition: member.terminal ? 'promoted' : 'absorbed',
+          ...(member.composition_provenance?.abstention_reason
+            ? { abstention_reason: member.composition_provenance.abstention_reason }
+            : {}),
+        },
+      };
+      (member.terminal ? composedCapabilities : absorbedCapabilities).push(claim);
     }
   }
-  return composed;
-}
 
-
-
-
-
-
-
-
-export function runTerminalCapabilityGate(repos: RepoCapabilityFacts[]): TerminalCapabilityGateResult {
-  const substrate = findSubstrateRepoIds(repos);
-  const composed = composeParentCapabilities(repos);
-  const violations = composed
-    .filter(c => IDENTITY_AUTH_SHAPE.test(c.name))
-    .map(
-      c =>
-        `"${c.name}" (from ${c.fromRepoId}) reads as identity/auth-shaped but survived composition into the parent capability list`,
-    );
   return {
     pass: violations.length === 0,
-    substrateRepoIds: Array.from(substrate),
-    terminalRepoIds: repos.map(r => r.repoId).filter(id => !substrate.has(id)),
-    composedCapabilities: composed,
+    substrateRepoIds,
+    terminalRepoIds,
+    composedCapabilities,
+    absorbedCapabilities,
     violations,
   };
 }

@@ -4,6 +4,7 @@ import { assertRealWorkspaceAiAttempt, buildCrossCodebaseSystemGraph, buildWorks
 import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
 import { CAS_VERSION, type CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { validateCasTree } from '../../../packages/analyzer-core/src/analyzer/core/recursive-cas';
+import { buildWorkspaceCapabilityProvenance, mergeWorkspaceCapabilityProvenance, terminalWorkspaceSystemCapabilities } from './workspace-composition-terminality';
 
 function cas(overrides: Partial<CASOutput>): CASOutput {
   return {
@@ -118,6 +119,160 @@ test('builds outer graph with http, sdk, message, passive data, and unmatched in
   assert.ok(graph.terminality.flows.length === graph.flows.length);
 });
 
+
+test('weights parent capabilities by structural child terminality and retains substrate child graphs with source provenance', () => {
+  const provider = cas({
+    system: { id: 'provider', name: 'provider', type: 'service', root_path: '/tmp/provider' },
+    nodes: [{ id: 'node:provider', name: 'Provide', type: 'function', source: { file: 'src/provider.ts', line: 1 } } as any],
+    entry_points: [{ id: 'entry:provider', source_node: 'node:provider', type: 'http', name: 'GET /records', trigger: { method: 'GET', path: '/records' } }],
+    capabilities: [{
+      id: 'capability:provider',
+      name: 'Provide records',
+      description: 'Provides records to authorized callers.',
+      description_source: 'ai',
+      category: 'core',
+      operations: [{ entry_point_id: 'entry:provider', entry_point_type: 'http', action: 'provide', path_or_command: '/records' }],
+      related_entities: [],
+      related_domains: [],
+      criticality: 'high',
+      criticality_factors: [],
+    }],
+  });
+  const consumerFlow = {
+    flow_id: 'flow:consumer',
+    name: 'Present records',
+    intent: 'Present records to the requesting user.',
+    entry_point: 'entry:consumer',
+    capability_id: 'capability:consumer',
+    entities: [],
+    contract: { input: [], logic: 'request and present records', side_effects: { state_changes: [], external_integrations: [] }, output: [], constraints: [] },
+    steps: [{ step_id: 'step:consumer', order: 1, name: 'Present', description: 'Present records.', description_source: 'deterministic-label', contract: {}, functions: [{ function_id: 'node:consumer' }], entities: [] }],
+  } as any;
+  const consumer = cas({
+    system: { id: 'consumer', name: 'consumer', type: 'application', root_path: '/tmp/consumer' },
+    nodes: [{ id: 'node:consumer', name: 'Present', type: 'component', source: { file: 'src/consumer.ts', line: 1 } } as any],
+    exit_points: [{ id: 'exit:consumer', source_node: 'node:consumer', type: 'api', name: 'load records', target: { endpoint: 'http://provider/records', service_id: 'provider' }, operation: { method: 'GET' } }],
+    flows: [consumerFlow],
+    capabilities: [{
+      id: 'capability:consumer',
+      name: 'Present records',
+      description: 'Presents requested records to users.',
+      description_source: 'ai',
+      category: 'core',
+      operations: [],
+      related_entities: [],
+      related_domains: [],
+      criticality: 'high',
+      criticality_factors: [],
+    }],
+  });
+
+  const graph = buildCrossCodebaseSystemGraph('terminality-system', [
+    { path: '/tmp/provider', name: 'provider', cas: provider },
+    { path: '/tmp/consumer', name: 'consumer', cas: consumer },
+  ], { generatedAt: '2026-01-01T00:00:00.000Z' });
+  const providerCapability = graph.workspace_capabilities.find(item => item.name === 'Provide records')!;
+  const consumerCapability = graph.workspace_capabilities.find(item => item.name === 'Present records')!;
+  assert.equal(providerCapability.composition_provenance?.[0].disposition, 'absorbed');
+  assert.equal(consumerCapability.composition_provenance?.[0].disposition, 'promoted');
+  assert.deepEqual(consumerCapability.composition_provenance?.[0].source_flow_ids, ['flow:consumer']);
+  assert.ok(graph.children.some(child => child.system.name === 'provider' && child.nodes.some(node => node.id.includes('node:provider'))));
+  const childTerminality = new Map(graph.terminality.nodes.map(member => [member.id, member]));
+  assert.equal([...childTerminality.values()].filter(member => member.terminal).length, 1);
+  assert.equal([...childTerminality.values()].filter(member => !member.terminal).length, 1);
+});
+
+test('extends inherited leaf evidence across a third composition boundary before parent comprehension', () => {
+  const inheritedCapability = {
+    id: 'capability:middle',
+    name: 'Complete requested work',
+    description: 'Completes requested work through a composed child.',
+    description_source: 'ai',
+    operations: [],
+    related_entities: [],
+    related_domains: [],
+    criticality: 'high',
+    criticality_factors: [],
+    composition_provenance: [{
+      source_child_id: 'cas:leaf',
+      source_capability_id: 'capability:leaf',
+      source_node_ids: ['node:leaf'],
+      source_flow_ids: ['flow:leaf'],
+      relation_path: [{ relation_id: 'relation:leaf-middle', source_id: 'cas:leaf', target_id: 'cas:middle', evidence_ids: ['edge:leaf-middle'], confidence: 0.9 }],
+      confidence: 0.9,
+      disposition: 'promoted',
+    }],
+  } as any;
+  const middleCas = cas({ id: 'cas:middle', capabilities: [inheritedCapability] });
+  const middleChild = cas({ id: 'workspace:middle' });
+  const member = {
+    id: 'workspace:middle',
+    terminal: true,
+    proximal_terminal: false,
+    distance_to_terminal: 0,
+    incoming: 1,
+    outgoing: 0,
+    strongly_connected_size: 1,
+    composition_provenance: {
+      source_child_id: 'workspace:middle',
+      supporting_source_ids: ['workspace:source'],
+      relation_path: [{ relation_id: 'relation:middle-parent', source_id: 'workspace:source', target_id: 'workspace:middle', evidence_ids: ['edge:middle-parent'], confidence: 0.8 }],
+      confidence: 0.8,
+    },
+  };
+  const provenance = buildWorkspaceCapabilityProvenance(middleCas, middleChild, inheritedCapability, member, new Map());
+  assert.equal(provenance.length, 1);
+  assert.deepEqual(provenance[0].source_node_ids, ['node:leaf']);
+  assert.deepEqual(provenance[0].source_flow_ids, ['flow:leaf']);
+  assert.deepEqual(provenance[0].relation_path.map(item => item.relation_id), ['relation:leaf-middle', 'relation:middle-parent']);
+  assert.equal(provenance[0].source_child_id, 'cas:leaf');
+  assert.equal(provenance[0].source_capability_id, 'capability:leaf');
+  assert.ok((middleCas.capabilities || []).some(capability => capability.composition_provenance?.some(lineage =>
+    lineage.source_child_id === provenance[0].source_child_id
+      && lineage.source_capability_id === provenance[0].source_capability_id
+      && lineage.source_node_ids.every(id => id === 'node:leaf')
+      && lineage.source_flow_ids.every(id => id === 'flow:leaf'))));
+  assert.equal(provenance[0].confidence, 0.8);
+  const published = terminalWorkspaceSystemCapabilities([{
+    id: 'workspace:capability:middle',
+    name: inheritedCapability.name,
+    description: inheritedCapability.description,
+    description_source: 'ai',
+    ai_required: true,
+    generation_pass: 'default-summary',
+    project_ids: ['middle'],
+    deployable_ids: [],
+    criticality: 'high',
+    evidence: [],
+    composition_provenance: provenance,
+  }], [member]);
+  assert.deepEqual(published.map(capability => capability.id), ['workspace:capability:middle']);
+});
+
+test('same-name capability provenance merges commutatively without dropping promoted or absorbed lineage', () => {
+  const promoted = {
+    source_child_id: 'child:b',
+    source_capability_id: 'capability:b',
+    source_node_ids: ['node:b'],
+    source_flow_ids: [],
+    relation_path: [],
+    confidence: 1,
+    disposition: 'promoted' as const,
+  };
+  const absorbed = {
+    source_child_id: 'child:a',
+    source_capability_id: 'capability:a',
+    source_node_ids: ['node:a'],
+    source_flow_ids: [],
+    relation_path: [{ relation_id: 'a-b', source_id: 'child:a', target_id: 'child:b', evidence_ids: ['edge:a-b'], confidence: 1 }],
+    confidence: 1,
+    disposition: 'absorbed' as const,
+  };
+  const forward = mergeWorkspaceCapabilityProvenance([promoted], [absorbed]);
+  const reverse = mergeWorkspaceCapabilityProvenance([absorbed], [promoted]);
+  assert.deepEqual(forward, reverse);
+  assert.deepEqual(forward.map(item => item.disposition).sort(), ['absorbed', 'promoted']);
+});
 test('workspace composition preserves complete member CAS trees with isolated identities', () => {
   const nested = cas({
     id: 'nested',

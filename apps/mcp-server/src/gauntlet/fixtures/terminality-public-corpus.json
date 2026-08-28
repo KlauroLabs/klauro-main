@@ -1,0 +1,60 @@
+{
+  "corpus": [
+    {
+      "repoId": "npm:qs@6.11.0",
+      "packageName": "qs",
+      "source": "https://registry.npmjs.org/qs/-/qs-6.11.0.tgz",
+      "license": "BSD-3-Clause",
+      "archive": "terminality-public-corpus/qs-6.11.0.tgz",
+      "archiveSha256": "01d91ce44dbb4259dd304f96bc62be5fbbb0dc9f82b26d644c4a7ab5150ee235",
+      "root": "package",
+      "sourceFile": "lib/parse.js",
+      "sourceSha256": "9611d65366166f5f826b647f6f2dc25ad94eb5d0259e9646bfd13784dfce907c"
+    },
+    {
+      "repoId": "npm:body-parser@1.20.1",
+      "packageName": "body-parser",
+      "source": "https://registry.npmjs.org/body-parser/-/body-parser-1.20.1.tgz",
+      "license": "MIT",
+      "archive": "terminality-public-corpus/body-parser-1.20.1.tgz",
+      "archiveSha256": "b351860179971e924b8d03497e00d015b16eb7eb9a2a8bbc1efd169194081b56",
+      "root": "package",
+      "sourceFile": "lib/read.js",
+      "sourceSha256": "1e9e274755366c39ae70e8b9a7a42fc12219566e67efaf9b7ebc2a8b337f5b6b"
+    },
+    {
+      "repoId": "github:Babadinho/todo-jobs@c7c139a966ee5eafa49066a89222b56ba8233c27",
+      "packageName": "todo-jobs",
+      "source": "https://github.com/Babadinho/todo-jobs/archive/c7c139a966ee5eafa49066a89222b56ba8233c27.tar.gz",
+      "license": "MIT",
+      "archive": "terminality-public-corpus/todo-jobs-c7c139a.tgz",
+      "archiveSha256": "0ce3c18fe0da2c0e62fe32f5dae87e6d2e8c4a7e1e67981c108d41746b0f69be",
+      "root": "todo-jobs-c7c139a966ee5eafa49066a89222b56ba8233c27",
+      "sourceFile": "README.md",
+      "receipt": "terminality-public-corpus/todo-jobs-production-receipt.json",
+      "sourceSha256": "d95545ff53cdfbc8fb7b3a2ec0fd5d97accebbaa5393c044670c09742af8be21"
+    }
+  ],
+  "relations": [
+    {
+      "id": "dependency:qs:body-parser",
+      "source_cas_id": "npm:qs@6.11.0",
+      "target_cas_id": "npm:body-parser@1.20.1",
+      "type": "consumed_by",
+      "confidence": 1,
+      "evidence": [
+        "package.json:body-parser.dependencies.qs"
+      ]
+    },
+    {
+      "id": "dependency:body-parser:todo-jobs",
+      "source_cas_id": "npm:body-parser@1.20.1",
+      "target_cas_id": "github:Babadinho/todo-jobs@c7c139a966ee5eafa49066a89222b56ba8233c27",
+      "type": "consumed_by",
+      "confidence": 1,
+      "evidence": [
+        "package-lock.json:body-parser@1.20.1"
+      ]
+    }
+  ]
+}

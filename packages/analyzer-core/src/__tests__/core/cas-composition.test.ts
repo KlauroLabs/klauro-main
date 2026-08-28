@@ -1,5 +1,5 @@
 import type { CASOutput } from '../../types/cas.types';
-import { composeCas } from '../../analyzer/core/cas-composition';
+import { composeCas, type CASCompositionContext } from '../../analyzer/core/cas-composition';
 import { validateCasTree } from '../../analyzer/core/recursive-cas';
 
 function leaf(id: string): CASOutput {
@@ -102,4 +102,52 @@ describe('CAS composition', () => {
     expect(tree.capabilities?.map(capability => capability.id)).not.toContain('child-capability');
     expect(tree.terminality?.capabilities[0]).toMatchObject({ id: 'parent-capability', terminal: true });
   });
+  test('recomputes terminal child evidence at each recursive composition boundary without deleting substrate CAS nodes', () => {
+    let middleContext: CASCompositionContext | undefined;
+    const middle = composeCas({
+      id: 'cas:middle',
+      label: 'middle',
+      cas_version: '3.0.0',
+      analysis_id: 'analysis:middle',
+      analysis_timestamp: '2026-08-13T00:00:00.000Z',
+      system: { id: 'system:middle', name: 'middle', type: 'monorepo', root_path: '.' },
+      children: [leaf('cas:leaf-a'), leaf('cas:leaf-b')],
+      relations: [{ id: 'relation:a-b', source_cas_id: 'cas:leaf-a', target_cas_id: 'cas:leaf-b', type: 'calls', confidence: 0.8, evidence: ['edge:a-b'] }],
+      derive_comprehension: context => {
+        middleContext = context;
+        return { capabilities: [], flows: [], steps: [], entities: [] };
+      },
+    });
+    const middleById = new Map(middleContext!.child_terminality.map(member => [member.id, member]));
+    expect(middleById.get('cas:leaf-a')).toMatchObject({ terminal: false, proximal_terminal: true });
+    expect(middleById.get('cas:leaf-a')?.composition_provenance).toMatchObject({
+      source_child_id: 'cas:leaf-a',
+      confidence: 0.8,
+      relation_path: [{ relation_id: 'relation:a-b', source_id: 'cas:leaf-a', target_id: 'cas:leaf-b', evidence_ids: ['edge:a-b'] }],
+    });
+    expect(middleById.get('cas:leaf-b')).toMatchObject({ terminal: true });
+    expect(middle.nodes.map(node => node.id)).toEqual(['cas:leaf-a', 'cas:leaf-b']);
+
+    let rootContext: CASCompositionContext | undefined;
+    const root = composeCas({
+      id: 'cas:root-recursive',
+      label: 'root',
+      cas_version: '3.0.0',
+      analysis_id: 'analysis:root-recursive',
+      analysis_timestamp: '2026-08-13T00:00:00.000Z',
+      system: { id: 'system:root-recursive', name: 'root', type: 'monorepo', root_path: '.' },
+      children: [middle, leaf('cas:leaf-c')],
+      relations: [{ id: 'relation:middle-c', source_cas_id: 'cas:middle', target_cas_id: 'cas:leaf-c', type: 'publishes', confidence: 0.7, evidence: ['edge:middle-c'] }],
+      derive_comprehension: context => {
+        rootContext = context;
+        return { capabilities: [], flows: [], steps: [], entities: [] };
+      },
+    });
+    const rootById = new Map(rootContext!.child_terminality.map(member => [member.id, member]));
+    expect(rootById.get('cas:middle')).toMatchObject({ terminal: false, proximal_terminal: true });
+    expect(rootById.get('cas:leaf-c')).toMatchObject({ terminal: true });
+    expect(root.nodes.map(node => node.id)).toEqual(['cas:middle', 'cas:leaf-c']);
+    expect(root.children?.[0].children?.map(child => child.id)).toEqual(['cas:leaf-a', 'cas:leaf-b']);
+  });
+
 });
