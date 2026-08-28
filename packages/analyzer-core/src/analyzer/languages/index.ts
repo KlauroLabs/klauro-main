@@ -26,74 +26,8 @@ export { CliAnalyzer } from './cli-analyzer';
 export { CaddyAnalyzer, NginxAnalyzer, ApacheAnalyzer, HAProxyAnalyzer, TraefikAnalyzer } from './reverse-proxy-analyzer';
 
 
-export const LanguageAnalyzers = {
-  python: 'PythonAnalyzer',
-  javascript: 'TypeScriptJavaScriptAnalyzer',
-  typescript: 'TypeScriptJavaScriptAnalyzer',
-  java: 'JavaAnalyzer',
-
-
-
-
-
-
-
-
-  csharp: 'CSharpAnalyzer',
-
-
-
-
-
-
-
-
-
-
-
-
-  vb: 'CSharpAnalyzer',
-  go: 'GoAnalyzer',
-  rust: 'RustAnalyzer',
-  php: 'PHPAnalyzer',
-  ruby: 'RubyAnalyzer',
-  dart: 'DartAnalyzer',
-  terraform: 'TerraformAnalyzer',
-
-
-
-
-
-
-  cloudformation: 'CloudFormationAnalyzer',
-
-
-
-
-
-
-
-
-
-  sql: 'SqlSchemaAnalyzer',
-  c: 'CCppAnalyzer',
-  cpp: 'CCppAnalyzer',
-  kotlin: 'KotlinAnalyzer',
-  swift: 'SwiftAnalyzer',
-  solidity: 'SolidityAnalyzer',
-  elixir: 'ElixirAnalyzer',
-  shell: 'ShellAnalyzer',
-  bash: 'ShellAnalyzer',
-  protobuf: 'ProtobufAnalyzer',
-  proto: 'ProtobufAnalyzer',
-  wsdl: 'SoapWsdlAnalyzer',
-  xsd: 'SoapWsdlAnalyzer'
-} as const;
-
-
-
-
-
+import { LanguageAnalyzers } from '../core/language-analyzer-catalog';
+export { LanguageAnalyzers } from '../core/language-analyzer-catalog';
 
 export const SUPPORTED_LANGUAGES = Object.keys(LanguageAnalyzers);
 

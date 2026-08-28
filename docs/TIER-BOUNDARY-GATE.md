@@ -7,7 +7,7 @@ an automated test, not just a doctrine.
 ## What it is
 
 `packages/analyzer-core/src/__tests__/architecture/tier-boundary.test.ts`
-classifies every analyzer-core production module and rejects an unregistered
+recursively discovers every analyzer-core production module and checks its explicit assignment in `analyzer-tier-registry.json` and rejects an unregistered
 module, a missing module, or a lower-tier import of a higher tier. It reads
 source imports directly and runs in the normal analyzer test suite.
 
@@ -26,14 +26,28 @@ kind of large, unrelated-to-the-diff change task #121 was told not to make.
 A ~100-line test using only `fs`/`path` (already a project dependency of
 everything) gets the same enforcement with zero new dependencies and zero
 config-file surface for a concurrent edit to collide with. If the project
-later adopts `dependency-cruiser` project-wide, `TIER_REGISTRY` in the test
-file translates directly into its `from`/`to` rules — this is not a dead
+later adopts `dependency-cruiser` project-wide, `analyzer-tier-registry.json` translates directly into its `from`/`to` rules — this is not a dead
 end, just the lowest-friction version of the same rule today.
 
 The analyzer-core registry is exhaustive rather than opt-in. A new production
 module must be assigned a tier in the same change that creates it. The MCP gate
 uses explicit boundary-entry modules plus automatic discovery for Fabric's
 coordination package.
+
+`npm run tier-registry:check` recursively derives the current production-module
+set and rejects missing, stale, invalid, or nondeterministically ordered entries.
+`npm run tier-registry:update -- --assign=languages/example.ts:2` updates the
+registry only when the contributor supplies the tier explicitly. Deleted modules
+remain a hard failure until `--prune-stale` is requested, so neither additions nor
+removals silently inherit a directory convention.
+
+Concrete convention-producing language, framework, library, and pack analyzers are tier
+2 adapters because they turn syntax into framework or library roles. Generic language
+parsers, signature parsers, call indexes, registries, and graph helpers remain tier 1.
+This makes shared guard classification and ORM identity dependencies
+same-tier convention dependencies instead of pretending the role-producing analyzers
+are framework-agnostic parsers. Every concrete analyzer must also appear in the live MCP
+registration path.
 
 ## Proof it fails on a real violation
 
@@ -53,8 +67,9 @@ committed — see the task report for the exact commands.
 1. Extract the file along a tier boundary (tier 1 = index/graph/ICELOT,
    tier 2 = framework/architecture/library, tier 3 = comprehension
    (capabilities/flows/steps/entities), tier 4 = telemetry attachment).
-2. Add `'your-new-file.ts': N` to `TIER_REGISTRY` in
-   `tier-boundary.test.ts`, in the same commit as the extraction.
+2. Add the analyzer-root-relative path and tier to
+   `packages/analyzer-core/src/__tests__/architecture/analyzer-tier-registry.json`, in the same commit as the extraction, or run
+   `npm run tier-registry:update -- --assign=path/from/analyzer/root.ts:2`.
 3. Run `npx jest src/__tests__/architecture/tier-boundary.test.ts` (scoped —
    do not run the full `analyzer:test`/`mcp:test` suite on this machine per
    the repo's local-load constraint).

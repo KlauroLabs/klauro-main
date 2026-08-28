@@ -12,6 +12,8 @@
     "test": "npm run test:jest && npm run test:node",
     "test:jest": "jest",
     "test:node": "node --require ts-node/register/transpile-only --test \"src/analyzer/**/*.test.ts\"",
+    "tier-registry:check": "node scripts/analyzer-tier-registry.mjs",
+    "tier-registry:update": "node scripts/analyzer-tier-registry.mjs",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
     "parity:extractor": "node --require ts-node/register/transpile-only src/__tests__/parity/run-extractor-parity.ts",

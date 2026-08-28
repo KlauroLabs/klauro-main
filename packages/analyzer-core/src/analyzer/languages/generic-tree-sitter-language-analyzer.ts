@@ -3,7 +3,7 @@ import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint } from '
 import { extractStructure } from '../core/generic-tree-sitter-analyzer';
 import { LANGUAGE_SPECS } from '../core/language-spec';
 import { LANGUAGE_REGISTRY } from '../core/language-registry';
-import { LanguageAnalyzers } from './index';
+import { LanguageAnalyzers } from '../core/language-analyzer-catalog';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../core/glob-cache';
 import * as path from 'path';

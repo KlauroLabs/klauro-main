@@ -24,7 +24,7 @@ import { TEST_FRAMEWORK_DETECTION_FILES } from './test-framework-detection';
  * (file exists, may even have its own passing unit tests) while silently
  * never running against a real repo. This test makes that impossible to miss:
  * it enumerates every concrete `*Analyzer` class file under
- * analyzer/{languages,frameworks,libraries} and asserts each one is
+ * analyzer/{languages,frameworks,libraries,packs} and asserts each one is
  * instantiated (`new ClassName(`) somewhere in the live registration file.
  *
  * This is a static-source-text check, not a runtime one: parsing the live
@@ -40,8 +40,9 @@ import { TEST_FRAMEWORK_DETECTION_FILES } from './test-framework-detection';
 const REPO_ROOT = path.resolve(__dirname, '../../..');
 const ANALYZER_CORE_SRC = path.join(REPO_ROOT, 'packages/analyzer-core/src/analyzer');
 const LIVE_REGISTRATION_FILE = path.join(REPO_ROOT, 'apps/mcp-server/src/analyzer.ts');
+const ANALYZER_TIER_REGISTRY_FILE = path.join(REPO_ROOT, 'packages/analyzer-core/src/__tests__/architecture/analyzer-tier-registry.json');
 
-const SCAN_DIRS = ['languages', 'frameworks', 'libraries'].map(d => path.join(ANALYZER_CORE_SRC, d));
+const SCAN_DIRS = ['languages', 'frameworks', 'libraries', 'packs'].map(d => path.join(ANALYZER_CORE_SRC, d));
 
 /**
  * Classes registered indirectly (not via a literal `new ClassName(` in the
@@ -137,6 +138,15 @@ test('every concrete analyzer class is wired into the live createOrchestrator() 
     `*Analyzer-extends-BaseAnalyzer, or add it to the documented allowlist in this test with a ` +
     `comment explaining why.`
   );
+});
+
+test('every concrete analyzer class has an explicit architecture-tier assignment', () => {
+  const tierRegistry = JSON.parse(fs.readFileSync(ANALYZER_TIER_REGISTRY_FILE, 'utf8')) as Record<string, number>;
+  const unassigned = discoverAnalyzerClasses().filter(({ file }) => {
+    const analyzerPath = path.relative(ANALYZER_CORE_SRC, path.join(REPO_ROOT, file)).split(path.sep).join('/');
+    return ![1, 2].includes(tierRegistry[analyzerPath]);
+  });
+  assert.deepEqual(unassigned, []);
 });
 
 test('cross-language test detection has a live file signal for every supported test shape', () => {
