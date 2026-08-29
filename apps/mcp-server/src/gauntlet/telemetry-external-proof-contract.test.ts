@@ -31,7 +31,7 @@ function evidence(): TelemetryExternalProofEvidence {
         acknowledged_count: 1,
       },
     ],
-    auth: { missing_token_status: 401, invalid_token_status: 401, cross_project_status: 404 },
+    auth: { missing_token_status: 401, invalid_token_status: 401, cross_project_status: 401 },
     delivery: {
       attempted_event_ids: ['js-event', 'py-event'],
       persisted_event_ids: ['js-event', 'py-event'],
@@ -44,9 +44,13 @@ function evidence(): TelemetryExternalProofEvidence {
       remaining_unmatched: 0,
     },
     observed: {
-      runtime_static_link_ids: ['runtime-link'],
-      flow_ids: ['flow'],
+      runtime_static_links: [{ id: 'runtime-link', static_id: 'node-handler' }],
+      flows: [{ flow_id: 'flow', static_ids: ['entry-route', 'node-handler'], capability_ids: ['capability'] }],
       capability_ids: ['capability'],
+      event_provenance: [
+        { event_id: 'js-event', runtime_static_link_id: 'runtime-link', static_id: 'node-handler', flow_id: 'flow', capability_id: 'capability' },
+        { event_id: 'py-event', runtime_static_link_id: 'runtime-link', static_id: 'node-handler', flow_id: 'flow', capability_id: 'capability' },
+      ],
     },
     started_at: '2026-08-27T12:00:00.000Z',
     completed_at: '2026-08-27T12:05:00.000Z',
@@ -96,4 +100,23 @@ test('rejects source, artifact, auth, client, acknowledgement, and retry omissio
   const noRetry = evidence();
   noRetry.delivery.retried_event_ids = [];
   assert.throws(() => validateTelemetryExternalProof(noRetry, expected), /stable-id retry/);
+});
+
+
+test('rejects fabricated, missing, or non-causal per-event observed provenance', () => {
+  const fabricatedFlow = evidence();
+  fabricatedFlow.observed.event_provenance[0].flow_id = 'flow-fabricated';
+  assert.throws(() => validateTelemetryExternalProof(fabricatedFlow, expected), /causal runtime-link/);
+
+  const wrongNode = evidence();
+  wrongNode.observed.event_provenance[0].static_id = 'node-unrelated';
+  assert.throws(() => validateTelemetryExternalProof(wrongNode, expected), /causal runtime-link/);
+
+  const missingEvent = evidence();
+  missingEvent.observed.event_provenance = missingEvent.observed.event_provenance.slice(0, 1);
+  assert.throws(() => validateTelemetryExternalProof(missingEvent, expected), /every submitted event/);
+
+  const duplicateEvent = evidence();
+  duplicateEvent.observed.event_provenance[1] = { ...duplicateEvent.observed.event_provenance[0] };
+  assert.throws(() => validateTelemetryExternalProof(duplicateEvent, expected), /duplicated or outside/);
 });

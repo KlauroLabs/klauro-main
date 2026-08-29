@@ -38,7 +38,7 @@ reading alone in the time available, it is marked UNSURE rather than guessed.
   This is real tier-1 hardening, done recently and load-bearing.
 - **Declared telemetry (ICELOT's `T`).** Recorded as a static fact about source
   (log sites, metric registrations) — distinct from tier 4. `self-telemetry.ts`
-  and installable SDKs (`packages/klauro-sdk-js`, `packages/klauro-sdk-py`) give
+  and source-bound, locally installable private-beta SDK release candidates (`packages/klauro-sdk-js`, `packages/klauro-sdk-py`) give
   codebases something to declare.
 - **Determinism is tested, not assumed.** `run-stability.test.ts` and
   `run-stability-cross-process.test.ts` (`packages/analyzer-core/src/__tests__/ai/`)

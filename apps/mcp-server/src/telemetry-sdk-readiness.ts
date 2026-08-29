@@ -1,6 +1,8 @@
-import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { resolveTelemetrySdkReleaseCandidateRoot, verifyTelemetrySdkReleaseReceipt } from './telemetry-sdk-release-integrity.mjs';
+
+const TELEMETRY_SDK_LICENSE_SHA256 = 'fd008f2c6d2f25412ff1e1e7abfed6c028c534a2c504ca3d0ef377284a253808';
 
 export interface TelemetrySdkReadinessOptions {
   candidateDir?: string;
@@ -8,8 +10,12 @@ export interface TelemetrySdkReadinessOptions {
 }
 
 export interface TelemetrySdkReadiness {
-  status: 'release_candidate' | 'installable';
+  status: 'release_candidate';
   installable: boolean;
+  locally_installable: boolean;
+  distributable: false;
+  publishable: false;
+  blockers: string[];
   reason: string;
   source_sha?: string;
   artifact_sha256?: string;
@@ -24,40 +30,25 @@ export function telemetrySdkReadiness(
   if (!candidateDir || !sourceSha) return candidate('source-bound release manifest is not configured');
   try {
     if (!/^[0-9a-f]{40}$/.test(sourceSha)) return candidate('release source SHA is not exact');
-    const manifestBytes = fs.readFileSync(path.join(candidateDir, 'manifest.json'));
-    const manifest = JSON.parse(manifestBytes.toString('utf8'));
-    const receipt = JSON.parse(fs.readFileSync(path.join(candidateDir, 'release-proof.json'), 'utf8'));
-    if (manifest.schema_version !== 1 || manifest.source_sha !== sourceSha || manifest.git_clean !== true
-      || manifest.install_smoke !== true || receipt.source_sha !== sourceSha) {
-      return candidate('release manifest identity or clean-install proof does not match this server');
-    }
-    const expectedManifestDigest = digest(manifestBytes);
-    if (receipt.manifest_sha256 !== expectedManifestDigest) return candidate('release manifest digest does not match its receipt');
-    const proof = {
-      schema_version: receipt.schema_version,
-      source_sha: receipt.source_sha,
-      javascript_version: receipt.javascript_version,
-      python_version: receipt.python_version,
-      manifest_sha256: receipt.manifest_sha256,
-      artifacts: receipt.artifacts,
-      passed_gates: receipt.passed_gates,
-    };
-    if (receipt.proof_sha256 !== digest(JSON.stringify(proof))) return candidate('release receipt digest is invalid');
+    const activeCandidateDir = resolveTelemetrySdkReleaseCandidateRoot(candidateDir);
+    const manifest = JSON.parse(fs.readFileSync(path.join(activeCandidateDir, 'manifest.json'), 'utf8'));
+    const verified = verifyTelemetrySdkReleaseReceipt(activeCandidateDir, {
+      sourceSha,
+      javascriptVersion: manifest.javascript_version,
+      pythonVersion: manifest.python_version,
+      authoritativeLicenseSha256: TELEMETRY_SDK_LICENSE_SHA256,
+    });
     const kind = stack === 'node' ? 'javascript' : 'python';
-    const artifact = manifest.artifacts?.find((item: any) => item.kind === kind);
-    const receiptArtifact = receipt.artifacts?.find((item: any) => item.kind === kind);
-    if (!artifact || !receiptArtifact || artifact.filename !== receiptArtifact.filename
-      || artifact.sha256 !== receiptArtifact.sha256 || !/^[0-9a-f]{64}$/.test(artifact.sha256)) {
-      return candidate(`${kind} artifact is absent from the source-bound receipt`);
-    }
-    if (path.basename(artifact.filename) !== artifact.filename
-      || digest(fs.readFileSync(path.join(candidateDir, artifact.filename))) !== artifact.sha256) {
-      return candidate(`${kind} artifact digest does not match`);
-    }
+    const artifact = (verified.manifest.artifacts as any[])?.find(item => item.kind === kind);
+    if (!artifact) return candidate(`${kind} artifact is absent from the source-bound receipt`);
     return {
-      status: 'installable',
+      status: 'release_candidate',
       installable: true,
-      reason: 'source-bound artifact and clean-install proof verified',
+      locally_installable: true,
+      distributable: false,
+      publishable: false,
+      blockers: [...(verified.manifest.blockers as string[])],
+      reason: 'source-bound artifact is verified for local installation; private-beta distribution authorization remains required',
       source_sha: sourceSha,
       artifact_sha256: artifact.sha256,
     };
@@ -67,9 +58,5 @@ export function telemetrySdkReadiness(
 }
 
 function candidate(reason: string): TelemetrySdkReadiness {
-  return { status: 'release_candidate', installable: false, reason };
-}
-
-function digest(value: string | Buffer): string {
-  return createHash('sha256').update(value).digest('hex');
+  return { status: 'release_candidate', installable: false, locally_installable: false, distributable: false, publishable: false, blockers: ['source_bound_artifact_proof_missing', 'private_beta_license_requires_distribution_authorization'], reason };
 }

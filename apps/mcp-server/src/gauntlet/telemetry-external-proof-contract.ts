@@ -32,9 +32,16 @@ export interface TelemetryExternalProofEvidence {
     remaining_unmatched: number;
   };
   observed: {
-    runtime_static_link_ids: string[];
-    flow_ids: string[];
+    runtime_static_links: Array<{ id: string; static_id: string }>;
+    flows: Array<{ flow_id: string; static_ids: string[]; capability_ids: string[] }>;
     capability_ids: string[];
+    event_provenance: Array<{
+      event_id: string;
+      runtime_static_link_id: string;
+      static_id: string;
+      flow_id: string;
+      capability_id: string;
+    }>;
   };
   started_at: string;
   completed_at: string;
@@ -74,10 +81,16 @@ export function validateTelemetryExternalProof(
     }
   }
   if (evidence.auth.missing_token_status !== 401 || evidence.auth.invalid_token_status !== 401
-    || ![403, 404].includes(evidence.auth.cross_project_status)) {
+    || evidence.auth.cross_project_status !== 401) {
     throw new Error('External telemetry proof did not fail closed for authentication and project isolation.');
   }
   const attempted = new Set(evidence.delivery.attempted_event_ids);
+  const submittedIds = evidence.clients.flatMap(client => client.sent_event_ids);
+  const submitted = new Set(submittedIds);
+  if (submitted.size !== submittedIds.length || attempted.size !== submitted.size
+    || [...submitted].some(id => !attempted.has(id))) {
+    throw new Error('External telemetry proof delivery namespace does not exactly match submitted client event ids.');
+  }
   const persisted = new Set(evidence.delivery.persisted_event_ids);
   if (attempted.size === 0 || persisted.size !== attempted.size
     || [...attempted].some(id => !persisted.has(id))
@@ -92,10 +105,29 @@ export function validateTelemetryExternalProof(
     || evidence.backfill.upgraded < 1 || evidence.backfill.remaining_unmatched !== 0) {
     throw new Error('External telemetry proof did not complete pre-analysis persistence and canonical backfill.');
   }
-  if (evidence.observed.runtime_static_link_ids.length === 0
-    || evidence.observed.flow_ids.length === 0
-    || evidence.observed.capability_ids.length === 0) {
+  const linkById = new Map(evidence.observed.runtime_static_links.map(link => [link.id, link]));
+  const flowById = new Map(evidence.observed.flows.map(flow => [flow.flow_id, flow]));
+  const capabilityIds = new Set(evidence.observed.capability_ids);
+  if (linkById.size === 0 || flowById.size === 0 || capabilityIds.size === 0) {
     throw new Error('External telemetry proof did not expose observed runtime links, flows, and capabilities.');
+  }
+  const provenanceByEvent = new Map<string, typeof evidence.observed.event_provenance[number]>();
+  for (const provenance of evidence.observed.event_provenance) {
+    if (!attempted.has(provenance.event_id) || provenanceByEvent.has(provenance.event_id)) {
+      throw new Error('External telemetry proof event provenance is duplicated or outside the submitted event namespace.');
+    }
+    const link = linkById.get(provenance.runtime_static_link_id);
+    const flow = flowById.get(provenance.flow_id);
+    if (!link || link.static_id !== provenance.static_id
+      || !flow || !flow.static_ids.includes(provenance.static_id)
+      || !flow.capability_ids.includes(provenance.capability_id)
+      || !capabilityIds.has(provenance.capability_id)) {
+      throw new Error('External telemetry proof event provenance is not a causal runtime-link to CAS-flow to capability chain.');
+    }
+    provenanceByEvent.set(provenance.event_id, provenance);
+  }
+  if (provenanceByEvent.size !== attempted.size || [...attempted].some(id => !provenanceByEvent.has(id))) {
+    throw new Error('External telemetry proof must causally account for every submitted event id.');
   }
   const started = Date.parse(evidence.started_at);
   const completed = Date.parse(evidence.completed_at);

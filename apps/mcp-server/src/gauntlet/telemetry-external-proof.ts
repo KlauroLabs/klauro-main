@@ -5,7 +5,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { validateTelemetryExternalProof, type TelemetryExternalProofEvidence } from './telemetry-external-proof-contract';
-import { verifyTelemetrySdkReleaseReceipt } from '../../../../scripts/telemetry-sdk-release-integrity.mjs';
+import { resolveTelemetrySdkReleaseCandidateRoot, verifyTelemetrySdkReleaseReceipt } from '../../../../scripts/telemetry-sdk-release-integrity.mjs';
 
 interface ProofState {
   started_at: string;
@@ -24,7 +24,7 @@ const crossProjectId = required('KLAURO_PROOF_CROSS_PROJECT_ID');
 const ingestToken = required('KLAURO_PROOF_INGEST_TOKEN');
 const accountToken = required('KLAURO_PROOF_ACCOUNT_TOKEN');
 const serverSha = required('KLAURO_PROOF_SERVER_SHA');
-const candidateDir = path.resolve(required('KLAURO_TELEMETRY_SDK_CANDIDATE_DIR'));
+const candidateDir = resolveTelemetrySdkReleaseCandidateRoot(path.resolve(required('KLAURO_TELEMETRY_SDK_CANDIDATE_DIR')));
 const proofRoute = required('KLAURO_PROOF_ROUTE');
 const manifest = JSON.parse(fs.readFileSync(path.join(candidateDir, 'manifest.json'), 'utf8')) as {
   javascript_version: string; python_version: string;
@@ -51,7 +51,7 @@ async function preanalysis(): Promise<void> {
   await verifyServerIdentity();
   const startedAt = new Date().toISOString();
   const auth = await authStatuses();
-  if (auth.missing_token_status !== 401 || auth.invalid_token_status !== 401 || ![401, 403, 404].includes(auth.cross_project_status)) {
+  if (auth.missing_token_status !== 401 || auth.invalid_token_status !== 401 || auth.cross_project_status !== 401) {
     throw new Error('Hosted telemetry authentication did not fail closed.');
   }
   const installRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-telemetry-external-'));
@@ -122,6 +122,24 @@ async function verify(): Promise<void> {
   const links = await query('get_runtime_static_links', { telemetry_status: 'observed' });
   const flows = await query('get_flow_graph', {});
   const observedCapabilities = (flows.result?.capabilities || []).filter((item: any) => item.telemetry?.observed).map((item: any) => item.id);
+  const observedLinks = (links.result?.links || []).map((item: any) => ({ id: item.id, static_id: item.static_id }));
+  const actualFlows = (flows.result?.flows || []).map((item: any) => ({
+    flow_id: item.flow_id,
+    static_ids: item.static_ids || [],
+    capability_ids: item.capability_ids || [],
+  }));
+  const eventProvenance = attempted.map(eventId => {
+    const observation = observations.observations.find((item: any) => item.event?.event_id === eventId);
+    const staticId = observation?.correlation?.best_match?.id;
+    const link = observedLinks.find((item: any) => item.static_id === staticId);
+    const flow = actualFlows.find((item: any) => item.static_ids.includes(staticId)
+      && item.capability_ids.some((id: string) => observedCapabilities.includes(id)));
+    const capabilityId = flow?.capability_ids.find((id: string) => observedCapabilities.includes(id));
+    if (!staticId || !link || !flow || !capabilityId) {
+      throw new Error(`No causal observed runtime-link/flow/capability chain for submitted event ${eventId}.`);
+    }
+    return { event_id: eventId, runtime_static_link_id: link.id, static_id: staticId, flow_id: flow.flow_id, capability_id: capabilityId };
+  });
   const evidence: TelemetryExternalProofEvidence = {
     schema_version: 1, endpoint_url: endpoint, server_sha: serverSha,
     sdk_release_proof_sha256: state.sdk_release_proof_sha256,
@@ -133,9 +151,10 @@ async function verify(): Promise<void> {
     delivery: { attempted_event_ids: attempted, persisted_event_ids: persisted, retried_event_ids: state.event_ids.javascript },
     backfill: { preanalysis_unmatched: state.preanalysis_unmatched, analysis_id: flows.analysis_id || '', upgraded: state.preanalysis_unmatched - remainingUnmatched, remaining_unmatched: remainingUnmatched },
     observed: {
-      runtime_static_link_ids: (links.result?.links || []).map((item: any) => item.id),
-      flow_ids: observedCapabilities,
+      runtime_static_links: observedLinks,
+      flows: actualFlows,
       capability_ids: observedCapabilities,
+      event_provenance: eventProvenance,
     },
     started_at: state.started_at, completed_at: new Date().toISOString(),
   };

@@ -22,7 +22,7 @@ import { isCASSearchContentWord } from '../../../packages/analyzer-core/src/anal
 import type { CASProductMap } from '../../../packages/analyzer-core/src/types/cas.types';
 import { buildSystemFitSummary, buildCommunicationSeamSummary } from './context-fabric';
 import { getQueryTraversalIndex } from './query-traversal-index';
-import { capabilityRuntimeTelemetryById, observedRuntimeStaticLinks } from './runtime-query-overlays';
+import { capabilityRuntimeTelemetryById, observedRuntimeFlowEvidence, observedRuntimeStaticLinks } from './runtime-query-overlays';
 import { resolveCodingContextTarget } from './coding-target-resolution';
 import { casEdgeCount, casNodeCount, casProjectionSummary, casSectionLoaded } from './cas-projection';
 import {
@@ -2582,9 +2582,12 @@ export function getFlowGraph(cas: CASOutput, runtimeMetrics: RuntimeMetricLike[]
     },
   }));
 
+  const flows = observedRuntimeFlowEvidence(cas);
   return {
     capability_count: capabilities.length,
     capabilities,
+    flow_count: flows.length,
+    flows,
     dependency_count: dependencies.length,
     dependencies,
     topology: flowGraph.topology,

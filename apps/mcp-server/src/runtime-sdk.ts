@@ -247,6 +247,10 @@ export function getRuntimeSdkPackage(cas: CASOutput, opts: {
     },
     proof: {
       installable: release.installable,
+      locally_installable: release.locally_installable,
+      distributable: release.distributable,
+      publishable: release.publishable,
+      release_blockers: release.blockers,
       release_status: release.status,
       release_reason: release.reason,
       ...(release.artifact_sha256 ? { artifact_sha256: release.artifact_sha256, source_sha: release.source_sha } : {}),

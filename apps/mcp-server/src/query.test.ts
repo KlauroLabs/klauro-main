@@ -906,4 +906,6 @@ test('runtime query overlays mark static links and capability evidence observed 
     error_rate: 0.1,
     p95_ms: 250,
   });
+  assert.equal(graph.flow_count, 0);
+  assert.deepEqual(graph.flows, []);
 });

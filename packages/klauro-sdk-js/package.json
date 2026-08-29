@@ -2,7 +2,7 @@
   "name": "@klauro/telemetry",
   "version": "0.1.0",
   "description": "Klauro runtime telemetry SDK. Emits CAS-correlated runtime events (requests, errors, spans, metrics) so production signal maps back onto your Klauro static analysis.",
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE",
   "type": "commonjs",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

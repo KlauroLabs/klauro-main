@@ -43,3 +43,23 @@ export function capabilityRuntimeTelemetryById(
   }
   return result;
 }
+
+
+export function observedRuntimeFlowEvidence(cas: CASOutput): Array<{
+  flow_id: string;
+  static_ids: string[];
+  capability_ids: string[];
+}> {
+  return (cas.flows || []).map(flow => ({
+    flow_id: flow.flow_id,
+    static_ids: [...new Set([
+      flow.entry_point,
+      ...flow.steps.flatMap(step => step.functions.map(fn => fn.function_id)),
+      flow.terminus?.node_id,
+    ].filter((id): id is string => Boolean(id)))],
+    capability_ids: [...new Set([
+      flow.capability_id,
+      ...(flow.capability_relationships || []).map(relationship => relationship.capability_id),
+    ].filter((id): id is string => Boolean(id)))],
+  }));
+}

@@ -1,10 +1,11 @@
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { existsSync } from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const bundlePath = path.join(packageRoot, 'dist', 'index.cjs');
+const cliPath = path.join(packageRoot, 'dist', 'cli.cjs');
 const maxStartupMs = Number(process.env.KLAURO_SMOKE_MAX_STARTUP_MS || 600);
 
 if (!existsSync(bundlePath)) {
@@ -109,6 +110,10 @@ function assertCheck(condition, label, failures) {
 }
 
 const failures = [];
+const cliVersion = spawnSync(process.execPath, [cliPath, '--version'], { encoding: 'utf8' });
+assertCheck(existsSync(cliPath) && cliVersion.status === 0 && cliVersion.stdout.trim().length > 0,
+  `cli: built --version command exits cleanly (status ${cliVersion.status})`, failures);
+assertCheck(cliVersion.stderr.trim() === '', `cli: no stderr output (got: ${cliVersion.stderr.trim().slice(0, 200) || 'none'})`, failures);
 const expectedInstalledToolCount = 47;
 const requiredInstalledTools = [
   'analyze_codebase',

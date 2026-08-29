@@ -2,6 +2,7 @@ export interface TelemetrySdkReleaseIdentity {
   sourceSha: string;
   javascriptVersion: string;
   pythonVersion: string;
+  authoritativeLicenseSha256: string;
 }
 
 export interface TelemetrySdkReleaseReceipt {
@@ -19,14 +20,7 @@ export function sha256(bytes: string | Uint8Array): string;
 export function readSdkArchiveInventory(kind: string, archivePath: string): string[];
 export function resolveTelemetrySdkReleaseCandidateRoot(candidateDir: string): string;
 export function assertSdkArchiveInventory(kind: string, entries: unknown[]): string[];
-export function expectedTelemetrySdkIdentity(environment?: NodeJS.ProcessEnv): TelemetrySdkReleaseIdentity;
-export function writeTelemetrySdkReleaseReceipt(
-  candidateDir: string,
-  expected: TelemetrySdkReleaseIdentity,
-): TelemetrySdkReleaseReceipt;
-export function verifyTelemetrySdkReleaseReceipt(
-  candidateDir: string,
-  expected: TelemetrySdkReleaseIdentity,
-): { manifest: Record<string, unknown>; receipt: TelemetrySdkReleaseReceipt };
-
+export function expectedTelemetrySdkIdentity(environment?: NodeJS.ProcessEnv): Omit<TelemetrySdkReleaseIdentity, 'authoritativeLicenseSha256'>;
+export function writeTelemetrySdkReleaseReceipt(candidateDir: string, expected: TelemetrySdkReleaseIdentity): TelemetrySdkReleaseReceipt;
+export function verifyTelemetrySdkReleaseReceipt(candidateDir: string, expected: TelemetrySdkReleaseIdentity): { manifest: Record<string, unknown>; receipt: TelemetrySdkReleaseReceipt };
 export function installTelemetrySdkReleaseCandidate(stagedDir: string, destinationDir: string, expected: TelemetrySdkReleaseIdentity, options?: { injectFailureAfterBackup?: boolean; injectCrashBeforePublish?: boolean; injectFailureAfterDestinationParentSync?: boolean; beforeStaleRecovery?: (owner: unknown) => void }): void;
