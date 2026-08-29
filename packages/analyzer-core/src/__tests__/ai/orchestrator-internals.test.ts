@@ -6358,6 +6358,65 @@ describe('capability hygiene: entity-set dedup', () => {
     expect(locationEvent.operations).toHaveLength(2);
   });
 
+  it('does not merge distinct entity-backed outcomes through related-entity or operation overlap', async () => {
+    const jobOperations = [
+      { entry_point_id: 'job-create', entry_point_type: 'http', action: 'create' },
+      { entry_point_id: 'job-status', entry_point_type: 'http', action: 'update' },
+      { entry_point_id: 'job-stats', entry_point_type: 'http', action: 'read' },
+    ];
+    const noteOperations = [
+      { entry_point_id: 'note-create', entry_point_type: 'http', action: 'create' },
+      { entry_point_id: 'note-delete', entry_point_type: 'http', action: 'delete' },
+    ];
+    const merged = orch.dedupeSystemCapabilitiesByName([
+      capFixture({
+        id: 'cap_job', name: 'Create job applications', related_entities: ['entity_job', 'entity_note'],
+        related_domains: ['job'], operations: [...jobOperations, ...noteOperations],
+      }),
+      capFixture({
+        id: 'cap_note', name: 'Attach notes to job applications', related_entities: ['entity_note'],
+        related_domains: ['note'], operations: noteOperations,
+      }),
+    ]);
+
+    expect(merged).toHaveLength(2);
+    expect(merged.find((capability: any) => capability.id === 'cap_note')?.operations).toEqual(noteOperations);
+    expect(merged.find((capability: any) => capability.id === 'cap_note')?.related_domains).toEqual(['note']);
+  });
+
+  it('keeps independently attributed job and note candidate operations separated', async () => {
+    const candidates = [
+      capFixture({
+        id: 'cap_job', name: 'Job', related_entities: ['entity_job'], related_domains: ['job'],
+        operations: Array.from({ length: 8 }, (_, index) => ({
+          entry_point_id: `job-operation-${index}`, entry_point_type: 'http', action: index === 0 ? 'create' : 'update',
+        })),
+      }),
+      capFixture({
+        id: 'cap_job_sites', name: 'Job Sites', related_entities: [], related_domains: ['job-sites'],
+        operations: Array.from({ length: 3 }, (_, index) => ({
+          entry_point_id: `job-site-operation-${index}`, entry_point_type: 'internal', action: 'read',
+        })),
+      }),
+      capFixture({
+        id: 'cap_note', name: 'Note', related_entities: ['entity_note'], related_domains: ['note'],
+        operations: [{ entry_point_id: 'note-create', entry_point_type: 'http', action: 'create' }],
+      }),
+    ];
+
+    const deduped = orch.dedupeSystemCapabilitiesByName(candidates);
+    const job = deduped.find((capability: any) => capability.id === 'cap_job');
+    const jobSites = deduped.find((capability: any) => capability.id === 'cap_job_sites');
+    const note = deduped.find((capability: any) => capability.id === 'cap_note');
+    expect(job?.operations).toHaveLength(8);
+    expect(jobSites?.operations).toHaveLength(3);
+    expect(note?.operations.map((operation: any) => operation.entry_point_id)).toEqual(['note-create']);
+    expect(note?.related_domains).toEqual(['note']);
+    expect(deduped.flatMap((capability: any) => capability.operations.map((operation: any) => operation.entry_point_id))).toEqual(
+      expect.arrayContaining(['job-operation-0', 'job-site-operation-0', 'note-create']),
+    );
+  });
+
   it('merges a subset-entity capability with no distinct operations into the superset', async () => {
     const merged = orch.dedupeSystemCapabilitiesByName([
       capFixture({

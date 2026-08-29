@@ -182,7 +182,7 @@ import { bindUniquelySatisfiedCatalogOutcomeRequirements, capabilityCatalogCover
 import { fitCapabilityCatalogContext } from './ai-context-budget';
 import { awaitAiOperation } from './ai-operation-timing';
 import { capabilityDescriptionBatchSize, resolveCapabilityCatalogRoute, resolveCapabilityDescriptionRoute, shouldReauthorCapabilityDescriptions, toAIContextRoute } from './ai-task-model-routing';
-import { capabilitiesWithoutDescriptionDisposition, type CapabilityCatalogRejection, type CapabilityCatalogRejectionsByCandidate, capabilityCatalogCycleDiagnostic, capabilityCatalogPendingRepairKeys, capabilityCatalogRepairCandidateIds, capabilityCatalogRepairEvidenceFacts, capabilityDescriptionsShareOutcome, capabilityIdentityPendingDescriptionRepair, capabilityOutcomeMatchesEvidence, capabilityTitlesShareOutcome, collectCapabilityCatalogEvidenceBatches, mergeCapabilityCatalogRepairResults, mergeUniquelyMatchedBehaviorEvidence, recordCapabilityCatalogRejection, recordCapabilityPublishabilityRejection, retryEmptyCapabilityCatalogOutcome, scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates, trackCapabilityCatalogRepair } from './capability-catalog-scheduling';
+import { capabilitiesWithoutDescriptionDisposition, type CapabilityCatalogRejection, type CapabilityCatalogRejectionsByCandidate, capabilityCatalogCycleDiagnostic, capabilityCatalogPendingRepairKeys, capabilityCatalogRepairCandidateIds, capabilityCatalogRepairEvidenceFacts, capabilityIdentityPendingDescriptionRepair, capabilityOutcomeMatchesEvidence, capabilityTitlesShareOutcome, collectCapabilityCatalogEvidenceBatches, mergeCapabilityCatalogRepairResults, mergeUniquelyMatchedBehaviorEvidence, recordCapabilityCatalogRejection, recordCapabilityPublishabilityRejection, retryEmptyCapabilityCatalogOutcome, scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates, trackCapabilityCatalogRepair } from './capability-catalog-scheduling';
 import { capabilityCatalogFirstPartyFallback, capabilityCatalogRepairPromptEnvelope, type CapabilityCatalogRepairPromptFact } from './capability-catalog-repair-context';
 import { capabilityCatalogFocusedTask, capabilityCatalogRepairNudge, capabilityCatalogRepairPlan, captureCapabilityCatalogPendingRequirements, preserveCapabilityCatalogDescriptionIdentity, supersedeUnboundPendingOutcomeDuplicates, type CapabilityCatalogRepairBatch } from './capability-catalog-repair-plan';
 import { TRACEABLE_NODE_TYPES, computeFlowConcepts, materializeNodeUnderstandingContracts, type FlowConcept } from './flow-concepts';
@@ -18372,9 +18372,71 @@ export class AnalyzerOrchestrator {
     const operationKey = (operation: SystemCapability['operations'][number]) =>
       [operation.entry_point_id, operation.entry_point_type, operation.action, operation.path_or_command].join('|');
 
+    const subjectPhraseOf = (capability: SystemCapability): string =>
+      String(capability.name || '')
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .toLowerCase()
+        .replace(/^\s*(?:lets|allows|enables)\s+users\s+(?:to\s+)?/i, '')
+        .replace(/^\s*(provides?|surfaces?|tracks?|exposes?|manages?|monitors?|secures?|handles?|enforces?|settles?|delivers?|renders?|displays?|shows?|creates?|updates?|deletes?|lists?|views?|adds?|removes?|edits?|trains?)\s+/i, '')
+        .replace(/\s+(results?|insights?|data|info|information|details?|records?|entries?|items?)\s*$/i, '')
+        .replace(/\s+capabilit(?:y|ies)\s*$/i, '')
+        .replace(/\s+(?:management|maintenance)\s*$/i, '')
+        .replace(/[^a-z0-9]+/g, ' ')
+        .trim();
+    const semanticSubjectTokens = (capability: SystemCapability): Set<string> => new Set(
+      subjectPhraseOf(capability)
+        .split(/\s+/)
+        .map(token => this.stemTerminologyToken(token))
+        .filter(token => token.length >= 3 && !this.isGenericCapabilityToken(token)),
+    );
+    const subjectsSemanticallyOverlap = (left: SystemCapability, right: SystemCapability): boolean => {
+      const leftTokens = semanticSubjectTokens(left);
+      const rightTokens = semanticSubjectTokens(right);
+      if (leftTokens.size === 0 || rightTokens.size === 0) return false;
+      const shared = [...leftTokens].filter(token => rightTokens.has(token)).length;
+      return shared / Math.min(leftTokens.size, rightTokens.size) >= 0.6;
+    };
+    const purposeActionClass = (capability: SystemCapability): string => {
+      const action = String(capability.name || '')
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .toLowerCase()
+        .replace(/^\s*(?:lets|allows|enables)\s+users\s+(?:to\s+)?/i, '')
+        .match(/^[a-z]+/)?.[0] || '';
+      if (/^(?:create|update|delete|manage|add|remove|edit|write|modify)/.test(action)) return 'mutate';
+      if (/^(?:provide|surface|track|monitor|display|show|view|list|access|retrieve|expose)/.test(action)) return 'observe';
+      if (/^(?:attach|correlate|secure|handle|enforce|settle|deliver|render|train)/.test(action)) {
+        return action.replace(/(?:es|s)$/, '');
+      }
+      return '';
+    };
+    const unboundOutcomesMayMerge = (left: SystemCapability, right: SystemCapability): boolean =>
+      capabilityTitlesShareOutcome(left, right) ||
+      subjectPhraseOf(left) === subjectPhraseOf(right) || (
+        purposeActionClass(left).length > 0 &&
+        purposeActionClass(left) === purposeActionClass(right) &&
+        subjectsSemanticallyOverlap(left, right)
+      );
+    const hasExactEntityAndOperationEvidence = (left: SystemCapability, right: SystemCapability): boolean => {
+      const leftEntities = entitySetOf(left);
+      const rightEntities = entitySetOf(right);
+      if (leftEntities.size === 0 || leftEntities.size !== rightEntities.size) return false;
+      if ([...leftEntities].some(entity => !rightEntities.has(entity))) return false;
+      const leftOperations = new Set(left.operations.map(operationKey));
+      const rightOperations = new Set(right.operations.map(operationKey));
+      if (leftOperations.size === 0 || leftOperations.size !== rightOperations.size) return false;
+      return [...leftOperations].every(operation => rightOperations.has(operation));
+    };
+    const entityDedupeOutcomesMayMerge = (left: SystemCapability, right: SystemCapability): boolean => {
+      if (!capabilityCatalogOutcomesMayMerge(left, right)) return false;
+      if (hasExactEntityAndOperationEvidence(left, right)) return true;
+      const hasBoundOutcome = [left, right].some(capability =>
+        (capability.criticality_factors || []).some(factor => factor.startsWith('catalog-outcome-requirement:')));
+      return hasBoundOutcome || unboundOutcomesMayMerge(left, right);
+    };
+
     const removed = new Set<SystemCapability>();
     const mergeInto = (winner: SystemCapability, loser: SystemCapability) => {
-      if (!capabilityCatalogOutcomesMayMerge(winner, loser)) return;
+      if (!entityDedupeOutcomesMayMerge(winner, loser)) return;
       if (winner.description_source !== 'ai' && loser.description_source === 'ai') {
         winner.description = loser.description;
         winner.description_source = loser.description_source;
@@ -18397,29 +18459,6 @@ export class AnalyzerOrchestrator {
     };
 
     const isSurfaceCap = (capability: SystemCapability) => capability.evidence_kind === 'behavior-surface';
-
-    const subjectPhraseOf = (capability: SystemCapability): string =>
-      String(capability.name || '')
-        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-        .toLowerCase()
-        .replace(/^\s*(?:lets|allows|enables)\s+users\s+(?:to\s+)?/i, '')
-        .replace(/^\s*(provides?|surfaces?|tracks?|exposes?|manages?|monitors?|secures?|handles?|enforces?|settles?|delivers?|renders?|displays?|shows?|creates?|updates?|deletes?|lists?|views?|adds?|removes?|edits?)\s+/i, '')
-        .replace(/\s+(results?|insights?|data|info|information|details?|records?|entries?|items?)\s*$/i, '')
-        .replace(/[^a-z0-9]+/g, ' ')
-        .trim();
-    const semanticSubjectTokens = (capability: SystemCapability): Set<string> => new Set(
-      subjectPhraseOf(capability)
-        .split(/\s+/)
-        .map(token => this.stemTerminologyToken(token))
-        .filter(token => token.length >= 3 && !this.isGenericCapabilityToken(token)),
-    );
-    const subjectsSemanticallyOverlap = (left: SystemCapability, right: SystemCapability): boolean => {
-      const leftTokens = semanticSubjectTokens(left);
-      const rightTokens = semanticSubjectTokens(right);
-      if (leftTokens.size === 0 || rightTokens.size === 0) return false;
-      const shared = [...leftTokens].filter(token => rightTokens.has(token)).length;
-      return shared / Math.min(leftTokens.size, rightTokens.size) >= 0.6;
-    };
 
     const bySetKey = new Map<string, SystemCapability>();
     for (const capability of capabilities) {
@@ -18474,20 +18513,23 @@ export class AnalyzerOrchestrator {
       const ownOperationKeys = new Set(capability.operations.map(operationKey));
       const opSuperset = opSurvivors.find(other => {
         if (other === capability || removed.has(other)) return false;
-        if (capabilityTitlesShareOutcome(capability, other) || capabilityDescriptionsShareOutcome(capability, other)) return true;
-        if (!subjectsSemanticallyOverlap(capability, other)) return false;
+        if (!entityDedupeOutcomesMayMerge(capability, other)) return false;
+        if (other.id === capability.id) return true;
         const otherOperationKeys = new Set(other.operations.map(operationKey));
         if (otherOperationKeys.size < ownOperationKeys.size) return false;
-        if (otherOperationKeys.size === ownOperationKeys.size) {
-          const otherRichness = richness(other);
-          const ownRichness = richness(capability);
-          if (otherRichness < ownRichness) return false;
-          if (otherRichness === ownRichness && other.id <= capability.id) return false;
-        }
         for (const key of ownOperationKeys) {
           if (!otherOperationKeys.has(key)) return false;
         }
-        return true;
+        if (otherOperationKeys.size > ownOperationKeys.size) return true;
+        const titleSpecificity = (candidate: SystemCapability) =>
+          String(candidate.name || '').split(/[^a-z0-9]+/i).filter(Boolean).length;
+        const otherSpecificity = titleSpecificity(other);
+        const ownSpecificity = titleSpecificity(capability);
+        if (otherSpecificity !== ownSpecificity) return otherSpecificity > ownSpecificity;
+        const otherRichness = richness(other);
+        const ownRichness = richness(capability);
+        if (otherRichness !== ownRichness) return otherRichness > ownRichness;
+        return other.id > capability.id;
       });
       if (opSuperset) mergeInto(opSuperset, capability);
     }
