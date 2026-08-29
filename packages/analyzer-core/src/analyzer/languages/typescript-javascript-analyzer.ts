@@ -15,7 +15,7 @@ import { yieldToEventLoop, createYieldBudget } from '../core/event-loop-yield';
 import { dropEdgesReferencingRemovedEndpoints } from '../core/graph-referential-integrity';
 import { availableParallelism } from 'node:os';
 import { Worker } from 'node:worker_threads';
-import { resolveTreeSitterWorkerPath, treeSitterWorkerExecArgv } from '../core/tree-sitter-worker-runtime';
+import { resolveTreeSitterWorkerPath, treeSitterWorkerExecArgv, treeSitterWorkerResourceLimits } from '../core/tree-sitter-worker-runtime';
 import {
   readTreeSitterExtractionCache,
   writeTreeSitterExtractionCache,
@@ -478,7 +478,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
     const runWorker = (): Promise<void> => new Promise((resolve, reject) => {
       const worker = new Worker(workerPath, {
-        execArgv: treeSitterWorkerExecArgv(process.execArgv)
+        execArgv: treeSitterWorkerExecArgv(process.execArgv),
+        resourceLimits: treeSitterWorkerResourceLimits()
       });
       let activeTask: number | undefined;
       const dispatch = (): void => {

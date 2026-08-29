@@ -1,7 +1,18 @@
 import {
   resolveTreeSitterWorkerPath,
   treeSitterWorkerExecArgv,
+  treeSitterWorkerResourceLimits,
 } from '../../analyzer/core/tree-sitter-worker-runtime';
+
+describe('treeSitterWorkerResourceLimits', () => {
+  it('caps each parser isolate below the hosted container memory boundary', () => {
+    expect(treeSitterWorkerResourceLimits()).toEqual({
+      maxOldGenerationSizeMb: 768,
+      maxYoungGenerationSizeMb: 128,
+      stackSizeMb: 8,
+    });
+  });
+});
 
 describe('treeSitterWorkerExecArgv', () => {
   it('keeps TypeScript loader flags but removes worker-incompatible heap flags', () => {
