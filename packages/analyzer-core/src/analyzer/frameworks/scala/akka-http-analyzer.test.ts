@@ -73,6 +73,14 @@ test('resolves nested pathPrefix/path DSL to full route paths, with auth scope',
   try {
     const result = await new AkkaHttpAnalyzer().analyze({ projectPath: dir });
 
+    const nodeIds = new Set(result.nodes.map(node => node.id));
+    const fileNodeId = 'file_src_main_scala_com_example_UserRoutes_scala';
+    assert.ok(nodeIds.has(fileNodeId), 'expected the framework contribution to own its route source file');
+    for (const edge of result.edges) {
+      assert.ok(nodeIds.has(edge.source), `edge ${edge.id} has unresolved source ${edge.source}`);
+      assert.ok(nodeIds.has(edge.target), `edge ${edge.id} has unresolved target ${edge.target}`);
+    }
+
     const routeNodes = result.nodes.filter(n => n.type === 'route');
     const labels = routeNodes.map(n => n.name).sort();
     assert.ok(labels.includes('GET /api/users'), `expected GET /api/users, got ${JSON.stringify(labels)}`);

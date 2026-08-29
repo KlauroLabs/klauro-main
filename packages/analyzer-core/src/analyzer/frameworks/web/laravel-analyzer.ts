@@ -1488,7 +1488,9 @@ export class LaravelAnalyzer extends BaseAnalyzer {
       relations.push({
         name,
         type,
-        model: model.replace(/['"]/g, '').split(',')[0].trim(),
+        model: model.replace(/['"]/g, '').split(',')[0].trim()
+          .replace(/::class$/i, '')
+          .split('\\').filter(Boolean).pop() || '',
         line
       });
     }
@@ -1887,6 +1889,14 @@ export class LaravelAnalyzer extends BaseAnalyzer {
     nodes: CASNode[],
     edges: CASEdge[]
   ): void {
+    const modelIdsByName = new Map<string, string[]>();
+    for (const model of models) {
+      const key = model.name.toLowerCase();
+      modelIdsByName.set(key, [
+        ...(modelIdsByName.get(key) || []),
+        this.generateId('model', model.filePath, model.name),
+      ]);
+    }
     routes.forEach((route, index) => {
       if (route.controller) {
         const routeId = this.generateId('route', '', `${route.method}_${route.uri}_${index}`);
@@ -1911,7 +1921,9 @@ export class LaravelAnalyzer extends BaseAnalyzer {
       const modelId = this.generateId('model', model.filePath, model.name);
 
       model.relations.forEach(relation => {
-        const relatedModelId = this.generateId('model', '', relation.model);
+        const relatedModelIds = modelIdsByName.get(relation.model.toLowerCase()) || [];
+        if (relatedModelIds.length !== 1) return;
+        const relatedModelId = relatedModelIds[0];
         edges.push(this.createEdge(
           this.generateEdgeId(modelId, relatedModelId, 'relates_to'),
           modelId,

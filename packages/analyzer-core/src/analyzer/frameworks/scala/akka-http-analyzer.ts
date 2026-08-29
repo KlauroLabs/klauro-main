@@ -312,6 +312,12 @@ export class AkkaHttpAnalyzer extends BaseAnalyzer {
     entryPoints: CASEntryPoint[]
   ): void {
     const fileId = `file_${this.sanitizeId(info.relativePath)}`;
+    nodes.push(this.createNodeBuilder(fileId, path.basename(info.relativePath), 'file')
+      .withLevel(1, 'File/Module')
+      .withCategory('modules', ['scala-files'])
+      .withSource({ file: info.fullPath, line: 1, end_line: info.lineCount })
+      .withMetadata({ language: 'scala' })
+      .build());
 
     info.routes.forEach((route, index) => {
       const routeId = `akkahttp_route_${this.sanitizeId(info.relativePath)}_${route.method}_${this.sanitizeId(route.path)}_${index}`;
