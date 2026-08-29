@@ -151,7 +151,8 @@
     "autonomous-mcp-trial": "tsx src/gauntlet/autonomous-mcp-trial.ts",
     "large-repo-scenario": "tsx src/gauntlet/large-repo-scenario.ts",
     "large-repo-scenario-multitrial": "tsx src/gauntlet/large-repo-scenario-multitrial.ts",
-    "release": "bash scripts/release.sh"
+    "release": "bash scripts/release.sh",
+    "corpus:terminal-receipts": "tsx scripts/generate-terminal-public-corpus-receipts.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1050.0",

@@ -884,16 +884,42 @@ describe('element description grounding parity with the system validator', () =>
   it('humanizes an exact product entity identifier before capability description validation', () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const target = {
-      id: 'workspace-map', name: 'Understand workspace capability map', kind: 'capability',
-      operations: ['show workspace relationships'], relatedEntities: ['WorkspaceCapabilityMap'], relatedDomains: ['workspace'],
+      id: 'job-review', name: 'Review job applications', kind: 'capability',
+      operations: ['show job applications'], relatedEntities: ['JobApplication'], relatedDomains: ['recruiting'],
     };
     const description = localOrch.sanitizeElementDescriptionCandidate(
-      'Understand workspace capability map presents WorkspaceCapabilityMap relationships for the analyzed workspace.',
+      'Recruiters review JobApplication details and compare each application before deciding what to do next.',
       target,
     );
 
-    expect(description).toContain('Workspace Capability Map');
-    expect(description).not.toContain('WorkspaceCapabilityMap');
+    expect(description).toContain('Job Application');
+    expect(description).not.toContain('JobApplication');
+    expect(localOrch.validateElementDescription(description, target).ok).toBe(true);
+  });
+
+  it('preserves a first-party relationship to another product entity during final description validation', () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    const names = new Map([['entity_job', 'job'], ['entity_category', 'category']]);
+    const evidence = new Map([
+      ['entity_job', { name: 'job', kind: 'model' }],
+      ['entity_category', { name: 'category', kind: 'model' }],
+    ]);
+    const target = localOrch.capabilityDescriptionTarget(
+      {
+        id: 'filter-jobs', name: 'Filter job applications', category: 'core', description: '',
+        related_entities: ['entity_job'], related_domains: [], criticality_factors: [],
+        operations: [{ action: 'Filter', entry_point_id: 'jobs', entry_point_type: 'event' }],
+      },
+      names,
+      new Map(),
+      evidence,
+      [],
+      ['Users filter job applications by category, status, job board, and search terms.'],
+    );
+
+    const description = 'Users filter job applications by category, status, job board, and search terms.';
+    expect(target.unrelatedEntities).toContain('category');
+    expect(target.productOutcomeTerms).toContain('Users filter job applications by category, status, job board, and search terms.');
     expect(localOrch.validateElementDescription(description, target).ok).toBe(true);
   });
 
@@ -942,10 +968,12 @@ describe('element description grounding parity with the system validator', () =>
       relatedEntities: ['EnterpriseOrder'],
       fields: ['id:number', 'total:number'],
     };
-    expect(validateElementDescription(
+    const unsupported = validateElementDescription(
       'View Enterprise Orders returns EnterpriseOrder details, including status, items, and timestamps, for an operator request.',
       subject,
-    ).reason).toMatch(/^unsupported-enumerated-detail:/);
+    );
+    expect(unsupported.reason).toBe('unsupported-enumerated-detail:status');
+    expect(unsupported.offendingTerms).toEqual(['status']);
     expect(validateElementDescription(
       'View Enterprise Orders returns EnterpriseOrder details, including the order id and total, for an operator request.',
       subject,

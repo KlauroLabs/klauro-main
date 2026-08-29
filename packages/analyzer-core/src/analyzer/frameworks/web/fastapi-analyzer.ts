@@ -1,7 +1,6 @@
 import { BaseAnalyzer, CASAnalysisResult, CASNode, CASEdge, AnalysisContext, FileAnalysisContext, FileAnalysisResult } from '../../core/base-analyzer';
 import {
   CASEntryPoint, CASExitPoint,
-  CASDocumentation, CASComment, CASTodo, CASImplementationStatus,
   CASPerspective
 } from '../../../types/cas.types';
 import { AnalyzerError } from '../../core/errors';
@@ -9,6 +8,7 @@ import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
 import { fastApiDependencyNodeId, planFastAPIDependencyLinks } from './fastapi-dependency-resolver';
+import { FastAPIAnalysisMetadata } from './fastapi-analysis-metadata';
 
 interface FastAPIApplication {
   name: string;
@@ -29,6 +29,13 @@ interface FastAPIRouter {
   tags?: string[];
   dependencies: string[];
   routes: FastAPIRoute[];
+}
+
+interface FastAPIRouterMount {
+  parentFile: string;
+  childFile: string;
+  prefix: string;
+  prefixResolved: boolean;
 }
 
 interface FastAPIRoute {
@@ -99,6 +106,8 @@ interface FastAPIWebSocket {
 
 export class FastAPIAnalyzer extends BaseAnalyzer {
 
+  private readonly analysisMetadata: FastAPIAnalysisMetadata;
+
   constructor() {
     super(
       'fastapi',
@@ -106,6 +115,7 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
       '1.0.0',
       'framework'
     );
+    this.analysisMetadata = new FastAPIAnalysisMetadata(this.analyzerId);
   }
 
   async canAnalyze(projectPath: string): Promise<boolean> {
@@ -197,7 +207,7 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
 
     this.buildFastAPIRelationships(application, routers, models, dependencies, middleware, nodes, edges);
     this.identifyDatabaseConnections(models, exitPoints);
-    this.tagNodesWithPerspectives(nodes, edges);
+    this.analysisMetadata.tagNodesWithPerspectives(nodes, edges);
 
     return this.createFileAnalysisResult(
       context.filePath,
@@ -238,8 +248,8 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
       this.identifyDatabaseConnections(models, exitPoints);
 
       const perspectives: CASPerspective[] = [];
-      this.createPerspectives(perspectives);
-      this.tagNodesWithPerspectives(nodes, edges);
+      this.analysisMetadata.createPerspectives(perspectives);
+      this.analysisMetadata.tagNodesWithPerspectives(nodes, edges);
 
       const contribution = this.createContribution(nodes, edges, entryPoints, exitPoints, {
         framework: 'fastapi',
@@ -297,10 +307,10 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
           };
 
           const appId = `app_${this.sanitizeId(application.name)}`;
-          const documentation = this.extractDocumentation(content, fullPath);
-          const comments = this.extractComments(content, fullPath);
-          const todos = this.extractTodos(comments);
-          const implementationStatus = this.determineImplementationStatus(content, comments);
+          const documentation = this.analysisMetadata.extractDocumentation(content, fullPath);
+          const comments = this.analysisMetadata.extractComments(content, fullPath);
+          const todos = this.analysisMetadata.extractTodos(comments);
+          const implementationStatus = this.analysisMetadata.determineImplementationStatus(content, comments);
 
           const appNode = this.createNodeBuilder(appId, application.name, 'application')
             .withLevel(1, 'system')
@@ -342,6 +352,7 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
     entryPoints: any[]
   ): Promise<FastAPIRouter[]> {
     const routers: FastAPIRouter[] = [];
+    const mountedPrefixesByFile = await this.resolveRouterMountPrefixes(files, projectPath);
 
     for (const file of files) {
       const fullPath = path.join(projectPath, file);
@@ -353,6 +364,9 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
       if (hasRouter || hasAppRoutes) {
         const routerName = hasRouter ? this.extractRouterName(content, file) : this.extractAppName(content, file);
         const prefix = hasRouter ? this.extractRouterPrefix(content) : '';
+        const mountedPrefixes = mountedPrefixesByFile.get(this.normalizePythonFile(file)) || [''];
+        const exposedPrefixes = [...new Set(mountedPrefixes.map(mountedPrefix =>
+          this.joinRoutePaths(mountedPrefix, prefix || '')))];
         const tags = this.extractRouterTags(content);
         const dependencies = this.extractRouterDependencies(content);
         const routes = this.extractRoutes(content);
@@ -369,10 +383,10 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
         routers.push(router);
 
         const routerId = this.routerNodeId(routerName, file);
-        const routerDocumentation = this.extractDocumentation(content, fullPath);
-        const routerComments = this.extractComments(content, fullPath);
-        const routerTodos = this.extractTodos(routerComments);
-        const routerImplementationStatus = this.determineImplementationStatus(content, routerComments);
+        const routerDocumentation = this.analysisMetadata.extractDocumentation(content, fullPath);
+        const routerComments = this.analysisMetadata.extractComments(content, fullPath);
+        const routerTodos = this.analysisMetadata.extractTodos(routerComments);
+        const routerImplementationStatus = this.analysisMetadata.determineImplementationStatus(content, routerComments);
 
         const routerNode = this.createNodeBuilder(routerId, routerName, 'router')
           .withLevel(2, 'architectural')
@@ -387,6 +401,8 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
             framework: 'fastapi',
             attributes: {
               prefix,
+              mounted_prefixes: mountedPrefixes,
+              exposed_prefixes: exposedPrefixes,
               tags,
               routes: routes.length,
               dependencies: dependencies.length
@@ -399,7 +415,9 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
         routes.forEach((route, index) => {
           const routeId = `route_${routerId}_${index}`;
           const handlerId = `handler_${routerId}_${this.sanitizeId(route.handlerName)}_${route.handlerLine}`;
-          const fullRoutePath = `${prefix || ''}${route.path}`.replace('//', '/');
+          const fullRoutePaths = exposedPrefixes.map(exposedPrefix =>
+            this.joinRoutePaths(exposedPrefix, route.path));
+          const fullRoutePath = fullRoutePaths[0];
 
           const routeNode = this.createNodeBuilder(routeId, `${route.method.toUpperCase()} ${fullRoutePath}`, 'route')
             .withLevel(3, 'code')
@@ -538,6 +556,81 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
               tags: route.tags
             }
           });
+          fullRoutePaths.slice(1).forEach((additionalPath, exposureIndex) => {
+            const exposedRouteId = `${routeId}_mount_${exposureIndex + 1}`;
+            nodes.push(this.createNodeBuilder(exposedRouteId, `${route.method.toUpperCase()} ${additionalPath}`, 'route')
+              .withLevel(3, 'code')
+              .withCategory('route', ['http', 'endpoint'])
+              .withSource({ file, line: route.handlerLine - 1, end_line: route.handlerLine })
+              .withDescription(`FastAPI HTTP endpoint: ${route.method.toUpperCase()} ${additionalPath}`)
+              .withMetadata({
+                framework: 'fastapi',
+                attributes: {
+                  method: route.method,
+                  path: route.path,
+                  operationId: route.operationId,
+                  summary: route.summary,
+                  description: route.description,
+                  tags: route.tags,
+                  parameters: route.parameters.length,
+                  requestBody: route.requestBody,
+                  responses: route.responses.length,
+                  security: route.security,
+                  handlerName: route.handlerName,
+                  mountedPath: additionalPath
+                }
+              })
+              .withAnalyzers([this.analyzerId], this.analyzerId)
+              .build());
+            edges.push(this.createEdge(
+              `${routerId}_exposes_${exposedRouteId}`,
+              routerId,
+              exposedRouteId,
+              'exposes'
+            ));
+            edges.push(this.createEdge(
+              `${exposedRouteId}_calls_${handlerId}`,
+              exposedRouteId,
+              handlerId,
+              'calls'
+            ));
+            entryPoints.push({
+              id: `entry_${exposedRouteId}`,
+              name: `${route.method.toUpperCase()} ${additionalPath}`,
+              type: 'http',
+              source_node: exposedRouteId,
+              trigger: {
+                method: route.method.toUpperCase(),
+                path: additionalPath,
+                parameters: route.parameters.map(parameter => ({
+                  name: parameter.name,
+                  type: parameter.location,
+                  required: parameter.required,
+                  location: parameter.location
+                }))
+              },
+              handler: {
+                node_id: handlerId,
+                method_name: route.handlerName,
+                file,
+                line: route.handlerLine
+              },
+              security: {
+                authenticated: route.security && route.security.length > 0,
+                guards: route.security || [],
+                roles: [],
+                permissions: []
+              },
+              metadata: {
+                framework: 'fastapi',
+                router: routerName,
+                operationId: route.operationId,
+                summary: route.summary,
+                tags: route.tags,
+                mountedPath: additionalPath
+              }
+            });
+          });
         });
       }
     }
@@ -563,10 +656,10 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
 
         extractedModels.forEach(model => {
           const modelId = `model_${this.sanitizeId(model.name)}`;
-          const modelDocumentation = this.extractDocumentation(content, fullPath);
-          const modelComments = this.extractComments(content, fullPath);
-          const modelTodos = this.extractTodos(modelComments);
-          const modelImplementationStatus = this.determineImplementationStatus(content, modelComments);
+          const modelDocumentation = this.analysisMetadata.extractDocumentation(content, fullPath);
+          const modelComments = this.analysisMetadata.extractComments(content, fullPath);
+          const modelTodos = this.analysisMetadata.extractTodos(modelComments);
+          const modelImplementationStatus = this.analysisMetadata.determineImplementationStatus(content, modelComments);
 
           const modelNode = this.createNodeBuilder(modelId, model.name, 'model')
             .withLevel(3, 'code')
@@ -614,10 +707,10 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
 
         extractedDeps.forEach(dep => {
           const depId = fastApiDependencyNodeId(dep.filePath, dep.name);
-          const depDocumentation = this.extractDocumentation(content, fullPath);
-          const depComments = this.extractComments(content, fullPath);
-          const depTodos = this.extractTodos(depComments);
-          const depImplementationStatus = this.determineImplementationStatus(content, depComments);
+          const depDocumentation = this.analysisMetadata.extractDocumentation(content, fullPath);
+          const depComments = this.analysisMetadata.extractComments(content, fullPath);
+          const depTodos = this.analysisMetadata.extractTodos(depComments);
+          const depImplementationStatus = this.analysisMetadata.determineImplementationStatus(content, depComments);
 
           const dependencyNode = this.createNodeBuilder(depId, dep.name, 'service')
             .withLevel(3, 'code')
@@ -665,10 +758,10 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
 
         extractedMiddleware.forEach(mw => {
           const middlewareId = `middleware_${this.sanitizeId(mw.name)}`;
-          const middlewareDocumentation = this.extractDocumentation(content, fullPath);
-          const middlewareComments = this.extractComments(content, fullPath);
-          const middlewareTodos = this.extractTodos(middlewareComments);
-          const middlewareImplementationStatus = this.determineImplementationStatus(content, middlewareComments);
+          const middlewareDocumentation = this.analysisMetadata.extractDocumentation(content, fullPath);
+          const middlewareComments = this.analysisMetadata.extractComments(content, fullPath);
+          const middlewareTodos = this.analysisMetadata.extractTodos(middlewareComments);
+          const middlewareImplementationStatus = this.analysisMetadata.determineImplementationStatus(content, middlewareComments);
 
           const middlewareNode = this.createNodeBuilder(middlewareId, mw.name, 'middleware')
             .withLevel(3, 'code')
@@ -886,10 +979,231 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
     return match ? match[1] : path.basename(filePath, '.py');
   }
 
+  private normalizePythonFile(filePath: string): string {
+    return filePath.replace(/\\/g, '/').replace(/^\.\//, '');
+  }
+
+  private joinRoutePaths(...parts: Array<string | undefined>): string {
+    const lastPart = [...parts].reverse().find((part): part is string => Boolean(part));
+    const preserveTrailingSlash = Boolean(lastPart && /\/$/.test(lastPart));
+    const joined = parts
+      .filter((part): part is string => Boolean(part))
+      .join('/')
+      .replace(/\/{2,}/g, '/');
+    if (!joined || joined === '/') return '/';
+    const normalized = `/${joined.replace(/^\/+|\/+$/g, '')}`;
+    return preserveTrailingSlash ? `${normalized}/` : normalized;
+  }
+
+  private extractBalancedCalls(content: string, methodName: string): string[] {
+    const calls: string[] = [];
+    const pattern = new RegExp(`\\.\\s*${methodName}\\s*\\(`, 'g');
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(content)) !== null) {
+      const opening = content.indexOf('(', match.index);
+      let depth = 0;
+      let quote = '';
+      let escaped = false;
+      for (let index = opening; index < content.length; index++) {
+        const character = content[index];
+        if (quote) {
+          if (escaped) {
+            escaped = false;
+          } else if (character === '\\') {
+            escaped = true;
+          } else if (character === quote) {
+            quote = '';
+          }
+          continue;
+        }
+        if (character === '"' || character === "'") {
+          quote = character;
+          continue;
+        }
+        if (character === '(') depth++;
+        if (character === ')') {
+          depth--;
+          if (depth === 0) {
+            calls.push(content.slice(match.index, index + 1));
+            pattern.lastIndex = index + 1;
+            break;
+          }
+        }
+      }
+    }
+    return calls;
+  }
+
+  private resolvePythonModuleFile(
+    importerFile: string,
+    moduleName: string,
+    importedName: string | undefined,
+    knownFiles: Set<string>,
+  ): string | undefined {
+    const importerDirectory = path.posix.dirname(this.normalizePythonFile(importerFile));
+    const relativePrefix = moduleName.match(/^\.+/)?.[0] || '';
+    const remainingModule = moduleName.slice(relativePrefix.length);
+    const baseSegments = relativePrefix
+      ? importerDirectory.split('/').filter(Boolean).slice(0, Math.max(0, importerDirectory.split('/').filter(Boolean).length - Math.max(0, relativePrefix.length - 1)))
+      : [];
+    const moduleSegments = remainingModule.split('.').filter(Boolean);
+    const absoluteSegments = [...baseSegments, ...moduleSegments];
+    const candidates: string[] = [];
+    if (importedName) {
+      candidates.push(
+        [...absoluteSegments, importedName].join('/') + '.py',
+        [...absoluteSegments, importedName, '__init__.py'].join('/'),
+      );
+    }
+    candidates.push(
+      absoluteSegments.join('/') + '.py',
+      [...absoluteSegments, '__init__.py'].join('/'),
+    );
+
+    for (const candidate of candidates.map(value => this.normalizePythonFile(value))) {
+      if (knownFiles.has(candidate)) return candidate;
+      const suffixMatches = [...knownFiles].filter(file => file.endsWith(`/${candidate}`));
+      if (suffixMatches.length === 1) return suffixMatches[0];
+    }
+    return undefined;
+  }
+
+  private extractPythonImportAliases(
+    content: string,
+    importerFile: string,
+    knownFiles: Set<string>,
+  ): Map<string, string> {
+    const aliases = new Map<string, string>();
+    const flattened = content.replace(
+      /^\s*from\s+([\w.]+)\s+import\s*\(([\s\S]*?)\)/gm,
+      (_match, moduleName: string, imports: string) =>
+        `from ${moduleName} import ${imports.replace(/\s+/g, ' ')}`,
+    );
+    const fromPattern = /^\s*from\s+([\w.]+)\s+import\s+([^\n#]+)/gm;
+    let fromMatch: RegExpExecArray | null;
+    while ((fromMatch = fromPattern.exec(flattened)) !== null) {
+      for (const imported of fromMatch[2].split(',')) {
+        const importMatch = imported.trim().match(/^([A-Za-z_][\w]*)(?:\s+as\s+([A-Za-z_][\w]*))?$/);
+        if (!importMatch) continue;
+        const importedName = importMatch[1];
+        const alias = importMatch[2] || importedName;
+        const resolved = this.resolvePythonModuleFile(importerFile, fromMatch[1], importedName, knownFiles);
+        if (resolved) aliases.set(alias, resolved);
+      }
+    }
+    const importPattern = /^\s*import\s+([\w.]+)(?:\s+as\s+([A-Za-z_][\w]*))?/gm;
+    let importMatch: RegExpExecArray | null;
+    while ((importMatch = importPattern.exec(flattened)) !== null) {
+      const alias = importMatch[2] || importMatch[1].split('.')[0];
+      const resolved = this.resolvePythonModuleFile(importerFile, importMatch[1], undefined, knownFiles);
+      if (resolved) aliases.set(alias, resolved);
+    }
+    return aliases;
+  }
+
+  private extractLiteralPythonSettings(contents: Iterable<string>): Map<string, string> {
+    const values = new Map<string, Set<string>>();
+    const assignmentPattern = /^\s*([A-Za-z_][\w]*)(?:\s*:\s*[^=\n]+)?\s*=\s*(['"])([^'"]*)\2\s*(?:#.*)?$/gm;
+    for (const content of contents) {
+      let match: RegExpExecArray | null;
+      while ((match = assignmentPattern.exec(content)) !== null) {
+        const candidates = values.get(match[1]) || new Set<string>();
+        candidates.add(match[3]);
+        values.set(match[1], candidates);
+      }
+    }
+    return new Map([...values.entries()]
+      .filter(([, candidates]) => candidates.size === 1)
+      .map(([name, candidates]) => [name, [...candidates][0]]));
+  }
+
+  private extractRouterMounts(
+    file: string,
+    content: string,
+    knownFiles: Set<string>,
+    literalSettings: Map<string, string>,
+  ): FastAPIRouterMount[] {
+    const aliases = this.extractPythonImportAliases(content, file, knownFiles);
+    const mounts: FastAPIRouterMount[] = [];
+    for (const call of this.extractBalancedCalls(content, 'include_router')) {
+      const routerReference = call.match(/include_router\s*\(\s*([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*)/)?.[1];
+      if (!routerReference) continue;
+      const alias = routerReference.split('.')[0];
+      const childFile = aliases.get(alias);
+      if (!childFile) continue;
+      const literalPrefix = call.match(/\bprefix\s*=\s*(['"])([^'"]*)\1/)?.[2];
+      const expressionPrefix = call.match(/\bprefix\s*=\s*([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*)/)?.[1];
+      const settingName = expressionPrefix?.split('.').pop();
+      const resolvedSetting = settingName ? literalSettings.get(settingName) : undefined;
+      mounts.push({
+        parentFile: this.normalizePythonFile(file),
+        childFile,
+        prefix: literalPrefix ?? resolvedSetting ?? '',
+        prefixResolved: literalPrefix !== undefined || resolvedSetting !== undefined || !/\bprefix\s*=/.test(call),
+      });
+    }
+    return mounts;
+  }
+
+  private async resolveRouterMountPrefixes(
+    files: string[],
+    projectPath: string,
+  ): Promise<Map<string, string[]>> {
+    const normalizedFiles = files.map(file => this.normalizePythonFile(file));
+    const knownFiles = new Set(normalizedFiles);
+    const contentByFile = new Map<string, string>();
+    for (const file of normalizedFiles) {
+      contentByFile.set(file, await fs.readFile(path.join(projectPath, file), 'utf-8'));
+    }
+    const literalSettings = this.extractLiteralPythonSettings(contentByFile.values());
+    const mounts = normalizedFiles.flatMap(file =>
+      this.extractRouterMounts(file, contentByFile.get(file) || '', knownFiles, literalSettings));
+    const children = new Set(mounts.map(mount => mount.childFile));
+    const roots = normalizedFiles.filter(file =>
+      !children.has(file) || /\bFastAPI\s*\(/.test(contentByFile.get(file) || ''));
+    const mountsByParent = new Map<string, FastAPIRouterMount[]>();
+    for (const mount of mounts) {
+      const childrenForParent = mountsByParent.get(mount.parentFile) || [];
+      childrenForParent.push(mount);
+      mountsByParent.set(mount.parentFile, childrenForParent);
+    }
+
+    const prefixes = new Map<string, Set<string>>();
+    const queue = roots.map(file => ({ file, prefix: '' }));
+    const visited = new Set<string>();
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      const visitKey = `${current.file}\0${current.prefix}`;
+      if (visited.has(visitKey)) continue;
+      visited.add(visitKey);
+      const currentPrefixes = prefixes.get(current.file) || new Set<string>();
+      currentPrefixes.add(current.prefix);
+      prefixes.set(current.file, currentPrefixes);
+      for (const mount of mountsByParent.get(current.file) || []) {
+        queue.push({
+          file: mount.childFile,
+          prefix: this.joinRoutePaths(current.prefix, mount.prefix),
+        });
+      }
+    }
+    for (const file of normalizedFiles) {
+      if (!prefixes.has(file)) prefixes.set(file, new Set(['']));
+    }
+    return new Map([...prefixes.entries()].map(([file, values]) => [file, [...values].sort()]));
+  }
+
   private extractRouterPrefix(content: string): string | undefined {
-    const prefixPattern = /prefix\s*=\s*['"]([^'"]+)['"]/;
-    const match = prefixPattern.exec(content);
-    return match ? match[1] : undefined;
+    const constructorMatch = /\bAPIRouter\s*\(/.exec(content);
+    if (!constructorMatch) return undefined;
+    const opening = content.indexOf('(', constructorMatch.index);
+    let depth = 0;
+    let end = opening;
+    for (; end < content.length; end++) {
+      if (content[end] === '(') depth++;
+      if (content[end] === ')' && --depth === 0) break;
+    }
+    const constructor = content.slice(constructorMatch.index, end + 1);
+    return constructor.match(/\bprefix\s*=\s*(['"])([^'"]*)\1/)?.[2];
   }
 
   private extractRouterTags(content: string): string[] {
@@ -921,6 +1235,13 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
   private extractRoutes(content: string): FastAPIRoute[] {
     const routes: FastAPIRoute[] = [];
     const lines = content.split('\n');
+    const lineOffsets: number[] = [];
+    let offset = 0;
+    for (const line of lines) {
+      lineOffsets.push(offset);
+      offset += line.length + 1;
+    }
+    const parenthesisDelta = (value: string): number => [...value].reduce((depth, character) => depth + (character === '(' ? 1 : character === ')' ? -1 : 0), 0);
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
@@ -931,9 +1252,18 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
 
       const method = decoratorMatch[2].toLowerCase();
 
-      let pathMatch = trimmedLine.match(/@\w+\.\w+\s*\(\s*["']([^"']+)["']/);
+      const decoratorLines = [trimmedLine];
+      let decoratorEndLine = i;
+      let decoratorDepth = parenthesisDelta(trimmedLine);
+      while (decoratorDepth > 0 && decoratorEndLine + 1 < Math.min(i + 40, lines.length)) {
+        decoratorEndLine++;
+        decoratorLines.push(lines[decoratorEndLine].trim());
+        decoratorDepth += parenthesisDelta(lines[decoratorEndLine]);
+      }
+      const decoratorText = decoratorLines.join(' ');
+      let pathMatch = decoratorText.match(/@\w+\.\w+\s*\(\s*["']([^"']+)["']/);
       if (!pathMatch) {
-        pathMatch = trimmedLine.match(/@\w+\.\w+\s*\(\s*["']([^"']*)/);
+        pathMatch = decoratorText.match(/@\w+\.\w+\s*\(\s*["']([^"']*)/);
       }
       const routePath = pathMatch ? pathMatch[1] : '/';
 
@@ -943,8 +1273,16 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
       let isAsync = false;
       let functionIndent = 0;
 
-      for (let j = i + 1; j < Math.min(i + 10, lines.length); j++) {
+      for (let j = decoratorEndLine + 1; j < Math.min(i + 40, lines.length); j++) {
         const nextLine = lines[j].trim();
+        if (nextLine.startsWith('@')) {
+          let stackedDepth = parenthesisDelta(nextLine);
+          while (stackedDepth > 0 && j + 1 < Math.min(i + 40, lines.length)) {
+            j++;
+            stackedDepth += parenthesisDelta(lines[j]);
+          }
+          continue;
+        }
         const funcMatch = nextLine.match(/^(async\s+)?def\s+(\w+)\s*\(/);
         if (funcMatch) {
           isAsync = !!funcMatch[1];
@@ -955,13 +1293,12 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
           handlerEndLine = this.findHandlerEndLine(lines, j, functionIndent);
           break;
         }
-        if (nextLine.startsWith('@')) continue;
         if (nextLine.length > 0 && !nextLine.startsWith('#')) break;
       }
 
       if (!functionName) continue;
 
-      const routeInfo = this.extractRouteInfo(content, 0, functionName);
+      const routeInfo = this.extractRouteInfo(content, lineOffsets[i], functionName);
       const functionDependencies = this.extractFunctionDependencies(lines, handlerLine - 1);
       const dependencies = [...new Set([
         ...(routeInfo.dependencies || []),
@@ -1545,370 +1882,4 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
   }
 
 
-  private extractDocumentation(content: string, filePath: string): CASDocumentation | undefined {
-    if (!content || content.trim().length === 0) return undefined;
-
-    const lines = content.split('\n');
-
-
-
-
-    const fieldDescMatches = content.matchAll(/Field\([^)]*description\s*=\s*['"]([^'"]+)['"]/g);
-    const fieldDescriptions = [];
-    for (const match of fieldDescMatches) {
-      fieldDescriptions.push(match[1]);
-    }
-
-
-    const routeDocMatches = content.matchAll(/@app\.(get|post|put|delete|patch)\([^)]*summary\s*=\s*['"]([^'"]+)['"]/g);
-    const routeDocs = [];
-    for (const match of routeDocMatches) {
-      routeDocs.push(`${match[1].toUpperCase()}: ${match[2]}`);
-    }
-
-
-    const modelDocMatches = content.matchAll(/class\s+\w+\([^)]*BaseModel[^)]*\):\s*['"""]([^'"]*?)['"""]/g);
-    const modelDocs = [];
-    for (const match of modelDocMatches) {
-      modelDocs.push(match[1].trim());
-    }
-
-
-    const functionDocStrings = [];
-    const functionMatches = content.matchAll(/def\s+\w+[^:]*:\s*['"""]([^'"]*?)['"""]/g);
-    for (const match of functionMatches) {
-      functionDocStrings.push(match[1].trim());
-    }
-
-    if (fieldDescriptions.length > 0 || routeDocs.length > 0 || modelDocs.length > 0 || functionDocStrings.length > 0) {
-      const doc: CASDocumentation = {
-        type: 'fastapi_documentation',
-        raw: content,
-        location: { start_line: 1, end_line: lines.length }
-      };
-
-      if (functionDocStrings.length > 0) {
-        doc.summary = functionDocStrings[0].split('\n')[0].trim();
-        doc.description = functionDocStrings[0].trim();
-      } else if (modelDocs.length > 0) {
-        doc.summary = modelDocs[0].split('\n')[0].trim();
-      }
-
-      doc.framework_docs = {
-        fastapi: {
-          field_descriptions: fieldDescriptions
-        }
-      };
-
-      return doc;
-    }
-
-    return undefined;
-  }
-
-  private extractComments(content: string, filePath: string): CASComment[] {
-    if (!content || content.trim().length === 0) return [];
-
-    const comments: CASComment[] = [];
-    let commentSeq = 0;
-    const lines = content.split('\n');
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const trimmedLine = line.trim();
-
-
-      if (trimmedLine.startsWith('#')) {
-        const commentText = trimmedLine.substring(1).trim();
-        if (commentText.length > 0) {
-          const comment: CASComment = {
-            id: `comment_${filePath}_${++commentSeq}`,
-            type: 'single-line',
-            style: '#',
-            text: commentText,
-            purpose: this.classifyCommentPurpose(commentText),
-            location: {
-              file: filePath,
-              line: i + 1
-            },
-            markers: {
-              is_todo: commentText.toUpperCase().includes('TODO'),
-              is_fixme: commentText.toUpperCase().includes('FIXME'),
-              is_hack: commentText.toUpperCase().includes('HACK'),
-              is_warning: commentText.toUpperCase().includes('WARNING'),
-              is_note: commentText.toUpperCase().includes('NOTE')
-            }
-          };
-          comments.push(comment);
-        }
-      }
-
-
-      const docstringMatch = line.match(/^\s*['"]{3}([^'"]*?)['"]{3}/);
-      if (docstringMatch && !line.includes('def ') && !line.includes('class ')) {
-        const commentText = docstringMatch[1].trim();
-        if (commentText.length > 0) {
-          const comment: CASComment = {
-            id: `comment_${filePath}_${++commentSeq}`,
-            type: 'docstring',
-            style: '"""',
-            text: commentText,
-            purpose: this.classifyCommentPurpose(commentText),
-            location: {
-              file: filePath,
-              line: i + 1
-            },
-            markers: {
-              is_todo: commentText.toUpperCase().includes('TODO'),
-              is_fixme: commentText.toUpperCase().includes('FIXME'),
-              is_hack: commentText.toUpperCase().includes('HACK'),
-              is_warning: commentText.toUpperCase().includes('WARNING'),
-              is_note: commentText.toUpperCase().includes('NOTE')
-            }
-          };
-          comments.push(comment);
-        }
-      }
-    }
-
-    return comments;
-  }
-
-  private extractTodos(comments: CASComment[]): CASTodo[] {
-    const todos: CASTodo[] = [];
-    let todoSeq = 0;
-
-    for (const comment of comments) {
-      if (comment.markers?.is_todo || comment.markers?.is_fixme || comment.markers?.is_hack) {
-        const text = comment.text;
-        const typeMatch = text.match(/(TODO|FIXME|HACK|NOTE|WARNING|XXX)/i);
-        const type = typeMatch ? typeMatch[0].toUpperCase() as CASTodo['type'] : 'TODO';
-
-
-        const assigneeMatch = text.match(/TODO\s*\(\s*([^)]+)\s*\)/i);
-        const assignee = assigneeMatch ? assigneeMatch[1].trim() : undefined;
-
-
-        const priorityMatch = text.match(/\[(CRITICAL|HIGH|MEDIUM|LOW)\]/i);
-        let priority: CASTodo['priority'] = 'medium';
-        if (priorityMatch) {
-          priority = priorityMatch[1].toLowerCase() as CASTodo['priority'];
-        }
-
-        const todo: CASTodo = {
-          id: `todo_${comment.location.file}_${comment.location.line}_${++todoSeq}`,
-          type,
-          text: text.replace(/^(TODO|FIXME|HACK|NOTE|WARNING|XXX)\s*(\([^)]+\))?\s*:?\s*/i, '').trim(),
-          priority,
-          location: {
-            file: comment.location.file,
-            line: comment.location.line
-          },
-          assignee,
-          classification: {
-            category: this.classifyTodoCategory(text),
-            technical_debt: type === 'TODO' || type === 'FIXME' || type === 'HACK'
-          }
-        };
-
-        todos.push(todo);
-      }
-    }
-
-    return todos;
-  }
-
-  private determineImplementationStatus(content: string, comments: CASComment[]): CASImplementationStatus {
-    const indicators = {
-      has_todo_markers: comments.some(c => c.markers?.is_todo),
-      has_not_implemented_exceptions: content.includes('NotImplementedError') || content.includes('raise NotImplemented'),
-      has_stub_returns: content.includes('pass') && (content.includes('def ') || content.includes('class ')),
-      has_placeholder_code: content.includes('# TODO') || content.includes('# FIXME') || content.includes('# PLACEHOLDER'),
-      has_hardcoded_values: /['\"](localhost|127\.0\.0\.1|test|example|demo|placeholder)['\"]/.test(content),
-      has_commented_out_code: comments.some(c => c.text.includes('def ') || c.text.includes('class ') || c.text.includes('import '))
-    };
-
-    const indicatorCount = Object.values(indicators).filter(Boolean).length;
-    let status: CASImplementationStatus['status'];
-    let confidence = 0.8;
-
-    if (content.includes('NotImplementedError') || content.includes('raise NotImplemented')) {
-      status = 'not-implemented';
-      confidence = 0.95;
-    } else if (indicatorCount >= 3) {
-      status = 'stub';
-      confidence = 0.7;
-    } else if (indicatorCount >= 1) {
-      status = 'partial';
-      confidence = 0.6;
-    } else if (content.includes('@deprecated') || content.includes('# deprecated')) {
-      status = 'deprecated';
-      confidence = 0.9;
-    } else if (content.includes('experimental') || content.includes('beta')) {
-      status = 'experimental';
-      confidence = 0.8;
-    } else {
-      status = 'complete';
-      confidence = 0.7;
-    }
-
-    const missingFeatures = [];
-    if (indicators.has_not_implemented_exceptions) missingFeatures.push('Core implementation');
-    if (indicators.has_todo_markers) missingFeatures.push('TODO items');
-    if (indicators.has_stub_returns) missingFeatures.push('Method implementations');
-
-    return {
-      status,
-      indicators,
-      confidence,
-      completeness: {
-        estimated_percentage: status === 'complete' ? 90 : status === 'partial' ? 60 : status === 'stub' ? 30 : 10,
-        missing_features: missingFeatures,
-        implemented_features: status === 'complete' ? ['Core functionality'] : []
-      }
-    };
-  }
-
-  private classifyCommentPurpose(text: string): CASComment['purpose'] {
-    const upperText = text.toUpperCase();
-    if (upperText.includes('TODO') || upperText.includes('FIXME')) return 'todo';
-    if (upperText.includes('WARNING') || upperText.includes('WARN')) return 'warning';
-    if (upperText.includes('HACK') || upperText.includes('WORKAROUND')) return 'hack';
-    if (upperText.includes('NOTE') || upperText.includes('INFO')) return 'note';
-    if (upperText.includes('DISABLED') || upperText.includes('COMMENTED')) return 'disabled-code';
-    return 'explanation';
-  }
-
-  private classifyTodoCategory(text: string): 'bug' | 'feature' | 'refactor' | 'performance' | 'security' | 'documentation' | 'test' | undefined {
-    const lowerText = text.toLowerCase();
-    if (lowerText.includes('bug') || lowerText.includes('fix') || lowerText.includes('error')) return 'bug';
-    if (lowerText.includes('security') || lowerText.includes('auth') || lowerText.includes('permission')) return 'security';
-    if (lowerText.includes('performance') || lowerText.includes('optimize') || lowerText.includes('slow')) return 'performance';
-    if (lowerText.includes('test') || lowerText.includes('spec') || lowerText.includes('coverage')) return 'test';
-    if (lowerText.includes('refactor') || lowerText.includes('cleanup') || lowerText.includes('reorganize')) return 'refactor';
-    if (lowerText.includes('doc') || lowerText.includes('comment') || lowerText.includes('explain')) return 'documentation';
-    return 'feature';
-  }
-
-  private createPerspectives(perspectives: CASPerspective[]): void {
-    perspectives.push({
-      id: 'fastapi-routes',
-      name: 'FastAPI API Endpoints',
-      description: 'API routes and dependency injection showing request processing flow',
-      analyzer_id: this.analyzerId,
-      type: 'flow',
-      connection_rules: {
-        visible_node_types: ['application', 'route', 'endpoint', 'function', 'class', 'method', 'middleware', 'model'],
-        relevant_edge_types: ['calls', 'uses', 'exposes', 'includes'],
-        node_connections: [
-          {
-            from_type: 'application',
-            to_types: ['route', 'middleware'],
-            edge_type: 'includes'
-          },
-          {
-            from_type: 'route',
-            to_types: ['function', 'method'],
-            edge_type: 'calls'
-          }
-        ]
-      },
-      layout_hints: {
-        style: 'hierarchical',
-        direction: 'TB',
-        group_by: 'http_method'
-      }
-    });
-
-    perspectives.push({
-      id: 'fastapi-layers',
-      name: 'FastAPI Application Layers',
-      description: 'Application layers: Routes -> Dependencies -> Services -> Models',
-      analyzer_id: this.analyzerId,
-      type: 'structure',
-      connection_rules: {
-        visible_node_types: ['application', 'route', 'endpoint', 'function', 'class', 'method', 'middleware', 'model', 'module', 'file'],
-        relevant_edge_types: ['calls', 'uses', 'imports', 'contains'],
-        node_connections: [
-          {
-            from_type: 'route',
-            to_types: ['function', 'class'],
-            edge_type: 'calls'
-          },
-          {
-            from_type: 'function',
-            to_types: ['model'],
-            edge_type: 'uses'
-          }
-        ]
-      },
-      layout_hints: {
-        style: 'hierarchical',
-        direction: 'LR'
-      }
-    });
-
-    perspectives.push({
-      id: 'fastapi-data',
-      name: 'FastAPI Data Flow',
-      description: 'Data models, schemas, and database access patterns',
-      analyzer_id: this.analyzerId,
-      type: 'data',
-      connection_rules: {
-        visible_node_types: ['model', 'class', 'function', 'method', 'attribute'],
-        relevant_edge_types: ['uses', 'has_attribute', 'has_method', 'calls']
-      },
-      layout_hints: {
-        style: 'hierarchical',
-        direction: 'TB'
-      }
-    });
-  }
-
-  private tagNodesWithPerspectives(nodes: CASNode[], edges: CASEdge[]): void {
-    for (const node of nodes) {
-      if (!node || typeof node !== 'object') continue;
-      if (!node.perspectives) node.perspectives = {};
-
-      const isRoute = node.type === 'route' || node.type === 'endpoint' ||
-        node.subcategories?.includes('route') || node.subcategories?.includes('endpoint');
-      const isMiddleware = node.type === 'middleware' || node.subcategories?.includes('middleware');
-      const isModel = node.type === 'model' || node.subcategories?.includes('model') ||
-        node.subcategories?.includes('pydantic');
-
-      if (isRoute || isMiddleware || node.type === 'application') {
-        node.perspectives['fastapi-routes'] = {
-          hierarchy: ['api', node.category || node.type, node.name],
-          level: node.level || 2,
-          priority: isRoute ? 90 : 70
-        };
-      }
-
-      if (node.type !== 'import' && node.type !== 'variable') {
-        node.perspectives['fastapi-layers'] = {
-          hierarchy: ['layers', node.category || node.type, node.name],
-          level: node.level || 2,
-          priority: isRoute ? 80 : isModel ? 70 : 50
-        };
-      }
-
-      if (isModel || node.type === 'attribute' || node.type === 'class') {
-        node.perspectives['fastapi-data'] = {
-          hierarchy: ['data', node.category || node.type, node.name],
-          level: node.level || 2,
-          priority: isModel ? 90 : 50
-        };
-      }
-    }
-
-    for (const edge of edges) {
-      edge.perspectives = [];
-      if (edge.type === 'calls' || edge.type === 'uses' || edge.type === 'exposes') {
-        edge.perspectives.push('fastapi-routes');
-      }
-      if (edge.type === 'contains' || edge.type === 'imports' || edge.type === 'calls') {
-        edge.perspectives.push('fastapi-layers');
-      }
-    }
-  }
 }

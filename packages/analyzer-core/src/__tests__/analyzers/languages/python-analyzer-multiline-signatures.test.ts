@@ -76,6 +76,7 @@ describe('PythonAnalyzer multi-line class/def signatures', () => {
       '    pass',
       '',
       '',
+      '',
       '# padding to make the file non-trivial for the degradation heuristic',
       '# line 1',
       '# line 2',
@@ -99,6 +100,24 @@ describe('PythonAnalyzer multi-line class/def signatures', () => {
     const warnings: string[] = (analyzer as unknown as { analysisWarnings: string[] }).analysisWarnings || [];
     const partial = warnings.filter(w => w.includes('broken syntax') || w.includes('no code elements'));
     expect(partial).toHaveLength(0);
+  });
+
+  it('extracts a multiline function with nested calls in parameter defaults', async () => {
+    const source = [
+      'from fastapi import Depends, Path',
+      '',
+      'async def get_article(',
+      '    slug: str = Path(..., min_length=1),',
+      '    user = Depends(get_current_user(required=False)),',
+      ') -> Article:',
+      '    return await load_article(slug, user)',
+      '',
+    ].join('\n');
+
+    const nodes = await analyzePython('dependencies.py', source);
+    const functionNode = nodes.find(n => n.type === 'function' && n.name === 'get_article');
+    expect(functionNode).toBeDefined();
+    expect(functionNode?.source?.line).toBe(6);
   });
 
   it('extracts a function whose typed parameter list wraps across lines', async () => {

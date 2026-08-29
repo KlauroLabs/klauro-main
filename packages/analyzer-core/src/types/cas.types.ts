@@ -3640,7 +3640,7 @@ export interface SystemCapability {
 
 
 
-  name_source?: 'ai' | 'manual' | 'reused';
+  name_source?: 'deterministic' | 'ai' | 'manual' | 'reused';
   name_generation?: CASDescriptionGeneration;
 
 

@@ -459,6 +459,15 @@ test('requires an evidence-grounded outcome anchor when a name starts with an in
   }), undefined);
 });
 
+test('recognizes short leading purpose verbs before subject-token filtering', () => {
+  const requirement: CapabilityCatalogOutcomeRequirement = {
+    id: 'all:note', statement: 'add notes', candidateIds: ['notes'],
+    subjectTokens: ['note'], requiredSubjectTerms: ['note'], visibleActionTerms: ['add'],
+  };
+  assert.equal(capabilityCatalogOutcomeNameFailure('Add Notes to Job Applications', requirement), undefined);
+  assert.equal(capabilityCatalogOutcomeNameFailure('View Notes for Job Applications', requirement), 'required-outcome-visible-action-missing:all:note');
+});
+
 test('an exact audience requirement binding covers its slot without title-token restatement', () => {
   const requirement: CapabilityCatalogOutcomeRequirement = {
     id: 'agent:behavior-understand',

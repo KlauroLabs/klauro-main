@@ -1,4 +1,6 @@
 import type { SystemCapability } from '../../types/cas.types';
+import { capabilityEvidenceSubjectTokens } from './capability-catalog-evidence';
+import { canonicalCapabilityLifecycleAction } from './capability-lifecycle-actions';
 import { canonicalCapabilityCatalogOutcomeToken, capabilityCatalogTargetedOutcomeText, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
 import type { CapabilityCatalogPriorRejection } from './capability-catalog-scheduling';
 
@@ -118,6 +120,13 @@ function customerVisibleOperationPhrase(value: unknown, groundedTerms: ReadonlyS
   const words = source.toLowerCase()
     .split(/[^a-z0-9]+/)
     .filter(word => word.length >= 3 && !/^(?:api|cmd|command|endpoint|handler|mcp|route|rpc|tool)$/.test(word));
+  const directlyObservedLifecycleActions = new Set([
+    'add', 'archive', 'authenticate', 'create', 'delete', 'edit', 'favorite', 'follow', 'list',
+    'publish', 'read', 'remove', 'retrieve', 'unfavorite', 'unfollow', 'update', 'view',
+  ]);
+  if (words.length === 1 && directlyObservedLifecycleActions.has(words[0])) {
+    return words[0];
+  }
   return words.length >= 2 && words.every(word => groundedTerms.has(word)) ? words.slice(0, 8).join(' ') : undefined;
 }
 
@@ -160,6 +169,25 @@ export function capabilityCatalogRepairPromptFacts(
     ].flatMap(value => String(value || '').toLowerCase().split(/[^a-z0-9]+/))
       .filter(token => token.length >= 3)
       .map(canonicalCapabilityCatalogOutcomeToken));
+    const genericEvidenceTerms = new Set([
+      'access', 'action', 'add', 'bar', 'card', 'change', 'click', 'close', 'create', 'delete', 'edit', 'event',
+      'get', 'handle', 'head', 'list', 'manage', 'management', 'modal', 'open', 'options', 'patch', 'post',
+      'process', 'put', 'read', 'remove', 'retrieve', 'show', 'submit', 'update', 'user', 'view',
+    ]);
+    const exactCandidateSubject = canonicalCapabilityCatalogOutcomeToken(String(candidate.name || '').trim().toLowerCase());
+    const candidateNameIsCustomerVisible = !/(?:[a-z0-9][A-Z]|[A-Z]{2,}[a-z]|[_:/])/.test(candidate.name || '');
+    const routeNameHasRecoverableProductTerms = candidate.evidence_kind === 'behavior-surface' &&
+      /\/[A-Za-z]/.test(candidate.name || '');
+    const evidenceSubjectTerms = candidateNameIsCustomerVisible || routeNameHasRecoverableProductTerms
+      ? capabilityEvidenceSubjectTokens(candidate, (candidate.related_entities || []).map(entityId => entityNamesById.get(entityId) || ''))
+        .map(canonicalCapabilityCatalogOutcomeToken)
+        .filter(token => token.length >= 3 && (!genericEvidenceTerms.has(token) || (token === 'user' && exactCandidateSubject === 'user')))
+        .slice(0, 8)
+      : [];
+    const requiredSubjectTerms = candidateRequirements.length > 0
+      ? [...new Set(candidateRequirements.flatMap(requirement => requirement.requiredSubjectTerms || requirement.subjectTokens))].slice(0, 16)
+      : [...new Set(evidenceSubjectTerms)];
+    if (candidateRequirements.length === 0) requiredSubjectTerms.forEach(term => groundedTerms.add(term));
     const scopedFirstPartyOutcomes = firstPartyTexts
       .flatMap(value => String(value || '').split(/(?<=[.!?])\s+|[\r\n]+/))
       .map(value => value.trim())
@@ -177,15 +205,14 @@ export function capabilityCatalogRepairPromptFacts(
         ...scopedFirstPartyOutcomes,
       ].filter(Boolean))].slice(0, 4),
       observable_actions: [...new Set((candidate.operations || []).flatMap(operation => [
-        ...safeOperation(operation.action),
+        ...safeOperation(canonicalCapabilityLifecycleAction(operation)),
       ]))].slice(0, 8),
       required_audience_labels: [...new Set(candidateRequirements.map(requirement =>
         String(requirement.audienceLabel || requirement.audience || '').trim()).filter(Boolean))],
-      required_subject_terms: [...new Set(candidateRequirements.flatMap(requirement =>
-        requirement.requiredSubjectTerms || requirement.subjectTokens))].slice(0, 16),
+      required_subject_terms: requiredSubjectTerms,
       required_visible_actions: [...new Set(candidateRequirements.flatMap(requirement => requirement.visibleActionTerms || []))].slice(0, 8),
       minimum_subject_matches: candidateRequirements.reduce((minimum, requirement) => Math.max(minimum,
-        requirement.minimumSubjectMatches ?? Math.min(2, requirement.subjectTokens.length)), 0),
+        requirement.minimumSubjectMatches ?? Math.min(2, requirement.subjectTokens.length)), Math.min(2, requiredSubjectTerms.length)),
       prior_rejections: (rejectionsByCandidate.get(candidate.id) || [])
         .filter(rejection => scopedRequirementIds.size > 0
           ? Boolean(rejection.requirement_id && scopedRequirementIds.has(rejection.requirement_id))
@@ -244,5 +271,55 @@ export function capabilityCatalogFirstPartyFallback(requirement?: CapabilityCata
   return {
     requirement_id: requirement.id, name, description,
     category: 'core', candidate_ids: requirement.candidateIds,
+    catalog_source: 'deterministic',
+  };
+}
+
+export function capabilityCatalogEvidenceFallback(
+  fact: CapabilityCatalogRepairPromptFact | undefined,
+  candidateId: string | undefined,
+  candidate: SystemCapability | undefined,
+): Record<string, unknown> | undefined {
+  if (!fact || !candidateId || !candidate || fact.minimum_subject_matches <= 0) return undefined;
+  const requiredTerms = [...new Set((fact.required_subject_terms || [])
+    .map(term => canonicalCapabilityCatalogOutcomeToken(term))
+    .filter(term => /^[a-z][a-z0-9-]*$/.test(term)))];
+  if (requiredTerms.length < fact.minimum_subject_matches) return undefined;
+
+  const methods = new Set((candidate.operations || [])
+    .map(operation => String(operation.trigger?.method || '').toUpperCase())
+    .filter(Boolean));
+  const actions = new Set((candidate.operations || [])
+    .flatMap(operation => [operation.action, operation.path_or_command])
+    .flatMap(value => String(value || '').toLowerCase().split(/[^a-z0-9]+/))
+    .filter(Boolean));
+  const canRead = [...methods].some(method => /^(?:GET|HEAD|OPTIONS)$/.test(method)) ||
+    ['access', 'get', 'list', 'read', 'retrieve', 'show', 'view'].some(action => actions.has(action));
+  const hasMutation = [...methods].some(method => /^(?:POST|PUT|PATCH|DELETE)$/.test(method)) ||
+    ['add', 'create', 'delete', 'edit', 'remove', 'submit', 'update'].some(action => actions.has(action));
+  const explicitlyNamedReadSurface = candidate.evidence_kind === 'behavior-surface' &&
+    /^(?:get|list|read|retrieve|show|view)\b/i.test(String(candidate.name || '').trim()) &&
+    [...methods].some(method => /^(?:GET|HEAD|OPTIONS)$/.test(method));
+  if (!canRead || (hasMutation && !explicitlyNamedReadSurface)) return undefined;
+
+  const titleCase = (term: string) => term.split('-')
+    .map(part => part ? part[0].toUpperCase() + part.slice(1) : '')
+    .join(' ');
+  const candidateWords = String(candidate.name || '').toLowerCase().match(/[a-z][a-z0-9-]*/g) || [];
+  const userScoped = candidateWords.some(word => canonicalCapabilityCatalogOutcomeToken(word) === 'user');
+  if (!userScoped) return undefined;
+  const displayTerms = requiredTerms.map(term => {
+    const matches = candidateWords.filter(word => canonicalCapabilityCatalogOutcomeToken(word) === term);
+    return matches.find(word => /s$/i.test(word) && !/ss$/i.test(word)) || matches[0] || term;
+  });
+  const subject = displayTerms.map(titleCase).join(' ');
+  const finalDisplayTerm = displayTerms[displayTerms.length - 1] || '';
+  const plural = /s$/i.test(finalDisplayTerm) && !/ss$/i.test(finalDisplayTerm);
+  return {
+    name: `View ${subject}`,
+    description: `${subject} ${plural ? 'are' : 'is'} available to be viewed for a specific user.`,
+    category: 'core',
+    candidate_ids: [candidateId],
+    catalog_source: 'deterministic',
   };
 }

@@ -21,6 +21,7 @@ function mapFlowCapability(capability: CASCapability): SystemCapability {
     name: capability.name,
     structural_label: capability.name,
     description: capability.description,
+    evidence_kind: 'behavior-surface',
     category: capability.classification === 'primary'
       ? 'core'
       : capability.classification === 'infrastructure'
@@ -61,6 +62,7 @@ export function mergeCapabilityCatalogFlowEvidence(
     merged.set(mapped.id, {
       ...existing,
       structural_label: existing.structural_label || mapped.structural_label,
+      evidence_kind: existing.evidence_kind || mapped.evidence_kind,
       description: existing.description || mapped.description,
       operations: [...operations.values()],
       related_entities: [...new Set([...existing.related_entities, ...mapped.related_entities])],

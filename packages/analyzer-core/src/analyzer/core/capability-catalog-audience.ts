@@ -1,13 +1,17 @@
 import type {
   CASDataEntity,
+  CASEntryPoint,
+  CASUserJourney,
   EnhancedSystemPurpose,
   SystemCapability,
 } from '../../types/cas.types';
 import {
   splitIdentifierWords,
   testCapabilityDescriptionAgainstAudience,
+  capabilityMarketingLanguageTerms,
   testCapabilityNameAgainstIdentifierVocabulary,
 } from './capability-audience-test';
+import { capabilityGroundedEntityIds } from './capability-entity-grounding';
 
 export interface CapabilityCatalogProductText {
   concepts?: string[];
@@ -24,6 +28,8 @@ export interface CapabilityAudienceRejection {
   flaggedTokens: string[];
   name: string;
   reasons: string[];
+  missingAudience?: string;
+  missingAudienceLocations?: Array<'description' | 'name'>;
   target: 'description' | 'name';
 }
 
@@ -39,14 +45,36 @@ function normalizedEntityPhrase(value: string): string {
     .toLowerCase()
     .split(/[^a-z0-9]+/)
     .filter(token => token.length >= 3)
-    .map(token => token.length > 4 && token.endsWith('s') && !token.endsWith('ss') ? token.slice(0, -1) : token)
+    .map(token => token.length > 4 && token.endsWith('ies')
+      ? `${token.slice(0, -3)}y`
+      : token.length > 4 && token.endsWith('s') && !token.endsWith('ss') ? token.slice(0, -1) : token)
     .join(' ');
+}
+
+function productTextGroundsEntityRelationship(
+  productTerms: string[],
+  relatedEntityIds: Set<string>,
+  entities: CASDataEntity[],
+  unrelatedEntityName: string,
+): boolean {
+  const unrelatedPhrase = normalizedEntityPhrase(unrelatedEntityName);
+  const relatedPhrases = entities
+    .filter(entity => relatedEntityIds.has(entity.id))
+    .map(entity => normalizedEntityPhrase(entity.name))
+    .filter(Boolean);
+  if (!unrelatedPhrase || relatedPhrases.length === 0) return false;
+  return productTerms
+    .flatMap(term => String(term || '').split(/(?<=[.!?;])\s+|[\r\n]+/))
+    .map(normalizedEntityPhrase)
+    .some(clause => clause.includes(unrelatedPhrase) &&
+      relatedPhrases.some(relatedPhrase => clause.includes(relatedPhrase)));
 }
 
 function unrelatedEntityReferences(
   text: string,
   relatedEntityIds: Set<string>,
   entities: CASDataEntity[],
+  productTerms: string[] = [],
 ): string[] {
   const normalizedText = ` ${normalizedEntityPhrase(text)} `;
   return entities
@@ -54,6 +82,7 @@ function unrelatedEntityReferences(
     .map(entity => ({ name: entity.name, phrase: normalizedEntityPhrase(entity.name) }))
     .filter(entity => entity.phrase.includes(' ') || entity.phrase.length >= 5)
     .filter(entity => normalizedText.includes(` ${entity.phrase} `))
+    .filter(entity => !productTextGroundsEntityRelationship(productTerms, relatedEntityIds, entities, entity.name))
     .map(entity => entity.name);
 }
 
@@ -80,6 +109,11 @@ function capabilityNameProductLanguageFailures(name: string, productTerms: strin
     reasons.push('internal-context-name');
     flaggedTokens.push('work context');
   }
+  const marketingTerms = capabilityMarketingLanguageTerms(name);
+  if (marketingTerms.length > 0) {
+    reasons.push('marketing-language');
+    flaggedTokens.push(...marketingTerms);
+  }
   const trustedWords = new Set(productTerms.flatMap(splitIdentifierWords).map(word => word.toLowerCase()));
   const ordinaryShortWords = new Set(['api', 'app', 'code', 'data', 'map', 'run', 'task', 'user', 'view', 'work']);
   const grammaticalConnectors = new Set([
@@ -98,7 +132,7 @@ function capabilityNameProductLanguageFailures(name: string, productTerms: strin
 }
 
 export function unsupportedCapabilityOperationalClaims(description: string, evidenceTerms: string[]): string[] {
-  const claims = (description || '').match(/\b(?:locks?|locked|locking|exclusive(?:ly| ownership)?|mutual exclusion|blocks? parallel|prevents? (?:concurrent|conflicts?|collisions?|overlaps?)|ensur(?:e|es|ed|ing) (?:a )?(?:consistent|conflict-free|exclusive|safe) state|ensur(?:e|es|ed|ing) [^.;]{0,60}\balign(?:ed|ment)?|reduc(?:e|es|ed|ing) [^.;]{0,24}\b(?:conflicts?|collisions?|overlaps?)|manag(?:e|es|ed|ing)(?=\s+and\s+synchroniz)|synchroniz(?:e|es|ed|ing) (?:tasks?|work|changes?|state)|manag(?:e|es|ed|ing) (?:agent )?tasks?|reserv(?:e|es|ed|ing|ation)|assign(?:s|ed|ing|ment)?|ownership|every|all)\b/gi) || [];
+  const claims = (description || '').match(/\b(?:locks?|locked|locking|exclusive(?:ly| ownership)?|mutual exclusion|immutab(?:le|ility)|immediate(?:ly)?|instant(?:ly|aneous(?:ly)?)?|permanent(?:ly)?|real[- ]time|blocks? parallel|prevents? (?:concurrent|conflicts?|collisions?|overlaps?)|enforc(?:e|es|ed|ing) [^.;]{0,60}\b(?:access|authentication|authorization|identity|permissions?|security)\b|ensur(?:e|es|ed|ing) (?:a )?(?:consistent|conflict-free|exclusive|safe) state|ensur(?:e|es|ed|ing) [^.;]{0,60}\balign(?:ed|ment)?|reduc(?:e|es|ed|ing) [^.;]{0,24}\b(?:conflicts?|collisions?|overlaps?)|manag(?:e|es|ed|ing)(?=\s+and\s+synchroniz)|synchroniz(?:e|es|ed|ing) (?:tasks?|work|changes?|state)|manag(?:e|es|ed|ing) (?:agent )?tasks?|reserv(?:e|es|ed|ing|ation)|assign(?:s|ed|ing)?(?=\s+(?:agents?|tasks?|work|changes?|areas?|ownership)\b)|ownership|every|all)\b/gi) || [];
   const evidence = normalizedEntityPhrase(evidenceTerms.join(' '));
   const evidenceIsAdvisory = /\b(?:advisory|non locking|non exclusive|never block)\b/.test(evidence);
   const operationalKey = (value: string): string => normalizedEntityPhrase(value)
@@ -109,6 +143,71 @@ export function unsupportedCapabilityOperationalClaims(description: string, evid
   const evidenceKey = operationalKey(evidence);
   return claims.filter(claim => evidenceIsAdvisory || !evidenceKey.includes(operationalKey(claim)));
 }
+export function unsupportedCapabilityAbsenceClaims(description: string): string[] {
+  return (description || '').match(
+    /\b(?:without\b[^.;]*|(?:does|do)\s+not\s+require\s+[^.;]*|no\s+[^.;]*\s+(?:is|are)\s+required)\b/gi,
+  ) || [];
+}
+export function removeUnsupportedCapabilityAbsenceClaims(description: string): string {
+  let sanitized = String(description || '').trim();
+  for (let pass = 0; pass < 8; pass++) {
+    const claim = unsupportedCapabilityAbsenceClaims(sanitized)[0];
+    if (!claim) break;
+    const index = sanitized.toLowerCase().indexOf(claim.toLowerCase());
+    if (index < 0) break;
+    const before = sanitized.slice(0, index).replace(/[\s,;:\-]+$/, '');
+    const after = sanitized.slice(index + claim.length).replace(/^[\s,;:\-]+/, '');
+    sanitized = `${before}${before && after ? ' ' : ''}${after}`;
+  }
+  sanitized = sanitized
+    .replace(/\s+([,.;:!?])/g, '$1')
+    .replace(/[,;:]\s*([.!?])$/, '$1')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  if (sanitized && !/[.!?]$/.test(sanitized)) sanitized += '.';
+  return sanitized;
+}
+
+function capabilityOperationSemanticContradictions(capability: SystemCapability): string[] {
+  const operationPaths = (capability.operations || [])
+    .flatMap(operation => [operation.path_or_command, operation.trigger?.path])
+    .filter((value): value is string => Boolean(value))
+    .map(value => value.toLowerCase());
+  const authenticationOnly = operationPaths.length > 0 &&
+    operationPaths.every(value => /(?:^|[/_-])(?:auth(?:enticate)?|login|sign[ _-]?in|token)(?:$|[/_?&#-])/.test(value)) &&
+    !operationPaths.some(value => /(?:^|[/_-])(?:register|registration|sign[ _-]?up)(?:$|[/_?&#-])/.test(value));
+  if (!authenticationOnly || !/^(?:authenticate|sign[ -]?in|log[ -]?in)\b/i.test(capability.name.trim())) {
+    return [];
+  }
+  return [
+    ...(capability.description || '').match(
+      /\b(?:(?:user\s+)?(?:accounts?|identit(?:y|ies)|records?)\s+(?:are|is)\s+(?:created|registered|provisioned)|(?:creates?|registers?|provisions?)\s+(?:an?\s+)?(?:new\s+)?(?:user\s+)?(?:accounts?|identit(?:y|ies)|records?))\b/gi,
+    ) || [],
+  ];
+}
+
+export function normalizeCapabilityDescriptionForPublication(
+  description: string,
+  evidenceTerms: string[] = [],
+): string {
+  let normalized = removeUnsupportedCapabilityAbsenceClaims(description);
+  for (const claim of unsupportedCapabilityOperationalClaims(normalized, evidenceTerms)) {
+    normalized = normalized.replace(claim, '');
+  }
+  normalized = normalized
+    .replace(/\s+(?:in response to|after|when)\s+(?:an?\s+)?(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+requests?(?:\s+(?:to|through|against)\s+[^,.;]+)?/gi, '')
+    .replace(/\s+(?:via|through|using)\s+(?:the\s+)?(?:API(?:\s+endpoint)?|endpoint|route)(?:\s+[^,.;]+)?/gi, '')
+    .replace(/\s+(?:using|via|by|based on)\s+(?:the\s+)?(?:article(?:'s)?\s+)?slug(?:\s+as\s+(?:an?\s+)?identifier)?/gi, '')
+    .replace(/(?:,\s*)?(?:reflecting|using|via|through|in|from|after|when|with)\b[^.;]*(?:\b(?:api|endpoint|http|route|slug|requests?|responses?)\b|\/[a-z0-9{}:_/-]+)[^.;]*/gi, '')
+    .replace(/\s+([,.;:!?])/g, '$1')
+    .replace(/[,;:]\s*([.!?])/g, '$1')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  if (normalized && !/[.!?]$/.test(normalized)) normalized += '.';
+  return normalized;
+}
+
+
 
 export function capabilityCatalogProductTerms(
   purpose: EnhancedSystemPurpose | undefined,
@@ -142,11 +241,31 @@ export function capabilityCatalogIntegrationTerms(libraryNames: string[]): strin
   return [...terms].sort();
 }
 
+function groundedCapabilityAudience(
+  capability: SystemCapability,
+  productText: CapabilityCatalogProductText | undefined,
+  userJourneys: readonly CASUserJourney[],
+): string | undefined {
+  const firstPartyText = [
+    productText?.productDocTitle,
+    productText?.productDocSummary,
+    productText?.manifestDescription,
+    productText?.summary,
+  ].filter(Boolean).join(' ');
+  const namedAudience = firstPartyText.match(/\b(?:users?|people|humans?|operators?|customers?)\b/i)?.[0];
+  if (namedAudience) return namedAudience;
+  const operationEntryPoints = new Set((capability.operations || []).map(operation => operation.entry_point_id));
+  return userJourneys.some(journey => journey.journey_kind === 'user-facing' && operationEntryPoints.has(journey.entry_point_id))
+    ? 'Users'
+    : undefined;
+}
+
 export function evaluateCapabilityCatalogAudience(
   capabilities: SystemCapability[],
   dataEntities: CASDataEntity[],
   libraryNames: string[],
   productTerms: string[],
+  context: { productText?: CapabilityCatalogProductText; userJourneys?: readonly CASUserJourney[]; entryPoints?: readonly CASEntryPoint[] } = {},
 ): CapabilityAudienceEvaluation {
   const libraries = libraryNames.map(name => ({ name }));
   const integrationTerms = capabilityCatalogIntegrationTerms(libraryNames);
@@ -193,7 +312,7 @@ export function evaluateCapabilityCatalogAudience(
       });
       continue;
     }
-    const unrelatedNameEntities = unrelatedEntityReferences(capability.name, relatedEntityIds, dataEntities);
+    const unrelatedNameEntities = unrelatedEntityReferences(capability.name, relatedEntityIds, dataEntities, productTerms);
     if (unrelatedNameEntities.length > 0) {
       rejections.push({
         capabilityId: capability.id,
@@ -233,7 +352,7 @@ export function evaluateCapabilityCatalogAudience(
       capability.description,
       libraries,
       dataEntities,
-      [...capabilityProductTerms, capability.name],
+      capabilityProductTerms,
     );
     if (/\bmessage handling\b/i.test(capability.description || '') &&
       !/\b(?:message|messaging)\b/i.test(productTerms.join(' '))) {
@@ -241,13 +360,26 @@ export function evaluateCapabilityCatalogAudience(
       descriptionVerdict.reasons.push('internal-mechanism-language');
       descriptionVerdict.flaggedTokens.push('message handling');
     }
-    const unsupportedExclusivity = unsupportedCapabilityOperationalClaims(capability.description, operationTerms);
+    const unsupportedExclusivity = unsupportedCapabilityOperationalClaims(capability.description, [...operationTerms, ...productTerms]);
     if (unsupportedExclusivity.length > 0) {
       descriptionVerdict.failsAudienceTest = true;
       descriptionVerdict.reasons.push('unsupported-exclusivity-claim');
       descriptionVerdict.flaggedTokens.push(...unsupportedExclusivity);
     }
-    const unrelatedDescriptionEntities = unrelatedEntityReferences(capability.description, relatedEntityIds, dataEntities);
+    const unsupportedAbsence = unsupportedCapabilityAbsenceClaims(capability.description);
+    if (unsupportedAbsence.length > 0) {
+      descriptionVerdict.failsAudienceTest = true;
+      descriptionVerdict.reasons.push('unsupported-absence-claim');
+      descriptionVerdict.flaggedTokens.push(...unsupportedAbsence);
+    }
+    const semanticContradictions = capabilityOperationSemanticContradictions(capability);
+    if (semanticContradictions.length > 0) {
+      descriptionVerdict.failsAudienceTest = true;
+      descriptionVerdict.reasons.push('operation-semantic-contradiction');
+      descriptionVerdict.flaggedTokens.push(...semanticContradictions);
+    }
+    const descriptionEntityIds = capabilityGroundedEntityIds(capability, dataEntities, context.entryPoints || []);
+    const unrelatedDescriptionEntities = unrelatedEntityReferences(capability.description, descriptionEntityIds, dataEntities, productTerms);
     if (unrelatedDescriptionEntities.length > 0) {
       descriptionVerdict.failsAudienceTest = true;
       descriptionVerdict.reasons.push('unrelated-entity-vocabulary');
@@ -255,6 +387,7 @@ export function evaluateCapabilityCatalogAudience(
     }
     if (descriptionVerdict.failsAudienceTest) {
       const reason = `catalog-audience:${descriptionVerdict.reasons.join(',')}`;
+      const groundedAudience = groundedCapabilityAudience(capability, context.productText, context.userJourneys || []);
       rejections.push({
         capabilityId: capability.id,
         capabilityIndex,
@@ -263,6 +396,8 @@ export function evaluateCapabilityCatalogAudience(
         target: 'description',
         reasons: descriptionVerdict.reasons,
         flaggedTokens: descriptionVerdict.flaggedTokens,
+        ...(groundedAudience ? { missingAudience: groundedAudience } : {}),
+        ...(groundedAudience ? { missingAudienceLocations: ['description' as const] } : {}),
       });
       descriptionRepairCandidates.push({
         ...capability,
@@ -297,7 +432,7 @@ export function capabilityAudienceRepairFeedback(rejections: CapabilityAudienceR
     reasons: rejection.reasons,
     flagged_tokens: rejection.flaggedTokens.slice(0, 8),
   }));
-  return `Replace every rejected item using only cited evidence: ${JSON.stringify(rejectedItems)}. Remove every flagged token. For marketing-language, state the concrete user outcome without promotional claims. For identifier-vocabulary or shortened-product-term, use exact product nouns from first-party product text rather than source identifiers or operation prefixes. For internal-context-name, name the observable action and subject instead of internal work context. For internal-mechanism-language, describe the observable user or operator outcome rather than tool registration, analyzers, storage reads, or source settings. For unsupported-exclusivity-claim, describe advisory detection or reporting; never claim prevention, conflict reduction, guaranteed alignment, exclusivity, ownership, assignment, reservation, universal coverage, or consistency guarantees unless cited evidence explicitly proves them. For missing or restates-name, write a grounded 8-24 word explanation of who uses the ability and why.`;
+  return `Replace every rejected item using only cited evidence: ${JSON.stringify(rejectedItems)}. Remove every flagged token. For marketing-language, state the concrete user outcome without promotional claims. For identifier-vocabulary or shortened-product-term, use exact product nouns from first-party product text rather than source identifiers or operation prefixes. For internal-context-name, name the observable action and subject instead of internal work context. For internal-mechanism-language, describe the observable user or operator outcome rather than tool registration, analyzers, storage reads, or source settings. For operation-semantic-contradiction, describe the route's evidenced outcome and never translate an HTTP method into account, identity, or record creation when the route identifies authentication. For unsupported-exclusivity-claim, describe advisory detection or reporting; never claim prevention, conflict reduction, guaranteed alignment, exclusivity, ownership, assignment, reservation, universal coverage, or consistency guarantees unless cited evidence explicitly proves them. For missing or restates-name, write a grounded 8-24 word explanation of who uses the ability and why.`;
 }
 
 export function capabilityPublishabilityRepairFeedback(

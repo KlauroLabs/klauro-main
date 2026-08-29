@@ -79,6 +79,19 @@ export async function retryEmptyCapabilityCatalogOutcome<T>(args: {
       args.rejections.push(feedback);
       args.record(feedback);
     }
+  } else if (args.retryEvidence) {
+    const expectedFeedbackExists = args.rejections.some(rejection =>
+      rejection.reason === 'required-evidence-zero-result' &&
+      args.candidateIds.every(candidateId => rejection.candidateIds.includes(candidateId)));
+    if (!expectedFeedbackExists) {
+      const feedback: CapabilityCatalogRejection = {
+        candidateIds: [...args.candidateIds],
+        name: 'Required evidence family',
+        reason: 'required-evidence-zero-result',
+      };
+      args.rejections.push(feedback);
+      args.record(feedback);
+    }
   }
   return args.retry();
 }
@@ -96,10 +109,15 @@ export function selectCapabilityCatalogPromptCandidates(
     .filter((candidate): candidate is SystemCapability => Boolean(candidate));
   const requiredIds = new Set([...requiredBehaviorCandidates, ...requiredEntityCandidates].map(candidate => candidate.id));
   const requiredCandidates = rankedCandidates.filter(candidate => requiredIds.has(candidate.id));
+  const omitSupportingContext = requiredCandidates.length > 0;
+  const isEligibleContext = (candidate: SystemCapability): boolean =>
+    !omitSupportingContext ||
+    (candidate.evidence_role !== 'supporting-mechanism' &&
+      candidate.evidence_role !== 'verification-harness');
   const structuralCandidates = rankedCandidates.filter(candidate =>
-    !requiredIds.has(candidate.id) && candidate.evidence_kind !== 'behavior-surface');
+    !requiredIds.has(candidate.id) && candidate.evidence_kind !== 'behavior-surface' && isEligibleContext(candidate));
   const internalBehaviorCandidates = behaviorCandidates.filter(candidate =>
-    !requiredIds.has(candidate.id));
+    !requiredIds.has(candidate.id) && isEligibleContext(candidate));
   const baselineWindowSize = Math.min(64, Math.max(24, requiredBehaviorCandidates.length, Math.ceil(rankedCandidates.length / 6)));
   const windowSize = Math.max(
     baselineWindowSize,
@@ -186,10 +204,22 @@ export function capabilityCatalogRepairCandidateIds(
 function normalizedOutcomeNameTokens(name: string): string[] {
   return String(name || '')
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/\b(?:log|sign)[ -]+in\b/gi, ' authenticate ')
     .toLowerCase()
     .split(/[^a-z0-9]+/)
     .filter(token => token.length >= 3)
-    .map(token => token.length > 4 && token.endsWith('s') && !token.endsWith('ss') ? token.slice(0, -1) : token);
+    .map(token => token.length >= 4 && token.endsWith('s') && !token.endsWith('ss') ? token.slice(0, -1) : token)
+    .map(token => /^(?:auth|authenticate|authentication|login|signin|signon)$/.test(token) ? 'authenticate' : token);
+}
+
+const OUTCOME_ACTION_TOKENS = new Set([
+  'add', 'authenticate', 'browse', 'create', 'delete', 'edit', 'find', 'get',
+  'list', 'manage', 'read', 'remove', 'review', 'search', 'show', 'track',
+  'update', 'view',
+]);
+
+function outcomeSubjectTokens(name: string): string[] {
+  return normalizedOutcomeNameTokens(name).filter(token => !OUTCOME_ACTION_TOKENS.has(token));
 }
 
 function evidenceTokenMatchesOutcomeName(token: string, outcomeNameTokens: readonly string[]): boolean {
@@ -273,6 +303,87 @@ export function mergeUniquelyMatchedBehaviorEvidence(
   return merged;
 }
 
+
+export function mergeGroundedEntityEvidenceFamilies(
+  capabilities: SystemCapability[],
+  evidenceCandidates: readonly SystemCapability[],
+  requiredEntityCandidateGroups: ReadonlyArray<ReadonlyArray<string>>,
+): SystemCapability[] {
+  const merged = capabilities.map(capability => ({ ...capability }));
+  const evidenceById = new Map(evidenceCandidates.map(candidate => [candidate.id, candidate]));
+  const citedIds = new Set(merged.flatMap(capability =>
+    (capability.criticality_factors || [])
+      .filter(factor => factor.startsWith('catalog-candidate:'))
+      .map(factor => factor.slice('catalog-candidate:'.length))));
+
+  for (const group of requiredEntityCandidateGroups) {
+    if (group.some(candidateId => citedIds.has(candidateId))) continue;
+    const matchesByCapability = new Map<number, Array<{ candidate: SystemCapability; score: number }>>();
+    for (const candidateId of group) {
+      const candidate = evidenceById.get(candidateId);
+      if (!candidate ||
+        candidate.evidence_kind === 'behavior-surface' ||
+        candidate.evidence_role !== 'product-outcome' ||
+        (candidate.related_entities || []).length === 0) continue;
+      const evidenceTokens = capabilityEvidenceSubjectTokens({
+        ...candidate,
+        structural_label: undefined,
+        related_domains: [],
+        evidence_examples: [],
+      });
+      if (evidenceTokens.length === 0) continue;
+      const candidateEntities = new Set(candidate.related_entities || []);
+      for (let index = 0; index < merged.length; index++) {
+        const capability = merged[index];
+        const capabilityCitationIds = (capability.criticality_factors || [])
+          .filter(factor => factor.startsWith('catalog-candidate:'))
+          .map(factor => factor.slice('catalog-candidate:'.length));
+        const capabilityEntities = new Set([
+          ...(capability.related_entities || []),
+          ...capabilityCitationIds.flatMap(citationId => evidenceById.get(citationId)?.related_entities || []),
+        ]);
+        const entityOverlap = [...capabilityEntities].filter(entityId => candidateEntities.has(entityId)).length;
+        if (entityOverlap === 0) continue;
+        const outcomeTokens = normalizedOutcomeNameTokens(capability.name);
+        const matchingSubjectCount = evidenceTokens
+          .filter(token => evidenceTokenMatchesOutcomeName(token, outcomeTokens)).length;
+        if (matchingSubjectCount !== evidenceTokens.length) continue;
+        if (outcomeSubjectTokens(capability.name).length === 0) continue;
+        const leadingAction = outcomeTokens[0];
+        const entityOutcomeActionScore = /^(?:manage|review|create|update|delete|edit|track)$/.test(leadingAction || '')
+          ? 10
+          : 0;
+        const score = matchingSubjectCount * 100 + entityOverlap + entityOutcomeActionScore;
+        matchesByCapability.set(index, [
+          ...(matchesByCapability.get(index) || []),
+          { candidate, score },
+        ]);
+      }
+    }
+    const ranked = [...matchesByCapability.entries()]
+      .map(([index, matches]) => ({
+        index,
+        match: [...matches].sort((left, right) =>
+          right.score - left.score || left.candidate.id.localeCompare(right.candidate.id))[0],
+      }))
+      .sort((left, right) => right.match.score - left.match.score || left.index - right.index);
+    if (process.env.KLAURO_DEBUG_CATALOG) {
+      console.error('[catalog-debug] entity evidence bridge:', JSON.stringify({
+        group,
+        candidates: group.map(candidateId => {
+          const candidate = evidenceById.get(candidateId);
+          return { id: candidateId, kind: candidate?.evidence_kind, role: candidate?.evidence_role, entities: candidate?.related_entities };
+        }),
+        matches: ranked.map(item => ({ capability: merged[item.index]?.name, candidate: item.match.candidate.id, score: item.match.score })),
+      }));
+    }
+    if (ranked.length === 0 || (ranked[1] && ranked[1].match.score === ranked[0].match.score)) continue;
+    const selected = ranked[0];
+    merged[selected.index] = mergeCapabilityEvidence(merged[selected.index], selected.match.candidate);
+    citedIds.add(selected.match.candidate.id);
+  }
+  return merged;
+}
 export function capabilityCatalogRepairEvidenceFacts(
   candidates: SystemCapability[], repairCandidateIds: readonly string[], entityNamesById: ReadonlyMap<string, string>,
   rejectionsByCandidate: ReadonlyMap<string, CapabilityCatalogPriorRejection[]> = new Map(),
@@ -346,11 +457,12 @@ export function recordCapabilityPublishabilityRejection(
   capability: SystemCapability,
   reason: string,
   forbiddenTerms: string[],
+  correction: Pick<CapabilityCatalogRejection, 'missingAudience' | 'missingAudienceLocations'> = {},
 ): { added: boolean; feedback: { name: string; description?: string; reason: string; requirement_id?: string; forbidden_terms: string[] } } {
   const identity = capabilityCatalogRepairIdentity(capability);
   const requirementId = identity.requirements[0];
   const recorded = recordCapabilityCatalogRejection(rejectionsByCandidate, {
-    candidateIds: identity.candidates, name: capability.name, reason, requirementId, forbiddenSubjectTerms: forbiddenTerms,
+    candidateIds: identity.candidates, name: capability.name, reason, requirementId, forbiddenSubjectTerms: forbiddenTerms, ...correction,
   });
   return {
     added: recorded.added,
@@ -451,7 +563,10 @@ export function capabilityIdentityPendingDescriptionRepair(
   capability: SystemCapability,
   failure: string,
 ): SystemCapability | undefined {
-  const descriptionFailure = failure === 'missing-description' ||
+  const persistedDescriptionFailure = capability.description_generation?.status === 'ai_rejected' &&
+    capability.description_generation.reason === failure &&
+    !['name-is-not-authored', 'missing-structural-anchor', 'bare-noun-name'].includes(failure);
+  const descriptionFailure = persistedDescriptionFailure || failure === 'missing-description' ||
     failure === 'structural-placeholder-description' ||
     failure === 'description-too-short' ||
     failure === 'description-too-long' ||
@@ -601,6 +716,7 @@ export function scheduleCapabilityCatalog<TTarget>(args: {
     const selected = outcome.value.length > 0
       ? outcome.value
       : args.capabilities.filter(capability =>
+        capability.name_source === 'deterministic' ||
         capability.name_source === 'ai' ||
         capability.name_source === 'manual' ||
         capability.name_source === 'reused').map(capability => structuredClone(capability));

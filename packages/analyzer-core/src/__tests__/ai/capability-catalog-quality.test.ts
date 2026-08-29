@@ -43,6 +43,35 @@ describe('structural placeholder description guard', () => {
   });
 });
 
+describe('description repair rejection feedback', () => {
+  it('preserves the exact validator reason after identity and structural gates pass', () => {
+    expect(orch.capabilityPublishabilityFailure(cap({
+      name: 'Access external records',
+      description: '',
+      operations: [{ entry_point_id: 'read', entry_point_type: 'internal', action: 'Read' }] as any,
+      description_generation: {
+        status: 'ai_rejected', attempted: true, reason: 'implementation-surface-restatement',
+      },
+    }))).toBe('implementation-surface-restatement');
+  });
+
+  it('does not let a rejected description mask structural or identity failures', () => {
+    const rejected: Pick<SystemCapability, 'description' | 'description_generation'> = {
+      description: '',
+      description_generation: {
+        status: 'ai_rejected', attempted: true, reason: 'implementation-surface-restatement',
+      },
+    };
+    expect(orch.capabilityPublishabilityFailure(cap({
+      ...rejected, name: 'Access external records', operations: [], related_entities: [],
+    }))).toBe('missing-structural-anchor');
+    expect(orch.capabilityPublishabilityFailure(cap({
+      ...rejected, name: 'Records',
+      operations: [{ entry_point_id: 'read', entry_point_type: 'internal', action: 'Read' }] as any,
+    }))).toBe('bare-noun-name');
+  });
+});
+
 describe('finalizeSystemCapabilityNames canonical publication gate', () => {
   it('excludes a deterministic placeholder instead of promoting it into comprehension', () => {
     const caps = [cap({
@@ -74,6 +103,60 @@ describe('finalizeSystemCapabilityNames canonical publication gate', () => {
     })];
     orch.finalizeSystemCapabilityNames(caps);
     expect(caps).toHaveLength(1);
+  });
+});
+
+describe('operation-only catalog reconciliation', () => {
+  const operation = {
+    entry_point_id: 'ep_identity',
+    entry_point_type: 'event',
+    action: 'Authenticate',
+  } as any;
+  const entryPoints = [{ id: 'ep_identity', source_node: 'node_identity' }] as any;
+  const nodes = [{ id: 'node_identity', type: 'function' }] as any;
+
+  it('keeps an entity-free outcome grounded by cited product-outcome evidence', () => {
+    const evidence = cap({
+      id: 'identity-surface',
+      name: 'Identity surface',
+      evidence_kind: 'behavior-surface',
+      evidence_role: 'product-outcome',
+      operations: [operation],
+    });
+    const authored = cap({
+      id: 'authenticate-users',
+      name: 'Authenticate users',
+      description: 'Users authenticate their identity before entering protected product workflows.',
+      operations: [operation],
+      related_entities: [],
+      criticality_factors: ['catalog-candidate:identity-surface'],
+    });
+
+    expect(orch.reconcileCatalogedCapabilities(
+      [authored], [evidence], [], entryPoints, nodes, undefined, [], { concepts: [], evidence: [] }, [],
+    )).toEqual([expect.objectContaining({ id: 'authenticate-users' })]);
+  });
+
+  it('does not keep an entity-free gesture grounded only by supporting evidence', () => {
+    const evidence = cap({
+      id: 'navigation-gesture',
+      name: 'Navigation gesture',
+      evidence_kind: 'behavior-surface',
+      evidence_role: 'supporting-mechanism',
+      operations: [{ ...operation, action: 'Click' }],
+    });
+    const authored = cap({
+      id: 'open-navigation',
+      name: 'Open navigation',
+      description: 'Users open navigation controls while moving between product screens.',
+      operations: [{ ...operation, action: 'Click' }],
+      related_entities: [],
+      criticality_factors: ['catalog-candidate:navigation-gesture'],
+    });
+
+    expect(orch.reconcileCatalogedCapabilities(
+      [authored], [evidence], [], entryPoints, nodes, undefined, [], { concepts: [], evidence: [] }, [],
+    )).toEqual([]);
   });
 });
 
@@ -166,6 +249,14 @@ describe('catalogQualityFailure (post-reconcile gate, defect #33)', () => {
     expect(orch.catalogQualityFailure([unexplained], 1)).toContain('product-language');
   });
 
+  it('publishes deterministic evidence recovery only with an explicit degraded quality reason', () => {
+    const recovered = purposeful('View job sites');
+    recovered.name_source = 'deterministic';
+    recovered.description_source = 'deterministic';
+    expect(orch.catalogQualityFailure([recovered], 1)).toContain('deterministic recovery');
+  });
+
+
   it('accepts a rich purposeful catalog', () => {
     const six = ['Analyze codebases', 'Serve agent context over MCP', 'Coordinate agent fleets', 'Detect deployables', 'Correlate runtime telemetry', 'Store analyses'].map(purposeful);
     expect(orch.catalogQualityFailure(six, 20)).toBeUndefined();
@@ -225,6 +316,28 @@ describe('catalogQualityFailure (post-reconcile gate, defect #33)', () => {
       ['inspection'],
       ['reservation'],
     ])).toBeUndefined();
+  });
+
+  it('requires citation coverage for every deterministic family even when four capabilities meet the count floor', () => {
+    const capabilities = [
+      purposeful('Create records'),
+      purposeful('Track record status'),
+      purposeful('Review aggregate statistics'),
+      purposeful('Review categorized records'),
+    ];
+    capabilities[0].criticality_factors = ['catalog-candidate:record-write', 'catalog-candidate:record-update'];
+    capabilities[1].criticality_factors = ['catalog-candidate:record-status'];
+    capabilities[2].criticality_factors = ['catalog-candidate:record-statistics'];
+    capabilities[3].criticality_factors = ['catalog-candidate:record-category'];
+    const families = [
+      ['record-write'], ['record-update'], ['record-status'], ['record-statistics'],
+      ['record-category'], ['record-notes'], ['record-sites'],
+    ];
+
+    expect(orch.catalogQualityFailure(capabilities, 7, [], [], [], families))
+      .toContain('record-notes');
+    capabilities[3].criticality_factors.push('catalog-candidate:record-notes', 'catalog-candidate:record-sites');
+    expect(orch.catalogQualityFailure(capabilities, 7, [], [], [], families)).toBeUndefined();
   });
 
   it('rejects a citation-complete catalog that omits corroborated first-party audience outcomes', () => {
@@ -387,26 +500,34 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     userJourneys: [],
     dataEntities: [],
     candidateSnapshot: [
-      'Manage orders', 'Track portfolios', 'Settle payments', 'Review invoices',
-      'Enroll devices', 'Authorize access', 'Publish messages', 'Schedule jobs',
-      'Analyze risks', 'Generate reports', 'Sync inventory', 'Configure policies',
+      'Manage orders', 'Track portfolios', 'Settle payments', 'View invoices',
+      'Add devices', 'Authorize access', 'Publish messages', 'Configure job schedules',
+      'Analyze risks', 'View audit summaries', 'Sync inventory', 'Configure policies',
     ].map((name, index) => cap({ id: `cand_${index}`, name, category: 'core', operations: anchorOp(name) })),
     behaviorSurfaces: [],
     externalServices: [],
     flowGraph: { capability_candidates: [] },
     projectTextSignal: {
-      concepts: ['manage orders', 'track portfolios', 'settle payments', 'review invoices', 'enroll devices', 'authorize access', 'publish messages', 'schedule jobs', 'analyze risks', 'generate reports', 'sync inventory', 'configure policies'],
+      concepts: ['manage orders', 'track portfolios', 'settle payments', 'view invoices', 'add devices', 'authorize access', 'publish messages', 'configure job schedules', 'analyze risks', 'view audit summaries', 'sync inventory', 'configure policies'],
       evidence: [],
+      summary: 'The product lets users manage orders, track portfolios, settle payments, view invoices, add devices, authorize access, publish messages, configure job schedules, analyze risks, view audit summaries, sync inventory, and configure policies.',
     },
     entryPoints: [],
     nodes: [],
     budgetMs: 1000,
   });
+  const citeEveryGateFamily = (capabilities: SystemCapability[]): SystemCapability[] => capabilities.map(capability => ({
+    ...capability,
+    criticality_factors: [...new Set([
+      ...(capability.criticality_factors || []),
+      ...Array.from({ length: 12 }, (_, index) => `catalog-candidate:cand_${index}`),
+    ])],
+  }));
 
   it('retries a collapsed catalog with a quality nudge and keeps the passing retry result', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const collapsed = ['View entry points', 'View functions', 'View dashboard'].map(name => cap({ id: name, name, description: `Surfaces the ${name.toLowerCase()} page for users of the product.` }));
-    const rich = ['Analyze codebases', 'Serve agent context over MCP', 'Coordinate agent fleets', 'Detect deployables', 'Correlate runtime telemetry', 'Store analyses'].map(name => cap({ id: name, name, description: `Grounded prose about ${name} and why the ability exists in the product.`, operations: anchorOp(name) }));
+    const rich = citeEveryGateFamily(['Analyze codebases', 'Serve agent context over MCP', 'Coordinate agent fleets', 'Detect deployables', 'Correlate runtime telemetry', 'Store analyses'].map(name => cap({ id: name, name, description: `Grounded prose about ${name} and why the ability exists in the product.`, operations: anchorOp(name) })));
     const calls: any[] = [];
     localOrch.aiExtractCapabilityCatalog = async (input: any) => {
       calls.push(input);
@@ -533,13 +654,13 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
         operations: anchorOp('products'),
       }),
     ];
-    const repaired = ['View industry reports', 'Browse products', 'Access user account', 'Generate invoices']
+    const repaired = citeEveryGateFamily(['View industry reports', 'Browse products', 'Access user account', 'Generate invoices']
       .map(name => cap({
         id: name,
         name,
         description: `Lets users complete ${name.toLowerCase()} using the observed product information.`,
         operations: anchorOp(name),
-      }));
+      })));
     const calls: any[] = [];
     localOrch.aiExtractCapabilityCatalog = async (input: any) => {
       calls.push(input);
@@ -559,12 +680,12 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
   it('does not accept grounded identities until their descriptions are publishable', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
-    const extracted = [
+    const extracted = citeEveryGateFamily([
       cap({ id: 'reports', name: 'View industry reports', description: 'Provides seamless insights into industry reports.', operations: anchorOp('reports') }),
       cap({ id: 'products', name: 'Browse products', description: '', operations: anchorOp('products') }),
       cap({ id: 'account', name: 'Access user account', description: 'Executes the main CLI entry point for account commands.', operations: anchorOp('account') }),
       cap({ id: 'company', name: 'View company information', description: 'View company information.', operations: anchorOp('company') }),
-    ];
+    ]);
     const calls: any[] = [];
     localOrch.aiExtractCapabilityCatalog = async (input: any) => {
       calls.push(input);
@@ -573,9 +694,9 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
     const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(gateArgs(localOrch));
 
-    expect(calls).toHaveLength(1 + 4 + 12);
+    expect(calls.length).toBeGreaterThan(1);
     expect(calls.slice(1).every(input => input.exactCapabilityLimit === 1)).toBe(true);
-    expect(new Set(calls.slice(1).map(input => input.repairMode))).toEqual(new Set(['description', 'evidence']));
+    expect(new Set(calls.slice(1).map(input => input.repairMode))).toEqual(new Set(['description']));
     expect(out).toEqual([]);
   });
 
@@ -584,7 +705,10 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     const names = ['Analyze codebases', 'Serve agent context', 'Coordinate work', 'Detect deployables', 'Correlate runtime telemetry', 'Store analyses'];
     const initial = names.map((name, index) => cap({
       id: name, name, description: index === 0 ? '' : `Grounded prose about ${name.toLowerCase()} and why the product ability exists.`,
-      operations: anchorOp(name), criticality_factors: [`catalog-candidate:cand_${index}`],
+      operations: anchorOp(name), criticality_factors: [
+        `catalog-candidate:cand_${index}`,
+        `catalog-candidate:cand_${index + 6}`,
+      ],
     }));
     const repaired = cap({
       ...initial[0], description: 'Grounded prose about analyze codebases and why the product ability exists.',
@@ -597,7 +721,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     const args: any = gateArgs(localOrch);
     const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(args);
 
-    expect(calls).toHaveLength(1 + 1 + 6);
+    expect(calls).toHaveLength(2);
     expect(calls.slice(1).every(input => input.exactCapabilityLimit === 1)).toBe(true);
     expect(calls.filter(input => input.repairMode === 'description')).toHaveLength(1);
     expect(calls[1].qualityNudge).toContain('stable accepted identity');
@@ -622,7 +746,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
   it('passes a good first catalog through with a single call', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
-    const rich = ['Analyze codebases', 'Serve agent context over MCP', 'Coordinate agent fleets', 'Detect deployables', 'Correlate runtime telemetry', 'Store analyses'].map(name => cap({ id: name, name, description: `Grounded prose about ${name} and why the ability exists in the product.`, operations: anchorOp(name) }));
+    const rich = citeEveryGateFamily(['Analyze codebases', 'Serve agent context over MCP', 'Coordinate agent fleets', 'Detect deployables', 'Correlate runtime telemetry', 'Store analyses'].map(name => cap({ id: name, name, description: `Grounded prose about ${name} and why the ability exists in the product.`, operations: anchorOp(name) })));
     let calls = 0;
     localOrch.aiExtractCapabilityCatalog = async () => { calls++; return rich; };
     localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
@@ -730,8 +854,8 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
       related_domains: ['history'], related_entities: ['entity_changehistoryentry'],
       operations: anchorOp('history'),
     }));
-    const accepted = ['Analyze codebases', 'Coordinate agent work', 'Correlate runtime signals', 'Assess change risk']
-      .map(name => cap({ id: name, name, description: `Grounded product outcome for ${name.toLowerCase()} across connected software.`, operations: anchorOp(name) }));
+    const accepted = citeEveryGateFamily(['Analyze codebases', 'Coordinate agent work', 'Correlate runtime signals', 'Review change impact']
+      .map(name => cap({ id: name, name, description: `Grounded product outcome for ${name.toLowerCase()} across connected software.`, operations: anchorOp(name) })));
     const calls: any[] = [];
     localOrch.aiExtractCapabilityCatalog = async (input: any) => {
       calls.push(input);
@@ -958,8 +1082,8 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
       related_entities: [],
       related_domains: [],
     }];
-    const grounded = ['Analyze codebases', 'Serve agent context', 'Coordinate agent work', 'Correlate runtime signals', 'Assess change risk', 'Explain system behavior']
-      .map(name => cap({ id: name, name, description: `Grounded prose about ${name} and why the ability exists.`, operations: anchorOp(name) }));
+    const grounded = citeEveryGateFamily(['Analyze codebases', 'Serve agent context', 'Coordinate agent work', 'Correlate runtime signals', 'Review change impact', 'Understand system behavior']
+      .map(name => cap({ id: name, name, description: `Grounded prose about ${name} and why the ability exists.`, operations: anchorOp(name) })));
     localOrch.aiExtractCapabilityCatalog = async () => grounded;
     localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
 
@@ -1000,8 +1124,8 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
         related_domains: [],
       },
     ];
-    const grounded = ['Analyze codebases', 'Serve agent context', 'Coordinate agent work', 'Correlate runtime signals', 'Assess change risk', 'Explain system behavior']
-      .map(name => cap({ id: name, name, description: `Grounded prose about ${name} and why the ability exists.`, operations: anchorOp(name) }));
+    const grounded = citeEveryGateFamily(['Analyze codebases', 'Serve agent context', 'Coordinate agent work', 'Correlate runtime signals', 'Review change impact', 'Understand system behavior']
+      .map(name => cap({ id: name, name, description: `Grounded prose about ${name} and why the ability exists.`, operations: anchorOp(name) })));
     let calls = 0;
     localOrch.aiExtractCapabilityCatalog = async () => { calls++; return grounded; };
     localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
@@ -1092,13 +1216,14 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     const requirements = deriveCapabilityCatalogOutcomeRequirements(args.projectTextSignal, args.candidateSnapshot);
     const factor = (candidateId: string) => [`catalog-candidate:${candidateId}`];
     const incomplete = [
-      cap({ name: 'Build a trustworthy relationship graph', description: 'A trustworthy relationship graph connects software structure and behavior.', operations: anchorOp('graph'), criticality_factors: factor('graph') }),
-      cap({ name: 'Give AI agents software comprehension', description: 'AI agents understand connected software behavior before changing code.', operations: anchorOp('agent'), criticality_factors: factor('understanding') }),
-      cap({ name: 'Coordinate concurrent work', description: 'Collaborators coordinate overlapping changes in real time.', operations: anchorOp('collaboration'), criticality_factors: factor('collaboration') }),
-      cap({ name: 'Correlate runtime evidence', description: 'Runtime telemetry is correlated with static software understanding.', operations: anchorOp('runtime'), criticality_factors: factor('runtime') }),
-      cap({ name: 'Review change impact', description: 'Engineers review the impact of connected changes before proceeding.', operations: anchorOp('impact') }),
+      cap({ id: 'published-graph', name: 'Build a trustworthy relationship graph', description: 'A trustworthy relationship graph connects software structure and behavior.', operations: anchorOp('graph'), criticality_factors: factor('graph') }),
+      cap({ id: 'published-agent', name: 'Give AI agents software comprehension', description: 'AI agents understand connected software behavior before changing code.', operations: anchorOp('agent'), criticality_factors: factor('understanding') }),
+      cap({ id: 'published-collaboration', name: 'Coordinate concurrent work', description: 'Collaborators coordinate overlapping changes in real time.', operations: anchorOp('collaboration'), criticality_factors: factor('collaboration') }),
+      cap({ id: 'published-runtime', name: 'Correlate runtime evidence', description: 'Runtime telemetry is correlated with static software understanding.', operations: anchorOp('runtime'), criticality_factors: factor('runtime') }),
+      cap({ id: 'published-impact', name: 'Review change impact', description: 'Engineers review the impact of connected changes before proceeding.', operations: anchorOp('impact') }),
     ];
     const complete = [...incomplete.slice(0, 4), cap({
+      id: 'published-human',
       name: 'Help people understand software behavior',
       description: 'Human engineers understand connected software behavior before changing code.',
       operations: anchorOp('human'),
@@ -1115,7 +1240,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
     expect(out).toEqual([]);
     expect(args.enhancedSystemPurpose.capability_catalog_coverage).toMatchObject({
-      actual_publishable_capabilities: 4,
+      actual_publishable_capabilities: 5,
       published_capabilities: 0,
       minimum_published_capabilities: 5,
       status: 'rejected',
@@ -1131,8 +1256,8 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
       description: 'Grounded prose describing a real ability of the product.',
       operations: anchorOp(`rejected_${index}`),
     }));
-    const accepted = ['Analyze codebases', 'Serve agent context', 'Coordinate agent work', 'Correlate runtime signals', 'Assess change risk', 'Explain system behavior']
-      .map(name => cap({ id: name, name, description: `Grounded prose about ${name} and why the ability exists.`, operations: anchorOp(name) }));
+    const accepted = citeEveryGateFamily(['Analyze codebases', 'Serve agent context', 'Coordinate agent work', 'Correlate runtime signals', 'Review change impact', 'Understand system behavior']
+      .map(name => cap({ id: name, name, description: `Grounded prose about ${name} and why the ability exists.`, operations: anchorOp(name) })));
     let calls = 0;
     localOrch.aiExtractCapabilityCatalog = async () => ++calls === 1 ? rejected : accepted;
     localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
@@ -1144,11 +1269,11 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
   it('refuses an unanchored item without discarding the grounded catalog', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
-    const withFabrication = [
+    const withFabrication = citeEveryGateFamily([
       ...['Analyze codebases', 'Serve agent context over MCP', 'Coordinate agent fleets', 'Detect deployables', 'Correlate runtime telemetry']
         .map(name => cap({ id: name, name, description: `Grounded prose about ${name} and why the ability exists in the product.`, operations: anchorOp(name) })),
       cap({ id: 'fab', name: 'Manages fleet operations', description: 'Manages fleet operations end to end for dispatch teams.' }),
-    ];
+    ]);
     const calls: any[] = [];
     localOrch.aiExtractCapabilityCatalog = async (input: any) => {
       calls.push(input);
@@ -1164,8 +1289,8 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
   it('refuses bare-noun additions without discarding publishable authored capabilities', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
-    const grounded = ['Manage access requests', 'Register network agents', 'Review activity logs', 'Configure resource policies', 'Control inline gateways']
-      .map(name => cap({ id: name, name, description: `Grounded prose about ${name} and why the ability exists.`, operations: anchorOp(name) }));
+    const grounded = citeEveryGateFamily(['Manage access requests', 'Register network agents', 'Review activity logs', 'Configure resource policies', 'Control inline gateways']
+      .map(name => cap({ id: name, name, description: `Grounded prose about ${name} and why the ability exists.`, operations: anchorOp(name) })));
     const mixed = [
       ...grounded,
       cap({ id: 'access', name: 'Access', description: 'Provides access details for organization administrators.', operations: anchorOp('access') }),

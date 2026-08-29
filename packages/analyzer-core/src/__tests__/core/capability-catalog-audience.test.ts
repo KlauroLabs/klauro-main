@@ -5,6 +5,8 @@ import {
   capabilityCatalogIntegrationTerms,
   capabilityCatalogProductTerms,
   evaluateCapabilityCatalogAudience,
+  normalizeCapabilityDescriptionForPublication,
+  removeUnsupportedCapabilityAbsenceClaims,
 } from '../../analyzer/core/capability-catalog-audience';
 import { testCapabilityDescriptionAgainstAudience } from '../../analyzer/core/capability-audience-test';
 
@@ -55,6 +57,66 @@ describe('capability catalog audience evaluation', () => {
     expect(evaluation.rejections).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'Browse products', reasons: expect.arrayContaining(['marketing-language']) }),
       expect.objectContaining({ name: 'Access user account', reasons: ['missing'] }),
+    ]));
+  });
+
+  it('rejects marketing language in capability names and does not let a name launder its description', () => {
+    const evaluation = evaluateCapabilityCatalogAudience([
+      capability(
+        'Categorize and Seamlessly Manage Job Applications',
+        'Users group job applications into named categories.',
+      ),
+      capability(
+        'Categorize Job Applications',
+        'Users seamlessly group job applications into named categories.',
+      ),
+    ], [], [], ['job applications', 'named categories']);
+
+    expect(evaluation.accepted).toEqual([]);
+    expect(evaluation.rejections).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'Categorize and Seamlessly Manage Job Applications',
+        target: 'name',
+        reasons: expect.arrayContaining(['marketing-language']),
+      }),
+      expect.objectContaining({
+        name: 'Categorize Job Applications',
+        target: 'description',
+        reasons: expect.arrayContaining(['marketing-language']),
+      }),
+    ]));
+  });
+
+  it('accepts a cross-entity outcome only when first-party product text explicitly relates the entities', () => {
+    const job = dataEntity('entity_job', 'job', 'domain-shape');
+    const category = dataEntity('entity_category', 'category', 'domain-shape');
+    const grounded = capability(
+      'Manage Job Applications',
+      'Users categorize job applications by creating categories for them.',
+    );
+    grounded.related_entities = [job.id];
+    const unsupported = capability(
+      'Manage Job Applications',
+      'Users attach unrelated categories to job applications.',
+    );
+    unsupported.related_entities = [job.id];
+
+    const productText = [
+      'Users categorize job applications by creating categories and adding applications to a category.',
+    ];
+    expect(evaluateCapabilityCatalogAudience(
+      [grounded],
+      [job, category],
+      [],
+      productText,
+    ).accepted.map(item => item.name)).toEqual(['Manage Job Applications']);
+    expect(evaluateCapabilityCatalogAudience(
+      [unsupported],
+      [job, category],
+      [],
+      ['Users manage job applications. Categories configure reports.'],
+    ).rejections).toEqual(expect.arrayContaining([
+      expect.objectContaining({ reasons: expect.arrayContaining(['unrelated-entity-vocabulary']) }),
     ]));
   });
 
@@ -420,4 +482,299 @@ describe('capability catalog audience evaluation', () => {
     );
     expect(evaluation.accepted).toEqual([subject]);
   });
+});
+
+describe('operation semantic grounding', () => {
+  it('rejects account creation claims inferred solely from a POST login route', () => {
+    const authentication = capability(
+      'Authenticate user account',
+      'User account records are created upon successful authentication to establish a persistent identity.',
+    );
+    authentication.operations = [{
+      entry_point_id: 'login',
+      entry_point_type: 'http',
+      action: 'Create',
+      path_or_command: '/api/users/login',
+      trigger: { method: 'POST', path: '/api/users/login' },
+    }];
+
+    const evaluation = evaluateCapabilityCatalogAudience(
+      [authentication], [], [], ['Users authenticate accounts.'],
+    );
+    expect(evaluation.accepted).toEqual([]);
+    expect(evaluation.rejections[0]).toEqual(expect.objectContaining({
+      target: 'description',
+      reasons: expect.arrayContaining(['operation-semantic-contradiction']),
+    }));
+
+    authentication.description = 'Validates user credentials and creates a secure session for protected features.';
+    expect(evaluateCapabilityCatalogAudience(
+      [authentication], [], [], ['Users authenticate accounts.'],
+    ).accepted).toHaveLength(1);
+  });
+});
+
+describe('unsupported absence claims', () => {
+  it('rejects claims that authentication, authorization, or dependencies are absent without proof', () => {
+    const articles = capability(
+      'Create articles',
+      'Users create articles without requiring authentication or external dependencies.',
+    );
+    articles.operations = [{
+      entry_point_id: 'create-article',
+      entry_point_type: 'http',
+      action: 'Create article',
+      trigger: { method: 'POST', path: '/articles' },
+    }];
+
+    const evaluation = evaluateCapabilityCatalogAudience(
+      [articles], [], [], ['Users create and publish articles.'],
+    );
+
+    expect(evaluation.accepted).toEqual([]);
+    expect(evaluation.rejections[0]).toEqual(expect.objectContaining({
+      target: 'description',
+      reasons: expect.arrayContaining(['unsupported-absence-claim']),
+      flaggedTokens: expect.arrayContaining([
+        'without requiring authentication or external dependencies',
+      ]),
+    }));
+  });
+});
+
+it('rejects unsupported workflow and security-state absence claims', () => {
+  const article = capability(
+    'Update articles',
+    'Authors update articles without intermediate workflows.',
+  );
+  const account = capability(
+    'Update user profile',
+    'Users update their profile without altering authentication state or permissions.',
+  );
+  const evaluation = evaluateCapabilityCatalogAudience(
+    [article, account], [], [], ['Users update articles and user profiles.'],
+  );
+
+  expect(evaluation.accepted).toEqual([]);
+  expect(evaluation.rejections.map(rejection => rejection.reasons)).toEqual([
+    expect.arrayContaining(['unsupported-absence-claim']),
+    expect.arrayContaining(['unsupported-absence-claim']),
+  ]);
+});
+
+it('rejects unsupported access-enforcement guarantees', () => {
+  const auth = capability(
+    'Authenticate user accounts',
+    'Credential validation establishes sessions, enforcing identity verification before access to protected resources.',
+  );
+  const evaluation = evaluateCapabilityCatalogAudience(
+    [auth], [], [], ['Users authenticate accounts.'],
+  );
+
+  expect(evaluation.accepted).toEqual([]);
+  expect(evaluation.rejections[0].reasons).toContain('unsupported-exclusivity-claim');
+});
+
+it('rejects unsupported immutability guarantees and accepts directly evidenced immutability', () => {
+  const unsupported = capability(
+    'Create and update articles',
+    'Articles are persisted as immutable state changes visible to readers.',
+  );
+  unsupported.operations = [{
+    entry_point_id: 'update-article',
+    entry_point_type: 'http',
+    action: 'Update article',
+    trigger: { method: 'PUT', path: '/articles/:slug' },
+  }];
+  expect(evaluateCapabilityCatalogAudience(
+    [unsupported], [], [], ['Users create and update articles.'],
+  ).rejections[0].reasons).toContain('unsupported-exclusivity-claim');
+
+  const supported = capability(
+    'Record article revisions',
+    'Article revisions are persisted as immutable records.',
+  );
+  supported.operations = [{
+    entry_point_id: 'record-revision',
+    entry_point_type: 'message',
+    action: 'Persist immutable article revision',
+  }];
+  expect(evaluateCapabilityCatalogAudience(
+    [supported], [], [], ['Article revisions preserve immutable history.'],
+  ).accepted).toEqual([supported]);
+});
+
+it('rejects unsupported latency guarantees but accepts first-party real-time claims', () => {
+  const comments = capability(
+    'Post and delete comments',
+    'Comment changes appear immediately in the article discussion.',
+  );
+  expect(evaluateCapabilityCatalogAudience(
+    [comments], [], [], ['Users discuss articles.'],
+  ).rejections[0].reasons).toContain('unsupported-exclusivity-claim');
+
+  comments.description = 'Comment changes appear in real time in the article discussion.';
+  expect(evaluateCapabilityCatalogAudience(
+    [comments], [], [], ['The product provides real-time article discussions.'],
+  ).accepted).toEqual([comments]);
+});
+
+it('removes only unsupported absence clauses while preserving the positive product statement', () => {
+  expect(removeUnsupportedCapabilityAbsenceClaims(
+    'User profile details can be changed and saved without altering authentication state or permissions.',
+  )).toBe('User profile details can be changed and saved.');
+  expect(removeUnsupportedCapabilityAbsenceClaims(
+    'Authors update articles without intermediate workflows.',
+  )).toBe('Authors update articles.');
+  expect(removeUnsupportedCapabilityAbsenceClaims(
+    'Articles change without intermediate record abstraction.',
+  )).toBe('Articles change.');
+  expect(removeUnsupportedCapabilityAbsenceClaims(
+    'Login establishes a session without exposing password data.',
+  )).toBe('Login establishes a session.');
+  expect(removeUnsupportedCapabilityAbsenceClaims(
+    'Authentication verifies submitted credentials for account access.',
+  )).toBe('Authentication verifies submitted credentials for account access.');
+});
+it('normalizes unsupported timing and transport mechanics while preserving product behavior', () => {
+  expect(normalizeCapabilityDescriptionForPublication(
+    'Users update their profile after a PUT request to /api/user, reflecting modified account details without altering authentication state.',
+  )).toBe('Users update their profile, reflecting modified account details.');
+  expect(normalizeCapabilityDescriptionForPublication(
+    "Users favorite articles using the article's slug as an identifier, with changes reflected immediately in their favorites.",
+  )).toBe('Users favorite articles, with changes reflected in their favorites.');
+  expect(normalizeCapabilityDescriptionForPublication(
+    'An article comment can be permanently removed by its author, reflecting the deletion action observed in the API endpoint DELETE /api/articles/{slug}/comments/{comment_id}.',
+  )).toBe('An article comment can be removed by its author.');
+  expect(normalizeCapabilityDescriptionForPublication(
+    'Comments appear in real time in the article discussion.',
+    ['The product provides real-time article discussions.'],
+  )).toBe('Comments appear in real time in the article discussion.');
+});
+
+
+it('rejects opaque catalog prompt identifiers from published descriptions', () => {
+  const auth = capability(
+    'Authenticate user accounts',
+    'User accounts establish session identity using the required subject term in candidate_1.',
+  );
+  const evaluation = evaluateCapabilityCatalogAudience(
+    [auth], [], [], ['Users authenticate accounts.'],
+  );
+
+  expect(evaluation.accepted).toEqual([]);
+  expect(evaluation.rejections[0].reasons).toContain('internal-mechanism-language');
+});
+
+it('rejects HTTP transport mechanics from published descriptions', () => {
+  const comments = capability(
+    'Post and delete comments',
+    'Users submit a request payload to the comments endpoint before a DELETE operation removes a comment.',
+  );
+  const evaluation = evaluateCapabilityCatalogAudience(
+    [comments], [], [], ['Users post and delete comments.'],
+  );
+
+  expect(evaluation.accepted).toEqual([]);
+  expect(evaluation.rejections[0].reasons).toContain('internal-mechanism-language');
+});
+
+it('rejects source-level URL slugs from published descriptions', () => {
+  const comments = capability(
+    'Comment on articles',
+    'Users post comments on an article selected via its slug.',
+  );
+  const evaluation = evaluateCapabilityCatalogAudience(
+    [comments], [], [], ['Users comment on articles.'],
+  );
+
+  expect(evaluation.accepted).toEqual([]);
+  expect(evaluation.rejections[0].reasons).toContain('internal-mechanism-language');
+});
+
+it('allows a parent resource named by every nested operation without merging entity ownership', () => {
+  const comment = dataEntity('entity_comment', 'Comment', 'persisted-entity');
+  const article = dataEntity('entity_article', 'Article', 'persisted-entity');
+  comment.relations = [{ target_name: 'Article', relation_type: 'ManyToOne', kind: 'data', evidence_source: 'orm-declaration', evidence: 'Comment.article' }];
+  article.relations = [{ target_name: 'Comment', relation_type: 'OneToMany', kind: 'data', evidence_source: 'orm-declaration', evidence: 'Article.comments' }];
+  const comments = capability(
+    'Create and delete comments',
+    'Comments can be created on articles and deleted from their article discussions.',
+  );
+  comments.related_entities = [comment.id];
+  comments.operations = [
+    { entry_point_id: 'create-comment', entry_point_type: 'http', action: 'Create', path_or_command: '/articles/:slug/comments' },
+    { entry_point_id: 'delete-comment', entry_point_type: 'http', action: 'Delete', path_or_command: '/articles/:slug/comments/:id' },
+  ];
+
+  const entryPoints = comments.operations.map(operation => ({
+    id: operation.entry_point_id, source_node: `node-${operation.entry_point_id}`, type: 'http' as const,
+    name: operation.entry_point_id,
+    trigger: { method: operation.action === 'Create' ? 'POST' : 'DELETE', path: operation.path_or_command },
+  }));
+  comments.operations.forEach((operation, index) => { operation.trigger = entryPoints[index].trigger; });
+  const evaluation = evaluateCapabilityCatalogAudience([comments], [comment, article], [], [], { entryPoints });
+  expect(evaluation.accepted).toEqual([comments]);
+  expect(evaluation.accepted[0].related_entities).toEqual([comment.id]);
+});
+
+it('rejects a foreign entity that is absent from any operation scope', () => {
+  const profile = dataEntity('entity_profile', 'Profile', 'persisted-entity');
+  const article = dataEntity('entity_article', 'Article', 'persisted-entity');
+  const follow = capability(
+    'Follow profiles',
+    'Profiles can be followed to include their articles in a personalized feed.',
+  );
+  follow.related_entities = [profile.id];
+  profile.relations = [{ target_name: 'User', relation_type: 'OneToOne', kind: 'data', evidence_source: 'orm-declaration', evidence: 'Profile.user' }];
+  follow.operations = [
+    { entry_point_id: 'follow-profile', entry_point_type: 'http', action: 'Follow', path_or_command: '/profiles/:username/follow' },
+    { entry_point_id: 'unfollow-profile', entry_point_type: 'http', action: 'Unfollow', path_or_command: '/profiles/:username/follow' },
+  ];
+
+  const entryPoints = follow.operations.map(operation => ({
+    id: operation.entry_point_id, source_node: `node-${operation.entry_point_id}`, type: 'http' as const,
+    name: operation.entry_point_id,
+    trigger: { method: operation.action === 'Follow' ? 'POST' : 'DELETE', path: operation.path_or_command },
+  }));
+  follow.operations.forEach((operation, index) => { operation.trigger = entryPoints[index].trigger; });
+  const evaluation = evaluateCapabilityCatalogAudience([follow], [profile, article], [], [], { entryPoints });
+  expect(evaluation.accepted).toEqual([]);
+  expect(evaluation.rejections).toEqual(expect.arrayContaining([
+    expect.objectContaining({ reasons: expect.arrayContaining(['unrelated-entity-vocabulary']), flaggedTokens: ['Article'] }),
+  ]));
+});
+
+it('carries a first-party audience into description repair without inventing one', () => {
+  const feed = capability('Read articles from the feed', 'Users read articles without requiring manual refresh.');
+  feed.operations = [{ entry_point_id: 'feed', entry_point_type: 'http', action: 'List' }];
+  const grounded = evaluateCapabilityCatalogAudience(
+    [feed], [], [], [], { productText: { productDocSummary: 'Users read articles from a personalized feed.' } },
+  );
+  expect(grounded.rejections[0]).toEqual(expect.objectContaining({
+    missingAudience: 'Users',
+    missingAudienceLocations: ['description'],
+  }));
+
+  const ungrounded = evaluateCapabilityCatalogAudience([feed], [], [], []);
+  expect(ungrounded.rejections[0].missingAudience).toBeUndefined();
+});
+
+it('derives a generic user audience only from a matching user-facing journey', () => {
+  const feed = capability('Read articles from the feed', 'Articles are listed without requiring manual refresh.');
+  feed.operations = [{ entry_point_id: 'feed', entry_point_type: 'http', action: 'List' }];
+  const journey = {
+    id: 'journey-feed', name: 'Read feed', journey_kind: 'user-facing' as const, entry_point_id: 'feed',
+    entry: { type: 'http', name: 'GET /feed' }, steps: [],
+    terminal_effects: { entities_written: [], entities_read: [], external_services: [], messages_emitted: [] },
+    terminal_entities: [], security_boundaries: [], tests_covering: [], criticality: 'low' as const,
+    call_chain_ids: [], exit_point_ids: [],
+  };
+  const grounded = evaluateCapabilityCatalogAudience([feed], [], [], [], { userJourneys: [journey] });
+  expect(grounded.rejections[0].missingAudience).toBe('Users');
+
+  const unrelated = evaluateCapabilityCatalogAudience([feed], [], [], [], {
+    userJourneys: [{ ...journey, entry_point_id: 'other' }],
+  });
+  expect(unrelated.rejections[0].missingAudience).toBeUndefined();
 });

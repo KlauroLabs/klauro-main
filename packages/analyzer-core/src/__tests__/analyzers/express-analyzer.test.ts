@@ -98,6 +98,38 @@ describe('ExpressAnalyzer.canAnalyze import-form detection', () => {
     expect(await analyzer.canAnalyze(root)).toBe(true);
   });
 
+  it('keeps same-named routers in different files as distinct graph nodes', async () => {
+    await writePackageJson();
+    await write('routes/auth.js', [
+      "const express = require('express');",
+      'const router = express.Router();',
+      "router.post('/register', register);",
+      'module.exports = router;',
+    ].join('\n'));
+    await write('routes/note.js', [
+      "const express = require('express');",
+      'const router = express.Router();',
+      "router.post('/notes/:userId', getNotes);",
+      'module.exports = router;',
+    ].join('\n'));
+
+    const contribution = await analyzer.analyze({ projectPath: root, files: [], config: {} } as any);
+    const entries = (contribution.entry_points || []).filter(entry => entry.type === 'http');
+    const register = entries.find(entry => entry.trigger?.path === '/auth/register');
+    const notes = entries.find(entry => entry.trigger?.path === '/note/notes/:userId');
+
+    expect(register).toBeDefined();
+    expect(notes).toBeDefined();
+    expect(register?.id).not.toBe(notes?.id);
+    expect(register?.source_node).not.toBe(notes?.source_node);
+    const registerNode = contribution.nodes?.find(node => node.id === register?.source_node);
+    const notesNode = contribution.nodes?.find(node => node.id === notes?.source_node);
+    expect(registerNode?.description).toBe('Express.js HTTP endpoint: POST /auth/register');
+    expect(notesNode?.description).toBe('Express.js HTTP endpoint: POST /note/notes/:userId');
+    expect(registerNode?.metadata?.attributes?.path).toBe('/register');
+    expect(notesNode?.metadata?.attributes?.path).toBe('/notes/:userId');
+  });
+
   it('resolves top-level app.get() routes to their real handler function node end-to-end (namespace import)', async () => {
     await writePackageJson();
     await write('src/server.ts', [

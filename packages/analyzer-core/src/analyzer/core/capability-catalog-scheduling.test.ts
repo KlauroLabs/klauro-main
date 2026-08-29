@@ -19,6 +19,7 @@ import {
   capabilityCatalogRepairEvidenceFacts,
   capabilityOutcomeMatchesEvidence,
   mergeUniquelyMatchedBehaviorEvidence,
+  mergeGroundedEntityEvidenceFamilies,
   mergeCapabilityCatalogRepairResults,
   recordCapabilityCatalogRejection,
   recordCapabilityPublishabilityRejection,
@@ -80,12 +81,13 @@ test('scopes every focused zero-result rejection class to exactly one outcome re
 
 test('retries one empty focused evidence batch without broadening its candidate scope', async () => {
   let retries = 0;
+  const recorded: Array<{ reason: string }> = [];
   const result = await retryEmptyCapabilityCatalogOutcome({
     candidateIds: ['ambiguous-family'],
     initial: [],
     rejections: [{ candidateIds: ['ambiguous-family'], name: 'Rejected result', reason: 'outcome-scope-unsupported:execution' }],
     retryEvidence: true,
-    record: () => undefined,
+    record: feedback => recorded.push(feedback),
     retry: async () => {
       retries++;
       return ['grounded'];
@@ -94,6 +96,8 @@ test('retries one empty focused evidence batch without broadening its candidate 
 
   assert.deepEqual(result, ['grounded']);
   assert.equal(retries, 1);
+  assert.equal(recorded.length, 1);
+  assert.equal(recorded[0].reason, 'required-evidence-zero-result');
 });
 
 test('uniquely matched behavior evidence enriches an accepted product outcome without replacing its authored identity', () => {
@@ -129,6 +133,35 @@ test('uniquely matched behavior evidence enriches an accepted product outcome wi
   assert.deepEqual(merged[0].related_domains, ['codebase', 'analysis']);
   assert.ok(merged[0].criticality_factors.includes(`catalog-candidate:${surface.id}`));
   assert.deepEqual(merged[0].evidence_examples, ['analyze codebase']);
+});
+
+test('login behavior evidence enriches a uniquely matching sign-in outcome', () => {
+
+  const accepted = catalogCapability({
+    id: 'sign-in',
+    name: 'Sign in with Google',
+    description: 'Users sign in with Google before accessing their application records.',
+    operations: [{ entry_point_id: 'google', entry_point_type: 'http', action: 'Authenticate' }],
+    criticality_factors: ['catalog-candidate:google-sign-in'],
+  });
+  const login = catalogCapability({
+    id: 'login',
+    name: 'Manage Login',
+    description: '',
+    evidence_kind: 'behavior-surface',
+    operations: [{ entry_point_id: 'login-click', entry_point_type: 'event', action: 'action' }],
+    evidence_examples: ['Login click'],
+  });
+
+  const merged = mergeUniquelyMatchedBehaviorEvidence(
+    [accepted],
+    [login],
+    [login.id],
+  );
+
+  assert.equal(merged.length, 1);
+  assert.ok(merged[0].criticality_factors.includes('catalog-candidate:login'));
+  assert.deepEqual(merged[0].operations.map(operation => operation.entry_point_id), ['google', 'login-click']);
 });
 
 test('behavior evidence remains uncovered when its outcome match is ambiguous', () => {
@@ -170,6 +203,102 @@ test('automatic evidence merge never absorbs entity evidence or an unrequired su
   assert.deepEqual(merged[0].criticality_factors, []);
 });
 
+
+test('entity evidence families bind only to a unique capability with matching subject and entity evidence', () => {
+  const capabilities = [
+    catalogCapability({ id: 'jobs', name: 'Manage Job Applications', related_entities: ['entity_job'] }),
+    catalogCapability({ id: 'categories', name: 'Manage Job Categories', related_entities: ['entity_category'] }),
+    catalogCapability({ id: 'notes', name: 'Create Note', related_entities: ['entity_note'] }),
+  ];
+  const candidates = [
+    catalogCapability({ id: 'cap_auth_management', name: 'Auth Note', evidence_kind: 'entity', evidence_role: 'product-outcome', related_entities: ['entity_note'] }),
+    catalogCapability({ id: 'cap_job_management', name: 'Job', evidence_kind: 'entity', evidence_role: 'product-outcome', related_entities: ['entity_job'] }),
+    catalogCapability({ id: 'cap_jobs_management', name: 'Jobs', evidence_kind: 'entity', evidence_role: 'product-outcome', related_entities: ['entity_job', 'entity_note'] }),
+    catalogCapability({ id: 'cap_category_management', name: 'Category', evidence_kind: 'entity', evidence_role: 'product-outcome', related_entities: ['entity_category'] }),
+  ];
+
+  const merged = mergeGroundedEntityEvidenceFamilies(
+    capabilities,
+    candidates,
+    [['cap_auth_management', 'cap_job_management', 'cap_jobs_management'], ['cap_category_management']],
+  );
+
+  assert.ok(merged[0].criticality_factors.includes('catalog-candidate:cap_job_management'));
+  assert.ok(merged[1].criticality_factors.includes('catalog-candidate:cap_category_management'));
+  assert.ok(!merged[2].criticality_factors.includes('catalog-candidate:cap_auth_management'));
+});
+
+
+test('entity evidence resolves related entities through an accepted capability citation', () => {
+  const behavior = catalogCapability({
+    id: 'capability_job',
+    name: 'Add Job Modal Change',
+    evidence_kind: 'behavior-surface',
+    related_entities: ['entity_job'],
+  });
+  const entity = catalogCapability({
+    id: 'cap_job_management',
+    name: 'Job',
+    evidence_kind: 'entity',
+    evidence_role: 'product-outcome',
+    related_entities: ['entity_job'],
+  });
+  const capability = catalogCapability({
+    id: 'jobs',
+    name: 'Manage Job Applications',
+    related_entities: [],
+    criticality_factors: ['catalog-candidate:capability_job'],
+  });
+
+  const [merged] = mergeGroundedEntityEvidenceFamilies(
+    [capability],
+    [behavior, entity],
+    [[entity.id]],
+  );
+
+  assert.ok(merged.criticality_factors.includes('catalog-candidate:cap_job_management'));
+});
+
+test('entity evidence does not let a broad entity family inflate a narrower outcome', () => {
+  const entity = catalogCapability({
+    id: 'cap_job_management',
+    name: 'Job',
+    evidence_kind: 'entity',
+    evidence_role: 'product-outcome',
+    related_entities: ['entity_job'],
+  });
+  const capabilities = [
+    catalogCapability({ id: 'jobs', name: 'Manage Jobs', related_entities: ['entity_job'] }),
+    catalogCapability({ id: 'job-sites', name: 'View Job Sites', related_entities: ['entity_job'] }),
+  ];
+
+  const merged = mergeGroundedEntityEvidenceFamilies(
+    capabilities,
+    [entity],
+    [[entity.id]],
+  );
+
+  assert.ok(merged[0].criticality_factors.includes('catalog-candidate:cap_job_management'));
+  assert.ok(!merged[1].criticality_factors.includes('catalog-candidate:cap_job_management'));
+});
+
+test('entity evidence remains uncovered when multiple capabilities are equally grounded', () => {
+  const candidate = catalogCapability({
+    id: 'cap_job_management',
+    name: 'Job',
+    evidence_kind: 'entity',
+    evidence_role: 'product-outcome',
+    related_entities: ['entity_job'],
+  });
+  const capabilities = [
+    catalogCapability({ id: 'jobs', name: 'Manage Job Applications', related_entities: ['entity_job'] }),
+    catalogCapability({ id: 'job-history', name: 'Review Job History', related_entities: ['entity_job'] }),
+  ];
+
+  const merged = mergeGroundedEntityEvidenceFamilies(capabilities, [candidate], [[candidate.id]]);
+
+  assert.ok(merged.every(capability => !capability.criticality_factors.includes('catalog-candidate:' + candidate.id)));
+});
 test('prompt selection represents every required entity family beyond the baseline window', () => {
   const productCandidates = Array.from({ length: 37 }, (_, index) => ({
     id: `product-${index}`,
@@ -195,14 +324,26 @@ test('prompt selection represents every required entity family beyond the baseli
   assert.equal(selected.filter(candidate => candidate.category === 'internal').length, 19);
 });
 
-test('prompt selection retains nonmandatory supporting and verification surfaces as context', () => {
+test('prompt selection omits supporting and verification plumbing when product outcome families exist', () => {
   const selected = selectCapabilityCatalogPromptCandidates([
     { id: 'required', name: 'Review work', category: 'core', evidence_kind: 'behavior-surface', evidence_role: 'product-outcome' },
     { id: 'support', name: 'Coordinate transport', category: 'supporting', evidence_kind: 'behavior-surface', evidence_role: 'supporting-mechanism' },
     { id: 'proof', name: 'Exercise proof', category: 'supporting', evidence_kind: 'behavior-surface', evidence_role: 'verification-harness' },
+    { id: 'database', name: 'Database', category: 'supporting', evidence_kind: 'entity', evidence_role: 'supporting-mechanism' },
+    { id: 'ambiguous', name: 'Account settings', category: 'supporting', evidence_kind: 'entity', evidence_role: 'unresolved' },
   ] as any[]);
 
-  assert.deepEqual(selected.map(candidate => candidate.id), ['required', 'support', 'proof']);
+  assert.deepEqual(selected.map(candidate => candidate.id), ['required', 'ambiguous']);
+});
+
+test('prompt selection retains supporting and verification context when no product family is established', () => {
+  const selected = selectCapabilityCatalogPromptCandidates([
+    { id: 'support', name: 'Coordinate transport', category: 'supporting', evidence_kind: 'behavior-surface', evidence_role: 'supporting-mechanism' },
+    { id: 'proof', name: 'Exercise proof', category: 'supporting', evidence_kind: 'behavior-surface', evidence_role: 'verification-harness' },
+    { id: 'database', name: 'Database', category: 'supporting', evidence_kind: 'entity', evidence_role: 'supporting-mechanism' },
+  ] as any[]);
+
+  assert.deepEqual(selected.map(candidate => candidate.id), ['database', 'support', 'proof']);
 });
 
 test('prompt selection retains first-party internal surfaces as context without elevating them above other delivery evidence', () => {
@@ -332,7 +473,7 @@ test('product-language violations expose the exact copied terms for all live rep
   );
   assert.deepEqual(
     capabilityDescriptionProductLanguageViolation('People click architecture diagram to inspect changes.', [], ['["click","architecture diagram"]']),
-    { reason: 'delivery-operation-restatement', forbiddenTerms: ['click', 'architecture', 'diagram'] },
+    { reason: 'ui-delivery-scaffolding', forbiddenTerms: ['click'] },
   );
   assert.deepEqual(
     capabilityDescriptionProductLanguageViolation('Agents inspect edges and call chains before changes.', [], []),
@@ -348,7 +489,7 @@ test('product-language violations expose the exact copied terms for all live rep
   );
   assert.deepEqual(
     capabilityDescriptionProductLanguageViolation('People compare capability maps and entry points across changes.', [], [], ['CapabilityMap', 'EntryPoint']),
-    { reason: 'implementation-graph-inventory', forbiddenTerms: ['capability map', 'entry point'] },
+    { reason: 'capability-self-reference', forbiddenTerms: ['capability'] },
   );
 });
 
@@ -388,6 +529,41 @@ test('preview and compare wording requires a narrowly cited operation family', (
   assert.deepEqual(capabilityOutcomeScopeFailure('Preview and compare codebase iterations', [focused], undefined, true), []);
 });
 
+test('aggregate entity evidence supports an outcome-level management label', () => {
+  const aggregate = catalogCapability({
+    id: 'jobs', name: 'Job', structural_label: 'Job', evidence_kind: 'entity',
+    operations: [
+      { action: 'Create', entry_point_id: 'create', entry_point_type: 'http' },
+      { action: 'Delete', entry_point_id: 'delete', entry_point_type: 'http' },
+    ],
+  });
+  assert.deepEqual(capabilityOutcomeScopeFailure('Manage Job Applications', [aggregate], undefined, true), []);
+});
+
+test('first-party product language plus aggregate lifecycle evidence supports management over mixed delivery evidence', () => {
+  const aggregate = catalogCapability({
+    id: 'jobs', name: 'Job', structural_label: 'Job Management', evidence_kind: 'entity',
+    operations: [
+      { action: 'Manage', path_or_command: '/job/add-job', entry_point_id: 'create', entry_point_type: 'http' },
+      { action: 'Manage', path_or_command: '/job/edit-job', entry_point_id: 'update', entry_point_type: 'http' },
+      { action: 'Manage', path_or_command: '/job/delete-job', entry_point_id: 'delete', entry_point_type: 'http' },
+    ],
+  });
+  const delivery = catalogCapability({
+    id: 'job-form', name: 'Add Job Modal Change', structural_label: 'Add Job Modal Change', evidence_kind: 'behavior-surface',
+    operations: [
+      { action: 'Create', path_or_command: 'change', entry_point_id: 'change', entry_point_type: 'event' },
+    ],
+  });
+  const signal = { productDocSummary: 'Users can manage job applications by adding, editing, and deleting them.' };
+
+  assert.deepEqual(capabilityOutcomeScopeFailure('Manage Job Applications', [aggregate, delivery], signal, false), []);
+  assert.deepEqual(
+    capabilityOutcomeScopeFailure('Manage Job Applications', [aggregate, delivery], { productDocSummary: 'Users browse job listings.' }, false),
+    ['delivery-operation-restatement'],
+  );
+});
+
 test('the seven-capability live catalog keeps outcomes and rejects implementation-shaped prose', () => {
   const liveIdentifiers = ['CASEdge', 'CASNode', 'SystemCapability', 'CASEntryPoint', 'CrossCodebaseSystemGraph'];
   const broad = catalogCapability({
@@ -411,7 +587,7 @@ test('the seven-capability live catalog keeps outcomes and rejects implementatio
   assert.equal(capabilityCatalogOutcomeNameFailure('Fabric work concepts across codebase changes', collaboration), 'required-outcome-visible-action-missing:collaboration');
   assert.equal(capabilityDescriptionProductLanguageViolation('Collaboration exposes conflicts across CAS graph nodes.', [], [], liveIdentifiers)?.reason, 'implementation-graph-inventory');
   assert.equal(capabilityDescriptionProductLanguageViolation('Static structure maps CASEdge transitions to runtime states.', [], [], liveIdentifiers)?.reason, 'raw-related-entity-identifier');
-  assert.equal(capabilityDescriptionProductLanguageViolation('People compare capability maps and entry points across changes.', [], [], liveIdentifiers)?.reason, 'implementation-graph-inventory');
+  assert.equal(capabilityDescriptionProductLanguageViolation('People compare capability maps and entry points across changes.', [], [], liveIdentifiers)?.reason, 'capability-self-reference');
   assert.equal(capabilityDescriptionProductLanguageViolation('Connected software relationships expose change impact and conceptual conflicts.', [], [], ['CASRelationshipGraph']), undefined);
   assert.equal(capabilityDescriptionProductLanguageViolation('Agents understand connected software behavior before changing code.', [], [], ['AgentContext']), undefined);
   assert.equal(capabilityDescriptionProductLanguageViolation('The CAS graph exposes connected behavior.', [], [], liveIdentifiers, ['CAS graph']), undefined);
@@ -440,6 +616,19 @@ test('only an exact bound first-party action bypasses broad delivery evidence', 
   assert.deepEqual(capabilityOutcomeScopeFailure('Correlate static understanding with runtime evidence', [broad], signal, false, '', [], runtime), []);
   assert.deepEqual(capabilityOutcomeScopeFailure('Build banana vacation graph', [broad], signal, false, '', [], graph), ['banana', 'vacation']);
   assert.deepEqual(capabilityOutcomeScopeFailure('Handle agent context', [broad], undefined, true, '', [], { id: 'tool', visibleActionTerms: ['handle'] }), ['delivery-operation-restatement']);
+
+});
+test('accepts an inverse lifecycle action only when the cited operation proves it', () => {
+  const favorite = catalogCapability({
+    id: 'favorite',
+    name: 'Favorite (Article)',
+    operations: [
+      { entry_point_id: 'favorite', entry_point_type: 'http', action: 'Create', trigger: { method: 'POST', path: '/articles/:slug/favorite' } },
+      { entry_point_id: 'unfavorite', entry_point_type: 'http', action: 'Delete', trigger: { method: 'DELETE', path: '/articles/:slug/favorite' } },
+    ],
+  });
+  assert.deepEqual(capabilityOutcomeScopeFailure('Favorite or unfavorite an article', [favorite]), []);
+  assert.deepEqual(capabilityOutcomeScopeFailure('Favorite or unfavorite an article', [{ ...favorite, operations: favorite.operations.slice(0, 1) }]), ['unfavorite']);
 });
 
 test('renamed repairs replace pending identities by stable requirement without crossing shared-candidate slots', () => {
@@ -475,6 +664,23 @@ test('candidate identity replaces a renamed pending repair but never overwrites 
 
   assert.deepEqual(mergeCapabilityCatalogRepairResults([pending], [repaired]).map(capability => capability.id), ['new']);
   assert.deepEqual(mergeCapabilityCatalogRepairResults([repaired], [invalidReplacement]).map(capability => capability.id), ['new']);
+});
+
+test('accepted same-identity description repair replaces the pending rejection and clears its repair key', () => {
+  const pending = catalogCapability({
+    id: 'old', name: 'Access external records', description: '',
+    description_generation: { status: 'ai_rejected', attempted: true, reason: 'implementation-surface-restatement' },
+    criticality_factors: ['catalog-candidate:external-records'],
+  });
+  const repaired = catalogCapability({
+    id: 'new', name: 'Access external records',
+    description: 'People open verified external records associated with their account.',
+    description_generation: { status: 'ai_applied', attempted: true },
+    criticality_factors: ['catalog-candidate:external-records'],
+  });
+  const merged = mergeCapabilityCatalogRepairResults([pending], [repaired]);
+  assert.deepEqual(merged.map(capability => capability.id), ['new']);
+  assert.deepEqual(capabilityCatalogPendingRepairKeys(merged), []);
 });
 
 test('evidence batch collection preserves successful families when one focused call times out', async () => {

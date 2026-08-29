@@ -1,7 +1,8 @@
 import { CapabilityDetector } from '../../analyzer/core/capability-detector';
 import {
   isBareNounCapabilityLabel,
-  isStructuralPlaceholderCapabilityDescription
+  isStructuralPlaceholderCapabilityDescription,
+  normalizeCapabilityActionName
 } from '../../analyzer/core/capability-naming';
 import type { CASEntryPoint } from '../../types/cas.types';
 
@@ -101,6 +102,12 @@ describe('CapabilityDetector producer naming (evidence-grounded, no bare-noun gr
     expect(isBareNounCapabilityLabel('Browse products')).toBe(false);
   });
 
+  it('recognizes publish as a product-purpose verb without accepting noun-only labels', () => {
+    expect(isBareNounCapabilityLabel('Publish articles')).toBe(false);
+    expect(isBareNounCapabilityLabel('Settle invoices')).toBe(false);
+    expect(isBareNounCapabilityLabel('Article management')).toBe(true);
+  });
+
   it('never emits the "<pattern> operation via <type>" single-op template', () => {
     const caps = detect([
       entryPoint({
@@ -151,5 +158,13 @@ describe('CapabilityDetector producer naming (evidence-grounded, no bare-noun gr
       expect(isBareNounCapabilityLabel(cap.name)).toBe(false);
       expect(isStructuralPlaceholderCapabilityDescription(cap.description)).toBe(false);
     }
+  });
+
+  it('normalizes third-person generated action headings to imperative names', () => {
+    expect(normalizeCapabilityActionName('Updates user profile')).toBe('Update user profile');
+    expect(normalizeCapabilityActionName('Creates and updates articles')).toBe('Create and update articles');
+    expect(normalizeCapabilityActionName('Manages account settings')).toBe('Manage account settings');
+    expect(normalizeCapabilityActionName('Processes events')).toBe('Process events');
+    expect(normalizeCapabilityActionName('Access control')).toBe('Access control');
   });
 });

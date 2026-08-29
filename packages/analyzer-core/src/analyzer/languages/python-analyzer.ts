@@ -827,12 +827,12 @@ export class PythonAnalyzer extends BaseAnalyzer {
       const line = lines[i];
 
       if (line.trim().startsWith('def ') || line.trim().startsWith('async def ')) {
-        let funcMatch = line.match(/(async\s+)?def\s+(\w+)\s*\(([^)]*)\)(?:\s*->\s*([^:]+))?:/);
+        let funcMatch = line.match(/(async\s+)?def\s+(\w+)\s*\((.*)\)(?:\s*->\s*([^:]+))?:/);
         let signatureEndIndex = i;
         if (!funcMatch) {
 
           const collected = this.collectLogicalStatement(lines, i);
-          funcMatch = collected.text.match(/(async\s+)?def\s+(\w+)\s*\(([^)]*)\)(?:\s*->\s*([^:]+))?:/);
+          funcMatch = collected.text.match(/(async\s+)?def\s+(\w+)\s*\((.*)\)(?:\s*->\s*([^:]+))?:/);
           if (funcMatch) signatureEndIndex = collected.endIndex;
         }
         if (funcMatch) {
@@ -890,11 +890,11 @@ export class PythonAnalyzer extends BaseAnalyzer {
       const indent = line.length - line.trimStart().length;
 
       if (indent > 0 && (line.trim().startsWith('def ') || line.trim().startsWith('async def '))) {
-        let methodMatch = line.match(/(async\s+)?def\s+(\w+)\s*\(([^)]*)\)(?:\s*->\s*([^:]+))?:/);
+        let methodMatch = line.match(/(async\s+)?def\s+(\w+)\s*\((.*)\)(?:\s*->\s*([^:]+))?:/);
         let signatureEndIndex = i;
         if (!methodMatch) {
           const collected = this.collectLogicalStatement(lines, i);
-          methodMatch = collected.text.match(/(async\s+)?def\s+(\w+)\s*\(([^)]*)\)(?:\s*->\s*([^:]+))?:/);
+          methodMatch = collected.text.match(/(async\s+)?def\s+(\w+)\s*\((.*)\)(?:\s*->\s*([^:]+))?:/);
           if (methodMatch) signatureEndIndex = collected.endIndex;
         }
         if (methodMatch) {

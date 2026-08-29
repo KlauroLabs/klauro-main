@@ -40,6 +40,10 @@ async function withScopedStorage<T>(fn: (repo: string) => Promise<T>): Promise<T
   process.env.OPENAI_API_KEY = 'test-mock-key';
   process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS = '60000';
   await fs.copy(fixturePath, repo);
+  await fs.outputFile(
+    path.join(repo, 'README.md'),
+    '# Customer profiles\n\nThis service creates and retrieves user records with names and email addresses for customer profile workflows.\n',
+  );
   try {
     return await fn(repo);
   } finally {
@@ -92,6 +96,17 @@ function capabilityCatalogResponse(context: any): string | undefined {
   const catalogSubjects = subjects.length > 0
     ? subjects
     : journeys.map(journey => String(journey.name || '')).filter(Boolean).slice(0, 8);
+  const candidates: Array<{ candidate_id?: string; family?: string; name?: string; entity_names?: string[] }> =
+    Array.isArray(context?.facts?.candidate_route_areas) ? context.facts.candidate_route_areas : [];
+  const candidateIdsFor = (subject: string): string[] => {
+    const normalizedSubject = subject.toLowerCase();
+    return candidates
+      .filter(candidate => [candidate.family, candidate.name, ...(candidate.entity_names || [])]
+        .map(value => String(value || '').toLowerCase())
+        .some(value => value.includes(normalizedSubject)))
+      .map(candidate => String(candidate.candidate_id || ''))
+      .filter(Boolean);
+  };
   return JSON.stringify({
     capabilities: catalogSubjects.map(subject => ({
       name: subject === 'User' ? 'Maintain customer profiles' : `Maintain ${subject.replace(/([a-z])([A-Z])/g, '$1 $2')} information`,
@@ -101,6 +116,7 @@ function capabilityCatalogResponse(context: any): string | undefined {
       category: 'core',
       entities: subjects.includes(subject) ? [subject] : [],
       journeys: journeys.some(journey => journey.name === subject) ? [subject] : [],
+      candidate_ids: candidateIdsFor(subject),
     })),
   });
 }

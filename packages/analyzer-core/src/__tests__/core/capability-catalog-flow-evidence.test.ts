@@ -1,4 +1,5 @@
 import { mergeCapabilityCatalogFlowEvidence } from '../../analyzer/core/capability-catalog-flow-evidence';
+import { classifyCapabilityEvidence } from '../../analyzer/core/capability-catalog-evidence';
 
 describe('mergeCapabilityCatalogFlowEvidence', () => {
   const flowCandidate: any = {
@@ -41,6 +42,7 @@ describe('mergeCapabilityCatalogFlowEvidence', () => {
     expect(candidate).toMatchObject({
       id: 'capability_customers',
       category: 'core',
+      evidence_kind: 'behavior-surface',
       related_entities: ['entity_customer'],
       operations: [{ entry_point_id: 'create-customer', entry_point_type: 'http', action: 'create' }],
     });
@@ -62,5 +64,32 @@ describe('mergeCapabilityCatalogFlowEvidence', () => {
     expect(candidate.operations).toHaveLength(1);
     expect(candidate.related_entities).toEqual(['entity_customer']);
     expect(candidate.description).toBe('Covers customer creation and retrieval.');
+  });
+
+  it('keeps supporting flow gestures out of mandatory product evidence while primary flow outcomes remain eligible', () => {
+    const primary = mergeCapabilityCatalogFlowEvidence([], [flowCandidate])[0];
+    const supporting = mergeCapabilityCatalogFlowEvidence([], [{
+      ...flowCandidate,
+      id: 'capability_navigation',
+      name: 'Navigation Click',
+      classification: 'supporting',
+      operations: [{
+        ...flowCandidate.operations[0],
+        id: 'navigation-click',
+        name: 'Navigation Click',
+        pattern: 'action',
+        entry_point_id: 'navigation-click',
+        trigger: { type: 'event' },
+      }],
+      entities_touched: [],
+    } as any])[0];
+    const classified = classifyCapabilityEvidence(
+      [primary, supporting],
+      [{ id: 'entity_customer', name: 'Customer', kind: 'persisted-entity', lifecycle: { created_by: ['create-customer'], read_by: ['get-customer'], updated_by: [], deleted_by: [] } } as any],
+      { productDocSummary: 'Get customers by id provides customer records.' },
+    );
+
+    expect(classified.find(candidate => candidate.id === primary.id)?.evidence_role).toBe('product-outcome');
+    expect(classified.find(candidate => candidate.id === supporting.id)?.evidence_role).toBe('supporting-mechanism');
   });
 });

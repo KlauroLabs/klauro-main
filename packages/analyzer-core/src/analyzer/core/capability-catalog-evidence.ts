@@ -1,7 +1,11 @@
 import { CASDataEntity, CASEntryPoint, CASNode, CASUserJourney, EnhancedSystemPurpose, SystemCapability } from '../../types/cas.types';
+import { capabilityMarketingLanguageTerms } from './capability-audience-test';
 import { USER_FACING_ENTRY_TYPES } from './journey-builder';
 import { isScaffoldOrTestPath } from './scaffold-paths';
 import { analyzeTerminality } from './terminality';
+import { observedCapabilityLifecycleActions } from './capability-lifecycle-actions';
+import { normalizedSubjectTokens, outcomeIdentityTokens, outcomeTokenMatches, productTextCorroboratesActionAndSubject } from './capability-evidence-language';
+import { CAPABILITY_PURPOSE_VERBS } from "./capability-naming";
 
 export type CapabilityEvidenceRole = NonNullable<SystemCapability['evidence_role']>;
 
@@ -58,51 +62,6 @@ export function synchronizeCapabilityCatalogCoverage(
   purpose.ai_phase_status = capabilityCatalogAiPhaseStatus(coverage);
 }
 
-function normalizedSubjectTokens(value: string): Set<string> {
-  const scaffolding = new Set(['management', 'capability', 'workflow', 'handling', 'operation', 'operations', 'mcp', 'tool', 'tools', 'surface']);
-  return new Set(String(value || '')
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter(token => token.length >= 3 && !scaffolding.has(token))
-    .map(token => token.length > 4 && token.endsWith('s') && !token.endsWith('ss') ? token.slice(0, -1) : token));
-}
-
-function outcomeIdentityTokens(value: string): string[] {
-  const ignored = new Set([
-    'a', 'an', 'and', 'as', 'at', 'by', 'for', 'from', 'in', 'into', 'of', 'on', 'or', 'the', 'through', 'to', 'using', 'with',
-    'ability', 'across', 'area', 'behavior', 'capability', 'management', 'operation', 'operations', 'surface', 'tool', 'tools', 'workflow',
-  ]);
-  return String(value || '')
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter(token => token.length >= 3)
-    .map(token => token.length >= 4 && token.endsWith('s') && !token.endsWith('ss') ? token.slice(0, -1) : token)
-    .filter(token => !ignored.has(token));
-}
-
-function outcomeTokenMatches(token: string, evidence: Set<string>): boolean {
-  const equivalents: Record<string, string[]> = {
-    code: ['codebase', 'software', 'source'],
-    codebase: ['code', 'software', 'source'],
-    collaborate: ['collaboration', 'coordinate'],
-    collaboration: ['collaborate', 'coordinate'],
-    coordinate: ['collaborate', 'collaboration'],
-    collision: ['conflict', 'overlap'],
-    conflict: ['collision', 'overlap'],
-    evolution: ['change', 'history'],
-    history: ['change', 'evolution'],
-    overlap: ['collision', 'conflict'],
-    overlapping: ['collision', 'conflict'],
-  };
-  if ((equivalents[token] || []).some(candidate => evidence.has(candidate))) return true;
-  return evidence.has(token) || [...evidence].some(candidate =>
-    Math.min(token.length, candidate.length) >= 5 &&
-    (token.startsWith(candidate) || candidate.startsWith(token) || token.slice(0, 5) === candidate.slice(0, 5))
-  );
-}
-
 function capabilityOutcomeCorroboratedByProductText(
   name: string,
   citedCandidates: SystemCapability[],
@@ -150,14 +109,18 @@ export function capabilityEvidenceSubjectTokens(
   entityNames: readonly string[] = [],
 ): string[] {
   const ignored = new Set([
-    'analyze', 'check', 'entry', 'extend', 'fetch', 'get', 'install', 'internal', 'list', 'load', 'mcp', 'model',
-    'preview', 'read', 'record', 'release', 'run', 'show', 'start', 'stop', 'supporting', 'sync', 'system', 'validate', 'value',
+    'analyze', 'api', 'app', 'cap', 'check', 'entry', 'extend', 'fetch', 'get', 'id', 'identifier', 'install', 'internal', 'list', 'load', 'mcp', 'model',
+    'preview', 'read', 'record', 'release', 'route', 'router', 'run', 'show', 'slug', 'start', 'stop', 'supporting', 'sync', 'system', 'username', 'validate', 'value',
   ]);
   const tokens = outcomeIdentityTokens([
     candidate.name,
     candidate.structural_label,
     ...(candidate.related_domains || []),
     ...entityNames,
+    ...(candidate.evidence_kind === 'behavior-surface' ? [] : (candidate.operations || []).flatMap(operation => [
+      operation.path_or_command,
+      operation.trigger?.path,
+    ])),
   ].filter(Boolean).join(' ')).filter(token => !ignored.has(token));
   const exampleCounts = new Map<string, number>();
   for (const example of candidate.evidence_examples || []) {
@@ -169,6 +132,46 @@ export function capabilityEvidenceSubjectTokens(
     .filter(([, count]) => count >= Math.min(2, candidate.evidence_examples?.length || 1))
     .map(([token]) => token);
   return [...new Set([...tokens, ...recurringExampleTokens])].sort();
+}
+
+export function narrowCapabilityEvidenceCandidates(
+  outcomeName: string,
+  citedCandidates: readonly SystemCapability[],
+): SystemCapability[] {
+  if (citedCandidates.length <= 1) return [...citedCandidates];
+  const deliveryActions = new Set([
+    'add', 'build', 'create', 'delete', 'edit', 'get', 'list', 'load', 'manage',
+    'patch', 'post', 'provide', 'put', 'read', 'remove', 'run', 'set', 'show',
+    'update', 'view',
+  ]);
+  const identityTokens = outcomeIdentityTokens(outcomeName);
+  const leadingOutcomeToken = identityTokens[0];
+  const outcomeTokens = identityTokens.filter(token => !deliveryActions.has(token));
+  if (outcomeTokens.length === 0) return [...citedCandidates];
+
+  const evidenceTokens = citedCandidates.map(candidate =>
+    new Set(capabilityEvidenceSubjectTokens(candidate)));
+  const frequencies = outcomeTokens.map(token => ({
+    token,
+    count: evidenceTokens.filter(evidence => outcomeTokenMatches(token, evidence)).length,
+  })).filter(item => item.count > 0);
+  if (frequencies.length === 0) return [...citedCandidates];
+
+  const minimumFrequency = Math.min(...frequencies.map(item => item.count));
+  const domainLeadingAnchor: { token: string; count: number } | undefined =
+    typeof leadingOutcomeToken === 'string' &&
+    leadingOutcomeToken.length > 0 &&
+    !deliveryActions.has(leadingOutcomeToken)
+      ? frequencies.find(item => item.token === leadingOutcomeToken)
+      : undefined;
+  const anchors: string[] = domainLeadingAnchor
+    ? [domainLeadingAnchor.token]
+    : frequencies
+        .filter(item => item.count === minimumFrequency)
+        .map(item => item.token);
+  const narrowed = citedCandidates.filter((_, index) =>
+    anchors.some(anchor => outcomeTokenMatches(anchor, evidenceTokens[index])));
+  return narrowed.length > 0 ? narrowed : [...citedCandidates];
 }
 
 export function capabilityOutcomeRestatesDeliveryOperation(
@@ -186,9 +189,11 @@ export function capabilityOutcomeRestatesDeliveryOperation(
   }));
   const corroboratedProductOutcome = capabilityOutcomeCorroboratedByProductText(name, citedCandidates, signal);
   const usesDeliveryScaffolding = /\b(?:mcp|tools?|surfaces?)\b/i.test(name);
-  const usesGenericDeliveryAction = /^(?:handle|manage|process)(?:s|es|ing)?\b/i.test(name.trim());
+  const usesInternalDeliveryAction = /^(?:handle|process)(?:s|es|ing)?\b/i.test(name.trim());
+  const usesBroadManagementAction = /^manage(?:s|d|ing)?\b/i.test(name.trim());
   const repeatsActionAsSubject = words.length === 2 && outcomeTokenMatches(words[0], new Set([words[1]]));
-  return words.length === 0 || usesDeliveryScaffolding || usesGenericDeliveryAction || repeatsActionAsSubject ||
+  const ungroundedBroadManagementAction = usesBroadManagementAction && !acceptedOutcome && !corroboratedProductOutcome;
+  return words.length === 0 || usesDeliveryScaffolding || usesInternalDeliveryAction || ungroundedBroadManagementAction || repeatsActionAsSubject ||
     (!acceptedOutcome && !corroboratedProductOutcome && copiesOperationPhrase) || /\b(?:at|by|for|from|in|of|on|to|via|with)$/i.test(name.trim());
 }
 
@@ -208,9 +213,31 @@ export function capabilityOutcomeMisusesCoordination(
   );
 }
 
-function capabilityOutcomeUsesBroadDeliveryAction(name: string, citedCandidates: SystemCapability[]): boolean {
+function capabilityOutcomeUsesBroadDeliveryAction(
+  name: string,
+  citedCandidates: SystemCapability[],
+  signal?: CapabilityCatalogProjectSignal,
+): boolean {
+  if (!citedCandidates.some(candidate => candidate.evidence_kind === 'behavior-surface')) return false;
   const leading = outcomeIdentityTokens(name)[0];
   if (!leading) return false;
+  const lifecycleBreadth = (candidate: SystemCapability): number => {
+    const stages = new Set<string>();
+    for (const operation of candidate.operations || []) {
+      const text = [operation.action, operation.path_or_command, operation.trigger?.path]
+        .filter(Boolean).join(' ').toLowerCase();
+      if (/\b(?:add|create|insert|new|post)\b/.test(text)) stages.add('create');
+      if (/\b(?:fetch|get|list|read|search|view)\b/.test(text)) stages.add('read');
+      if (/\b(?:change|edit|patch|put|status|update)\b/.test(text)) stages.add('update');
+      if (/\b(?:delete|remove)\b/.test(text)) stages.add('delete');
+    }
+    return stages.size;
+  };
+  const groundedAggregateManagement = /^manage(?:s|d|ing)?\b/i.test(name.trim()) &&
+    capabilityOutcomeCorroboratedByProductText(name, citedCandidates, signal) &&
+    citedCandidates.some(candidate =>
+      candidate.evidence_kind !== 'behavior-surface' && lifecycleBreadth(candidate) >= 3);
+  if (groundedAggregateManagement) return false;
   const matching = citedCandidates.filter(candidate => (candidate.operations || []).some(operation =>
     outcomeTokenMatches(leading, new Set(outcomeIdentityTokens([operation.action, operation.path_or_command, operation.trigger?.path].filter(Boolean).join(' '))))));
   if (matching.length === 0) return false;
@@ -239,7 +266,16 @@ export function capabilityOutcomeNameUnsupportedTokens(
 ): string[] {
   const nameTokens = outcomeIdentityTokens(name);
   if (nameTokens.length <= 1) return [];
-  const subjectTokens = nameTokens.slice(1);
+  const coordinatedActionMatch = String(name || '').trim().match(/^([A-Za-z]+)\s+and\s+([A-Za-z]+)\b/i);
+  const coordinatedActions = new Set<string>();
+  if (coordinatedActionMatch) {
+    const actionTokens = coordinatedActionMatch.slice(1)
+      .flatMap(value => outcomeIdentityTokens(value));
+    if (actionTokens.length === 2 && actionTokens.every(token => CAPABILITY_PURPOSE_VERBS.has(token))) {
+      actionTokens.forEach(token => coordinatedActions.add(token));
+    }
+  }
+  const subjectTokens = nameTokens.slice(1).filter(token => !coordinatedActions.has(token));
   const firstPartyTokens = new Set(outcomeIdentityTokens([
     signal?.productDocTitle,
     signal?.productDocSummary,
@@ -255,7 +291,18 @@ export function capabilityOutcomeNameUnsupportedTokens(
       ...(candidate.related_domains || []),
       ...(candidate.related_entities || []).map(entityId => entityId.replace(/^entity[_:-]?/i, '')),
       ...(candidate.evidence_examples || []),
+      ...(candidate.operations || []).flatMap(operation => [operation.action, operation.entry_point_id, operation.path_or_command, operation.trigger?.path]),
     ].filter(Boolean).join(' '))));
+  const leadingAction = nameTokens[0];
+  const authenticationEvidence = [...citedIdentityTokens].some(token =>
+    ['auth', 'authenticate', 'login', 'signin'].includes(token));
+  citedCandidates.flatMap(candidate => observedCapabilityLifecycleActions(candidate.operations || []))
+    .flatMap(outcomeIdentityTokens)
+    .forEach(token => citedIdentityTokens.add(token));
+  if (leadingAction === 'authenticate' && authenticationEvidence) {
+    ['access', 'account', 'credential', 'identity', 'session', 'user'].forEach(token =>
+      citedIdentityTokens.add(token));
+  }
   const unsupportedTokens = subjectTokens.filter(token =>
     !outcomeTokenMatches(token, firstPartyTokens) && !outcomeTokenMatches(token, citedIdentityTokens)
   );
@@ -292,7 +339,7 @@ export function capabilityOutcomeScopeFailure(
   if (capabilityOutcomeMisusesCoordination(name, citedCandidates)) return ['coordination-outcome-unsupported'];
   const leading = outcomeIdentityTokens(name)[0];
   const boundVisibleActions = new Set((boundRequirement?.visibleActionTerms || []).flatMap(outcomeIdentityTokens));
-  if (capabilityOutcomeUsesBroadDeliveryAction(name, citedCandidates) && !boundVisibleActions.has(leading || '')) return ['delivery-action-evidence-too-broad'];
+  if (capabilityOutcomeUsesBroadDeliveryAction(name, citedCandidates, signal) && !boundVisibleActions.has(leading || '')) return ['delivery-action-evidence-too-broad'];
   if (!capabilityOutcomeCorroboratedByProductText(name, citedCandidates, signal) && !capabilityOutcomeUsesDeliverySubject(name, citedCandidates, acceptedOutcome ? description : '')) return ['delivery-subject-missing'];
   if (acceptedOutcome) return [];
   const audienceTokens = new Set(evidenceBackedAudienceTokens.flatMap(outcomeIdentityTokens));
@@ -319,6 +366,10 @@ export function capabilityDescriptionProductLanguageViolation(
 ): { reason: string; forbiddenTerms: string[] } | undefined {
   const surfaceScaffolding = description.match(/\bmcp\s+(?:tools?|surfaces?|endpoints?)\b|\bcli\s+(?:commands?|interfaces?|surfaces?)\b/i);
   if (surfaceScaffolding) return { reason: 'delivery-surface-scaffolding', forbiddenTerms: [surfaceScaffolding[0]] };
+  const uiScaffolding = description.match(/\b(?:modals?|clicks?|mouse(?:leave|enter)|submit interactions?|form submissions?|(?:[a-z]+\s+){0,2}(?:creation|create|edit|editing|input|login|registration|update) forms?)\b/i);
+  if (uiScaffolding) return { reason: 'ui-delivery-scaffolding', forbiddenTerms: [uiScaffolding[0]] };
+  const selfReference = description.match(/\bcapabilit(?:y|ies)\b/i);
+  if (selfReference) return { reason: 'capability-self-reference', forbiddenTerms: [selfReference[0]] };
   const messageScaffolding = description.match(/\b(?:handles?|process(?:es|ed|ing)?)\s+(?:incoming\s+)?messages?\s+to\b/i);
   if (messageScaffolding) return { reason: 'message-handler-scaffolding', forbiddenTerms: [messageScaffolding[0]] };
   const normalizedDescription = outcomeIdentityTokens(description);
@@ -342,6 +393,11 @@ export function capabilityDescriptionProductLanguageViolation(
       valueTokens.every((token, offset) => phrase[index + offset] && outcomeTokenMatches(token, new Set([phrase[index + offset]])))));
   };
   const identifiers = [...new Set([...relatedEntities, ...evidenceIdentifiers].map(value => String(value || '')).filter(Boolean))];
+  const marketingTerms = capabilityMarketingLanguageTerms(description)
+    .filter(term => !establishedByFirstParty(term));
+  if (marketingTerms.length > 0) {
+    return { reason: 'marketing-language', forbiddenTerms: marketingTerms };
+  }
   const copiedEntity = identifiers.find(entity =>
     /[a-z0-9][A-Z]|[A-Z]{2,}[A-Z][a-z]|[_:$]/.test(entity) &&
     new RegExp(`\\b${entity.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(description)
@@ -537,9 +593,42 @@ function capabilityHasUserOutcomeJourney(
   const operationIds = new Set((capability.operations || []).map(operation => operation.entry_point_id));
   return journeys.some(journey => operationIds.has(journey.entry_point_id) &&
     journey.journey_kind === 'user-facing' &&
-    (journey.terminal_entities.length > 0 ||
-      Object.values(journey.terminal_effects).some(values => values.length > 0)));
+    ((journey.terminal_entities || []).some(entity => entity.terminal_kind === 'entity') ||
+      (journey.terminal_effects.entities_written || []).length > 0 ||
+      (journey.terminal_effects.entities_read || []).length > 0 ||
+      (journey.terminal_effects.messages_emitted || []).length > 0));
 }
+
+function capabilityHasUserFacingLifecycleBreadth(
+  capability: SystemCapability,
+  entryPointById: Map<string, CASEntryPoint>,
+): boolean {
+  if (capability.evidence_kind === 'behavior-surface') return false;
+  const stages = new Set<string>();
+  let externallyReachableOperations = 0;
+  for (const operation of capability.operations || []) {
+    const entryPoint = entryPointById.get(operation.entry_point_id);
+    const external = entryPoint?.interaction_reach === 'external' ||
+      (entryPoint?.interaction_reach !== 'internal' &&
+        (USER_FACING_ENTRY_TYPES.has((entryPoint?.type || operation.entry_point_type) as never)));
+    if (!external) continue;
+    externallyReachableOperations++;
+    const method = String(entryPoint?.trigger?.method || operation.trigger?.method || '').toUpperCase();
+    const action = [
+      operation.action,
+      operation.path_or_command,
+      operation.trigger?.path,
+      entryPoint?.name,
+      entryPoint?.trigger?.path,
+    ].filter(Boolean).join(' ').toLowerCase();
+    if (method === 'POST' || /\b(?:add|create|favorite|follow|publish|register|submit)\b/.test(action)) stages.add('create');
+    if (method === 'GET' || /\b(?:browse|fetch|get|list|read|search|view)\b/.test(action)) stages.add('read');
+    if (method === 'PUT' || method === 'PATCH' || /\b(?:change|edit|patch|update)\b/.test(action)) stages.add('update');
+    if (method === 'DELETE' || /\b(?:delete|remove|unfavorite|unfollow)\b/.test(action)) stages.add('delete');
+  }
+  return externallyReachableOperations >= 2 && stages.size >= 2;
+}
+
 
 export function classifyCapabilityEvidence(
   candidates: SystemCapability[],
@@ -567,12 +656,15 @@ export function classifyCapabilityEvidence(
       const externalReach = capabilityHasExternalReach(candidate, entryPointById);
       const productEntity = candidateHasProductEntity(candidate, entityById, projectTextSignal);
       const userOutcomeJourney = capabilityHasUserOutcomeJourney(candidate, context.userJourneys || []);
-      const firstPartyCoreOutcome = firstParty && candidate.category === 'core';
-      if (firstPartyCoreOutcome || userOutcomeJourney || (externalReach && productEntity)) {
+      const firstPartyCoreOutcome = firstParty && candidate.category === 'core' &&
+        productTextCorroboratesActionAndSubject(candidate, projectTextSignal);
+      const userFacingLifecycle = capabilityHasUserFacingLifecycleBreadth(candidate, entryPointById);
+      if (firstPartyCoreOutcome || userOutcomeJourney || (externalReach && productEntity) || userFacingLifecycle) {
         evidenceRole = 'product-outcome';
         if (firstPartyCoreOutcome) reasons.push('first-party-product-text');
         if (userOutcomeJourney) reasons.push('user-facing-terminal-journey');
         if (externalReach && productEntity) reasons.push('external-reach-with-product-entity');
+        if (userFacingLifecycle) reasons.push('user-facing-lifecycle-breadth');
       } else if ((candidate.operations || []).length > 0 || (candidate.related_entities || []).length > 0) {
         const potentiallyProductSignificant = productEntity || (externalReach && capabilityHasPotentialUserSurface(candidate));
         evidenceRole = potentiallyProductSignificant ? 'unresolved' : 'supporting-mechanism';
@@ -673,30 +765,20 @@ export function catalogEntityCandidateGroups(candidates: SystemCapability[]): st
     (candidate.related_entities || []).length > 0 &&
     (candidate.operations || []).some(operation => operation.entry_point_type !== 'external')
   );
-  const parent = eligible.map((_, index) => index);
-  const find = (index: number): number => parent[index] === index ? index : (parent[index] = find(parent[index]));
-  const union = (left: number, right: number): void => {
-    const leftRoot = find(left);
-    const rightRoot = find(right);
-    if (leftRoot !== rightRoot) parent[rightRoot] = leftRoot;
-  };
-  const entityOwners = new Map<string, number>();
-  eligible.forEach((candidate, index) => {
+  const candidatesByEntity = new Map<string, Set<string>>();
+  for (const candidate of eligible) {
     for (const entityId of candidate.related_entities || []) {
-      const owner = entityOwners.get(entityId);
-      if (owner === undefined) entityOwners.set(entityId, index);
-      else union(owner, index);
+      const group = candidatesByEntity.get(entityId);
+      if (group) group.add(candidate.id);
+      else candidatesByEntity.set(entityId, new Set([candidate.id]));
     }
-  });
-  const groups = new Map<number, string[]>();
-  eligible.forEach((candidate, index) => {
-    const root = find(index);
-    const group = groups.get(root);
-    if (group) group.push(candidate.id);
-    else groups.set(root, [candidate.id]);
-  });
-  return [...groups.values()]
-    .map(group => group.sort())
+  }
+  const uniqueGroups = new Map<string, string[]>();
+  for (const group of candidatesByEntity.values()) {
+    const sorted = [...group].sort();
+    uniqueGroups.set(sorted.join('|'), sorted);
+  }
+  return [...uniqueGroups.values()]
     .sort((left, right) => left[0].localeCompare(right[0]));
 }
 

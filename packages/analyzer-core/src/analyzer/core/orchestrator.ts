@@ -169,29 +169,35 @@ import {
   catalogCandidateTerminality as analyzeCatalogCandidateTerminality,
   catalogCountBounds, catalogEntityCandidateGroups,
   catalogEvidenceCandidates as selectCatalogEvidenceCandidates,
+  capabilityEvidenceSubjectTokens,
+  narrowCapabilityEvidenceCandidates,
   catalogRequiredEvidenceCandidates,
   catalogMinimumCapabilityCount, catalogPromptEntities, catalogRelatedEntityIds,
   capabilityCatalogAiPhaseStatus, firstPartySupportsIdentityProduct as supportsIdentityProduct,
   capabilityRequiresCatalogCoverage,
-  hasFirstPartyCorroboratedCatalogOperations,
   summarizeCapabilityEvidenceRoles,
   synchronizeCapabilityCatalogCoverage,
 } from './capability-catalog-evidence';
 import { mergeCapabilityCatalogFlowEvidence } from './capability-catalog-flow-evidence';
-import { bindUniquelySatisfiedCatalogOutcomeRequirements, capabilityCatalogCoverageFailure, capabilityCatalogOutcomeBindingFailureDetail, capabilityCatalogOutcomeNameFailure, capabilityCatalogOutcomesMayMerge, capabilityCatalogTargetedOutcomeText, deriveCapabilityCatalogOutcomeRequirements, uncoveredCapabilityCatalogOutcomeRequirements, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
+import { bindUniquelySatisfiedCatalogOutcomeRequirements, capabilityCatalogCoverageFailure, capabilityCatalogOutcomeBindingFailureDetail, capabilityCatalogOutcomeNameFailure, capabilityCatalogOutcomesMayMerge, capabilityCatalogTargetedOutcomeText, capabilitySemanticallySatisfiesCatalogOutcomeRequirement, deriveCapabilityCatalogOutcomeRequirements, uncoveredCapabilityCatalogOutcomeRequirements, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
 import { fitCapabilityCatalogContext } from './ai-context-budget';
 import { awaitAiOperation } from './ai-operation-timing';
 import { capabilityDescriptionBatchSize, resolveCapabilityCatalogRoute, resolveCapabilityDescriptionRoute, shouldReauthorCapabilityDescriptions, toAIContextRoute } from './ai-task-model-routing';
-import { capabilitiesWithoutDescriptionDisposition, type CapabilityCatalogRejection, type CapabilityCatalogRejectionsByCandidate, capabilityCatalogCycleDiagnostic, capabilityCatalogPendingRepairKeys, capabilityCatalogRepairCandidateIds, capabilityCatalogRepairEvidenceFacts, capabilityIdentityPendingDescriptionRepair, capabilityOutcomeMatchesEvidence, capabilityTitlesShareOutcome, collectCapabilityCatalogEvidenceBatches, mergeCapabilityCatalogRepairResults, mergeUniquelyMatchedBehaviorEvidence, recordCapabilityCatalogRejection, recordCapabilityPublishabilityRejection, retryEmptyCapabilityCatalogOutcome, scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates, trackCapabilityCatalogRepair } from './capability-catalog-scheduling';
-import { capabilityCatalogFirstPartyFallback, capabilityCatalogRepairPromptEnvelope, type CapabilityCatalogRepairPromptFact } from './capability-catalog-repair-context';
+import { capabilitiesWithoutDescriptionDisposition, type CapabilityCatalogRejection, type CapabilityCatalogRejectionsByCandidate, capabilityCatalogCycleDiagnostic, capabilityCatalogPendingRepairKeys, capabilityCatalogRepairCandidateIds, capabilityCatalogRepairEvidenceFacts, capabilityIdentityPendingDescriptionRepair, capabilityOutcomeMatchesEvidence, capabilityTitlesShareOutcome, collectCapabilityCatalogEvidenceBatches, mergeCapabilityCatalogRepairResults, mergeGroundedEntityEvidenceFamilies, mergeUniquelyMatchedBehaviorEvidence, recordCapabilityCatalogRejection, recordCapabilityPublishabilityRejection, retryEmptyCapabilityCatalogOutcome, scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates, trackCapabilityCatalogRepair, uncoveredCapabilityCatalogFamilyRepresentativeIds } from './capability-catalog-scheduling';
+import { capabilityCatalogEvidenceFallback, capabilityCatalogFirstPartyFallback, capabilityCatalogRepairPromptEnvelope, type CapabilityCatalogRepairPromptFact } from './capability-catalog-repair-context';
 import { capabilityCatalogFocusedTask, capabilityCatalogRepairNudge, capabilityCatalogRepairPlan, captureCapabilityCatalogPendingRequirements, preserveCapabilityCatalogDescriptionIdentity, supersedeUnboundPendingOutcomeDuplicates, type CapabilityCatalogRepairBatch } from './capability-catalog-repair-plan';
+import { groupCapabilityCatalogFamilies } from './capability-catalog-family-equivalence';
 import { TRACEABLE_NODE_TYPES, computeFlowConcepts, materializeNodeUnderstandingContracts, type FlowConcept } from './flow-concepts';
 import { capabilitySubjectTokens } from './capability-audience-test';
 import {
   capabilityAudienceRepairFeedback,
   capabilityPublishabilityRepairFeedback, capabilityCatalogProductTerms,
-  evaluateCapabilityCatalogAudience, unsupportedCapabilityOperationalClaims,
+  evaluateCapabilityCatalogAudience, normalizeCapabilityDescriptionForPublication, unsupportedCapabilityOperationalClaims,
 } from './capability-catalog-audience';
+import { capabilityGroundedEntityIds } from './capability-entity-grounding';
+import { canonicalCapabilityLifecycleAction, capabilityDescriptionExpressesDestructiveLifecycle, capabilityHasObservedDestructiveLifecycle } from './capability-lifecycle-actions';
+import { stripProjectDocumentMedia } from './project-document-framing';
+import { systemNarrativeGroundingFailure } from './system-narrative-grounding';
 import {
   attachFlowContract,
   attachCapability,
@@ -216,6 +222,8 @@ import { externalServiceIdentityForExitPoint } from './external-service-identity
 import { extractDistinctiveTextVocabulary, isEnglishFunctionWord } from './text-vocabulary';
 import { buildProductMap } from './product-map';
 import { buildReachabilityIndexFromCas } from './reachability-index';
+import { detectLibrariesFromManifests } from './manifest-library-detection';
+import { buildPerspectiveHierarchy, calculatePerspectivePriority } from './perspective-presentation';
 import { relativizeProjectPaths, toRepoRelativeSourceFile } from './relativize-project-paths';
 import { isRegisteredManifest, isRegisteredSourceExtension, isPackageBoundaryManifest } from './language-registry';
 import { discoverWorkspaceGlobRootsWithoutManifest } from './workspace-globs';
@@ -229,10 +237,12 @@ import {
   isStructuralPlaceholderCapabilityDescription as sharedIsStructuralPlaceholderCapabilityDescription,
   deriveCapabilityNameFromOperations as sharedDeriveCapabilityNameFromOperations,
   buildCapabilityDescriptionFromOperations as sharedBuildCapabilityDescriptionFromOperations,
+  CAPABILITY_PURPOSE_VERBS,
   namingSubjectFromPath,
   stripSourceFileExtension,
   isPathDerivedCapabilityName,
-  collapseDuplicateAdjacentWords
+  collapseDuplicateAdjacentWords,
+  normalizeCapabilityActionName
 } from './capability-naming';
 import { CallChainAnalyzer } from './call-chain-analyzer';
 import { CapabilityDependencyBuilder } from './capability-dependency-builder';
@@ -1446,7 +1456,7 @@ export class AnalyzerOrchestrator {
     await yieldToEventLoop();
 
     if (allLibraries.length === 0) {
-      const detectedLibraries = this.detectLibrariesFromManifests(projectPath);
+      const detectedLibraries = detectLibrariesFromManifests(projectPath);
       allLibraries.push(...detectedLibraries);
     }
 
@@ -8965,6 +8975,8 @@ export class AnalyzerOrchestrator {
   }
 
   private stemTerminologyToken(token: string): string {
+    const normalized = token.toLowerCase();
+    if (/^(?:auth|authenticate|authenticated|authenticating|authentication)$/.test(normalized)) return 'authenticate';
     if (token.length > 4 && token.endsWith('ies')) return `${token.slice(0, -3)}y`;
     if (token.length > 5 && /(sh|ch|x|z|ss)es$/.test(token)) return token.slice(0, -2);
     if (token.length > 4 && token.endsWith('s') && !token.endsWith('ss')) return token.slice(0, -1);
@@ -9156,7 +9168,7 @@ export class AnalyzerOrchestrator {
     behaviorSurfaces?: SystemCapability[]; externalServices: string[];
     flowGraph: CASFlowGraph; projectTextSignal?: ProjectTextSignal;
     budgetMs: number;
-    qualityNudge?: string; exactCapabilityLimit?: number; acceptedOutcomeNames?: string[]; requiredOutcomeCount?: number; requiredOutcomeRequirements?: CapabilityCatalogOutcomeRequirement[]; repairMode?: CapabilityCatalogRepairBatch['mode']; repairIdentityName?: string; targetedRepairFacts?: CapabilityCatalogRepairPromptFact[]; targetedRepairCandidateMap?: Readonly<Record<string, string>>; allowDeterministicFallback?: boolean; catalogOverride?: Array<Record<string, unknown>>;
+    qualityNudge?: string; exactCapabilityLimit?: number; acceptedOutcomeNames?: string[]; requiredOutcomeCount?: number; requiredOutcomeRequirements?: CapabilityCatalogOutcomeRequirement[]; repairMode?: CapabilityCatalogRepairBatch['mode']; repairIdentityName?: string; repairAttempt?: number; targetedRepairFacts?: CapabilityCatalogRepairPromptFact[]; targetedRepairCandidateMap?: Readonly<Record<string, string>>; allowDeterministicFallback?: boolean; catalogOverride?: Array<Record<string, unknown>>;
     hardDeadlineAt?: number;
     onResponse?: (raw: string) => void; onRejection?: (feedback: CapabilityCatalogRejection) => void;
     entryPoints?: CASEntryPoint[];
@@ -9241,8 +9253,8 @@ export class AnalyzerOrchestrator {
         }
       }
     }
-    const catalogDescriptionContract = 'Each description must be one sentence of 12-28 words and at least 55 characters. Start with a concrete PM-readable product or operational subject, then state its evidence-specific behavior or outcome. Do not start with actor scaffolding such as "Lets users", "Allows users", "Enables users", "Gives users", or "Provides users". The description must add concrete information beyond the capability name. State the observed result directly; never explain it with generic implementation scaffolding such as "by reading", "by processing", "by coordinating", "supports tasks", or "coordinates operations". Use PM-readable product nouns from cited operations, journeys, or first-party product text; do not replace them with generic "data" or "information". entity_names that look like source types are grounding labels only and must not appear in the prose. Translate internal inventory terms such as entities, nodes, entry points, capability maps, and analysis results into the concrete software behavior, risk, relationship, or change context visible to the user. Do not invent value claims such as accurate, up-to-date, efficient, effective, smooth, experience, insights, comprehensive, seamless, robust, decision-making, collaboration, metrics, or performance unless that exact claim appears in the cited evidence. Do not invent operating claims such as locking, exclusivity, or blocking unless that exact claim appears in the cited evidence. Do not name source-code types, interfaces, classes, UI widgets, graph-rendering structures, or other implementation artifacts, and never use "capability" or "lifecycle" as prose scaffolding.';
-    const focusedCatalogTask = capabilityCatalogFocusedTask(input.repairMode || (input.requiredOutcomeRequirements?.length ? 'outcome' : undefined), input.repairIdentityName, Boolean(input.acceptedOutcomeNames?.length)); const catalogTaskBase = input.exactCapabilityLimit ? `You are naming ${input.exactCapabilityLimit === 1 ? 'one evidence-grounded PRODUCT OUTCOME' : `${input.exactCapabilityLimit} distinct evidence-grounded PRODUCT OUTCOMES`} for one focused evidence family. Return ONLY valid JSON: {"capabilities":[{"requirement_id":"...","name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. ${focusedCatalogTask} Include at least one exact candidate_id.${input.repairMode === 'description' ? '' : ' When required_visible_actions is nonempty, begin the name with one of those anchors. Across the name and description, include the literal required_audience_label and at least minimum_subject_matches required_subject_terms, or canonical validator forms of those terms.'} Individual operation names are examples of delivery mechanics, not title templates. Do not discuss another product ability, write a system description, invent a broader claim, or return alternatives.`
+    const catalogDescriptionContract = 'Each description must be one sentence of 12-28 words and at least 55 characters. Start with a concrete PM-readable product or operational subject, then state its evidence-specific behavior or outcome. Do not start with actor scaffolding such as "Lets users", "Allows users", "Enables users", "Gives users", or "Provides users". The description must add concrete information beyond the capability name. Cover every directly observed lifecycle action, especially deletion, removal, unfollowing, or unfavoriting; do not omit destructive or reversal behavior. State the observed result directly; never explain it with generic implementation scaffolding such as "by reading", "by processing", "by coordinating", "supports tasks", or "coordinates operations". Use PM-readable product nouns from cited operations, journeys, or first-party product text; do not replace them with generic "data" or "information". entity_names that look like source types are grounding labels only and must not appear in the prose. Translate internal inventory terms such as entities, nodes, entry points, capability maps, and analysis results into the concrete software behavior, risk, relationship, or change context visible to the user. Do not invent value claims such as accurate, up-to-date, efficient, effective, smooth, experience, insights, comprehensive, seamless, robust, decision-making, collaboration, metrics, or performance unless that exact claim appears in the cited evidence. Do not invent operating claims such as locking, exclusivity, blocking, enforcing access, identity verification, or security guarantees unless that exact claim appears in the cited evidence. Never claim that authentication, authorization, permissions, security, dependencies, records, or workflows are absent, unnecessary, unchanged, unaffected, or bypassed. Do not mention forms, buttons, screens, slugs, identifiers, request or response payloads, HTTP methods, endpoints, routes, tools, or other delivery mechanisms as if they were the product outcome. Do not claim immediate, instant, permanent, or real-time effects unless first_party_outcomes explicitly states that guarantee. Do not name source-code types, interfaces, classes, UI widgets, graph-rendering structures, or other implementation artifacts, and never use "capability" or "lifecycle" as prose scaffolding.';
+    const focusedCatalogTask = capabilityCatalogFocusedTask(input.repairMode || (input.requiredOutcomeRequirements?.length ? 'outcome' : undefined), input.repairIdentityName, Boolean(input.acceptedOutcomeNames?.length)); const catalogTaskBase = input.exactCapabilityLimit ? `You are naming ${input.exactCapabilityLimit === 1 ? 'one evidence-grounded PRODUCT OUTCOME' : `${input.exactCapabilityLimit} distinct evidence-grounded PRODUCT OUTCOMES`} for one focused evidence family. Return ONLY valid JSON: {"capabilities":[{"requirement_id":"...","name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. ${focusedCatalogTask} Include at least one exact candidate_id.${input.repairMode === 'description' ? '' : ' When required_visible_actions is nonempty, begin the name with one of those anchors. When a required_subject_term is itself an action verb, begin the name with that exact base verb; never substitute a generic transport verb such as Create, Get, or Process. Across the name and description, include the literal required_audience_label and at least minimum_subject_matches required_subject_terms, or canonical validator forms of those terms.'} Individual operation names are examples of delivery mechanics, not title templates. Do not discuss another product ability, write a system description, invent a broader claim, or return alternatives.`
       : artifactType === 'infrastructure'
       ? `You are cataloging the OPERATIONAL RESPONSIBILITIES of an infrastructure codebase. Return ONLY valid JSON: {"system_description":"...","domain":"...","capabilities":[{"name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Name what operators accomplish with the declared infrastructure in product-neutral operational language. Every name must be a verb-headed operator outcome grounded in the supplied declarations. Never infer that a resource handles, processes, or manages a business concept merely because that concept appears in its resource name. Never name a script, file, command, handler, route, framework, or registration surface as the capability. Merge related deployment/configuration candidates. candidate_ids must be copied from supplied facts. Return ${catalogCountMin} to ${catalogCountMax} evidence-backed capabilities, ordered most central first.`
       : artifactType === 'library' || artifactType === 'client-sdk'
@@ -9277,6 +9289,7 @@ export class AnalyzerOrchestrator {
         requestTimeoutMs: 65000,
         requestRetries: 0,
         ...((hintOverride || attempt > 1) ? { retry_hint: hintOverride || `Previous answer returned fewer than ${catalogCountMin} capabilities for a platform whose facts name ${candidateAreas.length} distinct route areas. Cover the DISTINCT product areas in candidate_route_areas; merge related ones, but do not collapse unrelated areas.` } : {}),
+        ...(targetedRepair && input.repairAttempt ? { repair_attempt: input.repairAttempt } : {}),
         task: `${catalogTask} ${requiredBehaviorCandidateAreas.length > 0 ? `Every product-significant behavior-surface candidate_id in required_behavior_candidate_ids must appear in at least one result; related surfaces may share one result when they express the same user outcome.` : ''} ${requiredEntityCandidateGroups.length > 0 ? `For each group in required_entity_candidate_groups, at least one candidate_id from that group must appear in a result. A result may cite several groups only when their operations support the same product outcome.` : ''} Evidence roles are authoritative constraints: product-outcome facts require coverage; unresolved and supporting-mechanism facts remain grounding evidence but are not mandatory and must not become standalone capabilities without product-outcome evidence; verification-harness facts must never become product capabilities. Internal behavior surfaces are structural evidence, not mandatory capabilities, and must be omitted unless other evidence proves they are part of the product's purpose. Product text may rank, name, or merge an ability only when at least one cited candidate's operations support that ability; never attach a product claim to an unrelated candidate. Terminality is relational evidence, not a naming template: terminal and proximal-terminal candidate areas are more likely to express what the codebase was built to deliver; upstream areas are more likely to be prerequisites. Use it for ranking and grouping, but never override contradictory product text, journey, entity, or operation evidence. ENTITY LANGUAGE CHECK: entity_names establish which evidence belongs together but may be source-level type identifiers. Names and descriptions must use PM-readable nouns from cited operations, journeys, or top_down_signals and must never expose class, interface, schema, or graph-model identifiers. Do not lead a capability name with Handle, Process, or Manage; Coordinate is valid only when evidence establishes collaboration as the outcome.`,
         style: 'Write like a product engineer or PM. Plain language. No markdown. Begin each description with its concrete product subject, never an actor scaffold. Prefer precise behavior verbs such as tracks, surfaces, exposes, manages, monitors, secures, settles, and enforces. No CRUD inventory, no "lifecycle", no route counts, no file paths, no marketing fluff. Do not use vague value nouns such as insights or metrics unless the cited evidence names them. Never expand an abbreviation from an operation identifier unless first-party product text explicitly supplies that expansion; describe the evidenced actions instead. Each description names the concrete user-facing concept the evidence supports and adds evidence-specific information beyond the capability name.',
         product: targetedRepair ? { name: input.systemName } : {
@@ -9326,7 +9339,23 @@ export class AnalyzerOrchestrator {
       }
     }
     const firstPartyFallback = input.requiredOutcomeRequirements?.length === 1 ? capabilityCatalogFirstPartyFallback(input.requiredOutcomeRequirements[0]) : undefined;
-    if (!catalog.length && input.allowDeterministicFallback && firstPartyFallback) { catalog = [firstPartyFallback]; usedDeterministicFallback = true; }
+    const evidenceFallbackFact = input.repairMode === 'evidence' && input.targetedRepairFacts?.length === 1
+      ? input.targetedRepairFacts[0]
+      : undefined;
+    const evidenceFallbackCandidateId = evidenceFallbackFact
+      ? input.targetedRepairCandidateMap?.[evidenceFallbackFact.candidate_id]
+      : undefined;
+    const evidenceFallbackCandidate = candidatePoolForRanking.find(candidate => candidate.id === evidenceFallbackCandidateId) ||
+      [...(input.candidateCapabilities || []), ...(input.behaviorSurfaces || [])]
+        .find(candidate => candidate.id === evidenceFallbackCandidateId);
+    const evidenceFallback = capabilityCatalogEvidenceFallback(evidenceFallbackFact, evidenceFallbackCandidateId, evidenceFallbackCandidate);
+    if (process.env.KLAURO_DEBUG_CATALOG && input.allowDeterministicFallback && input.repairMode === 'evidence') {
+      writeAnalyzerStatus('[catalog-debug] deterministic evidence fallback:', {
+        candidateId: evidenceFallbackCandidateId, candidateFound: Boolean(evidenceFallbackCandidate), available: Boolean(evidenceFallback),
+      });
+    }
+    const deterministicFallback = firstPartyFallback || evidenceFallback;
+    if (!catalog.length && input.allowDeterministicFallback && deterministicFallback) { catalog = [deterministicFallback]; usedDeterministicFallback = true; }
     const effectiveSize = (items: Array<Record<string, unknown>>): number => {
       const sets = new Set(items.map((item, index) => {
         const entities = Array.isArray(item.entities)
@@ -9459,7 +9488,7 @@ export class AnalyzerOrchestrator {
       entityNameSet: Set<string>;
       nameTokensAll: string[];
       journeys: unknown;
-      candidateIds: string[]; requirementId?: string;
+      candidateIds: string[]; requirementId?: string; deterministicSource: boolean;
     };
     const staged: StagedCatalogItem[] = []; let activeRequirementId: string | undefined; let bareNounRejected = 0; const catalogRejectionFeedback: CapabilityCatalogRejection[] = [];
     const catalogRejectionReasons = new Map<string, number>();
@@ -9467,18 +9496,23 @@ export class AnalyzerOrchestrator {
       catalogRejectionReasons.set(reason, (catalogRejectionReasons.get(reason) || 0) + 1);
       catalogRejectionFeedback.push({ candidateIds, name, reason, ...details, ...(activeRequirementId ? { requirementId: activeRequirementId } : {}) });
       if (process.env.KLAURO_DEBUG_CATALOG) {
-        writeAnalyzerStatus('[catalog-debug] rejected catalog item:', { name, reason });
+        writeAnalyzerStatus('[catalog-debug] rejected catalog item:', { name, reason, ...details });
       }
     };
+    const targetedRepairFactByCandidateId = new Map((input.targetedRepairFacts || []).flatMap(fact => {
+      const candidateId = input.targetedRepairCandidateMap?.[fact.candidate_id];
+      return candidateId ? [[candidateId, fact] as const] : [];
+    }));
     for (const item of catalog) {
-      const rawRequirementId = String(item.requirement_id || '') || undefined; activeRequirementId = input.requiredOutcomeRequirements?.length === 1 ? input.requiredOutcomeRequirements[0].id : rawRequirementId;
+      const suppliedRequirementId = String(item.requirement_id || '') || undefined;
+      const rawRequirementId = input.repairMode === 'evidence' ? undefined : suppliedRequirementId; activeRequirementId = input.requiredOutcomeRequirements?.length === 1 ? input.requiredOutcomeRequirements[0].id : rawRequirementId;
       let boundRequirementId: string | undefined; let name = String(item.name || '').replace(/\s+/g, ' ').trim();
       if (input.repairMode === 'description' && input.repairIdentityName) name = input.repairIdentityName;
       const itemEntityNamesRaw = (Array.isArray(item.entities) ? item.entities : []).map((value: unknown) => String(value || '')).filter(Boolean);
       let description = String(item.description || '');
-      if (description.includes('{') || /"description"\s*:|key_capabilities/i.test(description)) description = '';
+      if (/^\s*\{/.test(description) || /"description"\s*:|key_capabilities/i.test(description)) description = '';
       description = description
-        .replace(/\s+(?:through|using|via)\s+(?:the\s+)?[^.]*?\b(?:api|apis|routes?|endpoints?|operations?|controllers?)\b[^.]*/gi, '')
+        .replace(/\s+(?:through|using|via)\s+(?:the\s+)?[^.,;]{0,80}\b(?:api|apis|routes?|endpoints?|operations?|controllers?)\b[^.,;]*/gi, '')
         .replace(/\b[a-z]+:\/[^\s.]*/gi, '')
         .replace(/\s+/g, ' ').trim();
       description = this.repairStrippedSentenceGrammar(description);
@@ -9490,7 +9524,68 @@ export class AnalyzerOrchestrator {
         continue;
       }
       const itemCandidateIds = Array.isArray(item.candidate_ids) ? item.candidate_ids.map(value => String(value || '')) : [];
-      if (input.repairMode === 'evidence' && item.requirement_id) { debugCatalogRejection(name, 'unexpected-requirement-id', itemCandidateIds); continue; }
+      const targetedItemFacts = itemCandidateIds
+        .map(candidateId => targetedRepairFactByCandidateId.get(candidateId))
+        .filter((fact): fact is CapabilityCatalogRepairPromptFact => Boolean(fact));
+      const audienceCorrections = targetedItemFacts.flatMap(fact => fact.prior_rejections || [])
+        .filter(rejection => Boolean(rejection.missing_audience));
+      const missingAudienceCorrection = audienceCorrections.find(rejection => {
+        const audience = String(rejection.missing_audience || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+        const locations = rejection.missing_audience_locations?.length
+          ? rejection.missing_audience_locations
+          : ['name', 'description'];
+        return locations.some(location => {
+          const authored = ` ${String(location === 'name' ? name : description).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()} `;
+          return !audience || !authored.includes(` ${audience} `);
+        });
+      });
+      if (missingAudienceCorrection) {
+        debugCatalogRejection(name, 'targeted-repair-audience-missing', itemCandidateIds, {
+          missingAudience: missingAudienceCorrection.missing_audience,
+          missingAudienceLocations: missingAudienceCorrection.missing_audience_locations?.filter((location): location is 'name' | 'description' => location === 'name' || location === 'description'),
+        });
+        continue;
+      }
+      if (input.repairMode === 'evidence') {
+        const repairFacts = itemCandidateIds
+          .map(candidateId => targetedRepairFactByCandidateId.get(candidateId))
+          .filter((fact): fact is CapabilityCatalogRepairPromptFact => Boolean(fact));
+        const requiredTerms = [...new Set(repairFacts.flatMap(fact => fact.required_subject_terms || []))];
+        const minimumMatches = repairFacts.reduce(
+          (minimum, fact) => Math.max(minimum, fact.minimum_subject_matches || 0),
+          0,
+        );
+        const authoredTokens = new Set(String(name + ' ' + description).toLowerCase().split(/[^a-z0-9]+/)
+          .filter(token => token.length >= 3)
+          .map(token => this.stemTerminologyToken(token)));
+        const authoredNameTokens = new Set(String(name).toLowerCase().split(/[^a-z0-9]+/)
+          .filter(token => token.length >= 3)
+          .map(token => this.stemTerminologyToken(token)));
+        const matchedTerms = requiredTerms.filter(term => authoredTokens.has(this.stemTerminologyToken(term)));
+        const nameMatchedTerms = requiredTerms.filter(term => authoredNameTokens.has(this.stemTerminologyToken(term)));
+        if (matchedTerms.length < minimumMatches) {
+          debugCatalogRejection(name, 'targeted-evidence-subject-missing', itemCandidateIds, {
+            missingSubjectTerms: requiredTerms.filter(term => !matchedTerms.includes(term)),
+          });
+          continue;
+        }
+        const leadingNameToken = [...authoredNameTokens][0];
+        const requiredActionTerms = requiredTerms
+          .map(term => this.stemTerminologyToken(term))
+          .filter(term => CAPABILITY_PURPOSE_VERBS.has(term));
+        if (requiredActionTerms.length > 0 && !requiredActionTerms.includes(leadingNameToken)) {
+          debugCatalogRejection(name, 'targeted-evidence-name-action-missing', itemCandidateIds, {
+            missingSubjectTerms: requiredActionTerms,
+          });
+          continue;
+        }
+        if (requiredTerms.length > 0 && nameMatchedTerms.length === 0) {
+          debugCatalogRejection(name, 'targeted-evidence-name-subject-missing', itemCandidateIds, {
+            missingSubjectTerms: requiredTerms,
+          });
+          continue;
+        }
+      }
       const boundRequirement = input.requiredOutcomeRequirements?.find(requirement => requirement.id === activeRequirementId); const bindingFailure = capabilityCatalogOutcomeBindingFailureDetail({ name, description }, itemCandidateIds, rawRequirementId || '', input.requiredOutcomeRequirements || [], fulfilledOutcomeRequirements);
       if (bindingFailure) { debugCatalogRejection(name, bindingFailure.reason, itemCandidateIds, bindingFailure); continue; }
       if (input.requiredOutcomeRequirements?.length) boundRequirementId = activeRequirementId;
@@ -9567,20 +9662,28 @@ export class AnalyzerOrchestrator {
       const candidateIds = (Array.isArray(item.candidate_ids) ? item.candidate_ids : [])
         .map((value: unknown) => String(value || ''))
         .filter(value => candidatePoolForRanking.some(candidate => candidate.id === value));
-      const citedCandidates = candidatePoolForRanking.filter(candidate => candidateIds.includes(candidate.id)); const outcomeNameFailure = boundRequirement ? capabilityCatalogOutcomeNameFailure(name, boundRequirement) : undefined; if (outcomeNameFailure) { debugCatalogRejection(name, outcomeNameFailure, candidateIds); continue; }
+      const citedCandidates = narrowCapabilityEvidenceCandidates(
+        name, candidatePoolForRanking.filter(candidate => candidateIds.includes(candidate.id)),
+      );
+      const narrowedCandidateIds = citedCandidates.map(candidate => candidate.id); const outcomeNameFailure = boundRequirement ? capabilityCatalogOutcomeNameFailure(name, boundRequirement) : undefined; if (outcomeNameFailure) { debugCatalogRejection(name, outcomeNameFailure, narrowedCandidateIds); continue; }
       const reusesAcceptedOutcome = input.acceptedOutcomeNames?.some(existing => existing.toLowerCase() === name.toLowerCase()) === true;
       if (reusesAcceptedOutcome && !capabilityOutcomeMatchesEvidence(name, citedCandidates)) {
-        debugCatalogRejection(name, 'accepted-outcome-evidence-mismatch', candidateIds);
+        debugCatalogRejection(name, 'accepted-outcome-evidence-mismatch', narrowedCandidateIds);
         continue;
       }
-      const unsupportedOutcomeTokens = capabilityOutcomeScopeFailure(name, citedCandidates, signal, reusesAcceptedOutcome, description, boundRequirement?.audience ? [boundRequirement.audience] : [], boundRequirement);
-      if (candidateIds.length > 0 && unsupportedOutcomeTokens.length > 0) {
-        debugCatalogRejection(name, `outcome-scope-unsupported:${unsupportedOutcomeTokens.join(',')}`, candidateIds);
+      const preservesDescriptionIdentity = input.repairMode === 'description' && name === input.repairIdentityName;
+      const evidenceGroundedDeterministicRecovery = item.catalog_source === 'deterministic';
+      const unsupportedOutcomeTokens = capabilityOutcomeScopeFailure(name, citedCandidates, signal, reusesAcceptedOutcome || preservesDescriptionIdentity || evidenceGroundedDeterministicRecovery, description, boundRequirement?.audience ? [boundRequirement.audience] : [], boundRequirement);
+      if (narrowedCandidateIds.length > 0 && unsupportedOutcomeTokens.length > 0) {
+        debugCatalogRejection(name, `outcome-scope-unsupported:${unsupportedOutcomeTokens.join(',')}`, narrowedCandidateIds);
         continue;
       }
       const citedEvidenceTokens = new Set(
         citedCandidates
-          .flatMap(candidate => [candidate.name, ...(candidate.evidence_examples || [])])
+          .flatMap(candidate => capabilityEvidenceSubjectTokens(
+            candidate,
+            (candidate.related_entities || []).map(entityId => entityNameById.get(entityId) || ''),
+          ))
           .flatMap(value => String(value).replace(/([a-z0-9])([A-Z])/g, '$1 $2').split(/[^A-Za-z0-9]+/))
           .map(token => this.stemTerminologyToken(token.toLowerCase()))
           .filter(token => token.length >= 3)
@@ -9615,7 +9718,14 @@ export class AnalyzerOrchestrator {
       const namesIdentityConcern = purposeNouns.some(token => identityConcernTokens.has(token)) ||
         /\baccess[ -]?control\b/i.test(name);
       const firstPartySupportsIdentity = this.firstPartySupportsIdentityProduct(signal);
-      if (artifactType === 'app' && namesIdentityConcern && !firstPartySupportsIdentity) {
+      const hasDirectIdentityOutcome = citedCandidates.some(candidate =>
+        candidate.evidence_kind !== 'behavior-surface' &&
+        (candidate.operations || []).some(operation =>
+          ['http', 'page', 'route'].includes(operation.entry_point_type) &&
+          /(?:auth|login|sign[ -]?in)/i.test([operation.entry_point_id, operation.path_or_command, operation.trigger?.path].filter(Boolean).join(' ')))) &&
+        purposeNouns.every(token => ['access', 'account', 'auth', 'authenticate', 'authorization', 'credential', 'identity', 'session', 'user']
+          .map(value => this.stemTerminologyToken(value)).includes(token));
+      if (artifactType === 'app' && namesIdentityConcern && !firstPartySupportsIdentity && !hasDirectIdentityOutcome) {
         debugCatalogRejection(name, 'supporting-identity-concern');
         continue;
       }
@@ -9623,17 +9733,18 @@ export class AnalyzerOrchestrator {
         purposeNouns.length > 0 &&
         !purposeNouns.some(token => capabilityEvidenceVocabulary.has(token) || tokenMatches(token, firstPartyEvidenceVocabulary)) &&
         !hasEntitySubjectEvidence &&
+        !hasDirectIdentityOutcome &&
         !hasEntityDescriptionEvidence
       ) {
         debugCatalogRejection(name, 'purpose-noun-missing-global-evidence');
         continue;
       }
-      if (candidateIds.length > 0 && purposeNouns.length > 0 && !hasCitedEvidenceBridge && !hasEntitySubjectEvidence) {
-        debugCatalogRejection(name, 'purpose-noun-missing-cited-evidence');
+      if (narrowedCandidateIds.length > 0 && purposeNouns.length > 0 && !hasDirectIdentityOutcome && !hasCitedEvidenceBridge && !hasEntitySubjectEvidence) {
+        debugCatalogRejection(name, 'purpose-noun-missing-cited-evidence', narrowedCandidateIds);
         continue;
       }
-      if (candidateIds.length > 0 && purposeNouns.length > 0 && !hasGroundedPurposeNoun) {
-        debugCatalogRejection(name, 'purpose-nouns-not-grounded');
+      if (narrowedCandidateIds.length > 0 && purposeNouns.length > 0 && !hasDirectIdentityOutcome && !hasGroundedPurposeNoun) {
+        debugCatalogRejection(name, 'purpose-nouns-not-grounded', narrowedCandidateIds);
         continue;
       }
       if (seen.has(key)) {
@@ -9661,7 +9772,7 @@ export class AnalyzerOrchestrator {
           .filter(token => token.length > 3 && !GENERIC_CAPABILITY_NAME_TOKENS.has(token) &&
             (artifactType !== 'app' || !capabilityActionTokens.has(token))),
         journeys: item.journeys,
-        candidateIds, requirementId: boundRequirementId,
+        candidateIds: narrowedCandidateIds, requirementId: boundRequirementId, deterministicSource: item.catalog_source === 'deterministic',
       });
     }
     const tokenDf = new Map<string, number>();
@@ -9761,7 +9872,7 @@ export class AnalyzerOrchestrator {
     }
 
     for (let index = 0; index < staged.length; index++) {
-      const { name, description, category, relatedEntities, journeys, requirementId } = staged[index];
+      const { name, description, category, relatedEntities, journeys, requirementId, deterministicSource } = staged[index];
       const operations = opsByItemIndex.get(index) || [];
       const dedupedOps = Array.from(new Map(operations.map(op => [op.entry_point_id, op])).values()).slice(0, 64);
       const candidateEntityIds = entityIdsByItemIndex.get(index) || new Set<string>();
@@ -9782,20 +9893,25 @@ export class AnalyzerOrchestrator {
       out.push({
         id: `capability_${resolvedKey.replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')}`,
         name: resolvedName,
-        name_source: 'ai',
-        name_generation: { status: 'ai_applied', attempted: true, generated_at: new Date().toISOString() },
+        name_source: deterministicSource ? 'deterministic' : 'ai',
+        name_generation: deterministicSource
+          ? { status: 'deterministic_kept', attempted: false, reason: 'evidence-family-recovery' }
+          : { status: 'ai_applied', attempted: true, generated_at: new Date().toISOString() },
         description: descriptionContradictsOperations ? '' : description,
-        description_source: descriptionContradictsOperations ? undefined : 'ai',
+        description_source: descriptionContradictsOperations ? undefined : deterministicSource ? 'deterministic' : 'ai',
         description_generation: descriptionContradictsOperations
           ? { status: 'ai_rejected', attempted: true, reason: 'description-contradicts-observed-operations', generated_at: new Date().toISOString() }
-          : { status: 'ai_applied', attempted: true, generated_at: new Date().toISOString() },
+          : deterministicSource
+            ? { status: 'deterministic_kept', attempted: false, reason: 'evidence-family-recovery' }
+            : { status: 'ai_applied', attempted: true, generated_at: new Date().toISOString() },
         category,
         operations: dedupedOps,
         related_entities: allRelatedEntities,
         related_domains: Array.isArray(journeys) ? journeys.map((value: unknown) => String(value || '')).filter(Boolean).slice(0, 6) : [],
         criticality: category === 'core' ? 'high' : 'medium',
         criticality_factors: Array.from(new Set([
-          'ai-extracted-from-journeys-and-entities', ...(requirementId ? [`catalog-outcome-requirement:${requirementId}`] : []),
+          deterministicSource ? 'deterministic-evidence-family-recovery' : 'ai-extracted-from-journeys-and-entities',
+          ...(requirementId ? [`catalog-outcome-requirement:${requirementId}`] : []),
           ...[...anchoredCandidateIds].map(candidateId => `catalog-candidate:${candidateId}`),
           ...(descriptionContradictsOperations ? ['catalog-description-rejected'] : []),
         ])),
@@ -9827,12 +9943,22 @@ export class AnalyzerOrchestrator {
 
     for (const feedback of catalogRejectionFeedback.slice(0, 4)) input.onRejection?.(feedback);
     input.onResponse?.(raw);
-    const boundedOutput = out.slice(0, input.exactCapabilityLimit ?? Math.max(16, catalogCountMax)); if (!usedDeterministicFallback && boundedOutput.length === 0 && input.allowDeterministicFallback && firstPartyFallback) return this.aiExtractCapabilityCatalog({ ...input, allowDeterministicFallback: false, catalogOverride: [firstPartyFallback] });
+    const boundedOutput = out.slice(0, input.exactCapabilityLimit ?? Math.max(16, catalogCountMax)); if (!usedDeterministicFallback && boundedOutput.length === 0 && input.allowDeterministicFallback && deterministicFallback) return this.aiExtractCapabilityCatalog({ ...input, allowDeterministicFallback: false, catalogOverride: [deterministicFallback] });
     if (!usedDeterministicFallback) return boundedOutput;
     const { entityNamesById, entityFieldsById, entityEvidenceById } = capabilityDescriptionEvidenceMaps(input.dataEntities); const fallbackOutputTerms = input.requiredOutcomeRequirements?.map(requirement => requirement.firstPartyOutcomeText || requirement.statement) || [];
-    return this.reconcileCatalogedCapabilities(boundedOutput, candidatePoolForRanking, input.dataEntities, input.entryPoints, input.nodes, input.enhancedSystemPurpose, [], input.projectTextSignal || { concepts: [], evidence: [] }, input.externalServices).filter(capability => {
-      const target = this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById);
-      target.productOutcomeTerms = fallbackOutputTerms; return this.isPublishableCapability(capability) && this.validateElementDescription(capability.description || '', target).ok && !capabilityDescriptionProductLanguageViolation(capability.description || '', target.relatedEntities || [], target.operations || [], target.rawIdentifiers || [], target.productOutcomeTerms) && !capability.criticality_factors?.some(factor => factor.startsWith('catalog-evidence-rejected:'));
+    return boundedOutput.filter(capability => {
+      const target = this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById, [], [], input.entryPoints);
+      target.productOutcomeTerms = fallbackOutputTerms;
+      const publishabilityFailure = this.capabilityPublishabilityFailure(capability);
+      const descriptionFailure = this.validateElementDescription(capability.description || '', target);
+      const languageFailure = capabilityDescriptionProductLanguageViolation(capability.description || '', target.relatedEntities || [], target.operations || [], target.rawIdentifiers || [], target.productOutcomeTerms);
+      const evidenceRejected = capability.criticality_factors?.some(factor => factor.startsWith('catalog-evidence-rejected:'));
+      if (process.env.KLAURO_DEBUG_CATALOG && (publishabilityFailure || !descriptionFailure.ok || languageFailure || evidenceRejected)) {
+        writeAnalyzerStatus('[catalog-debug] rejected deterministic fallback:', {
+          name: capability.name, publishabilityFailure, descriptionFailure, languageFailure, evidenceRejected,
+        });
+      }
+      return !publishabilityFailure && descriptionFailure.ok && !languageFailure && !evidenceRejected;
     });
   }
   private reconcileCatalogedCapabilities(
@@ -9845,8 +9971,24 @@ export class AnalyzerOrchestrator {
     libraryNames: string[] = [],
     projectTextSignal: ProjectTextSignal = { concepts: [], evidence: [] },
     externalServices: string[] = [],
+    userJourneys: CASUserJourney[] = [],
+    outcomeRequirements: readonly CapabilityCatalogOutcomeRequirement[] = [],
   ): SystemCapability[] {
     const entityById = new Map(dataEntities.map(entity => [entity.id, entity]));
+    const publicationFailure = (capability: SystemCapability) => {
+      const citedCandidateIds = new Set((capability.criticality_factors || [])
+        .filter(factor => factor.startsWith('catalog-candidate:'))
+        .map(factor => factor.slice('catalog-candidate:'.length)));
+      const boundRequirementIds = new Set((capability.criticality_factors || [])
+        .filter(factor => factor.startsWith('catalog-outcome-requirement:'))
+        .map(factor => factor.slice('catalog-outcome-requirement:'.length)));
+      const validBoundOutcome = outcomeRequirements.some(requirement =>
+        boundRequirementIds.has(requirement.id) &&
+        requirement.candidateIds.some(candidateId => citedCandidateIds.has(candidateId)) &&
+        capabilitySemanticallySatisfiesCatalogOutcomeRequirement(capability, requirement));
+      return validBoundOutcome ? undefined
+        : capabilityEvidencePublicationFailure(capability, candidates, projectTextSignal);
+    };
 
     const result = [...cataloged]
       .map(capability => this.normalizePolyglotCapabilityName(capability, entityById))
@@ -9869,24 +10011,22 @@ export class AnalyzerOrchestrator {
 
     const purposeGated = result.filter(capability => !this.isInfrastructureOnlyCapability(
       capability, entityById, nodeTypeByEntryPointId,
-      hasFirstPartyCorroboratedCatalogOperations(capability, candidates, projectTextSignal),
+      publicationFailure(capability) === undefined,
     ));
     const hasClassifiedEvidence = candidates.some(candidate => candidate.evidence_role !== undefined);
     const gated = hasClassifiedEvidence
-      ? purposeGated.map(capability => {
-          const failure = capabilityEvidencePublicationFailure(capability, candidates, projectTextSignal);
-          return failure ? {
-            ...capability,
-            criticality_factors: [...(capability.criticality_factors || []), `catalog-evidence-rejected:${failure}`],
-          } : capability;
-        })
+      ? purposeGated.filter(capability => publicationFailure(capability) === undefined)
       : purposeGated;
+    const preservedDescriptionRepairs = gated.filter(capability =>
+      capability.description_generation?.status === 'ai_rejected' && !capability.description);
+    const audienceCandidates = gated.filter(capability => !preservedDescriptionRepairs.includes(capability));
 
     const audienceEvaluation = evaluateCapabilityCatalogAudience(
-      gated,
+      audienceCandidates,
       dataEntities,
       libraryNames,
       [...capabilityCatalogProductTerms(purpose, projectTextSignal), ...externalServices],
+      { productText: projectTextSignal, userJourneys, entryPoints },
     );
     for (const rejection of audienceEvaluation.rejections) {
       if (rejection.target === 'name') {
@@ -9899,6 +10039,7 @@ export class AnalyzerOrchestrator {
     const deduped = this.dedupeSystemCapabilitiesByName([
       ...audienceEvaluation.accepted,
       ...audienceEvaluation.descriptionRepairCandidates,
+      ...preservedDescriptionRepairs,
     ]);
 
     return this.reinjectDescriptionAnchoredCapabilities(deduped, candidates, dataEntities, purpose);
@@ -10031,11 +10172,18 @@ export class AnalyzerOrchestrator {
     capability: Pick<SystemCapability, 'name' | 'description' | 'operations'>,
   ): boolean {
     const operations = capability.operations || [];
-    if (!this.capabilityHasObservedRead(operations) || this.capabilityHasObservedMutation(operations)) {
-      return false;
+    const hasRead = this.capabilityHasObservedRead(operations);
+    const hasMutation = this.capabilityHasObservedMutation(operations);
+    if (hasRead && !hasMutation) {
+      return /^(?:manage|create|update|delete|modify|write|submit|set|configure)\b/i.test(capability.name) ||
+        /\b(?:manag(?:e|es|ing|ement)|creat(?:e|es|ing)|updat(?:e|es|ing)|delet(?:e|es|ing)|modif(?:y|ies|ying)|mutat(?:e|es|ing)|writ(?:e|es|ing)|submits?|configur(?:e|es|ing))\b/i.test(capability.description || '');
     }
-    return /^(?:manage|create|update|delete|modify|write|submit|set|configure)\b/i.test(capability.name) ||
-      /\b(?:manag(?:e|es|ing|ement)|creat(?:e|es|ing)|updat(?:e|es|ing)|delet(?:e|es|ing)|modif(?:y|ies|ying)|mutat(?:e|es|ing)|writ(?:e|es|ing)|submits?|configur(?:e|es|ing))\b/i.test(capability.description || '');
+    if (hasRead && hasMutation) {
+      const readOnlyName = /^(?:browse|get|list|read|retrieve|show|view)\b/i.test(capability.name);
+      const namesMutation = /\b(?:add|create|delete|edit|manage|remove|submit|update|write)\b/i.test(capability.name);
+      if (readOnlyName && !namesMutation) return true;
+    }
+    return false;
   }
   private isInfrastructureOnlyCapability(
     capability: SystemCapability,
@@ -10187,7 +10335,8 @@ export class AnalyzerOrchestrator {
     return this.capabilityPublishabilityFailure(capability) === undefined;
   }
   private capabilityPublishabilityFailure(capability: SystemCapability): string | undefined {
-    const authored = capability.name_source === 'ai' ||
+    const authored = capability.name_source === 'deterministic' ||
+      capability.name_source === 'ai' ||
       capability.name_source === 'manual' ||
       capability.name_source === 'reused';
     if (!authored) return 'name-is-not-authored';
@@ -10202,10 +10351,16 @@ export class AnalyzerOrchestrator {
       descriptionWordCount >= 6 &&
       descriptionWordCount <= 32;
     if (!descriptionIsPublishable) {
+      if (capability.description_generation?.status === 'ai_rejected') {
+        return capability.description_generation.reason || 'description-rejected';
+      }
       if (!description) return 'missing-description';
       if (this.isStructuralPlaceholderCapabilityDescription(description)) return 'structural-placeholder-description';
       return descriptionWordCount < 6 ? 'description-too-short' : 'description-too-long';
     }
+    const observedDeletion = capabilityHasObservedDestructiveLifecycle(capability.operations || []);
+    const describesDeletion = capabilityDescriptionExpressesDestructiveLifecycle(`${capability.name} ${description}`);
+    if (observedDeletion && !describesDeletion) return 'description-omits-observed-deletion';
     return undefined;
   }
   private catalogQualityFailure(
@@ -10213,12 +10368,17 @@ export class AnalyzerOrchestrator {
     distinctFamilyCount: number,
     requiredBehaviorCandidateIds: string[] = [],
     requiredEntityCandidateGroups: string[][] = [], requiredOutcomes: readonly CapabilityCatalogOutcomeRequirement[] = [],
+    candidateFamilyGroups: ReadonlyArray<ReadonlyArray<string>> = [],
   ): string | undefined {
     if (reconciled.length === 0) {
       return distinctFamilyCount === 0 ? undefined : 'empty catalog after reconciliation';
     }
     const coverageFailure = capabilityCatalogCoverageFailure(reconciled, requiredBehaviorCandidateIds, requiredEntityCandidateGroups, requiredOutcomes);
     if (coverageFailure) return coverageFailure;
+    const uncoveredFamilyIds = uncoveredCapabilityCatalogFamilyRepresentativeIds(reconciled, candidateFamilyGroups);
+    if (uncoveredFamilyIds.length > 0) {
+      return `catalog omitted ${uncoveredFamilyIds.length} deterministic capability evidence families: ${uncoveredFamilyIds.slice(0, 8).join(', ')}`;
+    }
     const evidenceRejected = reconciled.filter(capability =>
       (capability.criticality_factors || []).some(factor => factor.startsWith('catalog-evidence-rejected:')));
     if (evidenceRejected.length > 0) {
@@ -10237,11 +10397,16 @@ export class AnalyzerOrchestrator {
       return `structural template descriptions survived reconciliation: ${placeholders.slice(0, 3).map(capability => `"${capability.name}"`).join(', ')}`;
     }
     const unauthored = reconciled.filter(capability =>
+      capability.name_source !== 'deterministic' &&
       capability.name_source !== 'ai' &&
       capability.name_source !== 'manual' &&
       capability.name_source !== 'reused');
     if (unauthored.length > 0) {
       return `unauthored capability names survived reconciliation: ${unauthored.slice(0, 3).map(capability => `"${capability.name}"`).join(', ')}`;
+    }
+    const deterministicRecoveries = reconciled.filter(capability => capability.name_source === 'deterministic');
+    if (deterministicRecoveries.length > 0) {
+      return `catalog contains ${deterministicRecoveries.length} evidence-grounded deterministic ${deterministicRecoveries.length === 1 ? 'recovery' : 'recoveries'} awaiting higher-quality language: ${deterministicRecoveries.slice(0, 3).map(capability => `"${capability.name}"`).join(', ')}`;
     }
     const weakDescriptions = reconciled.filter(capability => {
       if (capability.description_generation?.status === 'ai_rejected') return false;
@@ -10261,82 +10426,10 @@ export class AnalyzerOrchestrator {
   }
 
   private catalogDistinctFamilies(candidates: SystemCapability[]): SystemCapability[][] {
-    candidates = candidates.filter(candidate => {
-      const hasEntityEvidence = (candidate.related_entities?.length || 0) > 0;
-      const operations = candidate.operations || [];
-      const pageOnly = operations.length > 0 && operations.every(operation =>
-        operation.entry_point_type === 'page' || operation.entry_point_type === 'route'
-      );
-      const externalOnly = operations.length > 0 && operations.every(operation => operation.entry_point_type === 'external');
-      return !externalOnly && (!pageOnly || candidate.category === 'core' || hasEntityEvidence);
+    return groupCapabilityCatalogFamilies(candidates, {
+      normalizeToken: token => this.stemTerminologyToken(token),
+      isGenericToken: token => this.isGenericCapabilityToken(token),
     });
-    if (candidates.length === 0) return [];
-    const actionTokens = new Set([
-      'view', 'get', 'list', 'read', 'show', 'access', 'manage', 'create', 'update',
-      'delete', 'modify', 'write', 'process', 'handle', 'coordinate', 'provide',
-      'support', 'execute', 'run', 'perform', 'track', 'monitor',
-    ]);
-    const tokenize = (name: string): string[] => name
-      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-      .toLowerCase()
-      .split(/[^a-z0-9]+/)
-      .map(token => this.stemTerminologyToken(token))
-      .filter(token => token.length >= 4 && !actionTokens.has(token) && !this.isGenericCapabilityToken(token));
-    const rawTokens = candidates.map(candidate => new Set(tokenize(String(candidate.name || ''))));
-    const tokenFrequency = new Map<string, number>();
-    for (const candidateTokens of rawTokens) {
-      for (const token of candidateTokens) tokenFrequency.set(token, (tokenFrequency.get(token) || 0) + 1);
-    }
-    const nonDiscriminativeTokens = new Set(
-      candidates.length >= 3
-        ? [...tokenFrequency.entries()]
-            .filter(([, frequency]) => frequency > candidates.length / 2)
-            .map(([token]) => token)
-        : [],
-    );
-    const tokens = rawTokens.map(candidateTokens =>
-      new Set([...candidateTokens].filter(token => !nonDiscriminativeTokens.has(token)))
-    );
-    const entities = candidates.map(candidate => new Set((candidate.related_entities || []).map(value => String(value).toLowerCase())));
-    const parent = candidates.map((_, index) => index);
-    const find = (index: number): number => parent[index] === index ? index : (parent[index] = find(parent[index]));
-    const union = (left: number, right: number): void => {
-      const leftRoot = find(left);
-      const rightRoot = find(right);
-      if (leftRoot !== rightRoot) parent[rightRoot] = leftRoot;
-    };
-    const tokenSetsOverlap = (left: Set<string>, right: Set<string>): boolean => {
-      for (const a of left) {
-        for (const b of right) {
-          if (a === b || (Math.min(a.length, b.length) >= 5 && (a.includes(b) || b.includes(a)))) return true;
-        }
-      }
-      return false;
-    };
-    for (let left = 0; left < candidates.length; left++) {
-      for (let right = left + 1; right < candidates.length; right++) {
-        const subjectOverlap = tokenSetsOverlap(tokens[left], tokens[right]);
-        const sharedEntities = [...entities[left]].filter(value => entities[right].has(value));
-        const distinctiveEntityOverlap = sharedEntities.some(value => value
-          .replace(/^entity[_:-]?/, '')
-          .split(/[^a-z0-9]+/)
-          .some(token => token.length >= 4 && !this.isGenericCapabilityToken(token)));
-        const entityOverlap = sharedEntities.length > 0;
-        const bothBehaviorSurfaces = candidates[left].evidence_kind === 'behavior-surface' &&
-          candidates[right].evidence_kind === 'behavior-surface';
-        if (subjectOverlap || (!bothBehaviorSurfaces && entityOverlap &&
-          (distinctiveEntityOverlap || tokens[left].size === 0 || tokens[right].size === 0))) {
-          union(left, right);
-        }
-      }
-    }
-    const roots = new Set<number>();
-    for (let index = 0; index < candidates.length; index++) {
-      const evidenceAnchoredProductCandidate = candidates[index].evidence_kind !== 'behavior-surface' &&
-        (entities[index].size > 0 || (candidates[index].operations || []).length > 0);
-      if (tokens[index].size > 0 || evidenceAnchoredProductCandidate) roots.add(find(index));
-    }
-    return [...roots].map(root => candidates.filter((_, index) => find(index) === root));
   }
 
   private catalogDistinctFamilyCount(candidates: SystemCapability[]): number {
@@ -10416,6 +10509,7 @@ export class AnalyzerOrchestrator {
           flowGraph: args.flowGraph,
           projectTextSignal: args.projectTextSignal,
           budgetMs: args.budgetMs,
+          repairAttempt: targetedRepair ? cycle : undefined,
           hardDeadlineAt, exactCapabilityLimit: targetedRepair ? 1 : undefined, requiredOutcomeCount: targetedRepair ? mode?.requirements.length || 0 : requiredOutcomes.length, requiredOutcomeRequirements: mode?.requirements.length ? mode.requirements : undefined, repairMode: mode?.mode, repairIdentityName: mode?.mode === 'description' ? mode.identity.name : undefined, targetedRepairFacts: targetedRepair ? promptRepairEnvelope.facts : undefined, targetedRepairCandidateMap: targetedRepair ? promptRepairEnvelope.candidateMap : undefined, allowDeterministicFallback,
           entryPoints: args.entryPoints,
           nodes: args.nodes,
@@ -10423,7 +10517,7 @@ export class AnalyzerOrchestrator {
           ...(qualityNudge ? { qualityNudge } : {}),
           });
           const scopedRepairFeedback = () => { const rejections = promptRepairEnvelope.facts.flatMap(fact => fact.prior_rejections); return rejections.length > 0 ? JSON.stringify(rejections) : undefined; }; const initialNudge = mode ? capabilityCatalogRepairNudge(mode, promptRepairEnvelope.facts, qualityFailure, scopedRepairFeedback()) : cycle > 1 ? 'Previous catalog failed a quality check. Return a full replacement catalog.' : undefined; let batchExtracted = await extractBatch(initialNudge);
-          batchExtracted = await retryEmptyCapabilityCatalogOutcome({ initial: batchExtracted, candidateIds: [...batchIds], rejections: batchRejections, requirement: mode?.mode === 'outcome' ? mode.requirements[0] : undefined, retryEvidence: mode?.mode === 'evidence' && batchRejections.length === 0 && Boolean(batchRaw), record: feedback => { const recorded = recordCapabilityCatalogRejection(catalogRejectionsByCandidate, feedback); extractionRejections.push(recorded.explanation); }, retry: async () => { repairBatch = capabilityCatalogRepairEvidenceFacts(evidenceCandidates, [...batchIds], entityNamesById, catalogRejectionsByCandidate, mode?.requirements.map(requirement => requirement.id)); promptRepairEnvelope = buildPromptRepairEnvelope(); return extractBatch(capabilityCatalogRepairNudge(mode!, promptRepairEnvelope.facts, qualityFailure, scopedRepairFeedback()), true); } });
+          batchExtracted = await retryEmptyCapabilityCatalogOutcome({ initial: batchExtracted, candidateIds: [...batchIds], rejections: batchRejections, requirement: mode?.mode === 'outcome' ? mode.requirements[0] : undefined, retryEvidence: mode?.mode === 'evidence' && Boolean(batchRaw), record: feedback => { const recorded = recordCapabilityCatalogRejection(catalogRejectionsByCandidate, feedback); extractionRejections.push(recorded.explanation); }, retry: async () => { repairBatch = capabilityCatalogRepairEvidenceFacts(evidenceCandidates, [...batchIds], entityNamesById, catalogRejectionsByCandidate, mode?.requirements.map(requirement => requirement.id)); promptRepairEnvelope = buildPromptRepairEnvelope(); return extractBatch(capabilityCatalogRepairNudge(mode!, promptRepairEnvelope.facts, qualityFailure, scopedRepairFeedback()), true); } });
           if (!extractionRaw) extractionRaw = batchRaw;
           return mode?.mode === 'description' && batchExtracted[0]
             ? [preserveCapabilityCatalogDescriptionIdentity(mode.identity, batchExtracted[0])]
@@ -10438,37 +10532,68 @@ export class AnalyzerOrchestrator {
         }
         throw error;
       }
-      const audienceEvaluation = evaluateCapabilityCatalogAudience(extracted, args.dataEntities, args.libraryNames || [], [...capabilityCatalogProductTerms(args.enhancedSystemPurpose, args.projectTextSignal), ...args.externalServices]);
+      extracted = extracted.map(capability => {
+        const name = normalizeCapabilityActionName(capability.name);
+        return name === capability.name ? capability : { ...capability, name };
+      });
+      if (targetedRepair) {
+        const publicationEvidenceTerms = [...capabilityCatalogProductTerms(args.enhancedSystemPurpose, args.projectTextSignal), ...args.externalServices];
+        extracted = extracted.map(capability => {
+          const description = normalizeCapabilityDescriptionForPublication(capability.description, publicationEvidenceTerms);
+          if (description === capability.description) return capability;
+          return {
+            ...capability,
+            description,
+            description_source: 'deterministic',
+            description_generation: { status: 'deterministic_kept', attempted: true, reason: 'unsupported-description-claim-removed' },
+          };
+        });
+      }
+      const audienceEvaluation = evaluateCapabilityCatalogAudience(extracted, args.dataEntities, args.libraryNames || [], [...capabilityCatalogProductTerms(args.enhancedSystemPurpose, args.projectTextSignal), ...args.externalServices], { productText: args.projectTextSignal, userJourneys: args.userJourneys, entryPoints: args.entryPoints });
       for (const rejection of audienceEvaluation.rejections) {
         const rejected = extracted[rejection.capabilityIndex];
-        if (rejected?.id === rejection.capabilityId) recordCapabilityPublishabilityRejection(catalogRejectionsByCandidate, rejected, `catalog-audience:${rejection.reasons.join(',')}`, rejection.flaggedTokens);
+        if (rejected?.id === rejection.capabilityId) recordCapabilityPublishabilityRejection(catalogRejectionsByCandidate, rejected, `catalog-audience:${rejection.reasons.join(',')}`, rejection.flaggedTokens, {
+          missingAudience: rejection.missingAudience,
+          missingAudienceLocations: rejection.missingAudienceLocations,
+        });
       }
       audienceRepairFeedback = [extractionRejections.join(' '), capabilityAudienceRepairFeedback(audienceEvaluation.rejections)].filter(Boolean).join(' ') || undefined;
-      const reconciledCandidates = extracted.length > 0
-        ? this.reconcileCatalogedCapabilities(extracted, evidenceCandidates, args.dataEntities, args.entryPoints, args.nodes, args.enhancedSystemPurpose, args.libraryNames || [], args.projectTextSignal, args.externalServices)
+      const audiencePrepared = [...audienceEvaluation.accepted, ...audienceEvaluation.descriptionRepairCandidates];
+      const reconciledCandidates = audiencePrepared.length > 0
+        ? this.reconcileCatalogedCapabilities(audiencePrepared, evidenceCandidates, args.dataEntities, args.entryPoints, args.nodes, args.enhancedSystemPurpose, args.libraryNames || [], args.projectTextSignal, args.externalServices, args.userJourneys, requiredOutcomes)
         : [];
       captureCapabilityCatalogPendingRequirements(pendingRequirementIdsByCapabilityId, reconciledCandidates, requiredOutcomes);
       const boundReconciledCandidates = cycle === 1 ? bindUniquelySatisfiedCatalogOutcomeRequirements(reconciledCandidates, requiredOutcomes) : reconciledCandidates;
       const publishabilityFailures = new Map<string, number>(); const publishabilityRejections: Array<{ name: string; description?: string; reason: string; requirement_id?: string; forbidden_terms?: string[] }> = [];
       const rejectedCapabilities: SystemCapability[] = []; const cycleReconciled = boundReconciledCandidates.flatMap(capability => {
-      const descriptionTarget = this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById); const requirementIds = new Set((capability.criticality_factors || []).filter(factor => factor.startsWith('catalog-outcome-requirement:')).map(factor => factor.slice('catalog-outcome-requirement:'.length))); descriptionTarget.productOutcomeTerms = requiredOutcomes.filter(requirement => requirementIds.has(requirement.id)).map(requirement => requirement.firstPartyOutcomeText || requirement.statement); const descriptionValidation = this.validateElementDescription(capability.description || '', descriptionTarget);
+      const descriptionTarget = this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById, [], [], args.entryPoints); descriptionTarget.productOutcomeTerms = Array.from(new Set([
+        args.projectTextSignal.productDocSummary,
+        ...requiredOutcomes.map(requirement => requirement.firstPartyOutcomeText || requirement.statement),
+      ].filter((value): value is string => Boolean(value)))); const descriptionValidation = this.validateElementDescription(capability.description || '', descriptionTarget);
         const failure = this.capabilityPublishabilityFailure(capability) || (!descriptionValidation.ok ? `description-${descriptionValidation.reason}` : undefined);
         if (!failure) return [capability];
         rejectedCapabilities.push(capability); publishabilityFailures.set(failure, (publishabilityFailures.get(failure) || 0) + 1);
         const violation = capabilityDescriptionProductLanguageViolation(capability.description || '', descriptionTarget.relatedEntities || [], descriptionTarget.operations || [], descriptionTarget.rawIdentifiers || [], descriptionTarget.productOutcomeTerms || []); const forbiddenTerms = descriptionValidation.offendingTerms?.length ? descriptionValidation.offendingTerms : violation?.reason && failure.endsWith(violation.reason) ? violation.forbiddenTerms : [];
         const recorded = recordCapabilityPublishabilityRejection(catalogRejectionsByCandidate, capability, failure, forbiddenTerms); publishabilityRejections.push(recorded.feedback);
+        if (process.env.KLAURO_DEBUG_CATALOG) writeAnalyzerStatus('[catalog-debug] publishability rejection:', {
+          name: capability.name, failure, forbiddenTerms,
+          description: capability.description,
+        });
         const identity = capabilityIdentityPendingDescriptionRepair(capability, failure);
         return identity ? [identity] : [];
       });
       audienceRepairFeedback = [audienceRepairFeedback, capabilityPublishabilityRepairFeedback(publishabilityRejections)].filter(Boolean).join(' ') || undefined;
       const superseded = targetedRepair ? supersedeUnboundPendingOutcomeDuplicates(reconciled, cycleReconciled, requiredOutcomes, pendingRequirementIdsByCapabilityId) : { existing: reconciled, incoming: cycleReconciled }; const combinedReconciled = targetedRepair ? this.dedupeSystemCapabilitiesByName(mergeCapabilityCatalogRepairResults(superseded.existing, superseded.incoming), true) : cycleReconciled;
-      const evidenceCompleteReconciled = mergeUniquelyMatchedBehaviorEvidence(combinedReconciled, evidenceCandidates, requiredBehaviorCandidateIds); const nonPublishable = evidenceCompleteReconciled.filter(capability => !this.isPublishableCapability(capability));
+      const behaviorCompleteReconciled = mergeUniquelyMatchedBehaviorEvidence(combinedReconciled, evidenceCandidates, requiredBehaviorCandidateIds);
+      const evidenceCompleteReconciled = mergeGroundedEntityEvidenceFamilies(behaviorCompleteReconciled, evidenceCandidates, requiredEntityCandidateGroups);
+      const nonPublishable = evidenceCompleteReconciled.filter(capability => !this.isPublishableCapability(capability));
       const cycleQualityFailure = this.catalogQualityFailure(
         evidenceCompleteReconciled,
         distinctFamilyCount,
         requiredBehaviorCandidateIds,
         requiredEntityCandidateGroups,
         requiredOutcomes,
+        distinctFamilyCandidateGroups,
       ) || (nonPublishable.length > 0 ? `${nonPublishable.length} catalog capability ${nonPublishable.length === 1 ? 'requires' : 'require'} publishable description repair: ${nonPublishable.slice(0, 3).map(capability => capability.name).join(', ')}` : undefined);
       writeAnalyzerStatus(
         `[Klauro] capability catalog cycle ${cycle}/${repairProgress.maxCycles}${targetedRepair ? ' targeted-repair' : ''}: ${cycleQualityFailure ? `rejected (${cycleQualityFailure})` : `accepted (${evidenceCompleteReconciled.length} capabilities)`}${reconciledCandidates.length > cycleReconciled.length ? `; refused ${reconciledCandidates.length - cycleReconciled.length} non-publishable item(s): ${[...publishabilityFailures.entries()].map(([reason, count]) => `${reason}=${count}`).join(', ')}` : ''}`,
@@ -10501,7 +10626,10 @@ export class AnalyzerOrchestrator {
     const gateReason = deadlineExceeded
       ? `${AI_CATALOG_HARD_DEADLINE_MARKER}: capability-catalog AI enrichment abandoned after ${cyclesRun} cycle(s) to protect the overall analysis latency budget; structural capability candidates remain available${qualityFailure ? ` (last quality check: ${qualityFailure})` : ''}`
       : qualityFailure;
-    const publishableReconciled = reconciled.filter(capability => this.isPublishableCapability(capability)); const requiredCoverageFailure = capabilityCatalogCoverageFailure(publishableReconciled, requiredBehaviorCandidateIds, requiredEntityCandidateGroups, requiredOutcomes);
+    const publishableReconciled = reconciled.filter(capability => this.isPublishableCapability(capability)); const requiredCoverageFailure = capabilityCatalogCoverageFailure(publishableReconciled, requiredBehaviorCandidateIds, requiredEntityCandidateGroups, requiredOutcomes) ||
+      (uncoveredCapabilityCatalogFamilyRepresentativeIds(publishableReconciled, distinctFamilyCandidateGroups).length > 0
+        ? 'catalog-family-coverage-incomplete'
+        : undefined);
     const publishGroundedPartial = Boolean(qualityFailure) && !requiredCoverageFailure && publishableReconciled.length >= minimumCapabilities;
     if ((publishGroundedPartial || (!deadlineExceeded && !qualityFailure)) && retainedInterpretationRaw) {
       args.onInterpretationAccepted?.(retainedInterpretationRaw);
@@ -10669,6 +10797,19 @@ export class AnalyzerOrchestrator {
       userJourneys,
       projectTextSignal,
     );
+    const artifactTypeHint = String(enhancedSystemPurpose.artifact_type || 'app');
+    const descriptionEvidenceCandidates = this.catalogEvidenceCandidates(
+      mergeCapabilityCatalogFlowEvidence(candidateSnapshot, flowGraph.capability_candidates || []),
+      behaviorSurfaces,
+      dataEntities,
+      artifactTypeHint,
+      projectTextSignal,
+      { entryPoints, nodes, userJourneys },
+    );
+    const narrativeCandidateSnapshot = selectCapabilityCatalogPromptCandidates(
+      this.rankCatalogPromptCandidates(descriptionEvidenceCandidates, userJourneys),
+      catalogEntityCandidateGroups(catalogRequiredEvidenceCandidates(descriptionEvidenceCandidates)),
+    );
     const aiInputFingerprint = this.hashAIInterpretationRefreshFingerprint(
       this.buildAIInterpretationRefreshFingerprint(
         systemName,
@@ -10720,14 +10861,14 @@ export class AnalyzerOrchestrator {
       externalServices,
       flowGraph,
       domainConcepts,
-      candidateSnapshot,
+      narrativeCandidateSnapshot,
       libraryNames,
       projectTextSignal,
       dataEntities,
       projectTextSignal.manifestDescription || '',
       userJourneys
     );
-    const artifactType = String(enhancedSystemPurpose.artifact_type || structuralFacts.artifactType || 'app');
+    const artifactType = String(enhancedSystemPurpose.artifact_type || structuralFacts.artifactType || artifactTypeHint);
     if (artifactType === 'infrastructure') {
       const declarations = nodes
         .filter(node => /^(?:infrastructure_resource|kubernetes_deployment|compose_service|container_image_definition|serverless_function)$/i.test(node.type))
@@ -10762,7 +10903,7 @@ export class AnalyzerOrchestrator {
       systemName,
       projectText: [projectTextSignal.productDocTitle, projectTextSignal.productDocSummary, projectTextSignal.manifestDescription],
       entityNames: dataEntities.map(entity => entity.name),
-      capabilityNames: candidateSnapshot.map(capability => capability.name),
+      capabilityNames: narrativeCandidateSnapshot.map(capability => capability.name),
       coreConcepts: enhancedSystemPurpose.core_concepts || [],
       implementationNames: [...frameworks, ...libraryNames],
       isGenericToken: token => this.isGenericCapabilityToken(token),
@@ -10783,14 +10924,6 @@ export class AnalyzerOrchestrator {
     const configuredElementLimit = Number(process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT || '');
     const elementLimit = Number.isFinite(configuredElementLimit) && configuredElementLimit > 0 ? configuredElementLimit : 8;
     const { entityNamesById, entityFieldsById, entityEvidenceById } = capabilityDescriptionEvidenceMaps(dataEntities);
-    const descriptionEvidenceCandidates = this.catalogEvidenceCandidates(
-      mergeCapabilityCatalogFlowEvidence(candidateSnapshot, flowGraph.capability_candidates || []),
-      behaviorSurfaces,
-      dataEntities,
-      artifactType,
-      projectTextSignal,
-      { entryPoints, nodes, userJourneys },
-    );
     const requiredOutcomes = deriveCapabilityCatalogOutcomeRequirements(projectTextSignal, descriptionEvidenceCandidates);
 
     const semanticEvidenceDigest = {
@@ -10832,6 +10965,7 @@ export class AnalyzerOrchestrator {
       nodes,
       edges,
       allCapabilitiesForEvidence: systemCapabilities,
+      entryPoints,
       userJourneys,
       preferredBatchSize: 1, capabilityEntityEvidence: dataEntities,
       requiredOutcomeRequirements: requiredOutcomes,
@@ -10843,7 +10977,15 @@ export class AnalyzerOrchestrator {
       elementsEnabled,
       elementLimit,
       reauthorDescriptions: false,
-      toTarget: capability => this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById, requiredOutcomes),
+      toTarget: capability => this.capabilityDescriptionTarget(
+        capability,
+        entityNamesById,
+        entityFieldsById,
+        entityEvidenceById,
+        requiredOutcomes,
+        [projectTextSignal.productDocSummary, projectTextSignal.manifestDescription].filter((value): value is string => Boolean(value)),
+        entryPoints,
+      ),
       authorDescriptions: authorCapabilityDescriptions,
     });
     const capabilityTargets = catalogApplication.targets;
@@ -10905,7 +11047,7 @@ export class AnalyzerOrchestrator {
       databaseEntities: gateEntityGrounding,
       externalServices: this.plausiblePromptExternalServices(systemName, externalServices),
       structuralTokens: this.structuralGroundingTokens(structuralFacts, gateEntityGrounding),
-      projectTextSummary: projectTextSignal.manifestDescription || projectTextSignal.summary,
+      projectTextSummary: projectTextSignal.productDocSummary || projectTextSignal.manifestDescription || projectTextSignal.summary,
       projectTextConcepts: projectTextSignal.concepts,
       deployableCount,
       artifactType,
@@ -11253,17 +11395,17 @@ export class AnalyzerOrchestrator {
         includeEntities: false,
         nodes,
         edges,
-        allCapabilitiesForEvidence: systemCapabilities, userJourneys, capabilityEntityEvidence: dataEntities,
+        allCapabilitiesForEvidence: systemCapabilities, userJourneys, capabilityEntityEvidence: dataEntities, entryPoints,
         requiredOutcomeRequirements: requiredOutcomes,
       });
       const unresolvedAfterRepair = unresolvedCapabilities.filter(capability => {
-        const target = this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById, requiredOutcomes);
+        const target = this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById, requiredOutcomes, [projectTextSignal.productDocSummary, projectTextSignal.manifestDescription].filter((value): value is string => Boolean(value)), entryPoints);
         return !capability.description || capability.description_source !== 'ai' || !this.validateElementDescription(capability.description, target).ok;
       });
       if (unresolvedAfterRepair.length > 0) {
         const degraded: Array<{ id: string; name: string; reason: string; failure_class: 'provider-unavailable' | 'failed-grounding' }> = [];
         for (const capability of unresolvedAfterRepair) {
-          const target = this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById, requiredOutcomes);
+          const target = this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById, requiredOutcomes, [projectTextSignal.productDocSummary, projectTextSignal.manifestDescription].filter((value): value is string => Boolean(value)), entryPoints);
           const validation = capability.description
             ? this.validateElementDescription(capability.description, target)
             : { ok: false as const, reason: 'missing-description' };
@@ -11296,7 +11438,7 @@ export class AnalyzerOrchestrator {
     }
     if (elementsEnabled && systemCapabilities.length > capabilityTargets.length) {
       const skippedCapabilities = capabilitiesWithoutDescriptionDisposition(systemCapabilities.slice(elementLimit));
-      const skippedTargets = skippedCapabilities.map(capability => this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById, requiredOutcomes));
+      const skippedTargets = skippedCapabilities.map(capability => this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById, requiredOutcomes, [projectTextSignal.productDocSummary, projectTextSignal.manifestDescription].filter((value): value is string => Boolean(value)), entryPoints));
       this.recordElementDescriptionGenerationByIds(
         skippedTargets.map(target => target.id),
         systemCapabilities,
@@ -11671,6 +11813,7 @@ export class AnalyzerOrchestrator {
       userJourneys?: CASUserJourney[];
       preferredBatchSize?: number; capabilityEntityEvidence?: CASDataEntity[];
       requiredOutcomeRequirements?: readonly CapabilityCatalogOutcomeRequirement[];
+      entryPoints?: CASEntryPoint[];
     }
   ): Promise<void> {
     this.elementDescriptionArtifactType = context.enhancedSystemPurpose?.artifact_type || this.elementDescriptionArtifactType;
@@ -11701,6 +11844,8 @@ export class AnalyzerOrchestrator {
         entityFieldsById,
         entityEvidenceById,
         context.requiredOutcomeRequirements,
+        [context.projectTextSignal?.productDocSummary, context.projectTextSignal?.manifestDescription].filter((value): value is string => Boolean(value)),
+        context.entryPoints,
       )),
       ...entityTargets,
     ];
@@ -11977,8 +12122,10 @@ export class AnalyzerOrchestrator {
     capability: SystemCapability,
     entityNamesById?: Map<string, string>,
     entityFieldsById?: Map<string, string[]>,
-    entityEvidenceById?: Map<string, Pick<CASDataEntity, 'name' | 'kind'>>,
+    entityEvidenceById?: Map<string, Pick<CASDataEntity, 'id' | 'name' | 'kind' | 'relations'>>,
     requiredOutcomeRequirements: readonly CapabilityCatalogOutcomeRequirement[] = [],
+    firstPartyProductText: readonly string[] = [],
+    entryPoints: readonly CASEntryPoint[] = [],
   ): DescriptionTarget {
     const sourceAreas = this.capabilitySourceAreas([], capability.operations);
     const actionSummary = Array.from(new Set(
@@ -11992,7 +12139,9 @@ export class AnalyzerOrchestrator {
       .filter(Boolean);
     const readOnly = /^(?:view|access|list|read|show|retrieve)\b/i.test(capability.name) ||
       (observedHttpMethods.length > 0 && observedHttpMethods.every(method => ['GET', 'HEAD', 'OPTIONS'].includes(method)));
-    const proseEntityIds = capability.related_entities.filter(id => {
+    const evidenceEntities = entityEvidenceById ? [...entityEvidenceById.values()] as CASDataEntity[] : [];
+    const groundedEntityIds = capabilityGroundedEntityIds(capability, evidenceEntities, entryPoints);
+    const proseEntityIds = [...groundedEntityIds].filter(id => {
       const entity = entityEvidenceById?.get(id);
       return !entity || capabilityDescriptionEntityProvidesProductEvidence(capability.name, entity);
     });
@@ -12001,7 +12150,8 @@ export class AnalyzerOrchestrator {
       .map(factor => factor.slice('catalog-outcome-requirement:'.length)));
     const productOutcomeTerms = requiredOutcomeRequirements
       .filter(requirement => requirementIds.has(requirement.id))
-      .map(requirement => requirement.firstPartyOutcomeText || requirement.statement);
+      .map(requirement => requirement.firstPartyOutcomeText || requirement.statement)
+      .concat(firstPartyProductText);
     return {
       id: capability.id,
       name: capability.name,
@@ -12182,6 +12332,7 @@ export class AnalyzerOrchestrator {
       fields: target.fields,
       relatedEntities: target.relatedEntities,
       unrelatedEntities: target.unrelatedEntities,
+      productOutcomeTerms: target.productOutcomeTerms,
       domainVocabulary: this.elementDescriptionGroundingVocabulary,
     }, {
       minLength: 50,
@@ -12217,7 +12368,7 @@ export class AnalyzerOrchestrator {
         const evidenceSupportsClaim = ownEvidence.replace(/[- ]/g, '').includes(normalizedClaim) || firstPartyValueClaims.has(normalizedClaim) || (normalizedClaim.startsWith('metric') && /\b(?:metric|prometheus|telemetry)\b/.test(ownEvidence));
         if (!evidenceSupportsClaim) return { ok: false, reason: `unsupported-target-value-claim:${claim.toLowerCase()}` };
       }
-      const unsupportedOperationalClaims = [...unsupportedCapabilityOperationalClaims(cleaned, target.operations || []), ...(cleaned.match(/\b(?:high availability|resource utili[sz]ation|fault tolerance|auto[- ]scaling|scalability|resilien(?:ce|t))\b/gi) || [])];
+      const unsupportedOperationalClaims = [...unsupportedCapabilityOperationalClaims(cleaned, [...(target.operations || []), ...(target.productOutcomeTerms || [])]), ...(cleaned.match(/\b(?:high availability|resource utili[sz]ation|fault tolerance|auto[- ]scaling|scalability|resilien(?:ce|t))\b/gi) || [])];
       for (const claim of unsupportedOperationalClaims) {
         const normalizedClaim = claim.toLowerCase().replace(/[- ]/g, '');
         if (!ownEvidence.replace(/[- ]/g, '').includes(normalizedClaim)) {
@@ -12559,6 +12710,17 @@ export class AnalyzerOrchestrator {
     } = {},
   ): { ok: boolean; reason?: string } {
     const cleaned = this.cleanGeneratedDescriptionText(description);
+    const narrativeGroundingFailure = systemNarrativeGroundingFailure(cleaned, [
+      facts.projectTextSummary || '',
+      ...(facts.projectTextConcepts || []),
+      ...(facts.structuralTokens || []),
+    ]);
+    if (narrativeGroundingFailure) {
+      return {
+        ok: false,
+        reason: `${narrativeGroundingFailure.reason}:${narrativeGroundingFailure.offendingTerms.join(',')}`,
+      };
+    }
     if (/\b(?:it|this system|the system)\s+(?:frameworks|libraries|technologies|tools)\b/i.test(cleaned)) {
       return { ok: false, reason: 'malformed-missing-verb' };
     }
@@ -14492,7 +14654,7 @@ export class AnalyzerOrchestrator {
 
     for (const readmeName of ['README.md', 'README.mdx', 'readme.md']) {
       const readmePath = path.join(projectPath, readmeName);
-      const content = this.safeReadText(readmePath, 12000);
+      const content = stripProjectDocumentMedia(this.safeReadText(readmePath, 12000));
       if (!content) continue;
       const useful = this.stripBoilerplateProjectText(content);
       if (useful.length > 80) {
@@ -14514,7 +14676,7 @@ export class AnalyzerOrchestrator {
       'OVERVIEW.md', 'docs/OVERVIEW.md',
     ];
     for (const docName of PRODUCT_DOC_CANDIDATES) {
-      const content = this.safeReadText(path.join(projectPath, docName), 16000);
+      const content = stripProjectDocumentMedia(this.safeReadText(path.join(projectPath, docName), 16000));
       if (!content) continue;
       const framing = this.extractProductDocFraming(content);
       if (framing.title || framing.summary) {
@@ -14602,6 +14764,7 @@ export class AnalyzerOrchestrator {
     let title: string | undefined;
     let summary: string | undefined;
     const paragraph: string[] = [];
+    const featureItems: string[] = [];
     const isNoise = (line: string): boolean => {
       const t = line.trim();
       if (!t) return true;
@@ -14632,14 +14795,36 @@ export class AnalyzerOrchestrator {
         if (paragraph.join(' ').length > 400) break;
       }
     }
-    if (paragraph.length > 0) {
-      summary = paragraph
+    let inFeatureSection = false;
+    for (let i = 0; i < lines.length && i < 300 && featureItems.length < 8; i++) {
+      const t = lines[i].trim();
+      const heading = t.match(/^#{1,6}\s+(.+?)\s*#*$/);
+      if (heading) {
+        inFeatureSection = /^(?:key\s+)?(?:features?|capabilities|functionality|use cases?|what (?:it|this|you) (?:does|can do))\b/i.test(
+          heading[1].replace(/[`*_]/g, '').trim(),
+        );
+        continue;
+      }
+      if (!inFeatureSection) continue;
+      const item = t.match(/^(?:[-*+]|\d+\.)\s+(.+)$/);
+      if (!item) continue;
+      const cleaned = item[1]
+        .replace(/\*\*([^*]+)\*\*/g, '$1')
+        .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+        .replace(/[`*_]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (cleaned.length >= 12) featureItems.push(/[.!?]$/.test(cleaned) ? cleaned : `${cleaned}.`);
+    }
+    const summaryParts = [paragraph.join(' '), ...featureItems].filter(Boolean);
+    if (summaryParts.length > 0) {
+      summary = summaryParts
         .join(' ')
         .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
         .replace(/[`*_]/g, '')
         .replace(/\s+/g, ' ')
         .trim()
-        .slice(0, 400);
+        .slice(0, 2000);
     }
     return { title, summary };
   }
@@ -17763,6 +17948,21 @@ export class AnalyzerOrchestrator {
     const productNodeById = new Map(productNodes.map(node => [node.id, node] as const));
     const productNodeOrder = new Map(productNodes.map((node, index) => [node.id, index] as const));
 
+    const nestedHttpFamilyEvidence = new Map<string, { count: number; methods: Set<string> }>();
+    for (const entryPoint of productEntryPoints) {
+      const nestedKey = this.inferNestedHttpResourceKey(entryPoint);
+      if (!nestedKey) continue;
+      const evidence = nestedHttpFamilyEvidence.get(nestedKey) || { count: 0, methods: new Set<string>() };
+      evidence.count++;
+      const method = String(entryPoint.trigger?.method || '').toUpperCase();
+      if (method) evidence.methods.add(method);
+      nestedHttpFamilyEvidence.set(nestedKey, evidence);
+    }
+    const preferredNestedHttpResources = new Set([...nestedHttpFamilyEvidence.entries()]
+      .filter(([, evidence]) => evidence.count >= 2 && evidence.methods.size >= 2)
+      .map(([key]) => key));
+
+
     const resourceGroups = new Map<string, {
       entryPoints: CASEntryPoint[];
       name: string;
@@ -17776,7 +17976,7 @@ export class AnalyzerOrchestrator {
       if ((ep as any).metadata?.inferred_orientation_only) continue;
       if (!this.isCapabilityBearingEntryPoint(ep)) continue;
 
-      const resourceKey = this.inferResourceKey(ep);
+      const resourceKey = this.inferResourceKey(ep, preferredNestedHttpResources);
       const resourceName = this.inferResourceName(ep, resourceKey);
       if (this.isGenericCapabilityResourceKey(resourceKey, resourceName) &&
         !this.domainVariantInSet(resourceKey, productEntityDomains)) continue;
@@ -18318,8 +18518,14 @@ export class AnalyzerOrchestrator {
     };
     for (const capability of capabilities) {
       const baseKey = capability.name.trim().toLowerCase(); const baseMatch = byName.get(baseKey);
+      const hasOutcomeBinding = (value: SystemCapability): boolean =>
+        (value.criticality_factors || []).some(factor => factor.startsWith('catalog-outcome-requirement:'));
       const requirementKey = (capability.criticality_factors || []).filter(factor => factor.startsWith('catalog-outcome-requirement:')).sort().join('|');
-      const key = baseMatch && !capabilityCatalogOutcomesMayMerge(baseMatch, capability) ? `${baseKey}::${requirementKey}` : baseKey;
+      const exactNameHasUnboundDuplicate = Boolean(baseMatch) &&
+        (!hasOutcomeBinding(baseMatch!) || !hasOutcomeBinding(capability));
+      const key = baseMatch && !capabilityCatalogOutcomesMayMerge(baseMatch, capability) && !exactNameHasUnboundDuplicate
+        ? `${baseKey}::${requirementKey}`
+        : baseKey;
       const existing = byName.get(key);
       if (!existing) {
         byName.set(key, { ...capability });
@@ -20526,7 +20732,27 @@ export class AnalyzerOrchestrator {
     return this.domainKeyFromEntryPointText(segments[segments.length - 1] || '');
   }
 
-  private inferResourceKey(ep: CASEntryPoint): string {
+  private inferNestedHttpResourceKey(ep: CASEntryPoint): string | undefined {
+    if (ep.type !== 'http') return undefined;
+    const segments = String(ep.trigger?.path || '').split('/').filter(Boolean);
+    let parameterSeen = false;
+    let nestedKey: string | undefined;
+    for (const segment of segments) {
+      if (segment.startsWith(':') || segment.startsWith('{')) {
+        parameterSeen = true;
+        continue;
+      }
+      if (!parameterSeen) continue;
+      const key = this.normalizeHttpCapabilitySegment(segment);
+      if (key !== 'general' && !this.isGenericCapabilityResourceKey(key)) nestedKey = key;
+    }
+    return nestedKey;
+  }
+
+
+  private inferResourceKey(ep: CASEntryPoint, preferredNestedHttpResources = new Set<string>()): string {
+      const nestedKey = this.inferNestedHttpResourceKey(ep);
+      if (nestedKey && preferredNestedHttpResources.has(nestedKey)) return nestedKey;
     if (ep.type === 'http') {
       const path = ep.trigger?.path || '';
       const cleanPath = path.replace(/^\/api\//, '').replace(/^\//, '');
@@ -20771,6 +20997,9 @@ export class AnalyzerOrchestrator {
     if (ep.type === 'http') {
       const method = ep.trigger?.method?.toLowerCase() || '';
       const path = ep.trigger?.path || '';
+      if (canonicalCapabilityLifecycleAction({ trigger: ep.trigger }) === 'authenticate') {
+        return 'Authenticate';
+      }
       const pathParts = path.split('/').filter(Boolean);
       const lastPart = pathParts[pathParts.length - 1];
 
@@ -25357,12 +25586,12 @@ export class AnalyzerOrchestrator {
             node.perspectives = {};
           }
 
-          const hierarchy = this.buildPerspectiveHierarchy(node, perspective);
+          const hierarchy = buildPerspectiveHierarchy(node, perspective);
 
           node.perspectives[perspective.id] = {
             hierarchy,
             level: node.level || 1,
-            priority: this.calculatePerspectivePriority(node, perspective)
+            priority: calculatePerspectivePriority(node, perspective)
           };
         }
       }
@@ -25388,7 +25617,7 @@ export class AnalyzerOrchestrator {
         node.perspectives[fallbackPerspective.id] = {
           hierarchy: ['structure', node.category || node.type, node.name],
           level: node.level || 1,
-          priority: this.calculatePerspectivePriority(node, fallbackPerspective)
+          priority: calculatePerspectivePriority(node, fallbackPerspective)
         };
       }
     }
@@ -25408,297 +25637,5 @@ export class AnalyzerOrchestrator {
     return false;
   }
 
-  private buildPerspectiveHierarchy(node: CASNode, perspective: CASPerspective): string[] {
-    const hierarchy: string[] = [];
 
-    if (perspective.type === 'flow') {
-      hierarchy.push('flow');
-      if (node.category) hierarchy.push(node.category);
-      hierarchy.push(node.type);
-    } else if (perspective.type === 'structure') {
-      hierarchy.push('structure');
-      if (node.category) hierarchy.push(node.category);
-      if (node.subcategories?.[0]) hierarchy.push(node.subcategories[0]);
-    } else if (perspective.type === 'security') {
-      hierarchy.push('security');
-      hierarchy.push(node.type);
-    } else {
-      hierarchy.push(perspective.type);
-      if (node.category) hierarchy.push(node.category);
-    }
-
-    hierarchy.push(node.name);
-    return hierarchy;
-  }
-
-  private calculatePerspectivePriority(node: CASNode, perspective: CASPerspective): number {
-    let priority = 50;
-
-    if (node.metadata?.is_exported) priority += 20;
-    if (node.type === 'class' || node.type === 'module') priority += 10;
-    if (node.type === 'function' || node.type === 'method') priority += 5;
-
-    if (perspective.type === 'flow' && (node.type === 'controller' || node.type === 'route' || node.type === 'endpoint')) {
-      priority += 30;
-    }
-    if (perspective.type === 'data' && (node.type === 'entity' || node.type === 'model' || node.type === 'schema')) {
-      priority += 30;
-    }
-
-    return Math.min(100, priority);
-  }
-
-  private detectLibrariesFromManifests(projectPath: string): CASLibrary[] {
-    const libraries: CASLibrary[] = [];
-    const seen = new Set<string>();
-
-    const packageJsonPath = path.join(projectPath, 'package.json');
-    if (fs.existsSync(packageJsonPath)) {
-      try {
-        const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
-        const addDeps = (deps: Record<string, string> | undefined, type: CASLibrary['type']) => {
-          if (!deps) return;
-          for (const [name, version] of Object.entries(deps)) {
-            const key = `${name}@${type}`;
-            if (seen.has(key)) continue;
-            seen.add(key);
-            libraries.push({
-              id: `lib_${name.replace(/[^a-zA-Z0-9]/g, '_')}`,
-              name,
-              version: version.replace(/^[\^~>=<]/, ''),
-              type,
-              package_manager: 'npm'
-            });
-          }
-        };
-        addDeps(pkg.dependencies, 'production');
-        addDeps(pkg.devDependencies, 'development');
-        addDeps(pkg.peerDependencies, 'peer');
-        addDeps(pkg.optionalDependencies, 'optional');
-      } catch { }
-    }
-
-    const requirementsFiles = ['requirements.txt', 'requirements/base.txt', 'requirements/production.txt'];
-    for (const reqFile of requirementsFiles) {
-      const reqPath = path.join(projectPath, reqFile);
-      if (fs.existsSync(reqPath)) {
-        try {
-          const rawContent = fs.readFileSync(reqPath);
-          const content = rawContent.toString('utf8').replace(/\0/g, '').replace(/\uFEFF/g, '');
-          for (const line of content.split('\n')) {
-            const trimmed = line.trim();
-            if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('-')) continue;
-            const match = trimmed.match(/^([a-zA-Z0-9_.-]+)\s*(?:[><=!~]+\s*(.+))?/);
-            if (match) {
-              const name = match[1];
-              const version = match[2]?.split(',')[0]?.trim();
-              const key = `py_${name}`;
-              if (seen.has(key)) continue;
-              seen.add(key);
-              libraries.push({
-                id: `lib_${name.replace(/[^a-zA-Z0-9]/g, '_')}`,
-                name,
-                version,
-                type: 'production',
-                package_manager: 'pip'
-              });
-            }
-          }
-        } catch { }
-      }
-    }
-
-    const pipfilePath = path.join(projectPath, 'Pipfile');
-    if (fs.existsSync(pipfilePath) && libraries.filter(l => l.package_manager === 'pip').length === 0) {
-      try {
-        const content = fs.readFileSync(pipfilePath, 'utf8');
-        let section = '';
-        for (const line of content.split('\n')) {
-          const trimmed = line.trim();
-          if (trimmed.startsWith('[')) {
-            section = trimmed.replace(/[\[\]]/g, '').toLowerCase();
-            continue;
-          }
-          if (section === 'packages' || section === 'dev-packages') {
-            const match = trimmed.match(/^([a-zA-Z0-9_.-]+)\s*=/);
-            if (match) {
-              const name = match[1];
-              const key = `py_${name}`;
-              if (seen.has(key)) continue;
-              seen.add(key);
-              libraries.push({
-                id: `lib_${name.replace(/[^a-zA-Z0-9]/g, '_')}`,
-                name,
-                type: section === 'dev-packages' ? 'development' : 'production',
-                package_manager: 'pipenv'
-              });
-            }
-          }
-        }
-      } catch { }
-    }
-
-    const cargoPath = path.join(projectPath, 'Cargo.toml');
-    if (fs.existsSync(cargoPath)) {
-      try {
-        const content = fs.readFileSync(cargoPath, 'utf8');
-        let section = '';
-        for (const line of content.split('\n')) {
-          const trimmed = line.trim();
-          if (trimmed.startsWith('[')) {
-            section = trimmed.replace(/[\[\]]/g, '').toLowerCase();
-            continue;
-          }
-          if (section === 'dependencies' || section === 'dev-dependencies') {
-            const match = trimmed.match(/^([a-zA-Z0-9_-]+)\s*=/);
-            if (match) {
-              const name = match[1];
-              const key = `cargo_${name}`;
-              if (seen.has(key)) continue;
-              seen.add(key);
-              const versionMatch = trimmed.match(/"([^"]+)"/);
-              libraries.push({
-                id: `lib_${name.replace(/[^a-zA-Z0-9]/g, '_')}`,
-                name,
-                version: versionMatch?.[1],
-                type: section === 'dev-dependencies' ? 'development' : 'production',
-                package_manager: 'cargo'
-              });
-            }
-          }
-        }
-      } catch { }
-    }
-
-    const pyprojectPath = path.join(projectPath, 'pyproject.toml');
-    if (fs.existsSync(pyprojectPath) && libraries.filter(l => l.package_manager === 'pip' || l.package_manager === 'pipenv').length === 0) {
-      try {
-        const content = fs.readFileSync(pyprojectPath, 'utf8');
-        let inDeps = false;
-        for (const line of content.split('\n')) {
-          const trimmed = line.trim();
-          if (trimmed.match(/^\[.*dependencies.*\]/i)) {
-            inDeps = true;
-            continue;
-          }
-          if (trimmed.startsWith('[') && inDeps) {
-            inDeps = false;
-            continue;
-          }
-          if (inDeps) {
-            if (/^"?[a-zA-Z0-9_.-]+"?\s*=\s*\[/.test(trimmed)) {
-              continue;
-            }
-            const match = trimmed.match(/^"?([a-zA-Z0-9_.-]+)"?\s*(?:[><=!~]+\s*"?([^",\]]+))?/);
-            if (match && !match[1].startsWith('#')) {
-              const name = match[1];
-              const key = `py_${name}`;
-              if (seen.has(key)) continue;
-              seen.add(key);
-              libraries.push({
-                id: `lib_${name.replace(/[^a-zA-Z0-9]/g, '_')}`,
-                name,
-                version: match[2]?.replace(/"/g, ''),
-                type: 'production',
-                package_manager: 'pip'
-              });
-            }
-          }
-        }
-      } catch { }
-    }
-
-    if (libraries.length === 0) {
-      const manifestNames = ['package.json', 'requirements.txt', 'Cargo.toml', 'Pipfile', 'pyproject.toml', 'go.mod', 'Gemfile'];
-      try {
-        const entries = fs.readdirSync(projectPath, { withFileTypes: true });
-        for (const entry of entries) {
-          if (!entry.isDirectory()) continue;
-          if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === 'dist' || entry.name === 'build' || entry.name === '__pycache__') continue;
-          const subPath = path.join(projectPath, entry.name);
-          for (const manifest of manifestNames) {
-            const manifestPath = path.join(subPath, manifest);
-            if (!fs.existsSync(manifestPath)) continue;
-            if (manifest === 'package.json') {
-              try {
-                const pkg = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-                const addDeps = (deps: Record<string, string> | undefined, type: CASLibrary['type']) => {
-                  if (!deps) return;
-                  for (const [name, version] of Object.entries(deps)) {
-                    const key = `${name}@${type}`;
-                    if (seen.has(key)) continue;
-                    seen.add(key);
-                    libraries.push({
-                      id: `lib_${name.replace(/[^a-zA-Z0-9]/g, '_')}`,
-                      name,
-                      version: version.replace(/^[\^~>=<]/, ''),
-                      type,
-                      package_manager: 'npm'
-                    });
-                  }
-                };
-                addDeps(pkg.dependencies, 'production');
-                addDeps(pkg.devDependencies, 'development');
-              } catch { }
-            } else if (manifest === 'requirements.txt') {
-              try {
-                const content = fs.readFileSync(manifestPath, 'utf8');
-                for (const line of content.split('\n')) {
-                  const trimmed = line.trim();
-                  if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('-')) continue;
-                  const match = trimmed.match(/^([a-zA-Z0-9_.-]+)\s*(?:[><=!~]+\s*(.+))?/);
-                  if (match) {
-                    const name = match[1];
-                    const key = `py_${name}`;
-                    if (seen.has(key)) continue;
-                    seen.add(key);
-                    libraries.push({
-                      id: `lib_${name.replace(/[^a-zA-Z0-9]/g, '_')}`,
-                      name,
-                      version: match[2]?.split(',')[0]?.trim(),
-                      type: 'production',
-                      package_manager: 'pip'
-                    });
-                  }
-                }
-              } catch { }
-            } else if (manifest === 'Cargo.toml') {
-              try {
-                const content = fs.readFileSync(manifestPath, 'utf8');
-                let section = '';
-                for (const line of content.split('\n')) {
-                  const trimmed = line.trim();
-                  if (trimmed.startsWith('[')) {
-                    section = trimmed.replace(/[\[\]]/g, '').toLowerCase();
-                    continue;
-                  }
-                  if (section === 'dependencies' || section === 'dev-dependencies') {
-                    const match = trimmed.match(/^([a-zA-Z0-9_-]+)\s*=/);
-                    if (match) {
-                      const name = match[1];
-                      const key = `cargo_${name}`;
-                      if (seen.has(key)) continue;
-                      seen.add(key);
-                      const versionMatch = trimmed.match(/"([^"]+)"/);
-                      libraries.push({
-                        id: `lib_${name.replace(/[^a-zA-Z0-9]/g, '_')}`,
-                        name,
-                        version: versionMatch?.[1],
-                        type: section === 'dev-dependencies' ? 'development' : 'production',
-                        package_manager: 'cargo'
-                      });
-                    }
-                  }
-                }
-              } catch { }
-            }
-            if (libraries.length > 0) break;
-          }
-          if (libraries.length > 0) break;
-        }
-      } catch { }
-    }
-
-    return libraries;
-  }
 }

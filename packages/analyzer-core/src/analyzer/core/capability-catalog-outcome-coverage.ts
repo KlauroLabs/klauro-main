@@ -325,13 +325,17 @@ export function capabilityCatalogOutcomeNameFailure(
 ): string | undefined {
   const orderedNameTokens = tokens(name);
   const leading = orderedNameTokens[0];
+  const rawLeading = String(name || '').toLowerCase().match(/[a-z][a-z0-9]*/)?.[0] || '';
+  const canonicalLeading = canonicalToken(rawLeading);
   const recoveredAnchors = [...new Set((requirement.subjectAliasAnchorTokens || []).flat().map(canonicalToken))];
   const subjectTerms = new Set((requirement.requiredSubjectTerms || requirement.subjectTokens).map(canonicalToken));
-  const rawLeading = String(name || '').toLowerCase().match(/[a-z][a-z0-9]*/)?.[0] || '';
   const actionStem = rawLeading.replace(/(?:ing|ed|es|s)$/, '');
-  const actionHeaded = CAPABILITY_PURPOSE_VERBS.has(leading || '') || CAPABILITY_PURPOSE_VERBS.has(rawLeading) || CAPABILITY_PURPOSE_VERBS.has(actionStem);
+  const actionHeaded = CAPABILITY_PURPOSE_VERBS.has(canonicalLeading) ||
+    CAPABILITY_PURPOSE_VERBS.has(leading || '') ||
+    CAPABILITY_PURPOSE_VERBS.has(rawLeading) ||
+    CAPABILITY_PURPOSE_VERBS.has(actionStem);
   const requiredAction = new Set((requirement.visibleActionTerms || []).map(canonicalToken));
-  if (requiredAction.size > 0 && !requiredAction.has(leading || '')) return `required-outcome-visible-action-missing:${requirement.id}`;
+  if (requiredAction.size > 0 && !requiredAction.has(canonicalLeading)) return `required-outcome-visible-action-missing:${requirement.id}`;
   if (leading && subjectTerms.has(leading) && !actionHeaded && recoveredAnchors.length > 0 && !recoveredAnchors.some(anchor => orderedNameTokens.includes(anchor))) {
     return `required-outcome-visible-action-missing:${requirement.id}`;
   }

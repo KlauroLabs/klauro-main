@@ -98,6 +98,16 @@ function unboundNameIsCoveredByRequirementReplacement(
     subjectTerms.some(term => pendingTokens.includes(term));
 }
 
+function pendingTitleCoversRequirement(
+  pending: SystemCapability,
+  requirement: CapabilityCatalogOutcomeRequirement,
+): boolean {
+  const pendingTokens = new Set(outcomeNameTokens(pending.name));
+  const subjectTerms = (requirement.requiredSubjectTerms || requirement.subjectTokens).map(canonicalCapabilityCatalogOutcomeToken);
+  const minimumMatches = requirement.minimumSubjectMatches ?? Math.min(2, subjectTerms.length);
+  return subjectTerms.filter(term => pendingTokens.has(term)).length >= minimumMatches;
+}
+
 export function supersedeUnboundPendingOutcomeDuplicates(
   existing: readonly SystemCapability[], incoming: readonly SystemCapability[], requirements: readonly CapabilityCatalogOutcomeRequirement[],
   pendingRequirementIdsByCapabilityId: ReadonlyMap<string, readonly string[]>,
@@ -120,7 +130,12 @@ export function supersedeUnboundPendingOutcomeDuplicates(
   const isSupersededPendingIdentity = (capability: SystemCapability): boolean => {
     if (factors(capability, 'catalog-outcome-requirement:').length > 0) return false;
     const capturedRequirementIds = pendingRequirementIdsByCapabilityId.get(capability.id) || [];
-    const matchedRequirementIds = capturedRequirementIds.length > 0 ? capturedRequirementIds : requirements
+    const matchedRequirementIds = capturedRequirementIds.length > 0
+      ? capturedRequirementIds.filter(requirementId => {
+        const requirement = requirementById.get(requirementId);
+        return Boolean(requirement && pendingTitleCoversRequirement(capability, requirement));
+      })
+      : requirements
       .filter(requirement => (validReplacements.get(requirement.id) || [])
         .some(replacement => unboundNameIsCoveredByRequirementReplacement(capability, replacement, requirement)))
       .map(requirement => requirement.id);
@@ -147,9 +162,9 @@ export function capabilityCatalogRepairNudge(
   publishabilityFeedback?: string,
 ): string {
   const obligation = batch.mode === 'description'
-    ? `${publishabilityFeedback || ''} Repair only the rejected description for the stable accepted identity.`
+    ? `${publishabilityFeedback || ''} Repair only the rejected description for the stable accepted identity. Express the complete lifecycle in durable user-outcome language appropriate to the evidence subject (such as publish, view, maintain, or remove), not by mechanically enumerating transport or CRUD operation labels. Cover every lifecycle action listed in observable_actions; when delete, remove, unfollow, or unfavorite is listed, state the destructive outcome directly without inventing its effects. Do not copy a route phrase or combine its path nouns as a delivery description.`
     : batch.mode === 'outcome'
       ? capabilityCatalogOutcomeRepairNudge(batch.requirements, batch.candidateIds)
-      : 'Cover only this missing evidence family; it has no product-outcome requirement and cannot reuse another accepted outcome.';
-  return `Previous catalog failed a quality check (${qualityFailure}). ${obligation} Return only the evidence-grounded result requested in this ${batch.mode} batch. Missing evidence facts: ${JSON.stringify(facts)}. Each result must cite one or more of these candidate_ids and name the shared USER PURPOSE delivered by that evidence subject. A behavior-surface family label and its individual operation names are delivery evidence, never title templates. Never use MCP, tool, or surface as a capability title or description noun. Never begin a delivery-surface outcome with Get, List, Run, Release, Claim, Check, Extend, Install, Start, Stop, Sync, Fetch, Load, Read, or Show. Do not enumerate individual response objects, commands, or configuration fields.`;
+      : 'Cover only this missing evidence family; it has no product-outcome requirement and cannot reuse another accepted outcome. Derive the title from its evidence_subject and operations. Do not substitute an adjacent product outcome such as authentication when the evidence family only creates or updates user or account records.';
+  return `Previous catalog failed a quality check (${qualityFailure}). ${obligation} Every value listed in prior_rejections.forbidden_subject_terms is prohibited from both name and description; express only the supported product behavior without repeating or explaining those terms. Return only the evidence-grounded result requested in this ${batch.mode} batch. Missing evidence facts: ${JSON.stringify(facts)}. Each result must cite one or more of these candidate_ids and name the shared USER PURPOSE delivered by that evidence subject. A behavior-surface family label and its individual operation names are delivery evidence, never title templates. Never use MCP, tool, or surface as a capability title or description noun. Never begin a delivery-surface outcome with Get, List, Run, Release, Claim, Check, Extend, Install, Start, Stop, Sync, Fetch, Load, Read, or Show. Do not enumerate individual response objects, commands, or configuration fields.`;
 }

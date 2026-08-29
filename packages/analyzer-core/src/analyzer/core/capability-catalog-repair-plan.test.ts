@@ -48,6 +48,12 @@ describe('capability catalog repair planning', () => {
     assert.match(task, /description that explains that exact named outcome/);
     assert.match(nudge, /missing description/);
     assert.match(nudge, /Remove marketing-language token organized/);
+    assert.match(nudge, /forbidden_subject_terms is prohibited from both name and description/);
+    assert.match(nudge, /every lifecycle action listed in observable_actions/);
+    assert.match(nudge, /durable user-outcome language/);
+    assert.match(nudge, /not by mechanically enumerating transport or CRUD operation labels/);
+    assert.match(nudge, /Do not copy a route phrase/);
+    assert.match(nudge, /without inventing its effects/);
   });
 
   test('supersedes a pending identity from a different candidate when its semantic slot is replaced', () => {
@@ -159,6 +165,31 @@ describe('capability catalog repair planning', () => {
     assert.deepEqual(matched, ['human']);
     assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates([cleared], [incomingRepair, humanBound], [human], new Map([['pending', matched]])), {
       existing: [], incoming: [humanBound],
+    });
+  });
+
+  test('preserves a broad accepted outcome when narrower repairs match only its description', () => {
+    const status = {
+      id: 'status', statement: 'manage application status', candidateIds: ['status-surface'],
+      requiredSubjectTerms: ['statu'], subjectTokens: ['statu'], minimumSubjectMatches: 1,
+    };
+    const umbrella = {
+      ...capability('manage-jobs', ['catalog-candidate:job-surface'], 'Users manage job applications, update status, and add notes.'),
+      name: 'Manage job applications',
+    };
+    const repairedStatus = {
+      ...capability('status', ['catalog-candidate:status-surface', 'catalog-outcome-requirement:status'], 'Users update job application status.'),
+      name: 'Manage application status',
+    };
+
+    assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates(
+      [umbrella],
+      [repairedStatus],
+      [status],
+      new Map([['manage-jobs', ['status']]]),
+    ), {
+      existing: [umbrella],
+      incoming: [repairedStatus],
     });
   });
 

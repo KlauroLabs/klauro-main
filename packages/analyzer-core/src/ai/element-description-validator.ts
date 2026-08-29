@@ -6,6 +6,7 @@ export interface ElementDescriptionSubject {
 
   relatedEntities?: string[];
   unrelatedEntities?: string[];
+  productOutcomeTerms?: string[];
 
 
 
@@ -266,14 +267,28 @@ function unsupportedEnumeratedDetail(
   return undefined;
 }
 
-function unrelatedEntityReference(description: string, unrelatedEntities: string[]): string | undefined {
-  const singularize = (token: string): string => token.length > 4 && token.endsWith('s') && !token.endsWith('ss')
-    ? token.slice(0, -1)
-    : token;
+function unrelatedEntityReference(
+  description: string,
+  unrelatedEntities: string[],
+  relatedEntities: string[] = [],
+  productOutcomeTerms: string[] = [],
+): string | undefined {
+  const singularize = (token: string): string => token.length > 4 && token.endsWith('ies')
+    ? `${token.slice(0, -3)}y`
+    : token.length > 4 && token.endsWith('s') && !token.endsWith('ss') ? token.slice(0, -1) : token;
+  const normalize = (value: string): string =>
+    ` ${splitGroundingSource(value).map(singularize).filter(token => token.length >= 3).join(' ')} `;
   const normalizedText = ` ${splitGroundingSource(description).map(singularize).filter(token => token.length >= 3).join(' ')} `;
+  const relatedPhrases = relatedEntities.map(normalize).filter(phrase => phrase.trim().length >= 3);
+  const productClauses = productOutcomeTerms
+    .flatMap(term => String(term || '').split(/(?<=[.!?;])\s+|[\r\n]+/))
+    .map(normalize);
   return unrelatedEntities.find(entityName => {
-    const phrase = splitGroundingSource(entityName).map(singularize).filter(token => token.length >= 3).join(' ');
-    return (phrase.includes(' ') || phrase.length >= 5) && normalizedText.includes(` ${phrase} `);
+    const phrase = normalize(entityName);
+    if (phrase.trim().length < 5 || !normalizedText.includes(phrase)) return false;
+    const firstPartyRelationship = productClauses.some(clause =>
+      clause.includes(phrase) && relatedPhrases.some(relatedPhrase => clause.includes(relatedPhrase)));
+    return !firstPartyRelationship;
   });
 }
 
@@ -360,7 +375,12 @@ export function validateElementDescription(
     }
   }
   if (subject.kind === 'capability') {
-    const unrelatedEntity = unrelatedEntityReference(cleaned, subject.unrelatedEntities || []);
+    const unrelatedEntity = unrelatedEntityReference(
+      cleaned,
+      subject.unrelatedEntities || [],
+      subject.relatedEntities || [],
+      subject.productOutcomeTerms || [],
+    );
     if (unrelatedEntity) return { ok: false, reason: `unrelated-entity-vocabulary:${unrelatedEntity}` };
     const scaffoldReason = capabilityDescriptionScaffoldReason(cleaned, subject.name, [
       ...(subject.relatedEntities || []),
@@ -373,7 +393,7 @@ export function validateElementDescription(
       return { ok: false, reason: 'internal-analysis-vocabulary' };
     }
     const unsupportedDetail = unsupportedEnumeratedDetail(cleaned, subject, normalizeToken, isGenericToken);
-    if (unsupportedDetail) return { ok: false, reason: `unsupported-enumerated-detail:${unsupportedDetail}` };
+    if (unsupportedDetail) return descriptionFailure(`unsupported-enumerated-detail:${unsupportedDetail}`, [unsupportedDetail]);
   }
   if (FILLER_PHRASE_PATTERN.test(cleaned)) {
     const subjectVocabulary = [

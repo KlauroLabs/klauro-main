@@ -29,7 +29,7 @@ export const CAPABILITY_PURPOSE_VERBS = new Set<string>([
   'notify', 'report', 'export', 'import', 'connect', 'synchronize',
   'discover', 'configure', 'deploy', 'migrate', 'ingest', 'stream', 'route',
   'dispatch', 'reconcile', 'audit', 'log', 'cache', 'queue', 'persist',
-  'store', 'serve', 'correlate', 'collect', 'record',
+  'store', 'serve', 'correlate', 'collect', 'record', 'settle', 'publish', 'follow', 'unfollow', 'favorite', 'unfavorite',
   'search', 'index',
   'visualize',
   'offer',
@@ -256,6 +256,27 @@ export function humanizeCapabilityLabel(label: string): string {
     .replace(/\s+/g, ' ')
     .trim()
     .replace(/\b\w/g, char => char.toUpperCase());
+}
+
+export function normalizeCapabilityActionName(name: string): string {
+  const imperativeFor = (word: string): string => {
+    const lower = word.toLowerCase();
+    const candidates = [
+      lower.endsWith('ies') ? `${lower.slice(0, -3)}y` : '',
+      lower.endsWith('es') ? lower.slice(0, -1) : '',
+      lower.endsWith('es') ? lower.slice(0, -2) : '',
+      lower.endsWith('s') ? lower.slice(0, -1) : '',
+    ].filter(Boolean);
+    const imperative = candidates.find(candidate => CAPABILITY_PURPOSE_VERBS.has(candidate));
+    if (!imperative) return word;
+    return word[0] === word[0].toUpperCase()
+      ? `${imperative[0].toUpperCase()}${imperative.slice(1)}`
+      : imperative;
+  };
+  return String(name || '').trim().replace(
+    /(^|\b(?:and|or)\s+)([A-Za-z]+)/gi,
+    (_match, prefix: string, verb: string) => `${prefix}${imperativeFor(verb)}`,
+  );
 }
 
 

@@ -9,6 +9,7 @@ import {
   capabilityOutcomeUsesDeliverySubject,
   capabilityEvidencePublicationFailure,
   capabilityOutcomeNameUnsupportedTokens,
+  narrowCapabilityEvidenceCandidates,
   capabilityRequiresCatalogCoverage,
   catalogCountBounds,
   catalogEntityCandidateGroups,
@@ -54,6 +55,27 @@ function entity(id: string, name: string, kind: CASDataEntity['kind'], lifecycle
   };
 }
 
+describe('narrowCapabilityEvidenceCandidates', () => {
+  test('removes a broad sibling when a cited candidate matches the distinctive outcome', () => {
+    const article = candidate('article', 'Article Slug', 'supporting', ['Read', 'Update', 'Delete']);
+    const favorite = candidate('favorite', 'Favorite', 'core', ['Create', 'Delete']);
+    const route = candidate('favorite-route', 'Delete /api/articles/{slug}/favorite', 'supporting', ['Create', 'Delete']);
+
+    expect(narrowCapabilityEvidenceCandidates(
+      'Favorite an article', [article, favorite, route],
+    ).map(item => item.id)).toEqual(['favorite', 'favorite-route']);
+  });
+
+  test('preserves separately evidenced subjects in a genuinely combined outcome', () => {
+    const projects = candidate('projects', 'Projects', 'core', ['Create', 'Update']);
+    const issues = candidate('issues', 'Issues', 'core', ['Create', 'Update']);
+
+    expect(narrowCapabilityEvidenceCandidates(
+      'Manage projects and issues', [projects, issues],
+    ).map(item => item.id)).toEqual(['projects', 'issues']);
+  });
+});
+
 describe('catalogEvidenceCandidates', () => {
   test('keeps internally executed product behavior corroborated by first-party concepts', () => {
     const selected = catalogEvidenceCandidates([
@@ -62,7 +84,7 @@ describe('catalogEvidenceCandidates', () => {
       candidate('cart-notification', 'Cart Notification', 'supporting', ['Read', 'Process']),
       candidate('placeholder', 'Placeholder', 'supporting', ['Coordinate', 'Coordinate', 'Coordinate']),
       candidate('widths', 'Widths', 'supporting', ['Read', 'Generate']),
-    ], [], [], 'app', { concepts: ['product', 'cart', 'storefront'] });
+    ], [], [], 'app', { concepts: ['product', 'cart', 'storefront'], productDocSummary: 'Generate product results for shoppers.' });
 
     expect(selected.map(item => [item.id, item.evidence_role])).toEqual([
       ['product', 'product-outcome'],
@@ -91,15 +113,34 @@ describe('catalogEvidenceCandidates', () => {
     ]);
   });
 
-  test('does not promote a single internal occurrence or uncorroborated implementation family', () => {
+  test('does not promote internal aggregates from loose first-party lexical overlap alone', () => {
     const selected = catalogEvidenceCandidates([
       candidate('quantity', 'Quantity', 'core', ['Update']),
       candidate('renderer', 'Renderer', 'core', ['Generate', 'Generate']),
-    ], [], [], 'app', { concepts: ['quantity', 'commerce'] });
+      candidate('user', 'User', 'core', ['Read', 'Update']),
+    ], [], [], 'app', {
+      concepts: ['quantity', 'commerce', 'user', 'update'],
+      productDocSummary: 'A commerce example with CRUD and authentication patterns.',
+    });
+
+    expect(selected.map(item => [item.id, item.evidence_role])).toEqual([
+      ['quantity', 'supporting-mechanism'],
+      ['renderer', 'supporting-mechanism'],
+      ['user', 'supporting-mechanism'],
+    ]);
+  });
+
+  test('promotes an internal core aggregate when one first-party clause names its action and subject', () => {
+    const selected = catalogEvidenceCandidates([
+      candidate('quantity', 'Quantity', 'core', ['Update']),
+      candidate('user', 'User profiles', 'core', ['Read', 'Update']),
+    ], [], [], 'app', {
+      productDocSummary: 'Operators update quantities while readers browse unrelated articles.',
+    });
 
     expect(selected.map(item => [item.id, item.evidence_role])).toEqual([
       ['quantity', 'product-outcome'],
-      ['renderer', 'supporting-mechanism'],
+      ['user', 'supporting-mechanism'],
     ]);
   });
 
@@ -276,6 +317,27 @@ describe('capability evidence roles', () => {
     expect(catalogRequiredEvidenceCandidates([classified])).toEqual([classified]);
   });
 
+  test('does not promote a UI gesture from terminal functions and framework dependencies alone', () => {
+    const registration = candidate('register', 'Register', 'supporting', ['Handle']);
+    registration.operations[0].entry_point_type = 'event';
+    const [classified] = classifyCapabilityEvidence([registration], [], undefined, {
+      userJourneys: [{
+        id: 'register-journey', name: 'Register Change', journey_kind: 'user-facing', entry_point_id: 'register_0',
+        entry: { type: 'event', name: 'change' }, steps: [],
+        terminal_effects: {
+          entities_written: [], entities_read: [],
+          external_services: ['@chakra-ui/react', 'react', 'react-router-dom'],
+          messages_emitted: [],
+        },
+        terminal_entities: [{ name: 'authenticate', access: 'read', node_id: 'authenticate', terminal_kind: 'node' }],
+        security_boundaries: [], tests_covering: [], criticality: 'low', call_chain_ids: [], exit_point_ids: [],
+      }],
+    });
+
+    expect(classified.evidence_role).toBe('supporting-mechanism');
+    expect(capabilityRequiresCatalogCoverage(classified)).toBe(false);
+  });
+
   test('does not call a mixed resolved-test and unresolved operation family a verification harness', () => {
     const mixed = candidate('mixed', 'Exercise and publish analysis', 'supporting', ['Exercise', 'Publish']);
     mixed.operations[0].entry_point_id = 'proof-entry';
@@ -384,6 +446,36 @@ describe('capability evidence roles', () => {
     expect(capabilityOutcomeNameUnsupportedTokens('Build trustworthy CAS relationship graphs', [cas], signal)).toEqual([]);
     expect(capabilityOutcomeNameUnsupportedTokens('Explain software behavior to AI agents', [agent], signal)).toEqual([]);
     expect(capabilityOutcomeNameUnsupportedTokens('Correlate static understanding with runtime evidence', [cas], signal)).toEqual([]);
+
+    const article = candidate('article', 'Article', 'core', ['Create', 'Update']);
+    article.operations[0].entry_point_id = 'entry_route_articles_create';
+    const follow = candidate('follow', 'Follow', 'core', ['Create', 'Delete']);
+    follow.operations[0].entry_point_id = 'entry_route_profiles_username_follow';
+    const favorite = candidate('favorite', 'Favorite', 'core', ['Create', 'Delete']);
+    favorite.operations[0].entry_point_id = 'entry_route_articles_slug_favorite';
+    const publicationSignal = {};
+    expect(capabilityOutcomeNameUnsupportedTokens(
+      'Create and publish articles', [article], publicationSignal,
+    )).toEqual([]);
+    expect(capabilityOutcomeNameUnsupportedTokens(
+      'Follow and unfollow users', [follow], publicationSignal,
+    )).toEqual([]);
+    expect(capabilityOutcomeNameUnsupportedTokens(
+      'Favorite and unfavorite articles', [favorite], publicationSignal,
+    )).toEqual([]);
+    const authentication = candidate('auth', 'Auth', 'core', ['Create']);
+    authentication.related_domains = ['auth'];
+    authentication.operations[0].entry_point_id = 'entry_route_authentication_login';
+    expect(capabilityOutcomeNameUnsupportedTokens(
+      'Authenticate user sessions', [authentication], {},
+    )).toEqual([]);
+    const user = candidate('user', 'User', 'core', ['Read', 'Update']);
+    user.operations[0].entry_point_id = 'entry_route_user';
+    expect(capabilityOutcomeNameUnsupportedTokens(
+      'Update user profile', [user], {},
+    )).toEqual([]);
+
+
   });
 
   test('derives repair subject terms from product evidence without leaking structural scaffolding', () => {
@@ -393,6 +485,19 @@ describe('capability evidence roles', () => {
     history.related_entities = ['entity_change_history_entry'];
 
     expect(capabilityEvidenceSubjectTokens(history, ['ChangeHistoryEntry'])).toEqual(['change', 'history']);
+  });
+
+  test('derives product subjects from non-surface operation paths', () => {
+    const follow = candidate('follow', 'Follow', 'core', ['Create', 'Delete']);
+    follow.operations = follow.operations.map((operation, index) => ({
+      ...operation,
+      entry_point_id: `entry_route_profiles_username_follow_${index}`,
+      entry_point_type: 'http',
+      path_or_command: '/api/profiles/{username}/follow',
+      trigger: { method: index === 0 ? 'POST' : 'DELETE', path: '/api/profiles/{username}/follow' },
+    }));
+
+    expect(capabilityEvidenceSubjectTokens(follow)).toEqual(expect.arrayContaining(['follow', 'profile']));
   });
 
   test('derives recurring operation subjects while rejecting explicit delivery scaffolding', () => {
@@ -418,6 +523,11 @@ describe('capability evidence roles', () => {
     expect(capabilityOutcomeRestatesDeliveryOperation('Analyze codebases', [fabric], { productDocSummary: 'The product analyzes codebases.' })).toBe(false);
     expect(capabilityOutcomeRestatesDeliveryOperation('Analyze codebases', [fabric])).toBe(true);
     expect(capabilityOutcomeRestatesDeliveryOperation('Analyze codebases', [fabric], undefined, true)).toBe(false);
+    expect(capabilityOutcomeRestatesDeliveryOperation(
+      'Manage job applications',
+      [{ ...fabric, name: 'Job', structural_label: 'Job', evidence_examples: ['add_job', 'edit_job', 'delete_job'] }],
+      { productDocSummary: 'Users manage and track job applications.' },
+    )).toBe(false);
     expect(capabilityOutcomeRestatesDeliveryOperation('Evaluate analysis truth', [{ ...fabric, evidence_examples: ['evaluate_analysis_truth'] }])).toBe(true);
     expect(capabilityOutcomeRestatesDeliveryOperation('Evaluate analysis truth', [{ ...fabric, evidence_examples: ['evaluate_analysis_truth'] }], undefined, true)).toBe(false);
     expect(capabilityOutcomeRestatesDeliveryOperation('Correlate runtime events with codebase behavior', [{
@@ -470,6 +580,10 @@ describe('capability evidence roles', () => {
       related_domains: ['analysis'],
       evidence_examples: ['analyze_codebase'],
     }], { productDocSummary: 'Klauro analyzes any codebase.' })).toEqual([]);
+    const notes = { ...fabric, name: 'Notes Modal Change', structural_label: 'Notes Modal Change', evidence_examples: ['note created'] };
+    expect(capabilityOutcomeScopeFailure(
+      'Attach notes to job entries', [notes], { productDocSummary: 'Users add notes to job applications.' },
+    )).toEqual([]);
     expect(capabilityOutcomeScopeFailure('Claim work in the fab', [{
       ...fabric,
       evidence_examples: ['claim_work'],
@@ -483,6 +597,21 @@ describe('capability evidence roles', () => {
       'Help human developers understand software behavior', [understanding],
       { productDocSummary: 'Helps people understand software behavior.' }, false, '', ['human'],
     )).toEqual(['developer']);
+    const statistics = candidate('statistics', 'Job Application Stats', 'core', ['Read']);
+    statistics.structural_label = 'Job Application Statistics';
+    statistics.related_domains = ['job-stats'];
+    expect(capabilityOutcomeScopeFailure('View job application statistics', [statistics])).toEqual([]);
+    expect(capabilityOutcomeScopeFailure('View job application awards', [statistics])).toEqual(['award']);
+    const articles = candidate('articles', 'Articles', 'core', ['List', 'Create', 'Update', 'Delete']);
+    articles.operations = [
+      { entry_point_id: 'list', entry_point_type: 'http', action: 'List', trigger: { method: 'GET' } },
+      { entry_point_id: 'create', entry_point_type: 'http', action: 'Create', trigger: { method: 'POST' } },
+      { entry_point_id: 'update', entry_point_type: 'http', action: 'Update', trigger: { method: 'PUT' } },
+      { entry_point_id: 'delete', entry_point_type: 'http', action: 'Delete', trigger: { method: 'DELETE' } },
+    ];
+    expect(capabilityOutcomeScopeFailure(
+      'Create, update, and delete articles', [articles],
+    )).toEqual([]);
     expect(capabilityOutcomeNameUnsupportedTokens('Coordinate work across overlapping codebase areas', [{
       ...fabric,
       evidence_examples: ['fab_claim_work', 'fab_check_collision', 'fab_release_work'],
@@ -546,6 +675,20 @@ describe('catalogEntityCandidateGroups', () => {
     expect(catalogEntityCandidateGroups([parcelRead, parcelWrite, inspection])).toEqual([
       ['inspection'],
       ['parcel-read', 'parcel-write'],
+    ]);
+  });
+
+  test('does not transitively collapse distinct entity families through a multi-entity candidate', () => {
+    const jobs = candidate('jobs', 'Manage jobs', 'core', ['Write']);
+    jobs.related_entities = ['entity_job'];
+    const notes = candidate('notes', 'Manage notes', 'core', ['Write']);
+    notes.related_entities = ['entity_note'];
+    const workspace = candidate('workspace', 'Review workspace', 'core', ['Read']);
+    workspace.related_entities = ['entity_job', 'entity_note'];
+
+    expect(catalogEntityCandidateGroups([jobs, notes, workspace])).toEqual([
+      ['jobs', 'workspace'],
+      ['notes', 'workspace'],
     ]);
   });
 
@@ -655,6 +798,27 @@ describe('capabilityDescriptionProductLanguageFailure', () => {
       'Builds a graph from nodes, methods, and call chains discovered in source.',
       [],
     )).toBe('implementation-graph-inventory');
+    expect(capabilityDescriptionProductLanguageFailure(
+      'Job entries surface attached notes created through modal and click interactions.',
+      [],
+    )).toBe('ui-delivery-scaffolding');
+    expect(capabilityDescriptionProductLanguageFailure(
+      'Surfaces a new note creation capability by exposing a note creation form and managing note data.',
+      [],
+    )).toBe('ui-delivery-scaffolding');
+    expect(capabilityDescriptionProductLanguageFailure(
+      'Users update their personal details through the profile edit form.',
+      [],
+    )).toBe('ui-delivery-scaffolding');
+
+    expect(capabilityDescriptionProductLanguageFailure(
+      'Categorize and seamlessly manage job applications.',
+      [],
+    )).toBe('marketing-language');
+    expect(capabilityDescriptionProductLanguageFailure(
+      'Categorize and seamlessly manage job applications.',
+      [], [], [], ['seamlessly manage job applications'],
+    )).toBeUndefined();
   });
 
   test('rejects copied operation phrases while preserving independently phrased product value', () => {
@@ -682,5 +846,54 @@ describe('capabilityCatalogAiPhaseStatus', () => {
     expect(capabilityCatalogAiPhaseStatus({ evidence_families: 35, status: 'partial' })).toBe('degraded');
     expect(capabilityCatalogAiPhaseStatus({ evidence_families: 35, status: 'accepted' })).toBe('complete');
     expect(capabilityCatalogAiPhaseStatus({ evidence_families: 0, status: 'unavailable' })).toBe('complete');
+  });
+});
+
+describe('user-facing lifecycle evidence', () => {
+  test('makes a cohesive public create/delete lifecycle mandatory without requiring entity inference', () => {
+    const following = candidate('following', 'Follow profiles', 'supporting', ['Follow', 'Unfollow']);
+    following.operations = [
+      { entry_point_id: 'follow', entry_point_type: 'http', action: 'Follow profile', trigger: { method: 'POST', path: '/profiles/{username}/follow' } },
+      { entry_point_id: 'unfollow', entry_point_type: 'http', action: 'Unfollow profile', trigger: { method: 'DELETE', path: '/profiles/{username}/follow' } },
+    ];
+
+    const [classified] = classifyCapabilityEvidence([following], [], undefined, {
+      entryPoints: [
+        { id: 'follow', source_node: 'follow-route', type: 'http', name: 'POST /profiles/{username}/follow', interaction_reach: 'external', trigger: { method: 'POST', path: '/profiles/{username}/follow' } },
+        { id: 'unfollow', source_node: 'unfollow-route', type: 'http', name: 'DELETE /profiles/{username}/follow', interaction_reach: 'external', trigger: { method: 'DELETE', path: '/profiles/{username}/follow' } },
+      ] as any,
+    });
+
+    expect(classified.evidence_role).toBe('product-outcome');
+    expect(classified.evidence_role_reasons).toContain('user-facing-lifecycle-breadth');
+    expect(capabilityRequiresCatalogCoverage(classified)).toBe(true);
+  });
+
+  test('does not promote an internal lifecycle or a generated behavior-surface family', () => {
+    const internal = candidate('cache', 'Manage cache', 'supporting', ['Create', 'Delete']);
+    internal.operations[0].trigger = { method: 'POST' };
+    internal.operations[1].trigger = { method: 'DELETE' };
+    const surface = { ...internal, id: 'surface', evidence_kind: 'behavior-surface' as const };
+    surface.operations = surface.operations.map((operation, index) => ({
+      ...operation,
+      entry_point_id: `surface-${index}`,
+      entry_point_type: 'http',
+    }));
+
+    const classified = classifyCapabilityEvidence([internal, surface], [], undefined, {
+      entryPoints: surface.operations.map(operation => ({
+        id: operation.entry_point_id,
+        source_node: operation.entry_point_id,
+        type: 'http',
+        name: operation.action,
+        interaction_reach: 'external',
+        trigger: operation.trigger,
+      })) as any,
+    });
+
+    expect(classified.map(item => item.evidence_role)).toEqual([
+      'supporting-mechanism',
+      'supporting-mechanism',
+    ]);
   });
 });

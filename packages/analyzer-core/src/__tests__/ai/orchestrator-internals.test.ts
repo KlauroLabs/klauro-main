@@ -1,4 +1,5 @@
 import { AnalyzerOrchestrator } from '../../analyzer/core/orchestrator';
+import { detectLibrariesFromManifests } from '../../analyzer/core/manifest-library-detection';
 import { TerraformAnalyzer } from '../../analyzer/languages/terraform-analyzer';
 import { aiService } from '../../ai/ai-service';
 import { CASDataEntity, CASEdge, CASEntryPoint, CASExitPoint, CASNode, DeployableEvidence } from '../../types/cas.types';
@@ -186,8 +187,8 @@ test('catalog collapse schedules uncovered semantic family representatives even 
       name: candidate.name,
       journey_kind: 'user-facing',
       entry_point_id: candidate.operations[0].entry_point_id,
-      terminal_entities: [`terminal-${candidate.id}`],
-      terminal_effects: { state_changes: [`effect-${candidate.id}`] },
+      terminal_entities: [{ name: `ProductFamily-${candidate.id}`, access: 'read', node_id: `terminal-${candidate.id}`, terminal_kind: 'entity' }],
+      terminal_effects: { entities_read: [`ProductFamily-${candidate.id}`], entities_written: [], external_services: [], messages_emitted: [] },
     })),
     dataEntities: [],
     candidateSnapshot: candidates,
@@ -716,7 +717,7 @@ describe('detectLibrariesFromManifests pyproject.toml parsing', () => {
       ].join('\n'),
     );
 
-    const libs: any[] = orch.detectLibrariesFromManifests(root);
+    const libs: any[] = detectLibrariesFromManifests(root);
     const names = libs.map((l) => l.name);
 
     // The group/extras keys must NOT surface as packages.
@@ -6588,6 +6589,55 @@ describe('capability hygiene: post-AI-catalog reconciliation (real hosted-CAS de
     lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] },
   });
 
+  it('publishes supporting evidence only through an exact validated outcome binding', () => {
+    const operation = {
+      entry_point_id: 'fuel-create', entry_point_type: 'http', action: 'Create',
+      path_or_command: '/fuel-purchases', trigger: { method: 'POST', path: '/fuel-purchases' },
+    };
+    const supporting = cap({
+      id: 'fuel-surface', name: 'Fuel purchase surface', evidence_role: 'supporting-mechanism',
+      category: 'supporting', operations: [operation],
+    });
+    const unrelated = cap({
+      id: 'vehicle-surface', name: 'Vehicle surface', evidence_role: 'supporting-mechanism',
+      category: 'supporting', operations: [{ ...operation, entry_point_id: 'vehicle-list', action: 'List', path_or_command: '/vehicles' }],
+    });
+    const requirement = {
+      id: 'all:fuel-purchase', candidateIds: ['fuel-surface'], statement: 'fuel purchases',
+      firstPartyOutcomeText: 'record fuel purchases', subjectTokens: ['fuel', 'purchase'],
+      requiredSubjectTerms: ['fuel', 'purchase'], visibleActionTerms: ['record'], minimumSubjectMatches: 2,
+    };
+    const authored = cap({
+      id: 'record-fuel-purchases', name: 'Record fuel purchases', category: 'core',
+      description: 'Fuel activity preserves each purchase entered by fleet operators for daily fleet operations.',
+      operations: [operation],
+      criticality_factors: ['catalog-outcome-requirement:all:fuel-purchase', 'catalog-candidate:fuel-surface'],
+    });
+    const reconcile = (capability: any, requirements: any[] = [requirement]) => orch.reconcileCatalogedCapabilities(
+      [capability], [supporting, unrelated], [], [], [], undefined, [],
+      { concepts: [], evidence: [], productDocSummary: 'Fleet operators record fuel purchases.' }, [], [], requirements,
+    );
+
+    expect(reconcile(authored)).toEqual([expect.objectContaining({ id: 'record-fuel-purchases' })]);
+    expect(reconcile({
+      ...authored,
+      criticality_factors: ['catalog-candidate:fuel-surface'],
+    })).toEqual([]);
+    expect(reconcile({
+      ...authored,
+      criticality_factors: ['catalog-outcome-requirement:all:forged', 'catalog-candidate:fuel-surface'],
+    })).toEqual([]);
+    expect(reconcile({
+      ...authored,
+      criticality_factors: ['catalog-outcome-requirement:all:fuel-purchase', 'catalog-candidate:vehicle-surface'],
+    })).toEqual([]);
+    expect(reconcile({
+      ...authored,
+      name: 'Record vehicle inspections',
+      description: 'Vehicle inspection activity preserves completed checks for fleet operators during daily vehicle review.',
+    })).toEqual([]);
+  });
+
   it('SURFACES ARE NOT CAPABILITIES: a behavior-surface candidate is never re-injected into the ranked catalog, even if the AI dropped it', async () => {
     // Prior to the behavior_surfaces navigation tier, reconcile used to
     // re-inject a dropped surface as a 'core' capability (the "flagship"
@@ -6796,6 +6846,7 @@ describe('capability hygiene: post-AI-catalog reconciliation (real hosted-CAS de
       evidence_kind: 'behavior-surface',
       category: 'internal',
       operations: [{ entry_point_id: 'entry_fabric_claim', entry_point_type: 'message', action: 'Claim' }],
+      evidence_role: 'product-outcome',
     });
     const cataloged = [cap({
       name: 'Enable real-time collaboration through Fabric',
@@ -8214,10 +8265,16 @@ describe('top-down capability evidence (C2)', () => {
     let context: any;
     (aiService as any).generateComponentDescription = async (input: any) => {
       context = input.additionalContext;
-      return JSON.stringify({ capabilities: [] });
+      return JSON.stringify({ capabilities: [{
+        requirement_id: 'candidate_1',
+        name: 'Track job applications',
+        description: 'Users track job applications and organize them by progress.',
+        category: 'core',
+        candidate_ids: ['candidate_1'],
+      }] });
     };
     try {
-      await orch.aiExtractCapabilityCatalog({
+      const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'Application Tracker',
         enhancedSystemPurpose: { primary_domain: 'application-tracking', core_concepts: [] },
         frameworks: [],
@@ -8240,11 +8297,13 @@ describe('top-down capability evidence (C2)', () => {
         targetedRepairFacts: [{
           candidate_id: 'candidate_1', first_party_outcomes: ['Users track job applications and organize them by progress.'],
           observable_actions: ['change job status'], prior_rejections: [], required_audience_labels: [],
-          required_subject_terms: [], required_visible_actions: [], minimum_subject_matches: 0,
+          required_subject_terms: ['job', 'application'], required_visible_actions: [], minimum_subject_matches: 2,
         }],
         targetedRepairCandidateMap: { candidate_1: 'status-change' },
       });
 
+      expect(catalog).toHaveLength(1);
+      expect(catalog[0].name).toBe('Track job applications');
       expect(context.facts.top_down_signals.scoped_product_context).toEqual([
         'Users track job applications and organize them by progress.',
       ]);
@@ -8256,6 +8315,142 @@ describe('top-down capability evidence (C2)', () => {
       (aiService as any).generateComponentDescription = original;
     }
   });
+
+
+  it('rejects focused evidence repairs whose title omits every required evidence subject', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [{
+        name: 'Create Todo Jobs',
+        description: 'Users authenticate before creating a note in Todo Jobs.',
+        category: 'core',
+        candidate_ids: ['candidate_1'],
+      }],
+    });
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'Todo Jobs',
+        enhancedSystemPurpose: { primary_domain: 'job-tracking', core_concepts: [] },
+        frameworks: [], userJourneys: [],
+        dataEntities: [{ id: 'note', name: 'Note', kind: 'persisted-entity' }],
+        candidateCapabilities: [{
+          id: 'auth-note', name: 'Auth Note', category: 'core',
+          evidence_kind: 'entity', evidence_role: 'product-outcome',
+          operations: [{ entry_point_id: 'auth-note-route', entry_point_type: 'http', action: 'Authenticate' }],
+          related_entities: ['note'], related_domains: [], criticality: 'high', criticality_factors: [],
+        }],
+        behaviorSurfaces: [],
+        externalServices: [], flowGraph: emptyFlowGraph(),
+        projectTextSignal: { concepts: [], evidence: [] },
+        budgetMs: 30000, exactCapabilityLimit: 1, qualityNudge: 'Repair this focused family.',
+        repairMode: 'evidence',
+        targetedRepairFacts: [{
+          candidate_id: 'candidate_1', first_party_outcomes: [], observable_actions: [],
+          prior_rejections: [], required_audience_labels: [],
+          required_subject_terms: ['authenticate', 'note'], required_visible_actions: [], minimum_subject_matches: 2,
+        }],
+        targetedRepairCandidateMap: { candidate_1: 'auth-note' },
+      });
+
+      expect(catalog).toEqual([]);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+  it('recovers an omitted read-only product family from evidence with explicit deterministic provenance', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [{
+        name: 'Manage Job Applications',
+        description: 'Users track job applications and organize them by progress.',
+        category: 'core',
+        candidate_ids: ['candidate_1'],
+      }],
+    });
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'Todo Jobs',
+        enhancedSystemPurpose: { primary_domain: 'job-tracking', core_concepts: [] },
+        frameworks: [], userJourneys: [], dataEntities: [],
+        candidateCapabilities: [{
+          id: 'job-sites', name: 'Get /Job/Job Sites/:User Id', category: 'core',
+          evidence_kind: 'behavior-surface', evidence_examples: ['GET /job/job-sites/:userId'],
+          operations: [{
+            entry_point_id: 'job-sites-route', entry_point_type: 'http', action: 'Read',
+            path_or_command: '/job/job-sites/:userId', trigger: { method: 'GET', path: '/job/job-sites/:userId' },
+          }],
+          related_entities: [], related_domains: [], criticality: 'high', criticality_factors: [],
+        }],
+        behaviorSurfaces: [],
+        externalServices: [], flowGraph: emptyFlowGraph(),
+        projectTextSignal: { concepts: [], evidence: [] },
+        budgetMs: 30000, exactCapabilityLimit: 1, qualityNudge: 'Repair this focused family.',
+        repairMode: 'evidence', allowDeterministicFallback: true,
+        targetedRepairFacts: [{
+          candidate_id: 'candidate_1', first_party_outcomes: [], observable_actions: [],
+          prior_rejections: [], required_audience_labels: [], required_subject_terms: ['job', 'site'],
+          required_visible_actions: [], minimum_subject_matches: 2,
+        }],
+        targetedRepairCandidateMap: { candidate_1: 'job-sites' },
+      });
+
+      expect(catalog).toHaveLength(1);
+      expect(catalog[0]).toEqual(expect.objectContaining({
+        name: 'View Job Sites',
+        name_source: 'deterministic',
+        description_source: 'deterministic',
+      }));
+      expect(catalog[0].criticality_factors).toContain('catalog-candidate:job-sites');
+      expect(catalog[0].criticality_factors).toContain('deterministic-evidence-family-recovery');
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+  it('does not erase a grounded description when a later clause names internal operation evidence', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [{
+        name: 'Sign in with Google',
+        description: 'Users authenticate using Google credentials to access their job tracking data, as confirmed by cap_signin_google and cap_google_token operations.',
+        category: 'core',
+        candidate_ids: ['cap_signin_google', 'cap_google_token'],
+      }],
+    });
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'Todo Jobs',
+        enhancedSystemPurpose: { primary_domain: 'job-application-tracking', core_concepts: ['job tracking', 'Google sign in'] },
+        frameworks: [], userJourneys: [], dataEntities: [],
+        candidateCapabilities: [{
+          id: 'cap_signin_google', name: 'Signin Google', category: 'core',
+          evidence_role: 'product-outcome',
+          evidence_examples: ['Google sign in', 'authenticate user'],
+          related_entities: [], related_domains: ['authentication'],
+          operations: [{ entry_point_id: 'signin', entry_point_type: 'http', action: 'Authenticate', path_or_command: '/auth/signin-google' }],
+        }, {
+          id: 'cap_google_token', name: 'Google Token', category: 'supporting',
+          evidence_role: 'product-outcome',
+          evidence_examples: ['Google authentication token'],
+          related_entities: [], related_domains: ['authentication'],
+          operations: [{ entry_point_id: 'token', entry_point_type: 'http', action: 'Authenticate', path_or_command: '/auth/google-token' }],
+        }],
+        externalServices: ['Google'], flowGraph: { capability_candidates: [] },
+        projectTextSignal: {
+          concepts: ['job tracking', 'Google sign in', 'authentication'], evidence: [],
+          productDocSummary: 'Users sign in with Google to track job applications.',
+        },
+        budgetMs: 30000,
+        exactCapabilityLimit: 1,
+      });
+
+      expect(catalog).toHaveLength(1);
+      expect(catalog[0].name).toBe('Sign in with Google');
+      expect(catalog[0].description).toContain('Users authenticate using Google credentials');
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
 
   it('honors the evidence-derived maximum after validating an over-complete model response', async () => {
     const original = (aiService as any).generateComponentDescription;
@@ -8982,6 +9177,38 @@ describe('top-down capability evidence (C2)', () => {
     }
   });
 
+  it('accepts authentication as a product capability when a product-outcome candidate owns a direct login route', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [{
+        name: 'Authenticate users',
+        description: 'Users sign in with registered credentials before accessing protected application features.',
+        category: 'core', entities: [], journeys: [], candidate_ids: ['auth-login'],
+      }],
+    });
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'sample-application',
+        enhancedSystemPurpose: { primary_domain: 'content', core_concepts: ['article'] },
+        frameworks: [], userJourneys: [], dataEntities: [],
+        candidateCapabilities: [{
+          id: 'auth-login', name: 'Auth', structural_label: 'Auth Workflow',
+          evidence_kind: 'entity', evidence_role: 'product-outcome',
+          evidence_examples: [], related_entities: [], related_domains: ['auth'],
+          operations: [{ entry_point_id: 'entry_route_authentication_login', entry_point_type: 'http', action: 'Create', path_or_command: '/login', trigger: { method: 'POST', path: '/login' } }],
+          criticality_factors: [],
+        }],
+        behaviorSurfaces: [], externalServices: [], flowGraph: { capability_candidates: [] },
+        projectTextSignal: { concepts: ['article'], evidence: [] },
+        budgetMs: 30000,
+      });
+
+      expect(catalog.map((item: any) => item.name)).toEqual(['Authenticate users']);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
   it('extracts verbatim product framing from a README (title + opening paragraph)', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-topdown-readme-'));
     try {
@@ -9000,6 +9227,23 @@ describe('top-down capability evidence (C2)', () => {
       expect(signal.productVocabulary).toEqual(expect.arrayContaining(['trustworthy', 'relationship', 'concurrent', 'fabric']));
       // Badge line and the "Setup" list must not leak into the product summary.
       expect(signal.productDocSummary).not.toMatch(/shields\.io|npm install/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('includes product feature bullets in first-party capability evidence', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-topdown-features-'));
+    try {
+      fs.writeFileSync(
+        path.join(root, 'README.md'),
+        '# Job Tracker\n\nTrack job applications in one place.\n\n## Features\n\n- **Manage application status**: Move applications through interview stages.\n- **Filter applications**: Filter by category, status, or job site.\n\n## Setup\n\n- npm install\n',
+      );
+      const signal = orch.extractProjectTextSignal(root);
+      expect(signal.productDocSummary).toContain('Track job applications in one place.');
+      expect(signal.productDocSummary).toContain('Manage application status');
+      expect(signal.productDocSummary).toContain('Filter applications');
+      expect(signal.productDocSummary).not.toContain('npm install');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -9877,7 +10121,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     }
   });
 
-  it('keeps product-grounded candidates in the prompt when internal behavior families exceed the bounded window', async () => {
+  it('keeps every product family and omits internal plumbing when product families exceed the bounded window', async () => {
     const captured: any[] = [];
     const original = (aiService as any).generateComponentDescription;
     (aiService as any).generateComponentDescription = async (opts: any) => {
@@ -9935,7 +10179,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
       expect(facts?.required_entity_candidate_groups).toHaveLength(36);
       expect(facts.required_entity_candidate_groups.every((group: string[]) =>
         group.some(candidateId => includedIds.has(candidateId)))).toBe(true);
-      expect(areas.some(area => String(area.candidate_id).startsWith('surface_'))).toBe(true);
+      expect(areas.some(area => String(area.candidate_id).startsWith('surface_'))).toBe(false);
       expect(facts?.required_behavior_candidate_ids).toEqual([]);
       expect(captured[0].additionalContext.task).toMatch(/one candidate_id from that group/);
       expect(captured[0].additionalContext.task).toMatch(/must never expose class, interface, schema, or graph-model identifiers/);
@@ -11337,6 +11581,18 @@ describe('catalog completeness (live truckspy: fuel/safety/ELD rich evidence, 9-
     // over a non-generic first segment.
     expect(orch.inferResourceKey(ep('/api/orders/items'))).toBe('orders');
     expect(orch.inferResourceKey(ep('/api/users'))).toBe('users');
+    expect(orch.inferResourceKey(
+      ep('/api/articles/{slug}/comments/{comment_id}'),
+      new Set(['comments']),
+    )).toBe('comments');
+    expect(orch.inferResourceKey(
+      ep('/api/profiles/{username}/follow'),
+      new Set(['follow']),
+    )).toBe('follow');
+    expect(orch.inferResourceKey(
+      ep('/api/web/drive-alerts/{id}/coachable'),
+      new Set(['comments', 'follow']),
+    )).toBe('drive-alerts');
   });
 
   it('compound entity nouns attribute accessors (paginateAllDriveAlerts -> drivealert read lineage)', () => {
@@ -11865,6 +12121,19 @@ describe('enterprise AI semantic guards', () => {
       databaseEntities: ['EnterpriseOrder'],
       structuralTokens: ['order', 'enterprise'],
     }).reason).toBe('malformed-missing-verb');
+  });
+
+  it('rejects unsupported absence guarantees from the system narrative', () => {
+    const purpose = { primary_domain: 'article-discussion', core_concepts: ['article', 'comment'] };
+    const description = 'An article discussion product lets readers publish articles and respond to them with comments. Authors can review the comments attached to each article and remove their own contributions. When a reader deletes a comment, the system removes it without leaving a trace. Readers can also follow authors and review the articles those authors publish.';
+
+    expect(orch.validateGeneratedAIInterpretation(description, purpose, {
+      systemName: 'article-discussion',
+      databaseEntities: ['Article', 'Comment'],
+      structuralTokens: ['article', 'comment', 'delete', 'follow'],
+      projectTextSummary: 'Readers publish articles, comment on them, and delete their own comments.',
+      artifactType: 'app',
+    }).reason).toBe('unsupported-system-absence-claim:without leaving a trace');
   });
 
   it('keeps infrastructure narration and domains anchored to infrastructure semantics', () => {
@@ -12569,6 +12838,64 @@ describe('P0 (v1.0.127): no vocabulary-substitution table on ANY description pat
     expect(String(orch.validateElementDescription(element, target).reason)).toMatch(/^unsupported-marketing-language:/);
     expect(orch.sanitizeElementDescriptionCandidate(element, target)).toBeUndefined();
   });
+
+test('capability descriptions use the same direct nested-resource grounding as the audience gate', () => {
+  const comment: any = {
+    id: 'comment', name: 'Comment', kind: 'persisted-entity', fields: [],
+    lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] },
+    relations: [{ target_name: 'Article', relation_type: 'ManyToOne', kind: 'data', evidence_source: 'orm-declaration', evidence: 'Comment.article' }],
+  };
+  const article: any = {
+    id: 'article', name: 'Article', kind: 'persisted-entity', fields: [],
+    lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] },
+    relations: [{ target_name: 'Comment', relation_type: 'OneToMany', kind: 'data', evidence_source: 'orm-declaration', evidence: 'Article.comments' }],
+  };
+  const profile: any = {
+    id: 'profile', name: 'Profile', kind: 'persisted-entity', fields: [],
+    lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] },
+    relations: [],
+  };
+  const entities = [comment, article, profile];
+  const maps = {
+    names: new Map(entities.map(entity => [entity.id, entity.name])),
+    fields: new Map(entities.map(entity => [entity.id, []])),
+    evidence: new Map(entities.map(entity => [entity.id, entity])),
+  };
+  const commentOperations = [
+    { entry_point_id: 'comment-list', entry_point_type: 'http', action: 'List', path_or_command: '/articles/:slug/comments', trigger: { method: 'GET', path: '/articles/:slug/comments' } },
+    { entry_point_id: 'comment-delete', entry_point_type: 'http', action: 'Delete', path_or_command: '/articles/:slug/comments/:id', trigger: { method: 'DELETE', path: '/articles/:slug/comments/:id' } },
+  ];
+  const commentEntries: any[] = commentOperations.map(operation => ({
+    id: operation.entry_point_id, source_node: `node-${operation.entry_point_id}`, type: 'http',
+    name: operation.entry_point_id, trigger: operation.trigger,
+  }));
+  const comments: any = {
+    id: 'comments', name: 'Manage comments', description: '', category: 'core',
+    operations: commentOperations, related_entities: ['comment'], related_domains: [],
+    criticality: 'high', criticality_factors: [],
+  };
+  const commentTarget = orch.capabilityDescriptionTarget(comments, maps.names, maps.fields, maps.evidence, [], [], commentEntries);
+  expect(commentTarget.relatedEntities).toEqual(expect.arrayContaining(['Comment', 'Article']));
+  expect(commentTarget.unrelatedEntities).not.toContain('Article');
+  expect(orch.validateElementDescription(
+    'Users remove comments from an Article discussion after reviewing its conversation.',
+    commentTarget,
+  ).reason || '').not.toMatch(/^description-unrelated-entity-vocabulary:/);
+
+  const followOperation = { entry_point_id: 'follow', entry_point_type: 'http', action: 'Follow', path_or_command: '/profiles/:username/follow', trigger: { method: 'POST', path: '/profiles/:username/follow' } };
+  const follow: any = {
+    ...comments, id: 'follow', name: 'Follow profiles', operations: [followOperation], related_entities: ['profile'],
+  };
+  const followTarget = orch.capabilityDescriptionTarget(follow, maps.names, maps.fields, maps.evidence, [], [], [{
+    id: 'follow', source_node: 'node-follow', type: 'http', name: 'follow', trigger: followOperation.trigger,
+  }]);
+  expect(followTarget.relatedEntities).toEqual(['Profile']);
+  expect(followTarget.unrelatedEntities).toContain('Article');
+  expect(orch.validateElementDescription(
+    'Users follow profiles so Article updates become available in their personalized experience.',
+    followTarget,
+  ).reason).toBe('unrelated-entity-vocabulary:Article');
+});
 
   it('keeps genuine shape-based output hygiene: markdown fences, stray markers, doubled words, and instruction-shaped tails', () => {
     expect(orch.cleanGeneratedDescriptionText('```markdown\n**Atlas** records `Order` rows.\n```'))
@@ -13735,5 +14062,98 @@ describe('derived call graph replacement', () => {
     expect(node.call_graph?.total_calls_received).toBe(0);
     expect(node.metadata?.attributes?.incoming_calls).toBe(0);
     expect(node.metadata?.attributes?.outgoing_calls).toBe(0);
+  });
+});
+
+describe('capability operation semantics', () => {
+  it('rejects a read-only title for a family that also mutates the same product subject', () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    const operations = [
+      { entry_point_id: 'list', entry_point_type: 'http', action: 'List', trigger: { method: 'GET', path: '/articles' } },
+      { entry_point_id: 'create', entry_point_type: 'http', action: 'Create', trigger: { method: 'POST', path: '/articles' } },
+      { entry_point_id: 'update', entry_point_type: 'http', action: 'Update', trigger: { method: 'PUT', path: '/articles/{slug}' } },
+    ];
+
+    expect(localOrch.capabilityContradictsObservedOperations({
+      name: 'Read articles',
+      description: 'Articles are listed for readers and returned with their current content.',
+      operations,
+    })).toBe(true);
+    expect(localOrch.capabilityContradictsObservedOperations({
+      name: 'Read and update articles',
+      description: 'Articles can be listed and updated by the people who maintain them.',
+      operations,
+    })).toBe(false);
+  });
+
+  it('requires published descriptions to disclose destructive operations', () => {
+    const operations = [
+      { entry_point_id: 'create', entry_point_type: 'http', action: 'Create', trigger: { method: 'POST', path: '/comments' } },
+      { entry_point_id: 'delete', entry_point_type: 'http', action: 'Delete', trigger: { method: 'DELETE', path: '/comments/{id}' } },
+    ];
+    const base = {
+      id: 'comments',
+      name: 'Comment on articles',
+      name_source: 'ai',
+      description_source: 'ai',
+      category: 'core',
+      operations,
+      related_entities: [],
+      related_domains: [],
+      criticality: 'medium',
+      criticality_factors: [],
+    };
+    expect(orch.capabilityPublishabilityFailure({
+      ...base, description: 'Users post comments on articles and view the resulting discussion with other readers.',
+    })).toBe('description-omits-observed-deletion');
+    expect(orch.capabilityPublishabilityFailure({
+      ...base, description: 'Users post comments on articles and remove their own comments from the resulting discussion.',
+    })).toBeUndefined();
+    for (const description of [
+      'Users post comments on articles and delete their own comments from the resulting discussion.',
+      'Users post comments on articles, with existing comments deleted when their authors withdraw them.',
+      'Users post comments on articles, deleting their own comments from the resulting discussion.',
+      'Users can favorite articles and later mark them unfavored.',
+    ]) {
+      expect(orch.capabilityPublishabilityFailure({ ...base, description })).toBeUndefined();
+    }
+  });
+
+  it('requires a grounded audience at the structured repair location', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    const input = {
+      systemName: 'Article Reader', enhancedSystemPurpose: { primary_domain: 'articles', core_concepts: [] },
+      frameworks: [], userJourneys: [], dataEntities: [], behaviorSurfaces: [], externalServices: [],
+      flowGraph: emptyFlowGraph(), projectTextSignal: { concepts: [], evidence: [], productDocSummary: 'Users read articles from a feed.' },
+      budgetMs: 30000, exactCapabilityLimit: 1, qualityNudge: 'Repair this description.', repairMode: 'description' as const,
+      repairIdentityName: 'Read articles from the feed',
+      candidateCapabilities: [{
+        id: 'feed', name: 'Feed', structural_label: 'Feed Management', category: 'core',
+        operations: [{ entry_point_id: 'feed-route', entry_point_type: 'http', action: 'List' }],
+        related_entities: [], related_domains: [], criticality: 'high', criticality_factors: [],
+      }],
+      targetedRepairFacts: [{
+        candidate_id: 'candidate_1', stable_capability_name: 'Read articles from the feed',
+        first_party_outcomes: ['Users read articles from a feed.'], observable_actions: ['list'],
+        required_audience_labels: [], required_subject_terms: ['feed'], required_visible_actions: [], minimum_subject_matches: 1,
+        prior_rejections: [{ reason: 'unsupported-absence-claim', missing_audience: 'Users', missing_audience_locations: ['description'] }],
+      }],
+      targetedRepairCandidateMap: { candidate_1: 'feed' },
+    };
+    try {
+      (aiService as any).generateComponentDescription = async () => JSON.stringify({ capabilities: [{
+        name: 'Read articles from the feed', description: 'The feed lists current articles for browsing and discovery.',
+        category: 'core', candidate_ids: ['candidate_1'],
+      }] });
+      expect(await orch.aiExtractCapabilityCatalog(input)).toEqual([]);
+
+      (aiService as any).generateComponentDescription = async () => JSON.stringify({ capabilities: [{
+        name: 'Read articles from the feed', description: 'Users read current articles from the feed for browsing and discovery.',
+        category: 'core', candidate_ids: ['candidate_1'],
+      }] });
+      expect(await orch.aiExtractCapabilityCatalog(input)).toHaveLength(1);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
   });
 });

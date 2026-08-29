@@ -339,7 +339,7 @@ export class ExpressAnalyzer extends BaseAnalyzer {
 
           routers.push(router);
 
-          const routerId = `router_${this.sanitizeId(routerName)}`;
+          const routerId = `router_${this.sanitizeId(routerName)}_${this.sanitizeId(relativePath)}`;
           const routerDocumentation = this.extractDocumentation(content, fullPath);
           const routerComments = this.extractComments(content, fullPath);
           const routerTodos = this.extractTodos(routerComments);
@@ -1407,7 +1407,7 @@ export class ExpressAnalyzer extends BaseAnalyzer {
     const appId = `app_${this.sanitizeId(application.name)}`;
 
     routers.forEach(router => {
-      const routerId = `router_${this.sanitizeId(router.name)}`;
+      const routerId = `router_${this.sanitizeId(router.name)}_${this.sanitizeId(router.filePath)}`;
       edges.push(this.createEdge(
         `${appId}_uses_${routerId}`,
         appId,

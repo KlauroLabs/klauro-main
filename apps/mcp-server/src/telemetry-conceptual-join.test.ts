@@ -8,6 +8,7 @@ import * as http from 'node:http';
 import { createRemoteAnalyzerHttpServer } from './remote-analyzer-service';
 import { analyzeProject } from './analyzer';
 import { saveAnalysis } from './storage';
+import type { CASEntryPoint } from '../../../packages/analyzer-core/src/types/cas.types';
 import { acceptedComprehensionFixture } from './accepted-comprehension-test-fixture';
 
 /**
@@ -153,7 +154,12 @@ test('GET /api/projects/:id/conceptual joins real ingested telemetry onto a flow
     }>;
     assert.equal(afterFlows.length, 2);
 
-    const itemsFlow = afterFlows.find(f => f.entry_point.includes('server_get_0'));
+    const itemsEntryPoint = (cas.entry_points || []).find((entryPoint: CASEntryPoint) =>
+      entryPoint.type === 'http' &&
+      entryPoint.trigger?.method === 'GET' &&
+      entryPoint.trigger?.path === '/items/:id');
+    assert.ok(itemsEntryPoint, 'analysis must expose the /items/:id GET entry point');
+    const itemsFlow = afterFlows.find(flow => flow.entry_point === itemsEntryPoint.id);
     assert.ok(itemsFlow, 'the /items/:id flow must be present');
     const telemetry = itemsFlow!.contract?.telemetry;
     assert.ok(telemetry, 'the /items/:id flow must now carry a populated telemetry facet — the join fires end to end');
@@ -164,7 +170,12 @@ test('GET /api/projects/:id/conceptual joins real ingested telemetry onto a flow
 
     // Evidence-gated: the /widgets flow, which received NO observations,
     // stays telemetry-free — nothing fabricated.
-    const widgetsFlow = afterFlows.find(f => f !== itemsFlow);
+    const widgetsEntryPoint = (cas.entry_points || []).find((entryPoint: CASEntryPoint) =>
+      entryPoint.type === 'http' &&
+      entryPoint.trigger?.method === 'GET' &&
+      entryPoint.trigger?.path === '/widgets');
+    assert.ok(widgetsEntryPoint, 'analysis must expose the /widgets GET entry point');
+    const widgetsFlow = afterFlows.find(flow => flow.entry_point === widgetsEntryPoint.id);
     assert.ok(widgetsFlow, 'the /widgets flow must be present');
     assert.equal(widgetsFlow!.contract?.telemetry, undefined, '/widgets must stay telemetry-free — no observation matched it');
   } finally {

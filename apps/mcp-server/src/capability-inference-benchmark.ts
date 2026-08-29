@@ -135,6 +135,10 @@ async function seedSymfonyFleetFixture(root: string): Promise<void> {
       'symfony/framework-bundle': '^6.0',
     },
   });
+  await fs.outputFile(
+    path.join(root, 'README.md'),
+    '# Fleet operations\n\nFleet operators list vehicles, record fuel purchases, and settle customer invoices.\n',
+  );
   await fs.outputFile(path.join(root, 'bin/console'), '#!/usr/bin/env php\n<?php\n');
   await fs.outputFile(path.join(root, 'src/Entity/Vehicle.php'), [
     '<?php',
