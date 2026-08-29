@@ -144,6 +144,72 @@ test('catalog repair stops after bounded no-progress retries', async () => {
   expect(purpose.capability_catalog_coverage.reason).toMatch(/omitted 5 product-entity evidence families/);
 });
 
+test('catalog collapse schedules uncovered semantic family representatives even without mandatory entity groups', async () => {
+  const localOrch = new AnalyzerOrchestrator() as any;
+  const candidates = [
+    ['create', 'Create applications'],
+    ['category', 'Manage categories'],
+    ['notes', 'Update notes'],
+    ['search', 'Search history'],
+  ].map(([id, name]) => ({
+    id,
+    name,
+    category: 'core',
+    related_entities: [],
+    related_domains: [],
+    operations: [{ entry_point_id: `entry-${id}`, entry_point_type: 'http', action: name.split(' ')[0] }],
+    criticality: 'medium',
+    criticality_factors: [],
+  }));
+  const authored = (candidate: any) => ({
+    ...candidate,
+    name_source: 'ai',
+    description: `${candidate.name} through observed user-facing behavior and independently grounded application evidence.`,
+    description_source: 'ai',
+    criticality_factors: [`catalog-candidate:${candidate.id}`],
+  });
+  const requested: string[][] = [];
+  jest.spyOn(localOrch, 'aiExtractCapabilityCatalog').mockImplementation(async (input: any) => {
+    const ids = input.candidateCapabilities.map((candidate: any) => candidate.id);
+    requested.push(ids);
+    return ids.length > 1 ? [authored(candidates[0])] : [authored(input.candidateCapabilities[0])];
+  });
+  jest.spyOn(localOrch, 'reconcileCatalogedCapabilities').mockImplementation((value: any) => value);
+  const purpose: any = { primary_domain: 'application-work', core_concepts: [] };
+
+  const result = await localOrch.runCapabilityCatalogWithQualityGate({
+    systemName: 'semantic-family-repair-fixture',
+    enhancedSystemPurpose: purpose,
+    frameworks: [],
+    userJourneys: candidates.map(candidate => ({
+      id: `journey-${candidate.id}`,
+      name: candidate.name,
+      journey_kind: 'user-facing',
+      entry_point_id: candidate.operations[0].entry_point_id,
+      terminal_entities: [`terminal-${candidate.id}`],
+      terminal_effects: { state_changes: [`effect-${candidate.id}`] },
+    })),
+    dataEntities: [],
+    candidateSnapshot: candidates,
+    behaviorSurfaces: [],
+    externalServices: [],
+    flowGraph: emptyFlowGraph(),
+    projectTextSignal: { concepts: [], evidence: [] },
+    entryPoints: [],
+    nodes: [],
+    budgetMs: 30000,
+  });
+
+  expect(requested).toEqual([
+    ['create', 'category', 'notes', 'search'],
+    ['category'],
+    ['notes'],
+    ['search'],
+  ]);
+  expect(result.map((capability: any) => capability.id).sort()).toEqual(['category', 'create', 'notes', 'search']);
+  expect(purpose.capability_catalog_coverage.status).toBe('accepted');
+});
+
 describe('AI task model routing', () => {
   const keys = [
     'DEEPINFRA_MODEL',

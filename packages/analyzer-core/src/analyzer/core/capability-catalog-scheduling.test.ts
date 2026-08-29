@@ -10,6 +10,8 @@ import {
   scheduleRejectedCapabilityDescriptions,
   selectCapabilityCatalogPromptCandidates,
   uncoveredCapabilityCatalogCandidateIds,
+  uncoveredCapabilityCatalogFamilyRepresentativeIds,
+  capabilityCatalogRepairCandidateIds,
   capabilityTitlesShareOutcome,
   capabilityDescriptionsShareOutcome,
   capabilityCatalogTargetedRepairBatches,
@@ -605,6 +607,45 @@ test('targeted catalog repair converges when full passes omit different families
   assert.equal(firstRepairIds.length, 17);
   assert.equal(secondRepairIds.length, 8);
   assert.deepEqual(uncoveredCapabilityCatalogCandidateIds(fullyRepaired, [], requiredGroups), []);
+});
+
+test('collapsed catalog repair schedules one representative for each uncovered semantic family', () => {
+  const familyGroups = [
+    ['jobs-create', 'jobs-create-route'],
+    ['jobs-category', 'jobs-category-route'],
+    ['jobs-notes'],
+    ['jobs-search', 'jobs-search-route'],
+  ];
+  const capability = (id: string) => ({
+    id: `authored-${id}`,
+    criticality_factors: [`catalog-candidate:${id}`],
+  }) as SystemCapability;
+
+  assert.deepEqual(
+    uncoveredCapabilityCatalogFamilyRepresentativeIds([capability('jobs-create-route')], familyGroups),
+    ['jobs-category', 'jobs-notes', 'jobs-search'],
+  );
+  assert.deepEqual(
+    capabilityCatalogRepairCandidateIds([capability('jobs-create-route')], [], [], new Set(), familyGroups),
+    ['jobs-category', 'jobs-notes', 'jobs-search'],
+  );
+});
+
+test('semantic family coverage counts progress when any grouped candidate is cited', () => {
+  const familyGroups = [['create', 'create-route'], ['category', 'category-route'], ['notes']];
+  const capability = (id: string) => ({
+    id: `authored-${id}`,
+    criticality_factors: [`catalog-candidate:${id}`],
+  }) as SystemCapability;
+  const progress = trackCapabilityCatalogRepair(3, [], [], [], familyGroups);
+
+  const first = progress.observe([capability('create-route')]);
+  const second = progress.observe([capability('create-route'), capability('category-route')]);
+
+  assert.equal(first.noProgressCycles, 0);
+  assert.equal(first.uncoveredCount, 2);
+  assert.equal(second.noProgressCycles, 0);
+  assert.equal(second.uncoveredCount, 1);
 });
 
 test('semantic outcome progress prevents the repair loop from stopping while obligations shrink', () => {

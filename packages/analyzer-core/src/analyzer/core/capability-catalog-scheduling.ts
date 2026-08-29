@@ -153,14 +153,29 @@ export function uncoveredCapabilityCatalogCandidateIds(
   ])];
 }
 
+export function uncoveredCapabilityCatalogFamilyRepresentativeIds(
+  capabilities: SystemCapability[],
+  candidateFamilyGroups: ReadonlyArray<ReadonlyArray<string>>,
+): string[] {
+  const citedCandidateIds = new Set(capabilities.flatMap(capability =>
+    (capability.criticality_factors || [])
+      .filter(factor => factor.startsWith('catalog-candidate:'))
+      .map(factor => factor.slice('catalog-candidate:'.length))));
+  return candidateFamilyGroups
+    .filter(group => group.length > 0 && !group.some(candidateId => citedCandidateIds.has(candidateId)))
+    .map(group => group[0]);
+}
+
 export function capabilityCatalogRepairCandidateIds(
   capabilities: SystemCapability[],
   requiredBehaviorCandidateIds: readonly string[],
   requiredEntityCandidateGroups: ReadonlyArray<ReadonlyArray<string>>,
   pendingPublishabilityIds: ReadonlySet<string>,
+  candidateFamilyGroups: ReadonlyArray<ReadonlyArray<string>> = [],
 ): string[] {
   return [...new Set([
     ...uncoveredCapabilityCatalogCandidateIds(capabilities, requiredBehaviorCandidateIds, requiredEntityCandidateGroups),
+    ...uncoveredCapabilityCatalogFamilyRepresentativeIds(capabilities, candidateFamilyGroups),
     ...pendingPublishabilityIds,
   ])];
 }
@@ -469,6 +484,7 @@ export function trackCapabilityCatalogRepair(
   requiredBehaviorCandidateIds: readonly string[],
   requiredEntityCandidateGroups: ReadonlyArray<ReadonlyArray<string>>,
   requiredOutcomeIds: readonly string[] = [],
+  candidateFamilyGroups: ReadonlyArray<ReadonlyArray<string>> = [],
 ) {
   const requiredFamilyCount = Math.max(
     distinctFamilyCount,
@@ -476,9 +492,11 @@ export function trackCapabilityCatalogRepair(
     requiredOutcomeIds.length,
   );
   const budget = capabilityCatalogRepairBudget(requiredFamilyCount);
-  let previousEvidenceKeys = new Set(uncoveredCapabilityCatalogCandidateIds(
-    [], requiredBehaviorCandidateIds, requiredEntityCandidateGroups,
-  ));
+  const uncoveredEvidenceKeys = (capabilities: SystemCapability[]) => new Set([
+    ...uncoveredCapabilityCatalogCandidateIds(capabilities, requiredBehaviorCandidateIds, requiredEntityCandidateGroups),
+    ...uncoveredCapabilityCatalogFamilyRepresentativeIds(capabilities, candidateFamilyGroups),
+  ]);
+  let previousEvidenceKeys = uncoveredEvidenceKeys([]);
   let previousOutcomeKeys = new Set(requiredOutcomeIds);
   let previousPendingKeys = new Set<string>();
   let noProgressCycles = 0;
@@ -489,9 +507,7 @@ export function trackCapabilityCatalogRepair(
   return {
     maxCycles: budget.maxCycles,
     observe(capabilities: SystemCapability[], uncoveredOutcomeIds: readonly string[] = [], pendingIdentityKeys: readonly string[] = []) {
-      const evidenceKeys = new Set(uncoveredCapabilityCatalogCandidateIds(
-        capabilities, requiredBehaviorCandidateIds, requiredEntityCandidateGroups,
-      ));
+      const evidenceKeys = uncoveredEvidenceKeys(capabilities);
       const outcomeKeys = new Set(uncoveredOutcomeIds);
       const pendingKeys = new Set(pendingIdentityKeys);
       const mandatoryProgress = strictlyReduced(evidenceKeys, previousEvidenceKeys) || strictlyReduced(outcomeKeys, previousOutcomeKeys);

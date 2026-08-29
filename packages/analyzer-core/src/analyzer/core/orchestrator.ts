@@ -10246,7 +10246,7 @@ export class AnalyzerOrchestrator {
     return undefined;
   }
 
-  private catalogDistinctFamilyCount(candidates: SystemCapability[]): number {
+  private catalogDistinctFamilies(candidates: SystemCapability[]): SystemCapability[][] {
     candidates = candidates.filter(candidate => {
       const hasEntityEvidence = (candidate.related_entities?.length || 0) > 0;
       const operations = candidate.operations || [];
@@ -10256,7 +10256,7 @@ export class AnalyzerOrchestrator {
       const externalOnly = operations.length > 0 && operations.every(operation => operation.entry_point_type === 'external');
       return !externalOnly && (!pageOnly || candidate.category === 'core' || hasEntityEvidence);
     });
-    if (candidates.length === 0) return 0;
+    if (candidates.length === 0) return [];
     const actionTokens = new Set([
       'view', 'get', 'list', 'read', 'show', 'access', 'manage', 'create', 'update',
       'delete', 'modify', 'write', 'process', 'handle', 'coordinate', 'provide',
@@ -10322,7 +10322,11 @@ export class AnalyzerOrchestrator {
         (entities[index].size > 0 || (candidates[index].operations || []).length > 0);
       if (tokens[index].size > 0 || evidenceAnchoredProductCandidate) roots.add(find(index));
     }
-    return roots.size;
+    return [...roots].map(root => candidates.filter((_, index) => find(index) === root));
+  }
+
+  private catalogDistinctFamilyCount(candidates: SystemCapability[]): number {
+    return this.catalogDistinctFamilies(candidates).length;
   }
 
   private async runCapabilityCatalogWithQualityGate(args: {
@@ -10353,7 +10357,11 @@ export class AnalyzerOrchestrator {
     );
     const requiredEvidenceCandidates = catalogRequiredEvidenceCandidates(evidenceCandidates);
     const evidenceRoleSummary = summarizeCapabilityEvidenceRoles(evidenceCandidates);
-    const distinctFamilyCount = this.catalogDistinctFamilyCount(requiredEvidenceCandidates);
+    const distinctFamilies = this.catalogDistinctFamilies(requiredEvidenceCandidates);
+    const distinctFamilyCount = distinctFamilies.length;
+    const distinctFamilyCandidateGroups = distinctFamilies
+      .map(family => family.map(candidate => candidate.id).filter(Boolean))
+      .filter(family => family.length > 0);
     const requiredBehaviorCandidateIds = requiredEvidenceCandidates
       .filter(candidate => candidate.evidence_kind === 'behavior-surface' && capabilityRequiresCatalogCoverage(candidate) && candidate.id)
       .map(candidate => candidate.id);
@@ -10366,7 +10374,7 @@ export class AnalyzerOrchestrator {
     let audienceRepairFeedback: string | undefined;
     let cyclesRun = 0;
     let deadlineExceeded = false; let retainedInterpretationRaw = ''; const catalogRejectionsByCandidate: CapabilityCatalogRejectionsByCandidate = new Map(); const pendingRequirementIdsByCapabilityId = new Map<string, string[]>();
-    let uncoveredOutcomes = requiredOutcomes; const repairProgress = trackCapabilityCatalogRepair(Math.max(1, distinctFamilyCount), requiredBehaviorCandidateIds, requiredEntityCandidateGroups, requiredOutcomes.map(requirement => requirement.id));
+    let uncoveredOutcomes = requiredOutcomes; const repairProgress = trackCapabilityCatalogRepair(Math.max(1, distinctFamilyCount), requiredBehaviorCandidateIds, requiredEntityCandidateGroups, requiredOutcomes.map(requirement => requirement.id), distinctFamilyCandidateGroups);
     for (let cycle = 1; cycle <= repairProgress.maxCycles; cycle++) {
       if (args.hardDeadlineAt !== undefined && Date.now() >= args.hardDeadlineAt) {
         deadlineExceeded = true;
@@ -10374,7 +10382,7 @@ export class AnalyzerOrchestrator {
         break;
       }
       cyclesRun = cycle;
-      const pendingCapabilities = reconciled.filter(capability => !this.isPublishableCapability(capability)); const evidenceRepairIds = capabilityCatalogRepairCandidateIds(reconciled, requiredBehaviorCandidateIds, requiredEntityCandidateGroups, new Set());
+      const pendingCapabilities = reconciled.filter(capability => !this.isPublishableCapability(capability)); const evidenceRepairIds = capabilityCatalogRepairCandidateIds(reconciled, requiredBehaviorCandidateIds, requiredEntityCandidateGroups, new Set(), distinctFamilyCandidateGroups);
       const repairPlan = capabilityCatalogRepairPlan({ evidenceCandidateIds: evidenceRepairIds, outcomeRequirements: uncoveredOutcomes, pendingCapabilities }); const targetedRepair = cycle > 1 && reconciled.length > 0 && repairPlan.length > 0;
       let extracted: SystemCapability[], extractionRaw = ''; const extractionRejections: string[] = [];
       try {
