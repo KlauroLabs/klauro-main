@@ -1,7 +1,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SystemCapability } from '../../types/cas.types';
-import { capabilityCatalogPendingRequirementIds, capabilityCatalogRepairPlan, captureCapabilityCatalogPendingRequirements, preserveCapabilityCatalogDescriptionIdentity, supersedeUnboundPendingOutcomeDuplicates } from './capability-catalog-repair-plan';
+import { capabilityCatalogFocusedTask, capabilityCatalogPendingRequirementIds, capabilityCatalogRepairNudge, capabilityCatalogRepairPlan, captureCapabilityCatalogPendingRequirements, preserveCapabilityCatalogDescriptionIdentity, supersedeUnboundPendingOutcomeDuplicates } from './capability-catalog-repair-plan';
 
 const capability = (id: string, factors: string[], description = '') => ({
   id, name: `Outcome ${id}`, description, category: 'core', criticality: 'high', criticality_factors: factors,
@@ -28,13 +28,26 @@ describe('capability catalog repair planning', () => {
   });
 
   test('description repair preserves the stable identity while accepting only replacement prose', () => {
-    const identity = capability('graph', ['catalog-candidate:graph', 'catalog-outcome-requirement:graph-slot']);
-    const repaired = preserveCapabilityCatalogDescriptionIdentity(identity, capability('renamed', ['catalog-candidate:other'], 'Grounded product prose.'));
+    const identity = { ...capability('graph', ['catalog-candidate:graph', 'catalog-outcome-requirement:graph-slot']), name: 'Access job sites by user' };
+    const repaired = preserveCapabilityCatalogDescriptionIdentity(identity, { ...capability('renamed', ['catalog-candidate:other'], 'Users access saved job sites from each application record.'), name: 'Manage job applications' });
 
     assert.equal(repaired.id, 'graph');
-    assert.equal(repaired.name, 'Outcome graph');
-    assert.equal(repaired.description, 'Grounded product prose.');
+    assert.equal(repaired.name, 'Access job sites by user');
+    assert.equal(repaired.description, 'Users access saved job sites from each application record.');
     assert.deepEqual(repaired.criticality_factors, ['catalog-candidate:graph', 'catalog-outcome-requirement:graph-slot']);
+  });
+
+  test('description repair names the stable identity and carries prior validator feedback', () => {
+    const identity = { ...capability('access', ['catalog-candidate:job']), name: 'Access job sites by user' };
+    const batch = { mode: 'description' as const, candidateIds: ['job'], requirements: [], identity };
+    const task = capabilityCatalogFocusedTask(batch.mode, identity.name);
+    const nudge = capabilityCatalogRepairNudge(batch, [{ candidate_id: 'candidate_1', stable_capability_name: identity.name }], 'missing description', 'Remove marketing-language token organized.');
+
+    assert.match(task, /Access job sites by user/);
+    assert.match(task, /stable_capability_name/);
+    assert.match(task, /description that explains that exact named outcome/);
+    assert.match(nudge, /missing description/);
+    assert.match(nudge, /Remove marketing-language token organized/);
   });
 
   test('supersedes a pending identity from a different candidate when its semantic slot is replaced', () => {

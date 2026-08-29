@@ -82,7 +82,11 @@ function capabilityNameProductLanguageFailures(name: string, productTerms: strin
   }
   const trustedWords = new Set(productTerms.flatMap(splitIdentifierWords).map(word => word.toLowerCase()));
   const ordinaryShortWords = new Set(['api', 'app', 'code', 'data', 'map', 'run', 'task', 'user', 'view', 'work']);
+  const grammaticalConnectors = new Set([
+    'a', 'an', 'and', 'as', 'by', 'for', 'from', 'in', 'into', 'of', 'on', 'or', 'the', 'through', 'to', 'via', 'with',
+  ]);
   const shortenedTerms = splitIdentifierWords(name).filter(token => {
+    if (grammaticalConnectors.has(token.toLowerCase())) return false;
     if (!/^[a-z]{2,4}$/.test(token) || ordinaryShortWords.has(token)) return false;
     return [...trustedWords].some(word => word.length >= token.length + 2 && word.startsWith(token));
   });

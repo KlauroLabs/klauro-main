@@ -9163,7 +9163,16 @@ export class AnalyzerOrchestrator {
     nodes?: CASNode[];
   }): Promise<SystemCapability[]> {
     const purpose = input.enhancedSystemPurpose || ({} as EnhancedSystemPurpose); const targetedRepair = Boolean(input.targetedRepairFacts);
+    const targetedEntryPointIds = new Set([
+      ...(input.candidateCapabilities || []),
+      ...(input.behaviorSurfaces || []),
+    ].flatMap(candidate => (candidate.operations || []).map(operation => operation.entry_point_id)));
+    const targetedEntityIds = new Set([
+      ...(input.candidateCapabilities || []),
+      ...(input.behaviorSurfaces || []),
+    ].flatMap(candidate => candidate.related_entities || []));
     const journeys = (input.userJourneys || [])
+      .filter(journey => !targetedRepair || targetedEntryPointIds.has(journey.entry_point_id))
       .filter(journey => journey.journey_kind === 'user-facing' || journey.criticality === 'critical' || journey.criticality === 'high')
       .filter(journey => !/^run\s+(?:main|application|server)\b/i.test(journey.name))
       .slice(0, 12)
@@ -9181,14 +9190,14 @@ export class AnalyzerOrchestrator {
       input.projectTextSignal,
       { entryPoints: input.entryPoints, nodes: input.nodes, userJourneys: input.userJourneys },
     );
-    const requiredCandidatePool = catalogRequiredEvidenceCandidates(candidatePoolForRanking); const entities = catalogPromptEntities(input.dataEntities || [], candidatePoolForRanking);
+    const requiredCandidatePool = catalogRequiredEvidenceCandidates(candidatePoolForRanking); const promptDataEntities = targetedRepair ? (input.dataEntities || []).filter(entity => targetedEntityIds.has(entity.id)) : input.dataEntities || []; const entities = catalogPromptEntities(promptDataEntities, candidatePoolForRanking);
     const rankedCandidateAreas = this.rankCatalogPromptCandidates(candidatePoolForRanking, input.userJourneys || []);
     const requiredBehaviorCandidateAreas = requiredCandidatePool
       .filter(candidate => candidate.evidence_kind === 'behavior-surface' && capabilityRequiresCatalogCoverage(candidate));
     const requiredEntityCandidateGroups = catalogEntityCandidateGroups(requiredCandidatePool);
     const promptCandidateAreas = selectCapabilityCatalogPromptCandidates(rankedCandidateAreas, requiredEntityCandidateGroups);
     const candidateTerminality = this.catalogCandidateTerminality(candidatePoolForRanking);
-    const catalogEntityById = new Map(input.dataEntities.map(entity => [entity.id, entity]));
+    const catalogEntityById = new Map(promptDataEntities.map(entity => [entity.id, entity]));
     const candidateAreas = promptCandidateAreas.map(capability => capability.name);
     const candidateAreaFacts = promptCandidateAreas
       .map(capability => {
@@ -9250,6 +9259,11 @@ export class AnalyzerOrchestrator {
       .map(term => term.toLowerCase().trim())
       .filter(term => term.length >= 3))).slice(0, 80);
     const topDownSignals: Record<string, unknown> = {}; if (!targetedRepair && signal?.productDocTitle) topDownSignals.product_title = signal.productDocTitle; if (!targetedRepair && signal?.productDocSummary) topDownSignals.product_overview = signal.productDocSummary; if (!targetedRepair && signal?.manifestDescription) topDownSignals.product_self_description = signal.manifestDescription;
+    const targetedFirstPartyContext = [...new Set((input.targetedRepairFacts || [])
+      .flatMap(fact => fact.first_party_outcomes)
+      .map(value => String(value || '').trim())
+      .filter(Boolean))].slice(0, 4);
+    if (targetedRepair && targetedFirstPartyContext.length > 0) topDownSignals.scoped_product_context = targetedFirstPartyContext;
     const hasFirstPartyProductText = Boolean(signal?.productDocTitle || signal?.productDocSummary || signal?.manifestDescription || signal?.summary); if (!targetedRepair && !hasFirstPartyProductText && purpose.inferred_description) topDownSignals.inferred_product_description = purpose.inferred_description;
     if (!targetedRepair && productTerminology.length) topDownSignals.product_terminology = productTerminology;
     const hasTopDown = Object.keys(topDownSignals).length > 0; const aiBudget = Math.max(75000, Math.floor(input.budgetMs * 0.6));
@@ -9273,7 +9287,7 @@ export class AnalyzerOrchestrator {
         },
       };
       const budgetedContext = fitCapabilityCatalogContext(additionalContextWithoutFacts, {
-        user_journeys: targetedRepair ? [] : journeys, entities: targetedRepair ? [] : entities,
+        user_journeys: journeys, entities: targetedRepair ? [] : entities,
         candidate_route_areas: input.targetedRepairFacts || candidateAreaFacts,
         required_behavior_candidate_ids: targetedRepair ? [] : requiredBehaviorCandidateAreas.map(candidate => candidate.id), accepted_outcome_names: targetedRepair ? [] : input.acceptedOutcomeNames, required_outcomes: input.requiredOutcomeRequirements?.map(requirement => ({ requirement_id: requirement.id, audience: requirement.audience, required_audience_label: requirement.audienceLabel || requirement.audience, required_subject_terms: requirement.requiredSubjectTerms || requirement.subjectTokens, required_visible_actions: requirement.visibleActionTerms || [], minimum_subject_matches: requirement.minimumSubjectMatches ?? Math.min(2, requirement.subjectTokens.length), outcome: requirement.statement, first_party_outcome_text: targetedRepair ? capabilityCatalogTargetedOutcomeText(requirement) : requirement.firstPartyOutcomeText, candidate_ids: targetedRepair ? Object.entries(input.targetedRepairCandidateMap || {}).filter(([, rawId]) => requirement.candidateIds.includes(rawId)).map(([opaqueId]) => opaqueId) : requirement.candidateIds })),
         required_entity_candidate_groups: targetedRepair ? [] : requiredEntityCandidateGroups,
@@ -10390,12 +10404,12 @@ export class AnalyzerOrchestrator {
           facts: targetedRepair ? repairPlan : [], evidenceScoped: targetedRepair, hardDeadlineAt: args.hardDeadlineAt, batchBudgetMs: 36000,
           isDeadlineError: isAiCatalogHardDeadlineExceeded,
           extract: async (plannedBatch, hardDeadlineAt) => {
-          const mode = plannedBatch[0]; const batchIds = new Set(mode?.candidateIds || []); const buildPromptRepairEnvelope = () => capabilityCatalogRepairPromptEnvelope(evidenceCandidates, [...batchIds], mode?.requirements || [], catalogRejectionsByCandidate, entityNamesById); let promptRepairEnvelope = buildPromptRepairEnvelope(); let repairBatch = capabilityCatalogRepairEvidenceFacts(evidenceCandidates, [...batchIds], entityNamesById, catalogRejectionsByCandidate, mode?.requirements.map(requirement => requirement.id)); let batchRaw = ''; const batchEntityIds = new Set(evidenceCandidates.filter(candidate => batchIds.has(candidate.id)).flatMap(candidate => candidate.related_entities || [])); const batchRejections: CapabilityCatalogRejection[] = [];
+          const mode = plannedBatch[0]; const batchIds = new Set(mode?.candidateIds || []); const firstPartyRepairTexts = [args.projectTextSignal.productDocTitle, args.projectTextSignal.productDocSummary, args.projectTextSignal.manifestDescription, ...(args.projectTextSignal.productVocabulary || [])].filter((value): value is string => Boolean(String(value || '').trim())); const buildPromptRepairEnvelope = () => capabilityCatalogRepairPromptEnvelope(evidenceCandidates, [...batchIds], mode?.requirements || [], catalogRejectionsByCandidate, entityNamesById, firstPartyRepairTexts, mode?.mode === 'description' ? mode.identity.name : undefined); let promptRepairEnvelope = buildPromptRepairEnvelope(); let repairBatch = capabilityCatalogRepairEvidenceFacts(evidenceCandidates, [...batchIds], entityNamesById, catalogRejectionsByCandidate, mode?.requirements.map(requirement => requirement.id)); let batchRaw = ''; const batchCandidates = evidenceCandidates.filter(candidate => batchIds.has(candidate.id)); const batchEntityIds = new Set(batchCandidates.flatMap(candidate => candidate.related_entities || [])); const batchEntryPointIds = new Set(batchCandidates.flatMap(candidate => (candidate.operations || []).map(operation => operation.entry_point_id))); const batchRejections: CapabilityCatalogRejection[] = [];
           const extractBatch = (qualityNudge?: string, allowDeterministicFallback = false) => this.aiExtractCapabilityCatalog({
           systemName: args.systemName,
           enhancedSystemPurpose: args.enhancedSystemPurpose,
           frameworks: args.frameworks,
-          userJourneys: targetedRepair ? [] : args.userJourneys, dataEntities: targetedRepair ? repairBatch.every(fact => args.behaviorSurfaces.some(candidate => candidate.id === fact.candidate_id)) ? [] : args.dataEntities.filter(entity => batchEntityIds.has(entity.id)) : args.dataEntities,
+          userJourneys: targetedRepair ? args.userJourneys.filter(journey => batchEntryPointIds.has(journey.entry_point_id)) : args.userJourneys, dataEntities: targetedRepair ? repairBatch.every(fact => args.behaviorSurfaces.some(candidate => candidate.id === fact.candidate_id)) ? [] : args.dataEntities.filter(entity => batchEntityIds.has(entity.id)) : args.dataEntities,
           candidateCapabilities: targetedRepair ? catalogCandidates.filter(candidate => batchIds.has(candidate.id)) : catalogCandidates,
           behaviorSurfaces: targetedRepair ? args.behaviorSurfaces.filter(candidate => batchIds.has(candidate.id)) : args.behaviorSurfaces,
           externalServices: targetedRepair ? [] : args.externalServices,
@@ -10408,8 +10422,8 @@ export class AnalyzerOrchestrator {
           onResponse: raw => { batchRaw = raw; }, onRejection: feedback => { batchRejections.push(feedback); const recorded = recordCapabilityCatalogRejection(catalogRejectionsByCandidate, feedback); extractionRejections.push(recorded.explanation); },
           ...(qualityNudge ? { qualityNudge } : {}),
           });
-          const initialNudge = mode ? capabilityCatalogRepairNudge(mode, promptRepairEnvelope.facts) : cycle > 1 ? 'Previous catalog failed a quality check. Return a full replacement catalog.' : undefined; let batchExtracted = await extractBatch(initialNudge);
-          batchExtracted = await retryEmptyCapabilityCatalogOutcome({ initial: batchExtracted, candidateIds: [...batchIds], rejections: batchRejections, requirement: mode?.mode === 'outcome' ? mode.requirements[0] : undefined, record: feedback => { const recorded = recordCapabilityCatalogRejection(catalogRejectionsByCandidate, feedback); extractionRejections.push(recorded.explanation); }, retry: async () => { repairBatch = capabilityCatalogRepairEvidenceFacts(evidenceCandidates, [...batchIds], entityNamesById, catalogRejectionsByCandidate, mode?.requirements.map(requirement => requirement.id)); promptRepairEnvelope = buildPromptRepairEnvelope(); return extractBatch(capabilityCatalogRepairNudge(mode!, promptRepairEnvelope.facts), true); } });
+          const scopedRepairFeedback = () => { const rejections = promptRepairEnvelope.facts.flatMap(fact => fact.prior_rejections); return rejections.length > 0 ? JSON.stringify(rejections) : undefined; }; const initialNudge = mode ? capabilityCatalogRepairNudge(mode, promptRepairEnvelope.facts, qualityFailure, scopedRepairFeedback()) : cycle > 1 ? 'Previous catalog failed a quality check. Return a full replacement catalog.' : undefined; let batchExtracted = await extractBatch(initialNudge);
+          batchExtracted = await retryEmptyCapabilityCatalogOutcome({ initial: batchExtracted, candidateIds: [...batchIds], rejections: batchRejections, requirement: mode?.mode === 'outcome' ? mode.requirements[0] : undefined, retryEvidence: mode?.mode === 'evidence' && batchRejections.length === 0 && Boolean(batchRaw), record: feedback => { const recorded = recordCapabilityCatalogRejection(catalogRejectionsByCandidate, feedback); extractionRejections.push(recorded.explanation); }, retry: async () => { repairBatch = capabilityCatalogRepairEvidenceFacts(evidenceCandidates, [...batchIds], entityNamesById, catalogRejectionsByCandidate, mode?.requirements.map(requirement => requirement.id)); promptRepairEnvelope = buildPromptRepairEnvelope(); return extractBatch(capabilityCatalogRepairNudge(mode!, promptRepairEnvelope.facts, qualityFailure, scopedRepairFeedback()), true); } });
           if (!extractionRaw) extractionRaw = batchRaw;
           return mode?.mode === 'description' && batchExtracted[0]
             ? [preserveCapabilityCatalogDescriptionIdentity(mode.identity, batchExtracted[0])]

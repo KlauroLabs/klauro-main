@@ -244,6 +244,35 @@ describe('catalogQualityFailure (post-reconcile gate, defect #33)', () => {
 });
 
 describe('capability catalog entity grounding', () => {
+  it('does not treat grammatical connectors as shortened product identifiers', () => {
+    const evaluation = evaluateCapabilityCatalogAudience([
+      cap({
+        id: 'notes',
+        name: 'Add notes to job records',
+        description: 'Users add notes to job records so application context remains available.',
+        operations: [{ entry_point_id: 'ep_notes', entry_point_type: 'http', action: 'Add note' }] as any,
+      }),
+    ], [], [], ['Todo Jobs']);
+
+    expect(evaluation.rejections).toEqual([]);
+    expect(evaluation.accepted).toHaveLength(1);
+  });
+
+  it('continues to reject genuine shortened product identifiers in capability subjects', () => {
+    const evaluation = evaluateCapabilityCatalogAudience([
+      cap({
+        id: 'records',
+        name: 'Manage kl audit records',
+        description: 'Users manage audit records that remain available for later review.',
+        operations: [{ entry_point_id: 'ep_records', entry_point_type: 'http', action: 'Manage audit records' }] as any,
+      }),
+    ], [], [], ['Klarity Platform']);
+
+    expect(evaluation.rejections[0]).toMatchObject({
+      target: 'name', reasons: ['shortened-product-term'], flaggedTokens: ['kl'],
+    });
+  });
+
   it('rejects another product entity in a name unless the capability cites that entity', () => {
     const evaluation = evaluateCapabilityCatalogAudience([
       cap({
@@ -536,15 +565,17 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
       cap({ id: 'account', name: 'Access user account', description: 'Executes the main CLI entry point for account commands.', operations: anchorOp('account') }),
       cap({ id: 'company', name: 'View company information', description: 'View company information.', operations: anchorOp('company') }),
     ];
-    let calls = 0;
-    localOrch.aiExtractCapabilityCatalog = async () => {
-      calls++;
+    const calls: any[] = [];
+    localOrch.aiExtractCapabilityCatalog = async (input: any) => {
+      calls.push(input);
       return extracted;
     };
 
     const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(gateArgs(localOrch));
 
-    expect(calls).toBe(5);
+    expect(calls).toHaveLength(1 + 4 + 12);
+    expect(calls.slice(1).every(input => input.exactCapabilityLimit === 1)).toBe(true);
+    expect(new Set(calls.slice(1).map(input => input.repairMode))).toEqual(new Set(['description', 'evidence']));
     expect(out).toEqual([]);
   });
 
@@ -566,9 +597,11 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     const args: any = gateArgs(localOrch);
     const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(args);
 
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(1 + 1 + 6);
+    expect(calls.slice(1).every(input => input.exactCapabilityLimit === 1)).toBe(true);
+    expect(calls.filter(input => input.repairMode === 'description')).toHaveLength(1);
     expect(calls[1].qualityNudge).toContain('stable accepted identity');
-    expect(calls[1].qualityNudge).not.toContain(initial[0].name);
+    expect(calls[1].qualityNudge).toContain(initial[0].name);
     expect(out).toHaveLength(6);
     expect(out.find(capability => capability.name === repaired.name)?.description).toBe(repaired.description);
     localOrch.finalizeSystemCapabilityNames(out, [], args.enhancedSystemPurpose);

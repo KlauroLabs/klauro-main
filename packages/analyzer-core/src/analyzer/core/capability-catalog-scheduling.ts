@@ -66,16 +66,19 @@ export async function retryEmptyCapabilityCatalogOutcome<T>(args: {
   initial: T[];
   rejections: CapabilityCatalogRejection[];
   requirement?: CapabilityCatalogOutcomeRequirement;
+  retryEvidence?: boolean;
   record: (feedback: CapabilityCatalogRejection) => void;
   retry: () => Promise<T[]>;
 }): Promise<T[]> {
-  if (args.initial.length > 0 || !args.requirement) return args.initial;
-  const expectedFeedbackExists = args.rejections.some(rejection => rejection.requirementId === args.requirement?.id &&
-    args.candidateIds.every(candidateId => rejection.candidateIds.includes(candidateId)));
-  if (!expectedFeedbackExists) {
-    const feedback = capabilityCatalogOutcomeCorrectiveRetryFeedback(args.rejections, args.requirement, args.candidateIds);
-    args.rejections.push(feedback);
-    args.record(feedback);
+  if (args.initial.length > 0 || (!args.requirement && !args.retryEvidence)) return args.initial;
+  if (args.requirement) {
+    const expectedFeedbackExists = args.rejections.some(rejection => rejection.requirementId === args.requirement?.id &&
+      args.candidateIds.every(candidateId => rejection.candidateIds.includes(candidateId)));
+    if (!expectedFeedbackExists) {
+      const feedback = capabilityCatalogOutcomeCorrectiveRetryFeedback(args.rejections, args.requirement, args.candidateIds);
+      args.rejections.push(feedback);
+      args.record(feedback);
+    }
   }
   return args.retry();
 }

@@ -71,6 +71,29 @@ test('targeted repair omits unsafe operation identifiers instead of translating 
   }]);
 });
 
+test('targeted repair retains only first-party context that disambiguates the focused evidence family', () => {
+  const candidates = [{
+    id: 'status-change', name: 'Job Status Change', category: 'core',
+    operations: [{ entry_point_id: 'change-status', entry_point_type: 'http', action: 'Change job status' }],
+    related_entities: ['job'], related_domains: [], criticality: 'high', criticality_factors: [],
+  }] as SystemCapability[];
+  const firstPartyTexts = [
+    'Users track job applications and organize them by progress.',
+    'Administrators configure unrelated deployment infrastructure.',
+    'job application tracking',
+  ];
+
+  const envelope = capabilityCatalogRepairPromptEnvelope(
+    candidates, ['status-change'], [], new Map(), new Map([['job', 'Job']]), firstPartyTexts,
+  );
+
+  assert.deepEqual(envelope.facts[0].first_party_outcomes, [
+    'Users track job applications and organize them by progress.',
+    'job application tracking',
+  ]);
+  assert.equal(JSON.stringify(envelope.facts).includes('deployment infrastructure'), false);
+});
+
 test('first-party fallback requires one explicit visible action and normalizes it to an imperative', () => {
   const requirement = {
     id: 'graph', statement: 'builds trustworthy relationship graph', candidateIds: ['candidate'],
@@ -124,4 +147,16 @@ test('first-party fallback uses only an unambiguous audience-scoped coordinated 
   assert.equal(capabilityCatalogFirstPartyFallback({
     ...shared, firstPartyOutcomeText: 'People help agents understand connected software behavior.', audienceScopedOutcomeText: undefined,
   }), undefined);
+});
+
+test('description repair facts retain the exact stable capability identity', () => {
+  const candidates = [{
+    id: 'job_candidate', name: 'Manage job records', description: '', category: 'core', criticality: 'high',
+    criticality_factors: [], operations: [], related_entities: [], related_domains: [],
+  }] as SystemCapability[];
+  const envelope = capabilityCatalogRepairPromptEnvelope(
+    candidates, ['job_candidate'], [], new Map(), new Map(), ['Users track job applications.'], 'Access job sites by user',
+  );
+
+  assert.equal(envelope.facts[0]?.stable_capability_name, 'Access job sites by user');
 });

@@ -8150,6 +8150,54 @@ describe('behavior-anchored capability derivation (buildBehaviorCapabilities)', 
 });
 
 describe('top-down capability evidence (C2)', () => {
+  it('keeps candidate-scoped first-party context, journeys, and entities during targeted repair', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    let context: any;
+    (aiService as any).generateComponentDescription = async (input: any) => {
+      context = input.additionalContext;
+      return JSON.stringify({ capabilities: [] });
+    };
+    try {
+      await orch.aiExtractCapabilityCatalog({
+        systemName: 'Application Tracker',
+        enhancedSystemPurpose: { primary_domain: 'application-tracking', core_concepts: [] },
+        frameworks: [],
+        userJourneys: [
+          { id: 'relevant', name: 'Change application progress', journey_kind: 'user-facing', entry_point_id: 'change-status', terminal_entities: [], terminal_effects: {} },
+          { id: 'unrelated', name: 'Configure deployment', journey_kind: 'user-facing', entry_point_id: 'deploy', terminal_entities: [], terminal_effects: {} },
+        ],
+        dataEntities: [
+          { id: 'job', name: 'JobApplication', kind: 'persisted-entity' },
+          { id: 'deployment', name: 'DeploymentConfig', kind: 'persisted-entity' },
+        ],
+        candidateCapabilities: [{
+          id: 'status-change', name: 'Job Status Change', category: 'core',
+          operations: [{ entry_point_id: 'change-status', entry_point_type: 'http', action: 'Change job status' }],
+          related_entities: ['job'], related_domains: [], criticality: 'high', criticality_factors: [],
+        }],
+        externalServices: [], flowGraph: emptyFlowGraph(),
+        projectTextSignal: { concepts: [], evidence: [], productDocSummary: 'Users track job applications and organize them by progress.' },
+        budgetMs: 30000, exactCapabilityLimit: 1, qualityNudge: 'Repair this focused family.', repairMode: 'evidence',
+        targetedRepairFacts: [{
+          candidate_id: 'candidate_1', first_party_outcomes: ['Users track job applications and organize them by progress.'],
+          observable_actions: ['change job status'], prior_rejections: [], required_audience_labels: [],
+          required_subject_terms: [], required_visible_actions: [], minimum_subject_matches: 0,
+        }],
+        targetedRepairCandidateMap: { candidate_1: 'status-change' },
+      });
+
+      expect(context.facts.top_down_signals.scoped_product_context).toEqual([
+        'Users track job applications and organize them by progress.',
+      ]);
+      expect(context.facts.user_journeys.map((journey: any) => journey.name)).toEqual(['Change application progress']);
+      expect(context.facts.entities).toEqual([]);
+      expect(JSON.stringify(context.facts)).not.toContain('Configure deployment');
+      expect(JSON.stringify(context.facts)).not.toContain('DeploymentConfig');
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
   it('honors the evidence-derived maximum after validating an over-complete model response', async () => {
     const original = (aiService as any).generateComponentDescription;
     (aiService as any).generateComponentDescription = async () => JSON.stringify({
@@ -8442,6 +8490,7 @@ describe('top-down capability evidence (C2)', () => {
 
   it('validates description repair against its stable identity before name and binding gates', async () => {
     const original = (aiService as any).generateComponentDescription;
+    let repairContext: any;
     const requirement: any = {
       id: 'graph:trust-relation', statement: 'Build a trustworthy relationship graph',
       firstPartyOutcomeText: 'Build a trustworthy relationship graph that shows connected software behavior.',
@@ -8459,17 +8508,22 @@ describe('top-down capability evidence (C2)', () => {
       repairIdentityName: 'Build a trustworthy relationship graph',
     };
     try {
-      (aiService as any).generateComponentDescription = async () => JSON.stringify({ capabilities: [{
-        requirement_id: requirement.id, name: 'candidate_1',
+      (aiService as any).generateComponentDescription = async (request: any) => {
+        repairContext = request.additionalContext;
+        return JSON.stringify({ capabilities: [{
+        requirement_id: requirement.id, name: 'Manage software relationships',
         description: 'Builds trustworthy software relationships so people can inspect connected behavior before making changes.',
         category: 'core', candidate_ids: ['graph'],
       }] });
+      };
       const repaired = await orch.aiExtractCapabilityCatalog(input);
       expect(repaired).toHaveLength(1);
       expect(repaired[0].name).toBe(input.repairIdentityName);
       expect(repaired[0].criticality_factors).toEqual(expect.arrayContaining([
         'catalog-candidate:graph', `catalog-outcome-requirement:${requirement.id}`,
       ]));
+      expect(repairContext.task).toContain('Build a trustworthy relationship graph');
+      expect(repairContext.task).toContain('description that explains that exact named outcome');
 
       expect(validateElementDescription(
         'Builds system components from data entities and method calls.',

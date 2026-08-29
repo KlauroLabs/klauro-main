@@ -4,6 +4,7 @@ import type { CapabilityCatalogPriorRejection } from './capability-catalog-sched
 
 export interface CapabilityCatalogRepairPromptFact {
   candidate_id: string;
+  stable_capability_name?: string;
   first_party_outcomes: string[];
   observable_actions: string[];
   prior_rejections: Array<{
@@ -31,6 +32,7 @@ export function compactCapabilityCatalogRepairPromptFact(value: unknown, require
   if (!('first_party_outcomes' in fact || 'observable_actions' in fact || 'required_subject_terms' in fact)) return undefined;
   return {
     candidate_id: bounded(fact.candidate_id, 180),
+    ...(bounded(fact.stable_capability_name, 180) ? { stable_capability_name: bounded(fact.stable_capability_name, 180) } : {}),
     first_party_outcomes: boundedArray(fact.first_party_outcomes, 4, 800),
     observable_actions: boundedArray(fact.observable_actions, required ? 6 : 8, 160),
     required_audience_labels: boundedArray(fact.required_audience_labels, 4, 80),
@@ -136,6 +138,7 @@ export function capabilityCatalogRepairPromptFacts(
   requirements: readonly CapabilityCatalogOutcomeRequirement[],
   rejectionsByCandidate: ReadonlyMap<string, CapabilityCatalogPriorRejection[]> = new Map(),
   entityNamesById: ReadonlyMap<string, string> = new Map(),
+  firstPartyTexts: readonly string[] = [],
 ): CapabilityCatalogRepairPromptFact[] {
   const repairIds = new Set(repairCandidateIds);
   const scopedRequirementIds = new Set(requirements.map(requirement => requirement.id));
@@ -148,14 +151,31 @@ export function capabilityCatalogRepairPromptFacts(
       ...(candidate.related_entities || []).map(entityId => entityNamesById.get(entityId) || entityId)]
       .map(value => String(value || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_:/.-]+/g, ' ').toLowerCase().trim())
       .filter(value => value.split(/\s+/).length >= 2);
+    const evidenceTokens = new Set([
+      candidate.name,
+      candidate.structural_label,
+      ...(candidate.evidence_examples || []),
+      ...(candidate.related_entities || []).map(entityId => entityNamesById.get(entityId) || ''),
+      ...(candidate.operations || []).flatMap(operation => [operation.action, operation.path_or_command]),
+    ].flatMap(value => String(value || '').toLowerCase().split(/[^a-z0-9]+/))
+      .filter(token => token.length >= 3)
+      .map(canonicalCapabilityCatalogOutcomeToken));
+    const scopedFirstPartyOutcomes = firstPartyTexts
+      .flatMap(value => String(value || '').split(/(?<=[.!?])\s+|[\r\n]+/))
+      .map(value => value.trim())
+      .filter(value => value.length >= 8 && value.toLowerCase().split(/[^a-z0-9]+/)
+        .some(token => token.length >= 3 && evidenceTokens.has(canonicalCapabilityCatalogOutcomeToken(token))))
+      .map(value => value.slice(0, 500));
     const safeOperation = (value: unknown): string[] => {
       const phrase = customerVisibleOperationPhrase(value, groundedTerms);
       return phrase && !internalPhrases.some(internal => phrase.includes(internal) || internal.includes(phrase)) ? [phrase] : [];
     };
     return {
       candidate_id: candidate.id,
-      first_party_outcomes: [...new Set(candidateRequirements.map(requirement =>
-        String(capabilityCatalogTargetedOutcomeText(requirement) || '').trim()).filter(Boolean))].slice(0, 4),
+      first_party_outcomes: [...new Set([
+        ...candidateRequirements.map(requirement => String(capabilityCatalogTargetedOutcomeText(requirement) || '').trim()),
+        ...scopedFirstPartyOutcomes,
+      ].filter(Boolean))].slice(0, 4),
       observable_actions: [...new Set((candidate.operations || []).flatMap(operation => [
         ...safeOperation(operation.action),
       ]))].slice(0, 8),
@@ -193,11 +213,17 @@ export function capabilityCatalogRepairPromptEnvelope(
   requirements: readonly CapabilityCatalogOutcomeRequirement[],
   rejectionsByCandidate: ReadonlyMap<string, CapabilityCatalogPriorRejection[]> = new Map(),
   entityNamesById: ReadonlyMap<string, string> = new Map(),
+  firstPartyTexts: readonly string[] = [],
+  stableCapabilityName?: string,
 ): { facts: CapabilityCatalogRepairPromptFact[]; candidateMap: Record<string, string> } {
   const aliases = new Map(repairCandidateIds.map((candidateId, index) => [candidateId, `candidate_${index + 1}`]));
   return {
-    facts: capabilityCatalogRepairPromptFacts(candidates, repairCandidateIds, requirements, rejectionsByCandidate, entityNamesById)
-      .map(fact => ({ ...fact, candidate_id: aliases.get(fact.candidate_id) || '' })),
+    facts: capabilityCatalogRepairPromptFacts(candidates, repairCandidateIds, requirements, rejectionsByCandidate, entityNamesById, firstPartyTexts)
+      .map(fact => ({
+        ...fact,
+        candidate_id: aliases.get(fact.candidate_id) || '',
+        ...(stableCapabilityName ? { stable_capability_name: stableCapabilityName } : {}),
+      })),
     candidateMap: Object.fromEntries([...aliases].map(([rawId, opaqueId]) => [opaqueId, rawId])),
   };
 }

@@ -90,6 +90,8 @@ function compactTopDownSignals(value: unknown): Record<string, unknown> | undefi
   if (signals.product_overview) compacted.product_overview = boundedText(signals.product_overview, 1600);
   if (signals.product_self_description) compacted.product_self_description = boundedText(signals.product_self_description, 800);
   if (signals.inferred_product_description) compacted.inferred_product_description = boundedText(signals.inferred_product_description, 800);
+  const scopedProductContext = boundedTextArray(signals.scoped_product_context, 4, 500);
+  if (scopedProductContext.length > 0) compacted.scoped_product_context = scopedProductContext;
   const terminology = boundedTextArray(signals.product_terminology, 20, 180);
   if (terminology.length > 0) compacted.product_terminology = terminology;
   return Object.keys(compacted).length > 0 ? compacted : undefined;

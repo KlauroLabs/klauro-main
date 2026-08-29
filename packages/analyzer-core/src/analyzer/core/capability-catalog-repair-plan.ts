@@ -132,8 +132,8 @@ export function supersedeUnboundPendingOutcomeDuplicates(
 
   };
 }
-export function capabilityCatalogFocusedTask(mode: CapabilityCatalogRepairBatch['mode'] | undefined, _identityName?: string, acceptsExistingOutcome = false): string {
-  if (mode === 'description') return `Rewrite only the description for the existing capability identity retained by the server. Return exactly one object with the supplied candidate_ids. Preserve any supplied requirement_id exactly. The returned name is ignored; do not broaden or replace the outcome. Correct every reason and missing term named in prior_rejections.`;
+export function capabilityCatalogFocusedTask(mode: CapabilityCatalogRepairBatch['mode'] | undefined, identityName?: string, acceptsExistingOutcome = false): string {
+  if (mode === 'description') return `Rewrite only the description for the existing capability identity retained by the server${identityName ? `: ${JSON.stringify(identityName)}` : ''}. Return exactly one object with the supplied candidate_ids. Preserve any supplied requirement_id exactly. Set name to the stable_capability_name when supplied, and write a description that explains that exact named outcome; the server will preserve this identity and reject prose written for a renamed or broader outcome. Correct every reason and missing term named in prior_rejections.`;
   if (mode === 'outcome') return `Return exactly one object for the single required_outcomes entry and copy its requirement_id exactly. Independently express that entry's audience and outcome subjects. Use the supplied audience label itself when present; do not expand it into an inferred profession or role.`;
   return acceptsExistingOutcome
     ? 'Name only the common user or operator purpose of this evidence family. Reuse an accepted name only when its wording and evidence express that same outcome.'

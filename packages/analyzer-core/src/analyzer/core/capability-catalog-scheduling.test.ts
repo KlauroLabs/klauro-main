@@ -78,6 +78,24 @@ test('scopes every focused zero-result rejection class to exactly one outcome re
   assert.equal(capabilityCatalogOutcomeCorrectiveRetryFeedback([], requirement, ['shared']).reason, 'required-outcome-zero-result');
 });
 
+test('retries one empty focused evidence batch without broadening its candidate scope', async () => {
+  let retries = 0;
+  const result = await retryEmptyCapabilityCatalogOutcome({
+    candidateIds: ['ambiguous-family'],
+    initial: [],
+    rejections: [{ candidateIds: ['ambiguous-family'], name: 'Rejected result', reason: 'outcome-scope-unsupported:execution' }],
+    retryEvidence: true,
+    record: () => undefined,
+    retry: async () => {
+      retries++;
+      return ['grounded'];
+    },
+  });
+
+  assert.deepEqual(result, ['grounded']);
+  assert.equal(retries, 1);
+});
+
 test('uniquely matched behavior evidence enriches an accepted product outcome without replacing its authored identity', () => {
   const accepted = catalogCapability({
     id: 'accepted-analysis',
