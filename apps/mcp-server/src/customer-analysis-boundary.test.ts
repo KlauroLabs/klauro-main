@@ -73,7 +73,7 @@ test('hosted deployment reserves CPU for the control plane and admits one analys
   const apiService = compose.split('\n  fabric:')[0];
   assert.match(compose, /cpus:\s*["']4\.0["']/);
   assert.match(compose, /KLAURO_ANALYSIS_CONCURRENCY:\s*["']1["']/);
-  assert.match(compose, /KLAURO_TS_PARSE_WORKERS:\s*["']1["']/);
+  assert.match(apiService, /KLAURO_TS_PARSE_WORKERS:\s*["']2["']/);
   assert.match(apiService, /KLAURO_ANALYSIS_WORKER_IDLE_MS:\s*["']0["']/);
   assert.doesNotMatch(apiService, /KLAURO_ANALYSIS_WORKER_IDLE_MS:\s*["']-1["']/);
 });

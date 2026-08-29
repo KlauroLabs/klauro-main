@@ -11376,6 +11376,36 @@ describe('enterprise AI semantic guards', () => {
     }).ok).toBe(false);
   });
 
+  it('preserves strictly bound first-party outcome text in every later capability description target', () => {
+    const capability = {
+      id: 'cap_relationships',
+      name: 'Review CAS edge relationships',
+      category: 'core',
+      operations: [],
+      related_entities: ['fabric-work-concept', 'fabric-work-plan'],
+      related_domains: [],
+      criticality: 'high',
+      criticality_factors: ['catalog-outcome-requirement:relationship-slot'],
+    };
+    const requirement = {
+      id: 'relationship-slot',
+      statement: 'Review CAS edge relationships',
+      firstPartyOutcomeText: 'CAS edge relationships expose connected software behavior across each Fabric work concept.',
+      candidateIds: ['candidate'],
+      subjectTokens: ['edge', 'relationship'],
+    };
+    const entityNames = new Map([
+      ['fabric-work-concept', 'FabricWorkConcept'],
+      ['fabric-work-plan', 'FabricWorkPlan'],
+    ]);
+    const target = orch.capabilityDescriptionTarget(capability, entityNames, new Map(), new Map(), [requirement]);
+    const description = 'CAS edge relationships let reviewers inspect connected software behavior before changing a Fabric work concept.';
+
+    expect(target.productOutcomeTerms).toEqual([requirement.firstPartyOutcomeText]);
+    expect(orch.validateElementDescription(description, target).ok).toBe(true);
+    expect(orch.validateElementDescription(description, { ...target, productOutcomeTerms: [] }).ok).toBe(false);
+  });
+
   it('rejects mutation semantics for access/view capabilities even when the surface is a page', () => {
     const target = {
       id: 'cap_dashboard', name: 'Access Enterprise Dashboard', kind: 'capability',

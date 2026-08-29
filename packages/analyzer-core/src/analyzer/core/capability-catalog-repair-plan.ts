@@ -1,5 +1,5 @@
 import type { SystemCapability } from '../../types/cas.types';
-import { capabilityCatalogOutcomeRepairNudge, capabilityPotentiallySatisfiesCatalogOutcomeRequirement, capabilitySemanticallySatisfiesCatalogOutcomeRequirement, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
+import { canonicalCapabilityCatalogOutcomeToken, capabilityCatalogOutcomeRepairNudge, capabilityPotentiallySatisfiesCatalogOutcomeRequirement, capabilitySemanticallySatisfiesCatalogOutcomeRequirement, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
 
 export type CapabilityCatalogRepairBatch =
   | { mode: 'outcome'; candidateIds: string[]; requirements: CapabilityCatalogOutcomeRequirement[] }
@@ -75,33 +75,63 @@ export function captureCapabilityCatalogPendingRequirements(
   }
 }
 
+const outcomeNameTokens = (name: string): string[] => {
+  const ignored = new Set(['a', 'an', 'across', 'and', 'for', 'from', 'in', 'of', 'on', 'the', 'through', 'to', 'with']);
+  return [...new Set(String(name || '').toLowerCase().split(/[^a-z0-9]+/)
+    .filter(token => token.length >= 3 && !ignored.has(token))
+    .map(canonicalCapabilityCatalogOutcomeToken))];
+};
+
+function unboundNameIsCoveredByRequirementReplacement(
+  pending: SystemCapability,
+  replacement: SystemCapability,
+  requirement: CapabilityCatalogOutcomeRequirement,
+): boolean {
+  if (requirement.audience) return false;
+  const pendingTokens = outcomeNameTokens(pending.name);
+  const replacementTokens = outcomeNameTokens(replacement.name);
+  if (!pendingTokens[0] || pendingTokens[0] !== replacementTokens[0]) return false;
+  const replacementTokenSet = new Set(replacementTokens);
+  const overlap = pendingTokens.filter(token => replacementTokenSet.has(token)).length;
+  const subjectTerms = (requirement.requiredSubjectTerms || requirement.subjectTokens).map(canonicalCapabilityCatalogOutcomeToken);
+  return overlap >= 3 && overlap === pendingTokens.length &&
+    subjectTerms.some(term => pendingTokens.includes(term));
+}
+
 export function supersedeUnboundPendingOutcomeDuplicates(
   existing: readonly SystemCapability[], incoming: readonly SystemCapability[], requirements: readonly CapabilityCatalogOutcomeRequirement[],
   pendingRequirementIdsByCapabilityId: ReadonlyMap<string, readonly string[]>,
 ): { existing: SystemCapability[]; incoming: SystemCapability[] } {
   const requirementById = new Map(requirements.map(requirement => [requirement.id, requirement]));
-  const repairedRequirements = new Set([...existing, ...incoming].flatMap(capability => {
+  const validReplacements = new Map<string, SystemCapability[]>();
+  for (const capability of [...existing, ...incoming]) {
     if (!capability.description || capability.description_generation?.status === 'ai_rejected' ||
-        capability.criticality_factors?.some(factor => factor.startsWith('catalog-evidence-rejected:'))) return [];
+        capability.criticality_factors?.some(factor => factor.startsWith('catalog-evidence-rejected:'))) continue;
     const candidateIds = factors(capability, 'catalog-candidate:');
-    return factors(capability, 'catalog-outcome-requirement:').filter(requirementId => {
+    for (const requirementId of factors(capability, 'catalog-outcome-requirement:')) {
       const requirement = requirementById.get(requirementId);
-      return Boolean(requirement && candidateIds.some(candidateId => requirement.candidateIds.includes(candidateId))
-        && capabilitySemanticallySatisfiesCatalogOutcomeRequirement(capability, requirement));
-    });
-  }));
+      if (!requirement || !candidateIds.some(candidateId => requirement.candidateIds.includes(candidateId)) ||
+          !capabilitySemanticallySatisfiesCatalogOutcomeRequirement(capability, requirement)) continue;
+      validReplacements.set(requirementId, [...(validReplacements.get(requirementId) || []), capability]);
+    }
+  }
+  const repairedRequirements = new Set(validReplacements.keys());
   if (repairedRequirements.size === 0) return { existing: [...existing], incoming: [...incoming] };
   const isSupersededPendingIdentity = (capability: SystemCapability): boolean => {
     if (factors(capability, 'catalog-outcome-requirement:').length > 0) return false;
-    const matchedRequirementIds = pendingRequirementIdsByCapabilityId.get(capability.id) || [];
+    const capturedRequirementIds = pendingRequirementIdsByCapabilityId.get(capability.id) || [];
+    const matchedRequirementIds = capturedRequirementIds.length > 0 ? capturedRequirementIds : requirements
+      .filter(requirement => (validReplacements.get(requirement.id) || [])
+        .some(replacement => unboundNameIsCoveredByRequirementReplacement(capability, replacement, requirement)))
+      .map(requirement => requirement.id);
     return matchedRequirementIds.length > 0 && matchedRequirementIds.every(requirementId => repairedRequirements.has(requirementId));
   };
   return {
     existing: existing.filter(capability => !isSupersededPendingIdentity(capability)),
     incoming: incoming.filter(capability => !isSupersededPendingIdentity(capability)),
+
   };
 }
-
 export function capabilityCatalogFocusedTask(mode: CapabilityCatalogRepairBatch['mode'] | undefined, _identityName?: string, acceptsExistingOutcome = false): string {
   if (mode === 'description') return `Rewrite only the description for the existing capability identity retained by the server. Return exactly one object with the supplied candidate_ids. Preserve any supplied requirement_id exactly. The returned name is ignored; do not broaden or replace the outcome. Correct every reason and missing term named in prior_rejections.`;
   if (mode === 'outcome') return `Return exactly one object for the single required_outcomes entry and copy its requirement_id exactly. Independently express that entry's audience and outcome subjects. Use the supplied audience label itself when present; do not expand it into an inferred profession or role.`;

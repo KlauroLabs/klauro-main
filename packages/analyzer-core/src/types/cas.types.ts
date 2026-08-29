@@ -17,7 +17,6 @@ export interface CASOutput {
   system: CASSystem;
   analysis_phases?: CASAnalysisPhase[];
 
-
   timings?: CASAnalysisTimings;
   architecture_summary?: CASArchitectureSummary;
   route_table?: CASRouteTableEntry[];
@@ -33,25 +32,19 @@ export interface CASOutput {
   disclosure?: DisclosureHints;
   analyzer_contributions: CASAnalyzerContribution[];
 
-
   method_calls?: CASMethodCall[];
   call_chains?: CASCallChain[];
   decorators?: CASDecorator[];
-
 
   documentation_summary?: CASDocumentationSummary;
   todos_summary?: CASTodoSummary;
   implementation_health?: CASImplementationHealth;
   system_health?: CASSystemHealth;
 
-
   behaviors?: CASBehavior[];
   patterns?: CASPattern[];
 
-
-
   communities?: CASCommunity[];
-
 
 
 
@@ -566,6 +559,7 @@ export interface CASNode {
   description_source?: 'deterministic' | 'ai' | 'manual' | 'reused';
   description_generation?: CASDescriptionGeneration;
   tags?: string[];
+  contract?: ICELOTContract;
 
 
 
@@ -4272,6 +4266,7 @@ export interface LogicSummary {
 
 export type ProvenanceFacet =
   | 'input'
+  | 'logic'
   | 'output'
   | 'state_change'
   | 'external_integration'
@@ -4282,9 +4277,13 @@ export interface FacetProvenance {
   facet: ProvenanceFacet;
   value: string;
   contributed_by_step_ids?: string[];
+  contributed_by_node_ids?: string[];
   source: 'deterministic';
   evidence: string;
 }
+
+export type ICELOTAbstentionReason =
+  'no-source-evidence' | 'interpretation-not-requested' | 'no-runtime-observation';
 
 export interface ICELOTContract {
   input: string[];
@@ -4298,6 +4297,7 @@ export interface ICELOTContract {
   telemetry?: ContractTelemetry;
   facet_provenance?: FacetProvenance[];
   logic_summary?: LogicSummary;
+  facet_abstentions?: Partial<Record<UnderstandingContractFacet, ICELOTAbstentionReason>>;
 }
 
 export interface FlowICELOTContract extends ICELOTContract {

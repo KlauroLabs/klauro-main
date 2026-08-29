@@ -444,7 +444,8 @@ export function uncoveredCapabilityCatalogOutcomeRequirements(
     const citedCandidates = factors
       .filter(factor => factor.startsWith('catalog-candidate:'))
       .map(factor => factor.slice('catalog-candidate:'.length));
-    const grounded = boundRequirements.length > 0 ? bound : citedCandidates.some(candidateId => requirement.candidateIds.includes(candidateId));
+    const candidateGrounded = citedCandidates.some(candidateId => requirement.candidateIds.includes(candidateId));
+    const grounded = boundRequirements.length > 0 ? bound && candidateGrounded : candidateGrounded;
     return grounded && capabilitySatisfiesCatalogOutcomeRequirement(capability, requirement) ? [index] : [];
   }));
   const capabilityAssignments = new Map<number, number>();

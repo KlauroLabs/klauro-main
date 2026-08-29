@@ -160,6 +160,7 @@ import {
 import { buildUserJourneys, USER_FACING_ENTRY_TYPES } from './journey-builder';
 import { buildTerminalSignal, type TerminalSignal } from './terminal-signal';
 import { buildCasTerminality } from './terminality';
+import { assertUnderstandingContractIntegrity } from './understanding-contract-integrity';
 import { rollupSystemCapabilityDependencies } from './system-capability-dependencies';
 import {
   behaviorSurfaceEntryCount as countBehaviorSurfaceEntries, catalogCandidateEntityFacts,
@@ -184,7 +185,7 @@ import { capabilityDescriptionBatchSize, resolveCapabilityCatalogRoute, resolveC
 import { capabilitiesWithoutDescriptionDisposition, type CapabilityCatalogRejection, type CapabilityCatalogRejectionsByCandidate, capabilityCatalogCycleDiagnostic, capabilityCatalogPendingRepairKeys, capabilityCatalogRepairCandidateIds, capabilityCatalogRepairEvidenceFacts, capabilityDescriptionsShareOutcome, capabilityIdentityPendingDescriptionRepair, capabilityOutcomeMatchesEvidence, capabilityTitlesShareOutcome, collectCapabilityCatalogEvidenceBatches, mergeCapabilityCatalogRepairResults, mergeUniquelyMatchedBehaviorEvidence, recordCapabilityCatalogRejection, recordCapabilityPublishabilityRejection, retryEmptyCapabilityCatalogOutcome, scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates, trackCapabilityCatalogRepair } from './capability-catalog-scheduling';
 import { capabilityCatalogFirstPartyFallback, capabilityCatalogRepairPromptEnvelope, type CapabilityCatalogRepairPromptFact } from './capability-catalog-repair-context';
 import { capabilityCatalogFocusedTask, capabilityCatalogRepairNudge, capabilityCatalogRepairPlan, captureCapabilityCatalogPendingRequirements, preserveCapabilityCatalogDescriptionIdentity, supersedeUnboundPendingOutcomeDuplicates, type CapabilityCatalogRepairBatch } from './capability-catalog-repair-plan';
-import { TRACEABLE_NODE_TYPES, computeFlowConcepts, type FlowConcept } from './flow-concepts';
+import { TRACEABLE_NODE_TYPES, computeFlowConcepts, materializeNodeUnderstandingContracts, type FlowConcept } from './flow-concepts';
 import { capabilitySubjectTokens } from './capability-audience-test';
 import {
   capabilityAudienceRepairFeedback,
@@ -2167,6 +2168,8 @@ export class AnalyzerOrchestrator {
     output.entry_points = attachDeployable(output.entry_points || [], output.deployable_evidence, output.nodes);
     linkStructuralOwnership(output.nodes, output.edges);
     assignNodeRoles({ nodes: output.nodes, edges: output.edges, entry_points: output.entry_points, exit_points: output.exit_points, resetDerivedRoles: true });
+    materializeNodeUnderstandingContracts(output);
+    assertUnderstandingContractIntegrity(output);
     output.validation = buildGraphValidation(
       output.nodes,
       output.edges,
@@ -3435,6 +3438,8 @@ export class AnalyzerOrchestrator {
     );
     linkStructuralOwnership(rebuiltOutput.nodes, rebuiltOutput.edges);
     assignNodeRoles({ nodes: rebuiltOutput.nodes, edges: rebuiltOutput.edges, entry_points: rebuiltOutput.entry_points, exit_points: rebuiltOutput.exit_points, resetDerivedRoles: true });
+    materializeNodeUnderstandingContracts(rebuiltOutput);
+    assertUnderstandingContractIntegrity(rebuiltOutput);
     rebuiltOutput.validation = buildGraphValidation(
       rebuiltOutput.nodes,
       rebuiltOutput.edges,
@@ -10756,6 +10761,15 @@ export class AnalyzerOrchestrator {
     const configuredElementLimit = Number(process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT || '');
     const elementLimit = Number.isFinite(configuredElementLimit) && configuredElementLimit > 0 ? configuredElementLimit : 8;
     const { entityNamesById, entityFieldsById, entityEvidenceById } = capabilityDescriptionEvidenceMaps(dataEntities);
+    const descriptionEvidenceCandidates = this.catalogEvidenceCandidates(
+      mergeCapabilityCatalogFlowEvidence(candidateSnapshot, flowGraph.capability_candidates || []),
+      behaviorSurfaces,
+      dataEntities,
+      artifactType,
+      projectTextSignal,
+      { entryPoints, nodes, userJourneys },
+    );
+    const requiredOutcomes = deriveCapabilityCatalogOutcomeRequirements(projectTextSignal, descriptionEvidenceCandidates);
 
     const semanticEvidenceDigest = {
       systemName,
@@ -10798,6 +10812,7 @@ export class AnalyzerOrchestrator {
       allCapabilitiesForEvidence: systemCapabilities,
       userJourneys,
       preferredBatchSize: 1, capabilityEntityEvidence: dataEntities,
+      requiredOutcomeRequirements: requiredOutcomes,
     });
     const reauthorCatalogDescriptions = shouldReauthorCapabilityDescriptions(process.env, this.narrativeModel());
     const catalogApplication = await scheduleCapabilityCatalog({
@@ -10806,7 +10821,7 @@ export class AnalyzerOrchestrator {
       elementsEnabled,
       elementLimit,
       reauthorDescriptions: false,
-      toTarget: capability => this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById),
+      toTarget: capability => this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById, requiredOutcomes),
       authorDescriptions: authorCapabilityDescriptions,
     });
     const capabilityTargets = catalogApplication.targets;
@@ -11217,15 +11232,16 @@ export class AnalyzerOrchestrator {
         nodes,
         edges,
         allCapabilitiesForEvidence: systemCapabilities, userJourneys, capabilityEntityEvidence: dataEntities,
+        requiredOutcomeRequirements: requiredOutcomes,
       });
       const unresolvedAfterRepair = unresolvedCapabilities.filter(capability => {
-        const target = this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById);
+        const target = this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById, requiredOutcomes);
         return !capability.description || capability.description_source !== 'ai' || !this.validateElementDescription(capability.description, target).ok;
       });
       if (unresolvedAfterRepair.length > 0) {
         const degraded: Array<{ id: string; name: string; reason: string; failure_class: 'provider-unavailable' | 'failed-grounding' }> = [];
         for (const capability of unresolvedAfterRepair) {
-          const target = this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById);
+          const target = this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById, requiredOutcomes);
           const validation = capability.description
             ? this.validateElementDescription(capability.description, target)
             : { ok: false as const, reason: 'missing-description' };
@@ -11258,7 +11274,7 @@ export class AnalyzerOrchestrator {
     }
     if (elementsEnabled && systemCapabilities.length > capabilityTargets.length) {
       const skippedCapabilities = capabilitiesWithoutDescriptionDisposition(systemCapabilities.slice(elementLimit));
-      const skippedTargets = skippedCapabilities.map(capability => this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById));
+      const skippedTargets = skippedCapabilities.map(capability => this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById, requiredOutcomes));
       this.recordElementDescriptionGenerationByIds(
         skippedTargets.map(target => target.id),
         systemCapabilities,
@@ -11632,6 +11648,7 @@ export class AnalyzerOrchestrator {
       allCapabilitiesForEvidence?: SystemCapability[];
       userJourneys?: CASUserJourney[];
       preferredBatchSize?: number; capabilityEntityEvidence?: CASDataEntity[];
+      requiredOutcomeRequirements?: readonly CapabilityCatalogOutcomeRequirement[];
     }
   ): Promise<void> {
     this.elementDescriptionArtifactType = context.enhancedSystemPurpose?.artifact_type || this.elementDescriptionArtifactType;
@@ -11656,7 +11673,13 @@ export class AnalyzerOrchestrator {
       : [];
     const capabilityOnly = capabilities.length > 0 && !context.includeEntities;
     const allTargets = [
-      ...capabilities.map(capability => this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById)),
+      ...capabilities.map(capability => this.capabilityDescriptionTarget(
+        capability,
+        entityNamesById,
+        entityFieldsById,
+        entityEvidenceById,
+        context.requiredOutcomeRequirements,
+      )),
       ...entityTargets,
     ];
     const configuredLimit = Number(process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT || '');
@@ -11933,6 +11956,7 @@ export class AnalyzerOrchestrator {
     entityNamesById?: Map<string, string>,
     entityFieldsById?: Map<string, string[]>,
     entityEvidenceById?: Map<string, Pick<CASDataEntity, 'name' | 'kind'>>,
+    requiredOutcomeRequirements: readonly CapabilityCatalogOutcomeRequirement[] = [],
   ): DescriptionTarget {
     const sourceAreas = this.capabilitySourceAreas([], capability.operations);
     const actionSummary = Array.from(new Set(
@@ -11950,6 +11974,12 @@ export class AnalyzerOrchestrator {
       const entity = entityEvidenceById?.get(id);
       return !entity || capabilityDescriptionEntityProvidesProductEvidence(capability.name, entity);
     });
+    const requirementIds = new Set((capability.criticality_factors || [])
+      .filter(factor => factor.startsWith('catalog-outcome-requirement:'))
+      .map(factor => factor.slice('catalog-outcome-requirement:'.length)));
+    const productOutcomeTerms = requiredOutcomeRequirements
+      .filter(requirement => requirementIds.has(requirement.id))
+      .map(requirement => requirement.firstPartyOutcomeText || requirement.statement);
     return {
       id: capability.id,
       name: capability.name,
@@ -11966,6 +11996,7 @@ export class AnalyzerOrchestrator {
         capability.criticality ? `criticality: ${capability.criticality}` : '',
       ].filter(Boolean),
       relatedEntities: proseEntityIds.map(id => entityNamesById?.get(id) || id), rawIdentifiers: capability.related_entities.map(id => entityNamesById?.get(id) || id),
+      ...(productOutcomeTerms.length > 0 ? { productOutcomeTerms } : {}),
       unrelatedEntities: entityNamesById ? [...entityNamesById].filter(([id]) => !proseEntityIds.includes(id)).map(([, name]) => name) : [],
       relatedDomains: capability.related_domains,
       readOnly,

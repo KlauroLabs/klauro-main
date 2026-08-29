@@ -15,7 +15,6 @@ import type {
   FacetProvenance,
   FlowConcept,
   FlowEdgeKind,
-  FlowICELOTContract,
   FlowStep,
   FlowStepEdge,
   FlowStepGraph,
@@ -27,10 +26,21 @@ import type {
 } from '../../types/cas.types';
 import { buildTerminalSignal } from './terminal-signal';
 import { buildCronScheduleIndex, findCronSchedule, discriminatorLabel, USER_FACING_ENTRY_TYPES } from './journey-builder';
-import { entityLifecycleContractFacts } from './entity-lifecycle-contract';
 import { guardConstraintKind } from './guard-classification';
 import { httpRoutePathsMatch } from './http-route-path';
+import {
+  aggregateFlowContract,
+  buildLifecycleEvidenceByNode,
+  BEHAVIORAL_CODE_UNIT_TYPES,
+  deriveContractLogic,
+  facetAbstentions,
+  mergeEvidence,
+  mergeNodeContracts,
+  sortFacetProvenance,
+  type LifecycleContractEvidence,
+} from './understanding-contract';
 export { CONTRACT_MODEL_NAME, UNDERSTANDING_CONTRACT_FACETS } from '../../types/cas.types';
+export { BEHAVIORAL_CODE_UNIT_TYPES as TRACEABLE_NODE_TYPES } from './understanding-contract';
 export type {
   CapabilityFlowRelationship,
   ComputeFlowConceptsOptions,
@@ -59,13 +69,7 @@ export interface ChainNode {
 }
 const DEFAULT_MAX_DEPTH = 6;
 const DEFAULT_MAX_FUNCTIONS = 40;
-export const TRACEABLE_NODE_TYPES = new Set([
-  'function', 'method', 'controller', 'handler', 'route', 'resolver', 'gateway',
-  'service', 'usecase', 'repository', 'repository_operation', 'interface_method', 'dao',
-  'react_route', 'component', 'functional_component', 'class_component', 'page', 'view',
-  'hook_usage', 'hook',
-  'zustand_store', 'store',
-]);
+const TRACEABLE_NODE_TYPES = BEHAVIORAL_CODE_UNIT_TYPES;
 const VALIDATE_NAME_RE = /\b(validate|guard|check|assert|sanitize|verify|authoriz|authentic)/i;
 const RESPOND_NAME_RE = /\b(respond|render|reply|serialize|format|toJson|toResponse|present)/i;
 export type StepRole = 'validate' | 'persist' | 'dispatch' | 'call_external' | 'respond' | 'process';
@@ -575,6 +579,8 @@ function buildExitPointIndex(cas: CASOutput): Map<string, CASExitPoint[]> {
 
 interface ContractFactIndex {
   nodesById: Map<string, CASNode>;
+  behaviorEdgesBySource: Map<string, CASEdge[]>;
+  lifecycleEvidenceByNode: Map<string, LifecycleContractEvidence[]>;
   invariantsByNode: Map<string, Array<{ description: string; entityName: string }>>;
   eventualConsistencyByExitId: Map<string, NonNullable<CASOutput['consistency_model']>['store_consistency'][number]>;
   passiveSeamsByTarget: Map<string, NonNullable<CASOutput['consistency_model']>['passive_seams']>;
@@ -598,6 +604,14 @@ function contractFactIndex(cas: CASOutput): ContractFactIndex {
   if (cached) return cached;
 
   const nodesById = new Map((cas.nodes || []).map(node => [node.id, node]));
+  const behaviorEdgesBySource = new Map<string, CASEdge[]>();
+  for (const edge of cas.edges || []) {
+    if (!['calls', 'invokes', 'delegates_to', 'branches_to', 'continues_to'].includes(edge.type)) continue;
+    const edges = behaviorEdgesBySource.get(edge.source) || [];
+    edges.push(edge);
+    behaviorEdgesBySource.set(edge.source, edges);
+  }
+  const lifecycleEvidenceByNode = buildLifecycleEvidenceByNode(cas.entities || [], normalizeEntityKey);
   const invariantsByNode = new Map<string, Array<{ description: string; entityName: string }>>();
   for (const entity of cas.entities || []) {
     for (const invariant of entity.invariants || []) {
@@ -659,6 +673,8 @@ function contractFactIndex(cas: CASOutput): ContractFactIndex {
 
   const index: ContractFactIndex = {
     nodesById,
+    behaviorEdgesBySource,
+    lifecycleEvidenceByNode,
     invariantsByNode,
     eventualConsistencyByExitId,
     passiveSeamsByTarget,
@@ -826,7 +842,7 @@ function extractErrorConstraints(
   return out;
 }
 
-function buildContract(
+function buildEvidenceContract(
   nodes: CASNode[],
   cas: CASOutput,
   exitPointsByNode: Map<string, CASExitPoint[]>,
@@ -839,88 +855,119 @@ function buildContract(
   const stateChanges = new Set<string>();
   const externalIntegrations = new Set<string>();
   const constraints: FacetConstraint[] = [];
-  const constraintKeys = new Set<string>();
-  const addConstraint = (c: FacetConstraint) => {
-    const key = `${c.kind}::${c.rule}`;
-    if (constraintKeys.has(key)) return;
-    constraintKeys.add(key);
-    constraints.push(c);
-  };
-
   const provenanceByKey = new Map<string, FacetProvenance>();
-  const recordEvidence = (facet: ProvenanceFacet, value: string, evidence: string) => {
+  const recordEvidence = (facet: ProvenanceFacet, value: string, evidence: string, contributedNodeIds: Iterable<string>) => {
     const key = `${facet}\u0000${value}`;
-    if (provenanceByKey.has(key)) return;
-    provenanceByKey.set(key, { facet, value, source: 'deterministic', evidence });
+    const existing = provenanceByKey.get(key);
+    if (existing) {
+      existing.contributed_by_node_ids = [...new Set([
+        ...(existing.contributed_by_node_ids || []),
+        ...contributedNodeIds,
+      ])].sort();
+      existing.evidence = mergeEvidence(existing.evidence, evidence);
+      return;
+    }
+    provenanceByKey.set(key, {
+      facet,
+      value,
+      contributed_by_node_ids: [...new Set(contributedNodeIds)].sort(),
+      source: 'deterministic',
+      evidence,
+    });
   };
-
+  const constraintKeys = new Set<string>();
+  const addConstraint = (c: FacetConstraint, contributedNodeIds: Iterable<string>) => {
+    const key = `${c.kind}::${c.rule}`;
+    if (!constraintKeys.has(key)) {
+      constraintKeys.add(key);
+      constraints.push(c);
+    }
+    recordEvidence('constraint', c.rule, c.evidence, contributedNodeIds);
+  };
   const nodeIds = new Set(nodes.map(n => n.id));
+  const sourceConstraintsByNode = new Map<string, FacetConstraint[]>();
 
   for (const node of nodes) {
     for (const p of node.signature?.parameters || []) {
       const v = p.type ? `${p.name}: ${p.type}` : p.name;
       input.add(v);
-      recordEvidence('input', v, `node "${node.name}" signature.parameters`);
+      recordEvidence('input', v, `node ${node.id} signature.parameters`, [node.id]);
     }
     if (node.signature?.return_type) {
       output.add(node.signature.return_type);
-      recordEvidence('output', node.signature.return_type, `node "${node.name}" signature.return_type`);
+      recordEvidence('output', node.signature.return_type, `node ${node.id} signature.return_type`, [node.id]);
     }
 
     for (const ep of exitPointsByNode.get(node.id) || []) {
       const label = ep.target?.service_id || ep.target?.resource || `${ep.type}:${ep.name}`;
       if (ep.type === 'database' || ep.type === 'cache' || ep.type === 'file') {
         stateChanges.add(label);
-        recordEvidence('state_change', label, `exit point ${ep.id} (${ep.type}) on node "${node.name}"`);
+        recordEvidence('state_change', label, `exit point ${ep.id} (${ep.type}) on node ${node.id}`, [node.id]);
       } else {
         externalIntegrations.add(label);
-        recordEvidence('external_integration', label, `exit point ${ep.id} (${ep.type}) on node "${node.name}"`);
+        recordEvidence('external_integration', label, `exit point ${ep.id} (${ep.type}) on node ${node.id}`, [node.id]);
       }
     }
 
-    for (const c of extractConstraintsFromSource(node)) addConstraint(c);
+    const sourceConstraints = extractConstraintsFromSource(node);
+    sourceConstraintsByNode.set(node.id, sourceConstraints);
+    for (const c of sourceConstraints) addConstraint(c, [node.id]);
   }
 
   const relevantLineage = new Set<CASEntityLineage>();
   for (const nodeId of nodeIds) {
     for (const lineage of facts.lineageByNode.get(nodeId) || []) relevantLineage.add(lineage);
   }
-  const lifecycleFacts = entityLifecycleContractFacts(cas.entities || [], nodeIds, normalizeEntityKey);
-  for (const value of lifecycleFacts.inputs) input.add(value);
-  for (const value of lifecycleFacts.stateChanges) stateChanges.add(value);
-  for (const item of lifecycleFacts.evidence) recordEvidence(item.facet, item.value, item.evidence);
+  const writtenLifecycleEntityKeys = new Set<string>();
+  for (const node of nodes) {
+    for (const item of facts.lifecycleEvidenceByNode.get(node.id) || []) {
+      if (item.facet === 'input') input.add(item.value);
+      else stateChanges.add(item.value);
+      if (item.facet === 'state_change' && item.entityKey) writtenLifecycleEntityKeys.add(item.entityKey);
+      recordEvidence(item.facet, item.value, item.evidence, [node.id]);
+    }
+  }
   const orderedLineage = [...relevantLineage].sort((left, right) =>
     (facts.lineageOrdinal.get(left) ?? 0) - (facts.lineageOrdinal.get(right) ?? 0));
   for (const entry of orderedLineage) {
     const writesHere = entry.writers.some(w => nodeIds.has(w.node_id));
     const readsHere = entry.readers.some(r => nodeIds.has(r.node_id));
-    if (writesHere && !lifecycleFacts.writtenEntityKeys.has(normalizeEntityKey(entry.entity_name))) {
+    if (writesHere && !writtenLifecycleEntityKeys.has(normalizeEntityKey(entry.entity_name))) {
       stateChanges.add(`${entry.entity_name} updated`);
+      const writerIds = entry.writers.map(writer => writer.node_id).filter(id => nodeIds.has(id));
       recordEvidence('state_change', `${entry.entity_name} updated`,
-        `data_lineage "${entry.entity_name}" writers include a node in this unit`);
+        `data_lineage "${entry.entity_name}" writers include a node in this unit`, writerIds);
     }
     if (readsHere && !input.has(`reads ${entry.entity_name}`)) {
       input.add(`reads ${entry.entity_name}`);
+      const readerIds = entry.readers.map(reader => reader.node_id).filter(id => nodeIds.has(id));
       recordEvidence('input', `reads ${entry.entity_name}`,
-        `data_lineage "${entry.entity_name}" readers include a node in this unit`);
+        `data_lineage "${entry.entity_name}" readers include a node in this unit`, readerIds);
     }
     if (writesHere || readsHere) {
       for (const rec of entry.external_recipients) {
         externalIntegrations.add(rec.service);
+        const participantIds = [
+          ...entry.writers.map(writer => writer.node_id),
+          ...entry.readers.map(reader => reader.node_id),
+        ].filter(id => nodeIds.has(id));
         recordEvidence('external_integration', rec.service,
-          `data_lineage "${entry.entity_name}" external_recipients names ${rec.service}`);
+          `data_lineage "${entry.entity_name}" external_recipients names ${rec.service}`, participantIds);
       }
     }
   }
 
   const ownEntryPoints = nodes.flatMap(n => entryPointsByNode.get(n.id) || []);
-  for (const c of extractStructuralConstraints(nodeIds, cas, ownEntryPoints, exitPointsByNode, scopeEntryPointIds)) addConstraint(c);
+  for (const c of extractStructuralConstraints(nodeIds, cas, ownEntryPoints, exitPointsByNode, scopeEntryPointIds)) {
+    addConstraint(c, nodeIds);
+  }
 
-  const logicNames = nodes.map(n => n.name);
+  const logic = deriveContractLogic(nodes, facts, sourceConstraintsByNode);
+  if (logic) recordEvidence('logic', logic.value, logic.evidence, logic.nodeIds);
   const facetProvenance = sortFacetProvenance([...provenanceByKey.values()]);
-  return {
+  const contract: ICELOTContract = {
     input: [...input],
-    logic: logicNames.length > 1 ? logicNames.join(' -> ') : (logicNames[0] || ''),
+    logic: logic?.value || '',
     side_effects: {
       state_changes: [...stateChanges],
       external_integrations: [...externalIntegrations],
@@ -929,108 +976,48 @@ function buildContract(
     constraints,
     ...(facetProvenance.length > 0 ? { facet_provenance: facetProvenance } : {}),
   };
+  contract.facet_abstentions = facetAbstentions(contract);
+  return contract;
 }
 
-const FACET_PROVENANCE_CAP = 200;
-
-function sortFacetProvenance(entries: FacetProvenance[]): FacetProvenance[] {
-  const sorted = [...entries].sort((a, b) =>
-    a.facet.localeCompare(b.facet) || a.value.localeCompare(b.value));
-  return sorted.length > FACET_PROVENANCE_CAP ? sorted.slice(0, FACET_PROVENANCE_CAP) : sorted;
+export function deriveNodeUnderstandingContracts(cas: CASOutput): Map<string, ICELOTContract> {
+  contractFactIndexes.delete(cas);
+  const exitPointsByNode = buildExitPointIndex(cas);
+  const entryPointsByNode = new Map<string, CASEntryPoint[]>();
+  for (const entryPoint of cas.entry_points || []) {
+    const nodeId = entryPoint.handler?.node_id || entryPoint.source_node;
+    const entries = entryPointsByNode.get(nodeId) || [];
+    entries.push(entryPoint);
+    entryPointsByNode.set(nodeId, entries);
+  }
+  const contracts = new Map<string, ICELOTContract>();
+  for (const node of cas.nodes || []) {
+    if (TRACEABLE_NODE_TYPES.has(node.type)) {
+      contracts.set(node.id, buildEvidenceContract([node], cas, exitPointsByNode, entryPointsByNode));
+    }
+  }
+  contractFactIndexes.delete(cas);
+  return contracts;
 }
-
-function stepFacetEvidence(step: FlowStep, facet: ProvenanceFacet, value: string): string | undefined {
-  return step.contract.facet_provenance?.find(p => p.facet === facet && p.value === value)?.evidence;
-}
-
-function aggregateFlowContract(steps: FlowStep[]): FlowICELOTContract {
-  const provenanceByKey = new Map<string, FacetProvenance & { contributed_by_step_ids: string[] }>();
-  const record = (facet: ProvenanceFacet, value: string, stepId: string, evidence: string) => {
-    const key = `${facet}\u0000${value}`;
-    const existing = provenanceByKey.get(key);
-    if (existing) {
-      if (!existing.contributed_by_step_ids.includes(stepId)) existing.contributed_by_step_ids.push(stepId);
-      return;
+export function materializeNodeUnderstandingContracts(cas: CASOutput): void {
+  const contracts = deriveNodeUnderstandingContracts(cas);
+  for (const node of cas.nodes || []) {
+    const contract = contracts.get(node.id);
+    if (contract) node.contract = contract;
+    else delete node.contract;
+  }
+  const nodesById = new Map((cas.nodes || []).map(node => [node.id, node]));
+  for (const flow of cas.flows || []) {
+    for (const step of flow.steps || []) {
+      const nodes = step.functions
+        .map(reference => nodesById.get(reference.function_id))
+        .filter((node): node is CASNode => Boolean(node));
+      step.contract = mergeNodeContracts(nodes);
     }
-    provenanceByKey.set(key, { facet, value, contributed_by_step_ids: [stepId], source: 'deterministic', evidence });
-  };
-
-  const lastIdx = steps.length - 1;
-  const initiating = steps[0];
-  const terminal = steps[lastIdx];
-
-  const input = [...initiating.contract.input];
-  const inputSet = new Set(input);
-  for (const v of input) {
-    record('input', v, initiating.step_id,
-      stepFacetEvidence(initiating, 'input', v) ?? `initiating step "${initiating.name}" contract input`);
+    flow.contract = aggregateFlowContract(flow.steps || []);
   }
-  const interiorInputs = new Set<string>();
-  for (const step of steps.slice(1)) {
-    for (const v of step.contract.input) if (!inputSet.has(v)) interiorInputs.add(v);
-  }
-
-  const output = [...terminal.contract.output];
-  const outputSet = new Set(output);
-  for (const v of output) {
-    record('output', v, terminal.step_id,
-      stepFacetEvidence(terminal, 'output', v) ?? `terminal step "${terminal.name}" contract output`);
-  }
-  const interiorOutputs = new Set<string>();
-  for (const step of steps.slice(0, lastIdx)) {
-    for (const v of step.contract.output) if (!outputSet.has(v)) interiorOutputs.add(v);
-  }
-
-  const stateChanges = new Set<string>();
-  const externalIntegrations = new Set<string>();
-  for (const step of steps) {
-    for (const v of step.contract.side_effects.state_changes) {
-      stateChanges.add(v);
-      record('state_change', v, step.step_id,
-        stepFacetEvidence(step, 'state_change', v) ?? `step "${step.name}" contract side_effects.state_changes`);
-    }
-    for (const v of step.contract.side_effects.external_integrations) {
-      externalIntegrations.add(v);
-      record('external_integration', v, step.step_id,
-        stepFacetEvidence(step, 'external_integration', v) ?? `step "${step.name}" contract side_effects.external_integrations`);
-    }
-  }
-
-  const constraints: FacetConstraint[] = [];
-  const constraintKeys = new Set<string>();
-  for (let i = 0; i < steps.length; i++) {
-    const step = steps[i];
-    const gatesDownstream = i < lastIdx || steps.length === 1;
-    for (const c of step.contract.constraints) {
-      if (c.kind !== 'error' && !gatesDownstream) continue;
-      const key = `${c.kind}::${c.rule}`;
-      if (!constraintKeys.has(key)) {
-        constraintKeys.add(key);
-        constraints.push(c);
-      }
-      record('constraint', c.rule, step.step_id, c.evidence);
-    }
-  }
-
-  return {
-    input,
-    logic: steps.map(s => s.name).join(' -> '),
-    side_effects: {
-      state_changes: [...stateChanges],
-      external_integrations: [...externalIntegrations],
-    },
-    output,
-    constraints,
-    ...(interiorInputs.size > 0 ? { internal_inputs_count: interiorInputs.size } : {}),
-    ...(interiorOutputs.size > 0 ? { internal_outputs_count: interiorOutputs.size } : {}),
-    ...(provenanceByKey.size > 0
-      ? {
-          facet_provenance: sortFacetProvenance(
-            [...provenanceByKey.values()].map(p => ({ ...p, contributed_by_step_ids: [...p.contributed_by_step_ids].sort() }))
-          ),
-        }
-      : {}),
-  };
+  if (cas.flows) cas.steps = cas.flows.flatMap(flow => flow.steps || []);
+  contractFactIndexes.delete(cas);
 }
 
 function entitiesForNodes(nodeIds: Set<string>, cas: CASOutput): string[] {
@@ -1870,7 +1857,6 @@ function buildTerminalFlows(
       gaps.push('Entire terminal chain classified as a single step — no role boundary detected between entry and terminus.');
     }
 
-    const flowEntryScope = new Set([chain.entry_point.entry_point_id, chain.entry_point.node_id].filter(Boolean) as string[]);
     let anyStepGrounded = false;
     const steps: FlowStep[] = segments.map((seg, i) => {
       const { name, description, grounded } = nameStepForRole(seg.role, seg.nodes, exitPointsByNode, allLineage);
@@ -1878,7 +1864,7 @@ function buildTerminalFlows(
       if (!grounded) {
         gaps.push(`Step "${name}" carries no validate/persist/dispatch/call/respond/entity/verb evidence — honest fallback grouping used, not a fabricated role.`);
       }
-      const contract = buildContract(seg.nodes, cas, exitPointsByNode, entryPointsByNode, flowEntryScope);
+      const contract = mergeNodeContracts(seg.nodes);
 
       let functions: FlowStep['functions'];
       if (seg.nodes.length === 1) {
@@ -1949,6 +1935,7 @@ function buildTerminalFlows(
         if (existing) return;
         const entry: FacetProvenance = {
           facet, value, contributed_by_step_ids: [terminusStep.step_id],
+          contributed_by_node_ids: terminusStep.functions.map(reference => reference.function_id).sort(),
           source: 'deterministic', evidence: terminusEvidence,
         };
         contract.facet_provenance = sortFacetProvenance([...(contract.facet_provenance || []), entry]);
@@ -2116,6 +2103,7 @@ export function computeFlowConcepts(cas: CASOutput, opts: ComputeFlowConceptsOpt
     const end = opts.maxFlows && opts.maxFlows > 0 ? offset + opts.maxFlows : undefined;
     return matching.slice(offset, end);
   }
+  materializeNodeUnderstandingContracts(cas);
   const terminalFlows = buildTerminalFlows(cas, opts);
 
 
@@ -2438,7 +2426,6 @@ function computeEntryPointFlows(
       gaps.push('Entire chain classified as a single step — no role boundary detected; segmentation is coarse for this flow.');
     }
 
-    const flowEntryScope = new Set([ep.id, ep.handler?.node_id || ep.source_node].filter(Boolean) as string[]);
     let anyStepGrounded = false;
     const steps: FlowStep[] = segments.map((seg, i) => {
       const { name, description, grounded } = nameStepForRole(seg.role, seg.nodes, exitPointsByNode, allLineage);
@@ -2446,7 +2433,7 @@ function computeEntryPointFlows(
       if (!grounded) {
         gaps.push(`Step "${name}" carries no validate/persist/dispatch/call/respond/entity/verb evidence — honest fallback grouping used, not a fabricated role.`);
       }
-      const contract = buildContract(seg.nodes, cas, exitPointsByNode, entryPointsByNode, flowEntryScope);
+      const contract = mergeNodeContracts(seg.nodes);
 
       let functions: FlowStep['functions'];
       if (seg.nodes.length === 1) {
@@ -2611,33 +2598,55 @@ export function attachTelemetryToFlows(flows: FlowConcept[], metrics: RuntimeMet
   const index = indexRuntimeMetrics(metrics);
   if (index.size === 0) return flows;
 
-  for (const flow of flows) {
+  return flows.map(flow => {
     const flowNodeIds = new Set<string>();
     const telemetryStepIds: string[] = [];
-    for (const step of flow.steps) {
+    const steps = flow.steps.map(step => {
       const stepNodeIds = step.functions.map(f => f.function_id);
       for (const id of stepNodeIds) flowNodeIds.add(id);
       const stepTel = telemetryForUnit(index, stepNodeIds);
       if (stepTel) {
-        step.contract.telemetry = stepTel;
         telemetryStepIds.push(step.step_id);
+        return { ...step, contract: overlayRuntimeTelemetry(step.contract, stepTel, stepNodeIds) };
       }
-    }
+      return step;
+    });
     const flowTel = telemetryForUnit(index, flowNodeIds, [flow.entry_point]);
-    if (flowTel) {
-      flow.contract.telemetry = flowTel;
-      const entry: FacetProvenance = {
-        facet: 'telemetry',
-        value: flowTel.static_id,
-        contributed_by_step_ids: [...telemetryStepIds].sort(),
-        source: 'deterministic',
-        evidence: `runtime observations (source: ${flowTel.source}) matched this flow's entry point / nodes`,
-      };
-      const existing = (flow.contract.facet_provenance || []).filter(p => !(p.facet === 'telemetry' && p.value === entry.value));
-      flow.contract.facet_provenance = sortFacetProvenance([...existing, entry]);
-    }
-  }
-  return flows;
+    return {
+      ...flow,
+      steps,
+      contract: flowTel
+        ? overlayRuntimeTelemetry(flow.contract, flowTel, flowNodeIds, telemetryStepIds)
+        : flow.contract,
+    };
+  });
+}
+
+export function overlayRuntimeTelemetry(
+  contract: ICELOTContract,
+  telemetry: ContractTelemetry,
+  nodeIds: Iterable<string>,
+  stepIds: Iterable<string> = [],
+): ICELOTContract {
+  const abstentions = { ...(contract.facet_abstentions || {}) };
+  delete abstentions.telemetry;
+  const entry: FacetProvenance = {
+    facet: 'telemetry',
+    value: telemetry.static_id,
+    contributed_by_node_ids: [...new Set(nodeIds)].sort(),
+    contributed_by_step_ids: [...new Set(stepIds)].sort(),
+    source: 'deterministic',
+    evidence: `runtime observations (source: ${telemetry.source}) matched this unit`,
+  };
+  return {
+    ...contract,
+    telemetry,
+    facet_provenance: sortFacetProvenance([
+      ...(contract.facet_provenance || []).filter(provenance => provenance.facet !== 'telemetry'),
+      entry,
+    ]),
+    facet_abstentions: Object.keys(abstentions).length > 0 ? abstentions : undefined,
+  };
 }
 
 export function telemetryForNode(nodeId: string, metrics: RuntimeMetricLike[]): ContractTelemetry | undefined {

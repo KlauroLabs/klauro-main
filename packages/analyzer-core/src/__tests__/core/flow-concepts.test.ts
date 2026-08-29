@@ -721,8 +721,8 @@ describe('telemetry join (facet 6)', () => {
   ];
 
   test('attaches telemetry only to the step whose function has observations', () => {
-    const cloned = computeFlowConcepts(cas);
-    attachTelemetryToFlows(cloned, metrics);
+    const staticFlows = computeFlowConcepts(cas);
+    const cloned = attachTelemetryToFlows(staticFlows, metrics);
     const persistStep = cloned[0].steps.find(s => s.functions.some(f => f.function_id === 'n_saveOrder'));
     expect(persistStep!.contract.telemetry).toBeDefined();
     expect(persistStep!.contract.telemetry!.request_count).toBe(1200);
@@ -732,11 +732,11 @@ describe('telemetry join (facet 6)', () => {
     expect(validateStep!.contract.telemetry).toBeUndefined();
     // flow-level telemetry is present because one of its nodes matched
     expect(cloned[0].contract.telemetry).toBeDefined();
+    expect(staticFlows[0].contract.telemetry).toBeUndefined();
   });
 
   test('empty metrics leaves every telemetry facet absent', () => {
-    const cloned = computeFlowConcepts(cas);
-    attachTelemetryToFlows(cloned, []);
+    const cloned = attachTelemetryToFlows(computeFlowConcepts(cas), []);
     expect(cloned[0].contract.telemetry).toBeUndefined();
     expect(cloned[0].steps.every(s => s.contract.telemetry === undefined)).toBe(true);
   });

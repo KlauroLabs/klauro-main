@@ -14,7 +14,7 @@ import { buildProductMap } from '../../../packages/analyzer-core/src/analyzer/co
 import { RISKABLE_NODE_TYPES, hasStructuralSecurityEvidence } from '../../../packages/analyzer-core/src/analyzer/core/orchestrator';
 import { buildTerminalSignal } from '../../../packages/analyzer-core/src/analyzer/core/terminal-signal';
 import { selectProductFrameworkNames, analyzerTypeMap } from '../../../packages/analyzer-core/src/analyzer/core/framework-comprehension';
-import { computeFlowConcepts, rankMaterializedFlows, attachTelemetryToFlows, telemetryForNode, computeCapabilityTelemetry, unexercisedFlows, applyFlowRoleToCapabilityRelationships, type ComputeFlowConceptsOptions, type RuntimeMetricLike } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';
+import { computeFlowConcepts, rankMaterializedFlows, attachTelemetryToFlows, telemetryForNode, overlayRuntimeTelemetry, computeCapabilityTelemetry, unexercisedFlows, applyFlowRoleToCapabilityRelationships, type ComputeFlowConceptsOptions, type RuntimeMetricLike } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';
 import { computeSemanticCoverage, toCompactSemanticCoverage, type SemanticCoverage } from '../../../packages/analyzer-core/src/analyzer/core/semantic-coverage';
 import { computeFlowStructuralLinks, computeConflictBehavioralLinks } from '../../../packages/analyzer-core/src/analyzer/core/structural-cross-links';
 import { partitionAnalysisDiagnostics } from '../../../packages/analyzer-core/src/analyzer/core/analysis-diagnostics';
@@ -3803,6 +3803,16 @@ export function getCodingContext(
       layer,
       framework_role: frameworkRole,
     },
+    ...(targetNode.contract
+      ? {
+          contract: targetNode.contract,
+          input: targetNode.contract.input,
+          logic: targetNode.contract.logic,
+          side_effects: targetNode.contract.side_effects,
+          output: targetNode.contract.output,
+          constraints: targetNode.contract.constraints,
+        }
+      : {}),
   };
 
   if (shouldInclude('conventions')) {
@@ -3996,7 +4006,13 @@ export function getCodingContext(
 
   if (opts.runtimeMetrics && opts.runtimeMetrics.length > 0) {
     const tel = telemetryForNode(targetNode.id, opts.runtimeMetrics);
-    if (tel) result.telemetry = tel;
+    if (tel) {
+      result.telemetry = tel;
+      if (targetNode.contract) {
+        const contract = overlayRuntimeTelemetry(targetNode.contract, tel, [targetNode.id]);
+        result.contract = contract;
+      }
+    }
   }
 
   return result;
@@ -4406,6 +4422,9 @@ export function getFlowConcepts(
   if (opts.role) {
     probedFlows = probedFlows.filter(f => roleByFlowId.get(f.flow_id)?.role === opts.role);
   }
+  if (opts.runtimeMetrics && opts.runtimeMetrics.length > 0) {
+    probedFlows = attachTelemetryToFlows(probedFlows, opts.runtimeMetrics);
+  }
 
   const truncated = effectiveMaxFlows !== undefined && probedFlows.length > effectiveMaxFlows;
   const flows = truncated ? probedFlows.slice(0, effectiveMaxFlows) : probedFlows;
@@ -4542,7 +4561,6 @@ export function getFlowConcepts(
   let capabilityTelemetry: ReturnType<typeof computeCapabilityTelemetry> | undefined;
   let unexercised: ReturnType<typeof unexercisedFlows> | undefined;
   if (opts.runtimeMetrics && opts.runtimeMetrics.length > 0) {
-    attachTelemetryToFlows(probedFlows, opts.runtimeMetrics);
     if (cas.capabilities && cas.capabilities.length > 0) {
       capabilityTelemetry = computeCapabilityTelemetry(cas.capabilities, probedFlows);
     }

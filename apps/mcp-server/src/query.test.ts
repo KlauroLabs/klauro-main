@@ -180,6 +180,31 @@ test('getCodingContext connected_code.callers is deduplicated when a node is rea
   assert.equal(context.connected_code.callers_total, 1);
 });
 
+test('getCodingContext derives convenience fields from the canonical node contract and overlays runtime on a response copy', () => {
+  const cas = buildDualPathCas();
+  const node = cas.nodes.find(candidate => candidate.id === 'function_src/a.ts_caller_0')!;
+  node.contract = {
+    input: ['request: Request'], logic: 'caller calls callee',
+    side_effects: { state_changes: [], external_integrations: [] },
+    output: ['Response'], constraints: [],
+    facet_abstentions: { constraints: 'no-source-evidence', system_effects: 'no-source-evidence', telemetry: 'no-runtime-observation' },
+    facet_provenance: [
+      { facet: 'input', value: 'request: Request', contributed_by_node_ids: [node.id], source: 'deterministic', evidence: 'signature.parameters' },
+      { facet: 'logic', value: 'caller calls callee', contributed_by_node_ids: [node.id], source: 'deterministic', evidence: 'edge edge_1' },
+      { facet: 'output', value: 'Response', contributed_by_node_ids: [node.id], source: 'deterministic', evidence: 'signature.return_type' },
+    ],
+  };
+  const before = JSON.stringify(node.contract);
+  const context: any = getCodingContext(cas, node.id, {
+    runtimeMetrics: [{ static_id: node.id, request_count: 5, error_rate: 0, source: 'ingested' }],
+  });
+  assert.equal(context.contract.input, context.input);
+  assert.equal(context.contract.logic, context.logic);
+  assert.equal(context.contract.telemetry.request_count, 5);
+  assert.equal(JSON.stringify(node.contract), before);
+  assert.equal(node.contract.telemetry, undefined);
+});
+
 test('getCodingContext degrades gracefully (never a bare error) when the target is missing from a fresh analysis', () => {
   const cas = buildHighFanoutCas({ callerCount: 1, calleeCount: 1 });
   const context: any = getCodingContext(cas, 'thisSymbolDoesNotExistAnywhere');

@@ -1,7 +1,8 @@
 # The Uniform Understanding Contract (ICELOT)
 
-Every unit of a codebase Klauro understands — a **function/node**, a **step**, a
-**flow**, on up to a **capability** — carries the *same* contract shape.
+Every behavioral unit below capability — a **function/node**, a **step**, or a
+**flow** — carries the *same* contract shape. Capabilities state purpose and do
+not carry ICELOT.
 **ICELOT is not an execution order; it's the six questions asked of every unit:**
 
 > **I**nput — what does it take? · **C**onstraints — what bounds it? ·
@@ -15,16 +16,19 @@ same six facets at every level — the middle of the level-drilling path
 
 The model name lives in exactly one place — the exported constant
 `CONTRACT_MODEL_NAME` (value **`ICELOT`**) in
-`packages/analyzer-core/src/analyzer/core/flow-concepts.ts` — so it is trivially
+`packages/analyzer-core/src/types/cas.types.ts` — so it is trivially
 renamable. The facet list is the exported `UNDERSTANDING_CONTRACT_FACETS`.
 
 ## The cardinal rule: EVIDENCE-GATED, never fabricated
 
 A facet is populated **only** from a fact the analysis already extracted. When
-no supporting fact exists, the facet is **omitted** (or empty), never invented,
-never zero-filled. Constraints carry their driving evidence string; telemetry
-appears only when real runtime observations correlate to the unit. If you see a
-facet, a concrete fact produced it.
+no supporting fact exists, the facet is **omitted** (or empty) and its compact
+`facet_abstentions` entry states why; it is never invented or zero-filled.
+Every populated facet carries deterministic provenance with contributing node
+IDs, and aggregate step/flow facets retain the node → step → flow lineage.
+Constraints carry their driving evidence string; telemetry appears only when
+real runtime observations correlate to the unit. If you see a facet, a concrete
+fact produced it.
 
 ## The six facets
 
@@ -33,7 +37,7 @@ facet, a concrete fact produced it.
 | I | **Input** | What does it take? | signature params, `data_lineage` reads, consumed request shape |
 | C | **Constraints** | What bounds it? | validation, auth, rate-limit, error, invariant, business-rule, consistency facts |
 | E | **Effects** | What does it touch? | `exit_points` + `data_lineage`, **split two ways** (below) |
-| L | **Logic** | How does it decide? | the ordered step/function names |
+| L | **Logic** | How does it decide? | extracted control-flow, condition, and call facts; absent when those facts do not exist |
 | O | **Output** | What does it emit? | signature return types, produced entities/responses |
 | T | **Telemetry** | How does it behave? | joined runtime metrics, when observations exist |
 
@@ -74,8 +78,10 @@ replica/CDC/sink/materialized seam.
 (`buildNodeRuntimeMetrics`): `request_count`, `error_rate`, `p50/p95/p99_ms`,
 `status_code_distribution`, `source`, `last_seen`. It is **joined at the query
 layer** (where persisted observations live), not by the pure static analyzer —
-so `computeFlowConcepts` stays a pure pass over the CAS, and the telemetry
-facet is simply **absent** when no observation matches the unit.
+so persisted CAS remains static truth. Runtime observations overlay a response
+copy and never mutate a stored node, step, or flow contract. The telemetry
+facet is absent, with `no-runtime-observation` abstention, when no observation
+matches the unit.
 
 ## Where to get it
 

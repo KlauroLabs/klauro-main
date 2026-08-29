@@ -178,4 +178,130 @@ describe('capability catalog repair planning', () => {
       });
     }
   });
+  test('supersedes a shorter synonymous unbound title only when a strict bound outcome covers its subject', () => {
+    const requirement = {
+      id: 'collaboration',
+      statement: 'enable real-time collaboration across overlapping shared work concepts',
+      candidateIds: ['surface'],
+      requiredSubjectTerms: ['collaborate', 'work', 'concept'],
+      subjectTokens: ['collaborate', 'work', 'concept'],
+      minimumSubjectMatches: 2,
+    };
+    const pending = {
+      ...capability('pending', ['catalog-candidate:legacy'], 'Teams coordinate changes across overlapping concepts in real time.'),
+      name: 'Enable real-time collaboration across overlapping concepts',
+    };
+    const distinct = {
+      ...capability('review', ['catalog-candidate:legacy'], 'Teams coordinate review sessions in real time.'),
+      name: 'Enables real-time coordination through review sessions',
+    };
+    const replacement = {
+      ...capability('bound', ['catalog-candidate:surface', 'catalog-outcome-requirement:collaboration'], 'Teams collaborate on overlapping shared work concepts in real time.'),
+      name: 'Enable real-time collaboration on overlapping shared work concepts',
+    };
+    const result = supersedeUnboundPendingOutcomeDuplicates(
+      [pending, distinct],
+      [replacement],
+      [requirement],
+      new Map([['pending', []], ['review', []]]),
+    );
+
+    assert.deepEqual(result, { existing: [distinct], incoming: [replacement] });
+  });
+  test('uses a strict requirement binding as the replacement identity despite title paraphrase', () => {
+    const requirement = {
+      id: 'agent-understanding', audience: 'agent' as const, audienceLabel: 'agents',
+      statement: 'behavior-level understanding for agents', candidateIds: ['surface'],
+      requiredSubjectTerms: ['behavior', 'understand'], subjectTokens: ['behavior', 'understand'],
+      minimumSubjectMatches: 2,
+    };
+    const pending = {
+      ...capability('pending-agent', ['catalog-candidate:legacy'], 'Agents understand software behavior before changing it.'),
+      name: 'Help agents understand software behavior',
+    };
+    const replacement = {
+      ...capability('bound-agent', ['catalog-candidate:surface', 'catalog-outcome-requirement:agent-understanding'], 'AI agents understand software behavior before planning changes.'),
+      name: 'Equip AI agents for dependable change planning',
+    };
+    assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates(
+      [pending], [replacement], [requirement], new Map([['pending-agent', ['agent-understanding']]]),
+    ), { existing: [], incoming: [replacement] });
+
+    const actorless = {
+      ...replacement,
+      id: 'actorless',
+      description: 'Grounded context supports dependable change planning.',
+    };
+    assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates(
+      [pending], [actorless], [requirement], new Map([['pending-agent', ['agent-understanding']]]),
+    ), { existing: [pending], incoming: [actorless] });
+
+    const mixed = {
+      ...replacement,
+      id: 'mixed',
+      name: 'Equip people and AI agents for dependable change planning',
+      description: 'People and AI agents receive grounded context before planning changes.',
+    };
+    assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates(
+      [pending], [mixed], [requirement], new Map([['pending-agent', ['agent-understanding']]]),
+    ), { existing: [pending], incoming: [mixed] });
+  });
+
+
+  test('does not infer empty-capture supersession across audience, action, token, or binding boundaries', () => {
+    const requirement = {
+      id: 'collaboration',
+      statement: 'enable real-time collaboration across overlapping shared work concepts',
+      candidateIds: ['surface'],
+      requiredSubjectTerms: ['collaborate', 'work', 'concept'],
+      subjectTokens: ['collaborate', 'work', 'concept'],
+      minimumSubjectMatches: 2,
+    };
+    const replacement = {
+      ...capability('bound', ['catalog-candidate:surface', 'catalog-outcome-requirement:collaboration'], 'Teams collaborate on overlapping shared work concepts in real time.'),
+      name: 'Enable real-time collaboration on overlapping shared work concepts',
+    };
+    const assertRetained = (
+      pending: SystemCapability,
+      candidate: SystemCapability,
+      scopedRequirement: typeof requirement | (typeof requirement & { audience: 'human' }),
+    ) => {
+      assert.deepEqual(supersedeUnboundPendingOutcomeDuplicates(
+        [pending], [candidate], [scopedRequirement], new Map([[pending.id, []]]),
+      ), { existing: [pending], incoming: [candidate] });
+    };
+
+    const audiencePending = {
+      ...capability('audience-pending', ['catalog-candidate:legacy']),
+      name: 'Enable real-time collaboration on shared work',
+      description: 'People collaborate on overlapping shared work concepts in real time.',
+    };
+    const audienceReplacement = {
+      ...replacement,
+      description: 'People collaborate on overlapping shared work concepts in real time.',
+      name: 'Enable people real-time collaboration on overlapping shared work concepts',
+    };
+    assertRetained(audiencePending, audienceReplacement, { ...requirement, audience: 'human' });
+
+    assertRetained({
+      ...capability('action-pending', ['catalog-candidate:legacy']),
+      name: 'Review real-time collaboration on shared work',
+    }, replacement, requirement);
+
+    assertRetained({
+      ...capability('partial-pending', ['catalog-candidate:legacy']),
+      name: 'Enable real-time collaboration reports for shared work',
+    }, replacement, requirement);
+
+    const wrongCandidate = {
+      ...replacement,
+      id: 'wrong-candidate',
+      criticality_factors: ['catalog-candidate:legacy', 'catalog-outcome-requirement:collaboration'],
+    };
+    assertRetained({
+      ...capability('invalid-pending', ['catalog-candidate:legacy']),
+      name: 'Enable real-time collaboration on shared work',
+    }, wrongCandidate, requirement);
+  });
+
 });

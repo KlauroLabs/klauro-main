@@ -15,6 +15,7 @@ import { yieldToEventLoop, createYieldBudget } from '../core/event-loop-yield';
 import { dropEdgesReferencingRemovedEndpoints } from '../core/graph-referential-integrity';
 import { availableParallelism } from 'node:os';
 import { Worker } from 'node:worker_threads';
+import { resolveTreeSitterWorkerPath, treeSitterWorkerExecArgv } from '../core/tree-sitter-worker-runtime';
 import {
   readTreeSitterExtractionCache,
   writeTreeSitterExtractionCache,
@@ -459,6 +460,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       return this.extractTreeSitterFilesSequentially(files);
     }
 
+    const bundledWorkerPath = path.join(__dirname, 'tree-sitter-ts-worker.cjs');
     const compiledWorkerPath = path.join(
       __dirname,
       '..',
@@ -470,7 +472,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       'tree-sitter-ts-worker.js'
     );
     const sourceWorkerPath = path.join(__dirname, '..', 'core', 'tree-sitter-ts-worker.ts');
-    const workerPath = resolveTreeSitterWorkerPath(compiledWorkerPath, sourceWorkerPath);
+    const workerPath = resolveTreeSitterWorkerPath(bundledWorkerPath, compiledWorkerPath, sourceWorkerPath);
     const results = new Array<TSFileExtraction | Error>(files.length);
     let nextTask = 0;
 
@@ -2803,17 +2805,4 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     });
   }
 
-}
-export function treeSitterWorkerExecArgv(execArgv: string[]): string[] {
-  return execArgv.filter(argument =>
-    !argument.startsWith('--max-old-space-size=') &&
-    !argument.startsWith('--max_old_space_size='));
-}
-
-export function resolveTreeSitterWorkerPath(
-  compiledWorkerPath: string,
-  sourceWorkerPath: string,
-  exists: (filePath: string) => boolean = fs.existsSync
-): string {
-  return exists(compiledWorkerPath) ? compiledWorkerPath : sourceWorkerPath;
 }

@@ -1,7 +1,7 @@
 import {
   resolveTreeSitterWorkerPath,
   treeSitterWorkerExecArgv,
-} from '../../analyzer/languages/typescript-javascript-analyzer';
+} from '../../analyzer/core/tree-sitter-worker-runtime';
 
 describe('treeSitterWorkerExecArgv', () => {
   it('keeps TypeScript loader flags but removes worker-incompatible heap flags', () => {
@@ -22,8 +22,18 @@ describe('treeSitterWorkerExecArgv', () => {
 });
 
 describe('resolveTreeSitterWorkerPath', () => {
+  it('uses the sibling bundled worker artifact in packaged runtimes', () => {
+    expect(resolveTreeSitterWorkerPath(
+      '/app/dist-hosted/tree-sitter-ts-worker.cjs',
+      '/app/packages/analyzer-core/dist/analyzer/core/tree-sitter-ts-worker.js',
+      '/app/packages/analyzer-core/src/analyzer/core/tree-sitter-ts-worker.ts',
+      candidate => candidate.endsWith('.cjs')
+    )).toBe('/app/dist-hosted/tree-sitter-ts-worker.cjs');
+  });
+
   it('uses the compiled worker artifact when production built it', () => {
     expect(resolveTreeSitterWorkerPath(
+      '/app/dist-hosted/tree-sitter-ts-worker.cjs',
       '/app/packages/analyzer-core/dist/analyzer/core/tree-sitter-ts-worker.js',
       '/app/packages/analyzer-core/src/analyzer/core/tree-sitter-ts-worker.ts',
       candidate => candidate.includes('/dist/')
@@ -32,6 +42,7 @@ describe('resolveTreeSitterWorkerPath', () => {
 
   it('falls back to the TypeScript worker for source development', () => {
     expect(resolveTreeSitterWorkerPath(
+      '/app/dist-hosted/tree-sitter-ts-worker.cjs',
       '/app/packages/analyzer-core/dist/analyzer/core/tree-sitter-ts-worker.js',
       '/app/packages/analyzer-core/src/analyzer/core/tree-sitter-ts-worker.ts',
       () => false

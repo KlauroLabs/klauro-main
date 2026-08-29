@@ -1,6 +1,7 @@
 import type { CASOutput } from '../../types/cas.types';
 import { composeCas, type CASCompositionContext } from '../../analyzer/core/cas-composition';
 import { validateCasTree } from '../../analyzer/core/recursive-cas';
+import { materializeNodeUnderstandingContracts } from '../../analyzer/core/flow-concepts';
 
 function leaf(id: string): CASOutput {
   return {
@@ -148,6 +149,28 @@ describe('CAS composition', () => {
     expect(rootById.get('cas:leaf-c')).toMatchObject({ terminal: true });
     expect(root.nodes.map(node => node.id)).toEqual(['cas:middle', 'cas:leaf-c']);
     expect(root.children?.[0].children?.map(child => child.id)).toEqual(['cas:leaf-a', 'cas:leaf-b']);
+  });
+
+  test('preserves leaf code-unit contracts and their exact node provenance through recursive composition', () => {
+    const child = leaf('cas:contract-leaf');
+    child.nodes = [{
+      id: 'leaf-handler', name: 'handleLeaf', type: 'function',
+      signature: { parameters: [{ name: 'value', type: 'string' }], return_type: 'boolean' },
+    } as any];
+    materializeNodeUnderstandingContracts(child);
+    const root = composeCas({
+      id: 'cas:contract-root', label: 'root', cas_version: '3.0.0',
+      analysis_id: 'analysis:contract-root', analysis_timestamp: '2026-08-13T00:00:00.000Z',
+      system: { id: 'system:contract-root', name: 'root', type: 'monorepo', root_path: '.' },
+      children: [child, leaf('cas:sibling')],
+      derive_comprehension: () => ({ capabilities: [], flows: [], steps: [], entities: [] }),
+    });
+    const retained = root.children?.[0].nodes.find(node => node.id === 'leaf-handler');
+    expect(retained?.contract?.input).toEqual(['value: string']);
+    expect(retained?.contract?.output).toEqual(['boolean']);
+    for (const provenance of retained?.contract?.facet_provenance || []) {
+      expect(provenance.contributed_by_node_ids).toEqual(['leaf-handler']);
+    }
   });
 
 });

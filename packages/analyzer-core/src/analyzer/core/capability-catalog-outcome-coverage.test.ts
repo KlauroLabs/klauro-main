@@ -458,3 +458,77 @@ test('requires an evidence-grounded outcome anchor when a name starts with an in
     subjectTokenAliases: [['correlate', 'runtime', 'telemetry']], subjectAliasAnchorTokens: [['telemetry']],
   }), undefined);
 });
+
+test('an exact audience requirement binding covers its slot without title-token restatement', () => {
+  const requirement: CapabilityCatalogOutcomeRequirement = {
+    id: 'agent:behavior-understand',
+    audience: 'agent',
+    audienceLabel: 'agents',
+    statement: 'behavior-level understanding',
+    candidateIds: ['agent-surface'],
+    subjectTokens: ['behavior', 'understand'],
+    requiredSubjectTerms: ['behavior', 'understand'],
+    minimumSubjectMatches: 2,
+  };
+  const bound = {
+    ...published('Equip AI agents for dependable change planning', 'AI agents receive grounded context before planning changes.'),
+    criticality_factors: [
+      'catalog-candidate:agent-surface',
+      'catalog-outcome-requirement:agent:behavior-understand',
+    ],
+  };
+  assert.deepEqual(uncoveredCapabilityCatalogOutcomeRequirements([bound], [requirement]), []);
+
+  for (const invalid of [
+    { ...bound, description: 'Grounded context supports dependable change planning.' },
+    {
+      ...bound,
+      name: 'Equip people and AI agents for dependable change planning',
+      description: 'People and AI agents receive grounded context before planning changes.',
+    },
+  ]) {
+    assert.deepEqual(uncoveredCapabilityCatalogOutcomeRequirements([invalid], [requirement]), [requirement]);
+  }
+});
+
+test('requirement-bound coverage still requires a corroborating candidate while unbound coverage remains semantic', () => {
+  const requirement: CapabilityCatalogOutcomeRequirement = {
+    id: 'agent:behavior-understand',
+    audience: 'agent',
+    audienceLabel: 'agents',
+    statement: 'behavior-level understanding',
+    candidateIds: ['agent-surface'],
+    subjectTokens: ['behavior', 'understand'],
+    requiredSubjectTerms: ['behavior', 'understand'],
+    minimumSubjectMatches: 2,
+  };
+  const boundParaphrase = {
+    ...published('Equip AI agents for dependable change planning', 'AI agents receive grounded context before planning changes.'),
+    criticality_factors: ['catalog-outcome-requirement:agent:behavior-understand'],
+  };
+  assert.deepEqual(uncoveredCapabilityCatalogOutcomeRequirements([boundParaphrase], [requirement]), [requirement]);
+  assert.deepEqual(uncoveredCapabilityCatalogOutcomeRequirements([{
+    ...boundParaphrase,
+    criticality_factors: [
+      'catalog-candidate:wrong-surface',
+      'catalog-outcome-requirement:agent:behavior-understand',
+    ],
+  }], [requirement]), [requirement]);
+  assert.deepEqual(uncoveredCapabilityCatalogOutcomeRequirements([{
+    ...boundParaphrase,
+    criticality_factors: [
+      'catalog-candidate:agent-surface',
+      'catalog-outcome-requirement:agent:behavior-understand',
+    ],
+  }], [requirement]), []);
+
+  const unboundSemantic = {
+    ...published('Help AI agents understand behavior', 'AI agents understand software behavior before planning changes.'),
+    criticality_factors: ['catalog-candidate:agent-surface'],
+  };
+  assert.deepEqual(uncoveredCapabilityCatalogOutcomeRequirements([unboundSemantic], [requirement]), []);
+  assert.deepEqual(uncoveredCapabilityCatalogOutcomeRequirements([{
+    ...unboundSemantic,
+    criticality_factors: ['catalog-candidate:wrong-surface'],
+  }], [requirement]), [requirement]);
+});

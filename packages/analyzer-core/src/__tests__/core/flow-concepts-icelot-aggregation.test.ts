@@ -249,7 +249,8 @@ describe('D2 — facet provenance walkability (flow facet → step → code fact
           (p.facet === 'output' && c.output.includes(p.value)) ||
           (p.facet === 'state_change' && c.side_effects.state_changes.includes(p.value)) ||
           (p.facet === 'external_integration' && c.side_effects.external_integrations.includes(p.value)) ||
-          (p.facet === 'constraint' && c.constraints.some(k => k.rule === p.value));
+          (p.facet === 'constraint' && c.constraints.some(k => k.rule === p.value)) ||
+          (p.facet === 'logic' && Boolean(c.logic) && p.value.includes(c.logic));
         expect(holds).toBe(true);
       }
     }
@@ -284,15 +285,16 @@ describe('D2 — facet provenance walkability (flow facet → step → code fact
 
   test('telemetry join stamps flow-level telemetry provenance (evidence-gated)', () => {
     const flows = computeFlowConcepts(buildCas());
-    attachTelemetryToFlows(flows, [
+    const joined = attachTelemetryToFlows(flows, [
       { static_id: 'ep_createOrder', entry_point_id: 'ep_createOrder', request_count: 100, error_rate: 0.01, source: 'ingested' },
     ]);
-    const f = flows[0];
+    const f = joined[0];
     expect(f.contract.telemetry).toBeDefined();
     const prov = f.contract.facet_provenance!.find(p => p.facet === 'telemetry')!;
     expect(prov).toBeDefined();
     expect(prov.value).toBe('ep_createOrder');
     expect(prov.source).toBe('deterministic');
+    expect(flows[0].contract.telemetry).toBeUndefined();
     // no observations → no telemetry facet AND no telemetry provenance:
     const bare = computeFlowConcepts(buildCas())[0];
     expect(bare.contract.telemetry).toBeUndefined();
