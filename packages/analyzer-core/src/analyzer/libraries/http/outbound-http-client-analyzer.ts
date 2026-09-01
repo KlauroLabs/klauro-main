@@ -13,7 +13,21 @@ interface HttpClientCall {
   line: number;
   serviceAlias?: string;
   declaration?: string;
+  /** 'dynamic' when the URL is built at runtime and cannot be read from source. */
+  endpointResolution?: 'literal' | 'dynamic';
 }
+
+// An outbound call whose URL is a variable is still an outbound call. Every
+// pattern here used to require a quoted literal URL, so a system that calls
+// addresses held in configuration, a database, or user input recorded NO external
+// effects at all. Measured on a feed reader whose single fetch site is
+// `http.NewRequest("GET", requestURL, nil)`: external_services was empty on every
+// flow, and the only literal-URL calls in the repository were in test files. An
+// unknown endpoint is a gap in ONE FIELD; dropping the call loses the fact that
+// the system reaches the network at all.
+const RUNTIME_RESOLVED_ENDPOINT = '(runtime-resolved)';
+// Used when the HTTP verb is itself a variable, so it is never guessed.
+const UNKNOWN_HTTP_METHOD = 'ANY';
 
 interface FileHttpContext {
   baseUrls: Map<string, string>;
@@ -166,7 +180,9 @@ export class OutboundHttpClientAnalyzer extends BaseAnalyzer {
           nodeId,
           'api',
           `${call.method.toUpperCase()} ${call.endpoint}`,
-          `${call.library} outbound HTTP call to ${call.endpoint}.`,
+          call.endpointResolution === 'dynamic'
+            ? `${call.library} outbound HTTP call; the endpoint is built at runtime and is not readable from source.`
+            : `${call.library} outbound HTTP call to ${call.endpoint}.`,
           {
             service_id: call.serviceAlias || serviceAliasFromEndpoint(call.endpoint) || 'external_api',
             endpoint: call.endpoint,
@@ -387,6 +403,7 @@ export class OutboundHttpClientAnalyzer extends BaseAnalyzer {
       this.addCall(calls, 'resty', match[2], baseUrl ? joinEndpoint(baseUrl, match[3]) : match[3], content, match.index);
     }
 
+    this.addGoDynamicCalls(content, calls);
     return calls;
   }
 
@@ -472,6 +489,54 @@ export class OutboundHttpClientAnalyzer extends BaseAnalyzer {
       serviceAlias: serviceAlias || serviceAliasFromEndpoint(normalized),
       declaration,
     });
+  }
+
+  /** Records an outbound call whose endpoint cannot be resolved from source. */
+  private addDynamicCall(
+    calls: HttpClientCall[],
+    library: string,
+    method: string | undefined,
+    content: string,
+    index: number,
+  ): void {
+    calls.push({
+      library,
+      method: (method || UNKNOWN_HTTP_METHOD).toUpperCase(),
+      endpoint: RUNTIME_RESOLVED_ENDPOINT,
+      line: this.sourceLineForIndex(content, index),
+      endpointResolution: 'dynamic',
+    });
+  }
+
+  /**
+   * Go calls whose URL argument is an expression rather than a quoted literal.
+   * The literal patterns run first; any line they already matched is skipped, so
+   * one call is never recorded twice.
+   */
+  private addGoDynamicCalls(content: string, calls: HttpClientCall[]): void {
+    const literalLines = new Set(calls.map(call => call.line));
+    const isLiteral = (argument: string): boolean => /^\s*"/.test(argument);
+    const alreadyCounted = (index: number): boolean =>
+      literalLines.has(this.sourceLineForIndex(content, index));
+    let match: RegExpExecArray | null;
+
+    const newRequest = /\bhttp\.NewRequest\s*\(\s*(?:"([A-Z]+)"|[A-Za-z_][\w.]*)\s*,\s*([^,)]+?)\s*,/g;
+    while ((match = newRequest.exec(content)) !== null) {
+      if (isLiteral(match[2]) || alreadyCounted(match.index)) continue;
+      this.addDynamicCall(calls, 'net/http', match[1], content, match.index);
+    }
+
+    const withContext = /\bhttp\.NewRequestWithContext\s*\([^,]+,\s*(?:"([A-Z]+)"|[A-Za-z_][\w.]*)\s*,\s*([^,)]+?)\s*,/g;
+    while ((match = withContext.exec(content)) !== null) {
+      if (isLiteral(match[2]) || alreadyCounted(match.index)) continue;
+      this.addDynamicCall(calls, 'net/http', match[1], content, match.index);
+    }
+
+    const direct = /\bhttp\.(Get|Post|Head)\s*\(\s*([^,)"]+?)\s*[,)]/g;
+    while ((match = direct.exec(content)) !== null) {
+      if (alreadyCounted(match.index)) continue;
+      this.addDynamicCall(calls, 'net/http', match[1], content, match.index);
+    }
   }
 
   private fileHasHttpClientEvidence(content: string, relativePath: string): boolean {

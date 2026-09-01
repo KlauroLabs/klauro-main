@@ -35,6 +35,53 @@ describe('OutboundHttpClientAnalyzer', () => {
     return contribution.exit_points || [];
   }
 
+  it('records a Go outbound call whose URL is a variable, not only literal URLs', async () => {
+    // The exact shape of a real feed reader's only fetch site. Every pattern in
+    // this analyzer used to require a quoted literal URL, so this file produced
+    // no external effect at all and every flow reported external_services: [].
+    const contribution = await analyze({
+      'go.mod': 'module example.com/reader\n',
+      'internal/reader/fetcher/request_builder.go': [
+        'package fetcher',
+        '',
+        'import "net/http"',
+        '',
+        'func (r *RequestBuilder) ExecuteRequest(requestURL string) (*http.Response, error) {',
+        '\treq, err := http.NewRequest("GET", requestURL, nil)',
+        '\tif err != nil {',
+        '\t\treturn nil, err',
+        '\t}',
+        '\treturn r.client.Do(req)',
+        '}',
+      ].join('\n'),
+    });
+
+    const dynamic = exits(contribution).filter(exit => /runtime-resolved/.test(exit.name || ''));
+    expect(dynamic.length).toBeGreaterThan(0);
+    // The effect is recorded even though the endpoint is unknown...
+    expect(dynamic[0].target?.service_id).toBeTruthy();
+    // ...and the unknown endpoint is stated, never guessed into a hostname.
+    expect(dynamic[0].target?.endpoint).toBe('(runtime-resolved)');
+    expect(dynamic[0].description).toMatch(/built at runtime/i);
+  });
+
+  it('does not double-count a Go call that already matched a literal URL', async () => {
+    const contribution = await analyze({
+      'go.mod': 'module example.com/svc\n',
+      'main.go': [
+        'package main',
+        '',
+        'import "net/http"',
+        '',
+        'func ping() { http.Get("https://api.example.com/health") }',
+      ].join('\n'),
+    });
+
+    const calls = exits(contribution).filter(exit => /example\.com|runtime-resolved/.test(exit.name || ''));
+    expect(calls).toHaveLength(1);
+    expect(calls[0].name).toContain('https://api.example.com/health');
+  });
+
   it('extracts TS/JS axios, got, ky, fetch, Apollo, and urql outbound API calls', async () => {
     const contribution = await analyze({
       'package.json': JSON.stringify({
