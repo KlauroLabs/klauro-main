@@ -247,6 +247,69 @@ on library repos; generic-noun rejection lists discarding `User`, `Account`,
 
 ---
 
+### 5.4 Grounding — the harder half, and the differentiated one
+
+Proposing a capability from a README takes minutes and needs no analyser.
+**Grounding it is the half that requires the CAS, and the half a competitor
+cannot copy.** It is also, measured, much harder.
+
+**What grounding a proposal requires:**
+
+| Proposal claims | Evidence that grounds it |
+|---|---|
+| an outcome a user reaches | a flow whose `terminus.produces` is that outcome |
+| a thing the system holds | an entity with persistence or framework evidence |
+| an integration or delivery | an **external service / outbound effect** on some flow |
+| something reachable | an entry point, inside a ship unit (§6.1) |
+
+A proposal with none of these is a **gap**, not a capability (§9).
+
+#### Measured result
+
+Five proposals derived top-down for a Go feed reader, then grounded against its
+own complete analysis (all layers ready):
+
+| Proposal | Grounded | Why |
+|---|---|---|
+| Read articles from feeds you subscribe to | yes | `Entry` entity, entry routes, `Entry updated` terminus |
+| Read your feeds from other apps (API compat) | yes | among the HTTP route surface |
+| Clean up article content for reading | unknown | no flow located |
+| Fetch feeds from sites that block scrapers | **no** | `external_services: []` on every flow |
+| Send articles to read-later services | **no** | same |
+
+**2 of 5.** The three failures were not failures of the proposals — they were
+missing or wrong structural facts.
+
+#### The four blockers, and why they are fixable
+
+1. **Outbound effects not captured.** `external_services: []` on *every* journey
+   of a program whose entire purpose is fetching feeds over HTTP and pushing to
+   read-later services. The Effects facet is empty exactly where it should be
+   richest, which makes any integration-shaped proposal unfalsifiable.
+2. **Terminus inferred wrongly for non-mutating handlers.** `GET /category/create`
+   — the handler that *renders the form* — was credited with `Category **created**`.
+   A wrong terminus produces a wrong capability, because the terminus names it.
+3. **Steps polluted by shared infrastructure.** UI handlers call a shared
+   content-loader; the tracer follows it into i18n and sidebar counters. The steps
+   of "create a category" came back as *load translation files, parse plural
+   forms, count unread badges*. Every UI route then has the same ~22 steps, so
+   three different routes all render as the same title, and 156 of 181 flows
+   become indistinguishable — `flows_to_capabilities: 0.138`.
+4. **Capability attribution over-broad and token-derived.** A 3-step flow that
+   updates one entity carried **11** capability ids, including one named after a
+   parameter token, plus singular/plural duplicates of the same concept.
+
+**Proof this is a tracer defect and not a model defect:** in the same analysis,
+the API routes are clean. `PUT /v1/categories/:categoryID` yields the right name,
+the right terminus, and seven relevant steps — because its handler is thin and
+never enters shared plumbing. Same model, same repo, correct output.
+
+**Therefore:** step traces must exclude shared infrastructure reached through a
+common helper; terminus inference must distinguish a handler that *renders* from
+one that *mutates*; and outbound calls must be captured as effects. Until then,
+the naming half can be fixed by seeding from top-down evidence, but the grounding
+half — the differentiated half — cannot be trusted.
+
 ## 6. Dispatch mechanisms, and non-transactional systems
 
 **Every system has a dispatch mechanism, and it is never a flow.** The flows are
@@ -518,6 +581,11 @@ plausible and wrong.
 | Retired platform's routes reported as current capabilities | derived from folder contents, not ship-unit reachability (§6.1) |
 | Vendored dependency's features attributed to the product | same (§6.1) |
 | Docs/asset nodes inflating the graph and the catalog | content not separated from product (§6.1) |
+| Every UI route yields the same steps and the same title | tracer follows a shared helper into i18n/rendering (§5.4) |
+| A form-rendering GET credited with creating the record | terminus inferred from route/handler shape, not effects (§5.4) |
+| A 3-step flow carrying 11 capabilities | attribution over-broad and token-derived (§5.4) |
+| `cap_x_management` and `cap_xs_management` both present | no singular/plural collapse in capability identity (§5.4) |
+| Integration capabilities unfalsifiable | outbound calls not captured as effects (§5.4) |
 
 **Rule of thumb:** a wrong answer at one member is usually a missing input from
 the member or tier beneath it.
