@@ -832,3 +832,15 @@ test('moves enumerated state-transition details out of capability titles only wh
     'Filter applications by category, status, and job board',
   );
 });
+
+test('moves a proven multi-step implementation clause out of an outcome title', () => {
+  const title = 'Categorize job applications by creating, editing, or deleting categories and adding applications to them';
+  const evidence = 'Job applications are organized into user-defined categories by creating new categories, adding applications to them, editing category names, or deleting categories.';
+
+  assert.equal(conciseCapabilityCatalogOutcomeName(title, evidence), 'Categorize job applications');
+  assert.equal(
+    conciseCapabilityCatalogOutcomeName(title, 'Job applications can be organized into categories.'),
+    title,
+  );
+  assert.equal(conciseCapabilityCatalogOutcomeName('Filter applications by category, status, and job board', evidence), 'Filter applications by category, status, and job board');
+});

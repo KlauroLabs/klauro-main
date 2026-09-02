@@ -499,6 +499,14 @@ export function conciseCapabilityCatalogOutcomeName(
 ): string {
   const normalized = String(name || '').replace(/\s+/g, ' ').trim();
   if (!/[,;]/.test(normalized)) return normalized;
+  const procedural = normalized.match(/^(.+?)\s+by\s+(.+[,;].+)$/i);
+  if (procedural && purposeVerbIn(procedural[1])) {
+    const detailActions = [...new Set(tokens(procedural[2]).filter(token => CAPABILITY_PURPOSE_VERBS.has(token)))];
+    const supportingTokens = new Set(tokens(supportingText));
+    if (detailActions.length >= 3 && detailActions.every(action => supportingTokens.has(action))) {
+      return procedural[1].trim();
+    }
+  }
   const transition = normalized.match(/^((?:change|update|set|transition|move)\b.+?)\s+(?:to|as|between)\s+(.+[,;].+)$/i);
   if (!transition) return normalized;
   const detailTokens = transition[2]
