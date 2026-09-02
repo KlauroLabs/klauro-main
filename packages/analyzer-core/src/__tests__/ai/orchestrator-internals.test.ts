@@ -9223,7 +9223,7 @@ describe('top-down capability evidence (C2)', () => {
         'catalog-candidate:graph', `catalog-outcome-requirement:${requirement.id}`,
       ]));
       expect(repairContext.task).toContain('Build a trustworthy relationship graph');
-      expect(repairContext.task).toContain('description that explains that exact named outcome');
+      expect(repairContext.task).toContain('explain that exact audience outcome');
 
       expect(validateElementDescription(
         'Builds system components from data entities and method calls.',
@@ -14514,7 +14514,7 @@ describe('capability operation semantics', () => {
     })).toBe(false);
   });
 
-  it('requires published descriptions to disclose destructive operations', () => {
+  it('keeps destructive operations in evidence without forcing CRUD into outcome prose', () => {
     const operations = [
       { entry_point_id: 'create', entry_point_type: 'http', action: 'Create', trigger: { method: 'POST', path: '/comments' } },
       { entry_point_id: 'delete', entry_point_type: 'http', action: 'Delete', trigger: { method: 'DELETE', path: '/comments/{id}' } },
@@ -14533,7 +14533,7 @@ describe('capability operation semantics', () => {
     };
     expect(orch.capabilityPublishabilityFailure({
       ...base, description: 'Users post comments on articles and view the resulting discussion with other readers.',
-    })).toBe('description-omits-observed-deletion');
+    })).toBeUndefined();
     expect(orch.capabilityPublishabilityFailure({
       ...base, description: 'Users post comments on articles and remove their own comments from the resulting discussion.',
     })).toBeUndefined();
