@@ -15,21 +15,21 @@
     }
   },
   "analysis": {
-    "analysis_id": "analysis_1788376056336_8v8yjlxsw",
-    "analysis_timestamp": "2026-09-02T19:07:56.204Z",
+    "analysis_id": "analysis_1788376197824_r68y6un1r",
+    "analysis_timestamp": "2026-09-02T19:10:16.717Z",
     "analyzer_build": "source-sha256:27fbf7f53f8f76aa289abc2a3b6abdab0c41267a72d34b293f7a3ce7ce7de85a",
-    "analyzer_source_base_commit": "33f741b9a03238e9415d586dc1449e6a15559142",
+    "analyzer_source_base_commit": "9c35c6a8a5362cced1d0e670a0944c576072d5ab",
     "analyzer_source_sha256": "27fbf7f53f8f76aa289abc2a3b6abdab0c41267a72d34b293f7a3ce7ce7de85a",
     "analyzer_source_file_count": 449,
     "production_cas": "todo-jobs-production-cas.json.gz",
-    "production_cas_sha256": "a7e4dcd52107a61044124ab7651d204dfd80a82d39d707bc760bf98a1e85d3e2",
-    "capabilities_sha256": "4845087fd63c43dbd0f681e04eb3a134fafb8754d0abaeb22d36dd915d3d38b8",
+    "production_cas_sha256": "4f84e61f094b9036593dfe5b9e1fe0d0a84b09ccef40c09909ac5febd0039b5a",
+    "capabilities_sha256": "545619802a1166d84569c7cb73aed53c7743d494072be6d96c08361c4342de1e",
     "provider": "deepinfra",
     "model": "Qwen/Qwen3-Next-80B-A3B-Instruct",
     "prompt_version": "capability_catalog.v2",
     "semantic_schema_version": "e1.1",
     "semantic_trace": "todo-jobs-production-semantic.jsonl",
-    "semantic_trace_sha256": "6232bf5bd75e931cdab8db09026b39ac64024ad5f7a5f5467e728792bd4a05e2",
+    "semantic_trace_sha256": "97945ff1a69c793de073bd4f24567a7677e4fc98f5e08d7ab4c88bf739b3e707",
     "ai_cache": "disabled",
     "parser_fingerprint": "f22d25afb68de083",
     "derived_fingerprint": "97ed1ade78d27357"
@@ -957,7 +957,7 @@
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-02T19:07:41.425Z"
+          "generated_at": "2026-09-02T19:10:03.331Z"
         },
         "description": "Job applications organize into named categories by creating, editing, or deleting categories and assigning applications to them.",
         "description_source": "ai",
@@ -965,7 +965,7 @@
           "status": "ai_applied",
           "attempted": true,
           "budget_ms": 20000,
-          "generated_at": "2026-09-02T19:07:55.858Z"
+          "generated_at": "2026-09-02T19:10:16.360Z"
         },
         "category": "core",
         "operations": [
@@ -1554,7 +1554,7 @@
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-02T19:07:41.425Z"
+          "generated_at": "2026-09-02T19:10:03.331Z"
         },
         "description": "Todo Jobs allows users to manually set job application status to Rejected, Assessment, or Interview, and automatically closes applications when their end date is reached.",
         "description_source": "ai",
@@ -1562,7 +1562,7 @@
           "status": "ai_applied",
           "attempted": true,
           "budget_ms": 20000,
-          "generated_at": "2026-09-02T19:07:55.858Z"
+          "generated_at": "2026-09-02T19:10:16.360Z"
         },
         "category": "core",
         "operations": [
@@ -2001,7 +2001,7 @@
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-02T19:07:43.238Z"
+          "generated_at": "2026-09-02T19:10:05.107Z"
         },
         "description": "Job applications surface note counts when notes are added, edited, or deleted, ensuring users see updated note status across their categorized applications.",
         "description_source": "ai",
@@ -2009,7 +2009,7 @@
           "status": "ai_applied",
           "attempted": true,
           "budget_ms": 20000,
-          "generated_at": "2026-09-02T19:07:55.858Z"
+          "generated_at": "2026-09-02T19:10:16.360Z"
         },
         "category": "core",
         "operations": [
@@ -2222,7 +2222,7 @@
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-02T19:07:44.045Z"
+          "generated_at": "2026-09-02T19:10:05.936Z"
         },
         "description": "Users can keep track of job applications, while retaining the ability to create, view, update, and remove earlier job applications when needed.",
         "description_source": "ai",
@@ -2230,7 +2230,7 @@
           "status": "ai_applied",
           "attempted": true,
           "budget_ms": 20000,
-          "generated_at": "2026-09-02T19:07:55.858Z"
+          "generated_at": "2026-09-02T19:10:16.360Z"
         },
         "category": "core",
         "operations": [

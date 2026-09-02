@@ -1018,6 +1018,7 @@ test('repairs only uncovered action-scoped slices of a structural aggregate in s
   assert.deepEqual(uncoveredAggregateOperationObligationIds([aggregate], fullyCovered, first.scopes, context), new Map());
   assert.deepEqual([...fullyCoveredAggregateCapabilityCandidateIds([aggregate], fullyCovered, context)], [aggregate.id]);
   assert.deepEqual([...fullyCoveredAggregateCapabilityCandidateIds([aggregate], [...fullyCovered].reverse(), context)], [aggregate.id]);
+  assert.deepEqual([...fullyCoveredAggregateCapabilityCandidateIds([{ ...aggregate, operations: [] }], fullyCovered, context)], [aggregate.id]);
   const exactScopeOutcomesWithoutDuplicatedEntityMetadata = fullyCovered.map(item => ({ ...item, related_entities: [] }));
   assert.deepEqual([...fullyCoveredAggregateCapabilityCandidateIds([aggregate], exactScopeOutcomesWithoutDuplicatedEntityMetadata, context)], [aggregate.id]);
   assert.deepEqual([...fullyCoveredAggregateCapabilityCandidateIds([aggregate], exactScopeOutcomesWithoutDuplicatedEntityMetadata.filter(item => item.id !== readView.id), context)], []);
