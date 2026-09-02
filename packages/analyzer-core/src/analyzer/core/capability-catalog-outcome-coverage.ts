@@ -551,6 +551,20 @@ export function capabilityCandidateCorroboratesCatalogOutcomeRequirement(
   return requiredTerms.filter(token => candidateTokens.has(canonicalToken(token))).length >= requiredMatches;
 }
 
+function capabilityActionMatchesCatalogOutcomeRequirement(
+  capability: Pick<SystemCapability, 'name'>,
+  requirement: CapabilityCatalogOutcomeRequirement,
+): boolean {
+  const requiredActions = (requirement.visibleActionTerms || []).map(canonicalToken);
+  if (requiredActions.length === 0) return false;
+  const multiActionFeature = String(requirement.firstPartyOutcomeText || '')
+    .split(/(?<=[.!?;])\s+/i)
+    .filter(sentence => purposeVerbIn(sentence)).length > 1;
+  if (multiActionFeature) return true;
+  const leadingAction = canonicalToken((String(capability.name || '').match(/[A-Za-z][A-Za-z'-]*/)?.[0]) || '');
+  return requiredActions.includes(leadingAction);
+}
+
 export function bindUniquelySatisfiedCatalogOutcomeRequirements(
   capabilities: readonly SystemCapability[],
   requirements: readonly CapabilityCatalogOutcomeRequirement[],
@@ -563,6 +577,23 @@ export function bindUniquelySatisfiedCatalogOutcomeRequirements(
     return citedCandidates.some(candidateId => requirement.candidateIds.includes(candidateId)) &&
       capabilitySatisfiesCatalogOutcomeRequirement(capability, requirement) ? [index] : [];
   }));
+  const requirementIndexesByCapability = new Map<number, number[]>();
+  matches.forEach((capabilityIndexes, requirementIndex) => capabilityIndexes.forEach(capabilityIndex => {
+    requirementIndexesByCapability.set(capabilityIndex, [
+      ...(requirementIndexesByCapability.get(capabilityIndex) || []),
+      requirementIndex,
+    ]);
+  }));
+  for (const [capabilityIndex, requirementIndexes] of requirementIndexesByCapability) {
+    if (requirementIndexes.length < 2) continue;
+    const actionMatches = requirementIndexes.filter(requirementIndex =>
+      capabilityActionMatchesCatalogOutcomeRequirement(capabilities[capabilityIndex], requirements[requirementIndex]));
+    if (actionMatches.length === 0 || actionMatches.length === requirementIndexes.length) continue;
+    const preferred = new Set(actionMatches);
+    matches.forEach((capabilityIndexes, requirementIndex) => {
+      if (!preferred.has(requirementIndex)) matches[requirementIndex] = capabilityIndexes.filter(index => index !== capabilityIndex);
+    });
+  }
   const requirementMatchesByCapability = new Map<number, number[]>();
   matches.forEach((capabilityIndexes, requirementIndex) => capabilityIndexes.forEach(capabilityIndex => {
     const requirementIndexes = requirementMatchesByCapability.get(capabilityIndex) || [];

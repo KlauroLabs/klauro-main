@@ -465,6 +465,39 @@ test('initial one-to-one stamping cannot bind actorless or mixed-audience identi
   assert.equal(bindUniquelySatisfiedCatalogOutcomeRequirements([specific], [human])[0].criticality_factors.includes(`catalog-outcome-requirement:${human.id}`), true);
 });
 
+test('uses the outcome action to disambiguate shared subjects during unique binding', () => {
+  const broad: CapabilityCatalogOutcomeRequirement = {
+    id: 'all:track-job-applications',
+    statement: 'keep track of job applications',
+    firstPartyOutcomeText: 'Keep track of job applications.',
+    candidateIds: ['jobs', 'notes'],
+    subjectTokens: ['job', 'application'],
+    requiredSubjectTerms: ['job', 'application'],
+    visibleActionTerms: ['keep'],
+  };
+  const notes: CapabilityCatalogOutcomeRequirement = {
+    id: 'all:manage-job-application-notes',
+    statement: 'delete or edit job applications and add notes to job applications',
+    firstPartyOutcomeText: 'Delete or edit job applications. Add notes to job applications.',
+    candidateIds: ['jobs', 'notes'],
+    subjectTokens: ['job', 'application', 'note'],
+    requiredSubjectTerms: ['job', 'application'],
+    visibleActionTerms: ['delete'],
+  };
+  const capability = published(
+    'Attach notes to job applications',
+    'Job applicants retain contextual notes with each application.',
+  );
+  capability.criticality_factors = ['catalog-candidate:notes'];
+
+  const [bound] = bindUniquelySatisfiedCatalogOutcomeRequirements([capability], [broad, notes]);
+
+  assert.equal(
+    bound.criticality_factors.includes('catalog-outcome-requirement:all:manage-job-application-notes'),
+    true,
+  );
+});
+
 test('derives machine-readable extraction requirements from first-party audience and subjects', () => {
   const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, evidence).filter(requirement => requirement.audience);
   const human = requirements.find(requirement => requirement.audience === 'human')!;
