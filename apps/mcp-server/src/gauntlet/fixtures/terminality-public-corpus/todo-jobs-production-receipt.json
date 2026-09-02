@@ -15,24 +15,24 @@
     }
   },
   "analysis": {
-    "analysis_id": "analysis_1788376551633_xw4yw6gzh",
-    "analysis_timestamp": "2026-09-02T19:16:19.614Z",
-    "analyzer_build": "source-sha256:8fcfaddaffc3295ff00d554aaed9dc36d7d6fd7e096783156df3937125885fd7",
-    "analyzer_source_base_commit": "5319b6aac24da87cb0cfb119af5abf75888fd0de",
-    "analyzer_source_sha256": "8fcfaddaffc3295ff00d554aaed9dc36d7d6fd7e096783156df3937125885fd7",
+    "analysis_id": "analysis_1788377011896_jpgez8ohv",
+    "analysis_timestamp": "2026-09-02T19:24:09.921Z",
+    "analyzer_build": "source-sha256:bba90e4fbebd53c510c0c5e6172e6d98efc977f0d5027a85657458029e80daa9",
+    "analyzer_source_base_commit": "f57f9588522f616e5111791ec97c3429e6322d12",
+    "analyzer_source_sha256": "bba90e4fbebd53c510c0c5e6172e6d98efc977f0d5027a85657458029e80daa9",
     "analyzer_source_file_count": 449,
     "production_cas": "todo-jobs-production-cas.json.gz",
-    "production_cas_sha256": "88d18c53e980472cc1133d9e78784076cc301e1b79a90080a271c7b80d86563a",
-    "capabilities_sha256": "be3c0c40b2e89c8367123adc1d3bbec360975a7b628f8aca65dfd1db54129787",
+    "production_cas_sha256": "43f8830a4376b633abf5df7a5f1cc4ce20450342fc7cb9526e2c331c7f4f0e6a",
+    "capabilities_sha256": "36ca06f55ebc19dde0399900977aa24a2ea6d33c755006dec98e7872e2811111",
     "provider": "deepinfra",
     "model": "Qwen/Qwen3-Next-80B-A3B-Instruct",
     "prompt_version": "capability_catalog.v2",
     "semantic_schema_version": "e1.1",
     "semantic_trace": "todo-jobs-production-semantic.jsonl",
-    "semantic_trace_sha256": "b9c594e572d07a8ad217be09c3e217b68af8ae50d727cd6212501f639f03ddc9",
+    "semantic_trace_sha256": "fb4776558bd6fbb199148277814f6fda99409478f791743b6d08826578756e4f",
     "ai_cache": "disabled",
     "parser_fingerprint": "f22d25afb68de083",
-    "derived_fingerprint": "03123b7623f0906b"
+    "derived_fingerprint": "5e58f28d65e206b7"
   },
   "repo_id": "github:Babadinho/todo-jobs@c7c139a966ee5eafa49066a89222b56ba8233c27",
   "known_node_ids": [
@@ -957,7 +957,7 @@
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-02T19:16:01.558Z"
+          "generated_at": "2026-09-02T19:23:40.975Z"
         },
         "description": "Job applications organize into named categories by creating, editing, or deleting categories to group applications, with each action directly updating the assigned category reference.",
         "description_source": "ai",
@@ -965,7 +965,7 @@
           "status": "ai_applied",
           "attempted": true,
           "budget_ms": 20000,
-          "generated_at": "2026-09-02T19:16:19.238Z"
+          "generated_at": "2026-09-02T19:24:09.503Z"
         },
         "category": "core",
         "operations": [
@@ -1554,15 +1554,15 @@
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-02T19:16:01.558Z"
+          "generated_at": "2026-09-02T19:23:40.975Z"
         },
-        "description": "Todo Jobs allows users to manually set job application status to Rejected, Assessment, or Interview, and automatically closes applications when their end date passes.",
+        "description": "Todo Jobs allows users to manually set job application status to Rejected, Assessment, or Interview, and automatically closes applications when their end date is reached.",
         "description_source": "ai",
         "description_generation": {
           "status": "ai_applied",
           "attempted": true,
           "budget_ms": 20000,
-          "generated_at": "2026-09-02T19:16:19.238Z"
+          "generated_at": "2026-09-02T19:24:09.503Z"
         },
         "category": "core",
         "operations": [
@@ -2001,7 +2001,7 @@
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-02T19:16:04.201Z"
+          "generated_at": "2026-09-02T19:23:43.413Z"
         },
         "description": "Job applications surface note counts when notes are added, edited, or deleted, ensuring users see updated note status across categories and user contexts.",
         "description_source": "ai",
@@ -2009,7 +2009,7 @@
           "status": "ai_applied",
           "attempted": true,
           "budget_ms": 20000,
-          "generated_at": "2026-09-02T19:16:19.238Z"
+          "generated_at": "2026-09-02T19:24:09.503Z"
         },
         "category": "core",
         "operations": [
@@ -2222,15 +2222,15 @@
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-02T19:16:05.368Z"
+          "generated_at": "2026-09-02T19:23:57.832Z"
         },
-        "description": "Users can keep track of job applications, while retaining the ability to create, view, update, and remove earlier job applications when needed.",
+        "description": "Job applications track creation, updates, and deletion with title, status, category, and note counts visible to the user.",
         "description_source": "ai",
         "description_generation": {
           "status": "ai_applied",
           "attempted": true,
           "budget_ms": 20000,
-          "generated_at": "2026-09-02T19:16:19.238Z"
+          "generated_at": "2026-09-02T19:24:09.503Z"
         },
         "category": "core",
         "operations": [
@@ -2370,8 +2370,7 @@
         "criticality_factors": [
           "ai-extracted-from-journeys-and-entities",
           "catalog-outcome-requirement:all:job-keep",
-          "catalog-candidate:cap_job_management",
-          "catalog-description-rejected"
+          "catalog-candidate:cap_job_management"
         ],
         "related_flows": [
           {
