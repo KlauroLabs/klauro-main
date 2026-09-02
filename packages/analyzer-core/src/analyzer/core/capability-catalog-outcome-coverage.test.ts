@@ -552,6 +552,9 @@ test('preserves complete outcome clauses from a feature-rich README instead of e
   assert.ok(statements.some(statement => statement.startsWith('categorize your applications by creating different categories') && statement.includes('edit or delete your categories')));
   assert.ok(statements.some(statement => statement.startsWith('manage your application status') && statement.includes('Interview or set it to closed')));
   assert.ok(statements.some(statement => statement.startsWith('delete or edit your job applications') && statement.includes('add notes to your job applications')));
+  const jobManagement = requirements.find(requirement => requirement.statement.startsWith('delete or edit your job applications'))!;
+  assert.deepEqual(jobManagement.visibleActionTerms, ['delete']);
+  assert.equal(capabilityCatalogOutcomeNameFailure('Track job notes', jobManagement), undefined);
   assert.ok(statements.some(statement => statement.startsWith('Filter between job applications using the category, status, and the job board or website') && statement.includes('narrow down what you are looking for')), JSON.stringify(statements));
   assert.equal(statements.some(statement => /^(?:corresponding|with easy|status: status|search feature adds)$/i.test(statement)), false);
   assert.equal(requirements.some(requirement => requirement.requiredSubjectTerms?.includes('statu')), false);

@@ -460,7 +460,10 @@ export function capabilityCatalogOutcomeNameFailure(
     CAPABILITY_PURPOSE_VERBS.has(rawLeading) ||
     CAPABILITY_PURPOSE_VERBS.has(actionStem);
   const requiredAction = new Set((requirement.visibleActionTerms || []).map(canonicalToken));
-  if (requiredAction.size > 0 && !requiredAction.has(canonicalLeading)) return `required-outcome-visible-action-missing:${requirement.id}`;
+  const multiActionFeature = String(requirement.firstPartyOutcomeText || '')
+    .split(/(?<=[.!?;])\s+/i)
+    .filter(sentence => purposeVerbIn(sentence)).length > 1;
+  if (!multiActionFeature && requiredAction.size > 0 && !requiredAction.has(canonicalLeading)) return `required-outcome-visible-action-missing:${requirement.id}`;
   if (leading && subjectTerms.has(leading) && !actionHeaded && recoveredAnchors.length > 0 && !recoveredAnchors.some(anchor => orderedNameTokens.includes(anchor))) {
     return `required-outcome-visible-action-missing:${requirement.id}`;
   }
