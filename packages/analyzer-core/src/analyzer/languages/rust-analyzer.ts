@@ -423,15 +423,9 @@ export class RustAnalyzer extends BaseAnalyzer {
         if (extraction) extractions.push(extraction);
       }
 
-      if (this.shouldBuildExpensiveLanguageCallGraph(rustFiles.length)) {
-        const edgeIds = new Set(edges.map(edge => edge.id));
-        for (const extraction of extractions) {
-          this.linkFileElements(extraction, nodes, edges, edgeIds, exitPoints, methodCalls);
-        }
-      } else {
-        this.addAnalysisWarning(
-          `Rust cross-file linking deferred for ${process.env.KLAURO_ANALYSIS_FOCUS || 'default'} focus after ${rustFiles.length} prioritized files; run deep-context/full analysis for exhaustive Rust call edges`
-        );
+      const edgeIds = new Set(edges.map(edge => edge.id));
+      for (const extraction of extractions) {
+        this.linkFileElements(extraction, nodes, edges, edgeIds, exitPoints, methodCalls);
       }
       this.applyTestFileBoundary(nodes);
 
@@ -570,12 +564,6 @@ export class RustAnalyzer extends BaseAnalyzer {
     }
   }
 
-  private shouldBuildExpensiveLanguageCallGraph(fileCount: number): boolean {
-    const focus = process.env.KLAURO_ANALYSIS_FOCUS;
-    if (focus === 'agent-fast' || focus === 'ui-overview') return fileCount <= 350;
-    if (focus === 'deep-context') return fileCount <= 2000;
-    return true;
-  }
 
   private async detectProjectType(projectPath: string): Promise<void> {
     try {
@@ -2373,10 +2361,6 @@ export class RustAnalyzer extends BaseAnalyzer {
         }
 
         let targetNodeIds = functionNodeMap.get(call.targetFunction) || [];
-
-
-
-
         if (call.isMethodCall && call.targetModule) {
           const recvType = receiverTypes.get(call.targetModule);
           if (recvType) {
@@ -2384,36 +2368,22 @@ export class RustAnalyzer extends BaseAnalyzer {
             if (typed.length) targetNodeIds = typed;
           }
         }
-        for (const targetNodeId of targetNodeIds) {
-          if (targetNodeId !== callerNodeId) {
-            const edgeId = `call:${callerNodeId}:${targetNodeId}:${call.callLine}`;
-            if (!edgeIds.has(edgeId)) {
-              edgeIds.add(edgeId);
-              edges.push(this.createEdge(
-                edgeId,
-                callerNodeId,
-                targetNodeId,
-                'calls'
-              ));
-            }
-          }
-        }
-
-        if (call.isMethodCall && call.targetModule === undefined) {
-          const selfMethodIds = functionNodeMap.get(call.targetFunction) || [];
-          for (const selfMethodId of selfMethodIds) {
-            if (selfMethodId !== callerNodeId) {
-              const edgeId = `call:${callerNodeId}:${selfMethodId}:${call.callLine}`;
-              if (!edgeIds.has(edgeId)) {
-                edgeIds.add(edgeId);
-                edges.push(this.createEdge(
-                  edgeId,
-                  callerNodeId,
-                  selfMethodId,
-                  'calls'
-                ));
-              }
-            }
+        const targetNode = this.selectResolvedNode(
+          targetNodeIds
+            .map(id => nodeById.get(id))
+            .filter((node): node is CASNode => Boolean(node)),
+          func.filePath
+        );
+        if (targetNode && targetNode.id !== callerNodeId) {
+          const edgeId = `call:${callerNodeId}:${targetNode.id}:${call.callLine}`;
+          if (!edgeIds.has(edgeId)) {
+            edgeIds.add(edgeId);
+            edges.push(this.createEdge(
+              edgeId,
+              callerNodeId,
+              targetNode.id,
+              'calls'
+            ));
           }
         }
       }

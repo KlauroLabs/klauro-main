@@ -104,6 +104,8 @@ Rendering a form is not evidence that the form's eventual mutation occurred. A G
 
 Shared helpers belong in a flow only when they materially constrain, transform, decide, or effect that behavior. Translation lookup, sidebar counters, formatting, tracing wrappers, and generic framework dispatch should not make otherwise different flows appear identical. They remain linked as supporting code and can still matter for change risk.
 
+Flow paths are canonical evidence projections, not an expansion of every combinatorial route through the graph. Every reachable terminal must remain represented, while alternate routes remain losslessly queryable as CAS edges. Structural relationships such as dependency, use, and implementation links remain in CAS but do not masquerade as execution steps.
+
 Flows may support several capabilities, and one capability may require several flows. Flow identity must therefore remain independent of capability naming.
 
 ## Step construction

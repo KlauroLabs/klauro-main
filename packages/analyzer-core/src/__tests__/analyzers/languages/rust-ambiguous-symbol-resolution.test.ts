@@ -46,7 +46,10 @@ describe('Rust ambiguous symbol resolution', () => {
       '',
       'pub fn alpha_handle() {',
       '    errors::Error::custom();',
+      '    shared();',
       '}',
+      '',
+      'pub fn shared() {}',
       '',
     ].join('\n'));
     write('crates/beta/src/lib.rs', [
@@ -54,7 +57,10 @@ describe('Rust ambiguous symbol resolution', () => {
       '',
       'pub fn beta_handle() {',
       '    errors::Error::custom();',
+      '    shared();',
       '}',
+      '',
+      'pub fn shared() {}',
       '',
     ].join('\n'));
     write('crates/zeta/src/lib.rs', [
@@ -133,6 +139,17 @@ describe('Rust ambiguous symbol resolution', () => {
         expect(call.target_node).not.toContain('crates/beta/');
       }
     }
+  });
+
+  it('emits one deterministic call edge instead of every same-named target', async () => {
+    const contribution = await analyzeOnce();
+    const alphaSharedEdges = (contribution.edges || []).filter(edge =>
+      edge.type === 'calls' &&
+      edge.source.includes('crates/alpha/src/lib.rs') &&
+      edge.target.endsWith(':shared')
+    );
+    expect(alphaSharedEdges).toHaveLength(1);
+    expect(alphaSharedEdges[0].target).toContain('crates/alpha/src/lib.rs');
   });
 });
 

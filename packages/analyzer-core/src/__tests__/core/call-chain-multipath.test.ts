@@ -5,7 +5,9 @@
  * traced ONE greedy path per entry point (picking a single best-ranked edge at
  * each depth), so any handler whose non-first callee reached a terminal was
  * misclassified as dead-end (10/3,703 entry-to-exit chains on this repo).
- * The implementation performs deterministic, cycle-safe exhaustive traversal and preserves each canonical terminal path.
+ * The implementation performs deterministic, cycle-safe traversal, preserves
+ * every reachable terminal, and projects one canonical evidence path per exit.
+ * Alternate routes remain losslessly represented by the CAS relationship graph.
  */
 import { AnalyzerOrchestrator } from '../../analyzer/core/orchestrator';
 import type { CASNode, CASEdge, CASEntryPoint, CASExitPoint, CASCallChain } from '../../types/cas.types';
@@ -181,7 +183,7 @@ describe('buildCallChains multi-path exploration', () => {
   });
 
 
-  test('preserves every distinct exit and every parent path to a shared exit', () => {
+  test('preserves every distinct exit and projects one deterministic path to a shared exit', () => {
     const nodes = [
       node('handler'), node('left'), node('right'), node('shared'),
       node('audit'), node('database'),
@@ -201,16 +203,50 @@ describe('buildCallChains multi-path exploration', () => {
       [exit('xShared', 'shared', 'api'), exit('xAudit', 'audit', 'analytics'), exit('xDb', 'database', 'database')]
     );
 
-    expect(chains).toHaveLength(4);
+    expect(chains).toHaveLength(3);
     expect(chains.map(chain => chain.exit_point?.exit_point_id).sort()).toEqual([
-      'xAudit', 'xDb', 'xShared', 'xShared',
+      'xAudit', 'xDb', 'xShared',
     ]);
-    const sharedPaths = chains
-      .filter(chain => chain.exit_point?.exit_point_id === 'xShared')
-      .map(chain => chain.call_path.map(step => step.node_id).join('>'))
-      .sort();
-    expect(sharedPaths).toEqual(['handler>left>shared', 'handler>right>shared']);
-    expect(new Set(chains.map(chain => chain.id)).size).toBe(4);
+    const sharedPath = chains.find(chain => chain.exit_point?.exit_point_id === 'xShared');
+    expect(sharedPath?.call_path.map(step => step.node_id)).toEqual(['handler', 'left', 'shared']);
+    expect(edges.map(item => item.id)).toContain('edge:right->shared');
+    expect(new Set(chains.map(chain => chain.id)).size).toBe(3);
+  });
+
+  test('dense branch-and-merge graphs retain every terminal without materializing path permutations', () => {
+    const layers = 28;
+    const nodes = [node('handler')];
+    const edges: CASEdge[] = [];
+    let previous = ['handler'];
+    for (let layer = 0; layer < layers; layer++) {
+      const current = [`layer_${layer}_a`, `layer_${layer}_b`];
+      nodes.push(...current.map(id => node(id)));
+      for (const source of previous) for (const target of current) edges.push(edge(source, target));
+      previous = current;
+    }
+    nodes.push(node('terminal'));
+    for (const source of previous) edges.push(edge(source, 'terminal'));
+
+    const started = Date.now();
+    const chains = buildChains(nodes, edges, [entry('dense-entry', 'handler')], [exit('dense-exit', 'terminal', 'database')]);
+
+    expect(chains).toHaveLength(1);
+    expect(chains[0].exit_point?.exit_point_id).toBe('dense-exit');
+    expect(chains[0].call_path).toHaveLength(layers + 2);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  test('structural relationships do not masquerade as executed flow steps', () => {
+    const nodes = [node('handler'), node('dependency'), node('terminal')];
+    const edges = [
+      edge('handler', 'dependency', 'depends_on'),
+      edge('dependency', 'terminal'),
+    ];
+    const chains = buildChains(nodes, edges, [entry('ep1', 'handler')], [exit('x1', 'terminal', 'database')]);
+
+    expect(chains).toHaveLength(1);
+    expect(chains[0].chain_type).toBe('dead-end');
+    expect(chains[0].call_path.map(step => step.node_id)).toEqual(['handler']);
   });
 
   test('preserves exits and exact edge provenance beyond the former depth cap', () => {

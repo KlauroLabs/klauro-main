@@ -9,8 +9,6 @@ import type {
 
 const CHAIN_EDGE_TYPES = new Set([
   'calls',
-  'uses',
-  'depends_on',
   'queries',
   'reads',
   'writes',
@@ -19,8 +17,6 @@ const CHAIN_EDGE_TYPES = new Set([
   'emits',
   'handles',
   'routes_to',
-  'implements',
-  'implemented_by',
   'triggers',
 ]);
 
@@ -33,11 +29,7 @@ const CHAIN_EDGE_RANK: Record<string, number> = {
   reads: 5,
   publishes: 6,
   emits: 7,
-  depends_on: 8,
-  uses: 9,
-  implements: 10,
-  implemented_by: 11,
-  subscribes: 12,
+  subscribes: 8,
 };
 
 const CHAIN_EXIT_RANK: Record<string, number> = {
@@ -169,66 +161,75 @@ export function buildCanonicalCallChains(
     const startNode = nodeById.get(startNodeId);
     if (!startNode) continue;
 
-    const exitCandidates: ChainCandidate[] = [];
-    const deadEndCandidates: ChainCandidate[] = [];
-    const stack: Array<{
-      nodeId: string;
-      path: PathStep[];
-      pathNodeIds: Set<string>;
-      circular: boolean;
-      recursive: boolean;
-    }> = [{
-      nodeId: startNode.id,
-      path: [{ nodeId: startNode.id }],
-      pathNodeIds: new Set([startNode.id]),
-      circular: false,
-      recursive: false,
-    }];
+    const parents = new Map<string, { parentId?: string; edge?: CASEdge; depth: number }>();
+    const visited = new Set<string>([startNode.id]);
+    const stack = [startNode.id];
+    const exitNodeById = new Map<string, { nodeId: string; exit: CASExitPoint }>();
+    let deepestNodeId = startNode.id;
+    const circularSourceNodeIds = new Set<string>();
+    const recursiveSourceNodeIds = new Set<string>();
+    parents.set(startNode.id, { depth: 0 });
+
+    const isAncestor = (candidateId: string, nodeId: string): boolean => {
+      let current: string | undefined = nodeId;
+      while (current) {
+        if (current === candidateId) return true;
+        current = parents.get(current)?.parentId;
+      }
+      return false;
+    };
 
     while (stack.length > 0) {
-      const state = stack.pop()!;
-      const exits = [...(exitBySource.get(state.nodeId) || [])].sort((a, b) =>
+      const nodeId = stack.pop()!;
+      const nodeDepth = parents.get(nodeId)?.depth || 0;
+      if (nodeDepth > (parents.get(deepestNodeId)?.depth || 0)) deepestNodeId = nodeId;
+
+      const exits = [...(exitBySource.get(nodeId) || [])].sort((a, b) =>
         (chainExitRank(a) - chainExitRank(b)) || a.id.localeCompare(b.id)
       );
-      const onwardEdges = adjacency.get(state.nodeId) || [];
-      const cycleEdges = onwardEdges.filter(edge => state.pathNodeIds.has(edge.target));
-      const circular = state.circular || cycleEdges.length > 0;
-      const recursive = state.recursive || cycleEdges.some(edge => edge.target === state.nodeId);
-      const signature = state.path
-        .map(step => `${step.edge?.id || 'entry'}:${step.nodeId}`)
-        .join('>');
-
       for (const exitPoint of exits) {
-        exitCandidates.push({
-          path: state.path,
-          exit: exitPoint,
-          circular,
-          recursive,
-          signature: `${signature}>exit:${exitPoint.id}`,
-        });
+        if (!exitNodeById.has(exitPoint.id)) exitNodeById.set(exitPoint.id, { nodeId, exit: exitPoint });
       }
 
-      const traversableEdges = onwardEdges.filter(edge => !state.pathNodeIds.has(edge.target));
-      if (traversableEdges.length === 0 && exits.length === 0) {
-        deadEndCandidates.push({ path: state.path, circular, recursive, signature });
-        continue;
-      }
-
+      const traversableEdges = adjacency.get(nodeId) || [];
       for (let index = traversableEdges.length - 1; index >= 0; index--) {
         const edge = traversableEdges[index];
-        const nextPathNodeIds = new Set(state.pathNodeIds);
-        nextPathNodeIds.add(edge.target);
-        stack.push({
-          nodeId: edge.target,
-          path: [...state.path, { nodeId: edge.target, edge }],
-          pathNodeIds: nextPathNodeIds,
-          circular,
-          recursive,
-        });
+        if (edge.target === nodeId) recursiveSourceNodeIds.add(nodeId);
+        if (visited.has(edge.target)) {
+          if (isAncestor(edge.target, nodeId)) circularSourceNodeIds.add(nodeId);
+          continue;
+        }
+        visited.add(edge.target);
+        parents.set(edge.target, { parentId: nodeId, edge, depth: nodeDepth + 1 });
+        stack.push(edge.target);
       }
     }
 
-    const candidates = exitCandidates.length > 0 ? exitCandidates : deadEndCandidates;
+    const pathTo = (nodeId: string): PathStep[] => {
+      const reversed: PathStep[] = [];
+      let current: string | undefined = nodeId;
+      while (current) {
+        const parent = parents.get(current);
+        reversed.push({ nodeId: current, edge: parent?.edge });
+        current = parent?.parentId;
+      }
+      return reversed.reverse();
+    };
+    const candidateFor = (nodeId: string, exit?: CASExitPoint): ChainCandidate => {
+      const path = pathTo(nodeId);
+      const pathNodeIds = new Set(path.map(step => step.nodeId));
+      const signature = path.map(step => `${step.edge?.id || 'entry'}:${step.nodeId}`).join('>');
+      return {
+        path,
+        exit,
+        circular: [...circularSourceNodeIds].some(sourceId => pathNodeIds.has(sourceId)),
+        recursive: [...recursiveSourceNodeIds].some(sourceId => pathNodeIds.has(sourceId)),
+        signature: exit ? `${signature}>exit:${exit.id}` : signature,
+      };
+    };
+    const candidates = exitNodeById.size > 0
+      ? [...exitNodeById.values()].map(({ nodeId, exit }) => candidateFor(nodeId, exit))
+      : [candidateFor(deepestNodeId)];
     candidates.sort((a, b) =>
       ((a.exit ? chainExitRank(a.exit) : Number.MAX_SAFE_INTEGER) -
         (b.exit ? chainExitRank(b.exit) : Number.MAX_SAFE_INTEGER)) ||
