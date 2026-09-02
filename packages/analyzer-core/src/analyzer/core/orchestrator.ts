@@ -9244,7 +9244,17 @@ export class AnalyzerOrchestrator {
         debugCatalogRejection(name, 'targeted-evidence-citations-incomplete', candidateIds);
         continue;
       }
-      const citedCandidatePool = candidatePoolForRanking.filter(candidate => candidateIds.includes(candidate.id));
+      const requirementScopedCandidateIds = targetedRepair && boundRequirement
+        ? boundRequirement.candidateIds.filter(candidateId =>
+            candidateId.startsWith('operation-obligation:') &&
+            candidatePoolForRanking.some(candidate => candidate.id === candidateId),
+          )
+        : [];
+      const evidenceCandidateIds = new Set([
+        ...candidateIds,
+        ...requirementScopedCandidateIds,
+      ]);
+      const citedCandidatePool = candidatePoolForRanking.filter(candidate => evidenceCandidateIds.has(candidate.id));
       const citedCandidates = targetedRepair && requiresCompleteTargetedCitations
         ? citedCandidatePool
         : narrowCapabilityEvidenceCandidates(name, citedCandidatePool);
