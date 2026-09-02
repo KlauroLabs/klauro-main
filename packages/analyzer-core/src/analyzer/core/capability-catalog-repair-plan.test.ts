@@ -492,6 +492,15 @@ describe('capability catalog repair planning', () => {
     assert.deepEqual(result.existing[0].operations.map(operation => operation.entry_point_id).sort(), ['edit-category', 'edit-job']);
     assert.deepEqual(result.existing[0].related_entities, ['entity_category']);
     assert.deepEqual(result.incoming, []);
+
+    const inferred = supersedeUnboundPendingOutcomeDuplicates(
+      [bound], [synonym], [requirement], new Map(), new Set(['categories']),
+    );
+    assert.equal(inferred.existing.length, 1);
+    assert.equal(inferred.existing[0].id, 'bound-categorize');
+    assert.ok(inferred.existing[0].criticality_factors.includes('catalog-candidate:categories'));
+    assert.ok(inferred.existing[0].operations.some(operation => operation.entry_point_id === 'edit-category'));
+    assert.deepEqual(inferred.incoming, []);
   });
 
   test('preserves previously covered exact obligations while a same-identity sibling is promoted later', () => {

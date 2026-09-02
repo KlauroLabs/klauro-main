@@ -706,6 +706,24 @@ function unboundNameIsCoveredByRequirementReplacement(
     subjectTerms.some(term => pendingTokens.includes(term));
 }
 
+function unboundOutcomeSynonymIsCoveredByRequirementReplacement(
+  pending: SystemCapability,
+  replacement: SystemCapability,
+  requirement: CapabilityCatalogOutcomeRequirement,
+): boolean {
+  if (requirement.audience || !capabilityNamesShareCanonicalAction(pending, replacement)) return false;
+  const pendingCandidateIds = factors(pending, 'catalog-candidate:');
+  if (pendingCandidateIds.length === 0 || pendingCandidateIds.some(candidateId => !requirement.candidateIds.includes(candidateId))) return false;
+  const pendingSubjects = outcomeNameTokens(pending.name).slice(1);
+  const replacementSubjects = outcomeNameTokens(replacement.name).slice(1);
+  const requirementSubjects = (requirement.requiredSubjectTerms || requirement.subjectTokens)
+    .map(canonicalCapabilityCatalogOutcomeToken);
+  const requiredMatches = requirement.minimumSubjectMatches ?? Math.min(2, requirementSubjects.length);
+  const requirementMatches = requirementSubjects.filter(term => pendingSubjects.includes(term)).length;
+  const sharedSubjects = pendingSubjects.filter(term => replacementSubjects.includes(term)).length;
+  return requirementMatches >= requiredMatches && sharedSubjects >= 1;
+}
+
 function pendingTitleCoversRequirement(
   pending: SystemCapability,
   requirement: CapabilityCatalogOutcomeRequirement,
@@ -762,10 +780,20 @@ export function supersedeUnboundPendingOutcomeDuplicates(
   }
   const repairedRequirements = new Set(validReplacements.keys());
   if (repairedRequirements.size === 0) return { existing: [...existing], incoming: [...incoming] };
+  const matchingRequirementIds = (capability: SystemCapability): string[] => {
+    const captured = pendingRequirementIdsByLifecycleKey.get(capabilityCatalogRepairLifecycleKey(capability)) ||
+      pendingRequirementIdsByLifecycleKey.get(capability.id) || [];
+    if (captured.length > 0) return [...captured];
+    return requirements
+      .filter(requirement => (validReplacements.get(requirement.id) || []).some(replacement =>
+        unboundNameIsCoveredByRequirementReplacement(capability, replacement, requirement) ||
+        unboundOutcomeSynonymIsCoveredByRequirementReplacement(capability, replacement, requirement)))
+      .map(requirement => requirement.id);
+  };
   const evidenceTransfers = new Map<string, Array<{ evidence: SystemCapability; requirement: CapabilityCatalogOutcomeRequirement }>>();
   for (const capability of [...existing, ...incoming]) {
     if (factors(capability, 'catalog-outcome-requirement:').length > 0) continue;
-    const capturedRequirementIds = pendingRequirementIdsByLifecycleKey.get(capabilityCatalogRepairLifecycleKey(capability)) || [];
+    const capturedRequirementIds = matchingRequirementIds(capability);
     if (capturedRequirementIds.length !== 1) continue;
     const requirement = requirementById.get(capturedRequirementIds[0]);
     if (!requirement || !capabilitySemanticallySatisfiesCatalogOutcomeRequirement(capability, requirement)) continue;
@@ -788,7 +816,7 @@ export function supersedeUnboundPendingOutcomeDuplicates(
   const isSupersededPendingIdentity = (capability: SystemCapability): boolean => {
     if (factors(capability, 'catalog-outcome-requirement:').length > 0) return false;
     const capturedCandidateIds = factors(capability, 'catalog-candidate:');
-    const capturedRequirementIds = pendingRequirementIdsByLifecycleKey.get(capabilityCatalogRepairLifecycleKey(capability)) || [];
+    const capturedRequirementIds = matchingRequirementIds(capability);
     if (capturedRequirementIds.length === 0 &&
         capturedCandidateIds.some(candidateId => protectedExactCandidateIds.has(candidateId))) return false;
     if (capturedRequirementIds.length > 0) {
@@ -798,10 +826,7 @@ export function supersedeUnboundPendingOutcomeDuplicates(
           (validReplacements.get(requirementId) || []).some(replacement => capabilityNamesShareCanonicalAction(capability, replacement)));
       });
     }
-    const matchedRequirementIds = requirements
-      .filter(requirement => (validReplacements.get(requirement.id) || [])
-        .some(replacement => unboundNameIsCoveredByRequirementReplacement(capability, replacement, requirement)))
-      .map(requirement => requirement.id);
+    const matchedRequirementIds = matchingRequirementIds(capability);
     return matchedRequirementIds.length > 0 && matchedRequirementIds.every(requirementId => repairedRequirements.has(requirementId));
   };
   return {
