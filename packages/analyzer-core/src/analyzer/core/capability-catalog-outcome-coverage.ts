@@ -60,6 +60,7 @@ function canonicalToken(token: string): string {
   if (/^(?:collabor|coordin)/.test(value)) return 'collaborate';
   if (/^(?:connect|relation)/.test(value)) return 'relation';
   if (/^(?:code|codebase|source|software)$/.test(value)) return 'software';
+  if (/^extract(?:or|ion)?$/.test(value)) return 'extract';
   if (/^(?:event|observ|runtime|telemetry)/.test(value)) return value.startsWith('runtime') ? 'runtime' : 'telemetry';
   return value;
 }
@@ -242,7 +243,21 @@ export function deriveCapabilityCatalogOutcomeRequirements(
   const candidateTokens = candidates.filter(candidate => candidate.evidence_role !== 'verification-harness').map(candidate => {
     const text = candidateText(candidate);
     const rawTokens = tokens(text, true);
-    return { candidate, text, tokens: new Set([...rawTokens, ...rawTokens.map(comparableEvidenceToken)]) };
+    const identityRawTokens = tokens([
+      candidate.name,
+      candidate.structural_label,
+      ...(candidate.related_domains || []),
+    ].filter(Boolean).join(' '), true);
+    const symbolRawTokens = tokens((candidate.operations || []).map(operation =>
+      String(operation.entry_point_id || '').split(':').pop() || '',
+    ).join(' '), true);
+    return {
+      candidate,
+      text,
+      tokens: new Set([...rawTokens, ...symbolRawTokens, ...rawTokens.map(comparableEvidenceToken), ...symbolRawTokens.map(comparableEvidenceToken)]),
+      identityTokens: new Set([...identityRawTokens, ...identityRawTokens.map(comparableEvidenceToken)]),
+      symbolTokens: new Set([...symbolRawTokens, ...symbolRawTokens.map(comparableEvidenceToken)]),
+    };
   });
   const requirements = new Map<string, CapabilityCatalogOutcomeRequirement>();
   const subjectStopwords = new Set(['also', 'different', 'easier', 'extra', 'faster', 'feature', 'seamlessly', 'that', 'their', 'this', 'using', 'with', 'your']);
@@ -264,16 +279,26 @@ export function deriveCapabilityCatalogOutcomeRequirements(
           : item.candidate.evidence_role === 'unresolved' || item.candidate.evidence_role === undefined ? 1 : 2,
         aggregateRank: item.candidate.evidence_kind === 'behavior-surface' ? 1 : 0,
         score: scoringSubjectTokens.filter(token => item.tokens.has(comparableEvidenceToken(token))).length,
+        identityScore: scoringSubjectTokens.filter(token => item.identityTokens.has(comparableEvidenceToken(token))).length,
+        symbolScore: scoringSubjectTokens.filter(token => item.symbolTokens.has(comparableEvidenceToken(token))).length,
         distinctive: scoringSubjectTokens.some(token => item.tokens.has(comparableEvidenceToken(token)) && scoringTokenFrequency.get(token) === 1),
       })).filter(item => item.id && scoringSubjectTokens.length > 0 && (
         item.score >= Math.min(2, scoringSubjectTokens.length) ||
+        item.identityScore > 0 ||
+        item.symbolScore > 0 ||
         (item.score >= 1 && (item.evidenceRank === 0 || item.distinctive))
-      )).sort((left, right) => right.score - left.score ||
+      )).sort((left, right) => right.symbolScore - left.symbolScore || right.identityScore - left.identityScore ||
+        right.score - left.score ||
         left.evidenceRank - right.evidenceRank ||
         left.aggregateRank - right.aggregateRank ||
         left.id.localeCompare(right.id));
+      const bestIdentityScore = scored[0]?.identityScore;
       const bestScore = scored[0]?.score;
-      const candidateIds = bestScore === undefined ? [] : scored.filter(item => item.score === bestScore).slice(0, 3).map(item => item.id);
+      const bestSymbolScore = scored[0]?.symbolScore;
+      const candidateIds = bestScore === undefined ? [] : scored
+        .filter(item => item.identityScore === bestIdentityScore && item.symbolScore === bestSymbolScore && item.score === bestScore)
+        .slice(0, 3)
+        .map(item => item.id);
       const candidateIdSet = new Set(candidateIds);
       const groundedSubjectTokens = candidateIds.length > 0
         ? subjectTokens.filter(token => candidateTokens.some(item =>

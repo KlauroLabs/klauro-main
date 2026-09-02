@@ -14,7 +14,6 @@ export interface RemoteSourceFile {
   hash: string;
 }
 
-
 export type RemoteFileEntry = RemoteSourceFile;
 
 export interface BranchDiffContext {
@@ -77,13 +76,6 @@ export interface StreamingWorkingTreePlan {
   manifest: SourceManifest;
 }
 
-
-
-
-
-
-
-
 export interface RepoFacts {
   contributor_count?: number;
   first_commit_at?: string;
@@ -101,7 +93,6 @@ export interface SourceManifest {
   transfer_recommendation?: SourceTransferRecommendation;
   file_count: number;
   total_bytes: number;
-
 
   snapshot_digest?: string;
   excluded_directories: string[];
@@ -174,9 +165,6 @@ export interface WorkspaceRecommendation {
   candidates: WorkspaceCandidate[];
 }
 
-
-
-
 export const EXCLUDED_DIRECTORIES = new Set([
   '.git',
   '.klauro',
@@ -211,23 +199,11 @@ export const EXCLUDED_DIRECTORIES = new Set([
   'obj',
 ]);
 
-
-
-
-
-
-
-
-
-
 export const EXCLUDED_DIRECTORY_PATTERNS: RegExp[] = [
   /^\.tmp(?:[-_.].*)?$/,
   /^dist(?:[-_.].+)?$/,
 
-
-
   /^build-out(-|$)/,
-
 
   /^\.?build-artifacts?$/,
 
@@ -236,21 +212,11 @@ export const EXCLUDED_DIRECTORY_PATTERNS: RegExp[] = [
   /^DerivedData$/,
 ];
 
-
-
-
-
-
-
 export function matchExcludedDirectoryName(name: string): { excluded: boolean; matchedPattern?: string } {
   if (EXCLUDED_DIRECTORIES.has(name)) return { excluded: true };
   const matched = EXCLUDED_DIRECTORY_PATTERNS.find(pattern => pattern.test(name));
   return matched ? { excluded: true, matchedPattern: matched.source } : { excluded: false };
 }
-
-
-
-
 
 function manifestExclusionReason(verboseReason: string): string {
   return verboseReason.startsWith('vendored-output-shape') ? 'vendored-output-shape' : 'excluded by source policy';
@@ -270,15 +236,36 @@ export function isDefaultSensitiveSourceFile(filePath: string): boolean {
   return EXCLUDED_FILES.has(base) || /^\.env(?:\.|$)/.test(base);
 }
 
+const FIRST_PARTY_ROOT_DOCUMENTS = new Set([
+  'readme.md',
+  'readme.mdx',
+  'product.md',
+  'prd.md',
+  'overview.md',
+  'vision.md',
+  'context.md',
+]);
 
+function isFirstPartyRootDocument(relativePath: string): boolean {
+  const normalized = normalizeRelativePath(relativePath);
+  return !normalized.includes('/') && FIRST_PARTY_ROOT_DOCUMENTS.has(normalized.toLowerCase());
+}
 
-
-
-
-
-
-
-
+async function isSafeInternalFirstPartyDocumentSymlink(
+  root: string,
+  absolutePath: string,
+  relativePath: string,
+): Promise<boolean> {
+  if (!isFirstPartyRootDocument(relativePath)) return false;
+  try {
+    const resolved = await fs.realpath(absolutePath);
+    const relativeTarget = normalizeRelativePath(path.relative(root, resolved));
+    if (!relativeTarget || relativeTarget.startsWith('../') || path.isAbsolute(relativeTarget)) return false;
+    return (await fs.stat(resolved)).isFile();
+  } catch {
+    return false;
+  }
+}
 
 const EXTRA_INCLUDED_EXTENSIONS = new Set([
   '.yaml',
@@ -286,56 +273,20 @@ const EXTRA_INCLUDED_EXTENSIONS = new Set([
   '.toml',
   '.ini',
 
-
   '.routes',
 
-
-
   '.ipynb',
-
-
-
-
-
 
   '.conf',
   '.cfg',
 
-
   '.wsdl',
   '.xsd',
-
-
-
-
-
-
-
-
-
 
   '.md',
   '.markdown',
   '.rst',
 ]);
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 const PLATFORM_MANIFEST_BASENAMES = new Set([
   'AndroidManifest.xml',
@@ -349,23 +300,9 @@ const IMPORTANT_EXTENSIONLESS = new Set([
   'Rakefile',
   'artisan',
 
-
-
-
-
   'Caddyfile',
 
-
-
-
   'routes',
-
-
-
-
-
-
-
 
   '.klaurorc',
   '.klaurorc.json',
@@ -382,19 +319,7 @@ export async function buildSourceSnapshot(projectPath: string): Promise<SourceSn
   let fellBackFromEmptyHead = false;
   if (isGit && head && dirty) {
 
-
-
-
     const headSnapshot = await buildHeadSourceSnapshot(root, loaded, head);
-
-
-
-
-
-
-
-
-
 
     if (headSnapshot.files.length > 0) return headSnapshot;
     fellBackFromEmptyHead = true;
@@ -488,16 +413,22 @@ async function buildStreamingHeadSnapshot(
     const batch = included.slice(offset, offset + STREAMING_GIT_BATCH_FILES);
     const contents = readFilesAtRef(root, 'HEAD', batch);
     for (const relativePath of batch) {
-      const content = contents.get(relativePath);
-      if (content === undefined) continue;
+      const rawContent = contents.get(relativePath);
+      if (rawContent === undefined) continue;
+      const content = readFirstPartyDocumentAtRef(root, 'HEAD', relativePath, rawContent);
+      if (content === null) continue;
+      const bytes = Buffer.byteLength(content, 'utf8');
+      if (loaded.config.source.maxFileBytes > 0 && bytes > loaded.config.source.maxFileBytes) continue;
       files.push({
         path: relativePath,
         hash: hashContent(content),
-        bytes: Buffer.byteLength(content, 'utf8'),
+        bytes,
         readContent: async () => {
           const current = readFileAtRef(root, 'HEAD', relativePath);
           if (current === null) throw new Error(`Unable to reread ${relativePath} from committed HEAD during upload`);
-          return current;
+          const resolved = readFirstPartyDocumentAtRef(root, 'HEAD', relativePath, current);
+          if (resolved === null) throw new Error(`Unable to resolve ${relativePath} within committed HEAD during upload`);
+          return resolved;
         },
       });
     }
@@ -512,10 +443,6 @@ async function buildStreamingHeadSnapshot(
     manifest: buildManifestFromStats(root, loaded, files),
   };
 }
-
-
-
-
 
 interface WalkDiagnostics {
   candidatesBeforeIgnores: number;
@@ -546,7 +473,6 @@ function buildEmptySnapshotDiagnostic(
   const { diagnostics } = info;
   const lines: string[] = [];
   lines.push(`Remote analyze requires a source snapshot with files, but the snapshot built for "${root}" is empty. Here is exactly what was checked:`);
-
 
   let modeLine: string;
   if (!info.isGit) {
@@ -600,15 +526,6 @@ function buildEmptySnapshotDiagnostic(
   return new Error(lines.join('\n'));
 }
 
-
-
-
-
-
-
-
-
-
 export async function buildHeadSourceSnapshot(
   projectPath: string,
   preloadedConfig?: LoadedKlauroConfig,
@@ -635,8 +552,11 @@ export async function buildHeadSourceSnapshot(
   const contents = readFilesAtRef(root, 'HEAD', includedPaths);
   const files: RemoteSourceFile[] = [];
   for (const normalized of includedPaths) {
-    const content = contents.get(normalized);
+    const rawContent = contents.get(normalized);
+    if (rawContent == null) continue;
+    const content = readFirstPartyDocumentAtRef(root, 'HEAD', normalized, rawContent);
     if (content == null) continue;
+    if (loaded.config.source.maxFileBytes > 0 && Buffer.byteLength(content, 'utf8') > loaded.config.source.maxFileBytes) continue;
     files.push({ path: normalized, content, hash: hashContent(content) });
   }
   await appendDerivedLocalPackageContext(root, files, hashContent);
@@ -719,13 +639,6 @@ export async function buildStreamingWorkingTreeChanges(projectPath: string): Pro
   };
 }
 
-
-
-
-
-
-
-
 export async function buildBranchDiffContext(
   projectPath: string,
   targetBranch: string,
@@ -742,7 +655,6 @@ export async function buildBranchDiffContext(
   const files: RemoteFileEntry[] = [];
   for (const change of listBranchDiff(root, range)) {
     const normalized = normalizeRelativePath(change.path);
-
 
     const content = readFileAtRef(root, targetBranch, normalized);
     if (content == null) continue;
@@ -930,6 +842,18 @@ async function walkSourceFiles(
     const absolutePath = path.join(currentDirectory, entry.name);
     const relativePath = normalizeRelativePath(path.relative(root, absolutePath));
     if (entry.isSymbolicLink() && !loaded.config.source.followSymlinks) {
+      if (await isSafeInternalFirstPartyDocumentSymlink(root, absolutePath, relativePath)) {
+        if (diagnostics) diagnostics.candidatesBeforeIgnores++;
+        const verbose = await shouldIncludeRelativePathVerbose(root, relativePath, loaded);
+        if (verbose.included) {
+          if (diagnostics) diagnostics.candidatesAfterIgnores++;
+          await visit(absolutePath);
+        } else {
+          exclusions.push({ path: relativePath, reason: 'excluded by source policy' });
+          recordExclusion(diagnostics, verbose.reason);
+        }
+        continue;
+      }
       exclusions.push({ path: relativePath, reason: 'symlink excluded' });
       recordExclusion(diagnostics, 'symlink excluded');
       continue;
@@ -988,21 +912,12 @@ async function shouldIncludeRelativePath(
   relativePath: string,
   loaded: LoadedKlauroConfig,
 
-
-
   sizeOverride?: number
 ): Promise<boolean> {
   return (await shouldIncludeRelativePathVerbose(root, relativePath, loaded, sizeOverride)).included;
 }
 
 type IncludeVerdict = { included: true } | { included: false; reason: string };
-
-
-
-
-
-
-
 
 async function shouldIncludeRelativePathVerbose(
   root: string,
@@ -1048,10 +963,6 @@ async function shouldIncludeRelativePathVerbose(
     }
   }
 
-
-
-
-
   if (isRegisteredSourceExtension(base) || isRegisteredManifest(base) || IMPORTANT_EXTENSIONLESS.has(base) || PLATFORM_MANIFEST_BASENAMES.has(base)) {
     return { included: true };
   }
@@ -1059,8 +970,6 @@ async function shouldIncludeRelativePathVerbose(
   if (EXTRA_INCLUDED_EXTENSIONS.has(ext)) return { included: true };
   return { included: false, reason: 'not a registered source/manifest file type' };
 }
-
-
 
 function listGitTrackedPathsAtHead(root: string): string[] {
   try {
@@ -1103,9 +1012,6 @@ function listGitChanges(root: string): Array<{ path: string; status: 'added' | '
   }
 }
 
-
-
-
 function listBranchDiff(root: string, range: string): Array<{ path: string; status: 'added' | 'modified' }> {
   try {
     const output = execFileSync('git', ['diff', '--name-status', '--no-renames', '-z', range], {
@@ -1118,7 +1024,6 @@ function listBranchDiff(root: string, range: string): Array<{ path: string; stat
     const changes: Array<{ path: string; status: 'added' | 'modified' }> = [];
     for (let i = 0; i < fields.length; i++) {
       const code = fields[i];
-
 
       if (/^[RC]\d*$/.test(code)) {
         i += 1;
@@ -1161,17 +1066,30 @@ function readRevParse(root: string, ref: string): string | undefined {
   }
 }
 
+function readFirstPartyDocumentAtRef(
+  root: string,
+  ref: string,
+  relativePath: string,
+  content: string,
+): string | null {
+  if (!isFirstPartyRootDocument(relativePath)) return content;
+  try {
+    const entry = execFileSync('git', ['ls-tree', ref, '--', relativePath], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    if (!/^120000\s+blob\s/.test(entry)) return content;
+  } catch {
+    return content;
+  }
+  const target = normalizeRelativePath(path.posix.join(path.posix.dirname(relativePath), content.trim()));
+  if (!target || target.startsWith('../') || path.posix.isAbsolute(target)) return null;
+  return readFileAtRef(root, ref, target);
+}
+
 function readFileAtRef(root: string, ref: string, relativePath: string): string | null {
   try {
-
-
-
-
-
-
-
-
-
 
     return execFileSync('git', ['show', `${ref}:./${relativePath}`], {
       cwd: root,
@@ -1234,8 +1152,6 @@ function readFilesAtRef(root: string, ref: string, relativePaths: string[]): Map
   }
   return contents;
 }
-
-
 
 function detectDefaultBranch(root: string): string | undefined {
   try {
@@ -1335,7 +1251,6 @@ export function sourceSnapshotDigest(files: Array<{ path?: string; content: stri
   return digest.digest('hex');
 }
 
-
 function buildManifest(
   root: string,
   loaded: LoadedKlauroConfig,
@@ -1404,20 +1319,7 @@ function buildManifestFromStats(
   };
 }
 
-
-
-
-
 const REPO_FACTS_GIT_TIMEOUT_MS = 3000;
-
-
-
-
-
-
-
-
-
 
 function deriveRepoFacts(root: string): RepoFacts | undefined {
   if (!isGitRepository(root)) return undefined;
@@ -1443,15 +1345,6 @@ function deriveRepoFacts(root: string): RepoFacts | undefined {
   const firstCommitAt = readFirstCommitAt(root);
   const lastCommitAt = readLastCommitAt(root);
   const commitCount = readCommitCount(root);
-
-
-
-
-
-
-
-
-
 
   const timestampsCollapsed = !!firstCommitAt && !!lastCommitAt && firstCommitAt === lastCommitAt;
   const knownMultiCommit = typeof commitCount === 'number' && commitCount > 1;
@@ -1490,17 +1383,6 @@ function readCommitCount(root: string): number | undefined {
     return undefined;
   }
 }
-
-
-
-
-
-
-
-
-
-
-
 
 function readFirstCommitAt(root: string): string | undefined {
   try {
@@ -1595,8 +1477,6 @@ function allExcludePatterns(loaded: LoadedKlauroConfig): string[] {
 function patternListMatches(filePath: string, patterns: string[]): boolean {
   return patterns.some(pattern => globLikeMatches(filePath, pattern));
 }
-
-
 
 function findMatchingPattern(filePath: string, patterns: string[]): string | undefined {
   return patterns.find(pattern => globLikeMatches(filePath, pattern));

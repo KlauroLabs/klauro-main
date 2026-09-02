@@ -54,6 +54,49 @@ test('incremental stream preserves added, modified, deleted, diff, hashes, and m
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+test('source snapshots materialize a root product document symlink only when its target stays inside the repository', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-product-doc-symlink-'));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-product-doc-outside-'));
+  try {
+    fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'docs'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'src', 'app.ts'), 'export const app = true;\n');
+    fs.writeFileSync(path.join(root, 'docs', 'README.md'), '# Product\n\nRoute requests to handlers.\n');
+    fs.symlinkSync('docs/README.md', path.join(root, 'README.md'));
+
+    const working = await buildStreamingSourceSnapshot(root);
+    const workingReadme = working.files.find(file => file.path === 'README.md');
+    assert.ok(workingReadme);
+    assert.match(await workingReadme.readContent(), /Route requests to handlers/);
+
+    execFileSync('git', ['init', '-q'], { cwd: root });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: root });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: root });
+    execFileSync('git', ['add', '.'], { cwd: root });
+    execFileSync('git', ['commit', '-qm', 'base'], { cwd: root });
+    fs.writeFileSync(path.join(root, 'src', 'app.ts'), 'export const app = false;\n');
+
+    const committed = await buildStreamingSourceSnapshot(root);
+    assert.equal(committed.snapshot_source, 'committed-head');
+    const committedReadme = committed.files.find(file => file.path === 'README.md');
+    assert.ok(committedReadme);
+    assert.match(await committedReadme.readContent(), /Route requests to handlers/);
+    const legacy = await buildSourceSnapshot(root);
+    assert.match(legacy.files.find(file => file.path === 'README.md')?.content || '', /Route requests to handlers/);
+
+    fs.unlinkSync(path.join(root, 'README.md'));
+    fs.writeFileSync(path.join(outside, 'README.md'), '# Secret outside product\n');
+    fs.symlinkSync(path.join(outside, 'README.md'), path.join(root, 'README.md'));
+    execFileSync('git', ['add', 'README.md'], { cwd: root });
+    execFileSync('git', ['commit', '-qm', 'external symlink'], { cwd: root });
+    const guarded = await buildStreamingSourceSnapshot(root);
+    assert.equal(guarded.files.some(file => file.path === 'README.md'), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+});
+
 test('packaging rejects a source mutation instead of sending mismatched content and hash', async () => {
   const root = fixture();
   try {

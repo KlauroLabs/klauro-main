@@ -14761,7 +14761,7 @@ export class AnalyzerOrchestrator {
       const t = lines[i].trim();
       const heading = t.match(/^#{1,6}\s+(.+?)\s*#*$/);
       if (heading) {
-        inFeatureSection = /^(?:key\s+)?(?:features?|capabilities|functionality|use cases?|what (?:it|this|you) (?:does|can do))\b/i.test(
+        inFeatureSection = /^(?:key\s+|high(?:-|\s+)level\s+)?(?:features?|capabilities|functionality|use cases?|what (?:it|this|you) (?:does|can do))\b/i.test(
           heading[1].replace(/[`*_]/g, '').trim(),
         );
         continue;

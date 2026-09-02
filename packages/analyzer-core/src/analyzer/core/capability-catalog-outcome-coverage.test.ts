@@ -77,6 +77,48 @@ test('treats support staff as the audience and onboarding as the visible action'
   assert.equal(capabilityCatalogOutcomeNameFailure('Onboard customers with profiles', onboarding), undefined);
 });
 
+test('prefers a candidate whose identity names the first-party outcome over incidental operation overlap', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements({
+    productDocSummary: 'Route requests to handlers with a macro-free API.',
+  }, [
+    candidate('clone', 'Clone', ['route_request_handler', 'clone_router_request_handler']),
+    candidate('routing', 'Routing', ['register_handler']),
+  ]);
+
+  assert.equal(requirements.length, 1);
+  assert.deepEqual(requirements[0].candidateIds, ['routing']);
+});
+
+test('grounds library outcomes in matching public symbols instead of incidental directory words', () => {
+  const clone = candidate('clone', 'Clone', ['Coordinate']);
+  clone.evidence_role = 'supporting-mechanism';
+  clone.operations[0].entry_point_id = 'node:method:src/extract/cookie.rs:CookieJar:clone';
+  clone.operations[0].path_or_command = 'src/extract/cookie.rs';
+  const parts = candidate('parts', 'Parts', ['Coordinate']);
+  parts.evidence_role = 'supporting-mechanism';
+  parts.operations[0].entry_point_id = 'node:function:src/ext_traits/request.rs:extract_parts';
+  parts.operations[0].path_or_command = 'src/ext_traits/request.rs';
+  const response = candidate('into', 'Into', ['Coordinate']);
+  response.evidence_role = 'supporting-mechanism';
+  response.operations[0].entry_point_id = 'node:function:src/response/into_response.rs:into_response';
+  response.operations[0].path_or_command = 'src/response/into_response.rs';
+  const pipeline = candidate('ci', 'CI Pull Request', ['CI pull_request']);
+  pipeline.evidence_role = 'supporting-mechanism';
+  pipeline.evidence_kind = 'behavior-surface';
+  pipeline.operations[0].entry_point_id = 'entry:ci_pipeline:.github/workflows/ci.yml:CI:pull_request:1';
+
+  const requirements = deriveCapabilityCatalogOutcomeRequirements({
+    productDocSummary: 'High level features: Declaratively parse requests using extractors. Generate responses with minimal boilerplate.',
+  }, [clone, parts, response, pipeline]);
+
+  const extraction = requirements.find(requirement => requirement.firstPartyOutcomeText?.includes('Declaratively parse requests'));
+  const responses = requirements.find(requirement => requirement.subjectTokens.includes('response'));
+  assert.ok(extraction);
+  assert.ok(responses);
+  assert.deepEqual(extraction.candidateIds, ['parts']);
+  assert.deepEqual(responses.candidateIds, ['into']);
+});
+
 test('grounds an operator-facing list outcome through equivalent read evidence', () => {
   const requirements = deriveCapabilityCatalogOutcomeRequirements({
     productDocSummary: 'Fleet operators list vehicles for daily dispatch.',

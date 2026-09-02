@@ -9801,7 +9801,7 @@ describe('top-down capability evidence (C2)', () => {
     try {
       fs.writeFileSync(
         path.join(root, 'README.md'),
-        '# Job Tracker\n\nTrack job applications in one place.\n\n## Features\n\n- **Manage application status**: Move applications through interview stages.\n- **Filter applications**: Filter by category, status, or job site.\n\n## Setup\n\n- npm install\n',
+        '# Job Tracker\n\nTrack job applications in one place.\n\n## High level features\n\n- **Manage application status**: Move applications through interview stages.\n- **Filter applications**: Filter by category, status, or job site.\n\n## Setup\n\n- npm install\n',
       );
       const signal = orch.extractProjectTextSignal(root);
       expect(signal.productDocSummary).toContain('Track job applications in one place.');
