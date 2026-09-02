@@ -318,8 +318,12 @@ describe('capability evidence roles', () => {
     const handler = candidate('category-click', 'Manage Categories Click', 'core', ['Click', 'Click']);
     handler.related_entities = ['entity_category'];
     handler.operations.forEach((operation, index) => { operation.entry_point_id = `category-click-${index}`; });
+    const pageAggregate = candidate('jobs-page', 'Jobs', 'core', ['Handle', 'Handle']);
+    pageAggregate.related_entities = ['entity_job'];
+    pageAggregate.operations[0].entry_point_type = 'route';
+    pageAggregate.operations[1].entry_point_type = 'event';
     const classified = classifyCapabilityEvidence(
-      [route, handler],
+      [route, handler, pageAggregate],
       [
         entity('entity_job', 'Job', 'persisted-entity', true),
         entity('entity_category', 'Category', 'persisted-entity', true),
@@ -349,7 +353,8 @@ describe('capability evidence roles', () => {
       },
     );
 
-    expect(classified.map(item => item.evidence_role)).toEqual(['unresolved', 'unresolved']);
+    expect(classified.map(item => item.evidence_role)).toEqual(['unresolved', 'unresolved', 'supporting-mechanism']);
+    expect(classified[2].evidence_role_reasons).toEqual(['bare-page-and-event-aggregate-supports-outcomes']);
     expect(catalogRequiredEvidenceCandidates(classified)).toEqual([]);
   });
 

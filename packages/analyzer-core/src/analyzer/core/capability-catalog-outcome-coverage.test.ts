@@ -497,7 +497,9 @@ test('preserves complete outcome clauses from a feature-rich README instead of e
   const statements = requirements.map(requirement => requirement.statement);
 
   assert.ok(statements.includes('keep track of your job applications'));
-  assert.ok(statements.includes('Categorize and seamlessly manage your job applications'));
+  assert.equal(requirements.find(requirement => requirement.statement === 'keep track of your job applications')?.candidateIds.includes('jobs'), true);
+  assert.equal(statements.includes('Categorize and seamlessly manage your job applications'), false);
+  assert.equal(statements.filter(statement => /^categorize/i.test(statement)).length, 1);
   assert.ok(statements.some(statement => statement.startsWith('categorize your applications by creating different categories') && statement.includes('edit or delete your categories')));
   assert.ok(statements.some(statement => statement.startsWith('manage your application status') && statement.includes('Interview or set it to closed')));
   assert.ok(statements.some(statement => statement.startsWith('delete or edit your job applications') && statement.includes('add notes to your job applications')));
@@ -510,6 +512,7 @@ test('preserves complete outcome clauses from a feature-rich README instead of e
   const filter = requirements.find(requirement => requirement.statement.startsWith('Filter between job applications'));
   assert.equal(status?.candidateIds.includes('jobs'), true);
   assert.equal(filter?.candidateIds.includes('jobs'), true);
+  assert.deepEqual(status?.visibleActionTerms, []);
   assert.notEqual(status?.id, filter?.id);
 });
 

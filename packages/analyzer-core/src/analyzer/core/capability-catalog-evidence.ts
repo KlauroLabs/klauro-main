@@ -694,6 +694,9 @@ export function classifyCapabilityEvidence(
     const operations = candidate.operations || [];
     const allStructuralExecutableCli = operations.length > 0 && operations.every(operation =>
       isStructuralExecutableCliEntry(entryPointById.get(operation.entry_point_id)));
+    const bareDeliveryAggregate = isBareNounCapabilityLabel(candidate.name) &&
+      operations.length > 0 && operations.every(operation =>
+        /^(?:event|route)$/i.test(operation.entry_point_type || ''));
     if (capabilityIsVerificationHarness(candidate, entryPointById, nodeById)) {
       evidenceRole = 'verification-harness';
       reasons.push('all-resolved-operation-anchors-are-test-or-scaffold');
@@ -703,6 +706,9 @@ export function classifyCapabilityEvidence(
     } else if (allStructuralExecutableCli) {
       evidenceRole = 'supporting-mechanism';
       reasons.push('filesystem-executable-without-product-command-registration');
+    } else if (bareDeliveryAggregate) {
+      evidenceRole = 'supporting-mechanism';
+      reasons.push('bare-page-and-event-aggregate-supports-outcomes');
     } else if ((candidate.evidence_kind === 'behavior-surface' && candidate.category !== 'core') || candidate.category === 'internal') {
       const firstParty = productTextCorroboratesCapability(candidate, projectTextSignal);
       evidenceRole = 'supporting-mechanism';
