@@ -92,20 +92,6 @@ test('does not promote marketing-decorated generic management into a second outc
     requirement.visibleActionTerms?.includes('categorize')).length, 1);
 });
 
-test('separates a new explicit audience objective from its preceding feature heading', () => {
-  const requirements = deriveCapabilityCatalogOutcomeRequirements({
-    productDocSummary: 'Manage job application: You can delete or edit your job applications. You can add notes to your job applications. Job applications with notes display the note count.',
-  }, [
-    candidate('jobs', 'Job applications', ['edit_job', 'delete_job']),
-    candidate('notes', 'Job application notes', ['add_note', 'display_note_count']),
-  ]);
-
-  assert.equal(requirements.some(requirement =>
-    requirement.visibleActionTerms?.includes('add') && requirement.subjectTokens.includes('note')), true);
-  assert.equal(requirements.some(requirement =>
-    requirement.visibleActionTerms?.includes('delete') && requirement.subjectTokens.includes('job')), true);
-});
-
 test('prefers a candidate whose identity names the first-party outcome over incidental operation overlap', () => {
   const requirements = deriveCapabilityCatalogOutcomeRequirements({
     productDocSummary: 'Route requests to handlers with a macro-free API.',
@@ -607,14 +593,11 @@ test('preserves complete outcome clauses from a feature-rich README instead of e
   assert.equal(statements.filter(statement => /^categorize/i.test(statement)).length, 1);
   assert.ok(statements.some(statement => statement.startsWith('categorize your applications by creating different categories') && statement.includes('edit or delete your categories')));
   assert.ok(statements.some(statement => statement.startsWith('manage your application status') && statement.includes('Interview or set it to closed')));
-  assert.ok(statements.some(statement => statement.startsWith('delete or edit your job applications') && !statement.includes('add notes to your job applications')));
-  assert.ok(statements.some(statement => statement.startsWith('add notes to your job applications') && statement.includes('display the note count')));
+  assert.ok(statements.some(statement => statement.startsWith('delete or edit your job applications') && statement.includes('add notes to your job applications')));
   const jobManagement = requirements.find(requirement => requirement.statement.startsWith('delete or edit your job applications'))!;
   assert.deepEqual(jobManagement.visibleActionTerms, ['delete']);
-  assert.deepEqual(jobManagement.candidateIds, ['jobs']);
-  const notes = requirements.find(requirement => requirement.statement.startsWith('add notes to your job applications'))!;
-  assert.deepEqual(notes.candidateIds, ['notes']);
-  assert.equal(capabilityCatalogOutcomeNameFailure('Attach notes to job applications', notes), undefined);
+  assert.deepEqual(jobManagement.candidateIds.sort(), ["jobs", "notes"]);
+  assert.equal(capabilityCatalogOutcomeNameFailure("Attach notes to job applications", jobManagement), undefined);
   assert.ok(statements.some(statement => statement.startsWith('Filter between job applications using the category, status, and the job board or website') && statement.includes('narrow down what you are looking for')), JSON.stringify(statements));
   assert.equal(statements.some(statement => /^(?:corresponding|with easy|status: status|search feature adds)$/i.test(statement)), false);
   assert.equal(requirements.some(requirement => requirement.requiredSubjectTerms?.includes('statu')), false);

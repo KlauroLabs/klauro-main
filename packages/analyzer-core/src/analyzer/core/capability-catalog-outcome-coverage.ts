@@ -154,9 +154,6 @@ function productClauses(signal?: CapabilityCatalogProjectSignal): string[] {
     if (featureHeading) {
       grouped.push(sentence);
       activeFeatureIndex = grouped.length - 1;
-    } else if (activeFeatureIndex >= 0 && /^(?:you|users?|people)\s+can\s+(?!also\b)(?:add|attach|book|buy|create|export|filter|find|import|monitor|pay|publish|record|recover|schedule|search|share|track|view)\b/i.test(sentence)) {
-      grouped.push(sentence);
-      activeFeatureIndex = grouped.length - 1;
     } else if (activeFeatureIndex >= 0) {
       grouped[activeFeatureIndex] = `${grouped[activeFeatureIndex]} ${sentence}`;
     } else {
