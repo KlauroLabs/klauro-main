@@ -206,6 +206,34 @@ describe('capability description audience test', () => {
   });
 });
 
+it('rejects repository mechanics unless repository access is the product outcome', () => {
+  const sourceLeak = testCapabilityDescriptionAgainstAudience(
+    'Settle customer invoices',
+    'Fleet operators settle customer invoices from the PHP repository src files.',
+    [],
+    [],
+    ['fleet operators', 'customer invoices'],
+  );
+  const locationLeak = testCapabilityDescriptionAgainstAudience(
+    'Settle customer invoices',
+    'Fleet operators mark invoice settlements as complete in the repository.',
+    [],
+    [],
+    ['fleet operators', 'customer invoices'],
+  );
+  const product = testCapabilityDescriptionAgainstAudience(
+    'Review source repositories',
+    'Engineering teams inspect changes in the repository before approving them.',
+    [],
+    [],
+    ['source repositories', 'engineering teams'],
+  );
+
+  expect(sourceLeak.reasons).toContain('implementation-language');
+  expect(locationLeak.reasons).toContain('internal-mechanism-language');
+  expect(product.failsAudienceTest).toBe(false);
+});
+
 /**
  * PRECISION/RECALL RUN against the capability/mechanism audit's 23 graded
  * capabilities (docs/audits/CAPABILITY-MECHANISM-AUDIT-2026-08-09.md). Each

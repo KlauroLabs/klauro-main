@@ -268,7 +268,7 @@ export function capabilityMarketingLanguageTerms(text: string): string[] {
   const match = prose.match(VAGUE_MARKETING_PATTERN)?.[0];
   return match ? [match] : [];
 }
-const IMPLEMENTATION_PROSE_PATTERN = /\b(?:cli|command[- ]line)\s+(?:entry\s+point|command|interface)\b|\b(?:source[- ]code|implementation)\s+(?:type|class|interface|structure|detail)s?\b|\b(?:route|handler|controller|ui\s+widget)\s+(?:class|interface|implementation)s?\b/i;
+const IMPLEMENTATION_PROSE_PATTERN = /\b(?:cli|command[- ]line)\s+(?:entry\s+point|command|interface)\b|\b(?:source[- ]code|implementation)\s+(?:type|class|interface|structure|detail)s?\b|\b(?:route|handler|controller|ui\s+widget)\s+(?:class|interface|implementation)s?\b|\bfrom\s+(?:the\s+)?(?:php|python|java|javascript|typescript|ruby|go|rust|c#|dart)\s+repository\s+(?:source|src)\s+files?\b/i;
 const INTERNAL_MECHANISM_PROSE_PATTERN = /\bregisters?\s+(?:mcp\s+)?tools?\b|\bcoordinates?\s+with\s+(?:the\s+)?(?:analy[sz]er|storage)\b|\breads?\s+from\s+(?:the\s+)?storage\b|\b(?:the\s+)?analy[sz]er\s+(?:coordinates?|records?|reads?|writes?|stores?|loads?|processes?|manages?|handles?)\b|\b(?:the\s+)?storage\s+(?:coordinates?|records?|reads?|writes?|stores?|loads?|processes?|manages?|handles?)\b|\bsource\s+settings?\b|\bprojects?,\s+analy[sz]ers?,\s+and\s+(?:source\s+)?settings?\b|\bcandidate[_ -]?\d+\b|\b(?:request\s+(?:body|payload|object)|response\s+(?:body|payload|object)|body\s+read\s+operation|(?:get|post|put|patch|delete)\s+(?:request|operation)|[a-z]+\s+endpoint|(?:url\s+)?slug)\b/i;
 
 export interface AudienceDescriptionTestResult {
@@ -337,6 +337,12 @@ export function testCapabilityDescriptionAgainstAudience(
   const identifierVocab = buildIdentifierVocabulary(libraries);
   const domainVocab = buildDomainEntityVocabulary(entities);
   const productVocab = buildProductVocabulary(productTerms);
+  const repositoryMechanism = trimmed.match(/\b(?:from|in|through|using|via)\s+(?:the\s+)?(?:[a-z0-9.+#-]+\s+)?repositor(?:y|ies)\b/i)?.[0];
+  const repositoryIsProduct = /\brepositor(?:y|ies)\b/i.test(name);
+  if (repositoryMechanism && !repositoryIsProduct) {
+    reasons.push('internal-mechanism-language');
+    flaggedTokens.push(repositoryMechanism);
+  }
   const nameSubjects = capabilitySubjectTokens(name).map(normalizeToken);
   const groundedNameSubjects = nameSubjects.filter(token => productVocab.has(token) || domainVocab.has(token));
   const trustedNameSubjects = new Set(

@@ -62,8 +62,8 @@ export async function runCapabilityInferenceBenchmark(options: { outputPath?: st
       : ['ai_skipped', 'ai_rejected', 'ai_failed'].includes(descriptionStatus) || aiEnrichment === 'disabled';
     const genericCapabilities = capabilities.filter(capability => isGenericCapabilityName(capability.name));
     const isolatedDomainCapabilities = ['vehicle', 'fuel', 'invoice'].filter(domain =>
-      capabilityText.some(text => text.includes(domain) &&
-        ['vehicle', 'fuel', 'invoice'].filter(other => other !== domain).every(other => !text.includes(other)))
+      names.some(name => name.toLowerCase().includes(domain) &&
+        ['vehicle', 'fuel', 'invoice'].filter(other => other !== domain).every(other => !name.toLowerCase().includes(other)))
     );
     const publishableDescriptions = (cas.capabilities || []).filter(capability =>
       capability.description_source &&
