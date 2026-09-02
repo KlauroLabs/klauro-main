@@ -587,7 +587,10 @@ export function bindAtomicallySatisfiedCatalogOutcomeRequirements(
     if (!capabilitySemanticallySatisfiesCatalogOutcomeRequirement(combined, requirement)) continue;
     const visibleActions = (requirement.visibleActionTerms || []).map(canonicalToken);
     const combinedTokens = new Set(tokens(`${combined.name} ${combined.description}`));
-    if (visibleActions.some(action => !combinedTokens.has(action))) continue;
+    const multiActionFeature = String(requirement.firstPartyOutcomeText || '')
+      .split(/(?<=[.!?;])\s+/i)
+      .filter(sentence => purposeVerbIn(sentence)).length > 1;
+    if (!multiActionFeature && visibleActions.some(action => !combinedTokens.has(action))) continue;
     const representative = [...members]
       .filter(member => !(member.criticality_factors || [])
         .some(factor => factor.startsWith('catalog-outcome-requirement:')))
