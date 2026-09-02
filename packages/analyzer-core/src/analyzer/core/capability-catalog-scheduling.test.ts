@@ -599,6 +599,32 @@ test('distinct deterministic evidence attaches after its shared entity group is 
   assert.ok(merged[0].operations.some(operation => operation.entry_point_id === 'note-create'));
 });
 
+test('a uniquely anchored entity outcome retains the complete lifecycle as step evidence', () => {
+  const notes = catalogCapability({
+    id: 'cap_note_management', name: 'read and create and delete note', structural_label: 'Note Management',
+    evidence_role: 'product-outcome', related_entities: ['entity_note'], related_domains: ['note'],
+    operations: [
+      { entry_point_id: 'note-read', entry_point_type: 'http', action: 'read', path_or_command: '/note/notes/:userId' },
+      { entry_point_id: 'note-create', entry_point_type: 'http', action: 'create', path_or_command: '/note/add-note/:userId' },
+      { entry_point_id: 'note-delete', entry_point_type: 'http', action: 'delete', path_or_command: '/note/delete-note/:userId' },
+    ],
+  });
+  const capability = catalogCapability({
+    id: 'notes', name: 'Attach notes to job applications', related_entities: ['entity_note'],
+    criticality_factors: ['catalog-candidate:operation-obligation:cap_note_management:create'],
+  });
+
+  const [merged] = mergeGroundedEntityEvidenceFamilies(
+    [capability], [notes], [[notes.id]],
+  );
+
+  assert.ok(merged.criticality_factors.includes('catalog-candidate:cap_note_management'));
+  assert.deepEqual(
+    merged.operations.map(operation => operation.entry_point_id).sort(),
+    ['note-create', 'note-delete', 'note-read'],
+  );
+});
+
 test('entity evidence resolves related entities through an accepted capability citation', () => {
   const behavior = catalogCapability({
     id: 'capability_job',

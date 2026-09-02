@@ -262,7 +262,11 @@ export function capabilityOutcomeMatchesEvidence(
   });
 }
 
-function mergeCapabilityEvidence(outcome: SystemCapability, evidence: SystemCapability): SystemCapability {
+function mergeCapabilityEvidence(
+  outcome: SystemCapability,
+  evidence: SystemCapability,
+  preserveCompleteLifecycle = false,
+): SystemCapability {
   const operationKey = (operation: SystemCapability['operations'][number]) => [
     operation.entry_point_id,
     operation.entry_point_type,
@@ -271,9 +275,12 @@ function mergeCapabilityEvidence(outcome: SystemCapability, evidence: SystemCapa
     operation.trigger?.method || '',
     operation.trigger?.path || '',
   ].join('|');
-  const scopedOutcomeOperations = scopeCapabilityOperationsToOutcomeName(outcome.name, outcome.operations || []);
+  const scopedOutcomeOperations = preserveCompleteLifecycle
+    ? [...(outcome.operations || [])] : scopeCapabilityOperationsToOutcomeName(outcome.name, outcome.operations || []);
   const operations = new Map(scopedOutcomeOperations.map(operation => [operationKey(operation), operation]));
-  for (const operation of scopeCapabilityOperationsToOutcomeName(outcome.name, evidence.operations || [])) operations.set(operationKey(operation), operation);
+  const evidenceOperations = preserveCompleteLifecycle
+    ? [...(evidence.operations || [])] : scopeCapabilityOperationsToOutcomeName(outcome.name, evidence.operations || []);
+  for (const operation of evidenceOperations) operations.set(operationKey(operation), operation);
   const criticalityRank: Record<SystemCapability['criticality'], number> = {
     critical: 4,
     high: 3,
@@ -442,7 +449,13 @@ export function mergeGroundedEntityEvidenceFamilies(
     }
     if (ranked.length === 0 || (ranked[1] && ranked[1].match.score === ranked[0].match.score)) continue;
     const selected = ranked[0];
-    merged[selected.index] = mergeCapabilityEvidence(merged[selected.index], selected.match.candidate);
+    const selectedCapability = merged[selected.index];
+    const citedFamilyMember = (selectedCapability.criticality_factors || [])
+      .filter(factor => factor.startsWith('catalog-candidate:'))
+      .map(factor => factor.slice('catalog-candidate:'.length))
+      .some(candidateId => group.includes(candidateId) ||
+        candidateId.startsWith(`operation-obligation:${selected.match.candidate.id}:`));
+    merged[selected.index] = mergeCapabilityEvidence(selectedCapability, selected.match.candidate, citedFamilyMember);
     citedIds.add(selected.match.candidate.id);
   }
   return merged;
