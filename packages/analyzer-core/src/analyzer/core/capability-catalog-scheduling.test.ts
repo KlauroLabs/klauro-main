@@ -174,7 +174,7 @@ test('repairs a bound authored outcome across multiple evidence families without
       'catalog-candidate:jobs', 'catalog-candidate:categories',
     ],
   });
-  const expected = 'Users can categorize job applications as part of their normal workflow whenever needed.';
+  const expected = 'Users can categorize job applications as those job applications change over time.';
   const [repaired] = resolvePendingCapabilityDescriptionsWithoutProvider({
     capabilities: [identity], pendingEvidenceIdentityByCandidateId: new Map(),
     evidenceCandidates: [jobs, categories], firstPartyTexts: [], audienceFor: () => 'Users',

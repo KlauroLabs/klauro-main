@@ -356,7 +356,7 @@ export function deterministicCapabilityDescriptionFallback(args: {
       return `${audience} can ${normalizedTitle} as part of their normal workflow whenever needed.`;
     }
     if (firstPartyOutcomeBound) {
-      return `${audience} can ${normalizedTitle} as part of their normal workflow whenever needed.`;
+      return `${audience} can ${normalizedTitle} as those ${subjectPhrase} change over time.`;
     }
     if (actions.length > 1) {
       const continuity = actions.includes('remove')
@@ -788,8 +788,9 @@ export function supersedeUnboundPendingOutcomeDuplicates(
   const isSupersededPendingIdentity = (capability: SystemCapability): boolean => {
     if (factors(capability, 'catalog-outcome-requirement:').length > 0) return false;
     const capturedCandidateIds = factors(capability, 'catalog-candidate:');
-    if (capturedCandidateIds.some(candidateId => protectedExactCandidateIds.has(candidateId))) return false;
     const capturedRequirementIds = pendingRequirementIdsByLifecycleKey.get(capabilityCatalogRepairLifecycleKey(capability)) || [];
+    if (capturedRequirementIds.length === 0 &&
+        capturedCandidateIds.some(candidateId => protectedExactCandidateIds.has(candidateId))) return false;
     if (capturedRequirementIds.length > 0) {
       return capturedRequirementIds.every(requirementId => {
         const requirement = requirementById.get(requirementId);

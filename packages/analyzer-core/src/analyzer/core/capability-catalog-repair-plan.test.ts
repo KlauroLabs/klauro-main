@@ -455,6 +455,45 @@ describe('capability catalog repair planning', () => {
     assert.deepEqual(result.incoming.map(item => item.id), ['exact-update']);
   });
 
+  test('consolidates a protected synonym after transferring its evidence into the authored outcome', () => {
+    const requirement = {
+      id: 'categorize', statement: 'categorize job applications',
+      candidateIds: ['jobs', 'categories'],
+      requiredSubjectTerms: ['job', 'application', 'category'],
+      subjectTokens: ['job', 'application', 'category'], minimumSubjectMatches: 2,
+    };
+    const bound = {
+      ...capability('bound-categorize', [
+        'catalog-candidate:jobs',
+        'catalog-outcome-requirement:categorize',
+      ], 'Users categorize job applications as their categories change.'),
+      name: 'Categorize job applications',
+      operations: [{ entry_point_id: 'edit-job', entry_point_type: 'event', action: 'update' }],
+    };
+    const synonym = {
+      ...capability('organize-categories', [
+        'catalog-candidate:categories',
+      ], 'Users organize job applications by category.'),
+      name: 'Organize job applications by category',
+      operations: [{ entry_point_id: 'edit-category', entry_point_type: 'http', action: 'update' }],
+      related_entities: ['entity_category'],
+    };
+    const result = supersedeUnboundPendingOutcomeDuplicates(
+      [bound], [synonym], [requirement],
+      new Map([['candidate:categories', ['categorize']]]),
+      new Set(['categories']),
+    );
+    assert.equal(result.existing.length, 1);
+    assert.equal(result.existing[0].id, 'bound-categorize');
+    assert.deepEqual(
+      result.existing[0].criticality_factors.filter(factor => factor.startsWith('catalog-candidate:')).sort(),
+      ['catalog-candidate:categories', 'catalog-candidate:jobs'],
+    );
+    assert.deepEqual(result.existing[0].operations.map(operation => operation.entry_point_id).sort(), ['edit-category', 'edit-job']);
+    assert.deepEqual(result.existing[0].related_entities, ['entity_category']);
+    assert.deepEqual(result.incoming, []);
+  });
+
   test('preserves previously covered exact obligations while a same-identity sibling is promoted later', () => {
     const requirement = { id: 'status', statement: 'Manage application status', candidateIds: ['aggregate-status'], subjectTokens: ['status'] };
     const bound = { ...capability('bound-status', ['catalog-candidate:aggregate-status', 'catalog-outcome-requirement:status'], 'Users manage application status throughout review.'), name: 'Manage application status' };
