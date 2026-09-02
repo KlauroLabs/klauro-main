@@ -8854,7 +8854,7 @@ describe('top-down capability evidence (C2)', () => {
       (aiService as any).generateComponentDescription = original;
     }
   });
-  it('does not erase a grounded description when a later clause names internal operation evidence', async () => {
+  it('keeps documented sign-in as supporting behavior outside an identity product', async () => {
     const original = (aiService as any).generateComponentDescription;
     (aiService as any).generateComponentDescription = async () => JSON.stringify({
       capabilities: [{
@@ -8891,9 +8891,7 @@ describe('top-down capability evidence (C2)', () => {
         exactCapabilityLimit: 1,
       });
 
-      expect(catalog).toHaveLength(1);
-      expect(catalog[0].name).toBe('Sign in with Google');
-      expect(catalog[0].description).toContain('Users authenticate using Google credentials');
+      expect(catalog).toEqual([]);
     } finally {
       (aiService as any).generateComponentDescription = original;
     }
@@ -9710,7 +9708,7 @@ describe('top-down capability evidence (C2)', () => {
     }
   });
 
-  it('accepts authentication as a product capability when a product-outcome candidate owns a direct login route', async () => {
+  it('rejects routine authentication in an application even when it owns a direct login route', async () => {
     const original = (aiService as any).generateComponentDescription;
     (aiService as any).generateComponentDescription = async () => JSON.stringify({
       capabilities: [{
@@ -9736,7 +9734,7 @@ describe('top-down capability evidence (C2)', () => {
         budgetMs: 30000,
       });
 
-      expect(catalog.map((item: any) => item.name)).toEqual(['Authenticate users']);
+      expect(catalog).toEqual([]);
     } finally {
       (aiService as any).generateComponentDescription = original;
     }
@@ -10953,6 +10951,46 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     });
     expect(purpose.ai_phase_status).toBe('degraded');
   });
+
+  it('turns a grounded proposal into an intent gap when final publication removes its only capability', () => {
+    const purpose: any = {
+      capability_catalog_coverage: {
+        evidence_families: 1,
+        published_capabilities: 1,
+        minimum_published_capabilities: 1,
+        status: 'accepted',
+      },
+      capability_reconciliation: {
+        proposals: [{
+          requirement_id: 'outcome-review',
+          statement: 'Review account activity',
+          candidate_ids: ['candidate-activity'],
+          disposition: 'grounded',
+          capability_ids: ['cap_rejected'],
+        }],
+        undocumented_capabilities: [],
+      },
+    };
+    const systemCapabilities: any[] = [{
+      id: 'cap_rejected',
+      name: 'Get Activity',
+      name_source: 'ai',
+      description: '',
+      related_entities: ['entity_activity'],
+      related_domains: [],
+      operations: [],
+      criticality_factors: [],
+    }];
+
+    orch.finalizeSystemCapabilityNames(systemCapabilities, [], purpose);
+
+    expect(systemCapabilities).toEqual([]);
+    expect(purpose.capability_reconciliation.proposals[0]).toMatchObject({
+      disposition: 'intent-gap',
+      capability_ids: [],
+    });
+  });
+
 
   it('end-to-end: bare-noun placeholders never enter canonical capabilities', async () => {
     // Simulates the AI-pass-skipped-renaming case end-to-end through

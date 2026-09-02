@@ -157,7 +157,8 @@ import {
   type AnalyzerContributionCacheEvidence,
   stableAnalyzerCacheIdentity,
 } from './analyzer-contribution-cache';
-import { buildUserJourneys, USER_FACING_ENTRY_TYPES } from './journey-builder';
+import { USER_FACING_ENTRY_TYPES } from './journey-builder';
+import { buildComprehensionGraph } from './comprehension-graph';
 import { buildTerminalSignal, type TerminalSignal } from './terminal-signal';
 import { buildCasTerminality } from './terminality';
 import { assertUnderstandingContractIntegrity } from './understanding-contract-integrity';
@@ -200,6 +201,7 @@ import {
 } from './capability-catalog-audience';
 import { capabilityGroundedEntityIds } from './capability-entity-grounding';
 import { canonicalCapabilityLifecycleAction, capabilityDescriptionExpressesDestructiveLifecycle, capabilityHasObservedDestructiveLifecycle } from './capability-lifecycle-actions';
+import { scopeCapabilityOperationsToOutcomeName } from './capability-operation-attribution';
 import { stripProjectDocumentMedia } from './project-document-framing';
 import { systemNarrativeGroundingFailure } from './system-narrative-grounding';
 import {
@@ -216,7 +218,6 @@ import { deriveFrameworkIdentities } from './framework-identity';
 import { deriveDependencyRoles } from './dependency-roles';
 import { buildArchitecturalConflicts } from './architectural-conflicts';
 import { computeModuleHealth } from './module-health';
-import { buildDataLineage } from './data-lineage';
 import { isLanguageBuiltinName, isLanguageBuiltinExitPoint, isLanguageBuiltinDomainToken, isCapabilityNoiseToken, isVendorLibDomainToken } from './language-builtins';
 import { invalidateLocalPackageImportContext, localPackageImportsAny } from './local-package-import-context';
 import { classifyGuardKind } from './guard-classification';
@@ -986,9 +987,10 @@ export class AnalyzerOrchestrator {
       'nodes' | 'edges' | 'entry_points' | 'exit_points' | 'call_chains' | 'data_lineage' | 'capabilities' | 'behavior_surfaces' | 'entities'
     >,
     persistFlows?: (flows: FlowConcept[]) => void,
+    materializedFlows?: FlowConcept[],
   ): CASEntryPoint[] {
     try {
-      const flows = computeFlowConcepts(cas as CASOutput, {});
+      const flows = materializedFlows || computeFlowConcepts(cas as CASOutput, {});
       this.stampFlowCriticality(flows, cas.call_chains || []);
       persistFlows?.(flows);
       if (flows.length === 0) return entryPoints;
@@ -1473,29 +1475,14 @@ export class AnalyzerOrchestrator {
     logTiming('pp_enhanceRisks', phaseStart);
     await yieldToEventLoop();
     phaseStart = startPhase();
-    const flowsForJourneys = computeFlowConcepts({
-      nodes: allNodes,
-      edges: allEdges,
-      entry_points: allEntryPoints,
-      exit_points: allExitPoints,
-      call_chains: callChains,
-      data_lineage: [],
-      entities: dataEntities,
-      capabilities: systemCapabilities,
-      behavior_surfaces: behaviorSurfaces,
-    } as unknown as CASOutput, {});
-    this.rollupSystemCapabilityDependencies(flowsForJourneys, systemCapabilities, dataEntities);
-    const userJourneyResult = buildUserJourneys({
-      nodes: allNodes,
-      nodeLookup: this.getNodeLookup(allNodes),
-      edges: allEdges,
-      entryPoints: allEntryPoints,
-      exitPoints: allExitPoints,
-      callChains,
-      dataEntities,
-      changeRisks: enhancedChangeRisks,
-      flows: flowsForJourneys,
+    const comprehensionGraph = buildComprehensionGraph({
+      nodes: allNodes, edges: allEdges, entryPoints: allEntryPoints, exitPoints: allExitPoints,
+      callChains, dataEntities, capabilities: systemCapabilities, behaviorSurfaces,
+      changeRisks: enhancedChangeRisks, nodeLookup: this.getNodeLookup(allNodes),
     });
+    const flowsForJourneys = comprehensionGraph.flows;
+    this.rollupSystemCapabilityDependencies(flowsForJourneys, systemCapabilities, dataEntities);
+    let userJourneyResult = comprehensionGraph.journeyResult;
     const paradigmConformance = buildParadigmConformance({
       nodes: allNodes,
       edges: allEdges,
@@ -1509,14 +1496,7 @@ export class AnalyzerOrchestrator {
       patterns: allPatterns,
       exitPoints: allExitPoints,
     });
-    const dataLineage = buildDataLineage({
-      nodes: allNodes,
-      edges: allEdges,
-      dataEntities,
-      exitPoints: allExitPoints,
-      entryPoints: allEntryPoints,
-      userJourneys: userJourneyResult.journeys,
-    });
+    let dataLineage = comprehensionGraph.dataLineage;
     logTiming('pp_userJourneys', phaseStart);
     await yieldToEventLoop();
     if (allBehaviors.length === 0 && userJourneyResult.journeys.length > 0) {
@@ -1750,6 +1730,13 @@ export class AnalyzerOrchestrator {
     }
     const canonicalSystemCapabilities = deferAiEnrichment ? [] : systemCapabilities;
     this.finalizeFlowGraphCapabilities(flowGraph);
+    const finalizedComprehensionGraph = buildComprehensionGraph({
+      nodes: allNodes, edges: allEdges, entryPoints: allEntryPoints, exitPoints: allExitPoints,
+      callChains, dataEntities, capabilities: canonicalSystemCapabilities, behaviorSurfaces,
+      changeRisks: enhancedChangeRisks, nodeLookup: this.getNodeLookup(allNodes),
+    });
+    userJourneyResult = finalizedComprehensionGraph.journeyResult;
+    dataLineage = finalizedComprehensionGraph.dataLineage;
     let comprehensionFlows: FlowConcept[] = [];
     let entryPointsWithContractAndCapability = this.deriveEntryPointContractAndCapability(allEntryPoints, {
       nodes: allNodes,
@@ -1761,7 +1748,7 @@ export class AnalyzerOrchestrator {
       capabilities: canonicalSystemCapabilities,
       behavior_surfaces: behaviorSurfaces,
       entities: dataEntities,
-    }, flows => { comprehensionFlows = flows; });
+    }, flows => { comprehensionFlows = flows; }, finalizedComprehensionGraph.flows);
     entryPointsWithContractAndCapability = attachDeployable(entryPointsWithContractAndCapability, deployableEvidence, allNodes);
     logTiming('pp_entryPointContractCapability', phaseStart);
     await yieldToEventLoop();
@@ -2891,29 +2878,14 @@ export class AnalyzerOrchestrator {
     );
     const enhancedChangeRisks = this.enhanceChangeRisks(changeRisks, callGraphBuilder, callChains, entryPoints);
     callGraphBuilder.release();
-    const flowsForJourneys = computeFlowConcepts({
-      nodes,
-      edges,
-      entry_points: entryPoints,
-      exit_points: exitPoints,
-      call_chains: callChains,
-      data_lineage: [],
-      entities: dataEntities,
-      capabilities: systemCapabilities,
-      behavior_surfaces: behaviorSurfaces,
-    } as unknown as CASOutput, {});
-    this.rollupSystemCapabilityDependencies(flowsForJourneys, systemCapabilities, dataEntities);
-    const userJourneyResult = buildUserJourneys({
-      nodes,
+    const comprehensionGraph = buildComprehensionGraph({
+      nodes, edges, entryPoints, exitPoints, callChains, dataEntities,
+      capabilities: systemCapabilities, behaviorSurfaces, changeRisks: enhancedChangeRisks,
       nodeLookup: this.getNodeLookup(nodes),
-      edges,
-      entryPoints,
-      exitPoints,
-      callChains,
-      dataEntities,
-      changeRisks: enhancedChangeRisks,
-      flows: flowsForJourneys,
     });
+    const flowsForJourneys = comprehensionGraph.flows;
+    this.rollupSystemCapabilityDependencies(flowsForJourneys, systemCapabilities, dataEntities);
+    let userJourneyResult = comprehensionGraph.journeyResult;
     const paradigmConformance = buildParadigmConformance({
       nodes,
       edges,
@@ -2927,14 +2899,7 @@ export class AnalyzerOrchestrator {
       patterns: detectedPatterns,
       exitPoints,
     });
-    const dataLineage = buildDataLineage({
-      nodes,
-      edges,
-      dataEntities,
-      exitPoints,
-      entryPoints,
-      userJourneys: userJourneyResult.journeys,
-    });
+    let dataLineage = comprehensionGraph.dataLineage;
     this.stampChainCriticalityFromStructuralImportance(callChains, nodes, entryPoints);
     const enhancedFlowSummary = this.buildEnhancedFlowSummary(callChains, entryPoints);
     const implementationHealth = this.buildImplementationHealth(nodes);
@@ -3099,6 +3064,13 @@ export class AnalyzerOrchestrator {
     const validation = buildGraphValidation(nodes, edges, entryPoints, exitPoints, runtimeStaticLinks, analysisFacts);
     this.finalizeSystemCapabilityNames(systemCapabilities, dataEntities, enhancedSystemPurpose);
     this.finalizeFlowGraphCapabilities(flowGraph);
+    const finalizedComprehensionGraph = buildComprehensionGraph({
+      nodes, edges, entryPoints, exitPoints, callChains, dataEntities,
+      capabilities: systemCapabilities, behaviorSurfaces, changeRisks: enhancedChangeRisks,
+      nodeLookup: this.getNodeLookup(nodes),
+    });
+    userJourneyResult = finalizedComprehensionGraph.journeyResult;
+    dataLineage = finalizedComprehensionGraph.dataLineage;
     let comprehensionFlows: FlowConcept[] = [];
     let entryPointsWithContractAndCapability = this.deriveEntryPointContractAndCapability(entryPoints, {
       nodes,
@@ -3110,7 +3082,7 @@ export class AnalyzerOrchestrator {
       capabilities: systemCapabilities,
       behavior_surfaces: behaviorSurfaces,
       entities: dataEntities,
-    }, flows => { comprehensionFlows = flows; });
+    }, flows => { comprehensionFlows = flows; }, finalizedComprehensionGraph.flows);
     entryPointsWithContractAndCapability = attachDeployable(entryPointsWithContractAndCapability, deployableEvidence, nodes);
     const rebuiltReachabilityIndex = buildReachabilityIndexFromCas({
       nodes,
@@ -9346,6 +9318,12 @@ export class AnalyzerOrchestrator {
           /(?:auth|impersonat|login|sign[ -]?in)/i.test([operation.entry_point_id, operation.path_or_command, operation.trigger?.path].filter(Boolean).join(' ')))) &&
         purposeNouns.every(token => ['access', 'account', 'auth', 'authenticate', 'authorization', 'credential', 'identity', 'impersonate', 'impersonation', 'session', 'user']
           .map(value => this.stemTerminologyToken(value)).includes(token));
+      const routineIdentityMechanism =
+        /^(?:authenticate|log[ -]?in|sign[ -]?in|register)(?:s|ed|ing)?\b|^(?:create|open)\s+(?:an?\s+)?(?:user\s+)?account\b|\b(?:authentication|session tokens?)\b/i.test(name);
+      if (artifactType === 'app' && routineIdentityMechanism && !firstPartySupportsIdentity) {
+        debugCatalogRejection(name, 'supporting-identity-concern');
+        continue;
+      }
       if (artifactType === 'app' && namesIdentityConcern && !firstPartySupportsIdentity && !hasDirectIdentityOutcome) {
         debugCatalogRejection(name, 'supporting-identity-concern');
         continue;
@@ -9417,7 +9395,7 @@ export class AnalyzerOrchestrator {
       if (citedIndices.length > 0) {
         for (const index of citedIndices) {
           if (!opsByItemIndex.has(index)) opsByItemIndex.set(index, []);
-          opsByItemIndex.get(index)!.push(...candidate.operations);
+          opsByItemIndex.get(index)!.push(...scopeCapabilityOperationsToOutcomeName(staged[index].name, candidate.operations));
           if (!entityIdsByItemIndex.has(index)) entityIdsByItemIndex.set(index, new Set());
           for (const id of candidate.related_entities || []) entityIdsByItemIndex.get(index)!.add(id);
           if (!candidateIdsByItemIndex.has(index)) candidateIdsByItemIndex.set(index, new Set());
@@ -9468,7 +9446,7 @@ export class AnalyzerOrchestrator {
       }
       for (const index of winners) {
         if (!opsByItemIndex.has(index)) opsByItemIndex.set(index, []);
-        opsByItemIndex.get(index)!.push(...candidate.operations);
+        opsByItemIndex.get(index)!.push(...scopeCapabilityOperationsToOutcomeName(staged[index].name, candidate.operations));
         if (!entityIdsByItemIndex.has(index)) entityIdsByItemIndex.set(index, new Set());
         for (const id of candidate.related_entities || []) entityIdsByItemIndex.get(index)!.add(id);
         if (!candidateIdsByItemIndex.has(index)) candidateIdsByItemIndex.set(index, new Set());
@@ -10616,10 +10594,13 @@ export class AnalyzerOrchestrator {
       };
       const publishedIds = new Set(deduped.map(capability => capability.id));
       if (purpose.capability_reconciliation) {
-        purpose.capability_reconciliation.proposals = purpose.capability_reconciliation.proposals.map(proposal => ({
-          ...proposal,
-          capability_ids: proposal.capability_ids.filter(capabilityId => publishedIds.has(capabilityId)),
-        }));
+        purpose.capability_reconciliation.proposals = purpose.capability_reconciliation.proposals.map(proposal => {
+          const capabilityIds = proposal.capability_ids.filter(capabilityId => publishedIds.has(capabilityId));
+          return {
+            ...proposal, capability_ids: capabilityIds,
+            disposition: capabilityIds.length > 0 ? 'grounded' as const : 'intent-gap' as const,
+          };
+        });
         purpose.capability_reconciliation.undocumented_capabilities =
           purpose.capability_reconciliation.undocumented_capabilities.filter(capability =>
             publishedIds.has(capability.capability_id));

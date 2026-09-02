@@ -2930,7 +2930,7 @@ test('closes an incomplete aggregate with one evidence-cited lifecycle capabilit
     operations: [{
       entry_point_id: `category-${index}`,
       entry_point_type: 'http',
-      action,
+      action: `authenticate and ${action}`,
       path_or_command: path,
       trigger: { method, path },
     }],
@@ -2943,7 +2943,7 @@ test('closes an incomplete aggregate with one evidence-cited lifecycle capabilit
     uncoveredIdsByParent: new Map([[parentId, [candidates[0].id]]]),
     scopes,
     evidenceCandidates: candidates,
-    audienceFor: () => 'Users',
+    audienceFor: () => undefined,
     entityLabelsFor: () => ['Category'],
     validate: capability => Boolean(capability.description),
   });

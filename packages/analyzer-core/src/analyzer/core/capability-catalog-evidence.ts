@@ -6,7 +6,9 @@ import { analyzeTerminality } from './terminality';
 import { observedCapabilityLifecycleActions } from './capability-lifecycle-actions';
 import { normalizedSubjectTokens, outcomeIdentityTokens, outcomeTokenMatches, productTextCorroboratesActionAndSubject } from './capability-evidence-language';
 import { CAPABILITY_PURPOSE_VERBS, isBareNounCapabilityLabel, isCrudInventoryCapabilityLabel, isGenericManagementCapabilityLabel } from "./capability-naming";
-export { catalogCandidateEntityFacts, catalogCountBounds, catalogMinimumCapabilityCount, catalogRelatedEntityIds, firstPartySupportsIdentityProduct, uniquelyMatchingCapabilityEntityIds } from './capability-catalog-metrics';
+import { capabilityIsSupportingIdentityMechanism } from './capability-identity-scope';
+export { catalogCandidateEntityFacts, catalogCountBounds, catalogMinimumCapabilityCount, catalogRelatedEntityIds, uniquelyMatchingCapabilityEntityIds } from './capability-catalog-metrics';
+export { firstPartySupportsIdentityProduct } from './capability-catalog-metrics';
 import { isStructuralExecutableCliEntry } from './entry-point-product-role';
 import { demoteCoveredImplementationAggregates as demoteCoveredImplementationAggregatesImpl } from './capability-catalog-aggregate-demotion';
 export type CapabilityEvidenceRole = NonNullable<SystemCapability['evidence_role']>;
@@ -703,6 +705,9 @@ export function classifyCapabilityEvidence(
     } else if (allStructuralExecutableCli) {
       evidenceRole = 'supporting-mechanism';
       reasons.push('filesystem-executable-without-product-command-registration');
+    } else if (capabilityIsSupportingIdentityMechanism(candidate, entryPointById, projectTextSignal)) {
+      evidenceRole = 'supporting-mechanism';
+      reasons.push('identity-is-upstream-substrate-outside-an-identity-product');
     } else if (bareDeliveryAggregate) {
       evidenceRole = 'supporting-mechanism';
       reasons.push('bare-page-and-event-aggregate-supports-outcomes');

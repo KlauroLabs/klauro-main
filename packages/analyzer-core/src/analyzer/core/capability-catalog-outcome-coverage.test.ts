@@ -142,6 +142,8 @@ test('canonicalizes mapping without truncating the stem', () => {
   assert.equal(canonicalCapabilityCatalogOutcomeToken('authenticated'), 'authenticate');
   assert.equal(canonicalCapabilityCatalogOutcomeToken('tags'), 'tag');
   assert.equal(canonicalCapabilityCatalogOutcomeToken('jobs'), 'job');
+  assert.equal(canonicalCapabilityCatalogOutcomeToken('status'), 'status');
+  assert.equal(canonicalCapabilityCatalogOutcomeToken('statu'), 'status');
 });
 
 test('derives visible actions only from canonical purpose verbs after plural and shared audiences', () => {

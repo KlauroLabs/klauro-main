@@ -249,6 +249,83 @@ test('accepted zero-capability catalogs are ready when the evidence requires no 
   assert.equal(readiness.canonical_capabilities, 0);
 });
 
+test('accepted comprehension fails closed when grounded reconciliation references do not resolve', () => {
+  const readiness = evaluateComprehensionReadiness(cas({
+    capabilities: [{ id: 'cap-present', name: 'Review change impact' }],
+    ai_enrichment: 'ready',
+    enhanced_system_purpose: {
+      capability_catalog_coverage: {
+        evidence_families: 1,
+        published_capabilities: 1,
+        minimum_published_capabilities: 1,
+        status: 'accepted',
+      },
+      capability_reconciliation: {
+        proposals: [{
+          requirement_id: 'proposal-one',
+          statement: 'Know what will break before changing code',
+          candidate_ids: ['candidate-one'],
+          disposition: 'grounded',
+          capability_ids: ['cap-missing'],
+        }],
+        undocumented_capabilities: [],
+      },
+    },
+  }));
+
+  assert.equal(readiness.status, 'error');
+  assert.equal(readiness.ready, false);
+  assert.match(readiness.reason, /grounded proposal has unresolved capability references/);
+});
+
+test('accepted comprehension fails closed when capability flow references do not resolve', () => {
+  const readiness = evaluateComprehensionReadiness(cas({
+    capabilities: [{
+      id: 'cap-impact',
+      name: 'Review change impact',
+      related_flows: [{ flow_id: 'flow-missing', role: 'primary', rationale: 'implements outcome' }],
+    }],
+    flows: [{ flow_id: 'flow-present', name: 'Assess change', intent: 'Assess change', entry_point: 'entry-one', entities: [], contract: {}, steps: [] }],
+    ai_enrichment: 'ready',
+    enhanced_system_purpose: {
+      capability_catalog_coverage: {
+        evidence_families: 1,
+        published_capabilities: 1,
+        minimum_published_capabilities: 1,
+        status: 'accepted',
+      },
+    },
+  }));
+
+  assert.equal(readiness.status, 'error');
+  assert.equal(readiness.ready, false);
+  assert.match(readiness.reason, /capability flow reference does not resolve/);
+});
+
+test('node-backed capability operations satisfy reference integrity when the node exists', () => {
+  const readiness = evaluateComprehensionReadiness(cas({
+    nodes: [{ id: 'worker', name: 'Worker', type: 'function', source: { file: 'worker.ts', line: 1 } }],
+    capabilities: [{
+      id: 'cap-process',
+      name: 'Process queued work',
+      operations: [{ entry_point_id: 'node:worker', entry_point_type: 'function', action: 'Process' }],
+    }],
+    entry_points: [{ id: 'entry-present', type: 'http', name: 'present', source_node: 'worker' }],
+    ai_enrichment: 'ready',
+    enhanced_system_purpose: {
+      capability_catalog_coverage: {
+        evidence_families: 1,
+        published_capabilities: 1,
+        minimum_published_capabilities: 1,
+        status: 'accepted',
+      },
+    },
+  }));
+
+  assert.equal(readiness.status, 'ready');
+  assert.equal(readiness.ready, true);
+});
+
 test("unavailable comprehension exposes the persisted fail-closed catalog reason", () => {
   const readiness = evaluateComprehensionReadiness(cas({
     ai_enrichment: "synchronous",

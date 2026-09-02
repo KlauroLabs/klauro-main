@@ -534,7 +534,13 @@ export function validatedDeterministicGroupedOperationClosures(args: {
       related_domains: relatedDomains,
       criticality_factors: ['catalog-deterministic-grouped-lifecycle'],
     };
-    const audience = args.audienceFor(first);
+    const exactHttpRouteLineage = operations.every(operation => {
+      const method = String(operation.trigger?.method || '').trim();
+      const triggerPath = String(operation.trigger?.path || '').trim();
+      const commandPath = String(operation.path_or_command || '').trim();
+      return operation.entry_point_type === 'http' && Boolean(method && triggerPath && triggerPath === commandPath);
+    });
+    const audience = args.audienceFor(first) || (exactHttpRouteLineage ? 'Users' : undefined);
     const entityLabels = [...new Set(resolved.flatMap(candidate => args.entityLabelsFor(candidate)))];
     let draft = deterministicCapabilityActionIdentityFallback({
       capability: synthetic,
@@ -559,8 +565,15 @@ export function validatedDeterministicGroupedOperationClosures(args: {
     }
     if (!draft) continue;
     const subject = draft.name.replace(/^\S+\s+/, '');
-    const lifecycleActions = [...new Set(resolved.flatMap(candidate =>
-      (candidate.operations || []).map(operation => String(operation.action || '').toLowerCase())))];
+    const lifecycleActions = [...new Set(operations.map(operation => {
+      const method = String(operation.trigger?.method || '').toUpperCase();
+      const path = String(operation.trigger?.path || operation.path_or_command || '').toLowerCase();
+      if (/^(?:GET|HEAD|OPTIONS)$/.test(method)) return 'read';
+      if (method === 'POST' && !/(?:auth|login|sign[ _-]?in|token)/.test(path)) return 'create';
+      if (/^(?:PUT|PATCH)$/.test(method)) return 'update';
+      if (method === 'DELETE') return 'delete';
+      return String(operation.action || '').toLowerCase();
+    }))];
     const outcomeName = groupedLifecycleOutcomeName(subject, operations, lifecycleActions);
     if (!outcomeName) continue;
     const identity: SystemCapability = {

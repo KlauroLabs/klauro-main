@@ -39,7 +39,7 @@ const coordinatedAudienceList = new RegExp(
 function canonicalToken(token: string): string {
   const source = token.toLowerCase();
   if (/^(?:auth|authenticate|authenticated|authenticating|authentication)$/.test(source)) return 'authenticate';
-  if (source === 'status') return 'status';
+  if (/^statu(?:s)?$/.test(source)) return 'status';
   let value = source.endsWith('ies') && source.length > 4
     ? `${source.slice(0, -3)}y`
     : /(?:ches|shes|sses|xes|zes)$/.test(source)
@@ -410,7 +410,7 @@ function capabilityTextMatchesCatalogOutcomeRequirement(
   requirement: CapabilityCatalogOutcomeRequirement,
 ): boolean {
   const capabilityTokens = new Set(tokens(capabilityText));
-  const requiredTerms = requirement.requiredSubjectTerms || requirement.subjectTokens;
+  const requiredTerms = (requirement.requiredSubjectTerms || requirement.subjectTokens).map(canonicalToken);
   const requiredMatches = requirement.minimumSubjectMatches ?? Math.min(2, requiredTerms.length);
   if (requiredTerms.filter(token => capabilityTokens.has(token)).length >= requiredMatches) return true;
   return capabilityMatchesSubjectAlias(capabilityTokens, requiredTerms, requirement.subjectTokenAliases, requirement.subjectAliasAnchorTokens);
