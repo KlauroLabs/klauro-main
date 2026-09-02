@@ -80,7 +80,7 @@ export async function analyzeWithCompleteScope(
   let discoveryError: string | undefined;
   if (listFiles) {
     try {
-      declaredFiles = await listFiles(root);
+      declaredFiles = await listFiles(root, context);
     } catch (error) {
       discoveryError = error instanceof Error ? error.message : String(error);
     }

@@ -254,7 +254,7 @@ export abstract class BaseAnalyzer {
   }
 
   async analyzeFileSingle?(context: FileAnalysisContext): Promise<FileAnalysisResult>;
-  async getRelevantFiles?(projectPath: string): Promise<string[]>;
+  async getRelevantFiles?(projectPath: string, context?: AnalysisContext): Promise<string[]>;
   async getClaimedFiles?(projectPath: string): Promise<string[]>;
 
   protected resetAnalysisWarnings(): void {

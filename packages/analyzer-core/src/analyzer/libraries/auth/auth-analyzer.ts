@@ -160,8 +160,8 @@ export class AuthAnalyzer extends BaseAnalyzer {
     return true;
   }
 
-  async getRelevantFiles(projectPath: string): Promise<string[]> {
-    return this.sourceFiles({ projectPath });
+  async getRelevantFiles(projectPath: string, context?: AnalysisContext): Promise<string[]> {
+    return this.sourceFiles(context || { projectPath });
   }
 
   async analyze(context: AnalysisContext): Promise<CASContribution> {

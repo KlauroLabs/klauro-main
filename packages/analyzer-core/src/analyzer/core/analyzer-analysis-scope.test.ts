@@ -129,3 +129,33 @@ test('eligible files omitted by an analyzer remain exact and make its scope inco
     await fs.remove(projectPath);
   }
 });
+
+test('scope discovery receives the same analysis context as execution', async () => {
+  let receivedContext: AnalysisContext | undefined;
+  class ContextualAnalyzer extends BaseAnalyzer {
+    constructor() {
+      super('contextual', 'Contextual', '1.0.0', 'library');
+    }
+
+    async canAnalyze(): Promise<boolean> {
+      return true;
+    }
+
+    getCapabilities(): string[] {
+      return [];
+    }
+
+    async getRelevantFiles(_projectPath: string, context?: AnalysisContext): Promise<string[]> {
+      receivedContext = context;
+      return [];
+    }
+
+    async analyze(): Promise<any> {
+      return this.createContribution([], [], [], []);
+    }
+  }
+
+  const context: AnalysisContext = { projectPath: '/tmp/contextual', existingAnalysis: [] };
+  await withAnalyzerFileReadCache(() => scoped(new ContextualAnalyzer(), context));
+  assert.equal(receivedContext, context);
+});
