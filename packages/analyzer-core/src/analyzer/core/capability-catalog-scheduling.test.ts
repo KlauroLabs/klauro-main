@@ -681,6 +681,44 @@ test('a uniquely anchored entity outcome retains the complete lifecycle as step 
   );
 });
 
+test('a cited parent family is enriched with every missing lifecycle obligation', () => {
+  const categories = catalogCapability({
+    id: 'cap_category_management', name: 'Category records', structural_label: 'Category',
+    evidence_role: 'product-outcome', related_entities: ['entity_category'], related_domains: ['category'],
+    operations: [
+      { entry_point_id: 'category-read', entry_point_type: 'http', action: 'read' },
+      { entry_point_id: 'category-create', entry_point_type: 'http', action: 'create' },
+      { entry_point_id: 'category-update', entry_point_type: 'http', action: 'update' },
+      { entry_point_id: 'category-delete', entry_point_type: 'http', action: 'delete' },
+    ],
+  });
+  const obligations = categories.operations.map(operation => catalogCapability({
+    id: `operation-obligation:cap_category_management:${operation.entry_point_id}`,
+    name: `${operation.action} category`, structural_label: `${operation.action} category`,
+    evidence_role: 'product-outcome', related_entities: ['entity_category'], operations: [operation],
+    criticality_factors: [
+      'catalog-parent-candidate:cap_category_management',
+      `catalog-operation-obligation:operation-obligation:cap_category_management:${operation.entry_point_id}`,
+    ],
+  }));
+  const capability = catalogCapability({
+    id: 'categories', name: 'Categorize job applications', related_entities: ['entity_category'],
+    operations: [categories.operations[2]],
+    criticality_factors: ['catalog-candidate:cap_category_management'],
+  });
+
+  const [merged] = mergeGroundedEntityEvidenceFamilies(
+    [capability], [categories, ...obligations], [[categories.id, ...obligations.map(obligation => obligation.id)]],
+  );
+
+  assert.deepEqual(
+    merged.operations.map(operation => operation.entry_point_id).sort(),
+    ['category-create', 'category-delete', 'category-read', 'category-update'],
+  );
+  assert.ok(obligations.every(obligation =>
+    merged.criticality_factors.includes(`catalog-operation-obligation:${obligation.id}`)));
+});
+
 test('entity evidence resolves related entities through an accepted capability citation', () => {
   const behavior = catalogCapability({
     id: 'capability_job',

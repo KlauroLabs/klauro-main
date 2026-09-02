@@ -295,11 +295,14 @@ function mergeCapabilityEvidence(
     criticality: criticalityRank[evidence.criticality] > criticalityRank[outcome.criticality]
       ? evidence.criticality
       : outcome.criticality,
-    criticality_factors: scopeCapabilityObligationFactors(outcome.name, [...new Set([
-      ...(outcome.criticality_factors || []),
-      ...(evidence.criticality_factors || []),
-      `catalog-candidate:${evidence.id}`,
-    ])]),
+    criticality_factors: (() => {
+      const mergedFactors = [...new Set([
+        ...(outcome.criticality_factors || []),
+        ...(evidence.criticality_factors || []),
+        `catalog-candidate:${evidence.id}`,
+      ])];
+      return preserveCompleteLifecycle ? mergedFactors : scopeCapabilityObligationFactors(outcome.name, mergedFactors);
+    })(),
     evidence_examples: [...new Set([...(outcome.evidence_examples || []), ...(evidence.evidence_examples || [])])],
   };
 }
@@ -384,7 +387,7 @@ export function mergeGroundedEntityEvidenceFamilies(
       .map(factor => factor.slice('catalog-candidate:'.length))));
 
   for (const group of requiredEntityCandidateGroups) {
-    if (group.some(candidateId => citedIds.has(candidateId))) continue;
+    if (group.every(candidateId => citedIds.has(candidateId))) continue;
     const matchesByCapability = new Map<number, Array<{ candidate: SystemCapability; score: number }>>();
     for (const candidateId of group) {
       const candidate = evidenceById.get(candidateId);
