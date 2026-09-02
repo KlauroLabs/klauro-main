@@ -19,6 +19,14 @@ describe('capability operation attribution', () => {
     ]);
   });
 
+  it.each([
+    ['Filter articles', ['read']],
+    ['Categorize articles', ['update']],
+    ['Attach files to articles', ['create', 'update']],
+  ])('attributes product-language action %s without inheriting unrelated lifecycle operations', (name, expectedIds) => {
+    expect(scopeCapabilityOperationsToOutcomeName(name, operations).map(operation => operation.entry_point_id)).toEqual(expectedIds);
+  });
+
   it('retains the complete operation set for a broad outcome', () => {
     expect(scopeCapabilityOperationsToOutcomeName('Organize articles', operations)).toHaveLength(4);
   });

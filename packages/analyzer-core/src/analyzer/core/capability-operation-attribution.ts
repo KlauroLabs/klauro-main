@@ -5,9 +5,9 @@ type CapabilityOperation = SystemCapability['operations'][number];
 
 function requestedOutcomeActions(name: string): string[] {
   const actions = String(name || '').trim().toLowerCase().split(/[^a-z]+/).flatMap(token => {
-    if (/^(?:create|add|publish|post|submit|register)$/.test(token)) return ['create'];
-    if (/^(?:read|view|list|browse|search|find|get)$/.test(token)) return ['read'];
-    if (/^(?:update|edit|change)$/.test(token)) return ['update'];
+    if (/^(?:create|add|attach|publish|post|submit|register)$/.test(token)) return token === 'attach' ? ['create', 'update'] : ['create'];
+    if (/^(?:read|view|list|browse|search|find|filter|get)$/.test(token)) return ['read'];
+    if (/^(?:update|edit|change|categorize|assign)$/.test(token)) return ['update'];
     if (/^(?:delete|remove|archive)$/.test(token)) return ['delete'];
     if (/^(?:comment|favorite|follow|unfavorite|unfollow)$/.test(token)) return [token];
     return [];
