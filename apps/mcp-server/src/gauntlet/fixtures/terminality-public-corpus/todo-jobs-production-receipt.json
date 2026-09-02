@@ -15,24 +15,24 @@
     }
   },
   "analysis": {
-    "analysis_id": "analysis_1788391082061_bc1wjm2fw",
-    "analysis_timestamp": "2026-09-02T23:18:15.627Z",
-    "analyzer_build": "source-sha256:4f3e0e68932b3f02d1980b7d43dbd9978920794da61b5c7f04f5c4c3e4af8d6f",
-    "analyzer_source_base_commit": "c151f4c54ebffbbe7c433ac1a03dddb48f34651b",
-    "analyzer_source_sha256": "4f3e0e68932b3f02d1980b7d43dbd9978920794da61b5c7f04f5c4c3e4af8d6f",
+    "analysis_id": "analysis_1788391853074_x8041js5v",
+    "analysis_timestamp": "2026-09-02T23:31:03.533Z",
+    "analyzer_build": "source-sha256:96a67de4560a2d813ba85a27869d417b106f64d0acd1c01f9322380ef026c1e7",
+    "analyzer_source_base_commit": "7b8a9bfddf9355b087036d73b167603a84374f6c",
+    "analyzer_source_sha256": "96a67de4560a2d813ba85a27869d417b106f64d0acd1c01f9322380ef026c1e7",
     "analyzer_source_file_count": 450,
     "production_cas": "todo-jobs-production-cas.json.gz",
-    "production_cas_sha256": "1ccf6f5783425d1542378f9f0a4effbcc3123a2be6fff29c3258b278e3b6e4cd",
-    "capabilities_sha256": "25fdf79af4794f9af2b47a8533414c86fd352d6907425999dbe20ae691d24277",
+    "production_cas_sha256": "4ffc91e021bb96bc42da6d2224ed847bc8910f79a61c353d4f25e3911b69c585",
+    "capabilities_sha256": "7fda064f75d8261b0412e4af0c7693cffca91146eade71f53409c3968f9b2bc7",
     "provider": "deepinfra",
     "model": "Qwen/Qwen3-Next-80B-A3B-Instruct",
     "prompt_version": "capability_catalog.v2",
     "semantic_schema_version": "e1.1",
     "semantic_trace": "todo-jobs-production-semantic.jsonl",
-    "semantic_trace_sha256": "a585e7c06e63ced2314bb9a5f9890a72447795083e52c2f68928ff31148c2932",
+    "semantic_trace_sha256": "5e5d76a08191d3e53f46668c55903df0dfc83fa3faa82bdee0f0df5b1e41aee9",
     "ai_cache": "disabled",
     "parser_fingerprint": "f22d25afb68de083",
-    "derived_fingerprint": "d5418758b26ba7f7"
+    "derived_fingerprint": "01759ecfc9198aed"
   },
   "repo_id": "github:Babadinho/todo-jobs@c7c139a966ee5eafa49066a89222b56ba8233c27",
   "known_node_ids": [
@@ -957,7 +957,7 @@
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-02T23:18:06.909Z"
+          "generated_at": "2026-09-02T23:30:58.473Z"
         },
         "description": "Todo Jobs records job applications with titles, descriptions, links, and end dates to maintain a centralized record of active and closed applications.",
         "description_source": "ai",
@@ -965,7 +965,7 @@
           "status": "ai_applied",
           "attempted": true,
           "budget_ms": 20000,
-          "generated_at": "2026-09-02T23:18:15.341Z"
+          "generated_at": "2026-09-02T23:31:03.169Z"
         },
         "category": "core",
         "operations": [
@@ -1404,15 +1404,15 @@
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-02T23:18:06.909Z"
+          "generated_at": "2026-09-02T23:30:58.473Z"
         },
-        "description": "Users can categorize job applications as those job applications change over time.",
+        "description": "Job applications organize into named categories that users can create, edit, or delete to group opportunities by target role or company.",
         "description_source": "ai",
         "description_generation": {
           "status": "ai_applied",
           "attempted": true,
           "budget_ms": 20000,
-          "generated_at": "2026-09-02T23:18:15.341Z"
+          "generated_at": "2026-09-02T23:31:03.169Z"
         },
         "category": "core",
         "operations": [
@@ -1610,7 +1610,7 @@
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-02T23:18:08.093Z"
+          "generated_at": "2026-09-02T23:31:00.036Z"
         },
         "description": "Job applications surface attached notes and display a count of notes per application, helping users quickly see contextual feedback.",
         "description_source": "ai",
@@ -1618,7 +1618,7 @@
           "status": "ai_applied",
           "attempted": true,
           "budget_ms": 20000,
-          "generated_at": "2026-09-02T23:18:15.341Z"
+          "generated_at": "2026-09-02T23:31:03.169Z"
         },
         "category": "core",
         "operations": [
@@ -1833,15 +1833,15 @@
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-02T23:18:07.999Z"
+          "generated_at": "2026-09-02T23:30:59.691Z"
         },
-        "description": "Application status updates to Rejected, Assessment, or Interview, and automatically closes when the end date is reached.",
+        "description": "Application status updates to Rejected, Assessment, or Interview upon user action, and automatically closes when the end date is reached.",
         "description_source": "ai",
         "description_generation": {
           "status": "ai_applied",
           "attempted": true,
           "budget_ms": 20000,
-          "generated_at": "2026-09-02T23:18:15.341Z"
+          "generated_at": "2026-09-02T23:31:03.169Z"
         },
         "category": "core",
         "operations": [
@@ -1882,7 +1882,7 @@
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-02T23:18:10.501Z"
+          "generated_at": "2026-09-02T23:31:02.482Z"
         },
         "description": "Job applications surface filtered views based on status and category to help the user narrow down searches across job boards.",
         "description_source": "ai",
@@ -1890,7 +1890,7 @@
           "status": "ai_applied",
           "attempted": true,
           "budget_ms": 20000,
-          "generated_at": "2026-09-02T23:18:15.341Z"
+          "generated_at": "2026-09-02T23:31:03.169Z"
         },
         "category": "core",
         "operations": [
