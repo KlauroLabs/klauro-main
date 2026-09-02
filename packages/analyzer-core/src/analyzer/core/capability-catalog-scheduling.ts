@@ -385,7 +385,7 @@ export function mergeGroundedEntityEvidenceFamilies(
         candidate.evidence_kind === 'behavior-surface' ||
         candidate.evidence_role !== 'product-outcome') continue;
       const candidateEntities = new Set(candidate.related_entities || []);
-      const evidenceTokens = candidateEntities.size === 0
+      const evidenceTokens = (candidateEntities.size === 0 || candidate.structural_label
         ? normalizedOutcomeNameTokens(candidate.structural_label || candidate.name)
             .filter(token => !OUTCOME_ACTION_TOKENS.has(token) && token !== 'management')
         : capabilityEvidenceSubjectTokens({
@@ -394,7 +394,7 @@ export function mergeGroundedEntityEvidenceFamilies(
             related_domains: [],
             evidence_examples: [],
             operations: [],
-          });
+          }));
       if (evidenceTokens.length === 0) continue;
       for (let index = 0; index < merged.length; index++) {
         const capability = merged[index];

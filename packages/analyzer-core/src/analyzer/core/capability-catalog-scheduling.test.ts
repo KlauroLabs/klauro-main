@@ -577,7 +577,7 @@ test('distinct deterministic evidence attaches after its shared entity group is 
     related_entities: ['entity_job', 'entity_note'],
   });
   const notes = catalogCapability({
-    id: 'cap_note_management', name: 'Note', structural_label: 'Note Management',
+    id: 'cap_note_management', name: 'read and create and delete note', structural_label: 'Note Management',
     evidence_role: 'product-outcome', related_entities: ['entity_note'], related_domains: ['note'],
     operations: [{
       entry_point_id: 'note-create', entry_point_type: 'http', action: 'Create',
