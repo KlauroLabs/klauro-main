@@ -288,6 +288,7 @@ describe('capability evidence roles', () => {
   test('keeps a bare-noun public surface as evidence instead of inventing a mandatory outcome', () => {
     const bareSurface = candidate('jobsites', 'Job Sites', 'core', ['Read']);
     bareSurface.related_entities = ['entity_job'];
+    bareSurface.evidence_kind = 'behavior-surface';
     bareSurface.operations[0].entry_point_id = 'jobsites-page';
     const [classified] = classifyCapabilityEvidence(
       [bareSurface],
@@ -296,6 +297,12 @@ describe('capability evidence roles', () => {
       { entryPoints: [{
         id: 'jobsites-page', source_node: 'jobsites-node', type: 'page',
         name: 'Job Sites', interaction_reach: 'external',
+      }] as any, userJourneys: [{
+        id: 'jobsites-journey', name: 'View job sites', journey_kind: 'user-facing',
+        entry_point_id: 'jobsites-page', entry: { type: 'page', name: 'Job Sites' }, steps: [],
+        terminal_effects: { entities_written: [], entities_read: ['Job'], external_services: [], messages_emitted: [] },
+        terminal_entities: [], security_boundaries: [], tests_covering: [], criticality: 'medium',
+        call_chain_ids: [], exit_point_ids: [],
       }] as any },
     );
 

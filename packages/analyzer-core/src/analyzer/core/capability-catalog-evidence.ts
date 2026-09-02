@@ -724,7 +724,8 @@ export function classifyCapabilityEvidence(
         !isGenericManagementCapabilityLabel(candidate.name);
       const actionHeadedOutcome = !isBareNounCapabilityLabel(candidate.name);
       const interpretableOutcomeEvidence = outcomeShapedCandidate || firstParty;
-      const terminalOutcomeEvidence = interpretableOutcomeEvidence && userOutcomeJourney;
+      const terminalOutcomeEvidence = interpretableOutcomeEvidence && userOutcomeJourney &&
+        (candidate.evidence_kind !== 'behavior-surface' || operations.length > 1 || firstParty);
       const externallyReachableOutcomeEvidence = interpretableOutcomeEvidence && actionHeadedOutcome && externalReach && productEntity && operations.length > 1;
       const lifecycleOutcomeEvidence = interpretableOutcomeEvidence && userFacingLifecycle;
       if (firstPartyCoreOutcome || terminalOutcomeEvidence || externallyReachableOutcomeEvidence || lifecycleOutcomeEvidence) {
