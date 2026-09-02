@@ -105,7 +105,7 @@ describe('finalizeSystemCapabilityNames canonical publication gate', () => {
     expect(caps).toHaveLength(1);
   });
 
-  it('preserves normalized exact obligation scopes through final name dedupe', () => {
+  it('merges same-outcome obligation scopes without losing their operations or provenance', () => {
     const exact = (id: string, action: string, entryPointId: string) => cap({
       id, name: 'Remove records',
       description: 'Users remove records through the verified product workflow.',
@@ -119,11 +119,14 @@ describe('finalizeSystemCapabilityNames canonical publication gate', () => {
 
     orch.finalizeSystemCapabilityNames(caps);
 
-    expect(caps).toHaveLength(2);
-    expect(caps.map(item => item.operations.map(operation => operation.entry_point_id))).toEqual([
-      ['delete-job'], ['delete-category'],
+    expect(caps).toHaveLength(1);
+    expect(caps[0].operations.map(operation => operation.entry_point_id).sort()).toEqual([
+      'delete-category', 'delete-job',
     ]);
-    expect(caps.every(item => item.criticality_factors.filter(factor => factor.startsWith('catalog-operation-obligation:')).length === 1)).toBe(true);
+    expect(caps[0].criticality_factors.filter(factor => factor.startsWith('catalog-operation-obligation:')).sort()).toEqual([
+      'catalog-operation-obligation:operation-obligation:records:remove-category',
+      'catalog-operation-obligation:operation-obligation:records:remove-job',
+    ]);
   });
 });
 
