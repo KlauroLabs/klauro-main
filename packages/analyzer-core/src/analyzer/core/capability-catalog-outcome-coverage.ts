@@ -373,13 +373,14 @@ function capabilityMatchesAudience(capabilityText: string, audience?: 'agent' | 
 
 function capabilityMatchesBoundAudience(
   capability: Pick<SystemCapability, 'name' | 'description'>,
-  audience?: 'agent' | 'human',
+  requirement: CapabilityCatalogOutcomeRequirement,
 ): boolean {
-  if (!audience) return true;
-  const opposite = audience === 'human' ? agentAudience : humanAudience;
-  return capabilityMatchesAudience(capability.name || '', audience) &&
-    capabilityMatchesAudience(capability.description || '', audience) &&
-    !opposite.test(capability.name || '') && !opposite.test(capability.description || '');
+  if (!requirement.audience) return true;
+  const opposite = requirement.audience === 'human' ? agentAudience : humanAudience;
+  if (opposite.test(capability.name || '') || opposite.test(capability.description || '')) return false;
+  if (requirement.firstPartyOutcomeText && !requirement.audienceScopedOutcomeText) return true;
+  return capabilityMatchesAudience(capability.name || '', requirement.audience) &&
+    capabilityMatchesAudience(capability.description || '', requirement.audience);
 }
 
 function capabilityAudienceBindingFailure(
@@ -393,7 +394,7 @@ function capabilityAudienceBindingFailure(
   const oppositeAudienceLocations = (['name', 'description'] as const).filter(location => opposite.test(capability[location] || ''));
   const oppositeAudienceLabels = [...new Set(oppositeAudienceLocations.map(location =>
     (capability[location] || '').match(opposite)?.[0]?.toLowerCase()).filter((label): label is string => Boolean(label)))];
-  if (missingAudienceLocations.length > 0) return {
+  if ((!requirement.firstPartyOutcomeText || requirement.audienceScopedOutcomeText) && missingAudienceLocations.length > 0) return {
     missingAudience: requirement.audienceLabel || requirement.audience,
     missingAudienceLocations: [...missingAudienceLocations],
     ...(oppositeAudienceLabels.length ? { oppositeAudienceLabels, oppositeAudienceLocations: [...oppositeAudienceLocations] } : {}),
@@ -424,7 +425,7 @@ export function capabilitySatisfiesCatalogOutcomeRequirement(
   requirement: CapabilityCatalogOutcomeRequirement,
 ): boolean {
   if (capability.criticality_factors?.includes(`catalog-outcome-requirement:${requirement.id}`)) {
-    return capabilityMatchesBoundAudience(capability, requirement.audience);
+    return capabilityMatchesBoundAudience(capability, requirement);
   }
   return capabilitySemanticallySatisfiesCatalogOutcomeRequirement(capability, requirement);
 }
@@ -434,7 +435,7 @@ export function capabilitySemanticallySatisfiesCatalogOutcomeRequirement(
   requirement: CapabilityCatalogOutcomeRequirement,
 ): boolean {
   const capabilityText = `${capability.name || ''} ${capability.description || ''}`;
-  if (!capabilityMatchesBoundAudience(capability, requirement.audience)) return false;
+  if (!capabilityMatchesBoundAudience(capability, requirement)) return false;
   return capabilityTextMatchesCatalogOutcomeRequirement(capabilityText, requirement);
 }
 

@@ -10528,10 +10528,24 @@ export class AnalyzerOrchestrator {
         }),
       } : {}),
     };
-    const intrinsicQualityFailure = this.catalogQualityFailure(publishedCapabilities, 0, [], [], [], []); const emptyGroundedCatalogFailure = distinctFamilyCount > 0 && publishedCapabilities.length === 0 ? `catalog has no publishable capabilities for ${distinctFamilyCount} grounded evidence ${distinctFamilyCount === 1 ? 'family' : 'families'}` : undefined;
+    const finalAggregateCandidateIds = fullyCoveredAggregateCapabilityCandidateIds(
+      requiredEvidenceCandidates,
+      publishedCapabilities,
+      operationCoverageContext,
+    );
+    const finalQualityFailure = this.catalogQualityFailure(
+      publishedCapabilities,
+      0,
+      [],
+      [],
+      groundableOutcomes,
+      [],
+      finalAggregateCandidateIds,
+    );
+    const emptyGroundedCatalogFailure = distinctFamilyCount > 0 && publishedCapabilities.length === 0 ? `catalog has no publishable capabilities for ${distinctFamilyCount} grounded evidence ${distinctFamilyCount === 1 ? 'family' : 'families'}` : undefined;
     qualityFailure = normalizedOperationEvidence.errors.length > 0
       ? `catalog has invalid operation obligation evidence: ${normalizedOperationEvidence.errors.slice(0, 8).join(', ')}`
-      : emptyGroundedCatalogFailure || intrinsicQualityFailure || (unresolvedRejectedProductOutcomeIds.length > 0
+      : emptyGroundedCatalogFailure || finalQualityFailure || (unresolvedRejectedProductOutcomeIds.length > 0
         ? `catalog has ${unresolvedRejectedProductOutcomeIds.length} unreconciled product-outcome evidence ${unresolvedRejectedProductOutcomeIds.length === 1 ? 'family' : 'families'}: ${unresolvedRejectedProductOutcomeIds.slice(0, 8).join(', ')}`
         : undefined);
     const catalogPath = deadlineExceeded
