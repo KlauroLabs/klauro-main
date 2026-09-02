@@ -285,6 +285,24 @@ describe('capability evidence roles', () => {
     expect(catalogRequiredEvidenceCandidates(classified).map(item => item.id)).toEqual(['review']);
   });
 
+  test('keeps a bare-noun public surface as evidence instead of inventing a mandatory outcome', () => {
+    const bareSurface = candidate('jobsites', 'Job Sites', 'core', ['Read']);
+    bareSurface.related_entities = ['entity_job'];
+    bareSurface.operations[0].entry_point_id = 'jobsites-page';
+    const [classified] = classifyCapabilityEvidence(
+      [bareSurface],
+      [entity('entity_job', 'Job', 'persisted-entity', true)],
+      undefined,
+      { entryPoints: [{
+        id: 'jobsites-page', source_node: 'jobsites-node', type: 'page',
+        name: 'Job Sites', interaction_reach: 'external',
+      }] as any },
+    );
+
+    expect(classified.evidence_role).toBe('unresolved');
+    expect(catalogRequiredEvidenceCandidates([classified])).toEqual([]);
+  });
+
   test('keeps uncorroborated production-mounted test routes out of required product outcomes', () => {
     const verification = candidate('capability_test', 'Get API test family access', 'core', ['Read', 'Read']);
     verification.structural_label = 'API test';

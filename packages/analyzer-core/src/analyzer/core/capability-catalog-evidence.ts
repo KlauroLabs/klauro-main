@@ -5,7 +5,7 @@ import { isScaffoldOrTestPath } from './scaffold-paths';
 import { analyzeTerminality } from './terminality';
 import { observedCapabilityLifecycleActions } from './capability-lifecycle-actions';
 import { normalizedSubjectTokens, outcomeIdentityTokens, outcomeTokenMatches, productTextCorroboratesActionAndSubject } from './capability-evidence-language';
-import { CAPABILITY_PURPOSE_VERBS, isCrudInventoryCapabilityLabel, isGenericManagementCapabilityLabel } from "./capability-naming";
+import { CAPABILITY_PURPOSE_VERBS, isBareNounCapabilityLabel, isCrudInventoryCapabilityLabel, isGenericManagementCapabilityLabel } from "./capability-naming";
 export { catalogCandidateEntityFacts, catalogCountBounds, catalogMinimumCapabilityCount, catalogRelatedEntityIds, firstPartySupportsIdentityProduct, uniquelyMatchingCapabilityEntityIds } from './capability-catalog-metrics';
 import { isStructuralExecutableCliEntry } from './entry-point-product-role';
 import { demoteCoveredImplementationAggregates as demoteCoveredImplementationAggregatesImpl } from './capability-catalog-aggregate-demotion';
@@ -722,9 +722,10 @@ export function classifyCapabilityEvidence(
         !mechanismShapedCandidate &&
         !isCrudInventoryCapabilityLabel(candidate.name) &&
         !isGenericManagementCapabilityLabel(candidate.name);
+      const actionHeadedOutcome = !isBareNounCapabilityLabel(candidate.name);
       const interpretableOutcomeEvidence = outcomeShapedCandidate || firstParty;
       const terminalOutcomeEvidence = interpretableOutcomeEvidence && userOutcomeJourney;
-      const externallyReachableOutcomeEvidence = interpretableOutcomeEvidence && externalReach && productEntity;
+      const externallyReachableOutcomeEvidence = interpretableOutcomeEvidence && actionHeadedOutcome && externalReach && productEntity;
       const lifecycleOutcomeEvidence = interpretableOutcomeEvidence && userFacingLifecycle;
       if (firstPartyCoreOutcome || terminalOutcomeEvidence || externallyReachableOutcomeEvidence || lifecycleOutcomeEvidence) {
         evidenceRole = 'product-outcome';
