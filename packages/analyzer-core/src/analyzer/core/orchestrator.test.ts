@@ -286,6 +286,36 @@ test('capability merging keeps one stable id and prefers authored language witho
   assert.deepEqual(merged[0].operations, [operation]);
 });
 
+test('capability merging collapses singular and plural read outcomes with shared evidence', () => {
+  const firstOperation = { entry_point_id: 'article-list', entry_point_type: 'http', action: 'read' };
+  const secondOperation = { entry_point_id: 'article-show', entry_point_type: 'http', action: 'read' };
+  const capability = (id: string, name: string, operations: SystemCapability['operations']): SystemCapability => ({
+    id,
+    name,
+    description: 'Users read published articles.',
+    name_source: 'ai',
+    description_source: 'ai',
+    category: 'core',
+    operations,
+    related_entities: ['entity_article'],
+    related_domains: ['article'],
+    criticality: 'high',
+    criticality_factors: ['catalog-candidate:cap_article_management'],
+  });
+
+  const merged = (new AnalyzerOrchestrator() as any).dedupeSystemCapabilitiesByName([
+    capability('read-articles', 'Read articles', [firstOperation]),
+    capability('read-an-article', 'Read an article', [firstOperation, secondOperation]),
+  ]);
+
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].name, 'Read an article');
+  assert.deepEqual(
+    merged[0].operations.map((operation: SystemCapability['operations'][number]) => operation.entry_point_id),
+    ['article-list', 'article-show'],
+  );
+});
+
 test('authored outcomes subsume same-evidence deterministic lifecycle fallbacks across generated ids', () => {
   const operations = [
     { entry_point_id: 'exports-index', entry_point_type: 'http', action: 'read', path_or_command: '/family_exports' },

@@ -18559,7 +18559,7 @@ export class AnalyzerOrchestrator {
         .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
         .toLowerCase()
         .replace(/^\s*(?:lets|allows|enables)\s+users\s+(?:to\s+)?/i, '')
-        .replace(/^\s*(provides?|surfaces?|tracks?|categorizes?|categorises?|organizes?|organises?|classifies?|groups?|exposes?|manages?|monitors?|secures?|handles?|enforces?|settles?|delivers?|renders?|displays?|shows?|creates?|updates?|deletes?|lists?|views?|adds?|removes?|edits?|trains?|syncs?|synchronizes?|synchronises?)\s+/i, '')
+        .replace(/^\s*(provides?|surfaces?|tracks?|categorizes?|categorises?|organizes?|organises?|classifies?|groups?|exposes?|manages?|monitors?|secures?|handles?|enforces?|settles?|delivers?|renders?|displays?|shows?|creates?|updates?|deletes?|lists?|views?|reads?|browses?|searches?|finds?|adds?|removes?|edits?|trains?|syncs?|synchronizes?|synchronises?)\s+/i, '')
         .replace(/\s+(results?|insights?|data|info|information|details?|records?|entries?|items?)\s*$/i, '')
         .replace(/\s+capabilit(?:y|ies)\s*$/i, '')
         .replace(/\s+(?:management|maintenance)\s*$/i, '')
@@ -18588,7 +18588,7 @@ export class AnalyzerOrchestrator {
       if (/^(?:categorize|categorise|organize|organise|classify|group)/.test(action) ||
         (/^track/.test(action) && /\bby\b/i.test(capability.name))) return 'organize';
       if (/^(?:sync|synchronize|synchronise)/.test(action)) return 'synchronize';
-      if (/^(?:provide|surface|track|monitor|display|show|view|list|access|retrieve|expose)/.test(action)) return 'observe';
+      if (/^(?:provide|surface|track|monitor|display|show|view|list|read|browse|search|find|access|retrieve|expose)/.test(action)) return 'observe';
       if (/^(?:attach|correlate|secure|handle|enforce|settle|deliver|render|train)/.test(action)) {
         return action.replace(/(?:es|s)$/, '');
       }
