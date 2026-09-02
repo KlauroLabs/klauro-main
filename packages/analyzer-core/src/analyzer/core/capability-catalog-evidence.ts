@@ -725,7 +725,7 @@ export function classifyCapabilityEvidence(
       const actionHeadedOutcome = !isBareNounCapabilityLabel(candidate.name);
       const interpretableOutcomeEvidence = outcomeShapedCandidate || firstParty;
       const terminalOutcomeEvidence = interpretableOutcomeEvidence && userOutcomeJourney;
-      const externallyReachableOutcomeEvidence = interpretableOutcomeEvidence && actionHeadedOutcome && externalReach && productEntity;
+      const externallyReachableOutcomeEvidence = interpretableOutcomeEvidence && actionHeadedOutcome && externalReach && productEntity && operations.length > 1;
       const lifecycleOutcomeEvidence = interpretableOutcomeEvidence && userFacingLifecycle;
       if (firstPartyCoreOutcome || terminalOutcomeEvidence || externallyReachableOutcomeEvidence || lifecycleOutcomeEvidence) {
         evidenceRole = 'product-outcome';

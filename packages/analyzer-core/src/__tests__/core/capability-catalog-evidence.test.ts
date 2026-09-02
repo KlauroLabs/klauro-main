@@ -253,7 +253,7 @@ describe('catalogEvidenceCandidates', () => {
 });
 
 describe('capability evidence roles', () => {
-  test('keeps verification and supporting evidence auditable without making either a mandatory product family', () => {
+  test('keeps verification, internal, and uncorroborated public evidence auditable without making them mandatory outcomes', () => {
     const verification = candidate('proof', 'Exercise analysis proof', 'supporting', ['Run']);
     verification.operations[0].entry_point_id = 'proof-entry';
     const support = candidate('cache', 'Warm result cache', 'supporting', ['Warm']);
@@ -280,9 +280,9 @@ describe('capability evidence roles', () => {
     expect(classified.map(item => [item.id, item.evidence_role])).toEqual([
       ['proof', 'verification-harness'],
       ['cache', 'supporting-mechanism'],
-      ['review', 'product-outcome'],
+      ['review', 'unresolved'],
     ]);
-    expect(catalogRequiredEvidenceCandidates(classified).map(item => item.id)).toEqual(['review']);
+    expect(catalogRequiredEvidenceCandidates(classified)).toEqual([]);
   });
 
   test('keeps a bare-noun public surface as evidence instead of inventing a mandatory outcome', () => {
