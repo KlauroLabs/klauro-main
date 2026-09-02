@@ -122,12 +122,31 @@ function splitCoordinatedClause(value: string): string[] {
 }
 
 function productClauses(signal?: CapabilityCatalogProjectSignal): string[] {
-  return [signal?.productDocSummary || signal?.manifestDescription]
+  const sentences = [signal?.productDocSummary || signal?.manifestDescription]
     .filter((value): value is string => Boolean(value))
     .flatMap(value => value.split(/(?<=[.!?;])\s+/i))
+    .map(value => value.trim())
+    .filter(Boolean);
+  const grouped: string[] = [];
+  let activeFeatureIndex = -1;
+  for (const sentence of sentences) {
+    const separator = sentence.indexOf(':');
+    const heading = separator >= 0 ? sentence.slice(0, separator).trim() : '';
+    const body = separator >= 0 ? sentence.slice(separator + 1).trim() : '';
+    const featureHeading = heading.length > 0 && heading.split(/\s+/).length <= 6 && purposeVerbIn(body);
+    if (featureHeading) {
+      grouped.push(sentence);
+      activeFeatureIndex = grouped.length - 1;
+    } else if (activeFeatureIndex >= 0) {
+      grouped[activeFeatureIndex] = `${grouped[activeFeatureIndex]} ${sentence}`;
+    } else {
+      grouped.push(sentence);
+    }
+  }
+  return grouped
     .flatMap(splitCoordinatedClause)
     .map(value => value.trim().replace(/^[,;]\s*/, '').replace(/[.!?]+$/, ''))
-    .filter(value => value.length >= 20 && !/^.+?\s+(?:is|are)\s+(?:an?\s+|the\s+)?[^,.]+$/i.test(value));
+    .filter(value => value.length >= 20 && !/^[^,.:;!?]+?\s+(?:is|are)\s+(?:an?\s+|the\s+)?[^,.]+$/i.test(value));
 }
 
 function outcomeClauseBody(clause: string): string {

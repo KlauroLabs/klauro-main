@@ -498,10 +498,10 @@ test('preserves complete outcome clauses from a feature-rich README instead of e
 
   assert.ok(statements.includes('keep track of your job applications'));
   assert.ok(statements.includes('Categorize and seamlessly manage your job applications'));
-  assert.ok(statements.includes('categorize your applications by creating different categories and adding your job applications to any corresponding category'));
-  assert.ok(statements.includes('manage your application status'));
-  assert.ok(statements.includes('change to Rejected, Assessment, Interview or set it to closed'));
-  assert.ok(statements.includes('Filter between job applications using the category, status, and the job board or website'));
+  assert.ok(statements.some(statement => statement.startsWith('categorize your applications by creating different categories') && statement.includes('edit or delete your categories')));
+  assert.ok(statements.some(statement => statement.startsWith('manage your application status') && statement.includes('Interview or set it to closed')));
+  assert.ok(statements.some(statement => statement.startsWith('delete or edit your job applications') && statement.includes('add notes to your job applications')));
+  assert.ok(statements.some(statement => statement.startsWith('Filter between job applications using the category, status, and the job board or website') && statement.includes('narrow down what you are looking for')), JSON.stringify(statements));
   assert.equal(statements.some(statement => /^(?:corresponding|with easy|status: status|search feature adds)$/i.test(statement)), false);
   assert.equal(requirements.some(requirement => requirement.requiredSubjectTerms?.includes('statu')), false);
   assert.equal(requirements.some(requirement => requirement.requiredSubjectTerms?.includes('status')), true);
