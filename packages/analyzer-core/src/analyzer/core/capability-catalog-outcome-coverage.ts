@@ -39,6 +39,7 @@ const coordinatedAudienceList = new RegExp(
 function canonicalToken(token: string): string {
   const source = token.toLowerCase();
   if (/^(?:auth|authenticate|authenticated|authenticating|authentication)$/.test(source)) return 'authenticate';
+  if (source === 'status') return 'status';
   let value = source.endsWith('ies') && source.length > 4
     ? `${source.slice(0, -3)}y`
     : /(?:ches|shes|sses|xes|zes)$/.test(source)
@@ -97,13 +98,23 @@ function candidateText(candidate: SystemCapability): string {
   ].filter(Boolean).join(' ');
 }
 
+function purposeVerbIn(value: string): boolean {
+  return (value.match(/[A-Za-z][A-Za-z'-]*/g) || [])
+    .some(word => CAPABILITY_PURPOSE_VERBS.has(canonicalToken(word)));
+}
+
 function splitCoordinatedClause(value: string): string[] {
-  const conjunctions = [...value.matchAll(/\s+and\s+/gi)];
-  const boundary = conjunctions.find(match => {
+  const boundaries = [...value.matchAll(/\s*,\s*(?:and\s+)?|\s+and\s+/gi)];
+  const boundary = boundaries.find(match => {
     const index = match.index || 0;
-    const left = value.slice(0, index).trim().split(/\s+/);
-    const right = value.slice(index + match[0].length).trim().split(/\s+/);
-    return left.length >= 3 && right.length >= 3;
+    const left = value.slice(0, index).trim();
+    const right = value.slice(index + match[0].length).trim();
+    const leftWords = left.split(/\s+/);
+    const rightWords = right.match(/[A-Za-z][A-Za-z'-]*/g) || [];
+    const rightHead = (rightWords[0] || '').toLowerCase() === 'then' ? rightWords[1] || '' : rightWords[0] || '';
+    return leftWords.length >= 3 && rightWords.length >= 3 &&
+      purposeVerbIn(left) && CAPABILITY_PURPOSE_VERBS.has(canonicalToken(rightHead)) &&
+      !/ing$/i.test(rightHead);
   });
   if (!boundary) return [value];
   const index = boundary.index || 0;
@@ -113,19 +124,36 @@ function splitCoordinatedClause(value: string): string[] {
 function productClauses(signal?: CapabilityCatalogProjectSignal): string[] {
   return [signal?.productDocSummary || signal?.manifestDescription]
     .filter((value): value is string => Boolean(value))
-    .flatMap(value => value.split(/(?<=[.!?;])\s+|\s*,\s*(?:and\s+)?/i))
+    .flatMap(value => value.split(/(?<=[.!?;])\s+/i))
     .flatMap(splitCoordinatedClause)
     .map(value => value.trim().replace(/^[,;]\s*/, '').replace(/[.!?]+$/, ''))
     .filter(value => value.length >= 20 && !/^.+?\s+(?:is|are)\s+(?:an?\s+|the\s+)?[^,.]+$/i.test(value));
 }
 
+function outcomeClauseBody(clause: string): string {
+  const separator = clause.indexOf(':');
+  if (separator < 0) return clause;
+  const body = clause.slice(separator + 1).trim();
+  return purposeVerbIn(body) ? body : clause;
+}
+
 function conciseOutcomeStatement(clause: string, subjectTokens: ReadonlySet<string>): string {
-  return String(clause || '')
+  const words = String(clause || '')
     .replace(humanAudience, ' ')
     .replace(agentAudience, ' ')
-    .split(/\s+/)
-    .filter(word => tokens(word).some(token => subjectTokens.has(token)))
+    .trim()
+    .split(/\s+/);
+  const actionIndex = words.findIndex(word => CAPABILITY_PURPOSE_VERBS.has(canonicalToken(
+    (word.match(/[A-Za-z][A-Za-z'-]*/)?.[0]) || '',
+  )));
+  const matchingIndexes = words.flatMap((word, index) =>
+    tokens(word).some(token => subjectTokens.has(token)) ? [index] : []);
+  if (matchingIndexes.length === 0) return '';
+  const first = actionIndex >= 0 ? actionIndex : matchingIndexes[0];
+  const last = actionIndex >= 0 ? words.length - 1 : matchingIndexes[matchingIndexes.length - 1];
+  return words.slice(Math.min(first, last), last + 1)
     .join(' ')
+    .replace(/\s+(?:for|to|by)\s+(?:and\s+)?(?:ai\s*)?$/i, '')
     .replace(/^[^a-z0-9]+|[^a-z0-9]+$/gi, '');
 }
 
@@ -190,11 +218,11 @@ export function deriveCapabilityCatalogOutcomeRequirements(
     return { candidate, text, tokens: new Set([...rawTokens, ...rawTokens.map(comparableEvidenceToken)]) };
   });
   const requirements = new Map<string, CapabilityCatalogOutcomeRequirement>();
-  const previousClauseTokens = new Set<string>();
-  for (const clause of productClauses(signal)) {
+  const subjectStopwords = new Set(['also', 'different', 'easier', 'extra', 'faster', 'feature', 'seamlessly', 'that', 'their', 'this', 'using', 'with', 'your']);
+  for (const firstPartyClause of productClauses(signal)) {
+    const clause = outcomeClauseBody(firstPartyClause);
     const clauseTokens = tokens(clause, true);
-    const subjectTokens = clauseTokens.filter(token => !previousClauseTokens.has(token));
-    clauseTokens.forEach(token => previousClauseTokens.add(token));
+    const subjectTokens = clauseTokens.filter(token => !subjectStopwords.has(token));
     if (subjectTokens.length === 0) continue;
     for (const audience of requirementAudiences(clause)) {
       const audienceCandidates = candidateTokens.filter(item => !audience || (audience === 'human'
@@ -232,7 +260,7 @@ export function deriveCapabilityCatalogOutcomeRequirements(
         ...(audienceScopedOutcomeText ? { audienceScopedOutcomeText } : {}),
         candidateIds,
         id,
-        firstPartyOutcomeText: clause,
+        firstPartyOutcomeText: firstPartyClause,
         minimumSubjectMatches: Math.min(2, groundedSubjectTokens.length),
         requiredSubjectTerms: groundedSubjectTokens,
         visibleActionTerms,

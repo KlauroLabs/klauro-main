@@ -218,8 +218,8 @@ test('preserves evidence-grounded original-clause aliases for compressed outcome
   }, [candidate('coordination', 'Shared work concepts for real-time collaboration', ['coordinate_overlapping_work'])]);
   const collaboration = requirements.find(requirement => requirement.subjectTokens.includes('concept'))!;
 
-  assert.equal(collaboration.subjectTokenAliases?.some(alias => alias.includes('collaborate')), true);
-  assert.equal(collaboration.subjectAliasAnchorTokens?.flat().includes('collaborate'), true);
+  assert.equal(collaboration.requiredSubjectTerms?.includes('collaborate'), true);
+  assert.equal(collaboration.subjectTokenAliases, undefined);
 });
 
 test('matches a grounded original-clause alias without admitting unrelated prose', () => {
@@ -279,7 +279,9 @@ test('supporting delivery evidence can corroborate a first-party outcome but ver
   }, [supporting, verification]);
 
   assert.equal(requirements.some(requirement => requirement.audience === 'agent'), true);
-  assert.equal(requirements.some(requirement => requirement.audience === 'human'), false);
+  const humanGap = requirements.find(requirement => requirement.audience === 'human');
+  assert.ok(humanGap);
+  assert.deepEqual(humanGap.candidateIds, []);
 });
 
 test('does not let one combined audience statement satisfy two explicitly distinct audience outcomes', () => {
@@ -293,8 +295,8 @@ test('does not let one combined audience statement satisfy two explicitly distin
     .filter(requirement => requirement.audience);
 
   assert.deepEqual(audienceRequirements.map(requirement => requirement.statement), [
-    'behavior-level comprehension',
-    'behavior-level comprehension',
+    'turns that graph into behavior-level comprehension',
+    'turns that graph into behavior-level comprehension',
   ]);
   assert.ok(audienceGaps.length >= 1);
 });
@@ -470,10 +472,10 @@ test('removes identity prose and prior-clause references from broad supporting e
   }, [umbrella]);
 
   assert.deepEqual(requirements.map(requirement => requirement.statement), [
-    'builds relationship graph',
-    'behavior-level comprehension',
-    'behavior-level comprehension',
-    'correlates static runtime evidence',
+    'builds a relationship graph',
+    'turns that graph into behavior-level comprehension',
+    'turns that graph into behavior-level comprehension',
+    'correlates static understanding with runtime evidence',
   ]);
   const [graph, human, agent, runtime] = requirements;
   assert.equal(capabilityCatalogOutcomeCoverageFailure([
@@ -482,6 +484,27 @@ test('removes identity prose and prior-clause references from broad supporting e
     cited(published('Give agents software comprehension', 'AI agents understand connected software behavior before making changes.'), agent),
     cited(published('Correlate static analysis with runtime evidence', 'Static code structure and runtime evidence refine behavioral understanding.'), runtime),
   ], requirements), undefined);
+});
+
+test('preserves complete outcome clauses from a feature-rich README instead of emitting sentence fragments', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements({
+    productDocSummary: 'Todojobs is a web application that allows to you record and keep track of your job applications. Categorize and seamlessly manage your job applications. Categorize your applications: You can categorize your applications by creating different categories and adding your job applications to any corresponding category. You can also edit or delete your categories. Manage application status: You can manage your application status. You can change to Rejected, Assessment, Interview or set it to closed. Manage job application: You can delete or edit your job applications with easy. You can add notes to your job applications. Job applications with notes display the note count. Robust job filter: Filter between job applications using the category, status, and the job board or website. The search feature also adds and extra way to narrow down what you are looking for.',
+  }, [
+    candidate('jobs', 'Track job applications and application status', ['record_job', 'update_job_status', 'filter_jobs']),
+    candidate('categories', 'Organize application categories', ['create_category', 'edit_category', 'delete_category']),
+    candidate('notes', 'Record job application notes', ['add_note', 'delete_note']),
+  ]);
+  const statements = requirements.map(requirement => requirement.statement);
+
+  assert.ok(statements.includes('keep track of your job applications'));
+  assert.ok(statements.includes('Categorize and seamlessly manage your job applications'));
+  assert.ok(statements.includes('categorize your applications by creating different categories and adding your job applications to any corresponding category'));
+  assert.ok(statements.includes('manage your application status'));
+  assert.ok(statements.includes('change to Rejected, Assessment, Interview or set it to closed'));
+  assert.ok(statements.includes('Filter between job applications using the category, status, and the job board or website'));
+  assert.equal(statements.some(statement => /^(?:corresponding|with easy|status: status|search feature adds)$/i.test(statement)), false);
+  assert.equal(requirements.some(requirement => requirement.requiredSubjectTerms?.includes('statu')), false);
+  assert.equal(requirements.some(requirement => requirement.requiredSubjectTerms?.includes('status')), true);
 });
 
 test('requires an evidence-grounded outcome anchor when a name starts with an internal subsystem identity', () => {
