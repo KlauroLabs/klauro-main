@@ -85,7 +85,7 @@ const titleActionFamilies = (title: string): string[] => {
 
 const descriptionContainsAction = (description: string, action: string): boolean => {
   if (action === 'create') return /\b(?:add|adds|added|adding|creat(?:e|es|ed|ing|ion)|publish(?:es|ed|ing)?|register(?:s|ed|ing)?|submit(?:s|ted|ting)?)\b/i.test(description);
-  if (action === 'view') return /\b(?:access(?:es|ed|ing)?|brows(?:e|es|ed|ing)|fetch(?:es|ed|ing)?|filter(?:s|ed|ing)?|find(?:s|ing)?|get(?:s|ting)?|list(?:s|ed|ing)?|read(?:s|ing)?|retriev(?:e|es|ed|ing)|search(?:es|ed|ing)?|see|sees|seeing|seen|show(?:s|ed|ing)?|view(?:s|ed|ing)?|visibility|visible)\b/i.test(description);
+  if (action === 'view') return /\b(?:access(?:es|ed|ing)?|brows(?:e|es|ed|ing)|display(?:s|ed|ing)?|fetch(?:es|ed|ing)?|filter(?:s|ed|ing)?|find(?:s|ing)?|get(?:s|ting)?|list(?:s|ed|ing)?|read(?:s|ing)?|retriev(?:e|es|ed|ing)|search(?:es|ed|ing)?|see|sees|seeing|seen|show(?:s|ed|ing)?|surfac(?:e|es|ed|ing)|view(?:s|ed|ing)?|visibility|visible)\b/i.test(description);
   if (action === 'categorize') return /\bcategor(?:ize|izes|ized|izing)\b/i.test(description);
   if (action === 'close') return /\bclos(?:e|es|ed|ing)\b/i.test(description);
   if (action === 'organize') return /\borganiz(?:e|es|ed|ing)\b/i.test(description);

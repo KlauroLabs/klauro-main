@@ -2098,6 +2098,24 @@ test('rejects wrong-action operation obligations before merge and preserves cand
   ]);
 });
 
+test('retains read provenance when audience language says information is displayed or surfaced', () => {
+  const readNotes = catalogCapability({
+    id: 'operation-obligation:note:read',
+    name: 'read note',
+    structural_label: 'read note',
+    related_entities: ['entity_note'],
+    operations: [{ entry_point_id: 'read-note', entry_point_type: 'http', action: 'read' }],
+  });
+  for (const verb of ['displays', 'surfaces']) {
+    const capability = catalogCapability({
+      id: verb, name: 'Attach notes to job applications',
+      description: `Job applications ${verb} a note count when users add notes.`,
+      criticality_factors: ['catalog-candidate:' + readNotes.id],
+    });
+    assert.equal(filterMismatchedOperationObligationCapabilities({ capabilities: [capability], evidenceCandidates: [readNotes] }).length, 1);
+  }
+});
+
 test('validates multi-obligation citations independently and retains only exact compatible provenance', () => {
   const evidence = (id: string, label: string, action: string, entries: string[], entity: string) => catalogCapability({
     id,
