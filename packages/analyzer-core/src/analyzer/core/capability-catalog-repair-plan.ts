@@ -76,8 +76,12 @@ const titleActionFamilies = (title: string): string[] => {
     plan: ['create', 'view', 'update'], reconcile: ['view', 'update'],
     track: ['create', 'track', 'view', 'update'],
   };
-  for (const token of descriptionTokens(title)) {
-    const families = familyByAction[token] || [publicationAction(token)].filter(action => publicationActions.has(action));
+  const rawTokens = String(title || '').toLowerCase().split(/[^a-z0-9]+/)
+    .filter(token => token.length >= 3);
+  for (const rawToken of rawTokens) {
+    const canonicalToken = canonicalCapabilityCatalogOutcomeToken(rawToken);
+    const families = familyByAction[rawToken] || familyByAction[canonicalToken] ||
+      [publicationAction(canonicalToken)].filter(action => publicationActions.has(action));
     if (families.length > 0) return families;
   }
   return [];
