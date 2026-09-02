@@ -78,6 +78,20 @@ test('treats support staff as the audience and onboarding as the visible action'
   assert.equal(capabilityCatalogOutcomeNameFailure('Onboard customers with profiles', onboarding), undefined);
 });
 
+test('does not promote marketing-decorated generic management into a second outcome', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements({
+    productDocSummary: 'Categorize and seamlessly manage your job applications. Categorize your applications by creating categories and adding job applications to them.',
+  }, [candidate('categories', 'Job application categories', [
+    'create_category',
+    'add_job_application_category',
+    'edit_category',
+    'delete_category',
+  ])]);
+
+  assert.equal(requirements.filter(requirement =>
+    requirement.visibleActionTerms?.includes('categorize')).length, 1);
+});
+
 test('prefers a candidate whose identity names the first-party outcome over incidental operation overlap', () => {
   const requirements = deriveCapabilityCatalogOutcomeRequirements({
     productDocSummary: 'Route requests to handlers with a macro-free API.',

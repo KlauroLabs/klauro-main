@@ -161,7 +161,9 @@ function productClauses(signal?: CapabilityCatalogProjectSignal): string[] {
   }
   return grouped
     .flatMap(splitCoordinatedClause)
-    .map(value => value.trim().replace(/^[,;]\s*/, '').replace(/[.!?]+$/, ''))
+    .map(value => value.trim()
+      .replace(/\s+and\s+seamlessly\s+(?:manage|handle|process)\b/gi, '')
+      .replace(/^[,;]\s*/, '').replace(/[.!?]+$/, ''))
     .filter(value => value.length >= 20 && !/^[^,.:;!?]+?\s+(?:is|are)\s+(?:an?\s+|the\s+)?[^,.]+$/i.test(value));
 }
 
@@ -364,7 +366,10 @@ export function deriveCapabilityCatalogOutcomeRequirements(
     if (requirement.firstPartyOutcomeText?.includes(':')) return true;
     const detailed = ordered.find((candidate, candidateIndex) =>
       candidateIndex !== index &&
-      candidate.firstPartyOutcomeText?.includes(':') &&
+      (candidate.firstPartyOutcomeText?.includes(':') || (
+        /\bby\b/i.test(candidate.firstPartyOutcomeText || '') &&
+        candidate.candidateIds.some(candidateId => requirement.candidateIds.includes(candidateId))
+      )) &&
       candidate.audience === requirement.audience &&
       (candidate.visibleActionTerms || []).some(action => requirement.visibleActionTerms?.includes(action)) &&
       candidate.subjectTokens.some(token => requirement.subjectTokens.includes(token)));
