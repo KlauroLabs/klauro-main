@@ -351,20 +351,10 @@ export function deterministicCapabilityDescriptionFallback(args: {
       return `${audience} can ${normalizedTitle} as part of their normal workflow whenever needed.`;
     }
     if (actions.length > 1) {
-      const verbByAction: Record<string, string> = {
-        accept: 'accept', authenticate: 'authenticate', create: 'create', decline: 'decline', favorite: 'favorite', follow: 'follow', filter: 'filter',
-        remove: 'remove', run: 'run', test: 'test', update: 'update', view: 'view',
-      };
-      const remainingActions = actions.filter(action => !descriptionContainsAction(normalizedTitle, action));
-      const verbs = remainingActions.map(action => verbByAction[action]).filter(Boolean);
-      if (verbs.length !== remainingActions.length) return '';
-      if (verbs.length > 0) {
-        const actionPhrase = verbs.length === 1 ? verbs[0]
-          : verbs.length === 2 ? `${verbs[0]} and ${verbs[1]}`
-          : `${verbs.slice(0, -1).join(', ')}, and ${verbs[verbs.length - 1]}`;
-        return `${audience} can ${normalizedTitle}, while retaining the ability to ${actionPhrase} earlier ${subjectPhrase} when needed.`;
-      }
-      return `${audience} can ${normalizedTitle} as their needs change over time.`;
+      const continuity = actions.includes('remove')
+        ? 'from first use through later changes, including when they no longer need them'
+        : 'as their needs change over time';
+      return `${audience} can ${normalizedTitle} ${continuity}.`;
     }
     return `${audience} can ${normalizedTitle} as part of their normal workflow whenever needed.`;
   })();

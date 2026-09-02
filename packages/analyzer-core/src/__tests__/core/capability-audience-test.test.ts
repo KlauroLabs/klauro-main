@@ -219,6 +219,19 @@ it('rejects passive CRUD inventories that do not explain the audience outcome', 
   expect(result.flaggedTokens).toContain('entries are created, updated, read, and deleted');
 });
 
+it('rejects active CRUD inventories presented as supporting outcome prose', () => {
+  const result = testCapabilityDescriptionAgainstAudience(
+    'Keep track of job applications',
+    'Users keep track of applications while retaining the ability to create, view, update, and remove earlier entries.',
+    [],
+    [],
+    ['job applications'],
+  );
+
+  expect(result.reasons).toContain('internal-mechanism-language');
+  expect(result.flaggedTokens).toContain('retaining the ability to create, view, update, and remove');
+});
+
 it('rejects repository mechanics unless repository access is the product outcome', () => {
   const sourceLeak = testCapabilityDescriptionAgainstAudience(
     'Settle customer invoices',

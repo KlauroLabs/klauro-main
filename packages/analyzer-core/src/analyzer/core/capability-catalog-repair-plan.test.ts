@@ -205,7 +205,7 @@ describe('capability catalog repair planning', () => {
       validate: allow,
     });
     assert.notEqual(destructive?.description, 'Users create work collections to organize requests for later review by their teams.');
-    assert.match(destructive?.description || '', /\bremove\b/);
+    assert.match(destructive?.description || '', /no longer need/);
 
     const completeLifecycleEvidence = evidence('record-evidence', 'Work Record', ['create', 'update', 'delete']);
     const completeLifecycle = deterministicCapabilityDescriptionFallback({
@@ -215,9 +215,9 @@ describe('capability catalog repair planning', () => {
       validate: allow,
     });
     assert.notEqual(completeLifecycle?.description, 'Users remove work records when they are no longer needed by their teams.');
-    assert.match(completeLifecycle?.description || '', /\bcreate\b/);
-    assert.match(completeLifecycle?.description || '', /\bupdate\b/);
-    assert.match(completeLifecycle?.description || '', /\bremove\b/);
+    assert.match(completeLifecycle?.description || '', /from first use/);
+    assert.match(completeLifecycle?.description || '', /later changes/);
+    assert.match(completeLifecycle?.description || '', /no longer need/);
     const accountEvidence = evidence('account-evidence', 'Account Record', ['create']);
     const invoiceEvidence = evidence('invoice-evidence', 'Invoice Record', ['delete']);
     const mixedIdentity = { ...capability('mixed', ['catalog-candidate:account-evidence', 'catalog-candidate:invoice-evidence']), name: 'Manage account records' };
