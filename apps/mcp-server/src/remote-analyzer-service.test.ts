@@ -9,6 +9,7 @@ import { REMOTE_ANALYSIS_PROTOCOL_VERSION, type RemoteAnalyzeRequest, type Remot
 import { getAnalysis } from './analyzer';
 import { CAS_VERSION, type CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import type { SourceManifest } from './remote-source';
+import { buildCompletedAnalysisLayersReady } from './layered-analysis';
 
 /**
  * Analyzer-wiring coverage for the repo_facts data path's server side: the
@@ -24,7 +25,7 @@ import type { SourceManifest } from './remote-source';
  */
 
 function minimalCas(workspace: string): CASOutput {
-  return {
+  const cas: CASOutput = {
     cas_version: CAS_VERSION,
     analysis_timestamp: new Date().toISOString(),
     analysis_id: 'repo-facts-wiring-test',
@@ -39,6 +40,8 @@ function minimalCas(workspace: string): CASOutput {
     analyzer_contributions: [],
     progressive_levels: { total_levels: 0 },
   };
+  cas.layers_ready = buildCompletedAnalysisLayersReady(cas);
+  return cas;
 }
 
 function withTempWorkspace(run: (workspace: string) => Promise<void>): Promise<void> {

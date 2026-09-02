@@ -50,7 +50,7 @@ export class SqlxAnalyzer extends BaseAnalyzer {
       nodir: true,
     });
 
-    for (const file of sourceFiles.slice(0, 400)) {
+    for (const file of sourceFiles) {
       try {
         const content = await fs.readFile(file, 'utf-8');
         if (/sqlx::query(?:_as|_scalar)?!?\s*[(!]/.test(content)) {
@@ -152,7 +152,7 @@ export class SqlxAnalyzer extends BaseAnalyzer {
   }
 
   private emitExitPoints(sites: SqlxQuerySite[], nodes: CASNode[]): NonNullable<CASContribution['exit_points']> {
-    return sites.slice(0, 40).map((site, index) => {
+    return sites.map((site, index) => {
       const nodeId = `query_sqlx_${this.sanitizeId(site.filePath)}_${site.line}_${index}`;
       nodes.push(this.createNode(
         nodeId,

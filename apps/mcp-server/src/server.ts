@@ -1238,7 +1238,12 @@ function registerTools(server: McpServer) {
 
 
 
-      const result = await analyzeCodebaseRemotely({ projectPath: path, requireBoundProject: true, force: Boolean(force_full) });
+      const result = await analyzeCodebaseRemotely({
+        projectPath: path,
+        requireBoundProject: true,
+        analysisFocus: focus,
+        force: Boolean(force_full),
+      });
       return json({
         status: result.status,
         analysis_id: result.analysis_id,
@@ -1407,7 +1412,12 @@ function registerTools(server: McpServer) {
           : 'deep-context';
 
 
-      const result = await analyzeCodebaseRemotely({ projectPath: path, requireBoundProject: true, force: Boolean(force_full) });
+      const result = await analyzeCodebaseRemotely({
+        projectPath: path,
+        requireBoundProject: true,
+        analysisFocus: focus,
+        force: Boolean(force_full),
+      });
       return json({
         status: result.status,
         analysis_id: result.analysis_id,

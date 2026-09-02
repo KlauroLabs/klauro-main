@@ -44,8 +44,6 @@ const FOCUS_ENV_KEYS = [
   'KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT',
   'KLAURO_AI_ELEMENT_DESCRIPTIONS',
   'KLAURO_EMBEDDING_ENABLED',
-  'KLAURO_AGENT_FAST_EXCLUDE_LEGACY',
-  'KLAURO_MAX_FILES_PER_ANALYZER',
   'KLAURO_FULL_REBUILD_ON_CONFIG_CHANGE',
 ] as const;
 
@@ -244,8 +242,6 @@ export function applyAnalysisFocus(
       '8';
     process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE = process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE || '4';
     process.env.KLAURO_EMBEDDING_ENABLED = 'false';
-    process.env.KLAURO_AGENT_FAST_EXCLUDE_LEGACY = 'true';
-    process.env.KLAURO_MAX_FILES_PER_ANALYZER = process.env.KLAURO_MAX_FILES_PER_ANALYZER || '300';
     process.env.KLAURO_FULL_REBUILD_ON_CONFIG_CHANGE = process.env.KLAURO_FULL_REBUILD_ON_CONFIG_CHANGE || 'false';
     return;
   }
@@ -267,7 +263,6 @@ export function applyAnalysisFocus(
       '8';
     process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS = process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS || 'true';
     process.env.KLAURO_EMBEDDING_ENABLED = 'false';
-    process.env.KLAURO_MAX_FILES_PER_ANALYZER = process.env.KLAURO_MAX_FILES_PER_ANALYZER || '400';
     return;
   }
 
@@ -284,7 +279,6 @@ export function applyAnalysisFocus(
       options.elementDescriptionLimit ||
       '8';
     process.env.KLAURO_EMBEDDING_ENABLED = process.env.KLAURO_EMBEDDING_ENABLED || 'true';
-    process.env.KLAURO_MAX_FILES_PER_ANALYZER = process.env.KLAURO_MAX_FILES_PER_ANALYZER || '5000';
     return;
   }
 

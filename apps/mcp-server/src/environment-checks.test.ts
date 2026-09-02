@@ -223,6 +223,21 @@ test('decideBuildAction only builds when dist is incomplete or rebuild is forced
   assert.strictEqual(checks.decideBuildAction({ distComplete: true, rebuildRequested: true }).build, true);
 });
 
+test('inspectClientBundle requires only shipped client artifacts', async () => {
+  const checks = await loadChecks();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-client-bundle-'));
+  try {
+    for (const file of checks.REQUIRED_CLIENT_BUNDLE_FILES) fs.writeFileSync(path.join(root, file), file);
+    assert.deepStrictEqual(checks.inspectClientBundle(root), { complete: true, missing: [] });
+    fs.rmSync(path.join(root, 'handshake.json'));
+    assert.deepStrictEqual(checks.inspectClientBundle(root), { complete: false, missing: ['handshake.json'] });
+    assert.ok(!checks.REQUIRED_CLIENT_BUNDLE_FILES.includes('analysis-worker.cjs'));
+    assert.ok(!checks.REQUIRED_CLIENT_BUNDLE_FILES.includes('tree-sitter-ts-worker.cjs'));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('registration snippets target the bundle path', async () => {
   const checks = await loadChecks();
   const bundle = '/srv/klauro/dist/index.cjs';

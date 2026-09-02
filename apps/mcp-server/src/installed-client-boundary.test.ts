@@ -6,6 +6,7 @@ import * as path from 'node:path';
 import test from 'node:test';
 import { isRegisteredSourceExtension } from '../../../packages/analyzer-core/src/analyzer/core/language-registry';
 import {
+  buildHostedAnalysisResolution,
   collectExplicitWorkingChanges,
   INSTALLED_TOOL_NAMES,
   normalizeConceptualAnalysisParams,
@@ -38,6 +39,26 @@ test('installed package contains only the lightweight client artifacts', () => {
   assert.equal(existsSync(path.join(dist, 'grammars')), false);
   assert.equal(existsSync(path.join(dist, 'server.cjs')), true);
   assert.equal(existsSync(path.join(dist, 'cli.cjs')), true);
+});
+
+test('installed analysis resolution returns the agent path contract for ready hosted analysis', () => {
+  assert.deepEqual(buildHostedAnalysisResolution('/work/repo', {
+    status: 'ready',
+    project_id: 'project-1',
+  }), {
+    status: 'ready',
+    project_id: 'project-1',
+    requested_path: '/work/repo',
+    selected_path: '/work/repo',
+    recommendation: 'Continue with the selected path; its bound hosted analysis is ready.',
+  });
+});
+
+test('installed analysis resolution does not select an unavailable analysis', () => {
+  const resolution = buildHostedAnalysisResolution('/work/repo', { status: 'processing' }, 'client is stale');
+  assert.equal(resolution.selected_path, null);
+  assert.equal(resolution.client_build_warning, 'client is stale');
+  assert.match(String(resolution.recommendation), /processing/);
 });
 
 test('installed deployable-analysis boundary preserves the hosted root without constructing sub-CAS projections', () => {

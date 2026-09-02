@@ -8,6 +8,7 @@ import type { CASOutput, CASNode } from '../../../packages/analyzer-core/src/typ
 import { getDataLineage, getInterfaceSignature } from './query';
 import { createRemoteAnalyzerHttpServer } from './remote-analyzer-service';
 import { saveAnalysis } from './storage';
+import { acceptedComprehensionFixture } from './accepted-comprehension-test-fixture';
 
 /**
  * Four tool-surface paper cuts found by live audits on prod. Each block below
@@ -330,7 +331,7 @@ test('/conceptual honors a max_flows query param (bounded) and its gap text refl
     assert.equal(createRes.statusCode, 201);
     const project = JSON.parse(createRes.body).project as { id: string; analysis_id: string };
     const workspace = path.join(remoteData, 'workspaces', project.analysis_id);
-    await saveAnalysis(workspace, buildManyEntryPointsCas(project.analysis_id, 40));
+    await saveAnalysis(workspace, acceptedComprehensionFixture(buildManyEntryPointsCas(project.analysis_id, 40)));
 
     // Default (no max_flows): capped at 25, gap text names the REAL applied cap.
     const defaultRes = await httpRequest(port, 'GET', `/api/projects/${project.id}/conceptual`, undefined, token);

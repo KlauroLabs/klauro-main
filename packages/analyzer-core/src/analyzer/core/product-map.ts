@@ -300,6 +300,11 @@ function buildHealth(cas: CASOutput): CASProductMap['health'] {
       total: testSummary?.total_tests ?? 0,
       passing: testSummary?.by_status.passing ?? 0,
       failing: testSummary?.by_status.failing ?? 0,
+      unknown: testSummary?.by_status.unknown ?? 0,
+      execution_status: testSummary?.execution?.status ??
+        ((testSummary?.by_status.passing || testSummary?.by_status.failing)
+          ? 'observed'
+          : 'unknown'),
       coverage_percentage: testSummary?.coverage.overall_percentage,
     },
     implementation: {
@@ -343,7 +348,7 @@ function buildCoverageCaveats(
   if (diagnostics.warnings.length > 0) caveats.push(`${diagnostics.warnings.length} analysis warning${diagnostics.warnings.length === 1 ? '' : 's'} recorded during analysis`);
 
   const capabilityGaps = cas.enhanced_system_purpose?.description_capability_gaps || [];
-  const reinjected = capabilityGaps.filter(gap => gap.disposition === 'reinjected-from-candidate');
+  const structuralEvidenceOnly = capabilityGaps.filter(gap => gap.disposition === 'structural-evidence-only');
   const unanchored = capabilityGaps.filter(gap => gap.disposition === 'no-structural-candidate');
   if (unanchored.length > 0) {
     caveats.push(
@@ -353,11 +358,11 @@ function buildCoverageCaveats(
       + 'the description may be overreaching relative to the shipped capability list.'
     );
   }
-  if (reinjected.length > 0) {
+  if (structuralEvidenceOnly.length > 0) {
     caveats.push(
-      `${reinjected.length} ${reinjected.length === 1 ? 'capability was' : 'capabilities were'} restored into this `
-      + `catalog after the description referenced ${reinjected.length === 1 ? 'an entity' : 'entities'} `
-      + `(${reinjected.slice(0, 5).map(gap => gap.entity_name).join(', ')}${reinjected.length > 5 ? ', ...' : ''}) `
+      `${structuralEvidenceOnly.length} ${structuralEvidenceOnly.length === 1 ? 'entity has' : 'entities have'} structural evidence but were not promoted to capabilities `
+      + `solely because the description referenced ${structuralEvidenceOnly.length === 1 ? 'it' : 'them'} `
+      + `(${structuralEvidenceOnly.slice(0, 5).map(gap => gap.entity_name).join(', ')}${structuralEvidenceOnly.length > 5 ? ', ...' : ''}) `
       + `a pre-AI candidate already supported but reconciliation had dropped.`
     );
   }

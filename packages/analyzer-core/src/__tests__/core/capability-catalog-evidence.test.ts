@@ -1,5 +1,6 @@
 import {
   capabilityCatalogAiPhaseStatus,
+  capabilityCanRepairRejectedOutcomeProposal,
   capabilityDescriptionProductLanguageFailure,
   capabilityCitesRequiredEvidence,
   capabilityEvidenceSubjectTokens,
@@ -18,7 +19,10 @@ import {
   classifyCapabilityEvidence,
   catalogMinimumCapabilityCount,
   catalogRelatedEntityIds,
+  demoteCoveredImplementationAggregates,
   hasFirstPartyCorroboratedCatalogOperations,
+  synchronizeCapabilityCatalogCoverage,
+  uniquelyMatchingCapabilityEntityIds,
 } from '../../analyzer/core/capability-catalog-evidence';
 import type { CASDataEntity, SystemCapability } from '../../types/cas.types';
 
@@ -281,6 +285,28 @@ describe('capability evidence roles', () => {
     expect(catalogRequiredEvidenceCandidates(classified).map(item => item.id)).toEqual(['review']);
   });
 
+  test('keeps uncorroborated production-mounted test routes out of required product outcomes', () => {
+    const verification = candidate('capability_test', 'Get API test family access', 'core', ['Read', 'Read']);
+    verification.structural_label = 'API test';
+    verification.operations = [
+      { entry_point_id: 'test-index', entry_point_type: 'http', action: 'read', trigger: { method: 'GET', path: '/api/v1/test' } },
+      { entry_point_id: 'test-scope', entry_point_type: 'http', action: 'read', trigger: { method: 'GET', path: '/api/v1/test_scope_required' } },
+    ];
+    const [classified] = classifyCapabilityEvidence(
+      [verification],
+      [],
+      { productDocTitle: 'Personal finance for everyone', productDocSummary: 'Track accounts, transactions, budgets, and investments.' },
+      { entryPoints: [
+        { id: 'test-index', source_node: 'route-index', type: 'http', name: 'GET /api/v1/test', trigger: { method: 'GET', path: '/api/v1/test' }, handler: { node_id: 'handler-index', method_name: 'index', file: 'app/controllers/api/v1/test_controller.rb' } },
+        { id: 'test-scope', source_node: 'route-scope', type: 'http', name: 'GET /api/v1/test_scope_required', trigger: { method: 'GET', path: '/api/v1/test_scope_required' }, handler: { node_id: 'handler-scope', method_name: 'scope_required', file: 'app/controllers/api/v1/test_controller.rb' } },
+      ] },
+    );
+
+    expect(classified.evidence_role).toBe('verification-harness');
+    expect(classified.evidence_role_reasons).toEqual(['test-named-entry-points-without-product-corroboration']);
+    expect(catalogRequiredEvidenceCandidates([classified])).toEqual([]);
+  });
+
   test('keeps internal supporting history available without making its entity family mandatory', () => {
     const ambiguous = candidate('cap_history', 'History', 'supporting', ['Coordinate', 'Read']);
     ambiguous.structural_label = 'History Management';
@@ -315,6 +341,46 @@ describe('capability evidence roles', () => {
 
     expect(classified.evidence_role).toBe('product-outcome');
     expect(catalogRequiredEvidenceCandidates([classified])).toEqual([classified]);
+  });
+
+  test('uses terminality to rank a CRUD family without declaring the CRUD inventory a mandatory outcome', () => {
+    const crud = candidate('rules', 'delete and read and update and create rule', 'core', ['Delete', 'Read', 'Update', 'Create']);
+    crud.related_entities = ['entity_rule'];
+    crud.operations.forEach((operation, index) => { operation.entry_point_id = `rules-${index}`; });
+    const [classified] = classifyCapabilityEvidence(
+      [crud],
+      [entity('entity_rule', 'Rule', 'persisted-entity', true)],
+      undefined,
+      { userJourneys: crud.operations.map((operation, index) => ({
+        id: `journey-${index}`, name: `Rule operation ${index}`, journey_kind: 'user-facing' as const,
+        entry_point_id: operation.entry_point_id, entry: { type: 'http', name: 'rules' }, steps: [],
+        terminal_effects: { entities_written: ['Rule'], entities_read: [], external_services: [], messages_emitted: [] },
+        terminal_entities: [], security_boundaries: [], tests_covering: [], criticality: 'high' as const,
+        call_chain_ids: [], exit_point_ids: [],
+      })) },
+    );
+
+    expect(classified.evidence_role).toBe('unresolved');
+    expect(classified.evidence_role_reasons).toContain('potential-user-outcome-requires-catalog-resolution');
+    expect(capabilityRequiresCatalogCoverage(classified)).toBe(false);
+  });
+
+  test('does not promote a mechanism-shaped settings workflow from terminal reach alone', () => {
+    const settings = candidate('prompt-settings', 'Rule Prompt Settings Workflow', 'core', ['Update']);
+    settings.evidence_kind = 'behavior-surface';
+    settings.operations[0].entry_point_id = 'prompt-settings-update';
+    const [classified] = classifyCapabilityEvidence([settings], [], undefined, {
+      userJourneys: [{
+        id: 'settings-journey', name: 'Update rule prompt settings', journey_kind: 'user-facing',
+        entry_point_id: 'prompt-settings-update', entry: { type: 'http', name: 'settings' }, steps: [],
+        terminal_effects: { entities_written: [], entities_read: [], external_services: [], messages_emitted: [] },
+        terminal_entities: [], security_boundaries: [], tests_covering: [], criticality: 'low',
+        call_chain_ids: [], exit_point_ids: [],
+      }],
+    });
+
+    expect(classified.evidence_role).toBe('supporting-mechanism');
+    expect(capabilityRequiresCatalogCoverage(classified)).toBe(false);
   });
 
   test('does not promote a UI gesture from terminal functions and framework dependencies alone', () => {
@@ -424,6 +490,15 @@ describe('capability evidence roles', () => {
     expect(capabilityOutcomeRestatesDeliveryOperation('Analyze analysis surface', [{ ...surface, name: 'Analysis Tool Surface' }], {})).toBe(true);
   });
 
+  test('grounds cautious appearance outcomes in multiple visual profile fields', () => {
+    const merchant = candidate('family-merchants', 'Family merchants', 'core', ['Create', 'Read', 'Update', 'Delete']);
+    merchant.evidence_examples = ['entity evidence: name color icon_url logo_url website_url'];
+
+    expect(capabilityOutcomeNameUnsupportedTokens(
+      'Customize merchant appearance', [merchant], {},
+    )).toEqual([]);
+  });
+
   test('separates product outcomes from command, route, and analysis-layer names without deleting their evidence', () => {
     const cas = candidate('cas', 'CAS relationship graph', 'core', ['Analyze']);
     const agent = candidate('agent-tools', 'Agent MCP Tool Surface', 'internal', ['Handle']);
@@ -506,7 +581,7 @@ describe('capability evidence roles', () => {
     fabric.evidence_examples = ['claim_work', 'extend_work', 'list_active_work', 'release_work'];
 
     expect(capabilityEvidenceSubjectTokens(fabric)).toEqual(['fab', 'work']);
-    expect(capabilityOutcomeRestatesDeliveryOperation('Release work in codebase analysis', [fabric])).toBe(true);
+    expect(capabilityOutcomeRestatesDeliveryOperation('Release work in codebase analysis', [fabric])).toBe(false);
     expect(capabilityOutcomeRestatesDeliveryOperation('Release work through MCP tools', [fabric])).toBe(true);
     expect(capabilityOutcomeRestatesDeliveryOperation('Coordinate overlapping work', [fabric])).toBe(false);
     expect(capabilityOutcomeRestatesDeliveryOperation('Handle Fab work surfaces', [fabric])).toBe(true);
@@ -521,14 +596,14 @@ describe('capability evidence roles', () => {
     expect(capabilityOutcomeRestatesDeliveryOperation('Coordinate work with', [fabric])).toBe(true);
     fabric.evidence_examples = ['analyze_codebase', 'sync_codebase', 'get_codebase_summary'];
     expect(capabilityOutcomeRestatesDeliveryOperation('Analyze codebases', [fabric], { productDocSummary: 'The product analyzes codebases.' })).toBe(false);
-    expect(capabilityOutcomeRestatesDeliveryOperation('Analyze codebases', [fabric])).toBe(true);
+    expect(capabilityOutcomeRestatesDeliveryOperation('Analyze codebases', [fabric])).toBe(false);
     expect(capabilityOutcomeRestatesDeliveryOperation('Analyze codebases', [fabric], undefined, true)).toBe(false);
     expect(capabilityOutcomeRestatesDeliveryOperation(
       'Manage job applications',
       [{ ...fabric, name: 'Job', structural_label: 'Job', evidence_examples: ['add_job', 'edit_job', 'delete_job'] }],
       { productDocSummary: 'Users manage and track job applications.' },
     )).toBe(false);
-    expect(capabilityOutcomeRestatesDeliveryOperation('Evaluate analysis truth', [{ ...fabric, evidence_examples: ['evaluate_analysis_truth'] }])).toBe(true);
+    expect(capabilityOutcomeRestatesDeliveryOperation('Evaluate analysis truth', [{ ...fabric, evidence_examples: ['evaluate_analysis_truth'] }])).toBe(false);
     expect(capabilityOutcomeRestatesDeliveryOperation('Evaluate analysis truth', [{ ...fabric, evidence_examples: ['evaluate_analysis_truth'] }], undefined, true)).toBe(false);
     expect(capabilityOutcomeRestatesDeliveryOperation('Correlate runtime events with codebase behavior', [{
       ...fabric,
@@ -545,7 +620,7 @@ describe('capability evidence roles', () => {
     expect(capabilityOutcomeRestatesDeliveryOperation('Claim work in the fab', [{
       ...fabric,
       evidence_examples: ['claim_work'],
-    }], { productDocSummary: 'Fabric enables collaboration across overlapping work.' })).toBe(true);
+    }], { productDocSummary: 'Fabric enables collaboration across overlapping work.' })).toBe(false);
     expect(capabilityOutcomeRestatesDeliveryOperation('Understand Fab work surfaces', [fabric])).toBe(true);
     fabric.evidence_examples = ['get_agent_context', 'get_agent_readiness', 'get_agent_tool_plan'];
     expect(capabilityOutcomeRestatesDeliveryOperation('Get agent context', [fabric])).toBe(true);
@@ -587,7 +662,7 @@ describe('capability evidence roles', () => {
     expect(capabilityOutcomeScopeFailure('Claim work in the fab', [{
       ...fabric,
       evidence_examples: ['claim_work'],
-    }], { productDocSummary: 'Fabric enables collaboration across overlapping work.' })).toEqual(['delivery-operation-restatement']);
+    }], { productDocSummary: 'Fabric enables collaboration across overlapping work.' })).toEqual([]);
     const understanding = { ...fabric, name: 'Software behavior comprehension', structural_label: 'Software behavior comprehension', related_domains: ['software behavior'] };
     expect(capabilityOutcomeScopeFailure(
       'Help human understanding of software behavior', [understanding],
@@ -597,6 +672,20 @@ describe('capability evidence roles', () => {
       'Help human developers understand software behavior', [understanding],
       { productDocSummary: 'Helps people understand software behavior.' }, false, '', ['human'],
     )).toEqual(['developer']);
+    const jobApplications = candidate('job-application', 'Job Applications', 'core', ['Create', 'Update']);
+    jobApplications.structural_label = 'Job Application Status';
+    expect(capabilityOutcomeScopeFailure(
+      'Track job applications and update their status', [jobApplications],
+      { productDocSummary: 'Users track job applications and update application status.' },
+    )).toEqual([]);
+    expect(capabilityOutcomeScopeFailure(
+      'Track job applications and update their awards', [jobApplications],
+      { productDocSummary: 'Users track job applications and update application status.' },
+    )).toEqual(['award']);
+    expect(capabilityOutcomeScopeFailure(
+      'Track their awards', [jobApplications],
+      { productDocSummary: 'Users track job applications and update application status.' },
+    )).not.toEqual([]);
     const statistics = candidate('statistics', 'Job Application Stats', 'core', ['Read']);
     statistics.structural_label = 'Job Application Statistics';
     statistics.related_domains = ['job-stats'];
@@ -618,17 +707,19 @@ describe('capability evidence roles', () => {
     }], { productDocSummary: 'Fabric coordinates overlapping work across a codebase.' })).toEqual([]);
   });
 
-  test('refuses to publish an authored capability grounded only in supporting or verification candidates', () => {
+  test('lets validated catalog outcomes resolve ambiguous product evidence without promoting supporting-only evidence', () => {
     const authored = candidate('authored', 'Expose product result', 'core', ['Expose']);
     const supporting = { ...candidate('support', 'Warm cache', 'supporting', ['Warm']), evidence_role: 'supporting-mechanism' as const };
     const unresolved = { ...candidate('ambiguous', 'Inspect recorded state', 'supporting', ['Read']), evidence_role: 'unresolved' as const };
     const verification = { ...candidate('proof', 'Exercise proof', 'supporting', ['Run']), evidence_role: 'verification-harness' as const };
     const product = { ...candidate('product', 'Review result', 'core', ['Review']), evidence_role: 'product-outcome' as const };
 
-    authored.criticality_factors = ['catalog-candidate:support', 'catalog-candidate:ambiguous', 'catalog-candidate:proof'];
+    authored.criticality_factors = ['catalog-candidate:support', 'catalog-candidate:proof'];
     expect(capabilityCitesRequiredEvidence(authored, [supporting, unresolved, verification, product])).toBe(false);
     expect(capabilityEvidencePublicationFailure(authored, [supporting, unresolved, verification, product]))
       .toBe('supporting-or-verification-evidence-only');
+    authored.criticality_factors.push('catalog-candidate:ambiguous');
+    expect(capabilityCitesRequiredEvidence(authored, [supporting, unresolved, verification, product])).toBe(true);
     authored.criticality_factors.push('catalog-candidate:product');
     expect(capabilityCitesRequiredEvidence(authored, [supporting, unresolved, verification, product])).toBe(true);
     authored.criticality_factors = [];
@@ -657,11 +748,11 @@ describe('capability evidence roles', () => {
 });
 
 describe('catalogEntityCandidateGroups', () => {
-  test('allows one authored capability to cover several related entity families', () => {
-    expect(catalogCountBounds(37, 0, 37)).toEqual({ min: 6, max: 20 });
-    expect(catalogMinimumCapabilityCount(37, 37)).toBe(6);
-    expect(catalogCountBounds(2, 1, 1, 5)).toEqual({ min: 5, max: 5 });
-    expect(catalogMinimumCapabilityCount(2, 1, 5)).toBe(5);
+  test('does not turn structural or entity family counts into capability quotas', () => {
+    expect(catalogCountBounds(37, 0, 37)).toEqual({ min: 0, max: 20 });
+    expect(catalogMinimumCapabilityCount(37, 37)).toBe(0);
+    expect(catalogCountBounds(2, 1, 1, 5)).toEqual({ min: 0, max: 5 });
+    expect(catalogMinimumCapabilityCount(2, 1, 5)).toBe(0);
   });
 
   test('groups candidates sharing an entity while preserving unrelated product families', () => {
@@ -690,6 +781,114 @@ describe('catalogEntityCandidateGroups', () => {
       ['jobs', 'workspace'],
       ['notes', 'workspace'],
     ]);
+  });
+
+  test('lets specific compound-entity outcomes cover their broad parent entity family', () => {
+    const family = candidate('family', 'Family', 'core', ['Coordinate']);
+    family.related_entities = ['entity_family', 'entity_familymerchant'];
+    const merchants = candidate('family-merchants', 'Manage family merchants', 'core', ['Read', 'Write']);
+    merchants.related_entities = ['entity_familymerchant'];
+
+    const groups = catalogEntityCandidateGroups([family, merchants]);
+
+    expect(groups).toContainEqual(['family', 'family-merchants']);
+    expect(groups).not.toContainEqual(['family']);
+  });
+
+  test('lets entity-free route outcomes cover a parent entity family when they share exact operations', () => {
+    const sharedOperation = {
+      entry_point_id: 'family-merchants-index', entry_point_type: 'http' as const,
+      action: 'Read', path_or_command: '/family_merchants',
+    };
+    const family = candidate('family', 'Family', 'core', ['Coordinate']);
+    family.related_entities = ['entity_family', 'entity_familymerchant'];
+    family.operations = [sharedOperation];
+    const merchants = candidate('family-merchants', 'Manage family merchants', 'core', ['Read']);
+    merchants.related_entities = [];
+    merchants.operations = [sharedOperation];
+
+    const groups = catalogEntityCandidateGroups([family, merchants]);
+
+    expect(groups).toContainEqual(['family', 'family-merchants']);
+    expect(groups).not.toContainEqual(['family']);
+  });
+
+  test('links a route resource to one exact semantic entity without guessing among duplicates', () => {
+    const entities = [
+      { id: 'entity_familymerchant', name: 'FamilyMerchant' },
+      { id: 'entity_familyexport', name: 'FamilyExport' },
+    ] as CASDataEntity[];
+    expect(uniquelyMatchingCapabilityEntityIds('family-merchants', entities))
+      .toEqual(['entity_familymerchant']);
+    expect(uniquelyMatchingCapabilityEntityIds('family', entities)).toEqual([]);
+    expect(uniquelyMatchingCapabilityEntityIds('plaid-items', [
+      { id: 'entity_plaiditem', name: 'PlaidItem' } as CASDataEntity,
+    ])).toEqual(['entity_plaiditem']);
+  });
+
+  test('does not require a mixed implementation aggregate when specific outcomes cover every public operation', () => {
+    const merchantRead = {
+      entry_point_id: 'merchant-index', entry_point_type: 'http' as const,
+      action: 'Read', path_or_command: '/family_merchants',
+    };
+    const exportRead = {
+      entry_point_id: 'export-index', entry_point_type: 'http' as const,
+      action: 'Read', path_or_command: '/family_exports',
+    };
+    const aggregate = candidate('family', 'Family synchronization', 'core', ['Coordinate']);
+    aggregate.evidence_role = 'product-outcome';
+    aggregate.evidence_role_reasons = ['product-entity'];
+    aggregate.operations = [
+      { entry_point_id: 'family-model', entry_point_type: 'internal', action: 'Coordinate', path_or_command: 'app/models/family.rb' },
+      merchantRead,
+      exportRead,
+    ];
+    const merchants = candidate('family-merchants', 'Manage family merchants', 'core', ['Read']);
+    merchants.evidence_role = 'product-outcome';
+    merchants.operations = [merchantRead];
+    const exports = candidate('family-exports', 'Manage family exports', 'core', ['Read']);
+    exports.evidence_role = 'product-outcome';
+    exports.operations = [exportRead];
+
+    const classified = demoteCoveredImplementationAggregates([aggregate, merchants, exports]);
+
+    expect(classified[0].evidence_role).toBe('supporting-mechanism');
+    expect(classified[0].evidence_role_reasons).toContain('public-surface-covered-by-specific-outcomes');
+    expect(classified.slice(1).every(item => item.evidence_role === 'product-outcome')).toBe(true);
+  });
+
+  test('treats an entity-free subflow as delivery evidence for its entity-backed outcome', () => {
+    const imports = candidate('imports', 'Import financial data', 'core', ['Create', 'Read']);
+    imports.related_entities = ['entity_import'];
+    imports.evidence_role = 'unresolved';
+    const upload = candidate('import-upload', 'read and update upload', 'core', ['Read', 'Update']);
+    upload.evidence_kind = 'behavior-surface';
+    upload.evidence_role = 'product-outcome';
+    upload.related_domains = ['import-upload'];
+
+    const classified = demoteCoveredImplementationAggregates([imports, upload]);
+
+    expect(classified[1].evidence_role).toBe('supporting-mechanism');
+    expect(classified[1].evidence_role_reasons).toContain('entity-free-subflow-covered-by-entity-evidence');
+  });
+
+  test('does not require an all-public aggregate when smaller outcomes cover every operation', () => {
+    const sessionRead = { entry_point_id: 'session-index', entry_point_type: 'http' as const, action: 'Read', path_or_command: '/sessions' };
+    const passwordUpdate = { entry_point_id: 'password-update', entry_point_type: 'http' as const, action: 'Update', path_or_command: '/password' };
+    const aggregate = candidate('auth', 'Account access', 'core', ['Read', 'Update']);
+    aggregate.evidence_role = 'product-outcome';
+    aggregate.operations = [sessionRead, passwordUpdate];
+    const sessions = candidate('sessions', 'Access sessions', 'core', ['Read']);
+    sessions.evidence_role = 'product-outcome';
+    sessions.operations = [sessionRead];
+    const passwords = candidate('passwords', 'Recover passwords', 'core', ['Update']);
+    passwords.evidence_role = 'product-outcome';
+    passwords.operations = [passwordUpdate];
+
+    const classified = demoteCoveredImplementationAggregates([aggregate, sessions, passwords]);
+
+    expect(classified[0].evidence_role).toBe('supporting-mechanism');
+    expect(classified.slice(1).every(item => item.evidence_role === 'product-outcome')).toBe(true);
   });
 
   test('excludes entity-free, external-only, and behavior-surface candidates', () => {
@@ -837,6 +1036,11 @@ describe('capabilityDescriptionProductLanguageFailure', () => {
       [],
       ['["Correlate","correlate_event_data",null,"message"]'],
     )).toBe('delivery-operation-restatement');
+    expect(capabilityDescriptionProductLanguageFailure(
+      'Users can maintain impersonation sessions over time as the access they represent changes.',
+      ['ImpersonationSession'],
+      ['["create","/impersonation_sessions","POST","http"]'],
+    )).toBeUndefined();
   });
 });
 
@@ -850,6 +1054,14 @@ describe('capabilityCatalogAiPhaseStatus', () => {
 });
 
 describe('user-facing lifecycle evidence', () => {
+  test('repairs rejected AI proposals only for product or unresolved evidence', () => {
+    expect(capabilityCanRepairRejectedOutcomeProposal(candidate('product', 'Product', 'core', []))).toBe(false);
+    expect(capabilityCanRepairRejectedOutcomeProposal({ ...candidate('product', 'Product', 'core', []), evidence_role: 'product-outcome' })).toBe(true);
+    expect(capabilityCanRepairRejectedOutcomeProposal({ ...candidate('unresolved', 'Unresolved', 'core', []), evidence_role: 'unresolved' })).toBe(true);
+    expect(capabilityCanRepairRejectedOutcomeProposal({ ...candidate('support', 'Support', 'supporting', []), evidence_role: 'supporting-mechanism' })).toBe(false);
+    expect(capabilityCanRepairRejectedOutcomeProposal({ ...candidate('test', 'Test', 'supporting', []), evidence_role: 'verification-harness' })).toBe(false);
+  });
+
   test('makes a cohesive public create/delete lifecycle mandatory without requiring entity inference', () => {
     const following = candidate('following', 'Follow profiles', 'supporting', ['Follow', 'Unfollow']);
     following.operations = [
@@ -867,6 +1079,30 @@ describe('user-facing lifecycle evidence', () => {
     expect(classified.evidence_role).toBe('product-outcome');
     expect(classified.evidence_role_reasons).toContain('user-facing-lifecycle-breadth');
     expect(capabilityRequiresCatalogCoverage(classified)).toBe(true);
+  });
+
+  test('lets first-party purpose make a noun-labeled public lifecycle mandatory without trusting the label as the outcome', () => {
+    const budgets = candidate('budgets', 'Budgets', 'core', ['Read', 'Update']);
+    budgets.related_entities = ['entity_budget'];
+    budgets.operations = [
+      { entry_point_id: 'list-budgets', entry_point_type: 'http', action: 'Read', trigger: { method: 'GET', path: '/budgets' } },
+      { entry_point_id: 'update-budget', entry_point_type: 'http', action: 'Update', trigger: { method: 'PATCH', path: '/budgets/{id}' } },
+    ];
+    const entries = budgets.operations.map(operation => ({
+      id: operation.entry_point_id, source_node: operation.entry_point_id, type: 'http',
+      name: operation.action, interaction_reach: 'external', trigger: operation.trigger,
+    })) as any;
+    const budget = entity('entity_budget', 'Budget', 'persisted-entity', true);
+
+    const [documented] = classifyCapabilityEvidence(
+      [budgets], [budget], { productDocSummary: 'Users review and adjust budgets for household spending.' },
+      { entryPoints: entries },
+    );
+    const [undocumented] = classifyCapabilityEvidence([budgets], [budget], undefined, { entryPoints: entries });
+
+    expect(documented.evidence_role).toBe('product-outcome');
+    expect(documented.evidence_role_reasons).toContain('user-facing-lifecycle-breadth');
+    expect(undocumented.evidence_role).toBe('unresolved');
   });
 
   test('does not promote an internal lifecycle or a generated behavior-surface family', () => {
@@ -896,4 +1132,64 @@ describe('user-facing lifecycle evidence', () => {
       'supporting-mechanism',
     ]);
   });
+});
+
+describe('shell executable evidence roles', () => {
+  test('does not promote a filesystem executable without product command registration', () => {
+    const shell = candidate('report-export', 'Export reports', 'core', ['Export']);
+    shell.operations[0].entry_point_id = 'shell-entry';
+    shell.operations[0].entry_point_type = 'cli';
+    const [classified] = classifyCapabilityEvidence([shell], [], { productDocSummary: 'Users export reports.' }, {
+      entryPoints: [{
+        id: 'shell-entry', source_node: 'shell-file', source_analyzer: 'shell', type: 'cli', name: 'Shell script: export',
+        metadata: { source_analyzer: 'shell', cli_origin: 'filesystem-executable', cli_product_role: 'supporting-mechanism' },
+      }],
+      userJourneys: [{
+        id: 'shell-journey', name: 'Export reports', journey_kind: 'user-facing', entry_point_id: 'shell-entry',
+        entry: { type: 'cli', name: 'export' }, steps: [], terminal_effects: { entities_written: [], entities_read: [], external_services: ['storage'], messages_emitted: [] },
+        terminal_entities: [], security_boundaries: [], tests_covering: [], criticality: 'medium', call_chain_ids: [], exit_point_ids: [],
+      }],
+    });
+    expect(classified.evidence_role).toBe('supporting-mechanism');
+    expect(classified.evidence_role_reasons).toEqual(['filesystem-executable-without-product-command-registration']);
+  });
+});
+
+
+
+describe("catalog coverage synchronization", () => {
+  test("preserves a provider deadline state without converting a capability quota into rejection", () => {
+    const purpose = {
+      capability_catalog_coverage: {
+        evidence_families: 7,
+        product_evidence_candidates: 7,
+        supporting_evidence_candidates: 0,
+        verification_evidence_candidates: 0,
+        unresolved_evidence_candidates: 0,
+        candidate_dispositions: [],
+        actual_publishable_capabilities: 4,
+        published_capabilities: 0,
+        minimum_published_capabilities: 5,
+        status: "unavailable" as const,
+        reason: "ai-catalog-hard-deadline-exceeded: catalog omitted cap_chat",
+      },
+    } as any;
+    synchronizeCapabilityCatalogCoverage(purpose, 0, 0);
+    expect(purpose.capability_catalog_coverage.status).toBe("unavailable");
+    expect(purpose.capability_catalog_coverage.reason).toBe("ai-catalog-hard-deadline-exceeded: catalog omitted cap_chat");
+    expect(purpose.ai_phase_status).toBe("degraded");
+  });
+});
+
+
+test('uses verified flow dependency subjects when grounding an outcome name', () => {
+  const rules = candidate('rules', 'Rules', 'core', ['Update']);
+  rules.related_entities = ['entity_rule'];
+  rules.depends_on = [{
+    from_capability: 'bulk-transactions', to_capability: 'rules', dependency_type: 'shares-data', strength: 'common',
+    evidence: { shared_services: [], shared_nodes: [], shared_entities: ['Rule', 'Transaction', 'Category'] },
+    description: 'Bulk transaction updates share rule and category data',
+  }];
+
+  expect(capabilityEvidenceSubjectTokens(rules)).toEqual(expect.arrayContaining(['rule', 'transaction', 'category']));
 });

@@ -4,6 +4,7 @@ import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.ty
 import {
   comprehensionResponseReadiness,
   hostedQueryResponseReadiness,
+  paginateCapabilityReconciliation,
   paginateConceptualCatalog,
   parseConceptualCatalogPage,
   unavailableComprehensionResponse,
@@ -141,8 +142,12 @@ test('a failed latest committed-source attempt cannot expose a prior ready gener
   )?.status, 'failed', 'a failed reanalysis must not expose the prior generation as current');
 });
 
-test('legacy CAS without a layer manifest remains queryable', () => {
-  assert.deepEqual(comprehensionResponseReadiness(cas()), { status: 'ready', ready: true });
+test('CAS without a layer manifest fails closed', () => {
+  assert.deepEqual(comprehensionResponseReadiness(cas()), {
+    status: 'failed',
+    ready: false,
+    error: 'Analysis readiness manifest is missing.',
+  });
 });
 
 test('conceptual catalog pages are bounded and disclose exact continuation offsets', () => {
@@ -160,6 +165,25 @@ test('conceptual catalog pages are bounded and disclose exact continuation offse
   assert.deepEqual(catalog.behavior_surfaces.page, {
     total: 101, offset: 100, limit: 100, returned: 1, has_more: false, next_offset: null,
   });
+});
+
+test('capability reconciliation is bounded, paginated, and preserves intent gaps', () => {
+  const reconciliation = paginateCapabilityReconciliation({
+    proposals: [
+      { requirement_id: 'one', statement: 'Export reports', candidate_ids: ['reports'], disposition: 'grounded', capability_ids: ['export'] },
+      { requirement_id: 'two', statement: 'Schedule reports', candidate_ids: [], disposition: 'intent-gap', capability_ids: [] },
+    ],
+    undocumented_capabilities: [{ capability_id: 'discovered', name: 'Detect anomalies' }],
+    structural_gaps: [{ candidate_id: 'orphan', name: 'Unreconciled behavior', reason: 'no publishable outcome' }],
+  }, { limit: 1, offset: 1 });
+
+  assert.deepEqual(reconciliation?.summary, {
+    proposals: 2, grounded: 1, intent_gaps: 1, undocumented_capabilities: 1, structural_gaps: 1,
+  });
+  assert.deepEqual(reconciliation?.proposals.values.map(item => item.requirement_id), ['two']);
+  assert.equal(reconciliation?.proposals.page.has_more, false);
+  assert.equal(reconciliation?.undocumented_capabilities.values.length, 0);
+  assert.equal(reconciliation?.undocumented_capabilities.page.total, 1);
 });
 
 test('conceptual catalog paging accepts explicit names while preserving legacy aliases', () => {
@@ -195,4 +219,56 @@ test('readiness counts the authoritative capability catalog instead of summing d
 
   assert.equal(readiness.canonical_capabilities, 15);
   assert.equal(readiness.reason, '15 canonical product capabilities passed catalog coverage');
+});
+
+
+
+test('accepted zero-capability catalogs are ready when the evidence requires no product outcome', () => {
+  const readiness = evaluateComprehensionReadiness(cas({
+    capabilities: [],
+    ai_enrichment: 'synchronous',
+    enhanced_system_purpose: {
+      ai_phase_status: 'complete',
+      capability_catalog_coverage: {
+        evidence_families: 0,
+        product_evidence_candidates: 0,
+        supporting_evidence_candidates: 3,
+        verification_evidence_candidates: 0,
+        unresolved_evidence_candidates: 0,
+        candidate_dispositions: [],
+        actual_publishable_capabilities: 0,
+        published_capabilities: 0,
+        minimum_published_capabilities: 0,
+        status: 'accepted',
+      },
+    },
+  }));
+
+  assert.equal(readiness.status, 'ready');
+  assert.equal(readiness.ready, true);
+  assert.equal(readiness.canonical_capabilities, 0);
+});
+
+test("unavailable comprehension exposes the persisted fail-closed catalog reason", () => {
+  const readiness = evaluateComprehensionReadiness(cas({
+    ai_enrichment: "synchronous",
+    enhanced_system_purpose: {
+      ai_phase_status: "degraded",
+      capability_catalog_coverage: {
+        evidence_families: 7,
+        product_evidence_candidates: 7,
+        supporting_evidence_candidates: 0,
+        verification_evidence_candidates: 0,
+        unresolved_evidence_candidates: 0,
+        candidate_dispositions: [],
+        actual_publishable_capabilities: 4,
+        published_capabilities: 0,
+        minimum_published_capabilities: 5,
+        status: "rejected",
+        reason: "ai-catalog-hard-deadline-exceeded: catalog omitted cap_chat",
+      },
+    },
+  }));
+  assert.equal(readiness.status, "unavailable");
+  assert.equal(readiness.reason, "ai-catalog-hard-deadline-exceeded: catalog omitted cap_chat");
 });

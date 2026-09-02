@@ -16,6 +16,7 @@ import { classifyGuardKind } from './guard-classification';
 import { dedupeAdjacentWords } from './flow-concepts';
 import type { FlowConcept } from './flow-concepts';
 import { isLanguageBuiltinExitPoint } from './language-builtins';
+import { isStructuralExecutableCliEntry } from './entry-point-product-role';
 
 export interface UserJourneyInput {
   nodes: CASNode[]; nodeLookup?: Map<string, CASNode>;
@@ -36,11 +37,6 @@ export interface UserJourneyResult {
   journeys: CASUserJourney[];
   summary: CASUserJourneySummary;
 }
-
-const DEFAULT_MAX_JOURNEYS = 50;
-const WALK_MAX_DEPTH = 8;
-const WALK_MAX_NODES = 30;
-const SEED_EXPANSION_LIMIT = 15;
 
 const TEST_EDGE_TYPES = new Set(['tests', 'covers']);
 const TRAVERSAL_EDGE_TYPES = new Set([
@@ -191,7 +187,7 @@ interface JourneyGraph {
 }
 
 export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyOptions = {}): UserJourneyResult {
-  const maxJourneys = options.maxJourneys ?? DEFAULT_MAX_JOURNEYS;
+  const maxJourneys = options.maxJourneys;
   const graph = buildJourneyGraph(input);
 
   const chainsByEntryPointId = new Map<string, CASCallChain[]>();
@@ -311,7 +307,7 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
 
     const journeyKind: CASUserJourney['journey_kind'] = (SCHEDULED_ENTRY_TYPES.has(entryPoint.type) || cronSchedule)
       ? 'scheduled'
-      : (isUserFacingEntry(entryPoint, graph) && !isOperationalScriptEntry(entryFile) && !genericBootstrapCli)
+      : (isUserFacingEntry(entryPoint, graph) && !isOperationalScriptEntry(entryFile) && !genericBootstrapCli && !isStructuralExecutableCliEntry(entryPoint))
         ? 'user-facing'
         : 'system';
 
@@ -386,7 +382,8 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
   };
 }
 
-function selectIncludedJourneys(sortedJourneys: CASUserJourney[], maxJourneys: number): CASUserJourney[] {
+function selectIncludedJourneys(sortedJourneys: CASUserJourney[], maxJourneys?: number): CASUserJourney[] {
+  if (maxJourneys === undefined || maxJourneys <= 0) return sortedJourneys;
   if (sortedJourneys.length <= maxJourneys) return sortedJourneys;
 
   const rankById = new Map<string, number>();
@@ -642,23 +639,20 @@ function collectPathNodeIds(
     for (const seedId of seeds) {
       const seedDepth = pathNodeIds.get(seedId) ?? 0;
       const children = graph.containsBySource.get(seedId) || [];
-      let expanded = 0;
       for (const childId of children) {
-        if (expanded >= SEED_EXPANSION_LIMIT) break;
         const child = graph.nodesById.get(childId);
         if (!child) continue;
         if (!/(^|[_\s])(method|function|action)([_\s]|$)/.test(child.type)) continue;
         addNode(childId, seedDepth + 1);
-        expanded += 1;
       }
     }
   }
 
   const queue: Array<{ nodeId: string; depth: number }> = [...pathNodeIds.entries()].map(([nodeId, depth]) => ({ nodeId, depth }));
   const visited = new Set(pathNodeIds.keys());
-  while (queue.length > 0 && pathNodeIds.size < WALK_MAX_NODES) {
-    const { nodeId, depth } = queue.shift()!;
-    if (depth >= WALK_MAX_DEPTH) continue;
+  let queueIndex = 0;
+  while (queueIndex < queue.length) {
+    const { nodeId, depth } = queue[queueIndex++]!;
     const outgoing = graph.traversalBySource.get(nodeId) || [];
     for (const edge of outgoing) {
       if (visited.has(edge.target)) continue;
@@ -672,10 +666,9 @@ function collectPathNodeIds(
       visited.add(edge.target);
       addNode(edge.target, depth + 1);
       queue.push({ nodeId: edge.target, depth: depth + 1 });
-      if (pathNodeIds.size >= WALK_MAX_NODES) break;
     }
     for (const stateId of stateMachineEntryStates(nodeId, graph)) {
-      if (visited.has(stateId) || pathNodeIds.size >= WALK_MAX_NODES) continue;
+      if (visited.has(stateId)) continue;
       visited.add(stateId);
       addNode(stateId, depth + 1);
       queue.push({ nodeId: stateId, depth: depth + 1 });

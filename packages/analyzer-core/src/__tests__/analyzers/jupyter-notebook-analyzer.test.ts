@@ -124,4 +124,23 @@ describe('JupyterNotebookAnalyzer', () => {
       expect((contribution.analyzer_metadata as any).malformedSkipped).toBe(1);
     });
   });
+  it('retains every distinct call extracted from a notebook cell', async () => {
+    const calls = Array.from({ length: 40 }, (_, index) => `operation_${index}()`);
+    const notebook = {
+      ...NOTEBOOK_FIXTURE,
+      cells: [{
+        cell_type: 'code',
+        execution_count: 1,
+        metadata: {},
+        outputs: [],
+        source: calls.map(call => `${call}\n`),
+      }],
+    };
+    await withTempDir({ 'calls.ipynb': JSON.stringify(notebook) }, async (dir) => {
+      const analyzer = new JupyterNotebookAnalyzer();
+      const contribution = await analyzer.analyze({ projectPath: dir } as any);
+      const cell = contribution.nodes!.find(node => node.type === 'notebook-cell');
+      expect(cell?.metadata?.attributes?.calls).toEqual(calls.map(call => call.slice(0, -2)));
+    });
+  });
 });

@@ -478,6 +478,7 @@ export class ProtobufAnalyzer extends BaseAnalyzer {
     exitPoints: CASExitPoint[],
     messageIndex: Map<string, string>
   ): void {
+    const firstEmittedNode = nodes.length;
     const fileId = this.fileId(info.relativePath);
     const baseName = info.relativePath.split('/').pop() || 'unknown.proto';
 
@@ -641,6 +642,8 @@ export class ProtobufAnalyzer extends BaseAnalyzer {
           .withMetadata({
             language: 'protobuf',
             attributes: {
+              execution_role: 'declaration',
+              declaration_kind: 'protobuf-service-contract',
               service: service.name,
               package: info.packageName,
               requestType: rpc.requestType,
@@ -701,6 +704,8 @@ export class ProtobufAnalyzer extends BaseAnalyzer {
           { method: 'POST', path: fullPath, pattern: streamingMode },
           undefined,
           {
+            execution_role: 'declaration',
+            declaration_kind: 'protobuf-service-contract',
             protocol: 'grpc',
             service: service.name,
             rpc: rpc.name,
@@ -716,6 +721,12 @@ export class ProtobufAnalyzer extends BaseAnalyzer {
           { node_id: rpcId, method_name: rpc.name, file: info.relativePath, line: rpc.lineNumber }
         ));
       }
+    }
+    for (const node of nodes.slice(firstEmittedNode)) {
+      node.metadata = {
+        ...node.metadata,
+        attributes: { ...node.metadata?.attributes, execution_role: 'declaration', declaration_kind: 'protobuf-contract' },
+      };
     }
   }
 

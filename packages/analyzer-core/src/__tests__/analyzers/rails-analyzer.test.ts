@@ -296,8 +296,8 @@ describe('RailsAnalyzer', () => {
       const routes = analyzer.extractRoutes(source);
 
       expect(routes).toEqual([
-        expect.objectContaining({ method: 'GET', path: '/work_orders', controller: 'work_orders', action: 'index' }),
-        expect.objectContaining({ method: 'POST', path: '/work_orders', controller: 'work_orders', action: 'create' }),
+        expect.objectContaining({ method: 'GET', path: '/work_orders', controller: 'work_orders', action: 'index', resource: 'work_orders', restAction: 'index', routeRole: 'collection-read' }),
+        expect.objectContaining({ method: 'POST', path: '/work_orders', controller: 'work_orders', action: 'create', resource: 'work_orders', restAction: 'create', routeRole: 'mutation' }),
       ]);
     });
 
@@ -346,6 +346,9 @@ describe('RailsAnalyzer', () => {
 
     it('expands full resources into seven actions plus PUT alias', () => {
       const routes = analyzer.extractRoutes('resources :customers\n');
+      expect(routes.find(route => route.action === 'new')).toEqual(expect.objectContaining({ resource: 'customers', restAction: 'new', routeRole: 'create-form' }));
+      expect(routes.find(route => route.action === 'edit')).toEqual(expect.objectContaining({ resource: 'customers', restAction: 'edit', routeRole: 'update-form' }));
+      expect(routes.find(route => route.action === 'show')).toEqual(expect.objectContaining({ resource: 'customers', restAction: 'show', routeRole: 'member-read' }));
       expect(routes.map(route => `${route.method} ${route.path}`)).toEqual([
         'GET /customers',
         'POST /customers',
@@ -922,6 +925,11 @@ describe('RailsAnalyzer', () => {
 
       const paths = httpEntries.map(e => `${e.trigger?.method} ${e.trigger?.path}`).sort();
       expect(paths).toEqual(['GET /products', 'GET /products/:id', 'POST /invoices']);
+      const productsIndex = httpEntries.find(e => e.trigger?.path === '/products');
+      expect(productsIndex?.metadata).toEqual(expect.objectContaining({
+        route_source: 'resources', route_resource: 'products', rest_action: 'index', route_role: 'collection-read',
+      }));
+
 
       const invoiceEntry = httpEntries.find(e => e.trigger?.path === '/invoices');
       expect(invoiceEntry!.handler?.file).toBe('billing/app/controllers/billing/invoices_controller.rb');
@@ -1000,4 +1008,113 @@ describe('RailsAnalyzer', () => {
       }
     });
   });
+  describe('controller concern actions', () => {
+    let projectPath: string;
+
+    beforeEach(async () => {
+      projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'rails-concern-actions-'));
+      await fs.outputFile(path.join(projectPath, 'Gemfile'), "gem 'rails'\n");
+      await fs.outputFile(path.join(projectPath, 'config/routes.rb'), "Rails.application.routes.draw do\n  resources :trades, only: [:show, :destroy]\nend\n");
+      await fs.outputFile(path.join(projectPath, 'app/controllers/concerns/entryable_resource.rb'), [
+        'module EntryableResource',
+        '  extend ActiveSupport::Concern',
+        '  class_methods do',
+        '    def configuration; end',
+        '  end',
+        '  def show',
+        '    @trade = Trade.find(params[:id])',
+        '  end',
+        '  def destroy',
+        '    Trade.find(params[:id]).destroy!',
+        '  end',
+        '  private',
+        '    def internal_lookup; end',
+        'end',
+      ].join('\n'));
+      await fs.outputFile(path.join(projectPath, 'app/controllers/trades_controller.rb'), [
+        'class TradesController < ApplicationController',
+        '  include EntryableResource',
+        'end',
+      ].join('\n'));
+      await fs.outputFile(path.join(projectPath, 'app/models/trade.rb'), "class Trade < ApplicationRecord\nend\n");
+    });
+
+    afterEach(async () => fs.remove(projectPath));
+
+    it('emits source-backed handler nodes for public actions inherited from concerns', async () => {
+      const contribution = await analyzer.analyze({ projectPath } as any);
+      const nodeById = new Map((contribution.nodes || []).map(node => [node.id, node]));
+      const entries = (contribution.entry_points || []).filter(entry => entry.handler?.file === 'app/controllers/trades_controller.rb');
+
+      expect(entries).toHaveLength(2);
+      for (const entry of entries) expect(nodeById.has(entry.handler!.node_id)).toBe(true);
+      const destroy = entries.find(entry => entry.handler?.method_name === 'destroy');
+      expect(nodeById.get(destroy!.handler!.node_id)?.source?.file).toBe('app/controllers/concerns/entryable_resource.rb');
+      expect((contribution.nodes || []).some(node => node.name === 'configuration' || node.name === 'internal_lookup')).toBe(false);
+    });
+  });
+
+  describe('controller security inheritance', () => {
+    let projectPath: string;
+    beforeEach(async () => {
+      projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'rails-security-'));
+      await fs.outputFile(path.join(projectPath, 'Gemfile'), "gem 'rails'\n");
+      await fs.outputFile(path.join(projectPath, 'config/routes.rb'), "Rails.application.routes.draw do\n  resources :chats, only: [:index, :create, :destroy]\nend\n");
+      await fs.outputFile(path.join(projectPath, 'app/controllers/concerns/authentication.rb'), [
+        'module Authentication', '  extend ActiveSupport::Concern', '  included do', '    before_action :authenticate_user!', '  end',
+        '  class_methods do', '    def skip_authentication(**options)', '      skip_before_action :authenticate_user!, **options', '    end', '  end', 'end',
+      ].join('\n'));
+      await fs.outputFile(path.join(projectPath, 'app/controllers/application_controller.rb'), [
+        'class ApplicationController < ActionController::Base', '  include Layout, Onboardable,', '    Authentication, Invitable', 'end',
+      ].join('\n'));
+      await fs.outputFile(path.join(projectPath, 'app/controllers/chats_controller.rb'), [
+        'class ChatsController < ApplicationController', '  skip_authentication only: [:index]', '  def index; end', '  def create; end', '  def destroy; end', 'end',
+      ].join('\n'));
+    });
+    afterEach(async () => fs.remove(projectPath));
+
+    it('propagates concern authentication through inheritance and honors scoped macro skips', async () => {
+      const contribution = await analyzer.analyze({ projectPath } as any);
+      const entries = contribution.entry_points || [];
+      const index = entries.find(entry => entry.trigger?.path === '/chats' && entry.trigger?.method === 'GET');
+      expect(index?.security?.authenticated).toBe(false);
+      expect(index?.security?.guards).toEqual([]);
+      const create = entries.find(entry => entry.trigger?.path === '/chats' && entry.trigger?.method === 'POST');
+      const destroy = entries.find(entry => entry.trigger?.path === '/chats/:id' && entry.trigger?.method === 'DELETE');
+      expect(create?.security?.authenticated).toBe(true);
+      expect(create?.security?.guards).toContain('authenticate_user!');
+      expect(destroy?.security?.authenticated).toBe(true);
+      expect((contribution.edges || []).some(edge => edge.type === 'guarded_by' && edge.source.includes('ChatsController'))).toBe(true);
+    });
+  });
+
+  it('preserves explicit singular controllers, scalar only, and resource-local controller modules', () => {
+    const routes = analyzer.extractRoutes([
+      'Rails.application.routes.draw do',
+      '  resource :mfa, controller: "mfa", only: :create',
+      '  namespace :settings do',
+      '    resource :preferences, only: :show',
+      '  end',
+      '  resources :tags do',
+      '    resources :deletions, only: %i[new create], module: :tag',
+      '  end',
+      '  resources :categories do',
+      '    resources :deletions, only: %i[new create], module: :category',
+      '  end',
+      'end',
+    ].join('\n'));
+    expect(routes).toContainEqual(expect.objectContaining({ method: 'POST', path: '/mfa', controller: 'mfa', action: 'create' }));
+    expect(routes).toContainEqual(expect.objectContaining({ method: 'GET', path: '/settings/preferences', controller: 'settings/preferences', action: 'show' }));
+    expect(routes).toContainEqual(expect.objectContaining({
+      method: 'POST',
+      path: '/tags/:tag_id/deletions',
+      controller: 'tag/deletions',
+    }));
+    expect(routes).toContainEqual(expect.objectContaining({
+      method: 'POST',
+      path: '/categories/:category_id/deletions',
+      controller: 'category/deletions',
+    }));
+  });
+
 });

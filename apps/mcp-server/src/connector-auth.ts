@@ -274,8 +274,8 @@ export function connectorToken(explicitToken?: string, serverUrl?: string): stri
   return explicitToken ||
     process.env.KLAURO_ACCOUNT_TOKEN ||
     process.env.KLAURO_AUTH_TOKEN ||
-    process.env.KLAURO_ANALYZER_TOKEN ||
-    loadStoredConnectorToken(serverUrl);
+    loadStoredConnectorToken(serverUrl) ||
+    process.env.KLAURO_ANALYZER_TOKEN;
 }
 
 export async function requireConnectorEntitlement(input: {

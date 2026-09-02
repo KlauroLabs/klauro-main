@@ -5,42 +5,39 @@ import { isScaffoldOrTestPath } from './scaffold-paths';
 import { analyzeTerminality } from './terminality';
 import { observedCapabilityLifecycleActions } from './capability-lifecycle-actions';
 import { normalizedSubjectTokens, outcomeIdentityTokens, outcomeTokenMatches, productTextCorroboratesActionAndSubject } from './capability-evidence-language';
-import { CAPABILITY_PURPOSE_VERBS } from "./capability-naming";
-
+import { CAPABILITY_PURPOSE_VERBS, isCrudInventoryCapabilityLabel, isGenericManagementCapabilityLabel } from "./capability-naming";
+export { catalogCandidateEntityFacts, catalogCountBounds, catalogMinimumCapabilityCount, catalogRelatedEntityIds, firstPartySupportsIdentityProduct, uniquelyMatchingCapabilityEntityIds } from './capability-catalog-metrics';
+import { isStructuralExecutableCliEntry } from './entry-point-product-role';
+import { demoteCoveredImplementationAggregates as demoteCoveredImplementationAggregatesImpl } from './capability-catalog-aggregate-demotion';
 export type CapabilityEvidenceRole = NonNullable<SystemCapability['evidence_role']>;
-
 export interface CapabilityEvidenceContext {
   entryPoints?: CASEntryPoint[];
   nodes?: CASNode[];
   userJourneys?: CASUserJourney[];
 }
-
 export interface CapabilityEvidenceRoleSummary {
   product: number;
   supporting: number;
   verification: number;
   unresolved: number;
 }
-
 export interface CapabilityCatalogProjectSignal {
   concepts?: string[];
   productDocTitle?: string;
   productDocSummary?: string;
   manifestDescription?: string;
   summary?: string;
+  productVocabulary?: string[];
 }
-
 export interface CapabilityCatalogEntityFact {
   fields: string[];
   name: string;
 }
-
 export function capabilityCatalogAiPhaseStatus(
   coverage?: { evidence_families: number; status: 'accepted' | 'partial' | 'rejected' | 'unavailable' },
 ): 'complete' | 'degraded' {
   return coverage && coverage.evidence_families > 0 && coverage.status !== 'accepted' ? 'degraded' : 'complete';
 }
-
 export function synchronizeCapabilityCatalogCoverage(
   purpose: EnhancedSystemPurpose,
   publishedCapabilities: number,
@@ -52,24 +49,21 @@ export function synchronizeCapabilityCatalogCoverage(
   coverage.actual_publishable_capabilities = preserveRejectedCandidates ? Math.max(coverage.actual_publishable_capabilities || 0, publishedCapabilities) : publishedCapabilities;
   coverage.published_capabilities = publishedCapabilities;
   if (excludedCapabilities > 0 && coverage.status === 'accepted') {
-    coverage.status = 'partial';
-    coverage.reason = `${excludedCapabilities} catalog capability ${excludedCapabilities === 1 ? 'was' : 'were'} excluded during final publishability validation`;
-  }
-  if (publishedCapabilities < coverage.minimum_published_capabilities) {
     coverage.status = 'rejected';
-    coverage.reason = `final catalog published ${publishedCapabilities} of at least ${coverage.minimum_published_capabilities} required capabilities`;
+    coverage.reason = `${excludedCapabilities} catalog capability ${excludedCapabilities === 1 ? 'was' : 'were'} excluded during final publishability validation`;
   }
   purpose.ai_phase_status = capabilityCatalogAiPhaseStatus(coverage);
 }
-
 function capabilityOutcomeCorroboratedByProductText(
   name: string,
   citedCandidates: SystemCapability[],
   signal?: CapabilityCatalogProjectSignal,
+  requireCandidateSubject = true,
 ): boolean {
   const words = outcomeIdentityTokens(name);
   const productTokens = new Set(outcomeIdentityTokens([
     ...(signal?.concepts || []),
+    ...(signal?.productVocabulary || []),
     signal?.productDocTitle,
     signal?.productDocSummary,
     signal?.manifestDescription,
@@ -79,10 +73,10 @@ function capabilityOutcomeCorroboratedByProductText(
   const subjects = words.slice(1);
   if (!subjects.some(token => outcomeTokenMatches(token, productTokens))) return false;
   const evidenceTokens = new Set(citedCandidates.flatMap(candidate => capabilityEvidenceSubjectTokens(candidate)));
+  if (requireCandidateSubject && !subjects.some(token => outcomeTokenMatches(token, evidenceTokens))) return false;
   return subjects.every(token =>
     outcomeTokenMatches(token, productTokens) || outcomeTokenMatches(token, evidenceTokens));
 }
-
 function capabilityOutcomeHasSpecificFirstPartySupport(
   name: string,
   citedCandidates: SystemCapability[],
@@ -91,6 +85,7 @@ function capabilityOutcomeHasSpecificFirstPartySupport(
   const subjects = outcomeIdentityTokens(name).slice(1);
   const productTokens = new Set(outcomeIdentityTokens([
     ...(signal?.concepts || []),
+    ...(signal?.productVocabulary || []),
     signal?.productDocTitle,
     signal?.productDocSummary,
     signal?.manifestDescription,
@@ -103,7 +98,6 @@ function capabilityOutcomeHasSpecificFirstPartySupport(
   const evidenceTokens = new Set(citedCandidates.flatMap(candidate => capabilityEvidenceSubjectTokens(candidate)));
   return subjects.some(token => outcomeTokenMatches(token, evidenceTokens));
 }
-
 export function capabilityEvidenceSubjectTokens(
   candidate: SystemCapability,
   entityNames: readonly string[] = [],
@@ -121,6 +115,10 @@ export function capabilityEvidenceSubjectTokens(
       operation.path_or_command,
       operation.trigger?.path,
     ])),
+    ...(candidate.depends_on || []).flatMap(dependency => [
+      dependency.description,
+      ...(dependency.evidence.shared_entities || []),
+    ]),
   ].filter(Boolean).join(' ')).filter(token => !ignored.has(token));
   const exampleCounts = new Map<string, number>();
   for (const example of candidate.evidence_examples || []) {
@@ -133,7 +131,6 @@ export function capabilityEvidenceSubjectTokens(
     .map(([token]) => token);
   return [...new Set([...tokens, ...recurringExampleTokens])].sort();
 }
-
 export function narrowCapabilityEvidenceCandidates(
   outcomeName: string,
   citedCandidates: readonly SystemCapability[],
@@ -148,7 +145,6 @@ export function narrowCapabilityEvidenceCandidates(
   const leadingOutcomeToken = identityTokens[0];
   const outcomeTokens = identityTokens.filter(token => !deliveryActions.has(token));
   if (outcomeTokens.length === 0) return [...citedCandidates];
-
   const evidenceTokens = citedCandidates.map(candidate =>
     new Set(capabilityEvidenceSubjectTokens(candidate)));
   const frequencies = outcomeTokens.map(token => ({
@@ -191,10 +187,12 @@ export function capabilityOutcomeRestatesDeliveryOperation(
   const usesDeliveryScaffolding = /\b(?:mcp|tools?|surfaces?)\b/i.test(name);
   const usesInternalDeliveryAction = /^(?:handle|process)(?:s|es|ing)?\b/i.test(name.trim());
   const usesBroadManagementAction = /^manage(?:s|d|ing)?\b/i.test(name.trim());
+  const genericDeliveryAction = /^(?:add|create|delete|edit|fetch|get|list|load|read|remove|run|show|update|view)\b/i.test(name.trim());
   const repeatsActionAsSubject = words.length === 2 && outcomeTokenMatches(words[0], new Set([words[1]]));
   const ungroundedBroadManagementAction = usesBroadManagementAction && !acceptedOutcome && !corroboratedProductOutcome;
   return words.length === 0 || usesDeliveryScaffolding || usesInternalDeliveryAction || ungroundedBroadManagementAction || repeatsActionAsSubject ||
-    (!acceptedOutcome && !corroboratedProductOutcome && copiesOperationPhrase) || /\b(?:at|by|for|from|in|of|on|to|via|with)$/i.test(name.trim());
+    (!acceptedOutcome && !corroboratedProductOutcome && genericDeliveryAction && copiesOperationPhrase) ||
+    /\b(?:at|by|for|from|in|of|on|to|via|with)$/i.test(name.trim());
 }
 
 export function capabilityOutcomeMisusesCoordination(
@@ -277,6 +275,8 @@ export function capabilityOutcomeNameUnsupportedTokens(
   }
   const subjectTokens = nameTokens.slice(1).filter(token => !coordinatedActions.has(token));
   const firstPartyTokens = new Set(outcomeIdentityTokens([
+    ...(signal?.concepts || []),
+    ...(signal?.productVocabulary || []),
     signal?.productDocTitle,
     signal?.productDocSummary,
     signal?.manifestDescription,
@@ -299,12 +299,20 @@ export function capabilityOutcomeNameUnsupportedTokens(
   citedCandidates.flatMap(candidate => observedCapabilityLifecycleActions(candidate.operations || []))
     .flatMap(outcomeIdentityTokens)
     .forEach(token => citedIdentityTokens.add(token));
+  const visualProfileEvidence = ['avatar', 'color', 'icon', 'image', 'logo', 'style', 'theme']
+    .filter(token => citedIdentityTokens.has(token));
+  if (visualProfileEvidence.length >= 2) citedIdentityTokens.add('appearance');
   if (leadingAction === 'authenticate' && authenticationEvidence) {
     ['access', 'account', 'credential', 'identity', 'session', 'user'].forEach(token =>
       citedIdentityTokens.add(token));
   }
+  const neutralQualifiers = new Set([
+    'between', 'data', 'detail', 'record', 'state',
+  ]);
   const unsupportedTokens = subjectTokens.filter(token =>
-    !outcomeTokenMatches(token, firstPartyTokens) && !outcomeTokenMatches(token, citedIdentityTokens)
+    !neutralQualifiers.has(token) &&
+    !outcomeTokenMatches(token, firstPartyTokens) &&
+    !outcomeTokenMatches(token, citedIdentityTokens)
   );
   if (!focusedBehaviorSurface || unsupportedTokens.length < 2 || !/\band\b/i.test(name)) return unsupportedTokens;
   const hasRecurringSubject = subjectTokens.some(token => outcomeTokenMatches(token, citedIdentityTokens));
@@ -340,7 +348,8 @@ export function capabilityOutcomeScopeFailure(
   const leading = outcomeIdentityTokens(name)[0];
   const boundVisibleActions = new Set((boundRequirement?.visibleActionTerms || []).flatMap(outcomeIdentityTokens));
   if (capabilityOutcomeUsesBroadDeliveryAction(name, citedCandidates, signal) && !boundVisibleActions.has(leading || '')) return ['delivery-action-evidence-too-broad'];
-  if (!capabilityOutcomeCorroboratedByProductText(name, citedCandidates, signal) && !capabilityOutcomeUsesDeliverySubject(name, citedCandidates, acceptedOutcome ? description : '')) return ['delivery-subject-missing'];
+  const productTextCorroborates = capabilityOutcomeCorroboratedByProductText(name, citedCandidates, signal, !boundRequirement);
+  if (!productTextCorroborates && !capabilityOutcomeUsesDeliverySubject(name, citedCandidates, acceptedOutcome ? description : '')) return ['delivery-subject-missing'];
   if (acceptedOutcome) return [];
   const audienceTokens = new Set(evidenceBackedAudienceTokens.flatMap(outcomeIdentityTokens));
   return capabilityOutcomeNameUnsupportedTokens(name, citedCandidates, signal)
@@ -370,6 +379,8 @@ export function capabilityDescriptionProductLanguageViolation(
   if (uiScaffolding) return { reason: 'ui-delivery-scaffolding', forbiddenTerms: [uiScaffolding[0]] };
   const selfReference = description.match(/\bcapabilit(?:y|ies)\b/i);
   if (selfReference) return { reason: 'capability-self-reference', forbiddenTerms: [selfReference[0]] };
+  const rawSourceIdentifier = description.match(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/);
+  if (rawSourceIdentifier) return { reason: 'raw-related-entity-identifier', forbiddenTerms: [rawSourceIdentifier[0]] };
   const messageScaffolding = description.match(/\b(?:handles?|process(?:es|ed|ing)?)\s+(?:incoming\s+)?messages?\s+to\b/i);
   if (messageScaffolding) return { reason: 'message-handler-scaffolding', forbiddenTerms: [messageScaffolding[0]] };
   const normalizedDescription = outcomeIdentityTokens(description);
@@ -382,6 +393,9 @@ export function capabilityDescriptionProductLanguageViolation(
     }
     const pathOrCommand = Array.isArray(operationParts) ? operationParts[1] : operationParts;
     const phrase = [...new Set(outcomeIdentityTokens(String(pathOrCommand || '')))];
+    const exactEntitySubject = relatedEntities.some(entity =>
+      outcomeIdentityTokens(entity).join(' ') === phrase.join(' '));
+    if (exactEntitySubject) return false;
     if (phrase.length < 2) return false;
     return normalizedDescription.some((_, index) => phrase.every((token, offset) => normalizedDescription[index + offset] === token));
   });
@@ -392,6 +406,16 @@ export function capabilityDescriptionProductLanguageViolation(
     return valueTokens.length > 0 && firstPartyPhrases.some(phrase => phrase.some((_, index) =>
       valueTokens.every((token, offset) => phrase[index + offset] && outcomeTokenMatches(token, new Set([phrase[index + offset]])))));
   };
+  const entityObjectScaffolding = relatedEntities.flatMap(entity => {
+    const subjectTokens = outcomeIdentityTokens(entity).filter(token => token !== 'entity');
+    const subject = subjectTokens[subjectTokens.length - 1];
+    if (!subject) return [];
+    const match = description.match(new RegExp(`\\b${subject.replace(/[.*+?^$\{\}()|[\]\\]/g, '\\$&')}\\s+objects?\\b`, 'i'));
+    return match && !establishedByFirstParty(match[0]) ? [match[0]] : [];
+  });
+  if (entityObjectScaffolding.length > 0) {
+    return { reason: 'generic-structural-phrase', forbiddenTerms: [...new Set(entityObjectScaffolding)] };
+  }
   const identifiers = [...new Set([...relatedEntities, ...evidenceIdentifiers].map(value => String(value || '')).filter(Boolean))];
   const marketingTerms = capabilityMarketingLanguageTerms(description)
     .filter(term => !establishedByFirstParty(term));
@@ -415,7 +439,8 @@ export function capabilityDescriptionProductLanguageViolation(
     return new RegExp(`\\b${pattern}\\b`, 'i').test(normalizedDescriptionText);
   });
   const copiedPhrases = [...new Set(copiedInventoryPhrases.map(item => item.phrase))];
-  if (copiedPhrases.length >= 2) {
+  const copiedPhraseFamilies = new Set(copiedPhrases.map(phrase => outcomeIdentityTokens(phrase).join(' ')));
+  if (copiedPhraseFamilies.size >= 2) {
     return { reason: 'implementation-graph-inventory', forbiddenTerms: copiedPhrases };
   }
   if (copiedInventoryPhrases.some(item => item.acronymPrefixed)) {
@@ -433,8 +458,9 @@ export function capabilityDescriptionProductLanguageViolation(
     }
   }
   const matchedFragments = [...fragmentSources.keys()];
+  const matchedFragmentFamilies = new Set(matchedFragments.map(fragment => outcomeIdentityTokens(fragment).join(' ')));
   const matchedSources = new Set([...fragmentSources.values()].flatMap(sources => [...sources]));
-  if (matchedFragments.length >= 2 && matchedSources.size >= 2) {
+  if (matchedFragmentFamilies.size >= 2 && matchedSources.size >= 2) {
     return { reason: 'implementation-graph-inventory', forbiddenTerms: matchedFragments };
   }
   const identifierParts = identifiers.map(identifier => identifier.replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
@@ -567,12 +593,35 @@ function capabilityIsVerificationHarness(
   return true;
 }
 
+function capabilityUsesUncorroboratedTestSurface(
+  capability: SystemCapability,
+  entryPointById: Map<string, CASEntryPoint>,
+  signal?: CapabilityCatalogProjectSignal,
+): boolean {
+  if ((capability.operations || []).length === 0 || productTextCorroboratesCapability(capability, signal)) return false;
+  const testSurfaceSegment = /(?:^|[\/_.:-])tests?(?:[\/_.:-]|$)/i;
+  return (capability.operations || []).every(operation => {
+    const entryPoint = entryPointById.get(operation.entry_point_id);
+    const metadata = entryPoint?.metadata as Record<string, unknown> | undefined;
+    const anchors = [
+      operation.path_or_command,
+      operation.trigger?.path,
+      entryPoint?.name,
+      entryPoint?.trigger?.path,
+      entryPoint?.handler?.file,
+      typeof metadata?.controller === 'string' ? metadata.controller : undefined,
+    ];
+    return anchors.some(value => testSurfaceSegment.test(String(value || '')));
+  });
+}
+
 function capabilityHasExternalReach(
   capability: SystemCapability,
   entryPointById: Map<string, CASEntryPoint>,
 ): boolean {
   return (capability.operations || []).some(operation => {
     const entryPoint = entryPointById.get(operation.entry_point_id);
+    if (isStructuralExecutableCliEntry(entryPoint)) return false;
     if (entryPoint?.interaction_reach === 'external') return true;
     if (entryPoint?.interaction_reach === 'internal') return false;
     return operation.entry_point_type === 'external' ||
@@ -580,8 +629,9 @@ function capabilityHasExternalReach(
   });
 }
 
-function capabilityHasPotentialUserSurface(capability: SystemCapability): boolean {
+function capabilityHasPotentialUserSurface(capability: SystemCapability, entryPointById: Map<string, CASEntryPoint>): boolean {
   return (capability.operations || []).some(operation =>
+    !isStructuralExecutableCliEntry(entryPointById.get(operation.entry_point_id)) &&
     !/^(?:internal|message|event|schedule|queue|ipc|external)$/i.test(operation.entry_point_type || '')
   );
 }
@@ -629,7 +679,6 @@ function capabilityHasUserFacingLifecycleBreadth(
   return externallyReachableOperations >= 2 && stages.size >= 2;
 }
 
-
 export function classifyCapabilityEvidence(
   candidates: SystemCapability[],
   dataEntities: CASDataEntity[] = [],
@@ -642,9 +691,18 @@ export function classifyCapabilityEvidence(
   return candidates.map(candidate => {
     let evidenceRole: CapabilityEvidenceRole;
     const reasons: string[] = [];
+    const operations = candidate.operations || [];
+    const allStructuralExecutableCli = operations.length > 0 && operations.every(operation =>
+      isStructuralExecutableCliEntry(entryPointById.get(operation.entry_point_id)));
     if (capabilityIsVerificationHarness(candidate, entryPointById, nodeById)) {
       evidenceRole = 'verification-harness';
       reasons.push('all-resolved-operation-anchors-are-test-or-scaffold');
+    } else if (capabilityUsesUncorroboratedTestSurface(candidate, entryPointById, projectTextSignal)) {
+      evidenceRole = 'verification-harness';
+      reasons.push('test-named-entry-points-without-product-corroboration');
+    } else if (allStructuralExecutableCli) {
+      evidenceRole = 'supporting-mechanism';
+      reasons.push('filesystem-executable-without-product-command-registration');
     } else if ((candidate.evidence_kind === 'behavior-surface' && candidate.category !== 'core') || candidate.category === 'internal') {
       const firstParty = productTextCorroboratesCapability(candidate, projectTextSignal);
       evidenceRole = 'supporting-mechanism';
@@ -659,14 +717,23 @@ export function classifyCapabilityEvidence(
       const firstPartyCoreOutcome = firstParty && candidate.category === 'core' &&
         productTextCorroboratesActionAndSubject(candidate, projectTextSignal);
       const userFacingLifecycle = capabilityHasUserFacingLifecycleBreadth(candidate, entryPointById);
-      if (firstPartyCoreOutcome || userOutcomeJourney || (externalReach && productEntity) || userFacingLifecycle) {
+      const mechanismShapedCandidate = /\b(?:workflow|service|controller|handler|repository|layer|settings|configuration)\b/i.test(candidate.name);
+      const outcomeShapedCandidate = outcomeIdentityTokens(candidate.name).length >= 2 &&
+        !mechanismShapedCandidate &&
+        !isCrudInventoryCapabilityLabel(candidate.name) &&
+        !isGenericManagementCapabilityLabel(candidate.name);
+      const interpretableOutcomeEvidence = outcomeShapedCandidate || firstParty;
+      const terminalOutcomeEvidence = interpretableOutcomeEvidence && userOutcomeJourney;
+      const externallyReachableOutcomeEvidence = interpretableOutcomeEvidence && externalReach && productEntity;
+      const lifecycleOutcomeEvidence = interpretableOutcomeEvidence && userFacingLifecycle;
+      if (firstPartyCoreOutcome || terminalOutcomeEvidence || externallyReachableOutcomeEvidence || lifecycleOutcomeEvidence) {
         evidenceRole = 'product-outcome';
         if (firstPartyCoreOutcome) reasons.push('first-party-product-text');
-        if (userOutcomeJourney) reasons.push('user-facing-terminal-journey');
-        if (externalReach && productEntity) reasons.push('external-reach-with-product-entity');
-        if (userFacingLifecycle) reasons.push('user-facing-lifecycle-breadth');
+        if (terminalOutcomeEvidence) reasons.push('user-facing-terminal-journey');
+        if (externallyReachableOutcomeEvidence) reasons.push('external-reach-with-product-entity');
+        if (lifecycleOutcomeEvidence) reasons.push('user-facing-lifecycle-breadth');
       } else if ((candidate.operations || []).length > 0 || (candidate.related_entities || []).length > 0) {
-        const potentiallyProductSignificant = productEntity || (externalReach && capabilityHasPotentialUserSurface(candidate));
+        const potentiallyProductSignificant = productEntity || (externalReach && capabilityHasPotentialUserSurface(candidate, entryPointById));
         evidenceRole = potentiallyProductSignificant ? 'unresolved' : 'supporting-mechanism';
         reasons.push(potentiallyProductSignificant
           ? 'potential-user-outcome-requires-catalog-resolution'
@@ -680,12 +747,21 @@ export function classifyCapabilityEvidence(
   });
 }
 
+export function demoteCoveredImplementationAggregates(
+  candidates: readonly SystemCapability[],
+): SystemCapability[] {
+  return demoteCoveredImplementationAggregatesImpl(candidates, capabilityEvidenceSubjectTokens);
+}
 export function catalogRequiredEvidenceCandidates(candidates: SystemCapability[]): SystemCapability[] {
   return candidates.filter(capabilityRequiresCatalogCoverage);
 }
 
 export function capabilityRequiresCatalogCoverage(candidate: SystemCapability): boolean {
   return candidate.evidence_role === 'product-outcome';
+}
+
+export function capabilityCanRepairRejectedOutcomeProposal(candidate: SystemCapability): boolean {
+  return candidate.evidence_role === 'product-outcome' || candidate.evidence_role === 'unresolved';
 }
 
 export function capabilityCitesRequiredEvidence(
@@ -708,14 +784,12 @@ export function capabilityEvidencePublicationFailure(
   const citedCandidates = citedIds
     .map(id => candidateById.get(id))
     .filter((candidate): candidate is SystemCapability => Boolean(candidate));
-  const required = citedCandidates.some(candidate => candidate.evidence_role === 'product-outcome');
-  if (required) return undefined;
-  const firstPartyDeliveryEvidence = citedCandidates.some(candidate =>
-    candidate.evidence_kind === 'behavior-surface' && candidate.evidence_role === 'supporting-mechanism'
-  );
-  return firstPartyDeliveryEvidence && hasFirstPartyCorroboratedCatalogOperations(capability, candidates, signal)
-    ? undefined
-    : 'supporting-or-verification-evidence-only';
+  const executableOutcomeEvidence = citedCandidates.some(candidate =>
+    (candidate.evidence_role === 'product-outcome' || candidate.evidence_role === 'unresolved') &&
+    (candidate.operations || []).length > 0);
+  if (executableOutcomeEvidence) return undefined;
+  return hasFirstPartyCorroboratedCatalogOperations(capability, candidates, signal)
+    ? undefined : 'supporting-or-verification-evidence-only';
 }
 
 export function summarizeCapabilityEvidenceRoles(candidates: SystemCapability[]): CapabilityEvidenceRoleSummary {
@@ -765,12 +839,61 @@ export function catalogEntityCandidateGroups(candidates: SystemCapability[]): st
     (candidate.related_entities || []).length > 0 &&
     (candidate.operations || []).some(operation => operation.entry_point_type !== 'external')
   );
+  const coveringCandidates = candidates.filter(candidate =>
+    candidate.id &&
+    candidate.evidence_kind !== 'behavior-surface' &&
+    (candidate.operations || []).length > 0 &&
+    (candidate.operations || []).some(operation => operation.entry_point_type !== 'external')
+  );
   const candidatesByEntity = new Map<string, Set<string>>();
   for (const candidate of eligible) {
-    for (const entityId of candidate.related_entities || []) {
+    const relatedEntities = candidate.related_entities || [];
+    const candidateSubjects = new Set(capabilityEvidenceSubjectTokens(candidate));
+    const subjectMatchedEntities = relatedEntities.filter(entityId =>
+      [...normalizedSubjectTokens(String(entityId).replace(/^entity[_:-]?/i, ' '))]
+        .some(subject => candidateSubjects.has(subject)));
+    const ownedEntities = subjectMatchedEntities.length > 0 ? subjectMatchedEntities : relatedEntities;
+    for (const entityId of ownedEntities) {
       const group = candidatesByEntity.get(entityId);
       if (group) group.add(candidate.id);
       else candidatesByEntity.set(entityId, new Set([candidate.id]));
+    }
+  }
+  for (const [entityId, group] of candidatesByEntity) {
+    const parentSubjects = [...normalizedSubjectTokens(String(entityId).replace(/^entity[_:-]?/i, ' '))];
+    if (parentSubjects.length !== 1 || parentSubjects[0].length < 4) continue;
+    const parentSubject = parentSubjects[0];
+    const groupedOperationKeys = new Set(eligible
+      .filter(candidate => group.has(candidate.id))
+      .flatMap(candidate => (candidate.operations || []).map(operation => [
+        operation.entry_point_id,
+        operation.entry_point_type,
+        operation.action,
+        operation.path_or_command || '',
+        operation.trigger?.method || '',
+        operation.trigger?.path || '',
+      ].join('|'))));
+    for (const candidate of coveringCandidates) {
+      if (group.has(candidate.id)) continue;
+      const candidateSubjects = new Set(capabilityEvidenceSubjectTokens(candidate));
+      if (!candidateSubjects.has(parentSubject)) continue;
+      const ownsCompoundEntity = (candidate.related_entities || []).some(relatedEntityId => {
+        const normalized = String(relatedEntityId)
+          .replace(/^entity[_:-]?/i, '')
+          .replace(/[^a-z0-9]/gi, '')
+          .toLowerCase();
+        const suffix = normalized.startsWith(parentSubject) ? normalized.slice(parentSubject.length) : '';
+        return /[a-z]{2,}/.test(suffix);
+      });
+      const sharesGroupedOperation = (candidate.operations || []).some(operation => groupedOperationKeys.has([
+        operation.entry_point_id,
+        operation.entry_point_type,
+        operation.action,
+        operation.path_or_command || '',
+        operation.trigger?.method || '',
+        operation.trigger?.path || '',
+      ].join('|')));
+      if (ownsCompoundEntity || sharesGroupedOperation) group.add(candidate.id);
     }
   }
   const uniqueGroups = new Map<string, string[]>();
@@ -795,20 +918,11 @@ export function catalogPromptEntities(
     .map(entity => ({ name: entity.name, fields: (entity.fields || []).slice(0, 6).map(field => field.name) }));
 }
 
-export function catalogCandidateEntityFacts(
-  candidate: SystemCapability,
-  entityById: Map<string, CASDataEntity>,
-): CapabilityCatalogEntityFact[] {
-  return (candidate.related_entities || []).map(id => {
-    const entity = entityById.get(id);
-    return { name: entity?.name || id, fields: (entity?.fields || []).slice(0, 8).map(field => field.name) };
-  });
-}
-
 export function catalogEvidenceCoverageFailure(
   reconciled: readonly SystemCapability[],
   requiredBehaviorCandidateIds: readonly string[],
   requiredEntityCandidateGroups: ReadonlyArray<ReadonlyArray<string>>,
+  fullyCoveredAggregateCandidateIds: ReadonlySet<string> = new Set(),
 ): string | undefined {
   const citedCandidateIds = new Set(reconciled.flatMap(capability => (capability.criticality_factors || [])
     .filter(factor => factor.startsWith('catalog-candidate:'))
@@ -817,61 +931,14 @@ export function catalogEvidenceCoverageFailure(
   if (omittedBehaviorCandidateIds.length > 0) {
     return `catalog omitted ${omittedBehaviorCandidateIds.length} behavior evidence famil${omittedBehaviorCandidateIds.length === 1 ? 'y' : 'ies'}: ${omittedBehaviorCandidateIds.slice(0, 8).join(', ')}`;
   }
-  const omittedEntityGroups = requiredEntityCandidateGroups.filter(group => !group.some(candidateId => citedCandidateIds.has(candidateId)));
+  const omittedEntityGroups = requiredEntityCandidateGroups.filter(group => !group.some(candidateId =>
+    citedCandidateIds.has(candidateId) || fullyCoveredAggregateCandidateIds.has(candidateId)));
   if (omittedEntityGroups.length > 0) {
-    return `catalog omitted ${omittedEntityGroups.length} product-entity evidence famil${omittedEntityGroups.length === 1 ? 'y' : 'ies'}: ${omittedEntityGroups.slice(0, 8).map(group => group.join('|')).join(', ')}`;
+    const displayedGroups = omittedEntityGroups.slice(0, 8).map(group => group.join('|')).join(', ');
+    const omittedSuffix = omittedEntityGroups.length > 8 ? ' (+' + (omittedEntityGroups.length - 8) + ' more)' : '';
+    return 'catalog omitted ' + omittedEntityGroups.length + ' product-entity evidence ' + (omittedEntityGroups.length === 1 ? 'family' : 'families') + ': ' + displayedGroups + omittedSuffix;
   }
   return undefined;
-}
-
-export function catalogCountBounds(
-  distinctFamilyCount: number,
-  behaviorFamilyCount: number,
-  entityFamilyCount: number,
-  requiredOutcomeCount = 0,
-): { min: number; max: number } {
-  const max = Math.max(1, Math.min(20, Math.max(
-    distinctFamilyCount,
-    behaviorFamilyCount,
-    entityFamilyCount,
-    requiredOutcomeCount,
-  )));
-  const min = Math.min(max, catalogMinimumCapabilityCount(
-    distinctFamilyCount,
-    entityFamilyCount,
-    requiredOutcomeCount,
-  ));
-  return { min, max };
-}
-
-export function catalogMinimumCapabilityCount(
-  distinctFamilyCount: number,
-  entityFamilyCount: number,
-  requiredOutcomeCount = 0,
-): number {
-  return Math.max(
-    requiredOutcomeCount,
-    Math.ceil(Math.log2(distinctFamilyCount + 1)),
-    Math.ceil(Math.log2(entityFamilyCount + 1)),
-  );
-}
-
-export function catalogRelatedEntityIds(
-  authoredEntityIds: string[],
-  candidateEntityIds: Iterable<string>,
-): string[] {
-  return [...new Set(authoredEntityIds.length > 0 ? authoredEntityIds : [...candidateEntityIds])];
-}
-
-export function firstPartySupportsIdentityProduct(signal?: CapabilityCatalogProjectSignal): boolean {
-  if (!signal) return false;
-  const text = [signal.productDocTitle, signal.productDocSummary, signal.manifestDescription, signal.summary]
-    .filter(Boolean)
-    .join(' ');
-  const identity = '(?:identity|authentication|authorization|access[ -]?control)';
-  const product = '(?:platform|service|provider|product|system|server|gateway)';
-  return new RegExp(`\\b${identity}\\b[^.]{0,60}\\b${product}\\b|\\b${product}\\b[^.]{0,60}\\b${identity}\\b`, 'i').test(text) ||
-    new RegExp(`\\b(?:provides?|delivers?|offers?|sells?|issues?|verifies?|authenticates?|authorizes?)\\b[^.]{0,60}\\b${identity}\\b`, 'i').test(text);
 }
 
 export function catalogEvidenceCandidates(
@@ -919,5 +986,7 @@ export function catalogEvidenceCandidates(
     result.push(surface);
     if (surface.id) ids.add(surface.id);
   }
-  return classifyCapabilityEvidence(result, dataEntities || [], projectTextSignal, context);
+  return demoteCoveredImplementationAggregates(
+    classifyCapabilityEvidence(result, dataEntities || [], projectTextSignal, context),
+  );
 }

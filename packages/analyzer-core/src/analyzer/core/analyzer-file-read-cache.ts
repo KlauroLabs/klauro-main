@@ -12,6 +12,7 @@
 
 const fsExtra: { readFile: (path: string, options?: unknown) => Promise<string | Buffer> } = require('fs-extra');
 import { AsyncLocalStorage } from 'node:async_hooks';
+import * as path from 'node:path';
 
 
 
@@ -61,6 +62,7 @@ interface ReadCacheRun {
 }
 
 const readCacheStorage = new AsyncLocalStorage<ReadCacheRun>();
+const analyzerReadScopeStorage = new AsyncLocalStorage<Set<string>>();
 let patchDepth = 0;
 let originalReadFile: typeof fsExtra.readFile | null = null;
 let lastDebugStats = { hits: 0, misses: 0 };
@@ -108,6 +110,7 @@ function installPatch(): void {
       if (typeof filePath !== 'string' || !run) {
         return original.call(fsExtra, filePath, options);
       }
+      analyzerReadScopeStorage.getStore()?.add(path.resolve(filePath));
       const key = cacheKey(filePath, normalizeEncoding(options));
       const cached = run.cache.get(key);
       if (cached) {
@@ -169,6 +172,12 @@ function uninstallPatch(): void {
 
 
 
+
+export async function withAnalyzerFileReadTracking<T>(fn: () => Promise<T>): Promise<{ result: T; files: string[] }> {
+  const files = new Set<string>();
+  const result = await analyzerReadScopeStorage.run(files, fn);
+  return { result, files: [...files].sort() };
+}
 
 export async function withAnalyzerFileReadCache<T>(fn: () => Promise<T>): Promise<T> {
   if (readCacheStorage.getStore()) return fn();

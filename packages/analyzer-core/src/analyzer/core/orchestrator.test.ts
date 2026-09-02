@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { AnalyzerOrchestrator } from './orchestrator';
-import { CASAnalysisError, CASContribution } from '../../types/cas.types';
+import { CASAnalysisError, CASContribution, CASOutput, SystemCapability } from '../../types/cas.types';
+import { evaluateCapabilityCatalogOperationCoverage } from './capability-operation-coverage';
+import { normalizePublishedCapabilityIds } from './capability-catalog-publication';
 
 function emptyTarget() {
   return {
@@ -94,4 +96,289 @@ test('persistent merge indexes build once and preserve exact CAS and warning par
   assert.equal(persistent.mergeIndexes.exitPointsById.size, persistent.target.allExitPoints.length);
   assert.deepEqual(persistent.target.allEntryPoints.map((entryPoint: any) => entryPoint.id), ['entry-rich']);
   assert.deepEqual(persistent.target.allEdges.map((edge: any) => edge.id), ['edge-a', 'edge-b']);
+});
+
+test('source inventory does not exclude first-party legacy directories by name', () => {
+  const orchestrator = new AnalyzerOrchestrator() as any;
+  const ignored = orchestrator.isIgnoredInventoryDirectory('legacy', 'legacy', new Set(), '/repo');
+
+  assert.equal(ignored, false);
+});
+
+test('an atomic CRUD title cannot stand in for a multi-operation product capability', () => {
+  const orchestrator = new AnalyzerOrchestrator() as any;
+  const operations = [
+    { entry_point_id: 'categories-index', entry_point_type: 'http', action: 'read', trigger: { method: 'GET', path: '/categories' } },
+    { entry_point_id: 'categories-create', entry_point_type: 'http', action: 'create', trigger: { method: 'POST', path: '/categories' } },
+    { entry_point_id: 'categories-update', entry_point_type: 'http', action: 'update', trigger: { method: 'PATCH', path: '/categories/:id' } },
+    { entry_point_id: 'categories-delete', entry_point_type: 'http', action: 'delete', trigger: { method: 'DELETE', path: '/categories/:id' } },
+  ];
+
+  for (const name of ['View categories', 'Create categories', 'Update categories', 'Delete categories', 'Create and delete categories']) {
+    assert.equal(orchestrator.capabilityContradictsObservedOperations({ name, description: '', operations }), true, name);
+  }
+  assert.equal(orchestrator.capabilityContradictsObservedOperations({
+    name: 'Organize spending categories', description: '', operations,
+  }), false);
+});
+
+test('read-only evidence cannot be described as maintaining or mutating its subject', () => {
+  const orchestrator = new AnalyzerOrchestrator() as any;
+  const operations = [
+    { entry_point_id: 'securities-index', entry_point_type: 'http', action: 'read', trigger: { method: 'GET', path: '/securities' } },
+  ];
+
+  assert.equal(orchestrator.capabilityContradictsObservedOperations({
+    name: 'Maintain securities', description: 'Users maintain securities over time.', operations,
+  }), true);
+  assert.equal(orchestrator.capabilityContradictsObservedOperations({
+    name: 'Review securities', description: 'Users review securities and their current market details.', operations,
+  }), false);
+});
+
+test('capability publication treats generic lifecycle prose as an unresolved template', () => {
+  const orchestrator = new AnalyzerOrchestrator() as any;
+  const capability = {
+    id: 'categories', name: 'Organize spending categories', name_source: 'ai',
+    description: 'Users can create, view, update, and remove categories through the same lifecycle whenever needed.',
+    description_source: 'ai', category: 'core', criticality: 'high', criticality_factors: [],
+    related_entities: ['entity_category'], related_domains: ['category'],
+    operations: [{ entry_point_id: 'categories-create', entry_point_type: 'http', action: 'create' }],
+  };
+
+  assert.equal(orchestrator.capabilityPublishabilityFailure(capability), 'structural-placeholder-description');
+});
+
+test('a scoped AI repair attempt cannot outlive its scheduler deadline', async () => {
+  const orchestrator = new AnalyzerOrchestrator() as any;
+  const startedAt = Date.now();
+  await assert.rejects(
+    orchestrator.awaitAiBoundedThenUncapped(
+      () => new Promise(() => undefined),
+      'deadline proof',
+      {
+        perAttemptTimeoutMs: 10_000,
+        maxBoundedAttempts: 1,
+        slowWarnMs: 10_000,
+        hardDeadlineAt: startedAt + 30,
+      },
+    ),
+    /ai-catalog-hard-deadline-exceeded/,
+  );
+  assert.ok(Date.now() - startedAt < 500);
+});
+
+function rejectedCapabilityOutput(aiEnrichment: CASOutput['ai_enrichment']): CASOutput {
+  return {
+    ai_enrichment: aiEnrichment,
+    enhanced_system_purpose: {
+      ai_phase_status: 'degraded',
+      capability_catalog_coverage: {
+        evidence_families: 12,
+        published_capabilities: 0,
+        minimum_published_capabilities: 4,
+        status: 'rejected',
+        reason: 'catalog omitted required operation obligations',
+      },
+    },
+    analysis_phases: [
+      { id: 'agent-context', name: 'Agent context', priority: 2, status: 'partial', purpose: 'agent-development', default_phase: true, description: '', outputs: [], agent_value: '', visualization_value: '', can_run_later: false },
+      { id: 'ai-system-narrative', name: 'AI narrative', priority: 3, status: 'complete', purpose: 'ai-enrichment', default_phase: true, description: '', outputs: [], agent_value: '', visualization_value: '', can_run_later: true },
+    ],
+    analysis_errors: [],
+  } as unknown as CASOutput;
+}
+
+function assertRejectedCapabilityStatus(output: CASOutput, expectedEnrichment: 'ready' | 'synchronous'): void {
+  assert.equal(output.ai_enrichment, expectedEnrichment);
+  assert.equal(output.analysis_errors?.length, 1);
+  assert.equal(output.analysis_errors?.[0].code, 'CAPABILITY_CATALOG_REJECTED');
+  assert.match(output.analysis_errors?.[0].message || '', /omitted required operation obligations/);
+  assert.equal(output.analysis_phases?.find(phase => phase.id === 'agent-context')?.status, 'failed');
+  assert.equal(output.analysis_phases?.find(phase => phase.id === 'ai-system-narrative')?.status, 'complete');
+}
+
+test('synchronous AI settlement records a rejected capability catalog after enrichment status settles', () => {
+  const orchestrator = new AnalyzerOrchestrator() as any;
+  const output = rejectedCapabilityOutput(undefined);
+
+  orchestrator.settleCapabilityCatalogStatus(output, 'synchronous');
+  orchestrator.settleCapabilityCatalogStatus(output, 'synchronous');
+
+  assertRejectedCapabilityStatus(output, 'synchronous');
+});
+
+test('deferred AI settlement records a rejected capability catalog only after enrichment completes', async () => {
+  const orchestrator = new AnalyzerOrchestrator() as any;
+  const output = rejectedCapabilityOutput('pending');
+  orchestrator.deferredAiEnrichments.set(output, async () => undefined);
+
+  await orchestrator.enrichAnalysisAI(output);
+  await orchestrator.enrichAnalysisAI(output);
+
+  assertRejectedCapabilityStatus(output, 'ready');
+});
+
+test('capability merging preserves operations beyond the former 24 and 64 item limits for coverage', () => {
+  const operations = Array.from({ length: 65 }, (_, index) => ({
+    entry_point_id: `operation-${index}`,
+    entry_point_type: 'http',
+    action: 'update',
+  }));
+  const makeCapability = (id: string, selected: SystemCapability['operations']): SystemCapability => ({
+    id,
+    name: 'Manage records',
+    description: 'Users manage records.',
+    category: 'core',
+    operations: selected,
+    related_entities: ['entity_record'],
+    related_domains: ['record'],
+    criticality: 'high',
+    criticality_factors: [],
+    evidence_kind: 'behavior-surface',
+    evidence_role: 'product-outcome',
+  });
+  const [merged] = (new AnalyzerOrchestrator() as any).dedupeSystemCapabilitiesByName([
+    makeCapability('records-a', operations.slice(0, 40)),
+    makeCapability('records-b', operations.slice(40)),
+  ], true);
+
+  assert.equal(merged.operations.length, 65);
+  assert.equal(merged.operations.at(-1)?.entry_point_id, 'operation-64');
+
+  const coverage = evaluateCapabilityCatalogOperationCoverage(
+    [makeCapability('published', merged.operations.slice(0, 64))],
+    [merged],
+    {
+      entryPoints: operations.map(operation => ({
+        id: operation.entry_point_id,
+        type: 'http',
+        name: operation.entry_point_id,
+        trigger: { method: 'POST', path: `/records/${operation.entry_point_id}` },
+      })) as any,
+      nodes: [],
+      edges: [],
+      exitPoints: [],
+    },
+    () => true,
+  );
+  assert.deepEqual(coverage.uncoveredCandidateIds, ['records-a']);
+});
+
+test('capability merging keeps one stable id and prefers authored language without losing evidence', () => {
+  const operation = { entry_point_id: 'category-create', entry_point_type: 'http', action: 'create' };
+  const deterministic: SystemCapability = {
+    id: 'category-lifecycle', name: 'Manage categories', description: 'Users can manage categories.',
+    name_source: 'deterministic', description_source: 'deterministic',
+    category: 'core', operations: [operation], related_entities: ['entity_category'], related_domains: ['category'],
+    criticality: 'high', criticality_factors: ['catalog-candidate:cap_categories'],
+  };
+  const authored: SystemCapability = {
+    ...deterministic, name: 'Organize spending categories', description: 'Users create and revise spending categories for their financial records.',
+    name_source: 'ai', description_source: 'ai',
+    criticality_factors: ['catalog-candidate:cap_categories', 'catalog-description-repair-lifecycle:candidate:cap_categories'],
+  };
+  const merged = normalizePublishedCapabilityIds([deterministic, authored]);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].id, 'category-lifecycle');
+  assert.equal(merged[0].name, authored.name);
+  assert.equal(merged[0].name_source, 'ai');
+  assert.deepEqual(merged[0].operations, [operation]);
+});
+
+test('authored outcomes subsume same-evidence deterministic lifecycle fallbacks across generated ids', () => {
+  const operations = [
+    { entry_point_id: 'exports-index', entry_point_type: 'http', action: 'read', path_or_command: '/family_exports' },
+    { entry_point_id: 'exports-download', entry_point_type: 'http', action: 'read', path_or_command: '/family_exports/:id/download' },
+    { entry_point_id: 'exports-create', entry_point_type: 'http', action: 'create', path_or_command: '/family_exports' },
+  ];
+  const authored: SystemCapability = {
+    id: 'capability_export_family_financial_data', name: 'Export family financial data',
+    description: 'Families export structured financial records for backup or external analysis.',
+    name_source: 'ai', description_source: 'ai', category: 'core', operations,
+    related_entities: ['entity_familyexport'], related_domains: ['exports'], criticality: 'high',
+    criticality_factors: ['catalog-candidate:cap_family_exports_management'],
+  };
+  const fallback: SystemCapability = {
+    ...authored, id: 'capability_grouped_cap_family_exports_management', name: 'Download family exports',
+    description: 'Users can create and view family exports while keeping them current over time.',
+    name_source: 'deterministic', description_source: 'deterministic',
+    criticality_factors: [
+      'catalog-deterministic-grouped-lifecycle',
+      'catalog-candidate:cap_family_exports_management',
+      'catalog-operation-obligation:operation-obligation:cap_family_exports_management:read',
+    ],
+  };
+
+  const published = normalizePublishedCapabilityIds([authored, fallback]);
+
+  assert.equal(published.length, 1);
+  assert.equal(published[0].name, authored.name);
+  assert.equal(published[0].name_source, 'ai');
+  assert.ok(published[0].criticality_factors.includes('catalog-operation-obligation:operation-obligation:cap_family_exports_management:read'));
+});
+
+test('published capability ids remain unique without merging distinct exact operation obligations', () => {
+  const first: SystemCapability = {
+    id: 'capability_update_job_status',
+    name: 'Update job status',
+    description: 'Users update job application status throughout the review process.',
+    category: 'supporting',
+    operations: [{ entry_point_id: 'status-change', entry_point_type: 'event', action: 'update' }],
+    related_entities: ['entity_job'],
+    related_domains: [],
+    criticality: 'medium',
+    criticality_factors: ['catalog-candidate:operation-obligation:first'],
+  };
+  const second: SystemCapability = {
+    ...first,
+    operations: [{ entry_point_id: 'status-submit', entry_point_type: 'event', action: 'update' }],
+    criticality_factors: ['catalog-candidate:operation-obligation:second'],
+  };
+
+  const published = normalizePublishedCapabilityIds([second, first]);
+
+  assert.equal(published.length, 2);
+  assert.equal(new Set(published.map((capability: SystemCapability) => capability.id)).size, 2);
+  assert.deepEqual(
+    published.flatMap((capability: SystemCapability) => capability.criticality_factors).sort(),
+    first.criticality_factors.concat(second.criticality_factors).sort(),
+  );
+});
+
+test('behavior capability generation preserves families beyond the former 16 family limit', async () => {
+  const subjects = [
+    'invoice', 'payment', 'shipment', 'booking', 'profile', 'account',
+    'order', 'claim', 'policy', 'ticket', 'report', 'document',
+    'subscription', 'notification', 'inventory', 'schedule', 'approval',
+  ];
+  const entryPoints = subjects.flatMap(subject =>
+    Array.from({ length: 4 }, (_, index) => ({
+      id: `${subject}-${index}`,
+      type: 'command',
+      name: `${subject} command ${index}`,
+      source_node: `${subject}-handler-${index}`,
+      trigger: { event: `${subject} changed ${index}` },
+    })),
+  ) as any[];
+  const generated = await (new AnalyzerOrchestrator() as any)
+    .buildBehaviorCapabilities(entryPoints, [], [], [], '/repo');
+
+  assert.equal(generated.length, subjects.length);
+  assert.equal(generated.reduce((total: number, capability: SystemCapability) => total + capability.operations.length, 0), entryPoints.length);
+
+  const required = generated.map((capability: SystemCapability, index: number) => ({
+    ...capability,
+    id: `family-${index}`,
+    evidence_kind: 'behavior-surface' as const,
+    evidence_role: 'product-outcome' as const,
+  }));
+  const coverage = evaluateCapabilityCatalogOperationCoverage(
+    [],
+    required,
+    { entryPoints, nodes: [], edges: [], exitPoints: [] },
+    () => true,
+  );
+  assert.equal(coverage.uncoveredCandidateIds.length, 17);
+  assert.ok(coverage.uncoveredCandidateIds.includes('family-16'));
 });

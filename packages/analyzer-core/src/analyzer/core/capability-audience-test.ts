@@ -262,7 +262,10 @@ const SOURCE_FILE_PATH_PATTERN = /(?:^|[\s"'(])[\w.\-/\\]*[\/\\][\w.\-]+\.(?:ts|
 const VAGUE_MARKETING_PATTERN = /\b(?:insights?|comprehensive|accurate(?:ly)?|effective(?:ly)?|efficient(?:ly)?|organized|properly|relevant|seamless(?:ly)?|robust|best[- ]in[- ]class|world[- ]class|various operations?)\b/i;
 
 export function capabilityMarketingLanguageTerms(text: string): string[] {
-  const match = String(text || '').match(VAGUE_MARKETING_PATTERN)?.[0];
+  const prose = String(text || '')
+    .replace(/\beffective(?=\s+(?:date|from|until|period)\b)/gi, '')
+    .replace(/\b(?:no longer|not)\s+relevant\b/gi, '');
+  const match = prose.match(VAGUE_MARKETING_PATTERN)?.[0];
   return match ? [match] : [];
 }
 const IMPLEMENTATION_PROSE_PATTERN = /\b(?:cli|command[- ]line)\s+(?:entry\s+point|command|interface)\b|\b(?:source[- ]code|implementation)\s+(?:type|class|interface|structure|detail)s?\b|\b(?:route|handler|controller|ui\s+widget)\s+(?:class|interface|implementation)s?\b/i;

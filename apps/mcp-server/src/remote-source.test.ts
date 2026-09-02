@@ -4,7 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { buildSourceSnapshot, sourceSnapshotDigest } from './remote-source';
+import { buildSourceSnapshot, buildStreamingSourceSnapshot, sourceSnapshotDigest } from './remote-source';
 import { LOCAL_PACKAGE_IMPORT_CONTEXT_PATH } from '../../../packages/analyzer-core/src/analyzer/core/local-package-import-context';
 
 /**
@@ -216,5 +216,32 @@ test('repo_facts: absent for a git repo with no commits yet (working-tree-only)'
 
     const snapshot = await buildSourceSnapshot(dir);
     assert.equal(snapshot.manifest.repo_facts, undefined);
+  });
+});
+
+test('hosted snapshots include first-party files larger than the former one MiB cap', async () => {
+  await withTempDir(async dir => {
+    const content = 'export const largeValue = 1;\n/*' + 'x'.repeat(2 * 1024 * 1024) + '*/\n';
+    fs.writeFileSync(path.join(dir, 'large.ts'), content);
+    const snapshot = await buildStreamingSourceSnapshot(dir);
+    const file = snapshot.files.find(item => item.path === 'large.ts');
+    assert.ok(file);
+    assert.equal(file.bytes, Buffer.byteLength(content));
+    assert.equal(await file.readContent(), content);
+    assert.equal(snapshot.manifest.total_bytes >= file.bytes, true);
+  });
+});
+
+test('hosted snapshots fail closed when the explicit total-byte limit is exceeded', async () => {
+  await withTempDir(async dir => {
+    fs.writeFileSync(path.join(dir, '.klaurorc'), JSON.stringify({
+      version: 1,
+      source: { maxTotalBytes: 1024 },
+    }));
+    fs.writeFileSync(path.join(dir, 'large.ts'), 'x'.repeat(2048));
+    await assert.rejects(
+      buildStreamingSourceSnapshot(dir),
+      /Source snapshot is \d+ bytes, exceeding configured source\.maxTotalBytes=1024/,
+    );
   });
 });

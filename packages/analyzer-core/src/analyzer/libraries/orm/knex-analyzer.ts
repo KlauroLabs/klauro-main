@@ -64,7 +64,7 @@ export class KnexAnalyzer extends BaseAnalyzer {
       nodir: true,
     });
 
-    for (const file of sourceFiles.slice(0, 400)) {
+    for (const file of sourceFiles) {
       try {
         const content = await fs.readFile(file, 'utf-8');
         if (/knex\.schema\.(createTable|table)\s*\(/.test(content)) {
@@ -263,7 +263,7 @@ export class KnexAnalyzer extends BaseAnalyzer {
 
   private emitQueryExitPoints(querySites: KnexQuerySite[], nodes: CASNode[]): NonNullable<CASContribution['exit_points']> {
     const READ_METHODS = new Set(['select', 'where', 'first', 'pluck', 'count']);
-    return querySites.slice(0, 40).map((site, index) => {
+    return querySites.map((site, index) => {
       const nodeId = `query_knex_${this.sanitizeId(site.table)}_${this.sanitizeId(site.filePath)}_${site.line}_${index}`;
       nodes.push(this.createNode(
         nodeId,

@@ -18,21 +18,21 @@
 
 
 export const CAPABILITY_PURPOSE_VERBS = new Set<string>([
-  'get', 'set', 'fetch', 'list', 'find', 'load', 'show', 'view', 'read', 'browse',
-  'create', 'add', 'new', 'update', 'edit', 'delete', 'remove', 'save',
+  'get', 'set', 'fetch', 'list', 'find', 'load', 'show', 'view', 'read', 'browse', 'retrieve',
+  'create', 'add', 'new', 'update', 'edit', 'adjust', 'delete', 'remove', 'save', 'reset', 'transfer',
   'submit', 'send', 'sync', 'run', 'execute', 'process', 'handle', 'make',
   'build', 'init', 'initialize', 'validate', 'check', 'resolve', 'generate',
   'start', 'stop', 'open', 'close', 'enable', 'disable', 'apply', 'compute',
   'manage', 'provide', 'support', 'expose', 'monitor', 'track',
   'secure', 'detect', 'analyze', 'analyse', 'orchestrate', 'coordinate',
-  'schedule', 'transform', 'render', 'display', 'authenticate', 'authorize',
+  'schedule', 'transform', 'render', 'display', 'authenticate', 'authorize', 'impersonate',
   'notify', 'report', 'export', 'import', 'connect', 'synchronize',
   'discover', 'configure', 'deploy', 'migrate', 'ingest', 'stream', 'route',
   'dispatch', 'reconcile', 'audit', 'log', 'cache', 'queue', 'persist',
-  'store', 'serve', 'correlate', 'collect', 'record', 'settle', 'publish', 'follow', 'unfollow', 'favorite', 'unfavorite',
+  'store', 'serve', 'correlate', 'collect', 'record', 'settle', 'publish', 'categorize', 'organize', 'maintain', 'administer', 'follow', 'unfollow', 'favorite', 'unfavorite',
   'search', 'index',
   'visualize',
-  'offer',
+  'offer', 'onboard',
   'ground', 'help', 'surface', 'turn', 'understand',
 ]);
 
@@ -307,15 +307,37 @@ export function isBareNounCapabilityLabel(name: string): boolean {
 }
 
 
+export function isGenericManagementCapabilityLabel(name: string): boolean {
+  return /^(?:manage(?:s|d|ment|ing)?|handl(?:e|es|ed|ing)|process(?:es|ed|ing)?)\b/i.test(String(name || '').trim());
+}
+
+export function isCrudInventoryCapabilityLabel(name: string): boolean {
+  const value = String(name || '').trim().toLowerCase();
+  const action = '(?:access|add|archive|browse|change|create|delete|edit|find|get|list|manage|read|record|register|remove|retrieve|review|search|show|update|view)';
+  return new RegExp(`^${action}\\b(?:\\s*,\\s*|\\s+(?:and|or)\\s+)${action}\\b`, 'i').test(value) ||
+    /^(?:access|browse|get|list|manage|read|record|register|review|show|track|view)\s+(?:and|or)\s+(?:archive|delete|remove)\b/i.test(value);
+}
 
 
 
+
+
+
+
+export function isCrudLifecycleFragmentCapabilityLabel(name: string, observableActions: readonly string[]): boolean {
+  const lifecycleActions = new Set(observableActions.flatMap(value =>
+    String(value || '').toLowerCase().match(/\b(?:create|read|update|delete)\b/g) || []));
+  return lifecycleActions.size >= 3 &&
+    /^(?:add|create|delete|edit|get|list|read|remove|retrieve|show|update|view)\b/i.test(String(name || '').trim());
+}
 
 
 export function isStructuralPlaceholderCapabilityDescription(description: string): boolean {
   const trimmed = String(description || '').trim();
   if (!trimmed) return false;
-  return /^[^:]{1,80}:\s+(?:[a-z]+\s+operation\s+via\s+\S+\s*$|\d+\s+operations?\s*\()/i.test(trimmed);
+  return /^[^:]{1,80}:\s+(?:[a-z]+\s+operation\s+via\s+\S+\s*$|\d+\s+operations?\s*\()/i.test(trimmed) ||
+    /\b(?:through the same|throughout the complete product|through (?:its|their|the) supported) lifecycle whenever needed\.?$/i.test(trimmed) ||
+    /\bas part of (?:their|the) normal workflow whenever needed\.?$/i.test(trimmed);
 }
 
 

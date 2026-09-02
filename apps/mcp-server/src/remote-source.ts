@@ -6,6 +6,7 @@ import { loadKlauroConfig, type LoadedKlauroConfig } from './klauro-config';
 import { detectRemoteProvider, type RemoteProviderInfo } from './remote-provider';
 import { isRegisteredManifest, isRegisteredSourceExtension } from '../../../packages/analyzer-core/src/analyzer/core/language-registry';
 import { appendDerivedLocalPackageContext, appendDerivedStreamingLocalPackageContext } from './source-snapshot-package-context';
+import { assertSourceTotalBytes } from './source-upload-limits';
 
 export interface RemoteSourceFile {
   path: string;
@@ -1037,11 +1038,11 @@ async function shouldIncludeRelativePathVerbose(
   }
 
   if (sizeOverride != null) {
-    if (sizeOverride > loaded.config.source.maxFileBytes) return { included: false, reason: 'file exceeds source.maxFileBytes' };
+    if (loaded.config.source.maxFileBytes > 0 && sizeOverride > loaded.config.source.maxFileBytes) return { included: false, reason: 'file exceeds source.maxFileBytes' };
   } else {
     try {
       const stat = await fs.stat(path.join(root, normalized));
-      if (stat.size > loaded.config.source.maxFileBytes) return { included: false, reason: 'file exceeds source.maxFileBytes' };
+      if (loaded.config.source.maxFileBytes > 0 && stat.size > loaded.config.source.maxFileBytes) return { included: false, reason: 'file exceeds source.maxFileBytes' };
     } catch {
       return { included: false, reason: 'file not readable (stat failed)' };
     }
@@ -1334,6 +1335,7 @@ export function sourceSnapshotDigest(files: Array<{ path?: string; content: stri
   return digest.digest('hex');
 }
 
+
 function buildManifest(
   root: string,
   loaded: LoadedKlauroConfig,
@@ -1352,7 +1354,7 @@ function buildManifest(
     dirty: listGitChanges(root).length > 0,
     transfer_recommendation: recommendTransfer(loaded, remoteProvider, mode),
     file_count: files.length,
-    total_bytes: files.reduce((sum, file) => sum + Buffer.byteLength(file.content, 'utf8'), 0),
+    total_bytes: assertSourceTotalBytes(loaded, files.reduce((sum, file) => sum + Buffer.byteLength(file.content, 'utf8'), 0)),
     snapshot_digest: sourceSnapshotDigest(files),
     excluded_directories: Array.from(EXCLUDED_DIRECTORIES).sort(),
     config_file: loaded.configPath,
@@ -1386,7 +1388,7 @@ function buildManifestFromStats(
     dirty: listGitChanges(root).length > 0,
     transfer_recommendation: recommendTransfer(loaded, remoteProvider, mode),
     file_count: files.length,
-    total_bytes: files.reduce((sum, file) => sum + file.bytes, 0),
+    total_bytes: assertSourceTotalBytes(loaded, files.reduce((sum, file) => sum + file.bytes, 0)),
     snapshot_digest: sourceSnapshotDigest(files.map(file => ({ path: file.path, hash: file.hash, content: '' }))),
     excluded_directories: Array.from(EXCLUDED_DIRECTORIES).sort(),
     config_file: loaded.configPath,

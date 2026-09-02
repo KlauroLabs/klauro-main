@@ -34,6 +34,10 @@ describe('capabilitySubjectTokens', () => {
     expect(capabilitySubjectTokens('Visualizes code flow and coverage')).toEqual(['code', 'flow', 'coverage']);
     expect(capabilitySubjectTokens('Offers guidance for greenfield projects')).toEqual(['guidance', 'greenfield', 'projects']);
   });
+  it('recognizes onboarding and retrieval as product outcome verbs', () => {
+    expect(capabilitySubjectTokens('Onboard customers with profiles')).toEqual(['customers', 'profiles']);
+    expect(capabilitySubjectTokens('Retrieve customer profiles')).toEqual(['customer', 'profiles']);
+  });
 });
 
 describe('capability description audience test', () => {
@@ -52,6 +56,23 @@ describe('capability description audience test', () => {
       [],
       [],
       ['actionable insights for operators'],
+    ).reasons).not.toContain('marketing-language');
+  });
+
+  it('does not mistake ordinary state language for an unsupported marketing promise', () => {
+    expect(testCapabilityDescriptionAgainstAudience(
+      'Organize categories',
+      'Users remove categories that are no longer relevant.',
+      [],
+      [],
+      ['categories'],
+    ).reasons).not.toContain('marketing-language');
+    expect(testCapabilityDescriptionAgainstAudience(
+      'Schedule rules',
+      'Rules can begin on an effective date selected by the user.',
+      [],
+      [],
+      ['rules'],
     ).reasons).not.toContain('marketing-language');
   });
 

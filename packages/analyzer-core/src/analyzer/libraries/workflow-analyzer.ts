@@ -57,10 +57,9 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
       nodir: true,
     });
 
-    const sample = files.slice(0, 400);
     const importRe =
       /(@temporalio|temporalio|celery|sidekiq|bullmq|require\s*\(\s*['"]bull['"]\)|from\s+['"]bull['"]|kafkajs|Sidekiq::(Job|Worker)|@shared_task|@app\.task|segmentio\/kafka-go|kafka\.NewWriter|kafka\.NewReader|nats-io\/nats|rdkafka|FutureRecord|async[_-]nats|KafkaTemplate|@KafkaListener|Confluent\.Kafka|durable-functions|df\.orchestrator|zeebe|ZBClient|go\.uber\.org\/cadence|go\.temporal\.io)/;
-    for (const file of sample) {
+    for (const file of files) {
       try {
         const content = await fs.readFile(file, 'utf-8');
         if (importRe.test(content)) return true;

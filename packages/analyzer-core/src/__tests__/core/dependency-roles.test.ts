@@ -48,4 +48,15 @@ describe('deriveDependencyRoles', () => {
   it('returns nothing when there is no dependency manifest', () => {
     expect(deriveDependencyRoles(undefined, [])).toEqual([]);
   });
+  it('retains every matching exit-point evidence reference', () => {
+    const exitPoints = Array.from({ length: 12 }, (_, index) => ({
+      id: `exit_${index}`,
+      source_node: `node_${index}`,
+      type: 'api',
+      name: `request ${index}`,
+      metadata: { library: 'axios' },
+    })) as CASExitPoint[];
+    const roles = deriveDependencyRoles(manifest(['axios']), exitPoints);
+    expect(roles[0].evidence).toEqual(exitPoints.map(exit => `exit_point:${exit.id}`));
+  });
 });

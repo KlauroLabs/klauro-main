@@ -40,10 +40,26 @@ export function describeAnalysisVersion(storedVersion: string | undefined): Anal
         : compareCasVersions(stored, CAS_VERSION) > 0
           ? 'newer-compatible'
           : 'older-compatible';
+
   return {
     stored_version: stored,
     current_version: CAS_VERSION,
     minimum_compatible_version: MINIMUM_COMPATIBLE_CAS_VERSION,
     status,
   };
+}
+
+export function requiresExplicitAnalysisLayers(storedVersion: string | undefined): boolean {
+  const status = describeAnalysisVersion(storedVersion).status;
+  return status === 'current' ||
+    status === 'newer-compatible' ||
+    status === 'newer-major';
+}
+
+export function hasFailedStructuralAnalysisLayer(entry: {
+  cas_version?: string;
+  layers_ready?: { layers?: Array<{ layer: string; status: string }> };
+}): boolean {
+  if (!entry.layers_ready?.layers?.length) return requiresExplicitAnalysisLayers(entry.cas_version);
+  return entry.layers_ready.layers.some(layer => ['L0', 'L1', 'L2', 'L3'].includes(layer.layer) && layer.status === 'error');
 }

@@ -227,6 +227,49 @@ describe('OutboundHttpClientAnalyzer', () => {
     ]));
   });
 
+  it('preserves Go outbound effects when the request URL is resolved at runtime', async () => {
+    const contribution = await analyze({
+      'go.mod': 'module example.com/feed-reader',
+      'client.go': [
+        'package client',
+        'import "net/http"',
+        'func fetch(requestURL string) {',
+        '  req, _ := http.NewRequest("GET", requestURL, nil)',
+        '  http.DefaultClient.Do(req)',
+        '}',
+      ].join('\n'),
+    });
+
+    expect(exits(contribution)).toHaveLength(1);
+    expect(exits(contribution)[0]).toMatchObject({
+      type: 'api',
+      name: 'GET (runtime-resolved)',
+      target: {
+        service_id: 'external_api',
+        endpoint: '(runtime-resolved)',
+      },
+      operation: {
+        method: 'GET',
+      },
+    });
+  });
+
+  it('does not double-count a Go request whose URL is already a literal', async () => {
+    const contribution = await analyze({
+      'go.mod': 'module example.com/service',
+      'client.go': [
+        'package client',
+        'import "net/http"',
+        'func call() {',
+        '  http.NewRequest("POST", "https://tasks.example.com/jobs", nil)',
+        '}',
+      ].join('\n'),
+    });
+
+    expect(exits(contribution)).toHaveLength(1);
+    expect(exits(contribution)[0].target?.endpoint).toBe('https://tasks.example.com/jobs');
+  });
+
   it('extracts calls through a client instance imported from another module (cross-file), with TS generics and template paths', async () => {
     const contribution = await analyze({
       'package.json': JSON.stringify({ dependencies: { axios: '^1.0.0' } }),

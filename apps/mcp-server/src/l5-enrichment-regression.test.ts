@@ -40,9 +40,47 @@ async function withScopedStorage<T>(fn: (repo: string) => Promise<T>): Promise<T
   process.env.OPENAI_API_KEY = 'test-mock-key';
   process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS = '60000';
   await fs.copy(fixturePath, repo);
+  await fs.writeJson(path.join(repo, 'package.json'), {
+    name: 'customer-onboarding-service',
+    version: '1.0.0',
+    description: 'Lets support staff onboard customers and retrieve customer profiles while assisting them.',
+    dependencies: { express: '5.1.0', mongoose: '8.8.0' },
+  });
   await fs.outputFile(
     path.join(repo, 'README.md'),
-    '# Customer profiles\n\nThis service creates and retrieves user records with names and email addresses for customer profile workflows.\n',
+    '# Customer profiles\n\nThis service lets support staff onboard customers with profiles containing names and email addresses, then retrieve those profiles when assisting them.\n',
+  );
+  await fs.outputFile(
+    path.join(repo, 'src', 'server.ts'),
+    `import express from 'express';
+import mongoose from 'mongoose';
+
+const app = express();
+const customerProfileSchema = new mongoose.Schema({ email: String, name: String });
+const CustomerProfile = mongoose.model('CustomerProfile', customerProfileSchema);
+
+function requireSupportStaff(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (req.headers['x-support-role'] !== 'staff') return void res.status(403).json({ error: 'forbidden' });
+  next();
+}
+
+export async function retrieveCustomerProfile(req: express.Request, res: express.Response) {
+  res.json(await CustomerProfile.findById(req.params.id));
+}
+
+export async function onboardCustomer(req: express.Request, res: express.Response) {
+  const profile = await CustomerProfile.create(req.body);
+  await fetch('https://notifications.example.test/onboarding-invitations', {
+    method: 'POST',
+    body: JSON.stringify({ customerId: profile.id }),
+  });
+  res.status(201).json(profile);
+}
+
+app.get('/customer-profiles/:id', requireSupportStaff, retrieveCustomerProfile);
+app.post('/customer-profiles', requireSupportStaff, onboardCustomer);
+app.listen(3000);
+`,
   );
   try {
     return await fn(repo);
@@ -90,6 +128,22 @@ function groundedDescriptionFor(ctx: any): string {
 
 function capabilityCatalogResponse(context: any): string | undefined {
   if (!/cataloging the/i.test(String(context?.task || ''))) return undefined;
+  const requiredOutcome = Array.isArray(context?.facts?.required_outcomes) ? context.facts.required_outcomes[0] : undefined;
+  if (requiredOutcome) {
+    const outcomeText = [requiredOutcome.outcome, requiredOutcome.first_party_outcome_text].filter(Boolean).join(' ');
+    const retrieval = /retrieve|assist/i.test(outcomeText) && !/onboard/i.test(outcomeText);
+    return JSON.stringify({ capabilities: [{
+      requirement_id: requiredOutcome.requirement_id,
+      name: retrieval ? 'Retrieve customer profiles' : 'Onboard customers with profiles',
+      description: retrieval
+        ? 'Support staff retrieve customer profiles containing names and email addresses while assisting customers.'
+        : 'Customer profiles preserve names and email addresses that support staff use while onboarding customers.',
+      category: 'core',
+      entities: [],
+      journeys: [],
+      candidate_ids: requiredOutcome.candidate_ids || [],
+    }] });
+  }
   const entities: Array<{ name?: string }> = Array.isArray(context?.facts?.entities) ? context.facts.entities : [];
   const journeys: Array<{ name?: string }> = Array.isArray(context?.facts?.user_journeys) ? context.facts.user_journeys : [];
   const subjects = entities.map(entity => String(entity.name || '')).filter(Boolean).slice(0, 8);
@@ -109,9 +163,9 @@ function capabilityCatalogResponse(context: any): string | undefined {
   };
   return JSON.stringify({
     capabilities: catalogSubjects.map(subject => ({
-      name: subject === 'User' ? 'Maintain customer profiles' : `Maintain ${subject.replace(/([a-z])([A-Z])/g, '$1 $2')} information`,
+      name: subject === 'User' ? 'Onboard customers with profiles' : `Use ${subject.replace(/([a-z])([A-Z])/g, '$1 $2')} information`,
       description: subject === 'User'
-        ? 'Keeps user names and email details available for supported customer workflows.'
+        ? 'Customer profiles preserve names and email addresses that support staff use while onboarding and assisting customers.'
         : `Keeps ${subject} information accurate and available throughout supported product workflows.`,
       category: 'core',
       entities: subjects.includes(subject) ? [subject] : [],

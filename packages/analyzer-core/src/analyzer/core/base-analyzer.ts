@@ -338,37 +338,8 @@ export abstract class BaseAnalyzer {
     return [...files].sort();
   }
 
-  protected capAndPrioritizeSourceFiles(files: string[], purpose = 'source files'): string[] {
-    const configuredLimit = Number(process.env.KLAURO_MAX_FILES_PER_ANALYZER || '');
-    if (!Number.isFinite(configuredLimit) || configuredLimit <= 0 || files.length <= configuredLimit) {
-      return files;
-    }
-
-    const ranked = [...files].sort((left, right) => {
-      const scoreDelta = this.analysisFilePriorityScore(left) - this.analysisFilePriorityScore(right);
-      return scoreDelta || left.localeCompare(right);
-    });
-    this.addAnalysisWarning(
-      `${this.analyzerName} analyzed ${configuredLimit} of ${files.length} ${purpose} for ${process.env.KLAURO_ANALYSIS_FOCUS || 'default'} focus; run deep-context/full analysis for exhaustive per-file detail`
-    );
-    return ranked.slice(0, configuredLimit).sort();
-  }
-
-  private analysisFilePriorityScore(relativePath: string): number {
-    const normalized = relativePath.replace(/\\/g, '/').toLowerCase();
-    let score = 0;
-
-    if (/(^|\/)(src|app|apps|packages|products|server|frontend|backend|api|web|services|lib)\//.test(normalized)) score -= 8;
-    if (/(^|\/)(controllers?|routes?|pages?|app|models?|entities|schemas?|services?|repositories?|workers?|jobs?|consumers?|commands?|views?|components?|hooks|stores?|state|domains?)\//.test(normalized)) score -= 6;
-    if (/(^|\/)(posthog|saleor|medusa|supabase|appwrite|ghost|immich|mastodon|nocodb|budibase|outline|cal\.com)\//.test(normalized)) score -= 4;
-    if (/(\b|\/)(index|main|app|server|bootstrap|router|routes?|schema|models?|entities|controller|service|repository)\.[^.]+$/.test(normalized)) score -= 5;
-
-    if (/(^|\/)(docs?|documentation|examples?|samples?|fixtures?|__fixtures__|testdata|benchmark|benchmarks|storybook|playwright|cypress)(\/|$)/.test(normalized)) score += 25;
-    if (/(^|\/)(tests?|__tests__|spec|e2e)(\/|$)|\.(test|spec|stories|story|cy|e2e)\./.test(normalized)) score += 18;
-    if (/(^|\/)(generated|dist|build|coverage|vendor|vendors|public|static|assets?)(\/|$)|\.(generated|gen)\./.test(normalized)) score += 40;
-    if (/\.(min|bundle)\.(js|css)$/.test(normalized)) score += 50;
-
-    return score;
+  protected capAndPrioritizeSourceFiles(files: string[], _purpose = 'source files'): string[] {
+    return files;
   }
 
   protected getFrameworkVersion(projectPath: string, frameworkName: string): Promise<string | undefined> {
@@ -436,6 +407,37 @@ export abstract class BaseAnalyzer {
     const casCategories = isCASCategoriesShape(categories) ? categories : undefined;
     const categoryTags = casCategories ? undefined : normalizeCategoryTags(categories);
 
+    const suppliedAnalysisScope = isPlainRecord(metadataWithoutCategories.analysis_scope)
+      ? metadataWithoutCategories.analysis_scope
+      : undefined;
+    const eligibleFiles = Number(suppliedAnalysisScope?.files_eligible);
+    const analyzedFiles = Number(suppliedAnalysisScope?.files_analyzed);
+    const skippedFiles = Number(suppliedAnalysisScope?.files_skipped);
+    const hasFileCoverageSignal = suppliedAnalysisScope !== undefined && (
+      typeof suppliedAnalysisScope.complete === 'boolean'
+      || Number.isFinite(eligibleFiles)
+      || Number.isFinite(analyzedFiles)
+      || Number.isFinite(skippedFiles)
+    );
+    const incompleteFileCoverage = hasFileCoverageSignal && (
+      suppliedAnalysisScope.complete === false
+      || (Number.isFinite(eligibleFiles) && Number.isFinite(analyzedFiles) && analyzedFiles < eligibleFiles)
+      || (Number.isFinite(skippedFiles) && skippedFiles > 0)
+    );
+    if (incompleteFileCoverage) {
+      const coverage = Number.isFinite(eligibleFiles) && Number.isFinite(analyzedFiles)
+        ? `: analyzed ${analyzedFiles} of ${eligibleFiles} eligible files`
+        : '';
+      this.addAnalysisWarning(`${this.analyzerName} reported incomplete source coverage${coverage}`);
+    }
+    const analysisScope = suppliedAnalysisScope && hasFileCoverageSignal
+      ? { ...suppliedAnalysisScope, complete: !incompleteFileCoverage }
+      : suppliedAnalysisScope;
+    const suppliedWarnings = Array.isArray(metadataWithoutCategories.warnings)
+      ? metadataWithoutCategories.warnings.map(String)
+      : [];
+    const warnings = Array.from(new Set([...suppliedWarnings, ...this.collectAnalysisWarnings()]));
+
     const analyzerMetadata: CASAnalyzerContribution = {
       analyzer_id: this.analyzerId,
       analyzer_name: this.analyzerName,
@@ -447,6 +449,8 @@ export abstract class BaseAnalyzer {
       contributed_exit_points: exitPoints.length,
       capabilities: this.getCapabilities(),
       ...metadataWithoutCategories,
+      ...(analysisScope ? { analysis_scope: analysisScope } : {}),
+      ...(warnings.length > 0 ? { warnings } : {}),
       ...(categoryTags && categoryTags.length > 0 ? { category_tags: categoryTags } : {})
     };
 
@@ -597,11 +601,6 @@ export abstract class BaseAnalyzer {
       '**/Generated/**',
       '**/generated/**'
     ];
-
-    if (process.env.KLAURO_AGENT_FAST_EXCLUDE_LEGACY === 'true' ||
-      process.env.KLAURO_AGENT_FAST_EXCLUDE_LEGACY === '1') {
-      defaultIgnore.push('legacy/**', 'legacy/**/*', '**/legacy/**', '**/legacy/**/*');
-    }
 
     if (context.filters && Array.isArray(context.filters)) {
       return [...defaultIgnore, ...context.filters];

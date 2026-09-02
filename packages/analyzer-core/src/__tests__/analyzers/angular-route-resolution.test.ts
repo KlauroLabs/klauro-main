@@ -432,6 +432,27 @@ export const routes: Routes = [
       expect(routes[0].pathResolved).toBe(false);
       expect(routes[0].component).toBe('HomeComponent');
     });
+    it('resolves lazy route chains deeper than the former depth ceiling', async () => {
+      const depth = 15;
+      for (let index = 0; index < depth; index += 1) {
+        const next = index + 1;
+        write(
+          index === 0 ? 'src/app/app.routes.ts' : `src/app/level-${index}.routes.ts`,
+          index + 1 < depth
+            ? `import { Routes } from '@angular/router';
+export const routes: Routes = [{ path: 'level-${index}', loadChildren: () => import('./level-${next}.routes').then(module => module.routes) }];
+`
+            : `import { Routes } from '@angular/router';
+import { FinalComponent } from './final.component';
+export const routes: Routes = [{ path: 'level-${index}', component: FinalComponent }];
+`,
+        );
+      }
+      write('src/app/final.component.ts', 'export class FinalComponent {}\n');
+      const routes = await resolveRoutes();
+      const expectedPath = Array.from({ length: depth }, (_, index) => `level-${index}`).join('/');
+      expect(byPath(routes, expectedPath)?.component).toBe('FinalComponent');
+    });
   });
 
   describe('AngularAnalyzer route emission', () => {

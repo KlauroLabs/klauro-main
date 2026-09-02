@@ -286,6 +286,13 @@ function unrelatedEntityReference(
   return unrelatedEntities.find(entityName => {
     const phrase = normalize(entityName);
     if (phrase.trim().length < 5 || !normalizedText.includes(phrase)) return false;
+    const phraseTokens = phrase.trim().split(' ');
+    const groundedAsPartOfRelatedCompound = relatedPhrases.some(relatedPhrase => {
+      const relatedTokens = relatedPhrase.trim().split(' ');
+      return relatedPhrase !== phrase && normalizedText.includes(relatedPhrase) &&
+        phraseTokens.every(token => relatedTokens.includes(token));
+    });
+    if (groundedAsPartOfRelatedCompound) return false;
     const firstPartyRelationship = productClauses.some(clause =>
       clause.includes(phrase) && relatedPhrases.some(relatedPhrase => clause.includes(relatedPhrase)));
     return !firstPartyRelationship;
@@ -378,7 +385,7 @@ export function validateElementDescription(
     const unrelatedEntity = unrelatedEntityReference(
       cleaned,
       subject.unrelatedEntities || [],
-      subject.relatedEntities || [],
+      [...(subject.relatedEntities || []), ...(subject.relatedDomains || [])],
       subject.productOutcomeTerms || [],
     );
     if (unrelatedEntity) return { ok: false, reason: `unrelated-entity-vocabulary:${unrelatedEntity}` };
@@ -454,13 +461,20 @@ export function validateElementDescription(
   }
 
   if (subjectTokens.length === 0) return { ok: true };
+  const canonicalGroundingToken = (value: string): string => {
+    const normalized = normalizeToken(value.toLowerCase());
+    if (normalized.endsWith('ies') && normalized.length > 4) return normalized.slice(0, -3) + 'y';
+    if (normalized.endsWith('s') && !/(?:ss|us|is)$/.test(normalized) && normalized.length > 3) return normalized.slice(0, -1);
+    return normalized;
+  };
   const lower = cleaned.toLowerCase();
+  const descriptionTokens = new Set(splitGroundingSource(cleaned).map(canonicalGroundingToken));
   if (cleaned.length < 75 &&
     /\b(?:manages?|supports?|coordinates?)\b/i.test(cleaned) &&
     /\b(?:records?|operations?|entities?|things?|items?|data)\b/i.test(cleaned)) {
     return { ok: false, reason: 'short-generic-capability-phrase' };
   }
-  if (!subjectTokens.some(token => lower.includes(token))) return { ok: false, reason: 'target-not-grounded' };
+  if (!subjectTokens.some(token => lower.includes(token) || descriptionTokens.has(canonicalGroundingToken(token)))) return { ok: false, reason: 'target-not-grounded' };
   return { ok: true };
 }
 

@@ -5,7 +5,7 @@
  * traced ONE greedy path per entry point (picking a single best-ranked edge at
  * each depth), so any handler whose non-first callee reached a terminal was
  * misclassified as dead-end (10/3,703 entry-to-exit chains on this repo).
- * The new implementation does bounded, deterministic multi-path BFS.
+ * The implementation performs deterministic, cycle-safe exhaustive traversal and preserves each canonical terminal path.
  */
 import { AnalyzerOrchestrator } from '../../analyzer/core/orchestrator';
 import type { CASNode, CASEdge, CASEntryPoint, CASExitPoint, CASCallChain } from '../../types/cas.types';
@@ -180,10 +180,83 @@ describe('buildCallChains multi-path exploration', () => {
     expect(JSON.stringify(run3)).toBe(JSON.stringify(run1));
   });
 
-  test('respects the per-entry visit budget on a wide fan-out graph', () => {
-    // Entry fans out to 2,000 leaf nodes; the ONLY exit hangs off the last
-    // (lexicographically) leaf, beyond the visit budget. The chain must come
-    // back dead-end (budget honored, no unbounded exploration) and fast.
+
+  test('preserves every distinct exit and every parent path to a shared exit', () => {
+    const nodes = [
+      node('handler'), node('left'), node('right'), node('shared'),
+      node('audit'), node('database'),
+    ];
+    const edges = [
+      edge('handler', 'left'),
+      edge('handler', 'right'),
+      edge('left', 'shared'),
+      edge('right', 'shared'),
+      edge('handler', 'audit'),
+      edge('handler', 'database'),
+    ];
+    const chains = buildChains(
+      nodes,
+      edges,
+      [entry('ep1', 'handler')],
+      [exit('xShared', 'shared', 'api'), exit('xAudit', 'audit', 'analytics'), exit('xDb', 'database', 'database')]
+    );
+
+    expect(chains).toHaveLength(4);
+    expect(chains.map(chain => chain.exit_point?.exit_point_id).sort()).toEqual([
+      'xAudit', 'xDb', 'xShared', 'xShared',
+    ]);
+    const sharedPaths = chains
+      .filter(chain => chain.exit_point?.exit_point_id === 'xShared')
+      .map(chain => chain.call_path.map(step => step.node_id).join('>'))
+      .sort();
+    expect(sharedPaths).toEqual(['handler>left>shared', 'handler>right>shared']);
+    expect(new Set(chains.map(chain => chain.id)).size).toBe(4);
+  });
+
+  test('preserves exits and exact edge provenance beyond the former depth cap', () => {
+    const depth = 20;
+    const nodes = Array.from({ length: depth + 1 }, (_, index) => node(`deep_${index}`));
+    const edges = Array.from({ length: depth }, (_, index) => edge(`deep_${index}`, `deep_${index + 1}`));
+    const chains = buildChains(
+      nodes,
+      edges,
+      [entry('deep-entry', 'deep_0')],
+      [exit('deep-exit', `deep_${depth}`, 'database')]
+    );
+
+    expect(chains).toHaveLength(1);
+    expect(chains[0].call_path).toHaveLength(depth + 1);
+    expect(chains[0].call_path[depth]).toMatchObject({
+      call_id: `edge:deep_${depth - 1}->deep_${depth}`,
+      node_id: `deep_${depth}`,
+      depth,
+    });
+  });
+
+  test('cycles terminate without hiding an exit and record circular provenance', () => {
+    const nodes = [node('handler'), node('a'), node('b'), node('terminal')];
+    const edges = [
+      edge('handler', 'a'),
+      edge('a', 'b'),
+      edge('b', 'a'),
+      edge('b', 'terminal'),
+    ];
+    const chains = buildChains(
+      nodes,
+      edges,
+      [entry('cycle-entry', 'handler')],
+      [exit('cycle-exit', 'terminal', 'api')]
+    );
+
+    expect(chains).toHaveLength(1);
+    expect(chains[0].call_path.map(step => step.node_id)).toEqual(['handler', 'a', 'b', 'terminal']);
+    expect(chains[0].characteristics.is_circular).toBe(true);
+    expect(chains[0].characteristics.is_recursive).toBe(false);
+  });
+
+  test('preserves exits beyond the former per-entry visit budget on a wide fan-out graph', () => {
+    // Entry fans out to 2,000 leaf nodes; the only exit hangs off the last
+    // lexicographic leaf, beyond the former visit budget. Canonical CAS must retain it.
     const width = 2000;
     const nodes: CASNode[] = [node('handler')];
     const edges: CASEdge[] = [];
@@ -199,7 +272,8 @@ describe('buildCallChains multi-path exploration', () => {
     const elapsedMs = Date.now() - started;
 
     expect(chains).toHaveLength(1);
-    expect(chains[0].chain_type).toBe('dead-end');
+    expect(chains[0].chain_type).toBe('entry-to-exit');
+    expect(chains[0].exit_point?.exit_point_id).toBe('xFar');
     expect(elapsedMs).toBeLessThan(2000);
   });
 

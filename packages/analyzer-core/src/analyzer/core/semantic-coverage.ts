@@ -41,10 +41,6 @@ import {
 
 
 
-const REACH_MAX_DEPTH = 6;
-const REACH_MAX_FUNCTIONS = 40;
-
-
 const UNMAPPED_LIST_CAP = 50;
 
 export interface CoverageRatio {
@@ -199,7 +195,7 @@ export function computeSemanticCoverage(
   const roots = collectEntryRoots(cas, nodesById);
   const reachable = new Set<string>();
   for (const root of roots) {
-    const chain = traceForwardChain(traversal, root, REACH_MAX_DEPTH, REACH_MAX_FUNCTIONS);
+    const chain = traceForwardChain(traversal, root);
     for (const { node } of chain) {
       if (isExecutable(node)) reachable.add(node.id);
     }

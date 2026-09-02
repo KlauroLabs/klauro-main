@@ -3,6 +3,7 @@ import type { SystemCapability } from '../../types/cas.types';
 export interface CapabilityCatalogPromptEvidence {
   name: string;
   operations: string[];
+  relationships: string[];
 }
 
 function words(value: string): string[] {
@@ -44,10 +45,16 @@ export function projectCapabilityCatalogPromptEvidence(
       .filter(Boolean),
   )).slice(0, 8);
   const projectedOperations = operations.length > 0 ? operations : actionFallback;
+  const relationships = Array.from(new Set((capability.depends_on || []).map(dependency => {
+    const sharedEntities = (dependency.evidence.shared_entities || []).map(humanize).filter(Boolean);
+    return [humanize(dependency.description), sharedEntities.length > 0 ? `Shared subjects: ${sharedEntities.join(', ')}` : '']
+      .filter(Boolean).join('. ');
+  }).filter(Boolean))).slice(0, 8);
   return {
     name: capability.evidence_kind === 'behavior-surface' && projectedOperations.length > 0
       ? projectedOperations.join(', ')
       : humanize(capability.name),
     operations: projectedOperations,
+    relationships,
   };
 }

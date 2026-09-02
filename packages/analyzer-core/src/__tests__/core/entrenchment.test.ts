@@ -157,4 +157,17 @@ describe('computeEntrenchment', () => {
     expect(apiModule).toBeDefined();
     expect(apiModule!.score).toBeGreaterThan(0);
   });
+  it('counts every transitive dependent beyond the former traversal ceiling', () => {
+    const nodeCount = 4_102;
+    const nodes = Array.from({ length: nodeCount }, (_, index) =>
+      fn(
+        `node_${index}`,
+        `src/node-${index}.ts`,
+        index + 1 < nodeCount ? [`node_${index + 1}`] : [],
+      ));
+    const result = computeEntrenchment({ nodes });
+    expect(result.nodes.node_0.raw.transitive_dependents).toBe(nodeCount - 1);
+    expect(result.summary.files).toHaveLength(nodeCount);
+    expect(result.summary.modules).toHaveLength(nodeCount);
+  });
 });

@@ -135,7 +135,7 @@ export function deriveDependencyRoles(
     const matchingHints = hints.filter(hint => looseMatch(dependency.name, hint.name));
     if (matchingHints.length > 0) {
       const role = matchingHints[0].role;
-      const exitIds = [...new Set(matchingHints.map(h => h.exitId))].slice(0, 5);
+      const exitIds = [...new Set(matchingHints.map(h => h.exitId))];
       roles.push({
         name: dependency.name,
         ecosystem: dependency.ecosystem,

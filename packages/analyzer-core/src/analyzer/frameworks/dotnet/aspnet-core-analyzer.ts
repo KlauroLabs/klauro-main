@@ -102,7 +102,7 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
         nodir: true
       });
 
-      for (const csFile of csFiles.slice(0, 20)) {
+      for (const csFile of csFiles) {
         const content = await fs.readFile(path.join(projectPath, csFile), 'utf-8');
         if (/using\s+Microsoft\.AspNetCore/.test(content) ||
             /\[ApiController\]/.test(content) ||

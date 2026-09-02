@@ -772,6 +772,66 @@ test('wait mode follows a structural response until pending comprehension comple
   assert.equal(statusRequests, 1);
 });
 
+test('complete readiness waits for segmented publication to catch up with the ready status', async (t) => {
+  const analysisId = 'complete-segment-publication-race';
+  let sectionRequests = 0;
+  const server = http.createServer((req, res) => {
+    if (req.url === `/v1/analyses/${analysisId}/status`) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        status: 'ready',
+        analysis_id: analysisId,
+        summary: { layers_ready: { complete: true, layers: [{ layer: 'L5', status: 'ready' }] } },
+      }));
+      return;
+    }
+    if (req.url === `/v1/analyses/${analysisId}/cas/manifest`) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        manifest_version: 1,
+        cas_version: '3.0.0',
+        analysis_id: analysisId,
+        analysis_timestamp: new Date().toISOString(),
+        sections: [{ name: 'identity', fields: ['system', 'layers_ready'] }],
+        logical_fields: ['system', 'layers_ready'],
+      }));
+      return;
+    }
+    if (req.url === `/v1/analyses/${analysisId}/cas/sections/identity`) {
+      sectionRequests += 1;
+      const complete = sectionRequests > 1;
+      res.writeHead(200, { 'content-type': 'application/json', 'x-klauro-cas-codec': 'none' });
+      res.end(JSON.stringify({
+        system: { name: complete ? 'complete' : 'structural' },
+        layers_ready: {
+          complete,
+          layers: [{ layer: 'L5', status: complete ? 'ready' : 'pending' }],
+        },
+      }));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  t.after(async () => new Promise<void>(resolve => server.close(() => resolve())));
+
+  const cas = await waitForRemoteAnalysis(
+    `http://127.0.0.1:${address.port}`,
+    analysisId,
+    undefined,
+    undefined,
+    30_000,
+    ['identity'],
+    'complete',
+  );
+
+  assert.equal(cas.system.name, 'complete');
+  assert.equal(cas.layers_ready?.complete, true);
+  assert.equal(sectionRequests, 2);
+});
+
 test('wait mode ignores a ready CAS from an older analysis revision', async (t) => {
   disableConnectorAuth(t);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-resilience-test-'));

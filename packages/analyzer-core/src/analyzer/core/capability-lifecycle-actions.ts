@@ -12,6 +12,10 @@ export function canonicalCapabilityLifecycleAction(operation: CapabilityLifecycl
   const action = String(operation.action || '').trim().toLowerCase();
   const method = String(operation.trigger?.method || '').trim().toUpperCase();
   const path = String(operation.trigger?.path || operation.path_or_command || '').trim().toLowerCase();
+  if (/(?:^|[/_.-])decline/.test(path)) return 'decline';
+  if (/(?:^|[/_.-])accept/.test(path)) return 'accept';
+  if (/(?:^|[/_.-])test/.test(path)) return 'test';
+  if (/^(?:execute|run)$/.test(action)) return 'run';
   if (method === 'POST' && authenticationPath(path)) return 'authenticate';
   if (method === 'DELETE') {
     if (/(?:^|[/_-])follow(?:$|[/_?&#-])/.test(path)) return 'unfollow';

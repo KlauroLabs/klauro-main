@@ -482,6 +482,19 @@ export function decideBuildAction({ distComplete, rebuildRequested }) {
   return { build: false, reason: 'existing dist/ bundle found (pass --rebuild to force a rebuild)' };
 }
 
+export const REQUIRED_CLIENT_BUNDLE_FILES = [
+  'index.cjs',
+  'server.cjs',
+  'cli.cjs',
+  'handshake.json',
+  'build-stamp.json',
+];
+
+export function inspectClientBundle(distPath) {
+  const missing = REQUIRED_CLIENT_BUNDLE_FILES.filter(file => !fs.existsSync(path.join(distPath, file)));
+  return { complete: missing.length === 0, missing };
+}
+
 export function claudeRegisterCommand(bundlePath, scope = 'user') {
   return `claude mcp add --scope ${scope} klauro -- node ${bundlePath}`;
 }

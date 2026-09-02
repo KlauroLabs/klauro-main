@@ -114,6 +114,17 @@ interface GoCallGraphOptions {
   relationshipEdges?: CASEdge[];
 }
 
+interface GoCallGraphIndex {
+  functionByFileAndName: Map<string, CASNode>;
+  methodByNameAndReceiver: Map<string, CASNode>;
+  methodsByName: Map<string, CASNode[]>;
+  standaloneByName: Map<string, CASNode>;
+  structByName: Map<string, CASNode>;
+  methodTargetsByStruct: Map<string, Set<string>>;
+  edgeIds: Set<string>;
+  exitIds: Set<string>;
+}
+
 interface GoType {
   name: string;
   packageName: string;
@@ -439,6 +450,26 @@ export class GoAnalyzer extends BaseAnalyzer {
     try {
       const content = await fs.readFile(fullPath, 'utf-8');
       const lines = content.split('\n');
+      const emittedNodeStart = nodes.length;
+      let generatedSource = false;
+      let insideBlockComment = false;
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (/^\/\/ Code generated .* DO NOT EDIT\.$/.test(trimmed)) {
+          generatedSource = true;
+          break;
+        }
+        if (insideBlockComment) {
+          if (trimmed.includes('*/')) insideBlockComment = false;
+          continue;
+        }
+        if (trimmed.startsWith('/*')) {
+          insideBlockComment = !trimmed.includes('*/');
+          continue;
+        }
+        if (trimmed === '' || trimmed.startsWith('//')) continue;
+        break;
+      }
 
       const packageName = this.extractPackage(content);
       const imports = this.extractImports(content);
@@ -532,19 +563,19 @@ export class GoAnalyzer extends BaseAnalyzer {
       }
 
       for (const struct of structs) {
-        await this.processGoStruct(struct, fileId, fullPath, relativePath, nodes, edges, entryPoints);
+        await this.processGoStruct(struct, fileId, content, lines, fileComments, relativePath, nodes, edges, entryPoints);
       }
 
       for (const intf of interfaces) {
-        await this.processGoInterface(intf, fileId, fullPath, relativePath, nodes, edges, entryPoints);
+        await this.processGoInterface(intf, fileId, content, lines, fileComments, relativePath, nodes, edges, entryPoints);
       }
 
       for (const func of functions) {
-        await this.processGoFunction(func, fileId, fullPath, relativePath, nodes, edges, entryPoints);
+        await this.processGoFunction(func, fileId, content, lines, fileComments, relativePath, nodes, edges, entryPoints);
       }
 
       for (const type of types) {
-        await this.processGoType(type, fileId, fullPath, relativePath, nodes, edges, entryPoints);
+        await this.processGoType(type, fileId, content, lines, fileComments, relativePath, nodes, edges, entryPoints);
       }
 
       for (const variable of variables) {
@@ -608,6 +639,12 @@ export class GoAnalyzer extends BaseAnalyzer {
         ));
       }
 
+      if (generatedSource) {
+        for (let index = emittedNodeStart; index < nodes.length; index++) {
+          nodes[index].metadata = { ...(nodes[index].metadata || {}), is_generated: true };
+        }
+      }
+
     } catch (error) {
       console.warn(`Failed to analyze Go file ${relativePath}:`, error);
     }
@@ -616,20 +653,21 @@ export class GoAnalyzer extends BaseAnalyzer {
   private async processGoStruct(
     struct: GoStruct,
     fileId: string,
-    fullPath: string,
+    content: string,
+    lines: string[],
+    fileComments: CASComment[],
     relativePath: string,
     nodes: CASNode[],
     edges: CASEdge[],
     entryPoints: any[]
   ): Promise<void> {
     const structId = `struct_${this.sanitizeId(struct.packageName)}_${this.sanitizeId(struct.name)}`;
-    const content = await fs.readFile(fullPath, 'utf-8');
-    const structComments = this.extractCommentsFromFile(content, relativePath).filter(c =>
+    const structComments = fileComments.filter(c =>
       c.location.line >= struct.lineStart - 3 && c.location.line <= struct.lineStart
     );
     const structTodos = this.extractTodosFromComments(structComments, structId);
     const structDocs = this.extractDocumentationFromGoDoc(
-      content.split('\n'),
+      lines,
       struct.lineStart - 1
     );
 
@@ -760,20 +798,21 @@ export class GoAnalyzer extends BaseAnalyzer {
   private async processGoInterface(
     intf: GoInterface,
     fileId: string,
-    fullPath: string,
+    content: string,
+    lines: string[],
+    fileComments: CASComment[],
     relativePath: string,
     nodes: CASNode[],
     edges: CASEdge[],
     entryPoints: any[]
   ): Promise<void> {
     const interfaceId = `interface_${this.sanitizeId(intf.packageName)}_${this.sanitizeId(intf.name)}`;
-    const content = await fs.readFile(fullPath, 'utf-8');
-    const interfaceComments = this.extractCommentsFromFile(content, relativePath).filter(c =>
+    const interfaceComments = fileComments.filter(c =>
       c.location.line >= intf.lineStart - 3 && c.location.line <= intf.lineStart
     );
     const interfaceTodos = this.extractTodosFromComments(interfaceComments, interfaceId);
     const interfaceDocs = this.extractDocumentationFromGoDoc(
-      content.split('\n'),
+      lines,
       intf.lineStart - 1
     );
 
@@ -858,16 +897,16 @@ export class GoAnalyzer extends BaseAnalyzer {
   private async processGoFunction(
     func: GoFunction,
     fileId: string,
-    fullPath: string,
+    content: string,
+    lines: string[],
+    fileComments: CASComment[],
     relativePath: string,
     nodes: CASNode[],
     edges: CASEdge[],
     entryPoints: any[]
   ): Promise<void> {
     const functionId = `function_${this.sanitizeId(func.packageName)}_${this.sanitizeId(func.name)}_${func.lineStart}`;
-    const content = await fs.readFile(fullPath, 'utf-8');
-    const lines = content.split('\n');
-    const functionComments = this.extractCommentsFromFile(content, relativePath).filter(c =>
+    const functionComments = fileComments.filter(c =>
       c.location.line >= func.lineStart - 3 && c.location.line <= func.lineStart
     );
     const functionTodos = this.extractTodosFromComments(functionComments, functionId);
@@ -955,20 +994,21 @@ export class GoAnalyzer extends BaseAnalyzer {
   private async processGoType(
     type: GoType,
     fileId: string,
-    fullPath: string,
+    content: string,
+    lines: string[],
+    fileComments: CASComment[],
     relativePath: string,
     nodes: CASNode[],
     edges: CASEdge[],
     entryPoints: any[]
   ): Promise<void> {
     const typeId = `type_${this.sanitizeId(type.packageName)}_${this.sanitizeId(type.name)}`;
-    const content = await fs.readFile(fullPath, 'utf-8');
-    const typeComments = this.extractCommentsFromFile(content, relativePath).filter(c =>
+    const typeComments = fileComments.filter(c =>
       c.location.line >= type.lineNumber - 3 && c.location.line <= type.lineNumber
     );
     const typeTodos = this.extractTodosFromComments(typeComments, typeId);
     const typeDocs = this.extractDocumentationFromGoDoc(
-      content.split('\n'),
+      lines,
       type.lineNumber - 1
     );
 
@@ -1821,31 +1861,55 @@ export class GoAnalyzer extends BaseAnalyzer {
   private buildTypeRelationships(nodes: CASNode[], edges: CASEdge[]): void {
     const structNodes = nodes.filter(n => n.type === 'struct');
     const interfaceNodes = nodes.filter(n => n.type === 'interface');
+    const methodNamesByReceiver = new Map<string, Set<string>>();
+    const interfaceMethodNameById = new Map<string, string>();
+    const interfaceIds = new Set(interfaceNodes.map(node => node.id));
+    const interfaceMethodNamesByInterface = new Map<string, Set<string>>();
+
+    for (const node of nodes) {
+      if (node.type === 'method') {
+        const receiver = node.metadata?.attributes?.receiver as GoReceiver | undefined;
+        if (!receiver?.type) continue;
+        const methodNames = methodNamesByReceiver.get(receiver.type) || new Set<string>();
+        methodNames.add(node.name);
+        methodNamesByReceiver.set(receiver.type, methodNames);
+      } else if (node.type === 'interface_method') {
+        interfaceMethodNameById.set(node.id, node.name);
+      }
+    }
+
+    for (const edge of edges) {
+      if (!interfaceIds.has(edge.source)) continue;
+      const methodName = interfaceMethodNameById.get(edge.target);
+      if (!methodName) continue;
+      const methodNames = interfaceMethodNamesByInterface.get(edge.source) || new Set<string>();
+      methodNames.add(methodName);
+      interfaceMethodNamesByInterface.set(edge.source, methodNames);
+    }
+
+    const edgeIds = new Set(edges.map(edge => edge.id));
 
     for (const structNode of structNodes) {
-      const structMethods = nodes.filter(n =>
-        n.type === 'method' &&
-        n.metadata?.attributes?.receiver &&
-        (n.metadata.attributes.receiver as GoReceiver).type === structNode.name
-      );
+      const structMethodNames = methodNamesByReceiver.get(structNode.name) || new Set<string>();
 
       for (const interfaceNode of interfaceNodes) {
-        const interfaceMethods = nodes.filter(n =>
-          n.type === 'interface_method' &&
-          edges.some(e => e.source === interfaceNode.id && e.target === n.id)
+        const interfaceMethodNames = interfaceMethodNamesByInterface.get(interfaceNode.id);
+        if (!interfaceMethodNames?.size) continue;
+
+        const implementsInterface = [...interfaceMethodNames].every(methodName =>
+          structMethodNames.has(methodName)
         );
 
-        const implementsInterface = interfaceMethods.every(intfMethod =>
-          structMethods.some(structMethod => structMethod.name === intfMethod.name)
-        );
-
-        if (implementsInterface && interfaceMethods.length > 0) {
+        if (implementsInterface) {
+          const edgeId = `${structNode.id}_implements_${interfaceNode.id}`;
+          if (edgeIds.has(edgeId)) continue;
           edges.push(this.createEdge(
-            `${structNode.id}_implements_${interfaceNode.id}`,
+            edgeId,
             structNode.id,
             interfaceNode.id,
             'implements'
           ));
+          edgeIds.add(edgeId);
         }
       }
     }
@@ -1900,6 +1964,25 @@ export class GoAnalyzer extends BaseAnalyzer {
 
     const functionNodes = nodes.filter(n => n.type === 'function' || n.type === 'method');
     const structNodes = nodes.filter(n => n.type === 'struct' || n.type === 'interface');
+    const index: GoCallGraphIndex = {
+      functionByFileAndName: new Map(), methodByNameAndReceiver: new Map(), methodsByName: new Map(),
+      standaloneByName: new Map(), structByName: new Map(), methodTargetsByStruct: new Map(),
+      edgeIds: new Set(edges.map(edge => edge.id)), exitIds: new Set(exitPoints.map(exit => exit.id)),
+    };
+    const stripPointer = (value: string) => String(value || '').replace(/^[\*&]+/, '');
+    for (const node of functionNodes) {
+      if (node.source?.file) { const key = node.source.file + '\0' + node.name; if (!index.functionByFileAndName.has(key)) index.functionByFileAndName.set(key, node); }
+      if (node.type === 'method') {
+        const key = node.name + '\0' + stripPointer(node.metadata?.attributes?.receiver?.type as string);
+        if (!index.methodByNameAndReceiver.has(key)) index.methodByNameAndReceiver.set(key, node);
+        const named = index.methodsByName.get(node.name) || []; named.push(node); index.methodsByName.set(node.name, named);
+      } else if (!index.standaloneByName.has(node.name)) index.standaloneByName.set(node.name, node);
+    }
+    for (const node of structNodes) if (!index.structByName.has(node.name)) index.structByName.set(node.name, node);
+    for (const edge of relationshipEdges) {
+      if (edge.type !== 'has_method') continue;
+      const targets = index.methodTargetsByStruct.get(edge.source) || new Set<string>(); targets.add(edge.target); index.methodTargetsByStruct.set(edge.source, targets);
+    }
 
     for (const file of goFiles) {
       const fullPath = path.join(projectPath, file);
@@ -1911,7 +1994,7 @@ export class GoAnalyzer extends BaseAnalyzer {
       }
 
       this.astCache.set(file, ast);
-      await this.processGoASTCallGraph(ast, fullPath, file, nodes, edges, exitPoints, functionNodes, structNodes, relationshipEdges);
+      await this.processGoASTCallGraph(ast, fullPath, file, nodes, edges, exitPoints, index);
     }
   }
 
@@ -1922,9 +2005,7 @@ export class GoAnalyzer extends BaseAnalyzer {
     nodes: CASNode[],
     edges: CASEdge[],
     exitPoints: CASExitPoint[],
-    functionNodes: CASNode[],
-    structNodes: CASNode[],
-    relationshipEdges: CASEdge[] = edges
+    index: GoCallGraphIndex
   ): Promise<void> {
     const currentPackage = ast.package || 'main';
     let fileContent = '';
@@ -1932,10 +2013,7 @@ export class GoAnalyzer extends BaseAnalyzer {
 
     for (const child of ast.children || []) {
       if (child.type === 'Function' && child.calls) {
-        const callerFunction = functionNodes.find(n =>
-          n.name === child.name &&
-          n.source?.file === file
-        );
+        const callerFunction = index.functionByFileAndName.get(file + '\0' + child.name);
 
         if (!callerFunction) continue;
 
@@ -1950,35 +2028,27 @@ export class GoAnalyzer extends BaseAnalyzer {
             const stripPtr = (s: string) => String(s || '').replace(/^[\*&]+/, '');
             const recvType = stripPtr(recvTypes.get(call.package) || call.package);
 
-            targetFunction = functionNodes.find(n =>
-              n.type === 'method' && n.name === call.function &&
-              stripPtr(n.metadata?.attributes?.receiver?.type as string) === recvType
-            );
+            targetFunction = index.methodByNameAndReceiver.get(call.function + '\0' + recvType);
 
             if (!targetFunction) {
-              const targetStruct = structNodes.find(s => s.name === recvType);
+              const targetStruct = index.structByName.get(recvType);
               if (targetStruct) {
-                targetFunction = functionNodes.find(n =>
-                  n.name === call.function &&
-                  relationshipEdges.some(e => e.source === targetStruct.id && e.target === n.id && e.type === 'has_method')
-                );
+                const targets = index.methodTargetsByStruct.get(targetStruct.id);
+                targetFunction = index.methodsByName.get(call.function)?.find(node => targets?.has(node.id));
               }
             }
 
             if (!targetFunction) {
-              const named = functionNodes.filter(n => n.type === 'method' && n.name === call.function);
+              const named = index.methodsByName.get(call.function) || [];
               if (named.length === 1) targetFunction = named[0];
             }
           } else {
-            targetFunction = functionNodes.find(n =>
-              n.name === call.function &&
-              n.type === 'function'
-            );
+            targetFunction = index.standaloneByName.get(call.function);
           }
 
           if (targetFunction && targetFunction.id !== callerFunction.id) {
             const callEdgeId = `call_${callerFunction.id}_to_${targetFunction.id}_line_${call.line}`;
-            if (!edges.some(e => e.id === callEdgeId)) {
+            if (!index.edgeIds.has(callEdgeId)) {
               edges.push(this.createEdge(
                 callEdgeId,
                 callerFunction.id,
@@ -1993,10 +2063,11 @@ export class GoAnalyzer extends BaseAnalyzer {
                   targetFunction: call.function
                 }
               ));
+              index.edgeIds.add(callEdgeId);
             }
           } else if (this.isExternalLibraryCall(call.package || call.function, call.package ? call.function : undefined, currentPackage)) {
             const exitId = `exit_call_${callerFunction.id}_${call.package || ''}_${call.function}_${call.line}`;
-            if (!exitPoints.some(e => e.id === exitId)) {
+            if (!index.exitIds.has(exitId)) {
               exitPoints.push(this.createExitPoint(
                 exitId,
                 callerFunction.id,
@@ -2013,6 +2084,7 @@ export class GoAnalyzer extends BaseAnalyzer {
                   library: this.identifyGoLibrary(call.package || call.function)
                 }
               ));
+              index.exitIds.add(exitId);
             }
           }
         }

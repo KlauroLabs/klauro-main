@@ -107,7 +107,7 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
     try {
       const rules = this.rules();
       const files = await this.discoverCandidateFiles(projectPath, this.getTestIgnorePatterns({ projectPath } as AnalysisContext), rules);
-      for (const file of files.slice(0, 200)) {
+      for (const file of files) {
         const content = await fs.readFile(path.join(projectPath, file), 'utf-8').catch(() => '');
         if (rules.some(rule => this.matchesRule(rule, file, content))) return true;
       }
@@ -851,8 +851,20 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
         framework: 'minitest',
         language: 'ruby',
         filePatterns: ['**/*_test.rb', '**/test/**/*.rb'],
-        evidence: [/require\s+['"]minitest/, /Minitest::Test/, /MiniTest::Test/],
-        casePatterns: [/^\s*def\s+(test_[A-Za-z0-9_]+)/gm]
+        evidence: [
+          /require\s+['"]minitest/,
+          /Minitest::Test/,
+          /MiniTest::Test/,
+          /ActiveSupport::TestCase/,
+          /ActionDispatch::IntegrationTest/,
+          /ActionController::TestCase/,
+          /class\s+[A-Za-z0-9_:]+\s*<\s*[A-Za-z0-9_:]*TestCase\b/,
+          /^\s*test\s+['"][^'"]+['"]\s+do\b/m,
+        ],
+        casePatterns: [
+          /^\s*def\s+(test_[A-Za-z0-9_]+)/gm,
+          /^\s*test\s+['"]([^'"]+)['"]\s+do\b/gm,
+        ]
       },
       {
         framework: 'phpunit',

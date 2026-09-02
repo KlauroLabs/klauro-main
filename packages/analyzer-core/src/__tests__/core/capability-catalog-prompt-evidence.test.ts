@@ -28,6 +28,7 @@ describe('capability catalog prompt evidence', () => {
     expect(result).toEqual({
       name: 'Create payment invoice, Sync orders',
       operations: ['Create payment invoice', 'Sync orders'],
+      relationships: [],
     });
   });
 
@@ -37,7 +38,7 @@ describe('capability catalog prompt evidence', () => {
       operations: [{ entry_point_id: 'orders', entry_point_type: 'http', action: 'View' }],
     }));
 
-    expect(result).toEqual({ name: 'View', operations: ['View'] });
+    expect(result).toEqual({ name: 'View', operations: ['View'], relationships: [] });
   });
 
   it('keeps authored candidate names while humanizing their operation evidence', () => {
@@ -47,6 +48,21 @@ describe('capability catalog prompt evidence', () => {
       evidence_examples: ['submit_order'],
     }));
 
-    expect(result).toEqual({ name: 'Order Fulfillment', operations: ['Submit order'] });
+    expect(result).toEqual({ name: 'Order Fulfillment', operations: ['Submit order'], relationships: [] });
+  });
+
+  it('projects verified graph relationships separately from operations', () => {
+    const result = projectCapabilityCatalogPromptEvidence(capability({
+      name: 'Rules',
+      depends_on: [{
+        from_capability: 'bulk-update', to_capability: 'rule-update', dependency_type: 'shares-data', strength: 'common',
+        evidence: { shared_services: [], shared_nodes: [], shared_entities: ['Rule', 'Transaction', 'Category'] },
+        description: 'Bulk transaction updates share rule and category data',
+      }],
+    }));
+    expect(result.relationships).toEqual([
+      'Bulk transaction updates share rule and category data. Shared subjects: Rule, Transaction, Category',
+    ]);
+    expect(result.operations).toEqual([]);
   });
 });

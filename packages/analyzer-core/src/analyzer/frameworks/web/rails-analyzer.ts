@@ -7,6 +7,8 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../../core/glob-cache';
 import { extractRailsRoutes, type RailsRoute } from './rails-route-parser';
+import { extractRailsSecurityMixin, resolveRailsControllerSecurity, railsCallbackApplies, railsIncludedModules } from './rails-controller-security';
+import { extractRailsConcernActions, resolveRailsControllerActions, type RailsActionConcern } from './rails-controller-actions';
 
 interface RailsAssociation {
   type: 'has_many' | 'has_one' | 'belongs_to' | 'has_and_belongs_to_many';
@@ -37,6 +39,9 @@ interface RailsControllerAction {
   name: string;
   line: number;
   modelAccesses: RailsModelAccess[];
+  sourceFile?: string;
+  owner?: string;
+  inherited?: boolean;
 }
 
 interface RailsBeforeAction {
@@ -44,14 +49,22 @@ interface RailsBeforeAction {
   only: string[];
   except: string[];
   line: number;
+  sourceFile?: string;
+  owner?: string;
+  inherited?: boolean;
 }
 
 interface RailsController {
   name: string;
+  qualifiedName: string;
   filePath: string;
   controllerPath: string;
   actions: RailsControllerAction[];
   beforeActions: RailsBeforeAction[];
+  skipBeforeActions: RailsBeforeAction[];
+  parentName?: string;
+  includedConcerns: string[];
+  callbackInvocations: Array<{ name: string; only: string[]; except: string[]; line: number }>;
 }
 
 interface RailsMigration {
@@ -562,25 +575,6 @@ export class RailsAnalyzer extends BaseAnalyzer {
         })
         .build());
 
-      for (const action of controller.actions) {
-        const actionId = this.actionNodeId(controller, action.name);
-        nodes.push(this.createNodeBuilder(actionId, action.name, 'controller_method')
-          .withLevel(4, 'member')
-          .withCategory('method', ['rails', 'action'])
-          .withSource({ file: file, line: action.line, end_line: action.line })
-          .withDescription(`Controller action in ${controller.name}: ${action.name}`)
-          .withParent(controllerId)
-          .withMetadata({ framework: 'rails' })
-          .build());
-        edges.push(this.createEdge(
-          this.generateEdgeId(controllerId, actionId, 'contains'),
-          controllerId,
-          actionId,
-          'contains',
-          'structural'
-        ));
-      }
-
       for (const filter of controller.beforeActions) {
         if (!AUTH_FILTER_PATTERN.test(filter.name)) continue;
         const filterId = this.generateId('middleware', controller.filePath, `${controller.name}_${filter.name}`);
@@ -609,6 +603,51 @@ export class RailsAnalyzer extends BaseAnalyzer {
       }
     }
 
+    const concernFiles = await this.globRootFiles(projectPath, root, 'app/controllers/concerns/**/*.rb', roots);
+    const actionConcerns: RailsActionConcern<RailsModelAccess>[] = [];
+    const concerns = [];
+    for (const file of concernFiles) {
+      const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
+      const concern = extractRailsSecurityMixin(content, file, (options, key) => this.extractSymbolList(options, key));
+      if (concern) concerns.push(concern);
+      const actionConcern = extractRailsConcernActions(content, file, body => this.extractModelAccesses(body));
+      if (actionConcern) actionConcerns.push(actionConcern);
+    }
+    resolveRailsControllerSecurity(controllers, concerns);
+    resolveRailsControllerActions(controllers, actionConcerns);
+    for (const controller of controllers) {
+      const controllerId = this.controllerNodeId(controller);
+      for (const action of controller.actions) {
+        const actionId = this.actionNodeId(controller, action.name);
+        if (!nodes.some(node => node.id === actionId)) nodes.push(this.createNodeBuilder(actionId, action.name, 'controller_method')
+          .withLevel(4, 'member').withCategory('method', ['rails', 'action'])
+          .withSource({ file: action.sourceFile || controller.filePath, line: action.line, end_line: action.line })
+          .withDescription(`Controller action in ${controller.name}: ${action.name}`).withParent(controllerId)
+          .withMetadata({ framework: 'rails', attributes: action.inherited ? { inherited_from: action.owner } : undefined }).build());
+        if (!edges.some(edge => edge.source === controllerId && edge.target === actionId && edge.type === 'contains')) {
+          edges.push(this.createEdge(this.generateEdgeId(controllerId, actionId, 'contains'), controllerId, actionId, 'contains', 'structural'));
+        }
+      }
+      for (const filter of controller.beforeActions.filter(item => item.inherited && AUTH_FILTER_PATTERN.test(item.name))) {
+        const sourceFile = filter.sourceFile || controller.filePath;
+        const filterId = this.generateId('middleware', sourceFile, `${controller.name}_${filter.owner || 'inherited'}_${filter.name}`);
+        if (!nodes.some(node => node.id === filterId)) nodes.push(this.createNodeBuilder(filterId, filter.name, 'middleware')
+          .withLevel(3, 'code').withCategory('security', ['rails', 'before_action', 'auth'])
+          .withSource({ file: sourceFile, line: filter.line, end_line: filter.line })
+          .withDescription(`Rails inherited before_action auth filter on ${controller.name}: ${filter.name}`)
+          .withMetadata({ framework: 'rails', attributes: { filter_type: 'before_action', only: filter.only, except: filter.except, inherited_from: filter.owner } }).build());
+        if (!edges.some(edge => edge.source === controllerId && edge.target === filterId && edge.type === 'guarded_by')) {
+          edges.push(this.createEdge(this.generateEdgeId(controllerId, filterId, 'guarded_by'), controllerId, filterId, 'guarded_by', 'security', { filter: 'before_action' }));
+        }
+      }
+      const node = nodes.find(item => item.id === controllerId);
+      const attributes = (node?.metadata as any)?.attributes;
+      if (attributes) {
+        attributes.before_actions = controller.beforeActions.map(filter => filter.name);
+        attributes.actions_count = controller.actions.length;
+      }
+    }
+
     return controllers;
   }
 
@@ -621,13 +660,16 @@ export class RailsAnalyzer extends BaseAnalyzer {
   }
 
   extractController(content: string, filePath: string): RailsController | null {
-    const classMatch = content.match(/^\s*class\s+((?:[A-Z]\w*::)*\w+Controller)\s*<\s*[\w:.]+/m);
+    const classMatch = content.match(/^\s*class\s+((?:[A-Z]\w*::)*\w+Controller)\s*<\s*([\w:]+)/m);
     if (!classMatch) return null;
 
     const name = classMatch[1].split('::').pop()!;
     const lines = content.split('\n');
     const actions: RailsControllerAction[] = [];
     const beforeActions: RailsBeforeAction[] = [];
+    const skipBeforeActions: RailsBeforeAction[] = [];
+    const includedConcerns: string[] = railsIncludedModules(content);
+    const callbackInvocations: Array<{ name: string; only: string[]; except: string[]; line: number }> = [];
     const defLines: number[] = [];
     let visibility: 'public' | 'private' | 'protected' = 'public';
 
@@ -655,6 +697,20 @@ export class RailsAnalyzer extends BaseAnalyzer {
         continue;
       }
 
+      const skipActionMatch = trimmed.match(/^skip_(?:before_action|before_filter)\s+:(\w+[?!]?)(.*)$/);
+      if (skipActionMatch) {
+        const options = skipActionMatch[2] || '';
+        skipBeforeActions.push({ name: skipActionMatch[1], only: this.extractSymbolList(options, 'only'), except: this.extractSymbolList(options, 'except'), line: index + 1, sourceFile: filePath, owner: name });
+        continue;
+      }
+      const macroInvocation = trimmed.match(/^([a-z]\w+)\s*(.*)$/);
+      if (macroInvocation && !/^(?:def|private|protected|public)$/.test(macroInvocation[1])) callbackInvocations.push({ name: macroInvocation[1], only: this.extractSymbolList(macroInvocation[2] || '', 'only'), except: this.extractSymbolList(macroInvocation[2] || '', 'except'), line: index + 1 });
+      const concernMatch = trimmed.match(/^(?:include|prepend)\s+([A-Z]\w*(?:::[A-Z]\w*)*)\s*$/);
+      if (concernMatch) {
+        includedConcerns.push(concernMatch[1]);
+        continue;
+      }
+
       const defMatch = trimmed.match(/^def\s+(\w+[?!]?)/);
       if (defMatch) {
         defLines.push(index + 1);
@@ -672,10 +728,15 @@ export class RailsAnalyzer extends BaseAnalyzer {
 
     return {
       name,
+      qualifiedName: classMatch[1],
       filePath,
       controllerPath: this.controllerPathFor(name, filePath),
       actions,
-      beforeActions
+      beforeActions: beforeActions.map(filter => ({ ...filter, sourceFile: filePath, owner: name })),
+      skipBeforeActions,
+      parentName: classMatch[2].replace(/^::/, '').split('::').pop(),
+      includedConcerns,
+      callbackInvocations
     };
   }
 
@@ -717,8 +778,8 @@ export class RailsAnalyzer extends BaseAnalyzer {
       const authenticated = controller
         ? controller.beforeActions.some(filter =>
           AUTH_FILTER_PATTERN.test(filter.name) &&
-          (filter.only.length === 0 || filter.only.includes(route.action)) &&
-          !filter.except.includes(route.action))
+          railsCallbackApplies(filter, route.action) &&
+          !controller.skipBeforeActions.some(skip => skip.name === filter.name && railsCallbackApplies(skip, route.action)))
         : false;
 
       nodes.push(this.createNodeBuilder(routeId, `${route.method} ${route.path}`, 'rails_route')
@@ -733,7 +794,10 @@ export class RailsAnalyzer extends BaseAnalyzer {
             path: route.path,
             controller: route.controller,
             action: route.action,
-            source: route.source
+            source: route.source,
+            route_resource: route.resource,
+            rest_action: route.restAction,
+            route_role: route.routeRole
           }
         })
         .build());
@@ -751,12 +815,17 @@ export class RailsAnalyzer extends BaseAnalyzer {
         {
           authenticated,
           guards: authenticated && controller
-            ? controller.beforeActions.filter(filter => AUTH_FILTER_PATTERN.test(filter.name)).map(filter => filter.name)
+            ? controller.beforeActions.filter(filter => AUTH_FILTER_PATTERN.test(filter.name) && railsCallbackApplies(filter, route.action) &&
+              !controller.skipBeforeActions.some(skip => skip.name === filter.name && railsCallbackApplies(skip, route.action))).map(filter => filter.name)
             : []
         },
         {
           controller: route.controller,
-          action: route.action
+          action: route.action,
+          route_source: route.source,
+          route_resource: route.resource,
+          rest_action: route.restAction,
+          route_role: route.routeRole
         },
         controller ? {
           node_id: handlerNodeId,

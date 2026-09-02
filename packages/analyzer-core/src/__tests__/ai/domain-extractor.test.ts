@@ -280,17 +280,48 @@ describe('DomainExtractor distinctiveness gate', () => {
     expect(warehouse.description).toMatch(/4 distinct usage sites/);
   });
 
-  it('caps the emitted vocabulary rather than shipping hundreds of terms', () => {
+  it('retains every distinctive concept beyond the former canonical limit deterministically', () => {
     const nodes: CASNode[] = [];
     const entities: CASDataEntity[] = [];
-    for (let index = 0; index < 120; index++) {
+    for (let index = 0; index < 45; index++) {
       const term = `zeta${index}kappa`;
       entities.push(entity(`ent_${index}`, term));
       nodes.push(node(`n_${index}_a`, term), node(`n_${index}_b`, term));
     }
+
     const concepts = extractor.extract(nodes, [], entities, []);
-    expect(concepts.length).toBeLessThanOrEqual(40);
+    const reversed = extractor.extract([...nodes].reverse(), [], [...entities].reverse(), []);
+
+    expect(concepts).toHaveLength(45);
+    expect(concepts.map(concept => concept.name)).toEqual(
+      Array.from({ length: 45 }, (_, index) => `zeta${index}kappa`).sort(),
+    );
     expect(concepts.every(concept => (concept.distinctiveness_evidence || []).length > 0)).toBe(true);
+    expect(reversed).toEqual(concepts);
+  });
+
+  it('retains every node, entry-point, and entity reference beyond former limits', () => {
+    const nodes = Array.from({ length: 205 }, (_, index) =>
+      node(`invoice_node_${String(index).padStart(3, '0')}`, 'invoice'));
+    const entryPoints = Array.from({ length: 105 }, (_, index) =>
+      entryPoint(`invoice_entry_${String(index).padStart(3, '0')}`, 'invoice', '/invoice'));
+    const entities = Array.from({ length: 105 }, (_, index) =>
+      entity(`invoice_entity_${String(index).padStart(3, '0')}`, 'invoice'));
+
+    const concepts = extractor.extract(nodes, entryPoints, entities, []);
+    const invoice = concepts.find(concept => concept.name === 'invoice')!;
+    const reversed = extractor.extract(
+      [...nodes].reverse(),
+      [...entryPoints].reverse(),
+      [...entities].reverse(),
+      [],
+    ).find(concept => concept.name === 'invoice')!;
+
+    expect(invoice.appears_in.nodes).toEqual(nodes.map(candidate => candidate.id));
+    expect(invoice.appears_in.entry_points).toEqual(entryPoints.map(candidate => candidate.id));
+    expect(invoice.appears_in.entities).toEqual(entities.map(candidate => candidate.id));
+    expect(invoice.frequency).toBe(415);
+    expect(reversed).toEqual(invoice);
   });
 });
 

@@ -87,6 +87,8 @@ test('ProtobufAnalyzer.analyze extracts messages, fields, services, rpcs, entry 
     assert.equal(sayHello.metadata?.attributes?.serverStreaming, false, 'SayHello is unary');
     assert.equal(sayHello.metadata?.attributes?.streaming, 'unary');
     assert.equal(sayHelloStream.metadata?.attributes?.serverStreaming, true, 'SayHelloStream streams responses');
+    assert.ok(cas.nodes.every(node => node.metadata?.attributes?.execution_role === 'declaration'));
+    assert.ok(cas.entry_points.every(entry => entry.metadata?.execution_role === 'declaration'));
     assert.equal(sayHelloStream.metadata?.attributes?.streaming, 'server');
 
     // RPCs are entry points (API contract endpoints).

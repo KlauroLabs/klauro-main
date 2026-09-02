@@ -27,9 +27,6 @@ import { globSync } from 'glob';
 
 
 
-const MAX_GLOB_MEMBERS = 500;
-
-
 function parsePnpmWorkspaceYaml(content: string): string[] {
   const patterns: string[] = [];
   const lines = content.split(/\r?\n/);
@@ -134,7 +131,6 @@ export function resolveWorkspaceGlobMembers(projectPath: string, patterns: strin
         }
         if (!isDir) continue;
         members.add(absolute);
-        if (members.size >= MAX_GLOB_MEMBERS) return Array.from(members);
       }
     } catch {
 

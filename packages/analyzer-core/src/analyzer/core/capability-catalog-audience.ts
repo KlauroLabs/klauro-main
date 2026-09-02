@@ -75,14 +75,57 @@ function unrelatedEntityReferences(
   relatedEntityIds: Set<string>,
   entities: CASDataEntity[],
   productTerms: string[] = [],
+  groundedEntityNames: string[] = [],
 ): string[] {
   const normalizedText = ` ${normalizedEntityPhrase(text)} `;
+  const relatedPhrases = entities
+    .filter(entity => relatedEntityIds.has(entity.id))
+    .map(entity => normalizedEntityPhrase(entity.name))
+    .filter(Boolean);
+  const groundedPhrases = new Set(groundedEntityNames.map(normalizedEntityPhrase).filter(Boolean));
+  const genericSingleWordEntities = new Set(['action', 'change', 'context', 'entry', 'event', 'group', 'item', 'message', 'record', 'result', 'state', 'type', 'value']);
   return entities
     .filter(entity => !relatedEntityIds.has(entity.id))
     .map(entity => ({ name: entity.name, phrase: normalizedEntityPhrase(entity.name) }))
+    .filter(entity => !genericSingleWordEntities.has(entity.phrase))
+    .filter(entity => ![...groundedPhrases].some(grounded => grounded === entity.phrase || ` ${grounded} `.includes(` ${entity.phrase} `)))
     .filter(entity => entity.phrase.includes(' ') || entity.phrase.length >= 5)
     .filter(entity => normalizedText.includes(` ${entity.phrase} `))
+    .filter(entity => !relatedPhrases.some(relatedPhrase => {
+      const relatedTokens = relatedPhrase.split(' ');
+      return relatedTokens.includes(entity.phrase) && normalizedText.includes(` ${relatedPhrase} `);
+    }))
     .filter(entity => !productTextGroundsEntityRelationship(productTerms, relatedEntityIds, entities, entity.name))
+    .map(entity => entity.name);
+}
+
+export function schemaGroundedEntityNames(
+  relatedEntityIds: Set<string>,
+  entities: CASDataEntity[],
+): string[] {
+  const owned = entities.filter(entity => relatedEntityIds.has(entity.id));
+  const relationTargets = new Set(owned
+    .flatMap(entity => entity.relations || [])
+    .map(relation => normalizedEntityPhrase(relation.target_name))
+    .filter(Boolean));
+  const fieldPhrases = owned
+    .flatMap(entity => entity.fields || [])
+    .map(field => normalizedEntityPhrase(field.name))
+    .filter(Boolean);
+  const ownedPhrases = owned.map(entity => normalizedEntityPhrase(entity.name)).filter(Boolean);
+  const bridgeFieldPhrases = entities
+    .filter(entity => !relatedEntityIds.has(entity.id))
+    .map(entity => (entity.fields || []).map(field => normalizedEntityPhrase(field.name)).filter(Boolean))
+    .filter(fields => ownedPhrases.some(ownedPhrase => fields.some(field => ` ${field} `.includes(` ${ownedPhrase} `))))
+    .flat();
+  return entities
+    .filter(entity => !relatedEntityIds.has(entity.id))
+    .filter(entity => {
+      const phrase = normalizedEntityPhrase(entity.name);
+      return relationTargets.has(phrase) ||
+        fieldPhrases.some(field => ` ${field} `.includes(` ${phrase} `)) ||
+        bridgeFieldPhrases.some(field => ` ${field} `.includes(` ${phrase} `));
+    })
     .map(entity => entity.name);
 }
 
@@ -114,14 +157,21 @@ function capabilityNameProductLanguageFailures(name: string, productTerms: strin
     reasons.push('marketing-language');
     flaggedTokens.push(...marketingTerms);
   }
+  const danglingModifier = /\b(?:with|using)\s+(custom|configured|specific|shared|external|personal|financial|automated|selected|associated)\s*$/i.exec(name)?.[1];
+  if (danglingModifier) {
+    reasons.push('incomplete-modifier-tail');
+    flaggedTokens.push(danglingModifier);
+  }
   const trustedWords = new Set(productTerms.flatMap(splitIdentifierWords).map(word => word.toLowerCase()));
   const ordinaryShortWords = new Set(['api', 'app', 'code', 'data', 'map', 'run', 'task', 'user', 'view', 'work']);
   const grammaticalConnectors = new Set([
     'a', 'an', 'and', 'as', 'by', 'for', 'from', 'in', 'into', 'of', 'on', 'or', 'the', 'through', 'to', 'via', 'with',
   ]);
   const shortenedTerms = splitIdentifierWords(name).filter(token => {
-    if (grammaticalConnectors.has(token.toLowerCase())) return false;
+    const normalizedToken = token.toLowerCase();
+    if (grammaticalConnectors.has(normalizedToken)) return false;
     if (!/^[a-z]{2,4}$/.test(token) || ordinaryShortWords.has(token)) return false;
+    if (trustedWords.has(normalizedToken)) return false;
     return [...trustedWords].some(word => word.length >= token.length + 2 && word.startsWith(token));
   });
   if (shortenedTerms.length > 0) {
@@ -198,6 +248,7 @@ export function normalizeCapabilityDescriptionForPublication(
     .replace(/\s+(?:in response to|after|when)\s+(?:an?\s+)?(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+requests?(?:\s+(?:to|through|against)\s+[^,.;]+)?/gi, '')
     .replace(/\s+(?:via|through|using)\s+(?:the\s+)?(?:API(?:\s+endpoint)?|endpoint|route)(?:\s+[^,.;]+)?/gi, '')
     .replace(/\s+(?:using|via|by|based on)\s+(?:the\s+)?(?:article(?:'s)?\s+)?slug(?:\s+as\s+(?:an?\s+)?identifier)?/gi, '')
+    .replace(/,\s*as\s+(?:evidenced|shown|confirmed|supported|indicated|demonstrated|observed)\s+(?:by|in)\b[^.;]*/gi, '')
     .replace(/(?:,\s*)?(?:reflecting|using|via|through|in|from|after|when|with)\b[^.;]*(?:\b(?:api|endpoint|http|route|slug|requests?|responses?)\b|\/[a-z0-9{}:_/-]+)[^.;]*/gi, '')
     .replace(/\s+([,.;:!?])/g, '$1')
     .replace(/[,;:]\s*([.!?])/g, '$1')
@@ -241,20 +292,44 @@ export function capabilityCatalogIntegrationTerms(libraryNames: string[]): strin
   return [...terms].sort();
 }
 
-function groundedCapabilityAudience(
+export function groundedCapabilityAudience(
   capability: SystemCapability,
   productText: CapabilityCatalogProductText | undefined,
   userJourneys: readonly CASUserJourney[],
+  entryPoints: readonly CASEntryPoint[] = [],
 ): string | undefined {
-  const firstPartyText = [
+  const productTextEvidence = [
     productText?.productDocTitle,
     productText?.productDocSummary,
     productText?.manifestDescription,
     productText?.summary,
   ].filter(Boolean).join(' ');
-  const namedAudience = firstPartyText.match(/\b(?:users?|people|humans?|operators?|customers?)\b/i)?.[0];
-  if (namedAudience) return namedAudience;
   const operationEntryPoints = new Set((capability.operations || []).map(operation => operation.entry_point_id));
+  const entryPointEvidence = entryPoints.filter(entryPoint => operationEntryPoints.has(entryPoint.id) &&
+      entryPoint.type === 'event' &&
+      (entryPoint.source_analyzer === 'react' || entryPoint.metadata?.source_analyzer === 'react') &&
+      Boolean(String(entryPoint.metadata?.interaction_label || '').trim()) &&
+      Array.isArray(entryPoint.metadata?.handler_binding_node_ids) && entryPoint.metadata.handler_binding_node_ids.length > 0)
+    .map(entryPoint => [entryPoint.description, entryPoint.metadata?.interaction_label].filter(Boolean).join(' '))
+    .filter(Boolean).join(' ');
+  const audienceEvidence = [productTextEvidence, entryPointEvidence].filter(Boolean).join(' ');
+  const namedAudiences = [...audienceEvidence.matchAll(/\b(?:users?|people|humans?|operators?|customers?)\b/gi)]
+    .map(match => match[0].toLowerCase().replace(/s$/, ''));
+  const distinctAudiences = [...new Set(namedAudiences)];
+  if (distinctAudiences.length > 1) return undefined;
+  if (distinctAudiences.length === 1) {
+    const label = distinctAudiences[0];
+    if (label === 'people' || label === 'person') return 'People';
+    return `${label[0].toUpperCase()}${label.slice(1)}s`;
+  }
+  if (/\b(?:you|your|yours)\b/i.test(audienceEvidence)) return 'Users';
+  const hasExactReactPage = entryPoints.some(entryPoint => operationEntryPoints.has(entryPoint.id) &&
+    entryPoint.type === 'page' &&
+    (entryPoint.source_analyzer === 'react' || entryPoint.metadata?.source_analyzer === 'react') &&
+    entryPoint.metadata?.trigger_kind === 'page-component' &&
+    Boolean(entryPoint.source_node && entryPoint.handler?.node_id === entryPoint.source_node) &&
+    String(entryPoint.metadata?.component || '') === String(entryPoint.handler?.method_name || ''));
+  if (hasExactReactPage) return 'Users';
   return userJourneys.some(journey => journey.journey_kind === 'user-facing' && operationEntryPoints.has(journey.entry_point_id))
     ? 'Users'
     : undefined;
@@ -275,6 +350,7 @@ export function evaluateCapabilityCatalogAudience(
   const rejections: CapabilityAudienceRejection[] = [];
 
   for (const [capabilityIndex, capability] of capabilities.entries()) {
+    const trustedEvidenceDomains = capability.related_domains || [];
     const relatedEntityIds = new Set(capability.related_entities || []);
     const operationTerms = (capability.operations || []).flatMap(operation => [
       operation.action,
@@ -285,6 +361,16 @@ export function evaluateCapabilityCatalogAudience(
     const relatedEntityTerms = (capability.related_entities || [])
       .map(entityId => entityNamesById.get(entityId))
       .filter((value): value is string => Boolean(value));
+    const operationGroundedEntityNames = dataEntities
+      .filter(entity => {
+        const entityPhrase = normalizedEntityPhrase(entity.name);
+        if (!entityPhrase) return false;
+        return operationTerms.some(term =>
+          ` ${normalizedEntityPhrase(term)} `.includes(` ${entityPhrase} `));
+      })
+      .map(entity => entity.name);
+    const dependencyGroundedEntityNames = (capability.depends_on || [])
+      .flatMap(dependency => dependency.evidence.shared_entities || []);
     const capabilityProductTerms = [...productTerms, ...integrationTerms, ...operationTerms, ...relatedEntityTerms];
     const productLanguageFailures = capabilityNameProductLanguageFailures(capability.name, productTerms);
     if (productLanguageFailures.reasons.length > 0) {
@@ -312,7 +398,7 @@ export function evaluateCapabilityCatalogAudience(
       });
       continue;
     }
-    const unrelatedNameEntities = unrelatedEntityReferences(capability.name, relatedEntityIds, dataEntities, productTerms);
+    const unrelatedNameEntities = unrelatedEntityReferences(capability.name, relatedEntityIds, dataEntities, productTerms, [...trustedEvidenceDomains, ...operationGroundedEntityNames, ...dependencyGroundedEntityNames]);
     if (unrelatedNameEntities.length > 0) {
       rejections.push({
         capabilityId: capability.id,
@@ -379,7 +465,8 @@ export function evaluateCapabilityCatalogAudience(
       descriptionVerdict.flaggedTokens.push(...semanticContradictions);
     }
     const descriptionEntityIds = capabilityGroundedEntityIds(capability, dataEntities, context.entryPoints || []);
-    const unrelatedDescriptionEntities = unrelatedEntityReferences(capability.description, descriptionEntityIds, dataEntities, productTerms);
+    const schemaEntityNames = schemaGroundedEntityNames(descriptionEntityIds, dataEntities);
+    const unrelatedDescriptionEntities = unrelatedEntityReferences(capability.description, descriptionEntityIds, dataEntities, productTerms, [...trustedEvidenceDomains, ...operationGroundedEntityNames, ...schemaEntityNames, ...dependencyGroundedEntityNames]);
     if (unrelatedDescriptionEntities.length > 0) {
       descriptionVerdict.failsAudienceTest = true;
       descriptionVerdict.reasons.push('unrelated-entity-vocabulary');

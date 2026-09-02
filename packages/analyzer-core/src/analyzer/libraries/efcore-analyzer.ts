@@ -90,7 +90,7 @@ export class EFCoreAnalyzer extends BaseAnalyzer {
         ignore: this.getIgnorePatterns({ projectPath }),
         nodir: true,
       });
-      for (const rel of csFiles.slice(0, 500)) {
+      for (const rel of csFiles) {
         const content = await fs.readFile(path.join(projectPath, rel), 'utf-8').catch(() => '');
         if (/class\s+\w+\s*:\s*[^{]*\bDbContext\b/.test(content)) return true;
       }

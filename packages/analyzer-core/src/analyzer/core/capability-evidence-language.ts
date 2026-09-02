@@ -23,6 +23,7 @@ export function outcomeIdentityTokens(value: string): string[] {
   const ignored = new Set([
     'a', 'an', 'and', 'as', 'at', 'by', 'for', 'from', 'in', 'into', 'of', 'on', 'or', 'the', 'through', 'to', 'using', 'via', 'with',
     'ability', 'across', 'area', 'behavior', 'capability', 'entry', 'item', 'management', 'operation', 'operations', 'other', 'surface', 'tool', 'tools', 'workflow',
+    'her', 'hers', 'him', 'his', 'its', 'our', 'ours', 'their', 'theirs', 'them', 'they', 'your', 'yours',
   ]);
   return String(value || '')
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
@@ -38,6 +39,10 @@ export function outcomeIdentityTokens(value: string): string[] {
 
 export function outcomeTokenMatches(token: string, evidence: Set<string>): boolean {
   const equivalents: Record<string, string[]> = {
+    adjust: ['change', 'edit', 'update'],
+    change: ['adjust', 'edit', 'update'],
+    edit: ['adjust', 'change', 'update'],
+    update: ['adjust', 'change', 'edit'],
     code: ['codebase', 'software', 'source'],
     codebase: ['code', 'software', 'source'],
     collaborate: ['collaboration', 'coordinate'],

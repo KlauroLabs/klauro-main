@@ -103,6 +103,30 @@ function renderMinimalBootstrapPrompt(): string {
   return buildAgentBootstrapPrompt(cas, start, plan, context, readiness);
 }
 
+test('(bootstrap) capsule-only start context renders without expanded-only fields', () => {
+  const prompt = buildAgentBootstrapPrompt(
+    { system: { name: 'fixture' }, nodes: [{}, {}], edges: [{}], entry_points: [{}], analysis_errors: [] } as any,
+    {
+      context_profile: 'capsule-only',
+      rule: 'Use the compact CAS context before reading files.',
+      system: { type: 'service', description: 'd', languages: [], frameworks: [], top_capabilities: [] },
+    } as any,
+    { rule: 'plan rule', steps: [] } as any,
+    { context_profile: 'capsule-only', files: ['src/example.ts'] } as any,
+    {
+      agent_context_ready: true,
+      status: 'pass',
+      score: 100,
+      profile: { kind: 'backend-service', confidence: 1 },
+      adoption_gaps: [],
+      summary: { nodes: 2, edges: 1, entry_points: 1, errors: 0, warnings: 0 },
+    } as any,
+  );
+  assert.match(prompt, /Nodes: 2, Edges: 1, Entry points: 1/);
+  assert.match(prompt, /Use the compact CAS context before reading files/);
+  assert.match(prompt, /src\/example\.ts/);
+});
+
 // Each pillar → a regex that must match, keyed by human name for failure clarity.
 const CONCEPT_LAYER_PILLARS: Array<[string, RegExp]> = [
   ['runtime/telemetry', /get_runtime_observations/],

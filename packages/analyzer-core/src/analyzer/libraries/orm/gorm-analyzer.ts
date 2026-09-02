@@ -61,7 +61,7 @@ export class GormAnalyzer extends BaseAnalyzer {
       nodir: true,
     });
 
-    for (const file of sourceFiles.slice(0, 400)) {
+    for (const file of sourceFiles) {
       try {
         const content = await fs.readFile(file, 'utf-8');
         if (/"gorm\.io\/gorm"/.test(content) && (/gorm\.Model\b/.test(content) || /gorm:"/.test(content))) {

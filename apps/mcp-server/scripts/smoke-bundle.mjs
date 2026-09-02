@@ -119,6 +119,7 @@ const requiredInstalledTools = [
   'analyze_codebase',
   'resolve_agent_analysis',
   'get_agent_start_context',
+  'get_agent_tool_plan',
   'get_agent_context',
   'get_coding_context',
   'assess_change_risk',

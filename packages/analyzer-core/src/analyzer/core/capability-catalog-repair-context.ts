@@ -9,6 +9,8 @@ export interface CapabilityCatalogRepairPromptFact {
   stable_capability_name?: string;
   first_party_outcomes: string[];
   observable_actions: string[];
+  evidence_fields?: string[];
+  relationships?: string[];
   prior_rejections: Array<{
     forbidden_subject_terms?: string[];
     missing_audience?: string;
@@ -16,6 +18,7 @@ export interface CapabilityCatalogRepairPromptFact {
     missing_subject_terms?: string[];
     opposite_audience_labels?: string[];
     opposite_audience_locations?: string[];
+    rejected_name?: string;
     reason: string;
     requirement_id?: string;
   }>;
@@ -37,6 +40,8 @@ export function compactCapabilityCatalogRepairPromptFact(value: unknown, require
     ...(bounded(fact.stable_capability_name, 180) ? { stable_capability_name: bounded(fact.stable_capability_name, 180) } : {}),
     first_party_outcomes: boundedArray(fact.first_party_outcomes, 4, 800),
     observable_actions: boundedArray(fact.observable_actions, required ? 6 : 8, 160),
+    ...(boundedArray(fact.evidence_fields, 12, 120).length ? { evidence_fields: boundedArray(fact.evidence_fields, 12, 120) } : {}),
+    ...(boundedArray(fact.relationships, required ? 4 : 8, required ? 180 : 320).length ? { relationships: boundedArray(fact.relationships, required ? 4 : 8, required ? 180 : 320) } : {}),
     required_audience_labels: boundedArray(fact.required_audience_labels, 4, 80),
     required_subject_terms: boundedArray(fact.required_subject_terms, 16, 80),
     required_visible_actions: boundedArray(fact.required_visible_actions, 8, 80),
@@ -48,6 +53,7 @@ export function compactCapabilityCatalogRepairPromptFact(value: unknown, require
       const oppositeAudienceLocations = boundedArray(rejection.opposite_audience_locations, 2, 20);
       return {
         reason: bounded(rejection.reason, 180), requirement_id: bounded(rejection.requirement_id, 240),
+        ...(bounded(rejection.rejected_name, 180) ? { rejected_name: bounded(rejection.rejected_name, 180) } : {}),
         forbidden_subject_terms: boundedArray(rejection.forbidden_subject_terms, 12, 120),
         missing_audience: bounded(rejection.missing_audience, 80),
         ...(missingAudienceLocations.length ? { missing_audience_locations: missingAudienceLocations } : {}),
@@ -66,7 +72,7 @@ export function shrinkCapabilityCatalogRepairPromptToBudget(
   const isAudienceCorrection = (rejection: Record<string, unknown>): boolean => Boolean(String(rejection.missing_audience || '').trim()) ||
     [rejection.missing_audience_locations, rejection.opposite_audience_labels, rejection.opposite_audience_locations]
       .some(value => Array.isArray(value) && value.length > 0);
-  const removeLargest = (key: 'prior_rejections' | 'observable_actions' | 'first_party_outcomes'): boolean => {
+  const removeLargest = (key: 'prior_rejections' | 'observable_actions' | 'first_party_outcomes' | 'relationships'): boolean => {
     const removable = candidates.flatMap(candidate => {
       const values = Array.isArray(candidate[key]) ? candidate[key] as unknown[] : [];
       let protectedIndex = -1;
@@ -81,7 +87,7 @@ export function shrinkCapabilityCatalogRepairPromptToBudget(
     (target.candidate[key] as unknown[]).splice(target.index, 1);
     return true;
   };
-  for (const key of ['prior_rejections', 'observable_actions', 'first_party_outcomes'] as const) {
+  for (const key of ['prior_rejections', 'observable_actions', 'relationships', 'first_party_outcomes'] as const) {
     while (measure() > maxBytes && removeLargest(key)) {
       if (measure() <= maxBytes) break;
     }
@@ -131,10 +137,23 @@ function customerVisibleOperationPhrase(value: unknown, groundedTerms: ReadonlyS
 }
 
 function customerSafeRepairReason(value: unknown): string {
-  return String(value || 'rejected').toLowerCase().split(':', 1)[0].replace(/[^a-z0-9-]+/g, '-').slice(0, 120);
+  const normalized = String(value || 'rejected').toLowerCase();
+  const [reason, detail = ''] = normalized.split(':', 2);
+  if (reason === 'required-observable-action-missing') {
+    const actions = detail.split(',').map(action => canonicalCapabilityCatalogOutcomeToken(action))
+      .filter(action => /^(?:create|read|update|delete)$/.test(action));
+    return actions.length > 0 ? `${reason}:${[...new Set(actions)].join(',')}` : reason;
+  }
+  return reason.replace(/[^a-z0-9-]+/g, '-').slice(0, 120);
 }
 
-function customerSafeForbiddenSubjectTerms(values: readonly string[]): string[] {
+function customerSafeRejectedName(value: unknown): string | undefined {
+  const source = String(value || '').trim();
+  return source && /^[A-Za-z][A-Za-z0-9 '&-]+$/.test(source) &&
+    !/(?:[a-z0-9][A-Z]|[A-Z]{2,}[a-z]|\b[A-Z]{2,}\b)/.test(source) ? source.slice(0, 180) : undefined;
+}
+
+function customerSafeForbiddenSubjectTerms(values: readonly string[] = []): string[] {
   return values.filter(value => {
     const source = String(value || '').trim();
     return source.length > 0 && /^[A-Za-z][A-Za-z ]+$/.test(source) &&
@@ -148,6 +167,7 @@ export function capabilityCatalogRepairPromptFacts(
   rejectionsByCandidate: ReadonlyMap<string, CapabilityCatalogPriorRejection[]> = new Map(),
   entityNamesById: ReadonlyMap<string, string> = new Map(),
   firstPartyTexts: readonly string[] = [],
+  entityFieldsById: ReadonlyMap<string, readonly string[]> = new Map(),
 ): CapabilityCatalogRepairPromptFact[] {
   const repairIds = new Set(repairCandidateIds);
   const scopedRequirementIds = new Set(requirements.map(requirement => requirement.id));
@@ -170,16 +190,19 @@ export function capabilityCatalogRepairPromptFacts(
       .filter(token => token.length >= 3)
       .map(canonicalCapabilityCatalogOutcomeToken));
     const genericEvidenceTerms = new Set([
-      'access', 'action', 'add', 'bar', 'card', 'change', 'click', 'close', 'create', 'delete', 'edit', 'event',
-      'get', 'handle', 'head', 'list', 'manage', 'management', 'modal', 'open', 'options', 'patch', 'post',
-      'process', 'put', 'read', 'remove', 'retrieve', 'show', 'submit', 'update', 'user', 'view',
+      'access', 'action', 'add', 'bar', 'bulk', 'card', 'change', 'click', 'close', 'create', 'delete', 'deletion', 'dropdown', 'edit', 'event',
+      'get', 'handle', 'head', 'list', 'manage', 'management', 'modal', 'new', 'open', 'options', 'patch', 'post',
+      'process', 'put', 'read', 'remove', 'resolve', 'retrieve', 'show', 'submit', 'update', 'user', 'view',
     ]);
     const exactCandidateSubject = canonicalCapabilityCatalogOutcomeToken(String(candidate.name || '').trim().toLowerCase());
     const candidateNameIsCustomerVisible = !/(?:[a-z0-9][A-Z]|[A-Z]{2,}[a-z]|[_:/])/.test(candidate.name || '');
     const routeNameHasRecoverableProductTerms = candidate.evidence_kind === 'behavior-surface' &&
       /\/[A-Za-z]/.test(candidate.name || '');
+    const scopedSubjectCandidate = candidate.id.startsWith('operation-obligation:')
+      ? { ...candidate, related_domains: [], evidence_examples: [] }
+      : candidate;
     const evidenceSubjectTerms = candidateNameIsCustomerVisible || routeNameHasRecoverableProductTerms
-      ? capabilityEvidenceSubjectTokens(candidate, (candidate.related_entities || []).map(entityId => entityNamesById.get(entityId) || ''))
+      ? capabilityEvidenceSubjectTokens(scopedSubjectCandidate, (candidate.related_entities || []).map(entityId => entityNamesById.get(entityId) || ''))
         .map(canonicalCapabilityCatalogOutcomeToken)
         .filter(token => token.length >= 3 && (!genericEvidenceTerms.has(token) || (token === 'user' && exactCandidateSubject === 'user')))
         .slice(0, 8)
@@ -198,6 +221,16 @@ export function capabilityCatalogRepairPromptFacts(
       const phrase = customerVisibleOperationPhrase(value, groundedTerms);
       return phrase && !internalPhrases.some(internal => phrase.includes(internal) || internal.includes(phrase)) ? [phrase] : [];
     };
+    const evidenceFields = [...new Set((candidate.related_entities || [])
+      .flatMap(entityId => entityFieldsById.get(entityId) || [])
+      .map(field => String(field || '').trim())
+      .filter(field => field && !/^(?:id|created_at|updated_at|deleted_at|[a-z_]+_id)$/i.test(field)))].slice(0, 12);
+    const relationships = [...new Set((candidate.depends_on || []).flatMap(dependency => {
+      const subjects = [...new Set((dependency.evidence.shared_entities || [])
+        .map(entity => String(entity || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_:/.-]+/g, ' ').trim())
+        .filter(Boolean))];
+      return subjects.length >= 2 ? [`Observed together in one flow: ${subjects.join(', ')}`] : [];
+    }))].slice(0, 8);
     return {
       candidate_id: candidate.id,
       first_party_outcomes: [...new Set([
@@ -207,6 +240,8 @@ export function capabilityCatalogRepairPromptFacts(
       observable_actions: [...new Set((candidate.operations || []).flatMap(operation => [
         ...safeOperation(canonicalCapabilityLifecycleAction(operation)),
       ]))].slice(0, 8),
+      ...(evidenceFields.length ? { evidence_fields: evidenceFields } : {}),
+      ...(relationships.length ? { relationships } : {}),
       required_audience_labels: [...new Set(candidateRequirements.map(requirement =>
         String(requirement.audienceLabel || requirement.audience || '').trim()).filter(Boolean))],
       required_subject_terms: requiredSubjectTerms,
@@ -220,8 +255,10 @@ export function capabilityCatalogRepairPromptFacts(
         .slice(-4)
         .map(rejection => {
           const forbiddenSubjectTerms = customerSafeForbiddenSubjectTerms(rejection.forbidden_subject_terms);
+          const rejectedName = customerSafeRejectedName(rejection.name);
           return {
           reason: customerSafeRepairReason(rejection.reason),
+          ...(rejectedName ? { rejected_name: rejectedName } : {}),
           ...(forbiddenSubjectTerms.length ? { forbidden_subject_terms: forbiddenSubjectTerms } : {}),
           ...(rejection.missing_audience ? { missing_audience: rejection.missing_audience } : {}),
           ...(rejection.missing_audience_locations?.length ? { missing_audience_locations: rejection.missing_audience_locations } : {}),
@@ -242,14 +279,19 @@ export function capabilityCatalogRepairPromptEnvelope(
   entityNamesById: ReadonlyMap<string, string> = new Map(),
   firstPartyTexts: readonly string[] = [],
   stableCapabilityName?: string,
+  requiredVisibleActions: readonly string[] = [],
+  entityFieldsById: ReadonlyMap<string, readonly string[]> = new Map(),
 ): { facts: CapabilityCatalogRepairPromptFact[]; candidateMap: Record<string, string> } {
   const aliases = new Map(repairCandidateIds.map((candidateId, index) => [candidateId, `candidate_${index + 1}`]));
   return {
-    facts: capabilityCatalogRepairPromptFacts(candidates, repairCandidateIds, requirements, rejectionsByCandidate, entityNamesById, firstPartyTexts)
+    facts: capabilityCatalogRepairPromptFacts(candidates, repairCandidateIds, requirements, rejectionsByCandidate, entityNamesById, firstPartyTexts, entityFieldsById)
       .map(fact => ({
         ...fact,
         candidate_id: aliases.get(fact.candidate_id) || '',
         ...(stableCapabilityName ? { stable_capability_name: stableCapabilityName } : {}),
+        ...(requiredVisibleActions.length ? {
+          required_visible_actions: [...new Set(requiredVisibleActions.map(canonicalCapabilityCatalogOutcomeToken))],
+        } : {}),
       })),
     candidateMap: Object.fromEntries([...aliases].map(([rawId, opaqueId]) => [opaqueId, rawId])),
   };
@@ -297,7 +339,9 @@ export function capabilityCatalogEvidenceFallback(
     ['access', 'get', 'list', 'read', 'retrieve', 'show', 'view'].some(action => actions.has(action));
   const hasMutation = [...methods].some(method => /^(?:POST|PUT|PATCH|DELETE)$/.test(method)) ||
     ['add', 'create', 'delete', 'edit', 'remove', 'submit', 'update'].some(action => actions.has(action));
-  const explicitlyNamedReadSurface = candidate.evidence_kind === 'behavior-surface' &&
+  const exactOperationView = candidate.id.startsWith('operation-obligation:') &&
+    (candidate.criticality_factors || []).includes('catalog-aggregate-operation-view');
+  const explicitlyNamedReadSurface = (candidate.evidence_kind === 'behavior-surface' || exactOperationView) &&
     /^(?:get|list|read|retrieve|show|view)\b/i.test(String(candidate.name || '').trim()) &&
     [...methods].some(method => /^(?:GET|HEAD|OPTIONS)$/.test(method));
   if (!canRead || (hasMutation && !explicitlyNamedReadSurface)) return undefined;
@@ -305,8 +349,11 @@ export function capabilityCatalogEvidenceFallback(
   const titleCase = (term: string) => term.split('-')
     .map(part => part ? part[0].toUpperCase() + part.slice(1) : '')
     .join(' ');
-  const candidateWords = String(candidate.name || '').toLowerCase().match(/[a-z][a-z0-9-]*/g) || [];
-  const userScoped = candidateWords.some(word => canonicalCapabilityCatalogOutcomeToken(word) === 'user');
+  const candidateWords = [candidate.name, ...(candidate.operations || []).flatMap(operation => [operation.path_or_command, operation.trigger?.path])]
+    .join(' ').toLowerCase().match(/[a-z][a-z0-9-]*/g) || [];
+  const userScoped = candidateWords.some(word => canonicalCapabilityCatalogOutcomeToken(word) === 'user') ||
+    (candidate.operations || []).some(operation =>
+      /(?:^|[^a-z])user(?:id)?(?:[^a-z]|$)/i.test(String(operation.path_or_command || operation.trigger?.path || '')));
   if (!userScoped) return undefined;
   const displayTerms = requiredTerms.map(term => {
     const matches = candidateWords.filter(word => canonicalCapabilityCatalogOutcomeToken(word) === term);

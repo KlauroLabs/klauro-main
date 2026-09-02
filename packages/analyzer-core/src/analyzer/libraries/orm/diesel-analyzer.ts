@@ -71,7 +71,7 @@ export class DieselAnalyzer extends BaseAnalyzer {
       nodir: true,
     });
 
-    for (const file of sourceFiles.slice(0, 400)) {
+    for (const file of sourceFiles) {
       try {
         const content = await fs.readFile(file, 'utf-8');
         if (/\btable!\s*\{/.test(content) || /derive\s*\([^)]*Queryable/.test(content)) {

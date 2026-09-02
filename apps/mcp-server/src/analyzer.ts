@@ -984,6 +984,7 @@ export async function analyzeProject(projectPath: string, displayName?: string, 
       : await applyStoredElementDescriptions(projectPath, preservePreviousAIDescriptions(
         await loadAnalysis(projectPath, { preferCache: true }).catch(() => null), analyzed
       ));
+    result.layers_ready = buildCompletedAnalysisLayersReady(result);
     if (options.persist !== false) {
       await saveAnalysis(projectPath, result);
       await saveIncrementalState(projectPath, orch.createIncrementalBaseline(projectPath, result));
@@ -1038,6 +1039,9 @@ export async function analyzeProjectDeferred(
     ));
 
     options.prepareStructuralCheckpoint?.(result);
+    if (!result.layers_ready?.layers?.length) {
+      result.layers_ready = buildCompletedAnalysisLayersReady(result);
+    }
     await saveAnalysis(projectPath, result, 'main', { deferSegmentedWrite: options.deferStructuralSegments });
     await saveIncrementalState(projectPath, dedicatedOrch.createIncrementalBaseline(projectPath, result));
     clearFreshnessSummaryCache();
@@ -1073,6 +1077,7 @@ export async function analyzeProjectDeferred(
     };
     if (options.persistEnrichmentResult !== false) {
       await saveAnalysis(projectPath, output);
+      output.layers_ready = buildCompletedAnalysisLayersReady(output);
       clearFreshnessSummaryCache();
       await saveAnalysisSnapshot(projectPath, output);
     }
@@ -1095,6 +1100,7 @@ export async function analyzeProjectDeferred(
     try {
       await withProjectAnalysisLock(projectPath, () => withAiEnrichmentLanePermit(async () => {
         await saveAnalysis(projectPath, output);
+        output.layers_ready = buildCompletedAnalysisLayersReady(output);
         clearFreshnessSummaryCache();
         await saveAnalysisSnapshot(projectPath, output);
       }, undefined, projectPath));
@@ -1174,7 +1180,7 @@ export async function analyzeProjectLayered(
       const existing = forceFullRebuild
         ? null
         : await loadAnalysis(projectPath, { preferCache: true }).catch(() => null);
-      if (existing && (existing.layers_ready?.complete ?? true) && (existing.nodes?.length ?? 0) > 0) {
+      if (existing && existing.layers_ready?.complete === true && (existing.nodes?.length ?? 0) > 0) {
         return;
       }
       await saveAnalysis(projectPath, l0Cas);
@@ -1204,7 +1210,7 @@ export async function analyzeProjectLayered(
       ? null
       : await loadAnalysis(projectPath, { preferCache: true }).catch(() => null);
     const hasCompletePrevious = !forceFullRebuild && Boolean(
-      previous && (previous.layers_ready?.complete ?? true) && (previous.nodes?.length ?? 0) > 0
+      previous && previous.layers_ready?.complete === true && (previous.nodes?.length ?? 0) > 0
     );
     const stampStructuralLayers = (output: CASOutput): void => {
       const contentGeneratedAt = output.analysis_timestamp || new Date().toISOString();

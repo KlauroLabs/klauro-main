@@ -140,8 +140,6 @@ export class DistributionArtifactAnalyzer extends BaseAnalyzer {
     const absoluteFile = path.join(projectPath, relativeFile);
     let content = '';
     try {
-      const stat = await fs.stat(absoluteFile);
-      if (stat.size > 250_000) return undefined;
       content = await fs.readFile(absoluteFile, 'utf8');
     } catch {
       return undefined;
@@ -302,7 +300,7 @@ function installerBinaryNamesFromText(text: string): string[] {
     const value = cleanBinaryName(match[1].split(/[\\/]/).pop() || match[1]);
     if (value) names.add(value);
   }
-  return [...names].filter(name => !isDistributionNoiseToken(name)).slice(0, 40);
+  return [...names].filter(name => !isDistributionNoiseToken(name));
 }
 
 function parseScript(file: string, content: string, kind: DistributionArtifactKind): ParsedDistributionArtifact | undefined {
@@ -385,11 +383,11 @@ function binaryNamesFromText(text: string): string[] {
     const value = cleanBinaryName(match[1]);
     if (value) names.add(value);
   }
-  return [...names].filter(name => !isDistributionNoiseToken(name)).slice(0, 40);
+  return [...names].filter(name => !isDistributionNoiseToken(name));
 }
 
 function serviceNamesFromText(text: string): string[] {
-  return [...new Set([...text.matchAll(/\b([A-Za-z0-9_.-]+)\.service\b/g)].map(match => match[1]).filter(Boolean))].slice(0, 20);
+  return [...new Set([...text.matchAll(/\b([A-Za-z0-9_.-]+)\.service\b/g)].map(match => match[1]).filter(Boolean))];
 }
 
 function pathValuesFromText(text: string): string[] {
@@ -398,7 +396,7 @@ function pathValuesFromText(text: string): string[] {
     const value = match[1]?.trim();
     if (value && /[\\/]/.test(value)) values.add(value);
   }
-  return [...values].slice(0, 20);
+  return [...values];
 }
 
 function installerPlatforms(file: string, content: string): string[] {

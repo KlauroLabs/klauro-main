@@ -143,3 +143,78 @@ test('TypeScript single-file analysis preserves calls into unchanged project fil
     await fs.remove(root);
   }
 });
+
+test('TypeScript analyzes a first-party source file larger than five MiB', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-ts-large-source-'));
+  try {
+    const content = 'export function largeFileExport() { return 42; }\n/*' + 'x'.repeat(5 * 1024 * 1024 + 1) + '*/\n';
+    await fs.writeFile(path.join(root, 'large.ts'), content);
+    const result = await new TypeScriptJavaScriptAnalyzer().analyze({ projectPath: root });
+    assert.ok(result.nodes.some(node => node.name === 'largeFileExport'));
+    assert.equal(result.analyzer_metadata?.analysis_scope?.complete, true);
+    assert.equal(result.analyzer_metadata?.analysis_scope?.files_analyzed, 1);
+    assert.deepEqual(result.analyzer_metadata?.framework_specific?.omitted_source_files, undefined);
+  } finally {
+    await fs.remove(root);
+  }
+});
+
+test('TypeScript records exact source omission diagnostics and incomplete scope when parsing fails', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-ts-parser-omission-'));
+  try {
+    const source = 'export const parserFailureFixture = true;\n';
+    await fs.writeFile(path.join(root, 'broken.ts'), source);
+    const analyzer = new TypeScriptJavaScriptAnalyzer();
+    (analyzer as any).tsExtractor.extractFromSource = () => { throw new Error('forced parser failure'); };
+    const result = await analyzer.analyze({ projectPath: root });
+    assert.equal(result.analyzer_metadata?.analysis_scope?.complete, false);
+    assert.equal(result.analyzer_metadata?.analysis_scope?.files_eligible, 1);
+    assert.equal(result.analyzer_metadata?.analysis_scope?.files_analyzed, 0);
+    assert.equal(result.analyzer_metadata?.analysis_scope?.files_skipped, 1);
+    assert.match(result.analyzer_metadata?.analysis_scope?.incomplete_reason || '', /1 source file/);
+    assert.deepEqual(result.analyzer_metadata?.framework_specific?.omitted_source_files, [{
+      path: 'broken.ts',
+      reason: 'parser failed: forced parser failure',
+      bytes: Buffer.byteLength(source),
+    }]);
+    assert.match((result.analyzer_metadata?.warnings || []).join('\n'), /broken\.ts could not be parsed/);
+  } finally {
+    await fs.remove(root);
+  }
+});
+test('TypeScript treats recovered parser artifacts as complete but records genuine partial syntax exactly', async () => {
+  const recoveredRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-ts-recovered-syntax-'));
+  const partialRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-ts-partial-syntax-'));
+  try {
+    await fs.writeFile(path.join(recoveredRoot, 'valid.tsx'), [
+      'export function View() { return <p>Use <span>&&</span></p>; }',
+      'export async function load(importOriginal: Function) { return importOriginal<typeof import("pkg")>(); }',
+      'export function check(expect: Function, html: string, prefix: string) { expect(html).toContain(`${prefix}<span>value</span>`); }',
+    ].join('\n'));
+    const recovered = await new TypeScriptJavaScriptAnalyzer().analyze({ projectPath: recoveredRoot });
+    assert.equal(recovered.analyzer_metadata?.analysis_scope?.complete, true);
+    assert.equal(recovered.analyzer_metadata?.analysis_scope?.files_skipped, 0);
+    assert.equal(recovered.analyzer_metadata?.framework_specific?.partial_source_files, undefined);
+    assert.doesNotMatch((recovered.analyzer_metadata?.warnings || []).join('\n'), /could not fully recognize|syntax errors/);
+
+    const malformed = 'export function broken(: number { return 1; }\n';
+    await fs.writeFile(path.join(partialRoot, 'broken.ts'), malformed);
+    const partial = await new TypeScriptJavaScriptAnalyzer().analyze({ projectPath: partialRoot });
+    assert.equal(partial.analyzer_metadata?.analysis_scope?.complete, false);
+    assert.equal(partial.analyzer_metadata?.analysis_scope?.files_analyzed, 1);
+    assert.equal(partial.analyzer_metadata?.analysis_scope?.files_skipped, 1);
+    assert.deepEqual(partial.analyzer_metadata?.analysis_scope?.omitted_paths, ['broken.ts']);
+    assert.deepEqual(partial.analyzer_metadata?.framework_specific?.partial_source_files, [{
+      path: 'broken.ts',
+      reason: partial.analyzer_metadata?.framework_specific?.partial_source_files[0].reason,
+      bytes: Buffer.byteLength(malformed),
+    }]);
+    assert.match(partial.analyzer_metadata?.framework_specific?.partial_source_files[0].reason, /unparsed syntax near line 1/);
+    assert.match((partial.analyzer_metadata?.warnings || []).join('\n'), /broken\.ts contains a construct our parser could not fully recognize/);
+  } finally {
+    await Promise.all([
+      fs.remove(recoveredRoot),
+      fs.remove(partialRoot),
+    ]);
+  }
+});

@@ -104,6 +104,27 @@ export function jsonForTest(value: unknown, toolName?: string) {
 
 
 
+export function buildHostedAnalysisResolution(
+  projectPath: string,
+  status: Record<string, unknown>,
+  clientBuildWarning: string | null = null,
+): Record<string, unknown> {
+  const hostedSelectedPath = typeof status.selected_path === 'string' && status.selected_path.length > 0
+    ? status.selected_path
+    : null;
+  const selectedPath = hostedSelectedPath || (status.status === 'ready' ? path.resolve(projectPath) : null);
+  const recommendation = selectedPath
+    ? 'Continue with the selected path; its bound hosted analysis is ready.'
+    : 'Hosted analysis is ' + String(status.status || 'unavailable') + '; wait for a ready analysis before requesting agent context.';
+  return {
+    ...status,
+    requested_path: projectPath,
+    selected_path: selectedPath,
+    recommendation,
+    ...(clientBuildWarning ? { client_build_warning: clientBuildWarning } : {}),
+  };
+}
+
 async function hostedProjectGet(projectPath: string, suffix: string, params: Record<string, unknown> = {}) {
   const loaded = await loadKlauroConfig(projectPath);
   const serverUrl = resolveAnalyzerUrl(loaded)!.replace(/\/+$/, '');
@@ -413,7 +434,7 @@ export function createServer(): McpServer {
     const status = await hostedProjectGet(path, '/analysis-status') as Record<string, unknown>;
     let staleness: { note: string | null } = { note: null };
     try { staleness = checkRunningBundleStaleness(__dirname); } catch {   }
-    return json(staleness.note ? { ...status, client_build_warning: staleness.note } : status);
+    return json(buildHostedAnalysisResolution(path, status, staleness.note));
   });
 
   register('get_summary', {
@@ -440,7 +461,7 @@ export function createServer(): McpServer {
   });
 
   register('get_conceptual_analysis', {
-    description: 'Retrieve bounded, paginated hosted capability, flow, and step comprehension without downloading CAS.',
+    description: 'Retrieve bounded, paginated hosted capability, intent-reconciliation, flow, and step comprehension without downloading CAS.',
     inputSchema: {
       path: z.string(), target: z.string().optional(), max_flows: z.number().optional(),
       flow_offset: z.number().optional(), catalog_limit: z.number().optional(), catalog_offset: z.number().optional(),

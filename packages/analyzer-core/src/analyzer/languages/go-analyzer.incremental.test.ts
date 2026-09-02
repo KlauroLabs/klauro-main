@@ -60,3 +60,101 @@ test('single-file Go analysis remains graph-equivalent to the cold analyzer cont
     fs.rmSync(projectPath, { recursive: true, force: true });
   }
 });
+
+type RelationshipNode = {
+  id: string;
+  name: string;
+  type: string;
+  source?: { file: string };
+  metadata?: { attributes?: { receiver?: { type: string }; embedded?: string[] } };
+};
+
+type RelationshipEdge = { id: string; source: string; target: string; type: string };
+
+function referenceTypeRelationships(nodes: RelationshipNode[], edges: RelationshipEdge[]): RelationshipEdge[] {
+  const result = [...edges];
+  const structNodes = nodes.filter(node => node.type === 'struct');
+  const interfaceNodes = nodes.filter(node => node.type === 'interface');
+  for (const structNode of structNodes) {
+    const structMethods = nodes.filter(node =>
+      node.type === 'method' && node.metadata?.attributes?.receiver?.type === structNode.name
+    );
+    for (const interfaceNode of interfaceNodes) {
+      const interfaceMethods = nodes.filter(node =>
+        node.type === 'interface_method' && result.some(edge => edge.source === interfaceNode.id && edge.target === node.id)
+      );
+      if (interfaceMethods.length > 0 && interfaceMethods.every(method =>
+        structMethods.some(structMethod => structMethod.name === method.name)
+      )) {
+        result.push({
+          id: `${structNode.id}_implements_${interfaceNode.id}`,
+          source: structNode.id,
+          target: interfaceNode.id,
+          type: 'implements',
+        });
+      }
+    }
+  }
+  return result;
+}
+
+function relationshipProjection(edges: RelationshipEdge[]): RelationshipEdge[] {
+  return edges
+    .filter(edge => edge.type === 'implements')
+    .map(({ id, source, target, type }) => ({ id, source, target, type }))
+    .sort((left, right) => left.id.localeCompare(right.id));
+}
+
+test('indexed Go type relationships preserve reference semantics across files and duplicate names', () => {
+  const nodes: RelationshipNode[] = [
+    { id: 'struct_a_widget', name: 'Widget', type: 'struct', source: { file: 'a/widget.go' } },
+    { id: 'struct_b_widget', name: 'Widget', type: 'struct', source: { file: 'b/widget.go' } },
+    { id: 'struct_embedded', name: 'EmbeddedWidget', type: 'struct', source: { file: 'c/widget.go' }, metadata: { attributes: { embedded: ['Widget'] } } },
+    { id: 'method_widget_run_a', name: 'Run', type: 'method', source: { file: 'a/widget.go' }, metadata: { attributes: { receiver: { type: 'Widget' } } } },
+    { id: 'method_widget_run_b', name: 'Run', type: 'method', source: { file: 'b/widget.go' }, metadata: { attributes: { receiver: { type: 'Widget' } } } },
+    { id: 'method_widget_stop', name: 'Stop', type: 'method', source: { file: 'b/widget.go' }, metadata: { attributes: { receiver: { type: 'Widget' } } } },
+    { id: 'method_embedded_run', name: 'Run', type: 'method', source: { file: 'c/widget.go' }, metadata: { attributes: { receiver: { type: 'EmbeddedWidget' } } } },
+    { id: 'interface_runner', name: 'Runner', type: 'interface', source: { file: 'contracts/runner.go' } },
+    { id: 'interface_lifecycle', name: 'Lifecycle', type: 'interface', source: { file: 'contracts/lifecycle.go' } },
+    { id: 'interface_method_run', name: 'Run', type: 'interface_method', source: { file: 'contracts/runner.go' } },
+    { id: 'interface_method_stop', name: 'Stop', type: 'interface_method', source: { file: 'contracts/lifecycle.go' } },
+  ];
+  const edges: RelationshipEdge[] = [
+    { id: 'runner_run', source: 'interface_runner', target: 'interface_method_run', type: 'has_method' },
+    { id: 'lifecycle_run', source: 'interface_lifecycle', target: 'interface_method_run', type: 'has_method' },
+    { id: 'lifecycle_stop', source: 'interface_lifecycle', target: 'interface_method_stop', type: 'has_method' },
+  ];
+  const expected = referenceTypeRelationships(nodes, edges);
+  const actual = [...edges];
+
+  (new GoAnalyzer() as any).buildTypeRelationships(nodes, actual);
+
+  assert.deepEqual(relationshipProjection(actual), relationshipProjection(expected));
+});
+
+test('indexed Go type relationships perform a bounded number of global node scans', () => {
+  const rawNodes: RelationshipNode[] = [];
+  const edges: RelationshipEdge[] = [];
+  for (let index = 0; index < 500; index++) {
+    rawNodes.push({ id: `struct_${index}`, name: `Struct${index}`, type: 'struct' });
+    rawNodes.push({ id: `method_${index}`, name: 'Run', type: 'method', metadata: { attributes: { receiver: { type: `Struct${index}` } } } });
+  }
+  rawNodes.push({ id: 'interface_runner', name: 'Runner', type: 'interface' });
+  rawNodes.push({ id: 'interface_method_run', name: 'Run', type: 'interface_method' });
+  edges.push({ id: 'has_method_run', source: 'interface_runner', target: 'interface_method_run', type: 'has_method' });
+  let globalFilterCalls = 0;
+  const nodes = new Proxy(rawNodes, {
+    get(target, property, receiver) {
+      if (property === 'filter') globalFilterCalls++;
+      return Reflect.get(target, property, receiver);
+    },
+  });
+
+  (new GoAnalyzer() as any).buildTypeRelationships(nodes, edges);
+
+  assert.equal(globalFilterCalls, 2);
+  assert.equal(edges.filter(edge => edge.type === 'implements').length, 500);
+
+  (new GoAnalyzer() as any).buildTypeRelationships(nodes, edges);
+  assert.equal(edges.filter(edge => edge.type === 'implements').length, 500);
+});

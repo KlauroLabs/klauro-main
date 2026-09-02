@@ -73,11 +73,11 @@ test('freshness-on-read: a new file with a new function is visible via onboardin
       const initialDurationMs = Date.now() - initialStart;
 
       const initialCas = await getFreshAnalysisForAgent(project);
-      assert.equal(initialCas.layers_ready?.complete, true, 'initial incremental analysis must persist a complete layer manifest');
+      assert.equal(initialCas.layers_ready?.complete, false, 'disabled AI must remain visible as incomplete');
       assert.deepEqual(
         initialCas.layers_ready?.layers.map(layer => [layer.layer, layer.status]),
-        [['L0', 'ready'], ['L1', 'ready'], ['L2', 'ready'], ['L3', 'ready'], ['L4', 'ready'], ['L5', 'ready']],
-        'every completed analysis layer must be explicitly ready',
+        [['L0', 'ready'], ['L1', 'ready'], ['L2', 'ready'], ['L3', 'ready'], ['L4', 'error'], ['L5', 'error']],
+        'structural freshness must be ready while unavailable AI comprehension remains fail-closed',
       );
       assert.ok(
         (initialCas.nodes || []).some(n => n.name === 'alpha'),
@@ -106,7 +106,11 @@ test('freshness-on-read: a new file with a new function is visible via onboardin
       assert.notEqual(preRefreshSummary!.staleness, 'fresh', 'adding a new file must be detected as staleness');
 
       const refreshedCas = await getFreshAnalysisForAgent(project);
-      assert.equal(refreshedCas.layers_ready?.complete, true, 'changed-file incremental analysis must preserve the complete layer contract');
+      assert.deepEqual(
+        refreshedCas.layers_ready?.layers.map(layer => [layer.layer, layer.status]),
+        [['L0', 'ready'], ['L1', 'ready'], ['L2', 'ready'], ['L3', 'ready'], ['L4', 'error'], ['L5', 'error']],
+        'changed-file refresh must preserve structural readiness without concealing disabled AI comprehension',
+      );
       const codingContext = query.getCodingContext(refreshedCas, 'newModuleFn', {});
       assert.ok(
         !('error' in codingContext),

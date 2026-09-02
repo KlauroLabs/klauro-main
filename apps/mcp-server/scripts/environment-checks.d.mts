@@ -102,6 +102,8 @@ export declare function callBundleTool(input: {
   nodePath?: string;
 }): Promise<BundleToolCallResult>;
 export declare function decideBuildAction(input: { distComplete: boolean; rebuildRequested: boolean }): { build: boolean; reason: string };
+export declare const REQUIRED_CLIENT_BUNDLE_FILES: readonly string[];
+export declare function inspectClientBundle(distPath: string): { complete: boolean; missing: string[] };
 export declare function claudeRegisterCommand(bundlePath: string, scope?: string): string;
 export declare function mcpJsonSnippet(bundlePath: string, packageRoot: string): string;
 export declare function codexInstructions(bundlePath: string): string;

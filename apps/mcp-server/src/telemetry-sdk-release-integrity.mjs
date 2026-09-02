@@ -387,7 +387,12 @@ function acquirePublicationLock(lockDir, options = {}) {
       rmSync(pending, { recursive: true, force: true });
       if (!['EEXIST', 'ENOTEMPTY'].includes(error?.code)) throw error;
       let owner;
-      try { owner = JSON.parse(readFileSync(path.join(lockDir, 'owner.json'), 'utf8')); } catch { throw new Error(`Release publication lock has unknown ownership: ${lockDir}`); }
+      try {
+        owner = JSON.parse(readFileSync(path.join(lockDir, 'owner.json'), 'utf8'));
+      } catch (ownerError) {
+        if (ownerError?.code === 'ENOENT') continue;
+        throw new Error(`Release publication lock has unknown ownership: ${lockDir}`);
+      }
       const sameInstance = owner.instance === instance;
       const priorBoot = sameInstance && boot && owner.boot_id && owner.boot_id !== boot;
       const ownerStart = sameInstance && boot && owner.boot_id === boot && Number.isInteger(owner.pid) ? processStart(owner.pid) : undefined;

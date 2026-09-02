@@ -431,7 +431,7 @@ function resolveDebounceMs(): number {
 
 export function isCasComprehensionSettled(cas: any): boolean {
   if (cas?.ai_enrichment === 'pending') return false;
-  if (!cas?.layers_ready) return true;
+  if (!cas?.layers_ready?.layers?.length) return false;
   const layers = Array.isArray(cas.layers_ready.layers) ? cas.layers_ready.layers : [];
   const l5 = layers.find((layer: any) => layer?.layer === 'L5');
 

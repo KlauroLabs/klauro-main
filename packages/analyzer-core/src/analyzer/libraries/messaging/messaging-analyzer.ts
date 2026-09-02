@@ -128,7 +128,7 @@ export class MessagingAnalyzer extends BaseAnalyzer {
     })).filter(file => !isTestFileName(path.basename(file)));
 
     const importRe = /(from\s+['"]kafkajs['"]|require\(['"]kafkajs['"]\)|from\s+['"]amqplib['"]|require\(['"]amqplib['"]\)|from\s+['"]amqp-connection-manager['"]|require\(['"]amqp-connection-manager['"]\)|from\s+['"]@nestjs\/microservices['"]|@MessagePattern|@EventPattern|from\s+['"]bullmq['"]|require\(['"]bullmq['"]\)|from\s+celery\b|import\s+celery\b|from\s+confluent_kafka\b|from\s+kafka\b|import\s+pika\b|@KafkaListener|KafkaTemplate|@RabbitListener|RabbitTemplate|Sidekiq::Worker|github\.com\/segmentio\/kafka-go|github\.com\/nats-io\/nats\.go)/;
-    for (const file of files.slice(0, 400)) {
+    for (const file of files) {
       try {
         const content = await fs.readFile(file, 'utf-8');
         if (importRe.test(content)) return true;

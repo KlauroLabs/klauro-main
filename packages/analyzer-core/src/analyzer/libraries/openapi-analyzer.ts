@@ -210,6 +210,7 @@ export class OpenAPIAnalyzer extends BaseAnalyzer {
           summary: op.summary,
           tags: op.tags,
           contractRefs: op.refs,
+          attributes: { execution_role: 'declaration', declaration_kind: 'openapi-operation-contract' },
           subcategories: ['operation', 'openapi', 'api'],
         }
       ));
@@ -220,7 +221,14 @@ export class OpenAPIAnalyzer extends BaseAnalyzer {
         'http',
         displayName,
         op.summary,
-        { method: op.method.toUpperCase(), path: op.apiPath }
+        { method: op.method.toUpperCase(), path: op.apiPath },
+        undefined,
+        {
+          execution_role: 'declaration',
+          declaration_kind: 'openapi-operation-contract',
+          operationId: op.operationId,
+          tags: op.tags,
+        }
       ));
 
 

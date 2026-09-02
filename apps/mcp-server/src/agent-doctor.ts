@@ -39,7 +39,8 @@ export async function getAgentDoctor(cas: CASOutput, projectPath: string, option
 
 
   const layersReady = cas.layers_ready;
-  const analysisComplete = !layersReady || layersReady.complete !== false;
+  const hasLayerManifest = Boolean(layersReady?.layers?.length);
+  const analysisComplete = hasLayerManifest && layersReady?.complete === true;
   const pendingLayers = (layersReady?.layers || []).filter(layer => layer.status === 'pending').map(layer => layer.layer);
   const readiness = evaluateAgentReadiness(cas, projectPath, { testEvidence });
   const contract = validateCASContract(cas);
@@ -57,8 +58,10 @@ export async function getAgentDoctor(cas: CASOutput, projectPath: string, option
     check('cas-contract', contract.status, contract.score, `${contract.summary.nodes} nodes, ${contract.summary.edges} edges`),
     check('agent-readiness', readiness.status, readiness.score, readiness.agent_context_ready ? 'Ready for agent use' : readiness.adoption_gaps.join('; ')),
     check('freshness', freshness.status === 'fresh' ? 'pass' : freshness.status === 'stale' ? 'warn' : 'fail', freshness.status === 'fresh' ? 100 : freshness.status === 'stale' ? 70 : 0, freshness.recommendation),
-    check('layers-complete', analysisComplete ? 'pass' : 'warn', analysisComplete ? 100 : 60,
-      analysisComplete ? 'All analysis layers complete' : `Analysis still populating: ${pendingLayers.join(', ') || 'background layers pending'}`),
+    check('layers-complete', analysisComplete ? 'pass' : !hasLayerManifest ? 'fail' : 'warn', analysisComplete ? 100 : !hasLayerManifest ? 0 : 60,
+      analysisComplete
+        ? 'All analysis layers complete'
+        : !hasLayerManifest ? 'Analysis readiness manifest is missing' : `Analysis still populating: ${pendingLayers.join(', ') || 'background layers pending'}`),
     check('test-evidence', testEvidence.status === 'cas-covered' ? 'pass' : 'warn', testEvidence.status === 'cas-covered' ? 100 : 80, testEvidence.summary),
     check('runtime-sdk', runtime.totals.runtime_static_links > 0 && sdkPackage.files.length > 0 ? 'pass' : 'warn', runtime.totals.runtime_static_links > 0 ? 100 : 75, `${runtime.totals.runtime_static_links} runtime links, ${sdkPackage.files.length} SDK files`),
     check('golden-snapshot', goldenStatus, goldenStatus === 'pass' ? 100 : goldenStatus === 'warn' ? 80 : 0, savedGolden ? `${goldenGates.length} snapshot gates` : 'No saved CAS golden snapshot'),

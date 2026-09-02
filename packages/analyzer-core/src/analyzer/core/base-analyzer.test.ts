@@ -47,8 +47,12 @@ class TestAnalyzer extends BaseAnalyzer {
     return this.getPackageDirSafeIgnorePatterns(context);
   }
 
-  public buildContribution(nodes: any[], entryPoints: any[]): CASContribution {
-    return this.createContribution(nodes, [], entryPoints, []);
+  public buildContribution(nodes: any[], entryPoints: any[], metadata: Record<string, any> = {}): CASContribution {
+    return this.createContribution(nodes, [], entryPoints, [], metadata);
+  }
+
+  public selectSourceFiles(files: string[]): string[] {
+    return this.capAndPrioritizeSourceFiles(files, 'test source files');
   }
 
   public exposedPyprojectHasRealDependency(pyprojectContent: string, needle: string): boolean {
@@ -56,6 +60,42 @@ class TestAnalyzer extends BaseAnalyzer {
   }
 }
 
+test('canonical analyzer extraction retains files beyond the former per-analyzer cap', () => {
+  const previousLimit = process.env.KLAURO_MAX_FILES_PER_ANALYZER;
+  process.env.KLAURO_MAX_FILES_PER_ANALYZER = '2';
+  try {
+    const analyzer = new TestAnalyzer();
+    const files = [
+      'src/first.ts',
+      'src/second.ts',
+      'src/beyond-former-cap.ts',
+    ];
+
+    assert.deepEqual(analyzer.selectSourceFiles(files), files);
+  } finally {
+    if (previousLimit === undefined) delete process.env.KLAURO_MAX_FILES_PER_ANALYZER;
+    else process.env.KLAURO_MAX_FILES_PER_ANALYZER = previousLimit;
+  }
+});
+
+test('analyzer coverage metadata cannot claim complete when analyzed files are below eligible files', () => {
+  const analyzer = new TestAnalyzer();
+  const contribution = analyzer.buildContribution([], [], {
+    analysis_scope: {
+      files_eligible: 3,
+      files_analyzed: 2,
+      files_skipped: 0,
+      complete: true,
+    },
+  });
+
+  assert.equal(contribution.analyzer_metadata?.analysis_scope?.complete, false);
+  assert.match(
+    contribution.analyzer_metadata?.warnings?.join('\n') || '',
+    /incomplete source coverage: analyzed 2 of 3 eligible files/,
+
+  );
+});
 test('BaseAnalyzer backfills entry_point.handler from a backing node with a real source location (UI-event-like case)', () => {
   const analyzer = new TestAnalyzer();
   const componentNode = analyzer.buildNode('component_1', 'Checkout', 'functional_component', '/repo/src/Checkout.tsx', 1);
@@ -127,6 +167,21 @@ test('getIgnorePatterns excludes __tests__/ alongside fixtures/testdata/cas-test
   assert.ok(patterns.includes('**/testdata/**'), 'must still exclude **/testdata/**');
   assert.ok(patterns.includes('**/cas-tests/**'), 'must still exclude **/cas-tests/**');
 });
+
+test('agent-fast focus cannot exclude first-party legacy directories from canonical extraction', () => {
+  const previous = process.env.KLAURO_AGENT_FAST_EXCLUDE_LEGACY;
+  process.env.KLAURO_AGENT_FAST_EXCLUDE_LEGACY = 'true';
+  try {
+    const analyzer = new TestAnalyzer();
+    const patterns = analyzer.exposedIgnorePatterns({ projectPath: '/repo' });
+    assert.ok(!patterns.includes('legacy/**'));
+    assert.ok(!patterns.includes('**/legacy/**'));
+  } finally {
+    if (previous === undefined) delete process.env.KLAURO_AGENT_FAST_EXCLUDE_LEGACY;
+    else process.env.KLAURO_AGENT_FAST_EXCLUDE_LEGACY = previous;
+  }
+});
+
 
 test('getIgnorePatterns excludes named distribution output variants', () => {
   const analyzer = new TestAnalyzer();

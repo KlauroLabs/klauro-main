@@ -1,4 +1,5 @@
 import type { SystemCapability } from '../../types/cas.types';
+import { observedCapabilityLifecycleActions } from './capability-lifecycle-actions';
 
 export interface CapabilityFamilySemantics {
   isGenericToken: (token: string) => boolean;
@@ -23,6 +24,19 @@ function operationFamiliesCanMerge(left: SystemCapability, right: SystemCapabili
   const rightOperations = operationKeys(right);
   if (leftOperations.size === 0 || rightOperations.size === 0) return true;
   return [...leftOperations].some(operation => rightOperations.has(operation));
+}
+
+const resourceLifecycleActions = new Set([
+  'access', 'add', 'archive', 'create', 'delete', 'edit', 'get', 'list', 'modify',
+  'read', 'remove', 'show', 'update', 'view', 'write',
+]);
+
+function operationsFormResourceLifecycle(left: SystemCapability, right: SystemCapability): boolean {
+  const actions = observedCapabilityLifecycleActions([
+    ...(left.operations || []),
+    ...(right.operations || []),
+  ]);
+  return actions.length > 0 && actions.every(action => resourceLifecycleActions.has(action));
 }
 
 export function groupCapabilityCatalogFamilies(
@@ -68,15 +82,20 @@ export function groupCapabilityCatalogFamilies(
   };
   for (let left = 0; left < candidates.length; left++) {
     for (let right = left + 1; right < candidates.length; right++) {
-      if (!operationFamiliesCanMerge(candidates[left], candidates[right])) continue;
+      const operationOverlap = operationFamiliesCanMerge(candidates[left], candidates[right]);
       const subjectOverlap = tokenSetsOverlap(tokens[left], tokens[right]);
       const sharedEntities = [...entities[left]].filter(value => entities[right].has(value));
+      const identicalSubjects = tokens[left].size === tokens[right].size &&
+        [...tokens[left]].every(token => tokens[right].has(token));
       const distinctiveEntityOverlap = sharedEntities.some(value => value.replace(/^entity[_:-]?/, '')
         .split(/[^a-z0-9]+/).some(token => token.length >= 4 && !semantics.isGenericToken(token)));
       const bothBehaviorSurfaces = candidates[left].evidence_kind === 'behavior-surface' &&
         candidates[right].evidence_kind === 'behavior-surface';
-      if (subjectOverlap || (!bothBehaviorSurfaces && sharedEntities.length > 0 &&
-        (distinctiveEntityOverlap || tokens[left].size === 0 || tokens[right].size === 0))) union(left, right);
+      const sharedResourceLifecycle = !bothBehaviorSurfaces && distinctiveEntityOverlap &&
+        operationsFormResourceLifecycle(candidates[left], candidates[right]);
+      if ((operationOverlap && (subjectOverlap || (!bothBehaviorSurfaces && sharedEntities.length > 0 &&
+        (distinctiveEntityOverlap || tokens[left].size === 0 || tokens[right].size === 0)))) ||
+        sharedResourceLifecycle || (subjectOverlap && !identicalSubjects && operationsFormResourceLifecycle(candidates[left], candidates[right]))) union(left, right);
     }
   }
   const roots = new Set<number>();

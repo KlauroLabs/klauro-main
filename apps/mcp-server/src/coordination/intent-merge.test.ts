@@ -10,7 +10,9 @@ import { saveAnalysis } from '../storage';
 import { appendClaim, readSurprisesFor } from './local-store';
 import { appendParticipantInFlightSnapshot } from './participant-in-flight-store';
 import { getFabricDeliveryMetrics, recordFabricDeliveryStage } from './fabric-delivery-metrics';
+import type { CASOutput } from '../../../../packages/analyzer-core/src/types/cas.types';
 import type { WorkClaim } from './types';
+import { buildCompletedAnalysisLayersReady } from '../layered-analysis';
 
 const cas: ConflictCas = {
   nodes: [
@@ -272,7 +274,7 @@ function makeCas(opts: {
   nodes: Array<{ id: string; name: string; file?: string; return_type?: string; line?: number }>;
   edges?: Array<{ source: string; target: string; type: string }>;
 }): any {
-  return {
+  const output: CASOutput = {
     cas_version: '1.0.0',
     analysis_timestamp: opts.timestamp,
     analysis_id: `analysis_${opts.timestamp}`,
@@ -289,8 +291,11 @@ function makeCas(opts: {
     exit_points: [],
     call_chains: [],
     capabilities: [],
+    progressive_levels: {} as any,
     analyzer_contributions: [],
   };
+  output.layers_ready = buildCompletedAnalysisLayersReady(output);
+  return output;
 }
 
 function makeClaim(workspace: string, overrides: Partial<WorkClaim> = {}): Omit<WorkClaim, 'seq'> {

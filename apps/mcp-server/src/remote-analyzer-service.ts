@@ -75,7 +75,7 @@ async function throwSubCasScopeError(workspace: string, subCasNodeId: string, fa
   }
   throw new AccountHttpError(400, fallback);
 }
-import { completedAnalysisLandedAfterAttempt, failedAttemptHasQueryableAnalysis, isStructuralAnalysisLayer, paginateConceptualCatalog, parseConceptualCatalogPage, unavailableComprehensionResponse, unavailableFailedAttemptWithStaleAnalysis, unavailableLatestAnalyzeAttempt, unavailableStructuralAnalysisResponse, unavailableStructuralQueryResponse } from './analysis-response-readiness';
+import { completedAnalysisLandedAfterAttempt, failedAttemptHasQueryableAnalysis, isStructuralAnalysisLayer, paginateCapabilityReconciliation, paginateConceptualCatalog, parseConceptualCatalogPage, unavailableComprehensionResponse, unavailableFailedAttemptWithStaleAnalysis, unavailableLatestAnalyzeAttempt, unavailableStructuralAnalysisResponse, unavailableStructuralQueryResponse } from './analysis-response-readiness';
 import { analysisAttemptFenceResponse } from './analysis-attempt-fence';
 import { projectAttemptRecordPath, readAttemptRecord, writeAttemptRecord, type AnalysisAttemptRecord } from './analysis-attempt-record';
 import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
@@ -733,7 +733,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         const failedLayers = layers.filter(layer => layer.status === 'error');
         const complete = Boolean(
           entry
-          && (entry.layers_ready?.complete ?? true)
+          && entry.layers_ready?.complete === true
           && lastAttempt?.state !== 'in-progress'
           && !activeCommittedSnapshots.has(analysisId),
         );
@@ -3141,7 +3141,6 @@ async function handleAccountApi(
       const architectural = getArchitecturalConflicts(cas, { limit: 25 });
       const paradigms = getParadigmConformance(cas);
       const perspectives = getPerspectives(cas);
-
       const flowEdgesByCapability = new Map<string, Array<{ flow_id: string; role: string; rationale: string }>>();
       for (const flow of (flowConcepts.flows || []) as Array<{
         flow_id: string;
@@ -3173,6 +3172,7 @@ async function handleAccountApi(
         related_flows: flowEdgesByCapability.get(surface.id) || [],
       }));
       const catalog = paginateConceptualCatalog(allCapabilities, allBehaviorSurfaces, catalogPage);
+      const capabilityReconciliation = paginateCapabilityReconciliation(cas.enhanced_system_purpose?.capability_reconciliation, catalogPage);
       const body = {
         status: 'ready',
         project_id: project.id,
@@ -3180,12 +3180,9 @@ async function handleAccountApi(
         capabilities: catalog.capabilities.values, capability_page: catalog.capabilities.page,
         behavior_surface_page: catalog.behavior_surfaces.page,
         ...(catalog.behavior_surfaces.values.length ? { behavior_surfaces: catalog.behavior_surfaces.values } : {}),
+        ...(capabilityReconciliation ? { capability_reconciliation: capabilityReconciliation } : {}),
         flows: flowConcepts,
-        structural: {
-          architectural,
-          paradigms,
-          perspectives,
-        },
+        structural: { architectural, paradigms, perspectives },
       };
       const serializedBody = JSON.stringify(body);
       if (cacheKey) casReadResponseCache.set(cacheKey, serializedBody);

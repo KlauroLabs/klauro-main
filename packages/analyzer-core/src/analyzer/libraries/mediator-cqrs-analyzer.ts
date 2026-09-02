@@ -60,9 +60,8 @@ export class MediatorCqrsAnalyzer extends BaseAnalyzer {
       nodir: true,
     });
 
-    const sample = files.slice(0, 400);
     const markerRe = /(IRequestHandler|INotificationHandler|IMediator|IConsumer<|IHandleMessages<|@CommandHandler|@QueryHandler|@EventsHandler|commandBus\.|eventBus\.|queryBus\.|SQSEvent|Records\[.*\]\.body|'Records':)/;
-    for (const file of sample) {
+    for (const file of files) {
       try {
         const content = await fs.readFile(file, 'utf-8');
         if (markerRe.test(content)) return true;

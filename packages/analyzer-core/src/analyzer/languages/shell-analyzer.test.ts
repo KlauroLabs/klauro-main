@@ -82,6 +82,10 @@ test('ShellAnalyzer.analyze extracts functions, calls, sources, and entry points
       entryNames.some(n => n.includes('main.sh')),
       'main.sh (shebang) should be an entry point'
     );
+    const mainEntry = (cas.entry_points || []).find(entry => entry.name.includes('main.sh'));
+    assert.equal(mainEntry?.metadata?.cli_origin, 'filesystem-executable');
+    assert.equal(mainEntry?.metadata?.cli_product_role, 'supporting-mechanism');
+    assert.equal((cas.entry_points || []).length, 2, 'semantic role must not remove shell entries');
 
     // External command exit point for curl
     const curlExit = (cas.exit_points || []).find(e => e.name.includes('curl'));

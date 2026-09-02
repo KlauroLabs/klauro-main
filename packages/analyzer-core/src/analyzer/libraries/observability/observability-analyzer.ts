@@ -157,7 +157,7 @@ export class ObservabilityAnalyzer extends BaseAnalyzer {
     if (RULES.some(ruleDef => dependencies.some(dep => this.ruleMatchesDependency(ruleDef, dep)))) return true;
 
     const files = await this.sourceFiles({ projectPath });
-    for (const file of files.slice(0, 200)) {
+    for (const file of files) {
       const content = await this.readTextFileIfExists(path.join(projectPath, file));
       if (content && RULES.some(ruleDef => this.fileReferencesRule(content, ruleDef))) return true;
     }
@@ -245,7 +245,7 @@ export class ObservabilityAnalyzer extends BaseAnalyzer {
       if (dependencyHits.length === 0 && hits.length === 0) continue;
       allHits.push(...hits);
 
-      for (const hit of hits.slice(0, 250)) {
+      for (const hit of hits) {
         const moduleNodeId = `observability_module_${this.sanitizeId(hit.file)}`;
         if (!moduleNodes.has(moduleNodeId)) {
           moduleNodes.add(moduleNodeId);

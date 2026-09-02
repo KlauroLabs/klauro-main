@@ -62,7 +62,6 @@ interface FuncDecl {
 }
 
 
-const MAX_BREADTH_FILES = 4000;
 
 export class GenericTreeSitterLanguageAnalyzer extends BaseAnalyzer {
   constructor() {
@@ -312,11 +311,7 @@ export class GenericTreeSitterLanguageAnalyzer extends BaseAnalyzer {
   }
 
   private capAndPrioritizeBreadthFiles(files: BreadthFile[]): BreadthFile[] {
-    if (files.length <= MAX_BREADTH_FILES) return files;
-    this.addAnalysisWarning(
-      `Generic tree-sitter analyzer walked ${MAX_BREADTH_FILES} of ${files.length} breadth-language files; run full analysis for exhaustive coverage`
-    );
-    return files.slice(0, MAX_BREADTH_FILES);
+    return files;
   }
 
   private fileId(relativePath: string): string {

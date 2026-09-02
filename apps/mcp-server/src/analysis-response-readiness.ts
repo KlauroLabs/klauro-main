@@ -42,6 +42,13 @@ const DEFAULT_CONCEPTUAL_CATALOG_LIMIT = 5;
 const MAX_CONCEPTUAL_CATALOG_LIMIT = 100;
 
 export function comprehensionResponseReadiness(cas: CASOutput): AnalysisResponseReadiness {
+  if (!cas.layers_ready?.layers?.length) {
+    return {
+      status: 'failed',
+      ready: false,
+      error: 'Analysis readiness manifest is missing.',
+    };
+  }
   const layers = cas.layers_ready?.layers || [];
   const comprehensionLayers = layers.filter(layer => layer.layer === 'L4' || layer.layer === 'L5');
   const failed = comprehensionLayers.filter(layer => layer.status === 'error');
@@ -221,5 +228,25 @@ export function paginateConceptualCatalog<TCapability, TSurface>(
   return {
     capabilities: pageItems(capabilities, page),
     behavior_surfaces: pageItems(behaviorSurfaces, page),
+  };
+}
+
+export function paginateCapabilityReconciliation(
+  reconciliation: NonNullable<NonNullable<CASOutput['enhanced_system_purpose']>['capability_reconciliation']> | undefined,
+  page: ConceptualCatalogPage,
+) {
+  if (!reconciliation) return undefined;
+  const boundedPage = { ...page, limit: Math.min(page.limit, 20) };
+  return {
+    summary: {
+      proposals: reconciliation.proposals.length,
+      grounded: reconciliation.proposals.filter(proposal => proposal.disposition === 'grounded').length,
+      intent_gaps: reconciliation.proposals.filter(proposal => proposal.disposition === 'intent-gap').length,
+      undocumented_capabilities: reconciliation.undocumented_capabilities.length,
+      structural_gaps: reconciliation.structural_gaps?.length || 0,
+    },
+    proposals: pageItems(reconciliation.proposals, boundedPage),
+    undocumented_capabilities: pageItems(reconciliation.undocumented_capabilities, boundedPage),
+    structural_gaps: pageItems(reconciliation.structural_gaps || [], boundedPage),
   };
 }

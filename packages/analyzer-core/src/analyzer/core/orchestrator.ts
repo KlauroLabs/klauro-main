@@ -165,13 +165,14 @@ import { rollupSystemCapabilityDependencies } from './system-capability-dependen
 import {
   behaviorSurfaceEntryCount as countBehaviorSurfaceEntries, catalogCandidateEntityFacts,
   capabilityDescriptionProductLanguageFailure, capabilityDescriptionProductLanguageViolation, capabilityOutcomeScopeFailure,
-  capabilityEvidencePublicationFailure,
+  capabilityEvidencePublicationFailure, capabilityCanRepairRejectedOutcomeProposal, classifyCapabilityEvidence,
   catalogCandidateTerminality as analyzeCatalogCandidateTerminality,
   catalogCountBounds, catalogEntityCandidateGroups,
   catalogEvidenceCandidates as selectCatalogEvidenceCandidates,
   capabilityEvidenceSubjectTokens,
   narrowCapabilityEvidenceCandidates,
   catalogRequiredEvidenceCandidates,
+  uniquelyMatchingCapabilityEntityIds,
   catalogMinimumCapabilityCount, catalogPromptEntities, catalogRelatedEntityIds,
   capabilityCatalogAiPhaseStatus, firstPartySupportsIdentityProduct as supportsIdentityProduct,
   capabilityRequiresCatalogCoverage,
@@ -179,20 +180,23 @@ import {
   synchronizeCapabilityCatalogCoverage,
 } from './capability-catalog-evidence';
 import { mergeCapabilityCatalogFlowEvidence } from './capability-catalog-flow-evidence';
-import { bindUniquelySatisfiedCatalogOutcomeRequirements, capabilityCatalogCoverageFailure, capabilityCatalogOutcomeBindingFailureDetail, capabilityCatalogOutcomeNameFailure, capabilityCatalogOutcomesMayMerge, capabilityCatalogTargetedOutcomeText, capabilitySemanticallySatisfiesCatalogOutcomeRequirement, deriveCapabilityCatalogOutcomeRequirements, uncoveredCapabilityCatalogOutcomeRequirements, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
+import { bindAtomicallySatisfiedCatalogOutcomeRequirements, bindUniquelySatisfiedCatalogOutcomeRequirements, canonicalCapabilityCatalogOutcomeToken, capabilityCatalogCoverageFailure, capabilityCatalogOutcomeBindingFailureDetail, capabilityCatalogOutcomeNameFailure, capabilityCatalogOutcomesMayMerge, capabilityCatalogTargetedOutcomeText, capabilitySemanticallySatisfiesCatalogOutcomeRequirement, deriveCapabilityCatalogOutcomeRequirements, uncoveredCapabilityCatalogOutcomeRequirements, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
 import { fitCapabilityCatalogContext } from './ai-context-budget';
 import { awaitAiOperation } from './ai-operation-timing';
 import { capabilityDescriptionBatchSize, resolveCapabilityCatalogRoute, resolveCapabilityDescriptionRoute, shouldReauthorCapabilityDescriptions, toAIContextRoute } from './ai-task-model-routing';
 import { capabilitiesWithoutDescriptionDisposition, type CapabilityCatalogRejection, type CapabilityCatalogRejectionsByCandidate, capabilityCatalogCycleDiagnostic, capabilityCatalogPendingRepairKeys, capabilityCatalogRepairCandidateIds, capabilityCatalogRepairEvidenceFacts, capabilityIdentityPendingDescriptionRepair, capabilityOutcomeMatchesEvidence, capabilityTitlesShareOutcome, collectCapabilityCatalogEvidenceBatches, mergeCapabilityCatalogRepairResults, mergeGroundedEntityEvidenceFamilies, mergeUniquelyMatchedBehaviorEvidence, recordCapabilityCatalogRejection, recordCapabilityPublishabilityRejection, retryEmptyCapabilityCatalogOutcome, scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates, trackCapabilityCatalogRepair, uncoveredCapabilityCatalogFamilyRepresentativeIds } from './capability-catalog-scheduling';
+import { buildCapabilityOperationObligationViews, evaluateCapabilityCatalogOperationCoverage, fullyCoveredAggregateCapabilityCandidateIds, normalizeCapabilityOperationObligationEvidence, scopeRequiredCapabilityOperations, uncoveredAggregateOperationObligationIds, uncoveredRequiredBehaviorCandidateIds, uncoveredRequiredCapabilityOperations, type CapabilityOperationCoverageContext } from "./capability-operation-coverage";
 import { capabilityCatalogEvidenceFallback, capabilityCatalogFirstPartyFallback, capabilityCatalogRepairPromptEnvelope, type CapabilityCatalogRepairPromptFact } from './capability-catalog-repair-context';
-import { capabilityCatalogFocusedTask, capabilityCatalogRepairNudge, capabilityCatalogRepairPlan, captureCapabilityCatalogPendingRequirements, preserveCapabilityCatalogDescriptionIdentity, supersedeUnboundPendingOutcomeDuplicates, type CapabilityCatalogRepairBatch } from './capability-catalog-repair-plan';
+import { capabilityCatalogFocusedTask, capabilityCatalogRepairLifecycleKey, capabilityCatalogRepairNudge, capabilityCatalogRepairPlan, captureCapabilityCatalogPendingRequirements, deterministicCapabilityDescriptionFallback, supersedeUnboundPendingOutcomeDuplicates, type CapabilityCatalogRepairBatch, type PendingCapabilityEvidenceIdentity } from './capability-catalog-repair-plan';
 import { groupCapabilityCatalogFamilies } from './capability-catalog-family-equivalence';
+import { capabilityCatalogCycleQualityFailure, deterministicAtomicClosuresForObligationIds, filterMismatchedOperationObligationCapabilities, hasPendingCapabilityDescriptionAttempt, hasPendingCapabilityLanguageAttempt, isExactValidatedDeterministicRecovery, normalizeTargetedCapabilityCatalogDescriptions, resolveCapabilityCatalogDescriptionRepair, resolvePendingCapabilityDescriptionsWithoutProvider, retireIndependentlyCoveredPendingDescriptions, stagePendingCapabilityEvidenceRepairs, stageRejectedCapabilityNameRepair, validatedDeterministicAtomicClosures, validatedDeterministicGroupedOperationClosures, withoutSubsumedDeterministicAtomicClosures } from './capability-catalog-cycle-repair';
+import { normalizePublishedCapabilityIds } from './capability-catalog-publication';
 import { TRACEABLE_NODE_TYPES, computeFlowConcepts, materializeNodeUnderstandingContracts, type FlowConcept } from './flow-concepts';
 import { capabilitySubjectTokens } from './capability-audience-test';
 import {
   capabilityAudienceRepairFeedback,
   capabilityPublishabilityRepairFeedback, capabilityCatalogProductTerms,
-  evaluateCapabilityCatalogAudience, normalizeCapabilityDescriptionForPublication, unsupportedCapabilityOperationalClaims,
+  evaluateCapabilityCatalogAudience, groundedCapabilityAudience, schemaGroundedEntityNames, unsupportedCapabilityOperationalClaims,
 } from './capability-catalog-audience';
 import { capabilityGroundedEntityIds } from './capability-entity-grounding';
 import { canonicalCapabilityLifecycleAction, capabilityDescriptionExpressesDestructiveLifecycle, capabilityHasObservedDestructiveLifecycle } from './capability-lifecycle-actions';
@@ -234,6 +238,9 @@ import { DomainExtractor } from './domain-extractor';
 import { CapabilityDetector } from './capability-detector';
 import {
   isBareNounCapabilityLabel as sharedIsBareNounCapabilityLabel,
+  isGenericManagementCapabilityLabel,
+  isCrudInventoryCapabilityLabel,
+  isCrudLifecycleFragmentCapabilityLabel,
   isStructuralPlaceholderCapabilityDescription as sharedIsStructuralPlaceholderCapabilityDescription,
   deriveCapabilityNameFromOperations as sharedDeriveCapabilityNameFromOperations,
   buildCapabilityDescriptionFromOperations as sharedBuildCapabilityDescriptionFromOperations,
@@ -245,6 +252,7 @@ import {
   normalizeCapabilityActionName
 } from './capability-naming';
 import { CallChainAnalyzer } from './call-chain-analyzer';
+import { buildCanonicalCallChains } from './canonical-call-chains';
 import { CapabilityDependencyBuilder } from './capability-dependency-builder';
 import { FlowScorer } from './flow-scorer';
 import { computeStructuralImportance, StructuralImportanceResult } from './structural-importance';
@@ -253,6 +261,8 @@ import { GitAnalyzer } from './git-analyzer';
 import { detectCodebaseIdioms } from './idiom-detector';
 import { AnalysisRunLog } from './run-log';
 import { withAnalyzerFileReadCache, getDebugCacheStats } from './analyzer-file-read-cache';
+import { analyzeWithCompleteScope } from './analyzer-analysis-scope';
+import { applyCapabilityCatalogStatus } from './capability-catalog-status';
 import { captureAnalysisMemorySample } from './analysis-memory-profile';
 import { semanticPackIdentityForProject } from '../packs/pack-loader';
 import { EmbeddingPhase, type EmbeddingPhaseConfig } from '../embedding/embedding-phase';
@@ -264,7 +274,6 @@ import { capabilityDescriptionEntityProvidesProductEvidence, capabilityDescripti
 import { filterPlausibleExternalServices, isCommandShapedLabel, isHostnameLikeServiceName } from '../../ai/external-service-plausibility';
 import { buildGroundedDomainVocabulary, recoverAIDomainLabel } from './ai-domain-recovery';
 import { containsGenericImplementationMechanicFiller, mentionsDeclaredImplementationName, stripApplicationImplementationFillerSentences } from './ai-product-narrative';
-
 export type { CASOutput } from '../../types/cas.types';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob, beginGlobRun, endGlobRun } from './glob-cache';
@@ -274,14 +283,12 @@ import { globSync } from 'glob';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import * as nativeFs from 'node:fs/promises';
-
 const GENERIC_PATH_LAYOUT_WORDS = new Set([
   'src', 'app', 'apps', 'packages', 'lib', 'libs', 'server', 'client', 'clients',
   'components', 'controllers', 'services', 'repositories', 'models', 'entities',
   'routes', 'pages', 'api', 'test', 'tests', 'spec', 'specs', 'backend', 'frontend',
   'vendor', 'generated', 'dist', 'build', 'out', 'bin', 'node_modules',
 ]);
-
 async function runWithConcurrency<T>(
   items: T[],
   concurrency: number,
@@ -307,7 +314,6 @@ async function runWithConcurrency<T>(
   await Promise.all(runners);
   if (firstError !== undefined) throw firstError;
 }
-
 function aiConcurrencyLimit(): number {
   const configured = Number(process.env.KLAURO_AI_CONCURRENCY || '');
   return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 5;
@@ -339,7 +345,6 @@ const CAPABILITY_STRUCTURAL_AREA_NAMES = new Set([
   'view', 'views', 'route', 'routes', 'blockchains', 'feature', 'features',
   'function', 'functions', 'class', 'classes', 'interface', 'interfaces',
 ]);
-
 export interface AnalyzerRegistration {
   id: string;
   name: string;
@@ -365,7 +370,6 @@ interface AnalysisMergeTarget {
   allEntryPoints: any[];
   allExitPoints: any[];
 }
-
 interface AnalysisMergeIndexes {
   nodesById: Map<string, CASNode>;
   edgesById: Map<string, CASEdge>;
@@ -373,38 +377,31 @@ interface AnalysisMergeIndexes {
   entryPointsByCanonicalKey: Map<string, any>;
   exitPointsById: Map<string, any>;
 }
-
 type AnalysisAccumulators = LanguageAnalysisAccumulators<AnalysisMergeIndexes>;
-
 export interface AnalysisProgressEvent {
   sequence: number;
   phase: string;
   completedAt: string;
 }
-
 export interface IncrementalAnalysisOptions {
   loadCache?: (contentHash: string) => Promise<FileAnalysisResult | null>;
   saveCache?: (contentHash: string, result: FileAnalysisResult) => Promise<void>;
   displayName?: string;
   onProgress?: (event: AnalysisProgressEvent) => void;
 }
-
 export const RISKABLE_NODE_TYPES: readonly string[] = [
   'function', 'method', 'service', 'controller', 'serializer',
   'entity', 'model', 'route', 'handler', 'resolver', 'mutation', 'repository'
 ];
-
 export function hasStructuralSecurityEvidence(node: Pick<CASNode, 'security'>): boolean {
   return !!(node.security?.authentication_required || node.security?.authorization_roles);
 }
-
 interface SourceFileInventory {
   expiresAt: number;
   files: string[];
   basenames: Map<string, string[]>;
   extensions: Map<string, string[]>;
 }
-
 interface ProjectTextSignal {
   primaryDomain?: string;
   concepts: string[];
@@ -445,7 +442,6 @@ interface EntityPropertyIndex {
   byFileBasename: Map<string, Array<{ node: CASNode; position: number; normalizedFile: string }>>;
   resolved: Map<string, CASNode[]>;
 }
-
 interface PersistenceEvidenceContext {
   evidencedNames: Map<string, string>;
   mappedNames: Map<string, string>;
@@ -458,13 +454,11 @@ const MIGRATION_VOCABULARY =
   /^(create|add|drop|alter|rename|remove|delete|update|change|modify|init|initial|migration|migrate|table|tables|column|columns|index|indexes|indices|constraint|key|keys|to|from|for|and|the|schema|seed|up|down|v\d*)$/i;
 const PERSISTENCE_BASE_CLASS =
   /\b(BaseEntity|ActiveRecord|ApplicationRecord|Model|Document|DbContext|SQLModel|DeclarativeBase|EntityBase|AggregateRoot)\b/;
-
 const ORM_FAMILY_SUBCATEGORIES = new Set<string>([
   'orm', 'orm-entity', 'typeorm', 'sea-orm', 'gorm', 'mikroorm', 'prisma', 'drizzle',
   'sequelize', 'mongoose', 'sqlalchemy', 'django-model', 'activerecord', 'eloquent',
   'doctrine', 'hibernate', 'jpa', 'entity-framework', 'ef-core', 'diesel', 'sqlx',
 ]);
-
 interface DiscoveredEntryPointCandidate {
   file: string;
   type: CASEntryPoint['type'];
@@ -473,7 +467,6 @@ interface DiscoveredEntryPointCandidate {
   trigger?: CASEntryPoint['trigger'];
   libraryPublicApi?: { packageName: string; field: string };
 }
-
 export interface OrchestrateAnalysisOptions {
   onProgress?: (event: AnalysisProgressEvent) => void;
   deferAiEnrichment?: boolean;
@@ -481,13 +474,10 @@ export interface OrchestrateAnalysisOptions {
   conventions?: KlauroConventionsInput;
   packGlobs?: string[];
 }
-
 export class AnalyzerOrchestrator {
   private readonly GENERIC_STRUCTURAL_NAME_PATTERN = /^(mono-?repo|root|workspace|workspaces|repo|repository|source|src|main|app|apps|packages?|projects?|core|server|client|web|www|api|frontend|backend)$/i;
-
   private analyzers: Map<string, AnalyzerRegistration> = new Map();
   private projectRoots: string[] = [];
-
   private manifestOwningProjectRoots: Set<string> = new Set();
   private analyzerRootMap: Map<string, string> = new Map();
   private manifestFileCache: Map<string, string[]> = new Map();
@@ -506,12 +496,10 @@ export class AnalyzerOrchestrator {
   private activeAnalysisProjectPath?: string;
   private activeTerminalSignal: TerminalSignal | null = null;
   private activeArtifactType: CASArtifactType | null = null;
-  private klauroSelfProjectCache: Map<string, boolean> = new Map();
   private bundledFrontendRootsCache: Map<string, string[]> = new Map();
   private primaryProductPathCache: Map<string, boolean> = new Map();
   private elementDescriptionGroundingVocabulary: string[] = [];
   private elementDescriptionArtifactType?: string;
-
   private deferredAiEnrichments: WeakMap<CASOutput, () => Promise<void>> = new WeakMap();
   registerAnalyzer(registration: AnalyzerRegistration): void {
     this.analyzers.set(registration.id, registration);
@@ -545,7 +533,6 @@ export class AnalyzerOrchestrator {
   configureEmbedding(config: EmbeddingPhaseConfig | null): void {
     this.embeddingPhaseConfig = config;
   }
-
   configureAnalyzerContributionCache(rootPath?: string): void {
     this.analyzerContributionCache = rootPath?.trim()
       ? new PersistentAnalyzerContributionCache({ rootPath })
@@ -560,7 +547,6 @@ export class AnalyzerOrchestrator {
     await yieldToEventLoop();
     await relativizeProjectPaths(output, projectPath);
   }
-
   private async compactSourceRaw(output: CASOutput): Promise<void> {
     const maybeYield = createYieldBudget();
     const omitRaw = output.nodes.length > 10_000;
@@ -580,45 +566,34 @@ export class AnalyzerOrchestrator {
       };
     }
   }
-
   private async discoverProjectRoots(projectPath: string): Promise<string[]> {
     const rootSet = new Set<string>();
     rootSet.add(projectPath);
     const manifestRootAbsolutePaths = new Set<string>();
     manifestRootAbsolutePaths.add(projectPath);
-
     try {
       const matches = (await this.getManifestFiles(projectPath)).filter(isPackageBoundaryManifest);
       for (const match of matches) {
         const relativeDir = path.dirname(match).replace(/\\/g, '/');
-
-        if (this.isExcludedLegacyReferencePath(relativeDir, projectPath)) continue;
         const absolutePath = path.join(projectPath, relativeDir);
         rootSet.add(absolutePath);
         manifestRootAbsolutePaths.add(absolutePath);
       }
     } catch {
     }
-
     try {
-
       const globMembers = discoverWorkspaceGlobRootsWithoutManifest(
         projectPath,
         (absoluteDir) => manifestRootAbsolutePaths.has(absoluteDir),
-      ).filter((absoluteDir) => {
-        const relativeDir = path.relative(projectPath, absoluteDir).replace(/\\/g, '/');
-        return !this.isExcludedLegacyReferencePath(relativeDir, projectPath);
-      });
+      );
       for (const member of globMembers) {
         rootSet.add(member);
       }
     } catch {
     }
-
     this.manifestOwningProjectRoots = manifestRootAbsolutePaths;
     return Array.from(rootSet).sort((a, b) => a.length - b.length);
   }
-
   private async getManifestFiles(projectPath: string): Promise<string[]> {
     const cached = this.manifestFileCache.get(projectPath);
     if (cached) return cached;
@@ -627,12 +602,10 @@ export class AnalyzerOrchestrator {
     this.manifestFileCache.set(projectPath, matches);
     return matches;
   }
-
   private async getSourceFileInventory(projectPath: string): Promise<SourceFileInventory> {
     const cacheKey = path.resolve(projectPath);
     const cached = this.sourceFileInventoryCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) return cached;
-
     const nestedRepoIgnores = await this.getNestedRepoIgnorePatterns(projectPath);
     const nestedIgnoredDirectories = new Set(nestedRepoIgnores
       .map(pattern => pattern.replace(/\/\*\*$/, ''))
@@ -640,21 +613,18 @@ export class AnalyzerOrchestrator {
     const normalized = this.collectSourceInventoryFiles(projectPath, nestedIgnoredDirectories);
     const basenames = new Map<string, string[]>();
     const extensions = new Map<string, string[]>();
-
     for (const file of normalized) {
       const basename = path.basename(file).toLowerCase();
       const extension = path.extname(file).toLowerCase();
       const basenameMatches = basenames.get(basename) || [];
       basenameMatches.push(file);
       basenames.set(basename, basenameMatches);
-
       if (extension) {
         const extensionMatches = extensions.get(extension) || [];
         extensionMatches.push(file);
         extensions.set(extension, extensionMatches);
       }
     }
-
     const inventory = {
       expiresAt: Date.now() + 60_000,
       files: normalized,
@@ -664,7 +634,6 @@ export class AnalyzerOrchestrator {
     this.sourceFileInventoryCache.set(cacheKey, inventory);
     return inventory;
   }
-
   private collectSourceInventoryFiles(projectPath: string, nestedIgnoredDirectories: Set<string>): string[] {
     const files: string[] = [];
     const walk = (absoluteDirectory: string, relativeDirectory: string) => {
@@ -674,11 +643,9 @@ export class AnalyzerOrchestrator {
       } catch {
         return;
       }
-
       for (const entry of entries) {
         const relativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
         const normalizedRelativePath = relativePath.replace(/\\/g, '/');
-
         if (entry.isDirectory()) {
           if (this.isIgnoredInventoryDirectory(entry.name, normalizedRelativePath, nestedIgnoredDirectories, projectPath)) {
             continue;
@@ -686,7 +653,6 @@ export class AnalyzerOrchestrator {
           walk(path.join(absoluteDirectory, entry.name), normalizedRelativePath);
           continue;
         }
-
         if (
           entry.isFile() &&
           !this.isIgnoredInventoryFile(normalizedRelativePath) &&
@@ -696,19 +662,16 @@ export class AnalyzerOrchestrator {
         }
       }
     };
-
     walk(projectPath, '');
     return Array.from(new Set(files)).sort();
   }
-
   private isIgnoredInventoryDirectory(
     directoryName: string,
     relativePath: string,
     nestedIgnoredDirectories: Set<string>,
-    projectPath?: string
+    _projectPath?: string
   ): boolean {
     if (nestedIgnoredDirectories.has(relativePath)) return true;
-    if (this.isExcludedLegacyReferencePath(relativePath, projectPath)) return true;
     if (isBuildArtifactDirectoryName(directoryName)) return true;
     return new Set([
       'node_modules',
@@ -752,35 +715,13 @@ export class AnalyzerOrchestrator {
       'generated'
     ]).has(directoryName) || directoryName.startsWith('.klauro');
   }
-
-  private isExcludedLegacyReferencePath(relativePath: string, projectPath?: string): boolean {
-    if (!this.shouldExcludeLegacyReferencePaths(projectPath)) {
-      return false;
-    }
-    const normalized = relativePath.replace(/\\/g, '/').replace(/^\/+/, '');
-    return normalized === 'legacy' || normalized.startsWith('legacy/');
-  }
-
-  private shouldExcludeLegacyReferencePaths(projectPath?: string): boolean {
-    if (process.env.KLAURO_AGENT_FAST_EXCLUDE_LEGACY === 'true' ||
-      process.env.KLAURO_AGENT_FAST_EXCLUDE_LEGACY === '1') {
-      return true;
-    }
-    const activePath = projectPath || this.activeAnalysisProjectPath;
-    return this.isKlauroSelfProject(activePath);
-  }
-
   private async getAnalysisContextFilters(projectPath: string): Promise<string[]> {
     const filters = [
       ...(await this.getNestedRepoIgnorePatterns(projectPath)),
       ...(await this.getProjectConfiguredIgnorePatterns(projectPath)),
     ];
-    if (this.shouldExcludeLegacyReferencePaths(projectPath)) {
-      filters.push('legacy/**', 'legacy/**/*', '**/legacy/**', '**/legacy/**/*');
-    }
     return Array.from(new Set(filters));
   }
-
   private async getProjectConfiguredIgnorePatterns(projectPath: string): Promise<string[]> {
     const patterns: string[] = [];
     const ignorePath = path.join(projectPath, '.klauroignore');
@@ -792,7 +733,6 @@ export class AnalyzerOrchestrator {
         patterns.push(...this.normalizeConfiguredIgnorePattern(trimmed));
       }
     }
-
     for (const configName of ['.klaurorc', '.klaurorc.json']) {
       const configPath = path.join(projectPath, configName);
       if (!(await fs.pathExists(configPath))) continue;
@@ -807,10 +747,8 @@ export class AnalyzerOrchestrator {
         console.warn(`Ignoring invalid ${configName}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
-
     return patterns;
   }
-
   private normalizeConfiguredIgnorePattern(pattern: string): string[] {
     const normalized = pattern.replace(/\\/g, '/').replace(/^\/+/, '').trim();
     if (!normalized) return [];
@@ -818,7 +756,6 @@ export class AnalyzerOrchestrator {
     const withoutTrailingSlash = normalized.replace(/\/+$/, '');
     return [withoutTrailingSlash, `${withoutTrailingSlash}/**`, `${withoutTrailingSlash}/**/*`];
   }
-
   private isIgnoredInventoryFile(filePath: string): boolean {
     const normalized = filePath.replace(/\\/g, '/').toLowerCase();
     if (normalized.endsWith('.min.js') || normalized.endsWith('.min.css')) return true;
@@ -837,7 +774,6 @@ export class AnalyzerOrchestrator {
       '/downloads/'
     ].some(fragment => `/${normalized}`.includes(fragment));
   }
-
   private isSourceInventoryCandidate(filePath: string): boolean {
     const basename = path.basename(filePath).toLowerCase();
     if (this.isManifestFile(filePath)) return true;
@@ -854,7 +790,6 @@ export class AnalyzerOrchestrator {
     if (basename.endsWith('.ipynb')) return true;
     return isRegisteredSourceExtension(filePath);
   }
-
   private isCiPipelineConfigFile(filePath: string): boolean {
     const normalized = filePath.replace(/\\/g, '/').toLowerCase();
     const basename = path.basename(normalized);
@@ -870,15 +805,12 @@ export class AnalyzerOrchestrator {
       normalized === '.buildkite/pipeline.yaml' ||
       normalized.startsWith('.teamcity/');
   }
-
   private isManifestFile(filePath: string): boolean {
     return isRegisteredManifest(filePath);
   }
-
   private async getNestedRepoIgnorePatterns(projectPath: string): Promise<string[]> {
     const cached = this.nestedRepoIgnoreCache.get(projectPath);
     if (cached) return cached;
-
     try {
       const discoveryIgnores = this.getProjectDiscoveryIgnorePatterns()
         .filter(pattern => !pattern.includes('.git'));
@@ -898,7 +830,6 @@ export class AnalyzerOrchestrator {
       return [];
     }
   }
-
   private getProjectDiscoveryIgnorePatterns(): string[] {
     const patterns = [
       '**/node_modules/**',
@@ -968,9 +899,6 @@ export class AnalyzerOrchestrator {
       '**/Generated/**',
       '**/generated/**'
     ];
-    if (this.shouldExcludeLegacyReferencePaths(this.activeAnalysisProjectPath)) {
-      patterns.push('legacy/**', 'legacy/**/*', '**/legacy/**', '**/legacy/**/*');
-    }
     return patterns;
   }
   private applyLocalPackGlobs(globs: string[]): void {
@@ -982,7 +910,6 @@ export class AnalyzerOrchestrator {
       }
     }
   }
-
   async detectAnalyzers(projectPath: string): Promise<AnalyzerRegistration[]> {
     const cacheKey = path.resolve(projectPath);
     const registryFingerprint = this.analyzerRegistryFingerprint(this.analyzers.values());
@@ -993,18 +920,14 @@ export class AnalyzerOrchestrator {
       this.analyzerRootMap = new Map(cached.analyzerRootEntries);
       return cached.analyzerIds.map(id => this.analyzers.get(id)).filter((registration): registration is AnalyzerRegistration => Boolean(registration));
     }
-
     this.projectRoots = await this.discoverProjectRoots(projectPath);
     this.analyzerRootMap.clear();
-
     const detected: AnalyzerRegistration[] = [];
-
     for (const registration of this.analyzers.values()) {
       if (await this.shouldUseAnalyzer(projectPath, registration)) {
         detected.push(registration);
       }
     }
-
     const ordered = this.orderAnalyzers(detected);
     setAnalyzerDetectionEvidence(cacheKey, {
       registryFingerprint,
@@ -1016,7 +939,6 @@ export class AnalyzerOrchestrator {
     });
     return ordered;
   }
-
   private invalidateProjectDiscovery(projectPath: string): void {
     const cacheKey = path.resolve(projectPath);
     invalidateAnalyzerDetectionEvidence(cacheKey);
@@ -1027,7 +949,6 @@ export class AnalyzerOrchestrator {
     this.nestedRepoIgnoreCache.delete(projectPath);
     this.sourceFileInventoryCache.delete(cacheKey);
   }
-
   async orchestrateAnalysis(projectPath: string, options?: OrchestrateAnalysisOptions): Promise<CASOutput> {
     this.activeAnalysisProjectPath = projectPath;
     setAICacheProjectScope(projectPath);
@@ -1043,7 +964,6 @@ export class AnalyzerOrchestrator {
       endGlobRun(globRun);
     }
   }
-
   async enrichAnalysisAI(output: CASOutput): Promise<CASOutput> {
     const run = this.deferredAiEnrichments.get(output);
     if (!run) {
@@ -1056,10 +976,9 @@ export class AnalyzerOrchestrator {
       output.ai_enrichment = 'error';
       throw error;
     }
-    output.ai_enrichment = 'ready';
+    this.settleCapabilityCatalogStatus(output, 'ready');
     return output;
   }
-
   private deriveEntryPointContractAndCapability(
     entryPoints: CASEntryPoint[],
     cas: Pick<
@@ -1073,17 +992,14 @@ export class AnalyzerOrchestrator {
       this.stampFlowCriticality(flows, cas.call_chains || []);
       persistFlows?.(flows);
       if (flows.length === 0) return entryPoints;
-
       const flowLikes: FlowLike[] = flows.map((flow) => ({
         flow_id: flow.flow_id,
         entry_point: flow.entry_point,
         contract: { input: flow.contract.input, output: flow.contract.output },
       }));
-
       const capNameById = new Map<string, string>();
       for (const cap of cas.capabilities || []) capNameById.set(cap.id, cap.name);
       for (const surf of cas.behavior_surfaces || []) capNameById.set(surf.id, surf.name);
-
       const capsById = new Map<string, { id: string; name: string; related_flows: Array<{ flow_id: string; role?: string; rationale?: string }> }>();
       const addRelation = (capabilityId: string, flowId: string, role: string | undefined, rationale: string | undefined) => {
         let entry = capsById.get(capabilityId);
@@ -1093,7 +1009,6 @@ export class AnalyzerOrchestrator {
         }
         entry.related_flows.push({ flow_id: flowId, role, rationale });
       };
-
       for (const flow of flows) {
         const relationships = flow.capability_relationships || [];
         if (relationships.length > 0) {
@@ -1102,9 +1017,7 @@ export class AnalyzerOrchestrator {
           addRelation(flow.capability_id, flow.flow_id, undefined, undefined);
         }
       }
-
       const capabilities: CapabilityLike[] = Array.from(capsById.values());
-
       for (const cap of cas.capabilities || []) {
         const derived = capsById.get(cap.id);
         if (derived && derived.related_flows.length > 0) {
@@ -1125,9 +1038,7 @@ export class AnalyzerOrchestrator {
           }));
         }
       }
-
       this.rollupSystemCapabilityDependencies(flows, cas.capabilities || [], cas.entities || []);
-
       const withContract = attachFlowContract(entryPoints as unknown as EntryPointLike[], flowLikes);
       const withCapability = attachCapability(withContract, flowLikes, capabilities);
       return withCapability as unknown as CASEntryPoint[];
@@ -1136,7 +1047,6 @@ export class AnalyzerOrchestrator {
       return entryPoints;
     }
   }
-
   private rollupSystemCapabilityDependencies(
     flows: Array<Pick<FlowConcept, 'flow_id' | 'capability_id' | 'capability_relationships'>>,
     capabilities: SystemCapability[],
@@ -1144,7 +1054,6 @@ export class AnalyzerOrchestrator {
   ): void {
     rollupSystemCapabilityDependencies(flows, capabilities, dataEntities);
   }
-
   private async executeAnalysis(projectPath: string, analysisId: string, runLog: AnalysisRunLog, options?: OrchestrateAnalysisOptions): Promise<CASOutput> {
     const startTime = Date.now();
     const cpuUsageStart = process.cpuUsage();
@@ -1181,7 +1090,6 @@ export class AnalyzerOrchestrator {
       }
       if (process.env.KLAURO_DEBUG_ANALYZER_MEMORY === '1') writeAnalyzerStatus('[Klauro] analyzer-memory', captureAnalysisMemorySample(phase));
     };
-
     this.applyLocalPackGlobs(options?.packGlobs ?? []);
     this.activeSemanticPackIdentity = Object.freeze(
       await semanticPackIdentityForProject(projectPath, options?.packGlobs ?? [])
@@ -1189,7 +1097,6 @@ export class AnalyzerOrchestrator {
     this.analyzerContributionDigestCache.clear();
     this.analyzerContributionFileSetDigestCache.clear();
     this.analyzerContributionCacheEvidence.clear();
-
     let phaseStart = startPhase();
     const { detectedAnalyzers, context } = await withAnalyzerFileReadCache(async () => {
       const detected = await this.detectAnalyzers(projectPath);
@@ -1202,7 +1109,6 @@ export class AnalyzerOrchestrator {
       };
       return { detectedAnalyzers: detected, context: ctx };
     });
-
     const allNodes: CASNode[] = [];
     const allEdges: CASEdge[] = [];
     const allEntryPoints: any[] = [];
@@ -1221,19 +1127,15 @@ export class AnalyzerOrchestrator {
       allEntryPoints,
       allExitPoints,
     });
-
     const accumulators: AnalysisAccumulators = {
       allNodes, allEdges, allEntryPoints, allExitPoints,
       allBehaviors, allPatterns, allTags, allPerspectives,
       allLibraries, categories, contributions, analysisErrors, mergeIndexes
     };
-
     this.collectProjectReadabilityWarnings(projectPath, analysisErrors);
-
     const languageAnalyzers = detectedAnalyzers.filter(r => r.type === 'language');
     const parallelAnalyzers = detectedAnalyzers.filter(r => r.type === 'framework' || r.type === 'library');
     const patternAnalyzers = detectedAnalyzers.filter(r => r.type === 'pattern');
-
     await withEstreeParseCacheLifecycle(() => withAnalyzerFileReadCache(async () => {
     phaseStart = startPhase();
     await executeLanguageAnalyzers({
@@ -1252,7 +1154,6 @@ export class AnalyzerOrchestrator {
     });
     logTiming('languageAnalyzers', phaseStart);
     await yieldToEventLoop();
-
     phaseStart = startPhase();
     if (parallelAnalyzers.length > 0) {
       const languageSnapshot: CASContribution = {
@@ -1271,7 +1172,6 @@ export class AnalyzerOrchestrator {
           contributed_exit_points: allExitPoints.length
         }
       };
-
       const recordFrameworkMemory = ({ registration, stage }: FrameworkExecutionEvent<AnalyzerRegistration>) => {
         if (process.env.KLAURO_DEBUG_ANALYZER_MEMORY !== '1') return;
         writeAnalyzerStatus('[Klauro] analyzer-memory', captureAnalysisMemorySample(`framework_${registration.id}_${stage}`));
@@ -1300,13 +1200,11 @@ export class AnalyzerOrchestrator {
             result,
             { analyzerId: registration.id, analysisErrors, mergeIndexes }
           );
-
           if (result.behaviors) allBehaviors.push(...result.behaviors);
           if (result.patterns) allPatterns.push(...result.patterns);
           if (result.categories) this.mergeCategories(categories, result.categories);
           if (result.tags) allTags.push(...result.tags);
           if (result.perspectives) allPerspectives.push(...result.perspectives);
-
           const analyzerMeta = result.analyzer_metadata || {};
           if (Array.isArray(analyzerMeta.warnings)) {
             for (const warning of analyzerMeta.warnings) {
@@ -1343,9 +1241,9 @@ export class AnalyzerOrchestrator {
             application_type: analyzerMeta.application_type,
             project_name: analyzerMeta.project_name,
             project_version: analyzerMeta.project_version,
+            analysis_scope: analyzerMeta.analysis_scope,
             warnings: Array.isArray(analyzerMeta.warnings) && analyzerMeta.warnings.length > 0 ? analyzerMeta.warnings : undefined
           });
-
           if (result.libraries) {
             allLibraries.push(...result.libraries);
           }
@@ -1365,7 +1263,6 @@ export class AnalyzerOrchestrator {
         yieldAfterAnalyzer: yieldToEventLoop,
       });
     }
-
     for (const registration of patternAnalyzers) {
       try {
         await this.runAnalyzer(registration, context, projectPath, accumulators);
@@ -1387,7 +1284,6 @@ export class AnalyzerOrchestrator {
     if (process.env.KLAURO_DEBUG_FILE_READ_CACHE === '1') {
       writeAnalyzerStatus('[Klauro] file-read-cache stats:', getDebugCacheStats());
     }
-
     phaseStart = startPhase();
     this.removeTestEntryPoints(allNodes, allEdges, allEntryPoints);
     this.dedupeUtilNodeDuplicates(allNodes, allEdges);
@@ -1409,7 +1305,6 @@ export class AnalyzerOrchestrator {
     this.applyCanonicalOrdering(allNodes, allEdges, allEntryPoints, allExitPoints, allLibraries);
     logTiming('pp_linkRouteHandlers', phaseStart);
     await yieldToEventLoop();
-
     let declaredDataEntities: CASDataEntity[] = [];
     let declaredConventionMatches: ReturnType<typeof applyConventions>['matches'] = [];
     try {
@@ -1433,33 +1328,27 @@ export class AnalyzerOrchestrator {
     } catch (error) {
       console.error('[Klauro] conventions-applier pass failed:', error);
     }
-
     phaseStart = startPhase();
     this.liftValidationToEntryPoints(allNodes, allEntryPoints);
     logTiming('pp_liftValidation', phaseStart);
     await yieldToEventLoop();
-
     phaseStart = startPhase();
     assignNodeRoles({ nodes: allNodes, edges: allEdges, entry_points: allEntryPoints, exit_points: allExitPoints });
     logTiming('pp_nodeRoles', phaseStart);
     await yieldToEventLoop();
-
     phaseStart = startPhase();
     let systemName = options?.displayName || path.basename(projectPath);
     const progressiveLevels = this.buildProgressiveLevels(allNodes, categories);
     logTiming('pp_progressiveLevels', phaseStart);
     await yieldToEventLoop();
-
     phaseStart = startPhase();
     const index = this.buildIndex(allNodes, allEntryPoints, allExitPoints, allPerspectives);
     logTiming('pp_buildIndex', phaseStart);
     await yieldToEventLoop();
-
     if (allLibraries.length === 0) {
       const detectedLibraries = detectLibrariesFromManifests(projectPath);
       allLibraries.push(...detectedLibraries);
     }
-
     phaseStart = startPhase();
     const architectureSummary = this.buildArchitectureSummary(projectPath, allNodes, allEntryPoints, allExitPoints, contributions);
     await yieldToEventLoop();
@@ -1470,16 +1359,13 @@ export class AnalyzerOrchestrator {
     const externalServices = this.buildExternalServices(allNodes, allExitPoints, allLibraries);
     logTiming('pp_architecture', phaseStart);
     await yieldToEventLoop();
-
     appendAll(allPatterns, this.detectDesignPatterns(allNodes, allEdges));
     logTiming('pp_detectPatterns', Date.now());
     await yieldToEventLoop();
-
     phaseStart = startPhase();
     const intents = this.buildIntents(allNodes);
     logTiming('pp_buildIntents', phaseStart);
     await yieldToEventLoop();
-
     phaseStart = startPhase();
     logTiming('pp_flowSummary', phaseStart);
     await yieldToEventLoop();
@@ -1503,20 +1389,17 @@ export class AnalyzerOrchestrator {
     logTiming('pp_securityBoundaries', phaseStart);
     await yieldToEventLoop();
     phaseStart = startPhase();
-    const securitySummary = this.buildSecuritySummary(securityBoundaries, allNodes, productEntryPointsForSecurity);
+    const securitySummary = this.buildSecuritySummary(securityBoundaries, allNodes, productEntryPointsForSecurity, allEdges);
     logTiming('pp_securitySummary', phaseStart);
     await yieldToEventLoop();
-
     phaseStart = startPhase();
     const gitAnalyzer = new GitAnalyzer(projectPath);
     let changeRisks: CASChangeRisk[] = [];
     let temporalStability: CASTemporalStability[] = [];
-
     if (gitAnalyzer.isAvailable()) {
       const filePathsForGit = allNodes
         .filter((n): n is CASNode & { source: { file: string } } => !!n.source?.file)
         .map(n => n.source.file);
-
       if (filePathsForGit.length <= 500) {
         gitAnalyzer.preloadAllFileMetrics(filePathsForGit);
         changeRisks = this.buildChangeRisks(allNodes, allEdges, allEntryPoints, gitAnalyzer);
@@ -1529,7 +1412,6 @@ export class AnalyzerOrchestrator {
     }
     logTiming('pp_gitAnalysis', phaseStart);
     await yieldToEventLoop();
-
     phaseStart = startPhase();
     const changeRiskSummary = this.buildChangeRiskSummary(changeRisks);
     const stabilitySummary = this.buildStabilitySummary(temporalStability);
@@ -1539,7 +1421,6 @@ export class AnalyzerOrchestrator {
     this.enrichNodePerspectives(allNodes, allPerspectives);
     logTiming('pp_enrichNodes', phaseStart);
     await yieldToEventLoop();
-
     phaseStart = startPhase();
     const { capabilities: systemCapabilities, behaviorSurfaces } = await this.buildSystemCapabilities(allEntryPoints, dataEntities, allNodes, allEdges, projectPath, allExitPoints);
     const structuralCapabilityCandidates = structuredClone(systemCapabilities);
@@ -1547,12 +1428,10 @@ export class AnalyzerOrchestrator {
     const systemPurpose = await this.inferSystemPurpose(allEntryPoints, dataEntities, systemCapabilities, allNodes);
     logTiming('pp_capabilities', phaseStart);
     await yieldToEventLoop();
-
     phaseStart = startPhase();
     const callChains = this.buildCallChains(allNodes, allEdges, allEntryPoints, allExitPoints, callGraphBuilder, systemCapabilities);
     logTiming('pp_callGraph', phaseStart);
     await yieldToEventLoop();
-
     phaseStart = startPhase();
     const testSuites = await this.buildTestSuites(allNodes, allEntryPoints, projectPath, allEdges);
     await yieldToEventLoop();
@@ -1561,7 +1440,6 @@ export class AnalyzerOrchestrator {
     const testGaps = this.buildTestGaps(flowCoverage, allNodes);
     logTiming('pp_flowCoverage', phaseStart);
     await yieldToEventLoop();
-
     phaseStart = startPhase();
     const domainExtractor = new DomainExtractor();
     const domainConcepts = domainExtractor.extract(allNodes, allEntryPoints, dataEntities, allEdges, projectPath, {
@@ -1569,12 +1447,10 @@ export class AnalyzerOrchestrator {
     });
     logTiming('pp_domainConcepts', phaseStart);
     await yieldToEventLoop();
-
     phaseStart = startPhase();
     const structuralImportance = this.computeAndStampStructuralImportance(allNodes, allEdges, allEntryPoints);
     logTiming('pp_structuralImportance', phaseStart);
     await yieldToEventLoop();
-
     phaseStart = startPhase();
     const flowGraph = this.buildFlowGraph(
       allEntryPoints,
@@ -1596,7 +1472,6 @@ export class AnalyzerOrchestrator {
     const enhancedFlowSummary = this.buildEnhancedFlowSummary(callChains, allEntryPoints);
     logTiming('pp_enhanceRisks', phaseStart);
     await yieldToEventLoop();
-
     phaseStart = startPhase();
     const flowsForJourneys = computeFlowConcepts({
       nodes: allNodes,
@@ -1644,17 +1519,14 @@ export class AnalyzerOrchestrator {
     });
     logTiming('pp_userJourneys', phaseStart);
     await yieldToEventLoop();
-
     if (allBehaviors.length === 0 && userJourneyResult.journeys.length > 0) {
       allBehaviors.push(...this.synthesizeBehaviorsFromJourneys(userJourneyResult.journeys));
     }
-
     phaseStart = startPhase();
     const productEntryPointsForPurpose = this.filterPrimaryProductEntryPoints(allEntryPoints, allNodes, projectPath);
     await yieldToEventLoop();
     const entryPointSummary = this.summarizeEntryPoints(productEntryPointsForPurpose);
     const projectTextSignal = this.extractProjectTextSignal(projectPath);
-
     systemName = this.resolveSystemDisplayName(projectPath, projectTextSignal.productDocTitle) || systemName;
     const frameworkNames = this.frameworkNamesForPurpose(contributions, allNodes, allEdges, projectPath, allEntryPoints);
     const dbEntityNames = databaseSchema.entities.map(e => e.name);
@@ -1669,7 +1541,6 @@ export class AnalyzerOrchestrator {
       systemCapabilities,
     });
     await yieldToEventLoop();
-
     const enhancedSystemPurpose = this.buildEnhancedSystemPurpose(
       systemPurpose,
       domainConcepts,
@@ -1689,7 +1560,6 @@ export class AnalyzerOrchestrator {
     );
     logTiming('pp_enhancedPurpose', phaseStart);
     await yieldToEventLoop();
-
     phaseStart = startPhase();
     const unanalyzedLanguages = this.scanUnanalyzedLanguages(projectPath);
     const dependencyManifest = buildDependencyManifest(projectPath);
@@ -1724,7 +1594,6 @@ export class AnalyzerOrchestrator {
     }).slice(0, 48);
     phaseStart = startPhase();
     const nestedRepositories = await this.describeNestedRepositories(projectPath);
-
     const deployableEvidence: DeployableEvidence[] = collectDeployableEvidence({
       projectPath,
       nodes: allNodes,
@@ -1740,7 +1609,6 @@ export class AnalyzerOrchestrator {
       ? topLevelShipUnits.length
       : undefined;
     await yieldToEventLoop();
-
     const deferAiEnrichment = options?.deferAiEnrichment === true;
     const runAiInterpretation = async (): Promise<void> => {
       const aiPhaseStart = Date.now();
@@ -1763,7 +1631,8 @@ export class AnalyzerOrchestrator {
         allNodes,
         allEdges,
         behaviorSurfaces,
-        allEntryPoints
+        allEntryPoints,
+        allExitPoints
       );
       const aiDuration = Date.now() - aiPhaseStart;
       phaseTimingRecords['pp_aiInterpretation'] = {
@@ -1781,7 +1650,6 @@ export class AnalyzerOrchestrator {
         description_source: enhancedSystemPurpose.description_source,
       });
     };
-
     const aiInterpretationStartedAt = Date.now();
     const aiInterpretationPromise = deferAiEnrichment
       ? undefined
@@ -1791,12 +1659,10 @@ export class AnalyzerOrchestrator {
       );
     if (deferAiEnrichment) logTiming('pp_aiInterpretation', aiInterpretationStartedAt);
     await yieldToEventLoop();
-
     phaseStart = startPhase();
     const methodCalls = this.buildMethodCalls(allNodes, allEdges, allExitPoints);
     logTiming('pp_methodCalls', phaseStart);
     await yieldToEventLoop();
-
     phaseStart = startPhase();
     const reachabilityIndex = buildReachabilityIndexFromCas({
       nodes: allNodes,
@@ -1805,7 +1671,6 @@ export class AnalyzerOrchestrator {
     });
     logTiming('pp_reachabilityIndex', phaseStart);
     await yieldToEventLoop();
-
     phaseStart = startPhase();
     const allDecorators = this.buildAllDecorators(allNodes);
     const documentationSummary = this.buildDocumentationSummary(allNodes);
@@ -1815,7 +1680,6 @@ export class AnalyzerOrchestrator {
     const configuration = this.buildAllConfiguration(allNodes, allExitPoints, externalServices, projectPath);
     logTiming('pp_finalMetadata', phaseStart);
     await yieldToEventLoop();
-
     phaseStart = startPhase();
     const mocks = this.buildMocks(allNodes);
     const fixtures = this.buildFixtures(allNodes);
@@ -1824,7 +1688,6 @@ export class AnalyzerOrchestrator {
     const behavioralInvariantSummary = this.buildBehavioralInvariantSummary(behavioralInvariants);
     logTiming('pp_testData', phaseStart);
     await yieldToEventLoop();
-
     phaseStart = startPhase();
     const runtime = this.buildRuntime(projectPath, allEntryPoints, allExitPoints, externalServices, configuration, callChains);
     await yieldToEventLoop();
@@ -1881,7 +1744,6 @@ export class AnalyzerOrchestrator {
     await yieldToEventLoop();
     logTiming('pp_traceability', phaseStart);
     await yieldToEventLoop();
-
     phaseStart = startPhase();
     if (!deferAiEnrichment) {
       this.finalizeSystemCapabilityNames(systemCapabilities, dataEntities, enhancedSystemPurpose);
@@ -1903,16 +1765,13 @@ export class AnalyzerOrchestrator {
     entryPointsWithContractAndCapability = attachDeployable(entryPointsWithContractAndCapability, deployableEvidence, allNodes);
     logTiming('pp_entryPointContractCapability', phaseStart);
     await yieldToEventLoop();
-
     const totalTime = Date.now() - startTime;
     const overBudget = totalTime > 180_000;
     writeAnalyzerStatus(
       `[Klauro] Analysis completed in ${totalTime}ms${overBudget ? ' (OVER the 180s hard budget)' : ''}. Breakdown:`,
       JSON.stringify(timings),
     );
-
     const dependencyRoles = deriveDependencyRoles(dependencyManifest, allExitPoints);
-
     const moduleHealth = computeModuleHealth({
       nodes: allNodes,
       edges: allEdges,
@@ -1956,6 +1815,7 @@ export class AnalyzerOrchestrator {
         hasAIProvider: this.hasAIInterpretationProviderConfigured(),
         systemDescriptionSource: enhancedSystemPurpose.description_source,
         capabilityDescriptionSource: canonicalSystemCapabilities.some(capability => capability.description_source === 'ai') ? 'ai' : 'skipped',
+        canonicalCapabilities: canonicalSystemCapabilities.length,
         embeddingEnabled: Boolean(this.embeddingPhaseConfig),
         runtimeSignals: runtimeStaticLinks.length,
       }),
@@ -2041,10 +1901,8 @@ export class AnalyzerOrchestrator {
       fixtures: fixtures,
       test_summary: testSummary
     } as CASOutput;
-
     this.enforceCapabilityDescriptionProvenanceInvariant(output.capabilities);
     output.product_map = buildProductMap(output);
-
     try {
       const infraLinks = linkInfraTopology(output);
       if (infraLinks.nodes.length > 0) appendAll(output.nodes, infraLinks.nodes);
@@ -2052,13 +1910,11 @@ export class AnalyzerOrchestrator {
     } catch (error) {
       console.error('[Klauro] infra-topology-linker pass failed:', error);
     }
-
     try {
       output.communication_seams = classifyCommunicationSeams(output);
     } catch (error) {
       console.error('[Klauro] communication-seams pass failed:', error);
     }
-
     try {
       const consistency = deriveConsistencyModel(output);
       output.consistency_model = consistency;
@@ -2069,7 +1925,6 @@ export class AnalyzerOrchestrator {
     } catch (error) {
       console.error('[Klauro] consistency-model pass failed:', error);
     }
-
     try {
       const typeClassification = classifyCodebaseTypes({
         projectPath,
@@ -2081,7 +1936,6 @@ export class AnalyzerOrchestrator {
       output.codebase_type_confidence = typeClassification.confidence;
       output.codebase_types = typeClassification.types;
       output.codebase_type_signals = typeClassification.signals;
-
       const recognizedDependencyNames = new Set<string>();
       for (const registration of this.analyzers.values()) {
         for (const dep of registration.detectPatterns?.dependencies ?? []) {
@@ -2101,12 +1955,10 @@ export class AnalyzerOrchestrator {
     } catch (error) {
       console.error('[Klauro] codebase-type/coverage-gaps pass failed:', error);
     }
-
     this.enforceCapabilityDescriptionProvenanceInvariant(output.capabilities);
     output.product_map = buildProductMap(output);
-
     if (deferAiEnrichment) {
-      output.ai_enrichment = this.hasAIInterpretationProviderConfigured() ? 'pending' : 'disabled';
+      output.ai_enrichment = this.analysisAiEnrichmentStatus(true);
       if (output.ai_enrichment === 'pending') {
         this.deferredAiEnrichments.set(output, async () => {
           const rawCapabilitySnapshot = systemCapabilities.map(capability => ({ ...capability }));
@@ -2139,6 +1991,7 @@ export class AnalyzerOrchestrator {
             hasAIProvider: this.hasAIInterpretationProviderConfigured(),
             systemDescriptionSource: enhancedSystemPurpose.description_source,
             capabilityDescriptionSource: systemCapabilities.some(capability => capability.description_source === 'ai') ? 'ai' : 'skipped',
+            canonicalCapabilities: systemCapabilities.length,
             embeddingEnabled: Boolean(this.embeddingPhaseConfig),
             runtimeSignals: runtimeStaticLinks.length,
           });
@@ -2163,14 +2016,12 @@ export class AnalyzerOrchestrator {
         output.product_map = buildProductMap(output);
       }
     } else {
-      output.ai_enrichment = 'synchronous';
+      this.settleCapabilityCatalogStatus(output, this.analysisAiEnrichmentStatus(false));
     }
-
     phaseStart = startPhase();
     await this.applyEmbeddingPhase(output, projectPath);
     logTiming('pp_embeddingAndFinalize', phaseStart);
     await yieldToEventLoop();
-
     if (output.analysis_phases) {
       this.stampPhaseTimings(output.analysis_phases, phaseTimingRecords);
     }
@@ -2189,7 +2040,6 @@ export class AnalyzerOrchestrator {
       output.analysis_facts || []
     );
     output.terminality = buildCasTerminality(output);
-
     const sourceFiles = new Set<string>();
     for (const node of output.nodes) {
       if (node.source?.file) sourceFiles.add(node.source.file);
@@ -2208,7 +2058,6 @@ export class AnalyzerOrchestrator {
     refreshAnalyzerDetectionEvidence(path.resolve(projectPath), this.analyzerRegistryFingerprint(this.analyzers.values()), Date.now() + 60_000);
     return output;
   }
-
   async orchestrateIncrementalAnalysis(
     projectPath: string,
     previousOutput: CASOutput,
@@ -2238,7 +2087,6 @@ export class AnalyzerOrchestrator {
       ])].filter(filePath => !directChanges.has(filePath)).sort();
     }
     const schemaRebuildReason = this.fullRebuildReasonForPreviousOutput(previousOutput);
-
     if (schemaRebuildReason) {
       const trigger = /^(Parser-layer fingerprint changed|Derived-layer fingerprint changed|Analyzer build changed)/.test(schemaRebuildReason)
         ? 'analyzer-version'
@@ -2259,7 +2107,6 @@ export class AnalyzerOrchestrator {
       changeReport.locality = buildChangeExecutionLocality({ strategy: 'full-rebuild', state, changeSet, fileResults: new Map(), cas: output, fullRebuildReason: schemaRebuildReason });
       return { output, state, changeReport, wasFullRebuild: true, fullRebuildReason: schemaRebuildReason };
     }
-
     if (!previousState) {
       const output = previousOutput;
       const state = this.buildIncrementalState(projectPath, output, changeDetector);
@@ -2267,7 +2114,6 @@ export class AnalyzerOrchestrator {
       changeReport.locality = buildChangeExecutionLocality({ strategy: 'full-rebuild', state, changeSet, fileResults: new Map(), cas: output, fullRebuildReason: 'No previous analysis state' });
       return { output, state, changeReport, wasFullRebuild: true, fullRebuildReason: 'No previous analysis state' };
     }
-
     if (changeSet.requiresFullRebuild) {
       this.invalidateProjectDiscovery(projectPath);
       const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName, onProgress: options?.onProgress });
@@ -2278,7 +2124,6 @@ export class AnalyzerOrchestrator {
       });
       return { output, state, changeReport, wasFullRebuild: true, fullRebuildReason: changeSet.reason };
     }
-
     const totalChanges = changeSet.added.length + changeSet.modified.length + changeSet.deleted.length;
     if (totalChanges === 0) {
       const state: IncrementalState = {
@@ -2292,11 +2137,9 @@ export class AnalyzerOrchestrator {
       });
       return { output: previousOutput, state, changeReport, wasFullRebuild: false };
     }
-
     const incrementalResult = await withAnalyzerFileReadCache(() => this.runIncrementalAnalysis(
       projectPath, previousOutput, previousState, changeSet, options
     ));
-
     if (incrementalResult.wasFullRebuild) {
       this.invalidateProjectDiscovery(projectPath);
       const updatedState = this.buildIncrementalState(projectPath, incrementalResult.output, changeDetector);
@@ -2317,7 +2160,6 @@ export class AnalyzerOrchestrator {
         cas: incrementalResult.output,
         fullRebuildReason: incrementalResult.fullRebuildReason || changeSet.reason
       });
-
       return {
         output: incrementalResult.output,
         state: updatedState,
@@ -2326,14 +2168,12 @@ export class AnalyzerOrchestrator {
         fullRebuildReason: incrementalResult.fullRebuildReason || changeSet.reason
       };
     }
-
     let finalIncrementalPhaseStartedAt = Date.now();
     const debugFinalIncrementalPhase = (label: string) => {
       if (process.env.KLAURO_DEBUG_INCREMENTAL_PHASES !== '1') return;
       writeAnalyzerStatus(`[Klauro] incremental final phase ${label}: ${Date.now() - finalIncrementalPhaseStartedAt}ms`);
       finalIncrementalPhaseStartedAt = Date.now();
     };
-
     const updatedState = incrementalResult.rebuiltIncrementalState
       ? refreshIncrementalStateFromGraph({
         projectPath, previousState, changeSet, output: incrementalResult.output, fileResults: incrementalResult.fileResults,
@@ -2348,7 +2188,6 @@ export class AnalyzerOrchestrator {
       );
     debugFinalIncrementalPhase('update-state');
     await yieldToEventLoop();
-
     const changeReport = this.buildIncrementalChangeReport(
       previousOutput,
       incrementalResult.output,
@@ -2366,7 +2205,6 @@ export class AnalyzerOrchestrator {
     });
     debugFinalIncrementalPhase('build-change-report');
     await yieldToEventLoop();
-
     await this.applyEmbeddingPhase(incrementalResult.output, projectPath);
     incrementalResult.output.entry_points = attachDeployable(
       incrementalResult.output.entry_points || [],
@@ -2375,7 +2213,6 @@ export class AnalyzerOrchestrator {
     );
     debugFinalIncrementalPhase('apply-embedding-phase');
     await yieldToEventLoop();
-
     return {
       output: incrementalResult.output,
       state: updatedState,
@@ -2383,14 +2220,11 @@ export class AnalyzerOrchestrator {
       wasFullRebuild: false
     };
   }
-
   private fullRebuildReasonForPreviousOutput(previousOutput: CASOutput): string | null {
-
     const currentAnalyzerBuild = getBuildIdentity().version;
     const previousAnalyzerBuild = previousOutput.analyzer_build;
     const previousParserFingerprint = previousOutput.parser_fingerprint;
     const previousDerivedFingerprint = previousOutput.derived_fingerprint;
-
     if (!previousParserFingerprint || !previousDerivedFingerprint) {
       if (previousAnalyzerBuild !== currentAnalyzerBuild) {
         return `Analyzer build changed (${previousAnalyzerBuild || 'unstamped'} -> ${currentAnalyzerBuild}, no stage fingerprints on persisted output)`;
@@ -2424,7 +2258,6 @@ export class AnalyzerOrchestrator {
     }
     return null;
   }
-
   private async runIncrementalAnalysis(
     projectPath: string,
     previousOutput: CASOutput,
@@ -2477,7 +2310,6 @@ export class AnalyzerOrchestrator {
     const incrementalAnalyzers = detectedAnalyzers.filter(
       r => r.analyzer.supportsIncrementalAnalysis?.() && r.analyzer.analyzeFileSingle
     );
-
     if (incrementalAnalyzers.length === 0) {
       const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
       return {
@@ -2487,7 +2319,6 @@ export class AnalyzerOrchestrator {
         fullRebuildReason: 'No detected analyzer supports single-file incremental analysis'
       };
     }
-
     const directFilesToAnalyze = filesRequiringIncrementalAnalysis(changeSet);
     const possibleFilesToAnalyze = [...new Set([
       ...directFilesToAnalyze,
@@ -2506,7 +2337,6 @@ export class AnalyzerOrchestrator {
     const previousAnalyzerIdsByFile = indexIncrementalAnalyzersByFile(previousOutput, projectPath);
     const matchingAnalyzerPlansByFile = new Map<string, Array<{ registration: AnalyzerRegistration; relevantFiles: Set<string> }>>();
     const filesNeedingRelevanceScan: string[] = [];
-
     for (const relativePath of possibleFilesToAnalyze) {
       const expectedAnalyzerIds = this.expectedIncrementalAnalyzerIdsForFile(
         relativePath,
@@ -2521,7 +2351,6 @@ export class AnalyzerOrchestrator {
           expectedAnalyzerIds.has(registration.id) && this.analyzerCanHandleFile(registration.id, relativePath)
         )
         : [];
-
       if (directMatches.length > 0) {
         matchingAnalyzerPlansByFile.set(relativePath, directMatches.map(registration => ({
           registration,
@@ -2533,7 +2362,6 @@ export class AnalyzerOrchestrator {
     }
     debugIncrementalPhase('plan-direct-matches');
     await yieldToEventLoop();
-
     const analyzerPlans = filesNeedingRelevanceScan.length > 0
       ? await Promise.all(
         candidateIncrementalAnalyzers.map(async registration => ({
@@ -2544,11 +2372,9 @@ export class AnalyzerOrchestrator {
       : [];
     debugIncrementalPhase('relevance-scan');
     await yieldToEventLoop();
-
     const unsupportedFiles = new Set(possibleFilesToAnalyze.filter(relativePath => {
       const existingPlans = matchingAnalyzerPlansByFile.get(relativePath);
       if (existingPlans?.length) return false;
-
       const matchingPlans = analyzerPlans.filter(plan => plan.relevantFiles.has(relativePath));
       matchingAnalyzerPlansByFile.set(relativePath, matchingPlans);
       return matchingPlans.length === 0;
@@ -2563,7 +2389,6 @@ export class AnalyzerOrchestrator {
         fullRebuildReason: `Changed files are not supported by single-file incremental analyzers: ${unsupportedDirectFiles.slice(0, 5).join(', ')}`
       };
     }
-
     const scannedRelevantFilesByAnalyzer = new Map(
       analyzerPlans.map(plan => [plan.registration.id, plan.relevantFiles.size])
     );
@@ -2573,7 +2398,6 @@ export class AnalyzerOrchestrator {
       new Map([...matchingAnalyzerPlansByFile].filter(([filePath]) => directFilesToAnalyze.includes(filePath))),
       scannedRelevantFilesByAnalyzer
     );
-
     const projectScopedAnalyzerIds = new Set(promotedProjectAnalyzerIds);
     const filesWithWhollyDeferredAnalyzerOwnership = new Set<string>();
     const directlyChangedFiles = new Set([...changeSet.added, ...changeSet.modified]);
@@ -2586,7 +2410,6 @@ export class AnalyzerOrchestrator {
     const deletedEdgeIds = new Set<string>();
     const deletedEntryPointIds = new Set<string>();
     const deletedExitPointIds = new Set<string>();
-
     for (const deletedFile of changeSet.deleted) {
       const record = previousState.files[deletedFile];
       if (record) {
@@ -2662,7 +2485,6 @@ export class AnalyzerOrchestrator {
             propagation.complete(relativePath, false);
             continue;
           }
-
           const analyzerIds = new Set(matchingPlans.map(plan => plan.registration.id));
           const priorResult = fileResults.get(relativePath);
           const replacementRecord = priorResult ? {
@@ -2690,7 +2512,6 @@ export class AnalyzerOrchestrator {
             failedFiles.push(relativePath);
             break;
           }
-
           const stat = await fs.stat(fullPath);
           const content = await fs.readFile(fullPath, 'utf-8');
           const contentHash = this.computeContentHash(content);
@@ -2724,7 +2545,6 @@ export class AnalyzerOrchestrator {
           const analysisSnapshot = createIncrementalAnalysisSnapshot(currentSnapshot);
           const projectScopedSnapshot = matchingPlans.some(({ registration }) => registration.analyzer.incrementalContributionScope() === 'project')
             ? projectScopedFileAnalysisSnapshot(currentSnapshot, relativePath) : undefined;
-
           for (const { registration } of matchingPlans) {
             if (!registration.analyzer.analyzeFileSingle) continue;
             const analyzerRoot = this.analyzerRootMap.get(registration.id) || projectPath;
@@ -2757,7 +2577,6 @@ export class AnalyzerOrchestrator {
             mergeIncrementalFileAnalysisResult(combinedResult, result);
             analysisSnapshot.append(result);
           }
-
           combinedResult.imports = [...new Set(combinedResult.imports)];
           combinedResult.exports = [...new Set(combinedResult.exports)];
           filterInvalidIncrementalEndpoints(
@@ -2816,7 +2635,6 @@ export class AnalyzerOrchestrator {
     ));
     debugIncrementalPhase('analyze-changed-files');
     await yieldToEventLoop();
-
     if (failedFiles.length > 0 || fileResults.size !== analyzedFiles.length) {
       const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
       const incompleteFiles = analyzedFiles.filter(file => !fileResults.has(file));
@@ -2827,7 +2645,6 @@ export class AnalyzerOrchestrator {
         fullRebuildReason: `Single-file incremental analysis failed or was incomplete for: ${[...failedFiles, ...incompleteFiles].slice(0, 5).join(', ')}`
       };
     }
-
     this.retainStableMissingFileFacts(
       projectPath,
       previousOutput,
@@ -2837,7 +2654,6 @@ export class AnalyzerOrchestrator {
     );
     debugIncrementalPhase('retain-stable-missing-facts');
     await yieldToEventLoop();
-
     const filesWithUnsupportedDerivedFacts = propagation.changedSurfaceFiles().filter(relativePath => {
       const plans = matchingAnalyzerPlansByFile.get(relativePath) || [];
       const projectScopedPlans = plans.filter(plan =>
@@ -2956,7 +2772,6 @@ export class AnalyzerOrchestrator {
       entryPoints: filteredEntryPoints,
       exitPoints: filteredExitPoints,
     });
-
     const localizedOutput = !rebuiltIncrementalState
       ? this.tryBuildLocalizedIncrementalOutput(previousOutput, previousState, changeSet, fileResults)
       : undefined;
@@ -2965,11 +2780,9 @@ export class AnalyzerOrchestrator {
     if (localizedOutput) {
       return { output: localizedOutput, fileResults, rebuiltIncrementalState, executionStrategy: 'localized-file-merge' };
     }
-
     if (!rebuiltIncrementalState && this.isStructuralNoopIncremental(previousOutput, previousState, changeSet, fileResults)) {
       return { output: previousOutput, fileResults, rebuiltIncrementalState, executionStrategy: 'structural-noop' };
     }
-
     const rebuiltOutput = await this.rebuildDerivedData(
       projectPath,
       filteredNodes,
@@ -2982,12 +2795,10 @@ export class AnalyzerOrchestrator {
     if (incrementalMergeWarnings.length > 0) {
       rebuiltOutput.analysis_errors = [...(rebuiltOutput.analysis_errors || []), ...incrementalMergeWarnings];
     }
-
     return { output: rebuiltOutput, fileResults, rebuiltIncrementalState,
       executionStrategy: rebuiltIncrementalState ? 'project-contribution-refresh' : 'derived-layer-rebuild',
       refreshedProjectAnalyzers: rebuiltIncrementalState ? [...projectScopedAnalyzerIds].sort() : undefined };
   }
-
   private async rebuildDerivedData(
     projectPath: string,
     nodes: CASNode[],
@@ -3021,12 +2832,10 @@ export class AnalyzerOrchestrator {
     this.normalizeNodeMetrics(nodes);
     this.applyCanonicalOrdering(nodes, edges, entryPoints, exitPoints, previousOutput.libraries || []);
     assignNodeRoles({ nodes, edges, entry_points: entryPoints, exit_points: exitPoints, resetDerivedRoles: true });
-
     const categories = previousOutput.categories || {};
     let systemName = options?.displayName || path.basename(projectPath);
     const progressiveLevels = this.buildProgressiveLevels(nodes, categories);
     const index = this.buildIndex(nodes, entryPoints, exitPoints, previousOutput.perspectives || []);
-
     const libraries = previousOutput.libraries || [];
     const architectureSummary = this.buildArchitectureSummary(
       projectPath, nodes, entryPoints, exitPoints, previousOutput.analyzer_contributions
@@ -3034,7 +2843,6 @@ export class AnalyzerOrchestrator {
     const routeTable = this.buildRouteTable(entryPoints);
     const databaseSchema = this.buildDatabaseSchema(nodes, libraries, projectPath, edges);
     const externalServices = this.buildExternalServices(nodes, exitPoints, libraries);
-
     const detectedPatterns = this.detectPatterns(nodes, edges);
     const intents = this.buildIntents(nodes);
     const changeRisks = this.buildChangeRisks(nodes, edges, entryPoints, buildGitDerivedFacts ? gitAnalyzer : undefined);
@@ -3049,34 +2857,27 @@ export class AnalyzerOrchestrator {
     const dataSummary = this.buildDataSummary(dataEntities, nodes);
     const productEntryPointsForSecurity = this.filterPrimaryProductEntryPoints(entryPoints, nodes, projectPath);
     const securityBoundaries = this.buildSecurityBoundaries(nodes, entryPoints, projectPath, edges);
-    const securitySummary = this.buildSecuritySummary(securityBoundaries, nodes, productEntryPointsForSecurity);
+    const securitySummary = this.buildSecuritySummary(securityBoundaries, nodes, productEntryPointsForSecurity, edges);
     const temporalStability = buildGitDerivedFacts ? this.buildTemporalStability(nodes, gitAnalyzer) : [];
     const stabilitySummary = this.buildStabilitySummary(temporalStability);
     const testSuites = await this.buildTestSuites(nodes, entryPoints, projectPath, edges);
     const behavioralInvariants = this.buildBehavioralInvariants(nodes, edges, entryPoints, databaseSchema, dataEntities, securityBoundaries, testSuites, projectPath);
     const behavioralInvariantSummary = this.buildBehavioralInvariantSummary(behavioralInvariants);
-
     const callGraphBuilder = new CallGraphBuilder(nodes, edges, exitPoints);
     this.enrichNodeCallGraphs(nodes, callGraphBuilder, entryPoints, exitPoints);
     this.deriveParentFromContainsEdges(nodes, edges);
     this.enrichNodePerspectives(nodes, previousOutput.perspectives || []);
-
     const { capabilities: systemCapabilities, behaviorSurfaces } = await this.buildSystemCapabilities(entryPoints, dataEntities, nodes, edges, projectPath, exitPoints);
     await yieldToEventLoop();
     const systemPurpose = await this.inferSystemPurpose(entryPoints, dataEntities, systemCapabilities, nodes);
-
     const callChains = this.buildCallChains(nodes, edges, entryPoints, exitPoints, callGraphBuilder, systemCapabilities);
-
     const flowCoverage = await this.buildFlowCoverage(nodes, entryPoints, callChains, testSuites);
     const testGaps = this.buildTestGaps(flowCoverage, nodes);
-
     const domainExtractor = new DomainExtractor();
     const domainConcepts = domainExtractor.extract(nodes, entryPoints, dataEntities, edges, projectPath, {
       capabilityNames: systemCapabilities.map(capability => capability.name).filter(Boolean),
     });
-
     const structuralImportance = this.computeAndStampStructuralImportance(nodes, edges, entryPoints);
-
     const flowGraph = this.buildFlowGraph(
       entryPoints,
       callChains,
@@ -3088,7 +2889,6 @@ export class AnalyzerOrchestrator {
       systemPurpose,
       structuralImportance.scores
     );
-
     const enhancedChangeRisks = this.enhanceChangeRisks(changeRisks, callGraphBuilder, callChains, entryPoints);
     callGraphBuilder.release();
     const flowsForJourneys = computeFlowConcepts({
@@ -3220,7 +3020,8 @@ export class AnalyzerOrchestrator {
         nodes,
         edges,
         behaviorSurfaces,
-        entryPoints
+        entryPoints,
+        exitPoints
       );
       const stabilizedCapabilities = this.stabilizeRefreshedCapabilityCatalog(
         previousOutput.capabilities || [],
@@ -3258,7 +3059,6 @@ export class AnalyzerOrchestrator {
       );
       systemCapabilities.splice(0, systemCapabilities.length, ...reusedCapabilities);
     }
-
     const analysisFacts = await this.buildAnalysisFacts(
       nodes,
       edges,
@@ -3297,10 +3097,8 @@ export class AnalyzerOrchestrator {
       runtime
     );
     const validation = buildGraphValidation(nodes, edges, entryPoints, exitPoints, runtimeStaticLinks, analysisFacts);
-
     this.finalizeSystemCapabilityNames(systemCapabilities, dataEntities, enhancedSystemPurpose);
     this.finalizeFlowGraphCapabilities(flowGraph);
-
     let comprehensionFlows: FlowConcept[] = [];
     let entryPointsWithContractAndCapability = this.deriveEntryPointContractAndCapability(entryPoints, {
       nodes,
@@ -3314,13 +3112,11 @@ export class AnalyzerOrchestrator {
       entities: dataEntities,
     }, flows => { comprehensionFlows = flows; });
     entryPointsWithContractAndCapability = attachDeployable(entryPointsWithContractAndCapability, deployableEvidence, nodes);
-
     const rebuiltReachabilityIndex = buildReachabilityIndexFromCas({
       nodes,
       edges,
       method_calls: previousOutput.method_calls,
     });
-
     const rebuiltModuleHealth = computeModuleHealth({
       nodes,
       edges,
@@ -3342,6 +3138,7 @@ export class AnalyzerOrchestrator {
         hasAIProvider: this.hasAIInterpretationProviderConfigured(),
         systemDescriptionSource: enhancedSystemPurpose.description_source,
         capabilityDescriptionSource: systemCapabilities.some(capability => capability.description_source === 'ai') ? 'ai' : 'skipped',
+        canonicalCapabilities: systemCapabilities.length,
         embeddingEnabled: Boolean(this.embeddingPhaseConfig),
         runtimeSignals: runtimeStaticLinks.length,
       }),
@@ -3412,7 +3209,7 @@ export class AnalyzerOrchestrator {
       validation,
       test_suites: testSuites
     };
-
+    applyCapabilityCatalogStatus(rebuiltOutput);
     this.enforceCapabilityDescriptionProvenanceInvariant(rebuiltOutput.capabilities);
     rebuiltOutput.product_map = buildProductMap(rebuiltOutput);
     try {
@@ -3461,30 +3258,25 @@ export class AnalyzerOrchestrator {
     rebuiltOutput.terminality = buildCasTerminality(rebuiltOutput);
     return rebuiltOutput;
   }
-
   createIncrementalBaseline(projectPath: string, output: CASOutput): IncrementalState {
     const state = this.buildIncrementalState(projectPath, output, new ChangeDetector(projectPath));
     refreshAnalyzerDetectionEvidence(path.resolve(projectPath), this.analyzerRegistryFingerprint(this.analyzers.values()), Date.now() + 60_000);
     return state;
   }
-
   private buildIncrementalState(
     projectPath: string,
     output: CASOutput,
     changeDetector: ChangeDetector
   ): IncrementalState {
     const files: Record<string, FileAnalysisRecord> = {};
-
     const { nodesByFile, edgesByFile, entryPointsByFile, exitPointsByFile } =
       indexIncrementalGraphItemsByFile(projectPath, output);
-
     for (const [filePath, fileNodes] of nodesByFile) {
       const fullPath = path.join(projectPath, filePath);
       try {
         const stat = fs.statSync(fullPath);
         const content = fs.readFileSync(fullPath, 'utf-8');
         const contentHash = this.computeContentHash(content);
-
         files[filePath] = {
           filePath,
           contentHash,
@@ -3501,7 +3293,6 @@ export class AnalyzerOrchestrator {
       } catch {
       }
     }
-
     for (const filePath of this.getIncrementalSourceFiles(projectPath)) {
       if (files[filePath]) continue;
       const fullPath = path.join(projectPath, filePath);
@@ -3524,14 +3315,11 @@ export class AnalyzerOrchestrator {
       } catch {
       }
     }
-
     const analyzerVersions: Record<string, string> = {};
     for (const contribution of output.analyzer_contributions || []) {
       analyzerVersions[contribution.analyzer_id] = contribution.analyzer_version || '1.0.0';
     }
-
     normalizeIncrementalStateImports(files);
-
     return {
       version: INCREMENTAL_STATE_VERSION,
       projectPath,
@@ -3543,7 +3331,6 @@ export class AnalyzerOrchestrator {
       analyzerRegistryFingerprint: this.analyzerRegistryFingerprint(this.analyzers.values()),
     };
   }
-
   private analyzerRegistryFingerprint(registrations: Iterable<AnalyzerRegistration>): string {
     const registry = [...registrations].map(registration => ({
       id: registration.id,
@@ -3566,11 +3353,9 @@ export class AnalyzerOrchestrator {
     changeDetector: ChangeDetector
   ): IncrementalState {
     const files = { ...previousState.files };
-
     for (const deletedFile of changeSet.deleted) {
       delete files[deletedFile];
     }
-
     for (const [filePath, fileResult] of result.fileResults) {
       files[filePath] = updatedIncrementalFileRecord({
         previous: previousState.files[filePath],
@@ -3579,9 +3364,7 @@ export class AnalyzerOrchestrator {
         preservePreviousFacts: Boolean(changeSet.affectedFiles?.includes(filePath) && !changeSet.modified.includes(filePath) && !changeSet.added.includes(filePath)),
       });
     }
-
     normalizeIncrementalStateImports(files);
-
     return {
       ...previousState,
       lastAnalysisTimestamp: Date.now(),
@@ -3589,13 +3372,11 @@ export class AnalyzerOrchestrator {
       files
     };
   }
-
   private analyzerIdForNodes(nodes: CASNode[]): string {
     return nodes.find(node => node.primaryAnalyzer)?.primaryAnalyzer ||
       nodes.find(node => node.analyzers?.length)?.analyzers?.[0] ||
       'unknown';
   }
-
   private retainStableMissingFileFacts(
     projectPath: string,
     previousOutput: CASOutput,
@@ -3604,27 +3385,22 @@ export class AnalyzerOrchestrator {
     fileResults: Map<string, FileAnalysisResult>
   ): void {
     if (changeSet.added.length > 0 || changeSet.deleted.length > 0) return;
-
     const previousNodesById = new Map(previousOutput.nodes.map(node => [node.id, node]));
     const previousEdgesById = new Map(previousOutput.edges.map(edge => [edge.id, edge]));
     const previousEntryPointsById = new Map((previousOutput.entry_points || []).map(entryPoint => [entryPoint.id, entryPoint]));
     const previousExitPointsById = new Map((previousOutput.exit_points || []).map(exitPoint => [exitPoint.id, exitPoint]));
-
     for (const filePath of changeSet.modified) {
       const record = previousState.files[filePath];
       const result = fileResults.get(filePath);
       if (!record || !result) continue;
-
       let content = '';
       try {
         content = fs.readFileSync(path.join(projectPath, filePath), 'utf8');
       } catch {
         continue;
       }
-
       const currentNodeIds = new Set(result.nodes.map(node => node.id));
       const retainedNodeIds = new Set<string>();
-
       for (const nodeId of record.nodeIds) {
         if (currentNodeIds.has(nodeId)) continue;
         const previousNode = previousNodesById.get(nodeId);
@@ -3633,9 +3409,7 @@ export class AnalyzerOrchestrator {
         currentNodeIds.add(nodeId);
         retainedNodeIds.add(nodeId);
       }
-
       if (retainedNodeIds.size === 0) continue;
-
       const edgeIds = new Set(result.edges.map(edge => edge.id));
       for (const edgeId of record.edgeIds) {
         if (edgeIds.has(edgeId)) continue;
@@ -3646,7 +3420,6 @@ export class AnalyzerOrchestrator {
           edgeIds.add(edgeId);
         }
       }
-
       const entryPointIds = new Set(result.entryPoints.map(entryPoint => entryPoint.id));
       for (const entryPointId of record.entryPointIds) {
         if (entryPointIds.has(entryPointId)) continue;
@@ -3657,7 +3430,6 @@ export class AnalyzerOrchestrator {
           entryPointIds.add(entryPointId);
         }
       }
-
       const exitPointIds = new Set(result.exitPoints.map(exitPoint => exitPoint.id));
       for (const exitPointId of record.exitPointIds) {
         if (exitPointIds.has(exitPointId)) continue;
@@ -3670,14 +3442,12 @@ export class AnalyzerOrchestrator {
       }
     }
   }
-
   private canRetainStableMissingNode(node: CASNode, currentFileContent: string): boolean {
     const raw = node.source?.raw?.trim();
     if (!raw || raw.includes('\n...')) return false;
     if (raw.length < 20 && this.isBehavioralIncrementalNode(node)) return false;
     return currentFileContent.includes(raw);
   }
-
   private tryBuildLocalizedIncrementalOutput(
     previousOutput: CASOutput,
     previousState: IncrementalState,
@@ -3706,7 +3476,6 @@ export class AnalyzerOrchestrator {
       this.debugLocalizedIncremental('skipped', localizedEligibility.reason, changeSet, fileResults);
       return null;
     }
-
     const localizedStartedAt = Date.now();
     let localizedPhaseStartedAt = localizedStartedAt;
     const debugPhase = (label: string) => {
@@ -3714,13 +3483,11 @@ export class AnalyzerOrchestrator {
       writeAnalyzerStatus(`[Klauro] localized incremental timing ${label}: ${Date.now() - localizedPhaseStartedAt}ms`);
       localizedPhaseStartedAt = Date.now();
     };
-
     const nodeById = new Map(previousOutput.nodes.map(node => [node.id, node]));
     const edgeById = new Map(previousOutput.edges.map(edge => [edge.id, edge]));
     const entryPointById = new Map((previousOutput.entry_points || []).map(entryPoint => [entryPoint.id, entryPoint]));
     const exitPointById = new Map((previousOutput.exit_points || []).map(exitPoint => [exitPoint.id, exitPoint]));
     debugPhase('build-id-maps');
-
     for (const filePath of changeSet.modified) {
       const record = previousState.files[filePath];
       if (!record) continue;
@@ -3728,7 +3495,6 @@ export class AnalyzerOrchestrator {
       for (const exitPointId of record.exitPointIds) exitPointById.delete(exitPointId);
     }
     debugPhase('remove-modified-file-facts');
-
     for (const result of fileResults.values()) {
       for (const node of result.nodes) {
         const existing = nodeById.get(node.id);
@@ -3739,7 +3505,6 @@ export class AnalyzerOrchestrator {
       for (const exitPoint of result.exitPoints) exitPointById.set(exitPoint.id, exitPoint);
     }
     debugPhase('merge-file-results');
-
     const nodes = [...nodeById.values()];
     const edges = [...edgeById.values()];
     const entryPoints = [...entryPointById.values()];
@@ -3763,7 +3528,6 @@ export class AnalyzerOrchestrator {
     if (process.env.KLAURO_DEBUG_LOCALIZED_INCREMENTAL === '1') {
       writeAnalyzerStatus(`[Klauro] localized incremental timing total: ${Date.now() - localizedStartedAt}ms`);
     }
-
     return {
       ...previousOutput,
       analysis_timestamp: new Date().toISOString(),
@@ -3778,7 +3542,6 @@ export class AnalyzerOrchestrator {
       validation
     };
   }
-
   private getLocalizedIncrementalMergeEligibility(
     previousOutput: CASOutput,
     previousState: IncrementalState,
@@ -3789,12 +3552,10 @@ export class AnalyzerOrchestrator {
     const previousEdgesById = new Map(previousOutput.edges.map(edge => [edge.id, edge]));
     const previousEntryPointsById = new Map((previousOutput.entry_points || []).map(entryPoint => [entryPoint.id, entryPoint]));
     const previousExitPointsById = new Map((previousOutput.exit_points || []).map(exitPoint => [exitPoint.id, exitPoint]));
-
     for (const filePath of changeSet.modified) {
       const record = previousState.files[filePath];
       const result = fileResults.get(filePath);
       if (!record || !result) return { allowed: false, reason: `missing record or file result for ${filePath}` };
-
       const resolvedCurrentImports = resolveImportedFileReferences(
         filePath,
         result.imports || [],
@@ -3803,7 +3564,6 @@ export class AnalyzerOrchestrator {
       if (!this.sameStringSet(record.importedFiles || [], resolvedCurrentImports)) {
         return { allowed: false, reason: `local import set changed for ${filePath}` };
       }
-
       const previousNodes = record.nodeIds
         .map(id => previousNodesById.get(id))
         .filter((node): node is CASNode => Boolean(node));
@@ -3816,7 +3576,6 @@ export class AnalyzerOrchestrator {
       if (missingPreviousNodes.length > 0) {
         return { allowed: false, reason: `nodes disappeared for ${filePath}: ${missingPreviousNodes.slice(0, 5).map(node => `${node.type}:${node.name}`).join(', ')}` };
       }
-
       const addedNodes = result.nodes.filter(node => !previousNodeIds.has(node.id));
       const disconnectedImplementationNodes = addedNodes.filter(node => this.isBehavioralIncrementalNode(node));
       if (disconnectedImplementationNodes.some(node =>
@@ -5025,7 +4784,12 @@ export class AnalyzerOrchestrator {
     context: AnalysisContext,
     analysisRootPath: string
   ): Promise<CASContribution> {
-    if (!this.analyzerContributionCache) return registration.analyzer.analyze(context);
+    const analyze = () => analyzeWithCompleteScope(
+      registration,
+      context,
+      () => registration.analyzer.analyze(context)
+    );
+    if (!this.analyzerContributionCache) return analyze();
 
     const source = await this.analyzerContributionSourceIdentity(registration, context.projectPath, analysisRootPath);
     const fingerprints = getStageFingerprints();
@@ -5045,12 +4809,12 @@ export class AnalyzerOrchestrator {
         includeTests: context.includeTests,
         maxDepth: context.maxDepth,
         targetLevel: context.targetLevel,
+        analysisScopeVersion: 1,
         analysisFocus: process.env.KLAURO_ANALYSIS_FOCUS || '',
-        maxFilesPerAnalyzer: process.env.KLAURO_MAX_FILES_PER_ANALYZER || '',
         upstreamEvidenceHash: this.analyzerContextEvidenceHash(context),
       },
       semanticPackIdentity: this.activeSemanticPackIdentity,
-    }, () => registration.analyzer.analyze(context));
+    }, analyze);
 
     this.analyzerContributionCacheEvidence.set(registration.id, lookup.evidence);
     if (!lookup.contribution) {
@@ -5235,6 +4999,7 @@ export class AnalyzerOrchestrator {
       application_type: analyzerMeta.application_type,
       project_name: analyzerMeta.project_name,
       project_version: analyzerMeta.project_version,
+      analysis_scope: analyzerMeta.analysis_scope,
       warnings: Array.isArray(analyzerMeta.warnings) && analyzerMeta.warnings.length > 0 ? analyzerMeta.warnings : undefined
     });
 
@@ -5304,7 +5069,6 @@ export class AnalyzerOrchestrator {
       compareStrings(a.version, b.version)
     );
   }
-
   private canonicalGraphJson(value: unknown): string {
     const sortValue = (input: unknown): unknown => {
       if (Array.isArray(input)) return input.map(sortValue);
@@ -5318,33 +5082,34 @@ export class AnalyzerOrchestrator {
     };
     return JSON.stringify(sortValue(value));
   }
-
   private describeGraphItemSource(item: any, fallbackAnalyzer: string): string {
     const analyzer = item?.source_analyzer || fallbackAnalyzer || 'unknown analyzer';
     const file = item?.metadata?.file || item?.handler?.file || item?.source?.file || item?.source_location?.file;
     return file ? `${analyzer} (${file})` : analyzer;
   }
-
   private entryPointCanonicalKeys(ep: any): string[] {
     if (!ep || typeof ep !== 'object') return [];
     const type = typeof ep.type === 'string' ? ep.type : undefined;
     const name = typeof ep.name === 'string' ? ep.name.trim().toLowerCase() : '';
     if (!type || !name) return [];
-
     const keys: string[] = [];
     const file = this.entryPointSourceFile(ep);
+    const reactFile = String(ep.metadata?.handler_file || file || '').replace(/\\/g, '/').replace(/^\.\//, '');
+    const reactBindings = [...(ep.metadata?.handler_binding_node_ids || [])].map(String).sort().join(',');
+    if ((ep.source_analyzer === 'react' || ep.metadata?.source_analyzer === 'react') && reactFile && Number.isFinite(Number(ep.metadata?.jsx_line)) && Number.isFinite(Number(ep.metadata?.jsx_column))) {
+      return [`${type}::${name}::@react:${reactFile}:${Number(ep.metadata.jsx_line)}:${Number(ep.metadata.jsx_column)}:${reactBindings}`];
+    }
     const line = this.entryPointSourceLine(ep);
     if (file && line !== undefined) keys.push(`${type}::${name}::@${file}:${line}`);
-
     const handlerNode = ep.handler?.node_id || ep.source_node;
     if (handlerNode) keys.push(`${type}::${name}::${handlerNode}`);
     return keys;
   }
-
   private entryPointCrossAnalyzerKeys(ep: any): string[] {
     if (!ep || typeof ep !== 'object') return [];
     const keys: string[] = [];
-
+    const reactOccurrence = this.entryPointCanonicalKeys(ep).find(key => key.includes('::@react:'));
+    if (reactOccurrence) return [`x${reactOccurrence}`];
     const file = this.entryPointSourceFile(ep);
     const method = typeof ep.handler?.method_name === 'string' ? ep.handler.method_name.trim() : '';
     if (file && method) keys.push(`xhandler::${file.toLowerCase()}::${method.toLowerCase()}`);
@@ -6612,7 +6377,8 @@ export class AnalyzerOrchestrator {
 
     const mcpEntrySignal = mcpEntryPoints.length + mcpToolNodeCount;
     const mcpIsPrimaryEntrySurface =
-      mcpEntrySignal >= 5 &&
+      mcpEntrySignal > 0 &&
+      mcpEntrySignal >= pageEntryPoints.length &&
       mcpEntrySignal > httpEntryPoints.length * 2;
     const mcpAnalyzerIsPrimary = hasMcpSurface && hasAnalyzerSurface && mcpIsPrimaryEntrySurface;
 
@@ -6646,7 +6412,7 @@ export class AnalyzerOrchestrator {
     if (hasDesktopSurface && !hasRealServerSurface) {
       return 'Desktop application';
     }
-    if (hasMcpSurface) {
+    if (mcpIsPrimaryEntrySurface) {
       return 'MCP server';
     }
     if (hasFrontendSurface && hasApiSurface && hasDataSurface) {
@@ -8664,161 +8430,7 @@ export class AnalyzerOrchestrator {
     }
     const seededEntryIds = new Set(seededEntries.map(ep => ep.id));
     entryPoints = seededEntries.length > 0 ? [...entryPoints, ...seededEntries] : entryPoints;
-    const exitBySource = new Map<string, CASExitPoint[]>();
-    for (const exitPoint of exitPoints) {
-      if (!exitBySource.has(exitPoint.source_node)) {
-        exitBySource.set(exitPoint.source_node, []);
-      }
-      exitBySource.get(exitPoint.source_node)!.push(exitPoint);
-    }
-
-    const relationshipTypes = new Set([
-      'calls',
-      'uses',
-      'depends_on',
-      'queries',
-      'reads',
-      'writes',
-      'publishes',
-      'subscribes',
-      'emits',
-      'handles',
-      'routes_to',
-      'implements',
-      'implemented_by',
-      'triggers',
-    ]);
-    const adjacency = new Map<string, CASEdge[]>();
-    for (const edge of edges) {
-      if (!relationshipTypes.has(edge.type)) continue;
-      if (!nodeById.has(edge.source) || !nodeById.has(edge.target)) continue;
-      if (!adjacency.has(edge.source)) adjacency.set(edge.source, []);
-      adjacency.get(edge.source)!.push(edge);
-    }
-
-    for (const list of adjacency.values()) {
-      list.sort((a, b) =>
-        (this.rankChainEdge(a) - this.rankChainEdge(b)) ||
-        a.target.localeCompare(b.target) ||
-        (a.id || '').localeCompare(b.id || '')
-      );
-    }
-
-    const chains: CASCallChain[] = [];
-    const maxDepth = 8;
-    const nodeVisitBudget = 600;
-
-    for (const entryPoint of entryPoints) {
-      const startNodeId = entryPoint.handler?.node_id || entryPoint.source_node;
-      const startNode = nodeById.get(startNodeId);
-      if (!startNode) continue;
-
-      const parentByNode = new Map<string, { parent: string; edge: CASEdge }>();
-      const depthByNode = new Map<string, number>([[startNode.id, 0]]);
-      const queue: string[] = [startNode.id];
-      let queueIndex = 0;
-      let visitedCount = 0;
-      let deepestNodeId = startNode.id;
-      let best: { nodeId: string; depth: number; exit: CASExitPoint; rank: number } | undefined;
-
-      while (queueIndex < queue.length && visitedCount < nodeVisitBudget) {
-        const currentNodeId = queue[queueIndex++];
-        visitedCount++;
-        const depth = depthByNode.get(currentNodeId)!;
-        if (depth > depthByNode.get(deepestNodeId)!) {
-          deepestNodeId = currentNodeId;
-        }
-
-        const exits = exitBySource.get(currentNodeId);
-        const onwardEdges = adjacency.get(currentNodeId) || [];
-        if (exits?.length) {
-          const bestHere = [...exits].sort((a, b) =>
-            (this.rankChainExit(a) - this.rankChainExit(b)) || a.id.localeCompare(b.id)
-          )[0];
-          const rank = this.rankChainExit(bestHere);
-          if (
-            !best ||
-            rank < best.rank ||
-            (rank === best.rank && depth > best.depth) ||
-            (rank === best.rank && depth === best.depth && currentNodeId.localeCompare(best.nodeId) < 0)
-          ) {
-            best = { nodeId: currentNodeId, depth, exit: bestHere, rank };
-          }
-          if (onwardEdges.length === 0) continue;
-        }
-
-        if (depth >= maxDepth) continue;
-        for (const edge of onwardEdges) {
-          if (depthByNode.has(edge.target)) continue;
-          depthByNode.set(edge.target, depth + 1);
-          parentByNode.set(edge.target, { parent: currentNodeId, edge });
-          queue.push(edge.target);
-        }
-      }
-
-      const matchedExitPoint = best?.exit;
-      const selectedPath: Array<{ nodeId: string; edge?: CASEdge }> = [];
-      let cursor: string | undefined = best ? best.nodeId : deepestNodeId;
-      while (cursor) {
-        const parent = parentByNode.get(cursor);
-        selectedPath.unshift({ nodeId: cursor, edge: parent?.edge });
-        cursor = parent?.parent;
-      }
-
-      const pathNodes = selectedPath
-        .map(step => nodeById.get(step.nodeId))
-        .filter((node): node is CASNode => Boolean(node));
-      const hasDatabaseCalls = Boolean(matchedExitPoint && matchedExitPoint.type === 'database') ||
-        pathNodes.some(node => ['repository', 'entity', 'database', 'model'].includes(node.type));
-      const hasExternalCalls = Boolean(matchedExitPoint);
-      const hasAsyncCalls = pathNodes.some(node => Boolean(node.metadata?.is_async || node.metadata?.attributes?.isAsync));
-      const maxPathDepth = Math.max(1, selectedPath.length - 1);
-      const riskLevel = hasDatabaseCalls || hasExternalCalls || entryPoint.type === 'http' ? 'medium' : 'low';
-
-      chains.push({
-        id: `chain:${entryPoint.id}`,
-        chain_type: matchedExitPoint ? 'entry-to-exit' : 'dead-end',
-        entry_point: {
-          node_id: startNode.id,
-          method_name: entryPoint.handler?.method_name || startNode.name,
-          entry_point_id: entryPoint.id
-        },
-        exit_point: matchedExitPoint ? {
-          node_id: matchedExitPoint.source_node,
-          method_name: matchedExitPoint.operation?.action || matchedExitPoint.name,
-          exit_point_id: matchedExitPoint.id
-        } : undefined,
-        call_path: selectedPath.map((step, index) => {
-          const node = nodeById.get(step.nodeId);
-          return {
-            call_id: step.edge?.id || `entry:${entryPoint.id}`,
-            node_id: step.nodeId,
-            method_name: node?.name || step.nodeId,
-            depth: index
-          };
-        }),
-        characteristics: {
-          total_calls: Math.max(0, selectedPath.length - 1),
-          max_depth: maxPathDepth,
-          has_external_calls: hasExternalCalls,
-          has_database_calls: hasDatabaseCalls,
-          has_async_calls: hasAsyncCalls,
-          is_circular: false,
-          is_recursive: false,
-          complexity_score: maxPathDepth + (hasDatabaseCalls ? 2 : 0) + (hasExternalCalls ? 2 : 0)
-        },
-        risk_analysis: {
-          risk_level: riskLevel,
-          risk_factors: [
-            ...(hasDatabaseCalls ? ['data-access'] : []),
-            ...(hasExternalCalls ? ['external-boundary'] : []),
-            ...(selectedPath.length === 1 ? ['unexpanded-entry-point'] : [])
-          ]
-        },
-        criticality: entryPoint.type === 'http' ? 'medium' : 'low',
-        criticality_factors: [entryPoint.type]
-      });
-    }
+    const chains = buildCanonicalCallChains(nodes, edges, entryPoints, exitPoints);
 
     if (seededEntryIds.size === 0) return chains;
     return chains.filter(chain =>
@@ -8826,42 +8438,6 @@ export class AnalyzerOrchestrator {
       !chain.entry_point.entry_point_id ||
       !seededEntryIds.has(chain.entry_point.entry_point_id)
     );
-  }
-
-  private rankChainEdge(edge: CASEdge): number {
-    const ranks: Record<string, number> = {
-      calls: 0,
-      routes_to: 1,
-      handles: 2,
-      queries: 3,
-      writes: 4,
-      reads: 5,
-      publishes: 6,
-      emits: 7,
-      depends_on: 8,
-      uses: 9,
-      implements: 10,
-      implemented_by: 11,
-      subscribes: 12
-    };
-    return ranks[edge.type] ?? 99;
-  }
-
-  private rankChainExit(exitPoint: CASExitPoint): number {
-    const ranks: Record<string, number> = {
-      database: 0,
-      api: 1,
-      sdk: 2,
-      webhook: 3,
-      message: 4,
-      event: 5,
-      file: 6,
-      cache: 7,
-      client_storage: 8,
-      navigation: 9,
-      analytics: 10
-    };
-    return ranks[exitPoint.type] ?? 99;
   }
 
   private stampChainCriticalityFromStructuralImportance(
@@ -9090,6 +8666,11 @@ export class AnalyzerOrchestrator {
         throwDeadlineExceeded();
       }
       const attemptStartedAt = Date.now();
+      const remainingBeforeAttempt = opts.hardDeadlineAt === undefined
+        ? Number.POSITIVE_INFINITY
+        : opts.hardDeadlineAt - attemptStartedAt;
+      if (remainingBeforeAttempt <= 0) throwDeadlineExceeded();
+      const attemptTimeoutMs = Math.min(opts.perAttemptTimeoutMs, remainingBeforeAttempt);
       let timer: NodeJS.Timeout | undefined;
       const controller = new AbortController();
       try {
@@ -9097,14 +8678,13 @@ export class AnalyzerOrchestrator {
           attemptFactory(attemptIndex, controller.signal),
           new Promise<typeof TIMED_OUT>(resolve => {
             timer = setTimeout(() => {
-              controller.abort(new Error(`${operation} exceeded ${opts.perAttemptTimeoutMs}ms`));
+              controller.abort(new Error(`${operation} exceeded ${attemptTimeoutMs}ms`));
               resolve(TIMED_OUT);
-            }, opts.perAttemptTimeoutMs);
-            timer.unref?.();
+            }, attemptTimeoutMs);
           }),
         ]);
         if (raced === TIMED_OUT) {
-          console.error(`[Klauro] ${operation} bounded attempt ${attemptIndex}/${opts.maxBoundedAttempts} exceeded ${opts.perAttemptTimeoutMs}ms (elapsed ${Date.now() - attemptStartedAt}ms); abandoning and retrying with a fresh call`);
+          console.error(`[Klauro] ${operation} bounded attempt ${attemptIndex}/${opts.maxBoundedAttempts} exceeded ${attemptTimeoutMs}ms (elapsed ${Date.now() - attemptStartedAt}ms); abandoning and retrying with a fresh call`);
           continue;
         }
         writeAnalyzerStatus(`[Klauro] AI operation ${operation}: ok in ${Date.now() - attemptStartedAt}ms (attempt ${attemptIndex})`);
@@ -9138,7 +8718,6 @@ export class AnalyzerOrchestrator {
               controller.abort(new Error(`${operation} exceeded its hard deadline`));
               resolve(FINAL_TIMED_OUT);
             }, remaining);
-            finalTimer.unref?.();
           }),
         ]);
         if (raced === FINAL_TIMED_OUT) {
@@ -9202,7 +8781,10 @@ export class AnalyzerOrchestrator {
       input.projectTextSignal,
       { entryPoints: input.entryPoints, nodes: input.nodes, userJourneys: input.userJourneys },
     );
-    const requiredCandidatePool = catalogRequiredEvidenceCandidates(candidatePoolForRanking); const promptDataEntities = targetedRepair ? (input.dataEntities || []).filter(entity => targetedEntityIds.has(entity.id)) : input.dataEntities || []; const entities = catalogPromptEntities(promptDataEntities, candidatePoolForRanking);
+    const proposalCandidateIds = new Set((input.requiredOutcomeRequirements || [])
+      .flatMap(requirement => requirement.candidateIds));
+    const requiredCandidatePool = catalogRequiredEvidenceCandidates(candidatePoolForRanking)
+      .filter(candidate => proposalCandidateIds.has(candidate.id)); const promptDataEntities = targetedRepair ? (input.dataEntities || []).filter(entity => targetedEntityIds.has(entity.id)) : input.dataEntities || []; const entities = catalogPromptEntities(promptDataEntities, candidatePoolForRanking);
     const rankedCandidateAreas = this.rankCatalogPromptCandidates(candidatePoolForRanking, input.userJourneys || []);
     const requiredBehaviorCandidateAreas = requiredCandidatePool
       .filter(candidate => candidate.evidence_kind === 'behavior-surface' && capabilityRequiresCatalogCoverage(candidate));
@@ -9219,6 +8801,7 @@ export class AnalyzerOrchestrator {
           candidate_id: capability.id,
           family: capability.name,
           operations: promptEvidence.operations,
+          relationships: promptEvidence.relationships,
           name: promptEvidence.name,
           entry_points: this.behaviorSurfaceEntryCount(capability),
           entities: entityFacts.length,
@@ -9233,7 +8816,7 @@ export class AnalyzerOrchestrator {
         };
       });
     const services = (input.externalServices || []).slice(0, 12); const promptFamilyCount = this.catalogDistinctFamilyCount(requiredCandidatePool);
-    const { min: catalogCountMin, max: catalogCountMax } = catalogCountBounds(promptFamilyCount, requiredBehaviorCandidateAreas.length, requiredEntityCandidateGroups.length, input.requiredOutcomeCount || 0);
+    const { max: catalogCountMax } = catalogCountBounds(promptFamilyCount, requiredBehaviorCandidateAreas.length, requiredEntityCandidateGroups.length, input.requiredOutcomeCount || 0);
     const infrastructureResponsibilityTokens = new Set([
       'environment', 'infrastructure', 'platform', 'provision', 'resource',
       'runtime', 'service', 'topology', 'workload',
@@ -9254,14 +8837,16 @@ export class AnalyzerOrchestrator {
       }
     }
     const catalogDescriptionContract = 'Each description must be one sentence of 12-28 words and at least 55 characters. Start with a concrete PM-readable product or operational subject, then state its evidence-specific behavior or outcome. Do not start with actor scaffolding such as "Lets users", "Allows users", "Enables users", "Gives users", or "Provides users". The description must add concrete information beyond the capability name. Cover every directly observed lifecycle action, especially deletion, removal, unfollowing, or unfavoriting; do not omit destructive or reversal behavior. State the observed result directly; never explain it with generic implementation scaffolding such as "by reading", "by processing", "by coordinating", "supports tasks", or "coordinates operations". Use PM-readable product nouns from cited operations, journeys, or first-party product text; do not replace them with generic "data" or "information". entity_names that look like source types are grounding labels only and must not appear in the prose. Translate internal inventory terms such as entities, nodes, entry points, capability maps, and analysis results into the concrete software behavior, risk, relationship, or change context visible to the user. Do not invent value claims such as accurate, up-to-date, efficient, effective, smooth, experience, insights, comprehensive, seamless, robust, decision-making, collaboration, metrics, or performance unless that exact claim appears in the cited evidence. Do not invent operating claims such as locking, exclusivity, blocking, enforcing access, identity verification, or security guarantees unless that exact claim appears in the cited evidence. Never claim that authentication, authorization, permissions, security, dependencies, records, or workflows are absent, unnecessary, unchanged, unaffected, or bypassed. Do not mention forms, buttons, screens, slugs, identifiers, request or response payloads, HTTP methods, endpoints, routes, tools, or other delivery mechanisms as if they were the product outcome. Do not claim immediate, instant, permanent, or real-time effects unless first_party_outcomes explicitly states that guarantee. Do not name source-code types, interfaces, classes, UI widgets, graph-rendering structures, or other implementation artifacts, and never use "capability" or "lifecycle" as prose scaffolding.';
-    const focusedCatalogTask = capabilityCatalogFocusedTask(input.repairMode || (input.requiredOutcomeRequirements?.length ? 'outcome' : undefined), input.repairIdentityName, Boolean(input.acceptedOutcomeNames?.length)); const catalogTaskBase = input.exactCapabilityLimit ? `You are naming ${input.exactCapabilityLimit === 1 ? 'one evidence-grounded PRODUCT OUTCOME' : `${input.exactCapabilityLimit} distinct evidence-grounded PRODUCT OUTCOMES`} for one focused evidence family. Return ONLY valid JSON: {"capabilities":[{"requirement_id":"...","name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. ${focusedCatalogTask} Include at least one exact candidate_id.${input.repairMode === 'description' ? '' : ' When required_visible_actions is nonempty, begin the name with one of those anchors. When a required_subject_term is itself an action verb, begin the name with that exact base verb; never substitute a generic transport verb such as Create, Get, or Process. Across the name and description, include the literal required_audience_label and at least minimum_subject_matches required_subject_terms, or canonical validator forms of those terms.'} Individual operation names are examples of delivery mechanics, not title templates. Do not discuss another product ability, write a system description, invent a broader claim, or return alternatives.`
+    const requiresCompleteTargetedCitations = input.repairMode === 'evidence' && (input.targetedRepairFacts?.length || 0) > 1;
+    const focusedCatalogTask = capabilityCatalogFocusedTask(input.repairMode || (input.requiredOutcomeRequirements?.length ? 'outcome' : undefined), input.repairIdentityName, Boolean(input.acceptedOutcomeNames?.length)); const catalogTaskBase = input.exactCapabilityLimit ? `You are naming ${input.exactCapabilityLimit === 1 ? 'one evidence-grounded PRODUCT OUTCOME' : `${input.exactCapabilityLimit} distinct evidence-grounded PRODUCT OUTCOMES`} for one focused evidence family. Return ONLY valid JSON: {"capabilities":[{"requirement_id":"...","name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. ${focusedCatalogTask} ${requiresCompleteTargetedCitations ? 'Include every supplied candidate_id.' : 'Include at least one exact candidate_id.'}${input.repairMode === 'description' && input.repairIdentityName ? '' : ' When exactly one required_visible_action exists, begin the name with one of its allowed product-language anchors. When several facts expose different lifecycle actions for one subject, use one broader evidence-grounded purpose verb in the name and state every action in the description. When a required_subject_term is itself an action verb, begin the name with that exact base verb; never substitute a generic transport verb such as Create, Get, or Process. Across the name and description, include the literal required_audience_label and at least minimum_subject_matches required_subject_terms, or canonical validator forms of those terms.'} Individual operation names are examples of delivery mechanics, not title templates. Do not discuss another product ability, write a system description, invent a broader claim, or return alternatives.`
       : artifactType === 'infrastructure'
-      ? `You are cataloging the OPERATIONAL RESPONSIBILITIES of an infrastructure codebase. Return ONLY valid JSON: {"system_description":"...","domain":"...","capabilities":[{"name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Name what operators accomplish with the declared infrastructure in product-neutral operational language. Every name must be a verb-headed operator outcome grounded in the supplied declarations. Never infer that a resource handles, processes, or manages a business concept merely because that concept appears in its resource name. Never name a script, file, command, handler, route, framework, or registration surface as the capability. Merge related deployment/configuration candidates. candidate_ids must be copied from supplied facts. Return ${catalogCountMin} to ${catalogCountMax} evidence-backed capabilities, ordered most central first.`
+      ? `You are cataloging the OPERATIONAL RESPONSIBILITIES of an infrastructure codebase. Return ONLY valid JSON: {"system_description":"...","domain":"...","capabilities":[{"requirement_id":"...","name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Name what operators accomplish with the declared infrastructure in product-neutral operational language. Every name must be a verb-headed operator outcome grounded in the supplied declarations. Never infer that a resource handles, processes, or manages a business concept merely because that concept appears in its resource name. Never name a script, file, command, handler, route, framework, or registration surface as the capability. Merge related deployment/configuration candidates. candidate_ids must be copied from supplied facts. Return only distinct evidence-backed audience outcomes; an empty capabilities list is valid when no supplied evidence proves one. Order grounded outcomes most central first.`
       : artifactType === 'library' || artifactType === 'client-sdk'
-        ? `You are cataloging the CONSUMER-FACING ABILITIES of a reusable library or client SDK. Return ONLY valid JSON: {"system_description":"...","domain":"...","capabilities":[{"name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Name what library consumers can accomplish through its public contracts, not files, packages, handlers, or framework mechanics. candidate_ids must be copied from supplied facts. Return ${catalogCountMin} to ${catalogCountMax} evidence-backed capabilities, ordered most central first.`
-        : `You are cataloging the BUSINESS VALUE of a codebase. You are given BOTTOM-UP facts (user journeys, data entities, candidate route areas, external services) AND, when available, a top_down_signals block — the product's OWN words about what it is (README title/overview, manifest self-description, product terminology). Return ONLY valid JSON: {"system_description":"...","domain":"...","capabilities":[{"name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Rules: (1) THE PURPOSE TEST — every capability you name must be a product/user/operational ability that would appear in a product description, a user objective, a business offering, or an operational responsibility. If it would not, it is NOT a capability; drop it. Name capabilities as verb-headed outcomes describing what the product lets its USERS or OPERATORS DO in plain product language, never as a mechanism or supporting noun. Do not lead a name with Handle, Process, or Manage; Coordinate is valid only when operations or first-party product text establishes collaboration as the outcome. (2) TOP-DOWN COVERAGE — treat each distinct outcome or audience explicitly named by top_down_signals as an independent product obligation when candidate operations corroborate it. Preserve separately evidenced human-facing exploration, agent-facing context, collaboration, and truth-model construction; do not let a generic analysis capability absorb them solely because they share underlying data. (3) THE PURPOSE-TEST EXCLUSION — do NOT emit supporting/infrastructural concerns as capabilities (authentication, access control/permissions, session/token handling, logging/telemetry, notifications, caching, message brokering, generic CRUD, health checks, config, database, build, test, release, or deployment work) unless top_down_signals establishes that concern as the product's offering. Without that first-party evidence, such a concern is at most "supporting", never "core", and is usually dropped. (4) MERGE related candidate areas into real capabilities only when they express the same product outcome. Keep distinct user surfaces and distinct terminal outcomes separate even when they share data or implementation vocabulary. A capability spanning several evidence families must use the broader product outcome as its subject, never one entity label that narrows the whole aggregate. Never return two capabilities whose descriptions assert the same result. (5) category="core" only for the capabilities that ARE the product's value proposition (those corroborated by top_down_signals rank first); "supporting" for necessary-but-not-the-value. (6) candidate_ids must be copied from the supplied facts; cite every candidate area that grounds each capability and at least one ID from every required group. (7) Every subject noun in a capability name and description must come from cited operations, a supplied journey, or top_down_signals. entity_names may be source-level type identifiers: use them only to connect evidence, never repeat a type, class, interface, schema, or graph-model identifier in customer-facing prose. Inflection is allowed; substituting an unsupported product noun is not. Return ${catalogCountMin} to ${catalogCountMax} capabilities, ordered most-core first.`;
+        ? `You are cataloging the CONSUMER-FACING ABILITIES of a reusable library or client SDK. Return ONLY valid JSON: {"system_description":"...","domain":"...","capabilities":[{"requirement_id":"...","name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Name what library consumers can accomplish through its public contracts, not files, packages, handlers, or framework mechanics. candidate_ids must be copied from supplied facts. Return only distinct evidence-backed audience outcomes; an empty capabilities list is valid when no supplied evidence proves one. Order grounded outcomes most central first.`
+        : `You are cataloging the BUSINESS VALUE of a codebase. You are given BOTTOM-UP facts (user journeys, data entities, candidate route areas, external services) AND, when available, a top_down_signals block - the product's OWN words about what it is (README title/overview, manifest self-description, product terminology). Return ONLY valid JSON: {"system_description":"...","domain":"...","capabilities":[{"requirement_id":"...","name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Rules: (1) THE PURPOSE TEST - every capability you name must be a product/user/operational ability that would appear in a product description, a user objective, a business offering, or an operational responsibility. If it would not, it is NOT a capability; drop it. Name capabilities as verb-headed outcomes describing what the product lets its USERS or OPERATORS DO in plain product language, never as a mechanism or supporting noun. Do not lead a name with Handle or Process. Use Manage only when management itself is the audience outcome in this system's scope, not as a wrapper around generic CRUD; Coordinate is valid only when operations or first-party product text establishes collaboration as the outcome. (2) INTENT RECONCILIATION - evaluate each required_outcome independently. Emit it only when cited bottom-up behavior proves it, preserve its requirement_id, and omit it when the implementation evidence does not ground it; omission is an intent gap, not permission to invent evidence. You may also emit an undocumented capability when bottom-up behavior proves a real audience outcome not named in required_outcomes. (3) THE PURPOSE-TEST EXCLUSION - do NOT emit supporting/infrastructural concerns as capabilities (authentication, access control/permissions, session/token handling, logging/telemetry, notifications, caching, message brokering, generic CRUD, health checks, config, database, build, test, release, or deployment work) unless top_down_signals establishes that concern as the product's offering. Without that first-party evidence, such a concern is at most "supporting", never "core", and is usually dropped. (4) MERGE related candidate areas into real capabilities only when they express the same product outcome. Keep distinct user surfaces and distinct terminal outcomes separate even when they share data or implementation vocabulary. A capability spanning several evidence families must use the broader product outcome as its subject, never one entity label that narrows the whole aggregate. Never return two capabilities whose descriptions assert the same result. (5) category="core" only for the capabilities that ARE the product's value proposition (those corroborated by top_down_signals rank first); "supporting" for necessary-but-not-the-value. (6) candidate_ids must be copied from the supplied facts. Structural families, routes, entities, and operation groups are evidence, not publication quotas: never create a capability merely to cover them. (7) Every subject noun in a capability name and description must come from cited operations, a supplied journey, or top_down_signals. entity_names may be source-level type identifiers: use them only to connect evidence, never repeat a type, class, interface, schema, or graph-model identifier in customer-facing prose. Inflection is allowed; substituting an unsupported product noun is not. Return only distinct evidence-backed audience outcomes; an empty capabilities list is valid when no supplied evidence proves one. Order grounded outcomes most central first.`;
     const catalogNarrativeContract = 'The system_description must be exactly 4 concise, grammatical sentences for a non-technical reader: what the product or operational system is, what users or operators can do, one concrete action and result, and another evidenced behavior or operating property. Use concrete nouns from supplied evidence. Do not mention source files, routes, handlers, frameworks, libraries, tools, programming languages, prompt keys, or graph evidence. Never use marketing or generalized value claims such as seamless, robust, comprehensive, various, efficient, productivity, performance, compliant, compliance, advanced, modern, streamline, insights, metrics, decision-making, collaboration, scalable, user experience, business value, or best practices. domain must be a lowercase kebab-case label of 2 to 4 evidence-backed product nouns.';
-    const catalogTask = `${catalogTaskBase} ${input.exactCapabilityLimit ? `CARDINALITY CONTRACT: Return exactly ${input.exactCapabilityLimit} capability object${input.exactCapabilityLimit === 1 ? '' : 's'}; additional alternatives are invalid.` : ''} DESCRIPTION CONTRACT: ${catalogDescriptionContract} ${input.exactCapabilityLimit ? '' : `SYSTEM DESCRIPTION CONTRACT: ${catalogNarrativeContract}`}`;
+    const hypothesisContract = 'inferred_behavior_hypothesis is analysis-derived and non-authoritative. Use it only to propose groupings that cited bottom-up behavior independently proves. It is never first-party intent and never creates a required outcome.';
+    const catalogTask = `${catalogTaskBase} ${input.exactCapabilityLimit ? `CARDINALITY CONTRACT: Return exactly ${input.exactCapabilityLimit} capability object${input.exactCapabilityLimit === 1 ? '' : 's'}; additional alternatives are invalid.` : ''} DESCRIPTION CONTRACT: ${catalogDescriptionContract} ${input.exactCapabilityLimit ? '' : `SYSTEM DESCRIPTION CONTRACT: ${catalogNarrativeContract} HYPOTHESIS CONTRACT: ${hypothesisContract}`}`;
     const signal = input.projectTextSignal;
     const productTerminology = Array.from(new Set([
       signal?.productDocTitle,
@@ -9270,7 +8855,7 @@ export class AnalyzerOrchestrator {
     ].flatMap(term => String(term || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').split(/[^A-Za-z0-9]+/))
       .map(term => term.toLowerCase().trim())
       .filter(term => term.length >= 3))).slice(0, 80);
-    const topDownSignals: Record<string, unknown> = {}; if (!targetedRepair && signal?.productDocTitle) topDownSignals.product_title = signal.productDocTitle; if (!targetedRepair && signal?.productDocSummary) topDownSignals.product_overview = signal.productDocSummary; if (!targetedRepair && signal?.manifestDescription) topDownSignals.product_self_description = signal.manifestDescription;
+    const topDownSignals: Record<string, unknown> = {}; if (!targetedRepair && signal?.productDocTitle) topDownSignals.product_title = signal.productDocTitle; if (!targetedRepair && signal?.productDocSummary) topDownSignals.product_overview = signal.productDocSummary; if (!targetedRepair && signal?.manifestDescription) topDownSignals.product_self_description = signal.manifestDescription; if (!targetedRepair && purpose.inferred_description) topDownSignals.inferred_behavior_hypothesis = purpose.inferred_description;
     const targetedFirstPartyContext = [...new Set((input.targetedRepairFacts || [])
       .flatMap(fact => fact.first_party_outcomes)
       .map(value => String(value || '').trim())
@@ -9285,12 +8870,12 @@ export class AnalyzerOrchestrator {
       const additionalContextWithoutFacts = {
         ...toAIContextRoute(resolveCapabilityCatalogRoute(process.env, this.narrativeModel())),
         responseFormat: 'json',
-        maxTokens: input.exactCapabilityLimit ? Math.max(800, 260 + input.exactCapabilityLimit * 80) : Math.min(1900, Math.max(450, 260 + catalogCountMax * 80)),
+        maxTokens: input.exactCapabilityLimit ? Math.max(800, 260 + input.exactCapabilityLimit * 80) : Math.min(3400, Math.max(1200, 700 + catalogCountMax * 135)),
         requestTimeoutMs: 65000,
         requestRetries: 0,
-        ...((hintOverride || attempt > 1) ? { retry_hint: hintOverride || `Previous answer returned fewer than ${catalogCountMin} capabilities for a platform whose facts name ${candidateAreas.length} distinct route areas. Cover the DISTINCT product areas in candidate_route_areas; merge related ones, but do not collapse unrelated areas.` } : {}),
+        task: `${catalogTask} Required outcomes are authored proposals to test against cited behavior, not claims to repeat. Structural candidates, routes, entities, and operation groups remain complete evidence inputs but are never mandatory capability slots. Evidence roles are ranking signals, not semantic truth: product-outcome candidates may still be mechanisms, while supporting candidates may be the product in a scope-relative library or platform. Product text may propose, rank, or name an ability only when at least one cited candidate's operations supports that ability; never attach a product claim to unrelated evidence. relationships are verified flow-graph connections between cited subjects: use them only to ground a cross-subject outcome supported by the same cited candidate, never as separate capability slots or proof of an unstated business result. Terminality is relational evidence, not a decision rule: use it for ranking and grouping, but never override purpose, audience, journey, entity, or operation evidence. ENTITY LANGUAGE CHECK: entity_names establish which evidence belongs together but may be source-level type identifiers. Names and descriptions must use PM-readable nouns from cited operations, journeys, relationships, or top_down_signals and must never expose class, interface, schema, or graph-model identifiers. Do not lead a capability name with Handle or Process. Use Manage only when management itself is the audience outcome in this system's scope, not as a wrapper around generic CRUD; Coordinate is valid only when evidence establishes collaboration as the outcome. A name that enumerates Create, View, Update, or Delete is a CRUD inventory, not an outcome. Translate the lifecycle into its scope-relative purpose: for example, tracking records, organizing items with categories, planning with budgets, or recovering account access, but only when the cited evidence supports that meaning. evidence_fields are observed attributes of the cited entity: use them to infer a concrete audience outcome when their combination establishes one, but translate them into plain product language rather than repeating schema identifiers.`,
+        ...((hintOverride || attempt > 1) ? { retry_hint: hintOverride || 'Previous answer failed validation. Return only distinct audience outcomes grounded by exact supplied candidate_ids; do not create capabilities to cover routes, entities, or structural families.' } : {}),
         ...(targetedRepair && input.repairAttempt ? { repair_attempt: input.repairAttempt } : {}),
-        task: `${catalogTask} ${requiredBehaviorCandidateAreas.length > 0 ? `Every product-significant behavior-surface candidate_id in required_behavior_candidate_ids must appear in at least one result; related surfaces may share one result when they express the same user outcome.` : ''} ${requiredEntityCandidateGroups.length > 0 ? `For each group in required_entity_candidate_groups, at least one candidate_id from that group must appear in a result. A result may cite several groups only when their operations support the same product outcome.` : ''} Evidence roles are authoritative constraints: product-outcome facts require coverage; unresolved and supporting-mechanism facts remain grounding evidence but are not mandatory and must not become standalone capabilities without product-outcome evidence; verification-harness facts must never become product capabilities. Internal behavior surfaces are structural evidence, not mandatory capabilities, and must be omitted unless other evidence proves they are part of the product's purpose. Product text may rank, name, or merge an ability only when at least one cited candidate's operations support that ability; never attach a product claim to an unrelated candidate. Terminality is relational evidence, not a naming template: terminal and proximal-terminal candidate areas are more likely to express what the codebase was built to deliver; upstream areas are more likely to be prerequisites. Use it for ranking and grouping, but never override contradictory product text, journey, entity, or operation evidence. ENTITY LANGUAGE CHECK: entity_names establish which evidence belongs together but may be source-level type identifiers. Names and descriptions must use PM-readable nouns from cited operations, journeys, or top_down_signals and must never expose class, interface, schema, or graph-model identifiers. Do not lead a capability name with Handle, Process, or Manage; Coordinate is valid only when evidence establishes collaboration as the outcome.`,
         style: 'Write like a product engineer or PM. Plain language. No markdown. Begin each description with its concrete product subject, never an actor scaffold. Prefer precise behavior verbs such as tracks, surfaces, exposes, manages, monitors, secures, settles, and enforces. No CRUD inventory, no "lifecycle", no route counts, no file paths, no marketing fluff. Do not use vague value nouns such as insights or metrics unless the cited evidence names them. Never expand an abbreviation from an operation identifier unless first-party product text explicitly supplies that expansion; describe the evidenced actions instead. Each description names the concrete user-facing concept the evidence supports and adds evidence-specific information beyond the capability name.',
         product: targetedRepair ? { name: input.systemName } : {
           name: input.systemName, domain: purpose.primary_domain,
@@ -9300,7 +8885,7 @@ export class AnalyzerOrchestrator {
         },
       };
       const budgetedContext = fitCapabilityCatalogContext(additionalContextWithoutFacts, {
-        user_journeys: journeys, entities: targetedRepair ? [] : entities,
+        user_journeys: journeys, entities,
         candidate_route_areas: input.targetedRepairFacts || candidateAreaFacts,
         required_behavior_candidate_ids: targetedRepair ? [] : requiredBehaviorCandidateAreas.map(candidate => candidate.id), accepted_outcome_names: targetedRepair ? [] : input.acceptedOutcomeNames, required_outcomes: input.requiredOutcomeRequirements?.map(requirement => ({ requirement_id: requirement.id, audience: requirement.audience, required_audience_label: requirement.audienceLabel || requirement.audience, required_subject_terms: requirement.requiredSubjectTerms || requirement.subjectTokens, required_visible_actions: requirement.visibleActionTerms || [], minimum_subject_matches: requirement.minimumSubjectMatches ?? Math.min(2, requirement.subjectTokens.length), outcome: requirement.statement, first_party_outcome_text: targetedRepair ? capabilityCatalogTargetedOutcomeText(requirement) : requirement.firstPartyOutcomeText, candidate_ids: targetedRepair ? Object.entries(input.targetedRepairCandidateMap || {}).filter(([, rawId]) => requirement.candidateIds.includes(rawId)).map(([opaqueId]) => opaqueId) : requirement.candidateIds })),
         required_entity_candidate_groups: targetedRepair ? [] : requiredEntityCandidateGroups,
@@ -9311,6 +8896,7 @@ export class AnalyzerOrchestrator {
         (_boundedAttempt, signal) => aiService.generateComponentDescription({
             signal,
             additionalContext: budgetedContext.context,
+            skipCache: targetedRepair,
           }),
         'capability extraction',
         {
@@ -9334,9 +8920,6 @@ export class AnalyzerOrchestrator {
         if (isAiCatalogHardDeadlineExceeded(error)) break;
       }
       if (catalog.length > 0) break;
-      if (catalog.length && process.env.KLAURO_DEBUG_CATALOG) {
-        console.error(`[catalog-debug] attempt ${attempt} under-count: got ${catalog.length}, evidence-derived min ${catalogCountMin}`);
-      }
     }
     const firstPartyFallback = input.requiredOutcomeRequirements?.length === 1 ? capabilityCatalogFirstPartyFallback(input.requiredOutcomeRequirements[0]) : undefined;
     const evidenceFallbackFact = input.repairMode === 'evidence' && input.targetedRepairFacts?.length === 1
@@ -9356,37 +8939,6 @@ export class AnalyzerOrchestrator {
     }
     const deterministicFallback = firstPartyFallback || evidenceFallback;
     if (!catalog.length && input.allowDeterministicFallback && deterministicFallback) { catalog = [deterministicFallback]; usedDeterministicFallback = true; }
-    const effectiveSize = (items: Array<Record<string, unknown>>): number => {
-      const sets = new Set(items.map((item, index) => {
-        const entities = Array.isArray(item.entities)
-          ? (item.entities as unknown[]).map(value => String(value || '').trim().toLowerCase()).filter(Boolean).sort()
-          : [];
-        return entities.length > 0 ? entities.join('|') : `__no_entities_${index}`;
-      }));
-      return Math.min(items.length, sets.size);
-    };
-    const effectiveCatalogSize = effectiveSize(catalog);
-    const allDistinctFamilies = Array.from(new Set(
-      rankedCandidateAreas.map(candidate => String(candidate.name || '').trim()).filter(Boolean)
-    ));
-    const nudgeCeiling = Math.max(3, Math.floor(promptFamilyCount / 3));
-    if (!targetedRepair && !input.qualityNudge && effectiveCatalogSize >= 1 && effectiveCatalogSize <= nudgeCeiling) {
-      const distinctFamilies = allDistinctFamilies.slice(0, 10);
-      const familyThreshold = effectiveCatalogSize === 1 ? 2 : effectiveCatalogSize * 3;
-      if (promptFamilyCount >= familyThreshold) {
-        try {
-          const nudgeHint = `Previous answer collapsed this platform into only ${effectiveCatalogSize} distinct capabilit${effectiveCatalogSize === 1 ? 'y' : 'ies'} (several items were per-route CRUD variants of the same ability and merge together). The deterministic evidence resolves to ${promptFamilyCount} DISTINCT candidate route-area families${allDistinctFamilies.length > distinctFamilies.length ? ` (top ${distinctFamilies.length} listed)` : ''}: ${distinctFamilies.map(family => `"${family}"`).join(', ')}. Return ONE grounded, purpose-phrased capability PER distinct family listed above. Name the durable user or operator outcome, never an individual create, read, update, or delete operation. Merge two families only when they are genuinely the same product ability, never collapse all of them into one item.`;
-          const nudgeRaw = await requestCatalog(3, nudgeHint);
-          const nudgeParsed = this.parseCapabilityCatalog(nudgeRaw);
-          if (effectiveSize(nudgeParsed) > effectiveCatalogSize) {
-            catalog = nudgeParsed;
-            raw = nudgeRaw;
-          }
-        } catch (error) {
-          if (process.env.KLAURO_DEBUG_CATALOG) console.error('[catalog-debug] thin-catalog nudge failed:', error instanceof Error ? error.message : String(error));
-        }
-      }
-    }
     if (process.env.KLAURO_DEBUG_CATALOG) {
       console.error('[catalog-debug] raw.length=', (raw || '').length, 'parsed=', catalog.length, 'rawHead=', JSON.stringify(String(raw || '').slice(0, 300)));
       writeAnalyzerStatus('[catalog-debug] parsed catalog:', catalog.map(item => ({
@@ -9403,7 +8955,7 @@ export class AnalyzerOrchestrator {
       candidateAreas: candidateAreas.length,
       services: services.length,
       hasTopDown,
-      catalogCountMin,
+      catalogCountMin: 0,
       catalogCountMax,
     };
     if (!catalog.length) {
@@ -9557,12 +9109,12 @@ export class AnalyzerOrchestrator {
         );
         const authoredTokens = new Set(String(name + ' ' + description).toLowerCase().split(/[^a-z0-9]+/)
           .filter(token => token.length >= 3)
-          .map(token => this.stemTerminologyToken(token)));
+          .map(token => canonicalCapabilityCatalogOutcomeToken(token)));
         const authoredNameTokens = new Set(String(name).toLowerCase().split(/[^a-z0-9]+/)
           .filter(token => token.length >= 3)
-          .map(token => this.stemTerminologyToken(token)));
-        const matchedTerms = requiredTerms.filter(term => authoredTokens.has(this.stemTerminologyToken(term)));
-        const nameMatchedTerms = requiredTerms.filter(term => authoredNameTokens.has(this.stemTerminologyToken(term)));
+          .map(token => canonicalCapabilityCatalogOutcomeToken(token)));
+        const matchedTerms = requiredTerms.filter(term => authoredTokens.has(canonicalCapabilityCatalogOutcomeToken(term)));
+        const nameMatchedTerms = requiredTerms.filter(term => authoredNameTokens.has(canonicalCapabilityCatalogOutcomeToken(term)));
         if (matchedTerms.length < minimumMatches) {
           debugCatalogRejection(name, 'targeted-evidence-subject-missing', itemCandidateIds, {
             missingSubjectTerms: requiredTerms.filter(term => !matchedTerms.includes(term)),
@@ -9571,9 +9123,9 @@ export class AnalyzerOrchestrator {
         }
         const leadingNameToken = [...authoredNameTokens][0];
         const requiredActionTerms = requiredTerms
-          .map(term => this.stemTerminologyToken(term))
+          .map(term => canonicalCapabilityCatalogOutcomeToken(term))
           .filter(term => CAPABILITY_PURPOSE_VERBS.has(term));
-        if (requiredActionTerms.length > 0 && !requiredActionTerms.includes(leadingNameToken)) {
+        if (repairFacts.length <= 1 && requiredActionTerms.length > 0 && !requiredActionTerms.includes(leadingNameToken)) {
           debugCatalogRejection(name, 'targeted-evidence-name-action-missing', itemCandidateIds, {
             missingSubjectTerms: requiredActionTerms,
           });
@@ -9599,16 +9151,26 @@ export class AnalyzerOrchestrator {
         name = head;
       }
       if (this.isRawCandidateLabelName(name, candidateAreas)) {
-        debugCatalogRejection(name, 'raw-candidate-label');
+        debugCatalogRejection(name, 'raw-candidate-label', itemCandidateIds);
         continue;
       }
       if (this.isBareNounCapabilityLabel(name)) {
         bareNounRejected++;
-        debugCatalogRejection(name, 'bare-noun-label');
+        debugCatalogRejection(name, 'bare-noun-label', itemCandidateIds);
         continue;
       }
-      const key = name.toLowerCase();
-      const purposeNouns = capabilitySubjectTokens(name)
+      if (isGenericManagementCapabilityLabel(name)) {
+        debugCatalogRejection(name, 'generic-management-label', itemCandidateIds);
+        continue;
+      }
+      if (isCrudInventoryCapabilityLabel(name)) {
+        debugCatalogRejection(name, 'crud-inventory-label', itemCandidateIds);
+        continue;
+      }
+      const targetedObservableActions = itemCandidateIds.flatMap(candidateId => targetedRepairFactByCandidateId.get(candidateId)?.observable_actions || []);
+      if (isCrudLifecycleFragmentCapabilityLabel(name, targetedObservableActions)) { debugCatalogRejection(name, 'crud-lifecycle-fragment-label', itemCandidateIds); continue; }
+      let key = name.toLowerCase();
+      let purposeNouns = capabilitySubjectTokens(name)
         .map(token => this.stemTerminologyToken(token.toLowerCase()))
         .filter(token => token.length >= 3)
         .filter(token => !capabilityActionTokens.has(token))
@@ -9618,7 +9180,7 @@ export class AnalyzerOrchestrator {
         artifactType === 'infrastructure' &&
         purposeNouns.some(token => infrastructureMechanismTokens.has(token))
       ) {
-        debugCatalogRejection(name, 'infrastructure-mechanism-name');
+        debugCatalogRejection(name, 'infrastructure-mechanism-name', itemCandidateIds);
         continue;
       }
       const unsupportedValueNouns = new Set(['collaboration', 'decisionmaking', 'insight', 'metric', 'monitoring', 'performance', 'productivity', 'tracking'].map(token => this.stemTerminologyToken(token)));
@@ -9627,10 +9189,10 @@ export class AnalyzerOrchestrator {
       if (purposeNouns.some(token =>
         unsupportedValueNouns.has(token) && !capabilityEvidenceVocabulary.has(token) && !boundOutcomePurposeNouns.has(token)
       )) {
-        debugCatalogRejection(name, 'unsupported-value-noun');
+        debugCatalogRejection(name, 'unsupported-value-noun', itemCandidateIds);
         continue;
       }
-      const itemNameEvidenceTokens = key
+      let itemNameEvidenceTokens = key
         .split(/[^a-z0-9]+/)
         .map(token => this.stemTerminologyToken(token))
         .filter(token => token.length >= 4);
@@ -9662,9 +9224,43 @@ export class AnalyzerOrchestrator {
       const candidateIds = (Array.isArray(item.candidate_ids) ? item.candidate_ids : [])
         .map((value: unknown) => String(value || ''))
         .filter(value => candidatePoolForRanking.some(candidate => candidate.id === value));
-      const citedCandidates = narrowCapabilityEvidenceCandidates(
-        name, candidatePoolForRanking.filter(candidate => candidateIds.includes(candidate.id)),
-      );
+      if (itemCandidateIds.length > 0 && candidateIds.length === 0) {
+        debugCatalogRejection(name, 'unknown-candidate-citation', itemCandidateIds);
+        continue;
+      }
+      const suppliedTargetedCandidateIds = new Set(Object.values(input.targetedRepairCandidateMap || {}));
+      if (requiresCompleteTargetedCitations &&
+          [...suppliedTargetedCandidateIds].some(candidateId => !candidateIds.includes(candidateId))) {
+        debugCatalogRejection(name, 'targeted-evidence-citations-incomplete', candidateIds);
+        continue;
+      }
+      const citedCandidatePool = candidatePoolForRanking.filter(candidate => candidateIds.includes(candidate.id));
+      const citedCandidates = targetedRepair
+        ? citedCandidatePool
+        : narrowCapabilityEvidenceCandidates(name, citedCandidatePool);
+      const dataEntityByName = new Map(input.dataEntities.map(entity => [entity.name.toLowerCase(), entity]));
+      const citedScopeCandidates = citedCandidates.map(candidate => {
+        const entityEvidence = (candidate.related_entities || []).flatMap(entityId => {
+          const entity = input.dataEntities.find(item => item.id === entityId);
+          if (!entity) return [];
+          const relatedEntities = (entity.relations || [])
+            .map(relation => dataEntityByName.get(String(relation.target_name || '').toLowerCase()))
+            .filter((item): item is CASDataEntity => Boolean(item));
+          return [
+            entity.name,
+            ...(entity.fields || []).map(field => field.name),
+            ...(entity.relations || []).flatMap(relation => [relation.field, relation.target_name]),
+            ...relatedEntities.flatMap(related => [
+              related.name,
+              ...(related.fields || []).map(field => field.name),
+            ]),
+          ];
+        }).filter((value): value is string => Boolean(value));
+        return entityEvidence.length === 0 ? candidate : {
+          ...candidate,
+          evidence_examples: [...(candidate.evidence_examples || []), `entity evidence: ${entityEvidence.join(' ')}`],
+        };
+      });
       const narrowedCandidateIds = citedCandidates.map(candidate => candidate.id); const outcomeNameFailure = boundRequirement ? capabilityCatalogOutcomeNameFailure(name, boundRequirement) : undefined; if (outcomeNameFailure) { debugCatalogRejection(name, outcomeNameFailure, narrowedCandidateIds); continue; }
       const reusesAcceptedOutcome = input.acceptedOutcomeNames?.some(existing => existing.toLowerCase() === name.toLowerCase()) === true;
       if (reusesAcceptedOutcome && !capabilityOutcomeMatchesEvidence(name, citedCandidates)) {
@@ -9673,13 +9269,38 @@ export class AnalyzerOrchestrator {
       }
       const preservesDescriptionIdentity = input.repairMode === 'description' && name === input.repairIdentityName;
       const evidenceGroundedDeterministicRecovery = item.catalog_source === 'deterministic';
-      const unsupportedOutcomeTokens = capabilityOutcomeScopeFailure(name, citedCandidates, signal, reusesAcceptedOutcome || preservesDescriptionIdentity || evidenceGroundedDeterministicRecovery, description, boundRequirement?.audience ? [boundRequirement.audience] : [], boundRequirement);
+      let unsupportedOutcomeTokens = capabilityOutcomeScopeFailure(name, citedScopeCandidates, signal, reusesAcceptedOutcome || preservesDescriptionIdentity || evidenceGroundedDeterministicRecovery, description, boundRequirement?.audience ? [boundRequirement.audience] : [], boundRequirement);
+      if (unsupportedOutcomeTokens.length > 0 && input.repairMode === 'evidence') {
+        const removable = new Set(unsupportedOutcomeTokens
+          .map(canonicalCapabilityCatalogOutcomeToken)
+          .filter(token => !CAPABILITY_PURPOSE_VERBS.has(token)));
+        const words = name.split(/\s+/);
+        const repairedName = words
+          .filter(word => !removable.has(canonicalCapabilityCatalogOutcomeToken(word)))
+          .join(' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+        const grammaticallyComplete = repairedName.split(/\s+/).length >= 2 &&
+          repairedName.split(/\s+/)[0].toLowerCase() === words[0].toLowerCase() &&
+          !/^(?:and|or)\b|\b(?:and|or)$|\b(?:and|or)\s+(?:by|for|from|through|via|with)\b/i.test(repairedName);
+        const repairedFailures = grammaticallyComplete
+          ? capabilityOutcomeScopeFailure(repairedName, citedScopeCandidates, signal, false, description, [], boundRequirement)
+          : unsupportedOutcomeTokens;
+        if (repairedName !== name && grammaticallyComplete && repairedFailures.length === 0 &&
+            !isGenericManagementCapabilityLabel(repairedName) && !isCrudInventoryCapabilityLabel(repairedName)) {
+          name = repairedName;
+          key = name.toLowerCase();
+          purposeNouns = capabilitySubjectTokens(name).map(token => this.stemTerminologyToken(token.toLowerCase())).filter(token => token.length >= 3).filter(token => !capabilityActionTokens.has(token)).filter(token => !GENERIC_CAPABILITY_NAME_TOKENS.has(token)).filter(token => !systemIdentityTokens.has(token));
+          itemNameEvidenceTokens = key.split(/[^a-z0-9]+/).map(token => this.stemTerminologyToken(token)).filter(token => token.length >= 4);
+          unsupportedOutcomeTokens = [];
+        }
+      }
       if (narrowedCandidateIds.length > 0 && unsupportedOutcomeTokens.length > 0) {
-        debugCatalogRejection(name, `outcome-scope-unsupported:${unsupportedOutcomeTokens.join(',')}`, narrowedCandidateIds);
+        debugCatalogRejection(name, `outcome-scope-unsupported:${unsupportedOutcomeTokens.join(',')}`, narrowedCandidateIds, { forbiddenSubjectTerms: unsupportedOutcomeTokens });
         continue;
       }
       const citedEvidenceTokens = new Set(
-        citedCandidates
+        citedScopeCandidates
           .flatMap(candidate => capabilityEvidenceSubjectTokens(
             candidate,
             (candidate.related_entities || []).map(entityId => entityNameById.get(entityId) || ''),
@@ -9722,8 +9343,8 @@ export class AnalyzerOrchestrator {
         candidate.evidence_kind !== 'behavior-surface' &&
         (candidate.operations || []).some(operation =>
           ['http', 'page', 'route'].includes(operation.entry_point_type) &&
-          /(?:auth|login|sign[ -]?in)/i.test([operation.entry_point_id, operation.path_or_command, operation.trigger?.path].filter(Boolean).join(' ')))) &&
-        purposeNouns.every(token => ['access', 'account', 'auth', 'authenticate', 'authorization', 'credential', 'identity', 'session', 'user']
+          /(?:auth|impersonat|login|sign[ -]?in)/i.test([operation.entry_point_id, operation.path_or_command, operation.trigger?.path].filter(Boolean).join(' ')))) &&
+        purposeNouns.every(token => ['access', 'account', 'auth', 'authenticate', 'authorization', 'credential', 'identity', 'impersonate', 'impersonation', 'session', 'user']
           .map(value => this.stemTerminologyToken(value)).includes(token));
       if (artifactType === 'app' && namesIdentityConcern && !firstPartySupportsIdentity && !hasDirectIdentityOutcome) {
         debugCatalogRejection(name, 'supporting-identity-concern');
@@ -9872,11 +9493,19 @@ export class AnalyzerOrchestrator {
     }
 
     for (let index = 0; index < staged.length; index++) {
-      const { name, description, category, relatedEntities, journeys, requirementId, deterministicSource } = staged[index];
+      const { name, description, category, relatedEntities, requirementId, deterministicSource } = staged[index];
       const operations = opsByItemIndex.get(index) || [];
-      const dedupedOps = Array.from(new Map(operations.map(op => [op.entry_point_id, op])).values()).slice(0, 64);
+      const dedupedOps = Array.from(new Map(operations.map(op => [op.entry_point_id, op])).values());
       const candidateEntityIds = entityIdsByItemIndex.get(index) || new Set<string>();
       const anchoredCandidateIds = candidateIdsByItemIndex.get(index) || new Set<string>();
+      const obligationFactors = [...anchoredCandidateIds].flatMap(candidateId =>
+        (candidatePoolForRanking.find(candidate => candidate.id === candidateId)?.criticality_factors || [])
+          .filter(factor => factor.startsWith('catalog-parent-candidate:') || factor.startsWith('catalog-operation-obligation:')));
+      const candidateDependencies = [...new Map([...anchoredCandidateIds].flatMap(candidateId =>
+        candidatePoolForRanking.find(candidate => candidate.id === candidateId)?.depends_on || [])
+        .map(dependency => [
+          [dependency.from_capability, dependency.to_capability, dependency.dependency_type].join(':'), dependency,
+        ])).values()];
       const allRelatedEntities = catalogRelatedEntityIds(relatedEntities, candidateEntityIds);
       const resolvedName = name;
       if (!resolvedName) continue;
@@ -9907,12 +9536,14 @@ export class AnalyzerOrchestrator {
         category,
         operations: dedupedOps,
         related_entities: allRelatedEntities,
-        related_domains: Array.isArray(journeys) ? journeys.map((value: unknown) => String(value || '')).filter(Boolean).slice(0, 6) : [],
+        related_domains: Array.from(new Set([...anchoredCandidateIds].flatMap(candidateId => candidatePoolForRanking.find(candidate => candidate.id === candidateId)?.related_domains || []))).slice(0, 6),
+        depends_on: candidateDependencies,
         criticality: category === 'core' ? 'high' : 'medium',
         criticality_factors: Array.from(new Set([
           deterministicSource ? 'deterministic-evidence-family-recovery' : 'ai-extracted-from-journeys-and-entities',
           ...(requirementId ? [`catalog-outcome-requirement:${requirementId}`] : []),
           ...[...anchoredCandidateIds].map(candidateId => `catalog-candidate:${candidateId}`),
+          ...obligationFactors,
           ...(descriptionContradictsOperations ? ['catalog-description-rejected'] : []),
         ])),
       });
@@ -9941,7 +9572,7 @@ export class AnalyzerOrchestrator {
       final_outcome: out.length > 0 ? 'ai' : 'degraded',
     });
 
-    for (const feedback of catalogRejectionFeedback.slice(0, 4)) input.onRejection?.(feedback);
+    for (const feedback of catalogRejectionFeedback.slice(0, 12)) input.onRejection?.(feedback);
     input.onResponse?.(raw);
     const boundedOutput = out.slice(0, input.exactCapabilityLimit ?? Math.max(16, catalogCountMax)); if (!usedDeterministicFallback && boundedOutput.length === 0 && input.allowDeterministicFallback && deterministicFallback) return this.aiExtractCapabilityCatalog({ ...input, allowDeterministicFallback: false, catalogOverride: [deterministicFallback] });
     if (!usedDeterministicFallback) return boundedOutput;
@@ -9986,8 +9617,10 @@ export class AnalyzerOrchestrator {
         boundRequirementIds.has(requirement.id) &&
         requirement.candidateIds.some(candidateId => citedCandidateIds.has(candidateId)) &&
         capabilitySemanticallySatisfiesCatalogOutcomeRequirement(capability, requirement));
-      return validBoundOutcome ? undefined
-        : capabilityEvidencePublicationFailure(capability, candidates, projectTextSignal);
+      if (boundRequirementIds.size > 0) {
+        return validBoundOutcome ? undefined : 'invalid-outcome-requirement-binding';
+      }
+      return capabilityEvidencePublicationFailure(capability, candidates, projectTextSignal);
     };
 
     const result = [...cataloged]
@@ -10009,13 +9642,31 @@ export class AnalyzerOrchestrator {
       if (sourceNode?.type) nodeTypeByEntryPointId.set(ep.id, sourceNode.type);
     }
 
-    const purposeGated = result.filter(capability => !this.isInfrastructureOnlyCapability(
-      capability, entityById, nodeTypeByEntryPointId,
-      publicationFailure(capability) === undefined,
-    ));
+    const purposeGated = result.filter(capability => {
+      const infrastructureOnly = this.isInfrastructureOnlyCapability(
+        capability, entityById, nodeTypeByEntryPointId,
+        publicationFailure(capability) === undefined,
+      );
+      if (infrastructureOnly && process.env.KLAURO_DEBUG_CATALOG) {
+        writeAnalyzerStatus('[catalog-debug] reconciliation rejection:', {
+          name: capability.name,
+          reason: 'infrastructure-only',
+        });
+      }
+      return !infrastructureOnly;
+    });
     const hasClassifiedEvidence = candidates.some(candidate => candidate.evidence_role !== undefined);
     const gated = hasClassifiedEvidence
-      ? purposeGated.filter(capability => publicationFailure(capability) === undefined)
+      ? purposeGated.filter(capability => {
+          const failure = publicationFailure(capability);
+          if (failure && process.env.KLAURO_DEBUG_CATALOG) {
+            writeAnalyzerStatus('[catalog-debug] reconciliation rejection:', {
+              name: capability.name,
+              reason: failure,
+            });
+          }
+          return failure === undefined;
+        })
       : purposeGated;
     const preservedDescriptionRepairs = gated.filter(capability =>
       capability.description_generation?.status === 'ai_rejected' && !capability.description);
@@ -10040,12 +9691,12 @@ export class AnalyzerOrchestrator {
       ...audienceEvaluation.accepted,
       ...audienceEvaluation.descriptionRepairCandidates,
       ...preservedDescriptionRepairs,
-    ]);
+    ], false, true);
 
-    return this.reinjectDescriptionAnchoredCapabilities(deduped, candidates, dataEntities, purpose);
+    return this.recordDescriptionAnchoredEvidenceGaps(deduped, candidates, dataEntities, purpose);
   }
 
-  private reinjectDescriptionAnchoredCapabilities(
+  private recordDescriptionAnchoredEvidenceGaps(
     cataloged: SystemCapability[],
     candidates: SystemCapability[],
     dataEntities: CASDataEntity[],
@@ -10086,8 +9737,7 @@ export class AnalyzerOrchestrator {
       !coveredEntityIds.has(entity.id) && isProductEntity(entity) && nameMatchesDescription(entity));
     if (describedUncoveredEntities.length === 0) return cataloged;
 
-    const result = [...cataloged];
-    const catalogedIds = new Set(result.map(capability => capability.id));
+    const catalogedIds = new Set(cataloged.map(capability => capability.id));
     const gaps: NonNullable<EnhancedSystemPurpose['description_capability_gaps']> = [];
 
     for (const entity of describedUncoveredEntities) {
@@ -10098,18 +9748,10 @@ export class AnalyzerOrchestrator {
         .sort((left, right) => (right.operations?.length || 0) - (left.operations?.length || 0));
       const candidate = matchingCandidates[0];
       if (candidate && !catalogedIds.has(candidate.id)) {
-        result.push({
-          ...candidate,
-          criticality_factors: Array.from(new Set([
-            ...(candidate.criticality_factors || []),
-            'description-anchored-reinjection',
-          ])),
-        });
-        catalogedIds.add(candidate.id);
         gaps.push({
           entity_id: entity.id,
           entity_name: entity.name,
-          disposition: 'reinjected-from-candidate',
+          disposition: 'structural-evidence-only',
           capability_id: candidate.id,
         });
       } else if (!candidate) {
@@ -10125,7 +9767,7 @@ export class AnalyzerOrchestrator {
       purpose.description_capability_gaps = [...(purpose.description_capability_gaps || []), ...gaps];
     }
 
-    return result;
+    return cataloged;
   }
 
   private normalizePolyglotCapabilityName(
@@ -10172,17 +9814,15 @@ export class AnalyzerOrchestrator {
     capability: Pick<SystemCapability, 'name' | 'description' | 'operations'>,
   ): boolean {
     const operations = capability.operations || [];
+    if (isCrudLifecycleFragmentCapabilityLabel(capability.name, operations.map(operation => operation.action))) return true;
     const hasRead = this.capabilityHasObservedRead(operations);
     const hasMutation = this.capabilityHasObservedMutation(operations);
     if (hasRead && !hasMutation) {
-      return /^(?:manage|create|update|delete|modify|write|submit|set|configure)\b/i.test(capability.name) ||
-        /\b(?:manag(?:e|es|ing|ement)|creat(?:e|es|ing)|updat(?:e|es|ing)|delet(?:e|es|ing)|modif(?:y|ies|ying)|mutat(?:e|es|ing)|writ(?:e|es|ing)|submits?|configur(?:e|es|ing))\b/i.test(capability.description || '');
+      return /^(?:add|manage|maintain|create|update|delete|modify|write|submit|set|configure)\b/i.test(capability.name) ||
+        /\b(?:manag(?:e|es|ing|ement)|maintain(?:s|ed|ing|ance)?|creat(?:e|es|ing)|updat(?:e|es|ing)|delet(?:e|es|ing)|modif(?:y|ies|ying)|mutat(?:e|es|ing)|writ(?:e|es|ing)|submits?|configur(?:e|es|ing))\b/i.test(capability.description || '');
     }
-    if (hasRead && hasMutation) {
-      const readOnlyName = /^(?:browse|get|list|read|retrieve|show|view)\b/i.test(capability.name);
-      const namesMutation = /\b(?:add|create|delete|edit|manage|remove|submit|update|write)\b/i.test(capability.name);
-      if (readOnlyName && !namesMutation) return true;
-    }
+    if (hasRead && hasMutation && /^(?:browse|get|list|read|retrieve|show|view)\b/i.test(capability.name) &&
+        !/\b(?:add|create|delete|edit|manage|remove|submit|update|write)\b/i.test(capability.name)) return true;
     return false;
   }
   private isInfrastructureOnlyCapability(
@@ -10299,14 +9939,50 @@ export class AnalyzerOrchestrator {
     return false;
   }
 
+  private firstBalancedJsonValue(raw: string): string | undefined {
+    const start = raw.search(/[\[{]/);
+    if (start < 0) return undefined;
+    const stack: string[] = [];
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < raw.length; index += 1) {
+      const character = raw[index];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (character === '\\') {
+          escaped = true;
+        } else if (character === '"') {
+          inString = false;
+        }
+        continue;
+      }
+      if (character === '"') {
+        inString = true;
+        continue;
+      }
+      if (character === '{' || character === '[') {
+        stack.push(character);
+        continue;
+      }
+      if (character !== '}' && character !== ']') continue;
+      const expected = character === '}' ? '{' : '[';
+      if (stack.pop() !== expected) return undefined;
+      if (stack.length === 0) return raw.slice(start, index + 1);
+    }
+    return undefined;
+  }
+
   private parseCapabilityCatalog(raw: string): Array<Record<string, unknown>> {
     if (!raw) return [];
     let text = String(raw).trim().replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim();
     const start = text.indexOf('{');
     const end = text.lastIndexOf('}');
     if (start >= 0 && end > start) text = text.slice(start, end + 1);
+    const balancedText = this.firstBalancedJsonValue(text);
+    if (!balancedText) return [];
     try {
-      const parsed = JSON.parse(text);
+      const parsed = JSON.parse(balancedText);
       const list = Array.isArray(parsed?.capabilities) ? parsed.capabilities
         : Array.isArray(parsed?.key_capabilities) ? parsed.key_capabilities
         : Array.isArray(parsed) ? parsed : [];
@@ -10330,8 +10006,7 @@ export class AnalyzerOrchestrator {
     return operations.some(operation =>
       /^(?:manage|create|update|delete|write|modify|submit|configure|mutate|set|save|persist)$/i.test(operation.action || '')
     );
-  }
-  private isPublishableCapability(capability: SystemCapability): boolean {
+  }  private isPublishableCapability(capability: SystemCapability): boolean {
     return this.capabilityPublishabilityFailure(capability) === undefined;
   }
   private capabilityPublishabilityFailure(capability: SystemCapability): string | undefined {
@@ -10340,12 +10015,14 @@ export class AnalyzerOrchestrator {
       capability.name_source === 'manual' ||
       capability.name_source === 'reused';
     if (!authored) return 'name-is-not-authored';
-    if ((capability.related_entities || []).length === 0 && (capability.operations || []).length === 0) {
-      return 'missing-structural-anchor';
-    }
+    if ((capability.related_entities || []).length === 0 && (capability.operations || []).length === 0) return 'missing-structural-anchor';
     if (this.isBareNounCapabilityLabel(String(capability.name || ''))) return 'bare-noun-name';
     const description = String(capability.description || '').trim();
     const descriptionWordCount = description.split(/\s+/).filter(Boolean).length;
+    const capabilityName = String(capability.name || ''); const lifecycleActions = new Set((capability.operations || []).map(operation => String(operation.action || '').toLowerCase()).filter(action => /^(?:create|read|update|delete)/.test(action)));
+    if (isGenericManagementCapabilityLabel(capabilityName) || (/^maintain\b/i.test(capabilityName) && (capability.related_entities || []).length > 0 && lifecycleActions.size >= 2)) return 'generic-management-name';
+    if (isCrudInventoryCapabilityLabel(capabilityName) || ((capability.criticality_factors || []).includes('catalog-deterministic-grouped-lifecycle') && /^(?:add|create|delete|edit|remove|update)\b/i.test(capabilityName))) return 'crud-inventory-name';
+    if (isCrudLifecycleFragmentCapabilityLabel(String(capability.name || ''), (capability.operations || []).map(operation => operation.action))) return 'crud-lifecycle-fragment-name';
     const descriptionIsPublishable = Boolean(description) &&
       !this.isStructuralPlaceholderCapabilityDescription(description) &&
       descriptionWordCount >= 6 &&
@@ -10358,9 +10035,8 @@ export class AnalyzerOrchestrator {
       if (this.isStructuralPlaceholderCapabilityDescription(description)) return 'structural-placeholder-description';
       return descriptionWordCount < 6 ? 'description-too-short' : 'description-too-long';
     }
-    const observedDeletion = capabilityHasObservedDestructiveLifecycle(capability.operations || []);
-    const describesDeletion = capabilityDescriptionExpressesDestructiveLifecycle(`${capability.name} ${description}`);
-    if (observedDeletion && !describesDeletion) return 'description-omits-observed-deletion';
+    if (capabilityHasObservedDestructiveLifecycle(capability.operations || []) &&
+        !capabilityDescriptionExpressesDestructiveLifecycle(`${capability.name} ${description}`)) return 'description-omits-observed-deletion';
     return undefined;
   }
   private catalogQualityFailure(
@@ -10369,62 +10045,15 @@ export class AnalyzerOrchestrator {
     requiredBehaviorCandidateIds: string[] = [],
     requiredEntityCandidateGroups: string[][] = [], requiredOutcomes: readonly CapabilityCatalogOutcomeRequirement[] = [],
     candidateFamilyGroups: ReadonlyArray<ReadonlyArray<string>> = [],
+    fullyCoveredAggregateCandidateIds: ReadonlySet<string> = new Set(),
   ): string | undefined {
-    if (reconciled.length === 0) {
-      return distinctFamilyCount === 0 ? undefined : 'empty catalog after reconciliation';
-    }
-    const coverageFailure = capabilityCatalogCoverageFailure(reconciled, requiredBehaviorCandidateIds, requiredEntityCandidateGroups, requiredOutcomes);
-    if (coverageFailure) return coverageFailure;
-    const uncoveredFamilyIds = uncoveredCapabilityCatalogFamilyRepresentativeIds(reconciled, candidateFamilyGroups);
-    if (uncoveredFamilyIds.length > 0) {
-      return `catalog omitted ${uncoveredFamilyIds.length} deterministic capability evidence families: ${uncoveredFamilyIds.slice(0, 8).join(', ')}`;
-    }
-    const evidenceRejected = reconciled.filter(capability =>
-      (capability.criticality_factors || []).some(factor => factor.startsWith('catalog-evidence-rejected:')));
-    if (evidenceRejected.length > 0) {
-      return `catalog contains ${evidenceRejected.length} authored capability ${evidenceRejected.length === 1 ? 'claim' : 'claims'} without product-outcome evidence: ${evidenceRejected.slice(0, 3).map(capability => capability.name).join(', ')}`;
-    }
-    const minimumCapabilities = catalogMinimumCapabilityCount(distinctFamilyCount, requiredEntityCandidateGroups.length, requiredOutcomes.length);
-    if (reconciled.length < minimumCapabilities) {
-      return `catalog collapse: ${reconciled.length} capabilities against ${distinctFamilyCount} distinct deterministic candidate families; at least ${minimumCapabilities} independently expressed outcomes are required`;
-    }
-    const bareNouns = reconciled.filter(capability => this.isBareNounCapabilityLabel(String(capability.name || '')));
-    if (bareNouns.length > 0) {
-      return `bare-noun capability names survived reconciliation: ${bareNouns.slice(0, 3).map(capability => `"${capability.name}"`).join(', ')}`;
-    }
-    const placeholders = reconciled.filter(capability => this.isStructuralPlaceholderCapabilityDescription(capability.description));
-    if (placeholders.length > 0) {
-      return `structural template descriptions survived reconciliation: ${placeholders.slice(0, 3).map(capability => `"${capability.name}"`).join(', ')}`;
-    }
-    const unauthored = reconciled.filter(capability =>
-      capability.name_source !== 'deterministic' &&
-      capability.name_source !== 'ai' &&
-      capability.name_source !== 'manual' &&
-      capability.name_source !== 'reused');
-    if (unauthored.length > 0) {
-      return `unauthored capability names survived reconciliation: ${unauthored.slice(0, 3).map(capability => `"${capability.name}"`).join(', ')}`;
-    }
-    const deterministicRecoveries = reconciled.filter(capability => capability.name_source === 'deterministic');
-    if (deterministicRecoveries.length > 0) {
-      return `catalog contains ${deterministicRecoveries.length} evidence-grounded deterministic ${deterministicRecoveries.length === 1 ? 'recovery' : 'recoveries'} awaiting higher-quality language: ${deterministicRecoveries.slice(0, 3).map(capability => `"${capability.name}"`).join(', ')}`;
-    }
-    const weakDescriptions = reconciled.filter(capability => {
-      if (capability.description_generation?.status === 'ai_rejected') return false;
-      const wordCount = String(capability.description || '').trim().split(/\s+/).filter(Boolean).length;
-      return wordCount < 6 || wordCount > 32;
+    return capabilityCatalogCycleQualityFailure({
+      reconciled, distinctFamilyCount, requiredBehaviorCandidateIds, requiredEntityCandidateGroups,
+      requiredOutcomes, candidateFamilyGroups, fullyCoveredAggregateCandidateIds,
+      isBareNoun: name => this.isBareNounCapabilityLabel(name),
+      isStructuralPlaceholder: description => this.isStructuralPlaceholderCapabilityDescription(description || ''),
     });
-    if (weakDescriptions.length > 0) {
-      return `capability descriptions fall outside the product-language quality range: ${weakDescriptions.slice(0, 3).map(capability => `"${capability.name}"`).join(', ')}`;
-    }
-    const unanchored = reconciled.filter(capability =>
-      (capability.related_entities || []).length === 0 && (capability.operations || []).length === 0
-    );
-    if (unanchored.length > 0) {
-      return `unanchored capabilities survived reconciliation (no resolvable operation, entity, or entry point): ${unanchored.slice(0, 3).map(capability => `"${capability.name}"`).join(', ')}`;
-    }
-    return undefined;
   }
-
   private catalogDistinctFamilies(candidates: SystemCapability[]): SystemCapability[][] {
     return groupCapabilityCatalogFamilies(candidates, {
       normalizeToken: token => this.stemTerminologyToken(token),
@@ -10448,6 +10077,8 @@ export class AnalyzerOrchestrator {
     flowGraph: CASFlowGraph;
     projectTextSignal: ProjectTextSignal;
     entryPoints: CASEntryPoint[];
+    edges: CASEdge[];
+    exitPoints: CASExitPoint[];
     nodes: CASNode[];
     budgetMs: number;
     libraryNames?: string[];
@@ -10462,72 +10093,136 @@ export class AnalyzerOrchestrator {
       args.projectTextSignal,
       { entryPoints: args.entryPoints, nodes: args.nodes, userJourneys: args.userJourneys },
     );
-    const requiredEvidenceCandidates = catalogRequiredEvidenceCandidates(evidenceCandidates);
+    const operationCoverageContext: CapabilityOperationCoverageContext = { edges: args.edges, entryPoints: args.entryPoints, exitPoints: args.exitPoints, nodes: args.nodes };
+    const operationScopedById = new Map(scopeRequiredCapabilityOperations(evidenceCandidates, operationCoverageContext).map(candidate => [candidate.id, candidate]));
+    for (let index = 0; index < evidenceCandidates.length; index += 1) evidenceCandidates[index] = operationScopedById.get(evidenceCandidates[index].id) || evidenceCandidates[index];
     const evidenceRoleSummary = summarizeCapabilityEvidenceRoles(evidenceCandidates);
-    const distinctFamilies = this.catalogDistinctFamilies(requiredEvidenceCandidates);
+    const productOutcomeEvidenceCandidateIds = new Set(evidenceCandidates.filter(candidate => candidate.evidence_role === 'product-outcome').map(candidate => candidate.id));
+    const independentlyGroundedProductOutcomeIds = new Set(evidenceCandidates.filter(candidate =>
+      candidate.evidence_role === 'product-outcome' && candidate.evidence_kind !== 'behavior-surface' &&
+      ((candidate.related_entities || []).length > 0 || (candidate.operations || []).some(operation => Boolean(operation.path_or_command)))).map(candidate => candidate.id));
+    const repairableProposalCandidateIds = new Set(evidenceCandidates.filter(capabilityCanRepairRejectedOutcomeProposal).map(candidate => candidate.id));
+    const authoritativeOperationCandidates = new Map(evidenceCandidates.map(candidate => [candidate.id, candidate]));
+    const operationObligationViews = buildCapabilityOperationObligationViews(evidenceCandidates, operationCoverageContext); const aggregateOperationObligationViews = buildCapabilityOperationObligationViews(evidenceCandidates.filter(candidate => candidate.evidence_kind !== 'behavior-surface' && capabilityRequiresCatalogCoverage(candidate)), operationCoverageContext, { includeStructuralAggregates: true });
+    for (const candidate of operationObligationViews.candidates) authoritativeOperationCandidates.set(candidate.id, candidate); for (const candidate of aggregateOperationObligationViews.candidates) if (aggregateOperationObligationViews.scopes.has(candidate.id)) authoritativeOperationCandidates.set(candidate.id, candidate);
+    evidenceCandidates.splice(0, evidenceCandidates.length, ...operationObligationViews.candidates); evidenceCandidates.push(...aggregateOperationObligationViews.candidates.filter(candidate => aggregateOperationObligationViews.scopes.has(candidate.id))); operationCoverageContext.obligationScopes = new Map([...operationObligationViews.scopes, ...aggregateOperationObligationViews.scopes]);
+    const debugOperationProvenance = (stage: string, capabilities: readonly SystemCapability[]): void => { if (!process.env.KLAURO_DEBUG_CATALOG) return; const exact = capabilities.flatMap(capability => { const candidates = (capability.criticality_factors || []).filter(factor => factor.startsWith('catalog-candidate:operation-obligation:')); const obligations = (capability.criticality_factors || []).filter(factor => factor.startsWith('catalog-operation-obligation:')); return candidates.length || obligations.length ? [{ stage, id: capability.id, name: capability.name, description: capability.description, publishability_failure: this.capabilityPublishabilityFailure(capability), candidates, obligations, entry_point_ids: (capability.operations || []).map(operation => operation.entry_point_id) }] : []; }); if (exact.length > 0) writeAnalyzerStatus('[catalog-debug] operation provenance:', exact); };
+    const structuralProductEvidenceCandidates = catalogRequiredEvidenceCandidates(evidenceCandidates).filter(candidate => !(candidate.criticality_factors || []).includes('catalog-aggregate-operation-view'));
+    const distinctFamilies = this.catalogDistinctFamilies(structuralProductEvidenceCandidates);
     const distinctFamilyCount = distinctFamilies.length;
-    const distinctFamilyCandidateGroups = distinctFamilies
-      .map(family => family.map(candidate => candidate.id).filter(Boolean))
-      .filter(family => family.length > 0);
-    const requiredBehaviorCandidateIds = requiredEvidenceCandidates
-      .filter(candidate => candidate.evidence_kind === 'behavior-surface' && capabilityRequiresCatalogCoverage(candidate) && candidate.id)
-      .map(candidate => candidate.id);
-    const requiredEntityCandidateGroups = catalogEntityCandidateGroups(requiredEvidenceCandidates); const requiredOutcomes = deriveCapabilityCatalogOutcomeRequirements(args.projectTextSignal, evidenceCandidates);
+    const requiredOutcomes = deriveCapabilityCatalogOutcomeRequirements(args.projectTextSignal, evidenceCandidates);
+    const groundableOutcomes = requiredOutcomes.filter(requirement => requirement.candidateIds.length > 0);
+    const requiredEvidenceCandidates = catalogRequiredEvidenceCandidates(evidenceCandidates); const distinctFamilyCandidateGroups = distinctFamilies.map(family => family.map(candidate => candidate.id).filter(Boolean)).filter(family => family.length > 0);
+    const candidateFamilyKeyById = new Map<string, string>();
+    for (const family of distinctFamilyCandidateGroups) {
+      const familyKey = [...family].sort().join('|');
+      for (const candidateId of family) {
+        if (candidateFamilyKeyById.has(candidateId)) candidateFamilyKeyById.delete(candidateId);
+        else candidateFamilyKeyById.set(candidateId, familyKey);
+      }
+    }
+    const requiredBehaviorCandidateIds = requiredEvidenceCandidates.filter(candidate => candidate.evidence_kind === 'behavior-surface' && capabilityRequiresCatalogCoverage(candidate) && candidate.id).map(candidate => candidate.id);
+    const requiredEntityCandidateGroups = catalogEntityCandidateGroups(requiredEvidenceCandidates); const completeLifecycleCandidateIds = new Set(requiredEvidenceCandidates.map(candidate => candidate.id));
     const minimumCapabilities = catalogMinimumCapabilityCount(distinctFamilyCount, requiredEntityCandidateGroups.length, requiredOutcomes.length);
-    const { entityNamesById, entityFieldsById, entityEvidenceById } = capabilityDescriptionEvidenceMaps(args.dataEntities);
+    const { entityNamesById, entityFieldsById, entityEvidenceById } = capabilityDescriptionEvidenceMaps(args.dataEntities); const validateDeterministicAtomic = (recovered: SystemCapability): boolean => { const deterministicRouteTerms = (recovered.criticality_factors || []).includes('catalog-deterministic-atomic-closure') &&
+      (recovered.criticality_factors || []).includes('catalog-deterministic-route-lineage')
+      ? recovered.related_domains || [] : []; const audience = evaluateCapabilityCatalogAudience([recovered], args.dataEntities, args.libraryNames || [], [...capabilityCatalogProductTerms(args.enhancedSystemPurpose, args.projectTextSignal), ...deterministicRouteTerms, ...args.externalServices], { productText: args.projectTextSignal, userJourneys: args.userJourneys, entryPoints: args.entryPoints }); const target = this.capabilityDescriptionTarget(recovered, entityNamesById, entityFieldsById, entityEvidenceById, [], [], args.entryPoints); target.productOutcomeTerms = Array.from(new Set([args.projectTextSignal.productDocSummary, ...requiredOutcomes.map(requirement => requirement.firstPartyOutcomeText || requirement.statement), ...deterministicRouteTerms].filter((value): value is string => Boolean(value)))); const publishabilityFailure = this.capabilityPublishabilityFailure(recovered); const elementValidation = this.validateElementDescription(recovered.description || '', target); if (process.env.KLAURO_DEBUG_CATALOG && (audience.accepted.length !== 1 || publishabilityFailure || !elementValidation.ok)) writeAnalyzerStatus('[catalog-debug] deterministic atomic validation:', { name: recovered.name, description: recovered.description, candidates: (recovered.criticality_factors || []).filter(factor => factor.startsWith('catalog-candidate:')), audience_rejections: audience.rejections, publishability_failure: publishabilityFailure, element_reason: elementValidation.reason, offending_terms: elementValidation.offendingTerms, target }); return audience.accepted.length === 1 && !publishabilityFailure && elementValidation.ok; }; const baselineAtomicClosures: SystemCapability[] = [];
     let reconciled: SystemCapability[] = [];
     let qualityFailure: string | undefined;
     let retainedQualityFailure: string | undefined;
     let audienceRepairFeedback: string | undefined;
-    let cyclesRun = 0;
-    let deadlineExceeded = false; let retainedInterpretationRaw = ''; const catalogRejectionsByCandidate: CapabilityCatalogRejectionsByCandidate = new Map(); const pendingRequirementIdsByCapabilityId = new Map<string, string[]>();
-    let uncoveredOutcomes = requiredOutcomes; const repairProgress = trackCapabilityCatalogRepair(Math.max(1, distinctFamilyCount), requiredBehaviorCandidateIds, requiredEntityCandidateGroups, requiredOutcomes.map(requirement => requirement.id), distinctFamilyCandidateGroups);
-    for (let cycle = 1; cycle <= repairProgress.maxCycles; cycle++) {
+    let cyclesRun = 0; let catalogProviderCalls = 0; const maxCatalogProviderCalls = 26;
+    let independentBroadConfirmationPending = false;
+    const rejectedProposalCandidateIds = new Set<string>(independentlyGroundedProductOutcomeIds);
+    let deadlineExceeded = false; let retainedInterpretationRaw = ''; const catalogRejectionsByCandidate: CapabilityCatalogRejectionsByCandidate = new Map(); const pendingRequirementIdsByLifecycleKey = new Map<string, string[]>(); const descriptionRepairAttemptsByLifecycleKey = new Map<string, number>(); const deterministicFallbackAttemptedLifecycleKeys = new Set<string>(); const exactActionMismatchAttemptsByCandidateId = new Map<string, number>(); const evidenceRepairAttemptsByCandidateId = new Map<string, number>(); const pendingEvidenceIdentityByCandidateId = new Map<string, PendingCapabilityEvidenceIdentity>();
+    let uncoveredOutcomes = groundableOutcomes; const repairProgress = trackCapabilityCatalogRepair(Math.max(1, groundableOutcomes.length), requiredBehaviorCandidateIds, requiredEntityCandidateGroups, groundableOutcomes.map(requirement => requirement.id), distinctFamilyCandidateGroups);
+    let maxCatalogCycles = repairProgress.maxCycles;
+    let productOutcomeLanguageExtensionGranted = false;
+    for (let cycle = 1; cycle <= maxCatalogCycles; cycle++) {
       if (args.hardDeadlineAt !== undefined && Date.now() >= args.hardDeadlineAt) {
         deadlineExceeded = true;
-        console.warn(`[Klauro] capability catalog: hard deadline reached before cycle ${cycle}/${repairProgress.maxCycles}; stopping with ${reconciled.length} capabilities from ${cycle - 1} completed cycle(s)`);
+        console.warn(`[Klauro] capability catalog: hard deadline reached before cycle ${cycle}/${maxCatalogCycles}; stopping with ${reconciled.length} capabilities from ${cycle - 1} completed cycle(s)`);
         break;
       }
       cyclesRun = cycle;
-      const pendingCapabilities = reconciled.filter(capability => !this.isPublishableCapability(capability)); const evidenceRepairIds = capabilityCatalogRepairCandidateIds(reconciled, requiredBehaviorCandidateIds, requiredEntityCandidateGroups, new Set(), distinctFamilyCandidateGroups);
-      const repairPlan = capabilityCatalogRepairPlan({ evidenceCandidateIds: evidenceRepairIds, outcomeRequirements: uncoveredOutcomes, pendingCapabilities }); const targetedRepair = cycle > 1 && reconciled.length > 0 && repairPlan.length > 0;
-      let extracted: SystemCapability[], extractionRaw = ''; const extractionRejections: string[] = [];
+      const publishedCandidateIds = new Set(reconciled.flatMap(capability => (capability.criticality_factors || []).filter(factor => factor.startsWith('catalog-candidate:')).map(factor => factor.slice('catalog-candidate:'.length))));
+      for (const candidateId of rejectedProposalCandidateIds) {
+        if (publishedCandidateIds.has(candidateId)) rejectedProposalCandidateIds.delete(candidateId);
+      }
+      const pendingCapabilities = [...reconciled.filter(capability => !this.isPublishableCapability(capability) || (capability.name_source === 'deterministic' && !isExactValidatedDeterministicRecovery(capability))), ...[...pendingEvidenceIdentityByCandidateId.values()].map(entry => entry.identity)]; const uncoveredBehaviorCandidateIds = uncoveredRequiredBehaviorCandidateIds(requiredEvidenceCandidates, reconciled, operationCoverageContext); const coveredAggregateCandidateIds = fullyCoveredAggregateCapabilityCandidateIds(requiredEvidenceCandidates, reconciled, operationCoverageContext); const evidenceRepairIds = [...new Set([
+        ...capabilityCatalogRepairCandidateIds(reconciled, uncoveredBehaviorCandidateIds, requiredEntityCandidateGroups, new Set(), distinctFamilyCandidateGroups, coveredAggregateCandidateIds),
+        ...[...rejectedProposalCandidateIds].filter(candidateId => repairableProposalCandidateIds.has(candidateId)),
+      ])];
+      const aggregateRepairIdsByParent = uncoveredAggregateOperationObligationIds(requiredEvidenceCandidates, reconciled.filter(capability => this.isPublishableCapability(capability)), aggregateOperationObligationViews.scopes, operationCoverageContext); const scopedEvidenceRepairIds = evidenceRepairIds.flatMap(candidateId => aggregateRepairIdsByParent.get(candidateId) || [candidateId]); const scopedPriorityEvidenceIds = [...uncoveredBehaviorCandidateIds, ...[...aggregateRepairIdsByParent.values()].flat()];
+      const repairPlan = capabilityCatalogRepairPlan({ evidenceCandidateIds: scopedEvidenceRepairIds, priorityEvidenceCandidateIds: scopedPriorityEvidenceIds, evidenceCandidates, outcomeRequirements: uncoveredOutcomes, pendingCapabilities }); const runningIndependentBroadConfirmation = cycle > 1 && independentBroadConfirmationPending;
+      const targetedRepair = cycle > 1 && !runningIndependentBroadConfirmation && repairPlan.length > 0;
+      const evidenceRepairCandidateIdsForCycle = new Set(targetedRepair
+        ? repairPlan.filter(batch => batch.mode === 'evidence').flatMap(batch => batch.candidateIds)
+        : []);
+      const descriptionRepairLifecycleKeysForCycle = new Set(targetedRepair
+        ? repairPlan.filter(batch => batch.mode === 'description').map(batch => capabilityCatalogRepairLifecycleKey(batch.identity))
+        : []);
+      let extracted: SystemCapability[], extractionRaw = ''; const extractionRejections: string[] = []; const batchArtifacts = new Map<number, { raw: string; rejections: CapabilityCatalogRejection[] }>();
       try {
         extracted = await collectCapabilityCatalogEvidenceBatches({
-          facts: targetedRepair ? repairPlan : [], evidenceScoped: targetedRepair, hardDeadlineAt: args.hardDeadlineAt, batchBudgetMs: 36000,
+          facts: targetedRepair ? repairPlan : [], evidenceScoped: targetedRepair, hardDeadlineAt: args.hardDeadlineAt, batchBudgetMs: 24000, conflictKeys: batch => batch.candidateIds, concurrency: 4, onBatchSettled: (_values, batchIndex) => { const artifact = batchArtifacts.get(batchIndex); if (artifact) { if (!extractionRaw) extractionRaw = artifact.raw; for (const feedback of artifact.rejections) { const recorded = recordCapabilityCatalogRejection(catalogRejectionsByCandidate, feedback); extractionRejections.push(recorded.explanation); if (/^(?:generic-management-label|crud-inventory-label|outcome-scope-unsupported|unsupported-value-noun|bare-noun-label)/.test(feedback.reason)) for (const candidateId of feedback.candidateIds) rejectedProposalCandidateIds.add(candidateId); } batchArtifacts.delete(batchIndex); } },
           isDeadlineError: isAiCatalogHardDeadlineExceeded,
-          extract: async (plannedBatch, hardDeadlineAt) => {
-          const mode = plannedBatch[0]; const batchIds = new Set(mode?.candidateIds || []); const firstPartyRepairTexts = [args.projectTextSignal.productDocTitle, args.projectTextSignal.productDocSummary, args.projectTextSignal.manifestDescription, ...(args.projectTextSignal.productVocabulary || [])].filter((value): value is string => Boolean(String(value || '').trim())); const buildPromptRepairEnvelope = () => capabilityCatalogRepairPromptEnvelope(evidenceCandidates, [...batchIds], mode?.requirements || [], catalogRejectionsByCandidate, entityNamesById, firstPartyRepairTexts, mode?.mode === 'description' ? mode.identity.name : undefined); let promptRepairEnvelope = buildPromptRepairEnvelope(); let repairBatch = capabilityCatalogRepairEvidenceFacts(evidenceCandidates, [...batchIds], entityNamesById, catalogRejectionsByCandidate, mode?.requirements.map(requirement => requirement.id)); let batchRaw = ''; const batchCandidates = evidenceCandidates.filter(candidate => batchIds.has(candidate.id)); const batchEntityIds = new Set(batchCandidates.flatMap(candidate => candidate.related_entities || [])); const batchEntryPointIds = new Set(batchCandidates.flatMap(candidate => (candidate.operations || []).map(operation => operation.entry_point_id))); const batchRejections: CapabilityCatalogRejection[] = [];
-          const extractBatch = (qualityNudge?: string, allowDeterministicFallback = false) => this.aiExtractCapabilityCatalog({
+          extract: async (plannedBatch, hardDeadlineAt, batchIndex) => {
+          const mode = plannedBatch[0]; const repairName = mode?.mode === 'description' && Boolean(mode.repairName); const stableIdentityName = mode?.mode === 'description' && !repairName ? mode.identity.name : undefined; const batchCatalogRejectionsByCandidate: CapabilityCatalogRejectionsByCandidate = new Map([...catalogRejectionsByCandidate].map(([candidateId, rejections]) => [candidateId, [...rejections]])); const batchIds = new Set(mode?.candidateIds || []); const firstPartyRepairTexts = [args.projectTextSignal.productDocTitle, args.projectTextSignal.productDocSummary, args.projectTextSignal.manifestDescription, ...(args.projectTextSignal.productVocabulary || [])].filter((value): value is string => Boolean(String(value || '').trim())); const requiredRepairActions = repairName ? [...new Set((mode.identity.operations || []).map(operation => String(operation.action || '').toLowerCase()).filter(Boolean))] : []; const buildPromptRepairEnvelope = () => capabilityCatalogRepairPromptEnvelope(evidenceCandidates, [...batchIds], mode?.requirements || [], batchCatalogRejectionsByCandidate, entityNamesById, firstPartyRepairTexts, stableIdentityName, requiredRepairActions, entityFieldsById); let promptRepairEnvelope = buildPromptRepairEnvelope(); let repairBatch = capabilityCatalogRepairEvidenceFacts(evidenceCandidates, [...batchIds], entityNamesById, batchCatalogRejectionsByCandidate, mode?.requirements.map(requirement => requirement.id)); let batchRaw = ''; const batchCandidates = evidenceCandidates.filter(candidate => batchIds.has(candidate.id)); const batchEntityIds = new Set(batchCandidates.flatMap(candidate => candidate.related_entities || [])); const batchEntryPointIds = new Set(batchCandidates.flatMap(candidate => (candidate.operations || []).map(operation => operation.entry_point_id))); const batchRejections: CapabilityCatalogRejection[] = [];
+          if (mode?.mode === 'evidence') for (const candidateId of mode.candidateIds) evidenceRepairAttemptsByCandidateId.set(candidateId, (evidenceRepairAttemptsByCandidateId.get(candidateId) || 0) + 1);
+          const extractBatch = (qualityNudge?: string, allowDeterministicFallback = false) => {
+            if (catalogProviderCalls >= maxCatalogProviderCalls) return Promise.resolve([]); catalogProviderCalls += 1;
+            return this.aiExtractCapabilityCatalog({
           systemName: args.systemName,
           enhancedSystemPurpose: args.enhancedSystemPurpose,
           frameworks: args.frameworks,
           userJourneys: targetedRepair ? args.userJourneys.filter(journey => batchEntryPointIds.has(journey.entry_point_id)) : args.userJourneys, dataEntities: targetedRepair ? repairBatch.every(fact => args.behaviorSurfaces.some(candidate => candidate.id === fact.candidate_id)) ? [] : args.dataEntities.filter(entity => batchEntityIds.has(entity.id)) : args.dataEntities,
-          candidateCapabilities: targetedRepair ? catalogCandidates.filter(candidate => batchIds.has(candidate.id)) : catalogCandidates,
-          behaviorSurfaces: targetedRepair ? args.behaviorSurfaces.filter(candidate => batchIds.has(candidate.id)) : args.behaviorSurfaces,
+          candidateCapabilities: targetedRepair ? evidenceCandidates.filter(candidate => batchIds.has(candidate.id)) : evidenceCandidates.filter(candidate => !candidate.id.startsWith('operation-obligation:') && !(candidate.criticality_factors || []).includes('catalog-aggregate-operation-view')),
+          behaviorSurfaces: evidenceCandidates.filter(candidate => candidate.evidence_kind === 'behavior-surface' && (!targetedRepair || batchIds.has(candidate.id))),
           externalServices: targetedRepair ? [] : args.externalServices,
           flowGraph: args.flowGraph,
           projectTextSignal: args.projectTextSignal,
           budgetMs: args.budgetMs,
           repairAttempt: targetedRepair ? cycle : undefined,
-          hardDeadlineAt, exactCapabilityLimit: targetedRepair ? 1 : undefined, requiredOutcomeCount: targetedRepair ? mode?.requirements.length || 0 : requiredOutcomes.length, requiredOutcomeRequirements: mode?.requirements.length ? mode.requirements : undefined, repairMode: mode?.mode, repairIdentityName: mode?.mode === 'description' ? mode.identity.name : undefined, targetedRepairFacts: targetedRepair ? promptRepairEnvelope.facts : undefined, targetedRepairCandidateMap: targetedRepair ? promptRepairEnvelope.candidateMap : undefined, allowDeterministicFallback,
+          hardDeadlineAt, exactCapabilityLimit: targetedRepair ? 1 : undefined, requiredOutcomeCount: targetedRepair ? mode?.requirements.length || 0 : requiredOutcomes.length, requiredOutcomeRequirements: targetedRepair ? (mode?.requirements.length ? mode.requirements : undefined) : requiredOutcomes, repairMode: mode?.mode, repairIdentityName: stableIdentityName, targetedRepairFacts: targetedRepair ? promptRepairEnvelope.facts : undefined, targetedRepairCandidateMap: targetedRepair ? promptRepairEnvelope.candidateMap : undefined, allowDeterministicFallback,
           entryPoints: args.entryPoints,
           nodes: args.nodes,
-          onResponse: raw => { batchRaw = raw; }, onRejection: feedback => { batchRejections.push(feedback); const recorded = recordCapabilityCatalogRejection(catalogRejectionsByCandidate, feedback); extractionRejections.push(recorded.explanation); },
+          onResponse: raw => { batchRaw = raw; }, onRejection: feedback => { batchRejections.push(feedback); recordCapabilityCatalogRejection(batchCatalogRejectionsByCandidate, feedback); },
           ...(qualityNudge ? { qualityNudge } : {}),
           });
-          const scopedRepairFeedback = () => { const rejections = promptRepairEnvelope.facts.flatMap(fact => fact.prior_rejections); return rejections.length > 0 ? JSON.stringify(rejections) : undefined; }; const initialNudge = mode ? capabilityCatalogRepairNudge(mode, promptRepairEnvelope.facts, qualityFailure, scopedRepairFeedback()) : cycle > 1 ? 'Previous catalog failed a quality check. Return a full replacement catalog.' : undefined; let batchExtracted = await extractBatch(initialNudge);
-          batchExtracted = await retryEmptyCapabilityCatalogOutcome({ initial: batchExtracted, candidateIds: [...batchIds], rejections: batchRejections, requirement: mode?.mode === 'outcome' ? mode.requirements[0] : undefined, retryEvidence: mode?.mode === 'evidence' && Boolean(batchRaw), record: feedback => { const recorded = recordCapabilityCatalogRejection(catalogRejectionsByCandidate, feedback); extractionRejections.push(recorded.explanation); }, retry: async () => { repairBatch = capabilityCatalogRepairEvidenceFacts(evidenceCandidates, [...batchIds], entityNamesById, catalogRejectionsByCandidate, mode?.requirements.map(requirement => requirement.id)); promptRepairEnvelope = buildPromptRepairEnvelope(); return extractBatch(capabilityCatalogRepairNudge(mode!, promptRepairEnvelope.facts, qualityFailure, scopedRepairFeedback()), true); } });
-          if (!extractionRaw) extractionRaw = batchRaw;
-          return mode?.mode === 'description' && batchExtracted[0]
-            ? [preserveCapabilityCatalogDescriptionIdentity(mode.identity, batchExtracted[0])]
-            : batchExtracted;
+          }; const scopedRepairFeedback = () => { const rejections = promptRepairEnvelope.facts.flatMap(fact => fact.prior_rejections); return rejections.length > 0 ? JSON.stringify(rejections) : undefined; }; const initialNudge = mode ? capabilityCatalogRepairNudge(mode, promptRepairEnvelope.facts, qualityFailure, scopedRepairFeedback()) : cycle > 1 ? 'Previous catalog failed a quality check. Return a full replacement catalog.' : undefined; let batchExtracted = await extractBatch(initialNudge);
+          batchExtracted = await retryEmptyCapabilityCatalogOutcome({ initial: batchExtracted, candidateIds: [...batchIds], rejections: batchRejections, requirement: mode?.mode === 'outcome' ? mode.requirements[0] : undefined, retryEvidence: mode?.mode === 'evidence' && Boolean(batchRaw), deferEvidenceRetry: false, record: feedback => { batchRejections.push(feedback); recordCapabilityCatalogRejection(batchCatalogRejectionsByCandidate, feedback); }, retry: async () => { repairBatch = capabilityCatalogRepairEvidenceFacts(evidenceCandidates, [...batchIds], entityNamesById, batchCatalogRejectionsByCandidate, mode?.requirements.map(requirement => requirement.id)); promptRepairEnvelope = buildPromptRepairEnvelope(); return extractBatch(capabilityCatalogRepairNudge(mode!, promptRepairEnvelope.facts, qualityFailure, scopedRepairFeedback()), true); } });
+          const finishBatch = (values: SystemCapability[]): SystemCapability[] => { batchArtifacts.set(batchIndex, { raw: batchRaw, rejections: [...batchRejections] }); return values; };
+          if (mode?.mode === 'description') {
+            const lifecycleKey = capabilityCatalogRepairLifecycleKey(mode.identity); const repairAttempts = (descriptionRepairAttemptsByLifecycleKey.get(lifecycleKey) || 0) + 1;
+            descriptionRepairAttemptsByLifecycleKey.set(lifecycleKey, repairAttempts);
+            return finishBatch(resolveCapabilityCatalogDescriptionRepair({
+              validated: batchExtracted, attempt: repairAttempts, identity: mode.identity,
+              attemptedFallbackIdentityIds: deterministicFallbackAttemptedLifecycleKeys,
+              pendingEvidenceIdentityByCandidateId, evidenceCandidates,
+              audience: groundedCapabilityAudience(mode.identity, args.projectTextSignal, args.userJourneys, args.entryPoints), firstPartyTexts: firstPartyRepairTexts,
+              allowNameRepair: repairName,
+              validate: capability => {
+                const audience = evaluateCapabilityCatalogAudience([capability], args.dataEntities, args.libraryNames || [], [...capabilityCatalogProductTerms(args.enhancedSystemPurpose, args.projectTextSignal), ...args.externalServices], { productText: args.projectTextSignal, userJourneys: args.userJourneys, entryPoints: args.entryPoints });
+                const target = this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById, [], [], args.entryPoints);
+                target.productOutcomeTerms = Array.from(new Set([args.projectTextSignal.productDocSummary, ...requiredOutcomes.map(requirement => requirement.firstPartyOutcomeText || requirement.statement)].filter((value): value is string => Boolean(value))));
+                const publishabilityFailure = this.capabilityPublishabilityFailure(capability);
+                const descriptionValidation = this.validateElementDescription(capability.description || '', target);
+                if (process.env.KLAURO_DEBUG_CATALOG && (audience.accepted.length !== 1 || publishabilityFailure || !descriptionValidation.ok)) writeAnalyzerStatus('[catalog-debug] focused description repair validation:', {
+                  name: capability.name, audience_rejections: audience.rejections, publishability_failure: publishabilityFailure,
+                  description_reason: descriptionValidation.reason, offending_terms: descriptionValidation.offendingTerms,
+                });
+                const acceptedRepair = audience.accepted.length === 1 && !publishabilityFailure && descriptionValidation.ok; if (!acceptedRepair) { const audienceRejection = audience.rejections[0]; const repairFailure = publishabilityFailure || (audienceRejection ? `catalog-audience:${audienceRejection.reasons.join(',')}` : `description-${descriptionValidation.reason || 'rejected'}`); const feedback: CapabilityCatalogRejection = { candidateIds: mode.candidateIds, name: capability.name, reason: repairFailure, forbiddenSubjectTerms: descriptionValidation.offendingTerms || audienceRejection?.flaggedTokens }; batchRejections.push(feedback); recordCapabilityCatalogRejection(batchCatalogRejectionsByCandidate, feedback); } return acceptedRepair;
+              },
+            }));
+          }
+          return finishBatch(batchExtracted);
           },
         });
       } catch (error) {
         if (isAiCatalogHardDeadlineExceeded(error)) {
           deadlineExceeded = true;
-          console.warn(`[Klauro] capability catalog: hard deadline exceeded during cycle ${cycle}/${repairProgress.maxCycles}; stopping with ${reconciled.length} capabilities from prior cycle(s)`);
+          console.warn(`[Klauro] capability catalog: hard deadline exceeded during cycle ${cycle}/${maxCatalogCycles}; stopping with ${reconciled.length} capabilities from prior cycle(s)`);
           break;
         }
         throw error;
@@ -10536,35 +10231,84 @@ export class AnalyzerOrchestrator {
         const name = normalizeCapabilityActionName(capability.name);
         return name === capability.name ? capability : { ...capability, name };
       });
-      if (targetedRepair) {
-        const publicationEvidenceTerms = [...capabilityCatalogProductTerms(args.enhancedSystemPurpose, args.projectTextSignal), ...args.externalServices];
-        extracted = extracted.map(capability => {
-          const description = normalizeCapabilityDescriptionForPublication(capability.description, publicationEvidenceTerms);
-          if (description === capability.description) return capability;
-          return {
-            ...capability,
-            description,
-            description_source: 'deterministic',
-            description_generation: { status: 'deterministic_kept', attempted: true, reason: 'unsupported-description-claim-removed' },
-          };
-        });
-      }
+      const publicationEvidenceTerms = [...capabilityCatalogProductTerms(args.enhancedSystemPurpose, args.projectTextSignal), ...args.externalServices];
+      const unsupportedClaimsByLifecycleKey = new Map(extracted.map(capability => [
+        capabilityCatalogRepairLifecycleKey(capability),
+        unsupportedCapabilityOperationalClaims(capability.description || '', publicationEvidenceTerms),
+      ]));
+      extracted = normalizeTargetedCapabilityCatalogDescriptions(extracted, publicationEvidenceTerms);
+      const actionEvidenceDescriptionsByLifecycleKey = new Map(extracted
+        .filter(capability => Boolean(capability.description))
+        .map(capability => [capabilityCatalogRepairLifecycleKey(capability), capability.description as string]));
       const audienceEvaluation = evaluateCapabilityCatalogAudience(extracted, args.dataEntities, args.libraryNames || [], [...capabilityCatalogProductTerms(args.enhancedSystemPurpose, args.projectTextSignal), ...args.externalServices], { productText: args.projectTextSignal, userJourneys: args.userJourneys, entryPoints: args.entryPoints });
+      const audienceRejectionByCapabilityId = new Map(audienceEvaluation.rejections
+        .filter(rejection => Boolean(rejection.missingAudience))
+        .map(rejection => [rejection.capabilityId, rejection.missingAudience as string]));
+      if (process.env.KLAURO_DEBUG_CATALOG && audienceEvaluation.rejections.length > 0) {
+        writeAnalyzerStatus('[catalog-debug] audience evaluation rejections:', audienceEvaluation.rejections.map(rejection => ({
+          name: rejection.name,
+          target: rejection.target,
+          reasons: rejection.reasons,
+          flagged_tokens: rejection.flaggedTokens,
+        })));
+      }
       for (const rejection of audienceEvaluation.rejections) {
         const rejected = extracted[rejection.capabilityIndex];
-        if (rejected?.id === rejection.capabilityId) recordCapabilityPublishabilityRejection(catalogRejectionsByCandidate, rejected, `catalog-audience:${rejection.reasons.join(',')}`, rejection.flaggedTokens, {
+        if (rejected?.id !== rejection.capabilityId) continue;
+        const audienceFailure = `catalog-audience:${rejection.reasons.join(',')}`;
+        recordCapabilityPublishabilityRejection(catalogRejectionsByCandidate, rejected, audienceFailure, rejection.flaggedTokens, {
           missingAudience: rejection.missingAudience,
           missingAudienceLocations: rejection.missingAudienceLocations,
         });
+        if (rejection.target === 'name') stageRejectedCapabilityNameRepair({
+          capability: rejected, reason: audienceFailure, repairableCandidateIds: repairableProposalCandidateIds,
+          evidenceCandidates, registry: pendingEvidenceIdentityByCandidateId,
+          audience: groundedCapabilityAudience(rejected, args.projectTextSignal, args.userJourneys, args.entryPoints),
+        });
+        for (const candidateId of (rejected.criticality_factors || [])
+          .filter(factor => factor.startsWith('catalog-candidate:'))
+          .map(factor => factor.slice('catalog-candidate:'.length))) {
+          if (repairableProposalCandidateIds.has(candidateId)) rejectedProposalCandidateIds.add(candidateId);
+        }
       }
       audienceRepairFeedback = [extractionRejections.join(' '), capabilityAudienceRepairFeedback(audienceEvaluation.rejections)].filter(Boolean).join(' ') || undefined;
-      const audiencePrepared = [...audienceEvaluation.accepted, ...audienceEvaluation.descriptionRepairCandidates];
-      const reconciledCandidates = audiencePrepared.length > 0
+      const immediatelyRepairedDescriptions = audienceEvaluation.descriptionRepairCandidates.map(identity =>
+        deterministicCapabilityDescriptionFallback({
+          identity,
+          evidenceCandidates,
+          audience: audienceRejectionByCapabilityId.get(identity.id) || groundedCapabilityAudience(identity, args.projectTextSignal, args.userJourneys, args.entryPoints),
+          firstPartyTexts: [
+            args.projectTextSignal.productDocTitle,
+            args.projectTextSignal.productDocSummary,
+            args.projectTextSignal.manifestDescription,
+            ...(args.projectTextSignal.productVocabulary || []),
+          ].filter((value): value is string => Boolean(String(value || '').trim())),
+          validate: validateDeterministicAtomic,
+        }) || identity);
+      const audiencePrepared = [...audienceEvaluation.accepted, ...immediatelyRepairedDescriptions];
+      const initiallyReconciledCandidates = audiencePrepared.length > 0
         ? this.reconcileCatalogedCapabilities(audiencePrepared, evidenceCandidates, args.dataEntities, args.entryPoints, args.nodes, args.enhancedSystemPurpose, args.libraryNames || [], args.projectTextSignal, args.externalServices, args.userJourneys, requiredOutcomes)
         : [];
-      captureCapabilityCatalogPendingRequirements(pendingRequirementIdsByCapabilityId, reconciledCandidates, requiredOutcomes);
+      const postSynthesisGroundedCandidateIds = new Set([...classifyCapabilityEvidence(
+        initiallyReconciledCandidates, args.dataEntities, args.projectTextSignal,
+        { entryPoints: args.entryPoints, nodes: args.nodes, userJourneys: args.userJourneys },
+      ).filter(capability => capability.evidence_role === 'product-outcome').flatMap(capability =>
+        (capability.criticality_factors || []).filter(factor => factor.startsWith('catalog-candidate:'))
+          .map(factor => factor.slice('catalog-candidate:'.length))), ...initiallyReconciledCandidates.flatMap(capability => (capability.criticality_factors || []).filter(factor => factor.startsWith('catalog-candidate:')).map(factor => factor.slice('catalog-candidate:'.length))).filter(candidateId => independentlyGroundedProductOutcomeIds.has(candidateId))]);
+      if (process.env.KLAURO_DEBUG_CATALOG) debugOperationProvenance('reconciliation', initiallyReconciledCandidates); const reconciledCandidates = filterMismatchedOperationObligationCapabilities({
+        capabilities: initiallyReconciledCandidates, evidenceCandidates, actionMismatchAttemptsByCandidateId: exactActionMismatchAttemptsByCandidateId,
+        actionEvidenceDescriptionFor: capability => actionEvidenceDescriptionsByLifecycleKey.get(capabilityCatalogRepairLifecycleKey(capability)),
+        recordRejection: feedback => {
+          if (process.env.KLAURO_DEBUG_CATALOG) {
+            writeAnalyzerStatus('[catalog-debug] operation-obligation rejection:', feedback);
+          }
+          const recorded = recordCapabilityCatalogRejection(catalogRejectionsByCandidate, feedback);
+          extractionRejections.push(recorded.explanation);
+        },
+      });
+      captureCapabilityCatalogPendingRequirements(pendingRequirementIdsByLifecycleKey, reconciledCandidates, requiredOutcomes);
       const boundReconciledCandidates = cycle === 1 ? bindUniquelySatisfiedCatalogOutcomeRequirements(reconciledCandidates, requiredOutcomes) : reconciledCandidates;
-      const publishabilityFailures = new Map<string, number>(); const publishabilityRejections: Array<{ name: string; description?: string; reason: string; requirement_id?: string; forbidden_terms?: string[] }> = [];
+      const publishabilityFailures = new Map<string, number>(); const publishabilityRejections: Array<{ name: string; description?: string; reason: string; requirement_id?: string; forbidden_terms?: string[] }> = []; const descriptionFailureByCapabilityId = new Map<string, string>();
       const rejectedCapabilities: SystemCapability[] = []; const cycleReconciled = boundReconciledCandidates.flatMap(capability => {
       const descriptionTarget = this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById, [], [], args.entryPoints); descriptionTarget.productOutcomeTerms = Array.from(new Set([
         args.projectTextSignal.productDocSummary,
@@ -10573,31 +10317,84 @@ export class AnalyzerOrchestrator {
         const failure = this.capabilityPublishabilityFailure(capability) || (!descriptionValidation.ok ? `description-${descriptionValidation.reason}` : undefined);
         if (!failure) return [capability];
         rejectedCapabilities.push(capability); publishabilityFailures.set(failure, (publishabilityFailures.get(failure) || 0) + 1);
-        const violation = capabilityDescriptionProductLanguageViolation(capability.description || '', descriptionTarget.relatedEntities || [], descriptionTarget.operations || [], descriptionTarget.rawIdentifiers || [], descriptionTarget.productOutcomeTerms || []); const forbiddenTerms = descriptionValidation.offendingTerms?.length ? descriptionValidation.offendingTerms : violation?.reason && failure.endsWith(violation.reason) ? violation.forbiddenTerms : [];
+        const violation = capabilityDescriptionProductLanguageViolation(capability.description || '', descriptionTarget.relatedEntities || [], descriptionTarget.operations || [], descriptionTarget.rawIdentifiers || [], descriptionTarget.productOutcomeTerms || []); const preservedUnsupportedClaims = unsupportedClaimsByLifecycleKey.get(capabilityCatalogRepairLifecycleKey(capability)) || []; const forbiddenTerms = descriptionValidation.offendingTerms?.length ? descriptionValidation.offendingTerms : violation?.reason && failure.endsWith(violation.reason) ? violation.forbiddenTerms : preservedUnsupportedClaims;
         const recorded = recordCapabilityPublishabilityRejection(catalogRejectionsByCandidate, capability, failure, forbiddenTerms); publishabilityRejections.push(recorded.feedback);
         if (process.env.KLAURO_DEBUG_CATALOG) writeAnalyzerStatus('[catalog-debug] publishability rejection:', {
           name: capability.name, failure, forbiddenTerms,
           description: capability.description,
         });
         const identity = capabilityIdentityPendingDescriptionRepair(capability, failure);
+        if (identity) descriptionFailureByCapabilityId.set(capabilityCatalogRepairLifecycleKey(identity), failure);
         return identity ? [identity] : [];
       });
-      audienceRepairFeedback = [audienceRepairFeedback, capabilityPublishabilityRepairFeedback(publishabilityRejections)].filter(Boolean).join(' ') || undefined;
-      const superseded = targetedRepair ? supersedeUnboundPendingOutcomeDuplicates(reconciled, cycleReconciled, requiredOutcomes, pendingRequirementIdsByCapabilityId) : { existing: reconciled, incoming: cycleReconciled }; const combinedReconciled = targetedRepair ? this.dedupeSystemCapabilitiesByName(mergeCapabilityCatalogRepairResults(superseded.existing, superseded.incoming), true) : cycleReconciled;
-      const behaviorCompleteReconciled = mergeUniquelyMatchedBehaviorEvidence(combinedReconciled, evidenceCandidates, requiredBehaviorCandidateIds);
-      const evidenceCompleteReconciled = mergeGroundedEntityEvidenceFamilies(behaviorCompleteReconciled, evidenceCandidates, requiredEntityCandidateGroups);
+      audienceRepairFeedback = [audienceRepairFeedback, capabilityPublishabilityRepairFeedback(publishabilityRejections)].filter(Boolean).join(' ') || undefined;      const promotedEvidenceIdentityIds = new Set<string>(); const promotedEvidenceCandidateIds = new Set<string>(); const promotedEvidenceByCandidateId = new Map<string, SystemCapability>(); const stagedEvidenceCandidateIds = new Set<string>(); stagePendingCapabilityEvidenceRepairs({
+        cycleCapabilities: cycleReconciled, reconciled, registry: pendingEvidenceIdentityByCandidateId,
+        evidenceCandidates, evidenceRepairCandidateIds: evidenceRepairCandidateIdsForCycle,
+        requiredUncoveredCandidateIds: new Set(evidenceRepairIds), exactOperationCandidateIds: new Set(uncoveredBehaviorCandidateIds), familyKeyByCandidateId: new Map([
+          ...candidateFamilyKeyById,
+          ...[...productOutcomeEvidenceCandidateIds].map(candidateId => [candidateId, `product-outcome:${candidateId}`] as const),
+        ]),
+        descriptionFailureByCapabilityId, isPublishable: capability => this.isPublishableCapability(capability),
+        audienceFor: capability => groundedCapabilityAudience(capability, args.projectTextSignal, args.userJourneys, args.entryPoints),
+        recordRejection: feedback => { const recorded = recordCapabilityCatalogRejection(catalogRejectionsByCandidate, feedback); extractionRejections.push(recorded.explanation); }, promotedIdentityIds: promotedEvidenceIdentityIds, promotedCandidateIds: promotedEvidenceCandidateIds, promotedCapabilitiesByCandidateId: promotedEvidenceByCandidateId, stagedCandidateIds: stagedEvidenceCandidateIds,
+      }); if (process.env.KLAURO_DEBUG_CATALOG) debugOperationProvenance('stage-promotion', [...cycleReconciled, ...[...pendingEvidenceIdentityByCandidateId.values()].map(entry => entry.identity)]);
+      const exactEvidenceCandidateId = (capability: SystemCapability): string | undefined => { const citations = (capability.criticality_factors || []).filter(factor => factor.startsWith('catalog-candidate:')).map(factor => factor.slice('catalog-candidate:'.length)); return citations.length === 1 ? citations[0] : undefined; }; const promotedEvidenceIdentities = [...promotedEvidenceByCandidateId.values()]; const publishableCycleReconciled = cycleReconciled.filter(capability => { const candidateId = exactEvidenceCandidateId(capability); return !candidateId || (!stagedEvidenceCandidateIds.has(candidateId) && !promotedEvidenceCandidateIds.has(candidateId)); });
+      const superseded = targetedRepair ? supersedeUnboundPendingOutcomeDuplicates(reconciled, publishableCycleReconciled, requiredOutcomes, pendingRequirementIdsByLifecycleKey, new Set([...operationObligationViews.scopes.keys(), ...aggregateOperationObligationViews.scopes.keys()])) : { existing: reconciled, incoming: publishableCycleReconciled }; if (process.env.KLAURO_DEBUG_CATALOG) debugOperationProvenance('supersession', [...superseded.existing, ...superseded.incoming]); const mergedRepairResults = targetedRepair ? mergeCapabilityCatalogRepairResults(superseded.existing, superseded.incoming, evidenceRepairCandidateIdsForCycle, evidenceCandidates, descriptionRepairLifecycleKeysForCycle, postSynthesisGroundedCandidateIds) : publishableCycleReconciled; if (process.env.KLAURO_DEBUG_CATALOG) debugOperationProvenance('repair-merge', mergedRepairResults); const combinedReconciled = targetedRepair ? this.dedupeSystemCapabilitiesByName([...mergedRepairResults, ...promotedEvidenceIdentities], true, true) : runningIndependentBroadConfirmation ? this.dedupeSystemCapabilitiesByName([...reconciled, ...publishableCycleReconciled], true, true) : publishableCycleReconciled; if (process.env.KLAURO_DEBUG_CATALOG) debugOperationProvenance('exact-name-dedupe', combinedReconciled);
+      const behaviorCompleteReconciled = mergeUniquelyMatchedBehaviorEvidence(combinedReconciled, evidenceCandidates, requiredBehaviorCandidateIds, boundReconciledCandidates); if (process.env.KLAURO_DEBUG_CATALOG) debugOperationProvenance('behavior-merge', behaviorCompleteReconciled);
+      const groundedEntityReconciled = mergeGroundedEntityEvidenceFamilies(behaviorCompleteReconciled, evidenceCandidates, [...requiredEntityCandidateGroups, ...distinctFamilyCandidateGroups]); const uncoveredBaselineCandidates = baselineAtomicClosures.filter(closure => uncoveredRequiredCapabilityOperations(closure, groundedEntityReconciled, operationCoverageContext).length > 0); const uncoveredBaselineAtomicClosures = withoutSubsumedDeterministicAtomicClosures(uncoveredBaselineCandidates, requiredEntityCandidateGroups, [...groundedEntityReconciled, ...uncoveredBaselineCandidates], operationCoverageContext); const entityMergedReconciled = this.dedupeSystemCapabilitiesByName([...uncoveredBaselineAtomicClosures, ...groundedEntityReconciled], true, true); const preliminaryOperationCoverage = evaluateCapabilityCatalogOperationCoverage(entityMergedReconciled, requiredEvidenceCandidates, operationCoverageContext, capability => this.isPublishableCapability(capability)); const uncoveredAggregateClosureIds = [...uncoveredAggregateOperationObligationIds(requiredEvidenceCandidates, preliminaryOperationCoverage.publishableCapabilities, aggregateOperationObligationViews.scopes, operationCoverageContext).values()].flat(); const rawAtomicClosures = validatedDeterministicAtomicClosures({ candidateIds: [...preliminaryOperationCoverage.uncoveredCandidateIds, ...uncoveredAggregateClosureIds], evidenceCandidates, audienceFor: candidate => groundedCapabilityAudience(candidate, args.projectTextSignal, args.userJourneys, args.entryPoints), entityLabelsFor: candidate => (candidate.related_entities || []).map(entityId => entityNamesById.get(entityId)).filter((value): value is string => Boolean(value)), operationCoverageContext, completeLifecycleCandidateIds, validate: validateDeterministicAtomic }); const atomicClosures = withoutSubsumedDeterministicAtomicClosures(rawAtomicClosures, requiredEntityCandidateGroups, [...entityMergedReconciled, ...rawAtomicClosures], operationCoverageContext); const operationCandidates = withoutSubsumedDeterministicAtomicClosures([...entityMergedReconciled, ...atomicClosures], requiredEntityCandidateGroups, [...entityMergedReconciled, ...atomicClosures], operationCoverageContext); const operationCoverage = evaluateCapabilityCatalogOperationCoverage(operationCandidates, requiredEvidenceCandidates, operationCoverageContext, capability => this.isPublishableCapability(capability)); const evidenceCompleteReconciled = bindAtomicallySatisfiedCatalogOutcomeRequirements(operationCoverage.capabilities, requiredOutcomes, operationCoverage.fullyCoveredAggregateCandidateIds, operationCoverageContext.obligationScopes || aggregateOperationObligationViews.scopes); if (process.env.KLAURO_DEBUG_CATALOG) debugOperationProvenance('entity-merge', evidenceCompleteReconciled);
       const nonPublishable = evidenceCompleteReconciled.filter(capability => !this.isPublishableCapability(capability));
+      const cycleUncoveredBehaviorCandidateIds = operationCoverage.uncoveredCandidateIds; if (process.env.KLAURO_DEBUG_CATALOG) { debugOperationProvenance('operation-coverage', evidenceCompleteReconciled); writeAnalyzerStatus('[catalog-debug] operation uncovered:', cycleUncoveredBehaviorCandidateIds); }
+      const cyclePublishedCandidateIds = new Set(evidenceCompleteReconciled.flatMap(capability =>
+        (capability.criticality_factors || [])
+          .filter(factor => factor.startsWith('catalog-candidate:'))
+          .map(factor => factor.slice('catalog-candidate:'.length))));
+      const unresolvedRejectedProductOutcomeIds = [...rejectedProposalCandidateIds]
+        .filter(candidateId => productOutcomeEvidenceCandidateIds.has(candidateId) && !cyclePublishedCandidateIds.has(candidateId));
+      if (process.env.KLAURO_DEBUG_CATALOG && rejectedProposalCandidateIds.size > 0) writeAnalyzerStatus('[catalog-debug] rejected product-outcome repair coverage:', {
+        rejected_candidate_ids: [...rejectedProposalCandidateIds],
+        classified_product_outcome_ids: [...productOutcomeEvidenceCandidateIds],
+        unresolved_candidate_ids: unresolvedRejectedProductOutcomeIds,
+      });
+      if (unresolvedRejectedProductOutcomeIds.length > 0 && maxCatalogCycles === repairProgress.maxCycles) maxCatalogCycles += 1;
+      const rejectedDescriptionProductOutcomeIds = new Set(rejectedCapabilities.flatMap(capability =>
+        (capability.criticality_factors || [])
+          .filter(factor => factor.startsWith('catalog-candidate:'))
+          .map(factor => factor.slice('catalog-candidate:'.length))
+          .filter(candidateId => productOutcomeEvidenceCandidateIds.has(candidateId))));
+      const descriptionOnlyProductOutcomeFailure = unresolvedRejectedProductOutcomeIds.some(candidateId => rejectedDescriptionProductOutcomeIds.has(candidateId));
+      const pendingProductOutcomeNameRepair = unresolvedRejectedProductOutcomeIds.some(candidateId =>
+        (pendingEvidenceIdentityByCandidateId.get(candidateId)?.identity.criticality_factors || []).includes('catalog-name-repair-required'));
+      const recoverableProductOutcomeLanguageFailure = descriptionOnlyProductOutcomeFailure || pendingProductOutcomeNameRepair || unresolvedRejectedProductOutcomeIds.length === 1;
+      if (recoverableProductOutcomeLanguageFailure && cycle === maxCatalogCycles && !productOutcomeLanguageExtensionGranted) {
+        maxCatalogCycles += 1;
+        productOutcomeLanguageExtensionGranted = true;
+      }
       const cycleQualityFailure = this.catalogQualityFailure(
         evidenceCompleteReconciled,
-        distinctFamilyCount,
-        requiredBehaviorCandidateIds,
+        0,
+        cycleUncoveredBehaviorCandidateIds,
         requiredEntityCandidateGroups,
-        requiredOutcomes,
+        groundableOutcomes,
         distinctFamilyCandidateGroups,
-      ) || (nonPublishable.length > 0 ? `${nonPublishable.length} catalog capability ${nonPublishable.length === 1 ? 'requires' : 'require'} publishable description repair: ${nonPublishable.slice(0, 3).map(capability => capability.name).join(', ')}` : undefined);
+        operationCoverage.fullyCoveredAggregateCandidateIds,
+      ) || (unresolvedRejectedProductOutcomeIds.length > 0
+        ? `catalog requires grounded repair for ${unresolvedRejectedProductOutcomeIds.length} rejected product-outcome evidence ${unresolvedRejectedProductOutcomeIds.length === 1 ? 'family' : 'families'}`
+        : undefined) || (nonPublishable.length > 0 ? `${nonPublishable.length} catalog capability ${nonPublishable.length === 1 ? 'requires' : 'require'} publishable description repair: ${nonPublishable.slice(0, 3).map(capability => capability.name).join(', ')}` : undefined);
+      const needsIndependentBroadConfirmation = cycle === 1 &&
+        requiredOutcomes.length === 0 &&
+        extractionRejections.length > 0;
       writeAnalyzerStatus(
-        `[Klauro] capability catalog cycle ${cycle}/${repairProgress.maxCycles}${targetedRepair ? ' targeted-repair' : ''}: ${cycleQualityFailure ? `rejected (${cycleQualityFailure})` : `accepted (${evidenceCompleteReconciled.length} capabilities)`}${reconciledCandidates.length > cycleReconciled.length ? `; refused ${reconciledCandidates.length - cycleReconciled.length} non-publishable item(s): ${[...publishabilityFailures.entries()].map(([reason, count]) => `${reason}=${count}`).join(', ')}` : ''}`,
+        `[Klauro] capability catalog cycle ${cycle}/${maxCatalogCycles}${targetedRepair ? ' targeted-repair' : ''}: ${cycleQualityFailure ? `rejected (${cycleQualityFailure})` : `accepted (${evidenceCompleteReconciled.length} capabilities)`}${reconciledCandidates.length > cycleReconciled.length ? `; refused ${reconciledCandidates.length - cycleReconciled.length} non-publishable item(s): ${[...publishabilityFailures.entries()].map(([reason, count]) => `${reason}=${count}`).join(', ')}` : ''}`,
       ); writeAnalyzerStatus('[Klauro] capability catalog retained identities:', capabilityCatalogCycleDiagnostic(evidenceCompleteReconciled));
+      if (needsIndependentBroadConfirmation) {
+        reconciled = evidenceCompleteReconciled;
+        independentBroadConfirmationPending = true;
+        if (!retainedInterpretationRaw) retainedInterpretationRaw = extractionRaw;
+        qualityFailure = cycleQualityFailure || 'independent broad confirmation required after rejected proposals';
+        retainedQualityFailure = qualityFailure;
+        continue;
+      }
+      if (runningIndependentBroadConfirmation) independentBroadConfirmationPending = false;
       if (!cycleQualityFailure) {
         reconciled = evidenceCompleteReconciled;
         if (!retainedInterpretationRaw) retainedInterpretationRaw = extractionRaw;
@@ -10605,33 +10402,162 @@ export class AnalyzerOrchestrator {
         retainedQualityFailure = undefined;
         break;
       }
-      uncoveredOutcomes = uncoveredCapabilityCatalogOutcomeRequirements(evidenceCompleteReconciled, requiredOutcomes, capability => this.isPublishableCapability(capability)); const progress = repairProgress.observe(evidenceCompleteReconciled, uncoveredOutcomes.map(requirement => requirement.id), capabilityCatalogPendingRepairKeys(nonPublishable));
-      if (targetedRepair || evidenceCompleteReconciled.length > reconciled.length) {
+      uncoveredOutcomes = uncoveredCapabilityCatalogOutcomeRequirements(evidenceCompleteReconciled, groundableOutcomes, capability => this.isPublishableCapability(capability)); const progress = repairProgress.observe(evidenceCompleteReconciled, uncoveredOutcomes.map(requirement => requirement.id), [...capabilityCatalogPendingRepairKeys(nonPublishable), ...[...pendingEvidenceIdentityByCandidateId.keys()].map(candidateId => `candidate:${candidateId}`)], cycleUncoveredBehaviorCandidateIds);
+      if (evidenceCompleteReconciled.length > 0) {
         reconciled = evidenceCompleteReconciled;
         if (!retainedInterpretationRaw) retainedInterpretationRaw = extractionRaw;
         retainedQualityFailure = cycleQualityFailure;
       }
       qualityFailure = cycleQualityFailure;
-      if (progress.stop) {
+      if (progress.stop && !(recoverableProductOutcomeLanguageFailure && cycle < maxCatalogCycles) && !hasPendingCapabilityDescriptionAttempt(pendingEvidenceIdentityByCandidateId, descriptionRepairAttemptsByLifecycleKey) && !hasPendingCapabilityLanguageAttempt(pendingCapabilities, descriptionRepairAttemptsByLifecycleKey) && !scopedEvidenceRepairIds.some(candidateId => (evidenceRepairAttemptsByCandidateId.get(candidateId) || 0) < 2)) {
         writeAnalyzerStatus(`[Klauro] capability catalog repair stopped after ${progress.noProgressCycles} no-progress cycle(s) with ${progress.uncoveredCount} uncovered candidate reference(s)`);
         break;
       }
     }
+    if ((deadlineExceeded || qualityFailure) && reconciled.length > 0) {
+      const deadlineFirstPartyTexts = [args.projectTextSignal.productDocTitle, args.projectTextSignal.productDocSummary, args.projectTextSignal.manifestDescription, ...(args.projectTextSignal.productVocabulary || [])].filter((value): value is string => Boolean(String(value || '').trim()));
+      const deadlineDescriptionReconciled = resolvePendingCapabilityDescriptionsWithoutProvider({
+        capabilities: reconciled, pendingEvidenceIdentityByCandidateId, evidenceCandidates,
+        firstPartyTexts: deadlineFirstPartyTexts,
+        audienceFor: capability => groundedCapabilityAudience(capability, args.projectTextSignal, args.userJourneys, args.entryPoints),
+        validate: capability => {
+          const audience = evaluateCapabilityCatalogAudience([capability], args.dataEntities, args.libraryNames || [], [...capabilityCatalogProductTerms(args.enhancedSystemPurpose, args.projectTextSignal), ...args.externalServices], { productText: args.projectTextSignal, userJourneys: args.userJourneys, entryPoints: args.entryPoints });
+          if (audience.accepted.length !== 1) return false;
+          const target = this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById, entityEvidenceById, [], [], args.entryPoints);
+          target.productOutcomeTerms = Array.from(new Set([args.projectTextSignal.productDocSummary, ...requiredOutcomes.map(requirement => requirement.firstPartyOutcomeText || requirement.statement)].filter((value): value is string => Boolean(value))));
+          return !this.capabilityPublishabilityFailure(capability) && this.validateElementDescription(capability.description || '', target).ok;
+        },
+      });
+      const deadlineRetiredReconciled = retireIndependentlyCoveredPendingDescriptions({
+        capabilities: deadlineDescriptionReconciled, pendingEvidenceIdentityByCandidateId, evidenceCandidates,
+        operationCoverageContext, outcomeRequirements: requiredOutcomes,
+        isPublishable: capability => this.isPublishableCapability(capability),
+      });
+      const deadlineGroundedReconciled = mergeGroundedEntityEvidenceFamilies(deadlineRetiredReconciled, evidenceCandidates, [...requiredEntityCandidateGroups, ...distinctFamilyCandidateGroups]);
+      const deadlineCoveredAggregates = fullyCoveredAggregateCapabilityCandidateIds(requiredEvidenceCandidates, deadlineGroundedReconciled.filter(capability => this.isPublishableCapability(capability)), operationCoverageContext);
+      const structuralAggregateCandidateIds = new Set(requiredEvidenceCandidates.filter(candidate => candidate.evidence_kind !== 'behavior-surface').map(candidate => candidate.id));
+      const deadlineUncoveredBaselineCandidates = baselineAtomicClosures.filter(closure => {
+        const citedCandidateIds = (closure.criticality_factors || []).filter(factor => factor.startsWith('catalog-candidate:')).map(factor => factor.slice('catalog-candidate:'.length));
+        return uncoveredRequiredCapabilityOperations(closure, deadlineGroundedReconciled, operationCoverageContext).length > 0 ||
+          citedCandidateIds.some(candidateId => structuralAggregateCandidateIds.has(candidateId) && !deadlineCoveredAggregates.has(candidateId));
+      });
+      const deadlineUncoveredBaselineClosures = withoutSubsumedDeterministicAtomicClosures(deadlineUncoveredBaselineCandidates, requiredEntityCandidateGroups, [...deadlineGroundedReconciled, ...deadlineUncoveredBaselineCandidates], operationCoverageContext);
+      const deadlineSeedReconciled = this.dedupeSystemCapabilitiesByName([...deadlineUncoveredBaselineClosures, ...deadlineGroundedReconciled], true, true);
+      const deadlinePreliminaryCoverage = evaluateCapabilityCatalogOperationCoverage(deadlineSeedReconciled, requiredEvidenceCandidates, operationCoverageContext, capability => this.isPublishableCapability(capability));
+      const deadlineAggregateClosureIdsByParent = uncoveredAggregateOperationObligationIds(requiredEvidenceCandidates, deadlinePreliminaryCoverage.publishableCapabilities, aggregateOperationObligationViews.scopes, operationCoverageContext);
+      const deadlineAggregateClosureIds = [...deadlineAggregateClosureIdsByParent.values()].flat(); const deadlineMissingEvidenceCandidateIds = capabilityCatalogRepairCandidateIds(deadlineSeedReconciled, deadlinePreliminaryCoverage.uncoveredCandidateIds, requiredEntityCandidateGroups, new Set(), distinctFamilyCandidateGroups, deadlinePreliminaryCoverage.fullyCoveredAggregateCandidateIds);
+      const deadlineRawAtomicClosures = [
+        ...validatedDeterministicAtomicClosures({ candidateIds: [...deadlineMissingEvidenceCandidateIds, ...deadlineAggregateClosureIds], evidenceCandidates, audienceFor: candidate => groundedCapabilityAudience(candidate, args.projectTextSignal, args.userJourneys, args.entryPoints), entityLabelsFor: candidate => (candidate.related_entities || []).map(entityId => entityNamesById.get(entityId)).filter((value): value is string => Boolean(value)), operationCoverageContext, completeLifecycleCandidateIds, validate: validateDeterministicAtomic }),
+        ...validatedDeterministicGroupedOperationClosures({ uncoveredIdsByParent: deadlineAggregateClosureIdsByParent, scopes: aggregateOperationObligationViews.scopes, evidenceCandidates, audienceFor: candidate => groundedCapabilityAudience(candidate, args.projectTextSignal, args.userJourneys, args.entryPoints), entityLabelsFor: candidate => (candidate.related_entities || []).map(entityId => entityNamesById.get(entityId)).filter((value): value is string => Boolean(value)), validate: validateDeterministicAtomic }),
+      ];
+      if (process.env.KLAURO_DEBUG_CATALOG) writeAnalyzerStatus('[catalog-debug] deadline deterministic candidates:', { preliminary_uncovered: deadlinePreliminaryCoverage.uncoveredCandidateIds, aggregate_obligations: deadlineAggregateClosureIds, closure_names: deadlineRawAtomicClosures.map(capability => capability.name) });
+      const deadlineAtomicClosures = withoutSubsumedDeterministicAtomicClosures(deadlineRawAtomicClosures, requiredEntityCandidateGroups, [...deadlineSeedReconciled, ...deadlineRawAtomicClosures], operationCoverageContext);
+      const deadlineCompactedCandidates = withoutSubsumedDeterministicAtomicClosures([...deadlineSeedReconciled, ...deadlineAtomicClosures], requiredEntityCandidateGroups, [...deadlineSeedReconciled, ...deadlineAtomicClosures], operationCoverageContext);
+      const deadlineFilteredMerged = this.dedupeSystemCapabilitiesByName(deadlineCompactedCandidates, true, true);
+      const deadlineFilteredCoverage = evaluateCapabilityCatalogOperationCoverage(deadlineFilteredMerged, requiredEvidenceCandidates, operationCoverageContext, capability => this.isPublishableCapability(capability));
+      const deadlineResidualObligationIds = new Set([...uncoveredAggregateOperationObligationIds(requiredEvidenceCandidates, deadlineFilteredCoverage.publishableCapabilities, aggregateOperationObligationViews.scopes, operationCoverageContext).values()].flat());
+      const deadlineRestoredAtomicClosures = deterministicAtomicClosuresForObligationIds(deadlineRawAtomicClosures, deadlineResidualObligationIds);
+      const deadlineMerged = deadlineRestoredAtomicClosures.length > 0
+        ? this.dedupeSystemCapabilitiesByName([...deadlineFilteredMerged, ...deadlineRestoredAtomicClosures], true, true)
+        : deadlineFilteredMerged;
+      const deadlineOperationCoverage = deadlineRestoredAtomicClosures.length > 0
+        ? evaluateCapabilityCatalogOperationCoverage(deadlineMerged, requiredEvidenceCandidates, operationCoverageContext, capability => this.isPublishableCapability(capability))
+        : deadlineFilteredCoverage;
+      const deadlineCompleteReconciled = bindAtomicallySatisfiedCatalogOutcomeRequirements(deadlineOperationCoverage.capabilities, requiredOutcomes, deadlineOperationCoverage.fullyCoveredAggregateCandidateIds, operationCoverageContext.obligationScopes || aggregateOperationObligationViews.scopes);
+      const deadlineLanguageReconciled = deadlineCompleteReconciled;
+      const deadlinePublishable = deadlineLanguageReconciled.filter(capability => this.isPublishableCapability(capability));
+      const deadlinePublishableAggregateCandidateIds = fullyCoveredAggregateCapabilityCandidateIds(requiredEvidenceCandidates, deadlinePublishable, operationCoverageContext);
+      const deadlinePublishableComplete = uncoveredRequiredBehaviorCandidateIds(requiredEvidenceCandidates, deadlinePublishable, operationCoverageContext).length === 0 &&
+        !capabilityCatalogCoverageFailure(deadlinePublishable, [], requiredEntityCandidateGroups, requiredOutcomes, deadlinePublishableAggregateCandidateIds) &&
+        uncoveredCapabilityCatalogFamilyRepresentativeIds(deadlinePublishable, distinctFamilyCandidateGroups, deadlinePublishableAggregateCandidateIds).length === 0;
+      const deadlineQualityReconciled = deadlinePublishableComplete ? deadlinePublishable : deadlineLanguageReconciled;
+      const deadlineNonPublishable = deadlineQualityReconciled.filter(capability => !this.isPublishableCapability(capability));
+      const deadlineQualityFailure = this.catalogQualityFailure(deadlineQualityReconciled, 0, deadlineOperationCoverage.uncoveredCandidateIds, requiredEntityCandidateGroups, groundableOutcomes, distinctFamilyCandidateGroups, deadlinePublishableComplete ? deadlinePublishableAggregateCandidateIds : deadlineOperationCoverage.fullyCoveredAggregateCandidateIds) || (deadlineNonPublishable.length > 0 ? String(deadlineNonPublishable.length) + " catalog capability " + (deadlineNonPublishable.length === 1 ? "requires" : "require") + " publishable description repair: " + deadlineNonPublishable.slice(0, 3).map(capability => capability.name).join(", ") : undefined);
+      if (process.env.KLAURO_DEBUG_CATALOG) writeAnalyzerStatus('[catalog-debug] deadline deterministic result:', { uncovered: deadlineOperationCoverage.uncoveredCandidateIds, fully_covered_aggregates: [...deadlineOperationCoverage.fullyCoveredAggregateCandidateIds], quality_failure: deadlineQualityFailure });
+      reconciled = deadlineQualityReconciled;
+      qualityFailure = deadlineQualityFailure;
+      retainedQualityFailure = deadlineQualityFailure;
+      if (!deadlineQualityFailure) deadlineExceeded = false;
+    }
     if (qualityFailure) qualityFailure = retainedQualityFailure || qualityFailure;
+    const publishableBeforeCompaction = reconciled.filter(capability => this.isPublishableCapability(capability));
+    const compactedPublishable = withoutSubsumedDeterministicAtomicClosures(
+      publishableBeforeCompaction,
+      requiredEntityCandidateGroups,
+      publishableBeforeCompaction,
+      operationCoverageContext,
+    );
+    const compactedUncoveredBehaviorCandidateIds = uncoveredRequiredBehaviorCandidateIds(
+      requiredEvidenceCandidates,
+      compactedPublishable,
+      operationCoverageContext,
+    );
+    const compactedAggregateCandidateIds = fullyCoveredAggregateCapabilityCandidateIds(
+      requiredEvidenceCandidates,
+      compactedPublishable,
+      operationCoverageContext,
+    );
+    const compactedCoverageFailure = compactedUncoveredBehaviorCandidateIds.length > 0 ||
+      Boolean(capabilityCatalogCoverageFailure(compactedPublishable, [], requiredEntityCandidateGroups, requiredOutcomes, compactedAggregateCandidateIds)) ||
+      uncoveredCapabilityCatalogFamilyRepresentativeIds(compactedPublishable, distinctFamilyCandidateGroups, compactedAggregateCandidateIds).length > 0;
+    const publishableReconciled = compactedCoverageFailure ? publishableBeforeCompaction : compactedPublishable;
+    const normalizedOperationEvidence = normalizeCapabilityOperationObligationEvidence(publishableReconciled, operationCoverageContext.obligationScopes || operationObligationViews.scopes, authoritativeOperationCandidates);
+    const publishedCapabilities = normalizePublishedCapabilityIds(normalizedOperationEvidence.capabilities);
+    const finalPublishedCandidateIds = new Set(publishedCapabilities.flatMap(capability =>
+      (capability.criticality_factors || [])
+        .filter(factor => factor.startsWith('catalog-candidate:'))
+        .map(factor => factor.slice('catalog-candidate:'.length))));
+    const unresolvedRejectedProductOutcomeIds = [...rejectedProposalCandidateIds]
+      .filter(candidateId => productOutcomeEvidenceCandidateIds.has(candidateId) && !finalPublishedCandidateIds.has(candidateId));
+    const intentGapRequirements = uncoveredCapabilityCatalogOutcomeRequirements(publishedCapabilities, requiredOutcomes);
+    const groundedCapabilityIdsFor = (requirement: CapabilityCatalogOutcomeRequirement): string[] =>
+      publishedCapabilities
+        .filter(capability => uncoveredCapabilityCatalogOutcomeRequirements([capability], [requirement]).length === 0)
+        .map(capability => capability.id);
+    const intentGapRequirementIds = new Set(intentGapRequirements.map(requirement => requirement.id));
+    const groundedRequirementIds = new Set(requiredOutcomes.filter(requirement => !intentGapRequirementIds.has(requirement.id)).map(requirement => requirement.id));
+    args.enhancedSystemPurpose.capability_reconciliation = {
+      proposals: requiredOutcomes.map(requirement => {
+        const capabilityIds = groundedCapabilityIdsFor(requirement);
+        return {
+          requirement_id: requirement.id,
+          statement: requirement.statement,
+          ...(requirement.firstPartyOutcomeText ? { first_party_outcome_text: requirement.firstPartyOutcomeText } : {}),
+          ...(requirement.audience ? { audience: requirement.audience } : {}),
+          candidate_ids: [...requirement.candidateIds],
+          disposition: capabilityIds.length > 0 ? 'grounded' as const : 'intent-gap' as const,
+          capability_ids: capabilityIds,
+        };
+      }),
+      undocumented_capabilities: publishedCapabilities
+        .filter(capability => requiredOutcomes.every(requirement =>
+          !groundedRequirementIds.has(requirement.id) ||
+          uncoveredCapabilityCatalogOutcomeRequirements([capability], [requirement]).length > 0))
+        .map(capability => ({ capability_id: capability.id, name: capability.name })),
+      ...(unresolvedRejectedProductOutcomeIds.length > 0 ? {
+        structural_gaps: unresolvedRejectedProductOutcomeIds.map(candidateId => {
+          const candidate = evidenceCandidates.find(item => item.id === candidateId);
+          return {
+            candidate_id: candidateId,
+            name: candidate?.structural_label || candidate?.name || candidateId,
+            reason: 'grounded product-outcome evidence was not reconciled into a publishable capability',
+          };
+        }),
+      } : {}),
+    };
+    const intrinsicQualityFailure = this.catalogQualityFailure(publishedCapabilities, 0, [], [], [], []); const emptyGroundedCatalogFailure = distinctFamilyCount > 0 && publishedCapabilities.length === 0 ? `catalog has no publishable capabilities for ${distinctFamilyCount} grounded evidence ${distinctFamilyCount === 1 ? 'family' : 'families'}` : undefined;
+    qualityFailure = normalizedOperationEvidence.errors.length > 0
+      ? `catalog has invalid operation obligation evidence: ${normalizedOperationEvidence.errors.slice(0, 8).join(', ')}`
+      : emptyGroundedCatalogFailure || intrinsicQualityFailure || (unresolvedRejectedProductOutcomeIds.length > 0
+        ? `catalog has ${unresolvedRejectedProductOutcomeIds.length} unreconciled product-outcome evidence ${unresolvedRejectedProductOutcomeIds.length === 1 ? 'family' : 'families'}: ${unresolvedRejectedProductOutcomeIds.slice(0, 8).join(', ')}`
+        : undefined);
     const catalogPath = deadlineExceeded
       ? (reconciled.length > 0 ? 'rejected-hard-deadline' : 'unavailable-hard-deadline')
-      : reconciled.length > 0
-        ? (qualityFailure ? 'ai-below-quality-bar' : 'ai')
-        : 'unavailable';
+      : qualityFailure ? 'ai-below-quality-bar' : 'ai';
     const gateReason = deadlineExceeded
       ? `${AI_CATALOG_HARD_DEADLINE_MARKER}: capability-catalog AI enrichment abandoned after ${cyclesRun} cycle(s) to protect the overall analysis latency budget; structural capability candidates remain available${qualityFailure ? ` (last quality check: ${qualityFailure})` : ''}`
       : qualityFailure;
-    const publishableReconciled = reconciled.filter(capability => this.isPublishableCapability(capability)); const requiredCoverageFailure = capabilityCatalogCoverageFailure(publishableReconciled, requiredBehaviorCandidateIds, requiredEntityCandidateGroups, requiredOutcomes) ||
-      (uncoveredCapabilityCatalogFamilyRepresentativeIds(publishableReconciled, distinctFamilyCandidateGroups).length > 0
-        ? 'catalog-family-coverage-incomplete'
-        : undefined);
-    const publishGroundedPartial = Boolean(qualityFailure) && !requiredCoverageFailure && publishableReconciled.length >= minimumCapabilities;
-    if ((publishGroundedPartial || (!deadlineExceeded && !qualityFailure)) && retainedInterpretationRaw) {
+    if (!deadlineExceeded && !qualityFailure && retainedInterpretationRaw) {
       args.onInterpretationAccepted?.(retainedInterpretationRaw);
     }
     writeAnalyzerStatus(
@@ -10651,7 +10577,7 @@ export class AnalyzerOrchestrator {
       parse_ok: true,
       gate_verdict: deadlineExceeded ? 'degraded' : (qualityFailure ? 'degraded' : 'accepted'),
       gate_reason: gateReason,
-      final_outcome: reconciled.length > 0 ? (deadlineExceeded || qualityFailure ? 'degraded' : 'ai') : 'degraded',
+      final_outcome: deadlineExceeded || qualityFailure ? 'degraded' : 'ai',
     });
     args.enhancedSystemPurpose.capability_catalog_coverage = {
       evidence_families: distinctFamilyCount,
@@ -10659,14 +10585,14 @@ export class AnalyzerOrchestrator {
       supporting_evidence_candidates: evidenceRoleSummary.supporting,
       verification_evidence_candidates: evidenceRoleSummary.verification,
       unresolved_evidence_candidates: evidenceRoleSummary.unresolved,
-      candidate_dispositions: evidenceCandidates.map(candidate => ({ candidate_id: candidate.id, role: candidate.evidence_role || 'unresolved', reasons: candidate.evidence_role_reasons || [] })),
-      actual_publishable_capabilities: publishableReconciled.length,
-      published_capabilities: publishGroundedPartial || (!deadlineExceeded && !qualityFailure) ? publishableReconciled.length : 0,
+      candidate_dispositions: [...new Map(evidenceCandidates.map(candidate => { const scope = operationObligationViews.scopes.get(candidate.id); const candidateId = scope?.parentCandidateId || candidate.id; return [candidateId, { candidate_id: candidateId, role: candidate.evidence_role || 'unresolved', reasons: candidate.evidence_role_reasons || [] }]; })).values()],
+      actual_publishable_capabilities: publishedCapabilities.length,
+      published_capabilities: !deadlineExceeded && !qualityFailure ? publishedCapabilities.length : 0,
       minimum_published_capabilities: minimumCapabilities,
-      status: publishGroundedPartial ? 'partial' : deadlineExceeded ? 'unavailable' : qualityFailure ? 'rejected' : 'accepted',
+      status: deadlineExceeded ? 'unavailable' : qualityFailure ? 'rejected' : 'accepted',
       ...(gateReason ? { reason: gateReason } : {}),
     };
-    return publishGroundedPartial || (!deadlineExceeded && !qualityFailure) ? publishableReconciled : [];
+    return !deadlineExceeded && !qualityFailure ? publishedCapabilities : [];
   }
 
   private finalizeSystemCapabilityNames(
@@ -10676,7 +10602,7 @@ export class AnalyzerOrchestrator {
   ): void {
     const authored = systemCapabilities.filter(capability => this.isPublishableCapability(capability));
     const excluded = systemCapabilities.filter(capability => !authored.includes(capability));
-    const deduped = this.dedupeSystemCapabilitiesByName(authored);
+    const deduped = this.dedupeSystemCapabilitiesByName(authored, false, true);
     systemCapabilities.splice(0, systemCapabilities.length, ...deduped);
     if (purpose) {
       purpose.capability_naming_coverage = {
@@ -10685,9 +10611,28 @@ export class AnalyzerOrchestrator {
         un_enriched: excluded.length,
         path_derived_rejected: excluded.filter(capability => isPathDerivedCapabilityName(capability.name)).length,
       };
+      const publishedIds = new Set(deduped.map(capability => capability.id));
+      if (purpose.capability_reconciliation) {
+        purpose.capability_reconciliation.proposals = purpose.capability_reconciliation.proposals.map(proposal => ({
+          ...proposal,
+          capability_ids: proposal.capability_ids.filter(capabilityId => publishedIds.has(capabilityId)),
+        }));
+        purpose.capability_reconciliation.undocumented_capabilities =
+          purpose.capability_reconciliation.undocumented_capabilities.filter(capability =>
+            publishedIds.has(capability.capability_id));
+      }
       synchronizeCapabilityCatalogCoverage(purpose, deduped.length, excluded.length);
     }
     if (excluded.length > 0) {
+      if (process.env.KLAURO_DEBUG_CATALOG) {
+        writeAnalyzerStatus('[catalog-debug] final publishability exclusions:', excluded.map(capability => ({
+          id: capability.id,
+          name: capability.name,
+          reason: this.capabilityPublishabilityFailure(capability),
+          description: capability.description,
+          candidate_ids: (capability.criticality_factors || []).filter(factor => factor.startsWith('catalog-candidate:')),
+        })));
+      }
       recordSemanticDecision({
         ts: Date.now(),
         decision_type: 'capability_finalization',
@@ -10757,7 +10702,8 @@ export class AnalyzerOrchestrator {
     nodes: CASNode[] = [],
     edges: CASEdge[] = [],
     behaviorSurfaces: SystemCapability[] = [],
-    entryPoints: CASEntryPoint[] = []
+    entryPoints: CASEntryPoint[] = [],
+    exitPoints: CASExitPoint[] = []
   ): Promise<void> {
     this.elementDescriptionArtifactType = enhancedSystemPurpose.artifact_type;
     this.setElementDescriptionGrounding(
@@ -10841,6 +10787,8 @@ export class AnalyzerOrchestrator {
         flowGraph,
         projectTextSignal,
         entryPoints,
+        edges,
+        exitPoints,
         nodes,
         budgetMs,
         libraryNames,
@@ -11036,7 +10984,7 @@ export class AnalyzerOrchestrator {
     if (timeoutHandle) clearTimeout(timeoutHandle);
     systemCapabilities.splice(0, systemCapabilities.length, ...catalogApplication.capabilities);
 
-    const distinctiveEntityNames = this.selectDistinctiveEntityNames(dataEntities);
+    const distinctiveEntityNames = this.selectDistinctiveEntityNames(dataEntities, 20, projectTextSignal);
     const gateEntityGrounding = distinctiveEntityNames.length > 0
       ? Array.from(new Set([...distinctiveEntityNames, ...databaseEntities]))
       : databaseEntities;
@@ -11507,40 +11455,31 @@ export class AnalyzerOrchestrator {
     return filterPlausibleExternalServices(externalServices, selfNames);
   }
 
-  private isGenericDomainEntityName(entityName: string): boolean {
-    const normalized = this.humanizePascalName(entityName).toLowerCase().trim();
-    if (!normalized) return true;
-    const words = normalized.split(/\s+/).filter(Boolean);
-    const genericHead = new Set([
-      'user', 'account', 'session', 'setting', 'settings', 'preference',
-      'preferences', 'profile', 'role', 'permission', 'token', 'auth',
-      'organization', 'org', 'team', 'member', 'membership', 'tenant',
-      'workspace', 'project', 'group', 'invite', 'invitation', 'notification',
-      'log', 'audit', 'event', 'job', 'task', 'queue', 'config', 'configuration',
-      'file', 'upload', 'image', 'asset', 'tag', 'label', 'comment', 'message',
-      'usage', 'stats', 'statistic', 'metric', 'metadata', 'record', 'item',
-      'entity', 'object', 'data', 'entry', 'row', 'status', 'state', 'history',
-      'portfolio', 'strategy', 'plan', 'subscription', 'billing', 'invoice',
-      'payment', 'customer', 'contact', 'address',
-    ]);
-    return words.every(word => genericHead.has(word) || genericHead.has(word.replace(/s$/, '')));
-  }
-
-  private selectDistinctiveEntityNames(dataEntities: CASDataEntity[], limit = 20): string[] {
+  private selectDistinctiveEntityNames(
+    dataEntities: CASDataEntity[],
+    limit = 20,
+    projectTextSignal: ProjectTextSignal = { concepts: [], evidence: [] },
+  ): string[] {
+    const productTokens = new Set([
+      projectTextSignal.productDocTitle, projectTextSignal.productDocSummary,
+      projectTextSignal.manifestDescription, ...(projectTextSignal.concepts || []),
+    ].flatMap(value => String(value || '').toLowerCase().split(/[^a-z0-9]+/)).filter(token => token.length > 2));
+    const terminalRank = new Map((this.activeTerminalSignal?.ranked_entities || [])
+      .map((entity, index) => [String(entity.name || '').toLowerCase(), index] as const));
     const seen = new Set<string>();
-    const distinctive: string[] = [];
-    const generic: string[] = [];
-    for (const entity of dataEntities) {
+    return dataEntities.map((entity, index) => {
       const name = String(entity?.name || '').trim();
-      if (!name) continue;
-      if (this.isTransportContractEntityName(name)) continue;
-      const key = name.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      if (this.isGenericDomainEntityName(name)) generic.push(name);
-      else distinctive.push(name);
-    }
-    return [...distinctive, ...generic].slice(0, limit);
+      const words = this.humanizePascalName(name).toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+      const lifecycle = entity.lifecycle || { created_by: [], read_by: [], updated_by: [], deleted_by: [] };
+      return { entity, index, name, productScore: words.filter(word => productTokens.has(word)).length,
+        terminal: terminalRank.get(name.toLowerCase()),
+        lifecycleScore: [...lifecycle.created_by, ...lifecycle.read_by, ...lifecycle.updated_by, ...lifecycle.deleted_by].length };
+    }).filter(item => item.name && !this.isTransportContractEntityName(item.name) &&
+      !seen.has(item.name.toLowerCase()) && Boolean(seen.add(item.name.toLowerCase())))
+      .sort((left, right) => right.productScore - left.productScore ||
+        (left.terminal ?? Number.MAX_SAFE_INTEGER) - (right.terminal ?? Number.MAX_SAFE_INTEGER) ||
+        right.lifecycleScore - left.lifecycleScore || left.index - right.index)
+      .slice(0, limit).map(item => item.name);
   }
 
   private structuralGroundingTokens(
@@ -11636,7 +11575,7 @@ export class AnalyzerOrchestrator {
     return tokens.join('-');
   }
 
-  private static readonly PLUMBING_DOMAIN_TOKENS = new Set([
+  private static readonly COMMON_SUPPORTING_DOMAIN_TOKENS = new Set([
     'user', 'users', 'identity', 'auth', 'authentication', 'login', 'account', 'accounts',
     'session', 'sessions', 'menu', 'serialize', 'serialization', 'deserialize', 'string',
     'quote', 'request', 'response', 'config', 'configuration', 'settings', 'api', 'data',
@@ -11736,8 +11675,8 @@ export class AnalyzerOrchestrator {
       return { accepted: false, refined: false, reason: 'nonterminal-supporting-mechanism-domain' };
 
     const allPlumbing = labelTokens.length > 0 &&
-      labelTokens.every(token => AnalyzerOrchestrator.PLUMBING_DOMAIN_TOKENS.has(token));
-    if (allPlumbing && !labelTokens.some(inTerminal)) {
+      labelTokens.every(token => AnalyzerOrchestrator.COMMON_SUPPORTING_DOMAIN_TOKENS.has(token));
+    if (allPlumbing && !labelTokens.some(inTerminal) && !productTextGrounded) {
       return { accepted: false, refined: false, reason: 'generic-plumbing-label' };
     }
 
@@ -11787,6 +11726,21 @@ export class AnalyzerOrchestrator {
       freshConfig.anthropic.apiKey ||
       getAIProviderChain().length > 0
     );
+  }
+
+  private analysisAiEnrichmentStatus(deferred: true): 'pending' | 'disabled';
+  private analysisAiEnrichmentStatus(deferred: false): 'synchronous' | 'disabled';
+  private analysisAiEnrichmentStatus(deferred: boolean): 'pending' | 'disabled' | 'synchronous' {
+    if (!this.hasAIInterpretationProviderConfigured()) return 'disabled';
+    return deferred ? 'pending' : 'synchronous';
+  }
+
+  private settleCapabilityCatalogStatus(
+    output: CASOutput,
+    status: 'ready' | 'synchronous' | 'disabled',
+  ): void {
+    output.ai_enrichment = status;
+    applyCapabilityCatalogStatus(output);
   }
 
   private configuredAiInterpretationProviders(): string[] {
@@ -12122,7 +12076,7 @@ export class AnalyzerOrchestrator {
     capability: SystemCapability,
     entityNamesById?: Map<string, string>,
     entityFieldsById?: Map<string, string[]>,
-    entityEvidenceById?: Map<string, Pick<CASDataEntity, 'id' | 'name' | 'kind' | 'relations'>>,
+    entityEvidenceById?: Map<string, Pick<CASDataEntity, 'id' | 'name' | 'kind' | 'fields' | 'relations'>>,
     requiredOutcomeRequirements: readonly CapabilityCatalogOutcomeRequirement[] = [],
     firstPartyProductText: readonly string[] = [],
     entryPoints: readonly CASEntryPoint[] = [],
@@ -12141,10 +12095,19 @@ export class AnalyzerOrchestrator {
       (observedHttpMethods.length > 0 && observedHttpMethods.every(method => ['GET', 'HEAD', 'OPTIONS'].includes(method)));
     const evidenceEntities = entityEvidenceById ? [...entityEvidenceById.values()] as CASDataEntity[] : [];
     const groundedEntityIds = capabilityGroundedEntityIds(capability, evidenceEntities, entryPoints);
-    const proseEntityIds = [...groundedEntityIds].filter(id => {
+    const directProseEntityIds = [...groundedEntityIds].filter(id => {
       const entity = entityEvidenceById?.get(id);
       return !entity || capabilityDescriptionEntityProvidesProductEvidence(capability.name, entity);
     });
+    const schemaEntityNames = schemaGroundedEntityNames(groundedEntityIds, evidenceEntities);
+    const dependencyEntityNames = (capability.depends_on || [])
+      .flatMap(dependency => dependency.evidence.shared_entities || [])
+      .filter(Boolean);
+    const proseEntityNames = [...new Set([
+      ...directProseEntityIds.map(id => entityNamesById?.get(id) || id),
+      ...schemaEntityNames,
+      ...dependencyEntityNames,
+    ])];
     const requirementIds = new Set((capability.criticality_factors || [])
       .filter(factor => factor.startsWith('catalog-outcome-requirement:'))
       .map(factor => factor.slice('catalog-outcome-requirement:'.length)));
@@ -12152,6 +12115,18 @@ export class AnalyzerOrchestrator {
       .filter(requirement => requirementIds.has(requirement.id))
       .map(requirement => requirement.firstPartyOutcomeText || requirement.statement)
       .concat(firstPartyProductText);
+    const normalizeGroundedTerm = (value: string): string =>
+      value.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().replace(/[^a-z0-9]+/g, '');
+    const trustedRouteDomains = (capability.criticality_factors || []).includes('catalog-deterministic-route-lineage')
+      ? capability.related_domains || [] : [];
+    const groundedDomainTerms = new Set(trustedRouteDomains.map(normalizeGroundedTerm).filter(Boolean));
+    const groundedProseEntityTerms = new Set(proseEntityNames.map(normalizeGroundedTerm).filter(Boolean));
+    const genericEntityNames = new Set(['action', 'change', 'context', 'entry', 'event', 'group', 'item', 'message', 'record', 'result', 'state', 'type', 'value']);
+    const unrelatedEntities = entityNamesById ? [...entityNamesById].filter(([id, name]) => {
+      if (directProseEntityIds.includes(id) || groundedProseEntityTerms.has(normalizeGroundedTerm(name))) return false;
+      const normalizedName = normalizeGroundedTerm(name);
+      return !genericEntityNames.has(normalizedName) && (!normalizedName || !groundedDomainTerms.has(normalizedName));
+    }).map(([, name]) => name) : [];
     return {
       id: capability.id,
       name: capability.name,
@@ -12167,13 +12142,13 @@ export class AnalyzerOrchestrator {
         sourceAreas.length > 0 ? `owned by: ${sourceAreas.join(', ')}` : '',
         capability.criticality ? `criticality: ${capability.criticality}` : '',
       ].filter(Boolean),
-      relatedEntities: proseEntityIds.map(id => entityNamesById?.get(id) || id), rawIdentifiers: capability.related_entities.map(id => entityNamesById?.get(id) || id),
+      relatedEntities: proseEntityNames, rawIdentifiers: capability.related_entities.map(id => entityNamesById?.get(id) || id),
       ...(productOutcomeTerms.length > 0 ? { productOutcomeTerms } : {}),
-      unrelatedEntities: entityNamesById ? [...entityNamesById].filter(([id]) => !proseEntityIds.includes(id)).map(([, name]) => name) : [],
+      unrelatedEntities,
       relatedDomains: capability.related_domains,
       readOnly,
       artifactType: this.elementDescriptionArtifactType,
-      fields: proseEntityIds.flatMap(id => entityFieldsById?.get(id) || []).slice(0, 24),
+      fields: directProseEntityIds.flatMap(id => entityFieldsById?.get(id) || []).slice(0, 24),
     };
   }
 
@@ -12366,7 +12341,7 @@ export class AnalyzerOrchestrator {
       for (const claim of cleaned.match(valueClaimPattern) || []) {
         const normalizedClaim = normalizeValueClaim(claim);
         const evidenceSupportsClaim = ownEvidence.replace(/[- ]/g, '').includes(normalizedClaim) || firstPartyValueClaims.has(normalizedClaim) || (normalizedClaim.startsWith('metric') && /\b(?:metric|prometheus|telemetry)\b/.test(ownEvidence));
-        if (!evidenceSupportsClaim) return { ok: false, reason: `unsupported-target-value-claim:${claim.toLowerCase()}` };
+        if (!evidenceSupportsClaim) return { ok: false, reason: `unsupported-target-value-claim:${claim.toLowerCase()}`, offendingTerms: [claim.toLowerCase()] };
       }
       const unsupportedOperationalClaims = [...unsupportedCapabilityOperationalClaims(cleaned, [...(target.operations || []), ...(target.productOutcomeTerms || [])]), ...(cleaned.match(/\b(?:high availability|resource utili[sz]ation|fault tolerance|auto[- ]scaling|scalability|resilien(?:ce|t))\b/gi) || [])];
       for (const claim of unsupportedOperationalClaims) {
@@ -12609,6 +12584,7 @@ export class AnalyzerOrchestrator {
     hasAIProvider: boolean;
     systemDescriptionSource?: string;
     capabilityDescriptionSource?: string;
+    canonicalCapabilities: number;
     embeddingEnabled: boolean;
     runtimeSignals: number;
   }): CASAnalysisPhase[] {
@@ -12632,7 +12608,7 @@ export class AnalyzerOrchestrator {
         id: 'agent-context',
         name: 'Agent work context',
         priority: 2,
-        status: 'complete',
+        status: input.canonicalCapabilities > 0 ? 'complete' : 'partial',
         purpose: 'agent-development',
         default_phase: true,
         description: 'Adds capabilities, domains, flows, tests, risks, idioms, and behavioral invariants used to plan and validate edits.',
@@ -12641,6 +12617,7 @@ export class AnalyzerOrchestrator {
         visualization_value: 'Shows what the system does and which areas are risky or important.',
         can_run_later: false,
         generated_at: generatedAt,
+        notes: input.canonicalCapabilities > 0 ? undefined : ['Canonical capability comprehension is unavailable until an AI catalog is accepted.'],
       },
       {
         id: 'ai-system-narrative',
@@ -13906,7 +13883,7 @@ export class AnalyzerOrchestrator {
         artifactTypeInstruction: `This codebase is ${artifactNarrativeByType[this.activeArtifactType]}.`,
       }
       : {};
-    const distinctiveEntities = this.selectDistinctiveEntityNames(dataEntities);
+    const distinctiveEntities = this.selectDistinctiveEntityNames(dataEntities, 20, projectTextSignal);
     const entityGrounding = distinctiveEntities.length > 0 ? distinctiveEntities : databaseEntities;
     const manifestFacts = manifestDescription.trim()
       ? {
@@ -14608,28 +14585,26 @@ export class AnalyzerOrchestrator {
     return this.humanizeScopeStrippedManifestName(dominantScope);
   }
 
-  private collectNestedPackageJsonFiles(projectPath: string, maxDepth = 8, maxFiles = 500): string[] {
+  private collectNestedPackageJsonFiles(projectPath: string): string[] {
     const ignoredDir = /^(node_modules|dist|build|out|coverage|vendor|vendors|target|\.git|\.next|\.turbo|\.cache|\.terraform|\.worktrees|fixtures|__fixtures__|testdata)$/;
     const found: string[] = [];
-    const stack: Array<{ dir: string; depth: number }> = [{ dir: projectPath, depth: 0 }];
-    while (stack.length > 0 && found.length < maxFiles) {
-      const { dir, depth } = stack.pop()!;
-      if (depth > maxDepth) continue;
+    const stack: string[] = [projectPath];
+    while (stack.length > 0) {
+      const dir = stack.pop()!;
       let entries: fs.Dirent[];
       try {
-        entries = fs.readdirSync(dir, { withFileTypes: true });
+        entries = fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
       } catch {
         continue;
       }
       for (const entry of entries) {
         if (entry.isDirectory()) {
           if (entry.name.startsWith('.') || ignoredDir.test(entry.name)) continue;
-          stack.push({ dir: path.join(dir, entry.name), depth: depth + 1 });
+          stack.push(path.join(dir, entry.name));
           continue;
         }
         if (entry.isFile() && entry.name === 'package.json') {
           found.push(path.join(dir, entry.name));
-          if (found.length >= maxFiles) break;
         }
       }
     }
@@ -15479,9 +15454,9 @@ export class AnalyzerOrchestrator {
         const factorWeight = (risk: CASChangeRisk) => risk.risk_factors.reduce((total, factor) => total + (factor.severity === 'high' ? 3 : factor.severity === 'medium' ? 2 : 1), 0);
         return order[a.risk_level] - order[b.risk_level] ||
           factorWeight(b) - factorWeight(a) ||
-          b.downstream_impact.direct_callers.length - a.downstream_impact.direct_callers.length;
-      })
-      .slice(0, 100);
+          b.downstream_impact.direct_callers.length - a.downstream_impact.direct_callers.length ||
+          a.node_id.localeCompare(b.node_id);
+      });
   }
 
   private collapseChangeRisksByOwner(changeRisks: CASChangeRisk[], nodes: CASNode[]): CASChangeRisk[] {
@@ -17106,9 +17081,11 @@ export class AnalyzerOrchestrator {
 
   private buildSecurityBoundaries(nodes: CASNode[], entryPoints: CASEntryPoint[], projectPath?: string, edges: CASEdge[] = []): CASSecurityBoundary[] {
     const boundaries: CASSecurityBoundary[] = [];
+    const isRuntimeSecurityNode = (node: CASNode) =>
+      node.metadata?.attributes?.execution_role !== 'declaration';
     const effectiveNodes = projectPath
-      ? nodes.filter(node => this.isPrimaryProductNodeForProject(node, projectPath))
-      : nodes.filter(node => this.isPrimaryProductNode(node));
+      ? nodes.filter(node => isRuntimeSecurityNode(node) && this.isPrimaryProductNodeForProject(node, projectPath))
+      : nodes.filter(node => isRuntimeSecurityNode(node) && this.isPrimaryProductNode(node));
     const effectiveEntryPoints = projectPath
       ? this.filterPrimaryProductEntryPoints(entryPoints, nodes, projectPath)
       : entryPoints.filter(ep =>
@@ -17148,7 +17125,6 @@ export class AnalyzerOrchestrator {
         const tokens = this.signalTokens(n.name);
         return authVocabulary.some(term => tokens.includes(term));
       });
-
     const authenticatedEntryPoints = effectiveEntryPoints.filter(ep => ep.security?.authenticated);
 
     if (authNodes.length > 0 || authenticatedEntryPoints.length > 0 || guardEdges.length > 0) {
@@ -17173,10 +17149,7 @@ export class AnalyzerOrchestrator {
         });
       }
 
-      const perEntryPointCap = 500;
-      let addedFromEntryPoints = 0;
       for (const ep of authenticatedEntryPoints) {
-        if (addedFromEntryPoints >= perEntryPointCap) break;
         const nodeId = ep.handler?.node_id || ep.source_node;
         if (!nodeId || seenNodeIds.has(nodeId)) continue;
         const guards = ep.security?.guards || [];
@@ -17186,7 +17159,6 @@ export class AnalyzerOrchestrator {
           return enforcementNameIndex.has(guardKey) || guardTokens.some(token => enforcementNameIndex.has(token));
         });
         seenNodeIds.add(nodeId);
-        addedFromEntryPoints++;
         enforcementPoints.push({
           node_id: nodeId,
           mechanism: guards.length > 0
@@ -17204,8 +17176,8 @@ export class AnalyzerOrchestrator {
         });
       }
 
-      const unprotectedSensitive = this.unprotectedSensitiveEntryPoints(effectiveEntryPoints);
-      for (const ep of unprotectedSensitive.slice(0, 25)) {
+      const unprotectedSensitive = this.unprotectedSensitiveEntryPoints(effectiveEntryPoints, guardEdges);
+      for (const ep of unprotectedSensitive) {
         enforcementPoints.push({
           node_id: ep.handler?.node_id || ep.source_node,
           mechanism: `No authentication detected on sensitive operation ${ep.trigger?.method || ep.type} ${ep.trigger?.path || ep.name}`,
@@ -17327,7 +17299,7 @@ export class AnalyzerOrchestrator {
     const rateLimitNodes = effectiveNodes.filter(n => this.hasRateLimitingSemantics(n));
     const rateLimitedEntryPoints = effectiveEntryPoints.filter(ep => ep.security?.rate_limit);
     if (rateLimitNodes.length > 0 || rateLimitedEntryPoints.length > 0) {
-      const enforcementPoints: CASSecurityBoundary['enforcement_points'] = rateLimitNodes.slice(0, 50).map(n => ({
+      const enforcementPoints: CASSecurityBoundary['enforcement_points'] = rateLimitNodes.map(n => ({
         node_id: n.id,
         mechanism: `Rate limiting: ${n.name}`,
         confidence: 'enforced' as const
@@ -17355,13 +17327,25 @@ export class AnalyzerOrchestrator {
     return boundaries;
   }
 
-  private unprotectedSensitiveEntryPoints(entryPoints: CASEntryPoint[]): CASEntryPoint[] {
+  private unprotectedSensitiveEntryPoints(entryPoints: CASEntryPoint[], guardEdges: CASEdge[] = []): CASEntryPoint[] {
     const mutating = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+    const guardedEntryPointIds = new Set<string>();
+    const guardedNodeIds = new Set<string>();
+    for (const edge of guardEdges) {
+      const targetEntryPoint = (edge.metadata as any)?.target_entry_point;
+      if (typeof targetEntryPoint === 'string' && targetEntryPoint) guardedEntryPointIds.add(targetEntryPoint);
+      if (edge.target) guardedNodeIds.add(edge.target);
+    }
     return entryPoints.filter(ep =>
       ep.type === 'http' &&
+      ep.metadata?.execution_role !== 'declaration' &&
       mutating.has((ep.trigger?.method || '').toUpperCase()) &&
       !this.isIntentionallyPublicMutationEntryPoint(ep) &&
       !ep.security?.authenticated &&
+      !ep.metadata?.global_guards?.length &&
+      !guardedEntryPointIds.has(ep.id) &&
+      !guardedNodeIds.has(ep.source_node) &&
+      !guardedNodeIds.has(ep.handler?.node_id || '') &&
       (ep.security?.guards || []).length === 0 &&
       (ep.security?.roles || []).length === 0 &&
       (ep.security?.permissions || []).length === 0
@@ -17528,7 +17512,8 @@ export class AnalyzerOrchestrator {
   private buildSecuritySummary(
     boundaries: CASSecurityBoundary[],
     nodes: CASNode[],
-    entryPoints: CASEntryPoint[]
+    entryPoints: CASEntryPoint[],
+    edges: CASEdge[] = []
   ): CASSecuritySummary {
     let enforced = 0;
     let assumed = 0;
@@ -17542,7 +17527,10 @@ export class AnalyzerOrchestrator {
       }
     }
 
-    const unprotected = this.unprotectedSensitiveEntryPoints(entryPoints);
+    const guardEdges = edges.filter(edge =>
+      edge.type === 'guards' && edge.category === 'security'
+    );
+    const unprotected = this.unprotectedSensitiveEntryPoints(entryPoints, guardEdges);
     missing = Math.max(missing, unprotected.length);
 
     return {
@@ -17962,7 +17950,6 @@ export class AnalyzerOrchestrator {
       .filter(([, evidence]) => evidence.count >= 2 && evidence.methods.size >= 2)
       .map(([key]) => key));
 
-
     const resourceGroups = new Map<string, {
       entryPoints: CASEntryPoint[];
       name: string;
@@ -18151,9 +18138,13 @@ export class AnalyzerOrchestrator {
       });
 
       const matches = groupEntityMatches.get(resourceKey) || { direct: new Set<string>(), hop: new Set<string>() };
-      const relatedEntities = productDataEntities.filter(de =>
+      const semanticEntityIds = new Set(uniquelyMatchingCapabilityEntityIds(resourceKey, productDataEntities));
+      const graphRelatedEntities = productDataEntities.filter(de =>
         matches.direct.has(de.id) ||
         (matches.hop.has(de.id) && (hopMatchDf.get(de.id) || 0) <= hopDfLimit));
+      const relatedEntities = semanticEntityIds.size > 0
+        ? productDataEntities.filter(entity => semanticEntityIds.has(entity.id))
+        : graphRelatedEntities;
 
       const { criticality, factors } = this.calculateCriticalityFromSignals(
         group.entryPoints,
@@ -18314,7 +18305,7 @@ export class AnalyzerOrchestrator {
     entryPoints: CASEntryPoint[],
     projectPath?: string
   ): SystemCapability[] {
-    const operations = (entryPoints.length > 0 ? entryPoints : nodes.slice(0, 6)).slice(0, 12).map((item: CASEntryPoint | CASNode) => {
+    const operations = (entryPoints.length > 0 ? entryPoints : nodes).map((item: CASEntryPoint | CASNode) => {
       const isEntry = 'handler' in item || 'trigger' in item;
       return {
         entry_point_id: item.id,
@@ -18508,7 +18499,8 @@ export class AnalyzerOrchestrator {
     });
   }
 
-  private dedupeSystemCapabilitiesByName(capabilities: SystemCapability[], exactNamesOnly = false): SystemCapability[] {
+
+  private dedupeSystemCapabilitiesByName(capabilities: SystemCapability[], exactNamesOnly = false, preserveExactCandidateIdentity = false): SystemCapability[] {
     const byName = new Map<string, SystemCapability>();
     const criticalityRank: Record<SystemCapability['criticality'], number> = {
       critical: 4,
@@ -18517,7 +18509,7 @@ export class AnalyzerOrchestrator {
       low: 1,
     };
     for (const capability of capabilities) {
-      const baseKey = capability.name.trim().toLowerCase(); const baseMatch = byName.get(baseKey);
+      const obligationIds = (capability.criticality_factors || []).filter(factor => factor.startsWith('catalog-candidate:operation-obligation:') || factor.startsWith('catalog-operation-obligation:')).sort(); const obligationKey = preserveExactCandidateIdentity && obligationIds.length > 0 ? `::${obligationIds.join('|')}` : ''; const baseKey = capability.name.trim().toLowerCase() + obligationKey; const baseMatch = byName.get(baseKey);
       const hasOutcomeBinding = (value: SystemCapability): boolean =>
         (value.criticality_factors || []).some(factor => factor.startsWith('catalog-outcome-requirement:'));
       const requirementKey = (capability.criticality_factors || []).filter(factor => factor.startsWith('catalog-outcome-requirement:')).sort().join('|');
@@ -18537,7 +18529,7 @@ export class AnalyzerOrchestrator {
       existing.description = keepDescriptionFromCurrent ? capability.description : existing.description;
       existing.description_source = keepDescriptionFromCurrent ? capability.description_source : existing.description_source;
       existing.description_generation = keepDescriptionFromCurrent ? capability.description_generation : existing.description_generation;
-      existing.operations = this.uniqueCapabilityOperations([...existing.operations, ...capability.operations]).slice(0, 24);
+      existing.operations = this.uniqueCapabilityOperations(existing.operations, capability.operations);
       existing.related_entities = Array.from(new Set([...existing.related_entities, ...capability.related_entities]));
       existing.related_domains = Array.from(new Set([...existing.related_domains, ...capability.related_domains]));
       existing.criticality = criticalityRank[capability.criticality] > criticalityRank[existing.criticality]
@@ -18551,10 +18543,10 @@ export class AnalyzerOrchestrator {
         ? existing.category
         : capability.category;
     }
-    return exactNamesOnly ? Array.from(byName.values()) : this.dedupeSystemCapabilitiesByEntitySet(Array.from(byName.values()));
+    return exactNamesOnly ? Array.from(byName.values()) : this.dedupeSystemCapabilitiesByEntitySet(Array.from(byName.values()), preserveExactCandidateIdentity);
   }
 
-  private dedupeSystemCapabilitiesByEntitySet(capabilities: SystemCapability[]): SystemCapability[] {
+  private dedupeSystemCapabilitiesByEntitySet(capabilities: SystemCapability[], preserveExactCandidateIdentity = false): SystemCapability[] {
     const criticalityRank: Record<SystemCapability['criticality'], number> = {
       critical: 4,
       high: 3,
@@ -18576,14 +18568,14 @@ export class AnalyzerOrchestrator {
       (capability.description_source === 'ai' ? 500 : 0) +
       Math.min(capability.operations.length, 99);
     const operationKey = (operation: SystemCapability['operations'][number]) =>
-      [operation.entry_point_id, operation.entry_point_type, operation.action, operation.path_or_command].join('|');
+      [operation.entry_point_id, operation.entry_point_type, operation.action, operation.path_or_command].join('|'); const exactObligationKey = (capability: SystemCapability) => (capability.criticality_factors || []).filter(factor => factor.startsWith('catalog-candidate:operation-obligation:') || factor.startsWith('catalog-operation-obligation:')).sort().join('|');
 
     const subjectPhraseOf = (capability: SystemCapability): string =>
       String(capability.name || '')
         .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
         .toLowerCase()
         .replace(/^\s*(?:lets|allows|enables)\s+users\s+(?:to\s+)?/i, '')
-        .replace(/^\s*(provides?|surfaces?|tracks?|exposes?|manages?|monitors?|secures?|handles?|enforces?|settles?|delivers?|renders?|displays?|shows?|creates?|updates?|deletes?|lists?|views?|adds?|removes?|edits?|trains?)\s+/i, '')
+        .replace(/^\s*(provides?|surfaces?|tracks?|exposes?|manages?|monitors?|secures?|handles?|enforces?|settles?|delivers?|renders?|displays?|shows?|creates?|updates?|deletes?|lists?|views?|adds?|removes?|edits?|trains?|syncs?|synchronizes?|synchronises?)\s+/i, '')
         .replace(/\s+(results?|insights?|data|info|information|details?|records?|entries?|items?)\s*$/i, '')
         .replace(/\s+capabilit(?:y|ies)\s*$/i, '')
         .replace(/\s+(?:management|maintenance)\s*$/i, '')
@@ -18593,7 +18585,7 @@ export class AnalyzerOrchestrator {
       subjectPhraseOf(capability)
         .split(/\s+/)
         .map(token => this.stemTerminologyToken(token))
-        .filter(token => token.length >= 3 && !this.isGenericCapabilityToken(token)),
+        .filter(token => token.length >= 3 && !['from', 'via', 'with', 'using'].includes(token) && !this.isGenericCapabilityToken(token)),
     );
     const subjectsSemanticallyOverlap = (left: SystemCapability, right: SystemCapability): boolean => {
       const leftTokens = semanticSubjectTokens(left);
@@ -18609,6 +18601,7 @@ export class AnalyzerOrchestrator {
         .replace(/^\s*(?:lets|allows|enables)\s+users\s+(?:to\s+)?/i, '')
         .match(/^[a-z]+/)?.[0] || '';
       if (/^(?:create|update|delete|manage|add|remove|edit|write|modify)/.test(action)) return 'mutate';
+      if (/^(?:sync|synchronize|synchronise)/.test(action)) return 'synchronize';
       if (/^(?:provide|surface|track|monitor|display|show|view|list|access|retrieve|expose)/.test(action)) return 'observe';
       if (/^(?:attach|correlate|secure|handle|enforce|settle|deliver|render|train)/.test(action)) {
         return action.replace(/(?:es|s)$/, '');
@@ -18629,11 +18622,21 @@ export class AnalyzerOrchestrator {
       if ([...leftEntities].some(entity => !rightEntities.has(entity))) return false;
       const leftOperations = new Set(left.operations.map(operationKey));
       const rightOperations = new Set(right.operations.map(operationKey));
-      if (leftOperations.size === 0 || leftOperations.size !== rightOperations.size) return false;
-      return [...leftOperations].every(operation => rightOperations.has(operation));
+      if (leftOperations.size === 0 || rightOperations.size === 0) return false;
+      return [...leftOperations].every(operation => rightOperations.has(operation)) || [...rightOperations].every(operation => leftOperations.has(operation));
     };
+    const exactCatalogCandidateKey = (capability: SystemCapability) => (capability.criticality_factors || [])
+      .filter(factor => factor.startsWith('catalog-candidate:') && !factor.startsWith('catalog-candidate:operation-obligation:'))
+      .sort().join('|');
+    const exactRequirementKey = (capability: SystemCapability) => (capability.criticality_factors || [])
+      .filter(factor => factor.startsWith('catalog-outcome-requirement:')).sort().join('|');
     const entityDedupeOutcomesMayMerge = (left: SystemCapability, right: SystemCapability): boolean => {
-      if (!capabilityCatalogOutcomesMayMerge(left, right)) return false;
+      if (preserveExactCandidateIdentity && exactObligationKey(left) !== exactObligationKey(right)) return false;
+      const leftCandidateIds = new Set(exactCatalogCandidateKey(left).split('|').filter(Boolean));
+      const sameEvidenceIdentity = [...leftCandidateIds].some(candidateId => exactCatalogCandidateKey(right).split('|').includes(candidateId)) &&
+        exactRequirementKey(left) === exactRequirementKey(right) &&
+        hasExactEntityAndOperationEvidence(left, right) && unboundOutcomesMayMerge(left, right);
+      if (!sameEvidenceIdentity && !capabilityCatalogOutcomesMayMerge(left, right)) return false;
       if (hasExactEntityAndOperationEvidence(left, right)) return true;
       const hasBoundOutcome = [left, right].some(capability =>
         (capability.criticality_factors || []).some(factor => factor.startsWith('catalog-outcome-requirement:')));
@@ -18648,9 +18651,12 @@ export class AnalyzerOrchestrator {
         winner.description_source = loser.description_source;
         winner.description_generation = loser.description_generation;
       }
-      winner.operations = this.uniqueCapabilityOperations([...winner.operations, ...loser.operations]).slice(0, 24);
+      winner.operations = this.uniqueCapabilityOperations(winner.operations, loser.operations);
       winner.related_entities = Array.from(new Set([...winner.related_entities, ...loser.related_entities]));
       winner.related_domains = Array.from(new Set([...winner.related_domains, ...loser.related_domains]));
+      winner.depends_on = [...new Map([...(winner.depends_on || []), ...(loser.depends_on || [])].map(dependency => [
+        [dependency.from_capability, dependency.to_capability, dependency.dependency_type].join(':'), dependency,
+      ])).values()];
       winner.criticality = criticalityRank[loser.criticality] > criticalityRank[winner.criticality]
         ? loser.criticality
         : winner.criticality;
@@ -18799,19 +18805,21 @@ export class AnalyzerOrchestrator {
     return capabilities.filter(capability => !removed.has(capability));
   }
 
-  private uniqueCapabilityOperations(operations: SystemCapability['operations']): SystemCapability['operations'] {
+  private uniqueCapabilityOperations(...operationGroups: ReadonlyArray<SystemCapability['operations']>): SystemCapability['operations'] {
     const seen = new Set<string>();
     const uniqueOperations: SystemCapability['operations'] = [];
-    for (const operation of operations) {
-      const key = [
-        operation.entry_point_id,
-        operation.entry_point_type,
-        operation.action,
-        operation.path_or_command,
-      ].join('|');
-      if (seen.has(key)) continue;
-      seen.add(key);
-      uniqueOperations.push(operation);
+    for (const operations of operationGroups) {
+      for (const operation of operations) {
+        const key = [
+          operation.entry_point_id,
+          operation.entry_point_type,
+          operation.action,
+          operation.path_or_command,
+        ].join('|');
+        if (seen.has(key)) continue;
+        seen.add(key);
+        uniqueOperations.push(operation);
+      }
     }
     return uniqueOperations;
   }
@@ -18851,7 +18859,7 @@ export class AnalyzerOrchestrator {
             generated_at: new Date().toISOString(),
           },
           category: 'supporting' as const,
-          operations: group.slice(0, 12).map(node => ({
+          operations: group.map(node => ({
             entry_point_id: orientationEntry?.id || node.id,
             entry_point_type: 'infrastructure_resource',
             action: 'provision',
@@ -19184,7 +19192,7 @@ export class AnalyzerOrchestrator {
           generated_at: new Date().toISOString(),
         },
         category,
-        operations: operations.slice(0, 12),
+        operations,
         related_entities: uniqueEntities.map(entity => entity.id),
         related_domains: [key],
         criticality: this.inferTerminalCriticality(uniqueNodes, uniqueEntities),
@@ -19200,14 +19208,12 @@ export class AnalyzerOrchestrator {
         (terminalAnchorScore.get(b) || 0) - (terminalAnchorScore.get(a) || 0) ||
         b.related_entities.length - a.related_entities.length ||
         b.operations.length - a.operations.length
-      )
-      .slice(0, 24);
+      );
   }
 
   private static readonly BEHAVIOR_FAMILY_MIN_ENTRIES = 4;
   private static readonly BEHAVIOR_SURFACE_MIN_ENTRIES = 12;
   private static readonly OUTWARD_FACING_BEHAVIOR_KINDS = new Set(['cli', 'ipc', 'command']);
-  private static readonly BEHAVIOR_CAPABILITY_MAX = 16;
 
   private behaviorEntryModuleArea(ep: CASEntryPoint | undefined, nodesById: Map<string, CASNode>): string | undefined {
     const file = ep?.handler?.file || nodesById.get(ep?.source_node || '')?.source?.file || '';
@@ -19435,7 +19441,7 @@ export class AnalyzerOrchestrator {
         .filter(({ ids }) => ids.some(id => reachable.has(id)))
         .map(({ entity }) => entity);
 
-      const operations = entries.slice(0, 12).map(({ ep }) => ({
+      const operations = entries.map(({ ep }) => ({
         entry_point_id: ep.id,
         entry_point_type: String(ep.type),
         action: this.inferActionFromEntryPoint(ep),
@@ -19555,7 +19561,7 @@ export class AnalyzerOrchestrator {
           Math.max(remainder.length, 1);
 
         if (moduleClusters.length >= 2 && moduleCoverage >= 0.4) {
-          for (const [area, entries] of moduleClusters.slice(0, 12)) {
+          for (const [area, entries] of moduleClusters) {
             candidates.push({ capability: buildCandidate(surface, area, entries), evidence: entries.length });
           }
           const clustered = new Set(moduleClusters.flatMap(([, entries]) => entries));
@@ -19580,7 +19586,7 @@ export class AnalyzerOrchestrator {
             Math.max(remainder.length, 1);
 
           if (calleeModuleClusters.length >= 2 && calleeModuleCoverage >= 0.4) {
-            for (const [area, entries] of calleeModuleClusters.slice(0, 12)) {
+            for (const [area, entries] of calleeModuleClusters) {
               candidates.push({ capability: buildCandidate(surface, area, entries), evidence: entries.length });
             }
             const clustered = new Set(calleeModuleClusters.flatMap(([, entries]) => entries));
@@ -19592,18 +19598,18 @@ export class AnalyzerOrchestrator {
             candidates.push({ capability: buildCandidate(surface, undefined, remainder), evidence: remainder.length });
           }
         }
-        for (const [prefix, entries] of strongFamilies.slice(0, AnalyzerOrchestrator.BEHAVIOR_CAPABILITY_MAX)) {
+        for (const [prefix, entries] of strongFamilies) {
           candidates.push({ capability: buildCandidate(surface, prefix, entries), evidence: entries.length });
         }
         continue;
       }
 
-      for (const [prefix, entries] of strongFamilies.slice(0, 3)) {
+      for (const [prefix, entries] of strongFamilies) {
         candidates.push({ capability: buildCandidate(surface, prefix, entries), evidence: entries.length });
       }
 
       if (AnalyzerOrchestrator.OUTWARD_FACING_BEHAVIOR_KINDS.has(surface.kind)) {
-        const coveredByStrongFamily = new Set(strongFamilies.slice(0, 3).flatMap(([, entries]) => entries));
+        const coveredByStrongFamily = new Set(strongFamilies.flatMap(([, entries]) => entries));
         const uncovered = surface.entries.filter(entry => !coveredByStrongFamily.has(entry));
         if (uncovered.length > 0) {
           candidates.push({ capability: buildCandidate(surface, undefined, uncovered), evidence: uncovered.length });
@@ -19613,7 +19619,6 @@ export class AnalyzerOrchestrator {
 
     return candidates
       .sort((a, b) => b.evidence - a.evidence || a.capability.name.localeCompare(b.capability.name))
-      .slice(0, AnalyzerOrchestrator.BEHAVIOR_CAPABILITY_MAX)
       .map(candidate => candidate.capability);
   }
 
@@ -19671,7 +19676,7 @@ export class AnalyzerOrchestrator {
     }
 
     const buildOperations = (groupExitPoints: CASExitPoint[]) =>
-      groupExitPoints.slice(0, 24).map(ep => ({
+      groupExitPoints.map(ep => ({
         entry_point_id: `exit:${ep.id}`,
         entry_point_type: 'external',
         action: ep.operation?.action || this.inferActionFromNodeName(ep.name || 'call'),
@@ -19820,10 +19825,7 @@ export class AnalyzerOrchestrator {
     }
     if (!best) return false;
 
-    best.operations = this.uniqueCapabilityOperations([
-      ...best.operations,
-      ...candidate.operations,
-    ]).slice(0, 24);
+    best.operations = this.uniqueCapabilityOperations(best.operations, candidate.operations);
     best.related_entities = Array.from(new Set([
       ...best.related_entities,
       ...candidate.related_entities,
@@ -20534,31 +20536,13 @@ export class AnalyzerOrchestrator {
     return this.appendCapabilitySuffix(label, 'Workflow');
   }
 
-  private isKlauroSelfProject(projectPath?: string): boolean {
-    if (!projectPath) return false;
-    const resolved = path.resolve(projectPath);
-    const cached = this.klauroSelfProjectCache.get(resolved);
-    if (cached !== undefined) return cached;
-    let isSelf = false;
-    try {
-      const packageJsonPath = path.join(resolved, 'package.json');
-      if (fs.existsSync(packageJsonPath)) {
-        const parsed = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
-        const name = typeof parsed?.name === 'string' ? parsed.name : '';
-        isSelf = /(^|[@/])klauro([-/.]|$)/i.test(name);
-      }
-    } catch {
-      isSelf = false;
-    }
-    this.klauroSelfProjectCache.set(resolved, isSelf);
-    return isSelf;
-  }
 
   private inferActionFromNodeName(name: string): string {
     const lower = name
       .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
       .replace(/[_\-./]/g, ' ')
       .toLowerCase();
+    if (/\b(auth(?:enticate)?|login|logout|sign in|sign out|refresh token)\b/.test(lower)) return 'Authenticate';
     if (/\b(create|add|insert|register)\b/.test(lower)) return 'Create';
     if (/\b(update|edit|patch|save)\b/.test(lower)) return 'Update';
     if (/\b(delete|remove|destroy)\b/.test(lower)) return 'Delete';
@@ -20748,8 +20732,6 @@ export class AnalyzerOrchestrator {
     }
     return nestedKey;
   }
-
-
   private inferResourceKey(ep: CASEntryPoint, preferredNestedHttpResources = new Set<string>()): string {
       const nestedKey = this.inferNestedHttpResourceKey(ep);
       if (nestedKey && preferredNestedHttpResources.has(nestedKey)) return nestedKey;
@@ -20757,6 +20739,16 @@ export class AnalyzerOrchestrator {
       const path = ep.trigger?.path || '';
       const cleanPath = path.replace(/^\/api\//, '').replace(/^\//, '');
       const segments = cleanPath.split('/').filter(segment => segment && !segment.startsWith(':') && !segment.startsWith('{'));
+      const firstRouteKey = segments[0] ? this.normalizeHttpCapabilitySegment(segments[0]) : undefined;
+      if (firstRouteKey && /^(?:upload|download|import|export|sync)$/.test(firstRouteKey)) {
+        const handlerPath = String(ep.handler?.file || '').replace(/\\/g, '/');
+        const controllerNamespace = /(?:^|\/)controllers\/(.+)\/[^/]+_controller\.[^.]+$/i.exec(handlerPath)?.[1]
+          ?.split('/').filter(Boolean).pop();
+        if (controllerNamespace) {
+          const namespaceKey = this.normalizeHttpCapabilitySegment(controllerNamespace);
+          if (namespaceKey !== 'general' && namespaceKey !== firstRouteKey) return `${namespaceKey}-${firstRouteKey}`;
+        }
+      }
       for (const segment of segments) {
         const key = this.normalizeHttpCapabilitySegment(segment);
         if (key !== 'general' && !this.isGenericCapabilityResourceKey(key)) return key;
@@ -20861,7 +20853,7 @@ export class AnalyzerOrchestrator {
       .filter(Boolean);
     if (tokens.length === 0) return normalized;
 
-    if (tokens.some(token => /^(login|logout|auth|oauth|session|sessions|password|token|tokens)$/.test(token))) {
+    if (tokens.some(token => /^(login|logout|auth|oauth|token|tokens)$/.test(token))) {
       return 'auth';
     }
 
@@ -20999,6 +20991,12 @@ export class AnalyzerOrchestrator {
       const path = ep.trigger?.path || '';
       if (canonicalCapabilityLifecycleAction({ trigger: ep.trigger }) === 'authenticate') {
         return 'Authenticate';
+      }
+      const protocol = String(ep.metadata?.protocol || '').toLowerCase();
+      const handlerName = String(ep.metadata?.rpc || ep.handler?.method_name || '').trim();
+      if (protocol === 'grpc' && handlerName) {
+        const semanticAction = this.inferActionFromNodeName(handlerName);
+        if (semanticAction !== 'Coordinate') return semanticAction;
       }
       const pathParts = path.split('/').filter(Boolean);
       const lastPart = pathParts[pathParts.length - 1];
@@ -22349,6 +22347,11 @@ export class AnalyzerOrchestrator {
     };
     const keyOf = (entry: CASEntryPoint) => {
       const handlerFile = canonicalHandlerFile(entry);
+      const reactHandlerFile = String(entry.metadata?.handler_file || handlerFile).replace(/\\/g, '/').replace(/^\.\//, '');
+      const reactSourcePosition = (entry.source_analyzer === 'react' || entry.metadata?.source_analyzer === 'react') &&
+        Number.isFinite(Number(entry.metadata?.jsx_line)) && Number.isFinite(Number(entry.metadata?.jsx_column))
+        ? `${reactHandlerFile}:${Number(entry.metadata?.jsx_line)}:${Number(entry.metadata?.jsx_column)}:${[...(entry.metadata?.handler_binding_node_ids || [])].map(String).sort().join(',')}`
+        : '';
       const metadataHandler = typeof entry.metadata?.handler_name === 'string'
         ? entry.metadata.handler_name.trim()
         : '';
@@ -22356,7 +22359,7 @@ export class AnalyzerOrchestrator {
       const semanticHandler = handlerFile && handlerName
         ? `handler:${handlerFile}:${handlerName}`
         : `source:${entry.source_node}`;
-      return `${entry.type}::${semanticHandler}::${semanticTriggerSignature(entry)}`;
+      return `${entry.type}::${semanticHandler}::${semanticTriggerSignature(entry)}${reactSourcePosition ? `::react-occurrence:${reactSourcePosition}` : ''}`;
     };
     const richness = (entry: CASEntryPoint): number =>
       (entry.handler?.node_id ? 3 : 0) +
@@ -23490,10 +23493,17 @@ export class AnalyzerOrchestrator {
         other: 0
       },
       by_status: {
-        passing: allTests.length - skipped,
+        passing: 0,
         failing: 0,
         skipped,
-        flaky
+        flaky,
+        unknown: allTests.length - skipped,
+      },
+      execution: {
+        status: 'not-run',
+        source: 'static-analysis',
+        observed_tests: 0,
+        note: 'Tests were discovered from source; no test execution results were supplied.',
       },
       coverage: {
         status: 'not-measured',
@@ -23542,6 +23552,7 @@ export class AnalyzerOrchestrator {
 
     for (const node of nodes) {
       const hasDoc = !!node.documentation;
+      if (node.metadata?.is_generated) continue;
       const type = node.type;
 
       if (functionTypes.has(type)) {
@@ -23606,7 +23617,7 @@ export class AnalyzerOrchestrator {
         examples_provided: examplesProvided,
         deprecated_items: deprecatedItems
       },
-      missing_documentation: missingDocs.slice(0, 100)
+      missing_documentation: missingDocs.sort((a, b) => a.node_id.localeCompare(b.node_id))
     };
   }
 
@@ -23689,6 +23700,7 @@ export class AnalyzerOrchestrator {
 
     for (const node of nodes) {
       if (!node.implementation_status) continue;
+      if (node.metadata?.is_generated) continue;
 
       switch (node.implementation_status.status) {
         case 'complete': complete++; break;
@@ -23750,8 +23762,8 @@ export class AnalyzerOrchestrator {
       deprecated,
       experimental,
       health_score: Math.round(healthScore * 100) / 100,
-      risk_areas: riskAreas.slice(0, 50),
-      deprecation_timeline: deprecationTimeline.length > 0 ? deprecationTimeline : undefined
+      risk_areas: riskAreas.sort((a, b) => a.node_id.localeCompare(b.node_id)),
+      deprecation_timeline: deprecationTimeline.length > 0 ? deprecationTimeline.sort((a, b) => a.node_id.localeCompare(b.node_id)) : undefined
     };
   }
 
@@ -23781,9 +23793,8 @@ export class AnalyzerOrchestrator {
     const boundaryViolations = idiomViolations.filter(v => v.category === 'module-boundary').length;
     const duplicateNodes = this.detectDuplicateConceptSignals(nodes);
     const complexNodes = nodes
-      .filter(node => (node.metadata?.complexity?.cyclomatic || 0) >= 20)
-      .sort((a, b) => (b.metadata?.complexity?.cyclomatic || 0) - (a.metadata?.complexity?.cyclomatic || 0))
-      .slice(0, 10);
+      .filter(node => !node.metadata?.is_generated && (node.metadata?.complexity?.cyclomatic || 0) >= 20)
+      .sort((a, b) => (b.metadata?.complexity?.cyclomatic || 0) - (a.metadata?.complexity?.cyclomatic || 0) || a.id.localeCompare(b.id));
     const untestedCritical = changeRiskSummary.untested_critical_paths || [];
     const runtimeMissing = runtime.instrumentation?.missing_runtime_coverage || [];
 
@@ -23807,7 +23818,7 @@ export class AnalyzerOrchestrator {
         severity: conflictingParadigms.length > 2 ? 'high' : 'medium',
         title: 'Multiple architectural paradigms need explicit alignment',
         description: 'CAS detected several architecture patterns or anti-patterns that can cause agents to mix paradigms across features.',
-        evidence: [...primaryParadigms, ...conflictingParadigms].slice(0, 12),
+        evidence: [...primaryParadigms, ...conflictingParadigms],
         recommendation: 'Choose the target-area paradigm before editing and avoid copying patterns from unrelated subsystems.',
         agent_guidance: 'Use get_system_health, get_codebase_idioms, and get_agent_context before multi-file work; keep new files inside the selected subsystem paradigm.'
       });
@@ -23820,9 +23831,9 @@ export class AnalyzerOrchestrator {
         severity: duplicateNodes.length >= 5 ? 'high' : 'medium',
         title: 'Possible duplicate domain or service concepts',
         description: 'Similar concept names appear in the same architectural role, which can lead agents to create parallel implementations instead of extending the owner.',
-        affected_files: this.uniqueHealthStrings(duplicateNodes.flatMap(item => item.files)).slice(0, 20),
-        affected_nodes: duplicateNodes.map(item => item.node_ids).flat().slice(0, 20),
-        evidence: duplicateNodes.map(item => `${item.concept} (${item.role}): ${item.count} nodes`).slice(0, 10),
+        affected_files: this.uniqueHealthStrings(duplicateNodes.flatMap(item => item.files)),
+        affected_nodes: duplicateNodes.flatMap(item => item.node_ids),
+        evidence: duplicateNodes.map(item => `${item.concept} (${item.role}): ${item.count} nodes`),
         recommendation: 'Merge duplicate concepts or document a clear owner before adding adjacent behavior.',
         agent_guidance: 'Search capability memory and existing domain concepts before creating a new model, service, repository, or capability.'
       });
@@ -23835,7 +23846,7 @@ export class AnalyzerOrchestrator {
         severity: complexNodes.some(node => (node.metadata?.complexity?.cyclomatic || 0) >= 50) ? 'high' : 'medium',
         title: 'Complexity hotspots need targeted tests before changes',
         description: 'Several nodes have high cyclomatic complexity and are risky to modify without flow-level tests.',
-        affected_files: this.uniqueHealthStrings(complexNodes.map(node => node.source?.file).filter(Boolean) as string[]).slice(0, 10),
+        affected_files: this.uniqueHealthStrings(complexNodes.map(node => node.source?.file).filter(Boolean) as string[]),
         affected_nodes: complexNodes.map(node => node.id),
         evidence: complexNodes.map(node => `${node.name}: cyclomatic ${node.metadata?.complexity?.cyclomatic}`),
         recommendation: 'Refactor behind tests or split complex behavior into existing service/use-case boundaries.',
@@ -23849,7 +23860,7 @@ export class AnalyzerOrchestrator {
       ['module-boundary', boundaryViolations, 'module-boundary-drift', 'Module boundary convention drift'],
     ] as const) {
       if (count === 0) continue;
-      const examples = idiomViolations.filter(v => v.category === category).slice(0, 8);
+      const examples = idiomViolations.filter(v => v.category === category);
       riskAreas.push({
         id: type,
         type,
@@ -23871,8 +23882,8 @@ export class AnalyzerOrchestrator {
         severity: implementationHealth.risk_areas.some(area => area.risk_level === 'high') ? 'high' : 'medium',
         title: 'Incomplete or unstable implementation areas',
         description: `${implementationHealth.risk_areas.length} implementation health risk(s) were detected.`,
-        affected_nodes: implementationHealth.risk_areas.map(area => area.node_id).slice(0, 20),
-        evidence: implementationHealth.risk_areas.slice(0, 8).map(area => `${area.node_name}: ${area.risk_type}`),
+        affected_nodes: implementationHealth.risk_areas.map(area => area.node_id),
+        evidence: implementationHealth.risk_areas.map(area => `${area.node_name}: ${area.risk_type}`),
         recommendation: 'Complete or isolate incomplete behavior before building dependent features.',
         agent_guidance: 'Do not build new features on stubbed or deprecated nodes unless the task explicitly replaces them.'
       });
@@ -23885,8 +23896,8 @@ export class AnalyzerOrchestrator {
         severity: 'high',
         title: 'Critical paths lack mapped tests',
         description: `${untestedCritical.length} critical path(s) do not have mapped test protection.`,
-        affected_nodes: untestedCritical.slice(0, 20),
-        evidence: untestedCritical.slice(0, 10),
+        affected_nodes: untestedCritical,
+        evidence: untestedCritical,
         recommendation: 'Add or run focused tests before changing these paths.',
         agent_guidance: 'Use find_tests and get_flow_coverage before edits; add regression tests when coverage is missing.'
       });
@@ -23899,8 +23910,8 @@ export class AnalyzerOrchestrator {
         severity: runtimeMissing.length >= 10 ? 'medium' : 'low',
         title: 'Runtime telemetry coverage is incomplete',
         description: 'Static CAS can identify instrumentable paths that do not yet have runtime observations.',
-        affected_nodes: runtimeMissing.slice(0, 20),
-        evidence: runtimeMissing.slice(0, 10),
+        affected_nodes: runtimeMissing,
+        evidence: runtimeMissing,
         recommendation: 'Install or configure the runtime SDK on high-volume entry points and external exits.',
         agent_guidance: 'For production bug triage, combine get_runtime_observations with get_operational_priorities and static risk.'
       });
@@ -23943,7 +23954,7 @@ export class AnalyzerOrchestrator {
       summary: riskAreas.length === 0
         ? 'No major coherence, complexity, duplication, implementation, test, or runtime-coverage risks were detected.'
         : `${riskAreas.length} system health risk area(s) detected across architecture coherence, implementation health, tests, idioms, and runtime coverage.`,
-      risk_areas: riskAreas.slice(0, 25),
+      risk_areas: riskAreas,
       coherence: {
         status: coherenceStatus,
         paradigm_count: primaryParadigms.length,
@@ -23955,8 +23966,8 @@ export class AnalyzerOrchestrator {
         duplication_signals: duplicateNodes.length
       },
       remediation: {
-        immediate: riskAreas.slice(0, 6).map(area => area.recommendation),
-        agent_rules: this.uniqueHealthStrings(riskAreas.map(area => area.agent_guidance)).slice(0, 8),
+        immediate: riskAreas.map(area => area.recommendation),
+        agent_rules: this.uniqueHealthStrings(riskAreas.map(area => area.agent_guidance)),
         validation_tools: [
           'get_system_health',
           'get_codebase_idioms',
@@ -23973,6 +23984,7 @@ export class AnalyzerOrchestrator {
   private detectDuplicateConceptSignals(nodes: CASNode[]): Array<{ concept: string; role: string; count: number; node_ids: string[]; files: string[] }> {
     const conceptMap = new Map<string, Map<string, Array<{ id: string; file?: string }>>>();
     for (const node of nodes) {
+      if (node.metadata?.is_generated) continue;
       if (!['class', 'interface', 'service', 'repository', 'entity', 'model', 'component', 'function'].includes(node.type)) continue;
       const concept = this.normalizedDuplicateConceptName(node);
       if (concept.length < 4) continue;
@@ -23995,15 +24007,13 @@ export class AnalyzerOrchestrator {
           concept,
           role,
           count: entries.length,
-          node_ids: entries.map(entry => entry.id),
-          files: uniqueFiles
+          node_ids: entries.map(entry => entry.id).sort(),
+          files: uniqueFiles.sort()
         });
       }
     }
 
-    return duplicateSignals
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 20);
+    return duplicateSignals.sort((a, b) => b.count - a.count || a.role.localeCompare(b.role) || a.concept.localeCompare(b.concept));
   }
 
   private normalizedDuplicateConceptName(node: CASNode): string {
@@ -25527,7 +25537,6 @@ export class AnalyzerOrchestrator {
       required_services: requiredServices.length > 0 ? requiredServices : undefined
     };
   }
-
   private inferConfigFormat(fileName: string): string {
     if (fileName.endsWith('.json')) return 'json';
     if (fileName.endsWith('.yml') || fileName.endsWith('.yaml')) return 'yaml';
@@ -25540,13 +25549,11 @@ export class AnalyzerOrchestrator {
     if (fileName.endsWith('.py')) return 'python';
     return 'other';
   }
-
   private isSensitiveEnvVar(name: string): boolean {
     const sensitive = ['secret', 'password', 'key', 'token', 'credential', 'auth', 'private'];
     const lower = (name || '').toLowerCase();
     return sensitive.some(s => lower.includes(s));
   }
-
   private deriveParentFromContainsEdges(nodes: CASNode[], edges: CASEdge[]): void {
     const nodeMap = this.getNodeLookup(nodes);
     const containsEdges = edges.filter(e => e.type === 'contains' && e.metadata?.attributes?.relationship !== 'structural_ownership');
@@ -25560,34 +25567,25 @@ export class AnalyzerOrchestrator {
       }
     }
   }
-
   private enrichNodePerspectives(nodes: CASNode[], perspectives: CASPerspective[], matchingPopulation: CASNode[] = nodes): void {
     const trivialTypes = new Set(['import', 'using']);
-
     if (perspectives.length > 0) {
       for (const perspective of perspectives) {
         const visibleTypes = perspective.connection_rules?.visible_node_types;
-
         let matchedCount = 0;
         if (visibleTypes && visibleTypes.length > 0) {
           matchedCount = matchingPopulation.filter(n => visibleTypes.includes(n.type)).length;
         }
-
         const useStrictFilter = visibleTypes && visibleTypes.length > 0 && matchedCount > 0;
-
         for (const node of nodes) {
           if (trivialTypes.has(node.type)) continue;
-
           if (useStrictFilter && !this.nodeMatchesPerspective(node, visibleTypes!)) {
             continue;
           }
-
           if (!node.perspectives) {
             node.perspectives = {};
           }
-
           const hierarchy = buildPerspectiveHierarchy(node, perspective);
-
           node.perspectives[perspective.id] = {
             hierarchy,
             level: node.level || 1,
@@ -25596,7 +25594,6 @@ export class AnalyzerOrchestrator {
         }
       }
     }
-
     const uncoveredNodes = nodes.filter(n => !trivialTypes.has(n.type) && (!n.perspectives || Object.keys(n.perspectives).length === 0));
     if (uncoveredNodes.length > 0) {
       const fallbackPerspective: CASPerspective = {
@@ -25609,7 +25606,6 @@ export class AnalyzerOrchestrator {
           visible_node_types: []
         }
       };
-
       for (const node of uncoveredNodes) {
         if (!node.perspectives) {
           node.perspectives = {};
@@ -25622,10 +25618,8 @@ export class AnalyzerOrchestrator {
       }
     }
   }
-
   private nodeMatchesPerspective(node: CASNode, visibleTypes: string[]): boolean {
     if (visibleTypes.includes(node.type)) return true;
-
     for (const vt of visibleTypes) {
       const suffix = vt.replace(/^[a-z]+_/, '');
       if (suffix === node.type) return true;
@@ -25633,9 +25627,6 @@ export class AnalyzerOrchestrator {
       if (node.subcategories?.includes(suffix)) return true;
       if (node.subcategories?.includes(vt)) return true;
     }
-
     return false;
   }
-
-
 }

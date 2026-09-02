@@ -376,6 +376,14 @@ export function getRuntimeInstrumentationPlan(cas: CASOutput, opts: { limit?: nu
   };
 }
 
+export function agentStartingPointCount(value: unknown): number {
+  if (Array.isArray(value)) return value.length;
+  if (!value || typeof value !== 'object') return 0;
+  const groups = value as Record<string, unknown>;
+  return ['entry_points', 'exit_points', 'connected_nodes', 'runtime_static_links']
+    .reduce((count, key) => count + (Array.isArray(groups[key]) ? groups[key].length : 0), 0);
+}
+
 export async function evaluateAgentTaskProof(cas: CASOutput, pathValue: string, tasks: AgentTask[]) {
   const taskReports = await Promise.all(tasks.map(async task => {
     const context = await getAgentContext(cas, pathValue, task);
@@ -384,7 +392,7 @@ export async function evaluateAgentTaskProof(cas: CASOutput, pathValue: string, 
       system?: unknown;
       product_orientation?: unknown;
       source_reading_rule?: string;
-      starting_points?: unknown[];
+      starting_points?: unknown[] | { entry_points?: unknown[]; exit_points?: unknown[]; connected_nodes?: unknown[]; runtime_static_links?: unknown[] };
     };
     const orientation = task.task_type === 'orient' && !task.target && !task.related_paths?.length;
     const fileReadPlan = Array.isArray(context.file_read_plan) ? context.file_read_plan : [];
@@ -413,8 +421,8 @@ export async function evaluateAgentTaskProof(cas: CASOutput, pathValue: string, 
       ),
       simpleCheck(
         orientation ? 'starting-points' : 'test-context',
-        orientation ? Array.isArray(orientationContext.starting_points) && orientationContext.starting_points.length > 0 : Boolean(workContext?.tests),
-        orientation ? `${orientationContext.starting_points?.length || 0} starting points` : 'test context',
+        orientation ? agentStartingPointCount(orientationContext.starting_points) > 0 : Boolean(workContext?.tests),
+        orientation ? `${agentStartingPointCount(orientationContext.starting_points)} starting points` : 'test context',
       ),
       simpleCheck('mcp-followups', nextCalls.length > 0, `${nextCalls.length} calls`),
     ];

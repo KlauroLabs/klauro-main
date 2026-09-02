@@ -42,6 +42,21 @@ export function buildAgentBootstrapPrompt(
   readiness: ReturnType<typeof evaluateAgentReadiness>
 ): string {
   const sections: string[] = [];
+  const startContext = start as any;
+  const scale = startContext.scale || (readiness as any).summary || {};
+  const scaleNodes = scale.nodes ?? cas.nodes?.length ?? 0;
+  const scaleEdges = scale.edges ?? cas.edges?.length ?? 0;
+  const scaleEntryPoints = scale.entry_points ?? cas.entry_points?.length ?? 0;
+  const scaleErrors = scale.analysis_errors ?? scale.errors ??
+    (cas.analysis_errors || []).filter(error => error.severity === 'error').length;
+  const scaleWarnings = scale.analysis_warnings ?? scale.warnings ??
+    (cas.analysis_errors || []).filter(error => error.severity === 'warning').length;
+  const answerPackGaps = Array.isArray(startContext.answer_pack?.gaps)
+    ? startContext.answer_pack.gaps
+    : [];
+  const whenToReadFiles = Array.isArray(startContext.when_to_read_files)
+    ? startContext.when_to_read_files
+    : [];
 
   sections.push(`# Agent Bootstrap: ${cas.system.name}`);
   sections.push(`Agent context ready: ${readiness.agent_context_ready ? 'yes' : 'no'}`);
@@ -51,7 +66,7 @@ export function buildAgentBootstrapPrompt(
 
   sections.push('');
   sections.push('## Operating Rule');
-  sections.push(start.default_rule);
+  sections.push(startContext.default_rule || startContext.rule || 'Use CAS-backed context before broad source exploration.');
   sections.push(plan.rule);
   sections.push('For edit/debug/review work, prefer `get_agent_context` with `task.response_profile="capsule-only"`, read `K15`, and execute `K5` before broad file reads. Use `first-turn` only when capsule-only leaves a concrete gap.');
   sections.push('Understand at every level, not just files: this codebase is Capability -> Flow -> Step -> Function. `get_summary` names the capabilities; `get_flow_concepts` breaks one into named flows as ordered steps (Validate -> Charge -> Persist -> Notify); `get_coding_context`/`get_call_chain` drill a step into its concrete function(s) — 1:1, 1:many, or a sub-section. Orient wide, narrow through flows/steps, then edit.');
@@ -69,12 +84,12 @@ export function buildAgentBootstrapPrompt(
 
   sections.push('');
   sections.push('## Scale');
-  sections.push(`Nodes: ${start.scale.nodes}, Edges: ${start.scale.edges}, Entry points: ${start.scale.entry_points}, Analysis errors: ${start.scale.analysis_errors}, warnings: ${start.scale.analysis_warnings ?? 0}`);
+  sections.push(`Nodes: ${scaleNodes}, Edges: ${scaleEdges}, Entry points: ${scaleEntryPoints}, Analysis errors: ${scaleErrors}, warnings: ${scaleWarnings}`);
 
-  if (start.answer_pack.gaps.length > 0) {
+  if (answerPackGaps.length > 0) {
     sections.push('');
     sections.push('## Answer Pack Gaps');
-    for (const gap of start.answer_pack.gaps) sections.push(`- ${gap}`);
+    for (const gap of answerPackGaps) sections.push(`- ${gap}`);
   }
 
   sections.push('');
@@ -138,9 +153,11 @@ export function buildAgentBootstrapPrompt(
     }
   }
 
-  sections.push('');
-  sections.push('## When To Read Files');
-  for (const rule of start.when_to_read_files) sections.push(`- ${rule}`);
+  if (whenToReadFiles.length > 0) {
+    sections.push('');
+    sections.push('## When To Read Files');
+    for (const rule of whenToReadFiles) sections.push(`- ${rule}`);
+  }
 
   return sections.join('\n');
 }

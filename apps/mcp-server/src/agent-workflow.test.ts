@@ -69,6 +69,8 @@ test('openAgentWorkbench returns a product-level context for agent work', async 
       decision.existing_capability === 'Tenant-scoped user management'
     ));
     assert.ok(context.task_context.work_context.architecture_context.architecture_budget.includes('Service Layer'));
+    assert.ok(Array.isArray(context.task_context.work_context.tests.mocks));
+    assert.ok(Array.isArray(context.task_context.work_context.tests.fixtures));
     assert.ok(context.task_context.work_context.risk_context.target_risk);
     assert.equal(context.task_context.work_context.risk_context.target_risk.name, 'UsersService');
     assert.ok(context.task_context.work_context.risk_context.agent_rules.some((rule: string) => rule.includes('assess_change_risk')));
@@ -1457,7 +1459,7 @@ test('readiness rejects completed comprehension with no published product capabi
   });
 });
 
-test('readiness distinguishes structural agent context from canonical comprehension', async () => {
+test('readiness refuses agent context when canonical comprehension is unavailable', async () => {
   await withWorkspace(async workspace => {
     const cas = fixtureCas();
     cas.ai_enrichment = 'disabled';
@@ -1472,7 +1474,8 @@ test('readiness distinguishes structural agent context from canonical comprehens
     assert.equal(readiness.analysis_only_understanding_ready, false);
     assert.equal(readiness.comprehension.status, 'unavailable');
     assert.equal(readiness.comprehension.structural_candidates, 1);
-    assert.equal(comprehensionGate?.status, 'warn');
+    assert.equal(comprehensionGate?.status, 'fail');
+    assert.equal(readiness.agent_context_ready, false);
   });
 });
 

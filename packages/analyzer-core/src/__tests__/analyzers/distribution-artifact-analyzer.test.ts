@@ -161,4 +161,46 @@ describe('DistributionArtifactAnalyzer', () => {
     // yields nothing product-shaped either — no identity survives at all.
     expect(productName).toBeUndefined();
   });
+
+  test('analyzes distribution artifacts larger than the former 250 KB cutoff', async () => {
+    projectPath = tempProject();
+    const content = [
+      'Name "Large Product"',
+      'OutFile "LargeProductSetup.exe"',
+      'Section "Install"',
+      'SectionEnd',
+      ...Array.from({ length: 30_000 }, () => '; padding'),
+    ].join('\n');
+    expect(Buffer.byteLength(content)).toBeGreaterThan(250_000);
+    fs.writeFileSync(path.join(projectPath, 'installer.nsi'), content);
+
+    const contribution = await analyzer.analyze({ projectPath });
+    const installerNodes = (contribution.nodes ?? []).filter(node => (node.metadata as any)?.artifact_kind === 'installer');
+    expect(installerNodes).toHaveLength(1);
+  });
+  test('retains every binary, service, and install path in a distribution artifact', async () => {
+    projectPath = tempProject();
+    const binaries = Array.from({ length: 55 }, (_, index) => `product-${index}.exe`);
+    const services = Array.from({ length: 25 }, (_, index) => `product-${index}`);
+    const installPaths = Array.from({ length: 25 }, (_, index) => `/opt/product-${index}`);
+    fs.writeFileSync(
+      path.join(projectPath, 'installer.nsi'),
+      [
+        'Name "Complete Product"',
+        ...binaries.map(binary => `File "build\\\\${binary}"`),
+        ...services.map(service => `DetailPrint "${service}.service"`),
+        ...installPaths.map(installPath => `InstallDir "${installPath}"`),
+        'Section "Install"',
+        'SectionEnd',
+      ].join('\n')
+    );
+
+    const contribution = await analyzer.analyze({ projectPath });
+    const node = (contribution.nodes ?? []).find(candidate => (candidate.metadata as any)?.artifact_kind === 'installer');
+    expect(node).toBeDefined();
+    const metadata = node!.metadata as any;
+    expect(metadata.binary_names).toEqual(binaries.map(binary => binary.replace(/\.exe$/, '')));
+    expect(metadata.service_names).toEqual(services);
+    expect(metadata.install_paths).toEqual(installPaths);
+  });
 });

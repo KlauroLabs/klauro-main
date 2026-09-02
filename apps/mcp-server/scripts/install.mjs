@@ -11,6 +11,7 @@ import {
   decideBuildAction,
   evaluateNodeVersion,
   formatCheck,
+  inspectClientBundle,
   inspectStorage,
   mcpJsonSnippet,
   operatingLoopSnippet,
@@ -81,16 +82,26 @@ if (depsPresent) {
 }
 
 step('Locating the server bundle');
-const distComplete = ['index.cjs', 'server.cjs', 'cli.cjs', 'analysis-worker.cjs', 'tree-sitter-ts-worker.cjs', 'handshake.json']
-  .every(file => fs.existsSync(path.join(packageRoot, 'dist', file)));
-const buildAction = decideBuildAction({ distComplete, rebuildRequested: options.rebuild });
+let bundleInspection = inspectClientBundle(path.join(packageRoot, 'dist'));
+const buildAction = decideBuildAction({ distComplete: bundleInspection.complete, rebuildRequested: options.rebuild });
 if (!buildAction.build) {
   report({ id: 'bundle', status: 'pass', detail: `Using ${bundlePath}: ${buildAction.reason}.` });
 } else {
   print(`     building bundle: ${buildAction.reason}`);
   print('     note: do not rebuild while another process is actively serving from dist/.');
   if (run('npm', ['run', 'build'])) {
-    report({ id: 'bundle', status: 'pass', detail: `Built ${bundlePath}.` });
+    bundleInspection = inspectClientBundle(path.join(packageRoot, 'dist'));
+    if (bundleInspection.complete) {
+      report({ id: 'bundle', status: 'pass', detail: `Built and verified ${bundlePath}.` });
+    } else {
+      report({
+        id: 'bundle',
+        status: 'fail',
+        detail: `Build completed but the client bundle is incomplete: ${bundleInspection.missing.join(', ')}.`,
+        fix: `Run npm run build in ${packageRoot} and verify the installed-client dist files.`,
+      });
+      finish();
+    }
   } else {
     report({ id: 'bundle', status: 'fail', detail: 'npm run build failed (see output above).', fix: `Run npm run build manually in ${packageRoot} and re-run this installer.` });
     finish();

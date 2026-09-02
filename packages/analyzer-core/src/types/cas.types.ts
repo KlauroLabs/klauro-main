@@ -1,7 +1,6 @@
 import { createHash } from 'crypto';
 import type { CASComposedClaimProvenance, CASTerminalityProvenance } from './cas-composition.types';
 export type { CASComposedClaimProvenance, CASTerminalityEdge, CASTerminalityProvenance, CASTerminalityRelationEvidence } from './cas-composition.types';
-
 export interface CASOutput {
   id?: string;
   parent_id?: string | null;
@@ -16,7 +15,6 @@ export interface CASOutput {
   analysis_id: string;
   system: CASSystem;
   analysis_phases?: CASAnalysisPhase[];
-
   timings?: CASAnalysisTimings;
   architecture_summary?: CASArchitectureSummary;
   route_table?: CASRouteTableEntry[];
@@ -31,30 +29,17 @@ export interface CASOutput {
   dependencies?: Dependencies;
   disclosure?: DisclosureHints;
   analyzer_contributions: CASAnalyzerContribution[];
-
   method_calls?: CASMethodCall[];
   call_chains?: CASCallChain[];
   decorators?: CASDecorator[];
-
   documentation_summary?: CASDocumentationSummary;
   todos_summary?: CASTodoSummary;
   implementation_health?: CASImplementationHealth;
   system_health?: CASSystemHealth;
-
   behaviors?: CASBehavior[];
   patterns?: CASPattern[];
-
   communities?: CASCommunity[];
-
-
-
-
-
-
   reachability_index?: CASReachabilityIndex;
-
-
-
   structural_importance_meta?: CASStructuralImportanceMeta;
   categories?: CASCategories;
   tags?: CASTag[];
@@ -62,14 +47,10 @@ export interface CASOutput {
   cross_repository_links?: CASCrossRepositoryLink[];
   security_contexts?: CASSecurityContext[];
   test_coverage?: CASTestCoverage;
-
-
   test_suites?: CASTestSuite[];
   mocks?: CASMock[];
   fixtures?: CASFixture[];
   test_summary?: CASTestSummary;
-
-
   intents?: CASIntent[];
   flow_summary?: CASFlowSummary;
   change_risks?: CASChangeRisk[];
@@ -89,17 +70,6 @@ export interface CASOutput {
   flows?: FlowConcept[];
   steps?: FlowStep[];
   terminality?: CASTerminality;
-
-
-
-
-
-
-
-
-
-
-
 
 
   behavior_surfaces?: SystemCapability[];
@@ -1353,7 +1323,7 @@ export interface CASProductMap {
   health: {
     status?: 'healthy' | 'watch' | 'at-risk' | 'critical';
     score?: number;
-    tests: { total: number; passing: number; failing: number; coverage_percentage?: number };
+    tests: { total: number; passing: number; failing: number; unknown?: number; execution_status?: 'not-run' | 'partial' | 'observed' | 'unknown'; coverage_percentage?: number };
     implementation: {
       complete: number;
       partial: number;
@@ -1364,8 +1334,6 @@ export interface CASProductMap {
     };
     top_risks: Array<{ name: string; level: 'low' | 'medium' | 'high'; type: string; recommendation: string }>;
   };
-
-
 
 
 
@@ -1823,9 +1791,9 @@ export interface CASAnalyzerContribution {
   edges_contributed?: number;
   capabilities?: string[];
   analysis_scope?: {
-    files_analyzed?: number;
-    files_skipped?: number;
-    patterns_detected?: string[];
+    files_eligible?: number; files_analyzed?: number;
+    files_skipped?: number; complete?: boolean; applicability?: 'file-coverage' | 'not-applicable';
+    patterns_detected?: string[]; incomplete_reason?: string; omitted_paths?: string[];
   };
   contributed_categories?: string[];
   contributed_entry_points?: number;
@@ -3111,7 +3079,9 @@ export interface CASTestSummary {
     failing: number;
     skipped: number;
     flaky: number;
+    unknown?: number;
   };
+  execution?: { status: 'not-run' | 'partial' | 'observed'; source: 'static-analysis' | 'runtime'; observed_tests: number; note?: string };
   coverage: {
     status?: 'measured' | 'not-measured';
     overall_percentage?: number;
@@ -3273,7 +3243,7 @@ export interface CASAnalysisPhase {
   id: string;
   name: string;
   priority: number;
-  status: 'complete' | 'partial' | 'skipped' | 'deferred';
+  status: 'complete' | 'partial' | 'failed' | 'skipped' | 'deferred';
   purpose: 'visualization' | 'agent-development' | 'deep-context' | 'ai-enrichment' | 'runtime';
   default_phase: boolean;
   description: string;
@@ -4054,7 +4024,7 @@ export interface EnhancedSystemPurpose extends SystemPurpose {
   description_capability_gaps?: Array<{
     entity_id: string;
     entity_name: string;
-    disposition: 'reinjected-from-candidate' | 'no-structural-candidate';
+    disposition: 'structural-evidence-only' | 'no-structural-candidate';
     capability_id?: string;
   }>;
 
@@ -4081,6 +4051,26 @@ export interface EnhancedSystemPurpose extends SystemPurpose {
     minimum_published_capabilities: number;
     status: 'accepted' | 'partial' | 'rejected' | 'unavailable';
     reason?: string;
+  };
+  capability_reconciliation?: {
+    proposals: Array<{
+      requirement_id: string;
+      statement: string;
+      first_party_outcome_text?: string;
+      audience?: 'agent' | 'human';
+      candidate_ids: string[];
+      disposition: 'grounded' | 'intent-gap';
+      capability_ids: string[];
+    }>;
+    undocumented_capabilities: Array<{
+      capability_id: string;
+      name: string;
+    }>;
+    structural_gaps?: Array<{
+      candidate_id: string;
+      name: string;
+      reason: string;
+    }>;
   };
 
 

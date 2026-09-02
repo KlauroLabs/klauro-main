@@ -42,7 +42,7 @@ export function evaluateComprehensionReadiness(cas: CASOutput): ComprehensionRea
   const pending = cas.ai_enrichment === 'pending' || l5?.status === 'pending';
   const settled = cas.ai_enrichment === 'ready' || cas.ai_enrichment === 'synchronous' || l5?.status === 'ready';
   const accepted = coverageStatus === 'accepted';
-  const minimum = coverage?.minimum_published_capabilities || 1;
+  const minimum = coverage?.minimum_published_capabilities ?? 0;
   const ready = settled && accepted && canonicalCapabilities >= minimum;
 
   if (ready) {
@@ -95,16 +95,16 @@ export function evaluateComprehensionReadiness(cas: CASOutput): ComprehensionRea
     catalog_coverage: coverageStatus,
     reason: cas.ai_enrichment === 'disabled'
       ? 'AI comprehension is disabled; structural candidates are not canonical product capabilities'
-      : 'No canonical product capabilities are available',
+      : coverage?.reason || 'No canonical product capabilities are available',
   };
 }
 
 export function buildComprehensionGate(cas: CASOutput, readiness: ComprehensionReadiness): ComprehensionGateResult {
-  const invalidSettledCatalog = (cas.ai_enrichment === 'ready' || cas.ai_enrichment === 'synchronous')
-    && readiness.canonical_capabilities === 0;
+  const invalidCatalog = cas.enhanced_system_purpose?.capability_catalog_coverage === undefined;
+  const rejectedCatalog = cas.enhanced_system_purpose?.capability_catalog_coverage?.status === 'rejected';
   const status = readiness.ready
     ? 'pass'
-    : readiness.status === 'error' || invalidSettledCatalog ? 'fail' : 'warn';
+    : readiness.status === 'error' || invalidCatalog || rejectedCatalog ? 'fail' : 'warn';
   const score = readiness.ready ? 100 : readiness.status === 'partial' ? 80 : status === 'fail' ? 0 : 65;
   return { status, score, detail: readiness.reason };
 }

@@ -28,7 +28,7 @@ import {
 } from './cas-sections';
 import { iterateDeployableChildCas, materializeDeployableCasTree, prepareDeployableCasProjection } from './deployable-analysis';
 import { readZstdJson } from './zstd-json';
-import { describeAnalysisVersion, type AnalysisVersionInfo } from './analysis-version';
+import { describeAnalysisVersion, hasFailedStructuralAnalysisLayer, type AnalysisVersionInfo } from './analysis-version';
 import {
   acquireSegmentedAnalysisLease,
   loadCompactCASGraph,
@@ -42,7 +42,7 @@ import {
 } from './segmented-analysis-storage';
 import type { CompactCASGraph } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-graph';
 import type { LoadedCompactCASSearch } from './segmented-analysis-storage';
-import { STRUCTURAL_ANALYSIS_LAYERS, isStructuralAnalysisLayer } from './analysis-layer-contract';
+import { STRUCTURAL_ANALYSIS_LAYERS } from './analysis-layer-contract';
 import { findCasById, hydrateSegmentedCasTree, loadCasProjection, loadLegacyProjectedCas, type LoadedAnalysisProjection } from './recursive-cas-storage';
 import {
   compressLegacyJsonArtifact,
@@ -675,10 +675,11 @@ export async function saveAnalysis(
   const fileName = `${projectSlug(projectPath)}${trackSuffix(track)}.json${compressedJsonExtension()}`;
   const filePath = path.join(storagePath, fileName);
   const layersReady = output.layers_ready;
-  const completedOutput = !layersReady || layersReady.complete === true;
-  const structurallyQueryable = !layersReady || layersReady.complete === true || STRUCTURAL_ANALYSIS_LAYERS.every(layer =>
-    layersReady.layers.some(candidate => candidate.layer === layer && candidate.status === 'ready')
-  );
+  const hasLayerManifest = Boolean(layersReady?.layers?.length);
+  const completedOutput = hasLayerManifest && layersReady?.complete === true;
+  const structurallyQueryable = hasLayerManifest && (layersReady?.complete === true || STRUCTURAL_ANALYSIS_LAYERS.every(layer =>
+    layersReady?.layers?.some(candidate => candidate.layer === layer && candidate.status === 'ready') === true
+  ));
   const segmentsWorthWriting = structurallyQueryable && options.writeSegmentedAnalysis !== false;
   const canonicalSegmented = segmentsWorthWriting && (options.canonicalSegmented
     ?? process.env.KLAURO_CANONICAL_SEGMENTED_STORAGE === '1');
@@ -780,10 +781,6 @@ interface ResolvedAnalysisForLoad {
   filePath: string;
 }
 
-function hasFailedStructuralLayer(entry: AnalysisEntry): boolean {
-  return Boolean(entry.layers_ready?.layers.some(layer => isStructuralAnalysisLayer(layer.layer) && layer.status === 'error'));
-}
-
 async function resolveAnalysisForLoad(
   projectPath: string,
   requestedTrack?: AnalysisTrack
@@ -795,7 +792,7 @@ async function resolveAnalysisForLoad(
 
   const entry = index.analyses[analysisIndexKey(projectPath, track)];
 
-  if (!entry || hasFailedStructuralLayer(entry)) return null;
+  if (!entry || hasFailedStructuralAnalysisLayer(entry)) return null;
 
   const storagePath = getStoragePath();
   const filePath = path.join(storagePath, entry.file);

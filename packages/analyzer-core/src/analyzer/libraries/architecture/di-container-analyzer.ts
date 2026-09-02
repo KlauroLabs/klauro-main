@@ -528,7 +528,7 @@ export class DiContainerBindingAnalyzer extends BaseAnalyzer {
       ));
 
       const bindingNodeIds: string[] = [];
-      for (const binding of bindings.slice(0, 200)) {
+      for (const binding of bindings) {
         const bindingNodeId = `di_binding_${this.sanitizeId(ruleDef.id)}_${this.sanitizeId(binding.interfaceName)}_${this.sanitizeId(binding.file)}_${binding.line}`;
         bindingNodeIds.push(bindingNodeId);
 

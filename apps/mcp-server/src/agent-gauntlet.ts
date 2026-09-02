@@ -79,7 +79,7 @@ function printHelp(): void {
 
 async function analyzeTarget(target: RepoTarget): Promise<TargetAgentReport> {
   const startedAt = Date.now();
-  const output = await analyzeForBench(target.path);
+  const output = await analyzeForBench(target.path, { readinessRequirement: 'complete' });
   const analyzedAt = Date.now();
   const testEvidence = await getTestDiscoveryEvidence(target.path, output);
   const testsDiscoveredAt = Date.now();

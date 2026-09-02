@@ -136,9 +136,11 @@ describe('hostile input guards', () => {
       });
 
       const preloaded = await analyzer.preloadFilesWithTreeSitter([bigFile], tempDir);
-      expect(preloaded).toHaveLength(0);
+      expect(preloaded).toHaveLength(1);
+      expect(preloaded[0].relativePath).toBe(bigFile);
+      expect(preloaded[0].extraction).toBeDefined();
       const warnings: string[] = analyzer.collectAnalysisWarnings();
-      expect(warnings.some(warning => warning.includes(bigFile) && warning.includes('skipped'))).toBe(true);
+      expect(warnings.some(warning => warning.includes(bigFile) && /skipped|source file limit/.test(warning))).toBe(false);
     });
 
     it('records a warning for files with syntax errors while still extracting what it can', async () => {

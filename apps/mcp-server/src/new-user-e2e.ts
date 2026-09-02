@@ -1,8 +1,10 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { Server } from 'node:http';
+import { agentWorkflowFollowUps, McpWorkflowSession, resolveIncrementalTarget, selectAnalysisTarget, selectedWorkflowPath, validateAgentWorkflow, validateArtifactBuildIdentity, type AgentWorkflowPayloads, type WorkflowTarget } from './new-user-e2e-proof';
 
 interface StepResult {
   name: string;
@@ -18,6 +20,9 @@ const DEFAULT_OUTPUT_PATH = path.join(packageRoot, '.klauro-new-user-e2e', 'late
 
 interface Options {
   outputPath: string | null;
+  repoPath: string | null;
+  tarballPath: string | null;
+  expectedSha: string | null;
 }
 
 interface NewUserE2EReport {
@@ -26,6 +31,10 @@ interface NewUserE2EReport {
   total_ms: number;
   max_total_ms: number;
   workspace: string;
+  source_repo: string;
+  source_commit: string;
+  artifact: { tarball: string; sha256: string; cli_identity: string; build_sha: string; expected_sha: string | null };
+  workflow: { selected_path: string; target: WorkflowTarget | null; transcript: string | null };
   steps: StepResult[];
 }
 
@@ -39,6 +48,10 @@ async function main(): Promise<void> {
   const remoteData = path.join(root, 'remote-data');
   const npmCache = path.join(root, 'npm-cache');
   const results: StepResult[] = [];
+  const sourceRepo = options.repoPath || fixturePath;
+  const expectedSha = options.expectedSha || process.env.KLAURO_RELEASE_SHA || process.env.KLAURO_GIT_SHA || null;
+  if (options.tarballPath && !expectedSha) throw new Error('--tarball requires --expected-sha or KLAURO_RELEASE_SHA/KLAURO_GIT_SHA');
+  if (!fs.statSync(sourceRepo, { throwIfNoEntry: false })?.isDirectory()) throw new Error(`Repository path does not exist: ${sourceRepo}`);
   const env = {
     ...process.env,
     HOME: path.join(root, 'home'),
@@ -53,27 +66,46 @@ async function main(): Promise<void> {
   fs.mkdirSync(env.HOME, { recursive: true });
   fs.mkdirSync(npmCache, { recursive: true });
   fs.mkdirSync(packDir, { recursive: true });
-  fs.cpSync(fixturePath, repo, { recursive: true });
+  fs.cpSync(sourceRepo, repo, {
+    recursive: true,
+    filter: source => !['.git', 'node_modules', '.klaurorc'].includes(path.basename(source)),
+  });
   initGitRepo(repo, env);
+  const sourceCommit = run('git', ['rev-parse', 'HEAD'], env, 30000, repo).stdout.trim();
 
   let server: Server | undefined;
   let shutdownAnalysisWorker: (() => void) | undefined;
+  let tarball = options.tarballPath || '';
+  let tarballSha256 = '';
+  let cliIdentity = '';
+  let artifactBuildSha = '';
+  let selectedPath = '';
+  let workflowTarget: WorkflowTarget | undefined;
+  let workflowTranscript: string | null = null;
   try {
     results.push(runStep('build customer artifact', () => {
+      if (tarball) return `using exact prebuilt customer artifact ${path.basename(tarball)}`;
       const result = run('npm', ['run', 'build'], env, 3 * 60 * 1000);
       assertOutput(result, /Built installed client/);
       return 'built the lightweight customer bundle';
     }));
 
-    let tarball = '';
     results.push(runStep('pack and install from customer tarball', () => {
-      const packed = run('npm', ['pack', path.join(packageRoot, '.customer-package'), '--pack-destination', packDir, '--json'], env);
-      const payload = parseJson(packed.stdout) as Array<{ filename: string }>;
-      tarball = path.join(packDir, payload[0].filename);
+      if (!tarball) {
+        const packed = run('npm', ['pack', path.join(packageRoot, '.customer-package'), '--pack-destination', packDir, '--json'], env);
+        const payload = parseJson(packed.stdout) as Array<{ filename: string }>;
+        tarball = path.join(packDir, payload[0].filename);
+      }
+      if (!fs.statSync(tarball, { throwIfNoEntry: false })?.isFile()) throw new Error(`Customer tarball does not exist: ${tarball}`);
+      tarballSha256 = createHash('sha256').update(fs.readFileSync(tarball)).digest('hex');
       run('npm', ['install', '--ignore-scripts', '--prefix', installPrefix, tarball], env);
       const packagePath = path.join(installPrefix, 'node_modules', '@klauro', 'mcp-server');
       if (fs.existsSync(path.join(packagePath, 'node_modules'))) throw new Error('Installed package unexpectedly contains dependencies');
-      return `installed ${path.basename(tarball)} with no package-local dependencies`;
+      const packageManifest = parseJson(fs.readFileSync(path.join(packagePath, 'package.json'), 'utf8'));
+      const buildStamp = parseJson(fs.readFileSync(path.join(packagePath, 'dist', 'build-stamp.json'), 'utf8'));
+      validateArtifactBuildIdentity(buildStamp, packageManifest.version, expectedSha);
+      artifactBuildSha = buildStamp.git_sha;
+      return `installed ${path.basename(tarball)} with no package-local dependencies at ${artifactBuildSha}`;
     }));
 
     const installedPackage = path.join(installPrefix, 'node_modules', '@klauro', 'mcp-server');
@@ -82,7 +114,9 @@ async function main(): Promise<void> {
     results.push(runStep('installed CLI is executable', () => {
       const result = run(process.execPath, [cliPath, '--version'], env);
       assertOutput(result, /\d+\.\d+\.\d+\+/);
-      return result.stdout.trim();
+      cliIdentity = result.stdout.trim();
+      if (expectedSha && !cliIdentity.includes(expectedSha)) throw new Error(`Installed CLI identity does not include expected release SHA ${expectedSha}: ${cliIdentity}`);
+      return cliIdentity;
     }));
 
     process.env.KLAURO_COORD_DIR = env.KLAURO_COORD_DIR;
@@ -114,51 +148,60 @@ async function main(): Promise<void> {
       return `.klaurorc binds project ${payload.project_id}`;
     }));
 
+    let analysisPayload: any;
     results.push(await runStepAsync('hosted analyzer full analysis', async () => {
       const result = await runAsync(process.execPath, [cliPath, 'analyze', repo, '--wait', '--json'], env, 8 * 60 * 1000);
-      const payload = parseJson(result.stdout);
-      if (payload.status !== 'success') throw new Error(`Expected success, got ${payload.status}`);
-      if ((payload.cas?.nodes?.length || 0) <= 0) throw new Error('Remote analysis returned no nodes');
-      return `${payload.analysis_type} remote analysis returned ${payload.cas.nodes.length} nodes and ${payload.cas.edges.length} edges`;
+      analysisPayload = parseJson(result.stdout);
+      if (analysisPayload.status !== 'success') throw new Error(`Expected success, got ${analysisPayload.status}`);
+      if ((analysisPayload.cas?.nodes?.length || 0) <= 0) throw new Error('Remote analysis returned no nodes');
+      workflowTarget = selectAnalysisTarget(analysisPayload.cas, repo);
+      return `${analysisPayload.analysis_type} remote analysis returned ${analysisPayload.cas.nodes.length} nodes and ${analysisPayload.cas.edges.length} edges`;
     }));
 
-    results.push(await runStepAsync('installed MCP analysis-first workflow', async () => {
+    results.push(await runStepAsync('installed MCP first context', async () => {
+      if (!workflowTarget) throw new Error('Analysis did not select an MCP workflow target');
       const task = {
         task_type: 'review',
-        target: 'app/main.py',
-        instructions: 'Explain the primary HTTP implementation path, validation, risks, and tests without broad source exploration.',
+        target: workflowTarget.target,
+        instructions: 'Explain the primary implementation path, validation, risks, and tests without broad source exploration.',
         success_criteria: ['Identify the implementation path', 'Identify relevant tests and risks'],
-        response_profile: 'first-turn',
+        response_profile: 'standard',
       };
-      const payloads = await callMcpTools(mcpPath, [
-        { name: 'resolve_agent_analysis', arguments: { path: repo, task } },
-        { name: 'get_agent_start_context', arguments: { path: repo, task } },
-        { name: 'get_agent_tool_plan', arguments: { path: repo, task } },
-        { name: 'get_agent_context', arguments: { path: repo, task } },
-        { name: 'get_coding_context', arguments: { path: repo, target: 'app/main.py', task_type: 'modify' } },
-      ], env);
-      for (const [name, payload] of Object.entries(payloads)) {
-        if (payload?.error) throw new Error(`${name}: ${String(payload.error)}`);
+      const payloads = {} as AgentWorkflowPayloads;
+      const session = new McpWorkflowSession(mcpPath, env);
+      const transcriptPath = options.outputPath ? `${options.outputPath}.workflow.jsonl` : null;
+      if (transcriptPath) workflowTranscript = transcriptPath;
+      try {
+        await session.initialize();
+        payloads.resolve_agent_analysis = await session.callTool('resolve_agent_analysis', { path: repo, task });
+        selectedPath = selectedWorkflowPath(payloads.resolve_agent_analysis, repo);
+        for (const call of agentWorkflowFollowUps(selectedPath, task, workflowTarget)) {
+          payloads[call.name] = await session.callTool(call.name, call.arguments);
+        }
+        validateAgentWorkflow(payloads, repo, workflowTarget);
+      } finally {
+        if (transcriptPath) {
+          fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+          fs.writeFileSync(transcriptPath, `${session.transcript.map(entry => JSON.stringify(entry)).join('\n')}\n`, 'utf8');
+        }
+        session.close();
       }
-      const start = JSON.stringify(payloads.get_agent_start_context);
-      const context = JSON.stringify(payloads.get_agent_context);
-      const coding = JSON.stringify(payloads.get_coding_context);
-      if (!start.includes('system')) throw new Error('Agent start context did not include system context');
-      if (!context.includes('app/main.py')) throw new Error('Task context did not resolve app/main.py');
-      if (!coding.includes('target_node')) throw new Error('Coding context did not resolve a target node');
-      return Object.entries(payloads)
+      return `installed MCP returned hosted system context; ${Object.entries(payloads)
         .map(([name, payload]) => `${name}=${summarizeMcpPayload(payload)}`)
-        .join('; ');
+        .join('; ')}`;
     }));
 
     results.push(await runStepAsync('hosted analyzer incremental sync', async () => {
-      const appFile = path.join(repo, 'app', 'main.py');
-      fs.appendFileSync(appFile, '\n\n@app.get("/readyz")\ndef readyz():\n    return {"ready": True}\n', 'utf8');
+      if (!workflowTarget) throw new Error('Analysis did not select an incremental sync target');
+      const appFile = options.repoPath ? resolveIncrementalTarget(repo, workflowTarget.file) : path.join(repo, 'app', 'main.py');
+      if (!fs.existsSync(appFile)) throw new Error(`Incremental target does not exist: ${appFile}`);
+      resolveIncrementalTarget(fs.realpathSync(repo), fs.realpathSync(appFile));
+      fs.appendFileSync(appFile, options.repoPath ? '\n' : '\n\n@app.get("/readyz")\ndef readyz():\n    return {"ready": True}\n', 'utf8');
       const result = await runAsync(process.execPath, [cliPath, 'remote-sync', repo, '--wait', '--json'], env, 8 * 60 * 1000);
       const payload = parseJson(result.stdout);
       if (payload.status !== 'success') throw new Error(`Expected success, got ${payload.status}`);
       if (!payload.change_report) throw new Error('Remote sync did not return a change_report');
-      if (!JSON.stringify(payload.cas?.entry_points || []).includes('readyz')) throw new Error('Incremental CAS did not include the new readyz route');
+      if (!options.repoPath && !JSON.stringify(payload.cas?.entry_points || []).includes('readyz')) throw new Error('Incremental CAS did not include the new readyz route');
       return `incremental sync returned ${payload.change_report.summary.filesModified + payload.change_report.summary.filesAdded} changed file(s)`;
     }));
 
@@ -167,7 +210,7 @@ async function main(): Promise<void> {
       throw new Error(`New-user E2E exceeded ${maxTotalMs}ms: ${totalMs}ms`);
     }
 
-    const report = buildReport(results, totalMs, root);
+    const report = buildReport(results, totalMs, root, sourceRepo, sourceCommit, tarball, tarballSha256, cliIdentity, artifactBuildSha, expectedSha, selectedPath, workflowTarget || null, workflowTranscript);
     if (options.outputPath) {
       fs.mkdirSync(path.dirname(options.outputPath), { recursive: true });
       fs.writeFileSync(options.outputPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
@@ -180,71 +223,6 @@ async function main(): Promise<void> {
       fs.rmSync(root, { recursive: true, force: true });
     }
   }
-}
-
-function callMcpTools(
-  bundlePath: string,
-  calls: Array<{ name: string; arguments: Record<string, unknown> }>,
-  env: NodeJS.ProcessEnv
-): Promise<Record<string, any>> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [bundlePath], { env, stdio: ['pipe', 'pipe', 'pipe'] });
-    let stdout = '';
-    let stderr = '';
-    const responses = new Map<number, any>();
-    const timer = setTimeout(() => {
-      child.kill();
-      reject(new Error(`MCP workflow timed out: ${trim(stderr)}`));
-    }, 180_000);
-    child.stderr.on('data', chunk => { stderr += chunk.toString(); });
-    child.stdout.on('data', chunk => {
-      stdout += chunk.toString();
-      let newline = stdout.indexOf('\n');
-      while (newline >= 0) {
-        const line = stdout.slice(0, newline).trim();
-        stdout = stdout.slice(newline + 1);
-        newline = stdout.indexOf('\n');
-        if (!line) continue;
-        const message = JSON.parse(line);
-        if (typeof message.id !== 'number' || message.id < 2) continue;
-        responses.set(message.id, message);
-        if (responses.size < calls.length) continue;
-        clearTimeout(timer);
-        child.kill();
-        const payloads: Record<string, any> = {};
-        for (let index = 0; index < calls.length; index++) {
-          const response = responses.get(index + 2);
-          if (response?.error) {
-            reject(new Error(response.error.message || JSON.stringify(response.error)));
-            return;
-          }
-          const text = response?.result?.content?.[0]?.text;
-          try {
-            payloads[calls[index].name] = typeof text === 'string' ? JSON.parse(text) : response?.result;
-          } catch {
-            payloads[calls[index].name] = { text };
-          }
-        }
-        resolve(payloads);
-        return;
-      }
-    });
-    child.on('error', error => {
-      clearTimeout(timer);
-      reject(error);
-    });
-    child.stdin.write([
-      JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'klauro-new-user-e2e', version: '1' } } }),
-      JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
-      ...calls.map((call, index) => JSON.stringify({
-        jsonrpc: '2.0',
-        id: index + 2,
-        method: 'tools/call',
-        params: call,
-      })),
-      '',
-    ].join('\n'));
-  });
 }
 
 function summarizeMcpPayload(payload: any): string {
@@ -359,10 +337,19 @@ function parseJson(text: string): any {
 
 function parseArgs(argv: string[]): Options {
   let outputPath: string | null = DEFAULT_OUTPUT_PATH;
+  let repoPath: string | null = null;
+  let tarballPath: string | null = null;
+  let expectedSha: string | null = null;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--output') {
       outputPath = path.resolve(argv[++i]);
+    } else if (arg === '--repo') {
+      repoPath = path.resolve(argv[++i]);
+    } else if (arg === '--tarball') {
+      tarballPath = path.resolve(argv[++i]);
+    } else if (arg === '--expected-sha') {
+      expectedSha = argv[++i];
     } else if (arg === '--no-output') {
       outputPath = null;
     } else if (arg === '--help' || arg === '-h') {
@@ -370,16 +357,33 @@ function parseArgs(argv: string[]): Options {
         'Usage: npm run new-user-e2e -- [options]',
         '',
         'Options:',
+        '  --repo /path/to/repo        Analyze a supplied repository copy instead of the deterministic fixture.',
+        '  --tarball /path/client.tgz  Install an exact prebuilt customer artifact instead of rebuilding.',
+        '  --expected-sha <40-char SHA> Require the installed artifact to match this exact release commit.',
         '  --output /path/report.json  Write JSON report (default: .klauro-new-user-e2e/latest-report.json)',
         '  --no-output                 Do not write a JSON report.',
       ].join('\n') + '\n');
       process.exit(0);
     }
   }
-  return { outputPath };
+  return { outputPath, repoPath, tarballPath, expectedSha };
 }
 
-function buildReport(results: StepResult[], totalMs: number, root: string): NewUserE2EReport {
+function buildReport(
+  results: StepResult[],
+  totalMs: number,
+  root: string,
+  sourceRepo: string,
+  sourceCommit: string,
+  tarball: string,
+  tarballSha256: string,
+  cliIdentity: string,
+  artifactBuildSha: string,
+  expectedSha: string | null,
+  selectedPath: string,
+  target: WorkflowTarget | null,
+  transcript: string | null,
+): NewUserE2EReport {
   const failed = results.filter(result => !result.ok);
   return {
     generated_at: new Date().toISOString(),
@@ -387,6 +391,10 @@ function buildReport(results: StepResult[], totalMs: number, root: string): NewU
     total_ms: totalMs,
     max_total_ms: maxTotalMs,
     workspace: process.env.KLAURO_KEEP_NEW_USER_E2E === 'true' ? root : 'deleted',
+    source_repo: sourceRepo,
+    source_commit: sourceCommit,
+    artifact: { tarball, sha256: tarballSha256, cli_identity: cliIdentity, build_sha: artifactBuildSha, expected_sha: expectedSha },
+    workflow: { selected_path: selectedPath, target, transcript },
     steps: results,
   };
 }

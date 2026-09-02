@@ -2508,8 +2508,9 @@ function compactTinyTests(tests: any) {
   if (!compact || typeof compact !== 'object') return compact || null;
   const hasSuites = Array.isArray(compact.suites) && compact.suites.length > 0;
   return {
-    total_suites: compact.total_suites,
-    ...(hasSuites ? { suites: compact.suites.slice(0, 1) } : {}),
+    total_suites: compact.total_suites, total_mocks: compact.total_mocks, total_fixtures: compact.total_fixtures,
+    suites: hasSuites ? compact.suites.slice(0, 1) : [],
+    mocks: Array.isArray(compact.mocks) ? compact.mocks.slice(0, 1) : [], fixtures: Array.isArray(compact.fixtures) ? compact.fixtures.slice(0, 1) : [],
     ...(hasSuites && compact.recommendation ? { recommendation: compact.recommendation } : {}),
   };
 }
@@ -2828,13 +2829,11 @@ function filterArchitectureContextToFilePlan(context: any, fileReadPlan: any[]):
 
 function compactMinimalTests(tests: any) {
   if (!tests || typeof tests !== 'object') return tests || null;
+  const mocks = Array.isArray(tests.mocks) ? tests.mocks : [], fixtures = Array.isArray(tests.fixtures) ? tests.fixtures : [];
   return {
-    total_suites: tests.total_suites,
-    suites: Array.isArray(tests.suites) ? tests.suites.slice(0, 2).map((suite: any) => ({
-      file_path: suite.file_path,
-      name: suite.name,
-      test_count: suite.test_count,
-    })) : [],
+    total_suites: tests.total_suites, total_mocks: tests.total_mocks ?? mocks.length, total_fixtures: tests.total_fixtures ?? fixtures.length,
+    suites: Array.isArray(tests.suites) ? tests.suites.slice(0, 2).map(({ file_path, name, test_count }: any) => ({ file_path, name, test_count })) : [],
+    mocks: mocks.slice(0, 2), fixtures: fixtures.slice(0, 2),
     recommendation: tests.recommendation,
   };
 }
@@ -3160,7 +3159,8 @@ function compactTestsForMicroRepo(tests: any) {
       test_type: suite.test_type,
       framework: suite.framework,
       test_count: suite.test_count,
-    })) : tests.suites,
+    })) : [],
+    mocks: Array.isArray(tests.mocks) ? tests.mocks.slice(0, 3) : [], fixtures: Array.isArray(tests.fixtures) ? tests.fixtures.slice(0, 3) : [],
     recommendation: tests.recommendation,
   };
 }
@@ -5691,7 +5691,7 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { tes
     .sort((left, right) => left.score - right.score)
     .slice(0, 8)
     .map(result => `${result.id}: ${result.detail}`);
-  const agentContextReady = analysisErrors === 0 && (rawStatus !== 'fail' ? score >= 85 : score >= 95);
+  const agentContextReady = analysisErrors === 0 && rawStatus !== 'fail' && score >= 85;
   const analysisOnlyUnderstandingReady = agentContextReady && comprehension.ready && answerPackGaps.length === 0;
   const status: GateStatus = rawStatus === 'fail' && agentContextReady ? 'warn' : rawStatus;
 

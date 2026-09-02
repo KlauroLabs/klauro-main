@@ -13,6 +13,8 @@ const focusKeys = [
   'KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT',
   'KLAURO_AI_ELEMENT_DESCRIPTIONS',
   'KLAURO_EMBEDDING_ENABLED',
+  'KLAURO_AGENT_FAST_EXCLUDE_LEGACY',
+  'KLAURO_MAX_FILES_PER_ANALYZER',
   'KLAURO_FULL_REBUILD_ON_CONFIG_CHANGE',
   'OPENAI_MODEL',
 ] as const;
@@ -89,7 +91,7 @@ test('agent-fast focus keeps required AI summary and capability enrichment witho
     assert.equal(seen.elementLimit, '8');
     assert.equal(seen.elementBatchSize, '4');
     assert.equal(seen.embeddings, 'false');
-    assert.equal(seen.excludeLegacy, 'true');
+    assert.equal(seen.excludeLegacy, undefined);
     assert.equal(seen.fullRebuildOnConfig, 'false');
   });
 });
@@ -144,6 +146,18 @@ test('focus recommendation routes runtime and audit work to deep-context', () =>
   assert.equal(runtime.recommended_focus, 'deep-context');
   assert.equal(audit.recommended_focus, 'deep-context');
   assert.equal(audit.recommended_layer, 'deep-context-refresh');
+});
+
+test('analysis focus profiles never cap canonical analyzer source extraction', async () => {
+  await withCleanFocusEnv(async () => {
+    for (const focus of ['agent-fast', 'ui-overview', 'deep-context'] as const) {
+      const configuredLimit = await withAnalysisFocus(
+        focus,
+        async () => process.env.KLAURO_MAX_FILES_PER_ANALYZER,
+      );
+      assert.equal(configuredLimit, undefined, `${focus} must leave canonical extraction exhaustive`);
+    }
+  });
 });
 
 async function withCleanFocusEnv(run: () => Promise<void>): Promise<void> {

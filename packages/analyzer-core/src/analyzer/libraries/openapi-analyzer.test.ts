@@ -63,6 +63,8 @@ test('OpenAPIAnalyzer extracts operations, schemas, entry points, and contract e
     const operations = result.nodes.filter(n => n.type === 'api-operation');
     assert.equal(operations.length, 2, 'two operations');
     assert.ok(operations.some(o => o.metadata?.httpMethod === 'GET' && o.metadata?.httpPath === '/users'));
+    assert.ok(operations.every(o => o.metadata?.attributes?.execution_role === 'declaration'));
+    assert.ok(result.entry_points.every(e => e.metadata?.execution_role === 'declaration'));
     assert.ok(operations.some(o => o.metadata?.httpMethod === 'POST' && o.metadata?.httpPath === '/users'));
 
     // operations -> entry points

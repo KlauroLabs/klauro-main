@@ -52,6 +52,7 @@ export interface AIAnalysisContext {
   framework?: string;
   additionalContext?: Record<string, any>;
   signal?: AbortSignal;
+  skipCache?: boolean;
 }
 
 export interface AIRiskAssessment {
@@ -264,7 +265,7 @@ export class AIService {
 
     try {
 
-      const cached = await this.cache.get(cacheKey);
+      const cached = context.skipCache ? null : await this.cache.get(cacheKey);
       context.signal?.throwIfAborted();
       if (cached) {
         this.logger.debug('Using cached description');
@@ -283,7 +284,7 @@ export class AIService {
       if (this.providerChain.length > 0) {
         const description = await this.generateDescriptionViaChain(context);
         context.signal?.throwIfAborted();
-        await this.cache.set(cacheKey, description);
+        if (!context.skipCache) await this.cache.set(cacheKey, description);
         return description;
       }
 
@@ -303,7 +304,7 @@ export class AIService {
       this.updateUsageStats(provider.name, true, responseTime);
 
 
-      await this.cache.set(cacheKey, description);
+      if (!context.skipCache) await this.cache.set(cacheKey, description);
 
       return description;
     } catch (error) {

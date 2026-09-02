@@ -204,7 +204,7 @@ export class JupyterNotebookAnalyzer extends BaseAnalyzer {
             cellIndex: cell.index,
             imports: cell.imports,
             defs: cell.defs,
-            calls: cell.calls.slice(0, 25),
+            calls: cell.calls,
             executionCount: cell.executionCount
           }
         })

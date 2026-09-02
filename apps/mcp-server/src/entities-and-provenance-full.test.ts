@@ -6,6 +6,7 @@ import * as path from 'node:path';
 import * as http from 'node:http';
 import { createRemoteAnalyzerHttpServer, getCasReadResponseCacheStats } from './remote-analyzer-service';
 import { saveAnalysis } from './storage';
+import { acceptedComprehensionFixture } from './accepted-comprehension-test-fixture';
 import {
   CAS_VERSION,
   type CASOutput,
@@ -222,7 +223,7 @@ test('GET /api/projects/{id}/entities surfaces description/description_source/ro
     const project = JSON.parse(createRes.body).project as { id: string; analysis_id: string };
     const workspace = path.join(remoteData, 'workspaces', project.analysis_id);
     fs.mkdirSync(workspace, { recursive: true });
-    await saveAnalysis(workspace, buildFixtureCas());
+    await saveAnalysis(workspace, acceptedComprehensionFixture(buildFixtureCas()));
 
     // --- (1) GET /entities: description/description_source/role/relations ---
     const entitiesRes = await request(port, 'GET', `/api/projects/${project.id}/entities`, undefined, token);

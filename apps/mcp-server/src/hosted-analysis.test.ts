@@ -15,6 +15,7 @@ import {
 } from './hosted-analysis';
 import { loadAnalysis, saveAnalysis } from './storage';
 import { parseCasSectionNames, selectCasSections } from './cas-sections';
+import { buildCompletedAnalysisLayersReady } from './layered-analysis';
 
 /**
  * Resolution-matrix tests for hosted-analysis.ts — the fix for the live
@@ -32,7 +33,7 @@ const STALE_TS = '2026-07-04T19:14:18.863Z';
 const NEWER_TS = '2026-07-14T18:00:00.000Z';
 
 function minimalCas(timestamp: string, name = 'truckspy-fixture'): CASOutput {
-  return {
+  const output = {
     cas_version: '1.11.0',
     analysis_timestamp: timestamp,
     analysis_id: `analysis_${name}`,
@@ -49,6 +50,8 @@ function minimalCas(timestamp: string, name = 'truckspy-fixture'): CASOutput {
     entry_points: [],
     exit_points: [],
   } as unknown as CASOutput;
+  output.layers_ready = buildCompletedAnalysisLayersReady(output);
+  return output;
 }
 
 interface FakeHostedServer {

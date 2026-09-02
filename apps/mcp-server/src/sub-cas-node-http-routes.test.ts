@@ -6,6 +6,7 @@ import * as path from 'node:path';
 import * as http from 'node:http';
 import { createRemoteAnalyzerHttpServer, getCasReadResponseCacheStats } from './remote-analyzer-service';
 import { saveAnalysis } from './storage';
+import { buildLayersReady } from './layered-analysis';
 import type { CASNode, CASEdge, CASEntryPoint, CASOutput, DeployableEvidence } from '../../../packages/analyzer-core/src/types/cas.types';
 
 /**
@@ -44,6 +45,20 @@ function node(id: string, file: string): CASNode {
 function callEdge(source: string, target: string): CASEdge {
   return { id: `edge_${source}_${target}`, source, target, type: 'calls' };
 }
+function completedFixture(cas: CASOutput): CASOutput {
+  const completedAt = cas.analysis_timestamp;
+  const ready = { status: 'ready' as const, completedAt };
+  cas.layers_ready = buildLayersReady({
+    L0: ready,
+    L1: ready,
+    L2: ready,
+    L3: ready,
+    L4: ready,
+    L5: ready,
+  }, { generatedAt: completedAt });
+  return cas;
+}
+
 
 function entryPoint(id: string, file: string, handlerNodeId: string): CASEntryPoint {
   return {
@@ -188,7 +203,7 @@ test('DAS routes: index shape, scoped slice smaller than full, LRU keying, unkno
     const promotedWorkspace = path.join(remoteData, 'workspaces', project.analysis_id);
     await fs.promises.mkdir(promotedWorkspace, { recursive: true });
     const promotedCas = buildPromotedCas(project.analysis_id);
-    await saveAnalysis(promotedWorkspace, promotedCas);
+    await saveAnalysis(promotedWorkspace, completedFixture(promotedCas));
 
     // --- /das index shape: units + counts, no `cas` body ---
     const dasRes = await request(port, 'GET', `/api/projects/${project.id}/das`, undefined, token);
@@ -334,7 +349,7 @@ test('DAS routes: index shape, scoped slice smaller than full, LRU keying, unkno
 
     const nonPromotedWorkspace = path.join(remoteData, 'workspaces', nonPromotedProject.analysis_id);
     await fs.promises.mkdir(nonPromotedWorkspace, { recursive: true });
-    await saveAnalysis(nonPromotedWorkspace, buildNonPromotedCas(nonPromotedProject.analysis_id));
+    await saveAnalysis(nonPromotedWorkspace, completedFixture(buildNonPromotedCas(nonPromotedProject.analysis_id)));
 
     const dasNonPromoted = await request(port, 'GET', `/api/projects/${nonPromotedProject.id}/das`, undefined, token);
     assert.equal(dasNonPromoted.statusCode, 200);

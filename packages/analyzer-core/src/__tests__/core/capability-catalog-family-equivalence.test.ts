@@ -26,6 +26,30 @@ describe('capability catalog family equivalence', () => {
     expect(families.map(family => family.map(candidate => candidate.id))).toEqual([['articles', 'publishing']]);
   });
 
+  it('groups disjoint resource lifecycle operations anchored to the same distinctive entity', () => {
+    const families = groupCapabilityCatalogFamilies([
+      { id: 'sessions', name: 'Sessions', category: 'core', criticality: 'high', description: "", criticality_factors: [], related_domains: [], related_entities: ['entity_session'], operations: [operation('read-session', 'read', '/sessions/:id')] },
+      { id: 'session-management', name: 'Session Management', category: 'core', criticality: 'high', description: "", criticality_factors: [], related_domains: [], related_entities: ['entity_session'], operations: [operation('update-session', 'update', '/sessions/:id')] },
+    ], semantics);
+    expect(families.map(family => family.map(candidate => candidate.id))).toEqual([['sessions', 'session-management']]);
+  });
+
+  it('does not group disjoint operations without a shared distinctive entity', () => {
+    const families = groupCapabilityCatalogFamilies([
+      { id: 'settings', name: 'Settings', category: 'core', criticality: 'high', description: "", criticality_factors: [], related_domains: [], related_entities: [], operations: [operation('read-settings', 'read', '/settings')] },
+      { id: 'profiles', name: 'Profiles', category: 'core', criticality: 'high', description: "", criticality_factors: [], related_domains: [], related_entities: [], operations: [operation('update-profile', 'update', '/profiles/:id')] },
+    ], semantics);
+    expect(families.map(family => family.map(candidate => candidate.id))).toEqual([['settings'], ['profiles']]);
+  });
+
+  it('groups a namespaced resource lifecycle with its parent subject', () => {
+    const families = groupCapabilityCatalogFamilies([
+      { id: 'imports', name: 'Imports', category: 'core', criticality: 'high', description: "", criticality_factors: [], related_domains: ['imports'], related_entities: ['entity_import'], operations: [operation('create-import', 'create', '/imports')] },
+      { id: 'import-upload', name: 'Import Upload', category: 'supporting', criticality: 'high', description: "", criticality_factors: [], related_domains: ['import-upload'], related_entities: [], operations: [operation('update-upload', 'update', '/upload')] },
+    ], semantics);
+    expect(families.map(family => family.map(candidate => candidate.id))).toEqual([['imports', 'import-upload']]);
+  });
+
   it('is invariant to candidate order', () => {
     const candidates = [
       { id: 'articles', name: 'Article', category: 'core' as const, criticality: 'high' as const, description: "", criticality_factors: [], related_domains: [], related_entities: ['entity_article'], operations: [operation('create-article', 'Create', '/articles')] },

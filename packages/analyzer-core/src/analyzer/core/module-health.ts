@@ -366,6 +366,6 @@ export function computeModuleHealth(inputs: ModuleHealthInputs): CASModuleHealth
       churn_outlier_share_of_commits: totalCommits90d > 0 ? Number((churnOutlierCommits / totalCommits90d).toFixed(4)) : 0,
     },
     findings,
-    file_stats: fileStats.slice(0, 50),
+    file_stats: fileStats,
   };
 }

@@ -457,6 +457,8 @@ export class ShellAnalyzer extends BaseAnalyzer {
           line: 1,
           shebang: info.shebangLine,
           executable: isExecutable,
+          cli_origin: 'filesystem-executable',
+          cli_product_role: 'supporting-mechanism',
           reasons
         }
       ));

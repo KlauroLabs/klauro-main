@@ -387,7 +387,8 @@ describe('duplicate id namespacing across files', () => {
     const makeComponent = (
       name: string,
       filePath: string,
-      renderedComponents: Array<{ name: string; line: number; props: string[] }>
+      renderedComponents: Array<{ name: string; line: number; props: string[] }>,
+      importBindings: Array<{ localName: string; importedName: string; source: string }> = [],
     ) => ({
       name,
       filePath,
@@ -399,6 +400,7 @@ describe('duplicate id namespacing across files', () => {
       lifecycle: [],
       children: [],
       imports: [],
+      importBindings,
       exports: [],
       jsx: true,
       renderedComponents,
@@ -418,7 +420,7 @@ describe('duplicate id namespacing across files', () => {
         makeComponent('Dashboard', 'src/Dashboard.tsx', [
           { name: 'Card', line: 5, props: ['title'] },
           { name: 'Card', line: 12, props: ['footer'] },
-        ]),
+        ], [{ localName: 'Card', importedName: 'Card', source: './Card' }]),
       ];
 
       const rendersEdges = buildEdges(components);
@@ -434,8 +436,8 @@ describe('duplicate id namespacing across files', () => {
     it('does not collide renders edges across parents in different files', () => {
       const components = [
         makeComponent('Card', 'src/Card.tsx', []),
-        makeComponent('Home', 'src/pages/Home.tsx', [{ name: 'Card', line: 3, props: [] }]),
-        makeComponent('About', 'src/pages/About.tsx', [{ name: 'Card', line: 3, props: [] }]),
+        makeComponent('Home', 'src/pages/Home.tsx', [{ name: 'Card', line: 3, props: [] }], [{ localName: 'Card', importedName: 'Card', source: '../Card' }]),
+        makeComponent('About', 'src/pages/About.tsx', [{ name: 'Card', line: 3, props: [] }], [{ localName: 'Card', importedName: 'Card', source: '../Card' }]),
       ];
 
       const rendersEdges = buildEdges(components);
@@ -449,12 +451,22 @@ describe('duplicate id namespacing across files', () => {
         makeComponent('Dashboard', 'src/Dashboard.tsx', [
           { name: 'Card', line: 5, props: [] },
           { name: 'Card', line: 12, props: [] },
-        ]),
+        ], [{ localName: 'Card', importedName: 'Card', source: './Card' }]),
       ];
 
       const first = buildEdges(components).map(edge => edge.id);
       const second = buildEdges(components).map(edge => edge.id);
       expect(second).toEqual(first);
+    });
+
+    it('does not invent a cross-file render when legacy component facts omit import bindings', () => {
+      const card = makeComponent('Card', 'src/Card.tsx', []);
+      const dashboard = makeComponent('Dashboard', 'src/Dashboard.tsx', [
+        { name: 'Card', line: 5, props: [] },
+      ]) as any;
+      delete dashboard.importBindings;
+
+      expect(buildEdges([card, dashboard])).toEqual([]);
     });
   });
 });

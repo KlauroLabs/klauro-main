@@ -121,7 +121,7 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
         ignore: [...this.getIgnorePatterns({ projectPath }), '**/*.test.*', '**/*.spec.*'],
         nodir: true,
       });
-      for (const file of files.slice(0, 400)) {
+      for (const file of files) {
         const content = await this.readTextFileIfExists(path.join(projectPath, file));
         if (content === null) continue;
         if (/from\s+['"]react-native['"]/.test(content) ||

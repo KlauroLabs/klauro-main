@@ -46,6 +46,12 @@ let localServerStart: Promise<string> | null = null;
 let benchDataDirCleanupRegistered = false;
 let benchStoreScoped = false;
 let benchProcessStorageDir: string | null = null;
+type BenchReadinessRequirement = 'structural' | 'complete';
+
+export interface AnalyzeForBenchOptions {
+  readinessRequirement?: BenchReadinessRequirement;
+}
+
 const inFlightAnalyses = new Map<string, Promise<CASOutput>>();
 const MINIMUM_BENCH_ANALYSIS_TIMEOUT_MS = 180_000;
 const DEFAULT_BENCH_ANALYSIS_TIMEOUT_MS = 30 * 60_000;
@@ -55,6 +61,10 @@ export function benchAnalysisTimeoutMs(value = process.env.KLAURO_BENCH_ANALYSIS
   return Number.isFinite(configured) && configured >= MINIMUM_BENCH_ANALYSIS_TIMEOUT_MS
     ? configured
     : DEFAULT_BENCH_ANALYSIS_TIMEOUT_MS;
+}
+
+export function benchAnalyzerToken(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  return env.KLAURO_BENCH_ANALYZER_TOKEN || env.KLAURO_ANALYZER_TOKEN;
 }
 
 
@@ -183,7 +193,7 @@ function postJson(url: string, body: unknown): Promise<any> {
 
 
 
-  const token = process.env.KLAURO_BENCH_ANALYZER_TOKEN;
+  const token = benchAnalyzerToken();
   const headers: Record<string, string | number> = { 'content-type': 'application/json', 'content-length': payload.length };
   if (token) headers['authorization'] = `Bearer ${token}`;
   const isHttps = u.protocol === 'https:';
@@ -228,7 +238,7 @@ function getJson(url: string): Promise<any> {
   const u = new URL(url);
   const isHttps = u.protocol === 'https:';
   const transport = isHttps ? httpsRequest : http.request;
-  const token = process.env.KLAURO_BENCH_ANALYZER_TOKEN;
+  const token = benchAnalyzerToken();
   return new Promise((resolve, reject) => {
     const req = transport({
       hostname: u.hostname,
@@ -258,11 +268,15 @@ function getJson(url: string): Promise<any> {
 
 
 
-export async function analyzeForBench(dir: string): Promise<CASOutput> {
-  const key = path.resolve(dir);
+export async function analyzeForBench(
+  dir: string,
+  options: AnalyzeForBenchOptions = {},
+): Promise<CASOutput> {
+  const readinessRequirement = options.readinessRequirement || 'structural';
+  const key = `${path.resolve(dir)}:\0${readinessRequirement}`;
   const existing = inFlightAnalyses.get(key);
   if (existing) return existing;
-  const analysis = analyzeForBenchOnce(dir);
+  const analysis = analyzeForBenchOnce(dir, readinessRequirement);
   inFlightAnalyses.set(key, analysis);
   try {
     return await analysis;
@@ -271,7 +285,10 @@ export async function analyzeForBench(dir: string): Promise<CASOutput> {
   }
 }
 
-async function analyzeForBenchOnce(dir: string): Promise<CASOutput> {
+async function analyzeForBenchOnce(
+  dir: string,
+  readinessRequirement: BenchReadinessRequirement,
+): Promise<CASOutput> {
   scopeBenchProcessToDevStore();
 
 
@@ -289,7 +306,9 @@ async function analyzeForBenchOnce(dir: string): Promise<CASOutput> {
     snapshot.manifest.file_count = snapshot.files.length;
     snapshot.manifest.total_bytes = snapshot.files.reduce((sum, file) => sum + Buffer.byteLength(file.content, 'utf8'), 0);
     snapshot.manifest.snapshot_digest = sourceSnapshotDigest(snapshot.files);
-    const cache = benchCacheLocation(dir, snapshot.manifest.snapshot_digest);
+    const cache = readinessRequirement === 'structural'
+      ? benchCacheLocation(dir, snapshot.manifest.snapshot_digest)
+      : undefined;
     if (cache) {
       const cached = await readBenchCache(cache.file);
       if (cached) {
@@ -318,7 +337,10 @@ async function analyzeForBenchOnce(dir: string): Promise<CASOutput> {
       async: true,
       force: process.env.KLAURO_BENCH_FORCE_ANALYSIS === '1',
     });
-    const cas = response.cas as CASOutput || await waitForBenchAnalysis(serverUrl, response);
+    const immediateCas = response.cas as CASOutput | undefined;
+    const cas = readinessRequirement === 'structural' && immediateCas
+      ? immediateCas
+      : await waitForBenchAnalysis(serverUrl, response, readinessRequirement);
 
 
 
@@ -357,15 +379,19 @@ async function analyzeForBenchOnce(dir: string): Promise<CASOutput> {
   }
 }
 
-async function waitForBenchAnalysis(serverUrl: string, response: any): Promise<CASOutput> {
+async function waitForBenchAnalysis(
+  serverUrl: string,
+  response: any,
+  readinessRequirement: BenchReadinessRequirement,
+): Promise<CASOutput> {
   return await waitForRemoteAnalysis(
     serverUrl,
     response.analysis_id,
-    process.env.KLAURO_BENCH_ANALYZER_TOKEN,
+    benchAnalyzerToken(),
     response.analysis_revision,
     benchAnalysisTimeoutMs(),
     CAS_SECTION_NAMES.filter(section => section !== 'tree'),
-    'structural',
+    readinessRequirement,
   ) as CASOutput;
 }
 

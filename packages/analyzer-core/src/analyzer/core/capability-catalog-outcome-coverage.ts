@@ -38,6 +38,7 @@ const coordinatedAudienceList = new RegExp(
 
 function canonicalToken(token: string): string {
   const source = token.toLowerCase();
+  if (/^(?:auth|authenticate|authenticated|authenticating|authentication)$/.test(source)) return 'authenticate';
   let value = source.endsWith('ies') && source.length > 4
     ? `${source.slice(0, -3)}y`
     : /(?:ches|shes|sses|xes|zes)$/.test(source)
@@ -50,8 +51,11 @@ function canonicalToken(token: string): string {
             ? source.slice(0, -1)
             : source;
   if (!CAPABILITY_PURPOSE_VERBS.has(value) && CAPABILITY_PURPOSE_VERBS.has(`${value}e`)) value = `${value}e`;
+  if (/^(?:apps|jobs|maps|tags)$/.test(value)) value = value.slice(0, -1);
+
   if (/^(?:compreh|explain|explor|inspect|understand)/.test(value)) return 'understand';
   if (/^(?:accur|reliab|trust)/.test(value)) return 'trust';
+  if (value === 'mapp') return 'mapping';
   if (/^(?:collabor|coordin)/.test(value)) return 'collaborate';
   if (/^(?:connect|relation)/.test(value)) return 'relation';
   if (/^(?:code|codebase|source|software)$/.test(value)) return 'software';
@@ -63,8 +67,16 @@ export function canonicalCapabilityCatalogOutcomeToken(token: string): string {
   return canonicalToken(token);
 }
 
+function comparableEvidenceToken(token: string): string {
+  const canonical = canonicalToken(token);
+  return /^(?:browse|fetch|find|get|list|load|read|retrieve|show|view)$/.test(canonical) ? 'view' : canonical;
+}
+
 function tokens(value: string, omitAudience = false): string[] {
-  const source = omitAudience ? String(value || '').replace(humanAudience, ' ').replace(agentAudience, ' ') : String(value || '');
+  const source = omitAudience
+    ? String(value || '').replace(humanAudience, ' ').replace(agentAudience, ' ')
+      .replace(/\b(?:(?:support|operations?|engineering|development)\s+)?(?:staff|teams?|operators?|engineers?|developers?)\b/gi, ' ')
+    : String(value || '');
   return [...new Set(source
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .toLowerCase()
@@ -158,7 +170,11 @@ function requirementId(audience: string | undefined, subjectTokens: readonly str
 
 function clauseVisibleActionTerms(clause: string, statement: string): string[] {
   const words = String(clause || '').match(/[A-Za-z][A-Za-z'-]*/g) || [];
-  const action = words.map(canonicalToken).find(token => CAPABILITY_PURPOSE_VERBS.has(token));
+  const action = words
+    .map((word, index) => ({ index, token: canonicalToken(word) }))
+    .find(({ index, token }) => CAPABILITY_PURPOSE_VERBS.has(token) &&
+      !(token === 'support' && /^(?:staff|team|teams|engineers?|operators?|agents?)$/i.test(words[index + 1] || '')))
+    ?.token;
   if (action) return [action];
   const statementLeading = canonicalToken((String(statement || '').match(/[A-Za-z][A-Za-z'-]*/)?.[0]) || '');
   return CAPABILITY_PURPOSE_VERBS.has(statementLeading) ? [statementLeading] : [];
@@ -168,11 +184,11 @@ export function deriveCapabilityCatalogOutcomeRequirements(
   signal: CapabilityCatalogProjectSignal | undefined,
   candidates: readonly SystemCapability[],
 ): CapabilityCatalogOutcomeRequirement[] {
-  const candidateTokens = candidates.filter(candidate => candidate.evidence_role !== 'verification-harness').map(candidate => ({
-    candidate,
-    text: candidateText(candidate),
-    tokens: new Set(tokens(candidateText(candidate), true)),
-  }));
+  const candidateTokens = candidates.filter(candidate => candidate.evidence_role !== 'verification-harness').map(candidate => {
+    const text = candidateText(candidate);
+    const rawTokens = tokens(text, true);
+    return { candidate, text, tokens: new Set([...rawTokens, ...rawTokens.map(comparableEvidenceToken)]) };
+  });
   const requirements = new Map<string, CapabilityCatalogOutcomeRequirement>();
   const previousClauseTokens = new Set<string>();
   for (const clause of productClauses(signal)) {
@@ -186,13 +202,15 @@ export function deriveCapabilityCatalogOutcomeRequirements(
         : !humanAudience.test(item.text) || agentAudience.test(item.text)));
       const scored = audienceCandidates.map(item => ({
         id: item.candidate.id,
-        score: subjectTokens.filter(token => item.tokens.has(token)).length,
+        score: subjectTokens.filter(token => item.tokens.has(comparableEvidenceToken(token))).length,
       })).filter(item => item.id && item.score >= Math.min(2, subjectTokens.length)).sort((left, right) => right.score - left.score || left.id.localeCompare(right.id));
-      if (scored.length === 0) continue;
-      const bestScore = scored[0].score;
-      const candidateIds = scored.filter(item => item.score === bestScore).slice(0, 3).map(item => item.id);
+      const bestScore = scored[0]?.score;
+      const candidateIds = bestScore === undefined ? [] : scored.filter(item => item.score === bestScore).slice(0, 3).map(item => item.id);
       const candidateIdSet = new Set(candidateIds);
-      const groundedSubjectTokens = subjectTokens.filter(token => candidateTokens.some(item => candidateIdSet.has(item.candidate.id) && item.tokens.has(token)));
+      const groundedSubjectTokens = candidateIds.length > 0
+        ? subjectTokens.filter(token => candidateTokens.some(item =>
+          candidateIdSet.has(item.candidate.id) && item.tokens.has(comparableEvidenceToken(token))))
+        : subjectTokens.slice(0, 8);
       const originalClauseAlias = clauseTokens
         .filter(token => audienceCandidates.some(item => candidateIdSet.has(item.candidate.id) && item.tokens.has(token)))
         .slice(0, 8);
@@ -207,6 +225,7 @@ export function deriveCapabilityCatalogOutcomeRequirements(
       const audienceLabel = requirementAudienceLabel(clause, audience);
       const audienceScopedOutcomeText = audienceScopedCapabilityCatalogOutcomeText(clause, audience, audienceLabel);
       const visibleActionTerms = clauseVisibleActionTerms(clause, statement);
+      if (candidateIds.length === 0 && visibleActionTerms.length === 0) continue;
       requirements.set(id, {
         audience,
         audienceLabel,
@@ -386,6 +405,39 @@ export function bindUniquelySatisfiedCatalogOutcomeRequirements(
   });
 }
 
+export function bindAtomicallySatisfiedCatalogOutcomeRequirements(
+  capabilities: readonly SystemCapability[],
+  requirements: readonly CapabilityCatalogOutcomeRequirement[],
+  fullyCoveredAggregateCandidateIds: ReadonlySet<string>,
+  obligationScopes: ReadonlyMap<string, { parentCandidateId: string }>,
+): SystemCapability[] {
+  const result = capabilities.map(capability => ({ ...capability, criticality_factors: [...(capability.criticality_factors || [])] }));
+  for (const requirement of requirements) {
+    if (result.some(capability => capabilitySatisfiesCatalogOutcomeRequirement(capability, requirement) &&
+      (capability.criticality_factors || []).includes(`catalog-outcome-requirement:${requirement.id}`))) continue;
+    const coveredParents = requirement.candidateIds.filter(candidateId => fullyCoveredAggregateCandidateIds.has(candidateId));
+    if (coveredParents.length === 0) continue;
+    const members = result.filter(capability => (capability.criticality_factors || []).some(factor => {
+      if (!factor.startsWith('catalog-operation-obligation:')) return false;
+      const scope = obligationScopes.get(factor.slice('catalog-operation-obligation:'.length));
+      return Boolean(scope && coveredParents.includes(scope.parentCandidateId));
+    }));
+    if (members.length === 0) continue;
+    const combined = { name: members.map(item => item.name).join(' '), description: members.map(item => item.description || '').join(' ') };
+    if (!capabilitySemanticallySatisfiesCatalogOutcomeRequirement(combined, requirement)) continue;
+    const visibleActions = (requirement.visibleActionTerms || []).map(canonicalToken);
+    const combinedTokens = new Set(tokens(`${combined.name} ${combined.description}`));
+    if (visibleActions.some(action => !combinedTokens.has(action))) continue;
+    const representative = [...members].sort((left, right) => left.id.localeCompare(right.id))[0];
+    representative.criticality_factors = [...new Set([
+      ...(representative.criticality_factors || []),
+      `catalog-outcome-requirement:${requirement.id}`,
+      `catalog-outcome-union:${requirement.id}`,
+    ])];
+  }
+  return result;
+}
+
 export function capabilityCatalogOutcomeBindingFailure(
   capability: Pick<SystemCapability, 'name' | 'description'>,
   candidateIds: readonly string[],
@@ -449,7 +501,8 @@ export function uncoveredCapabilityCatalogOutcomeRequirements(
       .filter(factor => factor.startsWith('catalog-candidate:'))
       .map(factor => factor.slice('catalog-candidate:'.length));
     const candidateGrounded = citedCandidates.some(candidateId => requirement.candidateIds.includes(candidateId));
-    const grounded = boundRequirements.length > 0 ? bound && candidateGrounded : candidateGrounded;
+    const unionBound = factors.includes(`catalog-outcome-union:${requirement.id}`);
+    const grounded = boundRequirements.length > 0 ? bound && (candidateGrounded || unionBound) : candidateGrounded;
     return grounded && capabilitySatisfiesCatalogOutcomeRequirement(capability, requirement) ? [index] : [];
   }));
   const capabilityAssignments = new Map<number, number>();
@@ -475,7 +528,8 @@ export function capabilityCatalogOutcomeCoverageFailure(
   capabilities: readonly SystemCapability[],
   requirements: readonly CapabilityCatalogOutcomeRequirement[],
 ): string | undefined {
-  const uncovered = uncoveredCapabilityCatalogOutcomeRequirements(capabilities, requirements);
+  const groundedRequirements = requirements.filter(requirement => requirement.candidateIds.length > 0);
+  const uncovered = uncoveredCapabilityCatalogOutcomeRequirements(capabilities, groundedRequirements);
   if (uncovered.length === 0) return undefined;
   return `catalog omits ${uncovered.length} first-party product outcome${uncovered.length === 1 ? '' : 's'} corroborated by structural evidence: ${uncovered.slice(0, 4).map(requirement => `${requirement.audience ? `${requirement.audience} ` : ''}${requirement.statement}`).join(' | ')}`;
 }
@@ -485,8 +539,9 @@ export function capabilityCatalogCoverageFailure(
   requiredBehaviorCandidateIds: readonly string[],
   requiredEntityCandidateGroups: ReadonlyArray<ReadonlyArray<string>>,
   requirements: readonly CapabilityCatalogOutcomeRequirement[],
+  fullyCoveredAggregateCandidateIds: ReadonlySet<string> = new Set(),
 ): string | undefined {
-  return catalogEvidenceCoverageFailure(capabilities, requiredBehaviorCandidateIds, requiredEntityCandidateGroups) ||
+  return catalogEvidenceCoverageFailure(capabilities, requiredBehaviorCandidateIds, requiredEntityCandidateGroups, fullyCoveredAggregateCandidateIds) ||
     capabilityCatalogOutcomeCoverageFailure(capabilities, requirements);
 }
 

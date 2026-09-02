@@ -271,7 +271,11 @@ function buildRepoMarkdown(cas: CASOutput, durationMs: number): string {
   lines.push(`- **Exit points:** ${(cas.exit_points || []).length}`);
   const test = cas.test_summary;
   if (test) {
-    lines.push(`- **Tests:** ${test.total_tests} total (${test.by_status.passing} passing, ${test.by_status.failing} failing, ${test.by_status.skipped} skipped)`);
+    if (test.execution?.status === 'observed') {
+      lines.push(`- **Tests:** ${test.total_tests} total (${test.by_status.passing} passing, ${test.by_status.failing} failing, ${test.by_status.skipped} skipped)`);
+    } else {
+      lines.push(`- **Tests:** ${test.total_tests} discovered statically (${test.by_status.skipped} marked skipped; execution results not observed)`);
+    }
     if (typeof test.coverage.overall_percentage === 'number') {
       lines.push(`- **Test coverage:** ${test.coverage.overall_percentage.toFixed(1)}%`);
     }

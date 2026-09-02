@@ -159,4 +159,30 @@ describe('buildDependencyManifest', () => {
     expect(manifest.dependencies.map(d => d.name)).toEqual(['axios', 'ccxt', 'web3']);
     expect(manifest.manifests).toEqual(['package.json', 'sub/package.json']);
   });
+
+  it('discovers manifests beyond the previous directory-depth boundary', () => {
+    const segments = Array.from({ length: 12 }, (_, index) => `level-${index}`);
+    write(`${segments.join('/')}/package.json`, JSON.stringify({
+      dependencies: { 'deep-runtime': '1.2.3' },
+    }));
+
+    const manifest = buildDependencyManifest(root)!;
+
+    expect(manifest.manifests).toContain(`${segments.join('/')}/package.json`);
+    expect(manifest.dependencies.find(dependency => dependency.name === 'deep-runtime')?.declared_in)
+      .toEqual([`${segments.join('/')}/package.json`]);
+  });
+
+  it('does not silently omit a valid manifest because it exceeds five MiB', () => {
+    write('package.json', JSON.stringify({
+      name: 'large-package',
+      description: 'x'.repeat(5 * 1024 * 1024),
+      dependencies: { 'large-runtime': '4.5.6' },
+    }));
+
+    const manifest = buildDependencyManifest(root)!;
+
+    expect(manifest.dependencies.some(dependency => dependency.name === 'large-runtime')).toBe(true);
+    expect(manifest.manifests).toEqual(['package.json']);
+  });
 });

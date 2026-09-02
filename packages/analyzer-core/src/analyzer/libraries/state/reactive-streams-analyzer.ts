@@ -399,7 +399,7 @@ export class ReactiveStreamsAnalyzer extends BaseAnalyzer {
         nodir: true,
         absolute: false,
       });
-      const sample = this.capAndPrioritizeSourceFiles(candidates, 'reactive stream evidence scan').slice(0, 200);
+      const sample = this.capAndPrioritizeSourceFiles(candidates, 'reactive stream evidence scan');
       for (const relativeFile of sample) {
         const content = await fs.readFile(path.join(projectPath, relativeFile), 'utf8').catch(() => '');
         if (REACTOR_IMPORT.test(content) || RXJAVA_IMPORT.test(content) || COMBINE_IMPORT.test(content)) {

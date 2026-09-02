@@ -83,7 +83,7 @@ test('workspace comprehension waits for a pending L5 member and treats ready or 
   assert.equal(isCasComprehensionSettled({ layers_ready: { layers: [{ layer: 'L5', status: 'pending' }] } }), false);
   assert.equal(isCasComprehensionSettled({ ai_enrichment: 'ready', layers_ready: { layers: [{ layer: 'L5', status: 'ready' }] } }), true);
   assert.equal(isCasComprehensionSettled({ ai_enrichment: 'error', layers_ready: { layers: [{ layer: 'L5', status: 'error' }] } }), true);
-  assert.equal(isCasComprehensionSettled({ analysis_timestamp: 'legacy-synchronous' }), true);
+  assert.equal(isCasComprehensionSettled({ analysis_timestamp: 'legacy-synchronous' }), false);
 });
 
 test('workspace input signature is order-independent and changes when a member comprehension layer settles', () => {

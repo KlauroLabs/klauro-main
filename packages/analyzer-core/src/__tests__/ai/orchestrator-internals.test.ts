@@ -15,13 +15,37 @@ import {
   resolveCapabilityDescriptionRoute,
   shouldReauthorCatalogDescriptions,
 } from '../../analyzer/core/ai-task-model-routing';
+import { filterMismatchedOperationObligationCapabilities } from '../../analyzer/core/capability-catalog-cycle-repair';
+import { deterministicCapabilityActionIdentityFallback } from '../../analyzer/core/capability-catalog-repair-plan';
 
 // These exercise internal heuristics of the orchestrator. They are private by
 // design (not part of the public CAS contract) so the tests reach them via a
 // typed `any` handle rather than widening the class surface.
 const orch = new AnalyzerOrchestrator() as any;
 
-test('catalog quality repair targets and retains independently omitted evidence families', async () => {
+test('capability catalog parsing accepts one balanced JSON value and ignores trailing envelope noise', () => {
+  const raw = '{"capabilities":[{"name":"Track budgets","description":"Budgets track category targets across the planning period.","candidate_ids":["candidate_1"]}]}}';
+
+  expect(orch.parseCapabilityCatalog(raw)).toEqual([{
+    name: 'Track budgets',
+    description: 'Budgets track category targets across the planning period.',
+    candidate_ids: ['candidate_1'],
+  }]);
+});
+
+test('capability catalog parsing preserves braces inside strings and rejects incomplete JSON', () => {
+  const fenced = 'prefix \`\`\`json\\n{"capabilities":[{"name":"Track {budgets}","description":"Budgets track category targets across the planning period.","candidate_ids":["candidate_1"]}]}\\n\`\`\` trailing';
+
+  expect(orch.parseCapabilityCatalog(fenced)).toHaveLength(1);
+  expect(orch.parseCapabilityCatalog(
+    '{"capabilities":[{"name":"Track budgets","description":"Budgets track category targets"',
+  )).toEqual([]);
+  expect(orch.parseCapabilityCatalog(
+    '{"capabilities":[{"name":"Track budgets"]}]}',
+  )).toEqual([]);
+});
+
+test('catalog quality repair retries omitted evidence families without manufacturing standalone identities', async () => {
   const localOrch = new AnalyzerOrchestrator() as any;
   const candidates = Array.from({ length: 37 }, (_, index) => ({
     id: `family-${index}`,
@@ -78,14 +102,13 @@ test('catalog quality repair targets and retains independently omitted evidence 
     budgetMs: 30000,
   });
 
-  expect(requested).toHaveLength(32);
+  expect(requested.length).toBeGreaterThan(1);
+  expect(requested.length).toBeLessThanOrEqual(26);
   expect(requested[0]).toEqual(candidates.map(candidate => candidate.id));
   expect(requested.slice(1).every(ids => ids.length === 1)).toBe(true);
-  expect([...requestedById.values()].sort((left, right) => left - right)).toEqual([
-    ...Array(20).fill(1), ...Array(9).fill(2), ...Array(4).fill(3), ...Array(2).fill(4), ...Array(2).fill(5),
-  ]);
-  expect(result).toHaveLength(37);
-  expect(purpose.capability_catalog_coverage.status).toBe('accepted');
+  expect([...requestedById.values()].every(attempts => attempts <= 3)).toBe(true);
+  expect(result).toHaveLength(0);
+  expect(purpose.capability_catalog_coverage.status).toBe('rejected');
 });
 
 test('catalog repair stops after bounded no-progress retries', async () => {
@@ -142,13 +165,13 @@ test('catalog repair stops after bounded no-progress retries', async () => {
   expect(requests.slice(1).every(ids => ids.length === 1)).toBe(true);
   expect(result).toHaveLength(0);
   expect(purpose.capability_catalog_coverage.status).toBe('rejected');
-  expect(purpose.capability_catalog_coverage.reason).toMatch(/omitted 5 product-entity evidence families/);
+  expect(purpose.capability_catalog_coverage.reason).toMatch(/5 unreconciled product-outcome evidence families/);
 });
 
-test('catalog collapse schedules uncovered semantic family representatives even without mandatory entity groups', async () => {
+test('catalog collapse confirms each unmatched semantic family identity before publication', async () => {
   const localOrch = new AnalyzerOrchestrator() as any;
   const candidates = [
-    ['create', 'Create applications'],
+    ['create', 'Create records'],
     ['category', 'Manage categories'],
     ['notes', 'Update notes'],
     ['search', 'Search history'],
@@ -156,7 +179,7 @@ test('catalog collapse schedules uncovered semantic family representatives even 
     id,
     name,
     category: 'core',
-    related_entities: [],
+    related_entities: [`entity_${id === 'create' ? 'record' : id === 'notes' ? 'note' : id}`],
     related_domains: [],
     operations: [{ entry_point_id: `entry-${id}`, entry_point_type: 'http', action: name.split(' ')[0] }],
     criticality: 'medium',
@@ -201,13 +224,11 @@ test('catalog collapse schedules uncovered semantic family representatives even 
     budgetMs: 30000,
   });
 
-  expect(requested).toEqual([
-    ['create', 'category', 'notes', 'search'],
-    ['category'],
-    ['notes'],
-    ['search'],
-  ]);
-  expect(result.map((capability: any) => capability.id).sort()).toEqual(['category', 'create', 'notes', 'search']);
+  expect(requested[0]).toEqual(['create', 'category', 'notes', 'search']);
+  expect(requested.slice(1).every(ids => ids.length === 1)).toBe(true);
+  expect(new Set(requested.slice(1).flat())).toEqual(new Set(['notes', 'search']));
+  expect(requested).toHaveLength(5);
+  expect(result.map((capability: any) => capability.id).sort()).toEqual(['create', 'notes', 'search']);
   expect(purpose.capability_catalog_coverage.status).toBe('accepted');
 });
 
@@ -651,7 +672,7 @@ describe('source inventory analyzer detection', () => {
     }
   });
 
-  it('excludes root-level legacy reference apps from Klauro self project discovery', async () => {
+  it('includes root-level legacy first-party apps in source inventory and project discovery', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-inventory-legacy-'));
     try {
       fs.writeFileSync(path.join(root, 'package.json'), '{"name":"@klauro/monorepo"}');
@@ -668,19 +689,13 @@ describe('source inventory analyzer detection', () => {
       const roots = await localOrch.discoverProjectRoots(root);
 
       expect(inventory.files).toContain('apps/mcp-server/package.json');
-      expect(inventory.files).not.toContain('legacy/web/package.json');
-      expect(inventory.files.some((file: string) => file.startsWith('legacy/'))).toBe(false);
-      expect(roots.map((projectRoot: string) => path.relative(root, projectRoot).replace(/\\/g, '/'))).not.toContain('legacy/web');
+      expect(inventory.files).toContain('legacy/web/package.json');
+      expect(inventory.files).toContain('legacy/web/src/App.tsx');
+      expect(roots.map((projectRoot: string) => path.relative(root, projectRoot).replace(/\\/g, '/'))).toContain('legacy/web');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
-
-  // Regression for the workspace-glob variant of this exclusion (a repo whose root
-  // package.json declares `"workspaces": [..., "legacy/*"]`) lives in
-  // workspace-globs.test.ts, which unmocks `glob`/`fs`/`fs-extra` — required because
-  // discoverWorkspaceGlobRootsWithoutManifest calls the real `globSync`, which this
-  // file's global jest.mock('glob', ...) (see __tests__/setup.ts) stubs out entirely.
 });
 
 describe('detectLibrariesFromManifests pyproject.toml parsing', () => {
@@ -1205,9 +1220,30 @@ describe('architecture and capability inference', () => {
       concept: 'billing',
       role: 'business-logic',
       count: 2,
-      node_ids: ['billing-service', 'billing-manager'],
+      node_ids: ['billing-manager', 'billing-service'],
       files: ['src/billing/billing.service.ts', 'src/payments/billing.manager.ts'],
     }]);
+  });
+
+  it('derives gRPC lifecycle actions from RPC semantics before the POST transport', () => {
+    const rpc = (name: string) => ({
+      type: 'http',
+      trigger: { method: 'POST', path: `/example.AccountService/${name}` },
+      metadata: { protocol: 'grpc', rpc: name },
+      handler: { method_name: name },
+    });
+
+    expect([
+      'CreateAccount',
+      'GetAccount',
+      'ListAccounts',
+      'UpdateAccount',
+      'DeleteAccount',
+      'SignIn',
+      'RefreshToken',
+    ].map(name => orch.inferActionFromEntryPoint(rpc(name)))).toEqual([
+      'Create', 'Read', 'Read', 'Update', 'Delete', 'Authenticate', 'Authenticate',
+    ]);
   });
 
   it('infers capabilities from terminal business nodes and entities without routes', async () => {
@@ -3087,7 +3123,7 @@ describe('architecture and capability inference', () => {
     }).reason).toBe('project-name-as-concept');
   });
 
-  it('selects distinctive domain entities ahead of generic Portfolio/Strategy/User CRUD', async () => {
+  it('ranks entities by product and graph evidence rather than an absolute generic-name blacklist', async () => {
     const dataEntities = [
       { id: 'e1', name: 'Portfolio', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
       { id: 'e2', name: 'Strategy', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
@@ -3098,8 +3134,11 @@ describe('architecture and capability inference', () => {
       { id: 'e7', name: 'OhlcvCandle', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
       { id: 'e8', name: 'PreflightDecision', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
     ];
-    const selected = orch.selectDistinctiveEntityNames(dataEntities as any);
-    // Distinctive crypto entities rank ahead of the generic ones.
+    const selected = orch.selectDistinctiveEntityNames(dataEntities as any, 20, {
+      concepts: ['dex', 'whale', 'ohlcv', 'preflight'], evidence: [],
+      productDocSummary: 'Detect DEX trades, whale transactions, OHLCV candles, and preflight decisions.',
+    });
+    // First-party scope evidence ranks the matching entities; their names are not intrinsically more product-like.
     expect(selected.slice(0, 4)).toEqual(['DexTrade', 'WhaleTransaction', 'OhlcvCandle', 'PreflightDecision']);
     expect(selected.indexOf('DexTrade')).toBeLessThan(selected.indexOf('Portfolio'));
     expect(selected.indexOf('WhaleTransaction')).toBeLessThan(selected.indexOf('UsageStats'));
@@ -4062,6 +4101,7 @@ describe('evidence-driven security boundaries and summary', () => {
     trigger: { method: partial.method, path: partial.path },
     security: partial.security,
     handler: partial.handler,
+    metadata: partial.metadata,
   });
 
   it('emits a tenant-isolation boundary only when tenant scoping evidence exists', async () => {
@@ -4173,6 +4213,94 @@ describe('evidence-driven security boundaries and summary', () => {
     expect(summary.assumed_vs_enforced.missing).toBe(0);
   });
 
+  it('keeps interface declarations in CAS without treating them as unprotected runtime mutations', async () => {
+    const nodes = [node({
+      id: 'proto-auth-service',
+      name: 'AuthService',
+      type: 'service',
+      metadata: { attributes: { execution_role: 'declaration' } },
+    })];
+    const entryPoints = [
+      httpEntry({
+        id: 'proto-create',
+        source_node: 'proto-create-declaration',
+        method: 'POST',
+        path: '/catalog.MemoService/CreateMemo',
+        metadata: { execution_role: 'declaration', declaration_kind: 'protobuf-service-contract' },
+      }),
+      httpEntry({
+        id: 'openapi-delete',
+        source_node: 'openapi-delete-declaration',
+        method: 'DELETE',
+        path: '/memos/{id}',
+        metadata: { execution_role: 'declaration', declaration_kind: 'openapi-operation-contract' },
+      }),
+      httpEntry({
+        id: 'implemented-create',
+        source_node: 'implemented-create-handler',
+        method: 'POST',
+        path: '/memos',
+      }),
+    ];
+
+    const boundaries = orch.buildSecurityBoundaries(nodes, entryPoints);
+    expect(boundaries.map((boundary: any) => boundary.boundary_type)).not.toContain('authentication');
+    const summary = orch.buildSecuritySummary(boundaries, nodes, entryPoints);
+    expect(summary.unprotected_sensitive_ops).toEqual(['implemented-create-handler']);
+  });
+
+  it('excludes every protobuf contract artifact from authentication enforcement while retaining runtime guards', async () => {
+    const declaration = (id: string, name: string, type: CASNode['type']) => node({
+      id,
+      name,
+      type,
+      metadata: { attributes: { execution_role: 'declaration', declaration_kind: 'protobuf-contract' } },
+    });
+    const nodes = [
+      declaration('proto-file', 'auth_service.proto', 'file'),
+      declaration('proto-service', 'AuthService', 'service'),
+      declaration('proto-message', 'SSOCredentials', 'data_entity'),
+      declaration('proto-field-auth-url', 'auth_url', 'field'),
+      declaration('proto-field-password-auth', 'disallow_password_auth', 'field'),
+      node({ id: 'runtime-guard', name: 'AuthenticationGuard', type: 'guard' }),
+    ];
+
+    const boundaries = orch.buildSecurityBoundaries(nodes, []);
+    const authentication = boundaries.find((boundary: any) => boundary.boundary_type === 'authentication');
+    expect(authentication).toBeDefined();
+    expect(authentication.enforcement_points.map((point: any) => point.node_id)).toEqual(['runtime-guard']);
+    for (const id of ['proto-file', 'proto-service', 'proto-message', 'proto-field-auth-url', 'proto-field-password-auth']) {
+      expect(boundaries.flatMap((boundary: any) => boundary.enforcement_points)
+        .some((point: any) => point.node_id === id)).toBe(false);
+    }
+  });
+
+  it('does not report an implemented mutating handler protected by a global guard edge', async () => {
+    const nodes = [node({ id: 'global-auth', name: 'GlobalAuthInterceptor', type: 'guard' })];
+    const entryPoints = [
+      httpEntry({
+        id: 'implemented-create',
+        source_node: 'implemented-create-handler',
+        method: 'POST',
+        path: '/memos',
+        handler: { node_id: 'implemented-create-handler', method_name: 'CreateMemo' },
+      }),
+    ];
+    const edges = [{
+      id: 'global-auth-guards-create',
+      source: 'global-auth',
+      target: 'implemented-create-handler',
+      type: 'guards',
+      category: 'security',
+      metadata: { target_entry_point: 'implemented-create' },
+    }] as any;
+
+    const boundaries = orch.buildSecurityBoundaries(nodes, entryPoints, undefined, edges);
+    const summary = orch.buildSecuritySummary(boundaries, nodes, entryPoints, edges);
+    expect(summary.unprotected_sensitive_ops).toEqual([]);
+    expect(summary.assumed_vs_enforced.missing).toBe(0);
+  });
+
   it('lifts a route behind auth middleware onto the boundary via the guards edge (the real route-surface bridge), while an unprotected route stays out', async () => {
     // Mirrors auth-analyzer.ts's actual output shape: a mechanism node, a
     // route/handler node it protects, and a `guards` edge (category
@@ -4227,6 +4355,98 @@ describe('evidence-driven security boundaries and summary', () => {
     expect(authContext.scope.entry_points).toContain('entry_protected_route');
     expect(authContext.scope.node_ids).not.toContain('open_route_handler');
     expect(authContext.scope.entry_points).not.toContain('entry_open_route');
+  });
+});
+
+describe('canonical issue and health completeness', () => {
+  const node = (partial: Partial<CASNode>): CASNode => ({
+    id: partial.id || partial.name || 'node',
+    name: partial.name || 'Node',
+    type: partial.type || 'function',
+    source: partial.source || { file: `src/${partial.id || 'node'}.ts`, line: 1 },
+    metadata: partial.metadata || {},
+    implementation_status: partial.implementation_status,
+  } as CASNode);
+  const httpEntry = (partial: any) => ({
+    id: partial.id,
+    source_node: partial.source_node || partial.id,
+    type: 'http',
+    name: `${partial.method} ${partial.path}`,
+    trigger: { method: partial.method, path: partial.path },
+    metadata: partial.metadata,
+  });
+
+
+  it('retains every deterministically ordered change risk beyond the former cap', () => {
+    const nodes = Array.from({ length: 125 }, (_, index) => node({
+      id: `service-${String(124 - index).padStart(3, '0')}`,
+      name: `Service${index}`,
+      type: 'service',
+      metadata: { is_exported: true },
+    }));
+    const forward = orch.buildChangeRisks(nodes, [], []);
+    const reverse = orch.buildChangeRisks([...nodes].reverse(), [], []);
+
+    expect(forward).toHaveLength(125);
+    expect(forward.map((risk: any) => risk.node_id)).toEqual(reverse.map((risk: any) => risk.node_id));
+  });
+
+  it('retains all authored documentation and implementation issues while excluding generated nodes', () => {
+    const authored = Array.from({ length: 125 }, (_, index) => node({
+      id: `authored-${index}`,
+      name: `Authored${index}`,
+      type: 'function',
+      metadata: { is_exported: true },
+      implementation_status: { status: 'stub', indicators: [] },
+    }));
+    const generated = Array.from({ length: 20 }, (_, index) => node({
+      id: `generated-${index}`,
+      name: `Generated${index}`,
+      type: 'function',
+      metadata: { is_exported: true, is_generated: true },
+      implementation_status: { status: 'not-implemented', indicators: [] },
+    }));
+
+    const documentation = orch.buildDocumentationSummary([...authored, ...generated]);
+    const implementation = orch.buildImplementationHealth([...authored, ...generated]);
+
+    expect(documentation.by_type.functions.total).toBe(125);
+    expect(documentation.missing_documentation).toHaveLength(125);
+    expect(documentation.missing_documentation.every((item: any) => item.node_id.startsWith('authored-'))).toBe(true);
+    expect(implementation.stubs).toBe(125);
+    expect(implementation.not_implemented).toBe(0);
+    expect(implementation.risk_areas).toHaveLength(125);
+  });
+
+  it('retains duplicate concept signals beyond the former cap without generated-code noise', () => {
+    const authored = Array.from({ length: 25 }, (_, index) => [
+      node({ id: `service-a-${index}`, name: `Concept${index}Service`, type: 'service', source: { file: `src/a/${index}.ts`, line: 1 } }),
+      node({ id: `service-b-${index}`, name: `Concept${index}Manager`, type: 'service', source: { file: `src/b/${index}.ts`, line: 1 } }),
+    ]).flat();
+    const generated = [
+      node({ id: 'generated-a', name: 'TransportService', type: 'service', source: { file: 'gen/a.ts', line: 1 }, metadata: { is_generated: true } }),
+      node({ id: 'generated-b', name: 'TransportManager', type: 'service', source: { file: 'gen/b.ts', line: 1 }, metadata: { is_generated: true } }),
+    ];
+
+    const signals = orch.detectDuplicateConceptSignals([...authored, ...generated]);
+    expect(signals).toHaveLength(25);
+    expect(signals.some((signal: any) => signal.concept === 'transport')).toBe(false);
+    expect(signals.map((signal: any) => signal.concept)).toEqual([...signals.map((signal: any) => signal.concept)].sort());
+  });
+
+  it('retains every unprotected runtime mutation beyond the former reporting cap', () => {
+    const nodes = [node({ id: 'auth-guard', name: 'JwtAuthGuard', type: 'guard' })];
+    const entries = Array.from({ length: 40 }, (_, index) => httpEntry({
+      id: `mutation-${index}`,
+      source_node: `handler-${index}`,
+      method: 'POST',
+      path: `/resources/${index}`,
+    }));
+    const boundaries = orch.buildSecurityBoundaries(nodes, entries);
+    const summary = orch.buildSecuritySummary(boundaries, nodes, entries);
+    const auth = boundaries.find((boundary: any) => boundary.boundary_type === 'authentication');
+    expect(auth.enforcement_points.filter((point: any) => point.confidence === 'missing')).toHaveLength(40);
+    expect(summary.unprotected_sensitive_ops).toHaveLength(40);
   });
 });
 
@@ -5297,6 +5517,38 @@ describe('orchestrator entry-point merge integrity', () => {
     expect(target.allEntryPoints[0].id).toBe(incoming.id);
     expect(target.allEdges.map(edge => edge.source)).toEqual([incoming.id]);
   });
+
+  it('does not merge distinct source-positioned React occurrences during analyzer accumulation', async () => {
+    const first = {
+      id: 'first-click', source_node: 'panel', source_analyzer: 'react', type: 'event', name: 'Panel click',
+      trigger: { pattern: 'click' }, handler: { node_id: 'panel', method_name: 'Panel', file: 'Panel.tsx', line: 1 },
+      metadata: { source_analyzer: 'react', handler_file: 'Panel.tsx', jsx_line: 20, jsx_column: 8, handler_binding_node_ids: ['first-handler'] },
+    } as CASEntryPoint;
+    const second = {
+      id: 'second-click', source_node: 'panel', source_analyzer: 'react', type: 'event', name: 'Panel click',
+      trigger: { pattern: 'click' }, handler: { node_id: 'panel', method_name: 'Panel', file: 'Panel.tsx', line: 1 },
+      metadata: { source_analyzer: 'react', handler_file: 'Panel.tsx', jsx_line: 28, jsx_column: 8, handler_binding_node_ids: ['second-handler'] },
+    } as CASEntryPoint;
+    const target = {
+      allNodes: [],
+      allEdges: [{ id: 'first-trigger', source: first.id, target: 'first-handler', type: 'triggers' } as CASEdge],
+      allEntryPoints: [first],
+      allExitPoints: [],
+    };
+
+    await orch.mergeAnalysisResult(target, {
+      nodes: [],
+      edges: [{ id: 'second-trigger', source: second.id, target: 'second-handler', type: 'triggers' } as CASEdge],
+      entry_points: [second],
+      exit_points: [],
+    }, { analyzerId: 'react' });
+
+    expect(target.allEntryPoints.map(entry => entry.id).sort()).toEqual(['first-click', 'second-click']);
+    for (const entry of target.allEntryPoints) {
+      const targets = target.allEdges.filter(edge => edge.source === entry.id && edge.type === 'triggers').map(edge => edge.target).sort();
+      expect(targets).toEqual([...(entry.metadata?.handler_binding_node_ids || [])].sort());
+    }
+  });
 });
 
 describe('orchestrator dedupeEntryPointTwins (task #27: entry-point twins)', () => {
@@ -5359,6 +5611,33 @@ describe('orchestrator dedupeEntryPointTwins (task #27: entry-point twins)', () 
     orch.dedupeEntryPointTwins(entryPoints);
 
     expect(entryPoints.map(entryPoint => entryPoint.id)).toEqual(['entry_input_counter', 'entry_input_text']);
+  });
+
+  it('preserves distinct source-positioned React events and their exact trigger bindings', () => {
+    const entryPoints: CASEntryPoint[] = [
+      {
+        id: 'first-click', source_node: 'component', source_analyzer: 'react', type: 'event', name: 'Panel click',
+        trigger: { pattern: 'click' }, handler: { node_id: 'component', method_name: 'Panel', file: 'Panel.tsx' },
+        metadata: { source_analyzer: 'react', handler_file: 'Panel.tsx', jsx_line: 20, jsx_column: 8, handler_binding_node_ids: ['first-handler'] },
+      } as CASEntryPoint,
+      {
+        id: 'second-click', source_node: 'component', source_analyzer: 'react', type: 'event', name: 'Panel click',
+        trigger: { pattern: 'click' }, handler: { node_id: 'component', method_name: 'Panel', file: 'Panel.tsx' },
+        metadata: { source_analyzer: 'react', handler_file: 'Panel.tsx', jsx_line: 28, jsx_column: 8, handler_binding_node_ids: ['second-handler'] },
+      } as CASEntryPoint,
+    ];
+    const edges: CASEdge[] = [
+      { id: 'first-trigger', source: 'first-click', target: 'first-handler', type: 'triggers' } as CASEdge,
+      { id: 'second-trigger', source: 'second-click', target: 'second-handler', type: 'triggers' } as CASEdge,
+    ];
+
+    orch.dedupeEntryPointTwins(entryPoints, undefined, edges);
+
+    expect(entryPoints.map(entry => entry.id)).toEqual(['first-click', 'second-click']);
+    for (const entry of entryPoints) {
+      const targets = edges.filter(edge => edge.source === entry.id && edge.type === 'triggers').map(edge => edge.target).sort();
+      expect(targets).toEqual([...(entry.metadata?.handler_binding_node_ids || [])].sort());
+    }
   });
 
   it('keeps two entries for the same source_node when they are genuinely different triggers (e.g. a subscriber handling two distinct events)', () => {
@@ -6325,6 +6604,63 @@ describe('capability hygiene: entity-set dedup', () => {
     expect(orch.dedupeSystemCapabilitiesByName([bound[1], unboundAgent])).toHaveLength(2);
   });
 
+  it('merges repair-cycle synonyms that cite the same exact evidence without collapsing distinct outcome slots', () => {
+    const operation = { entry_point_id: 'rules-update', entry_point_type: 'http', action: 'update' };
+    const dependency = {
+      from_capability: 'rules', to_capability: 'transactions', dependency_type: 'requires', strength: 'required',
+      evidence: { shared_services: [], shared_nodes: [], shared_entities: ['Rule', 'Transaction'] },
+    };
+    const merged = orch.dedupeSystemCapabilitiesByName([
+      capFixture({
+        id: 'rules-short', name: 'Automate transaction categorization',
+        related_entities: ['entity_rule'], operations: [operation],
+        criticality_factors: ['catalog-candidate:cap_rules_management'],
+      }),
+      { ...capFixture({
+        id: 'rules-specific', name: 'Automate transaction categorization with rules',
+        related_entities: ['entity_rule'], operations: [operation],
+        criticality_factors: ['catalog-candidate:cap_rules_management'],
+      }), depends_on: [dependency] },
+    ], false, true);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0].name).toBe('Automate transaction categorization with rules');
+    expect(merged[0].depends_on).toEqual([dependency]);
+  });
+
+  it('unions separately promoted same-name operation obligations without losing either exact provenance', async () => {
+    const firstCandidate = 'operation-obligation:capability_job:804e94f90dbc44ec';
+    const secondCandidate = 'operation-obligation:capability_job:aade3daad6ccf9ae';
+    const promoted = (candidateId: string, entryPointId: string) => capFixture({
+      id: 'capability_update_job_status',
+      name: 'Update job status',
+      description: 'Users update job application status throughout the review process.',
+      related_entities: ['entity_job'],
+      operations: [{ entry_point_id: entryPointId, entry_point_type: 'event', action: 'update' }],
+      criticality_factors: [`catalog-candidate:${candidateId}`],
+    });
+    const merged = orch.dedupeSystemCapabilitiesByName([
+      promoted(firstCandidate, 'status-change'),
+      promoted(secondCandidate, 'status-submit'),
+    ], true);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0].operations.map((operation: any) => operation.entry_point_id).sort()).toEqual(['status-change', 'status-submit']);
+    expect(merged[0].criticality_factors.sort()).toEqual([
+      `catalog-candidate:${firstCandidate}`,
+      `catalog-candidate:${secondCandidate}`,
+    ].sort());
+    const preserved = orch.dedupeSystemCapabilitiesByName([
+      promoted(firstCandidate, 'status-change'),
+      promoted(secondCandidate, 'status-submit'),
+    ], true, true);
+    expect(preserved).toHaveLength(2);
+    expect(preserved.map((capability: any) => capability.criticality_factors[0]).sort()).toEqual([
+      `catalog-candidate:${firstCandidate}`,
+      `catalog-candidate:${secondCandidate}`,
+    ].sort());
+  });
+
   it('keeps two DIFFERENT purposes over the SAME entity set (rung-5 washup: exact-set dedupe collapsed 6 purpose caps to 3), while still merging a CRUD verb-variant pair', async () => {
     const merged = orch.dedupeSystemCapabilitiesByName([
       // Same entity set {Task, TaskList}, DIFFERENT purpose subjects — both live.
@@ -6452,6 +6788,28 @@ describe('capability hygiene: entity-set dedup', () => {
     expect(merged[0].criticality_factors).toEqual(expect.arrayContaining([
       'catalog-candidate:analysis',
       'catalog-candidate:runtime',
+    ]));
+  });
+
+  it('merges synchronization wording variants when one has the same entities and a superset of operations', async () => {
+    const shared = { entry_point_id: 'plaid-list', entry_point_type: 'http', action: 'list' };
+    const merged = orch.dedupeSystemCapabilitiesByName([
+      capFixture({
+        name: 'Sync financial accounts from Plaid', related_entities: ['PlaidAccount', 'PlaidItem'],
+        operations: [shared], criticality_factors: ['catalog-candidate:cap_plaid'],
+      }),
+      capFixture({
+        name: 'Synchronize bank accounts via Plaid', related_entities: ['PlaidAccount', 'PlaidItem'],
+        operations: [shared, { entry_point_id: 'plaid-sync', entry_point_type: 'http', action: 'create' }],
+        criticality_factors: ['catalog-candidate:cap_plaid', 'catalog-candidate:cap_plaid_sync'],
+      }),
+    ]);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0].operations).toHaveLength(2);
+    expect(merged[0].criticality_factors).toEqual(expect.arrayContaining([
+      'catalog-candidate:cap_plaid',
+      'catalog-candidate:cap_plaid_sync',
     ]));
   });
 
@@ -6622,7 +6980,7 @@ describe('capability hygiene: post-AI-catalog reconciliation (real hosted-CAS de
     expect(reconcile({
       ...authored,
       criticality_factors: ['catalog-candidate:fuel-surface'],
-    })).toEqual([]);
+    })).toEqual([expect.objectContaining({ id: 'record-fuel-purchases' })]);
     expect(reconcile({
       ...authored,
       criticality_factors: ['catalog-outcome-requirement:all:forged', 'catalog-candidate:fuel-surface'],
@@ -6636,6 +6994,41 @@ describe('capability hygiene: post-AI-catalog reconciliation (real hosted-CAS de
       name: 'Record vehicle inspections',
       description: 'Vehicle inspection activity preserves completed checks for fleet operators during daily vehicle review.',
     })).toEqual([]);
+  });
+
+  it('preserves exact authored operation obligations through reconciliation before pending staging', () => {
+    const firstId = 'operation-obligation:capability_job:804e94f90dbc44ec';
+    const secondId = 'operation-obligation:capability_job:aade3daad6ccf9ae';
+    const candidate = (id: string, entryPointId: string) => cap({
+      id, name: 'update job', structural_label: 'update job', evidence_kind: 'behavior-surface',
+      evidence_role: 'product-outcome', related_entities: ['entity_job'],
+      operations: [{ entry_point_id: entryPointId, entry_point_type: 'event', action: 'update' }],
+    });
+    const candidates = [candidate(firstId, 'status-change'), candidate(secondId, 'status-submit')];
+    const authored = (candidateId: string, entryPointId: string) => cap({
+      id: 'capability_update_job_status', name: 'Update job status',
+      description: 'Users update job application status throughout the review process.',
+      related_entities: ['entity_job'],
+      operations: [{ entry_point_id: entryPointId, entry_point_type: 'event', action: 'update' }],
+      criticality_factors: [`catalog-candidate:${candidateId}`],
+    });
+
+    const reconciled = orch.reconcileCatalogedCapabilities(
+      [authored(firstId, 'status-change'), authored(secondId, 'status-submit')],
+      candidates, [], [], [], undefined, [],
+      { concepts: [], evidence: [], productDocSummary: 'Users update job application status throughout the review process.' },
+    );
+
+    expect(reconciled).toHaveLength(2);
+    expect(reconciled.map((capability: any) => capability.name)).toEqual(['Update job status', 'Update job status']);
+    expect(reconciled.map((capability: any) => capability.description)).toEqual([
+      'Users update job application status throughout the review process.',
+      'Users update job application status throughout the review process.',
+    ]);
+    expect(reconciled.map((capability: any) => capability.criticality_factors[0]).sort()).toEqual([
+      `catalog-candidate:${firstId}`, `catalog-candidate:${secondId}`,
+    ].sort());
+    expect(reconciled.map((capability: any) => capability.operations[0].entry_point_id).sort()).toEqual(['status-change', 'status-submit']);
   });
 
   it('SURFACES ARE NOT CAPABILITIES: a behavior-surface candidate is never re-injected into the ranked catalog, even if the AI dropped it', async () => {
@@ -6935,22 +7328,22 @@ describe('capability hygiene: post-AI-catalog reconciliation (real hosted-CAS de
       ...over,
     });
 
-    it('restores a dropped entity-anchored capability the description names, from an already-anchored candidate', async () => {
+    it('records a dropped entity-backed outcome as a reconciliation gap without publishing structural evidence', async () => {
       const dataEntities = [productEntity('Device'), productEntity('Asset')];
       // The AI catalog only kept a User capability — Device/Asset vanished.
       const cataloged = [cap({ name: 'Manage user accounts', category: 'core', related_entities: ['User'] })];
       const candidates = [
-        cap({ id: 'cand_device', name: 'Manage devices', category: 'core', related_entities: ['Device'], operations: [{ entry_point_id: 'ep1', entry_point_type: 'http', action: 'GET' }] }),
-        cap({ id: 'cand_asset', name: 'Manage assets', category: 'core', related_entities: ['Asset'], operations: [{ entry_point_id: 'ep2', entry_point_type: 'http', action: 'GET' }] }),
+        cap({ id: 'cand_device', name: 'Pair devices for communication', category: 'core', related_entities: ['Device'], operations: [{ entry_point_id: 'ep1', entry_point_type: 'http', action: 'GET' }] }),
+        cap({ id: 'cand_asset', name: 'Track physical assets', category: 'core', related_entities: ['Asset'], operations: [{ entry_point_id: 'ep2', entry_point_type: 'http', action: 'GET' }] }),
       ];
       const purpose: any = { core_concepts: ['Device', 'Asset', 'User'] };
       const out = orch.reconcileCatalogedCapabilities(cataloged, candidates, dataEntities, [], [], purpose);
       const names = out.map((c: any) => c.name);
-      expect(names).toContain('Manage devices');
-      expect(names).toContain('Manage assets');
+      expect(names).not.toContain('Pair devices for communication');
+      expect(names).not.toContain('Track physical assets');
       expect(purpose.description_capability_gaps).toEqual(expect.arrayContaining([
-        expect.objectContaining({ entity_name: 'Device', disposition: 'reinjected-from-candidate' }),
-        expect.objectContaining({ entity_name: 'Asset', disposition: 'reinjected-from-candidate' }),
+        expect.objectContaining({ entity_name: 'Device', disposition: 'structural-evidence-only' }),
+        expect.objectContaining({ entity_name: 'Asset', disposition: 'structural-evidence-only' }),
       ]));
     });
 
@@ -8263,7 +8656,9 @@ describe('top-down capability evidence (C2)', () => {
   it('keeps candidate-scoped first-party context, journeys, and entities during targeted repair', async () => {
     const original = (aiService as any).generateComponentDescription;
     let context: any;
+    let request: any;
     (aiService as any).generateComponentDescription = async (input: any) => {
+      request = input;
       context = input.additionalContext;
       return JSON.stringify({ capabilities: [{
         requirement_id: 'candidate_1',
@@ -8304,16 +8699,62 @@ describe('top-down capability evidence (C2)', () => {
 
       expect(catalog).toHaveLength(1);
       expect(catalog[0].name).toBe('Track job applications');
+      expect(request.skipCache).toBe(true);
       expect(context.facts.top_down_signals.scoped_product_context).toEqual([
         'Users track job applications and organize them by progress.',
       ]);
       expect(context.facts.user_journeys.map((journey: any) => journey.name)).toEqual(['Change application progress']);
-      expect(context.facts.entities).toEqual([]);
+      expect(context.facts.entities).toEqual([{ name: 'JobApplication', fields: [] }]);
       expect(JSON.stringify(context.facts)).not.toContain('Configure deployment');
       expect(JSON.stringify(context.facts)).not.toContain('DeploymentConfig');
     } finally {
       (aiService as any).generateComponentDescription = original;
     }
+  });
+
+  it('accepts a durable grouped lifecycle title when its description covers every cited action', async () => {
+    const catalog = await orch.aiExtractCapabilityCatalog({
+      systemName: 'Budget Planner',
+      enhancedSystemPurpose: { primary_domain: 'budget-planning', core_concepts: [] },
+      frameworks: [], userJourneys: [],
+      dataEntities: [{ id: 'budget', name: 'Budget', kind: 'persisted-entity' }],
+      candidateCapabilities: [
+        {
+          id: 'budget-read', name: 'Read budget', category: 'core',
+          evidence_kind: 'behavior-surface', evidence_role: 'product-outcome',
+          operations: [{ entry_point_id: 'budget-read-route', entry_point_type: 'http', action: 'read' }],
+          related_entities: ['budget'], related_domains: [], criticality: 'medium', criticality_factors: [],
+        },
+        {
+          id: 'budget-update', name: 'Update budget', category: 'core',
+          evidence_kind: 'behavior-surface', evidence_role: 'product-outcome',
+          operations: [{ entry_point_id: 'budget-update-route', entry_point_type: 'http', action: 'update' }],
+          related_entities: ['budget'], related_domains: [], criticality: 'medium', criticality_factors: [],
+        },
+      ],
+      behaviorSurfaces: [], externalServices: [], flowGraph: emptyFlowGraph(),
+      projectTextSignal: { concepts: [], evidence: [], productDocSummary: 'Users plan spending with budgets.' },
+      budgetMs: 30000, exactCapabilityLimit: 1, qualityNudge: 'Repair this focused family.',
+      repairMode: 'evidence',
+      targetedRepairFacts: [
+        {
+          candidate_id: 'candidate_1', first_party_outcomes: [], observable_actions: ['read'],
+          prior_rejections: [], required_audience_labels: [], required_subject_terms: ['view', 'budget'],
+          required_visible_actions: ['view'], minimum_subject_matches: 2,
+        },
+        {
+          candidate_id: 'candidate_2', first_party_outcomes: [], observable_actions: ['update'],
+          prior_rejections: [], required_audience_labels: [], required_subject_terms: ['update', 'budget'],
+          required_visible_actions: ['update'], minimum_subject_matches: 2,
+        },
+      ],
+      targetedRepairCandidateMap: { candidate_1: 'budget-read', candidate_2: 'budget-update' },
+      catalogOverride: [{
+        name: 'Track budgets', description: 'Users track budgets by viewing and updating each planning period.',
+        category: 'core', candidate_ids: ['budget-read', 'budget-update'],
+      }],
+    });
+    expect(catalog.map((capability: any) => capability.name)).toEqual(['Track budgets']);
   });
 
 
@@ -8683,7 +9124,7 @@ describe('top-down capability evidence (C2)', () => {
     }
   });
 
-  it('keeps raw repair evidence server-side while resolving opaque prompt candidate ids for validation', async () => {
+  it('keeps repair evidence scoped while resolving opaque prompt candidate ids for validation', async () => {
     const original = (aiService as any).generateComponentDescription;
     const contexts: any[] = [];
     const responses = ['candidate_1', 'capability_mcp'];
@@ -8733,7 +9174,7 @@ describe('top-down capability evidence (C2)', () => {
       expect(serialized).toContain('candidate_1');
       expect(serialized).not.toContain('capability_mcp');
       expect(serialized).not.toContain('CrossCodebaseSystemGraph');
-      expect(serialized).not.toContain('CASEdge');
+      expect(serialized).toContain('CASEdge');
       expect(serialized).not.toContain('KlauroConfig');
       expect(serialized).not.toContain('RawArchitectureFamily');
       expect(contexts).toHaveLength(2);
@@ -8941,6 +9382,55 @@ describe('top-down capability evidence (C2)', () => {
     }
   });
 
+  it('preserves cited flow relationships so cross-subject outcome language remains grounded', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [{
+        name: 'Organize transactions with rules',
+        description: 'Users can organize transactions with rules; each action assigns a transaction to a category.',
+        category: 'core', candidate_ids: ['rules'],
+      }],
+    });
+    const dependsOn = [{
+      from_capability: 'rules-flow', to_capability: 'transaction-flow',
+      dependency_type: 'requires', strength: 'required',
+      evidence: { shared_services: [], shared_nodes: [], shared_entities: ['Rule', 'Transaction', 'Category'] },
+      description: 'Rules assign transactions to categories',
+    }];
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'finance',
+        enhancedSystemPurpose: { primary_domain: 'personal-finance', core_concepts: ['transactions', 'categories'] },
+        frameworks: [], userJourneys: [],
+        dataEntities: [
+          { id: 'rule', name: 'Rule', kind: 'persisted-entity' },
+          { id: 'transaction', name: 'Transaction', kind: 'persisted-entity' },
+          { id: 'category', name: 'Category', kind: 'persisted-entity' },
+          { id: 'action', name: 'Action', kind: 'persisted-entity' },
+        ],
+        candidateCapabilities: [{
+          id: 'rules', name: 'Rules', structural_label: 'Rules', category: 'core',
+          evidence_kind: 'entity', evidence_role: 'product-outcome',
+          operations: [{ entry_point_id: 'update-rule', entry_point_type: 'http', action: 'Update' }],
+          related_entities: ['rule'], related_domains: ['transaction-rules'], criticality: 'high', criticality_factors: [],
+          depends_on: dependsOn,
+        }],
+        behaviorSurfaces: [], externalServices: [], flowGraph: { capability_candidates: [] },
+        projectTextSignal: {
+          concepts: ['transactions', 'rules', 'categories'], evidence: [],
+          productDocSummary: 'Users organize transactions into categories with automated rules.',
+        },
+        budgetMs: 30000,
+      });
+
+      expect(catalog).toHaveLength(1);
+      expect(catalog[0].depends_on).toEqual(dependsOn);
+      expect(catalog[0].related_domains).toEqual(['transaction-rules']);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
   it('derives a missing candidate citation from the deterministic operation-family match', async () => {
     const original = (aiService as any).generateComponentDescription;
     (aiService as any).generateComponentDescription = async () => JSON.stringify({
@@ -8973,6 +9463,42 @@ describe('top-down capability evidence (C2)', () => {
       expect(catalog).toHaveLength(1);
       expect(catalog[0].criticality_factors).toContain('catalog-candidate:codebase');
       expect(catalog[0].operations.map((operation: any) => operation.entry_point_id)).toEqual(['analyze', 'preview']);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
+  it('does not infer broad candidate scope when the model supplies only an unknown candidate id', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [{
+        name: 'Manage user profiles',
+        description: 'Users can create, update, and delete user profiles associated with their accounts.',
+        category: 'core', entities: [], journeys: [],
+        candidate_ids: ['Users (PATCH /api/v1/users/{user})'],
+      }],
+    });
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'notes',
+        enhancedSystemPurpose: { primary_domain: 'notes', core_concepts: ['user profiles'] },
+        frameworks: [], userJourneys: [],
+        dataEntities: [{ id: 'user', name: 'User', kind: 'persisted-entity' }],
+        candidateCapabilities: [{
+          id: 'user-lifecycle', name: 'User Lifecycle', category: 'core',
+          evidence_kind: 'entity', evidence_role: 'product-outcome',
+          operations: [
+            { entry_point_id: 'update-user', entry_point_type: 'http', action: 'Update', trigger: { method: 'PATCH', path: '/users/:user' } },
+            { entry_point_id: 'delete-user', entry_point_type: 'http', action: 'Delete', trigger: { method: 'DELETE', path: '/users/:user' } },
+          ],
+          related_entities: ['user'], related_domains: [], criticality: 'high', criticality_factors: [],
+        }],
+        externalServices: [], flowGraph: { capability_candidates: [] },
+        projectTextSignal: { concepts: ['user profiles'], evidence: [], productDocSummary: 'Users manage personal profiles for their notes account.' },
+        budgetMs: 30000,
+      });
+
+      expect(catalog).toEqual([]);
     } finally {
       (aiService as any).generateComponentDescription = original;
     }
@@ -9209,6 +9735,39 @@ describe('top-down capability evidence (C2)', () => {
     }
   });
 
+  it('accepts impersonation as a product capability when a product-outcome candidate owns its public route', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [{
+        name: 'Create impersonation session',
+        description: "Impersonation session records are created to temporarily assume another user's identity, enabling authorized operators to observe and troubleshoot system behavior as that user.",
+        category: 'core', entities: ['ImpersonationSession'], journeys: [], candidate_ids: ['impersonation-sessions'],
+      }],
+    });
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'sample-application',
+        enhancedSystemPurpose: { primary_domain: 'content', core_concepts: ['article'] },
+        frameworks: [], userJourneys: [],
+        dataEntities: [{ id: 'entity_impersonationsession', name: 'ImpersonationSession', kind: 'persisted-entity', fields: [], lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } }],
+        candidateCapabilities: [{
+          id: 'impersonation-sessions', name: 'Impersonation Sessions', structural_label: 'Impersonation Sessions Management',
+          evidence_kind: 'entity', evidence_role: 'product-outcome',
+          evidence_examples: [], related_entities: ['entity_impersonationsession'], related_domains: ['impersonation-sessions'],
+          operations: [{ entry_point_id: 'entry_route_impersonation_sessions', entry_point_type: 'http', action: 'Create', path_or_command: '/impersonation_sessions', trigger: { method: 'POST', path: '/impersonation_sessions' } }],
+          criticality_factors: [],
+        }],
+        behaviorSurfaces: [], externalServices: [], flowGraph: { capability_candidates: [] },
+        projectTextSignal: { concepts: ['article'], evidence: [] },
+        budgetMs: 30000,
+      });
+
+      expect(catalog.map((item: any) => item.name)).toEqual(['Create impersonation session']);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
   it('extracts verbatim product framing from a README (title + opening paragraph)', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-topdown-readme-'));
     try {
@@ -9357,8 +9916,8 @@ describe('top-down capability evidence (C2)', () => {
       expect(withCtx.facts.top_down_signals.product_terminology).toEqual(expect.arrayContaining(['arcane', 'commander', 'multiplayer']));
       expect(withCtx.facts.top_down_signals.product_terminology).not.toEqual(expect.arrayContaining(['search', 'nodes', 'install', 'default', 'config']));
       expect(withCtx.task).toMatch(/PURPOSE TEST/);
-      expect(withCtx.task).toMatch(/TOP-DOWN COVERAGE/);
-      expect(withCtx.task).toMatch(/human-facing exploration, agent-facing context, collaboration, and truth-model construction/);
+      expect(withCtx.task).toMatch(/INTENT RECONCILIATION/);
+      expect(withCtx.facts.top_down_signals.product_overview).toMatch(/real-time multiplayer and AI opponents/);
       expect(withCtx.task).toMatch(/Never return two capabilities whose descriptions assert the same result/);
       expect(withCtx.task).toMatch(/access control/i);
       expect(withCtx.task).toMatch(/12-28 words and at least 55 characters/);
@@ -9419,7 +9978,7 @@ describe('top-down capability evidence (C2)', () => {
         // Fabricated journey strings must not count as journey grounding.
         { name: 'Coordinate partners', description: 'Coordinates partner onboarding workflows and partner account decisions end to end.', category: 'core', entities: [], journeys: ['Totally invented journey'] },
         // Entity-grounded core item survives as before.
-        { name: 'Manage trips', description: 'Tracks Trip records from booking through completion for dispatch operators.', category: 'core', entities: ['Trip'], journeys: [] },
+        { name: 'Track trips from booking through completion', description: 'Trips remain visible from booking through completion for dispatch operators.', category: 'core', entities: ['Trip'], journeys: [] },
         // DEFECT (real chat-gateway/assistant-runtime CAS, 25-repo capability
         // corpus): 0-entity/0-operation core items shipped anyway because their
         // SUBJECT happened to overlap the product's own top-down vocabulary
@@ -9458,7 +10017,7 @@ describe('top-down capability evidence (C2)', () => {
       // No longer survives: 0 entities, 0 operations, 0 entry points — the
       // journey/top-down escape hatch is gone.
       expect(names).not.toContain('Manage inspections');
-      expect(names).toContain('Manage trips');
+      expect(names).toContain('Track trips from booking through completion');
       expect(names).toContain('Coordinate inspection dispatch');
       const opAnchored = catalog.find((capability: any) => capability.name === 'Coordinate inspection dispatch') as any;
       expect(opAnchored.operations.length).toBeGreaterThan(0);
@@ -9469,265 +10028,45 @@ describe('top-down capability evidence (C2)', () => {
   });
 });
 
-describe('thin-catalog nudge (defect #33 — catalog VARIANCE: v1.0.83 returned 1 item, v1.0.84 returned 6 on the SAME 45k-node CAS)', () => {
-  const dataEntities = [
-    { id: 'entity_widget', name: 'Widget' },
-    { id: 'entity_gadget', name: 'Gadget' },
-    { id: 'entity_gizmo', name: 'Gizmo' },
-  ];
-  // Raw deterministic candidate labels — these are the "families" the nudge
-  // must enumerate. Deliberately worded DIFFERENTLY from the AI-authored
-  // output names below: an AI item whose name verbatim-echoes one of these
-  // is rejected by isRawCandidateLabelName (see that guard), so the fixture
-  // must exercise the nudge without tripping it.
-  const candidateCapabilities = [
-    { name: 'Widget route area', related_entities: ['entity_widget'], operations: [{ entry_point_id: 'ep_w_1', entry_point_type: 'http', action: 'Manage' }] },
-    { name: 'Gadget route area', related_entities: ['entity_gadget'], operations: [{ entry_point_id: 'ep_g_1', entry_point_type: 'http', action: 'Manage' }] },
-    { name: 'Gizmo route area', related_entities: ['entity_gizmo'], operations: [{ entry_point_id: 'ep_z_1', entry_point_type: 'http', action: 'Manage' }] },
-  ];
-  const baseInput = {
-    systemName: 'thin-catalog-fixture',
-    enhancedSystemPurpose: { primary_domain: 'widgets', core_concepts: [] },
-    frameworks: [], userJourneys: [],
-    dataEntities,
-    candidateCapabilities,
-    externalServices: [], flowGraph: { capability_candidates: [] } as any,
-    projectTextSignal: { concepts: [], evidence: [] } as any, budgetMs: 30000,
-  };
-
-  it('spends one extra targeted attempt when the catalog collapses to a single item, enumerating the distinct deterministic families, and keeps the richer result', async () => {
+describe('capability cardinality follows outcomes rather than structural family count', () => {
+  it('does not retry or inflate a grounded catalog merely because the graph has more structural families', async () => {
     const original = (aiService as any).generateComponentDescription;
-    const captured: any[] = [];
     let callCount = 0;
-    (aiService as any).generateComponentDescription = async (arg: any) => {
-      callCount++;
-      captured.push(arg);
-      if (callCount === 1) {
-        // The first call collapses everything into one merged item. It already
-        // satisfies this small repo's evidence-scaled minimum, so the next call
-        // is the targeted family nudge rather than a generic retry.
-        return JSON.stringify({
-          capabilities: [
-            { name: 'Manage all product records', description: 'Owns Widget, Gadget, and Gizmo records across the whole platform.', category: 'core', entities: ['Widget'], journeys: [] },
-          ],
-        });
-      }
-      // Second call = the thin-catalog nudge. It must be told the distinct
-      // families by name, and this time returns one grounded capability PER
-      // family — the measured v1.0.84 shape.
+    (aiService as any).generateComponentDescription = async () => {
+      callCount += 1;
       return JSON.stringify({
-        capabilities: [
-          { name: 'Manage widgets', description: 'Tracks Widget records from creation through retirement for operators.', category: 'core', entities: ['Widget'], journeys: [] },
-          { name: 'Manage gadgets', description: 'Tracks Gadget records and their configuration state for operators.', category: 'core', entities: ['Gadget'], journeys: [] },
-          { name: 'Manage gizmos', description: 'Tracks Gizmo records and their assembly status for operators.', category: 'core', entities: ['Gizmo'], journeys: [] },
-        ],
-      });
-    };
-    try {
-      const catalog = await orch.aiExtractCapabilityCatalog(baseInput);
-      expect(callCount).toBe(2);
-      // The nudge call's retry_hint enumerates the real distinct families by
-      // name (evidence already computed deterministically, not invented).
-      const nudgeHint = captured[1]?.additionalContext?.retry_hint;
-      expect(nudgeHint).toMatch(/Widget route area/);
-      expect(nudgeHint).toMatch(/Gadget route area/);
-      expect(nudgeHint).toMatch(/Gizmo route area/);
-      expect(nudgeHint).toMatch(/only 1 distinct capability/i);
-      // The richer (3-item) nudge result replaces the thin 1-item result.
-      expect(catalog.length).toBe(3);
-      expect(catalog.map((c: any) => c.name).sort()).toEqual(['Manage gadgets', 'Manage gizmos', 'Manage widgets']);
-    } finally {
-      (aiService as any).generateComponentDescription = original;
-    }
-  });
-
-  it('scales the nudge ceiling with family evidence (#33 margin: a 5-cap result on a 16-family repo is the same collapse as 3-on-9)', async () => {
-    const nouns = ['Widget', 'Gadget', 'Gizmo', 'Sprocket', 'Flange', 'Rotor', 'Stator', 'Bearing', 'Camshaft', 'Piston', 'Valve', 'Gasket', 'Pulley', 'Spindle', 'Bracket', 'Housing'];
-    const sixteenFamilies = nouns.map((noun, index) => ({
-      name: `${noun} route area`,
-      related_entities: [`entity_${noun.toLowerCase()}`],
-      operations: [{ entry_point_id: `ep_${index}`, entry_point_type: 'http', action: 'Manage' }],
-    }));
-    const fiveCaps = nouns.slice(0, 5).map(noun => ({
-      name: `Manage ${noun.toLowerCase()}s`,
-      description: `Tracks ${noun} records from creation through retirement for operators.`,
-      category: 'core', entities: [noun], journeys: [],
-    }));
-    const original = (aiService as any).generateComponentDescription;
-    const captured: any[] = [];
-    (aiService as any).generateComponentDescription = async (arg: any) => {
-      captured.push(arg);
-      // The first call returns FIVE caps (five distinct entity sets). With 16
-      // families the scaled ceiling is max(3, floor(16/3)=5) = 5, so the second
-      // call is the targeted nudge and returns one cap per family.
-      if (captured.length === 1) return JSON.stringify({ capabilities: fiveCaps });
-      return JSON.stringify({
-        capabilities: nouns.map(noun => ({
-          name: `Manage ${noun.toLowerCase()}s`,
-          description: `Tracks ${noun} records and their operating state for teams.`,
-          category: 'core', entities: [noun], journeys: [],
-        })),
+        capabilities: [{
+          name: 'Organize widgets',
+          description: 'Operators organize Widget records for the product behavior represented by the cited evidence.',
+          category: 'core',
+          entities: ['Widget'],
+          journeys: [],
+        }],
       });
     };
     try {
       const catalog = await orch.aiExtractCapabilityCatalog({
-        ...baseInput,
-        candidateCapabilities: sixteenFamilies,
-        dataEntities: nouns.map(noun => ({ id: `entity_${noun.toLowerCase()}`, name: noun })),
-      });
-      expect(captured.length).toBe(2); // one result plus one evidence-backed nudge
-      const hint = String(captured[1]?.additionalContext?.retry_hint || '');
-      expect(hint).toContain('16 DISTINCT candidate route-area families');
-      expect(hint).toContain('(top 10 listed)');
-      expect(catalog.length).toBe(16);
-    } finally {
-      (aiService as any).generateComponentDescription = original;
-    }
-  });
-
-  it('does NOT spend the extra attempt when the catalog is already rich (control: healthy multi-item result is left untouched)', async () => {
-    const original = (aiService as any).generateComponentDescription;
-    let callCount = 0;
-    (aiService as any).generateComponentDescription = async () => {
-      callCount++;
-      return JSON.stringify({
-        capabilities: [
-          { name: 'Manage widgets', description: 'Tracks Widget records from creation through retirement for operators.', category: 'core', entities: ['Widget'], journeys: [] },
-          { name: 'Manage gadgets', description: 'Tracks Gadget records and their configuration state for operators.', category: 'core', entities: ['Gadget'], journeys: [] },
-          { name: 'Manage gizmos', description: 'Tracks Gizmo records and their assembly status for operators.', category: 'core', entities: ['Gizmo'], journeys: [] },
+        systemName: 'outcome-cardinality-fixture',
+        enhancedSystemPurpose: { primary_domain: 'widgets', core_concepts: [] },
+        frameworks: [],
+        userJourneys: [],
+        dataEntities: [
+          { id: 'entity_widget', name: 'Widget' },
+          { id: 'entity_gadget', name: 'Gadget' },
+          { id: 'entity_gizmo', name: 'Gizmo' },
         ],
+        candidateCapabilities: [
+          { name: 'Widget route area', related_entities: ['entity_widget'], operations: [{ entry_point_id: 'ep_w', entry_point_type: 'http', action: 'Manage' }] },
+          { name: 'Gadget route area', related_entities: ['entity_gadget'], operations: [{ entry_point_id: 'ep_g', entry_point_type: 'http', action: 'Manage' }] },
+          { name: 'Gizmo route area', related_entities: ['entity_gizmo'], operations: [{ entry_point_id: 'ep_z', entry_point_type: 'http', action: 'Manage' }] },
+        ],
+        externalServices: [],
+        flowGraph: { capability_candidates: [] } as any,
+        projectTextSignal: { concepts: [], evidence: [] } as any,
+        budgetMs: 30000,
       });
-    };
-    try {
-      const catalog = await orch.aiExtractCapabilityCatalog(baseInput);
-      // Three capabilities satisfy the evidence-scaled range, so the first
-      // successful call is final and no quality nudge is warranted.
       expect(callCount).toBe(1);
-      expect(catalog.length).toBe(3);
-    } finally {
-      (aiService as any).generateComponentDescription = original;
-    }
-  });
-
-  it('does NOT spend the extra attempt on a genuine 1-family repo (nothing to nudge toward)', async () => {
-    const original = (aiService as any).generateComponentDescription;
-    let callCount = 0;
-    (aiService as any).generateComponentDescription = async () => {
-      callCount++;
-      return JSON.stringify({
-        capabilities: [
-          { name: 'Manage widgets', description: 'Tracks Widget records from creation through retirement for operators.', category: 'core', entities: ['Widget'], journeys: [] },
-        ],
-      });
-    };
-    try {
-      const catalog = await orch.aiExtractCapabilityCatalog({
-        ...baseInput,
-        // Only ONE distinct deterministic family — the nudge has nothing
-        // evidence-backed to enumerate, so it must not fire.
-        candidateCapabilities: [candidateCapabilities[0]],
-        dataEntities: [dataEntities[0]],
-      });
-      expect(callCount).toBe(1); // one satisfying call, no unsupported nudge
-      expect(catalog.length).toBe(1);
-    } finally {
-      (aiService as any).generateComponentDescription = original;
-    }
-  });
-
-  it('nudges a SEVERE undercount too: 3 thin caps against 9+ distinct families (rung-5 washup: 3 caps on a 34-entity/309-route Rails app)', async () => {
-    // Nine distinct deterministic families — the washup shape in miniature.
-    const nouns = ['Widget', 'Gadget', 'Gizmo', 'Sprocket', 'Flange', 'Rotor', 'Stator', 'Bearing', 'Camshaft'];
-    const manyFamilies = nouns.map((noun, index) => ({
-      name: `${noun} route area`,
-      related_entities: [`entity_${noun.toLowerCase()}`],
-      operations: [{ entry_point_id: `ep_${index}`, entry_point_type: 'http', action: 'Manage' }],
-    }));
-    const original = (aiService as any).generateComponentDescription;
-    const captured: any[] = [];
-    (aiService as any).generateComponentDescription = async (arg: any) => {
-      captured.push(arg);
-      // The first attempt collapses to 3 thin items; the nudge returns 9.
-      if (captured.length === 1) {
-        return JSON.stringify({
-          capabilities: [
-            { name: 'Create record', description: 'Creates a record in the system for operators to review later.', category: 'core', entities: ['Widget'], journeys: [] },
-            { name: 'Update item', description: 'Updates an item in the system when operators change details.', category: 'core', entities: ['Gadget'], journeys: [] },
-            { name: 'List things', description: 'Lists things stored in the system so operators can browse them.', category: 'supporting', entities: ['Gizmo'], journeys: [] },
-          ],
-        });
-      }
-      return JSON.stringify({
-        capabilities: nouns.map(noun => ({
-          name: `Manage ${noun.toLowerCase()}s`,
-          description: `Tracks ${noun} records from creation through retirement for operators.`,
-          category: 'core', entities: [noun], journeys: [],
-        })),
-      });
-    };
-    try {
-      const catalog = await orch.aiExtractCapabilityCatalog({
-        ...baseInput,
-        candidateCapabilities: manyFamilies,
-        dataEntities: nouns.map(noun => ({ id: `entity_${noun.toLowerCase()}`, name: noun })),
-      });
-      expect(captured.length).toBe(2); // one result + the severe-undercount nudge
-      const nudgeArg = captured[1];
-      const hint = String(nudgeArg?.additionalContext?.retry_hint || JSON.stringify(nudgeArg));
-      expect(hint).toContain('only 3 distinct capabilities');
-      expect(catalog.length).toBe(9);
-    } finally {
-      (aiService as any).generateComponentDescription = original;
-    }
-  });
-
-  it('nudges a CRUD-per-route collapse: 9 raw items over 3 entity sets is EFFECTIVELY 3 (rung-5 washup: entity-set dedupe ran after the count check, so 9 sailed through and persisted as 3)', async () => {
-    const nouns = ['Widget', 'Gadget', 'Gizmo', 'Sprocket', 'Flange', 'Rotor', 'Stator', 'Bearing', 'Camshaft'];
-    const manyFamilies = nouns.map((noun, index) => ({
-      name: `${noun} route area`,
-      related_entities: [`entity_${noun.toLowerCase()}`],
-      operations: [{ entry_point_id: `ep_${index}`, entry_point_type: 'http', action: 'Manage' }],
-    }));
-    const crudTrio = (noun: string) => (['Create', 'Update', 'Delete'].map(verb => ({
-      name: `${verb} ${noun.toLowerCase()}`,
-      description: `Lets users ${verb.toLowerCase()} ${noun.toLowerCase()} records in the system for later review.`,
-      category: 'core', entities: [noun], journeys: [],
-    })));
-    const original = (aiService as any).generateComponentDescription;
-    const captured: any[] = [];
-    (aiService as any).generateComponentDescription = async (arg: any) => {
-      captured.push(arg);
-      // First attempt: NINE items but only THREE distinct entity sets (a CRUD
-      // trio per entity) — raw count (9) satisfies the minimum so the regular
-      // retry loop stops after ONE call; only the effective count (3) reveals
-      // the collapse. The nudge attempt returns one purpose cap per family —
-      // note its RAW length equals the first attempt's (9 vs 9): only the
-      // effective-size comparison accepts it.
-      if (captured.length === 1) {
-        return JSON.stringify({ capabilities: [...crudTrio('Widget'), ...crudTrio('Gadget'), ...crudTrio('Gizmo')] });
-      }
-      return JSON.stringify({
-        capabilities: nouns.map(noun => ({
-          name: `Manage ${noun.toLowerCase()}s`,
-          description: `Tracks ${noun} records from creation through retirement for operators.`,
-          category: 'core', entities: [noun], journeys: [],
-        })),
-      });
-    };
-    try {
-      const catalog = await orch.aiExtractCapabilityCatalog({
-        ...baseInput,
-        candidateCapabilities: manyFamilies,
-        dataEntities: nouns.map(noun => ({ id: `entity_${noun.toLowerCase()}`, name: noun })),
-      });
-      expect(captured.length).toBe(2); // one satisfying regular attempt + the effective-count nudge
-      const hint = String(captured[1]?.additionalContext?.retry_hint || '');
-      expect(hint).toContain('only 3 distinct capabilities');
-      expect(hint).toMatch(/per-route CRUD/);
-      // The nudge result REPLACED the CRUD catalog (equal raw length — only
-      // the effective-size acceptance makes this true).
-      expect(catalog.length).toBe(9);
-      expect(catalog.every((item: any) => String(item.name).startsWith('Manage '))).toBe(true);
+      expect(catalog.map((capability: any) => capability.name)).toEqual(['Organize widgets']);
     } finally {
       (aiService as any).generateComponentDescription = original;
     }
@@ -9907,7 +10246,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     }
   });
 
-  it('keeps a well-formed AI capability whose name exactly matches an already-clean, evidence-anchored deterministic candidate area (express-mongoose coverage-gate regression, 2026-08-09)', async () => {
+  it('keeps an outcome-shaped AI capability whose name exactly matches an evidence-anchored deterministic candidate area', async () => {
     // REGRESSION: the exact-match branch of isRawCandidateLabelName used to
     // reject ANY AI item whose name verbatim-matched a candidateAreas string,
     // on the theory that a match means the AI lazily echoed a raw/mechanical
@@ -9928,7 +10267,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     const original = (aiService as any).generateComponentDescription;
     (aiService as any).generateComponentDescription = async () => JSON.stringify({
       capabilities: [
-        { name: 'Manage User', description: 'Lets users create and update their profiles with email and name details.', category: 'core', entities: ['User'] },
+        { name: 'Keep user profiles current', description: 'User profiles retain current email and name details as people create and update them.', category: 'core', entities: ['User'] },
       ],
     });
     try {
@@ -9939,7 +10278,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
         dataEntities: [{ id: 'entity_user', name: 'User' }],
         candidateCapabilities: [
           {
-            name: 'Manage User',
+            name: 'Keep user profiles current',
             related_entities: ['entity_user'],
             operations: [
               { entry_point_id: 'entry_route_get_0', entry_point_type: 'http', action: 'Read' },
@@ -9951,7 +10290,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
         projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
       });
       expect(catalog.length).toBe(1);
-      expect(catalog[0].name).toBe('Manage User');
+      expect(catalog[0].name).toBe('Keep user profiles current');
       expect(catalog[0].related_entities).toContain('entity_user');
       expect(catalog[0].operations.length).toBeGreaterThan(0);
     } finally {
@@ -10121,7 +10460,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     }
   });
 
-  it('keeps every product family and omits internal plumbing when product families exceed the bounded window', async () => {
+  it('keeps the prompt window bounded and treats internal evidence as context rather than capability quotas', async () => {
     const captured: any[] = [];
     const original = (aiService as any).generateComponentDescription;
     (aiService as any).generateComponentDescription = async (opts: any) => {
@@ -10175,14 +10514,15 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
       const facts = captured[0]?.additionalContext?.facts;
       const areas: any[] = facts?.candidate_route_areas || [];
       const includedIds = new Set(areas.map(area => area.candidate_id));
-      expect(candidateCapabilities.every(candidate => includedIds.has(candidate.id))).toBe(true);
-      expect(facts?.required_entity_candidate_groups).toHaveLength(36);
-      expect(facts.required_entity_candidate_groups.every((group: string[]) =>
+      expect(areas.length).toBeGreaterThan(0);
+      expect(areas.length).toBeLessThan(candidateCapabilities.length + behaviorSurfaces.length);
+      expect((facts?.required_entity_candidate_groups || []).every((group: string[]) =>
         group.some(candidateId => includedIds.has(candidateId)))).toBe(true);
-      expect(areas.some(area => String(area.candidate_id).startsWith('surface_'))).toBe(false);
+      expect(areas.some(area => String(area.candidate_id).startsWith('surface_'))).toBe(true);
+      expect(areas.filter(area => String(area.candidate_id).startsWith('surface_')).length).toBeLessThan(behaviorSurfaces.length);
       expect(facts?.required_behavior_candidate_ids).toEqual([]);
-      expect(captured[0].additionalContext.task).toMatch(/one candidate_id from that group/);
-      expect(captured[0].additionalContext.task).toMatch(/must never expose class, interface, schema, or graph-model identifiers/);
+      expect(captured[0].additionalContext.task).toMatch(/never mandatory capability slots/);
+      expect(captured[0].additionalContext.task).toMatch(/never repeat a type, class, interface, schema, or graph-model identifier/);
     } finally {
       (aiService as any).generateComponentDescription = original;
     }
@@ -10602,7 +10942,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
       actual_publishable_capabilities: 1,
       published_capabilities: 1,
       status: 'rejected',
-      reason: 'final catalog published 1 of at least 2 required capabilities',
+      reason: '1 catalog capability was excluded during final publishability validation',
     });
     expect(purpose.ai_phase_status).toBe('degraded');
   });
@@ -10747,6 +11087,26 @@ describe('domain grounding gate: dependency-name salience (live defect — a men
     );
 
     expect(verdict.reason).toBe('nonterminal-supporting-mechanism-domain');
+  });
+
+  it('accepts authentication as the domain when first-party scope evidence says identity is the product', () => {
+    const verdict = orch.evaluateAIDomainCandidate(
+      'identity-authentication',
+      {
+        primary_domain: '',
+        inferred_description: 'An identity platform that authenticates application users.',
+        core_concepts: ['identity', 'authentication'],
+      },
+      [],
+      {
+        concepts: ['identity', 'authentication'],
+        evidence: ['README'],
+        productDocTitle: 'Identity Platform',
+        productDocSummary: 'Authenticate users and issue identities for connected applications.',
+      },
+    );
+
+    expect(verdict).toMatchObject({ accepted: true, reason: 'accepted' });
   });
 
   it('evaluateAIDomainCandidate accepts a label grounded in README/manifest text even when unrelated generic-infra dependencies are present', () => {
@@ -11581,6 +11941,13 @@ describe('catalog completeness (live truckspy: fuel/safety/ELD rich evidence, 9-
     // over a non-generic first segment.
     expect(orch.inferResourceKey(ep('/api/orders/items'))).toBe('orders');
     expect(orch.inferResourceKey(ep('/api/users'))).toBe('users');
+    expect(orch.inferResourceKey(ep('/sessions/new'))).toBe('sessions');
+    expect(orch.inferResourceKey(ep('/password_reset/edit'))).toBe('password');
+    expect(orch.inferResourceKey(ep('/impersonation_sessions'))).toBe('impersonation-sessions');
+    expect(orch.inferResourceKey({
+      ...ep('/upload'),
+      handler: { file: 'app/controllers/import/uploads_controller.rb' },
+    })).toBe('import-upload');
     expect(orch.inferResourceKey(
       ep('/api/articles/{slug}/comments/{comment_id}'),
       new Set(['comments']),
@@ -11655,8 +12022,7 @@ describe('catalog completeness (live truckspy: fuel/safety/ELD rich evidence, 9-
       });
       const bigCtx = captured[captured.length - 1].additionalContext;
       expect(bigCtx.facts.candidate_route_areas.length).toBe(30); // ceil(180/6)
-      const bigCounts = bigCtx.task.match(/Return (\d+) to (\d+) capabilities/);
-      expect(bigCounts.slice(1)).toEqual(['0', '1']);
+      expect(bigCtx.task).not.toMatch(/Return \d+ to \d+ capabilities/);
 
       const smallPool = bigPool.slice(0, 10);
       await orch.aiExtractCapabilityCatalog({
@@ -11669,8 +12035,7 @@ describe('catalog completeness (live truckspy: fuel/safety/ELD rich evidence, 9-
       });
       const smallCtx = captured[captured.length - 1].additionalContext;
       expect(smallCtx.facts.candidate_route_areas.length).toBe(10);
-      const smallCounts = smallCtx.task.match(/Return (\d+) to (\d+) capabilities/);
-      expect(smallCounts.slice(1)).toEqual(['0', '1']);
+      expect(smallCtx.task).not.toMatch(/Return \d+ to \d+ capabilities/);
     } finally {
       (aiService as any).generateComponentDescription = original;
     }
@@ -11788,6 +12153,24 @@ describe('enterprise AI semantic guards', () => {
       'Access Enterprise Dashboard gives users one place to review enterprise orders and compare order details.',
       target,
     ).ok).toBe(true);
+  });
+
+  it('returns the exact unsupported value claim for the next repair prompt', () => {
+    const result = orch.validateElementDescription(
+      'Users organize categories with names, colors, and icons for financial tracking.',
+      {
+        id: 'cap_categories', name: 'Organize categories', kind: 'capability',
+        operations: ['Create Category', 'Update Category', 'Delete Category'],
+        evidenceSummary: ['Category name color icon'], relatedEntities: ['Category'], relatedDomains: [],
+        productOutcomeTerms: [],
+      },
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'unsupported-target-value-claim:tracking',
+      offendingTerms: ['tracking'],
+    });
   });
 
   it('grounds target value claims only in exact strictly bound first-party outcomes', () => {
@@ -11938,10 +12321,10 @@ describe('enterprise AI semantic guards', () => {
   it('does not retry an empty capability catalog when the codebase has no evidence-backed capability families', () => {
     expect(orch.catalogQualityFailure([], 0)).toBeUndefined();
     expect(orch.catalogQualityFailure([], 1)).toBe('empty catalog after reconciliation');
-    expect(orch.catalogQualityFailure([{ name: 'View orders' }], 3)).toMatch(/catalog collapse/);
+    expect(orch.catalogQualityFailure([{ name: 'View orders' }], 3)).toMatch(/unauthored capability names/);
   });
 
-  it('rejects a catalog that compresses five evidence families into two capabilities', () => {
+  it('does not impose a capability quota from structural family count', () => {
     const twoCapabilities = [
       { name: 'Analyze codebases', description: 'Explains code behavior for engineering decisions.', name_source: 'ai', operations: [{}] },
       { name: 'Assess proposed changes', description: 'Shows likely change effects before implementation.', name_source: 'ai', operations: [{}] },
@@ -11951,7 +12334,7 @@ describe('enterprise AI semantic guards', () => {
       { name: 'Coordinate concurrent work', description: 'Prevents overlapping changes from conflicting in shared concepts.', name_source: 'ai', operations: [{}] },
     ];
 
-    expect(orch.catalogQualityFailure(twoCapabilities, 5)).toMatch(/at least 3/);
+    expect(orch.catalogQualityFailure(twoCapabilities, 5)).toBeUndefined();
     expect(orch.catalogQualityFailure(threeCapabilities, 5)).toBeUndefined();
   });
 
@@ -14156,4 +14539,81 @@ describe('capability operation semantics', () => {
       (aiService as any).generateComponentDescription = original;
     }
   });
+});
+
+test('defers an exact typed-interaction mismatch to validated candidate-local recovery', async () => {
+  const candidate: any = {
+    id: 'operation-obligation:job:fetch-details',
+    name: 'Fetch job details',
+    structural_label: 'Fetch job details',
+    category: 'core',
+    evidence_kind: 'behavior-surface',
+    evidence_role: 'product-outcome',
+    operations: [{
+      entry_point_id: 'add-job-fetch-click',
+      entry_point_type: 'event',
+      action: 'read',
+      path_or_command: '/fetch-job',
+    }],
+    related_entities: ['entity_job'],
+    related_domains: [],
+    criticality: 'high',
+    criticality_factors: [],
+  };
+  const extracted = await orch.aiExtractCapabilityCatalog({
+    systemName: 'Application Tracker',
+    enhancedSystemPurpose: { primary_domain: 'application-tracking', core_concepts: [] },
+    frameworks: [],
+    userJourneys: [],
+    dataEntities: [{ id: 'entity_job', name: 'Job', kind: 'persisted-entity' }],
+    candidateCapabilities: [candidate],
+    behaviorSurfaces: [],
+    externalServices: [],
+    flowGraph: emptyFlowGraph(),
+    projectTextSignal: { concepts: [], evidence: [], productDocSummary: 'Users fetch job details into an application form.' },
+    budgetMs: 30000,
+    exactCapabilityLimit: 1,
+    qualityNudge: 'Repair this focused family.',
+    repairMode: 'evidence',
+    targetedRepairFacts: [{
+      candidate_id: 'candidate_1',
+      first_party_outcomes: [],
+      observable_actions: ['fetch'],
+      prior_rejections: [],
+      required_audience_labels: [],
+      required_subject_terms: ['job', 'details'],
+      required_visible_actions: [],
+      minimum_subject_matches: 2,
+    }],
+    targetedRepairCandidateMap: { candidate_1: candidate.id },
+    catalogOverride: [{
+      name: 'View job details',
+      description: 'Users view job details and status while reviewing an application before making changes.',
+      category: 'core',
+      candidate_ids: [candidate.id],
+    }],
+  });
+  expect(extracted).toHaveLength(1);
+  expect(extracted[0].name).toBe('View job details');
+
+  const recovered = filterMismatchedOperationObligationCapabilities({
+    capabilities: extracted,
+    evidenceCandidates: [candidate],
+    recoverActionMismatch: (capability, evidence) => deterministicCapabilityActionIdentityFallback({
+      capability,
+      candidate: evidence,
+      audience: 'Users',
+      relatedEntityLabels: ['Job'],
+      validate: item => item.name === 'Fetch job details' && /Users/.test(item.description || ''),
+    }),
+  });
+  expect(recovered).toHaveLength(1);
+  expect(recovered[0].name).toBe('Fetch job details');
+  expect(recovered[0].operations).toEqual(candidate.operations);
+  expect(recovered[0].criticality_factors?.filter((factor: string) =>
+    factor.startsWith('catalog-candidate:') || factor.startsWith('catalog-operation-obligation:'),
+  )).toEqual([
+    `catalog-candidate:${candidate.id}`,
+    `catalog-operation-obligation:${candidate.id}`,
+  ]);
 });

@@ -47,22 +47,21 @@ interface DepAccumulator {
 
 
 
-function collectManifestFiles(projectPath: string, maxDepth = 8): string[] {
+function collectManifestFiles(projectPath: string): string[] {
   const found: string[] = [];
-  const stack: Array<{ dir: string; depth: number }> = [{ dir: projectPath, depth: 0 }];
+  const stack: string[] = [projectPath];
   while (stack.length > 0) {
-    const { dir, depth } = stack.pop()!;
-    if (depth > maxDepth) continue;
+    const dir = stack.pop()!;
     let entries: fs.Dirent[];
     try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
+      entries = fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
     } catch {
       continue;
     }
     for (const entry of entries) {
       if (entry.isDirectory()) {
         if (entry.name.startsWith('.') || IGNORED_DIRS.has(entry.name)) continue;
-        stack.push({ dir: path.join(dir, entry.name), depth: depth + 1 });
+        stack.push(path.join(dir, entry.name));
         continue;
       }
       if (!entry.isFile()) continue;
@@ -373,8 +372,6 @@ export function buildDependencyManifest(projectPath: string): CASDependencyManif
     if (eco === null) continue;
     let text: string;
     try {
-      const stat = fs.statSync(file);
-      if (stat.size > 5 * 1024 * 1024) continue;
       text = fs.readFileSync(file, 'utf8');
     } catch {
       continue;

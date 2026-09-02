@@ -174,22 +174,70 @@ export function buildLayersReady(
 
 
 
+function analyzerCoverageError(output: CASOutput): string | undefined {
+  const incomplete: string[] = [];
+  const unknown: string[] = [];
+  for (const contribution of output.analyzer_contributions || []) {
+    const scope = contribution.analysis_scope;
+    if (!scope) {
+      unknown.push(contribution.analyzer_id);
+      continue;
+    }
+    if (scope.applicability === 'not-applicable') {
+      if ((contribution.files_created || 0) > 0) incomplete.push(contribution.analyzer_id);
+      continue;
+    }
+    const eligible = Number(scope.files_eligible);
+    const analyzed = Number(scope.files_analyzed);
+    const skipped = Number(scope.files_skipped);
+    if (!Number.isFinite(eligible) || !Number.isFinite(analyzed) || !Number.isFinite(skipped)) {
+      unknown.push(contribution.analyzer_id);
+      continue;
+    }
+    if (scope.complete === false || analyzed < eligible || skipped > 0) {
+      incomplete.push(contribution.analyzer_id);
+    }
+  }
+  const reasons: string[] = [];
+  if (incomplete.length > 0) reasons.push(`incomplete for analyzer(s): ${incomplete.join(', ')}`);
+  if (unknown.length > 0) reasons.push(`scope unreported for analyzer(s): ${unknown.join(', ')}`);
+  return reasons.length > 0 ? `Canonical source extraction is ${reasons.join('; ')}` : undefined;
+}
+
+function canonicalCapabilityCount(output: CASOutput): number {
+  const catalog = (output.capabilities || []).length > 0
+    ? output.capabilities || []
+    : output.product_map?.capabilities || [];
+  return new Set(catalog.map(capability => String(
+    ('id' in capability ? capability.id : undefined) || capability.name || ''
+  ).trim()).filter(Boolean)).size;
+}
+
 export function buildCompletedAnalysisLayersReady(output: CASOutput): CASLayersReady {
   const generatedAt = output.analysis_timestamp || new Date().toISOString();
   const ready = { status: 'ready' as const, completedAt: generatedAt };
+  const extractionError = analyzerCoverageError(output);
+  const structural = extractionError
+    ? { status: 'error' as const, completedAt: generatedAt, error: extractionError }
+    : ready;
   const catalogCoverage = output.enhanced_system_purpose?.capability_catalog_coverage;
-  const catalogIncomplete = Boolean(
-    catalogCoverage &&
-    catalogCoverage.evidence_families > 0 &&
-    catalogCoverage.status !== 'accepted'
-  );
-  const catalogError = catalogIncomplete
-    ? `Capability comprehension is ${catalogCoverage?.status}: ${catalogCoverage?.reason || `${catalogCoverage?.published_capabilities || 0} of at least ${catalogCoverage?.minimum_published_capabilities || 0} required capabilities were published`}`
-    : undefined;
-  const l4 = catalogError
+  const canonicalCapabilities = canonicalCapabilityCount(output);
+  const catalogMinimum = catalogCoverage?.minimum_published_capabilities ?? 0;
+  const catalogError = !catalogCoverage
+    ? 'Capability comprehension is unavailable: catalog coverage was not reported'
+    : catalogCoverage.status !== 'accepted'
+      ? `Capability comprehension is ${catalogCoverage.status}: ${catalogCoverage.reason || `${catalogCoverage.published_capabilities || 0} of at least ${catalogMinimum} required capabilities were published`}`
+      : canonicalCapabilities < catalogMinimum
+        ? `Capability comprehension is inconsistent: ${canonicalCapabilities} of at least ${catalogMinimum} required capabilities were published`
+        : undefined;
+  const l4 = extractionError
+    ? structural
+    : catalogError
     ? { status: 'error' as const, completedAt: generatedAt, error: catalogError }
     : ready;
-  const l5 = output.ai_enrichment === 'pending'
+  const l5 = extractionError
+    ? structural
+    : output.ai_enrichment === 'pending'
     ? { status: 'pending' as const }
     : output.ai_enrichment === 'error'
       ? {
@@ -214,10 +262,10 @@ export function buildCompletedAnalysisLayersReady(output: CASOutput): CASLayersR
           : ready;
 
   return buildLayersReady({
-    L0: ready,
-    L1: ready,
-    L2: ready,
-    L3: ready,
+    L0: structural,
+    L1: structural,
+    L2: structural,
+    L3: structural,
     L4: l4,
     L5: l5,
   }, { generatedAt });

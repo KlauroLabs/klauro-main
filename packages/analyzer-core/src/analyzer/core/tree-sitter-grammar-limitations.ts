@@ -4,6 +4,7 @@ export function sanitizeTaggedTemplateTypeArguments(source: string): string {
   let sanitized: string[] | undefined;
   for (let start = 0; start < source.length; start++) {
     if (source[start] !== '<') continue;
+    if (source[start + 1] === '/') continue;
     let previous = start - 1;
     while (previous >= 0 && /\s/.test(source[previous])) previous--;
     if (previous < 0 || !/[\w$.)\]]/.test(source[previous])) continue;

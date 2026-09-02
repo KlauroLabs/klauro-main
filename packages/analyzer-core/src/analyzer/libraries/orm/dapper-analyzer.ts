@@ -58,7 +58,7 @@ export class DapperAnalyzer extends BaseAnalyzer {
       nodir: true,
     });
 
-    for (const file of sourceFiles.slice(0, 400)) {
+    for (const file of sourceFiles) {
       try {
         const content = await fs.readFile(file, 'utf-8');
         if (/using\s+Dapper\s*;/.test(content) && /\.(Query|Execute)(?:Async|First|FirstOrDefault|Single|SingleOrDefault)?\s*[<(]/.test(content)) {
@@ -159,7 +159,7 @@ export class DapperAnalyzer extends BaseAnalyzer {
   }
 
   private emitExitPoints(sites: DapperQuerySite[], nodes: CASNode[]): NonNullable<CASContribution['exit_points']> {
-    return sites.slice(0, 40).map((site, index) => {
+    return sites.map((site, index) => {
       const nodeId = `query_dapper_${this.sanitizeId(site.filePath)}_${site.line}_${index}`;
       const label = site.resultType ? `Dapper ${site.method}<${site.resultType}>` : `Dapper ${site.method}`;
       nodes.push(this.createNode(

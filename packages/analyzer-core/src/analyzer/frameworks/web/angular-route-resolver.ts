@@ -65,7 +65,6 @@ interface RouteArrayDefinition {
 const EVAL_FAILED = Symbol('angular-route-eval-failed');
 const MAX_EVAL_STEPS = 50000;
 const MAX_EVAL_DEPTH = 64;
-const MAX_LAZY_DEPTH = 12;
 const GUARD_PROPERTIES = ['canActivate', 'canActivateChild', 'canMatch', 'canLoad', 'canDeactivate'];
 const ROUTE_FILE_HINT = /(RouterModule|provideRouter|\bRoutes\b|\bRoute\[\])/;
 
@@ -554,7 +553,7 @@ export class AngularRouteResolver {
       }
     }
 
-    if (lazyTarget?.file && lazyDepth < MAX_LAZY_DEPTH) {
+    if (lazyTarget?.file) {
       const childModule = this.getModule(lazyTarget.file);
       if (childModule) {
         const declarator = childModule.declarations.get(lazyTarget.exportName);

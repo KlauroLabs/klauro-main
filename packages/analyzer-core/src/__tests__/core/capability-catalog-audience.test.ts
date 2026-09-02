@@ -5,6 +5,7 @@ import {
   capabilityCatalogIntegrationTerms,
   capabilityCatalogProductTerms,
   evaluateCapabilityCatalogAudience,
+  groundedCapabilityAudience,
   normalizeCapabilityDescriptionForPublication,
   removeUnsupportedCapabilityAbsenceClaims,
 } from '../../analyzer/core/capability-catalog-audience';
@@ -58,6 +59,122 @@ describe('capability catalog audience evaluation', () => {
       expect.objectContaining({ name: 'Browse products', reasons: expect.arrayContaining(['marketing-language']) }),
       expect.objectContaining({ name: 'Access user account', reasons: ['missing'] }),
     ]));
+  });
+
+
+  it('rejects an incomplete modifier at the end of a capability name', () => {
+    const evaluation = evaluateCapabilityCatalogAudience([
+      capability('Organize merchant families with custom', 'Users organize merchant families with colors, icons, logos, and website details.'),
+    ], [], [], ['merchant families', 'custom']);
+
+    expect(evaluation.accepted).toEqual([]);
+    expect(evaluation.rejections).toEqual([
+      expect.objectContaining({
+        target: 'name',
+        reasons: ['incomplete-modifier-tail'],
+        flaggedTokens: ['custom'],
+      }),
+    ]);
+  });
+
+  it('accepts entity vocabulary directly grounded by the cited operation path', () => {
+    const sync = capability(
+      'Sync financial accounts via Plaid',
+      'Financial accounts synchronize balances and transactions from Plaid connections.',
+    );
+    sync.operations = [{
+      entry_point_id: 'entry_accounts_sync',
+      entry_point_type: 'http',
+      action: 'update',
+      path_or_command: '/accounts/sync',
+    }];
+    sync.related_entities = ['entity_plaid_item'];
+
+    const evaluation = evaluateCapabilityCatalogAudience(
+      [sync],
+      [
+        dataEntity('entity_account', 'Account', 'persisted-entity'),
+        dataEntity('entity_plaid_item', 'PlaidItem', 'persisted-entity'),
+      ],
+      [],
+      ['financial', 'Plaid'],
+    );
+
+    expect(evaluation.accepted.map(item => item.name)).toEqual(['Sync financial accounts via Plaid']);
+  });
+
+  it('accepts entity vocabulary grounded by owned schema fields and relations', () => {
+    const imported = capability(
+      'Import financial data from CSV',
+      'Users import account and category data from CSV files for later review.',
+    );
+    imported.operations = [{ entry_point_id: 'imports', entry_point_type: 'http', action: 'Create', path_or_command: '/imports' }];
+    imported.related_entities = ['entity_import'];
+    const importEntity = dataEntity('entity_import', 'Import', 'persisted-entity');
+    importEntity.fields = [{ name: 'category_col_label', type: 'string', is_sensitive: false }];
+    importEntity.relations = [{
+      target_name: 'Account',
+      relation_type: 'ManyToOne',
+      kind: 'data',
+      evidence_source: 'orm-declaration',
+      evidence: 'Import.account',
+    }];
+
+    const evaluation = evaluateCapabilityCatalogAudience(
+      [imported],
+      [
+        importEntity,
+        dataEntity('entity_account', 'Account', 'persisted-entity'),
+        dataEntity('entity_category', 'Category', 'persisted-entity'),
+      ],
+      [],
+      ['financial', 'CSV'],
+    );
+    expect(evaluation.accepted.map(item => item.name)).toEqual(['Import financial data from CSV']);
+  });
+
+  it('grounds entities connected through a one-hop junction schema', () => {
+    const capabilityUnderTest = capability(
+      'Organize budgets by category',
+      'Users organize budgets by category for financial planning.',
+    );
+    capabilityUnderTest.related_entities = ['entity_category'];
+
+    const category = dataEntity('entity_category', 'Category', 'persisted-entity');
+    const budgetCategory = dataEntity('entity_budget_category', 'BudgetCategory', 'persisted-entity');
+    budgetCategory.fields = [
+      { name: 'category_id', type: 'uuid', is_sensitive: false },
+      { name: 'budget_id', type: 'uuid', is_sensitive: false },
+    ];
+
+    const evaluation = evaluateCapabilityCatalogAudience(
+      [capabilityUnderTest],
+      [category, budgetCategory, dataEntity('entity_budget', 'Budget', 'persisted-entity')],
+      [],
+      ['financial planning'],
+    );
+
+    expect(evaluation.accepted.map(item => item.name)).toEqual(['Organize budgets by category']);
+  });
+
+  it('does not confuse ordinary action language with an unrelated Action entity', () => {
+    const capabilityUnderTest = capability(
+      'Track transactions',
+      'Users track transaction lifecycle actions across their financial records.',
+    );
+    capabilityUnderTest.related_entities = ['entity_transaction'];
+
+    const evaluation = evaluateCapabilityCatalogAudience(
+      [capabilityUnderTest],
+      [
+        dataEntity('entity_transaction', 'Transaction', 'persisted-entity'),
+        dataEntity('entity_action', 'Action', 'persisted-entity'),
+      ],
+      [],
+      ['financial records'],
+    );
+
+    expect(evaluation.accepted.map(item => item.name)).toEqual(['Track transactions']);
   });
 
   it('rejects marketing language in capability names and does not let a name launder its description', () => {
@@ -118,6 +235,30 @@ describe('capability catalog audience evaluation', () => {
     ).rejections).toEqual(expect.arrayContaining([
       expect.objectContaining({ reasons: expect.arrayContaining(['unrelated-entity-vocabulary']) }),
     ]));
+  });
+
+  it('trusts entity subjects grounded by cited operations for deterministic and authored outcomes', () => {
+    const category = dataEntity('entity_category', 'category', 'domain-shape');
+    const atomic = capability(
+      'Update categories',
+      'Users can update categories; they can also update the same categories when needed.',
+    );
+    atomic.name_source = 'deterministic';
+    atomic.description_source = 'deterministic';
+    atomic.related_domains = ['category'];
+    atomic.criticality_factors = [
+      'catalog-deterministic-atomic-closure',
+      'catalog-candidate:operation-obligation:category:update',
+    ];
+    expect(evaluateCapabilityCatalogAudience([atomic], [category], [], []).accepted).toHaveLength(1);
+
+    const authored = {
+      ...atomic,
+      id: 'authored-update-categories',
+      name_source: 'ai' as const,
+      description_source: 'ai' as const,
+    };
+    expect(evaluateCapabilityCatalogAudience([authored], [category], [], []).accepted).toHaveLength(1);
   });
 
   it('builds bounded corrective feedback with evidence-preserving instructions', () => {
@@ -318,6 +459,19 @@ describe('capability catalog audience evaluation', () => {
       flaggedTokens: ['work context', 'fab'],
     }));
     expect(capabilityAudienceRepairFeedback(evaluation.rejections)).toContain('observable action and subject');
+  });
+
+  it('accepts an exact first-party noun even when it prefixes a longer trusted identifier', () => {
+    const subject = capability(
+      'View memo views',
+      'Users can view memo views as part of their normal workflow whenever needed.',
+    );
+
+    const evaluation = evaluateCapabilityCatalogAudience(
+      [subject], [], [], ['memo', 'memo view', 'memos-v1-memoviewservice'],
+    );
+
+    expect(evaluation.accepted.map(item => item.name)).toEqual(['View memo views']);
   });
 
   it('rejects invented reservation, assignment, and ownership semantics', () => {
@@ -777,4 +931,91 @@ it('derives a generic user audience only from a matching user-facing journey', (
     userJourneys: [{ ...journey, entry_point_id: 'other' }],
   });
   expect(unrelated.rejections[0].missingAudience).toBeUndefined();
+});
+
+it('requires one unambiguous first-party audience for deterministic description repair', () => {
+  const feed = capability('Read articles from the feed');
+  expect(groundedCapabilityAudience(feed, { productDocSummary: 'Users read articles from a personalized feed.' }, [])).toBe('Users');
+  expect(groundedCapabilityAudience(feed, { productDocSummary: 'You can read articles from your personalized feed.' }, [])).toBe('Users');
+  expect(groundedCapabilityAudience(feed, { productDocSummary: 'Operators curate feeds while customers read articles.' }, [])).toBeUndefined();
+  expect(groundedCapabilityAudience(feed, undefined, [])).toBeUndefined();
+  const eventCapability = {
+    ...feed,
+    operations: [{ entry_point_id: 'fetch-record', entry_point_type: 'event' as const, action: 'read' }],
+  };
+  expect(groundedCapabilityAudience(eventCapability, undefined, [], [{
+    id: 'fetch-record',
+    type: 'event',
+    name: 'Details click',
+    description: 'User click event handled by fetchRecord',
+    source_node: 'component',
+    source_analyzer: 'react',
+    metadata: { source_analyzer: 'react', interaction_label: 'Fetch record', handler_binding_node_ids: ['fetch-record-handler'] },
+  }])).toBe('Users');
+  const pageCapability = {
+    ...feed,
+    operations: [{ entry_point_id: 'statistics-page', entry_point_type: 'page' as const, action: 'view' }],
+  };
+  const exactPage = {
+    id: 'statistics-page', type: 'page' as const, name: 'Page Statistics', source_node: 'statistics-component',
+    source_analyzer: 'react', handler: { node_id: 'statistics-component', method_name: 'StatisticsView', file: 'StatisticsView.tsx' },
+    metadata: { source_analyzer: 'react', trigger_kind: 'page-component', component: 'StatisticsView' },
+  };
+  expect(groundedCapabilityAudience(pageCapability, undefined, [], [exactPage])).toBe('Users');
+  expect(groundedCapabilityAudience(pageCapability, undefined, [], [{
+    ...exactPage,
+    handler: { ...exactPage.handler, node_id: 'different-component' },
+  }])).toBeUndefined();
+  expect(groundedCapabilityAudience(pageCapability, undefined, [], [{
+    ...exactPage,
+    source_analyzer: 'generic',
+    metadata: { ...exactPage.metadata, source_analyzer: 'generic' },
+  }])).toBeUndefined();
+  for (const type of ['http', 'schedule', 'cli'] as const) {
+    expect(groundedCapabilityAudience({ ...eventCapability, operations: [{ entry_point_id: `non-ui-${type}`, entry_point_type: type, action: 'read' }] }, undefined, [], [{
+      id: `non-ui-${type}`,
+      type,
+      name: 'Fetch records',
+      description: 'User fetch operation',
+      source_node: 'handler',
+      metadata: { interaction_label: 'Fetch records', handler_binding_node_ids: ['handler'] },
+    }])).toBeUndefined();
+  }
+});
+
+
+it('accepts cross-entity product language only when a verified flow dependency grounds it', () => {
+  const categorize = capability(
+    'Automate transaction categorization',
+    'Transaction rules assign categories during bulk financial updates for later review.',
+  );
+  categorize.related_entities = ['entity_rule'];
+  categorize.depends_on = [{
+    from_capability: 'bulk-transactions', to_capability: 'rules', dependency_type: 'shares-data', strength: 'common',
+    evidence: { shared_services: [], shared_nodes: [], shared_entities: ['Rule', 'Transaction', 'Category'] },
+    description: 'Bulk transaction updates share rule and category data',
+  }];
+  const entities = [
+    dataEntity('entity_rule', 'Rule', 'persisted-entity'),
+    dataEntity('entity_transaction', 'Transaction', 'persisted-entity'),
+    dataEntity('entity_category', 'Category', 'persisted-entity'),
+  ];
+
+  expect(evaluateCapabilityCatalogAudience([categorize], entities, [], ['financial']).accepted).toEqual([categorize]);
+  expect(evaluateCapabilityCatalogAudience([{ ...categorize, depends_on: [] }], entities, [], ['financial']).accepted).toEqual([]);
+});
+
+
+
+it('accepts product subjects preserved from cited candidate domains', () => {
+  const importUpload = capability('Import uploads', 'Users import uploads through the observed upload workflow.');
+  importUpload.operations = [{ entry_point_id: 'upload-view', entry_point_type: 'http', action: 'read', path_or_command: '/upload' }];
+  importUpload.related_domains = ['import-upload'];
+  const entities = [
+    dataEntity('entity_import', 'Import', 'persisted-entity'),
+    dataEntity('entity_upload', 'Upload', 'persisted-entity'),
+  ];
+
+  expect(evaluateCapabilityCatalogAudience([importUpload], entities, [], []).accepted).toEqual([importUpload]);
+  expect(evaluateCapabilityCatalogAudience([{ ...importUpload, related_domains: [] }], entities, [], []).accepted).toEqual([]);
 });

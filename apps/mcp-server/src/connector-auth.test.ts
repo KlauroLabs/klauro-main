@@ -6,6 +6,7 @@ import * as path from 'node:path';
 
 import {
   clearStoredConnectorSession,
+  connectorToken,
   listStoredAccounts,
   loadStoredConnectorAuth,
   loadStoredConnectorToken,
@@ -104,6 +105,34 @@ function fakeResponse(status: number, body: unknown): Response {
     json: async () => body,
   } as unknown as Response;
 }
+
+test('connectorToken prefers an authenticated user session over the server shared-token fallback', async () => {
+  await withIsolatedAuthFile(() => {
+    const serverUrl = 'https://example.test';
+    const saved = {
+      account: process.env.KLAURO_ACCOUNT_TOKEN,
+      auth: process.env.KLAURO_AUTH_TOKEN,
+      analyzer: process.env.KLAURO_ANALYZER_TOKEN,
+    };
+    try {
+      delete process.env.KLAURO_ACCOUNT_TOKEN;
+      delete process.env.KLAURO_AUTH_TOKEN;
+      process.env.KLAURO_ANALYZER_TOKEN = 'shared-server-token';
+      saveStoredConnectorSession({ serverUrl, token: 'signed-in-user-token', email: 'dev@example.test' });
+      assert.equal(connectorToken(undefined, serverUrl), 'signed-in-user-token');
+      assert.equal(connectorToken('explicit-token', serverUrl), 'explicit-token');
+      process.env.KLAURO_ACCOUNT_TOKEN = 'account-env-token';
+      assert.equal(connectorToken(undefined, serverUrl), 'account-env-token');
+    } finally {
+      if (saved.account === undefined) delete process.env.KLAURO_ACCOUNT_TOKEN;
+      else process.env.KLAURO_ACCOUNT_TOKEN = saved.account;
+      if (saved.auth === undefined) delete process.env.KLAURO_AUTH_TOKEN;
+      else process.env.KLAURO_AUTH_TOKEN = saved.auth;
+      if (saved.analyzer === undefined) delete process.env.KLAURO_ANALYZER_TOKEN;
+      else process.env.KLAURO_ANALYZER_TOKEN = saved.analyzer;
+    }
+  });
+});
 
 test('resolveAuthStatus: no-token when nothing is stored for the server', async () => {
   await withIsolatedAuthFile(async () => {

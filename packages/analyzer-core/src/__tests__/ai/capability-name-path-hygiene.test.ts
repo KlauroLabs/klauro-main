@@ -143,14 +143,14 @@ describe('finalizeSystemCapabilityNames — path-derived guard', () => {
   it('leaves an AI-authored name untouched even if it contains a path-ish word', () => {
     const capabilities = [capability({
       id: 'cap_ai',
-      name: 'Manage Project Data Exports',
+      name: 'Export project data for review',
       name_source: 'ai',
       description: 'Lets operators export project data for downstream review and reporting.',
       description_source: 'ai',
       operations: [{ entry_point_id: 'entry_export', entry_point_type: 'http', action: 'export' }] as any,
     })];
     orch.finalizeSystemCapabilityNames(capabilities, [], {} as any);
-    expect(capabilities.map(item => item.name)).toEqual(['Manage Project Data Exports']);
+    expect(capabilities.map(item => item.name)).toEqual(['Export project data for review']);
   });
 
   it('reports naming coverage so an un-enriched catalog cannot pass as a result', () => {

@@ -422,7 +422,7 @@ export class TerraformAnalyzer extends BaseAnalyzer {
     for (const match of body.match(/\b(?:aws|azurerm|google|module|data)\.[A-Za-z0-9_.-]+/g) || []) {
       dependencies.add(match);
     }
-    return Array.from(dependencies).slice(0, 20);
+    return Array.from(dependencies);
   }
 
 

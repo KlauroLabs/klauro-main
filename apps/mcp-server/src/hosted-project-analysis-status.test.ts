@@ -54,6 +54,8 @@ test('hosted analysis status uses the persisted exact sub-CAS index for a graph-
 
   const status = buildHostedProjectAnalysisStatus(cas, 'project', 'analysis', subCasNodes);
   assert.deepEqual((status.summary as Record<string, unknown>).sub_cas_nodes, subCasNodes);
+  assert.equal(status.status, 'failed');
+  assert.equal(status.analysis_error, 'Analysis readiness manifest is missing.');
 });
 
 test('an L4-only failure degrades comprehension without failing the structural analysis', () => {

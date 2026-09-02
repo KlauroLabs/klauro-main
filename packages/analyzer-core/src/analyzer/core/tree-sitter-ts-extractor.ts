@@ -1,9 +1,10 @@
 import * as fs from 'fs';
 import { NativeAddonUnavailableError, isNativeAddonUnavailableError } from './errors';
 import { classifyKnownTypeScriptGrammarLimitation, sanitizeTaggedTemplateTypeArguments } from './tree-sitter-grammar-limitations';
+import { originalNodeText, recoverTypeScriptTree } from './tree-sitter-ts-recovery';
 
 export function sanitizeForTreeSitterParse(source: string): string {
-  return source.indexOf('\0') === -1 ? source : source.replace(/\0/g, '�');
+  return source.indexOf('\0') === -1 ? source : source.replace(/\0/g, ' ');
 }
 
 const ABSTRACT_AS_PROPERTY_KEY = /([{;,\n]\s*)abstract(\??\s*:)/g;
@@ -370,7 +371,7 @@ interface TSTraversalFrame {
 
 export class TreeSitterTSExtractor {
   private parsers = new Map<string, any>();
-  private currentFile: string = '';
+  private currentFile: string = ''; private currentSource = Buffer.alloc(0);
   private imports = new Map<string, TSExtractedImport>();
 
   private getParser(filePath: string): any {
@@ -387,17 +388,15 @@ export class TreeSitterTSExtractor {
   }
 
   extractFromSource(content: string, filePath: string): TSFileExtraction {
-    this.currentFile = filePath;
+    this.currentFile = filePath; this.currentSource = Buffer.from(content);
     this.imports.clear();
 
     const parser = this.getParser(filePath);
     const forParse = sanitizeTaggedTemplateTypeArguments(sanitizeAbstractPropertyKeyword(sanitizeForTreeSitterParse(content)));
-    const tree = parser.parse(forParse);
+    const initialTree = parser.parse(forParse);
+    const { tree, root, hasSyntaxErrors } = recoverTypeScriptTree(parser, initialTree, content, forParse, getRootNode, treeHasSyntaxErrors, collectSyntaxErrorLocations);
     try {
-      const root = getRootNode(tree);
-
       const traversal = this.buildTraversalIndex(root);
-      const hasSyntaxErrors = treeHasSyntaxErrors(root);
 
       const result: TSFileExtraction = {
         imports: this.extractImports(root, traversal.imports),
@@ -1235,7 +1234,7 @@ export class TreeSitterTSExtractor {
       isAsync,
       isConditional,
       isInLoop,
-      callExpression: call.text.substring(0, 100),
+      callExpression: originalNodeText(this.currentSource, call).substring(0, 100),
       context: {
         enclosingFunction,
         enclosingClass,

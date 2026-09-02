@@ -115,8 +115,17 @@ describe('resolveWorkspaceGlobMembers', () => {
   it('returns nothing for patterns that match no directories', async () => {
     expect(resolveWorkspaceGlobMembers(root, ['apps/*'])).toEqual([]);
   });
-});
+  it('returns every declared workspace member beyond the former discovery cap', async () => {
+    await Promise.all(
+      Array.from({ length: 505 }, (_, index) =>
+        fs.ensureDir(path.join(root, 'packages', `package-${String(index).padStart(3, '0')}`))),
+    );
 
+    expect(resolveWorkspaceGlobMembers(root, ['packages/*'])).toHaveLength(505);
+  });
+
+
+});
 describe('discoverWorkspaceGlobRootsWithoutManifest', () => {
   let root: string;
 
@@ -237,7 +246,7 @@ describe('NestJS controller discovery in a workspace-glob-only member (no packag
  * exercises the real `globSync` — that file's shared jest.mock('glob', ...) setup
  * stubs `globSync` out entirely, silently no-oping the vulnerable code path.
  */
-describe('legacy npm-workspace glob members are excluded from Klauro self-project discovery', () => {
+describe('legacy-named npm workspace members remain in first-party discovery', () => {
   let root: string;
 
   beforeEach(async () => {
@@ -254,7 +263,7 @@ describe('legacy npm-workspace glob members are excluded from Klauro self-projec
     await fs.writeFile(full, content);
   };
 
-  it('does not promote a legacy/* workspace-glob member to a project root, even when its package.json name matches the klauro-self heuristic', async () => {
+  it('promotes a declared legacy/* member and includes all of its source', async () => {
     await write('package.json', JSON.stringify({
       name: '@klauro/monorepo',
       workspaces: ['apps/*', 'packages/*', 'legacy/*'],
@@ -273,11 +282,10 @@ describe('legacy npm-workspace glob members are excluded from Klauro self-projec
     const relativeRoots = roots.map((r: string) => path.relative(root, r).replace(/\\/g, '/'));
 
     expect(relativeRoots).toContain('apps/mcp-server');
-    expect(relativeRoots).not.toContain('legacy/web');
-    expect(relativeRoots.some((r: string) => r === 'legacy' || r.startsWith('legacy/'))).toBe(false);
+    expect(relativeRoots).toContain('legacy/web');
 
     const inventory = await orchestrator.getSourceFileInventory(root);
-    expect(inventory.files).not.toContain('legacy/web/package.json');
-    expect(inventory.files.some((file: string) => file.startsWith('legacy/'))).toBe(false);
+    expect(inventory.files).toContain('legacy/web/package.json');
+    expect(inventory.files).toContain('legacy/web/src/App.tsx');
   });
 });

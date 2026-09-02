@@ -56,6 +56,7 @@ function compactCandidate(value: unknown, required: boolean): Record<string, unk
     candidate_id: boundedText(candidate.candidate_id, 180),
     family: boundedText(candidate.family, required ? 120 : 180),
     operations: boundedTextArray(candidate.operations, required ? 3 : 6, required ? 120 : 240),
+    relationships: boundedTextArray(candidate.relationships, required ? 4 : 8, required ? 180 : 320),
     name: boundedText(candidate.name, required ? 320 : 900),
     entry_points: candidate.entry_points,
     entities: candidate.entities,
@@ -197,6 +198,12 @@ export function fitCapabilityCatalogContext<T extends Record<string, unknown>>(
     const [removed] = includedCandidates.splice(removableIndex, 1);
     const candidateId = String(removed.candidate_id || '');
     omittedCandidateIds.unshift(candidateId);
+  }
+  while (byteLength(buildContext()) > maxBytes) {
+    const candidate = [...includedCandidates].reverse().find(value => Array.isArray(value.relationships) && value.relationships.length > 0);
+    if (!candidate) break;
+    (candidate.relationships as unknown[]).pop();
+    if ((candidate.relationships as unknown[]).length === 0) delete candidate.relationships;
   }
   if (targetedRepairIds.length > 0) shrinkCapabilityCatalogRepairPromptToBudget(compactBase, boundedFacts, maxBytes, () => byteLength(buildContext()));
   const context = buildContext();

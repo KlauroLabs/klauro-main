@@ -478,7 +478,7 @@ export class CapabilityDetector {
     const operations: CASOperation[] = [];
 
     for (const ep of entryPoints) {
-      const operationKey = `${ep.name}_${ep.trigger?.method || ''}_${ep.trigger?.path || ''}`;
+      const operationKey = ep.id;
       if (seenOperations.has(operationKey)) {
         continue;
       }
@@ -503,28 +503,24 @@ export class CapabilityDetector {
 
   private inferOperationPattern(ep: CASEntryPoint): CASOperation['pattern'] {
     const method = (ep.trigger?.method || '').toUpperCase();
-    const name = ep.name.toLowerCase();
+    const name = ep.name.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase();
     const path = (ep.trigger?.path || '').toLowerCase();
+    const hasNameToken = (...tokens: string[]): boolean =>
+      new RegExp(`(?:^|[^a-z0-9])(?:${tokens.join('|')})(?:$|[^a-z0-9])`, 'i').test(name);
 
-    if (method === 'POST' || name.includes('create') || name.includes('add')) {
-      return 'create';
+    if (method === 'DELETE') return 'delete';
+    if (method === 'PUT' || method === 'PATCH') return 'update';
+    if (method === 'GET' || method === 'HEAD') {
+      return path.includes(':') || path.includes('{') ? 'read' : 'query';
     }
-    if (method === 'PUT' || method === 'PATCH' || name.includes('update') || name.includes('edit')) {
-      return 'update';
-    }
-    if (method === 'DELETE' || name.includes('delete') || name.includes('remove')) {
-      return 'delete';
-    }
-    if (method === 'GET' && (path.includes(':') || path.includes('{'))) {
-      return 'read';
-    }
-    if (method === 'GET' || name.includes('get') || name.includes('find') || name.includes('list')) {
-      return 'query';
-    }
-    if (name.includes('transform') || name.includes('convert') || name.includes('process')) {
-      return 'transform';
-    }
-
+    if (hasNameToken('accept', 'decline', 'test')) return 'action';
+    if (hasNameToken('delete', 'remove')) return 'delete';
+    if (hasNameToken('update', 'edit', 'upsert')) return 'update';
+    if (hasNameToken('create', 'add')) return 'create';
+    if (hasNameToken('list', 'search', 'query')) return 'query';
+    if (hasNameToken('get', 'find', 'fetch')) return 'read';
+    if (method === 'POST') return 'create';
+    if (hasNameToken('transform', 'convert', 'process')) return 'transform';
     return 'action';
   }
 
@@ -624,16 +620,26 @@ export class CapabilityDetector {
   ): string[] {
     const entityIds = new Set<string>();
 
+    const semanticTokens = (value: string): string[] => String(value || '')
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(Boolean)
+      .map(token => token.length > 4 && token.endsWith('ies')
+        ? `${token.slice(0, -3)}y`
+        : token.length > 3 && token.endsWith('s') && !token.endsWith('ss') ? token.slice(0, -1) : token);
+    const structuralRoles = new Set(['controller', 'handler', 'model', 'repository', 'resource', 'service']);
     for (const chain of callChains) {
       for (const step of chain.call_path || []) {
         const node = nodesById.get(step.node_id);
-        if (node) {
-          for (const { entity, lowerName: entityNameLower } of entities) {
-            const nodeNameLower = node.name.toLowerCase();
-            if (nodeNameLower.includes(entityNameLower) ||
-                entityNameLower.includes(nodeNameLower.replace(/service|repository|controller/gi, ''))) {
-              entityIds.add(entity.id);
-            }
+        if (!node) continue;
+        const nodeTokens = semanticTokens(node.name)
+          .filter(token => !structuralRoles.has(token) && !ACTION_WORDS.has(token));
+        if (nodeTokens.length === 0) continue;
+        for (const { entity } of entities) {
+          const entityTokens = semanticTokens(entity.name);
+          if (entityTokens.length > 0 && entityTokens.every(token => nodeTokens.includes(token))) {
+            entityIds.add(entity.id);
           }
         }
       }

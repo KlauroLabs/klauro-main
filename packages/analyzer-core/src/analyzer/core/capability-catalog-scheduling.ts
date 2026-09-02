@@ -1,6 +1,7 @@
 import type { SystemCapability } from '../../types/cas.types';
-import { capabilityEvidenceSubjectTokens, capabilityRequiresCatalogCoverage } from './capability-catalog-evidence';
+import { capabilityEvidenceSubjectTokens } from './capability-catalog-evidence';
 import type { CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
+import { capabilityCatalogRepairLifecycleKey } from './capability-catalog-repair-plan';
 
 export type CapabilityCatalogOutcome =
   | { status: 'fulfilled'; value: SystemCapability[] }
@@ -16,6 +17,15 @@ export interface ScheduledCapabilityCatalog<TTarget> {
 export type CapabilityDescriptionRepairOutcome =
   | { status: 'fulfilled'; value: SystemCapability[] }
   | { status: 'rejected'; reason: unknown };
+
+export function selectValidatedCapabilityDescriptionRepair<T>(
+  validated: readonly T[],
+  attempt: number,
+  fallback: () => T | undefined,
+): T | undefined {
+  if (validated[0] !== undefined) return validated[0];
+  return attempt >= 2 ? fallback() : undefined;
+}
 
 export interface CapabilityCatalogRejection {
   candidateIds: string[];
@@ -67,6 +77,7 @@ export async function retryEmptyCapabilityCatalogOutcome<T>(args: {
   rejections: CapabilityCatalogRejection[];
   requirement?: CapabilityCatalogOutcomeRequirement;
   retryEvidence?: boolean;
+  deferEvidenceRetry?: boolean;
   record: (feedback: CapabilityCatalogRejection) => void;
   retry: () => Promise<T[]>;
 }): Promise<T[]> {
@@ -93,6 +104,7 @@ export async function retryEmptyCapabilityCatalogOutcome<T>(args: {
       args.record(feedback);
     }
   }
+  if (args.deferEvidenceRetry && args.retryEvidence) return args.initial;
   return args.retry();
 }
 
@@ -103,7 +115,8 @@ export function selectCapabilityCatalogPromptCandidates(
   requiredEntityCandidateGroups: ReadonlyArray<ReadonlyArray<string>> = [],
 ): SystemCapability[] {
   const behaviorCandidates = rankedCandidates.filter(candidate => candidate.evidence_kind === 'behavior-surface');
-  const requiredBehaviorCandidates = behaviorCandidates.filter(capabilityRequiresCatalogCoverage);
+  const explicitlyRequiredIds = new Set(requiredEntityCandidateGroups.flat());
+  const requiredBehaviorCandidates = behaviorCandidates.filter(candidate => explicitlyRequiredIds.has(candidate.id));
   const requiredEntityCandidates = requiredEntityCandidateGroups
     .map(group => rankedCandidates.find(candidate => group.includes(candidate.id)))
     .filter((candidate): candidate is SystemCapability => Boolean(candidate));
@@ -161,6 +174,7 @@ export function uncoveredCapabilityCatalogCandidateIds(
   capabilities: SystemCapability[],
   requiredBehaviorCandidateIds: readonly string[],
   requiredEntityCandidateGroups: ReadonlyArray<ReadonlyArray<string>>,
+  fullyCoveredAggregateCandidateIds: ReadonlySet<string> = new Set(),
 ): string[] {
   const citedCandidateIds = new Set(capabilities.flatMap(capability =>
     (capability.criticality_factors || [])
@@ -169,7 +183,8 @@ export function uncoveredCapabilityCatalogCandidateIds(
   return [...new Set([
     ...requiredBehaviorCandidateIds.filter(candidateId => !citedCandidateIds.has(candidateId)),
     ...requiredEntityCandidateGroups
-      .filter(group => !group.some(candidateId => citedCandidateIds.has(candidateId)))
+      .filter(group => !group.some(candidateId =>
+        citedCandidateIds.has(candidateId) || fullyCoveredAggregateCandidateIds.has(candidateId)))
       .flat(),
   ])];
 }
@@ -177,13 +192,15 @@ export function uncoveredCapabilityCatalogCandidateIds(
 export function uncoveredCapabilityCatalogFamilyRepresentativeIds(
   capabilities: SystemCapability[],
   candidateFamilyGroups: ReadonlyArray<ReadonlyArray<string>>,
+  fullyCoveredAggregateCandidateIds: ReadonlySet<string> = new Set(),
 ): string[] {
   const citedCandidateIds = new Set(capabilities.flatMap(capability =>
     (capability.criticality_factors || [])
       .filter(factor => factor.startsWith('catalog-candidate:'))
       .map(factor => factor.slice('catalog-candidate:'.length))));
   return candidateFamilyGroups
-    .filter(group => group.length > 0 && !group.some(candidateId => citedCandidateIds.has(candidateId)))
+    .filter(group => group.length > 0 && !group.some(candidateId =>
+      citedCandidateIds.has(candidateId) || fullyCoveredAggregateCandidateIds.has(candidateId)))
     .map(group => group[0]);
 }
 
@@ -193,10 +210,12 @@ export function capabilityCatalogRepairCandidateIds(
   requiredEntityCandidateGroups: ReadonlyArray<ReadonlyArray<string>>,
   pendingPublishabilityIds: ReadonlySet<string>,
   candidateFamilyGroups: ReadonlyArray<ReadonlyArray<string>> = [],
+  fullyCoveredAggregateCandidateIds: ReadonlySet<string> = new Set(),
 ): string[] {
   return [...new Set([
-    ...uncoveredCapabilityCatalogCandidateIds(capabilities, requiredBehaviorCandidateIds, requiredEntityCandidateGroups),
-    ...uncoveredCapabilityCatalogFamilyRepresentativeIds(capabilities, candidateFamilyGroups),
+    ...requiredBehaviorCandidateIds,
+    ...uncoveredCapabilityCatalogCandidateIds(capabilities, [], requiredEntityCandidateGroups, fullyCoveredAggregateCandidateIds),
+    ...uncoveredCapabilityCatalogFamilyRepresentativeIds(capabilities, candidateFamilyGroups, fullyCoveredAggregateCandidateIds),
     ...pendingPublishabilityIds,
   ])];
 }
@@ -276,10 +295,42 @@ function mergeCapabilityEvidence(outcome: SystemCapability, evidence: SystemCapa
   };
 }
 
+function uniquelyMatchedRepairOutcomeIndexes(
+  outcomes: readonly SystemCapability[],
+  repairHints: readonly SystemCapability[],
+  evidence: SystemCapability,
+): number[] {
+  const evidenceCitation = `catalog-candidate:${evidence.id}`;
+  const hints = repairHints.filter(hint =>
+    (hint.criticality_factors || []).includes(evidenceCitation) &&
+    capabilityOutcomeMatchesEvidence(hint.name, [evidence]));
+  const matches = new Set<number>();
+  const evidenceEntities = new Set(evidence.related_entities || []);
+  const evidenceOperations = new Set((evidence.operations || []).map(operation => operation.entry_point_id));
+  const exactOperationAnchors = new Set(outcomes.flatMap((outcome, index) =>
+    (outcome.operations || []).some(operation => evidenceOperations.has(operation.entry_point_id)) ? [index] : []));
+  for (const hint of hints) {
+    const hintSubjects = outcomeSubjectTokens(hint.name);
+    for (let index = 0; index < outcomes.length; index++) {
+      const outcome = outcomes[index];
+      const hasStructuralAnchor = exactOperationAnchors.size > 0
+        ? exactOperationAnchors.has(index)
+        : (outcome.related_entities || []).some(entity => evidenceEntities.has(entity));
+      if (!hasStructuralAnchor) continue;
+      const outcomeSubjects = outcomeSubjectTokens(outcome.name);
+      const sharedSubjects = hintSubjects.filter(token => evidenceTokenMatchesOutcomeName(token, outcomeSubjects));
+      const requiredSubjects = Math.min(2, hintSubjects.length, outcomeSubjects.length);
+      if (requiredSubjects > 0 && sharedSubjects.length >= requiredSubjects) matches.add(index);
+    }
+  }
+  return [...matches];
+}
+
 export function mergeUniquelyMatchedBehaviorEvidence(
   capabilities: SystemCapability[],
   evidenceCandidates: readonly SystemCapability[],
   requiredCandidateIds: readonly string[],
+  repairHints: readonly SystemCapability[] = [],
 ): SystemCapability[] {
   const requiredIds = new Set(requiredCandidateIds);
   const merged = capabilities.map(capability => ({ ...capability }));
@@ -288,15 +339,22 @@ export function mergeUniquelyMatchedBehaviorEvidence(
       .filter(factor => factor.startsWith('catalog-candidate:'))
       .map(factor => factor.slice('catalog-candidate:'.length))));
   for (const evidence of evidenceCandidates) {
-    if (!requiredIds.has(evidence.id) || citedIds.has(evidence.id) || evidence.evidence_kind !== 'behavior-surface') continue;
+    if (!requiredIds.has(evidence.id) ||
+      citedIds.has(evidence.id) ||
+      evidence.evidence_kind !== 'behavior-surface' ||
+      evidence.id.startsWith('operation-obligation:')) {
+      continue;
+    }
     const evidenceTokens = capabilityEvidenceSubjectTokens(evidence);
     if (evidenceTokens.length === 0) continue;
     const matchingIndexes = merged.flatMap((capability, index) =>
       evidenceTokens.some(token => evidenceTokenMatchesOutcomeName(token, normalizedOutcomeNameTokens(capability.name)))
         ? [index]
         : []);
-    if (matchingIndexes.length !== 1) continue;
-    const index = matchingIndexes[0];
+    const anchoredIndexes = matchingIndexes.length === 1
+      ? matchingIndexes : uniquelyMatchedRepairOutcomeIndexes(merged, repairHints, evidence);
+    if (anchoredIndexes.length !== 1) continue;
+    const index = anchoredIndexes[0];
     merged[index] = mergeCapabilityEvidence(merged[index], evidence);
     citedIds.add(evidence.id);
   }
@@ -323,16 +381,19 @@ export function mergeGroundedEntityEvidenceFamilies(
       const candidate = evidenceById.get(candidateId);
       if (!candidate ||
         candidate.evidence_kind === 'behavior-surface' ||
-        candidate.evidence_role !== 'product-outcome' ||
-        (candidate.related_entities || []).length === 0) continue;
-      const evidenceTokens = capabilityEvidenceSubjectTokens({
-        ...candidate,
-        structural_label: undefined,
-        related_domains: [],
-        evidence_examples: [],
-      });
-      if (evidenceTokens.length === 0) continue;
+        candidate.evidence_role !== 'product-outcome') continue;
       const candidateEntities = new Set(candidate.related_entities || []);
+      const evidenceTokens = candidateEntities.size === 0
+        ? normalizedOutcomeNameTokens(candidate.structural_label || candidate.name)
+            .filter(token => !OUTCOME_ACTION_TOKENS.has(token) && token !== 'management')
+        : capabilityEvidenceSubjectTokens({
+            ...candidate,
+            structural_label: undefined,
+            related_domains: [],
+            evidence_examples: [],
+            operations: [],
+          });
+      if (evidenceTokens.length === 0) continue;
       for (let index = 0; index < merged.length; index++) {
         const capability = merged[index];
         const capabilityCitationIds = (capability.criticality_factors || [])
@@ -343,7 +404,7 @@ export function mergeGroundedEntityEvidenceFamilies(
           ...capabilityCitationIds.flatMap(citationId => evidenceById.get(citationId)?.related_entities || []),
         ]);
         const entityOverlap = [...capabilityEntities].filter(entityId => candidateEntities.has(entityId)).length;
-        if (entityOverlap === 0) continue;
+        if (candidateEntities.size > 0 && entityOverlap === 0) continue;
         const outcomeTokens = normalizedOutcomeNameTokens(capability.name);
         const matchingSubjectCount = evidenceTokens
           .filter(token => evidenceTokenMatchesOutcomeName(token, outcomeTokens)).length;
@@ -484,12 +545,138 @@ function capabilityCatalogDescriptionPending(capability: SystemCapability): bool
   return !capability.description || capability.description_generation?.status === 'ai_rejected';
 }
 
+export function capabilityCatalogEvidenceRepairMatchIndexes(
+  existing: readonly SystemCapability[],
+  replacement: SystemCapability,
+  knownEvidenceCandidates: readonly SystemCapability[],
+  requestedCandidateIds: ReadonlySet<string>,
+): number[] {
+  const citedCandidateIds = capabilityCatalogRepairIdentity(replacement).candidates;
+  if (citedCandidateIds.length !== 1 || !requestedCandidateIds.has(citedCandidateIds[0])) return [];
+  const exactCandidateId = citedCandidateIds[0];
+  const exactOperationRepair = exactCandidateId.startsWith('operation-obligation:');
+  const evidence = knownEvidenceCandidates.find(candidate => candidate.id === citedCandidateIds[0]);
+  if (!evidence) return [];
+  const replacementOperations = new Set((evidence.operations || []).map(operation => operation.entry_point_id));
+  const exactOperationMatches = existing.flatMap((capability, index) =>
+    (capability.operations || []).some(operation => replacementOperations.has(operation.entry_point_id)) ? [index] : []);
+  const structurallyMatched = exactOperationMatches.length > 0 ? exactOperationMatches : existing.flatMap((capability, index) => {
+    const replacementEntities = new Set(evidence.related_entities || []);
+    return (capability.related_entities || []).some(entity => replacementEntities.has(entity)) ? [index] : [];
+  });
+  const replacementSubjects = outcomeSubjectTokens(replacement.name);
+  if (replacementSubjects.length === 0) return [];
+  return structurallyMatched.filter(index => {
+    if (exactOperationRepair) {
+      const existingObligations = capabilityCatalogRepairIdentity(existing[index]).candidates
+        .filter(candidateId => candidateId.startsWith('operation-obligation:'));
+      if (existingObligations.length > 0 && !existingObligations.includes(exactCandidateId)) return false;
+    }
+    const capabilitySubjects = outcomeSubjectTokens(existing[index].name);
+    if (capabilitySubjects.length === 0) return false;
+    const shared = replacementSubjects.filter(token => evidenceTokenMatchesOutcomeName(token, capabilitySubjects));
+    return shared.length >= Math.min(2, replacementSubjects.length, capabilitySubjects.length);
+  });
+}
+
+function mergeKnownEvidenceRepair(outcome: SystemCapability, evidence: SystemCapability): SystemCapability {
+  const allowedCitations = new Set([evidence.id]);
+  const existingFactors = new Set(outcome.criticality_factors || []);
+  const merged = mergeCapabilityEvidence(outcome, evidence);
+  return {
+    ...merged,
+    criticality_factors: (merged.criticality_factors || []).filter(factor =>
+      !factor.startsWith('catalog-candidate:') ||
+      existingFactors.has(factor) ||
+      allowedCitations.has(factor.slice('catalog-candidate:'.length))),
+  };
+}
+
 export function mergeCapabilityCatalogRepairResults(
   existing: SystemCapability[], incoming: SystemCapability[],
+  evidenceRepairCandidateIds: ReadonlySet<string> = new Set(),
+  knownEvidenceCandidates: readonly SystemCapability[] = [],
+  descriptionRepairLifecycleKeys: ReadonlySet<string> = new Set(),
+  postSynthesisGroundedCandidateIds: ReadonlySet<string> = new Set(),
 ): SystemCapability[] {
   const merged = [...existing];
   for (const replacement of incoming) {
     const replacementIdentity = capabilityCatalogRepairIdentity(replacement);
+    const lifecycleMarker = (replacement.criticality_factors || [])
+      .find(factor => factor.startsWith('catalog-description-repair-lifecycle:'));
+    const replacementLifecycleKey = lifecycleMarker
+      ? lifecycleMarker.slice('catalog-description-repair-lifecycle:'.length)
+      : capabilityCatalogRepairLifecycleKey(replacement);
+    const lifecycleMatches = merged.flatMap((capability, index) =>
+      capabilityCatalogRepairLifecycleKey(capability) === replacementLifecycleKey ? [index] : []);
+    if (process.env.KLAURO_DEBUG_CATALOG && lifecycleMarker) {
+      console.error('[catalog-debug] description repair lifecycle merge:', JSON.stringify({
+        name: replacement.name,
+        lifecycle_key: replacementLifecycleKey,
+        planned: descriptionRepairLifecycleKeys.has(replacementLifecycleKey),
+        matching_indexes: lifecycleMatches,
+        replacement_candidates: replacementIdentity.candidates,
+      }));
+    }
+    if (descriptionRepairLifecycleKeys.has(replacementLifecycleKey) &&
+        lifecycleMatches.length === 1 &&
+        !capabilityCatalogDescriptionPending(replacement)) {
+      const stableIdentity = merged[lifecycleMatches[0]];
+      merged[lifecycleMatches[0]] = {
+        ...stableIdentity,
+        name: replacement.name,
+        name_source: replacement.name_source,
+        description: replacement.description,
+        ...(replacement.description_source !== undefined ? { description_source: replacement.description_source } : {}),
+        ...(replacement.description_generation !== undefined ? { description_generation: replacement.description_generation } : {}),
+      };
+      continue;
+    }
+      if (replacementIdentity.candidates.length > 1 && replacementIdentity.candidates.some(candidateId => evidenceRepairCandidateIds.has(candidateId))) {
+        const groupedEvidence = replacementIdentity.candidates.map(candidateId =>
+          evidenceRepairCandidateIds.has(candidateId)
+            ? knownEvidenceCandidates.find(candidate => candidate.id === candidateId)
+            : undefined);
+        if (groupedEvidence.some(candidate => !candidate)) continue;
+        const citedCandidateIds = new Set(replacementIdentity.candidates);
+        const overlapsExisting = merged.some(capability =>
+          capabilityCatalogRepairIdentity(capability).candidates.some(candidateId => citedCandidateIds.has(candidateId)));
+        if (overlapsExisting) continue;
+        const groundedSeed: SystemCapability = {
+          ...replacement,
+          operations: [],
+          related_entities: [],
+          related_domains: [],
+          evidence_examples: [],
+          criticality_factors: (replacement.criticality_factors || []).filter(factor => !factor.startsWith('catalog-candidate:')),
+        };
+        const grounded = (groupedEvidence as SystemCapability[]).reduce(
+          (capability, evidence) => mergeCapabilityEvidence(capability, evidence),
+          groundedSeed,
+        );
+        grounded.criticality_factors = (grounded.criticality_factors || []).filter(factor =>
+          !factor.startsWith('catalog-candidate:') ||
+          citedCandidateIds.has(factor.slice('catalog-candidate:'.length)));
+        merged.push(grounded);
+        continue;
+      }
+    const evidenceRepair = replacementIdentity.candidates.some(candidateId => evidenceRepairCandidateIds.has(candidateId));
+    if (evidenceRepair) {
+      const exactEvidence = replacementIdentity.candidates.length === 1
+        ? knownEvidenceCandidates.find(candidate => candidate.id === replacementIdentity.candidates[0] && evidenceRepairCandidateIds.has(candidate.id))
+        : undefined;
+      if (!exactEvidence) continue;
+      const semanticallyMatched = capabilityCatalogEvidenceRepairMatchIndexes(merged, replacement, [exactEvidence], evidenceRepairCandidateIds);
+      if (semanticallyMatched.length === 1) {
+        const index = semanticallyMatched[0];
+        merged[index] = mergeKnownEvidenceRepair(merged[index], exactEvidence);
+      } else if (semanticallyMatched.length === 0 &&
+          postSynthesisGroundedCandidateIds.has(exactEvidence.id) &&
+          !merged.some(capability => capabilityCatalogRepairIdentity(capability).candidates.includes(exactEvidence.id))) {
+        merged.push(mergeKnownEvidenceRepair(replacement, exactEvidence));
+      }
+      continue;
+    }
     let matching = replacementIdentity.requirements.length > 0
       ? merged.flatMap((capability, index) => {
         const identity = capabilityCatalogRepairIdentity(capability);
@@ -526,27 +713,38 @@ export function capabilityCatalogTargetedRepairBatches<T>(facts: readonly T[], t
 }
 
 export async function collectCapabilityCatalogEvidenceBatches<TFact, TValue>(args: {
-  facts: readonly TFact[];
-  evidenceScoped: boolean;
-  hardDeadlineAt?: number;
-  batchBudgetMs: number;
-  extract: (facts: TFact[], deadlineAt?: number) => Promise<TValue[]>;
-  isDeadlineError: (error: unknown) => boolean;
+  facts: readonly TFact[]; evidenceScoped: boolean; hardDeadlineAt?: number; batchBudgetMs: number;
+  extract: (facts: TFact[], deadlineAt: number | undefined, batchIndex: number) => Promise<TValue[]>;
+  isDeadlineError: (error: unknown) => boolean; conflictKeys?: (fact: TFact) => readonly string[]; concurrency?: number;
+  onBatchSettled?: (values: readonly TValue[], batchIndex: number) => void;
 }): Promise<TValue[]> {
-  const values: TValue[] = [];
-  for (const batch of capabilityCatalogTargetedRepairBatches(args.facts, args.evidenceScoped)) {
+  const batches = capabilityCatalogTargetedRepairBatches(args.facts, args.evidenceScoped);
+  const valuesByIndex = new Map<number, TValue[]>();
+  const concurrency = args.evidenceScoped ? Math.max(1, Math.min(4, args.concurrency ?? 4)) : 1;
+  const pending = batches.map((batch, index) => ({ batch, index }));
+  while (pending.length > 0) {
     if (args.hardDeadlineAt !== undefined && Date.now() >= args.hardDeadlineAt) break;
-    const deadlineAt = args.evidenceScoped
-      ? Math.min(args.hardDeadlineAt ?? Number.POSITIVE_INFINITY, Date.now() + args.batchBudgetMs)
-      : args.hardDeadlineAt;
-    try {
-      values.push(...await args.extract(batch, deadlineAt));
-    } catch (error) {
-      const globalDeadlineReached = args.hardDeadlineAt !== undefined && Date.now() >= args.hardDeadlineAt;
-      if (!args.evidenceScoped || !args.isDeadlineError(error) || globalDeadlineReached) throw error;
+    const wave: Array<{ batch: TFact[]; index: number }> = []; const waveKeys = new Set<string>();
+    for (let pendingIndex = 0; pendingIndex < pending.length && wave.length < concurrency;) {
+      const item = pending[pendingIndex];
+      const keys = new Set(args.conflictKeys ? item.batch.flatMap(fact => [...args.conflictKeys!(fact)]) : []);
+      if (wave.length > 0 && [...keys].some(key => waveKeys.has(key))) { pendingIndex += 1; continue; }
+      wave.push(item); keys.forEach(key => waveKeys.add(key)); pending.splice(pendingIndex, 1);
+    }
+    const results = await Promise.allSettled(wave.map(({ batch, index }) => {
+      const deadlineAt = args.evidenceScoped ? Math.min(args.hardDeadlineAt ?? Number.POSITIVE_INFINITY, Date.now() + args.batchBudgetMs) : args.hardDeadlineAt;
+      return args.extract(batch, deadlineAt, index);
+    }));
+    for (let resultIndex = 0; resultIndex < results.length; resultIndex++) {
+      const result = results[resultIndex]; const batchIndex = wave[resultIndex].index;
+      if (result.status === 'fulfilled') { args.onBatchSettled?.(result.value, batchIndex); valuesByIndex.set(batchIndex, result.value); }
+      else {
+        const globalDeadlineReached = args.hardDeadlineAt !== undefined && Date.now() >= args.hardDeadlineAt;
+        if (!args.evidenceScoped || !args.isDeadlineError(result.reason) || globalDeadlineReached) throw result.reason;
+      }
     }
   }
-  return values;
+  return [...valuesByIndex.entries()].sort(([left], [right]) => left - right).flatMap(([, values]) => values);
 }
 
 export function updateCapabilityCatalogPublishabilityRepairIds(
@@ -610,8 +808,9 @@ export function trackCapabilityCatalogRepair(
     requiredOutcomeIds.length,
   );
   const budget = capabilityCatalogRepairBudget(requiredFamilyCount);
-  const uncoveredEvidenceKeys = (capabilities: SystemCapability[]) => new Set([
-    ...uncoveredCapabilityCatalogCandidateIds(capabilities, requiredBehaviorCandidateIds, requiredEntityCandidateGroups),
+  const uncoveredEvidenceKeys = (capabilities: SystemCapability[], operationUncoveredIds: readonly string[] = requiredBehaviorCandidateIds) => new Set([
+    ...operationUncoveredIds,
+    ...uncoveredCapabilityCatalogCandidateIds(capabilities, [], requiredEntityCandidateGroups),
     ...uncoveredCapabilityCatalogFamilyRepresentativeIds(capabilities, candidateFamilyGroups),
   ]);
   let previousEvidenceKeys = uncoveredEvidenceKeys([]);
@@ -624,8 +823,8 @@ export function trackCapabilityCatalogRepair(
     current.size === previous.size && [...current].every(key => previous.has(key));
   return {
     maxCycles: budget.maxCycles,
-    observe(capabilities: SystemCapability[], uncoveredOutcomeIds: readonly string[] = [], pendingIdentityKeys: readonly string[] = []) {
-      const evidenceKeys = uncoveredEvidenceKeys(capabilities);
+    observe(capabilities: SystemCapability[], uncoveredOutcomeIds: readonly string[] = [], pendingIdentityKeys: readonly string[] = [], operationUncoveredIds: readonly string[] = requiredBehaviorCandidateIds) {
+      const evidenceKeys = uncoveredEvidenceKeys(capabilities, operationUncoveredIds);
       const outcomeKeys = new Set(uncoveredOutcomeIds);
       const pendingKeys = new Set(pendingIdentityKeys);
       const mandatoryProgress = strictlyReduced(evidenceKeys, previousEvidenceKeys) || strictlyReduced(outcomeKeys, previousOutcomeKeys);
@@ -644,7 +843,8 @@ export function trackCapabilityCatalogRepair(
 export function capabilityTitlesShareOutcome(left: SystemCapability, right: SystemCapability): boolean {
   const tokens = (name: string) => name.toLowerCase()
     .replace(/^(?:lets|allows|enables)\s+users\s+(?:to\s+)?/, '')
-    .split(/[^a-z0-9]+/).filter(Boolean);
+    .split(/[^a-z0-9]+/).filter(Boolean)
+    .map(token => /^(?:sync|synchronise|synchronize)$/.test(token) ? 'synchronize' : token);
   const leftTokens = tokens(left.name);
   const rightTokens = tokens(right.name);
   const analysisIdentity = (parts: string[]): string | undefined => {

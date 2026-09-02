@@ -593,7 +593,9 @@ test('analyzer is one product (hosted) — no local/remote mode field at all', (
   const config = defaultKlauroConfig('/tmp/example-project');
   assert.equal((config.analyzer as Record<string, unknown>).mode, undefined);
   assert.equal(config.analyzer.serverUrl, 'https://mcp.klauro.com');
-  assert.deepEqual(Object.keys(config.source).sort(), ['exclude', 'followSymlinks', 'include', 'maxFileBytes', 'roots'].sort());
+  assert.deepEqual(Object.keys(config.source).sort(), ['exclude', 'followSymlinks', 'include', 'maxFileBytes', 'maxTotalBytes', 'roots'].sort());
+  assert.equal(config.source.maxFileBytes, 0);
+  assert.equal(config.source.maxTotalBytes, 512 * 1024 * 1024);
 });
 
 test('remote init defaults to Klauro Cloud without requiring --server-url', () => {

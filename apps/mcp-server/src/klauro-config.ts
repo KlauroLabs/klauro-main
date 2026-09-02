@@ -31,6 +31,7 @@ export interface KlauroConfig {
     include: string[];
     exclude: string[];
     maxFileBytes: number;
+    maxTotalBytes: number;
     followSymlinks: boolean;
   };
   upload: {
@@ -269,7 +270,8 @@ export function defaultKlauroConfig(projectPath: string): KlauroConfig {
         '**/*',
       ],
       exclude: defaultExcludePatterns(),
-      maxFileBytes: 1024 * 1024,
+      maxFileBytes: 0,
+      maxTotalBytes: 512 * 1024 * 1024,
       followSymlinks: false,
     },
     upload: {

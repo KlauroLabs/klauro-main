@@ -1,3 +1,5 @@
+import { ReactBindingResolver, ReactComponentAnalysis, type ReactComponent } from './react-component-analysis';
+import { isReactApplicableSource, ReactSourceAnalysis } from './react-source-analysis';
 import { BaseAnalyzer, AnalysisContext, FileAnalysisContext, FileAnalysisResult } from '../../core/base-analyzer';
 import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint, CASPerspective, CASDocumentation, CASComment, CASTodo, CASImplementationStatus } from '../../../types/cas.types';
 import { AnalyzerError } from '../../core/errors';
@@ -15,23 +17,6 @@ interface ReactApplication {
   stateManagement: string[];
   testing: string[];
   buildTool: string;
-}
-
-interface ReactComponent {
-  name: string;
-  filePath: string;
-  type: 'functional' | 'class';
-  isDefaultExport: boolean;
-  props: Array<{ name: string; type: string; required: boolean; defaultValue?: string }>;
-  state: Array<{ name: string; type: string; initialValue?: string }>;
-  hooks: Array<{ name: string; type: string; dependencies?: string[]; hookUsageId?: string }>;
-  lifecycle: string[];
-  children: string[];
-  imports: string[];
-  exports: string[];
-  jsx: boolean;
-  renderedComponents: Array<{ name: string; line: number; props: string[] }>;
-  eventHandlers: Array<{ event: string; handlerName?: string; line: number }>;
 }
 
 interface ReactHook {
@@ -95,6 +80,8 @@ interface ReactUtil {
 }
 
 export class ReactAnalyzer extends BaseAnalyzer {
+  private readonly componentAnalysis = new ReactComponentAnalysis((node, content, name) => this.looksLikeComponent(node, content, name));
+  private readonly bindingResolver = new ReactBindingResolver(component => this.generateId('component', component.filePath, component.name));
   private fileRouterCache = new Map<string, boolean>();
 
   constructor() {
@@ -152,7 +139,12 @@ export class ReactAnalyzer extends BaseAnalyzer {
   }
 
   async getRelevantFiles(projectPath: string): Promise<string[]> {
-    return this.reactSourceFiles({ projectPath });
+    const files = await glob(['**/*.{ts,tsx,js,jsx,cts,mts}'], { cwd: projectPath, ignore: [...this.getIgnorePatterns({ projectPath }), '**/*.test.*', '**/*.spec.*'], nodir: true });
+    const applicable = await Promise.all(files.map(async file => {
+      const content = await this.readTextFileIfExists(path.join(projectPath, file));
+      return content !== null && isReactApplicableSource(file, content) ? file : undefined;
+    }));
+    return this.capAndPrioritizeSourceFiles(applicable.filter((file): file is string => Boolean(file)).sort(), 'React source files');
   }
 
   async analyzeFileSingle(context: FileAnalysisContext): Promise<FileAnalysisResult> {
@@ -181,15 +173,17 @@ export class ReactAnalyzer extends BaseAnalyzer {
     const localNodes: CASNode[][] = [[], [], [], [], [], [], []];
     const localEdges: CASEdge[][] = [[], [], [], [], [], [], []];
     const localEntryPoints: CASEntryPoint[][] = [[], []];
+    const sources = ReactSourceAnalysis.fromContent(
+      file, context.filePath, content, (sourceFile, sourceContent) => this.parseReactSource(sourceFile, sourceContent));
 
     const [components, hooks, contexts, routes, stores, pages, utils] = await Promise.all([
-      this.analyzeComponents([file], context.projectPath, localNodes[0], localEdges[0]),
-      this.analyzeHooks([file], context.projectPath, localNodes[1], localEdges[1]),
-      this.analyzeContexts([file], context.projectPath, localNodes[2], localEdges[2]),
-      this.analyzeRoutes([file], context.projectPath, localNodes[3], localEdges[3], localEntryPoints[0]),
-      this.analyzeStores([file], context.projectPath, localNodes[4], localEdges[4]),
-      this.analyzePages([file], context.projectPath, localNodes[5], localEdges[5]),
-      this.analyzeUtils([file], context.projectPath, localNodes[6], localEdges[6])
+      this.analyzeComponents(sources, localNodes[0], localEdges[0]),
+      this.analyzeHooks(sources, localNodes[1], localEdges[1]),
+      this.analyzeContexts(sources, localNodes[2], localEdges[2]),
+      this.analyzeRoutes(sources, localNodes[3], localEdges[3], localEntryPoints[0]),
+      this.analyzeStores(sources, localNodes[4], localEdges[4]),
+      this.analyzePages(sources, localNodes[5], localEdges[5]),
+      this.analyzeUtils(sources, localNodes[6], localEdges[6])
     ]);
 
     this.createPageEntryPoints(pages, routes, localEntryPoints[1], await this.isFileRouterProject(context.projectPath));
@@ -209,7 +203,8 @@ export class ReactAnalyzer extends BaseAnalyzer {
       [...utils, ...existingFacts.utils],
       nodes,
       edges,
-      entryPoints
+      entryPoints,
+      [...(context.existingAnalysis || []).flatMap(contribution => contribution.nodes || []), ...nodes]
     );
     this.computeComponentMetrics([...components, ...existingFacts.components], nodes, edges);
     this.identifyAPIConnections(components, hooks, nodes, exitPoints);
@@ -250,15 +245,16 @@ export class ReactAnalyzer extends BaseAnalyzer {
       const localNodes: CASNode[][] = [[], [], [], [], [], [], []];
       const localEdges: CASEdge[][] = [[], [], [], [], [], [], []];
       const localEntryPoints: CASEntryPoint[][] = [[], []];
+      const sources = await this.createSourceAnalysis(reactFiles, context.projectPath);
 
       const [components, hooks, contexts, routes, stores, pages, utils] = await Promise.all([
-        this.analyzeComponents(reactFiles, context.projectPath, localNodes[0], localEdges[0]),
-        this.analyzeHooks(reactFiles, context.projectPath, localNodes[1], localEdges[1]),
-        this.analyzeContexts(reactFiles, context.projectPath, localNodes[2], localEdges[2]),
-        this.analyzeRoutes(reactFiles, context.projectPath, localNodes[3], localEdges[3], localEntryPoints[0]),
-        this.analyzeStores(reactFiles, context.projectPath, localNodes[4], localEdges[4]),
-        this.analyzePages(reactFiles, context.projectPath, localNodes[5], localEdges[5]),
-        this.analyzeUtils(reactFiles, context.projectPath, localNodes[6], localEdges[6])
+        this.analyzeComponents(sources, localNodes[0], localEdges[0]),
+        this.analyzeHooks(sources, localNodes[1], localEdges[1]),
+        this.analyzeContexts(sources, localNodes[2], localEdges[2]),
+        this.analyzeRoutes(sources, localNodes[3], localEdges[3], localEntryPoints[0]),
+        this.analyzeStores(sources, localNodes[4], localEdges[4]),
+        this.analyzePages(sources, localNodes[5], localEdges[5]),
+        this.analyzeUtils(sources, localNodes[6], localEdges[6])
       ]);
 
       this.createPageEntryPoints(pages, routes, localEntryPoints[1], application?.type === 'next');
@@ -269,7 +265,10 @@ export class ReactAnalyzer extends BaseAnalyzer {
       timings['parallelAnalysis'] = Date.now() - t;
 
       t = Date.now();
-      this.buildReactRelationships(components, hooks, contexts, routes, stores, pages, utils, nodes, edges, entryPoints);
+      this.buildReactRelationships(
+        components, hooks, contexts, routes, stores, pages, utils, nodes, edges, entryPoints,
+        [...(context.existingAnalysis || []).flatMap(contribution => contribution.nodes || []), ...nodes]
+      );
       this.computeComponentMetrics(components, nodes, edges);
       this.identifyAPIConnections(components, hooks, nodes, exitPoints);
       timings['relationships'] = Date.now() - t;
@@ -358,6 +357,25 @@ export class ReactAnalyzer extends BaseAnalyzer {
     ];
   }
 
+  protected createSourceAnalysis(files: readonly string[], projectPath: string): Promise<ReactSourceAnalysis> {
+    return ReactSourceAnalysis.create({
+      files,
+      projectPath,
+      read: fullPath => this.readTextFileIfExists(fullPath),
+      parse: (file, content) => this.parseReactSource(file, content),
+    });
+  }
+
+  private parseReactSource(file: string, content: string): ReturnType<typeof parse> {
+    return parse(content, {
+      loc: true,
+      range: true,
+      jsx: this.shouldParseJsx(file, content),
+      ecmaVersion: 2020,
+      sourceType: 'module'
+    });
+  }
+
   private async analyzeApplication(projectPath: string, nodes: CASNode[]): Promise<ReactApplication | null> {
     try {
       const packageJson = await this.readSourceJson<any>(path.join(projectPath, 'package.json'));
@@ -417,27 +435,18 @@ export class ReactAnalyzer extends BaseAnalyzer {
   }
 
   private async analyzeComponents(
-    files: string[],
-    projectPath: string,
+    sources: ReactSourceAnalysis,
     nodes: CASNode[],
     edges: CASEdge[]
   ): Promise<ReactComponent[]> {
     const components: ReactComponent[] = [];
 
-    for (const file of files) {
-      const fullPath = path.join(projectPath, file);
-      const content = await this.readTextFileIfExists(fullPath);
-      if (content === null) continue;
+    for (const source of sources.files) {
+      const { file, fullPath, content } = source;
 
       if (this.isReactComponent(content)) {
         try {
-          const jsx = this.shouldParseJsx(file, content);
-          const ast = parse(content, {
-            loc: true,
-            jsx,
-            ecmaVersion: 2020,
-            sourceType: 'module'
-          });
+          const ast = sources.ast(source);
 
           const extractedComponents = this.extractComponents(ast, content, file);
           components.push(...extractedComponents);
@@ -474,6 +483,22 @@ export class ReactAnalyzer extends BaseAnalyzer {
               })
               .build();
             nodes.push(componentNode);
+
+            component.handlerBindings.forEach(binding => {
+              const bindingId = this.generateId('react_handler_binding', component.filePath, component.name + '_' + binding.line);
+              nodes.push(this.createNodeBuilder(bindingId, binding.names.length > 1 ? '{ ' + binding.names.join(', ') + ' }' : binding.names[0], 'react_handler_binding')
+                .withLevel(4, 'member')
+                .withCategory('handler_binding', ['react', binding.kind])
+                .withSource({ file: component.filePath, line: binding.line, end_line: binding.line })
+                .withDescription('React ' + binding.kind + ' binding in ' + component.name)
+                .withParent(componentId)
+                .withMetadata({ framework: 'react', attributes: { binding_names: binding.names, binding_kind: binding.kind, value: binding.initializer } })
+                .build());
+              edges.push(this.createEdge(
+                this.generateEdgeId(componentId, bindingId, 'contains'), componentId, bindingId, 'contains', 'structural',
+                { binding_kind: binding.kind }
+              ));
+            });
 
             component.hooks.forEach((hook, index) => {
               const hookUsageId = this.generateId('hook_usage', component.filePath, `${component.name}_${hook.name}_${index}`);
@@ -515,27 +540,18 @@ export class ReactAnalyzer extends BaseAnalyzer {
   }
 
   private async analyzeHooks(
-    files: string[],
-    projectPath: string,
+    sources: ReactSourceAnalysis,
     nodes: CASNode[],
     edges: CASEdge[]
   ): Promise<ReactHook[]> {
     const hooks: ReactHook[] = [];
 
-    for (const file of files) {
-      const fullPath = path.join(projectPath, file);
-      const content = await this.readTextFileIfExists(fullPath);
-      if (content === null) continue;
+    for (const source of sources.files) {
+      const { file, fullPath, content } = source;
 
       if (this.isCustomHook(content)) {
         try {
-          const jsx = this.shouldParseJsx(file, content);
-          const ast = parse(content, {
-            loc: true,
-            jsx,
-            ecmaVersion: 2020,
-            sourceType: 'module'
-          });
+          const ast = sources.ast(source);
 
           const extractedHooks = this.extractHooks(ast, content, file);
           hooks.push(...extractedHooks);
@@ -582,27 +598,18 @@ export class ReactAnalyzer extends BaseAnalyzer {
   }
 
   private async analyzeContexts(
-    files: string[],
-    projectPath: string,
+    sources: ReactSourceAnalysis,
     nodes: CASNode[],
     edges: CASEdge[]
   ): Promise<ReactContext[]> {
     const contexts: ReactContext[] = [];
 
-    for (const file of files) {
-      const fullPath = path.join(projectPath, file);
-      const content = await this.readTextFileIfExists(fullPath);
-      if (content === null) continue;
+    for (const source of sources.files) {
+      const { file, content } = source;
 
       if (content.includes('createContext') || content.includes('Context')) {
         try {
-          const jsx = this.shouldParseJsx(file, content);
-          const ast = parse(content, {
-            loc: true,
-            jsx,
-            ecmaVersion: 2020,
-            sourceType: 'module'
-          });
+          const ast = sources.ast(source);
 
           const extractedContexts = this.extractContexts(ast, content, file);
           contexts.push(...extractedContexts);
@@ -636,26 +643,22 @@ export class ReactAnalyzer extends BaseAnalyzer {
   }
 
   private async analyzeRoutes(
-    files: string[],
-    projectPath: string,
+    sources: ReactSourceAnalysis,
     nodes: CASNode[],
     edges: CASEdge[],
     entryPoints: CASEntryPoint[]
   ): Promise<ReactRoute[]> {
     const routes: ReactRoute[] = [];
 
-    for (const file of files) {
-      const fullPath = path.join(projectPath, file);
-      const content = await this.readTextFileIfExists(fullPath);
-      if (content === null) continue;
+    for (const source of sources.files) {
+      const { file, content } = source;
 
       if (content.includes('Route') || content.includes('Router') || content.includes('routing')) {
         try {
           const extractedRoutes = this.extractRoutes(content, file);
-          const moduleMap = this.buildComponentModuleMap(content);
           const annotate = (route: ReactRoute): void => {
             route.filePath = file;
-            const target = route.component ? moduleMap.get(route.component) : undefined;
+            const target = route.component ? sources.componentModule(source, route.component) : undefined;
             if (target) route.componentModule = target;
             for (const child of route.children || []) annotate(child);
           };
@@ -713,17 +716,14 @@ export class ReactAnalyzer extends BaseAnalyzer {
   }
 
   private async analyzeStores(
-    files: string[],
-    projectPath: string,
+    sources: ReactSourceAnalysis,
     nodes: CASNode[],
     edges: CASEdge[]
   ): Promise<ReactStore[]> {
     const stores: ReactStore[] = [];
 
-    for (const file of files) {
-      const fullPath = path.join(projectPath, file);
-      const content = await this.readTextFileIfExists(fullPath);
-      if (content === null) continue;
+    for (const source of sources.files) {
+      const { file, content } = source;
 
       if (this.isStoreFile(content)) {
         try {
@@ -760,26 +760,23 @@ export class ReactAnalyzer extends BaseAnalyzer {
   }
 
   private async analyzePages(
-    files: string[],
-    projectPath: string,
+    sources: ReactSourceAnalysis,
     nodes: CASNode[],
     edges: CASEdge[]
   ): Promise<ReactPage[]> {
     const pages: ReactPage[] = [];
 
-    const pageFiles = files.filter(f =>
-      f.includes('/pages/') ||
-      f.includes('/views/') ||
-      f.includes('/screens/') ||
-      f.includes('Page.') ||
-      f.includes('View.') ||
-      f.includes('Screen.')
+    const pageFiles = sources.files.filter(source =>
+      source.file.includes('/pages/') ||
+      source.file.includes('/views/') ||
+      source.file.includes('/screens/') ||
+      source.file.includes('Page.') ||
+      source.file.includes('View.') ||
+      source.file.includes('Screen.')
     );
 
-    for (const file of pageFiles) {
-      const fullPath = path.join(projectPath, file);
-      const content = await this.readTextFileIfExists(fullPath);
-      if (content === null) continue;
+    for (const source of pageFiles) {
+      const { file, content } = source;
 
       if (this.isReactComponent(content)) {
         const pageName = this.extractPageName(file);
@@ -896,45 +893,36 @@ export class ReactAnalyzer extends BaseAnalyzer {
   }
 
   private async analyzeUtils(
-    files: string[],
-    projectPath: string,
+    sources: ReactSourceAnalysis,
     nodes: CASNode[],
     edges: CASEdge[]
   ): Promise<ReactUtil[]> {
     const utils: ReactUtil[] = [];
 
-    const utilFiles = files.filter(f =>
-      f.includes('/utils/') ||
-      f.includes('/helpers/') ||
-      f.includes('/lib/') ||
-      f.includes('util.') ||
-      f.includes('helper.') ||
-      f.includes('lib.') ||
+    const utilFiles = sources.files.filter(source =>
+      source.file.includes('/utils/') ||
+      source.file.includes('/helpers/') ||
+      source.file.includes('/lib/') ||
+      source.file.includes('util.') ||
+      source.file.includes('helper.') ||
+      source.file.includes('lib.') ||
 
 
 
 
 
-      f.includes('/api/') ||
-      f.includes('/services/') ||
-      f.includes('api.') ||
-      f.includes('service.')
+      source.file.includes('/api/') ||
+      source.file.includes('/services/') ||
+      source.file.includes('api.') ||
+      source.file.includes('service.')
     );
 
-    for (const file of utilFiles) {
-      const fullPath = path.join(projectPath, file);
-      const content = await this.readTextFileIfExists(fullPath);
-      if (content === null) continue;
+    for (const source of utilFiles) {
+      const { file, content } = source;
 
       if (!this.isReactComponent(content)) {
         try {
-          const jsx = this.shouldParseJsx(file, content);
-          const ast = parse(content, {
-            loc: true,
-            jsx,
-            ecmaVersion: 2020,
-            sourceType: 'module'
-          });
+          const ast = sources.ast(source);
 
           const extractedUtils = this.extractUtils(ast, content, file);
           utils.push(...extractedUtils);
@@ -1403,7 +1391,9 @@ export class ReactAnalyzer extends BaseAnalyzer {
       return false;
     }
     const nodeContent = content.substring(node.range?.[0] || 0, node.range?.[1] || content.length);
-    return nodeContent.includes('return') &&
+    const returnsJsx = node.body?.type !== 'BlockStatement' &&
+      (node.body?.type === 'JSXElement' || node.body?.type === 'JSXFragment' || nodeContent.trimStart().startsWith('<'));
+    return (nodeContent.includes('return') || returnsJsx) &&
            (nodeContent.includes('<') || nodeContent.includes('createElement'));
   }
 
@@ -1419,115 +1409,27 @@ export class ReactAnalyzer extends BaseAnalyzer {
       name,
       filePath,
       type,
-      isDefaultExport: this.isDefaultExport(node, content),
+      sourceStartLine: node.loc?.start?.line || 1,
+      sourceEndLine: node.loc?.end?.line || this.sourceLineCount(content),
+      isDefaultExport: this.isDefaultExport(node, content, name),
       props: this.extractProps(node, content),
       state: this.extractState(node, content),
       hooks: this.extractComponentHooks(node, content),
       lifecycle: this.extractLifecycleMethods(node, content),
       children: [],
       imports: this.extractImports(content),
+      importBindings: this.componentAnalysis.extractImportBindings(content),
       exports: this.extractExports(content),
       jsx: content.includes('jsx') || content.includes('<'),
-      renderedComponents: this.extractRenderedComponents(node, content),
-      eventHandlers: this.extractEventHandlers(node, content)
+      renderedComponents: this.componentAnalysis.extractRenderedComponents(node, content),
+      eventHandlers: this.componentAnalysis.extractEventHandlers(node, content),
+      handlerBindings: this.componentAnalysis.extractLocalHandlerBindings(node, content)
     };
   }
 
 
 
 
-
-  private extractEventHandlers(node: any, content: string): Array<{ event: string; handlerName?: string; line: number }> {
-    const handlers: Array<{ event: string; handlerName?: string; line: number }> = [];
-    const nodeStart = node?.range?.[0] || 0;
-    const nodeEnd = node?.range?.[1] || content.length;
-    const componentContent = content.substring(nodeStart, nodeEnd);
-
-    const pattern = /\bon([A-Z]\w+)=\{([^}]*)\}/g;
-    let match;
-    while ((match = pattern.exec(componentContent)) !== null) {
-      const event = match[1].charAt(0).toLowerCase() + match[1].slice(1);
-      const expr = match[2].trim();
-
-      let handlerName: string | undefined;
-      const bareIdentifier = /^(\w+)$/.exec(expr);
-      const arrowCall = /=>\s*(\w+)\s*\(/.exec(expr);
-      const thisMethod = /^this\.(\w+)$/.exec(expr);
-      if (bareIdentifier) handlerName = bareIdentifier[1];
-      else if (thisMethod) handlerName = thisMethod[1];
-      else if (arrowCall) handlerName = arrowCall[1];
-
-      const lineNumber = this.sourceLineForIndex(content, nodeStart + match.index);
-      handlers.push({ event, handlerName, line: lineNumber });
-    }
-
-    return handlers;
-  }
-
-  private extractRenderedComponents(node: any, content: string): Array<{ name: string; line: number; props: string[] }> {
-    const renderedComponents: Array<{ name: string; line: number; props: string[] }> = [];
-    const seen = new Set<string>();
-
-    const nodeStart = node?.range?.[0] || 0;
-    const nodeEnd = node?.range?.[1] || content.length;
-    const componentContent = content.substring(nodeStart, nodeEnd);
-
-    const jsxPattern = /<([A-Z][A-Za-z0-9_.]*)(\s+[^>]*)?(?:\/>|>)/g;
-    let match;
-
-    while ((match = jsxPattern.exec(componentContent)) !== null) {
-      const componentName = match[1];
-
-      if (componentName.includes('.')) {
-        const parts = componentName.split('.');
-        if (parts[0] === 'React' || parts[1]?.toLowerCase() === parts[1]) {
-          continue;
-        }
-      }
-
-      const htmlElements = new Set([
-        'A', 'Abbr', 'Address', 'Area', 'Article', 'Aside', 'Audio',
-        'B', 'Base', 'Bdi', 'Bdo', 'Blockquote', 'Body', 'Br', 'Button',
-        'Canvas', 'Caption', 'Cite', 'Code', 'Col', 'Colgroup',
-        'Data', 'Datalist', 'Dd', 'Del', 'Details', 'Dfn', 'Dialog', 'Div', 'Dl', 'Dt',
-        'Em', 'Embed', 'Fieldset', 'Figcaption', 'Figure', 'Footer', 'Form',
-        'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'Head', 'Header', 'Hr', 'Html',
-        'I', 'Iframe', 'Img', 'Input', 'Ins', 'Kbd', 'Label', 'Legend', 'Li', 'Link',
-        'Main', 'Map', 'Mark', 'Meta', 'Meter', 'Nav', 'Noscript',
-        'Object', 'Ol', 'Optgroup', 'Option', 'Output', 'P', 'Param', 'Picture', 'Pre', 'Progress',
-        'Q', 'Rp', 'Rt', 'Ruby', 'S', 'Samp', 'Script', 'Section', 'Select', 'Small', 'Source',
-        'Span', 'Strong', 'Style', 'Sub', 'Summary', 'Sup', 'Svg',
-        'Table', 'Tbody', 'Td', 'Template', 'Textarea', 'Tfoot', 'Th', 'Thead', 'Time', 'Title', 'Tr', 'Track',
-        'U', 'Ul', 'Var', 'Video', 'Wbr'
-      ]);
-
-      if (htmlElements.has(componentName)) {
-        continue;
-      }
-
-      const propsStr = match[2] || '';
-      const props: string[] = [];
-      const propPattern = /(\w+)(?:=|(?=\s|>|\/))/g;
-      let propMatch;
-      while ((propMatch = propPattern.exec(propsStr)) !== null) {
-        props.push(propMatch[1]);
-      }
-
-      const lineNumber = this.sourceLineForIndex(content, nodeStart + match.index);
-
-      const key = `${componentName}:${lineNumber}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        renderedComponents.push({
-          name: componentName,
-          line: lineNumber,
-          props
-        });
-      }
-    }
-
-    return renderedComponents;
-  }
 
   private buildHookInfo(node: any, content: string, filePath: string, name: string): ReactHook {
     return {
@@ -1600,8 +1502,11 @@ export class ReactAnalyzer extends BaseAnalyzer {
     return false;
   }
 
-  private isDefaultExport(node: any, content: string): boolean {
-    return content.includes(`export default ${node.id?.name}`);
+  private isDefaultExport(node: any, content: string, declaredName?: string): boolean {
+    const name = String(declaredName || node.id?.name || '').trim();
+    if (!name) return false;
+    const escaped = name.replace(/[.*+?^$()|[\]\\]/g, '\\$&');
+    return new RegExp('\\bexport\\s+default\\s+(?:(?:async\\s+)?function\\s+|class\\s+)?' + escaped + '\\b').test(content);
   }
 
   private extractProps(node: any, content: string): Array<{ name: string; type: string; required: boolean; defaultValue?: string }> {
@@ -2036,32 +1941,6 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
 
 
-  private buildComponentModuleMap(content: string): Map<string, string> {
-    const map = new Map<string, string>();
-
-
-    for (const m of content.matchAll(/\b(?:const|let|var)\s+(\w+)\s*=\s*([^;]*?)(?:;|\n(?=\s*(?:const|let|var|function|export|import)\b))/g)) {
-      const dynamic = /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/.exec(m[2]);
-      if (dynamic) map.set(m[1], dynamic[1]);
-    }
-
-
-    for (const m of content.matchAll(/\bimport\s+([^;'"]+?)\s+from\s*['"]([^'"]+)['"]/g)) {
-      const clause = m[1];
-      const moduleSpecifier = m[2];
-      const defaultMatch = /^\s*(\w+)\s*(?:,|$)/.exec(clause);
-      if (defaultMatch) map.set(defaultMatch[1], moduleSpecifier);
-      const braces = /\{([^}]*)\}/.exec(clause);
-      if (braces) {
-        for (const part of braces[1].split(',')) {
-          const named = /^\s*(\w+)(?:\s+as\s+(\w+))?\s*$/.exec(part);
-          if (named) map.set(named[2] || named[1], moduleSpecifier);
-        }
-      }
-    }
-
-    return map;
-  }
 
 
 
@@ -2279,6 +2158,8 @@ export class ReactAnalyzer extends BaseAnalyzer {
             name: node.name,
             filePath,
             type: node.type === 'class_component' ? 'class' : 'functional',
+            sourceStartLine: node.source?.line || 1,
+            sourceEndLine: node.source?.end_line || node.source?.line || 1,
             isDefaultExport: Boolean(node.metadata?.attributes?.is_default_export),
             props: [],
             state: [],
@@ -2286,10 +2167,12 @@ export class ReactAnalyzer extends BaseAnalyzer {
             lifecycle: [],
             children: [],
             imports: [],
+            importBindings: [],
             exports: [],
             jsx: Boolean(node.metadata?.attributes?.jsx),
             renderedComponents: [],
-            eventHandlers: []
+            eventHandlers: [],
+            handlerBindings: []
           });
         } else if (node.type === 'custom_hook') {
           facts.hooks.push({
@@ -2352,13 +2235,15 @@ export class ReactAnalyzer extends BaseAnalyzer {
     utils: ReactUtil[],
     nodes: CASNode[],
     edges: CASEdge[],
-    entryPoints: CASEntryPoint[]
+    entryPoints: CASEntryPoint[],
+    declarationNodes: readonly CASNode[] = []
   ): void {
     const componentNameToId = new Map<string, string>();
-    components.forEach(component => {
-      const componentId = this.generateId('component', component.filePath, component.name);
-      componentNameToId.set(component.name, componentId);
-    });
+    for (const component of components) {
+      if (components.filter(candidate => candidate.name === component.name).length === 1) {
+        componentNameToId.set(component.name, this.generateId('component', component.filePath, component.name));
+      }
+    }
 
 
 
@@ -2477,7 +2362,8 @@ export class ReactAnalyzer extends BaseAnalyzer {
       });
 
       component.renderedComponents.forEach(rendered => {
-        const childComponentId = componentNameToId.get(rendered.name);
+        const childComponent = this.bindingResolver.resolveRenderedComponent(component, rendered, components);
+        const childComponentId = childComponent ? this.generateId('component', childComponent.filePath, childComponent.name) : undefined;
         if (childComponentId) {
           edges.push(this.createEdge(
             rendersEdgeId(componentId, childComponentId),
@@ -2500,30 +2386,100 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
 
 
-      (component.eventHandlers || []).forEach((handler, index) => {
-        const entryId = this.generateId('event_entry', component.filePath, `${component.name}_${handler.event}_${index}`);
+      const componentEntryIds = new Set<string>();
+      (component.eventHandlers || []).forEach(handler => {
+        const entryId = this.generateId('event_entry', component.filePath, `${component.name}_${handler.event}_${handler.line}_${handler.column}`);
+        if (componentEntryIds.has(entryId)) throw new Error(`Duplicate React JSX event identity: ${entryId}`);
+        componentEntryIds.add(entryId);
+        const handlerReferences = [...new Set([handler.handlerName, ...handler.handlerCallees].filter((value): value is string => Boolean(value)))]
+          .map(name => {
+            const localBindingNodeId = this.bindingResolver.resolveReactHandlerBinding(component, name, declarationNodes);
+            const propBinding = localBindingNodeId ? undefined : this.bindingResolver.resolveReactPropBinding(component, name, components, declarationNodes);
+            return {
+              name,
+              kind: handler.handlerName === name ? 'direct' : 'inline-callee',
+              binding_node_id: localBindingNodeId || propBinding?.bindingNodeId,
+              binding_origin_component_id: propBinding?.originComponentId,
+              binding_component_path: propBinding?.componentPath,
+              binding_reference_name: propBinding?.bindingName || name,
+            };
+          });
+        const handlerBindingNodeIds = handlerReferences.map(reference => reference.binding_node_id).filter((value): value is string => Boolean(value));
+        const localSupportBindings = handler.localSupportCallees.map(name => {
+          const matching = component.handlerBindings.filter(binding => binding.names.includes(name));
+          return matching.length === 1
+            ? { name, id: this.generateId('react_handler_binding', component.filePath, component.name + '_' + matching[0].line) }
+            : undefined;
+        }).filter((value): value is { name: string; id: string } => Boolean(value));
+        const localSupportBindingNodeIds = localSupportBindings.length === handler.localSupportCallees.length
+          ? localSupportBindings.map(binding => binding.id)
+          : [];
+        const stateTargetBindings = component.handlerBindings.filter(binding =>
+          binding.kind === 'state-setter' && binding.names.some(name => handler.handlerStateTargets.includes(name)))
+          .map(binding => ({ names: binding.names, id: this.generateId('react_handler_binding', component.filePath, component.name + '_' + binding.line) }));
+        const callbackOrigins = [...new Set(handlerReferences.map(reference => reference.binding_origin_component_id).filter((value): value is string => Boolean(value)))];
+        const callbackPaths = handlerReferences.map(reference => reference.binding_component_path).filter((value): value is string[] => Array.isArray(value));
+        const callbackOriginComponentId = callbackOrigins.length === 1 ? callbackOrigins[0] : undefined;
+        const callbackComponentPath = callbackPaths.length > 0 && callbackPaths.every(path => path.join('>') === callbackPaths[0].join('>')) ? callbackPaths[0] : undefined;
         entryPoints.push(this.createEntryPoint(
-          `entry_${entryId}`,
+          'entry_' + entryId,
           componentId,
           'event',
-          `${component.name} ${handler.event}`,
-          `User ${handler.event} event on ${component.name}${handler.handlerName ? `, handled by ${handler.handlerName}` : ''}`,
+          component.name + ' ' + handler.event,
+          'User ' + handler.event + ' event on ' + component.name + (handler.handlerName ? ', handled by ' + handler.handlerName : ''),
           { pattern: handler.event },
           undefined,
-          { component: component.name, event: handler.event, handler_name: handler.handlerName, jsx_line: handler.line }
+          {
+            component: component.name,
+            event: handler.event,
+            handler_name: handler.handlerName,
+            handler_references: handlerReferences,
+            handler_binding_node_ids: handlerBindingNodeIds,
+            handler_component_id: componentId,
+            handler_file: component.filePath,
+            local_handler_kind: handler.localHandlerKind,
+            local_support_callee_names: localSupportBindingNodeIds.length > 0 ? localSupportBindings.map(binding => binding.name) : undefined,
+            local_support_binding_node_ids: localSupportBindingNodeIds.length > 0 ? localSupportBindingNodeIds : undefined,
+            callback_origin_component_id: callbackOriginComponentId,
+            callback_component_path: callbackComponentPath,
+            jsx_element: handler.jsxElement,
+            interaction_label: handler.interactionLabel,
+            handler_state_target_names: handler.handlerStateTargets.length > 0 ? handler.handlerStateTargets : undefined,
+            handler_state_target_binding_node_ids: stateTargetBindings.length > 0 ? stateTargetBindings.map(binding => binding.id) : undefined,
+            binding_kind: callbackOriginComponentId ? 'component-callback-prop' : 'event-handler',
+            jsx_line: handler.line,
+            jsx_column: handler.column,
+          }
         ));
 
-        if (handler.handlerName) {
-          const targetId = namedTargetIds.get(handler.handlerName);
-          if (targetId) {
+        for (const reference of handlerReferences) {
+          if (reference.binding_node_id) {
             edges.push(this.createEdge(
-              this.generateEdgeId(entryId, targetId, 'triggers'),
-              entryId,
-              targetId,
+              this.generateEdgeId(entryId, reference.binding_node_id, 'triggers'),
+              'entry_' + entryId,
+              reference.binding_node_id,
               'triggers',
               'behavioral',
-              { event: handler.event, source_component: component.name }
+              { event: handler.event, source_component: component.name, handler_reference: reference.name }
             ));
+          }
+        }
+        if (handlerReferences.length === 1 && handlerReferences[0].binding_node_id) {
+          for (const binding of stateTargetBindings) {
+            const edgeId = this.generateEdgeId(handlerReferences[0].binding_node_id, binding.id, 'calls');
+            if (!edges.some(edge => edge.id === edgeId)) {
+              edges.push(this.createEdge(edgeId, handlerReferences[0].binding_node_id, binding.id, 'calls', 'behavioral',
+                { resolution: 'exact-handler-state-write', binding_names: binding.names }));
+            }
+          }
+        }
+        if (handlerReferences.length === 1 && handlerReferences[0].binding_node_id && localSupportBindingNodeIds.length > 0) {
+          for (const binding of localSupportBindings) {
+            const edgeId = this.generateEdgeId(handlerReferences[0].binding_node_id, binding.id, 'calls');
+            if (!edges.some(edge => edge.id === edgeId)) {
+              edges.push(this.createEdge(edgeId, handlerReferences[0].binding_node_id, binding.id, 'calls', 'behavioral',
+                { source_component: component.name, handler_reference: binding.name }));
+            }
           }
         }
       });

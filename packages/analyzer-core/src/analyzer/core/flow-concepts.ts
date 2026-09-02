@@ -67,8 +67,6 @@ export interface ChainNode {
   node: CASNode;
   depth: number;
 }
-const DEFAULT_MAX_DEPTH = 6;
-const DEFAULT_MAX_FUNCTIONS = 40;
 const TRACEABLE_NODE_TYPES = BEHAVIORAL_CODE_UNIT_TYPES;
 const VALIDATE_NAME_RE = /\b(validate|guard|check|assert|sanitize|verify|authoriz|authentic)/i;
 const RESPOND_NAME_RE = /\b(respond|render|reply|serialize|format|toJson|toResponse|present)/i;
@@ -203,9 +201,7 @@ export function buildTraversalIndex(cas: CASOutput): TraversalIndex {
 
 export function traceForwardChain(
   index: TraversalIndex,
-  rootId: string,
-  maxDepth: number,
-  maxFunctions: number
+  rootId: string
 ): ChainNode[] {
   const { nodesById, outgoingEdges, outgoingMethodCalls } = index;
 
@@ -216,13 +212,13 @@ export function traceForwardChain(
 
   let frontier: string[] = [rootId];
   let depth = 0;
-  while (frontier.length > 0 && depth < maxDepth && chain.length < maxFunctions) {
+  while (frontier.length > 0) {
     const next: string[] = [];
     for (const id of frontier) {
-      const targets = [
+      const targets = [...new Set([
         ...(outgoingEdges.get(id) || []).map(e => e.target),
         ...(outgoingMethodCalls.get(id) || []),
-      ];
+      ])].sort();
       for (const targetId of targets) {
         if (visited.has(targetId)) continue;
         const targetNode = nodesById.get(targetId);
@@ -231,9 +227,7 @@ export function traceForwardChain(
         visited.add(targetId);
         next.push(targetId);
         chain.push({ node: targetNode, depth: depth + 1 });
-        if (chain.length >= maxFunctions) break;
       }
-      if (chain.length >= maxFunctions) break;
     }
     frontier = next;
     depth++;
@@ -1066,16 +1060,14 @@ export function normalizeEntityKey(ref: string): string {
 
 function makeEntryFamilyEntities(
   cas: CASOutput,
-  index: TraversalIndex,
-  maxDepth: number,
-  maxFunctions: number
+  index: TraversalIndex
 ): (rootId: string | undefined) => string[] {
   const memo = new Map<string, string[]>();
   return (rootId: string | undefined): string[] => {
     if (!rootId) return [];
     const cached = memo.get(rootId);
     if (cached) return cached;
-    const family = traceForwardChain(index, rootId, maxDepth, maxFunctions);
+    const family = traceForwardChain(index, rootId);
     const familyIds = new Set(family.map(c => c.node.id));
     familyIds.add(rootId);
     const entities = entitiesForNodes(familyIds, cas);
@@ -1746,9 +1738,6 @@ function buildTerminalFlows(
   }
   if (chains.length === 0) return [];
 
-  const maxDepth = opts.maxDepth && opts.maxDepth > 0 ? opts.maxDepth : DEFAULT_MAX_DEPTH;
-  const maxFunctions = opts.maxFunctionsPerFlow && opts.maxFunctionsPerFlow > 0 ? opts.maxFunctionsPerFlow : DEFAULT_MAX_FUNCTIONS;
-
   const nodesById = new Map(cas.nodes.map(n => [n.id, n]));
   const capabilities = [...(cas.capabilities || []), ...(cas.behavior_surfaces || [])];
   const entryHandlerNodeIdByEpId = buildEntryHandlerNodeIdByEpId(cas);
@@ -1771,7 +1760,7 @@ function buildTerminalFlows(
   const allLineage = [...(cas.data_lineage || [])];
 
   const traversal = buildTraversalIndex(cas);
-  const familyEntities = makeEntryFamilyEntities(cas, traversal, maxDepth, maxFunctions);
+  const familyEntities = makeEntryFamilyEntities(cas, traversal);
   const cliOneHopEntities = makeCliOneHopEntities(cas);
 
   const entryClassRank = (chain: CASCallChain): number => {
@@ -1808,13 +1797,11 @@ function buildTerminalFlows(
     const chainNodes: ChainNode[] = [];
     const seen = new Set<string>();
     for (const step of chain.call_path || []) {
-      if (step.depth >= maxDepth) continue;
       if (seen.has(step.node_id)) continue;
       const node = nodesById.get(step.node_id);
       if (!node) continue;
       seen.add(step.node_id);
       chainNodes.push({ node, depth: step.depth });
-      if (chainNodes.length >= maxFunctions) break;
     }
     if (chainNodes.length === 0) continue;
 
@@ -1847,9 +1834,6 @@ function buildTerminalFlows(
     );
 
     const gaps: string[] = [];
-    if (chainNodes.length >= maxFunctions) {
-      gaps.push(`Terminal chain truncated at maxFunctionsPerFlow=${maxFunctions}; some downstream steps may be missing.`);
-    }
     if ((chain.call_path || []).length > chainNodes.length + 1) {
       gaps.push('Some call_path nodes did not resolve in the graph and were skipped from this flow.');
     }
@@ -2319,9 +2303,6 @@ function computeEntryPointFlows(
   opts: ComputeFlowConceptsOptions = {},
   unionOpts: { excludeEntryKeys?: Set<string>; significantOnly?: boolean; onlyEntryKeys?: Set<string> } = {}
 ): FlowConcept[] {
-  const maxDepth = opts.maxDepth && opts.maxDepth > 0 ? opts.maxDepth : DEFAULT_MAX_DEPTH;
-  const maxFunctions = opts.maxFunctionsPerFlow && opts.maxFunctionsPerFlow > 0 ? opts.maxFunctionsPerFlow : DEFAULT_MAX_FUNCTIONS;
-
   const nodesById = new Map(cas.nodes.map(n => [n.id, n]));
   const capabilities = [...(cas.capabilities || []), ...(cas.behavior_surfaces || [])];
   const entryHandlerNodeIdByEpId = buildEntryHandlerNodeIdByEpId(cas);
@@ -2397,7 +2378,7 @@ function computeEntryPointFlows(
     const rootNode = nodesById.get(ep.handler?.node_id || ep.source_node);
     if (!rootNode) continue;
 
-    const chain = traceForwardChain(traversal, rootNode.id, maxDepth, maxFunctions);
+    const chain = traceForwardChain(traversal, rootNode.id);
     if (chain.length === 0) continue;
 
     if (unionOpts.significantOnly && chain.length === 1 && !USER_FACING_ENTRY_TYPES.has(ep.type)) {
@@ -2418,9 +2399,6 @@ function computeEntryPointFlows(
     const gaps: string[] = [];
     if (synthesizedRootIds.has(ep.id)) {
       gaps.push('Root synthesized from a capabilities operation node reference — this codebase\'s entry-point extraction did not surface a dedicated entry point for this handler.');
-    }
-    if (chain.length >= maxFunctions) {
-      gaps.push(`Call chain truncated at maxFunctionsPerFlow=${maxFunctions}; some downstream steps may be missing.`);
     }
     if (segments.length === 1) {
       gaps.push('Entire chain classified as a single step — no role boundary detected; segmentation is coarse for this flow.');

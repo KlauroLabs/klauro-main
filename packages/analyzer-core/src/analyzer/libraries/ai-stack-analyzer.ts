@@ -109,7 +109,7 @@ export class AIStackAnalyzer extends BaseAnalyzer {
       nodir: true,
     })).filter(file => !isTestFileName(path.basename(file)));
 
-    for (const file of sourceFiles.slice(0, 400)) {
+    for (const file of sourceFiles) {
       try {
         const content = await fs.readFile(file, 'utf-8');
         if (this.hasAIImport(content)) {

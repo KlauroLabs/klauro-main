@@ -3,6 +3,7 @@ jest.unmock('fs');
 jest.unmock('glob');
 
 import { ReactAnalyzer } from '../../analyzer/frameworks/web/react-analyzer';
+import { buildComponentModuleMap } from '../../analyzer/frameworks/web/react-source-analysis';
 import { CASEntryPoint } from '../../types/cas.types';
 
 describe('React page entry point emission', () => {
@@ -178,7 +179,7 @@ describe('React page entry point emission', () => {
 
   describe('buildComponentModuleMap', () => {
     it('resolves aliases from imports and from lazily-loaded consts', () => {
-      const map = analyzer().buildComponentModuleMap([
+      const map = buildComponentModuleMap([
         "import { AuthPage } from '@/app/Auth/AuthPage';",
         "import Shell from '@/shared/Shell';",
         "import { EntitiesPage as Renamed } from '@/app/Entities/EntitiesPage';",

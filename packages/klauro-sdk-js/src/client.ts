@@ -7,27 +7,33 @@ import {
 } from './types';
 import { nowMs, elapsedMs } from './clock';
 
+interface ProcessLifecycle {
+  on(event: 'beforeExit', listener: () => void): void;
+  removeListener(event: 'beforeExit', listener: () => void): void;
+}
+
+const runtimeProcess = (globalThis as typeof globalThis & { process?: ProcessLifecycle }).process;
 const activeClients = new Set<KlauroClient>();
 const MAX_INGEST_BATCH_SIZE = 1000;
 let lifecycleHookInstalled = false;
 
 function flushActiveClients(): void {
-  if (typeof process !== 'undefined') process.removeListener('beforeExit', flushActiveClients);
+  runtimeProcess?.removeListener('beforeExit', flushActiveClients);
   lifecycleHookInstalled = false;
   for (const client of activeClients) void client.flush();
 }
 
 function registerActiveClient(client: KlauroClient): void {
   activeClients.add(client);
-  if (lifecycleHookInstalled || typeof process === 'undefined' || typeof process.on !== 'function') return;
-  process.on('beforeExit', flushActiveClients);
+  if (lifecycleHookInstalled || !runtimeProcess) return;
+  runtimeProcess.on('beforeExit', flushActiveClients);
   lifecycleHookInstalled = true;
 }
 
 function unregisterActiveClient(client: KlauroClient): void {
   activeClients.delete(client);
-  if (activeClients.size > 0 || !lifecycleHookInstalled || typeof process === 'undefined') return;
-  process.removeListener('beforeExit', flushActiveClients);
+  if (activeClients.size > 0 || !lifecycleHookInstalled || !runtimeProcess) return;
+  runtimeProcess.removeListener('beforeExit', flushActiveClients);
   lifecycleHookInstalled = false;
 }
 
@@ -85,7 +91,8 @@ export class KlauroClient {
         void this.flush();
       }, this.config.flushInterval);
 
-      if (typeof this.timer.unref === 'function') this.timer.unref();
+      const timer = this.timer as ReturnType<typeof setInterval> & { unref?: () => void };
+      timer.unref?.();
     }
     registerActiveClient(this);
   }

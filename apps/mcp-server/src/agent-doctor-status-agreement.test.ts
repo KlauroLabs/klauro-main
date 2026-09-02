@@ -170,6 +170,27 @@ test('a CAS still populating (layers_ready.complete=false) is reported as incomp
   });
 });
 
+test('a CAS without a readiness manifest is never reported as complete or agent-context-ready', async () => {
+  await withTempStorage(async () => {
+    await withTempRepo(async root => {
+      fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'fixture' }));
+      fs.writeFileSync(path.join(root, 'src', 'index.ts'), 'export const app = true;\n');
+      initGitRepo(root);
+
+      const { getAgentDoctor } = await import('./agent-doctor');
+      const cas = fixtureCas(root, new Date().toISOString());
+      delete cas.layers_ready;
+
+      const doctorView = await getAgentDoctor(cas, root, { assumeFresh: true });
+      const layersCheck = doctorView.checks.find(check => check.id === 'layers-complete');
+
+      assert.equal(layersCheck?.status, 'fail');
+      assert.equal(layersCheck?.detail, 'Analysis readiness manifest is missing');
+      assert.equal(doctorView.agent_context_ready, false);
+    });
+  });
+});
 test('doctor freshness status agrees with status when nothing changed since analysis (both fresh)', async () => {
   await withTempStorage(async () => {
     await withTempRepo(async root => {

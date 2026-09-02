@@ -104,6 +104,27 @@ describe('finalizeSystemCapabilityNames canonical publication gate', () => {
     orch.finalizeSystemCapabilityNames(caps);
     expect(caps).toHaveLength(1);
   });
+
+  it('preserves normalized exact obligation scopes through final name dedupe', () => {
+    const exact = (id: string, action: string, entryPointId: string) => cap({
+      id, name: 'Remove records',
+      description: 'Users remove records through the verified product workflow.',
+      operations: [{ entry_point_id: entryPointId, entry_point_type: 'http', action }] as any,
+      related_entities: ['entity_record'],
+      criticality_factors: [`catalog-operation-obligation:operation-obligation:records:${id}`],
+    });
+    const removeCategory = exact('remove-category', 'delete', 'delete-category');
+    const removeJob = exact('remove-job', 'delete', 'delete-job');
+    const caps = [removeJob, removeCategory];
+
+    orch.finalizeSystemCapabilityNames(caps);
+
+    expect(caps).toHaveLength(2);
+    expect(caps.map(item => item.operations.map(operation => operation.entry_point_id))).toEqual([
+      ['delete-job'], ['delete-category'],
+    ]);
+    expect(caps.every(item => item.criticality_factors.filter(factor => factor.startsWith('catalog-operation-obligation:')).length === 1)).toBe(true);
+  });
 });
 
 describe('operation-only catalog reconciliation', () => {
@@ -223,9 +244,9 @@ describe('catalogQualityFailure (post-reconcile gate, defect #33)', () => {
     expect(orch.catalogQualityFailure([], 20)).toContain('empty');
   });
 
-  it('fails a <=3 catalog when the deterministic families outnumber it 2x+', () => {
+  it('does not impose a structural-family count quota on a small grounded catalog', () => {
     const three = [purposeful('View entry points'), purposeful('View functions'), purposeful('View dashboard')];
-    expect(orch.catalogQualityFailure(three, 20)).toContain('collapse');
+    expect(orch.catalogQualityFailure(three, 20)).toBeUndefined();
   });
 
   it('accepts a small catalog on a genuinely small repo', () => {
@@ -280,7 +301,7 @@ describe('catalogQualityFailure (post-reconcile gate, defect #33)', () => {
     expect(orch.catalogQualityFailure(repairing, 6)).toBeUndefined();
   });
 
-  it('requires every selected behavior family to be cited even when the capability count passes', () => {
+  it('requires every operation-level obligation even when its candidate is already cited', () => {
     const capabilities = [
       purposeful('Analyze codebases'),
       purposeful('Coordinate overlapping work'),
@@ -289,10 +310,10 @@ describe('catalogQualityFailure (post-reconcile gate, defect #33)', () => {
     capabilities[0].criticality_factors = ['catalog-candidate:analysis'];
     capabilities[1].criticality_factors = ['catalog-candidate:fabric'];
 
-    expect(orch.catalogQualityFailure(capabilities, 5, ['analysis', 'fabric', 'runtime']))
-      .toContain('runtime');
     capabilities[2].criticality_factors = ['catalog-candidate:runtime'];
-    expect(orch.catalogQualityFailure(capabilities, 5, ['analysis', 'fabric', 'runtime']))
+    expect(orch.catalogQualityFailure(capabilities, 5, ['runtime']))
+      .toContain('runtime');
+    expect(orch.catalogQualityFailure(capabilities, 5, []))
       .toBeUndefined();
   });
 
@@ -513,7 +534,9 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
       summary: 'The product lets users manage orders, track portfolios, settle payments, view invoices, add devices, authorize access, publish messages, configure job schedules, analyze risks, view audit summaries, sync inventory, and configure policies.',
     },
     entryPoints: [],
+    exitPoints: [],
     nodes: [],
+    edges: [],
     budgetMs: 1000,
   });
   const citeEveryGateFamily = (capabilities: SystemCapability[]): SystemCapability[] => capabilities.map(capability => ({
@@ -524,7 +547,186 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     ])],
   }));
 
-  it('retries a collapsed catalog with a quality nudge and keeps the passing retry result', async () => {
+  const atomicGateArgs = (localOrch: any) => {
+    const args: any = gateArgs(localOrch);
+    const evidence = cap({
+      id: 'notes-read', name: 'read note', structural_label: 'read note',
+      category: 'core', evidence_kind: 'behavior-surface', evidence_role: 'product-outcome',
+      operations: [{ entry_point_id: 'view-note', entry_point_type: 'http', action: 'read', trigger: { method: 'GET', path: '/notes' } }] as any,
+      related_entities: ['entity_note'],
+    });
+    args.candidateSnapshot = [evidence];
+    args.behaviorSurfaces = [evidence];
+    args.dataEntities = [{ id: 'entity_note', name: 'Note', kind: 'persisted-entity', attributes: [] }];
+    args.entryPoints = [{ id: 'view-note', name: 'View notes', type: 'http', route: { method: 'GET', path: '/notes' }, handler: { file: 'routes/notes.ts' }, metadata: {} }];
+    args.projectTextSignal = { concepts: ['notes'], evidence: [], summary: 'Users view notes attached to their job applications.' };
+    return args;
+  };
+
+  it('does not promote a structural atomic baseline before authored comprehension', async () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    const args = atomicGateArgs(localOrch);
+    args.hardDeadlineAt = Date.now() - 1;
+    let calls = 0;
+    localOrch.aiExtractCapabilityCatalog = async () => { calls++; return []; };
+
+    const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(args);
+
+    expect(calls).toBe(0);
+    expect(out).toEqual([]);
+    expect(args.enhancedSystemPurpose.capability_catalog_coverage).toMatchObject({ status: 'unavailable', published_capabilities: 0 });
+  });
+
+  it('does not publish structural closure after a completed cycle reaches the hard deadline', async () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    const args = atomicGateArgs(localOrch);
+    args.hardDeadlineAt = Date.now() + 60_000;
+    let providerCalls = 0;
+    localOrch.aiExtractCapabilityCatalog = async () => {
+      providerCalls += 1;
+      args.hardDeadlineAt = Date.now() - 1;
+      return [];
+    };
+    const originalQualityFailure = localOrch.catalogQualityFailure.bind(localOrch);
+    let qualityChecks = 0;
+    localOrch.catalogQualityFailure = (...values: unknown[]) => {
+      qualityChecks += 1;
+      return qualityChecks === 1 ? 'forced-cycle-one-repair' : originalQualityFailure(...values);
+    };
+
+    const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(args);
+
+    expect(providerCalls).toBe(1);
+    expect(qualityChecks).toBeGreaterThanOrEqual(2);
+    expect(out).toEqual([]);
+    expect(args.enhancedSystemPurpose.capability_catalog_coverage).toMatchObject({ status: 'unavailable', published_capabilities: 0 });
+  });
+
+  it('revalidates complete deterministic coverage after no-progress termination', async () => {
+    const completeOrch = new AnalyzerOrchestrator() as any;
+    const completeArgs = atomicGateArgs(completeOrch);
+    let completeCalls = 0;
+    completeOrch.aiExtractCapabilityCatalog = async () => { completeCalls++; return []; };
+    const completeQualityFailure = completeOrch.catalogQualityFailure.bind(completeOrch);
+    let completeQualityChecks = 0;
+    completeOrch.catalogQualityFailure = (...values: unknown[]) => {
+      completeQualityChecks += 1;
+      return completeQualityChecks <= 3 ? 'forced-no-progress-repair' : completeQualityFailure(...values);
+    };
+
+    const complete: SystemCapability[] = await completeOrch.runCapabilityCatalogWithQualityGate(completeArgs);
+
+    expect(completeCalls).toBeGreaterThan(0);
+    expect(completeQualityChecks).toBeGreaterThanOrEqual(3);
+    expect(complete).toEqual([]);
+    expect(completeArgs.enhancedSystemPurpose.capability_catalog_coverage).toMatchObject({ status: 'rejected', published_capabilities: 0 });
+
+  });
+
+  it('keeps structural evidence out of the catalog when the provider returns no authored outcome', async () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    const args = atomicGateArgs(localOrch);
+    const calls: any[] = [];
+    localOrch.aiExtractCapabilityCatalog = async (input: any) => { calls.push(input); return []; };
+
+    const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(args);
+
+    expect(out).toEqual([]);
+    expect(calls).toHaveLength(1);
+    expect(calls.some(call => call.exactCapabilityLimit)).toBe(false);
+  });
+
+  it('does not inject a deterministic atomic baseline around provider-authored output', async () => {
+    const run = async (reverse: boolean) => {
+      const localOrch = new AnalyzerOrchestrator() as any;
+      const args = atomicGateArgs(localOrch);
+      const wrong = cap({
+        id: 'wrong', name: 'Add notes',
+        description: 'Users add notes to job applications while reviewing each tracked opportunity.',
+        operations: args.candidateSnapshot[0].operations,
+        related_entities: ['entity_note'], criticality_factors: ['catalog-candidate:notes-read'],
+      });
+      const unrelated = cap({
+        id: 'unrelated', name: 'Update profiles',
+        description: 'Users update profile settings while managing their product account preferences.',
+        operations: [], criticality_factors: [],
+      });
+      localOrch.aiExtractCapabilityCatalog = async () => reverse ? [unrelated, wrong] : [wrong, unrelated];
+      localOrch.reconcileCatalogedCapabilities = (values: SystemCapability[]) => values;
+      return localOrch.runCapabilityCatalogWithQualityGate(args) as Promise<SystemCapability[]>;
+    };
+
+    for (const out of [await run(false), await run(true)]) {
+      const retained = out.find(item => item.criticality_factors.includes('catalog-candidate:notes-read'));
+      expect(retained?.name).toBe('Add notes');
+      expect(retained?.criticality_factors).not.toContain('catalog-deterministic-atomic-closure');
+    }
+  });
+
+  it('allows a validated provider improvement without losing exact atomic coverage and abstains on ambiguous evidence', async () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    const args = atomicGateArgs(localOrch);
+    const improvedDescription = 'Users view notes attached to job applications while reviewing each tracked opportunity.';
+    const improved = cap({
+      id: 'improved', name: 'View notes', description: improvedDescription,
+      operations: args.candidateSnapshot[0].operations, related_entities: ['entity_note'],
+      criticality_factors: ['catalog-candidate:notes-read'],
+    });
+    localOrch.aiExtractCapabilityCatalog = async () => [improved];
+    localOrch.reconcileCatalogedCapabilities = (values: SystemCapability[]) => values;
+
+    const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(args);
+
+    expect(out.some(item => item.name === 'View notes' && item.criticality_factors.includes('catalog-candidate:notes-read'))).toBe(true);
+    const ambiguousArgs = atomicGateArgs(new AnalyzerOrchestrator() as any);
+    ambiguousArgs.candidateSnapshot[0] = {
+      ...ambiguousArgs.candidateSnapshot[0], name: 'read record', structural_label: 'read record',
+      operations: [{ entry_point_id: 'view-note', entry_point_type: 'internal', action: 'read' }],
+      related_entities: ['entity_note', 'entity_job'],
+    };
+    ambiguousArgs.behaviorSurfaces = [ambiguousArgs.candidateSnapshot[0]];
+    ambiguousArgs.dataEntities.push({ id: 'entity_job', name: 'Job', kind: 'persisted-entity', attributes: [] });
+    ambiguousArgs.entryPoints = [];
+    ambiguousArgs.hardDeadlineAt = Date.now() - 1;
+
+    const ambiguousOrch = new AnalyzerOrchestrator() as any;
+    expect(await ambiguousOrch.runCapabilityCatalogWithQualityGate(ambiguousArgs)).toEqual([]);
+  });
+  it('publishes an accepted cycle-one capability without staging it as an evidence repair', async () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    const operation = [{
+      entry_point_id: 'ep_status', entry_point_type: 'http', action: 'Track',
+      path_or_command: '/status', trigger: { method: 'PATCH', path: '/status' },
+
+    }] as any;
+    const evidence = cap({
+      id: 'capability_status', name: 'Track job status', structural_label: 'Track job status',
+      category: 'core', evidence_kind: 'behavior-surface', evidence_role: 'product-outcome', operations: operation,
+      related_entities: ['entity_job'],
+    });
+    const authored = cap({
+      id: 'track-status', name: 'Track job status',
+      description: 'Users track job status throughout the review process.',
+      operations: operation, related_entities: ['entity_job'], criticality_factors: ['catalog-candidate:capability_status'],
+    });
+    const args: any = gateArgs(localOrch);
+    args.candidateSnapshot = [evidence];
+    args.projectTextSignal = {
+      concepts: ['track job status'], evidence: [],
+      summary: 'Users track job status throughout the review process.',
+    };
+    let calls = 0;
+    localOrch.aiExtractCapabilityCatalog = async () => { calls++; return [authored]; };
+    localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
+
+    const out = await localOrch.runCapabilityCatalogWithQualityGate(args);
+
+    expect(calls).toBe(1);
+    expect(out).toEqual([authored]);
+    expect(args.enhancedSystemPurpose.capability_catalog_coverage).toMatchObject({ status: 'accepted' });
+  });
+
+  it('does not fill a catalog quota after tool-shaped proposals are rejected', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const collapsed = ['View entry points', 'View functions', 'View dashboard'].map(name => cap({ id: name, name, description: `Surfaces the ${name.toLowerCase()} page for users of the product.` }));
     const rich = citeEveryGateFamily(['Analyze codebases', 'Serve agent context over MCP', 'Coordinate agent fleets', 'Detect deployables', 'Correlate runtime telemetry', 'Store analyses'].map(name => cap({ id: name, name, description: `Grounded prose about ${name} and why the ability exists in the product.`, operations: anchorOp(name) })));
@@ -536,10 +738,9 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
 
     const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(gateArgs(localOrch));
-    expect(out).toHaveLength(6);
-    expect(calls).toHaveLength(2);
+    expect(out).toEqual([]);
+    expect(calls).toHaveLength(1);
     expect(calls[0].qualityNudge).toBeUndefined();
-    expect(calls[1].qualityNudge).toContain('quality check');
   });
 
   it('repairs paired audience and truth outcomes even when they share one evidence family', async () => {
@@ -638,7 +839,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(emptyGraphAttempts).toBe(2);
   });
 
-  it('tells the next AI cycle exactly which audience failures require repair', async () => {
+  it('does not retry rejected ungrounded proposals merely to fill the catalog', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const rejected = [
       cap({
@@ -671,11 +872,9 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
     const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(gateArgs(localOrch));
 
-    expect(out).toEqual(repaired);
-    expect(calls).toHaveLength(2);
-    expect(calls[1].qualityNudge).toBe('Previous catalog failed a quality check. Return a full replacement catalog.');
-    expect(calls[1].qualityNudge).not.toContain('View industry reports');
-    expect(calls[1].qualityNudge).not.toContain('Browse products');
+    expect(out).toEqual([]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].qualityNudge).toBeUndefined();
   });
 
   it('does not accept grounded identities until their descriptions are publishable', async () => {
@@ -732,16 +931,19 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(args.enhancedSystemPurpose.capability_naming_coverage.un_enriched).toBe(0);
   });
 
-  it('rejects a catalog after bounded no-progress retries', async () => {
+  it('rejects an empty catalog after tool-shaped proposals make no progress', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const collapsed = ['View entry points', 'View functions'].map(name => cap({ id: name, name, description: `Surfaces the ${name.toLowerCase()} page for users of the product.` }));
     let calls = 0;
     localOrch.aiExtractCapabilityCatalog = async () => { calls++; return collapsed; };
     localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
 
-    const out = await localOrch.runCapabilityCatalogWithQualityGate(gateArgs(localOrch));
-    expect(calls).toBe(2);
+    const args: any = gateArgs(localOrch);
+    const out = await localOrch.runCapabilityCatalogWithQualityGate(args);
+    expect(calls).toBe(1);
     expect(out).toEqual([]);
+    expect(args.enhancedSystemPurpose.capability_catalog_coverage.status).toBe('rejected');
+    expect(args.enhancedSystemPurpose.capability_catalog_coverage.reason).toContain('no publishable capabilities');
   });
 
   it('passes a good first catalog through with a single call', async () => {
@@ -921,10 +1123,10 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     const args: any = gateArgs(localOrch);
     args.projectTextSignal = { concepts: ['overlapping work', 'collaboration'], evidence: [] };
     const coordinationEvidence = {
-      id: 'coordination', name: 'Coordinate overlapping work', category: 'internal', evidence_kind: 'behavior-surface',
+      id: 'coordination', name: 'Coordinate overlapping work', category: 'internal', evidence_kind: 'behavior-surface', evidence_role: 'product-outcome',
       evidence_examples: ['surface overlapping changes'],
       criticality_factors: ["1 message entry point forms one cohesive behavior family ('coordination')"],
-      operations: [{ entry_point_id: 'observe', entry_point_type: 'message', action: 'Surface overlapping changes' }],
+      operations: [{ entry_point_id: 'observe', entry_point_type: 'message', action: 'Process' }],
       related_entities: [], related_domains: [],
     };
     const safeCoordinationEvidence = { ...coordinationEvidence, id: 'coordination-safe' };
@@ -935,20 +1137,14 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     const rejected = cap({
       id: 'coordination', name: 'Coordinate overlapping work',
       description: 'Surfaces synchronized changes across overlapping work while ensuring participants remain aligned.',
-      operations: [{ entry_point_id: 'observe', entry_point_type: 'message', action: 'Surface overlapping changes' }],
+      operations: [{ entry_point_id: 'observe', entry_point_type: 'message', action: 'Process' }],
       criticality_factors: ['catalog-candidate:coordination'],
-    });
-    const sameTitleAccepted = cap({
-      id: rejected.id, name: rejected.name,
-      description: 'Surfaces overlapping changes so participants can coordinate their work.',
-      operations: rejected.operations,
-      criticality_factors: ['catalog-candidate:coordination-safe'],
     });
     const repaired = { ...rejected, description: 'Surfaces overlapping changes so participants can coordinate their work.' };
     const calls: any[] = [];
     localOrch.aiExtractCapabilityCatalog = async (input: any) => {
       calls.push(input);
-      return calls.length === 1 ? [...retained, sameTitleAccepted, rejected] : [repaired];
+      return calls.length === 1 ? [...retained, rejected] : [repaired];
     };
     localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
 
@@ -999,7 +1195,54 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(out[0].criticality_factors).toContain('catalog-candidate:workspace');
   });
 
-  it('does not promote a rejected optional delivery title into a product-catalog repair', async () => {
+  it('repairs rejected wording when the cited evidence is already classified as a product outcome', async () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    const args: any = gateArgs(localOrch);
+    const operations = [
+      { entry_point_id: 'category-create', entry_point_type: 'http', action: 'Create', trigger: { method: 'POST', path: '/categories' } },
+      { entry_point_id: 'category-list', entry_point_type: 'http', action: 'List', trigger: { method: 'GET', path: '/categories' } },
+      { entry_point_id: 'category-update', entry_point_type: 'http', action: 'Update', trigger: { method: 'PATCH', path: '/categories/:id' } },
+      { entry_point_id: 'category-delete', entry_point_type: 'http', action: 'Delete', trigger: { method: 'DELETE', path: '/categories/:id' } },
+    ] as any;
+    const evidence = cap({
+      id: 'cap_categories', name: 'Spending categories', structural_label: 'Spending category',
+      category: 'core', evidence_role: 'product-outcome',
+      operations, related_entities: ['entity_category'], related_domains: ['categories'],
+    });
+    args.candidateSnapshot = [evidence];
+    args.behaviorSurfaces = [];
+    args.dataEntities = [{ id: 'entity_category', name: 'Category', kind: 'persisted-entity', attributes: [] }];
+    args.projectTextSignal = { concepts: ['spending categories', 'budgets'], evidence: [], summary: 'Users organize spending with categories and budgets.' };
+    args.userJourneys = [{ name: 'Organize spending categories' }];
+    const repaired = cap({
+      id: 'organize-categories', name: 'Organize spending categories',
+      description: 'Users organize spending categories while retaining the ability to add, review, revise, and remove categories.',
+      operations, related_entities: ['entity_category'], related_domains: ['categories'],
+      criticality_factors: ['catalog-candidate:cap_categories'],
+    });
+    const calls: any[] = [];
+    localOrch.aiExtractCapabilityCatalog = async (input: any) => {
+      calls.push(input);
+      if (calls.length === 1) {
+        input.onRejection?.({
+          candidateIds: ['cap_categories'],
+          name: 'Create and manage spending categories',
+          reason: 'crud-inventory-label',
+        });
+        return [];
+      }
+      return calls.length === 2 ? [] : [repaired];
+    };
+    localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
+
+    const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(args);
+
+    expect(calls).toHaveLength(3);
+    expect(calls[2]).toMatchObject({ repairMode: 'evidence', exactCapabilityLimit: 1 });
+    expect(out.map(capability => capability.name)).toEqual([repaired.name]);
+  });
+
+  it('accepts an independently grounded outcome without turning a rejected proposal into a targeted repair', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const args: any = gateArgs(localOrch);
     args.projectTextSignal = { concepts: ['codebase', 'software understanding'], evidence: [] };
@@ -1032,8 +1275,9 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
     const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(args);
 
-    expect(calls).toHaveLength(1);
-    expect(out.map(capability => capability.name)).toEqual(retained.map(capability => capability.name));
+    expect(calls).toHaveLength(2);
+    expect(calls.every(call => call.repairIdentityName === undefined)).toBe(true);
+    expect(out.map(capability => capability.name)).toEqual([...retained.map(capability => capability.name), repaired.name]);
   });
 
   it('does not publish a rejected description identity when its evidence family is already covered', async () => {
@@ -1176,11 +1420,11 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
 
     const out = await localOrch.runCapabilityCatalogWithQualityGate(gateArgs(localOrch));
-    expect(calls).toBe(2);
+    expect(calls).toBe(1);
     expect(out).toHaveLength(0);
   });
 
-  it('does not publish a partial catalog that cannot satisfy required evidence coverage', async () => {
+  it('publishes every grounded outcome without imposing a catalog-size quota', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const grounded = ['Analyze codebases', 'Coordinate agent work', 'Correlate runtime signals'].map(name => cap({
       id: name, name, description: `Grounded product outcome for ${name.toLowerCase()} across connected software.`, operations: anchorOp(name),
@@ -1191,16 +1435,17 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
     const out = await localOrch.runCapabilityCatalogWithQualityGate(args);
 
-    expect(out).toEqual([]);
+    expect(out).toEqual(grounded);
     expect(args.enhancedSystemPurpose.capability_catalog_coverage).toMatchObject({
-      status: 'rejected',
-      published_capabilities: 0,
+      status: 'accepted',
+      published_capabilities: 3,
       actual_publishable_capabilities: 3,
+      minimum_published_capabilities: 0,
     });
-    expect(args.enhancedSystemPurpose.capability_catalog_coverage.reason).toBeDefined();
+    expect(args.enhancedSystemPurpose.capability_catalog_coverage.reason).toBeUndefined();
   });
 
-  it('does not publish a full-sized catalog missing one first-party outcome slot', async () => {
+  it('publishes grounded outcomes while retaining a missing first-party outcome as an intent gap', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const args: any = gateArgs(localOrch);
     args.projectTextSignal = {
@@ -1238,17 +1483,16 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
     const out = await localOrch.runCapabilityCatalogWithQualityGate(args);
 
-    expect(out).toEqual([]);
+    expect(out.map((capability: SystemCapability) => capability.name)).toEqual(incomplete.map(capability => capability.name));
     expect(args.enhancedSystemPurpose.capability_catalog_coverage).toMatchObject({
       actual_publishable_capabilities: 5,
-      published_capabilities: 0,
-      minimum_published_capabilities: 5,
-      status: 'rejected',
+      published_capabilities: 5,
+      minimum_published_capabilities: 0,
+      status: 'accepted',
     });
-    expect(args.enhancedSystemPurpose.capability_catalog_coverage.reason).toContain('first-party product outcome');
   });
 
-  it('accepts a smaller passing retry instead of retaining a larger rejected catalog', async () => {
+  it('does not replace rejected bare abstractions merely to fill a catalog', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const rejected = Array.from({ length: 8 }, (_, index) => cap({
       id: `rejected_${index}`,
@@ -1263,8 +1507,8 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
 
     const out = await localOrch.runCapabilityCatalogWithQualityGate(gateArgs(localOrch));
-    expect(out).toEqual(accepted);
-    expect(calls).toBe(2);
+    expect(out).toEqual([]);
+    expect(calls).toBe(1);
   });
 
   it('refuses an unanchored item without discarding the grounded catalog', async () => {
@@ -1303,6 +1547,6 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     const out = await localOrch.runCapabilityCatalogWithQualityGate(gateArgs(localOrch));
 
     expect(calls).toBe(1);
-    expect(out).toEqual(grounded);
+    expect(out).toEqual(grounded.slice(1));
   });
 });

@@ -22,15 +22,15 @@ import {
 } from '../core/tree-sitter-ts-extraction-cache';
 import { loadPrismaModelIdentities, selectPrismaModelIdentity, type PrismaModelIdentity } from '../libraries/orm/prisma-model-identity';
 import { appendInMemoryRecordCollectionNodes } from '../core/javascript-in-memory-data';
+import { partialTypeScriptSourceFailure, typeScriptAnalysisScope, typeScriptSourceDiagnostics } from '../core/tree-sitter-ts-recovery';
 
 interface ParsedAST {
   ast: TSESTree.Program;
   content: string;
   filePath: string;
 }
-
 const PARALLEL_BATCH_SIZE = 100;
-const MAX_SOURCE_FILE_BYTES = 5 * 1024 * 1024;
+const MAX_WORKER_SOURCE_FILE_BYTES = 1024 * 1024;
 
 export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   private astCache = new Map<string, ParsedAST>();
@@ -49,6 +49,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   private callEdgeIds = new Set<string>();
   private exitPointIds = new Set<string>();
   private callTargetResolutionCache = new Map<string, string | undefined>();
+  private omittedSourceFiles: Array<{ path: string; reason: string; bytes?: number }> = [];
+  private partialSourceFiles: Array<{ path: string; reason: string; bytes: number }> = [];
 
   constructor() { super('typescript-javascript', 'TypeScript/JavaScript AST Analyzer', '1.0.0', 'language'); }
   async canAnalyze(projectPath: string): Promise<boolean> {
@@ -192,6 +194,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     this.classFieldTypes.clear();
     this.repositoryPropertyTypes.clear();
     this.prismaModelsByName.clear();
+    this.omittedSourceFiles = [];
+    this.partialSourceFiles = [];
     this.analysisWarnings = [];
     this.suppressedWarningCount = 0;
 
@@ -290,19 +294,22 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         console.log(`[Klauro] TypeScript/JavaScript analyzer completed for ${context.projectPath}:`, JSON.stringify({
           ...tsTimings,
           ...this.getProcessTimings(),
-          filesAnalyzed: sourceFiles.length,
+          filesAnalyzed: preloadedFiles.length,
           nodes: nodes.length,
           edges: edges.length,
         }, null, 2));
       }
 
       const warnings = this.collectAnalysisWarnings();
+      const incompleteSourceFiles = [...this.omittedSourceFiles, ...this.partialSourceFiles];
       return this.createContribution(nodes, edges, entryPoints, exitPoints, {
         framework_specific: {
           isTypeScriptProject: this.isTypeScriptProject,
           libraries,
-          filesAnalyzed: sourceFiles.length
+          filesAnalyzed: preloadedFiles.length,
+          ...typeScriptSourceDiagnostics(this.omittedSourceFiles, this.partialSourceFiles),
         },
+        analysis_scope: typeScriptAnalysisScope(sourceFiles.length, preloadedFiles.length, incompleteSourceFiles),
         categories,
         perspectives,
         provided_perspectives: perspectives.map(p => p.id),
@@ -341,15 +348,11 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
           try {
             const stat = await fs.stat(fullPath);
             if (!stat.isFile()) return null;
-            if (stat.size > MAX_SOURCE_FILE_BYTES) {
-              this.addAnalysisWarning(
-                `${file} exceeds the ${Math.round(MAX_SOURCE_FILE_BYTES / (1024 * 1024))}MB source file limit (${Math.round(stat.size / (1024 * 1024))}MB); file skipped`
-              );
-              return null;
-            }
             const content = await fs.readFile(fullPath, 'utf-8');
             return { relativePath: file, fullPath, content };
           } catch (error) {
+            this.omittedSourceFiles.push({ path: file, reason: 'source read failed: ' + (error as Error).message });
+
             this.addAnalysisWarning(`${file} could not be parsed: ${(error as Error).message}`);
             console.warn(`Failed to parse ${file}:`, error);
             return null;
@@ -376,11 +379,15 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
     if (misses.length > 0) {
       let extractedMisses: Array<TSFileExtraction | Error>;
-      try {
-        extractedMisses = await this.extractTreeSitterFilesInWorkers(misses);
-      } catch (error) {
-        console.warn(`Tree-sitter worker pool unavailable; using sequential extraction: ${(error as Error).message}`);
+      if (misses.some(miss => Buffer.byteLength(miss.content, 'utf8') > MAX_WORKER_SOURCE_FILE_BYTES)) {
         extractedMisses = await this.extractTreeSitterFilesSequentially(misses);
+      } else {
+        try {
+          extractedMisses = await this.extractTreeSitterFilesInWorkers(misses);
+        } catch (error) {
+          console.warn(`Tree-sitter worker pool unavailable; using sequential extraction: ${(error as Error).message}`);
+          extractedMisses = await this.extractTreeSitterFilesSequentially(misses);
+        }
       }
       await Promise.all(extractedMisses.map(async (extraction, missIndex) => {
         const miss = misses[missIndex];
@@ -398,11 +405,13 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       if (extraction instanceof Error) {
 
         if (isNativeAddonUnavailableError(extraction)) throw extraction;
+        this.omittedSourceFiles.push({ path: loaded.relativePath, reason: 'parser failed: ' + extraction.message, bytes: Buffer.byteLength(loaded.content, 'utf8') });
         this.addAnalysisWarning(`${loaded.relativePath} could not be parsed: ${extraction.message}`);
         continue;
       }
       if (extraction.hasSyntaxErrors) {
         const locations = extraction.syntaxErrorLocations || [];
+        this.partialSourceFiles.push(partialTypeScriptSourceFailure(loaded.relativePath, loaded.content, locations));
 
         const known = locations.filter(l => l.knownLimitation);
         const unknown = locations.filter(l => !l.knownLimitation);

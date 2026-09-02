@@ -17,6 +17,151 @@ Capabilities are not technical mechanisms, routes, CRUD labels, framework names,
 
 Journeys, workflows, scenarios, use cases, and processes are read-time projections over flows. They are not separate persisted builders and cannot become competing sources of truth.
 
+## Audience and scope
+
+A capability is an outcome the system's actual audience came to obtain. It must be recognizable at that audience's altitude and specific to this system. The audience is not always a non-technical end user. It can be an application developer using a library, an operator using an observability product, an agent using Klauro, or another service consuming an API.
+
+Two quick tests reject most false capabilities:
+
+1. **Audience test:** Would the intended audience recognize this as a reason to choose or use the system?
+2. **Universality test:** Would the statement be equally true of most software? If so, it is probably infrastructure rather than product purpose.
+
+The classification is scope-relative. Authentication is substrate in an online store and flagship behavior in an identity product. Logging is substrate in most applications and product behavior in an observability platform. Dependency registration is infrastructure in an application and can be the product of a dependency-injection library. No vocabulary list can decide this independently of audience, system boundary, graph position, and product evidence.
+
+## Altitude model
+
+Comprehension uses an altitude ladder so evidence is not promoted into a higher-order claim merely because it exists:
+
+| Altitude | Question | Example |
+| --- | --- | --- |
+| Purpose | Why does the system exist as a whole? | Help people understand what a codebase actually built |
+| Capability | What outcome can its audience obtain? | Know what will break before changing something |
+| Flow | What complete behavior produces that outcome? | Assess a proposed change against affected behavior and tests |
+| Step | What meaningful transition advances the flow? | Resolve the changed symbol to connected flows |
+| Code and mechanism | How is the step implemented? | Traverse a reachability index |
+
+An entity is not another altitude. It is a durable subject or object that participates across the ladder. A quality is a property such as privacy, speed, reliability, or self-hostability. A goal is a desired future or business result. Neither qualities nor goals are capabilities unless the product itself exists to deliver that outcome.
+
+## Positive and negative examples
+
+| Capability | Not a capability | Why the alternative fails |
+| --- | --- | --- |
+| Buy products | Checkout Controller, Cart Management, POST /orders | Component, CRUD noun, and endpoint |
+| Get paid for a ride | Process Payment, Stripe Integration | Internal step and vendor mechanism |
+| Find a place to stay | Listing Search Service | Component rather than audience outcome |
+| Recover access to an account | Password Reset Flow, Token Validation | Flow and implementation detail |
+| Understand what a codebase actually built | Run Analysis Layer, Get Idioms | Klauro tool names |
+| Know what will break before changing something | assess_change_risk, Reachability Index | Tool and algorithm names |
+
+The following shapes are presumptively not capabilities:
+
+- tools, endpoints, functions, classes, files, and framework roles;
+- artifact or data-structure names such as a CAS, claim, graph, or verdict;
+- generic CRUD labels such as User Management;
+- infrastructure such as caching, logging, repositories, service layers, and database access;
+- universal abstractions such as Data Processing, Business Logic, or Integrate with external services;
+- identifiers, paths, and generated stutters leaking into prose.
+
+These are rejection defaults, not domain blacklists. A candidate can survive only when system purpose and evidence show that the supposedly technical behavior is itself what the audience came to obtain.
+
+## Derivation pipeline
+
+Comprehension is neither documentation-only nor graph-only. It is a reconciliation between product intent and implemented behavior:
+
+1. **Establish membership.** Determine the shipped system boundary before interpreting it. Presence in the repository is insufficient. Production entry-point reachability, manifests, packaging, deployment configuration, imports, and runtime evidence distinguish product code from legacy code, examples, tests, vendored code, generated output, docs, and scaffolding.
+2. **Propose top-down.** Extract audience, promised outcomes, product language, and system scope from README files, manifests, package metadata, product documents, user-facing copy, CLI help, agent instructions, and other authored signals. These sources propose capabilities; they do not prove implementation.
+3. **Build bottom-up behavior.** Construct entities, entries, connected steps, constraints, effects, outputs, calls, and terminal states from the complete CAS. Routers, schedulers, render loops, and framework dispatchers identify boundaries but are not automatically flows.
+4. **Ground proposals.** Require each proposed capability to resolve to one or more coherent implemented flows or equivalent behavior evidence. Routes and entities can support the proof but cannot independently name the outcome.
+5. **Arbitrate altitude and purpose.** Use audience, boundary, dependency direction, terminality, repeated use across flows, and contradictory evidence to decide whether a grounded behavior is capability, supporting flow, shared step, entity operation, or mechanism.
+6. **Report the reconciliation.** Preserve matches and mismatches instead of forcing a clean catalog.
+
+The resulting states are first-class:
+
+| Product proposal | CAS grounding | Interpretation |
+| --- | --- | --- |
+| Present | Present | Implemented capability |
+| Present | Missing or insufficient | Intended, documented, or promised capability with an implementation gap |
+| Missing | Present | Implemented but undocumented capability candidate |
+| Missing | Missing | No claim |
+
+A proposed capability with weak proof does not disappear. Its existence as product intent remains, while implementation confidence degrades. Likewise, a real implemented effect with an unresolved destination remains an effect with an unknown endpoint. Klauro degrades confidence or field precision, never the existence of observed evidence.
+
+There is no minimum capability count. A small focused tool may have one. A broad platform may have many. Count targets incentivize CRUD inflation and mechanism promotion.
+
+## Flow construction
+
+A flow is a coherent end-to-end behavior with a trigger, meaningful transitions, and at least one terminal result. Its identity comes from what happens, not merely from the controller, job, route, or UI page that dispatches it.
+
+A terminal result can be:
+
+- a user-visible response or navigation result;
+- an outbound effect;
+- durable state change;
+- meaningful in-memory domain-state change;
+- a produced artifact, message, or command result.
+
+Rendering a form is not evidence that the form's eventual mutation occurred. A GET page and the POST that creates a record are separate behaviors unless the graph proves a combined transaction.
+
+Shared helpers belong in a flow only when they materially constrain, transform, decide, or effect that behavior. Translation lookup, sidebar counters, formatting, tracing wrappers, and generic framework dispatch should not make otherwise different flows appear identical. They remain linked as supporting code and can still matter for change risk.
+
+Flows may support several capabilities, and one capability may require several flows. Flow identity must therefore remain independent of capability naming.
+
+## Step construction
+
+A step is a behavior-relevant transition inside a flow. It can consume input, enforce a constraint, make a decision, transform domain state, cause an effect, or produce an output. It is not synonymous with a function call.
+
+Step boundaries should preserve:
+
+- the actor-visible or domain-relevant action;
+- the input and preconditions;
+- the affected entities;
+- the effect or state transition;
+- the resulting output or handoff;
+- exact source provenance.
+
+Several functions can implement one step, and one shared function can participate in several steps. Plumbing remains reachable beneath the step without being promoted into the behavioral narrative.
+
+## Entity role
+
+Entities are durable subjects, objects, concepts, messages, artifacts, or stateful records that flows create, transform, inspect, communicate, or retire. They help connect product language to implementation, but an entity plus CRUD verbs is not automatically a capability.
+
+Entity evidence is strongest when multiple signals agree: persistence, contracts, validation, state transitions, relationships, messages, user-visible language, and flow participation. Generated schemas, vendor models, documentation markup, and unreachable legacy types must not inflate the product entity inventory.
+
+## Special system shapes
+
+- **Libraries and developer tools:** the audience is a developer; technical-looking outcomes may be legitimate product capabilities.
+- **Samples and demos:** report the behavior the sample depicts and separately identify its sample quality. Do not describe the example as a full production product.
+- **Content and build repositories:** producing, validating, or publishing an artifact can be the audience outcome.
+- **Infrastructure products:** provisioning, observing, routing, or securing systems can be product behavior when that is what the audience acquires.
+- **Recursive workspaces:** derive parent capabilities from child facts and seams; never union child labels.
+
+## Computational contract
+
+Optimization cannot change semantic coverage. Cold analysis discovers the complete in-scope ship unit. Indexing and caching may avoid repeated parsing, and later stages may operate on dependency-closed worksets, but no stage may silently omit a file, language, flow, entity, or effect because of a memory or time budget.
+
+Large evidence collections may be chunked, streamed, indexed, compressed, deduplicated, or spilled from memory. Their identifiers, counts, provenance, uncertainty, and recoverability must survive. Summaries accelerate candidate ranking and warm queries; they are not substitutes for the underlying CAS evidence.
+
+Failing to complete a required tier is an explicit incomplete analysis, not a smaller successful analysis.
+
+## Acceptance and scoring
+
+Comprehension quality is measured against authored outcome targets and source-grounded behavior, not catalog size. A representative scoreboard should cover applications, libraries, tools, infrastructure, samples, content systems, and multi-repo workspaces.
+
+For each system, measure:
+
+- capability precision: published outcomes that pass audience and evidence review;
+- capability recall: expected product outcomes that are grounded or honestly reported as gaps;
+- intent reconciliation: proposed-and-grounded, proposed-and-ungrounded, and grounded-and-unproposed results;
+- flow fidelity: distinct behaviors remain distinct and terminate at their real results;
+- step signal: behavior-relevant transitions dominate shared plumbing;
+- entity precision and coverage;
+- membership precision: legacy, generated, vendored, test, and documentation material do not become product truth;
+- citation validity and reference resolution;
+- repeatability across cold runs;
+- latency and peak memory without scope reduction.
+
+The acceptance set must include adversarial scope-relative pairs, such as authentication as substrate versus authentication as product. Repository-specific allowlists and expected names cannot appear in production inference.
+
 ## Bidirectional understanding
 
 The model supports both directions:

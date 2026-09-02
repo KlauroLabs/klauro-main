@@ -316,7 +316,10 @@ export async function waitForRemoteAnalysis(
       summary?: {
         node_count?: number;
         edge_count?: number;
-        layers_ready?: { layers?: Array<{ layer?: string; status?: string }> };
+        layers_ready?: {
+          complete?: boolean;
+          layers?: Array<{ layer?: string; status?: string }>;
+        };
       };
     };
     if (!statusResponse.ok) {
@@ -381,7 +384,16 @@ export async function waitForRemoteAnalysis(
         headers,
         requestedSections || CAS_SECTION_NAMES,
       );
-      if (segmented) return segmented;
+      if (segmented) {
+        if (readinessRequirement === 'complete'
+          && statusPayload.summary?.layers_ready?.complete === true
+          && segmented.layers_ready?.complete !== true) {
+          lastStatus = 'segmented CAS is behind the completed analysis';
+          await sleep(500);
+          continue;
+        }
+        return segmented;
+      }
       if (segmented === null) {
         segmentedManifestPendingSince ??= Date.now();
         const pendingForMs = Date.now() - segmentedManifestPendingSince;
@@ -415,7 +427,16 @@ export async function waitForRemoteAnalysis(
           }
           return fetchUncompressedRemoteCas(serverUrl, analysisId, headers);
         });
-        if (exported) return exported;
+        if (exported) {
+          if (readinessRequirement === 'complete'
+            && statusPayload.summary?.layers_ready?.complete === true
+            && exported.layers_ready?.complete !== true) {
+            lastStatus = 'CAS export is behind the completed analysis';
+            await sleep(500);
+            continue;
+          }
+          return exported;
+        }
         lastStatus = expectedRevision === undefined
           ? 'CAS export is still populating'
           : `waiting for revision ${expectedRevision} export`;

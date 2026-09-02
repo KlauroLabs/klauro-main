@@ -316,6 +316,61 @@ end
   }
 });
 
+test('Rails Minitest: extracts ActiveSupport and integration test DSL cases', async () => {
+  const root = await makeProject('rails-minitest');
+  try {
+    await fs.ensureDir(path.join(root, 'test', 'models'));
+    await fs.ensureDir(path.join(root, 'test', 'integration'));
+    await fs.writeFile(
+      path.join(root, 'test', 'models', 'account_test.rb'),
+      `require "test_helper"
+
+class AccountTest < ActiveSupport::TestCase
+  test "requires a name" do
+    assert false
+  end
+
+  def test_normalizes_currency
+    assert true
+  end
+end
+`
+    );
+    await fs.writeFile(
+      path.join(root, 'test', 'integration', 'accounts_flow_test.rb'),
+      `require "test_helper"
+
+class AccountsFlowTest < ActionDispatch::IntegrationTest
+  test "creates an account" do
+    post accounts_path
+  end
+end
+`
+    );
+    await fs.writeFile(
+      path.join(root, 'test', 'integration', 'system_flow_test.rb'),
+      `class SystemFlowTest < ApplicationSystemTestCase
+  test "opens the dashboard" do; end
+end
+`);
+
+    const analyzer = new TestFrameworkAnalyzer();
+    assert.strictEqual(await analyzer.canAnalyze(root), true);
+    const contribution = await analyzer.analyze({ projectPath: root });
+
+    assert.deepEqual(caseNodes(contribution.nodes).map(node => node.name).sort(), [
+      'creates an account',
+      'opens the dashboard',
+      'requires a name',
+      'test_normalizes_currency',
+    ]);
+    assert.strictEqual(suiteNodes(contribution.nodes).length, 3);
+    assert.ok(suiteNodes(contribution.nodes).every(node => node.metadata?.framework === 'minitest'));
+  } finally {
+    await fs.remove(root);
+  }
+});
+
 test('does not double-own a Jest-style file that lacks distinguishing evidence', async () => {
   const root = await makeProject('nojest');
   try {

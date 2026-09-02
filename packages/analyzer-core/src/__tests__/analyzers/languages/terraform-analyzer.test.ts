@@ -113,4 +113,23 @@ describe('TerraformAnalyzer', () => {
     expect(resource).toBeDefined();
     expect((result.exit_points || []).some(exit => exit.source_node === resource?.id)).toBe(true);
   });
+
+  it('retains every declared dependency when a resource has more than twenty references', async () => {
+    const dependencies = Array.from({ length: 25 }, (_, index) => `aws_sqs_queue.queue_${index}`);
+    await fs.writeFile(path.join(tempDir, 'main.tf'), [
+      ...dependencies.map(address => `resource "aws_sqs_queue" "${address.split('.')[1]}" {}`),
+      'resource "aws_lambda_function" "consumer" {',
+      `  depends_on = [${dependencies.join(', ')}]`,
+      '}',
+    ].join('\n'));
+
+    const result = await new TerraformAnalyzer().analyze({ projectPath: tempDir } as any);
+    const consumer = (result.nodes || []).find(node =>
+      node.qualified_name === 'resource.aws_lambda_function.consumer'
+    );
+
+    expect((consumer?.metadata as any)?.attributes?.depends_on).toEqual(dependencies);
+    expect((result.edges || []).filter(edge => edge.source === consumer?.id && edge.type === 'depends_on'))
+      .toHaveLength(dependencies.length);
+  });
 });

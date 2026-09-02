@@ -27,13 +27,11 @@ export interface DomainExtractionContext {
   capabilityNames?: string[];
 }
 
-const MAX_DOMAIN_CONCEPT_NODE_REFERENCES = 200;
-const MAX_DOMAIN_CONCEPT_ENTRY_REFERENCES = 100;
-const MAX_DOMAIN_CONCEPT_ENTITY_REFERENCES = 100;
-const MAX_DOMAIN_CONCEPTS = 40;
 const MIN_DECLARED_TYPE_RECURRENCE = 3;
 const MIN_RETAINED_CONCEPTS = 8;
 const MIN_DISTINCT_USAGE_SITES = 2;
+const SYSTEM_DESCRIPTION_CORE_CONCEPT_LIMIT = 5;
+const SYSTEM_DESCRIPTION_RELATED_CONCEPT_LIMIT = 3;
 
 const DECLARED_TYPE_NODE_TYPES = new Set([
   'class', 'interface', 'type', 'struct', 'enum', 'record', 'trait', 'protocol',
@@ -608,13 +606,13 @@ export class DomainExtractor {
       entries.push({ id, occurrence });
     }
 
-    const nonInfra = entries.filter(
-      e => !GENERIC_INFRASTRUCTURE_HINTS.has(e.occurrence.normalizedName)
-    );
-    const stats: ConceptStats = {
-      maxNodeSpread: Math.max(0, ...entries.map(e => e.occurrence.nodes.size)),
-      maxFrequency: Math.max(0, ...nonInfra.map(e => e.occurrence.frequency)),
-    };
+    const stats: ConceptStats = { maxNodeSpread: 0, maxFrequency: 0 };
+    for (const { occurrence } of entries) {
+      stats.maxNodeSpread = Math.max(stats.maxNodeSpread, occurrence.nodes.size);
+      if (!GENERIC_INFRASTRUCTURE_HINTS.has(occurrence.normalizedName)) {
+        stats.maxFrequency = Math.max(stats.maxFrequency, occurrence.frequency);
+      }
+    }
 
     const occurrenceByName = new Map<string, ConceptOccurrence>();
     const results: CASDomainConcept[] = [];
@@ -625,9 +623,9 @@ export class DomainExtractor {
         name: occurrence.normalizedName,
         frequency: occurrence.frequency,
         appears_in: {
-          entry_points: Array.from(occurrence.entryPoints).slice(0, MAX_DOMAIN_CONCEPT_ENTRY_REFERENCES),
-          entities: Array.from(occurrence.entities).slice(0, MAX_DOMAIN_CONCEPT_ENTITY_REFERENCES),
-          nodes: Array.from(occurrence.nodes).slice(0, MAX_DOMAIN_CONCEPT_NODE_REFERENCES)
+          entry_points: Array.from(occurrence.entryPoints).sort(),
+          entities: Array.from(occurrence.entities).sort(),
+          nodes: Array.from(occurrence.nodes).sort()
         },
         classification: this.classifyConcept(occurrence, stats),
         description: this.describeConcept(occurrence),
@@ -684,10 +682,9 @@ export class DomainExtractor {
         ];
         retained.push(concept);
       }
-      retained.sort((left, right) => results.indexOf(left) - results.indexOf(right));
     }
 
-    return retained.slice(0, MAX_DOMAIN_CONCEPTS);
+    return retained;
   }
 
   private classifyConcept(
@@ -793,7 +790,7 @@ export class DomainExtractor {
     concepts: CASDomainConcept[],
     systemType: string
   ): string {
-    const coreConcepts = this.getCoreConcepts(concepts).slice(0, 5);
+    const coreConcepts = this.getCoreConcepts(concepts).slice(0, SYSTEM_DESCRIPTION_CORE_CONCEPT_LIMIT);
     const coreNames = coreConcepts.map(c => c.name);
 
     if (coreNames.length === 0) {
@@ -801,7 +798,7 @@ export class DomainExtractor {
     }
 
     const domain = coreNames[0];
-    const relatedConcepts = coreNames.slice(1, 4).join(', ');
+    const relatedConcepts = coreNames.slice(1, 1 + SYSTEM_DESCRIPTION_RELATED_CONCEPT_LIMIT).join(', ');
 
     if (relatedConcepts) {
       return `A ${systemType} system focused on ${domain}, involving ${relatedConcepts}`;

@@ -53,6 +53,21 @@ test('targeted repair exposes opaque ids and customer-language facts without raw
   }]);
 });
 
+test('targeted repair retains relevant entity fields needed to infer the audience outcome', () => {
+  const candidate = {
+    id: 'merchant-management', name: 'Family merchants', category: 'core',
+    operations: [{ entry_point_id: 'update', entry_point_type: 'http', action: 'Update' }],
+    related_entities: ['entity_familymerchant'], related_domains: [], criticality: 'high', criticality_factors: [],
+  } as SystemCapability;
+  const envelope = capabilityCatalogRepairPromptEnvelope(
+    [candidate], ['merchant-management'], [], new Map(),
+    new Map([['entity_familymerchant', 'FamilyMerchant']]), [], undefined, [],
+    new Map([['entity_familymerchant', ['id', 'family_id', 'name', 'color', 'icon_url', 'logo_url', 'updated_at']]]),
+  );
+
+  assert.deepEqual(envelope.facts[0].evidence_fields, ['name', 'color', 'icon_url', 'logo_url']);
+});
+
 test('repair facts retain directly observed lifecycle actions for complete descriptions', () => {
   const candidates = [{
     id: 'article-management',
@@ -72,6 +87,21 @@ test('repair facts retain directly observed lifecycle actions for complete descr
   const envelope = capabilityCatalogRepairPromptEnvelope(candidates, ['article-management'], []);
 
   assert.deepEqual(envelope.facts[0].observable_actions, ['create', 'update', 'delete']);
+});
+
+test('repair facts preserve safe exact observable-action feedback for the next retry', () => {
+  const candidate = {
+    id: 'job-create', name: 'Job', structural_label: 'Job', category: 'core',
+    operations: [{ entry_point_id: 'create-job', entry_point_type: 'http', action: 'create' }],
+    related_entities: ['entity_job'], related_domains: [], criticality: 'high', criticality_factors: [],
+  } as SystemCapability;
+  const rejections = new Map([['job-create', [{
+    name: 'Track jobs', reason: 'required-observable-action-missing:create',
+  }]]]);
+
+  const envelope = capabilityCatalogRepairPromptEnvelope([candidate], ['job-create'], [], rejections);
+
+  assert.deepEqual(envelope.facts[0].prior_rejections, [{ reason: 'required-observable-action-missing:create', rejected_name: 'Track jobs' }]);
 });
 
 test('route-backed repair facts retain product subjects without framework path scaffolding', () => {
@@ -121,6 +151,21 @@ test('targeted repair omits unsafe operation identifiers instead of translating 
     candidate_id: 'candidate_1', first_party_outcomes: [], observable_actions: [], prior_rejections: [],
     required_audience_labels: [], required_subject_terms: [], required_visible_actions: [], minimum_subject_matches: 0,
   }]);
+});
+
+test('targeted evidence repair excludes Rails new-form routing from the product subject', () => {
+  const rules = [{
+    id: 'rules', name: 'Rules', structural_label: 'Rules Management', category: 'core',
+    operations: [
+      { entry_point_id: 'new-rule', entry_point_type: 'http', action: 'List', path_or_command: '/rules/new', trigger: { method: 'GET', path: '/rules/new' } },
+      { entry_point_id: 'create-rule', entry_point_type: 'http', action: 'Create', path_or_command: '/rules', trigger: { method: 'POST', path: '/rules' } },
+    ],
+    related_entities: [], related_domains: [], criticality: 'high', criticality_factors: [],
+  }] as SystemCapability[];
+
+  const envelope = capabilityCatalogRepairPromptEnvelope(rules, ['rules'], []);
+
+  assert.deepEqual(envelope.facts[0].required_subject_terms, ['rule']);
 });
 
 test('targeted evidence repair exposes a canonical product subject without UI gesture terms', () => {
@@ -184,6 +229,38 @@ test('targeted evidence repair does not mistake action and UI words for product 
 
   assert.deepEqual(envelope.facts[0].required_subject_terms, ['job']);
   assert.equal(envelope.facts[0].minimum_subject_matches, 1);
+});
+
+test('exact operation repair derives required subjects from its scoped obligation rather than inherited parent examples', () => {
+  const candidate = {
+    id: 'operation-obligation:notes:create', name: 'create note', structural_label: 'create note',
+    category: 'core', evidence_kind: 'behavior-surface', evidence_role: 'product-outcome',
+    evidence_examples: ['Telemetry change', 'Telemetry submit', 'Add note'],
+    operations: [
+      { entry_point_id: 'note-click', entry_point_type: 'event', action: 'create' },
+      { entry_point_id: 'note-submit', entry_point_type: 'event', action: 'create' },
+    ],
+    related_entities: ['entity_note'], related_domains: ['telemetry'], criticality: 'high', criticality_factors: [],
+  } as SystemCapability;
+  const envelope = capabilityCatalogRepairPromptEnvelope(
+    [candidate], [candidate.id], [], new Map(), new Map([['entity_note', 'Note']]),
+  );
+  assert.deepEqual(envelope.facts[0].required_subject_terms, ['note']);
+  assert.equal(envelope.facts[0].minimum_subject_matches, 1);
+});
+
+test('description repair exposes the complete stable lifecycle to every candidate fact', () => {
+  const candidates = [{
+    id: 'imports', name: 'Imports', category: 'core', evidence_kind: 'behavior-surface',
+    operations: [{ entry_point_id: 'create', entry_point_type: 'http', action: 'create' }],
+    related_entities: [], related_domains: [], criticality: 'high', criticality_factors: [],
+  }] as SystemCapability[];
+
+  const envelope = capabilityCatalogRepairPromptEnvelope(
+    candidates, ['imports'], [], new Map(), new Map(), [], undefined, ['create', 'read', 'Delete', 'create'],
+  );
+
+  assert.deepEqual(envelope.facts[0].required_visible_actions, ['create', 'read', 'delete']);
 });
 
 test('evidence fallback preserves a readable structurally proven family when AI repair fails', () => {
@@ -261,6 +338,46 @@ test('targeted repair retains only first-party context that disambiguates the fo
   assert.equal(JSON.stringify(envelope.facts).includes('deployment infrastructure'), false);
 });
 
+test('synthetic resolve labels do not become required product subjects', () => {
+  const candidate = {
+    id: 'operation-obligation:categories:delete',
+    name: 'resolve category',
+    structural_label: 'resolve category',
+    category: 'core',
+    operations: [{ entry_point_id: 'delete-category', entry_point_type: 'http', action: 'delete' }],
+    related_entities: ['entity_category'],
+    related_domains: [],
+    criticality: 'high',
+    criticality_factors: ['catalog-aggregate-operation-view'],
+  } as SystemCapability;
+  const envelope = capabilityCatalogRepairPromptEnvelope(
+    [candidate], [candidate.id], [], new Map(), new Map([['entity_category', 'Category']]),
+  );
+
+  assert.deepEqual(envelope.facts[0]?.required_subject_terms, ['category']);
+  assert.equal(envelope.facts[0]?.minimum_subject_matches, 1);
+});
+
+test('synthetic route qualifiers do not become required lifecycle subjects', () => {
+  const candidate = {
+    id: 'operation-obligation:transactions:bulk-delete',
+    name: 'create bulk deletion',
+    structural_label: 'create bulk deletion',
+    category: 'core',
+    operations: [{ entry_point_id: 'bulk-delete-transactions', entry_point_type: 'http', action: 'create', path_or_command: '/transactions/bulk_deletion' }],
+    related_entities: ['entity_transaction'],
+    related_domains: [],
+    criticality: 'high',
+    criticality_factors: ['catalog-aggregate-operation-view'],
+  } as SystemCapability;
+  const envelope = capabilityCatalogRepairPromptEnvelope(
+    [candidate], [candidate.id], [], new Map(), new Map([['entity_transaction', 'Transaction']]),
+  );
+
+  assert.deepEqual(envelope.facts[0]?.required_subject_terms, ['transaction']);
+  assert.equal(envelope.facts[0]?.minimum_subject_matches, 1);
+});
+
 test('first-party fallback requires one explicit visible action and normalizes it to an imperative', () => {
   const requirement = {
     id: 'graph', statement: 'builds trustworthy relationship graph', candidateIds: ['candidate'],
@@ -329,4 +446,42 @@ test('description repair facts retain the exact stable capability identity', () 
   );
 
   assert.equal(envelope.facts[0]?.stable_capability_name, 'Access job sites by user');
+});
+
+test('evidence fallback deterministically authors a user-scoped structural GET obligation', () => {
+  const candidate = {
+    id: 'operation-obligation:aggregate:read', name: 'read category', structural_label: 'read category',
+    category: 'core', operations: [{
+      entry_point_id: 'route', entry_point_type: 'http', action: 'read',
+      path_or_command: '/category/categories/:userId', trigger: { method: 'GET', path: '/category/categories/:userId' },
+    }],
+    related_entities: ['entity_category'], related_domains: [], criticality: 'high',
+    criticality_factors: ['catalog-operation-obligation:operation-obligation:aggregate:read', 'catalog-aggregate-operation-view'],
+  } as SystemCapability;
+  const fact = {
+    candidate_id: 'candidate_1', first_party_outcomes: [], observable_actions: [], prior_rejections: [],
+    required_audience_labels: [], required_subject_terms: ['category'], required_visible_actions: ['read'], minimum_subject_matches: 1,
+  };
+  const expected = capabilityCatalogEvidenceFallback(fact, candidate.id, candidate);
+  assert.equal(expected?.name, 'View Categories');
+  assert.deepEqual(capabilityCatalogEvidenceFallback(fact, candidate.id, { ...candidate, criticality_factors: [...candidate.criticality_factors!].reverse() }), expected);
+});
+
+
+test('targeted repair retains verified cross-subject flow relationships', () => {
+  const candidate = {
+    id: 'rules', name: 'Rules', category: 'core',
+    operations: [{ entry_point_id: 'update-rule', entry_point_type: 'http', action: 'Update' }],
+    related_entities: ['entity_rule'], related_domains: [], criticality: 'high', criticality_factors: [],
+    depends_on: [{
+      from_capability: 'bulk-update', to_capability: 'rules', dependency_type: 'shares-data', strength: 'common',
+      evidence: { shared_services: [], shared_nodes: [], shared_entities: ['Rule', 'Transaction', 'Category'] },
+      description: 'Rule and transaction category evidence',
+    }],
+  } as SystemCapability;
+
+  const envelope = capabilityCatalogRepairPromptEnvelope([candidate], ['rules'], []);
+  assert.deepEqual(envelope.facts[0].relationships, [
+    'Observed together in one flow: Rule, Transaction, Category',
+  ]);
 });

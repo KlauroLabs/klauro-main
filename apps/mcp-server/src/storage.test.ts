@@ -6,7 +6,7 @@ import * as path from 'path';
 import * as crypto from 'node:crypto';
 import * as zlib from 'node:zlib';
 import { execFileSync } from 'node:child_process';
-import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
+import { CAS_VERSION, type CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import {
   clearLoadedAnalysisCache,
   getLoadedAnalysisCacheStats,
@@ -38,6 +38,12 @@ function casFixture(id: string): CASOutput {
     edges: [], method_calls: [{ caller_id: `${id}-node`, callee_name: 'run' }],
     analysis_facts: [{ id: `${id}-fact`, subject_id: `${id}-node`, kind: 'test' }],
     analyzer_contributions: [], progressive_levels: [],
+    layers_ready: {
+      complete: true,
+      generated_at: '2026-07-22T00:00:00.000Z',
+      layers: ['L0', 'L1', 'L2', 'L3', 'L4', 'L5'].map(layer =>
+        ({ layer, name: layer, status: 'ready', fields: [] })),
+    },
   } as unknown as CASOutput;
 }
 
@@ -291,6 +297,7 @@ test('queries use an existing read-only default analysis store', async () => {
         edge_count: cas.edges.length,
         cas_version: cas.cas_version,
         track: 'main',
+        layers_ready: cas.layers_ready,
       },
     },
   });
@@ -477,7 +484,6 @@ async function savedSectionsExist(storagePath: string, projectPath: string): Pro
 test('a COMPLETE layered CAS writes the segmented sidecar', async () => {
   await withStoragePath(async storagePath => {
     const cas = casFixture('complete-cas');
-    (cas as unknown as { layers_ready: unknown }).layers_ready = { complete: true, layers: [] };
     await saveAnalysis('/tmp/complete-project', cas);
     assert.equal(await savedSectionsExist(storagePath, '/tmp/complete-project'), true);
   });
@@ -486,7 +492,10 @@ test('a COMPLETE layered CAS writes the segmented sidecar', async () => {
 test('an INCOMPLETE layered CAS skips the sidecar but stays fully readable', async () => {
   await withStoragePath(async storagePath => {
     const cas = casFixture('partial-cas');
-    (cas as unknown as { layers_ready: unknown }).layers_ready = { complete: false, layers: [] };
+    (cas as unknown as { layers_ready: unknown }).layers_ready = {
+      complete: false,
+      layers: [{ layer: 'L0', status: 'pending' }],
+    };
     await saveAnalysis('/tmp/partial-project', cas);
     assert.equal(
       await savedSectionsExist(storagePath, '/tmp/partial-project'),
@@ -527,7 +536,6 @@ test('authoritative-only persistence stays readable without writing segmented se
   await withStoragePath(async storagePath => {
     const project = '/tmp/authoritative-only-project';
     const cas = casFixture('authoritative-only');
-    (cas as unknown as { layers_ready: unknown }).layers_ready = { complete: true, layers: [] };
     await saveAnalysis(project, cas, 'main', { writeSegmentedAnalysis: false });
     assert.equal(await savedSectionsExist(storagePath, project), false);
     clearLoadedAnalysisCache();
@@ -535,12 +543,18 @@ test('authoritative-only persistence stays readable without writing segmented se
   });
 });
 
-test('a CAS with no layers_ready keeps the previous always-write behaviour', async () => {
+test('a CAS with no layers_ready is persisted for diagnosis but cannot be loaded as ready', async () => {
   await withStoragePath(async storagePath => {
-    // Non-layered / incremental paths never populate layers_ready; they must not
-    // silently lose their sidecar.
-    await saveAnalysis('/tmp/legacy-project', casFixture('legacy-cas'));
-    assert.equal(await savedSectionsExist(storagePath, '/tmp/legacy-project'), true);
+    const project = '/tmp/unstamped-project';
+    const cas = casFixture('unstamped-cas');
+    cas.cas_version = CAS_VERSION;
+    delete cas.layers_ready;
+
+    await saveAnalysis(project, cas);
+
+    assert.equal(await savedSectionsExist(storagePath, project), false);
+    clearLoadedAnalysisCache();
+    assert.equal(await loadAnalysis(project), null);
   });
 });
 

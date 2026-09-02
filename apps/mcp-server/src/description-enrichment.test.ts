@@ -7,6 +7,7 @@ import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { generateElementDescription, getElementDescription, validateDescription } from './description-enrichment';
 import { saveAnalysis } from './storage';
+import { buildCompletedAnalysisLayersReady } from './layered-analysis';
 
 test('manual element descriptions are stored and invalidated when source changes', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-description-project-'));
@@ -51,6 +52,7 @@ test('manual element descriptions are stored and invalidated when source changes
     'DriversService coordinates driver records for fleet operations and provides the service boundary used by driver workflows.';
 
   try {
+    cas.layers_ready = buildCompletedAnalysisLayersReady(cas);
     await saveAnalysis(root, cas);
     const generated = await generateElementDescription({
       projectPath: root,
@@ -122,6 +124,7 @@ test('manual element descriptions reject unsupported marketing claims', async ()
     'DriversService improves operational efficiency and ensures compliant fleet workflows with a user-friendly driver management experience.';
 
   try {
+    cas.layers_ready = buildCompletedAnalysisLayersReady(cas);
     await saveAnalysis(root, cas);
     await assert.rejects(
       () => generateElementDescription({
@@ -193,6 +196,7 @@ test('manual element descriptions retry once and store the repaired grounded ans
   };
 
   try {
+    cas.layers_ready = buildCompletedAnalysisLayersReady(cas);
     await saveAnalysis(root, cas);
     const generated = await generateElementDescription({
       projectPath: root,
@@ -258,6 +262,7 @@ test('manual element descriptions reject generic filler word salad that the vali
     'Zerac Management coordinates the integration of zerac-related components and protocol agents to ensure secure communication. It facilitates the interaction between zerac services and protocol modules to support secure data transmission and session management.';
 
   try {
+    cas.layers_ready = buildCompletedAnalysisLayersReady(cas);
     await saveAnalysis(root, cas);
     await assert.rejects(
       () => generateElementDescription({
@@ -313,6 +318,7 @@ test('manual element descriptions reject file coordination summaries from local 
     'Agent Contexts manages the creation and coordination of files related to agent adoption and measurement, including files like agent-adoption.ts.';
 
   try {
+    cas.layers_ready = buildCompletedAnalysisLayersReady(cas);
     await saveAnalysis(root, cas);
     await assert.rejects(
       () => generateElementDescription({
@@ -562,6 +568,7 @@ test('manual capability description prompt omits internal helper operations', as
   };
 
   try {
+    cas.layers_ready = buildCompletedAnalysisLayersReady(cas);
     await saveAnalysis(root, cas);
     const generated = await generateElementDescription({
       projectPath: root,
@@ -667,6 +674,7 @@ test('manual capability prompt derives behavior hints and excludes test-helper s
   };
 
   try {
+    cas.layers_ready = buildCompletedAnalysisLayersReady(cas);
     await saveAnalysis(root, cas);
     const generated = await generateElementDescription({
       projectPath: root,
@@ -764,6 +772,7 @@ test('manual capability prompt marks generic analyzer-derived names so AI uses b
   };
 
   try {
+    cas.layers_ready = buildCompletedAnalysisLayersReady(cas);
     await saveAnalysis(root, cas);
     const generated = await generateElementDescription({
       projectPath: root,
@@ -835,6 +844,7 @@ test('manual capability descriptions repair generic analyzer-derived subject pre
     'Mutation Management lets an operator change the status of approvals, connectors, or content items when managing operational state or workflow progress.';
 
   try {
+    cas.layers_ready = buildCompletedAnalysisLayersReady(cas);
     await saveAnalysis(root, cas);
     const generated = await generateElementDescription({
       projectPath: root,

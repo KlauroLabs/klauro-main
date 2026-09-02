@@ -3,10 +3,12 @@ import test from 'node:test';
 import type { SystemCapability } from '../../types/cas.types';
 import {
   audienceScopedCapabilityCatalogOutcomeText,
+  bindAtomicallySatisfiedCatalogOutcomeRequirements,
   bindUniquelySatisfiedCatalogOutcomeRequirements,
   capabilityCatalogOutcomeBindingFailure,
   capabilityCatalogOutcomeBindingFailureDetail,
   capabilityCatalogOutcomeCoverageFailure,
+  canonicalCapabilityCatalogOutcomeToken,
   capabilityCatalogOutcomeNameFailure,
   capabilityCatalogOutcomesMayMerge,
   capabilitySatisfiesCatalogOutcomeRequirement,
@@ -63,6 +65,42 @@ const evidence = [
   candidate('runtime', 'Runtime evidence correlation', ['correlate_runtime_evidence']),
 ];
 
+test('treats support staff as the audience and onboarding as the visible action', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements({
+    productDocSummary: 'This service lets support staff onboard customers with profiles, then retrieve those profiles while assisting them.',
+  }, [candidate('profiles', 'Customer profiles', ['onboard_customer_profile', 'retrieve_customer_profile'])]);
+
+  assert.equal(requirements.length, 2);
+  const onboarding = requirements.find(requirement => requirement.visibleActionTerms?.includes('onboard'));
+  assert.ok(onboarding);
+  assert.equal(capabilityCatalogOutcomeNameFailure('Onboard customers with profiles', onboarding), undefined);
+});
+
+test('grounds an operator-facing list outcome through equivalent read evidence', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements({
+    productDocSummary: 'Fleet operators list vehicles for daily dispatch.',
+  }, [candidate('vehicles', 'Read vehicle', ['read_vehicle'])]);
+
+  assert.equal(requirements.length, 1);
+  assert.deepEqual(requirements[0].visibleActionTerms, ['list']);
+  assert.deepEqual(requirements[0].candidateIds, ['vehicles']);
+  assert.equal(capabilityCatalogOutcomeNameFailure('List fleet vehicles', requirements[0]), undefined);
+});
+
+test('preserves authored outcomes without matching implementation as intent-gap proposals', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements({
+    productDocSummary: 'Operators export compliance reports for external auditors.',
+  }, []);
+
+  assert.equal(requirements.length, 1);
+  assert.equal(requirements[0].firstPartyOutcomeText, 'Operators export compliance reports for external auditors');
+  assert.deepEqual(requirements[0].candidateIds, []);
+  assert.deepEqual(requirements[0].visibleActionTerms, ['export']);
+  assert.equal(uncoveredCapabilityCatalogOutcomeRequirements([], requirements).length, 1);
+  assert.equal(capabilityCatalogOutcomeCoverageFailure([], requirements), undefined,
+    'an ungrounded product promise remains an intent gap and does not become a fabricated catalog quota');
+});
+
 test('requires separately stated first-party human, agent, and truth outcomes when structural evidence corroborates them', () => {
   const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, evidence);
   const human = requirements.find(requirement => requirement.audience === 'human')!;
@@ -94,6 +132,15 @@ test('requires separately stated first-party human, agent, and truth outcomes wh
     cited(published('Build a trustworthy relationship graph', 'A trustworthy relationship graph connects the software structure and behavior.'), graph),
   ];
   assert.equal(capabilityCatalogOutcomeCoverageFailure(complete, requirements), undefined);
+});
+
+test('canonicalizes mapping without truncating the stem', () => {
+  assert.equal(canonicalCapabilityCatalogOutcomeToken('mapping'), 'mapping');
+  assert.equal(canonicalCapabilityCatalogOutcomeToken('mappings'), 'mapping');
+  assert.equal(canonicalCapabilityCatalogOutcomeToken('authentication'), 'authenticate');
+  assert.equal(canonicalCapabilityCatalogOutcomeToken('authenticated'), 'authenticate');
+  assert.equal(canonicalCapabilityCatalogOutcomeToken('tags'), 'tag');
+  assert.equal(canonicalCapabilityCatalogOutcomeToken('jobs'), 'job');
 });
 
 test('derives visible actions only from canonical purpose verbs after plural and shared audiences', () => {
@@ -212,12 +259,14 @@ test('does not satisfy an outcome with matching prose cited to the wrong candida
   assert.equal(uncoveredCapabilityCatalogOutcomeRequirements([wrongCandidate], [human]).length, 1);
 });
 
-test('does not turn uncorroborated first-party aspirations into mandatory catalog outcomes', () => {
+test('retains uncorroborated first-party outcomes as explicit intent gaps', () => {
   const requirements = deriveCapabilityCatalogOutcomeRequirements({
     productDocSummary: 'The product visualizes future production economics and predicts customer demand.',
   }, evidence);
 
-  assert.deepEqual(requirements, []);
+  assert.equal(requirements.length, 1);
+  assert.deepEqual(requirements[0].candidateIds, []);
+  assert.match(requirements[0].statement, /visualizes future production economics/);
 });
 
 test('supporting delivery evidence can corroborate a first-party outcome but verification fixtures cannot', () => {
@@ -540,4 +589,33 @@ test('requirement-bound coverage still requires a corroborating candidate while 
     ...unboundSemantic,
     criticality_factors: ['catalog-candidate:wrong-surface'],
   }], [requirement]), [requirement]);
+});
+
+
+test('binds a broad outcome through a complete order-independent exact atomic union only', () => {
+  const requirement: CapabilityCatalogOutcomeRequirement = {
+    id: 'all:note', statement: 'notes', subjectTokens: ['note'], requiredSubjectTerms: ['note'],
+    minimumSubjectMatches: 1, candidateIds: ['cap_note_management'],
+  };
+  const scopes = new Map([
+    ['operation-obligation:cap_note_management:read', { parentCandidateId: 'cap_note_management' }],
+    ['operation-obligation:cap_note_management:create', { parentCandidateId: 'cap_note_management' }],
+    ['operation-obligation:cap_note_management:delete', { parentCandidateId: 'cap_note_management' }],
+  ]);
+  const atom = (action: string) => ({
+    ...published(`${action === 'read' ? 'View' : action === 'delete' ? 'Remove' : 'Create'} notes`, `Users ${action === 'read' ? 'view' : action} notes through the verified product workflow.`),
+    id: action,
+    criticality_factors: [`catalog-operation-obligation:operation-obligation:cap_note_management:${action}`],
+  });
+  for (const values of [[atom('read'), atom('create'), atom('delete')], [atom('delete'), atom('read'), atom('create')]]) {
+    const bound = bindAtomicallySatisfiedCatalogOutcomeRequirements(values, [requirement], new Set(['cap_note_management']), scopes);
+    assert.equal(uncoveredCapabilityCatalogOutcomeRequirements(bound, [requirement]).length, 0);
+    assert.equal(bound.filter(item => item.criticality_factors.includes('catalog-outcome-union:all:note')).length, 1);
+    assert.ok(bound.every(item => item.operations.length === 0));
+  }
+  const partial = bindAtomicallySatisfiedCatalogOutcomeRequirements([atom('create'), atom('delete')], [requirement], new Set(), scopes);
+  assert.equal(uncoveredCapabilityCatalogOutcomeRequirements(partial, [requirement]).length, 1);
+  const unrelated = { ...atom('read'), name: 'View note counts', description: 'Users view note counts for monitoring metrics.', criticality_factors: ['catalog-operation-obligation:operation-obligation:other:read'] };
+  assert.equal(bindAtomicallySatisfiedCatalogOutcomeRequirements([unrelated], [requirement], new Set(['cap_note_management']), scopes)
+    .some(item => item.criticality_factors.includes('catalog-outcome-union:all:note')), false);
 });

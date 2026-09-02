@@ -12,6 +12,7 @@ export function buildHostedProjectAnalysisStatus(
   const summary = buildSummary(cas, { detail: 'compact' }) as Record<string, unknown>;
   summary.sub_cas_nodes = subCasNodes || getCachedDeployableAnalyses(cas).sub_cas_nodes;
   const layers = cas.layers_ready?.layers || [];
+  const readinessManifestMissing = layers.length === 0;
   const pending = layers.some(layer => layer.status === 'pending');
   const errors = layers.filter(layer => layer.status === 'error');
   const structuralErrors = errors.filter(layer => isStructuralAnalysisLayer(layer.layer));
@@ -36,7 +37,7 @@ export function buildHostedProjectAnalysisStatus(
     const missing = nameShort && descriptionShort ? 'name and description' : nameShort ? 'name' : 'description';
     return capability.name ? [{ name: capability.name, missing }] : [];
   }) : [];
-  const status = structuralErrors.length > 0
+  const status = readinessManifestMissing || structuralErrors.length > 0
     ? 'failed'
     : cas.layers_ready && !cas.layers_ready.complete && pending
       ? 'populating'
@@ -45,8 +46,8 @@ export function buildHostedProjectAnalysisStatus(
 
   return {
     status,
-    ...(structuralErrors.length > 0 ? {
-      analysis_error: structuralErrors.find(layer => layer.error)?.error || 'The analysis failed before structure could be produced.',
+    ...(readinessManifestMissing || structuralErrors.length > 0 ? {
+      analysis_error: readinessManifestMissing ? 'Analysis readiness manifest is missing.' : structuralErrors.find(layer => layer.error)?.error || 'The analysis failed before structure could be produced.',
       failed_layers: structuralErrors.map(layer => layer.layer),
     } : {}),
     ...(comprehensionFailed ? {

@@ -334,8 +334,27 @@ export function computeEntrenchment(
   const changeRiskById = new Map<string, CASChangeRisk>();
   for (const cr of output.change_risks || []) changeRiskById.set(cr.node_id, cr);
 
+  const traversalIds: string[] = [];
+  const traversalOrdinalById = new Map<string, number>();
+  const registerTraversalId = (id: string) => {
+    if (traversalOrdinalById.has(id)) return;
+    traversalOrdinalById.set(id, traversalIds.length);
+    traversalIds.push(id);
+  };
+  for (const id of byId.keys()) registerTraversalId(id);
+  for (const [unit, directDependents] of dependents) {
+    registerTraversalId(unit);
+    for (const dependent of directDependents) registerTraversalId(dependent);
+  }
+  const dependentOrdinals = Array.from({ length: traversalIds.length }, () => [] as number[]);
+  for (const [unit, directDependents] of dependents) {
+    const unitOrdinal = traversalOrdinalById.get(unit)!;
+    for (const dependent of directDependents) dependentOrdinals[unitOrdinal].push(traversalOrdinalById.get(dependent)!);
+  }
+  const traversalMarks = new Uint32Array(traversalIds.length);
+  const traversalQueue = new Uint32Array(traversalIds.length);
+  let traversalGeneration = 0;
   const transitiveCache = new Map<string, number>();
-  const MAX_BFS_NODES = 4000;
   function transitiveDependentCount(unit: string): number {
     const cached = transitiveCache.get(unit);
     if (cached !== undefined) return cached;
@@ -353,17 +372,30 @@ export function computeEntrenchment(
       transitiveCache.set(unit, count);
       return count;
     }
-    const seen = new Set<string>([unit]);
-    const queue = [unit];
-    let visited = 0;
-    while (queue.length && visited < MAX_BFS_NODES) {
-      const cur = queue.shift()!;
-      visited++;
-      for (const dep of dependents.get(cur) || []) {
-        if (!seen.has(dep)) { seen.add(dep); queue.push(dep); }
+    const start = traversalOrdinalById.get(unit);
+    if (start === undefined) {
+      transitiveCache.set(unit, 0);
+      return 0;
+    }
+    traversalGeneration = (traversalGeneration + 1) >>> 0;
+    if (traversalGeneration === 0) {
+      traversalMarks.fill(0);
+      traversalGeneration = 1;
+    }
+    traversalMarks[start] = traversalGeneration;
+    traversalQueue[0] = start;
+    let head = 0;
+    let tail = 1;
+    let count = 0;
+    while (head < tail) {
+      const current = traversalQueue[head++];
+      for (const dependent of dependentOrdinals[current]) {
+        if (traversalMarks[dependent] === traversalGeneration) continue;
+        traversalMarks[dependent] = traversalGeneration;
+        traversalQueue[tail++] = dependent;
+        count++;
       }
     }
-    const count = seen.size - 1;
     transitiveCache.set(unit, count);
     return count;
   }
@@ -663,7 +695,6 @@ function buildSummary(
   const bedrock = all
     .filter(n => LEVEL_ORDER.indexOf(n.level) >= LEVEL_ORDER.indexOf('load-bearing'))
     .sort((a, b) => b.score - a.score)
-    .slice(0, 25)
     .map(n => {
       const node = byId.get(n.node_id);
       return {
@@ -723,8 +754,8 @@ function buildSummary(
     repo_score: repoScore,
     repo_level: repoLevel,
     bedrock,
-    files: files.slice(0, 100),
-    modules: modules.slice(0, 50),
+    files,
+    modules,
     counts: { nodes_scored: all.length, files: byFile.size, modules: byModule.size },
   };
 }

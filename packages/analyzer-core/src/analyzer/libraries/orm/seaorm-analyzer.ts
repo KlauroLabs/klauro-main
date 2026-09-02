@@ -70,7 +70,7 @@ export class SeaOrmAnalyzer extends BaseAnalyzer {
       nodir: true,
     });
 
-    for (const file of sourceFiles.slice(0, 400)) {
+    for (const file of sourceFiles) {
       try {
         const content = await fs.readFile(file, 'utf-8');
         if (/DeriveEntityModel/.test(content) || /sea_orm\(table_name/.test(content)) {

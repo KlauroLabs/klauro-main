@@ -115,6 +115,17 @@ test('conceptual endpoint exposes behavior_surfaces so flow capability_relations
     assert.equal(unavailable.statusCode, 200);
     assert.notEqual(JSON.parse(unavailable.body).status, 'ready', 'L5-error comprehension must fail closed');
     const acceptedCas = acceptedComprehensionFixture(cas);
+    acceptedCas.enhanced_system_purpose!.capability_reconciliation = {
+      proposals: [{
+        requirement_id: 'human:understand-codebase',
+        statement: 'Understand what a codebase actually built',
+        candidate_ids: ['candidate-analysis'],
+        disposition: 'intent-gap',
+        capability_ids: [],
+      }],
+      undocumented_capabilities: [{ capability_id: 'capability-runtime', name: 'Correlate runtime evidence' }],
+      structural_gaps: [{ candidate_id: 'candidate-analysis', name: 'Analysis behavior', reason: 'no publishable outcome' }],
+    };
     await saveAnalysis(workspace, acceptedCas);
     const toolEntryPoint = cas.entry_points?.find(entryPoint => entryPoint.name === 'get_summary');
     assert.ok(toolEntryPoint);
@@ -128,6 +139,10 @@ test('conceptual endpoint exposes behavior_surfaces so flow capability_relations
     assert.equal(res.statusCode, 200);
     const body = JSON.parse(res.body);
     assert.equal(body.status, 'ready');
+    assert.equal(body.capability_reconciliation.summary.intent_gaps, 1);
+    assert.equal(body.capability_reconciliation.proposals.values[0].statement, 'Understand what a codebase actually built');
+    assert.equal(body.capability_reconciliation.undocumented_capabilities.values[0].name, 'Correlate runtime evidence');
+    assert.equal(body.capability_reconciliation.structural_gaps.values[0].candidate_id, 'candidate-analysis');
 
     assert.ok(Array.isArray(body.behavior_surfaces));
     const mcpSurface = body.behavior_surfaces.find((surface: any) => surface.id === storedSurface.id);

@@ -268,6 +268,21 @@ describe('shared element description validator', () => {
     expect(result.reason).toBe('target-not-grounded');
   });
 
+  it('accepts canonical singular and plural forms of the same grounded subject', () => {
+    expect(validateElementDescription(
+      'Users can update categories while keeping the same category organization available to their team.',
+      { name: 'Update category', kind: 'capability' },
+    ).ok).toBe(true);
+    expect(validateElementDescription(
+      'Users can remove the selected category while preserving unrelated application records for later review.',
+      { name: 'Remove categories', kind: 'capability' },
+    ).ok).toBe(true);
+    expect(validateElementDescription(
+      'Users can review unrelated jobs while preserving their existing application history and current status.',
+      { name: 'Update category', kind: 'capability' },
+    )).toEqual({ ok: false, reason: 'target-not-grounded' });
+  });
+
   it('accepts a capability description grounded by its explicit related entity', () => {
     const result = validateElementDescription(
       'User records retain the identities created and retrieved through user management.',
