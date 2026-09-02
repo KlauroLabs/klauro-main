@@ -1245,6 +1245,45 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(out.map(capability => capability.name)).toEqual([repaired.name]);
   });
 
+  it('accepts scope-relative management wording when first-party intent and structural evidence both require it', async () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    const args: any = gateArgs(localOrch);
+    const operations = [
+      { entry_point_id: 'update-application-status', entry_point_type: 'http', action: 'Update', trigger: { method: 'PATCH', path: '/applications/:id/status' } },
+    ] as any;
+    args.candidateSnapshot = [cap({
+      id: 'cap_status', name: 'Application status', structural_label: 'application status',
+      category: 'core', evidence_role: 'product-outcome', operations,
+      related_entities: ['entity_application'], related_domains: ['applications'],
+    })];
+    args.behaviorSurfaces = [];
+    args.dataEntities = [{ id: 'entity_application', name: 'Application', kind: 'persisted-entity', attributes: [] }];
+    args.projectTextSignal = {
+      concepts: ['application status'], evidence: [],
+      summary: 'Users manage application status and can change it to rejected, assessment, interview, or closed.',
+      productDocSummary: 'Users manage application status and can change it to rejected, assessment, interview, or closed.',
+    };
+    localOrch.aiExtractCapabilityCatalog = async (input: any) => {
+      const requirement = input.requiredOutcomeRequirements?.[0];
+      expect(requirement?.candidateIds).toContain('cap_status');
+      return [cap({
+      id: 'manage-application-status',
+      name: 'Manage application status',
+      description: 'Users manage application status and move applications through rejected, assessment, interview, or closed states.',
+      operations,
+      related_entities: ['entity_application'],
+      related_domains: ['applications'],
+      criticality_factors: ['catalog-candidate:cap_status', `catalog-outcome-requirement:${requirement.id}`],
+      })];
+    };
+    localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
+
+    const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(args);
+
+    expect(out.map(capability => capability.name)).toEqual(['Manage application status']);
+    expect(args.enhancedSystemPurpose.capability_catalog_coverage.status).toBe('accepted');
+  });
+
   it('accepts an independently grounded outcome without turning a rejected proposal into a targeted repair', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const args: any = gateArgs(localOrch);

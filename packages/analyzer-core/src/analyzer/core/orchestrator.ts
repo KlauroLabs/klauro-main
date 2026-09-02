@@ -9133,16 +9133,16 @@ export class AnalyzerOrchestrator {
         debugCatalogRejection(name, 'bare-noun-label', itemCandidateIds);
         continue;
       }
-      if (isGenericManagementCapabilityLabel(name)) {
+      if (isGenericManagementCapabilityLabel(name) && !boundRequirementId) {
         debugCatalogRejection(name, 'generic-management-label', itemCandidateIds);
         continue;
       }
-      if (isCrudInventoryCapabilityLabel(name)) {
+      if (isCrudInventoryCapabilityLabel(name) && !boundRequirementId) {
         debugCatalogRejection(name, 'crud-inventory-label', itemCandidateIds);
         continue;
       }
       const targetedObservableActions = itemCandidateIds.flatMap(candidateId => targetedRepairFactByCandidateId.get(candidateId)?.observable_actions || []);
-      if (isCrudLifecycleFragmentCapabilityLabel(name, targetedObservableActions)) { debugCatalogRejection(name, 'crud-lifecycle-fragment-label', itemCandidateIds); continue; }
+      if (isCrudLifecycleFragmentCapabilityLabel(name, targetedObservableActions) && !boundRequirementId) { debugCatalogRejection(name, 'crud-lifecycle-fragment-label', itemCandidateIds); continue; }
       let key = name.toLowerCase();
       let purposeNouns = capabilitySubjectTokens(name)
         .map(token => this.stemTerminologyToken(token.toLowerCase()))
@@ -10000,9 +10000,10 @@ export class AnalyzerOrchestrator {
     const description = String(capability.description || '').trim();
     const descriptionWordCount = description.split(/\s+/).filter(Boolean).length;
     const capabilityName = String(capability.name || ''); const lifecycleActions = new Set((capability.operations || []).map(operation => String(operation.action || '').toLowerCase()).filter(action => /^(?:create|read|update|delete)/.test(action)));
-    if (isGenericManagementCapabilityLabel(capabilityName) || (/^maintain\b/i.test(capabilityName) && (capability.related_entities || []).length > 0 && lifecycleActions.size >= 2)) return 'generic-management-name';
-    if (isCrudInventoryCapabilityLabel(capabilityName) || ((capability.criticality_factors || []).includes('catalog-deterministic-grouped-lifecycle') && /^(?:add|create|delete|edit|remove|update)\b/i.test(capabilityName))) return 'crud-inventory-name';
-    if (isCrudLifecycleFragmentCapabilityLabel(String(capability.name || ''), (capability.operations || []).map(operation => operation.action))) return 'crud-lifecycle-fragment-name';
+    const hasBoundFirstPartyOutcome = (capability.criticality_factors || []).some(factor => factor.startsWith('catalog-outcome-requirement:'));
+    if (!hasBoundFirstPartyOutcome && (isGenericManagementCapabilityLabel(capabilityName) || (/^maintain\b/i.test(capabilityName) && (capability.related_entities || []).length > 0 && lifecycleActions.size >= 2))) return 'generic-management-name';
+    if (!hasBoundFirstPartyOutcome && (isCrudInventoryCapabilityLabel(capabilityName) || ((capability.criticality_factors || []).includes('catalog-deterministic-grouped-lifecycle') && /^(?:add|create|delete|edit|remove|update)\b/i.test(capabilityName)))) return 'crud-inventory-name';
+    if (!hasBoundFirstPartyOutcome && isCrudLifecycleFragmentCapabilityLabel(String(capability.name || ''), (capability.operations || []).map(operation => operation.action))) return 'crud-lifecycle-fragment-name';
     const descriptionIsPublishable = Boolean(description) &&
       !this.isStructuralPlaceholderCapabilityDescription(description) &&
       descriptionWordCount >= 6 &&
