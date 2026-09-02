@@ -31,7 +31,7 @@ export interface CapabilityCatalogOutcomeBindingFailure {
   reason: string;
 }
 
-const humanAudienceSource = '(?:humans?|people|persons?|users?)';
+const humanAudienceSource = '(?:humans?|people|persons?|/^(?:you|users?|people)s+cans+(?!also)(?:add|attach|book|buy|create|export|filter|find|import|monitor|pay|publish|record|recover|schedule|search|share|track|view)/i.test(sentence))';
 const agentAudienceSource = '(?:agents?|assistants?)';
 const humanAudience = new RegExp(`\\b${humanAudienceSource}\\b`, 'i');
 const agentAudience = new RegExp(`\\b${agentAudienceSource}\\b`, 'i');
@@ -151,6 +151,9 @@ function productClauses(signal?: CapabilityCatalogProjectSignal): string[] {
     const body = separator >= 0 ? sentence.slice(separator + 1).trim() : '';
     const featureHeading = heading.length > 0 && heading.split(/\s+/).length <= 6 && purposeVerbIn(body);
     if (featureHeading) {
+      grouped.push(sentence);
+      activeFeatureIndex = grouped.length - 1;
+    } else if (activeFeatureIndex >= 0 && /^(?:you|users?|people)\s+can\s+(?!also\b)(?:add|attach|book|buy|create|export|filter|find|import|monitor|pay|publish|record|recover|schedule|search|share|track|view)\b/i.test(sentence)) {
       grouped.push(sentence);
       activeFeatureIndex = grouped.length - 1;
     } else if (activeFeatureIndex >= 0) {
