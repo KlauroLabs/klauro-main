@@ -374,14 +374,15 @@ describe('capability catalog repair planning', () => {
     assert.match(nudge, /missing description/);
     assert.match(nudge, /Remove marketing-language token organized/);
     assert.match(nudge, /forbidden_subject_terms is prohibited from both name and description/);
-    assert.match(nudge, /every lifecycle action listed in observable_actions/);
+    assert.match(nudge, /observable_actions as attached evidence constraints, not prose quotas/);
+    assert.doesNotMatch(nudge, /state every.*observable action/i);
     assert.match(nudge, /state that exact audience label in every required location/);
     assert.match(nudge, /description-target-not-grounded/);
     assert.match(nudge, /exact evidence_subject terms/);
     assert.match(nudge, /durable user-outcome language/);
     assert.match(nudge, /not by mechanically enumerating transport or CRUD operation labels/);
     assert.match(nudge, /Do not copy a route phrase/);
-    assert.match(nudge, /without inventing its effects/);
+    assert.match(nudge, /destructive effect in ordinary audience language/);
   });
 
   test('evidence repair asks for scope-relative purpose instead of translating CRUD into the title', () => {
