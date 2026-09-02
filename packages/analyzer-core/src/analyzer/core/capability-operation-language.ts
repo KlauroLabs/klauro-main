@@ -18,29 +18,31 @@ export function isTransportScaffoldingExit(exit: CASExitPoint): boolean {
 
 export function semanticActions(value: unknown): string[] {
   const tokens = String(value || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z]+/);
+  const has = (pattern: RegExp): boolean => tokens.some(token => pattern.test(token));
   const actions = new Set<string>();
-  if (tokens.some(token => /^(?:add|create|publish|register|submit)$/.test(token))) actions.add('create');
-  if (tokens.some(token => /^(?:browse|fetch|filter|find|get|list|read|search|show|view)$/.test(token))) actions.add('read');
-  if (tokens.some(token => /^(?:change|edit|manage|maintain|track|update)$/.test(token))) actions.add('update');
-  if (tokens.some(token => /^(?:close|delete|remove|unfavorite|unfollow)$/.test(token))) actions.add('delete');
-  if (tokens.some(token => /^(?:auth|authenticate|login|signin)$/.test(token))) actions.add('authenticate');
+  const organizes = has(/^organiz(?:e|es|ed|ing)$/);
+  if (organizes || has(/^(?:add(?:s|ed|ing)?|creat(?:e|es|ed|ing)|publish(?:es|ed|ing)?|register(?:s|ed|ing)?|submit(?:s|ted|ting)?)$/)) actions.add('create');
+  if (organizes || has(/^(?:brows(?:e|es|ed|ing)|display(?:s|ed|ing)?|fetch(?:es|ed|ing)?|filter(?:s|ed|ing)?|find(?:s|ing)?|found|get(?:s|ting)?|list(?:s|ed|ing)?|read(?:s|ing)?|search(?:es|ed|ing)?|show(?:s|ed|ing)?|surfac(?:e|es|ed|ing)|view(?:s|ed|ing)?)$/)) actions.add('read');
+  if (organizes || has(/^(?:assign(?:s|ed|ing)?|chang(?:e|es|ed|ing)|edit(?:s|ed|ing)?|manag(?:e|es|ed|ing)|maintain(?:s|ed|ing)?|track(?:s|ed|ing)?|updat(?:e|es|ed|ing))$/)) actions.add('update');
+  if (has(/^(?:clos(?:e|es|ed|ing)|delet(?:e|es|ed|ing)|remov(?:e|es|ed|ing)|unfavorit(?:e|es|ed|ing)|unfollow(?:s|ed|ing)?)$/)) actions.add('delete');
+  if (has(/^(?:auth|authenticat(?:e|es|ed|ing|ion)|login|signin)$/)) actions.add('authenticate');
   if (tokens.includes('accept')) actions.add('accept');
   if (tokens.includes('decline')) actions.add('decline');
   if (tokens.includes('test')) actions.add('test');
-  if (tokens.some(token => /^(?:execute|run)$/.test(token))) actions.add('run');
+  if (has(/^(?:execut(?:e|es|ed|ing)|run(?:s|ning)?)$/)) actions.add('run');
   return [...actions];
 }
 
 const genericSubjectTokens = new Set([
-  'action', 'add', 'application', 'browse', 'change', 'close', 'create', 'delete', 'edit', 'entity', 'event',
-  'fetch', 'filter', 'find', 'default', 'detail', 'get', 'handle', 'handler', 'list', 'loading', 'loading2', 'open', 'prevent', 'set', 'manage', 'operation', 'post', 'put', 'read', 'remove',
-  'param', 'route', 'search', 'show', 'statu', 'status', 'system', 'track', 'update', 'user', 'view',
+  'action', 'add', 'and', 'application', 'browse', 'change', 'close', 'create', 'delete', 'edit', 'entity', 'event',
+  'display', 'fetch', 'filter', 'find', 'default', 'detail', 'get', 'handle', 'handler', 'list', 'loading', 'loading2', 'open', 'prevent', 'set', 'manage', 'operation', 'post', 'put', 'read', 'remove',
+  'param', 'route', 'search', 'show', 'statu', 'status', 'surface', 'system', 'track', 'update', 'user', 'view',
 ]);
 
 export function semanticSubjects(value: unknown): string[] {
   return [...new Set(String(value || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/)
     .map(token => token.replace(/^entity_/, '').replace(/ies$/, 'y').replace(/s$/, ''))
-    .filter(token => token.length >= 3 && !genericSubjectTokens.has(token)))];
+    .filter(token => token.length >= 3 && !genericSubjectTokens.has(token) && semanticActions(token).length === 0))];
 }
 
 export function declarationOperationSemantics(entry: CASEntryPoint | undefined): { actions: string[]; subjects: string[] } | undefined {

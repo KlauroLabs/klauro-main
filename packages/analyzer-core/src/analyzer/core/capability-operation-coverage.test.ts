@@ -4,6 +4,15 @@ import { hasAuthoritativeCapabilityOperationSubjectLineage } from './capability-
 import type { SystemCapability } from '../../types/cas.types';
 import { capabilityCatalogRepairEvidenceFacts } from './capability-catalog-scheduling';
 import { buildCapabilityOperationObligationViews, classifyCapabilityOperationEffect, evaluateCapabilityCatalogOperationCoverage, fullyCoveredAggregateCapabilityCandidateIds, normalizeCapabilityOperationObligationEvidence, retireFullyCoveredPendingAggregateCapabilities, scopeRequiredCapabilityOperations, uncoveredAggregateOperationObligationIds, uncoveredRequiredBehaviorCandidateIds, uncoveredRequiredCapabilityOperations } from './capability-operation-coverage';
+import { semanticActions, semanticSubjects } from './capability-operation-language';
+
+test('treats displayed and surfaced product data as read outcomes rather than subjects', () => {
+  assert.deepEqual(semanticActions('Applications display and surface note counts'), ['read']);
+  assert.deepEqual(semanticActions('Organizing categories by creating, assigning, editing, and deleting them'), ['create', 'read', 'update', 'delete']);
+  assert.deepEqual(semanticSubjects('Organizing categories by creating, assigning, editing, and deleting them'), ['category', 'them']);
+  assert.deepEqual(semanticSubjects('Applications display and surface note counts'), ['note', 'count']);
+});
+
 const operation = (id: string, path?: string) => ({ entry_point_id: id, entry_point_type: "event", action: path ? "Manage" : "Handle", ...(path ? { trigger: { method: "POST", path } } : {}) });
 const capability = (id: string, operations: SystemCapability['operations'], entities = ['entity_job']): SystemCapability => ({ id, name: id, description: id, category: 'core', operations, related_entities: entities, related_domains: [], criticality: 'high', criticality_factors: [], evidence_kind: 'behavior-surface', evidence_role: 'product-outcome', evidence_examples: [] });
 const terminalContext = () => ({
