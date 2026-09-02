@@ -583,6 +583,8 @@ export function bindAtomicallySatisfiedCatalogOutcomeRequirements(
     const combinedTokens = new Set(tokens(`${combined.name} ${combined.description}`));
     if (visibleActions.some(action => !combinedTokens.has(action))) continue;
     const representative = [...members]
+      .filter(member => !(member.criticality_factors || [])
+        .some(factor => factor.startsWith('catalog-outcome-requirement:')))
       .filter(member => capabilityCatalogOutcomeNameFailure(member.name, requirement) === undefined)
       .sort((left, right) => left.id.localeCompare(right.id))[0];
     if (!representative) continue;

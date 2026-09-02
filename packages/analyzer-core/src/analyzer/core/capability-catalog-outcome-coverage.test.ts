@@ -712,9 +712,12 @@ test('binds a broad outcome through a complete order-independent exact atomic un
   }
   const direct = published('Track notes', 'Users track notes through the verified product workflow.');
   direct.criticality_factors = ['catalog-candidate:cap_note_management'];
-  const directBound = bindAtomicallySatisfiedCatalogOutcomeRequirements([direct], [requirement], new Set(['cap_note_management']), scopes);
+  const occupied = published('Categorize records', 'Users categorize records and can also inspect attached notes.');
+  occupied.criticality_factors = ['catalog-candidate:cap_note_management', 'catalog-outcome-requirement:all:categorize'];
+  const directBound = bindAtomicallySatisfiedCatalogOutcomeRequirements([occupied, direct], [requirement], new Set(['cap_note_management']), scopes);
   assert.equal(uncoveredCapabilityCatalogOutcomeRequirements(directBound, [requirement]).length, 0);
-  assert.equal(directBound[0].criticality_factors.includes('catalog-outcome-union:all:note'), true);
+  assert.equal(directBound[0].criticality_factors.includes('catalog-outcome-union:all:note'), false);
+  assert.equal(directBound[1].criticality_factors.includes('catalog-outcome-union:all:note'), true);
   const partial = bindAtomicallySatisfiedCatalogOutcomeRequirements([atom('create'), atom('delete')], [requirement], new Set(), scopes);
   assert.equal(uncoveredCapabilityCatalogOutcomeRequirements(partial, [requirement]).length, 1);
   const unrelated = { ...atom('read'), name: 'View note counts', description: 'Users view note counts for monitoring metrics.', criticality_factors: ['catalog-operation-obligation:operation-obligation:other:read'] };
