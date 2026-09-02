@@ -1474,6 +1474,8 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     localOrch.aiExtractCapabilityCatalog = async () => grounded;
     localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
     const args: any = gateArgs(localOrch);
+    args.candidateSnapshot = [];
+    args.behaviorSurfaces = [];
 
     const out = await localOrch.runCapabilityCatalogWithQualityGate(args);
 
