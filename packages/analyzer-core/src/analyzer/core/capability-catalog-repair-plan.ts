@@ -299,7 +299,7 @@ export function deterministicCapabilityDescriptionFallback(args: {
     actions.length > 1 &&
     /^manage\b/i.test(args.identity.name) &&
     (args.identity.criticality_factors || []).includes('catalog-deterministic-grouped-lifecycle'));
-  if (!exactSentence && resolvedCandidates.length !== 1 && !exactGroupedLifecycle) return undefined;
+  if (!exactSentence && resolvedCandidates.length !== 1 && !exactGroupedLifecycle && !firstPartyOutcomeBound) return undefined;
   const description = exactSentence || (() => {
     const normalizedTitle = args.identity.name.trim().replace(/[.!?]+$/, '').replace(/^./, value => value.toLowerCase());
     const evidenceSubject = exactGroupedLifecycle
@@ -355,14 +355,14 @@ export function deterministicCapabilityDescriptionFallback(args: {
     if ((args.identity.criticality_factors || []).includes('catalog-deterministic-route-lineage')) {
       return `${audience} can ${normalizedTitle} as part of their normal workflow whenever needed.`;
     }
+    if (firstPartyOutcomeBound) {
+      return `${audience} can ${normalizedTitle} as part of their normal workflow whenever needed.`;
+    }
     if (actions.length > 1) {
       const continuity = actions.includes('remove')
         ? 'from first use through later changes, including when they no longer need them'
         : 'as their needs change over time';
       return `${audience} can ${normalizedTitle} ${continuity}.`;
-    }
-    if (firstPartyOutcomeBound) {
-      return `${audience} can ${normalizedTitle} as those ${subjectPhrase} change over time.`;
     }
     return `${audience} can ${normalizedTitle} as part of their normal workflow whenever needed.`;
   })();

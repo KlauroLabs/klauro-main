@@ -147,6 +147,47 @@ test('resolves exact pending descriptions without a provider at the deadline and
   assert.equal(stillPending.description, '');
 });
 
+test('repairs a bound authored outcome across multiple evidence families without a pending registry entry', () => {
+  const jobs = catalogCapability({
+    id: 'jobs', name: 'Job applications', structural_label: 'Job applications',
+    evidence_kind: 'behavior-surface', evidence_role: 'product-outcome',
+    operations: [{ entry_point_id: 'update-job', entry_point_type: 'http', action: 'update' }],
+    related_entities: ['entity_job'], related_domains: ['jobs'],
+  });
+  const categories = catalogCapability({
+    id: 'categories', name: 'Application categories', structural_label: 'Application categories',
+    evidence_kind: 'behavior-surface', evidence_role: 'product-outcome',
+    operations: [
+      { entry_point_id: 'create-category', entry_point_type: 'http', action: 'create' },
+      { entry_point_id: 'update-category', entry_point_type: 'http', action: 'update' },
+      { entry_point_id: 'delete-category', entry_point_type: 'http', action: 'delete' },
+    ],
+    related_entities: ['entity_category'], related_domains: ['categories'],
+  });
+  const identity = catalogCapability({
+    id: 'categorize-jobs', name: 'Categorize job applications', description: '',
+    description_generation: { status: 'ai_rejected', attempted: true, reason: 'description-unsupported-target-value-claim:tracking' },
+    operations: [...jobs.operations, ...categories.operations],
+    related_entities: [...jobs.related_entities, ...categories.related_entities],
+    criticality_factors: [
+      'catalog-outcome-requirement:all:categorize-job-applications',
+      'catalog-candidate:jobs', 'catalog-candidate:categories',
+    ],
+  });
+  const expected = 'Users can categorize job applications as part of their normal workflow whenever needed.';
+  const [repaired] = resolvePendingCapabilityDescriptionsWithoutProvider({
+    capabilities: [identity], pendingEvidenceIdentityByCandidateId: new Map(),
+    evidenceCandidates: [jobs, categories], firstPartyTexts: [], audienceFor: () => 'Users',
+    validate: capability => capability.description === expected,
+  });
+  assert.equal(repaired.name, identity.name);
+  assert.equal(repaired.description, expected);
+  assert.deepEqual(
+    repaired.criticality_factors?.filter(factor => factor.startsWith('catalog-candidate:')).sort(),
+    ['catalog-candidate:categories', 'catalog-candidate:jobs'],
+  );
+});
+
 test('retires an invalid pending description only when exact cited operations are independently publishable', () => {
   const evidence = catalogCapability({
     id: 'profile-update', name: 'Update user profile', structural_label: 'Update user profile',

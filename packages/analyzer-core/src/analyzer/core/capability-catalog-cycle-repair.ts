@@ -143,7 +143,10 @@ export function resolvePendingCapabilityDescriptionsWithoutProvider(args: {
     const repairGenericGroupedName = capability.name_source === "deterministic" &&
       (capability.criticality_factors || []).includes("catalog-deterministic-grouped-lifecycle") &&
       /^(?:manage|handle|process)(?:s|d|ing)?\b/i.test(String(capability.name || "").trim());
-    if (!pending && !repairGenericGroupedName) return capability;
+    const boundOutcomePending = (capability.criticality_factors || [])
+      .some(factor => factor.startsWith("catalog-outcome-requirement:")) &&
+      (!String(capability.description || "").trim() || capability.description_generation?.status === "ai_rejected");
+    if (!pending && !repairGenericGroupedName && !boundOutcomePending) return capability;
     const repaired = deterministicCapabilityDescriptionFallback({
       identity: repairGenericGroupedName ? capability : pending?.identity || capability, evidenceCandidates: args.evidenceCandidates,
       audience: pending?.audience || args.audienceFor(capability), firstPartyTexts: args.firstPartyTexts,
