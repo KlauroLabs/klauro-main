@@ -201,7 +201,7 @@ import {
 } from './capability-catalog-audience';
 import { capabilityGroundedEntityIds } from './capability-entity-grounding';
 import { canonicalCapabilityLifecycleAction, capabilityDescriptionExpressesDestructiveLifecycle, capabilityHasObservedDestructiveLifecycle } from './capability-lifecycle-actions';
-import { scopeCapabilityOperationsToOutcomeName } from './capability-operation-attribution';
+import { isReversibleCapabilityOutcomeName, scopeCapabilityOperationsToOutcomeName } from './capability-operation-attribution';
 import { stripProjectDocumentMedia } from './project-document-framing';
 import { systemNarrativeGroundingFailure } from './system-narrative-grounding';
 import {
@@ -18513,7 +18513,10 @@ export class AnalyzerOrchestrator {
       existing.description = keepDescriptionFromCurrent ? capability.description : existing.description;
       existing.description_source = keepDescriptionFromCurrent ? capability.description_source : existing.description_source;
       existing.description_generation = keepDescriptionFromCurrent ? capability.description_generation : existing.description_generation;
-      existing.operations = this.uniqueCapabilityOperations(existing.operations, capability.operations);
+      const mergedNameOperations = this.uniqueCapabilityOperations(existing.operations, capability.operations);
+      existing.operations = isReversibleCapabilityOutcomeName(existing.name)
+        ? scopeCapabilityOperationsToOutcomeName(existing.name, mergedNameOperations)
+        : mergedNameOperations;
       existing.related_entities = Array.from(new Set([...existing.related_entities, ...capability.related_entities]));
       existing.related_domains = Array.from(new Set([...existing.related_domains, ...capability.related_domains]));
       existing.criticality = criticalityRank[capability.criticality] > criticalityRank[existing.criticality]
@@ -18522,7 +18525,10 @@ export class AnalyzerOrchestrator {
       existing.criticality_factors = Array.from(new Set([
         ...existing.criticality_factors,
         ...capability.criticality_factors,
-      ]));
+      ])).filter(factor =>
+        !isReversibleCapabilityOutcomeName(existing.name) ||
+        (!factor.startsWith('catalog-operation-obligation:') &&
+          !factor.startsWith('catalog-candidate:operation-obligation:')));
       existing.category = existing.category === 'core' || capability.category !== 'core'
         ? existing.category
         : capability.category;
@@ -18658,7 +18664,10 @@ export class AnalyzerOrchestrator {
         winner.description_source = loser.description_source;
         winner.description_generation = loser.description_generation;
       }
-      winner.operations = this.uniqueCapabilityOperations(winner.operations, loser.operations);
+      const mergedEntityOperations = this.uniqueCapabilityOperations(winner.operations, loser.operations);
+      winner.operations = isReversibleCapabilityOutcomeName(winner.name)
+        ? scopeCapabilityOperationsToOutcomeName(winner.name, mergedEntityOperations)
+        : mergedEntityOperations;
       winner.related_entities = Array.from(new Set([...winner.related_entities, ...loser.related_entities]));
       winner.related_domains = Array.from(new Set([...winner.related_domains, ...loser.related_domains]));
       winner.depends_on = [...new Map([...(winner.depends_on || []), ...(loser.depends_on || [])].map(dependency => [
@@ -18670,7 +18679,10 @@ export class AnalyzerOrchestrator {
       winner.criticality_factors = Array.from(new Set([
         ...winner.criticality_factors,
         ...loser.criticality_factors,
-      ]));
+      ])).filter(factor =>
+        !isReversibleCapabilityOutcomeName(winner.name) ||
+        (!factor.startsWith('catalog-operation-obligation:') &&
+          !factor.startsWith('catalog-candidate:operation-obligation:')));
       if (winner.category !== 'core' && loser.category === 'core') {
         winner.category = loser.category;
       }

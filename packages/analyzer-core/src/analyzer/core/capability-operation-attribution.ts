@@ -3,14 +3,16 @@ import { canonicalCapabilityLifecycleAction } from './capability-lifecycle-actio
 
 type CapabilityOperation = SystemCapability['operations'][number];
 
-function requestedOutcomeAction(name: string): string | undefined {
-  const head = String(name || '').trim().toLowerCase().split(/\s+/)[0] || '';
-  if (/^(?:create|add|publish|post|submit|register)$/.test(head)) return 'create';
-  if (/^(?:read|view|list|browse|search|find|get)$/.test(head)) return 'read';
-  if (/^(?:update|edit|change)$/.test(head)) return 'update';
-  if (/^(?:delete|remove|archive)$/.test(head)) return 'delete';
-  if (/^(?:comment|favorite|follow|unfavorite|unfollow)$/.test(head)) return head;
-  return undefined;
+function requestedOutcomeActions(name: string): string[] {
+  const actions = String(name || '').trim().toLowerCase().split(/[^a-z]+/).flatMap(token => {
+    if (/^(?:create|add|publish|post|submit|register)$/.test(token)) return ['create'];
+    if (/^(?:read|view|list|browse|search|find|get)$/.test(token)) return ['read'];
+    if (/^(?:update|edit|change)$/.test(token)) return ['update'];
+    if (/^(?:delete|remove|archive)$/.test(token)) return ['delete'];
+    if (/^(?:comment|favorite|follow|unfavorite|unfollow)$/.test(token)) return [token];
+    return [];
+  });
+  return [...new Set(actions)];
 }
 
 function operationMatchesRequestedAction(operation: CapabilityOperation, requested: string): boolean {
@@ -29,12 +31,17 @@ function operationMatchesRequestedAction(operation: CapabilityOperation, request
   return false;
 }
 
+export function isReversibleCapabilityOutcomeName(name: string): boolean {
+  return /\b(?:favou?rite|unfavou?rite|follow|unfollow)\b/i.test(name);
+}
+
 export function scopeCapabilityOperationsToOutcomeName(
   name: string,
   operations: readonly CapabilityOperation[],
 ): CapabilityOperation[] {
-  const requested = requestedOutcomeAction(name);
-  if (!requested) return [...operations];
-  const matching = operations.filter(operation => operationMatchesRequestedAction(operation, requested));
+  const requested = requestedOutcomeActions(name);
+  if (requested.length === 0) return [...operations];
+  const matching = operations.filter(operation =>
+    requested.some(action => operationMatchesRequestedAction(operation, action)));
   return matching.length > 0 ? matching : [...operations];
 }

@@ -678,6 +678,40 @@ function capabilityHasUserFacingLifecycleBreadth(
   return externallyReachableOperations >= 2 && stages.size >= 2;
 }
 
+function capabilityHasReversibleUserActionLifecycle(
+  capability: SystemCapability,
+  entryPointById: Map<string, CASEntryPoint>,
+): boolean {
+  const methodsByPath = new Map<string, Set<string>>();
+  for (const operation of capability.operations || []) {
+    const entryPoint = entryPointById.get(operation.entry_point_id);
+    const external = entryPoint?.interaction_reach === 'external' ||
+      (entryPoint?.interaction_reach !== 'internal' &&
+        USER_FACING_ENTRY_TYPES.has((entryPoint?.type || operation.entry_point_type) as never));
+    if (!external) continue;
+    const method = String(entryPoint?.trigger?.method || operation.trigger?.method || '').toUpperCase();
+    if (!/^(?:POST|PUT|PATCH|DELETE)$/.test(method)) continue;
+    const rawPath = String(entryPoint?.trigger?.path || operation.trigger?.path || operation.path_or_command || '')
+      .split(/[?#]/, 1)[0]
+      .replace(/\/+$/, '');
+    const segments = rawPath.split('/').filter(Boolean);
+    if (segments.length < 2) continue;
+    const actionSegment = segments[segments.length - 1];
+    const subjectSegment = segments[segments.length - 2];
+    const actionIsStatic = !/^[:{[]/.test(actionSegment);
+    const subjectIsDynamic = /^:/.test(subjectSegment) ||
+      /^\{[^}]+\}$/.test(subjectSegment) ||
+      /^\[[^\]]+\]$/.test(subjectSegment);
+    if (!actionIsStatic || !subjectIsDynamic) continue;
+    const normalizedPath = rawPath.replace(/\{[^}]+\}|:[^/]+|\[[^\]]+\]/g, ':parameter');
+    const methods = methodsByPath.get(normalizedPath) || new Set<string>();
+    methods.add(method);
+    methodsByPath.set(normalizedPath, methods);
+  }
+  return [...methodsByPath.values()].some(methods =>
+    methods.has('DELETE') && (methods.has('POST') || methods.has('PUT') || methods.has('PATCH')));
+}
+
 export function classifyCapabilityEvidence(
   candidates: SystemCapability[],
   dataEntities: CASDataEntity[] = [],
@@ -735,18 +769,21 @@ export function classifyCapabilityEvidence(
         !mechanismShapedCandidate &&
         !isCrudInventoryCapabilityLabel(candidate.name) &&
         !isGenericManagementCapabilityLabel(candidate.name);
+      const reversibleUserActionLifecycle = capabilityHasReversibleUserActionLifecycle(candidate, entryPointById);
       const actionHeadedOutcome = !isBareNounCapabilityLabel(candidate.name);
       const interpretableOutcomeEvidence = outcomeShapedCandidate || firstParty;
       const terminalOutcomeEvidence = !deliverySurfaceShapedCandidate && interpretableOutcomeEvidence && userOutcomeJourney &&
         (candidate.evidence_kind !== 'behavior-surface' || operations.length > 1 || firstParty);
       const externallyReachableOutcomeEvidence = !deliverySurfaceShapedCandidate && interpretableOutcomeEvidence && actionHeadedOutcome && externalReach && productEntity && operations.length > 1;
       const lifecycleOutcomeEvidence = !deliverySurfaceShapedCandidate && interpretableOutcomeEvidence && userFacingLifecycle;
-      if (firstPartyCoreOutcome || terminalOutcomeEvidence || externallyReachableOutcomeEvidence || lifecycleOutcomeEvidence) {
+      const reversibleActionOutcomeEvidence = !deliverySurfaceShapedCandidate && externalReach && reversibleUserActionLifecycle;
+      if (firstPartyCoreOutcome || terminalOutcomeEvidence || externallyReachableOutcomeEvidence || lifecycleOutcomeEvidence || reversibleActionOutcomeEvidence) {
         evidenceRole = 'product-outcome';
         if (firstPartyCoreOutcome) reasons.push('first-party-product-text');
         if (terminalOutcomeEvidence) reasons.push('user-facing-terminal-journey');
         if (externallyReachableOutcomeEvidence) reasons.push('external-reach-with-product-entity');
         if (lifecycleOutcomeEvidence) reasons.push('user-facing-lifecycle-breadth');
+        if (reversibleActionOutcomeEvidence) reasons.push('reversible-user-action-lifecycle');
       } else if ((candidate.operations || []).length > 0 || (candidate.related_entities || []).length > 0) {
         const potentiallyProductSignificant = productEntity || (externalReach && capabilityHasPotentialUserSurface(candidate, entryPointById));
         evidenceRole = potentiallyProductSignificant ? 'unresolved' : 'supporting-mechanism';

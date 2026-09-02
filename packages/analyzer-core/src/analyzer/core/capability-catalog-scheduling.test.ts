@@ -2955,3 +2955,90 @@ test('closes an incomplete aggregate with one evidence-cited lifecycle capabilit
     candidates.map(candidate => `catalog-candidate:${candidate.id}`),
   );
 });
+
+test('deterministically recovers a reversible user-action lifecycle', () => {
+  const parentId = 'cap_follow_management';
+  const candidates = [
+    catalogCapability({
+      id: `operation-obligation:${parentId}:follow`,
+      name: 'follow profile',
+      structural_label: 'follow profile',
+      operations: [{
+        entry_point_id: 'follow-profile',
+        entry_point_type: 'http',
+        action: 'Create',
+        path_or_command: '/profiles/:username/follow',
+        trigger: { method: 'POST', path: '/profiles/:username/follow' },
+      }],
+    }),
+    catalogCapability({
+      id: `operation-obligation:${parentId}:unfollow`,
+      name: 'unfollow profile',
+      structural_label: 'unfollow profile',
+      operations: [{
+        entry_point_id: 'unfollow-profile',
+        entry_point_type: 'http',
+        action: 'Delete',
+        path_or_command: '/profiles/:username/follow',
+        trigger: { method: 'DELETE', path: '/profiles/:username/follow' },
+      }],
+    }),
+  ];
+  const scopes = new Map(candidates.map(candidate => [candidate.id, {
+    id: candidate.id,
+    parentCandidateId: parentId,
+  }]));
+  const [closure] = validatedDeterministicGroupedOperationClosures({
+    uncoveredIdsByParent: new Map([[parentId, candidates.map(candidate => candidate.id)]]),
+    scopes,
+    evidenceCandidates: candidates,
+    audienceFor: () => undefined,
+    entityLabelsFor: () => [],
+    validate: capability => Boolean(capability.description),
+  });
+  assert.equal(closure?.name, 'Follow and unfollow profiles');
+  assert.equal(closure?.description, 'Users can follow and unfollow profiles while keeping those profiles current over time.');
+  assert.deepEqual(closure?.operations, candidates.flatMap(candidate => candidate.operations));
+});
+
+
+test('evidence merging prunes unrelated operations already attached to a focused reversible outcome', () => {
+  const operations = [
+    { entry_point_id: 'create-article', entry_point_type: 'http' as const, action: 'create', path_or_command: '/articles', trigger: { method: 'POST', path: '/articles' } },
+    { entry_point_id: 'read-article', entry_point_type: 'http' as const, action: 'read', path_or_command: '/articles/:slug', trigger: { method: 'GET', path: '/articles/:slug' } },
+    { entry_point_id: 'favorite-article', entry_point_type: 'http' as const, action: 'favorite', path_or_command: '/articles/:slug/favorite', trigger: { method: 'POST', path: '/articles/:slug/favorite' } },
+    { entry_point_id: 'unfavorite-article', entry_point_type: 'http' as const, action: 'unfavorite', path_or_command: '/articles/:slug/favorite', trigger: { method: 'DELETE', path: '/articles/:slug/favorite' } },
+  ];
+  const accepted = catalogCapability({
+    id: 'accepted-favorites',
+    name: 'Favorite and unfavorite articles',
+    operations,
+    criticality_factors: [
+      'catalog-candidate:cap_article_management',
+      'catalog-operation-obligation:operation-obligation:cap_article_management:create',
+      'catalog-candidate:operation-obligation:cap_article_management:read',
+    ],
+  });
+  const evidence = catalogCapability({
+    id: 'cap_favorite_management',
+    name: 'Favorite articles',
+    structural_label: 'Favorite articles',
+    evidence_kind: 'behavior-surface',
+    operations,
+  });
+
+  const [merged] = mergeUniquelyMatchedBehaviorEvidence(
+    [accepted],
+    [evidence],
+    [evidence.id],
+  );
+
+  assert.deepEqual(
+    merged.operations.map(operation => operation.entry_point_id),
+    ['favorite-article', 'unfavorite-article'],
+  );
+  assert.deepEqual(
+    merged.criticality_factors.filter(factor => factor.includes('operation-obligation:')),
+    [],
+  );
+});

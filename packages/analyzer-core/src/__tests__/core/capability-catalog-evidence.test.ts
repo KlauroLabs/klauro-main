@@ -1166,6 +1166,25 @@ describe('user-facing lifecycle evidence', () => {
     expect(capabilityRequiresCatalogCoverage(classified)).toBe(true);
   });
 
+  test('makes a noun-shaped reversible action subresource mandatory', () => {
+    const following = candidate('following', 'Follow', 'core', ['Create', 'Delete']);
+    following.operations = [
+      { entry_point_id: 'follow', entry_point_type: 'http', action: 'Create', trigger: { method: 'POST', path: '/profiles/:username/follow' } },
+      { entry_point_id: 'unfollow', entry_point_type: 'http', action: 'Delete', trigger: { method: 'DELETE', path: '/profiles/:username/follow' } },
+    ];
+
+    const [classified] = classifyCapabilityEvidence([following], [], undefined, {
+      entryPoints: [
+        { id: 'follow', source_node: 'follow-route', type: 'http', name: 'POST /profiles/:username/follow', interaction_reach: 'external', trigger: { method: 'POST', path: '/profiles/:username/follow' } },
+        { id: 'unfollow', source_node: 'unfollow-route', type: 'http', name: 'DELETE /profiles/:username/follow', interaction_reach: 'external', trigger: { method: 'DELETE', path: '/profiles/:username/follow' } },
+      ] as any,
+    });
+
+    expect(classified.evidence_role).toBe('product-outcome');
+    expect(classified.evidence_role_reasons).toContain('reversible-user-action-lifecycle');
+    expect(capabilityRequiresCatalogCoverage(classified)).toBe(true);
+  });
+
   test('lets first-party purpose make a noun-labeled public lifecycle mandatory without trusting the label as the outcome', () => {
     const budgets = candidate('budgets', 'Budgets', 'core', ['Read', 'Update']);
     budgets.related_entities = ['entity_budget'];

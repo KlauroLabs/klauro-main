@@ -59,7 +59,7 @@ const publicationAction = (action: string): string => {
 };
 
 const publicationActions = new Set([
-  'accept', 'archive', 'authenticate', 'cancel', 'categorize', 'close', 'create', 'decline', 'edit', 'filter', 'manage', 'organize', 'remove',
+  'accept', 'archive', 'authenticate', 'cancel', 'categorize', 'close', 'create', 'decline', 'edit', 'favorite', 'filter', 'follow', 'manage', 'organize', 'remove',
   'run', 'search', 'test', 'track', 'unfavorite', 'unfollow', 'update', 'view', 'withdraw',
 ]);
 
@@ -90,7 +90,7 @@ const descriptionContainsAction = (description: string, action: string): boolean
   if (action === 'close') return /\bclos(?:e|es|ed|ing)\b/i.test(description);
   if (action === 'organize') return /\borganiz(?:e|es|ed|ing)\b/i.test(description);
   if (action === 'update') return /\b(?:categor(?:ize|izes|ized|izing)|chang(?:e|es|ed|ing)|clos(?:e|es|ed|ing)|edit(?:s|ed|ing)?|maintain(?:s|ed|ing)?|organiz(?:e|es|ed|ing)|updat(?:e|es|ed|ing))\b/i.test(description);
-  if (action === 'remove') return /\b(?:delet(?:e|es|ed|ing|ion)|remove|removes|removed|removing)\b/i.test(description);
+  if (action === 'remove') return /\b(?:delet(?:e|es|ed|ing|ion)|remove|removes|removed|removing|unfavou?rit(?:e|es|ed|ing)|unfollow(?:s|ed|ing)?)\b/i.test(description);
   if (action === 'unfavorite') return /\bunfavou?rit(?:e|es|ed|ing)\b/i.test(description);
   if (action === 'unfollow') return /\bunfollow(?:s|ed|ing)?\b/i.test(description);
   if (action === 'archive') return /\barchiv(?:e|es|ed|ing)\b/i.test(description);
@@ -297,7 +297,9 @@ export function deterministicCapabilityDescriptionFallback(args: {
   if (!exactSentence && resolvedCandidates.length !== 1 && !exactGroupedLifecycle) return undefined;
   const description = exactSentence || (() => {
     const normalizedTitle = args.identity.name.trim().replace(/[.!?]+$/, '').replace(/^./, value => value.toLowerCase());
-    const evidenceSubject = exactGroupedLifecycle ? args.identity.name.trim().replace(/^[^\s]+\s+/, '').toLowerCase() : groundedTitleSubjects.join(' ');
+    const evidenceSubject = exactGroupedLifecycle
+      ? args.identity.name.trim().replace(/^[^\s]+\s+(?:and\s+[^\s]+\s+)?/i, '').toLowerCase()
+      : groundedTitleSubjects.join(' ');
     if (!normalizedTitle || !evidenceSubject || actions.length === 0) return '';
     const subjectBase = exactGroupedLifecycle ? evidenceSubject : titleSubjects.join(' ') || evidenceSubject;
     const subjectPhrase = /(?:^| )(?:data|information)$/.test(subjectBase) ? subjectBase : pluralSubject(subjectBase);
@@ -315,10 +317,16 @@ export function deterministicCapabilityDescriptionFallback(args: {
           : `${verbs.slice(0, -1).join(', ')}, and ${verbs[verbs.length - 1]}`;
         return `${audience} can ${actionPhrase} through the same authentication lifecycle as their access needs change over time.`;
       }
+      const inverseRemovalVerb = /\bunfollow\b/i.test(args.identity.name) ? 'unfollow' : /\bunfavou?rite\b/i.test(args.identity.name) ? 'unfavorite' : 'remove';
       const verbs = actions.map(action => ({
-        accept: 'accept', authenticate: 'authenticate', create: 'create', decline: 'decline',
-        filter: 'filter', remove: 'remove', update: 'update', view: 'view',
-      }[action])).filter((value): value is string => Boolean(value));
+        accept: 'accept', authenticate: 'authenticate', create: 'create', decline: 'decline', favorite: 'favorite', follow: 'follow',
+        filter: 'filter', remove: inverseRemovalVerb, update: 'update', view: 'view',
+      }[action])).filter((value): value is string => Boolean(value)).sort((left, right) => {
+        const title = args.identity.name.toLowerCase();
+        const leftIndex = title.indexOf(left);
+        const rightIndex = title.indexOf(right);
+        return (leftIndex < 0 ? Number.MAX_SAFE_INTEGER : leftIndex) - (rightIndex < 0 ? Number.MAX_SAFE_INTEGER : rightIndex);
+      });
       if (verbs.length !== actions.length) return '';
       const actionPhrase = verbs.length === 2 ? `${verbs[0]} and ${verbs[1]}`
         : `${verbs.slice(0, -1).join(', ')}, and ${verbs[verbs.length - 1]}`;
@@ -344,7 +352,7 @@ export function deterministicCapabilityDescriptionFallback(args: {
     }
     if (actions.length > 1) {
       const verbByAction: Record<string, string> = {
-        accept: 'accept', authenticate: 'authenticate', create: 'create', decline: 'decline', filter: 'filter',
+        accept: 'accept', authenticate: 'authenticate', create: 'create', decline: 'decline', favorite: 'favorite', follow: 'follow', filter: 'filter',
         remove: 'remove', run: 'run', test: 'test', update: 'update', view: 'view',
       };
       const remainingActions = actions.filter(action => !descriptionContainsAction(normalizedTitle, action));
@@ -442,7 +450,7 @@ export function deterministicCapabilityActionIdentityFallback(args: {
       new Set(segments.flatMap(segment => segment.key.split(/\s+/).filter(Boolean))));
     const commonTokens = [...tokenSets[0]].filter(token =>
       tokenSets.slice(1).every(tokens => tokens.has(token)));
-    const subject = commonSegments[commonSegments.length - 1]?.display ||
+    const subject = [...commonSegments].reverse().find(segment => !publicationActions.has(publicationAction(descriptionTokens(segment.display)[0] || '')))?.display ||
       (commonTokens.length > 0 ? commonTokens.join(' ') : undefined);
     if (!subject || publicationActions.has(publicationAction(descriptionTokens(subject)[0] || ''))) return undefined;
     return subject === 'auth' ? 'authentication' : subject;
@@ -520,7 +528,7 @@ export function deterministicCapabilityActionIdentityFallback(args: {
     : entitySubject || terminalSubject;
   if (!subject) return undefined;
   const verbByAction: Record<string, string> = {
-    accept: 'Accept', authenticate: 'Authenticate', create: 'Create', decline: 'Decline', filter: 'Filter', remove: 'Remove', run: 'Run', test: 'Test', update: 'Update', view: 'View',
+    accept: 'Accept', authenticate: 'Authenticate', create: 'Create', decline: 'Decline', favorite: 'Favorite', filter: 'Filter', follow: 'Follow', remove: 'Remove', run: 'Run', test: 'Test', update: 'Update', view: 'View',
   };
   const evidenceVerb = descriptionTokens(obligationLabel || '')[0];
   const exactEvidenceVerb = evidenceVerb && /^(?:browse|fetch|filter|import|list|load|retrieve|search)$/.test(evidenceVerb) && publicationAction(evidenceVerb) === actions[0]

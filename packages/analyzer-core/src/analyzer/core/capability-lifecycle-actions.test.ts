@@ -11,6 +11,8 @@ describe('capability lifecycle actions', () => {
   });
 
   test('normalizes destructive route lifecycles and their customer-visible wording', () => {
+    assert.equal(canonicalCapabilityLifecycleAction({ action: 'Create', trigger: { method: 'POST', path: '/articles/:slug/favorite' } }), 'favorite');
+    assert.equal(canonicalCapabilityLifecycleAction({ action: 'Create', trigger: { method: 'POST', path: '/profiles/:username/follow' } }), 'follow');
     assert.equal(canonicalCapabilityLifecycleAction({ action: 'Delete', trigger: { method: 'DELETE', path: '/articles/:slug/favorite' } }), 'unfavorite');
     assert.equal(canonicalCapabilityLifecycleAction({ action: 'Delete', trigger: { method: 'DELETE', path: '/profiles/:username/follow' } }), 'unfollow');
     assert.equal(capabilityDescriptionExpressesDestructiveLifecycle('Users can unfavorite an article later.'), true);

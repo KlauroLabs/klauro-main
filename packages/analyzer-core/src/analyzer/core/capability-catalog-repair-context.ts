@@ -219,7 +219,9 @@ export function capabilityCatalogRepairPromptFacts(
       .map(value => value.slice(0, 500));
     const safeOperation = (value: unknown): string[] => {
       const phrase = customerVisibleOperationPhrase(value, groundedTerms);
-      return phrase && !internalPhrases.some(internal => phrase.includes(internal) || internal.includes(phrase)) ? [phrase] : [];
+      const duplicatesInternalPhrase = Boolean(phrase?.includes(' ')) &&
+        internalPhrases.some(internal => phrase!.includes(internal) || internal.includes(phrase!));
+      return phrase && !duplicatesInternalPhrase ? [phrase] : [];
     };
     const evidenceFields = [...new Set((candidate.related_entities || [])
       .flatMap(entityId => entityFieldsById.get(entityId) || [])

@@ -39,6 +39,33 @@ test('preserves an exact HTTP lifecycle action when reached terminal evidence ha
   assert.deepEqual(classifyCapabilityOperationEffect(candidate, op as any, context).actions, ['delete']);
 });
 
+test('keeps reversible action subresources distinct from generic create and delete', () => {
+  const operations = [
+    {
+      entry_point_id: 'favorite',
+      entry_point_type: 'http',
+      action: 'Create',
+      path_or_command: '/articles/:slug/favorite',
+      trigger: { method: 'POST', path: '/articles/:slug/favorite' },
+    },
+    {
+      entry_point_id: 'unfavorite',
+      entry_point_type: 'http',
+      action: 'Delete',
+      path_or_command: '/articles/:slug/favorite',
+      trigger: { method: 'DELETE', path: '/articles/:slug/favorite' },
+    },
+  ] as any;
+  const context = {
+    entryPoints: operations.map((item: any) => ({
+      id: item.entry_point_id, source_node: item.entry_point_id, type: 'http',
+      name: item.entry_point_id, interaction_reach: 'external', trigger: item.trigger,
+    })),
+    nodes: [], edges: [], exitPoints: [],
+  } as any;
+  const candidate = capability('articles', operations, ['entity_article']);
+  assert.deepEqual(operations.map((item: any) => classifyCapabilityOperationEffect(candidate, item, context).actions), [['favorite'], ['unfavorite']]);
+});
 test('classifies proven local state interaction as support without removing it', () => { const context = { entryPoints: [{ id: 'leave', source_analyzer: 'react', source_node: 'component', type: 'event', name: 'leave', handler: { file: 'ui.ts' }, metadata: { handler_name: 'setOpen', handler_references: [{ name: 'setOpen', kind: 'direct', binding_node_id: 'state' }], handler_binding_node_ids: ['state'], handler_file: 'ui.ts', handler_component_id: 'component', local_handler_kind: 'state-setter', source_analyzer: 'react' } }], nodes: [{ id: 'state', name: '[open, setOpen]', type: 'react_handler_binding', primaryAnalyzer: 'react', parent: 'component', source: { file: 'ui.ts', line: 1 }, metadata: { attributes: { value: 'useState(false)', binding_kind: 'state-setter', binding_names: ['open', 'setOpen'] } } }], edges: [], exitPoints: [] } as any; const candidate = capability('surface', [operation('leave')]); assert.equal(classifyCapabilityOperationEffect(candidate, candidate.operations[0], context).kind, 'support'); assert.equal(candidate.operations.length, 1); });
 test('classifies proven child callback wiring as support without removing it', () => { const context = { entryPoints: [{ id: 'close', source_analyzer: 'react', source_node: 'modal', type: 'event', name: 'close', handler: { file: 'modal.ts' }, metadata: { handler_name: 'onClose', handler_references: [{ name: 'onClose', kind: 'direct', binding_node_id: 'close-binding', binding_origin_component_id: 'parent' }], handler_binding_node_ids: ['close-binding'], handler_component_id: 'modal', callback_origin_component_id: 'parent', callback_component_path: ['modal', 'parent'], jsx_element: 'Button', binding_kind: 'component-callback-prop', source_analyzer: 'react' } }], nodes: [{ id: 'parent', name: 'Parent', type: 'functional_component', metadata: {} }, { id: 'modal', name: 'Modal', type: 'functional_component', metadata: {} }, { id: 'close-binding', name: '{ isOpen, onClose }', type: 'react_handler_binding', primaryAnalyzer: 'react', parent: 'parent', source: { file: 'parent.ts', line: 2 }, metadata: { attributes: { value: 'useDisclosure()', binding_kind: 'disclosure-controller', binding_names: ['isOpen', 'onClose'] } } }], edges: [{ id: 'renders', source: 'parent', target: 'modal', type: 'renders' }], exitPoints: [] } as any; assert.equal(classifyCapabilityOperationEffect(capability('surface', [operation('close')]), operation('close'), context).kind, 'support'); });
 test('classifies a locally bound disclosure controller action as support', () => { const context = { entryPoints: [{ id: 'open', source_analyzer: 'react', source_node: 'component', type: 'event', name: 'open', handler: { file: 'ui.ts' }, metadata: { handler_name: 'onOpen', handler_references: [{ name: 'onOpen', kind: 'direct', binding_node_id: 'disclosure' }], handler_binding_node_ids: ['disclosure'], handler_file: 'ui.ts', handler_component_id: 'component', local_handler_kind: 'disclosure-controller', jsx_element: 'Button', binding_kind: 'event-handler', source_analyzer: 'react' } }], nodes: [{ id: 'disclosure', name: '{ isOpen, onOpen, onClose }', type: 'react_handler_binding', primaryAnalyzer: 'react', parent: 'component', source: { file: 'ui.ts', line: 4 }, metadata: { attributes: { value: 'useDisclosure()', binding_kind: 'disclosure-controller', binding_names: ['isOpen', 'onOpen', 'onClose'] } } }], edges: [], exitPoints: [] } as any; assert.equal(classifyCapabilityOperationEffect(capability('surface', [operation('open')]), operation('open'), context).kind, 'support'); });

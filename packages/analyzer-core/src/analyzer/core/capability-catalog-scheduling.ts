@@ -2,6 +2,7 @@ import type { SystemCapability } from '../../types/cas.types';
 import { capabilityEvidenceSubjectTokens } from './capability-catalog-evidence';
 import type { CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
 import { capabilityCatalogRepairLifecycleKey } from './capability-catalog-repair-plan';
+import { isReversibleCapabilityOutcomeName, scopeCapabilityOperationsToOutcomeName } from './capability-operation-attribution';
 
 export type CapabilityCatalogOutcome =
   | { status: 'fulfilled'; value: SystemCapability[] }
@@ -270,8 +271,9 @@ function mergeCapabilityEvidence(outcome: SystemCapability, evidence: SystemCapa
     operation.trigger?.method || '',
     operation.trigger?.path || '',
   ].join('|');
-  const operations = new Map((outcome.operations || []).map(operation => [operationKey(operation), operation]));
-  for (const operation of evidence.operations || []) operations.set(operationKey(operation), operation);
+  const scopedOutcomeOperations = scopeCapabilityOperationsToOutcomeName(outcome.name, outcome.operations || []);
+  const operations = new Map(scopedOutcomeOperations.map(operation => [operationKey(operation), operation]));
+  for (const operation of scopeCapabilityOperationsToOutcomeName(outcome.name, evidence.operations || [])) operations.set(operationKey(operation), operation);
   const criticalityRank: Record<SystemCapability['criticality'], number> = {
     critical: 4,
     high: 3,
@@ -290,7 +292,10 @@ function mergeCapabilityEvidence(outcome: SystemCapability, evidence: SystemCapa
       ...(outcome.criticality_factors || []),
       ...(evidence.criticality_factors || []),
       `catalog-candidate:${evidence.id}`,
-    ])],
+    ])].filter(factor =>
+      !isReversibleCapabilityOutcomeName(outcome.name) ||
+      (!factor.startsWith('catalog-operation-obligation:') &&
+        !factor.startsWith('catalog-candidate:operation-obligation:'))),
     evidence_examples: [...new Set([...(outcome.evidence_examples || []), ...(evidence.evidence_examples || [])])],
   };
 }

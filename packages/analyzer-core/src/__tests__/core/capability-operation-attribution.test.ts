@@ -22,4 +22,17 @@ describe('capability operation attribution', () => {
   it('retains the complete operation set for a broad outcome', () => {
     expect(scopeCapabilityOperationsToOutcomeName('Organize articles', operations)).toHaveLength(4);
   });
+
+  it('keeps both sides of an inverse-action outcome without inheriting sibling CRUD operations', () => {
+    const mixed = [
+      ...operations,
+      { entry_point_id: 'favorite', entry_point_type: 'http', action: 'Create', path_or_command: '/articles/:slug/favorite', trigger: { method: 'POST', path: '/articles/:slug/favorite' } },
+      { entry_point_id: 'unfavorite', entry_point_type: 'http', action: 'Delete', path_or_command: '/articles/:slug/favorite', trigger: { method: 'DELETE', path: '/articles/:slug/favorite' } },
+    ];
+    expect(scopeCapabilityOperationsToOutcomeName('Favorite and unfavorite articles', mixed)).toEqual([
+      expect.objectContaining({ entry_point_id: 'favorite' }),
+      expect.objectContaining({ entry_point_id: 'unfavorite' }),
+    ]);
+  });
+
 });

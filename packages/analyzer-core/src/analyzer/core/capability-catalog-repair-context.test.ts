@@ -131,7 +131,7 @@ test('route-backed repair facts retain product subjects without framework path s
     ['authenticate'], ['follow', 'profile'], ['article', 'favorite'], ['user'],
   ]);
   assert.deepEqual(envelope.facts.map(fact => fact.observable_actions), [
-    ['authenticate'], ['create', 'unfollow'], ['create', 'unfavorite'], ['list', 'update'],
+    ['authenticate'], ['follow', 'unfollow'], ['favorite', 'unfavorite'], ['list', 'update'],
   ]);
 });
 

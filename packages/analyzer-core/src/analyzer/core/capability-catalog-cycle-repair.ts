@@ -1,4 +1,5 @@
 import type { SystemCapability } from '../../types/cas.types';
+import { canonicalCapabilityLifecycleAction } from './capability-lifecycle-actions';
 import { hasAuthoritativeCapabilityOperationSubjectLineage, uncoveredRequiredCapabilityOperations, type CapabilityOperationCoverageContext } from './capability-operation-coverage';
 import { normalizeCapabilityDescriptionForPublication } from './capability-catalog-audience';
 import { capabilityEvidenceSubjectTokens, catalogMinimumCapabilityCount } from './capability-catalog-evidence';
@@ -495,6 +496,8 @@ function groupedLifecycleOutcomeName(
     return `Control ${normalizedSubject}`;
   }
   const actionSet = new Set(actions.map(action => /^(?:browse|fetch|get|list|read|retrieve|search|show)/.test(action) ? 'view' : /^(?:delete|archive|cancel)/.test(action) ? 'remove' : action));
+  if (actionSet.has('follow') && actionSet.has('unfollow')) return `Follow and unfollow ${normalizedSubject}`;
+  if (actionSet.has('favorite') && actionSet.has('unfavorite')) return `Favorite and unfavorite ${normalizedSubject}`;
   if (['create', 'view', 'update', 'remove'].every(action => actionSet.has(action))) return `Organize ${normalizedSubject}`;
   if (actionSet.has('create') && actionSet.has('update')) return `Track ${normalizedSubject}`;
   if (actionSet.has('create') && actionSet.has('view')) return `Organize ${normalizedSubject}`;
@@ -566,6 +569,8 @@ export function validatedDeterministicGroupedOperationClosures(args: {
     if (!draft) continue;
     const subject = draft.name.replace(/^\S+\s+/, '');
     const lifecycleActions = [...new Set(operations.map(operation => {
+      const canonical = canonicalCapabilityLifecycleAction(operation);
+      if (['favorite', 'unfavorite', 'follow', 'unfollow'].includes(canonical)) return canonical;
       const method = String(operation.trigger?.method || '').toUpperCase();
       const path = String(operation.trigger?.path || operation.path_or_command || '').toLowerCase();
       if (/^(?:GET|HEAD|OPTIONS)$/.test(method)) return 'read';

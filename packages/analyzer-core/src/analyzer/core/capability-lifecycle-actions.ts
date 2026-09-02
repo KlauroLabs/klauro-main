@@ -16,6 +16,10 @@ export function canonicalCapabilityLifecycleAction(operation: CapabilityLifecycl
   if (/(?:^|[/_.-])accept/.test(path)) return 'accept';
   if (/(?:^|[/_.-])test/.test(path)) return 'test';
   if (/^(?:execute|run)$/.test(action)) return 'run';
+  if (method === 'POST') {
+    if (/(?:^|[/_-])follow(?:$|[/_?&#-])/.test(path)) return 'follow';
+    if (/(?:^|[/_-])favou?rite(?:$|[/_?&#-])/.test(path)) return 'favorite';
+  }
   if (method === 'POST' && authenticationPath(path)) return 'authenticate';
   if (method === 'DELETE') {
     if (/(?:^|[/_-])follow(?:$|[/_?&#-])/.test(path)) return 'unfollow';
