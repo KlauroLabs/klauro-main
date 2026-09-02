@@ -570,17 +570,31 @@ export function bindAtomicallySatisfiedCatalogOutcomeRequirements(
 ): SystemCapability[] {
   const result = capabilities.map(capability => ({ ...capability, criticality_factors: [...(capability.criticality_factors || [])] }));
   for (const requirement of requirements) {
-    if (result.some(capability => capabilitySatisfiesCatalogOutcomeRequirement(capability, requirement) &&
-      (capability.criticality_factors || []).includes(`catalog-outcome-requirement:${requirement.id}`))) continue;
     const coveredParents = requirement.candidateIds.filter(candidateId => fullyCoveredAggregateCandidateIds.has(candidateId));
     if (coveredParents.length === 0) continue;
+    const representedParents = new Set<string>();
+    result
+      .filter(capability => (capability.criticality_factors || []).includes(`catalog-outcome-requirement:${requirement.id}`))
+      .forEach(capability => (capability.criticality_factors || []).forEach(factor => {
+        const candidateId = factor.startsWith('catalog-candidate:')
+          ? factor.slice('catalog-candidate:'.length)
+          : factor.startsWith('catalog-operation-obligation:')
+            ? factor.slice('catalog-operation-obligation:'.length)
+            : undefined;
+        if (!candidateId) return;
+        const parentCandidateId = obligationScopes.get(candidateId)?.parentCandidateId || candidateId;
+        if (coveredParents.includes(parentCandidateId)) representedParents.add(parentCandidateId);
+      }));
+    const unrepresentedParents = coveredParents.filter(candidateId => !representedParents.has(candidateId));
+    if (unrepresentedParents.length === 0) continue;
     const members = result.filter(capability => (capability.criticality_factors || []).some(factor => {
       if (factor.startsWith('catalog-candidate:')) {
-        return coveredParents.includes(factor.slice('catalog-candidate:'.length));
+        const candidateId = factor.slice('catalog-candidate:'.length);
+        return unrepresentedParents.includes(obligationScopes.get(candidateId)?.parentCandidateId || candidateId);
       }
       if (!factor.startsWith('catalog-operation-obligation:')) return false;
       const scope = obligationScopes.get(factor.slice('catalog-operation-obligation:'.length));
-      return Boolean(scope && coveredParents.includes(scope.parentCandidateId));
+      return Boolean(scope && unrepresentedParents.includes(scope.parentCandidateId));
     }));
     if (members.length === 0) continue;
     const combined = { name: members.map(item => item.name).join(' '), description: members.map(item => item.description || '').join(' ') };

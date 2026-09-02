@@ -760,6 +760,32 @@ test('binds a broad outcome through a complete order-independent exact atomic un
   );
   assert.equal(uncoveredCapabilityCatalogOutcomeRequirements(compoundBound, [compoundRequirement]).length, 0);
   const partial = bindAtomicallySatisfiedCatalogOutcomeRequirements([atom('create'), atom('delete')], [requirement], new Set(), scopes);
+  const multiParentRequirement: CapabilityCatalogOutcomeRequirement = {
+    ...requirement,
+    id: 'all:applications-and-notes',
+    firstPartyOutcomeText: 'Manage job applications. Add, edit, and delete notes for each application.',
+    statement: 'manage job applications and add edit or delete notes for each application',
+    subjectTokens: ['job', 'application', 'note'],
+    requiredSubjectTerms: ['application', 'note'],
+    minimumSubjectMatches: 2,
+    candidateIds: ['cap_job_management', 'cap_note_management'],
+  };
+  const jobs = published('Manage job applications', 'Users create, edit, and delete job applications.');
+  jobs.criticality_factors = [
+    'catalog-candidate:cap_job_management',
+    'catalog-outcome-requirement:all:applications-and-notes',
+  ];
+  const notes = published('Track job application notes', 'Users add, edit, and delete notes for each job application.');
+  notes.criticality_factors = ['catalog-candidate:cap_note_management'];
+  const multiParentBound = bindAtomicallySatisfiedCatalogOutcomeRequirements(
+    [jobs, notes], [multiParentRequirement], new Set(['cap_job_management', 'cap_note_management']), scopes,
+  );
+  assert.equal(multiParentBound[1].criticality_factors.includes('catalog-outcome-requirement:all:applications-and-notes'), true);
+  assert.equal(multiParentBound[1].criticality_factors.includes('catalog-outcome-union:all:applications-and-notes'), true);
+  const rebound = bindAtomicallySatisfiedCatalogOutcomeRequirements(
+    multiParentBound, [multiParentRequirement], new Set(['cap_job_management', 'cap_note_management']), scopes,
+  );
+  assert.equal(rebound.filter(item => item.criticality_factors.includes('catalog-outcome-union:all:applications-and-notes')).length, 1);
   assert.equal(uncoveredCapabilityCatalogOutcomeRequirements(partial, [requirement]).length, 1);
   const unrelated = { ...atom('read'), name: 'View note counts', description: 'Users view note counts for monitoring metrics.', criticality_factors: ['catalog-operation-obligation:operation-obligation:other:read'] };
   assert.equal(bindAtomicallySatisfiedCatalogOutcomeRequirements([unrelated], [requirement], new Set(['cap_note_management']), scopes)
