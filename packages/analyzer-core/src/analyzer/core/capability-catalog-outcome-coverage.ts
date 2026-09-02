@@ -73,6 +73,12 @@ function comparableEvidenceToken(token: string): string {
   return /^(?:browse|fetch|find|get|list|load|read|retrieve|show|view)$/.test(canonical) ? 'view' : canonical;
 }
 
+const outcomeTokenStopwords = new Set([
+  'all', 'also', 'and', 'any', 'are', 'but', 'can', 'each', 'for', 'had', 'has', 'have', 'how', 'its', 'may', 'not', 'our',
+  'per', 'than', 'that', 'the', 'their', 'then', 'this', 'through', 'under', 'using', 'was', 'were', 'what', 'when', 'where',
+  'which', 'who', 'why', 'will', 'with', 'without', 'you', 'your',
+]);
+
 function tokens(value: string, omitAudience = false): string[] {
   const source = omitAudience
     ? String(value || '').replace(humanAudience, ' ').replace(agentAudience, ' ')
@@ -82,9 +88,9 @@ function tokens(value: string, omitAudience = false): string[] {
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .toLowerCase()
     .split(/[^a-z0-9]+/)
-    .filter(token => token.length >= 4)
+    .filter(token => token.length >= 3)
     .map(canonicalToken)
-    .filter(token => token.length >= 4))];
+    .filter(token => token.length >= 3 && !outcomeTokenStopwords.has(token)))];
 }
 
 function candidateText(candidate: SystemCapability): string {

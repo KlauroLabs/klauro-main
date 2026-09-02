@@ -505,6 +505,8 @@ test('preserves complete outcome clauses from a feature-rich README instead of e
   assert.equal(statements.some(statement => /^(?:corresponding|with easy|status: status|search feature adds)$/i.test(statement)), false);
   assert.equal(requirements.some(requirement => requirement.requiredSubjectTerms?.includes('statu')), false);
   assert.equal(requirements.some(requirement => requirement.requiredSubjectTerms?.includes('status')), true);
+  assert.equal(requirements.find(requirement => requirement.statement.startsWith('manage your application status'))?.candidateIds.includes('jobs'), true);
+  assert.equal(requirements.find(requirement => requirement.statement.startsWith('Filter between job applications'))?.candidateIds.includes('jobs'), true);
 });
 
 test('requires an evidence-grounded outcome anchor when a name starts with an internal subsystem identity', () => {
