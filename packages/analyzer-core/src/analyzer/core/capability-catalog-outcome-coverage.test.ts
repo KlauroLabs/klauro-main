@@ -614,7 +614,7 @@ test('preserves complete outcome clauses from a feature-rich README instead of e
   assert.deepEqual(jobManagement.candidateIds, ['jobs']);
   const notes = requirements.find(requirement => requirement.statement.startsWith('add notes to your job applications'))!;
   assert.deepEqual(notes.candidateIds, ['notes']);
-  assert.equal(capabilityCatalogOutcomeNameFailure('Track job notes', notes), undefined);
+  assert.equal(capabilityCatalogOutcomeNameFailure('Attach notes to job applications', notes), undefined);
   assert.ok(statements.some(statement => statement.startsWith('Filter between job applications using the category, status, and the job board or website') && statement.includes('narrow down what you are looking for')), JSON.stringify(statements));
   assert.equal(statements.some(statement => /^(?:corresponding|with easy|status: status|search feature adds)$/i.test(statement)), false);
   assert.equal(requirements.some(requirement => requirement.requiredSubjectTerms?.includes('statu')), false);
