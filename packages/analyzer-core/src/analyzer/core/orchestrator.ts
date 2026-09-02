@@ -18559,7 +18559,7 @@ export class AnalyzerOrchestrator {
         .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
         .toLowerCase()
         .replace(/^\s*(?:lets|allows|enables)\s+users\s+(?:to\s+)?/i, '')
-        .replace(/^\s*(provides?|surfaces?|tracks?|categorizes?|categorises?|organizes?|organises?|classifies?|groups?|exposes?|manages?|monitors?|secures?|handles?|enforces?|settles?|delivers?|renders?|displays?|shows?|creates?|updates?|deletes?|lists?|views?|reads?|browses?|searches?|finds?|adds?|removes?|edits?|trains?|syncs?|synchronizes?|synchronises?)\s+/i, '')
+        .replace(/^\s*(provides?|surfaces?|tracks?|categorizes?|categorises?|organizes?|organises?|classifies?|groups?|exposes?|manages?|monitors?|secures?|handles?|enforces?|settles?|delivers?|renders?|displays?|shows?|creates?|updates?|deletes?|lists?|views?|reads?|browses?|searches?|finds?|adds?|removes?|edits?|posts?|comments?|favorites?|favourites?|unfavorites?|unfavourites?|follows?|unfollows?|trains?|syncs?|synchronizes?|synchronises?)\s+/i, '')
         .replace(/\s+(results?|insights?|data|info|information|details?|records?|entries?|items?)\s*$/i, '')
         .replace(/\s+capabilit(?:y|ies)\s*$/i, '')
         .replace(/\s+(?:management|maintenance)\s*$/i, '')
@@ -18584,7 +18584,11 @@ export class AnalyzerOrchestrator {
         .toLowerCase()
         .replace(/^\s*(?:lets|allows|enables)\s+users\s+(?:to\s+)?/i, '')
         .match(/^[a-z]+/)?.[0] || '';
-      if (/^(?:create|update|delete|manage|add|remove|edit|write|modify)/.test(action)) return 'mutate';
+      if (/^unfavou?rite/.test(action)) return 'unfavorite';
+      if (/^favou?rite/.test(action)) return 'favorite';
+      if (/^unfollow/.test(action)) return 'unfollow';
+      if (/^follow/.test(action)) return 'follow';
+      if (/^(?:create|update|delete|manage|add|remove|edit|write|modify|post|comment)/.test(action)) return 'mutate';
       if (/^(?:categorize|categorise|organize|organise|classify|group)/.test(action) ||
         (/^track/.test(action) && /\bby\b/i.test(capability.name))) return 'organize';
       if (/^(?:sync|synchronize|synchronise)/.test(action)) return 'synchronize';
@@ -18594,13 +18598,17 @@ export class AnalyzerOrchestrator {
       }
       return '';
     };
-    const unboundOutcomesMayMerge = (left: SystemCapability, right: SystemCapability): boolean =>
-      capabilityTitlesShareOutcome(left, right) ||
-      subjectPhraseOf(left) === subjectPhraseOf(right) || (
-        purposeActionClass(left).length > 0 &&
-        purposeActionClass(left) === purposeActionClass(right) &&
+    const unboundOutcomesMayMerge = (left: SystemCapability, right: SystemCapability): boolean => {
+      const leftAction = purposeActionClass(left);
+      const rightAction = purposeActionClass(right);
+      if (leftAction.length > 0 && rightAction.length > 0 && leftAction !== rightAction) return false;
+      return capabilityTitlesShareOutcome(left, right) ||
+        subjectPhraseOf(left) === subjectPhraseOf(right) || (
+        leftAction.length > 0 &&
+        leftAction === rightAction &&
         subjectsSemanticallyOverlap(left, right)
       );
+    };
     const hasExactEntityAndOperationEvidence = (left: SystemCapability, right: SystemCapability): boolean => {
       const leftEntities = entitySetOf(left);
       const rightEntities = entitySetOf(right);
@@ -18635,7 +18643,7 @@ export class AnalyzerOrchestrator {
 
     const removed = new Set<SystemCapability>();
     const mergeInto = (winner: SystemCapability, loser: SystemCapability) => {
-      if (!entityDedupeOutcomesMayMerge(winner, loser)) return;
+      if (!entityDedupeOutcomesMayMerge(winner, loser)) return false;
       if (winner.description_source !== 'ai' && loser.description_source === 'ai') {
         winner.description = loser.description;
         winner.description_source = loser.description_source;
@@ -18658,6 +18666,7 @@ export class AnalyzerOrchestrator {
         winner.category = loser.category;
       }
       removed.add(loser);
+      return true;
     };
 
     const isSurfaceCap = (capability: SystemCapability) => capability.evidence_kind === 'behavior-surface';
@@ -18674,10 +18683,15 @@ export class AnalyzerOrchestrator {
         continue;
       }
       if (richness(capability) > richness(existing)) {
-        mergeInto(capability, existing);
-        bySetKey.set(key, capability);
+        if (mergeInto(capability, existing)) {
+          bySetKey.set(key, capability);
+        } else {
+          bySetKey.set(`${key}::${capability.id}`, capability);
+        }
       } else {
-        mergeInto(existing, capability);
+        if (!mergeInto(existing, capability)) {
+          bySetKey.set(`${key}::${capability.id}`, capability);
+        }
       }
     }
     const anchored = [...bySetKey.values()];

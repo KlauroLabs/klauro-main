@@ -390,6 +390,10 @@ test('requires audience identity in both the bound title and description', () =>
     { ...people, criticality_factors: [`catalog-outcome-requirement:${human.id}`] },
     { ...agents, criticality_factors: [`catalog-outcome-requirement:${agent.id}`] },
   ), false);
+  assert.equal(capabilityCatalogOutcomesMayMerge(
+    { ...people, criticality_factors: [] },
+    { ...people, criticality_factors: [] },
+  ), false);
 });
 
 test('initial one-to-one stamping cannot bind actorless or mixed-audience identities', () => {

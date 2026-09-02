@@ -599,7 +599,7 @@ export function capabilityCatalogOutcomesMayMerge(
     .filter(factor => factor.startsWith('catalog-outcome-requirement:'))
     .map(factor => factor.slice('catalog-outcome-requirement:'.length)))].sort();
   const leftIds = ids(left); const rightIds = ids(right);
-  return leftIds.length === rightIds.length && leftIds.every((id, index) => id === rightIds[index]);
+  return leftIds.length > 0 && leftIds.length === rightIds.length && leftIds.every((id, index) => id === rightIds[index]);
 }
 
 export function uncoveredCapabilityCatalogOutcomeRequirements(

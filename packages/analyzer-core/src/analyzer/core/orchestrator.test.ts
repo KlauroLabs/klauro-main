@@ -316,6 +316,57 @@ test('capability merging collapses singular and plural read outcomes with shared
   );
 });
 
+test('capability merging collapses grammatical action variants but preserves inverse outcomes', () => {
+  const operation = { entry_point_id: 'article-favorite', entry_point_type: 'http', action: 'update' };
+  const capability = (id: string, name: string): SystemCapability => ({
+    id,
+    name,
+    description: 'Users control whether an article is included in their favorites.',
+    name_source: 'ai',
+    description_source: 'ai',
+    category: 'core',
+    operations: [operation],
+    related_entities: ['entity_article'],
+    related_domains: ['article'],
+    criticality: 'high',
+    criticality_factors: ['catalog-candidate:cap_article_favorites'],
+  });
+
+  const merged = (new AnalyzerOrchestrator() as any).dedupeSystemCapabilitiesByName([
+    capability('favorite-an-article', 'Favorite an article'),
+    capability('favorite-articles', 'Favorite articles'),
+    capability('unfavorite-articles', 'Unfavorite articles'),
+  ]);
+
+  assert.equal(merged.length, 2);
+  assert.equal(merged.filter((item: SystemCapability) => item.name.startsWith('Favorite')).length, 1);
+  assert.equal(merged.filter((item: SystemCapability) => item.name.startsWith('Unfavorite')).length, 1);
+});
+
+test('capability merging collapses equivalent comment outcomes with shared evidence', () => {
+  const operation = { entry_point_id: 'comment-create', entry_point_type: 'http', action: 'create' };
+  const capability = (id: string, name: string): SystemCapability => ({
+    id,
+    name,
+    description: 'Users add comments to published articles.',
+    name_source: 'ai',
+    description_source: 'ai',
+    category: 'core',
+    operations: [operation],
+    related_entities: ['entity_comment'],
+    related_domains: ['article'],
+    criticality: 'high',
+    criticality_factors: ['catalog-candidate:cap_article_comments'],
+  });
+
+  const merged = (new AnalyzerOrchestrator() as any).dedupeSystemCapabilitiesByName([
+    capability('post-a-comment', 'Post a comment'),
+    capability('create-comments', 'Create comments on articles'),
+  ]);
+
+  assert.equal(merged.length, 1);
+});
+
 test('authored outcomes subsume same-evidence deterministic lifecycle fallbacks across generated ids', () => {
   const operations = [
     { entry_point_id: 'exports-index', entry_point_type: 'http', action: 'read', path_or_command: '/family_exports' },
