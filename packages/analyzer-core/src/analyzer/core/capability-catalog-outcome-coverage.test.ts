@@ -623,8 +623,11 @@ test('preserves complete outcome clauses from a feature-rich README instead of e
   assert.ok(statements.includes('keep track of your job applications'));
   assert.equal(requirements.find(requirement => requirement.statement === 'keep track of your job applications')?.candidateIds.includes('jobs'), true);
   assert.equal(statements.includes('Categorize and seamlessly manage your job applications'), false);
-  assert.equal(statements.filter(statement => /^categorize/i.test(statement)).length, 1);
-  assert.ok(statements.some(statement => statement.startsWith('categorize your applications by creating different categories') && statement.includes('edit or delete your categories')));
+  assert.equal(statements.filter(statement => /^categorize/i.test(statement)).length, 1, JSON.stringify(requirements));
+  const categorization = requirements.find(requirement =>
+    requirement.statement.startsWith('categorize your applications by creating different categories'));
+  assert.ok(categorization?.statement.includes('edit or delete your categories'));
+  assert.deepEqual(categorization?.candidateIds.sort(), ['categories', 'jobs']);
   assert.ok(statements.some(statement => statement.startsWith('manage your application status') && statement.includes('Interview or set it to closed')));
   assert.ok(statements.some(statement => statement.startsWith('delete or edit your job applications') && statement.includes('add notes to your job applications')));
   const jobManagement = requirements.find(requirement => requirement.statement.startsWith('delete or edit your job applications'))!;

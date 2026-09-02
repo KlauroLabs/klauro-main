@@ -363,19 +363,28 @@ export function deriveCapabilityCatalogOutcomeRequirements(
     }
   }
   const ordered = [...requirements.values()];
-  return ordered.filter((requirement, index) => {
-    if (requirement.firstPartyOutcomeText?.includes(':')) return true;
-    const detailed = ordered.find((candidate, candidateIndex) =>
-      candidateIndex !== index &&
-      (candidate.firstPartyOutcomeText?.includes(':') || (
-        /\bby\b/i.test(candidate.firstPartyOutcomeText || '') &&
-        candidate.candidateIds.some(candidateId => requirement.candidateIds.includes(candidateId))
-      )) &&
-      candidate.audience === requirement.audience &&
-      (candidate.visibleActionTerms || []).some(action => requirement.visibleActionTerms?.includes(action)) &&
-      candidate.subjectTokens.some(token => requirement.subjectTokens.includes(token)));
-    return !detailed;
-  });
+  const redundantRequirementIds = new Set<string>();
+  for (const requirement of ordered) {
+    if (requirement.firstPartyOutcomeText?.includes(':')) continue;
+    const detailed = ordered.find(candidate => {
+      if (candidate.id === requirement.id ||
+          (!candidate.firstPartyOutcomeText?.includes(':') && !/\bby\b/i.test(candidate.firstPartyOutcomeText || '')) ||
+          candidate.audience !== requirement.audience ||
+          !(candidate.visibleActionTerms || []).some(action => requirement.visibleActionTerms?.includes(action))) return false;
+      const requirementTextSubjects = tokens(
+        outcomeClauseBody(requirement.firstPartyOutcomeText || requirement.statement), true,
+      ).filter(token => !subjectStopwords.has(token));
+      const candidateTextSubjects = new Set(tokens(
+        outcomeClauseBody(candidate.firstPartyOutcomeText || candidate.statement), true,
+      ).filter(token => !subjectStopwords.has(token)));
+      const sharedSubjects = requirementTextSubjects.filter(token => candidateTextSubjects.has(token));
+      return sharedSubjects.length >= Math.min(2, requirementTextSubjects.length);
+    });
+    if (!detailed) continue;
+    detailed.candidateIds = [...new Set([...detailed.candidateIds, ...requirement.candidateIds])];
+    redundantRequirementIds.add(requirement.id);
+  }
+  return ordered.filter(requirement => !redundantRequirementIds.has(requirement.id));
 }
 
 function capabilityMatchesAudience(capabilityText: string, audience?: 'agent' | 'human'): boolean {
