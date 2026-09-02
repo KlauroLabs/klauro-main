@@ -831,15 +831,8 @@ export function fullyCoveredAggregateCapabilityCandidateIds(
   );
   for (const candidate of candidates) {
     if (candidate.id.startsWith('operation-obligation:')) continue;
-    const exactScopes = [...(completeContext.obligationScopes?.values() || [])]
-      .filter(scope => scope.parentCandidateId === candidate.id);
-    const allExactScopesCited = exactScopes.length > 0 && exactScopes.every(scope =>
-      published.some(capability => (capability.criticality_factors || [])
-        .includes(`catalog-operation-obligation:${scope.id}`)));
-    if (allExactScopesCited && !uncoveredAggregateIds.has(candidate.id)) {
-      covered.add(candidate.id);
-      continue;
-    }
+    const exactScopes = [...(completeContext.obligationScopes?.values() || [])].filter(scope => scope.parentCandidateId === candidate.id); const allExactScopesCited = exactScopes.length > 0 && exactScopes.every(scope => published.some(capability => (capability.criticality_factors || []).includes(`catalog-operation-obligation:${scope.id}`)));
+    if (allExactScopesCited && !uncoveredAggregateIds.has(candidate.id)) { covered.add(candidate.id); continue; }
     const requiredEffects = scopedRequiredEffects(candidate, completeContext);
     if (requiredEffects.length === 0 || (scopedParentIds.has(candidate.id)
       ? uncoveredAggregateIds.has(candidate.id)
