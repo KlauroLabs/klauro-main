@@ -29,10 +29,7 @@ export interface CapabilityCatalogProjectSignal {
   summary?: string;
   productVocabulary?: string[];
 }
-export interface CapabilityCatalogEntityFact {
-  fields: string[];
-  name: string;
-}
+export { catalogPromptEntities, type CapabilityCatalogEntityFact } from './capability-catalog-prompt-entities';
 export function capabilityCatalogAiPhaseStatus(
   coverage?: { evidence_families: number; status: 'accepted' | 'partial' | 'rejected' | 'unavailable' },
 ): 'complete' | 'degraded' {
@@ -918,18 +915,6 @@ export function catalogEntityCandidateGroups(candidates: SystemCapability[]): st
     .sort((left, right) => left[0].localeCompare(right[0]));
 }
 
-export function catalogPromptEntities(
-  dataEntities: CASDataEntity[],
-  candidates: SystemCapability[],
-  limit = 18,
-): CapabilityCatalogEntityFact[] {
-  const candidateEntityIds = new Set(candidates.flatMap(candidate => candidate.related_entities || []));
-  return dataEntities
-    .filter(entity => entity.kind === 'persisted-entity' || entity.kind === 'api-response' || candidateEntityIds.has(entity.id))
-    .sort((left, right) => (right.fields?.length || 0) - (left.fields?.length || 0) || left.name.localeCompare(right.name))
-    .slice(0, limit)
-    .map(entity => ({ name: entity.name, fields: (entity.fields || []).slice(0, 6).map(field => field.name) }));
-}
 
 export function catalogEvidenceCoverageFailure(
   reconciled: readonly SystemCapability[],

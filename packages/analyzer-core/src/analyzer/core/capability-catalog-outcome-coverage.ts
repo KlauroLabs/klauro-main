@@ -463,6 +463,14 @@ export function conciseCapabilityCatalogOutcomeName(
   if (detailTokens.length < 2 || !detailTokens.every(token => supportingTokens.has(token))) return normalized;
   return transition[1].trim();
 }
+export function sanitizeCapabilityCatalogDescription(description: string): string {
+  return String(description || '')
+    .replace(/\s+(?:through|using|via)\s+(?:the\s+)?[^.,;]{0,80}\b(?:api|apis|routes?|endpoints?|operations?|controllers?)\b[^.,;]*/gi, '')
+    .replace(/\b[a-z]+:\/[^\s.]*/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 
 export function capabilityCandidateCorroboratesCatalogOutcomeRequirement(
   candidate: SystemCapability,

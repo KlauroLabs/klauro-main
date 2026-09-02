@@ -180,7 +180,7 @@ import {
   synchronizeCapabilityCatalogCoverage,
 } from './capability-catalog-evidence';
 import { mergeCapabilityCatalogFlowEvidence } from './capability-catalog-flow-evidence';
-import { bindAtomicallySatisfiedCatalogOutcomeRequirements, bindUniquelySatisfiedCatalogOutcomeRequirements, canonicalCapabilityCatalogOutcomeToken, capabilityCatalogCoverageFailure, capabilityCatalogOutcomeBindingFailureDetail, capabilityCatalogOutcomeNameFailure, capabilityCatalogOutcomesMayMerge, capabilityCatalogTargetedOutcomeText, capabilitySemanticallySatisfiesCatalogOutcomeRequirement, conciseCapabilityCatalogOutcomeName, deriveCapabilityCatalogOutcomeRequirements, uncoveredCapabilityCatalogOutcomeRequirements, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
+import { bindAtomicallySatisfiedCatalogOutcomeRequirements, bindUniquelySatisfiedCatalogOutcomeRequirements, canonicalCapabilityCatalogOutcomeToken, capabilityCatalogCoverageFailure, capabilityCatalogOutcomeBindingFailureDetail, capabilityCatalogOutcomeNameFailure, capabilityCatalogOutcomesMayMerge, capabilityCatalogTargetedOutcomeText, capabilitySemanticallySatisfiesCatalogOutcomeRequirement, conciseCapabilityCatalogOutcomeName, deriveCapabilityCatalogOutcomeRequirements, sanitizeCapabilityCatalogDescription, uncoveredCapabilityCatalogOutcomeRequirements, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
 import { fitCapabilityCatalogContext } from './ai-context-budget';
 import { awaitAiOperation } from './ai-operation-timing';
 import { capabilityDescriptionBatchSize, resolveCapabilityCatalogRoute, resolveCapabilityDescriptionRoute, shouldReauthorCapabilityDescriptions, toAIContextRoute } from './ai-task-model-routing';
@@ -9064,20 +9064,10 @@ export class AnalyzerOrchestrator {
       const itemEntityNamesRaw = (Array.isArray(item.entities) ? item.entities : []).map((value: unknown) => String(value || '')).filter(Boolean);
       let description = String(item.description || '');
       if (/^\s*\{/.test(description) || /"description"\s*:|key_capabilities/i.test(description)) description = '';
-      description = description
-        .replace(/\s+(?:through|using|via)\s+(?:the\s+)?[^.,;]{0,80}\b(?:api|apis|routes?|endpoints?|operations?|controllers?)\b[^.,;]*/gi, '')
-        .replace(/\b[a-z]+:\/[^\s.]*/gi, '')
-        .replace(/\s+/g, ' ').trim();
+      description = sanitizeCapabilityCatalogDescription(description);
       description = this.repairStrippedSentenceGrammar(description);
-      const requiredOutcome = input.requiredOutcomeRequirements?.find(requirement =>
-        requirement.id === (input.requiredOutcomeRequirements?.length === 1
-          ? input.requiredOutcomeRequirements[0].id
-          : String(item.requirement_id || '')),
-      );
-      name = conciseCapabilityCatalogOutcomeName(
-        name,
-        `${description} ${requiredOutcome ? capabilityCatalogTargetedOutcomeText(requiredOutcome) : ''}`,
-      );
+      const requiredOutcome = input.requiredOutcomeRequirements?.find(requirement => requirement.id === (input.requiredOutcomeRequirements?.length === 1 ? input.requiredOutcomeRequirements[0].id : String(item.requirement_id || '')));
+      name = conciseCapabilityCatalogOutcomeName(name, `${description} ${requiredOutcome ? capabilityCatalogTargetedOutcomeText(requiredOutcome) : ''}`);
       if (description.length < 25 && itemEntityNamesRaw.length) {
         description = `${name} manages ${itemEntityNamesRaw.slice(0, 4).join(', ')}.`;
       }
