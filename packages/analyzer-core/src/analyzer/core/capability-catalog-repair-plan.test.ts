@@ -176,6 +176,16 @@ describe('capability catalog repair planning', () => {
     });
     assert.equal(bySource?.description, 'Operators can track requests by source as part of their normal workflow whenever needed.');
 
+    const managedEvidence = evidence('managed-evidence', 'Job Application', ['manage']);
+    const boundOutcome = deterministicCapabilityDescriptionFallback({
+      identity: { ...capability('tracked', [
+        'catalog-candidate:managed-evidence',
+        'catalog-outcome-requirement:all:job-keep',
+      ]), name: 'Keep track of job applications' },
+      evidenceCandidates: [managedEvidence], audience: 'Users', firstPartyTexts: [], validate: allow,
+    });
+    assert.equal(boundOutcome?.description, 'Users can keep track of job applications as those job applications change over time.');
+
     const exactFirstPartyOverride = deterministicCapabilityDescriptionFallback({
       identity: { ...capability('remove-source', ['catalog-candidate:source-evidence']), name: 'Remove tracked requests' },
       evidenceCandidates: [sourceEvidence], audience: 'Operators',

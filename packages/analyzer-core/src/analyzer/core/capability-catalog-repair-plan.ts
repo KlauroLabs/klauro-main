@@ -285,7 +285,8 @@ export function deterministicCapabilityDescriptionFallback(args: {
     return candidateSubjects.some(evidence =>
       titleSubjects.some(subject => subjectMatches(subject, evidence)));
   });
-  if (!exactSentence && !supportedTitleActions.some(action => actions.includes(action))) return undefined;
+  const firstPartyOutcomeBound = factors(args.identity, 'catalog-outcome-requirement:').length > 0;
+  if (!exactSentence && !supportedTitleActions.some(action => actions.includes(action)) && !firstPartyOutcomeBound) return undefined;
   const authoredExactGroupedLifecycle = resolvedCandidates.length > 1 &&
     candidateIds.every(candidateId => candidateId.startsWith('operation-obligation:')) &&
     titleGroundsEveryCandidate &&
@@ -355,6 +356,9 @@ export function deterministicCapabilityDescriptionFallback(args: {
         ? 'from first use through later changes, including when they no longer need them'
         : 'as their needs change over time';
       return `${audience} can ${normalizedTitle} ${continuity}.`;
+    }
+    if (firstPartyOutcomeBound) {
+      return `${audience} can ${normalizedTitle} as those ${subjectPhrase} change over time.`;
     }
     return `${audience} can ${normalizedTitle} as part of their normal workflow whenever needed.`;
   })();
