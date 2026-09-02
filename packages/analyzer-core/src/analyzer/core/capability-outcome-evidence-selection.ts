@@ -85,11 +85,11 @@ export function selectMultiActionOutcomeCandidateIds(
       .sort((left, right) =>
         right.actionMatches - left.actionMatches ||
         right.distinctiveMatches - left.distinctiveMatches ||
+        left.group.evidenceRank - right.group.evidenceRank ||
+        left.group.aggregateRank - right.group.aggregateRank ||
         right.identityMatches - left.identityMatches ||
         right.symbolMatches - left.symbolMatches ||
         right.subjectMatches - left.subjectMatches ||
-        left.group.evidenceRank - right.group.evidenceRank ||
-        left.group.aggregateRank - right.group.aggregateRank ||
         left.group.id.localeCompare(right.group.id));
     const best = ranked[0];
     if (best && !selected.includes(best.group.id)) selected.push(best.group.id);

@@ -537,10 +537,10 @@ test('removes identity prose and prior-clause references from broad supporting e
 });
 
 test('pairs each action with its subject and folds exact operation evidence into the parent family', () => {
-  const evidence = (id: string, values: string[]) => ({
+  const evidence = (id: string, values: string[], aggregateRank = 0, evidenceRank = 0) => ({
     id,
-    aggregateRank: 0,
-    evidenceRank: 0,
+    aggregateRank,
+    evidenceRank,
     identityTokens: new Set(values),
     symbolTokens: new Set(values),
     tokens: new Set(values),
@@ -555,6 +555,7 @@ test('pairs each action with its subject and folds exact operation evidence into
       evidence('categories', ['create', 'edit', 'delete', 'category']),
       evidence('notes', ['add', 'delete', 'note', 'job', 'application']),
       evidence('operation-obligation:notes:0123456789abcdef', ['edit', 'note', 'job', 'application']),
+      evidence('route-add-note', ['add', 'note', 'job', 'application'], 1),
     ],
     tokenize,
     token => purposeVerbs.has(token),
