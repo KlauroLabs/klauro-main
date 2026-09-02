@@ -107,7 +107,7 @@ describe('mergeCapabilityCatalogFlowEvidence', () => {
       { productDocSummary: 'Get customers by id provides customer records.' },
     );
 
-    expect(classified.find(candidate => candidate.id === primary.id)?.evidence_role).toBe('product-outcome');
+    expect(classified.find(candidate => candidate.id === primary.id)?.evidence_role).toBe('unresolved');
     expect(classified.find(candidate => candidate.id === supporting.id)?.evidence_role).toBe('supporting-mechanism');
   });
 

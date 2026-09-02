@@ -714,20 +714,25 @@ export function classifyCapabilityEvidence(
       const externalReach = capabilityHasExternalReach(candidate, entryPointById);
       const productEntity = candidateHasProductEntity(candidate, entityById, projectTextSignal);
       const userOutcomeJourney = capabilityHasUserOutcomeJourney(candidate, context.userJourneys || []);
-      const firstPartyCoreOutcome = firstParty && candidate.category === 'core' &&
+      const deliverySurfaceShapedCandidate =
+        /^(?:get|post|put|patch|delete)\s+\//i.test(candidate.name) ||
+        /\b(?:click|change|close|submit|mouse\s*leave)\s*$/i.test(candidate.name) ||
+        /\b(?:controller|handler|route|endpoint|modal)\b/i.test(candidate.name);
+      const firstPartyCoreOutcome = !deliverySurfaceShapedCandidate && firstParty && candidate.category === 'core' &&
         productTextCorroboratesActionAndSubject(candidate, projectTextSignal);
       const userFacingLifecycle = capabilityHasUserFacingLifecycleBreadth(candidate, entryPointById);
-      const mechanismShapedCandidate = /\b(?:workflow|service|controller|handler|repository|layer|settings|configuration)\b/i.test(candidate.name);
+      const mechanismShapedCandidate = deliverySurfaceShapedCandidate ||
+        /\b(?:workflow|service|repository|layer|settings|configuration)\b/i.test(candidate.name);
       const outcomeShapedCandidate = outcomeIdentityTokens(candidate.name).length >= 2 &&
         !mechanismShapedCandidate &&
         !isCrudInventoryCapabilityLabel(candidate.name) &&
         !isGenericManagementCapabilityLabel(candidate.name);
       const actionHeadedOutcome = !isBareNounCapabilityLabel(candidate.name);
       const interpretableOutcomeEvidence = outcomeShapedCandidate || firstParty;
-      const terminalOutcomeEvidence = interpretableOutcomeEvidence && userOutcomeJourney &&
+      const terminalOutcomeEvidence = !deliverySurfaceShapedCandidate && interpretableOutcomeEvidence && userOutcomeJourney &&
         (candidate.evidence_kind !== 'behavior-surface' || operations.length > 1 || firstParty);
-      const externallyReachableOutcomeEvidence = interpretableOutcomeEvidence && actionHeadedOutcome && externalReach && productEntity && operations.length > 1;
-      const lifecycleOutcomeEvidence = interpretableOutcomeEvidence && userFacingLifecycle;
+      const externallyReachableOutcomeEvidence = !deliverySurfaceShapedCandidate && interpretableOutcomeEvidence && actionHeadedOutcome && externalReach && productEntity && operations.length > 1;
+      const lifecycleOutcomeEvidence = !deliverySurfaceShapedCandidate && interpretableOutcomeEvidence && userFacingLifecycle;
       if (firstPartyCoreOutcome || terminalOutcomeEvidence || externallyReachableOutcomeEvidence || lifecycleOutcomeEvidence) {
         evidenceRole = 'product-outcome';
         if (firstPartyCoreOutcome) reasons.push('first-party-product-text');

@@ -18578,7 +18578,7 @@ export class AnalyzerOrchestrator {
         .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
         .toLowerCase()
         .replace(/^\s*(?:lets|allows|enables)\s+users\s+(?:to\s+)?/i, '')
-        .replace(/^\s*(provides?|surfaces?|tracks?|exposes?|manages?|monitors?|secures?|handles?|enforces?|settles?|delivers?|renders?|displays?|shows?|creates?|updates?|deletes?|lists?|views?|adds?|removes?|edits?|trains?|syncs?|synchronizes?|synchronises?)\s+/i, '')
+        .replace(/^\s*(provides?|surfaces?|tracks?|categorizes?|categorises?|organizes?|organises?|classifies?|groups?|exposes?|manages?|monitors?|secures?|handles?|enforces?|settles?|delivers?|renders?|displays?|shows?|creates?|updates?|deletes?|lists?|views?|adds?|removes?|edits?|trains?|syncs?|synchronizes?|synchronises?)\s+/i, '')
         .replace(/\s+(results?|insights?|data|info|information|details?|records?|entries?|items?)\s*$/i, '')
         .replace(/\s+capabilit(?:y|ies)\s*$/i, '')
         .replace(/\s+(?:management|maintenance)\s*$/i, '')
@@ -18604,6 +18604,8 @@ export class AnalyzerOrchestrator {
         .replace(/^\s*(?:lets|allows|enables)\s+users\s+(?:to\s+)?/i, '')
         .match(/^[a-z]+/)?.[0] || '';
       if (/^(?:create|update|delete|manage|add|remove|edit|write|modify)/.test(action)) return 'mutate';
+      if (/^(?:categorize|categorise|organize|organise|classify|group)/.test(action) ||
+        (/^track/.test(action) && /\bby\b/i.test(capability.name))) return 'organize';
       if (/^(?:sync|synchronize|synchronise)/.test(action)) return 'synchronize';
       if (/^(?:provide|surface|track|monitor|display|show|view|list|access|retrieve|expose)/.test(action)) return 'observe';
       if (/^(?:attach|correlate|secure|handle|enforce|settle|deliver|render|train)/.test(action)) {
@@ -18639,7 +18641,11 @@ export class AnalyzerOrchestrator {
       const sameEvidenceIdentity = [...leftCandidateIds].some(candidateId => exactCatalogCandidateKey(right).split('|').includes(candidateId)) &&
         exactRequirementKey(left) === exactRequirementKey(right) &&
         hasExactEntityAndOperationEvidence(left, right) && unboundOutcomesMayMerge(left, right);
-      if (!sameEvidenceIdentity && !capabilityCatalogOutcomesMayMerge(left, right)) return false;
+      const leftHasBoundOutcome = exactRequirementKey(left).length > 0;
+      const rightHasBoundOutcome = exactRequirementKey(right).length > 0;
+      const compatibleBoundAndUnboundOutcome = leftHasBoundOutcome !== rightHasBoundOutcome &&
+        unboundOutcomesMayMerge(left, right);
+      if (!sameEvidenceIdentity && !capabilityCatalogOutcomesMayMerge(left, right) && !compatibleBoundAndUnboundOutcome) return false;
       if (hasExactEntityAndOperationEvidence(left, right)) return true;
       const hasBoundOutcome = [left, right].some(capability =>
         (capability.criticality_factors || []).some(factor => factor.startsWith('catalog-outcome-requirement:')));
@@ -18762,7 +18768,7 @@ export class AnalyzerOrchestrator {
       for (const other of survivors) {
         if (other === capability || removed.has(other) || removed.has(capability)) continue;
         if (primaryEntityOf(other) !== primary) continue;
-        if (subjectPhraseOf(other) !== subject) continue;
+        if (!unboundOutcomesMayMerge(capability, other)) continue;
         const otherDomains = new Set((other.related_domains || []).map(d => normalizeEntityRef(String(d))));
         const domainOverlap = domains.size === 0 || otherDomains.size === 0 ||
           [...domains].some(d => otherDomains.has(d));

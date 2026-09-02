@@ -105,6 +105,37 @@ describe('orchestrator: dedupeSystemCapabilitiesByEntitySet — equal-size ident
     expect(byId.get('capability_b')!.related_entities).toEqual(['entity_workspaceaccess', 'entity_user']);
   });
 
+  it('merges synonymous organization outcomes while preserving their complete evidence and authored binding', () => {
+    const categorized = capability({
+      id: 'capability_categorize_applications',
+      name: 'Categorize job applications',
+      related_entities: ['entity_category'],
+      operations: [op('category-read')],
+      criticality_factors: ['catalog-candidate:cap_category_management'],
+    });
+    const organized = capability({
+      id: 'capability_organize_applications',
+      name: 'Organize job applications by category',
+      related_entities: ['entity_category'],
+      operations: [op('category-write')],
+      criticality_factors: ['catalog-outcome-requirement:all:category-create'],
+    });
+    const tracked = capability({
+      id: 'capability_track_applications',
+      name: 'Track job applications by category',
+      related_entities: ['entity_category'],
+      operations: [op('category-filter')],
+    });
+
+    const result: SystemCapability[] = orch.dedupeSystemCapabilitiesByEntitySet([categorized, organized, tracked]);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].operations.map(operation => operation.entry_point_id).sort()).toEqual([
+      'category-filter', 'category-read', 'category-write',
+    ]);
+    expect(result[0].criticality_factors).toContain('catalog-outcome-requirement:all:category-create');
+  });
+
   it('preserves distinct product outcomes when their operation sets overlap', () => {
     const sharedOperations = [op('get_context'), op('inspect_graph')];
     const graph = capability({

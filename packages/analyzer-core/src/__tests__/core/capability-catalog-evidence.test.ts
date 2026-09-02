@@ -310,6 +310,49 @@ describe('capability evidence roles', () => {
     expect(catalogRequiredEvidenceCandidates([classified])).toEqual([]);
   });
 
+  test('keeps route and UI event delivery surfaces as evidence rather than outcomes', () => {
+    const route = candidate('jobsites', 'Get /Job/Job Sites/:User Id', 'core', ['Read', 'Click']);
+    route.related_entities = ['entity_job'];
+    route.operations[0].entry_point_id = 'jobsites-page';
+    route.operations[1].entry_point_id = 'jobsites-click';
+    const handler = candidate('category-click', 'Manage Categories Click', 'core', ['Click', 'Click']);
+    handler.related_entities = ['entity_category'];
+    handler.operations.forEach((operation, index) => { operation.entry_point_id = `category-click-${index}`; });
+    const classified = classifyCapabilityEvidence(
+      [route, handler],
+      [
+        entity('entity_job', 'Job', 'persisted-entity', true),
+        entity('entity_category', 'Category', 'persisted-entity', true),
+      ],
+      { productDocSummary: 'Organize job applications into categories and filter them by job site.' },
+      {
+        entryPoints: [
+          { id: 'jobsites-page', source_node: 'jobsites-node', type: 'http', name: 'GET /job/job-sites/:userId', interaction_reach: 'external' },
+          { id: 'jobsites-click', source_node: 'jobsites-click-node', type: 'event', name: 'Jobsites click', interaction_reach: 'external' },
+        ] as any,
+        userJourneys: [
+          {
+            id: 'jobsites-journey', name: 'View job sites', journey_kind: 'user-facing',
+            entry_point_id: 'jobsites-page', entry: { type: 'http', name: 'Job Sites' }, steps: [],
+            terminal_effects: { entities_written: [], entities_read: ['Job'], external_services: [], messages_emitted: [] },
+            terminal_entities: [], security_boundaries: [], tests_covering: [], criticality: 'medium',
+            call_chain_ids: [], exit_point_ids: [],
+          },
+          {
+            id: 'category-journey', name: 'Organize applications', journey_kind: 'user-facing',
+            entry_point_id: 'category-click-0', entry: { type: 'event', name: 'Categories click' }, steps: [],
+            terminal_effects: { entities_written: ['Category'], entities_read: [], external_services: [], messages_emitted: [] },
+            terminal_entities: [], security_boundaries: [], tests_covering: [], criticality: 'medium',
+            call_chain_ids: [], exit_point_ids: [],
+          },
+        ] as any,
+      },
+    );
+
+    expect(classified.map(item => item.evidence_role)).toEqual(['unresolved', 'unresolved']);
+    expect(catalogRequiredEvidenceCandidates(classified)).toEqual([]);
+  });
+
   test('keeps uncorroborated production-mounted test routes out of required product outcomes', () => {
     const verification = candidate('capability_test', 'Get API test family access', 'core', ['Read', 'Read']);
     verification.structural_label = 'API test';
