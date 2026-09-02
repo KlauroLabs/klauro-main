@@ -18568,7 +18568,7 @@ export class AnalyzerOrchestrator {
       subjectPhraseOf(capability)
         .split(/\s+/)
         .map(token => this.stemTerminologyToken(token))
-        .filter(token => token.length >= 3 && !['from', 'via', 'with', 'using'].includes(token) && !this.isGenericCapabilityToken(token)),
+        .filter(token => token.length >= 3 && !['from', 'via', 'with', 'using'].includes(token)),
     );
     const subjectsSemanticallyOverlap = (left: SystemCapability, right: SystemCapability): boolean => {
       const leftTokens = semanticSubjectTokens(left);
@@ -18634,7 +18634,7 @@ export class AnalyzerOrchestrator {
       const leftCandidateIds = new Set(exactCatalogCandidateKey(left).split('|').filter(Boolean));
       const sameEvidenceIdentity = [...leftCandidateIds].some(candidateId => exactCatalogCandidateKey(right).split('|').includes(candidateId)) &&
         exactRequirementKey(left) === exactRequirementKey(right) &&
-        hasExactEntityAndOperationEvidence(left, right) && unboundOutcomesMayMerge(left, right);
+        subjectsSemanticallyOverlap(left, right);
       const leftHasBoundOutcome = exactRequirementKey(left).length > 0;
       const rightHasBoundOutcome = exactRequirementKey(right).length > 0;
       const compatibleBoundAndUnboundOutcome = leftHasBoundOutcome !== rightHasBoundOutcome &&
@@ -18643,7 +18643,7 @@ export class AnalyzerOrchestrator {
         (hasExactEntityAndOperationEvidence(left, right) || unboundOutcomesMayMerge(left, right));
       if (!sameEvidenceIdentity && !capabilityCatalogOutcomesMayMerge(left, right) &&
         !compatibleBoundAndUnboundOutcome && !compatibleUnboundOutcomes) return false;
-      if (hasExactEntityAndOperationEvidence(left, right)) return true;
+      if (sameEvidenceIdentity || hasExactEntityAndOperationEvidence(left, right)) return true;
       const hasBoundOutcome = [left, right].some(capability =>
         (capability.criticality_factors || []).some(factor => factor.startsWith('catalog-outcome-requirement:')));
       return hasBoundOutcome || unboundOutcomesMayMerge(left, right);
@@ -18767,12 +18767,12 @@ export class AnalyzerOrchestrator {
       const domains = new Set((capability.related_domains || []).map(d => normalizeEntityRef(String(d))));
       for (const other of survivors) {
         if (other === capability || removed.has(other) || removed.has(capability)) continue;
-        if (primaryEntityOf(other) !== primary) continue;
-        if (!unboundOutcomesMayMerge(capability, other)) continue;
+        const crossEntityOutcome = Boolean(exactRequirementKey(capability)) !== Boolean(exactRequirementKey(other)) && purposeActionClass(capability) === purposeActionClass(other) && subjectsSemanticallyOverlap(capability, other); if (primaryEntityOf(other) !== primary && !crossEntityOutcome) continue;
+        if (!unboundOutcomesMayMerge(capability, other) && !(exactRequirementKey(capability) === exactRequirementKey(other) && exactCatalogCandidateKey(capability).split('|').some(candidateId => candidateId && exactCatalogCandidateKey(other).split('|').includes(candidateId)) && subjectsSemanticallyOverlap(capability, other))) continue;
         const otherDomains = new Set((other.related_domains || []).map(d => normalizeEntityRef(String(d))));
         const domainOverlap = domains.size === 0 || otherDomains.size === 0 ||
           [...domains].some(d => otherDomains.has(d));
-        if (!domainOverlap) continue;
+        if (!domainOverlap && !crossEntityOutcome) continue;
         if (richness(capability) >= richness(other)) mergeInto(capability, other);
         else mergeInto(other, capability);
       }

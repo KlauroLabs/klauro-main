@@ -367,6 +367,67 @@ test('capability merging collapses equivalent comment outcomes with shared evide
   assert.equal(merged.length, 1);
 });
 
+test('capability merging reconciles complementary lifecycle and cross-entity outcome evidence', () => {
+  const capability = (
+    id: string,
+    name: string,
+    entity: string,
+    operation: SystemCapability['operations'][number],
+    factors: string[],
+  ): SystemCapability => ({
+    id,
+    name,
+    description: `Users ${name.toLowerCase()}.`,
+    name_source: 'ai',
+    description_source: 'ai',
+    category: 'core',
+    operations: [operation],
+    related_entities: [entity],
+    related_domains: [entity.replace(/^entity_/, '')],
+    criticality: 'high',
+    criticality_factors: factors,
+  });
+  const orchestrator = new AnalyzerOrchestrator() as any;
+  const notes = orchestrator.dedupeSystemCapabilitiesByName([
+    capability(
+      'attach-notes',
+      'Attach notes to job applications',
+      'entity_note',
+      { entry_point_id: 'note-update', entry_point_type: 'http', action: 'update' },
+      ['catalog-candidate:cap_note_management'],
+    ),
+    capability(
+      'track-notes',
+      'Track job application notes',
+      'entity_note',
+      { entry_point_id: 'note-read', entry_point_type: 'http', action: 'read' },
+      ['catalog-candidate:cap_note_management'],
+    ),
+  ]);
+  assert.equal(notes.length, 1);
+  assert.deepEqual(new Set(notes[0].operations.map((operation: SystemCapability['operations'][number]) => operation.entry_point_id)), new Set(['note-update', 'note-read']));
+
+  const categories = orchestrator.dedupeSystemCapabilitiesByName([
+    capability(
+      'organize-categories',
+      'Organize job applications by category',
+      'entity_category',
+      { entry_point_id: 'category-create', entry_point_type: 'http', action: 'create' },
+      ['catalog-candidate:cap_category_management'],
+    ),
+    capability(
+      'categorize-jobs',
+      'Categorize job applications',
+      'entity_job',
+      { entry_point_id: 'job-category-update', entry_point_type: 'http', action: 'update' },
+      ['catalog-outcome-requirement:all:categorize-jobs', 'catalog-candidate:cap_job_management'],
+    ),
+  ]);
+  assert.equal(categories.length, 1);
+  assert.deepEqual(new Set(categories[0].related_entities), new Set(['entity_category', 'entity_job']));
+  assert.deepEqual(new Set(categories[0].operations.map((operation: SystemCapability['operations'][number]) => operation.entry_point_id)), new Set(['category-create', 'job-category-update']));
+});
+
 test('authored outcomes subsume same-evidence deterministic lifecycle fallbacks across generated ids', () => {
   const operations = [
     { entry_point_id: 'exports-index', entry_point_type: 'http', action: 'read', path_or_command: '/family_exports' },
