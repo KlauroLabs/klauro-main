@@ -380,7 +380,8 @@ describe('capability catalog repair planning', () => {
 
     assert.match(task, /Access job sites by user/);
     assert.match(task, /stable_capability_name/);
-    assert.match(task, /description that explains that exact named outcome/);
+    assert.match(task, /explain that exact audience outcome/);
+    assert.match(task, /attached operations retain complete lifecycle proof/);
     assert.match(nudge, /missing description/);
     assert.match(nudge, /Remove marketing-language token organized/);
     assert.match(nudge, /forbidden_subject_terms is prohibited from both name and description/);
