@@ -362,7 +362,8 @@ export function deriveCapabilityCatalogOutcomeRequirements(
   const ordered = [...requirements.values()];
   return ordered.filter((requirement, index) => {
     if (requirement.firstPartyOutcomeText?.includes(':')) return true;
-    const detailed = ordered.slice(index + 1, index + 3).find(candidate =>
+    const detailed = ordered.find((candidate, candidateIndex) =>
+      candidateIndex !== index &&
       candidate.firstPartyOutcomeText?.includes(':') &&
       candidate.audience === requirement.audience &&
       (candidate.visibleActionTerms || []).some(action => requirement.visibleActionTerms?.includes(action)) &&
