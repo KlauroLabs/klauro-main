@@ -270,6 +270,7 @@ export function capabilityMarketingLanguageTerms(text: string): string[] {
 }
 const IMPLEMENTATION_PROSE_PATTERN = /\b(?:cli|command[- ]line)\s+(?:entry\s+point|command|interface)\b|\b(?:source[- ]code|implementation)\s+(?:type|class|interface|structure|detail)s?\b|\b(?:route|handler|controller|ui\s+widget)\s+(?:class|interface|implementation)s?\b|\bfrom\s+(?:the\s+)?(?:php|python|java|javascript|typescript|ruby|go|rust|c#|dart)\s+repository\s+(?:source|src)\s+files?\b/i;
 const INTERNAL_MECHANISM_PROSE_PATTERN = /\bregisters?\s+(?:mcp\s+)?tools?\b|\bcoordinates?\s+with\s+(?:the\s+)?(?:analy[sz]er|storage)\b|\breads?\s+from\s+(?:the\s+)?storage\b|\b(?:the\s+)?analy[sz]er\s+(?:coordinates?|records?|reads?|writes?|stores?|loads?|processes?|manages?|handles?)\b|\b(?:the\s+)?storage\s+(?:coordinates?|records?|reads?|writes?|stores?|loads?|processes?|manages?|handles?)\b|\bsource\s+settings?\b|\bprojects?,\s+analy[sz]ers?,\s+and\s+(?:source\s+)?settings?\b|\bcandidate[_ -]?\d+\b|\b(?:request\s+(?:body|payload|object)|response\s+(?:body|payload|object)|body\s+read\s+operation|(?:get|post|put|patch|delete)\s+(?:request|operation)|[a-z]+\s+endpoint|(?:url\s+)?slug)\b/i;
+const PASSIVE_CRUD_INVENTORY_PATTERN = /\b(?:records?|entries?|items?|entities?|objects?|data)\s+(?:are|can be|may be)\s+(?:created|read|viewed|updated|edited|deleted|removed)(?:\s*,?\s*(?:and\s+)?(?:created|read|viewed|updated|edited|deleted|removed)){2,}\b/i;
 
 export interface AudienceDescriptionTestResult {
 
@@ -325,6 +326,11 @@ export function testCapabilityDescriptionAgainstAudience(
   if (internalMechanismMatch) {
     reasons.push('internal-mechanism-language');
     flaggedTokens.push(internalMechanismMatch);
+  }
+  const passiveCrudInventory = trimmed.match(PASSIVE_CRUD_INVENTORY_PATTERN)?.[0];
+  if (passiveCrudInventory) {
+    reasons.push('internal-mechanism-language');
+    flaggedTokens.push(passiveCrudInventory);
   }
   if (descriptionRestatesName(name, trimmed)) reasons.push('restates-name');
   const marketingMatch = capabilityMarketingLanguageTerms(trimmed)[0];

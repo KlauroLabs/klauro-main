@@ -206,6 +206,19 @@ describe('capability description audience test', () => {
   });
 });
 
+it('rejects passive CRUD inventories that do not explain the audience outcome', () => {
+  const result = testCapabilityDescriptionAgainstAudience(
+    'Keep track of job applications',
+    'Job entries are created, updated, read, and deleted.',
+    [],
+    [],
+    ['job applications'],
+  );
+
+  expect(result.reasons).toContain('internal-mechanism-language');
+  expect(result.flaggedTokens).toContain('entries are created, updated, read, and deleted');
+});
+
 it('rejects repository mechanics unless repository access is the product outcome', () => {
   const sourceLeak = testCapabilityDescriptionAgainstAudience(
     'Settle customer invoices',
