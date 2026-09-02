@@ -17,6 +17,7 @@ import {
   uncoveredCapabilityCatalogOutcomeRequirements,
   type CapabilityCatalogOutcomeRequirement,
 } from './capability-catalog-outcome-coverage';
+import { selectMultiActionOutcomeCandidateIds } from './capability-outcome-evidence-selection';
 
 const candidate = (id: string, name: string, examples: string[]): SystemCapability => ({
   id,
@@ -533,6 +534,31 @@ test('removes identity prose and prior-clause references from broad supporting e
     cited(published('Give agents software comprehension', 'AI agents understand connected software behavior before making changes.'), agent),
     cited(published('Correlate static analysis with runtime evidence', 'Static code structure and runtime evidence refine behavioral understanding.'), runtime),
   ], requirements), undefined);
+});
+
+test('pairs each action with its subject and folds exact operation evidence into the parent family', () => {
+  const evidence = (id: string, values: string[]) => ({
+    id,
+    aggregateRank: 0,
+    evidenceRank: 0,
+    identityTokens: new Set(values),
+    symbolTokens: new Set(values),
+    tokens: new Set(values),
+  });
+  const purposeVerbs = new Set(['add', 'create', 'delete', 'display', 'edit', 'filter', 'search', 'update']);
+  const tokenize = (value: string) => value.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+
+  assert.deepEqual(selectMultiActionOutcomeCandidateIds(
+    'Delete or edit job applications. Add notes to job applications. Display the note count.',
+    [
+      evidence('jobs', ['delete', 'edit', 'job', 'application']),
+      evidence('categories', ['create', 'edit', 'delete', 'category']),
+      evidence('notes', ['add', 'delete', 'note', 'job', 'application']),
+      evidence('operation-obligation:notes:0123456789abcdef', ['edit', 'note', 'job', 'application']),
+    ],
+    tokenize,
+    token => purposeVerbs.has(token),
+  ), ['jobs', 'notes']);
 });
 
 test('preserves complete outcome clauses from a feature-rich README instead of emitting sentence fragments', () => {

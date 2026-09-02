@@ -1,6 +1,10 @@
 import type { SystemCapability } from '../../types/cas.types';
 import { catalogEvidenceCoverageFailure, type CapabilityCatalogProjectSignal } from './capability-catalog-evidence';
 import { CAPABILITY_PURPOSE_VERBS } from './capability-naming';
+import {
+  canonicalOutcomeEvidenceCandidateId,
+  selectMultiActionOutcomeCandidateIds,
+} from './capability-outcome-evidence-selection';
 
 export interface CapabilityCatalogOutcomeRequirement {
   audience?: 'agent' | 'human';
@@ -303,21 +307,23 @@ export function deriveCapabilityCatalogOutcomeRequirements(
         .filter(item => item.identityScore === bestIdentityScore && item.symbolScore === bestSymbolScore && item.score === bestScore)
         .slice(0, 3)
         .map(item => item.id);
-      const candidateIds = multiActionFeature ? (() => {
-        const covered = new Set<string>();
-        return scored.filter(item => {
-          const addsEvidence = item.matchedSubjectTokens.some(token => !covered.has(token));
-          if (addsEvidence) item.matchedSubjectTokens.forEach(token => covered.add(token));
-          return addsEvidence;
-        }).slice(0, 3).map(item => item.id);
-      })() : strongestCandidateIds;
+      const candidateIds = multiActionFeature
+        ? selectMultiActionOutcomeCandidateIds(clause, audienceCandidates.map(item => ({
+          ...item,
+          aggregateRank: item.candidate.evidence_kind === 'behavior-surface' ? 1 : 0,
+          evidenceRank: item.candidate.evidence_role === 'product-outcome' ? 0
+            : item.candidate.evidence_role === 'unresolved' || item.candidate.evidence_role === undefined ? 1 : 2,
+          id: item.candidate.id,
+        })), value => tokens(value, true).map(comparableEvidenceToken), token => CAPABILITY_PURPOSE_VERBS.has(token))
+        : strongestCandidateIds;
       const candidateIdSet = new Set(candidateIds);
       const groundedSubjectTokens = candidateIds.length > 0
         ? subjectTokens.filter(token => candidateTokens.some(item =>
-          candidateIdSet.has(item.candidate.id) && item.tokens.has(comparableEvidenceToken(token))))
+          candidateIdSet.has(canonicalOutcomeEvidenceCandidateId(item.candidate.id)) && item.tokens.has(comparableEvidenceToken(token))))
         : subjectTokens.slice(0, 8);
       const originalClauseAlias = clauseTokens
-        .filter(token => audienceCandidates.some(item => candidateIdSet.has(item.candidate.id) && item.tokens.has(token)))
+        .filter(token => audienceCandidates.some(item =>
+          candidateIdSet.has(canonicalOutcomeEvidenceCandidateId(item.candidate.id)) && item.tokens.has(token)))
         .slice(0, 8);
       const recoveredAliasTokens = originalClauseAlias.filter(token => !groundedSubjectTokens.includes(token));
       const aliasAnchor = recoveredAliasTokens.slice().sort((left, right) => {
@@ -355,7 +361,6 @@ export function deriveCapabilityCatalogOutcomeRequirements(
       candidate.firstPartyOutcomeText?.includes(':') &&
       candidate.audience === requirement.audience &&
       (candidate.visibleActionTerms || []).some(action => requirement.visibleActionTerms?.includes(action)) &&
-      candidate.candidateIds.some(candidateId => requirement.candidateIds.includes(candidateId)) &&
       candidate.subjectTokens.some(token => requirement.subjectTokens.includes(token)));
     return !detailed;
   });
