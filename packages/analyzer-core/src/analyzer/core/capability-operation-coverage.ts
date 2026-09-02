@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { CASEdge, CASEntryPoint, CASExitPoint, CASNode, SystemCapability } from '../../types/cas.types';
-import { declarationOperationSemantics, endpointParts, endpointSignature, isTransportScaffoldingExit, semanticActions, semanticSubjects } from './capability-operation-language';
+import { capabilityTitleActionIntent, declarationOperationSemantics, endpointParts, endpointSignature, isTransportScaffoldingExit, semanticActions, semanticSubjects, terminalEffectActions } from './capability-operation-language';
 import { isStructuralExecutableCliEntry } from './entry-point-product-role';
 import { capabilityOperationActionEvidence } from './capability-operation-action-evidence';
 export interface CapabilityOperationObligationScope {
@@ -43,18 +43,6 @@ function terminalObligationKey(obligation: CapabilityTerminalObligation): string
   });
 }
 const normalizedFile = (value: unknown): string => String(value || '').replace(/\\/g, '/').replace(/^\.\//, '');
-function terminalEffectActions(exit: CASExitPoint): string[] {
-  const targetActions = semanticActions([exit.target?.endpoint, exit.target?.resource].filter(Boolean).join(' '));
-  if (targetActions.length > 0) return targetActions;
-  const operationActions = semanticActions([exit.operation?.action, exit.operation?.method].filter(Boolean).join(' '));
-  return operationActions.length > 0 ? operationActions : semanticActions(exit.name);
-}
-function capabilityTitleActionIntent(value: unknown): { actions: string[]; broadManage: boolean } {
-  const normalized = String(value || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase();
-  const actions = semanticActions(normalized);
-  const broadManage = /\bmanage(?:s|d|ment|ing)?\b/.test(normalized) && actions.length === 1 && actions[0] === 'update';
-  return { actions: broadManage ? [] : actions, broadManage };
-}
 function railsResourceOperation(entryPoint: CASEntryPoint | undefined): { action: string; resource: string; role: string } | undefined {
   const metadata = entryPoint?.metadata;
   if (entryPoint?.type !== 'http' || (metadata?.route_source !== 'resources' && metadata?.route_source !== 'resource')) return undefined;

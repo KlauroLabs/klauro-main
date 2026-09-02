@@ -33,6 +33,19 @@ export function semanticActions(value: unknown): string[] {
   return [...actions];
 }
 
+export function terminalEffectActions(exit: CASExitPoint): string[] {
+  const targetActions = semanticActions([exit.target?.endpoint, exit.target?.resource].filter(Boolean).join(' '));
+  if (targetActions.length > 0) return targetActions;
+  const operationActions = semanticActions([exit.operation?.action, exit.operation?.method].filter(Boolean).join(' '));
+  return operationActions.length > 0 ? operationActions : semanticActions(exit.name);
+}
+
+export function capabilityTitleActionIntent(value: unknown): { actions: string[]; broadManage: boolean } {
+  const normalized = String(value || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase();
+  const actions = semanticActions(normalized);
+  const broadManage = /\bmanage(?:s|d|ment|ing)?\b/.test(normalized) && actions.length === 1 && actions[0] === 'update';
+  return { actions: broadManage ? [] : actions, broadManage };
+}
 const genericSubjectTokens = new Set([
   'action', 'add', 'and', 'application', 'browse', 'change', 'close', 'create', 'delete', 'edit', 'entity', 'event',
   'display', 'fetch', 'filter', 'find', 'default', 'detail', 'get', 'handle', 'handler', 'list', 'loading', 'loading2', 'open', 'prevent', 'set', 'manage', 'operation', 'post', 'put', 'read', 'remove',

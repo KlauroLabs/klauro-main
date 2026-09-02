@@ -18486,7 +18486,6 @@ export class AnalyzerOrchestrator {
     });
   }
 
-
   private dedupeSystemCapabilitiesByName(capabilities: SystemCapability[], exactNamesOnly = false, preserveExactCandidateIdentity = false): SystemCapability[] {
     const byName = new Map<string, SystemCapability>();
     const criticalityRank: Record<SystemCapability['criticality'], number> = {
