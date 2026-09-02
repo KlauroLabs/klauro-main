@@ -839,6 +839,10 @@ test('moves a proven multi-step implementation clause out of an outcome title', 
 
   assert.equal(conciseCapabilityCatalogOutcomeName(title, evidence), 'Categorize job applications');
   assert.equal(
+    conciseCapabilityCatalogOutcomeName('Categorize your applications by creating categories and adding job applications to them', evidence),
+    'Categorize your applications',
+  );
+  assert.equal(
     conciseCapabilityCatalogOutcomeName(title, 'Job applications can be organized into categories.'),
     title,
   );
