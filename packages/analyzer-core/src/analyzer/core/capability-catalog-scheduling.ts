@@ -455,8 +455,18 @@ export function mergeGroundedEntityEvidenceFamilies(
       .map(factor => factor.slice('catalog-candidate:'.length))
       .some(candidateId => group.includes(candidateId) ||
         candidateId.startsWith(`operation-obligation:${selected.match.candidate.id}:`));
-    merged[selected.index] = mergeCapabilityEvidence(selectedCapability, selected.match.candidate, citedFamilyMember);
-    citedIds.add(selected.match.candidate.id);
+    const completeFamilyEvidence = citedFamilyMember && !selected.match.candidate.id.startsWith('operation-obligation:')
+      ? [
+          selected.match.candidate,
+          ...evidenceCandidates.filter(candidate =>
+            candidate.id.startsWith(`operation-obligation:${selected.match.candidate.id}:`)),
+        ]
+      : [selected.match.candidate];
+    merged[selected.index] = completeFamilyEvidence.reduce(
+      (capability, evidence) => mergeCapabilityEvidence(capability, evidence, citedFamilyMember),
+      selectedCapability,
+    );
+    for (const evidence of completeFamilyEvidence) citedIds.add(evidence.id);
   }
   return merged;
 }

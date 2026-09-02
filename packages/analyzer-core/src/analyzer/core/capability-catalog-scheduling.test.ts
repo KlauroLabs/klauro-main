@@ -609,16 +609,31 @@ test('a uniquely anchored entity outcome retains the complete lifecycle as step 
       { entry_point_id: 'note-delete', entry_point_type: 'http', action: 'delete', path_or_command: '/note/delete-note/:userId' },
     ],
   });
+  const obligations = notes.operations.map(operation => catalogCapability({
+    id: `operation-obligation:cap_note_management:${operation.entry_point_id}`,
+    name: `${operation.action} note`,
+    structural_label: `${operation.action} note`,
+    evidence_role: 'product-outcome',
+    related_entities: ['entity_note'],
+    operations: [operation],
+    criticality_factors: [
+      'catalog-parent-candidate:cap_note_management',
+      `catalog-operation-obligation:operation-obligation:cap_note_management:${operation.entry_point_id}`,
+    ],
+  }));
   const capability = catalogCapability({
     id: 'notes', name: 'Attach notes to job applications', related_entities: ['entity_note'],
-    criticality_factors: ['catalog-candidate:operation-obligation:cap_note_management:create'],
+    operations: obligations.slice(0, 2).flatMap(obligation => obligation.operations),
+    criticality_factors: obligations.slice(0, 2).map(obligation => `catalog-candidate:${obligation.id}`),
   });
 
   const [merged] = mergeGroundedEntityEvidenceFamilies(
-    [capability], [notes], [[notes.id]],
+    [capability], [notes, ...obligations], [[notes.id]],
   );
 
   assert.ok(merged.criticality_factors.includes('catalog-candidate:cap_note_management'));
+  assert.ok(obligations.every(obligation =>
+    merged.criticality_factors.includes(`catalog-operation-obligation:${obligation.id}`)));
   assert.deepEqual(
     merged.operations.map(operation => operation.entry_point_id).sort(),
     ['note-create', 'note-delete', 'note-read'],
