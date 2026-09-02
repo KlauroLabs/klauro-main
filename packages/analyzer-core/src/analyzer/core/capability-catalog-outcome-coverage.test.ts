@@ -619,3 +619,26 @@ test('binds a broad outcome through a complete order-independent exact atomic un
   assert.equal(bindAtomicallySatisfiedCatalogOutcomeRequirements([unrelated], [requirement], new Set(['cap_note_management']), scopes)
     .some(item => item.criticality_factors.includes('catalog-outcome-union:all:note')), false);
 });
+
+test('does not ground a visible-action outcome through a differently named atomic union', () => {
+  const requirement: CapabilityCatalogOutcomeRequirement = {
+    id: 'all:status-update', statement: 'update application status', subjectTokens: ['application', 'status'],
+    requiredSubjectTerms: ['application', 'status'], minimumSubjectMatches: 2,
+    visibleActionTerms: ['update'], candidateIds: ['cap_job_management'],
+  };
+  const scopes = new Map([
+    ['operation-obligation:cap_job_management:update', { parentCandidateId: 'cap_job_management' }],
+  ]);
+  const mislabeled = {
+    ...published('Categorize job applications', 'Job applications retain status updates while users organize them into categories.'),
+    id: 'categorize',
+    criticality_factors: ['catalog-operation-obligation:operation-obligation:cap_job_management:update'],
+  };
+
+  const bound = bindAtomicallySatisfiedCatalogOutcomeRequirements(
+    [mislabeled], [requirement], new Set(['cap_job_management']), scopes,
+  );
+
+  assert.equal(bound.some(item => item.criticality_factors.includes('catalog-outcome-union:all:status-update')), false);
+  assert.deepEqual(uncoveredCapabilityCatalogOutcomeRequirements(bound, [requirement]), [requirement]);
+});

@@ -10409,7 +10409,7 @@ export class AnalyzerOrchestrator {
         retainedQualityFailure = cycleQualityFailure;
       }
       qualityFailure = cycleQualityFailure;
-      if (progress.stop && !(recoverableProductOutcomeLanguageFailure && cycle < maxCatalogCycles) && !hasPendingCapabilityDescriptionAttempt(pendingEvidenceIdentityByCandidateId, descriptionRepairAttemptsByLifecycleKey) && !hasPendingCapabilityLanguageAttempt(pendingCapabilities, descriptionRepairAttemptsByLifecycleKey) && !scopedEvidenceRepairIds.some(candidateId => (evidenceRepairAttemptsByCandidateId.get(candidateId) || 0) < 2)) {
+      if (progress.stop && !hasPendingCapabilityDescriptionAttempt(pendingEvidenceIdentityByCandidateId, descriptionRepairAttemptsByLifecycleKey) && !hasPendingCapabilityLanguageAttempt(pendingCapabilities, descriptionRepairAttemptsByLifecycleKey) && !scopedEvidenceRepairIds.some(candidateId => (evidenceRepairAttemptsByCandidateId.get(candidateId) || 0) < 2)) {
         writeAnalyzerStatus(`[Klauro] capability catalog repair stopped after ${progress.noProgressCycles} no-progress cycle(s) with ${progress.uncoveredCount} uncovered candidate reference(s)`);
         break;
       }

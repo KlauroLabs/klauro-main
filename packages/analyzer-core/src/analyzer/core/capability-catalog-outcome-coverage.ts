@@ -428,7 +428,10 @@ export function bindAtomicallySatisfiedCatalogOutcomeRequirements(
     const visibleActions = (requirement.visibleActionTerms || []).map(canonicalToken);
     const combinedTokens = new Set(tokens(`${combined.name} ${combined.description}`));
     if (visibleActions.some(action => !combinedTokens.has(action))) continue;
-    const representative = [...members].sort((left, right) => left.id.localeCompare(right.id))[0];
+    const representative = [...members]
+      .filter(member => capabilityCatalogOutcomeNameFailure(member.name, requirement) === undefined)
+      .sort((left, right) => left.id.localeCompare(right.id))[0];
+    if (!representative) continue;
     representative.criticality_factors = [...new Set([
       ...(representative.criticality_factors || []),
       `catalog-outcome-requirement:${requirement.id}`,
