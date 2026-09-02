@@ -569,6 +569,9 @@ export function bindAtomicallySatisfiedCatalogOutcomeRequirements(
     const coveredParents = requirement.candidateIds.filter(candidateId => fullyCoveredAggregateCandidateIds.has(candidateId));
     if (coveredParents.length === 0) continue;
     const members = result.filter(capability => (capability.criticality_factors || []).some(factor => {
+      if (factor.startsWith('catalog-candidate:')) {
+        return coveredParents.includes(factor.slice('catalog-candidate:'.length));
+      }
       if (!factor.startsWith('catalog-operation-obligation:')) return false;
       const scope = obligationScopes.get(factor.slice('catalog-operation-obligation:'.length));
       return Boolean(scope && coveredParents.includes(scope.parentCandidateId));
