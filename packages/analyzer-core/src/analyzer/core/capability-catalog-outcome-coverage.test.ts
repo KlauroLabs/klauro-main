@@ -506,7 +506,22 @@ test('preserves complete outcome clauses from a feature-rich README instead of e
   assert.equal(requirements.some(requirement => requirement.requiredSubjectTerms?.includes('statu')), false);
   assert.equal(requirements.some(requirement => requirement.requiredSubjectTerms?.includes('status')), true);
   assert.equal(requirements.find(requirement => requirement.statement.startsWith('manage your application status'))?.candidateIds.includes('jobs'), true);
-  assert.equal(requirements.find(requirement => requirement.statement.startsWith('Filter between job applications'))?.candidateIds.includes('jobs'), true);
+  const status = requirements.find(requirement => requirement.statement.startsWith('manage your application status'));
+  const filter = requirements.find(requirement => requirement.statement.startsWith('Filter between job applications'));
+  assert.equal(status?.candidateIds.includes('jobs'), true);
+  assert.equal(filter?.candidateIds.includes('jobs'), true);
+  assert.notEqual(status?.id, filter?.id);
+});
+
+test('rejects sentence-shaped repair text as a capability title', () => {
+  const requirement: CapabilityCatalogOutcomeRequirement = {
+    id: 'all:categorize-job', statement: 'Categorize job applications', candidateIds: ['jobs'],
+    subjectTokens: ['job', 'application'], requiredSubjectTerms: ['job', 'application'], visibleActionTerms: ['categorize'],
+  };
+  assert.equal(
+    capabilityCatalogOutcomeNameFailure('Categorize your applications You can categorize your applications by creating different categories', requirement),
+    'required-outcome-title-not-concise:all:categorize-job',
+  );
 });
 
 test('requires an evidence-grounded outcome anchor when a name starts with an internal subsystem identity', () => {

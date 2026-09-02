@@ -273,11 +273,11 @@ export function deriveCapabilityCatalogOutcomeRequirements(
         return occurrences(left) - occurrences(right) || right.length - left.length || left.localeCompare(right);
       })[0];
       const subjectTokenAliases = originalClauseAlias.some(token => groundedSubjectTokens.includes(token)) && aliasAnchor ? [originalClauseAlias] : undefined;
-      const id = requirementId(audience, groundedSubjectTokens);
       const statement = conciseOutcomeStatement(clause, new Set(groundedSubjectTokens));
       const audienceLabel = requirementAudienceLabel(clause, audience);
       const audienceScopedOutcomeText = audienceScopedCapabilityCatalogOutcomeText(clause, audience, audienceLabel);
       const visibleActionTerms = clauseVisibleActionTerms(clause, statement);
+      const id = requirementId(audience, [...new Set([...visibleActionTerms, ...groundedSubjectTokens])]);
       if (candidateIds.length === 0 && visibleActionTerms.length === 0) continue;
       requirements.set(id, {
         audience,
@@ -396,6 +396,9 @@ export function capabilityCatalogOutcomeNameFailure(
   requirement: CapabilityCatalogOutcomeRequirement,
 ): string | undefined {
   const orderedNameTokens = tokens(name);
+  if (/\byou\s+can\b/i.test(name)) {
+    return `required-outcome-title-not-concise:${requirement.id}`;
+  }
   const leading = orderedNameTokens[0];
   const rawLeading = String(name || '').toLowerCase().match(/[a-z][a-z0-9]*/)?.[0] || '';
   const canonicalLeading = canonicalToken(rawLeading);
