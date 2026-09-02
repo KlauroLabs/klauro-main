@@ -442,6 +442,28 @@ export function capabilityCatalogOutcomeNameFailure(
   return undefined;
 }
 
+export function conciseCapabilityCatalogOutcomeName(
+  name: string,
+  supportingText: string,
+): string {
+  const normalized = String(name || '').replace(/\s+/g, ' ').trim();
+  if (!/[,;]/.test(normalized)) return normalized;
+  const transition = normalized.match(/^((?:change|update|set|transition|move)\b.+?)\s+(?:to|as|between)\s+(.+[,;].+)$/i);
+  if (!transition) return normalized;
+  const detailTokens = transition[2]
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(token => token.length >= 3 && !/^(?:and|the|with)$/.test(token))
+    .map(canonicalCapabilityCatalogOutcomeToken);
+  const supportingTokens = new Set(String(supportingText || '')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean)
+    .map(canonicalCapabilityCatalogOutcomeToken));
+  if (detailTokens.length < 2 || !detailTokens.every(token => supportingTokens.has(token))) return normalized;
+  return transition[1].trim();
+}
+
 export function capabilityCandidateCorroboratesCatalogOutcomeRequirement(
   candidate: SystemCapability,
   requirement: CapabilityCatalogOutcomeRequirement,

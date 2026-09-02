@@ -11,6 +11,7 @@ import {
   canonicalCapabilityCatalogOutcomeToken,
   capabilityCatalogOutcomeNameFailure,
   capabilityCatalogOutcomesMayMerge,
+  conciseCapabilityCatalogOutcomeName,
   capabilitySatisfiesCatalogOutcomeRequirement,
   deriveCapabilityCatalogOutcomeRequirements,
   uncoveredCapabilityCatalogOutcomeRequirements,
@@ -685,4 +686,16 @@ test('does not ground a visible-action outcome through a differently named atomi
 
   assert.equal(bound.some(item => item.criticality_factors.includes('catalog-outcome-union:all:status-update')), false);
   assert.deepEqual(uncoveredCapabilityCatalogOutcomeRequirements(bound, [requirement]), [requirement]);
+});
+
+test('moves enumerated state-transition details out of capability titles only when evidence retains them', () => {
+  const title = 'Change job application status to Rejected, Assessment, Interview, or closed';
+  const evidence = 'Job application status changes to Rejected, Assessment, Interview, or closed.';
+
+  assert.equal(conciseCapabilityCatalogOutcomeName(title, evidence), 'Change job application status');
+  assert.equal(conciseCapabilityCatalogOutcomeName(title, 'Job application status changes.'), title);
+  assert.equal(
+    conciseCapabilityCatalogOutcomeName('Filter applications by category, status, and job board', evidence),
+    'Filter applications by category, status, and job board',
+  );
 });
