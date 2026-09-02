@@ -1,4 +1,4 @@
-import { ENTRY_POINT_TYPE_REACH, type CASEntryPointType } from '../../types/cas.types';
+import { ENTRY_POINT_TYPE_REACH, type CapabilityFlowRole, type CASEntryPointType } from '../../types/cas.types';
 
 
 
@@ -93,7 +93,7 @@ export interface FlowLike {
 
 
 
-export type CapabilityRelatedFlow = string | { flow_id: string; role?: string };
+export type CapabilityRelatedFlow = string | { flow_id: string; role?: CapabilityFlowRole };
 
 
 export interface CapabilityLike {

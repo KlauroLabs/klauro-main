@@ -302,6 +302,30 @@ test('accepted comprehension fails closed when capability flow references do not
   assert.match(readiness.reason, /capability flow reference does not resolve/);
 });
 
+test('accepted comprehension rejects relationship roles outside the canonical vocabulary', () => {
+  const readiness = evaluateComprehensionReadiness(cas({
+    capabilities: [{
+      id: 'cap-impact',
+      name: 'Review change impact',
+      related_flows: [{ flow_id: 'flow-present', role: 'owner', rationale: 'non-canonical role' }],
+    } as any],
+    flows: [{ flow_id: 'flow-present', name: 'Assess change', intent: 'Assess change', entry_point: 'entry-one', entities: [], contract: {}, steps: [] }],
+    ai_enrichment: 'ready',
+    enhanced_system_purpose: {
+      capability_catalog_coverage: {
+        evidence_families: 1,
+        published_capabilities: 1,
+        minimum_published_capabilities: 0,
+        status: 'accepted',
+      },
+    },
+  }));
+
+  assert.equal(readiness.status, 'error');
+  assert.equal(readiness.ready, false);
+  assert.match(readiness.reason, /invalid role/);
+});
+
 test('node-backed capability operations satisfy reference integrity when the node exists', () => {
   const readiness = evaluateComprehensionReadiness(cas({
     nodes: [{ id: 'worker', name: 'Worker', type: 'function', source: { file: 'worker.ts', line: 1 } }],

@@ -834,7 +834,7 @@ describe('capability evidence roles', () => {
 
 describe('catalogEntityCandidateGroups', () => {
   test('does not turn structural or entity family counts into capability quotas', () => {
-    expect(catalogCountBounds(37, 0, 37)).toEqual({ min: 0, max: 20 });
+    expect(catalogCountBounds(37, 0, 37)).toEqual({ min: 0, max: 37 });
     expect(catalogMinimumCapabilityCount(37, 37)).toBe(0);
     expect(catalogCountBounds(2, 1, 1, 5)).toEqual({ min: 0, max: 5 });
     expect(catalogMinimumCapabilityCount(2, 1, 5)).toBe(0);

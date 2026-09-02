@@ -2,7 +2,7 @@ import type { SystemCapability } from '../../types/cas.types';
 import { capabilityEvidenceSubjectTokens } from './capability-catalog-evidence';
 import type { CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
 import { capabilityCatalogRepairLifecycleKey } from './capability-catalog-repair-plan';
-import { isReversibleCapabilityOutcomeName, scopeCapabilityOperationsToOutcomeName } from './capability-operation-attribution';
+import { scopeCapabilityObligationFactors, scopeCapabilityOperationsToOutcomeName } from './capability-operation-attribution';
 
 export type CapabilityCatalogOutcome =
   | { status: 'fulfilled'; value: SystemCapability[] }
@@ -288,14 +288,11 @@ function mergeCapabilityEvidence(outcome: SystemCapability, evidence: SystemCapa
     criticality: criticalityRank[evidence.criticality] > criticalityRank[outcome.criticality]
       ? evidence.criticality
       : outcome.criticality,
-    criticality_factors: [...new Set([
+    criticality_factors: scopeCapabilityObligationFactors(outcome.name, [...new Set([
       ...(outcome.criticality_factors || []),
       ...(evidence.criticality_factors || []),
       `catalog-candidate:${evidence.id}`,
-    ])].filter(factor =>
-      !isReversibleCapabilityOutcomeName(outcome.name) ||
-      (!factor.startsWith('catalog-operation-obligation:') &&
-        !factor.startsWith('catalog-candidate:operation-obligation:'))),
+    ])]),
     evidence_examples: [...new Set([...(outcome.evidence_examples || []), ...(evidence.evidence_examples || [])])],
   };
 }

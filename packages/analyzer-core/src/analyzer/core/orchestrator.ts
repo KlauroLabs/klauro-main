@@ -81,7 +81,8 @@ import {
   FileAnalysisResult,
   CAS_VERSION,
   INCREMENTAL_STATE_VERSION,
-  CASArtifactType
+  CASArtifactType,
+  CapabilityFlowRole
 } from '../../types/cas.types';
 import { classifyArtifactType, collectArtifactManifestSignal, APP_FRAMEWORK_MARKERS } from './artifact-type';
 import { executeLanguageAnalyzers, type AnalysisAccumulators as LanguageAnalysisAccumulators } from './language-analyzer-execution';
@@ -201,7 +202,8 @@ import {
 } from './capability-catalog-audience';
 import { capabilityGroundedEntityIds } from './capability-entity-grounding';
 import { canonicalCapabilityLifecycleAction, capabilityDescriptionExpressesDestructiveLifecycle, capabilityHasObservedDestructiveLifecycle } from './capability-lifecycle-actions';
-import { isReversibleCapabilityOutcomeName, scopeCapabilityOperationsToOutcomeName } from './capability-operation-attribution';
+import { projectReversibleCapabilityEvidence, scopeCapabilityOperationsToOutcomeName } from './capability-operation-attribution';
+import { applyPreferredAiCapabilityDescription } from './capability-merge';
 import { stripProjectDocumentMedia } from './project-document-framing';
 import { systemNarrativeGroundingFailure } from './system-narrative-grounding';
 import {
@@ -1002,8 +1004,8 @@ export class AnalyzerOrchestrator {
       const capNameById = new Map<string, string>();
       for (const cap of cas.capabilities || []) capNameById.set(cap.id, cap.name);
       for (const surf of cas.behavior_surfaces || []) capNameById.set(surf.id, surf.name);
-      const capsById = new Map<string, { id: string; name: string; related_flows: Array<{ flow_id: string; role?: string; rationale?: string }> }>();
-      const addRelation = (capabilityId: string, flowId: string, role: string | undefined, rationale: string | undefined) => {
+      const capsById = new Map<string, { id: string; name: string; related_flows: Array<{ flow_id: string; role?: CapabilityFlowRole; rationale?: string }> }>();
+      const addRelation = (capabilityId: string, flowId: string, role: CapabilityFlowRole | undefined, rationale: string | undefined) => {
         let entry = capsById.get(capabilityId);
         if (!entry) {
           entry = { id: capabilityId, name: capNameById.get(capabilityId) || capabilityId, related_flows: [] };
@@ -9552,7 +9554,7 @@ export class AnalyzerOrchestrator {
 
     for (const feedback of catalogRejectionFeedback.slice(0, 12)) input.onRejection?.(feedback);
     input.onResponse?.(raw);
-    const boundedOutput = out.slice(0, input.exactCapabilityLimit ?? Math.max(16, catalogCountMax)); if (!usedDeterministicFallback && boundedOutput.length === 0 && input.allowDeterministicFallback && deterministicFallback) return this.aiExtractCapabilityCatalog({ ...input, allowDeterministicFallback: false, catalogOverride: [deterministicFallback] });
+    const boundedOutput = input.exactCapabilityLimit === undefined ? out : out.slice(0, input.exactCapabilityLimit); if (!usedDeterministicFallback && boundedOutput.length === 0 && input.allowDeterministicFallback && deterministicFallback) return this.aiExtractCapabilityCatalog({ ...input, allowDeterministicFallback: false, catalogOverride: [deterministicFallback] });
     if (!usedDeterministicFallback) return boundedOutput;
     const { entityNamesById, entityFieldsById, entityEvidenceById } = capabilityDescriptionEvidenceMaps(input.dataEntities); const fallbackOutputTerms = input.requiredOutcomeRequirements?.map(requirement => requirement.firstPartyOutcomeText || requirement.statement) || [];
     return boundedOutput.filter(capability => {
@@ -18508,27 +18510,18 @@ export class AnalyzerOrchestrator {
         continue;
       }
 
-      const keepDescriptionFromCurrent =
-        existing.description_source !== 'ai' && capability.description_source === 'ai';
-      existing.description = keepDescriptionFromCurrent ? capability.description : existing.description;
-      existing.description_source = keepDescriptionFromCurrent ? capability.description_source : existing.description_source;
-      existing.description_generation = keepDescriptionFromCurrent ? capability.description_generation : existing.description_generation;
-      const mergedNameOperations = this.uniqueCapabilityOperations(existing.operations, capability.operations);
-      existing.operations = isReversibleCapabilityOutcomeName(existing.name)
-        ? scopeCapabilityOperationsToOutcomeName(existing.name, mergedNameOperations)
-        : mergedNameOperations;
+      applyPreferredAiCapabilityDescription(existing, capability);
       existing.related_entities = Array.from(new Set([...existing.related_entities, ...capability.related_entities]));
       existing.related_domains = Array.from(new Set([...existing.related_domains, ...capability.related_domains]));
       existing.criticality = criticalityRank[capability.criticality] > criticalityRank[existing.criticality]
         ? capability.criticality
         : existing.criticality;
-      existing.criticality_factors = Array.from(new Set([
-        ...existing.criticality_factors,
-        ...capability.criticality_factors,
-      ])).filter(factor =>
-        !isReversibleCapabilityOutcomeName(existing.name) ||
-        (!factor.startsWith('catalog-operation-obligation:') &&
-          !factor.startsWith('catalog-candidate:operation-obligation:')));
+      const projectedNameEvidence = projectReversibleCapabilityEvidence(
+        existing.name, this.uniqueCapabilityOperations(existing.operations, capability.operations),
+        [...new Set([...existing.criticality_factors, ...capability.criticality_factors])],
+      );
+      existing.operations = projectedNameEvidence.operations;
+      existing.criticality_factors = projectedNameEvidence.criticalityFactors;
       existing.category = existing.category === 'core' || capability.category !== 'core'
         ? existing.category
         : capability.category;
@@ -18659,15 +18652,7 @@ export class AnalyzerOrchestrator {
     const removed = new Set<SystemCapability>();
     const mergeInto = (winner: SystemCapability, loser: SystemCapability) => {
       if (!entityDedupeOutcomesMayMerge(winner, loser)) return false;
-      if (winner.description_source !== 'ai' && loser.description_source === 'ai') {
-        winner.description = loser.description;
-        winner.description_source = loser.description_source;
-        winner.description_generation = loser.description_generation;
-      }
-      const mergedEntityOperations = this.uniqueCapabilityOperations(winner.operations, loser.operations);
-      winner.operations = isReversibleCapabilityOutcomeName(winner.name)
-        ? scopeCapabilityOperationsToOutcomeName(winner.name, mergedEntityOperations)
-        : mergedEntityOperations;
+      applyPreferredAiCapabilityDescription(winner, loser);
       winner.related_entities = Array.from(new Set([...winner.related_entities, ...loser.related_entities]));
       winner.related_domains = Array.from(new Set([...winner.related_domains, ...loser.related_domains]));
       winner.depends_on = [...new Map([...(winner.depends_on || []), ...(loser.depends_on || [])].map(dependency => [
@@ -18676,13 +18661,12 @@ export class AnalyzerOrchestrator {
       winner.criticality = criticalityRank[loser.criticality] > criticalityRank[winner.criticality]
         ? loser.criticality
         : winner.criticality;
-      winner.criticality_factors = Array.from(new Set([
-        ...winner.criticality_factors,
-        ...loser.criticality_factors,
-      ])).filter(factor =>
-        !isReversibleCapabilityOutcomeName(winner.name) ||
-        (!factor.startsWith('catalog-operation-obligation:') &&
-          !factor.startsWith('catalog-candidate:operation-obligation:')));
+      const projectedEntityEvidence = projectReversibleCapabilityEvidence(
+        winner.name, this.uniqueCapabilityOperations(winner.operations, loser.operations),
+        [...new Set([...winner.criticality_factors, ...loser.criticality_factors])],
+      );
+      winner.operations = projectedEntityEvidence.operations;
+      winner.criticality_factors = projectedEntityEvidence.criticalityFactors;
       if (winner.category !== 'core' && loser.category === 'core') {
         winner.category = loser.category;
       }

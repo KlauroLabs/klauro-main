@@ -1,6 +1,6 @@
 import * as path from 'path';
 import * as fs from 'fs';
-import { CAS_VERSION, type CASDataEntity, type CASEdge, type CASEntryPoint, type CASExitPoint, type CASNode, type CASOutput, type CASProgressiveLevels, type CASSystem, type CASTemporalStability, type CASTerminality, type FlowConcept, type FlowStep, type SystemCapability } from '../../../packages/analyzer-core/src/types/cas.types';
+import { CAS_VERSION, type CapabilityFlowRole, type CASDataEntity, type CASEdge, type CASEntryPoint, type CASExitPoint, type CASNode, type CASOutput, type CASProgressiveLevels, type CASSystem, type CASTemporalStability, type CASTerminality, type FlowConcept, type FlowStep, type SystemCapability } from '../../../packages/analyzer-core/src/types/cas.types';
 import { composeCas, type CASCompositionContext, type CASComprehension } from '../../../packages/analyzer-core/src/analyzer/core/cas-composition';
 import { buildCasTerminality } from '../../../packages/analyzer-core/src/analyzer/core/terminality';
 import { partitionAnalysisDiagnostics } from '../../../packages/analyzer-core/src/analyzer/core/analysis-diagnostics';
@@ -1610,7 +1610,7 @@ function synchronizeCanonicalWorkspaceComprehension(graph: WorkspaceAnalysisGrap
       .filter(entity => entity.related_capability_ids.some(id => (capability.source_capability_ids || [capability.id]).includes(id)))
       .map(entity => entity.id);
     const relatedFlows = flowIds.map(flowId => {
-      const role = primaryByFlowId.get(flowId) === capability.id
+      const role: CapabilityFlowRole = primaryByFlowId.get(flowId) === capability.id
         ? 'primary'
         : capability.semantic_role === 'infrastructure'
           ? 'operational'

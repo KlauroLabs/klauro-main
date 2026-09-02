@@ -554,6 +554,26 @@ test('capability map rejects a published catalog below its structural family min
   assert.match(gate.detail, /catalog collapsed/);
 });
 
+test('capability map accepts an evidence-free catalog without inventing a minimum count', () => {
+  const profile: any = {
+    kind: 'cli-tool', confidence: 0.9, evidence: [],
+    expectations: { entry_points: 'optional', call_chains: 'optional', behavioral_invariants: 'optional', security: 'optional', runtime_correlation: 'optional', flow_coverage: 'optional' },
+  };
+  const gate = scoreCapabilityMap({
+    enhanced_system_purpose: {
+      capability_catalog_coverage: {
+        evidence_families: 0, published_capabilities: 0, minimum_published_capabilities: 0,
+        status: 'accepted',
+      },
+      capability_reconciliation: { proposals: [], undocumented_capabilities: [] },
+    },
+    capabilities: [],
+    user_journeys: [],
+  } as any, profile);
+
+  assert.equal(gate.status, 'pass');
+});
+
 test('description quality gate flags over-narrow connector descriptions for broad capabilities', () => {
   const profile: any = {
     kind: 'backend-service',

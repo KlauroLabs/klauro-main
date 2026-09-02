@@ -755,6 +755,10 @@ function scoreLayeredDescriptionPolicy(cas: CASOutput): UsefulnessGate {
     ...capabilityGenerations,
   ].filter(generation => generation?.attempted).length;
   const requiredTargets = 1 + Math.min(capabilities.length, 8);
+  const catalogCoverage = cas.enhanced_system_purpose?.capability_catalog_coverage;
+  const acceptedEmptyCatalog = capabilities.length === 0 &&
+    catalogCoverage?.status === 'accepted' &&
+    (catalogCoverage.evidence_families || 0) === 0;
   const phases = cas.analysis_phases || [];
   const aiPhase = phases.find((phase: any) => phase.id === 'ai-enrichment' || phase.purpose === 'ai-enrichment');
   const details: string[] = [];
@@ -762,7 +766,7 @@ function scoreLayeredDescriptionPolicy(cas: CASOutput): UsefulnessGate {
 
   if (clean(cas.enhanced_system_purpose?.inferred_description || cas.system?.description).length >= 40) score += 25;
   else details.push('missing compact system orientation');
-  if (capabilities.length > 0) score += 25;
+  if (capabilities.length > 0 || acceptedEmptyCatalog) score += 25;
   else details.push('missing capabilities for fast agent orientation');
   if (aiApplied >= Math.min(requiredTargets, attempted || requiredTargets)) score += 25;
   else details.push(`required AI summary/capability pass incomplete (${aiApplied}/${requiredTargets} applied)`);
@@ -775,23 +779,26 @@ function scoreLayeredDescriptionPolicy(cas: CASOutput): UsefulnessGate {
 export function scoreCapabilityMap(cas: CASOutput, profile: AnalysisProfile): UsefulnessGate {
   const capabilities = cas.capabilities || [];
   const workflows = cas.user_journeys || [];
-  const required = profile.kind === 'library-package' || profile.kind === 'test-package' || profile.kind === 'infrastructure' ? 1 : 2;
+  const catalogCoverage = cas.enhanced_system_purpose?.capability_catalog_coverage;
+  const acceptedEmptyCatalog = capabilities.length === 0 &&
+    catalogCoverage?.status === 'accepted' &&
+    (catalogCoverage.evidence_families || 0) === 0;
   let score = 0;
   const details: string[] = [];
 
-  if (capabilities.length >= required) score += 30; else details.push(`${capabilities.length}/${required} capabilities`);
+  if (capabilities.length > 0 || acceptedEmptyCatalog) score += 30;
+  else details.push('no accepted capability outcome or explicit evidence-free catalog');
   const named = capabilities.filter(capability => clean(capability.name) && !GENERIC_TERMS.has(clean(capability.name).toLowerCase())).length;
   const usableNamed = capabilities.filter(capability => isUsefulCapabilityName(capability.name)).length;
-  if (named >= Math.min(required, capabilities.length || required) && usableNamed >= Math.ceil(capabilities.length * 0.5)) score += 20; else details.push('capability names are weak or generic');
+  if (acceptedEmptyCatalog || (named === capabilities.length && usableNamed >= Math.ceil(capabilities.length * 0.5))) score += 20; else details.push('capability names are weak or generic');
   const described = capabilities.filter(capability => clean(capability.description).length >= 30).length;
-  if (described >= Math.min(required, capabilities.length || required)) score += 20; else details.push('capability descriptions are too thin');
+  if (acceptedEmptyCatalog || described === capabilities.length) score += 20; else details.push('capability descriptions are too thin');
   const linked = capabilities.filter(capability =>
     (capability.related_entities || []).length > 0 ||
     (capability.related_domains || []).length > 0 ||
     (capability.operations || []).length > 0
   ).length;
-  if (linked >= Math.min(required, capabilities.length || required)) score += 20; else details.push('capabilities lack entity/domain/operation links');
-  const catalogCoverage = cas.enhanced_system_purpose?.capability_catalog_coverage;
+  if (acceptedEmptyCatalog || linked === capabilities.length) score += 20; else details.push('capabilities lack entity/domain/operation links');
   if (catalogCoverage?.status === 'rejected' || (
     catalogCoverage &&
     catalogCoverage.published_capabilities < catalogCoverage.minimum_published_capabilities

@@ -45,3 +45,26 @@ export function scopeCapabilityOperationsToOutcomeName(
     requested.some(action => operationMatchesRequestedAction(operation, action)));
   return matching.length > 0 ? matching : [...operations];
 }
+
+export function scopeCapabilityObligationFactors(
+  name: string,
+  factors: readonly string[],
+): string[] {
+  if (!isReversibleCapabilityOutcomeName(name)) return [...factors];
+  return factors.filter(factor =>
+    !factor.startsWith('catalog-operation-obligation:') &&
+    !factor.startsWith('catalog-candidate:operation-obligation:'));
+}
+
+export function projectReversibleCapabilityEvidence(
+  name: string,
+  operations: readonly CapabilityOperation[],
+  criticalityFactors: readonly string[],
+): { operations: CapabilityOperation[]; criticalityFactors: string[] } {
+  return {
+    operations: isReversibleCapabilityOutcomeName(name)
+      ? scopeCapabilityOperationsToOutcomeName(name, operations)
+      : [...operations],
+    criticalityFactors: scopeCapabilityObligationFactors(name, criticalityFactors),
+  };
+}

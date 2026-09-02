@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type { CASEdge, CASEntryPoint, CASExitPoint, CASNode, SystemCapability } from '../../types/cas.types';
 import { declarationOperationSemantics, endpointParts, endpointSignature, isTransportScaffoldingExit, semanticActions, semanticSubjects } from './capability-operation-language';
 import { isStructuralExecutableCliEntry } from './entry-point-product-role';
-import { canonicalCapabilityLifecycleAction } from './capability-lifecycle-actions';
+import { capabilityOperationActionEvidence } from './capability-operation-action-evidence';
 export interface CapabilityOperationObligationScope {
   id: string;
   parentCandidateId: string;
@@ -423,20 +423,14 @@ export function classifyCapabilityOperationEffect(candidate: SystemCapability, o
     : railsResource?.role === 'member-read' ? `View ${railsResourceLabel?.replace(/s$/, '')}`
       : undefined;
   const operationText = railsOperationText || exactHandlerText || fallbackOperationText;
-  const method = String(operation.trigger?.method || entry?.trigger?.method || '').toUpperCase();
-  const genericLifecycleAction = canonicalCapabilityLifecycleAction({ action: operation.action, trigger: { method } });
-  const canonicalRouteAction = canonicalCapabilityLifecycleAction({ action: operation.action, path_or_command: operation.path_or_command, trigger: { method, path: operation.trigger?.path || entry?.trigger?.path } });
-  const routeSpecificAction = canonicalRouteAction && canonicalRouteAction !== genericLifecycleAction;
-  const operationActions = routeSpecificAction
-    ? [canonicalRouteAction]
-    : [...new Set([
-      ...(declarationSemantics?.actions || semanticActions(operationText)),
-      ...(terminalEffects.length === 0 && directSignature && method === 'GET' ? ['read'] : []),
-    ])];
+  const { operationActions, routeFallbackActions } = capabilityOperationActionEvidence({
+    operation, entry, declarationActions: declarationSemantics?.actions,
+    operationText, hasTerminalEffects: terminalEffects.length > 0,
+    hasDirectSignature: Boolean(directSignature),
+  });
   const operationSubjects = (declarationSemantics?.subjects || semanticSubjects(operationText))
     .filter(subject => !(reactEntry && entry?.type === 'page' && subject === 'page'));
   const routeParts = endpointParts(operation.trigger?.path);
-  const routeFallbackActions = routeSpecificAction ? [canonicalRouteAction] : semanticActions(operation.action);
   const exactRouteSubjects = entry?.type === 'http' && operation.trigger?.path && operation.trigger.path === operation.path_or_command
     ? semanticSubjects(routeParts[routeParts.length - 1] || '') : [];
   const attributionFor = (specificText: unknown, allowOperationFallback = true): { entityIds: string[]; subjects: string[] } => {

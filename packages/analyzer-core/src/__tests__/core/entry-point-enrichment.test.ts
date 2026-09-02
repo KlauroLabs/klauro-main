@@ -127,7 +127,7 @@ describe('attachCapability', () => {
 
   it('leaves capabilities undefined for an entry point with no related capability (infrastructure flow)', () => {
     const capabilities: CapabilityLike[] = [
-      { id: 'cap_c', name: 'Capability C', related_flows: [{ flow_id: 'flow_orphan', role: 'infrastructure' }] },
+      { id: 'cap_c', name: 'Capability C', related_flows: [{ flow_id: 'flow_orphan', role: 'operational' }] },
     ];
     // entry_none's only flow is infrastructure and untouched by any capability relation in this fixture;
     // an entry point with zero capability relations at all:

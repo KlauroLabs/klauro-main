@@ -24,12 +24,12 @@ export function catalogCountBounds(
   entityFamilyCount: number,
   requiredOutcomeCount = 0,
 ): { min: number; max: number } {
-  const max = Math.max(1, Math.min(20, Math.max(
+  const max = Math.max(1, Math.max(
     distinctFamilyCount,
     behaviorFamilyCount,
     entityFamilyCount,
     requiredOutcomeCount,
-  )));
+  ));
   return { min: 0, max };
 }
 

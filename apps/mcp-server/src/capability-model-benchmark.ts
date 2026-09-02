@@ -112,7 +112,7 @@ export function scoreCapabilityModelTrial(
     ? capabilities.filter(capability => capability.operations > 0 || capability.entities > 0).length / capabilities.length
     : 0;
   const narrative = result.primary_domain && result.system_description && result.description_status === 'ai_applied' ? 1 : 0;
-  const count = capabilities.length >= 2 && capabilities.length <= 20 ? 1 : 0;
+  const count = capabilities.length > 0 ? 1 : 0;
   const duration = result.elapsed_ms <= maxDurationMs ? 1 : 0;
   const components = {
     completion: 10,

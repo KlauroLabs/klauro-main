@@ -9,7 +9,7 @@ import { ensurePrivateDataRoot, restrictProcessFileCreation } from './hosted-sto
 import { analyzeProjectIncremental, analyzeProjectDeferred, checkDoomedVersionRebuild, getAnalysis, prewarmAnalysisWorker, runAnalysis, runLayeredAnalysis } from './analyzer';
 import { REMOTE_ANALYSIS_PROTOCOL_VERSION, clientUpgradeRequiredMessage, type AccountActivityEvent, type RemoteAnalyzeDiffRequest, type RemoteAnalyzeRequest, type RemoteAnalyzeResponse, type RemoteGreenfieldPreviewRequest, type RemoteProjectRevision, type RemoteProjectRevisionsResponse, type RemoteProposalPreviewRequest, type RemoteSyncRequest } from './remote-analyzer-protocol';
 import { buildSourceSnapshot, type BranchDiffContext, type RemoteFileChange, type RepoFacts, type SourceManifest } from './remote-source';
-import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
+import type { CapabilityFlowRole, CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { previewCodebaseIteration, previewGreenfieldCodebase } from './proposal-preview';
 import { isDirectCliInvocation } from './cli-invocation';
 import { AccountHttpError, AccountStore, type AccountProject } from './account-store';
@@ -3141,10 +3141,10 @@ async function handleAccountApi(
       const architectural = getArchitecturalConflicts(cas, { limit: 25 });
       const paradigms = getParadigmConformance(cas);
       const perspectives = getPerspectives(cas);
-      const flowEdgesByCapability = new Map<string, Array<{ flow_id: string; role: string; rationale: string }>>();
+      const flowEdgesByCapability = new Map<string, Array<{ flow_id: string; role: CapabilityFlowRole; rationale: string }>>();
       for (const flow of (flowConcepts.flows || []) as Array<{
         flow_id: string;
-        capability_relationships?: Array<{ capability_id: string; role: string; rationale: string }>;
+        capability_relationships?: Array<{ capability_id: string; role: CapabilityFlowRole; rationale: string }>;
       }>) {
         for (const rel of flow.capability_relationships || []) {
           const list = flowEdgesByCapability.get(rel.capability_id) || [];

@@ -33,6 +33,7 @@ function comprehensionIntegrityFailures(cas: CASOutput): string[] {
   const capabilities = (cas.capabilities || []).length > 0 ? cas.capabilities || [] : cas.product_map?.capabilities || [];
   const capabilityIds = new Set(capabilities.map(capability => 'id' in capability ? capability.id : '').filter(Boolean));
   const failures: string[] = [];
+  const validFlowRoles = new Set(['primary', 'supporting', 'prerequisite', 'operational', 'recovery', 'observability']);
   const normalizedNames = new Set<string>();
   for (const capability of capabilities) {
     const normalizedName = String(capability.name || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ');
@@ -57,33 +58,35 @@ function comprehensionIntegrityFailures(cas: CASOutput): string[] {
     ...capabilityIds,
     ...(cas.behavior_surfaces || []).map(surface => surface.id),
   ]);
-  if (flowIds.size > 0) {
-    for (const capability of cas.capabilities || []) {
-      for (const relationship of capability.related_flows || []) {
-        if (!flowIds.has(relationship.flow_id)) failures.push(`capability flow reference does not resolve: ${capability.id} -> ${relationship.flow_id}`);
+  for (const capability of cas.capabilities || []) {
+    for (const relationship of capability.related_flows || []) {
+      if (!flowIds.has(relationship.flow_id)) failures.push(`capability flow reference does not resolve: ${capability.id} -> ${relationship.flow_id}`);
+      if (!validFlowRoles.has(relationship.role)) {
+        failures.push(`capability flow relationship has invalid role: ${capability.id} -> ${relationship.flow_id} (${relationship.role})`);
       }
     }
-    for (const flow of cas.flows || []) {
-      if (flow.capability_id && !flowRelationshipTargetIds.has(flow.capability_id)) {
-        failures.push(`flow capability reference does not resolve: ${flow.flow_id} -> ${flow.capability_id}`);
+  }
+  for (const flow of cas.flows || []) {
+    if (flow.capability_id && !flowRelationshipTargetIds.has(flow.capability_id)) {
+      failures.push(`flow capability reference does not resolve: ${flow.flow_id} -> ${flow.capability_id}`);
+    }
+    for (const relationship of flow.capability_relationships || []) {
+      if (!flowRelationshipTargetIds.has(relationship.capability_id)) {
+        failures.push(`flow capability relationship does not resolve: ${flow.flow_id} -> ${relationship.capability_id}`);
       }
-      for (const relationship of flow.capability_relationships || []) {
-        if (!flowRelationshipTargetIds.has(relationship.capability_id)) {
-          failures.push(`flow capability relationship does not resolve: ${flow.flow_id} -> ${relationship.capability_id}`);
-        }
+      if (!validFlowRoles.has(relationship.role)) {
+        failures.push(`flow capability relationship has invalid role: ${flow.flow_id} -> ${relationship.capability_id} (${relationship.role})`);
       }
     }
   }
   const entryPointIds = new Set((cas.entry_points || []).map(entryPoint => entryPoint.id));
   const nodeIds = new Set((cas.nodes || []).map(node => node.id));
-  if (entryPointIds.size > 0) {
-    for (const capability of cas.capabilities || []) {
-      for (const operation of capability.operations || []) {
-        const nodeAnchor = operation.entry_point_id.startsWith('node:')
-          ? operation.entry_point_id.slice('node:'.length) : undefined;
-        if (operation.entry_point_id && !entryPointIds.has(operation.entry_point_id) && !(nodeAnchor && nodeIds.has(nodeAnchor))) {
-          failures.push(`capability entry-point reference does not resolve: ${capability.id} -> ${operation.entry_point_id}`);
-        }
+  for (const capability of cas.capabilities || []) {
+    for (const operation of capability.operations || []) {
+      const nodeAnchor = operation.entry_point_id.startsWith('node:')
+        ? operation.entry_point_id.slice('node:'.length) : undefined;
+      if (operation.entry_point_id && !entryPointIds.has(operation.entry_point_id) && !(nodeAnchor && nodeIds.has(nodeAnchor))) {
+        failures.push(`capability entry-point reference does not resolve: ${capability.id} -> ${operation.entry_point_id}`);
       }
     }
   }

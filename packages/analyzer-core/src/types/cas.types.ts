@@ -3676,7 +3676,7 @@ export interface SystemCapability {
 
 
 
-  related_flows?: Array<{ flow_id: string; role: string; rationale: string }>;
+  related_flows?: Array<{ flow_id: string; role: CapabilityFlowRole; rationale: string }>;
 
 
 
@@ -3793,7 +3793,7 @@ export interface CASUserJourney {
 
   capability_relationships?: Array<{
     capability_id: string;
-    role: string;
+    role: CapabilityFlowRole;
     rationale: string;
     evidence?: string;
   }>;
