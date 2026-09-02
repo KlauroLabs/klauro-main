@@ -9999,8 +9999,7 @@ export class AnalyzerOrchestrator {
     if (this.isBareNounCapabilityLabel(String(capability.name || ''))) return 'bare-noun-name';
     const description = String(capability.description || '').trim();
     const descriptionWordCount = description.split(/\s+/).filter(Boolean).length;
-    const capabilityName = String(capability.name || ''); const lifecycleActions = new Set((capability.operations || []).map(operation => String(operation.action || '').toLowerCase()).filter(action => /^(?:create|read|update|delete)/.test(action)));
-    const hasBoundFirstPartyOutcome = (capability.criticality_factors || []).some(factor => factor.startsWith('catalog-outcome-requirement:'));
+    const capabilityName = String(capability.name || ''); const lifecycleActions = new Set((capability.operations || []).map(operation => String(operation.action || '').toLowerCase()).filter(action => /^(?:create|read|update|delete)/.test(action))); const hasBoundFirstPartyOutcome = (capability.criticality_factors || []).some(factor => factor.startsWith('catalog-outcome-requirement:'));
     if (!hasBoundFirstPartyOutcome && (isGenericManagementCapabilityLabel(capabilityName) || (/^maintain\b/i.test(capabilityName) && (capability.related_entities || []).length > 0 && lifecycleActions.size >= 2))) return 'generic-management-name';
     if (!hasBoundFirstPartyOutcome && (isCrudInventoryCapabilityLabel(capabilityName) || ((capability.criticality_factors || []).includes('catalog-deterministic-grouped-lifecycle') && /^(?:add|create|delete|edit|remove|update)\b/i.test(capabilityName)))) return 'crud-inventory-name';
     if (!hasBoundFirstPartyOutcome && isCrudLifecycleFragmentCapabilityLabel(String(capability.name || ''), (capability.operations || []).map(operation => operation.action))) return 'crud-lifecycle-fragment-name';
