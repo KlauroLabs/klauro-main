@@ -266,6 +266,9 @@ export function deriveCapabilityCatalogOutcomeRequirements(
     const clauseTokens = tokens(clause, true);
     const subjectTokens = clauseTokens.filter(token => !subjectStopwords.has(token));
     const scoringSubjectTokens = subjectTokens.filter(token => !/^(?:add|change|close|create|delete|edit|get|handle|list|manage|process|read|remove|update|view)$/.test(token));
+    const multiActionFeature = String(clause || '')
+      .split(/(?<=[.!?;])\s+/i)
+      .filter(sentence => purposeVerbIn(sentence)).length > 1;
     if (subjectTokens.length === 0) continue;
     for (const audience of requirementAudiences(clause)) {
       const audienceCandidates = candidateTokens.filter(item => !audience || (audience === 'human'
@@ -279,6 +282,7 @@ export function deriveCapabilityCatalogOutcomeRequirements(
           : item.candidate.evidence_role === 'unresolved' || item.candidate.evidence_role === undefined ? 1 : 2,
         aggregateRank: item.candidate.evidence_kind === 'behavior-surface' ? 1 : 0,
         score: scoringSubjectTokens.filter(token => item.tokens.has(comparableEvidenceToken(token))).length,
+        matchedSubjectTokens: subjectTokens.filter(token => item.tokens.has(comparableEvidenceToken(token))),
         identityScore: scoringSubjectTokens.filter(token => item.identityTokens.has(comparableEvidenceToken(token))).length,
         symbolScore: scoringSubjectTokens.filter(token => item.symbolTokens.has(comparableEvidenceToken(token))).length,
         distinctive: scoringSubjectTokens.some(token => item.tokens.has(comparableEvidenceToken(token)) && scoringTokenFrequency.get(token) === 1),
@@ -295,10 +299,18 @@ export function deriveCapabilityCatalogOutcomeRequirements(
       const bestIdentityScore = scored[0]?.identityScore;
       const bestScore = scored[0]?.score;
       const bestSymbolScore = scored[0]?.symbolScore;
-      const candidateIds = bestScore === undefined ? [] : scored
+      const strongestCandidateIds = bestScore === undefined ? [] : scored
         .filter(item => item.identityScore === bestIdentityScore && item.symbolScore === bestSymbolScore && item.score === bestScore)
         .slice(0, 3)
         .map(item => item.id);
+      const candidateIds = multiActionFeature ? (() => {
+        const covered = new Set<string>();
+        return scored.filter(item => {
+          const addsEvidence = item.matchedSubjectTokens.some(token => !covered.has(token));
+          if (addsEvidence) item.matchedSubjectTokens.forEach(token => covered.add(token));
+          return addsEvidence;
+        }).slice(0, 3).map(item => item.id);
+      })() : strongestCandidateIds;
       const candidateIdSet = new Set(candidateIds);
       const groundedSubjectTokens = candidateIds.length > 0
         ? subjectTokens.filter(token => candidateTokens.some(item =>

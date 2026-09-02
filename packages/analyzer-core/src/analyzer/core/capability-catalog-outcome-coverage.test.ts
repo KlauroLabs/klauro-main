@@ -539,7 +539,7 @@ test('preserves complete outcome clauses from a feature-rich README instead of e
   const requirements = deriveCapabilityCatalogOutcomeRequirements({
     productDocSummary: 'Todojobs is a web application that allows to you record and keep track of your job applications. Categorize and seamlessly manage your job applications. Categorize your applications: You can categorize your applications by creating different categories and adding your job applications to any corresponding category. You can also edit or delete your categories. Manage application status: You can manage your application status. You can change to Rejected, Assessment, Interview or set it to closed. Manage job application: You can delete or edit your job applications with easy. You can add notes to your job applications. Job applications with notes display the note count. Robust job filter: Filter between job applications using the category, status, and the job board or website. The search feature also adds and extra way to narrow down what you are looking for.',
   }, [
-    candidate('jobs', 'Track job applications and application status', ['record_job', 'update_job_status', 'filter_jobs']),
+    candidate('jobs', 'Track job applications and application status', ['record_job', 'update_job_status', 'filter_jobs', 'delete_job', 'edit_job']),
     candidate('categories', 'Organize application categories', ['create_category', 'edit_category', 'delete_category']),
     candidate('notes', 'Record job application notes', ['add_note', 'delete_note']),
   ]);
@@ -554,6 +554,7 @@ test('preserves complete outcome clauses from a feature-rich README instead of e
   assert.ok(statements.some(statement => statement.startsWith('delete or edit your job applications') && statement.includes('add notes to your job applications')));
   const jobManagement = requirements.find(requirement => requirement.statement.startsWith('delete or edit your job applications'))!;
   assert.deepEqual(jobManagement.visibleActionTerms, ['delete']);
+  assert.deepEqual(jobManagement.candidateIds.sort(), ['jobs', 'notes']);
   assert.equal(capabilityCatalogOutcomeNameFailure('Track job notes', jobManagement), undefined);
   assert.ok(statements.some(statement => statement.startsWith('Filter between job applications using the category, status, and the job board or website') && statement.includes('narrow down what you are looking for')), JSON.stringify(statements));
   assert.equal(statements.some(statement => /^(?:corresponding|with easy|status: status|search feature adds)$/i.test(statement)), false);

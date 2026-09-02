@@ -15,24 +15,24 @@
     }
   },
   "analysis": {
-    "analysis_id": "analysis_1788372557036_zk7hwazk1",
-    "analysis_timestamp": "2026-09-02T18:09:55.163Z",
-    "analyzer_build": "source-sha256:139a88a3fca400cce7217e2e2cf4f748b4b82a44cc322ecba2eab3f68f1b6af7",
-    "analyzer_source_base_commit": "a2c77b656d84d77d6cd7bcdd467d61497c44e283",
-    "analyzer_source_sha256": "139a88a3fca400cce7217e2e2cf4f748b4b82a44cc322ecba2eab3f68f1b6af7",
+    "analysis_id": "analysis_1788374099097_6t3dunnuk",
+    "analysis_timestamp": "2026-09-02T18:35:51.632Z",
+    "analyzer_build": "source-sha256:7220de69ca8331d8cc1e284924090691fc83ff2c3dd9c32c35d7bd2e939e1d31",
+    "analyzer_source_base_commit": "8b7b3af9f0ddcf6cf4e171de5558bdf9bc34b903",
+    "analyzer_source_sha256": "7220de69ca8331d8cc1e284924090691fc83ff2c3dd9c32c35d7bd2e939e1d31",
     "analyzer_source_file_count": 449,
     "production_cas": "todo-jobs-production-cas.json.gz",
-    "production_cas_sha256": "f96440ff2fd7032c3ca543ea85d04eb393d015f560d7d28a8410409f42171abf",
-    "capabilities_sha256": "5c23b169d569b4c2a3e3055ad9b9c8f06a7cbb634ceb88dc7b376c43cee41354",
+    "production_cas_sha256": "9de93a391ce4d553f1d57b5b7e89d22f5f0a067b468d282028a7cad3de603561",
+    "capabilities_sha256": "784830dd2e9b8f9b64488f6fe715d5ddedbf69064415d4badad1ff9c6f2f9ee6",
     "provider": "deepinfra",
     "model": "Qwen/Qwen3-Next-80B-A3B-Instruct",
     "prompt_version": "capability_catalog.v2",
     "semantic_schema_version": "e1.1",
     "semantic_trace": "todo-jobs-production-semantic.jsonl",
-    "semantic_trace_sha256": "8f0dc0de6f648e1ef5d47954dc862441f5b44d63dcb59d89b6b903a5330edb0b",
+    "semantic_trace_sha256": "164b2127ba5624b6910d6c0cde7d1d53c58db594ac8d124dad4f1d31e7b5b627",
     "ai_cache": "disabled",
     "parser_fingerprint": "f22d25afb68de083",
-    "derived_fingerprint": "41e8f11e910b823a"
+    "derived_fingerprint": "d83db56901998e15"
   },
   "repo_id": "github:Babadinho/todo-jobs@c7c139a966ee5eafa49066a89222b56ba8233c27",
   "known_node_ids": [
@@ -957,15 +957,15 @@
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-02T18:09:22.967Z"
+          "generated_at": "2026-09-02T18:35:23.752Z"
         },
-        "description": "Users can keep track of job applications, while retaining the ability to create, view, update, and remove earlier job applications when needed.",
+        "description": "Job entries can be created, updated, read, and deleted with attached notes that display a count next to each application.",
         "description_source": "ai",
         "description_generation": {
           "status": "ai_applied",
           "attempted": true,
           "budget_ms": 20000,
-          "generated_at": "2026-09-02T18:09:54.792Z"
+          "generated_at": "2026-09-02T18:35:51.265Z"
         },
         "category": "core",
         "operations": [
@@ -1404,15 +1404,15 @@
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-02T18:09:22.967Z"
+          "generated_at": "2026-09-02T18:35:23.752Z"
         },
-        "description": "Job applications organize into named categories by creating, editing, or deleting categories and assigning each application to a specific category.",
+        "description": "Job applications organize into named categories that users can create, edit, or delete, with each application visibly assigned to one category and note counts displayed alongside.",
         "description_source": "ai",
         "description_generation": {
           "status": "ai_applied",
           "attempted": true,
           "budget_ms": 20000,
-          "generated_at": "2026-09-02T18:09:54.792Z"
+          "generated_at": "2026-09-02T18:35:51.265Z"
         },
         "category": "core",
         "operations": [
@@ -1995,13 +1995,13 @@
     },
     {
       "capability": {
-        "id": "capability_track_job_notes",
-        "name": "Track job notes",
+        "id": "capability_track_job_application_notes",
+        "name": "Track job application notes",
         "name_source": "ai",
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-02T18:09:24.374Z"
+          "generated_at": "2026-09-02T18:35:26.934Z"
         },
         "description": "Job applications surface note counts when notes are added, edited, or deleted, ensuring users see updated note status across their categorized applications.",
         "description_source": "ai",
@@ -2009,7 +2009,7 @@
           "status": "ai_applied",
           "attempted": true,
           "budget_ms": 20000,
-          "generated_at": "2026-09-02T18:09:54.792Z"
+          "generated_at": "2026-09-02T18:35:51.265Z"
         },
         "category": "core",
         "operations": [
@@ -2216,21 +2216,70 @@
     },
     {
       "capability": {
+        "id": "capability_manage_application_status",
+        "name": "Manage application status",
+        "name_source": "ai",
+        "name_generation": {
+          "status": "ai_applied",
+          "attempted": true,
+          "generated_at": "2026-09-02T18:35:26.242Z"
+        },
+        "description": "Application status updates to Rejected, Assessment, or Interview manually, and automatically closes when the end date is reached.",
+        "description_source": "ai",
+        "description_generation": {
+          "status": "ai_applied",
+          "attempted": true,
+          "budget_ms": 20000,
+          "generated_at": "2026-09-02T18:35:51.265Z"
+        },
+        "category": "core",
+        "operations": [
+          {
+            "entry_point_id": "entry_event_entry_client_src_components_status_tsx_Status_click_43_16_18a6d9d6",
+            "entry_point_type": "event",
+            "action": "action",
+            "path_or_command": "click",
+            "trigger": {}
+          }
+        ],
+        "related_entities": [],
+        "related_domains": [],
+        "criticality": "high",
+        "criticality_factors": [
+          "ai-extracted-from-journeys-and-entities",
+          "catalog-outcome-requirement:all:manage-status",
+          "catalog-candidate:capability_status_click"
+        ],
+        "related_flows": [
+          {
+            "flow_id": "flow::entry_route_client_src_app_tsx__jobs_1_815c92bf",
+            "role": "supporting",
+            "rationale": "capability operation \"action\" (entry_point_id=entry_event_entry_client_src_components_status_tsx_Status_click_43_16_18a6d9d6) is realized as an interior step on this flow's path"
+          }
+        ]
+      },
+      "source_node_ids": [],
+      "source_flow_ids": [
+        "flow::entry_route_client_src_app_tsx__jobs_1_815c92bf"
+      ]
+    },
+    {
+      "capability": {
         "id": "capability_filter_job_applications_by_status_and_category",
         "name": "Filter job applications by status and category",
         "name_source": "ai",
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-02T18:09:24.803Z"
+          "generated_at": "2026-09-02T18:35:26.937Z"
         },
-        "description": "Job applications surface filtered views based on status and category to narrow results from the job board or website, supporting precise selection.",
+        "description": "Job applications surface filtered views based on status and category, allowing users to narrow results using the job board or website as additional criteria.",
         "description_source": "ai",
         "description_generation": {
           "status": "ai_applied",
           "attempted": true,
           "budget_ms": 20000,
-          "generated_at": "2026-09-02T18:09:54.792Z"
+          "generated_at": "2026-09-02T18:35:51.265Z"
         },
         "category": "core",
         "operations": [
