@@ -525,6 +525,7 @@ test('rejects sentence-shaped repair text as a capability title', () => {
     capabilityCatalogOutcomeNameFailure('Categorize your applications You can categorize your applications by creating different categories', requirement),
     'required-outcome-title-not-concise:all:categorize-job',
   );
+  assert.equal(capabilityCatalogOutcomeNameFailure('Change application status to Rejected, Assessment, or Interview', requirement), 'required-outcome-title-not-concise:all:categorize-job');
 });
 
 test('requires an evidence-grounded outcome anchor when a name starts with an internal subsystem identity', () => {

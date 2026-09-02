@@ -421,7 +421,7 @@ export function capabilityCatalogOutcomeNameFailure(
   requirement: CapabilityCatalogOutcomeRequirement,
 ): string | undefined {
   const orderedNameTokens = tokens(name);
-  if (/\byou\s+can\b/i.test(name)) {
+  if (/\byou\s+can\b/i.test(name) || /[,;]/.test(name)) {
     return `required-outcome-title-not-concise:${requirement.id}`;
   }
   const leading = orderedNameTokens[0];

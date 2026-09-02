@@ -70,6 +70,18 @@ describe('narrowCapabilityEvidenceCandidates', () => {
     ).map(item => item.id)).toEqual(['favorite', 'favorite-route']);
   });
 
+  test('narrows a focused outcome from a broad aggregate to its specific operation evidence', () => {
+    const parent = candidate('jobs', 'Job', 'core', ['Manage', 'Manage']);
+    parent.operations[0].path_or_command = '/job/delete-job/:userId';
+    parent.operations[1].path_or_command = '/job/status/:jobId';
+    const status = candidate('job-status', 'Change job application status', 'core', ['Update']);
+    status.evidence_examples = ['Rejected Assessment Interview closed'];
+
+    expect(narrowCapabilityEvidenceCandidates(
+      'Change job application status to Rejected Assessment or Interview', [parent, status],
+    ).map(item => item.id)).toEqual(['job-status']);
+  });
+
   test('preserves separately evidenced subjects in a genuinely combined outcome', () => {
     const projects = candidate('projects', 'Projects', 'core', ['Create', 'Update']);
     const issues = candidate('issues', 'Issues', 'core', ['Create', 'Update']);
