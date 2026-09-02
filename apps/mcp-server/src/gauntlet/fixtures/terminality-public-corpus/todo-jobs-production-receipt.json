@@ -15,24 +15,24 @@
     }
   },
   "analysis": {
-    "analysis_id": "analysis_1788385446186_4ez8tofmn",
-    "analysis_timestamp": "2026-09-02T21:44:26.543Z",
-    "analyzer_build": "source-sha256:2b9a0f22cfbdb476b701f5cceda6a8d7e2c1dacc572f03eeb80e5d9bdd0527c8",
-    "analyzer_source_base_commit": "889cc2b2958754c6f8a912b554feea48015af01e",
-    "analyzer_source_sha256": "2b9a0f22cfbdb476b701f5cceda6a8d7e2c1dacc572f03eeb80e5d9bdd0527c8",
+    "analysis_id": "analysis_1788389288082_uari7q0ur",
+    "analysis_timestamp": "2026-09-02T22:48:18.557Z",
+    "analyzer_build": "source-sha256:b7ac6df5e54843b43ffedeae435027c8a52c16de89096b2812a632e3f2c1c6b5",
+    "analyzer_source_base_commit": "349df4a81b3ebda0cf7df2cc10dfb72f206ab368",
+    "analyzer_source_sha256": "b7ac6df5e54843b43ffedeae435027c8a52c16de89096b2812a632e3f2c1c6b5",
     "analyzer_source_file_count": 450,
     "production_cas": "todo-jobs-production-cas.json.gz",
-    "production_cas_sha256": "a93a5a6468e22831e15c97579566e6619fa4c639e29ea2dd4f469ed1f1ab8570",
-    "capabilities_sha256": "40af2afc23c89b6dbcf013c08ba0f15439d91168e03d8a52bc7c50660931d898",
+    "production_cas_sha256": "ee76939e14256ca4fa760f76fa9988daf74bfae5ee7ce47c22ceadd1aa455e04",
+    "capabilities_sha256": "99dbdcaa5b4a79d5d1a7cc35401beb728dd0e3b62479b677f44562f04c4ed6e5",
     "provider": "deepinfra",
     "model": "Qwen/Qwen3-Next-80B-A3B-Instruct",
     "prompt_version": "capability_catalog.v2",
     "semantic_schema_version": "e1.1",
     "semantic_trace": "todo-jobs-production-semantic.jsonl",
-    "semantic_trace_sha256": "4e3763728418c82f948f4d2a75c121b573dac2bb9c1542f749a8f791637aad9c",
+    "semantic_trace_sha256": "01c959d511973b1387ad7b4b96356627d068665b17b671c45ea499a3a5cdda43",
     "ai_cache": "disabled",
     "parser_fingerprint": "f22d25afb68de083",
-    "derived_fingerprint": "bf6003e6d9e912f5"
+    "derived_fingerprint": "bdc09c31bef8ccd9"
   },
   "repo_id": "github:Babadinho/todo-jobs@c7c139a966ee5eafa49066a89222b56ba8233c27",
   "known_node_ids": [
@@ -957,15 +957,15 @@
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-02T21:44:12.226Z"
+          "generated_at": "2026-09-02T22:48:13.928Z"
         },
-        "description": "Job entries are created, updated, read, and deleted.",
+        "description": "Job entries surface title, link, status, and end date.",
         "description_source": "ai",
         "description_generation": {
           "status": "ai_applied",
           "attempted": true,
           "budget_ms": 20000,
-          "generated_at": "2026-09-02T21:44:26.167Z"
+          "generated_at": "2026-09-02T22:48:18.222Z"
         },
         "category": "core",
         "operations": [
@@ -1404,15 +1404,15 @@
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-02T21:44:12.226Z"
+          "generated_at": "2026-09-02T22:48:13.928Z"
         },
-        "description": "Todo Jobs lets users assign job applications to named categories and reassign them, with category deletion removing the association but not the job.",
+        "description": "Todo Jobs lets users assign job applications to named categories and reassign them between categories to organize applications by priority or type.",
         "description_source": "ai",
         "description_generation": {
           "status": "ai_applied",
           "attempted": true,
           "budget_ms": 20000,
-          "generated_at": "2026-09-02T21:44:26.167Z"
+          "generated_at": "2026-09-02T22:48:18.222Z"
         },
         "category": "core",
         "operations": [
@@ -1845,21 +1845,21 @@
     },
     {
       "capability": {
-        "id": "capability_organize_job_applications_by_category",
-        "name": "Organize job applications by category",
+        "id": "capability_manage_job_application_categories",
+        "name": "Manage job application categories",
         "name_source": "ai",
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-02T21:44:14.056Z"
+          "generated_at": "2026-09-02T22:48:13.928Z"
         },
-        "description": "Users maintain job applications in named categories by creating, editing, or deleting categories to group applications by job board or status.",
+        "description": "Job applicants organize their submissions by assigning each application to named categories they create, edit, or delete to maintain a personalized overview of their job search progress.",
         "description_source": "ai",
         "description_generation": {
           "status": "ai_applied",
           "attempted": true,
           "budget_ms": 20000,
-          "generated_at": "2026-09-02T21:44:26.167Z"
+          "generated_at": "2026-09-02T22:48:18.222Z"
         },
         "category": "core",
         "operations": [
@@ -1918,23 +1918,8 @@
         "criticality": "high",
         "criticality_factors": [
           "ai-extracted-from-journeys-and-entities",
-          "Requires authentication",
-          "Performs data mutations",
-          "Administrative operations",
-          "catalog-aggregate-operation-view",
           "catalog-outcome-requirement:all:add-categorize-category-create-delete-edit",
-          "catalog-outcome-union:all:add-categorize-category-create-delete-edit",
-          "catalog-description-rejected",
-          "catalog-candidate:cap_note_management",
-          "catalog-candidate:cap_category_management",
-          "catalog-operation-obligation:operation-obligation:cap_category_management:117de8b6a7502c7a",
-          "catalog-operation-obligation:operation-obligation:cap_category_management:263f29c82c9c1963",
-          "catalog-operation-obligation:operation-obligation:cap_category_management:4acc5366e4967360",
-          "catalog-operation-obligation:operation-obligation:cap_category_management:637edd2a26f4724e",
-          "catalog-operation-obligation:operation-obligation:cap_category_management:e6b95279dda1af4b"
-        ],
-        "evidence_examples": [
-          "User click event on AddCategoryModal, handled by handleSubmit"
+          "catalog-candidate:cap_category_management"
         ],
         "related_flows": [
           {
@@ -2059,15 +2044,15 @@
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-02T21:44:13.918Z"
+          "generated_at": "2026-09-02T22:48:15.372Z"
         },
-        "description": "Job applications display a note count when notes are added, and users can create, edit, or delete notes linked to specific job applications and categories.",
+        "description": "Job applications surface attached notes to help users track contextual details, with each note linked to a specific job and user, and note counts displayed prominently.",
         "description_source": "ai",
         "description_generation": {
           "status": "ai_applied",
           "attempted": true,
           "budget_ms": 20000,
-          "generated_at": "2026-09-02T21:44:26.167Z"
+          "generated_at": "2026-09-02T22:48:18.222Z"
         },
         "category": "core",
         "operations": [
@@ -2090,16 +2075,6 @@
               "method": "POST",
               "path": "/note/add-note/:userId"
             }
-          },
-          {
-            "entry_point_id": "entry_route_router_router_routes_note_js_post_2",
-            "entry_point_type": "http",
-            "action": "delete",
-            "path_or_command": "/note/delete-note/:userId",
-            "trigger": {
-              "method": "POST",
-              "path": "/note/delete-note/:userId"
-            }
           }
         ],
         "related_entities": [
@@ -2115,11 +2090,8 @@
           "Performs data mutations",
           "Administrative operations",
           "catalog-aggregate-operation-view",
-          "catalog-outcome-requirement:all:add-delete-edit-job-note",
-          "catalog-outcome-union:all:add-delete-edit-job-note",
           "catalog-candidate:cap_note_management",
           "catalog-operation-obligation:operation-obligation:cap_note_management:09b21586e2b7a9ff",
-          "catalog-operation-obligation:operation-obligation:cap_note_management:d1cfcb5639fabc0d",
           "catalog-operation-obligation:operation-obligation:cap_note_management:efefa9007bbe6f75"
         ],
         "evidence_examples": [],
@@ -2238,11 +2210,6 @@
             "flow_id": "flow::entry_route_router_router_routes_note_js_post_1",
             "role": "primary",
             "rationale": "capability operation \"create\" (entry_point_id=entry_route_router_router_routes_note_js_post_1) references this flow's entry point"
-          },
-          {
-            "flow_id": "flow::entry_route_router_router_routes_note_js_post_2",
-            "role": "primary",
-            "rationale": "capability operation \"delete\" (entry_point_id=entry_route_router_router_routes_note_js_post_2) references this flow's entry point"
           }
         ]
       },
@@ -2270,8 +2237,7 @@
         "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_45:2e48f5c40395",
         "flow::entry_route_client_src_app_tsx__jobs_1_815c92bf",
         "flow::entry_route_router_router_routes_note_js_post_0",
-        "flow::entry_route_router_router_routes_note_js_post_1",
-        "flow::entry_route_router_router_routes_note_js_post_2"
+        "flow::entry_route_router_router_routes_note_js_post_1"
       ]
     },
     {
@@ -2282,7 +2248,7 @@
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-02T21:44:15.150Z"
+          "generated_at": "2026-09-02T22:48:15.301Z"
         },
         "description": "Application status updates to Rejected, Assessment, or Interview, and automatically closes when the end date is reached.",
         "description_source": "ai",
@@ -2290,7 +2256,7 @@
           "status": "ai_applied",
           "attempted": true,
           "budget_ms": 20000,
-          "generated_at": "2026-09-02T21:44:26.167Z"
+          "generated_at": "2026-09-02T22:48:18.222Z"
         },
         "category": "core",
         "operations": [
@@ -2331,15 +2297,15 @@
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-02T21:44:17.169Z"
+          "generated_at": "2026-09-02T22:48:17.307Z"
         },
-        "description": "Job applications surface in filtered views based on their current status, and deleted applications no longer appear in those filtered lists.",
+        "description": "Job applications surface filtered views based on status and category to help the user narrow down searches across job boards.",
         "description_source": "ai",
         "description_generation": {
           "status": "ai_applied",
           "attempted": true,
           "budget_ms": 20000,
-          "generated_at": "2026-09-02T21:44:26.167Z"
+          "generated_at": "2026-09-02T22:48:18.222Z"
         },
         "category": "core",
         "operations": [
