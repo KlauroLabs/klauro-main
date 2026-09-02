@@ -1015,6 +1015,7 @@ test('repairs only uncovered action-scoped slices of a structural aggregate in s
   const fullyCovered = [...coveredAtomicOutcomes, { ...readView, name: 'View records', description: 'Users can view records through the verified product workflow.', criticality_factors: [`catalog-candidate:${readView.id}`, `catalog-operation-obligation:${readView.id}`] }];
   assert.deepEqual(uncoveredAggregateOperationObligationIds(evidence, fullyCovered, first.scopes, context), new Map());
   assert.deepEqual([...fullyCoveredAggregateCapabilityCandidateIds(evidence, fullyCovered, context)], [aggregate.id]);
+  assert.deepEqual([...fullyCoveredAggregateCapabilityCandidateIds(first.candidates, fullyCovered, context)], [aggregate.id]);
   assert.deepEqual(uncoveredAggregateOperationObligationIds([aggregate], fullyCovered, first.scopes, context), new Map());
   assert.deepEqual([...fullyCoveredAggregateCapabilityCandidateIds([aggregate], fullyCovered, context)], [aggregate.id]);
   assert.deepEqual([...fullyCoveredAggregateCapabilityCandidateIds([aggregate], [...fullyCovered].reverse(), context)], [aggregate.id]);

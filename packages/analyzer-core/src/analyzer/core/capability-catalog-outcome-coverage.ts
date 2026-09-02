@@ -109,6 +109,11 @@ function candidateText(candidate: SystemCapability): string {
   ].filter(Boolean).join(' ');
 }
 
+function candidateAggregationRank(candidate: SystemCapability): number {
+  if (candidate.evidence_kind === 'behavior-surface') return 2;
+  return (candidate.operations || []).length > 1 ? 0 : 1;
+}
+
 function purposeVerbIn(value: string): boolean {
   return (value.match(/[A-Za-z][A-Za-z'-]*/g) || [])
     .some(word => CAPABILITY_PURPOSE_VERBS.has(canonicalToken(word)));
@@ -284,7 +289,7 @@ export function deriveCapabilityCatalogOutcomeRequirements(
         id: item.candidate.id,
         evidenceRank: item.candidate.evidence_role === 'product-outcome' ? 0
           : item.candidate.evidence_role === 'unresolved' || item.candidate.evidence_role === undefined ? 1 : 2,
-        aggregateRank: item.candidate.evidence_kind === 'behavior-surface' ? 1 : 0,
+        aggregateRank: candidateAggregationRank(item.candidate),
         score: scoringSubjectTokens.filter(token => item.tokens.has(comparableEvidenceToken(token))).length,
         matchedSubjectTokens: subjectTokens.filter(token => item.tokens.has(comparableEvidenceToken(token))),
         identityScore: scoringSubjectTokens.filter(token => item.identityTokens.has(comparableEvidenceToken(token))).length,
@@ -310,7 +315,7 @@ export function deriveCapabilityCatalogOutcomeRequirements(
       const candidateIds = multiActionFeature
         ? selectMultiActionOutcomeCandidateIds(clause, audienceCandidates.map(item => ({
           ...item,
-          aggregateRank: item.candidate.evidence_kind === 'behavior-surface' ? 1 : 0,
+          aggregateRank: candidateAggregationRank(item.candidate),
           evidenceRank: item.candidate.evidence_role === 'product-outcome' ? 0
             : item.candidate.evidence_role === 'unresolved' || item.candidate.evidence_role === undefined ? 1 : 2,
           id: item.candidate.id,
@@ -567,14 +572,26 @@ export function bindAtomicallySatisfiedCatalogOutcomeRequirements(
   requirements: readonly CapabilityCatalogOutcomeRequirement[],
   fullyCoveredAggregateCandidateIds: ReadonlySet<string>,
   obligationScopes: ReadonlyMap<string, { parentCandidateId: string }>,
+  eligibleCapabilities: readonly SystemCapability[] = capabilities,
 ): SystemCapability[] {
   const result = capabilities.map(capability => ({ ...capability, criticality_factors: [...(capability.criticality_factors || [])] }));
+  const eligibleCapabilityIds = new Set(eligibleCapabilities.map(capability => capability.id));
+  const citedObligationIds = new Set(eligibleCapabilities.flatMap(capability =>
+    (capability.criticality_factors || []).filter(factor => factor.startsWith('catalog-operation-obligation:'))
+      .map(factor => factor.slice('catalog-operation-obligation:'.length))));
+  const obligationIdsByParent = new Map<string, string[]>();
+  for (const [id, scope] of obligationScopes) {
+    obligationIdsByParent.set(scope.parentCandidateId, [...(obligationIdsByParent.get(scope.parentCandidateId) || []), id]);
+  }
   for (const requirement of requirements) {
-    const coveredParents = requirement.candidateIds.filter(candidateId => fullyCoveredAggregateCandidateIds.has(candidateId));
+    const coveredParents = requirement.candidateIds.filter(candidateId => {
+      const obligationIds = obligationIdsByParent.get(candidateId) || [];
+      return fullyCoveredAggregateCandidateIds.has(candidateId) || (obligationIds.length > 0 && obligationIds.every(id => citedObligationIds.has(id)));
+    });
     if (coveredParents.length === 0) continue;
     const representedParents = new Set<string>();
     result
-      .filter(capability => (capability.criticality_factors || []).includes(`catalog-outcome-requirement:${requirement.id}`))
+      .filter(capability => eligibleCapabilityIds.has(capability.id) && (capability.criticality_factors || []).includes(`catalog-outcome-requirement:${requirement.id}`))
       .forEach(capability => (capability.criticality_factors || []).forEach(factor => {
         const candidateId = factor.startsWith('catalog-candidate:')
           ? factor.slice('catalog-candidate:'.length)
@@ -587,7 +604,7 @@ export function bindAtomicallySatisfiedCatalogOutcomeRequirements(
       }));
     const unrepresentedParents = coveredParents.filter(candidateId => !representedParents.has(candidateId));
     if (unrepresentedParents.length === 0) continue;
-    const members = result.filter(capability => (capability.criticality_factors || []).some(factor => {
+    const members = result.filter(capability => eligibleCapabilityIds.has(capability.id) && (capability.criticality_factors || []).some(factor => {
       if (factor.startsWith('catalog-candidate:')) {
         const candidateId = factor.slice('catalog-candidate:'.length);
         return unrepresentedParents.includes(obligationScopes.get(candidateId)?.parentCandidateId || candidateId);

@@ -68,7 +68,18 @@ export function selectMultiActionOutcomeCandidateIds(
   for (const sentence of actionableSentences) {
     const sentenceTokens = tokenize(sentence);
     const actionClasses = new Set(sentenceTokens.filter(isPurposeVerb).map(actionClass));
-    const subjects = sentenceTokens.filter(token => !isPurposeVerb(token));
+    const directSubjects: string[] = [];
+    let actionSeen = false;
+    for (const word of sentence.toLowerCase().match(/[a-z0-9]+/g) || []) {
+      const normalized = tokenize(word)[0];
+      if (normalized && isPurposeVerb(normalized)) {
+        actionSeen = true;
+        continue;
+      }
+      if (actionSeen && /^(?:across|by|for|from|into|through|to|using|via|with)$/.test(word)) break;
+      if (actionSeen && normalized) directSubjects.push(normalized);
+    }
+    const subjects = directSubjects.length > 0 ? [...new Set(directSubjects)] : sentenceTokens.filter(token => !isPurposeVerb(token));
     const subjectFrequency = new Map(subjects.map(token => [
       token,
       groups.filter(group => group.tokens.has(token)).length,

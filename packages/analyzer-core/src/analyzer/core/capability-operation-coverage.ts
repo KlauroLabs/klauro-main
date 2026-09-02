@@ -829,6 +829,16 @@ export function fullyCoveredAggregateCapabilityCandidateIds(
   const uncoveredAggregateIds = uncoveredAggregateOperationObligationIds(
     candidates, published, completeContext.obligationScopes || new Map(), completeContext,
   );
+  const requiredAggregateScopeIds = new Set(candidates
+    .filter(candidate => candidate.id.startsWith('operation-obligation:') && (candidate.criticality_factors || []).includes('catalog-aggregate-operation-view'))
+    .map(candidate => candidate.id));
+  for (const parentCandidateId of scopedParentIds) {
+    const exactScopes = [...(completeContext.obligationScopes?.values() || [])]
+      .filter(scope => scope.parentCandidateId === parentCandidateId && requiredAggregateScopeIds.has(scope.id));
+    const allExactScopesCited = exactScopes.length > 0 && exactScopes.every(scope =>
+      published.some(capability => (capability.criticality_factors || []).includes(`catalog-operation-obligation:${scope.id}`)));
+    if (allExactScopesCited && !uncoveredAggregateIds.has(parentCandidateId)) covered.add(parentCandidateId);
+  }
   for (const candidate of candidates) {
     if (candidate.id.startsWith('operation-obligation:')) continue;
     const exactScopes = [...(completeContext.obligationScopes?.values() || [])].filter(scope => scope.parentCandidateId === candidate.id); const allExactScopesCited = exactScopes.length > 0 && exactScopes.every(scope => published.some(capability => (capability.criticality_factors || []).includes(`catalog-operation-obligation:${scope.id}`)));

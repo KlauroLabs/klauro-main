@@ -537,12 +537,12 @@ test('removes identity prose and prior-clause references from broad supporting e
 });
 
 test('pairs each action with its subject and folds exact operation evidence into the parent family', () => {
-  const evidence = (id: string, values: string[], aggregateRank = 0, evidenceRank = 0) => ({
+  const evidence = (id: string, values: string[], aggregateRank = 0, evidenceRank = 0, identityValues = values) => ({
     id,
     aggregateRank,
     evidenceRank,
-    identityTokens: new Set(values),
-    symbolTokens: new Set(values),
+    identityTokens: new Set(identityValues),
+    symbolTokens: new Set(identityValues),
     tokens: new Set(values),
   });
   const purposeVerbs = new Set(['add', 'create', 'delete', 'display', 'edit', 'filter', 'search', 'update']);
@@ -553,7 +553,7 @@ test('pairs each action with its subject and folds exact operation evidence into
     [
       evidence('jobs', ['delete', 'edit', 'job', 'application']),
       evidence('categories', ['create', 'edit', 'delete', 'category']),
-      evidence('notes', ['add', 'delete', 'note', 'job', 'application']),
+      evidence('notes', ['add', 'delete', 'note', 'job', 'application'], 0, 0, ['note']),
       evidence('operation-obligation:notes:0123456789abcdef', ['edit', 'note', 'job', 'application']),
       evidence('route-add-note', ['add', 'note', 'job', 'application'], 1),
     ],
@@ -569,6 +569,7 @@ test('preserves complete outcome clauses from a feature-rich README instead of e
     candidate('jobs', 'Track job applications and application status', ['record_job', 'update_job_status', 'filter_jobs', 'delete_job', 'edit_job']),
     candidate('categories', 'Organize application categories', ['create_category', 'edit_category', 'delete_category']),
     candidate('notes', 'Record job application notes', ['add_note', 'delete_note']),
+    candidate('route-add-note', 'Add note route', ['add_note']),
   ]);
   const statements = requirements.map(requirement => requirement.statement);
 
@@ -777,14 +778,18 @@ test('binds a broad outcome through a complete order-independent exact atomic un
     'catalog-outcome-requirement:all:applications-and-notes',
   ];
   const notes = published('Track job application notes', 'Users add, edit, and delete notes for each job application.');
-  notes.criticality_factors = ['catalog-candidate:cap_note_management'];
+  notes.criticality_factors = [
+    'catalog-operation-obligation:operation-obligation:cap_note_management:read',
+    'catalog-operation-obligation:operation-obligation:cap_note_management:create',
+    'catalog-operation-obligation:operation-obligation:cap_note_management:delete',
+  ];
   const multiParentBound = bindAtomicallySatisfiedCatalogOutcomeRequirements(
-    [jobs, notes], [multiParentRequirement], new Set(['cap_job_management', 'cap_note_management']), scopes,
+    [jobs, notes], [multiParentRequirement], new Set(['cap_job_management']), scopes,
   );
   assert.equal(multiParentBound[1].criticality_factors.includes('catalog-outcome-requirement:all:applications-and-notes'), true);
   assert.equal(multiParentBound[1].criticality_factors.includes('catalog-outcome-union:all:applications-and-notes'), true);
   const rebound = bindAtomicallySatisfiedCatalogOutcomeRequirements(
-    multiParentBound, [multiParentRequirement], new Set(['cap_job_management', 'cap_note_management']), scopes,
+    multiParentBound, [multiParentRequirement], new Set(['cap_job_management']), scopes,
   );
   assert.equal(rebound.filter(item => item.criticality_factors.includes('catalog-outcome-union:all:applications-and-notes')).length, 1);
   assert.equal(uncoveredCapabilityCatalogOutcomeRequirements(partial, [requirement]).length, 1);
