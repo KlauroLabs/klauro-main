@@ -172,7 +172,7 @@ test('catalog repair stops after bounded no-progress retries', async () => {
   expect(requests.slice(1).every(ids => ids.length === 1)).toBe(true);
   expect(result).toHaveLength(0);
   expect(purpose.capability_catalog_coverage.status).toBe('rejected');
-  expect(purpose.capability_catalog_coverage.reason).toMatch(/5 unreconciled product-outcome evidence families/);
+  expect(purpose.capability_catalog_coverage.reason).toMatch(/catalog omitted 5 product-entity evidence families/);
 });
 
 test('catalog collapse confirms each unmatched semantic family identity before publication', async () => {

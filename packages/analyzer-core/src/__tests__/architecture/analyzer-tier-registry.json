@@ -52,6 +52,7 @@
   "core/capability-operation-attribution.ts": 3,
   "core/capability-operation-coverage.ts": 3,
   "core/capability-operation-language.ts": 3,
+  "core/capability-outcome-evidence-selection.ts": 3,
   "core/capability-reversible-lifecycle.ts": 3,
   "core/cas-composition.ts": 3,
   "core/change-detector.ts": 1,
