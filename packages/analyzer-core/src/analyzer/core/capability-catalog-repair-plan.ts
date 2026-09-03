@@ -363,6 +363,11 @@ export function deterministicCapabilityDescriptionFallback(args: {
           .replace(/^with\b/i, 'through');
         return `${audience} direct incoming requests to the handlers that serve them${qualifier ? ` ${qualifier}` : ''}.`;
       }
+      const generatedObject = normalizedTitle.match(/^generate (.+)$/)?.[1];
+      if (generatedObject) return `${audience} produce ${generatedObject}.`;
+      if (/^declaratively parse requests using extractors\b/.test(normalizedTitle)) {
+        return `${audience} extract incoming request data through declarative extractors.`;
+      }
       if (coreOutcomeTitle !== normalizedTitle) return audience + " can " + coreOutcomeTitle + ".";
       return `${audience} can ${normalizedTitle} as those ${subjectPhrase} change over time.`;
     }
