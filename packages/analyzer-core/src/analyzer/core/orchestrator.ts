@@ -158,6 +158,7 @@ import {
   type AnalyzerContributionCacheEvidence,
   stableAnalyzerCacheIdentity,
 } from './analyzer-contribution-cache';
+import { isComprehensionInertPrivateAddition, removeTestEntryPoints } from './analysis-comprehension-surface';
 import { USER_FACING_ENTRY_TYPES } from './journey-builder';
 import { buildComprehensionGraph } from './comprehension-graph';
 import { buildTerminalSignal, type TerminalSignal } from './terminal-signal';
@@ -1289,7 +1290,7 @@ export class AnalyzerOrchestrator {
       writeAnalyzerStatus('[Klauro] file-read-cache stats:', getDebugCacheStats());
     }
     phaseStart = startPhase();
-    this.removeTestEntryPoints(allNodes, allEdges, allEntryPoints);
+    removeTestEntryPoints(allNodes, allEdges, allEntryPoints, node => this.isTestFileNode(node));
     this.dedupeUtilNodeDuplicates(allNodes, allEdges);
     this.resolveNodeTwins(allNodes, allEdges, allEntryPoints, allExitPoints);
     this.applyCanonicalOrdering(allNodes, allEdges, allEntryPoints, allExitPoints, allLibraries);
@@ -1302,6 +1303,7 @@ export class AnalyzerOrchestrator {
       writeAnalyzerStatus('[Klauro] in-repo call resolution:', internalizedCalls);
     }
     this.addDiscoveredEntryPoints(projectPath, allNodes, allEntryPoints, allEdges);
+    removeTestEntryPoints(allNodes, allEdges, allEntryPoints, node => this.isTestFileNode(node));
     this.dedupeHttpEntryPoints(allEntryPoints, projectPath, allEdges);
     this.dedupeEntryPointTwins(allEntryPoints, projectPath, allEdges);
     linkHttpTestCoverage(allNodes, allEdges, allEntryPoints);
@@ -2801,7 +2803,7 @@ export class AnalyzerOrchestrator {
       .map(n => n.source.file);
     const buildGitDerivedFacts = gitAnalyzer.isAvailable() && filePathsForGit.length <= 500;
     if (buildGitDerivedFacts) gitAnalyzer.preloadAllFileMetrics(filePathsForGit);
-    this.removeTestEntryPoints(nodes, edges, entryPoints);
+    removeTestEntryPoints(nodes, edges, entryPoints, node => this.isTestFileNode(node));
     this.dedupeUtilNodeDuplicates(nodes, edges);
     this.resolveNodeTwins(nodes, edges, entryPoints, exitPoints);
     this.applyCanonicalOrdering(nodes, edges, entryPoints, exitPoints, previousOutput.libraries || []);
@@ -2812,6 +2814,7 @@ export class AnalyzerOrchestrator {
       nodes, edges, exitPoints, libraries: previousOutput.libraries || [],
     });
     this.addDiscoveredEntryPoints(projectPath, nodes, entryPoints, edges);
+    removeTestEntryPoints(nodes, edges, entryPoints, node => this.isTestFileNode(node));
     this.dedupeHttpEntryPoints(entryPoints, projectPath, edges);
     this.dedupeEntryPointTwins(entryPoints, projectPath, edges);
     linkHttpTestCoverage(nodes, edges, entryPoints);
@@ -2972,7 +2975,7 @@ export class AnalyzerOrchestrator {
       this.rankCatalogPromptCandidates(incrementalDescriptionEvidence, incrComprehensionJourneys),
       catalogEntityCandidateGroups(catalogRequiredEvidenceCandidates(incrementalDescriptionEvidence)),
     );
-    if (this.shouldRefreshAIInterpretation(
+    const incrementalAIRefreshDecision = this.getAIInterpretationRefreshDecision(
       previousOutput,
       systemName,
       incrFrameworkNames,
@@ -2981,7 +2984,23 @@ export class AnalyzerOrchestrator {
       incrExternalServiceNames,
       domainConcepts,
       incrementalNarrativeCandidates
-    )) {
+    );
+    const incrementalAIRefreshRequested = this.shouldRefreshAIInterpretation(previousOutput, systemName, incrFrameworkNames, incrEntryPointSummary, incrDbEntityNames, incrExternalServiceNames, domainConcepts, incrementalNarrativeCandidates, false);
+    const comprehensionInertAddition = isComprehensionInertPrivateAddition(
+      previousOutput,
+      nodes,
+      edges,
+      entryPoints,
+      exitPoints,
+      dataEntities,
+    );
+    const skipSemanticRefresh = comprehensionInertAddition && (
+      incrementalAIRefreshDecision.reason.startsWith('semantic-fingerprint-changed:') ||
+      incrementalAIRefreshDecision.reason === 'legacy-semantic-facts-changed'
+    );
+    const refreshAIInterpretation = incrementalAIRefreshRequested && !skipSemanticRefresh;
+    writeAnalyzerStatus(`[Klauro] AI interpretation refresh=${refreshAIInterpretation} reason=${skipSemanticRefresh ? 'comprehension-inert-private-addition' : incrementalAIRefreshDecision.reason}`);
+    if (refreshAIInterpretation) {
       await this.applyAIInterpretation(
         enhancedSystemPurpose,
         systemName,
@@ -3497,7 +3516,7 @@ export class AnalyzerOrchestrator {
     const entryPoints = [...entryPointById.values()];
     const exitPoints = [...exitPointById.values()];
     const enrichmentNodes = selectLocalizedIncrementalEnrichmentNodes(previousOutput.nodes, nodes, directlyModifiedFiles);
-    this.removeTestEntryPoints(nodes, edges, entryPoints);
+    removeTestEntryPoints(nodes, edges, entryPoints, node => this.isTestFileNode(node));
     this.normalizeNodeMetrics(enrichmentNodes);
     linkStructuralOwnership(nodes, edges);
     this.deriveParentFromContainsEdges(enrichmentNodes, edges);
@@ -5461,45 +5480,6 @@ export class AnalyzerOrchestrator {
   }
 
   private static readonly VALID_ENTRY_POINT_TYPES: ReadonlySet<string> = new Set(ENTRY_POINT_TYPES);
-
-  private removeTestEntryPoints(nodes: CASNode[], edges: CASEdge[], entryPoints: CASEntryPoint[]): void {
-    const nodesById = this.getNodeLookup(nodes);
-    const removedEntryPointIds = new Set<string>();
-    let writeIndex = 0;
-
-    for (const entryPoint of entryPoints) {
-      const sourceNode = nodesById.get(entryPoint.source_node) ||
-        (entryPoint.handler?.node_id ? nodesById.get(entryPoint.handler.node_id) : undefined);
-      const sourceFile = sourceNode?.source?.file || entryPoint.handler?.file || '';
-      const metadata = entryPoint.metadata as Record<string, any> | undefined;
-      const isTestEntryPoint = entryPoint.type === 'test' ||
-        Boolean(metadata?.test_framework || metadata?.attributes?.test_framework) ||
-        Boolean(sourceNode && (
-          sourceNode.type === 'test' ||
-          sourceNode.type === 'test-suite' ||
-          sourceNode.type.startsWith('test_') ||
-          sourceNode.type.startsWith('cypress_') ||
-          sourceNode.category === 'test' ||
-          sourceNode.subcategories?.some(category => /^(test|testing|test-suite|e2e)$/i.test(category))
-        )) ||
-        Boolean(sourceFile && isTestFileName(sourceFile));
-
-      if (isTestEntryPoint) {
-        removedEntryPointIds.add(entryPoint.id);
-        continue;
-      }
-      entryPoints[writeIndex++] = entryPoint;
-    }
-    entryPoints.length = writeIndex;
-
-    if (removedEntryPointIds.size === 0) return;
-    writeIndex = 0;
-    for (const edge of edges) {
-      if (removedEntryPointIds.has(edge.source) || removedEntryPointIds.has(edge.target)) continue;
-      edges[writeIndex++] = edge;
-    }
-    edges.length = writeIndex;
-  }
 
   private isValidEntryPoint(ep: CASEntryPoint): boolean {
     return AnalyzerOrchestrator.VALID_ENTRY_POINT_TYPES.has(ep.type);
@@ -13689,7 +13669,8 @@ export class AnalyzerOrchestrator {
     databaseEntities: string[],
     externalServices: string[],
     domainConcepts: CASDomainConcept[],
-    systemCapabilities: SystemCapability[] = []
+    systemCapabilities: SystemCapability[] = [],
+    logDecision = true,
   ): boolean {
     const decision = this.getAIInterpretationRefreshDecision(
       previousOutput,
@@ -13701,7 +13682,7 @@ export class AnalyzerOrchestrator {
       domainConcepts,
       systemCapabilities
     );
-    writeAnalyzerStatus(`[Klauro] AI interpretation refresh=${decision.refresh} reason=${decision.reason}`);
+    if (logDecision) writeAnalyzerStatus(`[Klauro] AI interpretation refresh=${decision.refresh} reason=${decision.reason}`);
     return decision.refresh;
   }
 

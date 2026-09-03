@@ -17,6 +17,7 @@ import {
 } from '../../analyzer/core/ai-task-model-routing';
 import { filterMismatchedOperationObligationCapabilities } from '../../analyzer/core/capability-catalog-cycle-repair';
 import { deterministicCapabilityActionIdentityFallback } from '../../analyzer/core/capability-catalog-repair-plan';
+import { isComprehensionInertPrivateAddition, removeTestEntryPoints } from '../../analyzer/core/analysis-comprehension-surface';
 
 // These exercise internal heuristics of the orchestrator. They are private by
 // design (not part of the public CAS contract) so the tests reach them via a
@@ -14949,4 +14950,75 @@ test('defers an exact typed-interaction mismatch to validated candidate-local re
     `catalog-candidate:${candidate.id}`,
     `catalog-operation-obligation:${candidate.id}`,
   ]);
+});
+test('treats only isolated private additions as comprehension-inert', () => {
+  const existingNode: CASNode = {
+    id: 'function:src/value.rs:value',
+    name: 'value',
+    type: 'function',
+    source: { file: 'src/value.rs', line: 1, end_line: 1 },
+    metadata: { access_modifier: 'private' },
+  };
+  const privateHelper: CASNode = {
+    id: 'function:src/value.rs:helper',
+    name: 'helper',
+    type: 'function',
+    source: { file: 'src/value.rs', line: 3, end_line: 3 },
+    metadata: { access_modifier: 'private' },
+  };
+  const previous = {
+    nodes: [existingNode],
+    edges: [],
+    entry_points: [],
+    exit_points: [],
+    entities: [],
+  };
+
+  expect(isComprehensionInertPrivateAddition(
+    previous,
+    [existingNode, privateHelper],
+    [],
+    [],
+    [],
+    [],
+  )).toBe(true);
+
+  expect(isComprehensionInertPrivateAddition(
+    previous,
+    [existingNode, {
+      ...privateHelper,
+      metadata: { access_modifier: 'public' },
+    }],
+    [],
+    [],
+    [],
+    [],
+  )).toBe(false);
+
+  expect(isComprehensionInertPrivateAddition(
+    previous,
+    [existingNode, privateHelper],
+    [{ id: 'calls-helper', source: existingNode.id, target: privateHelper.id, type: 'calls' }],
+    [],
+    [],
+    [],
+  )).toBe(false);
+});
+test('removes discovered routes whose resolved handler belongs to test code', () => {
+  const nodes: CASNode[] = [
+    { id: 'route-doc-example', name: 'GET /', type: 'route', source: { file: 'src/docs/example.rs' } },
+    { id: 'test-handler', name: 'handler', type: 'function', source: { file: 'src/routing/tests/handler.rs' } },
+  ];
+  const entryPoints: CASEntryPoint[] = [{
+    id: 'entry-doc-example', name: 'GET /',
+    type: 'http',
+    source_node: 'route-doc-example',
+    handler: { node_id: 'test-handler', method_name: 'handler', file: 'src/docs/example.rs' },
+  }];
+  const edges: CASEdge[] = [{ id: 'entry-link', source: 'entry-doc-example', target: 'route-doc-example', type: 'routes_to' }];
+
+  removeTestEntryPoints(nodes, edges, entryPoints, () => false);
+
+  expect(entryPoints).toEqual([]);
+  expect(edges).toEqual([]);
 });
