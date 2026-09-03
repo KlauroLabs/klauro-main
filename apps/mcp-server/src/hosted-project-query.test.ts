@@ -52,7 +52,7 @@ test('hosted search schema bounds character and UTF-8 byte amplification', () =>
 test('hosted query tools load only the CAS sections they consume', () => {
   assert.deepEqual(hostedProjectQuerySections('search_nodes'), []);
   assert.deepEqual(hostedProjectQuerySections('get_product_map'), [
-    'facts', 'comprehension', 'runtime', 'quality', 'supplemental',
+    'graph', 'calls', 'facts', 'comprehension', 'tests', 'runtime', 'quality', 'supplemental',
   ]);
   assert.deepEqual(hostedProjectQuerySections('get_agent_start_context'), [
     'facts', 'comprehension', 'tests', 'runtime', 'quality', 'supplemental',
@@ -75,7 +75,9 @@ test('hosted query tools load only the CAS sections they consume', () => {
   assert.deepEqual(hostedProjectQuerySections('evaluate_agent_task_proof'), [
     'graph', 'calls', 'facts', 'comprehension', 'tests', 'runtime', 'quality', 'supplemental',
   ]);
-  assert.equal(hostedProjectQuerySections('get_product_map').includes('graph'), false);
+  assert.deepEqual(hostedProjectQuerySections('get_user_journeys'), [
+    'graph', 'calls', 'comprehension', 'tests', 'quality', 'supplemental',
+  ]);
   assert.equal(hostedProjectQuerySections('get_agent_start_context').includes('calls'), false);
 });
 

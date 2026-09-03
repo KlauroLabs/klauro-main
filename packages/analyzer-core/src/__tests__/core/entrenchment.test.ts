@@ -170,4 +170,44 @@ describe('computeEntrenchment', () => {
     expect(result.summary.files).toHaveLength(nodeCount);
     expect(result.summary.modules).toHaveLength(nodeCount);
   });
+
+  it('uses canonical flow membership when no persisted journeys exist', () => {
+    const result = computeEntrenchment({
+      nodes: [fn('entry', 'src/review.ts'), fn('decision', 'src/review.ts')],
+      entry_points: [{ id: 'review-entry', name: 'review', type: 'http', source_node: 'entry' }] as any,
+      flows: [{
+        flow_id: 'approve',
+        name: 'Approve application',
+        intent: 'Approve application',
+        entry_point: 'review-entry',
+        entities: [],
+        contract: {
+          input: [],
+          logic: 'approve',
+          constraints: [],
+          output: ['approved'],
+          side_effects: { state_changes: [], external_integrations: [] },
+        },
+        steps: [{
+          step_id: 'decide',
+          order: 0,
+          name: 'Approve application',
+          description: 'approve',
+          description_source: 'deterministic-label',
+          contract: {
+            input: [],
+            logic: 'approve',
+            constraints: [],
+            output: [],
+            side_effects: { state_changes: [], external_integrations: [] },
+          },
+          functions: [{ function_id: 'decision' }],
+          entities: [],
+        }],
+      }],
+    });
+
+    expect(result.nodes.entry.raw.flows).toBe(1);
+    expect(result.nodes.decision.raw.flows).toBe(1);
+  });
 });

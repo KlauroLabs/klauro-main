@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as nodePath from 'path';
 import type { CASEntryPoint, CASOutput, CASNode, SystemCapability } from '../../../packages/analyzer-core/src/types/cas.types';
+import { projectUserJourneysFromCas } from '../../../packages/analyzer-core/src/analyzer/core/journey-projection';
 import {
   assessChangeRisk,
   buildSummary,
@@ -56,7 +57,6 @@ import { buildComprehensionGate, evaluateComprehensionReadiness, type Comprehens
 import { buildOrientationExecutionBrief, buildOrientationValidationPlan, buildTargetlessOrientationContext, isTargetlessOrientationTask, normalizeAgentToolSteps, orientationAnchorNodes, rankOrientationEntryPoints } from './agent-orientation';
 export type AgentTaskType = 'orient' | 'modify' | 'debug' | 'review' | 'trace' | 'cross-repo' | 'runtime';
 type GateStatus = 'pass' | 'warn' | 'fail';
-
 export interface AgentTask {
   task_type?: AgentTaskType;
   target?: string;
@@ -1314,7 +1314,7 @@ export function buildJourneyContextForAgent(
   cas: CASOutput,
   opts: { nodeId?: string; file?: string; entityName?: string } = {},
 ) {
-  const journeys = cas.user_journeys || [];
+  const journeys = projectUserJourneysFromCas(cas).journeys;
   if (journeys.length === 0 || (!opts.nodeId && !opts.file && !opts.entityName)) return null;
   const rootPath = cas.system?.root_path;
   const nodeIndex = getAgentNodeIndex(cas);
@@ -5756,7 +5756,7 @@ function storedFlowCoverageSummary(cas: CASOutput): Record<string, unknown> {
   return {
     total_call_chains: cas.call_chains?.length || 0,
     measured_call_chains: cas.flow_coverage?.length || 0,
-    user_journeys: cas.user_journeys?.length || 0,
+    user_journeys: projectUserJourneysFromCas(cas).journeys.length,
     critical_flows: cas.flow_summary?.total_critical_flows || 0,
     by_coverage_status: byStatus,
   };

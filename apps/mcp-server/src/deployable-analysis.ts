@@ -4,7 +4,6 @@ import type {
   CASExitPoint,
   CASDataEntity,
   CASEntityLineage,
-  CASUserJourney,
   CASFlowGraph,
   FlowConcept,
   SystemCapability,
@@ -752,9 +751,6 @@ function scopeCapabilitiesToSlice<T extends SystemCapability>(
   });
 }
 
-function filterUserJourneys(journeys: CASUserJourney[] | undefined, includedEntryPointIds: Set<string>): CASUserJourney[] {
-  return (journeys || []).filter(j => includedEntryPointIds.has(j.entry_point_id));
-}
 
 interface ScopedFlowGraph {
   graph: CASFlowGraph | undefined;
@@ -1317,7 +1313,7 @@ export function sliceDeployableAnalysis(cas: CASOutput, deployable: DeployableEv
     flows: comprehensionFlows.length > 0 ? comprehensionFlows : undefined,
     steps: comprehensionFlows.length > 0 ? comprehensionFlows.flatMap(flow => flow.steps) : undefined,
     flow_graph: scopedFlowGraph.graph,
-    user_journeys: filterUserJourneys(cas.user_journeys, includedEntryPointIds),
+    user_journeys: undefined,
     communication_seams: filterCommunicationSeams(cas.communication_seams, includedEntryPointIds, includedExitPointIds, includedEntityIds),
     method_calls: methodCalls.length > 0 ? methodCalls : undefined,
     call_chains: callChains.length > 0 ? callChains : undefined,

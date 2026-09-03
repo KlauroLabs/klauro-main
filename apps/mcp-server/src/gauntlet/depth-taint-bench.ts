@@ -73,6 +73,7 @@ import { execFileSync } from 'child_process';
 import { analyzeForBench } from './product-analysis';
 import { getUserJourneys } from '../query';
 import { codebaseMemoryPath } from './real-camp-arms';
+import { projectUserJourneysFromCas } from '../../../../packages/analyzer-core/src/analyzer/core/journey-projection';
 
 interface TaintFlow {
   source: string;
@@ -175,7 +176,7 @@ async function klauroFlows(dir: string): Promise<{ flows: string[]; bytes: numbe
 
   const listed: any = getUserJourneys(cas, { limit: 200 });
   void listed;
-  const journeys: any[] = cas.user_journeys || [];
+  const journeys: any[] = projectUserJourneysFromCas(cas).journeys;
   const flows: string[] = [];
   for (const j of journeys) {
     const source = normEntry(j);

@@ -18,29 +18,20 @@ export function catalogCandidateEntityFacts(
   });
 }
 
-export function catalogCountBounds(
+export function catalogPromptCapabilityLimit(
   distinctFamilyCount: number,
   behaviorFamilyCount: number,
   entityFamilyCount: number,
   requiredOutcomeCount = 0,
-): { min: number; max: number } {
-  const max = Math.max(1, Math.max(
+): number {
+  return Math.max(1, Math.max(
     distinctFamilyCount,
     behaviorFamilyCount,
     entityFamilyCount,
     requiredOutcomeCount,
   ));
-  return { min: 0, max };
 }
 
-export function catalogMinimumCapabilityCount(
-  distinctFamilyCount: number,
-  entityFamilyCount: number,
-  requiredOutcomeCount = 0,
-): number {
-  void distinctFamilyCount; void entityFamilyCount; void requiredOutcomeCount;
-  return 0;
-}
 
 export function catalogRelatedEntityIds(
   authoredEntityIds: string[],

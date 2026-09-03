@@ -4,6 +4,7 @@ import { SCAFFOLD_GLOBS } from './scaffold-paths';
 import { BUILD_ARTIFACT_GLOBS, THIRD_PARTY_SOURCE_GLOBS } from './build-artifact-paths';
 import { ChangeSemanticImpact } from '../../types/cas.types';
 import { CASEntryPoint, CASExitPoint, CASOutput } from '../../types/cas.types';
+import { projectUserJourneysFromCas } from './journey-projection';
 export function getIncrementalSourceFiles(projectPath: string): string[] {
     const coreConfigPatterns = [
       'package.json',
@@ -117,7 +118,7 @@ export function buildSemanticChangeImpact(
     changedEntryPoints: CASEntryPoint[],
     changedExitPoints: CASExitPoint[]
   ) {
-    const affected_journeys = (output.user_journeys || [])
+    const affected_journeys = projectUserJourneysFromCas(output).journeys
       .filter(journey =>
         affectedEntryPointIds.has(journey.entry_point_id) ||
         journey.call_chain_ids.some(id => affectedCallChainIds.has(id)) ||
@@ -209,7 +210,7 @@ export function buildScopedSemanticChangeImpact(
     changedEntryPoints: CASEntryPoint[],
     changedExitPoints: CASExitPoint[]
   ): ChangeSemanticImpact {
-    const affected_journeys = (currentOutput.user_journeys || [])
+    const affected_journeys = projectUserJourneysFromCas(currentOutput).journeys
       .filter(journey =>
         journey.call_chain_ids.some(id => affectedCallChainIds.has(id)) ||
         affectedEntryPointIds.has(journey.entry_point_id)

@@ -106,9 +106,8 @@ export function evaluateComprehensionReadiness(cas: CASOutput): ComprehensionRea
   const pending = cas.ai_enrichment === 'pending' || l5?.status === 'pending';
   const settled = cas.ai_enrichment === 'ready' || cas.ai_enrichment === 'synchronous' || l5?.status === 'ready';
   const accepted = coverageStatus === 'accepted';
-  const minimum = coverage?.minimum_published_capabilities ?? 0;
   const integrityFailures = comprehensionIntegrityFailures(cas);
-  const ready = settled && accepted && canonicalCapabilities >= minimum && integrityFailures.length === 0;
+  const ready = settled && accepted && integrityFailures.length === 0;
 
   if (ready) {
     return {
@@ -158,7 +157,7 @@ export function evaluateComprehensionReadiness(cas: CASOutput): ComprehensionRea
       structural_candidates: structuralCandidates,
       catalog_coverage: coverageStatus,
       reason: accepted
-        ? `${canonicalCapabilities}/${minimum} required canonical capabilities were published`
+        ? `${canonicalCapabilities} canonical capabilities passed coverage but comprehension is not settled`
         : `${canonicalCapabilities} canonical capabilities exist without accepted catalog coverage`,
     };
   }

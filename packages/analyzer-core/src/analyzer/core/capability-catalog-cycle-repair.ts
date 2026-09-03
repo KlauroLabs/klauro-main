@@ -2,7 +2,7 @@ import type { SystemCapability } from '../../types/cas.types';
 import { canonicalCapabilityLifecycleAction } from './capability-lifecycle-actions';
 import { hasAuthoritativeCapabilityOperationSubjectLineage, uncoveredRequiredCapabilityOperations, type CapabilityOperationCoverageContext } from './capability-operation-coverage';
 import { normalizeCapabilityDescriptionForPublication } from './capability-catalog-audience';
-import { capabilityEvidenceSubjectTokens, catalogMinimumCapabilityCount } from './capability-catalog-evidence';
+import { capabilityEvidenceSubjectTokens } from './capability-catalog-evidence';
 import { normalizedSubjectTokens, outcomeIdentityTokens, outcomeTokenMatches } from './capability-evidence-language';
 import { capabilityCatalogOutcomeCoverageFailure, uncoveredCapabilityCatalogOutcomeRequirements, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
 import {
@@ -787,8 +787,6 @@ export function capabilityCatalogCycleQualityFailure(args: {
   const evidenceRejected = args.reconciled.filter(capability =>
     (capability.criticality_factors || []).some(factor => factor.startsWith('catalog-evidence-rejected:')));
   if (evidenceRejected.length > 0) return `catalog contains ${evidenceRejected.length} authored capability ${evidenceRejected.length === 1 ? 'claim' : 'claims'} without product-outcome evidence: ${evidenceRejected.slice(0, 3).map(capability => capability.name).join(', ')}`;
-  const minimumCapabilities = catalogMinimumCapabilityCount(args.distinctFamilyCount, args.requiredEntityCandidateGroups.length, args.requiredOutcomes.length);
-  if (args.reconciled.length < minimumCapabilities) return `catalog collapse: ${args.reconciled.length} capabilities against ${args.distinctFamilyCount} distinct deterministic candidate families; at least ${minimumCapabilities} independently expressed outcomes are required`;
   const bareNouns = args.reconciled.filter(capability => args.isBareNoun(String(capability.name || '')));
   if (bareNouns.length > 0) return `bare-noun capability names survived reconciliation: ${bareNouns.slice(0, 3).map(capability => `"${capability.name}"`).join(', ')}`;
   const placeholders = args.reconciled.filter(capability => args.isStructuralPlaceholder(capability.description));

@@ -8,6 +8,7 @@ import { buildSummary, getDataLineage, getParadigmConformance, getProductMap, ge
 import { buildCrossRepoRouteDrift } from './product';
 import { analyzeForBench } from './gauntlet/product-analysis';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
+import { projectUserJourneysFromCas } from '../../../packages/analyzer-core/src/analyzer/core/journey-projection';
 
 const PACKAGE_ROOT = path.resolve(__dirname, '..');
 const REPO_ROOT = path.resolve(PACKAGE_ROOT, '..', '..');
@@ -225,7 +226,7 @@ export function evaluateAnswerPackChecks(input: {
     railsEntryPoints >= 2 && railsEntryPoints <= 100
   );
 
-  const journeys = input.truckspyApp?.user_journeys || [];
+  const journeys = input.truckspyApp ? projectUserJourneysFromCas(input.truckspyApp).journeys : [];
   const journeysWithTerminals = journeys.filter(journey => (journey.terminal_entities || []).length > 0);
   record(
     'truckspy-journeys-terminal-entities',
@@ -424,7 +425,7 @@ export function collectProductSurfaceText(cas: CASOutput): Record<string, string
     capability_names: capabilities.map(capability => capability.name).join('\n'),
     capability_descriptions: capabilities.map(capability => capability.description || '').join('\n'),
     domains: capabilities.flatMap(capability => capability.related_domains || []).join('\n'),
-    journeys: JSON.stringify(cas.user_journeys || []),
+    journeys: JSON.stringify(projectUserJourneysFromCas(cas).journeys),
     product_map: [productMap.markdown || '', JSON.stringify(cas.product_map || {})].join('\n'),
   };
 }

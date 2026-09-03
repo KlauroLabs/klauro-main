@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { CASOutput, CASTerminalityMember, FlowConcept } from '../../../packages/analyzer-core/src/types/cas.types';
 import { buildTerminalSignal } from '../../../packages/analyzer-core/src/analyzer/core/terminal-signal';
+import { projectUserJourneysFromCas } from '../../../packages/analyzer-core/src/analyzer/core/journey-projection';
 import { analyzeForBench } from './gauntlet/product-analysis';
 import { evaluateAgentReadiness } from './agent-adoption';
 import { buildSummary } from './query';
@@ -49,6 +50,7 @@ function flowEvidence(flow: FlowConcept, entryFiles: Map<string, string | undefi
 }
 
 export function buildAnalysisTruthReview(cas: CASOutput, projectPath: string) {
+  const journeys = projectUserJourneysFromCas(cas).journeys;
   const summary = buildSummary(cas);
   const readiness = evaluateAgentReadiness(cas, projectPath);
   const answerPack = runAnswerPack(cas, projectPath);
@@ -61,7 +63,7 @@ export function buildAnalysisTruthReview(cas: CASOutput, projectPath: string) {
   const terminalFlows = namedTerminality(terminality.flows, flowNames, member => member.terminal);
   const proximalFlows = namedTerminality(terminality.flows, flowNames, member => member.proximal_terminal);
   const reviewedFlowIds = new Set([...terminalFlows, ...proximalFlows].map(member => member.id));
-  const terminalSignal = buildTerminalSignal({ journeys: cas.user_journeys || [], systemCapabilities: cas.capabilities || [] });
+  const terminalSignal = buildTerminalSignal({ journeys, systemCapabilities: cas.capabilities || [] });
   const fieldsByParent = new Map<string, typeof cas.nodes>();
   for (const node of cas.nodes) {
     if (!node.parent || !['field', 'property', 'attribute'].includes(node.type)) continue;
@@ -86,7 +88,7 @@ export function buildAnalysisTruthReview(cas: CASOutput, projectPath: string) {
       edges: cas.edges.length,
       entry_points: cas.entry_points?.length || 0,
       flows: cas.flows?.length || 0,
-      journeys: cas.user_journeys?.length || 0,
+      journeys: journeys.length,
       diagnostics: cas.analysis_errors || [],
     },
     comprehension: readiness.comprehension,
@@ -128,7 +130,7 @@ export function buildAnalysisTruthReview(cas: CASOutput, projectPath: string) {
       flow_evidence: [...reviewedFlowIds].map(id => flowById.get(id)).filter(Boolean).map(flow => flowEvidence(flow!, entryFiles)),
       terminal_signal: terminalSignal,
     },
-    journey_evidence: [...(cas.user_journeys || [])]
+    journey_evidence: [...journeys]
       .sort((left, right) => Number(right.journey_kind === 'user-facing') - Number(left.journey_kind === 'user-facing'))
       .slice(0, 16)
       .map(journey => ({

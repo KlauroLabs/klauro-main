@@ -45,7 +45,6 @@ export function acceptedComprehensionFixture(cas: CASOutput): CASOutput {
       capability_catalog_coverage: {
         evidence_families: Math.max(1, enhanced.capability_catalog_coverage?.evidence_families || 0),
         published_capabilities: canonicalCapabilities.length,
-        minimum_published_capabilities: 1,
         status: 'accepted',
       },
     },

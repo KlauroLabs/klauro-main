@@ -56,7 +56,7 @@ test('settled but unaccepted comprehension is partial, never ready', () => {
       ],
     },
     capabilities: [{ id: 'cap-partial', name: 'Partial capability' }],
-    enhanced_system_purpose: { capability_catalog_coverage: { status: 'partial', minimum_published_capabilities: 1 } },
+    enhanced_system_purpose: { capability_catalog_coverage: { status: 'partial' } },
   }));
 
   assert.equal(result.status, 'partial');
@@ -213,7 +213,7 @@ test('readiness counts the authoritative capability catalog instead of summing d
     },
     ai_enrichment: 'ready',
     enhanced_system_purpose: {
-      capability_catalog_coverage: { status: 'accepted', minimum_published_capabilities: 1 },
+      capability_catalog_coverage: { status: 'accepted' },
     },
   }));
 
@@ -238,7 +238,6 @@ test('accepted zero-capability catalogs are ready when the evidence requires no 
         candidate_dispositions: [],
         actual_publishable_capabilities: 0,
         published_capabilities: 0,
-        minimum_published_capabilities: 0,
         status: 'accepted',
       },
     },
@@ -257,7 +256,6 @@ test('accepted comprehension fails closed when grounded reconciliation reference
       capability_catalog_coverage: {
         evidence_families: 1,
         published_capabilities: 1,
-        minimum_published_capabilities: 1,
         status: 'accepted',
       },
       capability_reconciliation: {
@@ -291,7 +289,6 @@ test('accepted comprehension fails closed when capability flow references do not
       capability_catalog_coverage: {
         evidence_families: 1,
         published_capabilities: 1,
-        minimum_published_capabilities: 1,
         status: 'accepted',
       },
     },
@@ -315,7 +312,6 @@ test('accepted comprehension rejects relationship roles outside the canonical vo
       capability_catalog_coverage: {
         evidence_families: 1,
         published_capabilities: 1,
-        minimum_published_capabilities: 0,
         status: 'accepted',
       },
     },
@@ -340,7 +336,6 @@ test('node-backed capability operations satisfy reference integrity when the nod
       capability_catalog_coverage: {
         evidence_families: 1,
         published_capabilities: 1,
-        minimum_published_capabilities: 1,
         status: 'accepted',
       },
     },
@@ -364,7 +359,6 @@ test("unavailable comprehension exposes the persisted fail-closed catalog reason
         candidate_dispositions: [],
         actual_publishable_capabilities: 4,
         published_capabilities: 0,
-        minimum_published_capabilities: 5,
         status: "rejected",
         reason: "ai-catalog-hard-deadline-exceeded: catalog omitted cap_chat",
       },

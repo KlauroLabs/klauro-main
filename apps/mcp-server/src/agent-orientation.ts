@@ -1,5 +1,6 @@
 import type { CASEntryPoint, CASNode, CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { isInstalledToolName } from './installed-tool-registry';
+import { projectUserJourneysFromCas } from '../../../packages/analyzer-core/src/analyzer/core/journey-projection';
 
 interface OrientationTask {
   task_type?: string;
@@ -108,7 +109,7 @@ export function orientationAnchorNodes(
   isExcludedNode: (node: CASNode) => boolean,
 ): CASNode[] {
   const nodeIndex = new Map(cas.nodes.map(node => [node.id, node]));
-  const journeyNodeIds = (cas.user_journeys || [])
+  const journeyNodeIds = projectUserJourneysFromCas(cas).journeys
     .slice()
     .sort((left, right) =>
       journeyKindRank(left.journey_kind) - journeyKindRank(right.journey_kind) ||
@@ -133,7 +134,7 @@ export function rankOrientationEntryPoints(
   isExcludedEntry: (entry: CASEntryPoint) => boolean,
 ): CASEntryPoint[] {
   const journeyRank = new Map<string, number>();
-  for (const journey of cas.user_journeys || []) {
+  for (const journey of projectUserJourneysFromCas(cas).journeys) {
     const score = journeyKindRank(journey.journey_kind) * 100 + (CRITICALITY_RANK[journey.criticality] ?? 4) * 10;
     const current = journeyRank.get(journey.entry_point_id);
     if (current === undefined || score < current) journeyRank.set(journey.entry_point_id, score);

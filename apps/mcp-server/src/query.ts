@@ -15,6 +15,7 @@ import { RISKABLE_NODE_TYPES, hasStructuralSecurityEvidence } from '../../../pac
 import { buildTerminalSignal } from '../../../packages/analyzer-core/src/analyzer/core/terminal-signal';
 import { selectProductFrameworkNames, analyzerTypeMap } from '../../../packages/analyzer-core/src/analyzer/core/framework-comprehension';
 import { computeFlowConcepts, rankMaterializedFlows, attachTelemetryToFlows, telemetryForNode, overlayRuntimeTelemetry, computeCapabilityTelemetry, unexercisedFlows, applyFlowRoleToCapabilityRelationships, type ComputeFlowConceptsOptions, type RuntimeMetricLike } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';
+import { projectUserJourneysFromCas } from '../../../packages/analyzer-core/src/analyzer/core/journey-projection';
 import { computeSemanticCoverage, toCompactSemanticCoverage, type SemanticCoverage } from '../../../packages/analyzer-core/src/analyzer/core/semantic-coverage';
 import { computeFlowStructuralLinks, computeConflictBehavioralLinks } from '../../../packages/analyzer-core/src/analyzer/core/structural-cross-links';
 import { partitionAnalysisDiagnostics } from '../../../packages/analyzer-core/src/analyzer/core/analysis-diagnostics';
@@ -1838,7 +1839,7 @@ function journeyToWorkflowSummary(journey: CASUserJourney) {
 }
 
 export function getWorkflows(cas: CASOutput, workflowId?: string) {
-  const journeys = cas.user_journeys || [];
+  const journeys = projectUserJourneysFromCas(cas).journeys;
   if (workflowId) {
     const journey = journeys.find(j => j.id === workflowId);
     return { workflow: journey ? journeyToWorkflowSummary(journey) : null };
@@ -1857,10 +1858,11 @@ export function getUserJourneys(
   cas: CASOutput,
   opts: { journeyId?: string; kind?: string; limit?: number; offset?: number; format?: 'json' | 'markdown'; includeSteps?: boolean } = {}
 ) {
-  const journeysNotice = cas.user_journeys === undefined
+  const journeysNotice = cas.flows === undefined && cas.user_journeys === undefined
     ? analysisVersionNotice(cas, 'user journeys')
     : undefined;
-  const journeys = cas.user_journeys || [];
+  const projection = projectUserJourneysFromCas(cas);
+  const journeys = projection.journeys;
   if (opts.journeyId) {
     const journey = journeys.find(item => item.id === opts.journeyId) || null;
     if (opts.format === 'markdown') {
@@ -1890,7 +1892,7 @@ export function getUserJourneys(
     const markdown = journeyListMarkdown(page, {
       total: filtered.length,
       offset,
-      byKind: cas.user_journey_summary?.by_kind,
+      byKind: projection.summary.by_kind,
     });
     return {
       markdown: journeysNotice ? `> ${journeysNotice}\n\n${markdown}` : markdown,
@@ -1912,13 +1914,15 @@ export function getUserJourneys(
     offset,
     limit,
     analysis_version_notice: journeysNotice,
-    summary: cas.user_journey_summary || null,
+    summary: projection.summary,
     journeys: page.map(journey => ({
       id: journey.id,
       title: journeyTitle(journey),
       headline: journeyHeadline(journey),
       name: journey.name,
       journey_kind: journey.journey_kind,
+      derived_from_flow_id: journey.derived_from_flow_id,
+      exit_point_ids: journey.exit_point_ids,
       criticality: journey.criticality,
       risk: journey.risk,
       entry: journey.entry,
@@ -1934,8 +1938,6 @@ export function getUserJourneys(
             depth: step.depth,
           }))
         : undefined,
-
-
 
 
       path: journeyStepPhrase(journey) || undefined,
@@ -2257,7 +2259,7 @@ export async function diffBehaviorAgainstSnapshot(
   const diff = diffBehavior(before, currentCas);
 
   const baselinePredatesPillars =
-    before.user_journeys === undefined &&
+    before.flows === undefined && before.user_journeys === undefined &&
     before.data_lineage === undefined &&
     compareCasVersions(before.cas_version, PILLAR_ATTESTED_CAS_VERSION) < 0;
 
@@ -4178,8 +4180,9 @@ export function getInterfaceSignature(
 
 
   let purpose: string | undefined;
-  if (cas.user_journeys && cas.user_journeys.length > 0) {
-    const signal = buildTerminalSignal({ journeys: cas.user_journeys, systemCapabilities: cas.capabilities || [] });
+  const projectedJourneys = projectUserJourneysFromCas(cas).journeys;
+  if (projectedJourneys.length > 0) {
+    const signal = buildTerminalSignal({ journeys: projectedJourneys, systemCapabilities: cas.capabilities || [] });
     const nameLower = targetNode.name.toLowerCase();
     const matchedEntity = signal.ranked_entities.find(e => e.name.toLowerCase() === nameLower || nameLower.includes(e.name.toLowerCase()));
     const matchedStage = signal.ranked_stages.find(s => s.name.toLowerCase() === nameLower || nameLower.includes(s.name.toLowerCase()));

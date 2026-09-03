@@ -12,12 +12,11 @@ import {
   capabilityOutcomeNameUnsupportedTokens,
   narrowCapabilityEvidenceCandidates,
   capabilityRequiresCatalogCoverage,
-  catalogCountBounds,
+  catalogPromptCapabilityLimit,
   catalogEntityCandidateGroups,
   catalogEvidenceCandidates,
   catalogRequiredEvidenceCandidates,
   classifyCapabilityEvidence,
-  catalogMinimumCapabilityCount,
   catalogRelatedEntityIds,
   demoteCoveredImplementationAggregates,
   hasFirstPartyCorroboratedCatalogOperations,
@@ -833,11 +832,9 @@ describe('capability evidence roles', () => {
 });
 
 describe('catalogEntityCandidateGroups', () => {
-  test('does not turn structural or entity family counts into capability quotas', () => {
-    expect(catalogCountBounds(37, 0, 37)).toEqual({ min: 0, max: 37 });
-    expect(catalogMinimumCapabilityCount(37, 37)).toBe(0);
-    expect(catalogCountBounds(2, 1, 1, 5)).toEqual({ min: 0, max: 5 });
-    expect(catalogMinimumCapabilityCount(2, 1, 5)).toBe(0);
+  test('sizes only the prompt response ceiling without defining a catalog minimum', () => {
+    expect(catalogPromptCapabilityLimit(37, 0, 37)).toBe(37);
+    expect(catalogPromptCapabilityLimit(2, 1, 1, 5)).toBe(5);
   });
 
   test('groups candidates sharing an entity while preserving unrelated product families', () => {
@@ -1273,7 +1270,6 @@ describe("catalog coverage synchronization", () => {
         candidate_dispositions: [],
         actual_publishable_capabilities: 4,
         published_capabilities: 0,
-        minimum_published_capabilities: 5,
         status: "unavailable" as const,
         reason: "ai-catalog-hard-deadline-exceeded: catalog omitted cap_chat",
       },

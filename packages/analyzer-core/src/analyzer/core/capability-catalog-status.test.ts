@@ -12,7 +12,6 @@ function output(status: 'accepted' | 'rejected', capabilities: number): CASOutpu
       capability_catalog_coverage: {
         evidence_families: 12,
         published_capabilities: capabilities,
-        minimum_published_capabilities: 4,
         status,
         ...(status === 'rejected' ? { reason: 'catalog omitted required operation obligations' } : {}),
       },

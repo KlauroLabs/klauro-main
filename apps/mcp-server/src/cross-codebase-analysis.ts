@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import { CAS_VERSION, type CapabilityFlowRole, type CASDataEntity, type CASEdge, type CASEntryPoint, type CASExitPoint, type CASNode, type CASOutput, type CASProgressiveLevels, type CASSystem, type CASTemporalStability, type CASTerminality, type FlowConcept, type FlowStep, type SystemCapability } from '../../../packages/analyzer-core/src/types/cas.types';
 import { composeCas, type CASCompositionContext, type CASComprehension } from '../../../packages/analyzer-core/src/analyzer/core/cas-composition';
 import { buildCasTerminality } from '../../../packages/analyzer-core/src/analyzer/core/terminality';
+import { projectUserJourneysFromCas } from '../../../packages/analyzer-core/src/analyzer/core/journey-projection';
 import { partitionAnalysisDiagnostics } from '../../../packages/analyzer-core/src/analyzer/core/analysis-diagnostics';
 import type {
   CommunicationSeam,
@@ -7118,8 +7119,8 @@ function buildTerminalSemanticProfile(projectId: string, cas: any): WorkspaceTer
     for (const entity of capability.entities_touched || []) addName(entity, score > 0 ? Math.max(3, score / 2) : score, `flow_capability_entity:${id}:${entity}`);
   }
 
-  for (const journey of cas.user_journeys || []) {
-    const journeyWeight = journey.criticality === 'critical' ? 4 : journey.criticality === 'high' ? 3 : journey.classification === 'primary' ? 2 : 1;
+  for (const journey of projectUserJourneysFromCas(cas).journeys) {
+    const journeyWeight = journey.criticality === 'critical' ? 4 : journey.criticality === 'high' ? 3 : journey.journey_kind === 'user-facing' ? 2 : 1;
 
     const externalCommandNames = journeyExternalCommandNames(journey);
     const isExternalCommand = (name: unknown) => matchesExternalCommandName(externalCommandNames, name);
@@ -7688,7 +7689,7 @@ function buildWorkspaceWorkflows(
     const appByProjectId = new Map(apps.map(app => [app.id, app]));
     const lookupIndex = lookupIndexes.get(repository.cas)!;
 
-    for (const journey of repository.cas.user_journeys || []) {
+    for (const journey of projectUserJourneysFromCas(repository.cas).journeys) {
       const workflow = {
         id: journey.id,
         name: journey.name,

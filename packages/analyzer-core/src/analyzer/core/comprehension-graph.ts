@@ -11,7 +11,7 @@ import type {
 } from '../../types/cas.types';
 import { buildDataLineage } from './data-lineage';
 import { computeFlowConcepts } from './flow-concepts';
-import { buildUserJourneys } from './journey-builder';
+import { projectUserJourneysFromFlows } from './journey-projection';
 
 export interface ComprehensionGraphInput {
   nodes: CASNode[];
@@ -46,9 +46,8 @@ export function buildComprehensionGraph(input: ComprehensionGraphInput) {
     capabilities: input.capabilities,
     behavior_surfaces: input.behaviorSurfaces,
   } as CASOutput, {});
-  const journeyResult = buildUserJourneys({
+  const journeyResult = projectUserJourneysFromFlows({
     nodes: input.nodes,
-    nodeLookup: input.nodeLookup,
     edges: input.edges,
     entryPoints: input.entryPoints,
     exitPoints: input.exitPoints,

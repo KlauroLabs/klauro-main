@@ -10,6 +10,7 @@ import {
   CASUserJourney,
   SystemCapability,
 } from '../../types/cas.types';
+import { projectUserJourneysFromCas } from './journey-projection';
 
 const CAPABILITY_NAME_STOPWORDS = new Set([
   'management', 'manage', 'service', 'services', 'api', 'data', 'system',
@@ -422,8 +423,8 @@ function buildRiskFlags(diff: Omit<CASBehaviorDiff, 'summary'>): string[] {
 }
 
 export function diffBehavior(before: CASOutput, after: CASOutput): CASBehaviorDiff {
-  const beforeJourneys = before.user_journeys || [];
-  const afterJourneys = after.user_journeys || [];
+  const beforeJourneys = projectUserJourneysFromCas(before).journeys;
+  const afterJourneys = projectUserJourneysFromCas(after).journeys;
 
   const { matches, added, removed } = matchJourneys(beforeJourneys, afterJourneys);
 

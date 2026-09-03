@@ -22,7 +22,6 @@ function outputWithCatalog(
       capability_catalog_coverage: {
         evidence_families: 35,
         published_capabilities: publishedCapabilities,
-        minimum_published_capabilities: 6,
         status,
         ...(status === 'accepted' ? {} : { reason: 'catalog quality gate did not pass' }),
       },
@@ -144,18 +143,18 @@ test('fails L4 and L5 when catalog coverage is absent', () => {
   assert.equal(layer(output, 'L5')?.status, 'error');
 });
 
-test('accepts an explicitly valid empty catalog when no minimum outcome is required', () => {
+test('accepts an explicitly valid empty catalog when no outcomes are grounded', () => {
   const output = outputWithCatalog('accepted', 0);
-  output.enhanced_system_purpose!.capability_catalog_coverage!.minimum_published_capabilities = 0;
 
   assert.equal(layer(output, 'L4')?.status, 'ready');
   assert.equal(layer(output, 'L5')?.status, 'ready');
 });
 
-test('fails inconsistent accepted coverage below its declared minimum', () => {
+test('fails when accepted coverage disagrees with the canonical catalog count', () => {
   const output = outputWithCatalog('accepted', 0);
+  output.enhanced_system_purpose!.capability_catalog_coverage!.published_capabilities = 1;
 
   assert.equal(layer(output, 'L4')?.status, 'error');
-  assert.match(layer(output, 'L4')?.error || '', /0 of at least 6/);
+  assert.match(layer(output, 'L4')?.error || '', /reports 1 published capabilities.*contains 0/);
   assert.equal(layer(output, 'L5')?.status, 'error');
 });

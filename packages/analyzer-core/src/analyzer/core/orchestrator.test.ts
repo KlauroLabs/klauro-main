@@ -176,7 +176,6 @@ function rejectedCapabilityOutput(aiEnrichment: CASOutput['ai_enrichment']): CAS
       capability_catalog_coverage: {
         evidence_families: 12,
         published_capabilities: 0,
-        minimum_published_capabilities: 4,
         status: 'rejected',
         reason: 'catalog omitted required operation obligations',
       },

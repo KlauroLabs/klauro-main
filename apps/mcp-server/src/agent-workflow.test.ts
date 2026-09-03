@@ -1442,7 +1442,6 @@ test('readiness rejects completed comprehension with no published product capabi
       capability_catalog_coverage: {
         evidence_families: 12,
         published_capabilities: 0,
-        minimum_published_capabilities: 4,
         status: 'rejected',
         reason: 'catalog omitted grounded evidence families',
       },

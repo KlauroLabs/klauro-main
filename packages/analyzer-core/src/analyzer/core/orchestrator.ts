@@ -169,13 +169,13 @@ import {
   capabilityDescriptionProductLanguageFailure, capabilityDescriptionProductLanguageViolation, capabilityOutcomeScopeFailure,
   capabilityEvidencePublicationFailure, capabilityCanRepairRejectedOutcomeProposal, classifyCapabilityEvidence,
   catalogCandidateTerminality as analyzeCatalogCandidateTerminality,
-  catalogCountBounds, catalogEntityCandidateGroups,
+  catalogPromptCapabilityLimit, catalogEntityCandidateGroups,
   catalogEvidenceCandidates as selectCatalogEvidenceCandidates,
   capabilityEvidenceSubjectTokens,
   narrowCapabilityEvidenceCandidates,
   catalogRequiredEvidenceCandidates,
   uniquelyMatchingCapabilityEntityIds,
-  catalogMinimumCapabilityCount, catalogPromptEntities, catalogRelatedEntityIds,
+  catalogPromptEntities, catalogRelatedEntityIds,
   capabilityCatalogAiPhaseStatus, firstPartySupportsIdentityProduct as supportsIdentityProduct,
   capabilityRequiresCatalogCoverage,
   summarizeCapabilityEvidenceRoles,
@@ -1852,8 +1852,6 @@ export class AnalyzerOrchestrator {
         evidence: enhancedSystemPurpose.evidence || systemPurpose.evidence,
       },
       call_chains: callChains.length > 0 ? callChains : undefined,
-      user_journeys: userJourneyResult.journeys.length > 0 ? userJourneyResult.journeys : undefined,
-      user_journey_summary: userJourneyResult.journeys.length > 0 ? userJourneyResult.summary : undefined,
       paradigm_conformance: paradigmConformance.length > 0 ? paradigmConformance : undefined,
       architectural_conflicts: architecturalConflicts.conflicts.length > 0 ? architecturalConflicts.conflicts : undefined,
       principle_violations: architecturalConflicts.principle_violations.length > 0 ? architecturalConflicts.principle_violations : undefined,
@@ -3156,8 +3154,6 @@ export class AnalyzerOrchestrator {
       call_chains: callChains.length > 0 ? callChains : undefined,
       flow_coverage: flowCoverage.length > 0 ? flowCoverage : undefined,
       test_gaps: testGaps.length > 0 ? testGaps : undefined,
-      user_journeys: userJourneyResult.journeys.length > 0 ? userJourneyResult.journeys : undefined,
-      user_journey_summary: userJourneyResult.journeys.length > 0 ? userJourneyResult.summary : undefined,
       paradigm_conformance: paradigmConformance.length > 0 ? paradigmConformance : undefined,
       architectural_conflicts: architecturalConflicts.conflicts.length > 0 ? architecturalConflicts.conflicts : undefined,
       principle_violations: architecturalConflicts.principle_violations.length > 0 ? architecturalConflicts.principle_violations : undefined,
@@ -8789,7 +8785,7 @@ export class AnalyzerOrchestrator {
         };
       });
     const services = (input.externalServices || []).slice(0, 12); const promptFamilyCount = this.catalogDistinctFamilyCount(requiredCandidatePool);
-    const { max: catalogCountMax } = catalogCountBounds(promptFamilyCount, requiredBehaviorCandidateAreas.length, requiredEntityCandidateGroups.length, input.requiredOutcomeCount || 0);
+    const catalogCountMax = catalogPromptCapabilityLimit(promptFamilyCount, requiredBehaviorCandidateAreas.length, requiredEntityCandidateGroups.length, input.requiredOutcomeCount || 0);
     const infrastructureResponsibilityTokens = new Set([
       'environment', 'infrastructure', 'platform', 'provision', 'resource',
       'runtime', 'service', 'topology', 'workload',
@@ -10100,7 +10096,6 @@ export class AnalyzerOrchestrator {
     }
     const requiredBehaviorCandidateIds = requiredEvidenceCandidates.filter(candidate => candidate.evidence_kind === 'behavior-surface' && capabilityRequiresCatalogCoverage(candidate) && candidate.id).map(candidate => candidate.id);
     const requiredEntityCandidateGroups = catalogEntityCandidateGroups(requiredEvidenceCandidates); const completeLifecycleCandidateIds = new Set(requiredEvidenceCandidates.map(candidate => candidate.id));
-    const minimumCapabilities = catalogMinimumCapabilityCount(distinctFamilyCount, requiredEntityCandidateGroups.length, requiredOutcomes.length);
     const { entityNamesById, entityFieldsById, entityEvidenceById } = capabilityDescriptionEvidenceMaps(args.dataEntities); const validateDeterministicAtomic = (recovered: SystemCapability): boolean => { const deterministicRouteTerms = (recovered.criticality_factors || []).includes('catalog-deterministic-atomic-closure') &&
       (recovered.criticality_factors || []).includes('catalog-deterministic-route-lineage')
       ? recovered.related_domains || [] : []; const audience = evaluateCapabilityCatalogAudience([recovered], args.dataEntities, args.libraryNames || [], [...capabilityCatalogProductTerms(args.enhancedSystemPurpose, args.projectTextSignal), ...deterministicRouteTerms, ...args.externalServices], { productText: args.projectTextSignal, userJourneys: args.userJourneys, entryPoints: args.entryPoints }); const target = this.capabilityDescriptionTarget(recovered, entityNamesById, entityFieldsById, entityEvidenceById, [], [], args.entryPoints); target.productOutcomeTerms = Array.from(new Set([args.projectTextSignal.productDocSummary, ...requiredOutcomes.map(requirement => requirement.firstPartyOutcomeText || requirement.statement), ...deterministicRouteTerms].filter((value): value is string => Boolean(value)))); const publishabilityFailure = this.capabilityPublishabilityFailure(recovered); const elementValidation = this.validateElementDescription(recovered.description || '', target); if (process.env.KLAURO_DEBUG_CATALOG && (audience.accepted.length !== 1 || publishabilityFailure || !elementValidation.ok)) writeAnalyzerStatus('[catalog-debug] deterministic atomic validation:', { name: recovered.name, description: recovered.description, candidates: (recovered.criticality_factors || []).filter(factor => factor.startsWith('catalog-candidate:')), audience_rejections: audience.rejections, publishability_failure: publishabilityFailure, element_reason: elementValidation.reason, offending_terms: elementValidation.offendingTerms, target }); return audience.accepted.length === 1 && !publishabilityFailure && elementValidation.ok; }; const baselineAtomicClosures: SystemCapability[] = [];
@@ -10558,7 +10553,6 @@ export class AnalyzerOrchestrator {
       candidate_dispositions: [...new Map(evidenceCandidates.map(candidate => { const scope = operationObligationViews.scopes.get(candidate.id); const candidateId = scope?.parentCandidateId || candidate.id; return [candidateId, { candidate_id: candidateId, role: candidate.evidence_role || 'unresolved', reasons: candidate.evidence_role_reasons || [] }]; })).values()],
       actual_publishable_capabilities: publishedCapabilities.length,
       published_capabilities: !deadlineExceeded && !qualityFailure ? publishedCapabilities.length : 0,
-      minimum_published_capabilities: minimumCapabilities,
       status: deadlineExceeded ? 'unavailable' : qualityFailure ? 'rejected' : 'accepted',
       ...(gateReason ? { reason: gateReason } : {}),
     };

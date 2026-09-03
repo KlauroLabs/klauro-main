@@ -377,7 +377,7 @@ export async function buildDepthBehavioralDiffReport(): Promise<DepthBehavioralD
     klauroQueryPath:
       'orchestrateAnalysis(before) + orchestrateAnalysis(after) -> diffBehavior(before, after) ' +
       '(diffBehaviorAgainstSnapshot MCP tool): a STRUCTURED behavioral delta over the CAS behavior ' +
-      'pillars — user_journeys (added/removed/changed), security_boundaries (newly_unguarded / lost-guard), ' +
+      'pillars — flow-derived journeys (added/removed/changed), security boundaries (newly unguarded / lost guard), ' +
       'capabilities (added/removed), data_lineage, paradigm_conformance — with human risk_flags.',
     cbmQueryPath:
       'index_repository(after) -> detect_changes + index_status: detect_changes returns a git changed-FILE ' +

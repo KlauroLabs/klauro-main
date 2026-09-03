@@ -140,8 +140,8 @@ interface HostedQuerySectionArgs {
 export function hostedProjectQuerySections(tool: string, args: HostedQuerySectionArgs = {}): readonly CasSectionName[] {
   switch (tool) {
     case 'search_nodes': return [];
-    case 'get_product_map': return ['facts', 'comprehension', 'runtime', 'quality', 'supplemental'];
-    case 'get_user_journeys': return ['comprehension'];
+    case 'get_product_map': return ['graph', 'calls', 'facts', 'comprehension', 'tests', 'runtime', 'quality', 'supplemental'];
+    case 'get_user_journeys': return ['graph', 'calls', 'comprehension', 'tests', 'quality', 'supplemental'];
     case 'get_module_health': return ['quality'];
     case 'evaluate_analysis_truth': return ['graph', 'calls', 'facts', 'runtime', 'supplemental'];
     case 'get_semantic_map': return ['graph', 'calls', 'facts', 'supplemental'];

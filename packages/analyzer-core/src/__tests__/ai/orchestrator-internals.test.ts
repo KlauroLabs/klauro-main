@@ -11004,7 +11004,6 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
       capability_catalog_coverage: {
         evidence_families: 3,
         published_capabilities: 2,
-        minimum_published_capabilities: 2,
         status: 'accepted',
       },
       ai_phase_status: 'complete',
@@ -11049,7 +11048,6 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
       capability_catalog_coverage: {
         evidence_families: 1,
         published_capabilities: 1,
-        minimum_published_capabilities: 1,
         status: 'accepted',
       },
       capability_reconciliation: {

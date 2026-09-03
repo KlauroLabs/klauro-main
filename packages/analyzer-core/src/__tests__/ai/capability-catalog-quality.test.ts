@@ -1516,7 +1516,6 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
       status: 'accepted',
       published_capabilities: 3,
       actual_publishable_capabilities: 3,
-      minimum_published_capabilities: 0,
     });
     expect(args.enhancedSystemPurpose.capability_catalog_coverage.reason).toBeUndefined();
   });
@@ -1563,7 +1562,6 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(args.enhancedSystemPurpose.capability_catalog_coverage).toMatchObject({
       actual_publishable_capabilities: 6,
       published_capabilities: 0,
-      minimum_published_capabilities: 0,
       status: 'rejected',
     });
     expect(args.enhancedSystemPurpose.capability_catalog_coverage.reason).toContain('first-party product outcome');

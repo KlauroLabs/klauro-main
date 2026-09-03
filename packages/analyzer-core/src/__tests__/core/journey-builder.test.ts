@@ -1,4 +1,5 @@
 import { buildUserJourneys } from '../../analyzer/core/journey-builder';
+import { projectUserJourneysFromFlows } from '../../analyzer/core/journey-projection';
 import {
   CASNode,
   CASEdge,
@@ -1976,7 +1977,7 @@ describe('buildUserJourneys with partially materialized flows', () => {
     expect(parserSteps[parserSteps.length - 1]?.node_id).toBe('parser_service');
   });
 
-  it('uses matching flows as capability evidence without excluding unmatched structural journeys', () => {
+  it('projects only canonical flows and does not invent an unmatched structural journey', () => {
     const nodes = [
       node('workspace_route', 'workspace route', 'controller'),
       node('workspace_service', 'workspace service', 'service'),
@@ -1988,7 +1989,7 @@ describe('buildUserJourneys with partially materialized flows', () => {
       { id: 'entry_worker', source_node: 'worker_entry', type: 'message', name: 'worker event' },
     ] as CASEntryPoint[];
 
-    const { journeys } = buildUserJourneys({
+    const { journeys } = projectUserJourneysFromFlows({
       nodes,
       edges: [
         edge('workspace_edge', 'workspace_route', 'workspace_service', 'calls'),
@@ -2003,11 +2004,11 @@ describe('buildUserJourneys with partially materialized flows', () => {
       flows: [flow('workspace_flow', 'entry_workspace', ['workspace_route', 'workspace_service'], 'capability_workspace')],
     });
 
-    expect(journeys).toHaveLength(2);
+    expect(journeys).toHaveLength(1);
     expect(journeys.find(journey => journey.entry_point_id === 'entry_workspace')?.capability_relationships).toEqual([
       expect.objectContaining({ capability_id: 'capability_workspace', role: 'primary', evidence: 'operation' }),
     ]);
-    expect(journeys.find(journey => journey.entry_point_id === 'entry_worker')?.capability_relationships).toBeUndefined();
+    expect(journeys.some(journey => journey.entry_point_id === 'entry_worker')).toBe(false);
   });
 });
 

@@ -8,7 +8,7 @@ import { normalizedSubjectTokens, outcomeIdentityTokens, outcomeTokenMatches, pr
 import { CAPABILITY_PURPOSE_VERBS, isBareNounCapabilityLabel, isCrudInventoryCapabilityLabel, isGenericManagementCapabilityLabel } from "./capability-naming";
 import { capabilityIsSupportingIdentityMechanism } from './capability-identity-scope';
 import { capabilityHasReversibleUserActionLifecycle } from './capability-reversible-lifecycle';
-export { catalogCandidateEntityFacts, catalogCountBounds, catalogMinimumCapabilityCount, catalogRelatedEntityIds, uniquelyMatchingCapabilityEntityIds } from './capability-catalog-metrics';
+export { catalogCandidateEntityFacts, catalogPromptCapabilityLimit, catalogRelatedEntityIds, uniquelyMatchingCapabilityEntityIds } from './capability-catalog-metrics';
 export { firstPartySupportsIdentityProduct } from './capability-catalog-metrics';
 import { isStructuralExecutableCliEntry } from './entry-point-product-role';
 import { demoteCoveredImplementationAggregates as demoteCoveredImplementationAggregatesImpl } from './capability-catalog-aggregate-demotion';

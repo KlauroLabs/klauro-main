@@ -254,7 +254,7 @@ export async function reviewAnalysisUsefulness(cas: CASOutput, projectPath: stri
       primary_domain: cas.enhanced_system_purpose?.primary_domain,
       description: cas.enhanced_system_purpose?.inferred_description || cas.system?.description,
       capability_count: cas.capabilities?.length || 0,
-      workflow_count: cas.user_journeys?.length || 0,
+      workflow_count: cas.flows?.length || 0,
       idiom_count: cas.codebase_idioms?.length || 0,
       invariant_count: cas.behavioral_invariants?.length || 0,
       architectural_pattern_count: cas.architecture_summary?.architectural_patterns?.length || 0,
@@ -299,7 +299,7 @@ export function reviewAnalysisUsefulnessStatic(cas: CASOutput, projectPath: stri
       primary_domain: cas.enhanced_system_purpose?.primary_domain,
       description: cas.enhanced_system_purpose?.inferred_description || cas.system?.description,
       capability_count: cas.capabilities?.length || 0,
-      workflow_count: cas.user_journeys?.length || 0,
+      workflow_count: cas.flows?.length || 0,
       idiom_count: cas.codebase_idioms?.length || 0,
       invariant_count: cas.behavioral_invariants?.length || 0,
       architectural_pattern_count: cas.architecture_summary?.architectural_patterns?.length || 0,
@@ -778,7 +778,7 @@ function scoreLayeredDescriptionPolicy(cas: CASOutput): UsefulnessGate {
 
 export function scoreCapabilityMap(cas: CASOutput, profile: AnalysisProfile): UsefulnessGate {
   const capabilities = cas.capabilities || [];
-  const workflows = cas.user_journeys || [];
+  const workflows = cas.flows || [];
   const catalogCoverage = cas.enhanced_system_purpose?.capability_catalog_coverage;
   const acceptedEmptyCatalog = capabilities.length === 0 &&
     catalogCoverage?.status === 'accepted' &&
@@ -799,10 +799,7 @@ export function scoreCapabilityMap(cas: CASOutput, profile: AnalysisProfile): Us
     (capability.operations || []).length > 0
   ).length;
   if (acceptedEmptyCatalog || linked === capabilities.length) score += 20; else details.push('capabilities lack entity/domain/operation links');
-  if (catalogCoverage?.status === 'rejected' || (
-    catalogCoverage &&
-    catalogCoverage.published_capabilities < catalogCoverage.minimum_published_capabilities
-  )) {
+  if (catalogCoverage?.status === 'rejected') {
     score = Math.min(score, 35);
     details.push(catalogCoverage.reason || `${catalogCoverage.published_capabilities}/${catalogCoverage.evidence_families} evidence families represented`);
   }
@@ -1088,7 +1085,7 @@ function scoreIdiomAndInvariantGuidance(cas: CASOutput, agentContext: any, profi
 
 export function scoreDuplicationAvoidance(cas: CASOutput, agentContext: any, profile: AnalysisProfile): UsefulnessGate {
   const capabilities = cas.capabilities || [];
-  const workflows = cas.user_journeys || [];
+  const workflows = cas.flows || [];
   const concepts = cas.domain_concepts || [];
   const selected = agentContext?.selected_node;
   const contextText = JSON.stringify({

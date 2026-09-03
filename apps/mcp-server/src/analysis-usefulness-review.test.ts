@@ -539,7 +539,7 @@ test('capability map rejects a published catalog below its structural family min
   const gate = scoreCapabilityMap({
     enhanced_system_purpose: {
       capability_catalog_coverage: {
-        evidence_families: 5, published_capabilities: 2, minimum_published_capabilities: 3,
+        evidence_families: 5, published_capabilities: 2,
         status: 'rejected', reason: 'catalog collapsed distinct evidence families',
       },
     },
@@ -562,7 +562,7 @@ test('capability map accepts an evidence-free catalog without inventing a minimu
   const gate = scoreCapabilityMap({
     enhanced_system_purpose: {
       capability_catalog_coverage: {
-        evidence_families: 0, published_capabilities: 0, minimum_published_capabilities: 0,
+        evidence_families: 0, published_capabilities: 0,
         status: 'accepted',
       },
       capability_reconciliation: { proposals: [], undocumented_capabilities: [] },

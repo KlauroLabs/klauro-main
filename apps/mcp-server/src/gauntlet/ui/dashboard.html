@@ -1527,7 +1527,7 @@ function renderCamps(data) {
     const da = dt.aggregate;
     campC += '<div class="camp-sec" style="grid-column:1/-1;margin-top:10px;border-color:var(--accent)"><div class="ch"><span class="cn">Camp C · DEPTH — taint / data-flow (source→sink, cross-function)</span>' +
       '<span class="cv out">' + da.cases + ' CASES · ' + Math.round(da.winRate * 100) + '% WIN · ' + da.losses + ' LOSSES</span></div>' +
-      '<div class="csub">The deepest axis: does tainted/sensitive data flow from a user-input source through the call chain to a SQL / fs / external-HTTP sink? Klauro emits the structured source→path→sink fact (user_journeys entry→steps→terminal + data_lineage) and drops the non-reaching decoy. codebase-memory at its best (trace_path) returns call adjacency only — no source binding, no value-flow. Klauro mean F1 <b>' + da.meanKlauroF1.toFixed(2) + '</b> vs codebase-memory <b>' + da.meanCbmF1.toFixed(2) + '</b>, ~' + Math.round(da.tokenSaving * 100) + '% fewer tokens.</div></div>';
+      '<div class="csub">The deepest axis: does tainted/sensitive data flow from a user-input source through the call chain to a SQL / fs / external-HTTP sink? Klauro emits the structured source→path→sink fact (flow entry→steps→terminal + data lineage) and drops the non-reaching decoy. codebase-memory at its best (trace_path) returns call adjacency only — no source binding, no value-flow. Klauro mean F1 <b>' + da.meanKlauroF1.toFixed(2) + '</b> vs codebase-memory <b>' + da.meanCbmF1.toFixed(2) + '</b>, ~' + Math.round(da.tokenSaving * 100) + '% fewer tokens.</div></div>';
   }
 
   // ---- DEPTH-4 dispatch (interface->impl) vs codebase-memory's Hybrid-LSP ----

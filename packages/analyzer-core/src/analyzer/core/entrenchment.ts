@@ -266,6 +266,7 @@ export function computeEntrenchment(
       | 'communication_seams'
       | 'deployable_evidence'
       | 'call_chains'
+      | 'flows'
       | 'user_journeys'
       | 'repository_links'
       | 'cross_repository_links'
@@ -422,9 +423,26 @@ export function computeEntrenchment(
     if (chain.exit_point?.node_id) joinFlow(chain.exit_point.node_id, chain.id);
     for (const step of chain.call_path || []) joinFlow(step.node_id, chain.id);
   }
-  for (const j of output.user_journeys || []) {
-    joinFlow(j.entry?.handler_node_id, j.id);
-    for (const step of j.steps || []) joinFlow(step.node_id, j.id);
+  if (output.flows) {
+    const entryNodesById = new Map((output.entry_points || []).map(entry => [
+      entry.id,
+      entry.handler?.node_id || entry.source_node,
+    ]));
+    for (const flow of output.flows) {
+      joinFlow(entryNodesById.get(flow.entry_point), flow.flow_id);
+      joinFlow(flow.terminus?.node_id, flow.flow_id);
+      for (const step of flow.steps) {
+        for (const fn of step.functions) joinFlow(fn.function_id, flow.flow_id);
+        for (const mapping of step.code_mappings || []) {
+          joinFlow(mapping.code_region.node_id, flow.flow_id);
+        }
+      }
+    }
+  } else {
+    for (const journey of output.user_journeys || []) {
+      joinFlow(journey.entry?.handler_node_id, journey.id);
+      for (const step of journey.steps || []) joinFlow(step.node_id, journey.id);
+    }
   }
   const flowCount = new Map<string, number>();
   for (const [id, set] of flowMembership) flowCount.set(id, set.size);

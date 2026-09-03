@@ -11,6 +11,7 @@ import {
   SystemCapability,
 } from '../../types/cas.types';
 import { exposureScore } from './data-lineage';
+import { projectUserJourneysFromCas } from './journey-projection';
 import { partitionAnalysisDiagnostics } from './analysis-diagnostics';
 import { journeyPrimaryEntityNames, linkJourneysToCapability, normalizeProductMapEntityName } from './product-map-journey-linking';
 
@@ -122,7 +123,7 @@ function capabilityRiskLevel(
 }
 
 function buildCapabilities(cas: CASOutput): CASProductMapCapability[] {
-  const journeys = cas.user_journeys || [];
+  const journeys = projectUserJourneysFromCas(cas).journeys;
   const primaryNamesByJourney = new Map(journeys.map(journey => [journey.id, journeyPrimaryEntityNames(journey)]));
   const entityNameById = new Map((cas.entities || []).map(entity => [entity.id, entity.name]));
   const entityOwnerCounts = new Map<string, number>();
@@ -184,8 +185,8 @@ function buildCapabilities(cas: CASOutput): CASProductMapCapability[] {
 }
 
 function buildJourneys(cas: CASOutput): CASProductMap['journeys'] {
-  const journeys = cas.user_journeys || [];
-  const summary = cas.user_journey_summary;
+  const projection = projectUserJourneysFromCas(cas);
+  const { journeys, summary } = projection;
 
   const top: CASProductMapJourney[] = [...journeys]
     .sort(
@@ -368,7 +369,7 @@ function buildCoverageCaveats(
   }
 
   const totalTests = cas.test_summary?.total_tests ?? 0;
-  const journeysWithTests = (cas.user_journeys || []).filter(journey => (journey.tests_covering || []).length > 0).length;
+  const journeysWithTests = projectUserJourneysFromCas(cas).journeys.filter(journey => (journey.tests_covering || []).length > 0).length;
   if (totalTests === 0 && journeysWithTests === 0) {
     caveats.push('No tests detected; test coverage signals are unavailable');
   } else if (totalTests === 0 && journeysWithTests > 0) {

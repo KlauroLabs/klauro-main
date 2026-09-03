@@ -132,7 +132,7 @@ const LAYER_DEFINITIONS: Array<{ layer: CASLayerStatus['layer']; name: string; f
   { layer: 'L1', name: 'Nodes, entry points, routes', fields: ['nodes', 'entry_points', 'route_table'] },
   { layer: 'L2', name: 'Call graph / edges', fields: ['edges', 'method_calls', 'call_chains'] },
   { layer: 'L3', name: 'Entities, lineage, database schema', fields: ['entities', 'data_lineage', 'database_schema'] },
-  { layer: 'L4', name: 'Flows, capabilities, contracts', fields: ['flow_graph', 'capabilities', 'user_journeys'] },
+  { layer: 'L4', name: 'Canonical comprehension', fields: ['capabilities', 'flows', 'steps', 'entities'] },
   { layer: 'L5', name: 'AI enrichment', fields: ['enhanced_system_purpose', 'system_purpose.description_source'] },
 ];
 
@@ -222,13 +222,12 @@ export function buildCompletedAnalysisLayersReady(output: CASOutput): CASLayersR
     : ready;
   const catalogCoverage = output.enhanced_system_purpose?.capability_catalog_coverage;
   const canonicalCapabilities = canonicalCapabilityCount(output);
-  const catalogMinimum = catalogCoverage?.minimum_published_capabilities ?? 0;
   const catalogError = !catalogCoverage
     ? 'Capability comprehension is unavailable: catalog coverage was not reported'
     : catalogCoverage.status !== 'accepted'
-      ? `Capability comprehension is ${catalogCoverage.status}: ${catalogCoverage.reason || `${catalogCoverage.published_capabilities || 0} of at least ${catalogMinimum} required capabilities were published`}`
-      : canonicalCapabilities < catalogMinimum
-        ? `Capability comprehension is inconsistent: ${canonicalCapabilities} of at least ${catalogMinimum} required capabilities were published`
+      ? `Capability comprehension is ${catalogCoverage.status}: ${catalogCoverage.reason || `${catalogCoverage.published_capabilities || 0} evidence-grounded capabilities were published`}`
+      : catalogCoverage.published_capabilities !== canonicalCapabilities
+        ? `Capability comprehension is inconsistent: coverage reports ${catalogCoverage.published_capabilities} published capabilities but the canonical catalog contains ${canonicalCapabilities}`
         : undefined;
   const l4 = extractionError
     ? structural
