@@ -23,6 +23,7 @@ import {
 import { loadPrismaModelIdentities, selectPrismaModelIdentity, type PrismaModelIdentity } from '../libraries/orm/prisma-model-identity';
 import { appendInMemoryRecordCollectionNodes } from '../core/javascript-in-memory-data';
 import { partialTypeScriptSourceFailure, typeScriptAnalysisScope, typeScriptSourceDiagnostics } from '../core/tree-sitter-ts-recovery';
+import { buildImportedFilesystemWriteEvidence, isImportedDatabaseClientReceiver } from './typescript-database-client';
 
 interface ParsedAST {
   ast: TSESTree.Program;
@@ -1519,9 +1520,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       const sourceNodeId = this.resolveSourceNodeIdIndexed(filePath, func);
       this.addConstructedEntityPersistEdges(edges, sourceNodeId, func);
       func.calls.forEach((call: any) => {
-
         const typedTargetId = this.resolveTypedReceiverCall(call.target, func);
-
+        const filesystemWrite = sourceNodeId ? buildImportedFilesystemWriteEvidence(sourceNodeId, func.name, call, this.importSourceMap) : undefined;
         const diTargetIds = typedTargetId ? undefined : this.resolveDiFieldCall(call.target, func, filePath);
         if (call.httpMethod && call.httpPath) {
           if (sourceNodeId) {
@@ -1734,7 +1734,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
             this.addEntityAccessEdge(edges, sourceNodeId, call, func, filePath);
           }
         } else if (call.targetType === 'property' && call.argumentCount === 0 && !call.httpMethod) {
-
           const targetNodeId = this.findNodeIdByNameIndexed(call.target, filePath, func.className);
           if (sourceNodeId && targetNodeId && sourceNodeId !== targetNodeId) {
             this.addCallEdge(edges, {
@@ -1752,6 +1751,9 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
               }
             });
           }
+        } else if (sourceNodeId && filesystemWrite) {
+          this.addExitPoint(exitPoints, filesystemWrite.exitPoint);
+          this.addCallEdge(edges, filesystemWrite.edge);
         } else if (sourceNodeId && (call.targetType === 'external' || call.targetType === 'library')) {
           const library = this.getLibraryForType(call.target) || this.importSourceMap.get(call.target) || call.target;
           const exitPointId = `exit_sdk_${func.name}_${call.target}_${call.line}`.replace(/[^a-zA-Z0-9_]/g, '_');
@@ -1904,9 +1906,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       if (injectedFieldType) return this.isRepositoryLikeType(injectedFieldType);
     }
 
-    return this.isRepositoryLikeCaller(callerName) || this.isModelLikeCaller(originalCallerName);
+    return this.isRepositoryLikeCaller(callerName) || isImportedDatabaseClientReceiver(originalCallerName, this.nodesByName, this.importSourceMap) || this.isModelLikeCaller(originalCallerName);
   }
-
   private static readonly PERSISTENCE_OPERATIONS = new Set([
 
     'findoneorfail', 'findall', 'findandcount',

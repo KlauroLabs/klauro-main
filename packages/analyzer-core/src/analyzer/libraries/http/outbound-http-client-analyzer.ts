@@ -4,6 +4,7 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../../core/glob-cache';
 import { isConfigurationConstantExpression, serviceNameFromConfigurationExpression } from '../../core/service-identity';
+import { findEnclosingExecutableNodeId } from './outbound-http-source-attribution';
 
 interface HttpClientCall {
   library: string;
@@ -152,10 +153,11 @@ export class OutboundHttpClientAnalyzer extends BaseAnalyzer {
       const content = await this.readFileIfPresent(context.projectPath, relativePath);
       if (!content) continue;
 
-      const nodeId = this.findFileNodeId(relativePath, context.existingAnalysis) ||
+      const fileNodeId = this.findFileNodeId(relativePath, context.existingAnalysis) ||
         this.ensureHttpClientSourceNode(relativePath, nodes, seenNodeIds);
 
       for (const call of this.extractCalls(content, relativePath, projectBaseUrls)) {
+        const nodeId = findEnclosingExecutableNodeId(relativePath, call.line, context.existingAnalysis) || fileNodeId;
         const exitId = `exit_http_client_${this.safeId(relativePath)}_${this.safeId(call.library)}_${this.safeId(call.method)}_${this.safeId(call.endpoint)}_${call.line}`;
         if (seenExitIds.has(exitId)) continue;
         seenExitIds.add(exitId);

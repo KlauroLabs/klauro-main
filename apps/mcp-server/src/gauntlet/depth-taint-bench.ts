@@ -177,11 +177,24 @@ async function klauroFlows(dir: string): Promise<{ flows: string[]; bytes: numbe
   const listed: any = getUserJourneys(cas, { limit: 200 });
   void listed;
   const journeys: any[] = projectUserJourneysFromCas(cas).journeys;
+  const nodeById = new Map<string, any>((cas.nodes || []).map((node: any) => [node.id, node]));
+  const calleesByNode = new Map<string, string[]>();
+  for (const edge of cas.edges || []) {
+    if (edge.type !== "calls" || !nodeById.has(edge.target)) continue;
+    calleesByNode.set(edge.source, [...(calleesByNode.get(edge.source) || []), edge.target]);
+  }
   const flows: string[] = [];
   for (const j of journeys) {
     const source = normEntry(j);
-    const stepNames: string[] = (j.steps || []).map((s: any) => s.name);
-
+    const pending = j.entry.handler_node_id ? [j.entry.handler_node_id] : [];
+    const reachable = new Set<string>();
+    while (pending.length > 0) {
+      const nodeId = pending.shift()!;
+      if (reachable.has(nodeId)) continue;
+      reachable.add(nodeId);
+      pending.push(...(calleesByNode.get(nodeId) || []));
+    }
+    const stepNames = [...reachable].map(nodeId => nodeById.get(nodeId)?.name).filter(Boolean) as string[];
     const hops = stepNames.filter(n => n && n !== source && !/\s\//.test(n));
     for (const t of j.terminal_entities || []) {
       const sink = t?.name;

@@ -64,6 +64,12 @@ test('journey views are one-to-one projections of canonical flows sharing an ent
   expect(result.journeys.map(journey => journey.derived_from_flow_id).sort()).toEqual(['approve', 'reject']);
   expect(result.journeys.find(journey => journey.derived_from_flow_id === 'approve')?.exit_point_ids).toEqual(['approve-exit']);
   expect(result.journeys.find(journey => journey.derived_from_flow_id === 'reject')?.exit_point_ids).toEqual(['reject-exit']);
+  expect(result.journeys.find(journey => journey.derived_from_flow_id === 'approve')?.terminal_entities).toContainEqual({
+    node_id: 'approve-node',
+    name: 'approve',
+    access: 'read',
+    terminal_kind: 'node',
+  });
 });
 
 test('current CAS derives journeys from flows without a persisted journey collection', () => {

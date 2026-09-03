@@ -7,6 +7,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { OutboundHttpClientAnalyzer } from '../../analyzer/libraries/http/outbound-http-client-analyzer';
 import { PythonAnalyzer } from '../../analyzer/languages/python-analyzer';
+import { TypeScriptJavaScriptAnalyzer } from '../../analyzer/languages/typescript-javascript-analyzer';
 import { CASContribution } from '../../types/cas.types';
 
 describe('OutboundHttpClientAnalyzer', () => {
@@ -76,6 +77,33 @@ describe('OutboundHttpClientAnalyzer', () => {
       'POST https://urql.example.com/graphql',
     ]));
     expect(exits(contribution).every(exit => exit.type === 'api')).toBe(true);
+  });
+
+  it('attributes an outbound call to its enclosing executable node', async () => {
+    const files = {
+      'package.json': JSON.stringify({ dependencies: { axios: '^1.0.0' } }),
+      'src/analytics.ts': [
+        "import axios from 'axios';",
+        'export async function sendToAnalytics(payload: unknown) {',
+        "  await axios.post('https://analytics.example.com/track', payload);",
+        '}',
+      ].join('\n'),
+    };
+    for (const [relativePath, content] of Object.entries(files)) {
+      const fullPath = path.join(tempDir, relativePath);
+      await fs.ensureDir(path.dirname(fullPath));
+      await fs.writeFile(fullPath, content);
+    }
+    const language = await new TypeScriptJavaScriptAnalyzer().analyze({ projectPath: tempDir } as any);
+    const contribution = await new OutboundHttpClientAnalyzer().analyze({
+      projectPath: tempDir,
+      existingAnalysis: [language],
+    } as any);
+    const functionNode = (language.nodes || []).find(node => node.name === 'sendToAnalytics');
+
+    expect(functionNode).toBeDefined();
+    expect(exits(contribution)).toHaveLength(1);
+    expect(exits(contribution)[0].source_node).toBe(functionNode!.id);
   });
 
   it('extracts Python requests, httpx, and aiohttp outbound API calls', async () => {

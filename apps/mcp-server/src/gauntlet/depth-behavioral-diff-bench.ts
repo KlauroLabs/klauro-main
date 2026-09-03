@@ -166,7 +166,9 @@ function klauroKindsFromDiff(diff: CASBehaviorDiff): BehavioralKind[] {
   }
 
 
-  if (diff.journeys.removed.length > 0) kinds.add('journey-broken');
+  if (diff.journeys.removed.length > 0 || diff.journeys.changed.some(change =>
+    change.what.some(item => item.startsWith("removed terminal entity"))
+  )) kinds.add("journey-broken");
 
 
 

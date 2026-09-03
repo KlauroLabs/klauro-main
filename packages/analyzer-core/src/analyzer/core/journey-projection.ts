@@ -9,6 +9,7 @@ import type {
   CASOutput,
   CASUserJourney,
   CASUserJourneyStep,
+  CASUserJourneyTerminalEntity,
   CASUserJourneySummary,
   FlowConcept,
 } from '../../types/cas.types';
@@ -151,7 +152,7 @@ export function projectUserJourneysFromFlows(
     const participants = [...new Map((input.dataEntities || [])
       .filter(entity => flow.entities.includes(entity.id) || entityEvidence.includes(entity.name.toLowerCase()))
       .map(entity => [entity.id, entity])).values()];
-    const terminalEntities = participants
+    const terminalEntities: CASUserJourneyTerminalEntity[] = participants
       .filter(entity => entityEvidence.includes(entity.name.toLowerCase()))
       .map(entity => ({
         entity_id: entity.id,
@@ -168,6 +169,12 @@ export function projectUserJourneysFromFlows(
     const externalServices = new Set(flow.contract.side_effects.external_integrations || []);
     const messagesEmitted = new Set<string>();
     for (const exitPoint of exits) {
+      const terminalNode = nodesById.get(exitPoint.source_node);
+      if (terminalNode && !terminalEntities.some(terminal => terminal.node_id === terminalNode.id)) {
+        const action = String(exitPoint.operation?.action || exitPoint.operation?.method || '').toLowerCase();
+        const access = /(?:create|insert|save|write|update|delete|remove|upsert|set|put|post)/.test(action) ? 'updated' as const : 'read' as const;
+        terminalEntities.push({ node_id: terminalNode.id, name: terminalNode.name, access, terminal_kind: 'node' });
+      }
       if (exitPoint.type === 'message' || exitPoint.type === 'event') messagesEmitted.add(exitPoint.name);
       else if ((exitPoint.target?.service_id || exitPoint.target?.sdk) && !isLanguageBuiltinExitPoint(exitPoint)) {
         externalServices.add(exitPoint.target?.service_id || exitPoint.target?.sdk || '');

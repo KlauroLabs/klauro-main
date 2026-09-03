@@ -84,6 +84,42 @@ describe('Repository/ORM exit-point routing is gated on receiver evidence, not b
     expect(dbExitPoints.some(ep => ep.metadata?.method === 'find')).toBe(true);
   });
 
+  it('preserves a dynamic query as a database effect for an imported database client', async () => {
+    const contribution = await analyzeProject({
+      'src/database.ts': [
+        "import { Pool } from 'pg';",
+        'const pool = new Pool();',
+        'export async function runQuery(sql: string) {',
+        '  return pool.query(sql);',
+        '}',
+      ].join('\n'),
+    });
+
+    const functionNode = (contribution.nodes || []).find(node => node.type === 'function' && node.name === 'runQuery');
+    const dbExits = dbExitPointsFor(contribution, functionNode?.id);
+    expect(dbExits).toHaveLength(1);
+    expect(dbExits[0].name).toBe('Pool.query');
+    expect(dbExits[0].target?.resource).toBe('Pool');
+  });
+
+  it('preserves an imported filesystem write as a file effect', async () => {
+    const contribution = await analyzeProject({
+      'src/reports.ts': [
+        "import * as fs from 'fs';",
+        'export function persistToDisk(filePath: string, contents: string) {',
+        '  fs.writeFileSync(filePath, contents);',
+        '}',
+      ].join('\n'),
+    });
+
+    const functionNode = (contribution.nodes || []).find(node => node.type === 'function' && node.name === 'persistToDisk');
+    const fileExits = (contribution.exit_points || []).filter(
+      exitPoint => exitPoint.type === 'file' && exitPoint.source_node === functionNode?.id,
+    );
+    expect(fileExits).toHaveLength(1);
+    expect(fileExits[0].target?.resource).toBe('(runtime-resolved)');
+  });
+
   it('does NOT route a plain service method named findAll to a DB exit point', async () => {
     const contribution = await analyzeProject({
       'src/services/organizations.service.ts': [
