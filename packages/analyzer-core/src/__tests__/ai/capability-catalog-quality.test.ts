@@ -615,6 +615,45 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
   });
 
+  it('recovers grounded authored outcomes in the first cycle without broad repair calls', async () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    const args: any = gateArgs(localOrch);
+    const outcome = 'Understand what a codebase actually built';
+    const operation = {
+      entry_point_id: 'understand-codebase',
+      entry_point_type: 'message',
+      action: 'Understand',
+      path_or_command: 'get_agent_start_context',
+    };
+    const evidence = cap({
+      id: 'understand-codebase',
+      name: outcome,
+      structural_label: 'Agent understanding surface',
+      evidence_kind: 'behavior-surface',
+      evidence_role: 'product-outcome',
+      operations: [operation] as any,
+    });
+    args.candidateSnapshot = [evidence];
+    args.behaviorSurfaces = [evidence];
+    args.projectTextSignal = {
+      productDocSummary: `${outcome}.`,
+      concepts: ['understand codebase'],
+      evidence: [],
+    };
+    let calls = 0;
+    localOrch.aiExtractCapabilityCatalog = async () => { calls += 1; return []; };
+    localOrch.reconcileCatalogedCapabilities = (values: SystemCapability[]) => values;
+
+    const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(args);
+
+    expect(calls).toBe(1);
+    expect(out).toEqual([expect.objectContaining({ name: outcome })]);
+    expect(args.enhancedSystemPurpose.capability_catalog_coverage).toMatchObject({
+      status: 'accepted',
+      published_capabilities: 1,
+    });
+  });
+
   it('keeps structural evidence out of the catalog when the provider returns no authored outcome', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const args = atomicGateArgs(localOrch);
