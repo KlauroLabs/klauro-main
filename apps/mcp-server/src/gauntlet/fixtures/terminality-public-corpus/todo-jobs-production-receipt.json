@@ -15,24 +15,24 @@
     }
   },
   "analysis": {
-    "analysis_id": "analysis_1788458922443_q07iwf1dw",
-    "analysis_timestamp": "2026-09-03T18:08:50.827Z",
-    "analyzer_build": "source-sha256:f583f26d620a9f211ae9b1e1c05f8c9134ec40ecd9967d7e61f671ed83e76f62",
-    "analyzer_source_base_commit": "a643c01beb3e63913e745760c4757b4e86dd3a6a",
-    "analyzer_source_sha256": "f583f26d620a9f211ae9b1e1c05f8c9134ec40ecd9967d7e61f671ed83e76f62",
+    "analysis_id": "analysis_1788459514991_q3hmxoo0b",
+    "analysis_timestamp": "2026-09-03T18:18:44.704Z",
+    "analyzer_build": "source-sha256:80d91c9d4a3ec83ed1879d2316dd2aa2c5fbbffae3aa123109af093393b009d9",
+    "analyzer_source_base_commit": "6f92f9ec9c83287d394266d2306640898e2fb146",
+    "analyzer_source_sha256": "80d91c9d4a3ec83ed1879d2316dd2aa2c5fbbffae3aa123109af093393b009d9",
     "analyzer_source_file_count": 455,
     "production_cas": "todo-jobs-production-cas.json.gz",
-    "production_cas_sha256": "320e39d31d1e483f75da413d31a4bf2255e0e6949803fc34a9557e9a30926dba",
-    "capabilities_sha256": "c125dc95afe6432dca553f20ffa4afb41681ab90a58f0d84bf2026c9b28ae32e",
+    "production_cas_sha256": "6849245e244e264cac9dba6077214e690cdc33ea368022f4dbb0eff7159ab04d",
+    "capabilities_sha256": "c957dbfe8bad7700f1a7dd78b438c4e9bd9eb9f6fad699c2f568b652fdc9f639",
     "provider": "deepinfra",
     "model": "Qwen/Qwen3-Next-80B-A3B-Instruct",
     "prompt_version": "capability_catalog.v2",
     "semantic_schema_version": "e1.1",
     "semantic_trace": "todo-jobs-production-semantic.jsonl",
-    "semantic_trace_sha256": "0d579b772912a7921f641d2d54c87e6bed9b8333684d6cb67c74b675e441c592",
+    "semantic_trace_sha256": "b3384c22bbd243a516bb985cf046ec72906d78020c3c670dfd38d89c30bf3ce9",
     "ai_cache": "disabled",
     "parser_fingerprint": "f737e145945ddc1d",
-    "derived_fingerprint": "c33f25ef9e1649e8"
+    "derived_fingerprint": "6bff79a268fedee1"
   },
   "repo_id": "github:Babadinho/todo-jobs@c7c139a966ee5eafa49066a89222b56ba8233c27",
   "known_node_ids": [
@@ -978,7 +978,7 @@
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-03T18:08:47.193Z"
+          "generated_at": "2026-09-03T18:18:39.932Z"
         },
         "description": "Create and assign job applications to named categories to organize applications by type or priority, with category counts reflecting associated job totals.",
         "description_source": "ai",
@@ -986,7 +986,7 @@
           "status": "ai_applied",
           "attempted": true,
           "budget_ms": 600000,
-          "generated_at": "2026-09-03T18:08:50.524Z"
+          "generated_at": "2026-09-03T18:18:44.385Z"
         },
         "category": "core",
         "operations": [
@@ -1460,7 +1460,7 @@
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-03T18:08:47.193Z"
+          "generated_at": "2026-09-03T18:18:39.932Z"
         },
         "description": "Update job application status to Rejected, Assessment, Interview, or Closed, with status automatically set to Closed when the application's end date is reached.",
         "description_source": "ai",
@@ -1468,7 +1468,7 @@
           "status": "ai_applied",
           "attempted": true,
           "budget_ms": 600000,
-          "generated_at": "2026-09-03T18:08:50.524Z"
+          "generated_at": "2026-09-03T18:18:44.385Z"
         },
         "category": "core",
         "operations": [
@@ -1509,7 +1509,7 @@
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-03T18:08:47.193Z"
+          "generated_at": "2026-09-03T18:18:39.932Z"
         },
         "description": "Modify job details or remove applications entirely, with changes reflected across associated notes and categories.",
         "description_source": "ai",
@@ -1517,7 +1517,7 @@
           "status": "ai_applied",
           "attempted": true,
           "budget_ms": 600000,
-          "generated_at": "2026-09-03T18:08:50.524Z"
+          "generated_at": "2026-09-03T18:18:44.385Z"
         },
         "category": "core",
         "operations": [
@@ -2087,7 +2087,7 @@
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-03T18:08:48.439Z"
+          "generated_at": "2026-09-03T18:18:41.402Z"
         },
         "description": "Users can filter job applications by status and category as those job application status categories change over time.",
         "description_source": "ai",
@@ -2095,7 +2095,7 @@
           "status": "ai_applied",
           "attempted": true,
           "budget_ms": 600000,
-          "generated_at": "2026-09-03T18:08:50.524Z"
+          "generated_at": "2026-09-03T18:18:44.385Z"
         },
         "category": "core",
         "operations": [
@@ -2118,8 +2118,7 @@
         "criticality_factors": [
           "ai-extracted-from-journeys-and-entities",
           "catalog-outcome-requirement:all:filter-job-status",
-          "catalog-candidate:capability_job_status",
-          "catalog-description-rejected"
+          "catalog-candidate:capability_job_status"
         ],
         "related_flows": [
           {
