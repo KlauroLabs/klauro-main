@@ -2243,8 +2243,10 @@ export class ReactAnalyzer extends BaseAnalyzer {
     declarationNodes: readonly CASNode[] = []
   ): void {
     const componentNameToId = new Map<string, string>();
+    const componentNameCounts = new Map<string, number>();
+    for (const component of components) componentNameCounts.set(component.name, (componentNameCounts.get(component.name) || 0) + 1);
     for (const component of components) {
-      if (components.filter(candidate => candidate.name === component.name).length === 1) {
+      if (componentNameCounts.get(component.name) === 1) {
         componentNameToId.set(component.name, this.generateId('component', component.filePath, component.name));
       }
     }

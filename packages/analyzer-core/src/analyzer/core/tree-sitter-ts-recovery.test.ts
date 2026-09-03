@@ -20,6 +20,16 @@ test('recovers raw logical operators used as JSX text without hiding malformed J
   assert.ok(invalid.syntaxErrorLocations?.length);
 });
 
+test('recovers raw ampersands on JSX text lines without accepting mismatched tags', () => {
+  const valid = extractor.extractFromSource(
+    'export function Help() { return <p>\nEntry & Exit Points\n</p>; }',
+    'Help.tsx',
+  );
+  assert.equal(valid.hasSyntaxErrors, false);
+  const invalid = extractor.extractFromSource('export function Broken() { return <span>&</p>; }', 'Broken.tsx');
+  assert.equal(invalid.hasSyntaxErrors, true);
+});
+
 test('recovers nested typeof-import generic call arguments while retaining the runtime call', () => {
   const extraction = extractor.extractFromSource(
     'export async function load(importOriginal: Function) { return importOriginal<typeof import("pkg")>(); }',

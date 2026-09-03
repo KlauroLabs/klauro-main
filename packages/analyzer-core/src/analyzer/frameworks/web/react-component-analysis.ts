@@ -295,7 +295,46 @@ export class ReactComponentAnalysis {
 }
 
 export class ReactBindingResolver {
+  private indexedDeclarations?: readonly CASNode[];
+  private declarationsByFile = new Map<string, CASNode[]>();
+  private declarationsByModule = new Map<string, CASNode[]>();
+  private indexedComponents?: readonly ReactComponent[];
+  private componentsByFileAndName = new Map<string, ReactComponent[]>();
+  private componentsByModule = new Map<string, ReactComponent[]>();
+
   constructor(private readonly componentId: (component: ReactComponent) => string) {}
+
+  private indexDeclarations(declarationNodes: readonly CASNode[]): void {
+    if (this.indexedDeclarations === declarationNodes) return;
+    this.indexedDeclarations = declarationNodes;
+    this.declarationsByFile = new Map();
+    this.declarationsByModule = new Map();
+    for (const node of declarationNodes) {
+      const file = this.normalizeDeclarationFile(node.source?.file);
+      if (!file) continue;
+      const byFile = this.declarationsByFile.get(file) || [];
+      byFile.push(node);
+      this.declarationsByFile.set(file, byFile);
+      const module = this.moduleIdentity(file);
+      const byModule = this.declarationsByModule.get(module) || [];
+      byModule.push(node);
+      this.declarationsByModule.set(module, byModule);
+    }
+  }
+
+  private indexComponents(components: readonly ReactComponent[]): void {
+    if (this.indexedComponents === components) return;
+    this.indexedComponents = components;
+    this.componentsByFileAndName = new Map();
+    this.componentsByModule = new Map();
+    for (const component of components) {
+      const file = this.normalizeDeclarationFile(component.filePath);
+      const exactKey = `${file}\0${component.name}`;
+      this.componentsByFileAndName.set(exactKey, [...(this.componentsByFileAndName.get(exactKey) || []), component]);
+      const module = this.moduleIdentity(file);
+      this.componentsByModule.set(module, [...(this.componentsByModule.get(module) || []), component]);
+    }
+  }
 
   normalizeDeclarationFile(file: unknown): string {
     return String(file || '').replace(/\\/g, '/').replace(/^\.\//, '');
@@ -316,10 +355,10 @@ export class ReactBindingResolver {
   }
 
   resolveReactHandlerBinding(component: ReactComponent, name: string, declarationNodes: readonly CASNode[]): string | undefined {
+    this.indexDeclarations(declarationNodes);
     const componentFile = this.normalizeDeclarationFile(component.filePath);
     const bindingName = name.includes('.') ? name.split('.')[0] : name;
-    const sameFile = declarationNodes.filter(node =>
-      this.normalizeDeclarationFile(node.source?.file) === componentFile &&
+    const sameFile = (this.declarationsByFile.get(componentFile) || []).filter(node =>
       (node.source?.line || 0) >= component.sourceStartLine &&
       (node.source?.line || 0) <= component.sourceEndLine &&
       this.declarationBindingNames(node).includes(bindingName)
@@ -333,9 +372,7 @@ export class ReactBindingResolver {
     if (imports.length !== 1) return undefined;
     const binding = imports[0];
     const targetModule = this.moduleIdentity(path.posix.normalize(path.posix.join(path.posix.dirname(componentFile), binding.source)));
-    const imported = declarationNodes.filter(node => {
-      const nodeModule = this.moduleIdentity(this.normalizeDeclarationFile(node.source?.file));
-      if (nodeModule !== targetModule) return false;
+    const imported = (this.declarationsByModule.get(targetModule) || []).filter(node => {
       if (binding.importedName === 'default') return Boolean(node.metadata?.attributes?.is_default_export);
       return this.declarationBindingNames(node).includes(binding.importedName);
     });
@@ -343,20 +380,17 @@ export class ReactBindingResolver {
   }
 
   resolveRenderedComponent(parent: ReactComponent, rendered: ReactRenderedComponent, components: readonly ReactComponent[]): ReactComponent | undefined {
-    const sameFile = components.filter(component =>
-      component.name === rendered.name &&
-      this.normalizeDeclarationFile(component.filePath) === this.normalizeDeclarationFile(parent.filePath)
-    );
+    this.indexComponents(components);
+    const parentFile = this.normalizeDeclarationFile(parent.filePath);
+    const sameFile = this.componentsByFileAndName.get(`${parentFile}\0${rendered.name}`) || [];
     if (sameFile.length === 1) return sameFile[0];
     if (sameFile.length > 1) return undefined;
     const imports = (parent.importBindings || []).filter(binding => binding.localName === rendered.name && binding.source.startsWith('.'));
     if (imports.length !== 1) return undefined;
     const binding = imports[0];
     const targetModule = this.moduleIdentity(path.posix.normalize(path.posix.join(path.posix.dirname(parent.filePath), binding.source)));
-    const imported = components.filter(component =>
-      this.moduleIdentity(component.filePath) === targetModule &&
-      (binding.importedName === 'default' ? component.isDefaultExport : component.name === binding.importedName)
-    );
+    const imported = (this.componentsByModule.get(targetModule) || [])
+      .filter(component => binding.importedName === 'default' ? component.isDefaultExport : component.name === binding.importedName);
     return imported.length === 1 ? imported[0] : undefined;
   }
 

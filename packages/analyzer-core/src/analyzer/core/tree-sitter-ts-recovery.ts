@@ -10,10 +10,13 @@ function blank(value: string): string {
 function recoverLine(line: string, snippet: string): string {
   let recovered = line;
   if (snippet.trimStart().startsWith('&')) {
+    if (!/[<>]/.test(line)) {
+      recovered = recovered.replace(/&(?![A-Za-z0-9#]+;)/g, token => blank(token));
+    }
     recovered = recovered.replace(
-      /(<([A-Za-z][\w:.-]*)\b[^>]*>)([^<>{}]*(?:&&|\|\|)[^<>{}]*)(<\/\2\s*>)/g,
+      /(<([A-Za-z][\w:.-]*)\b[^>]*>)([^<>{}]*?(?:&&|\|\||&(?![A-Za-z0-9#]+;))[^<>{}]*)(<\/\2\s*>)/g,
       (_match: string, open: string, _tag: string, text: string, close: string) =>
-        open + text.replace(/&&|\|\|/g, token => blank(token)) + close,
+        open + text.replace(/&&|\|\||&(?![A-Za-z0-9#]+;)/g, token => blank(token)) + close,
     );
   }
   if (snippet.includes('>()')) {
