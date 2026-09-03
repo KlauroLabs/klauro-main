@@ -137,6 +137,44 @@ describe('hostile input guards', () => {
       expect(warnings.some(warning => warning.includes(bigFile) && /skipped|source file limit/.test(warning))).toBe(false);
     });
 
+    it('fails closed with an exact omission for source files above the bounded parser limit', async () => {
+      const analyzer = new TypeScriptJavaScriptAnalyzer() as any;
+      analyzer.analysisWarnings = [];
+      analyzer.suppressedWarningCount = 0;
+      const hugeFile = path.join(tempDir, 'huge.ts');
+      await fs.writeFile(hugeFile, 'export const retainedPrefix = true;\n');
+      await fs.truncate(hugeFile, 32 * 1024 * 1024 + 1);
+
+      const preloaded = await analyzer.preloadFilesWithTreeSitter(['huge.ts'], tempDir);
+      expect(preloaded).toHaveLength(0);
+      expect(analyzer.omittedSourceFiles).toEqual([{
+        path: 'huge.ts',
+        reason: expect.stringContaining('source file limit exceeded'),
+        bytes: 32 * 1024 * 1024 + 1,
+      }]);
+      expect(analyzer.collectAnalysisWarnings()).toContainEqual(
+        expect.stringMatching(/huge\.ts skipped: source file limit exceeded/),
+      );
+    });
+
+    it('rejects an oversized incremental source before reading it into the worker heap', async () => {
+      const analyzer = new TypeScriptJavaScriptAnalyzer();
+      const hugeFile = path.join(tempDir, 'incremental-huge.ts');
+      await fs.writeFile(hugeFile, 'export const retainedPrefix = true;\n');
+      await fs.truncate(hugeFile, 32 * 1024 * 1024 + 1);
+
+      await expect(analyzer.analyzeFileSingle({
+        filePath: hugeFile,
+        relativePath: 'incremental-huge.ts',
+        projectPath: tempDir,
+        contentHash: 'oversized',
+        existingAnalysis: [],
+      } as any)).rejects.toMatchObject({
+        code: 'SOURCE_FILE_LIMIT_EXCEEDED',
+        recoverable: true,
+      });
+    });
+
     it('records a warning for files with syntax errors while still extracting what it can', async () => {
       const analyzer = new TypeScriptJavaScriptAnalyzer() as any;
       analyzer.analysisWarnings = [];

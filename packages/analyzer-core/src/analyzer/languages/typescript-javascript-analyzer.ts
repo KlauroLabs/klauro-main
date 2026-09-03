@@ -32,6 +32,7 @@ interface ParsedAST {
 }
 const PARALLEL_BATCH_SIZE = 100;
 const MAX_WORKER_SOURCE_FILE_BYTES = 1024 * 1024;
+const MAX_PARSEABLE_SOURCE_FILE_BYTES = 32 * 1024 * 1024;
 
 export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   private astCache = new Map<string, ParsedAST>();
@@ -81,9 +82,14 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
   async analyzeFileSingle(context: FileAnalysisContext): Promise<FileAnalysisResult> {
     const { filePath, relativePath } = context;
+    const stat = await fs.stat(filePath);
+    if (stat.size > MAX_PARSEABLE_SOURCE_FILE_BYTES) {
+      throw new AnalyzerError(
+        `${relativePath} exceeds the bounded parser limit (${stat.size} > ${MAX_PARSEABLE_SOURCE_FILE_BYTES} bytes)`,
+        'SOURCE_FILE_LIMIT_EXCEEDED', { filePath: relativePath, bytes: stat.size }, true);
+    }
     const content = await fs.readFile(filePath, 'utf-8');
     const contentHash = context.contentHash || this.computeContentHash(content);
-    const stat = await fs.stat(filePath);
 
     const nodes: CASNode[] = [];
     const edges: CASEdge[] = [];
@@ -349,6 +355,12 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
           try {
             const stat = await fs.stat(fullPath);
             if (!stat.isFile()) return null;
+            if (stat.size > MAX_PARSEABLE_SOURCE_FILE_BYTES) {
+              const reason = `source file limit exceeded: ${stat.size} bytes is above ${MAX_PARSEABLE_SOURCE_FILE_BYTES}`;
+              this.omittedSourceFiles.push({ path: file, reason, bytes: stat.size });
+              this.addAnalysisWarning(`${file} skipped: ${reason}`);
+              return null;
+            }
             const content = await fs.readFile(fullPath, 'utf-8');
             return { relativePath: file, fullPath, content };
           } catch (error) {
