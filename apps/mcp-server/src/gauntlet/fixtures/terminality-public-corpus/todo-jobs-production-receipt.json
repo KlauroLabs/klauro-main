@@ -15,24 +15,24 @@
     }
   },
   "analysis": {
-    "analysis_id": "analysis_1788459514991_q3hmxoo0b",
-    "analysis_timestamp": "2026-09-03T18:18:44.704Z",
-    "analyzer_build": "source-sha256:80d91c9d4a3ec83ed1879d2316dd2aa2c5fbbffae3aa123109af093393b009d9",
-    "analyzer_source_base_commit": "6f92f9ec9c83287d394266d2306640898e2fb146",
-    "analyzer_source_sha256": "80d91c9d4a3ec83ed1879d2316dd2aa2c5fbbffae3aa123109af093393b009d9",
+    "analysis_id": "analysis_1788460876854_9xx4vakcz",
+    "analysis_timestamp": "2026-09-03T18:41:24.819Z",
+    "analyzer_build": "source-sha256:c5ff9d7f07b516c422ef0dbe05cfed5d8e8102f9a8004cb193d837d80539b491",
+    "analyzer_source_base_commit": "fb2975a9d3ca5d126c000b7b2b54ef84f922189a",
+    "analyzer_source_sha256": "c5ff9d7f07b516c422ef0dbe05cfed5d8e8102f9a8004cb193d837d80539b491",
     "analyzer_source_file_count": 455,
     "production_cas": "todo-jobs-production-cas.json.gz",
-    "production_cas_sha256": "6849245e244e264cac9dba6077214e690cdc33ea368022f4dbb0eff7159ab04d",
-    "capabilities_sha256": "c957dbfe8bad7700f1a7dd78b438c4e9bd9eb9f6fad699c2f568b652fdc9f639",
+    "production_cas_sha256": "6d4e26a27ec0dedaf26622bd3bc5c2ce895c51d9b214b43ecc705f67cec2ac73",
+    "capabilities_sha256": "3b242d487e8b16030958034ac464b2e5393d813671ff3360029a21a6b8d7cc3d",
     "provider": "deepinfra",
     "model": "Qwen/Qwen3-Next-80B-A3B-Instruct",
     "prompt_version": "capability_catalog.v2",
     "semantic_schema_version": "e1.1",
     "semantic_trace": "todo-jobs-production-semantic.jsonl",
-    "semantic_trace_sha256": "b3384c22bbd243a516bb985cf046ec72906d78020c3c670dfd38d89c30bf3ce9",
+    "semantic_trace_sha256": "1d62013ff1be8308b6c1f207e7d4530a15042e421edb2798bb663175d2484210",
     "ai_cache": "disabled",
     "parser_fingerprint": "f737e145945ddc1d",
-    "derived_fingerprint": "6bff79a268fedee1"
+    "derived_fingerprint": "b2dfa9621b758b10"
   },
   "repo_id": "github:Babadinho/todo-jobs@c7c139a966ee5eafa49066a89222b56ba8233c27",
   "known_node_ids": [
@@ -978,7 +978,7 @@
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-03T18:18:39.932Z"
+          "generated_at": "2026-09-03T18:41:22.174Z"
         },
         "description": "Create and assign job applications to named categories to organize applications by type or priority, with category counts reflecting associated job totals.",
         "description_source": "ai",
@@ -986,7 +986,7 @@
           "status": "ai_applied",
           "attempted": true,
           "budget_ms": 600000,
-          "generated_at": "2026-09-03T18:18:44.385Z"
+          "generated_at": "2026-09-03T18:41:24.505Z"
         },
         "category": "core",
         "operations": [
@@ -1460,15 +1460,15 @@
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-03T18:18:39.932Z"
+          "generated_at": "2026-09-03T18:41:22.175Z"
         },
-        "description": "Update job application status to Rejected, Assessment, Interview, or Closed, with status automatically set to Closed when the application's end date is reached.",
+        "description": "Update job application status to Rejected, Assessment, Interview, or Closed, with automatic closure triggered when the application's end date is reached.",
         "description_source": "ai",
         "description_generation": {
           "status": "ai_applied",
           "attempted": true,
           "budget_ms": 600000,
-          "generated_at": "2026-09-03T18:18:44.385Z"
+          "generated_at": "2026-09-03T18:41:24.505Z"
         },
         "category": "core",
         "operations": [
@@ -1509,7 +1509,7 @@
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-03T18:18:39.932Z"
+          "generated_at": "2026-09-03T18:41:22.175Z"
         },
         "description": "Modify job details or remove applications entirely, with changes reflected across associated notes and categories.",
         "description_source": "ai",
@@ -1517,7 +1517,7 @@
           "status": "ai_applied",
           "attempted": true,
           "budget_ms": 600000,
-          "generated_at": "2026-09-03T18:18:44.385Z"
+          "generated_at": "2026-09-03T18:41:24.505Z"
         },
         "category": "core",
         "operations": [
@@ -2087,15 +2087,15 @@
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-03T18:18:41.402Z"
+          "generated_at": "2026-09-03T18:41:23.982Z"
         },
-        "description": "Users can filter job applications by status and category as those job application status categories change over time.",
+        "description": "Users track and organize job applications by filtering them using status, category, and job board source to maintain clear visibility across active and pending opportunities.",
         "description_source": "ai",
         "description_generation": {
           "status": "ai_applied",
           "attempted": true,
           "budget_ms": 600000,
-          "generated_at": "2026-09-03T18:18:44.385Z"
+          "generated_at": "2026-09-03T18:41:24.505Z"
         },
         "category": "core",
         "operations": [
