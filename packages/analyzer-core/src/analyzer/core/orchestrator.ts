@@ -9981,10 +9981,7 @@ export class AnalyzerOrchestrator {
     return operations.some(operation =>
       /^(?:manage|create|update|delete|write|modify|submit|configure|mutate|set|save|persist)$/i.test(operation.action || '')
     );
-  }  private isRepairRetainableCapability(capability: SystemCapability): boolean {
-    const failure = this.capabilityPublishabilityFailure(capability);
-    return !failure || !['name-is-not-authored', 'bare-noun-name', 'generated-label-prefix', 'generic-management-name', 'crud-inventory-name', 'crud-lifecycle-fragment-name'].includes(failure);
-  }  private isPublishableCapability(capability: SystemCapability): boolean {
+  }  private isRepairRetainableCapability(capability: SystemCapability): boolean { const failure = this.capabilityPublishabilityFailure(capability); return !failure || !['name-is-not-authored', 'bare-noun-name', 'generated-label-prefix', 'generic-management-name', 'crud-inventory-name', 'crud-lifecycle-fragment-name'].includes(failure); }  private isPublishableCapability(capability: SystemCapability): boolean {
     return this.capabilityPublishabilityFailure(capability) === undefined;
   }  private capabilityPublishabilityFailure(capability: SystemCapability): string | undefined {
     const authored = capability.name_source === 'deterministic' ||
