@@ -55,6 +55,13 @@ describe('description repair rejection feedback', () => {
     }))).toBe('implementation-surface-restatement');
   });
 
+  it('rejects generated field labels leaked into capability names', () => {
+    expect(orch.capabilityPublishabilityFailure(cap({
+      name: 'filter: Filter between job applications',
+      operations: [{ entry_point_id: 'filter', entry_point_type: 'http', action: 'filter' }] as any,
+    }))).toBe('generated-label-prefix');
+  });
+
   it('does not let a rejected description mask structural or identity failures', () => {
     const rejected: Pick<SystemCapability, 'description' | 'description_generation'> = {
       description: '',

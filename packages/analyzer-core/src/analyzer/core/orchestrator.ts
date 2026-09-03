@@ -9984,8 +9984,7 @@ export class AnalyzerOrchestrator {
     );
   }  private isPublishableCapability(capability: SystemCapability): boolean {
     return this.capabilityPublishabilityFailure(capability) === undefined;
-  }
-  private capabilityPublishabilityFailure(capability: SystemCapability): string | undefined {
+  }  private capabilityPublishabilityFailure(capability: SystemCapability): string | undefined {
     const authored = capability.name_source === 'deterministic' ||
       capability.name_source === 'ai' ||
       capability.name_source === 'manual' ||
@@ -9993,6 +9992,7 @@ export class AnalyzerOrchestrator {
     if (!authored) return 'name-is-not-authored';
     if ((capability.related_entities || []).length === 0 && (capability.operations || []).length === 0) return 'missing-structural-anchor';
     if (this.isBareNounCapabilityLabel(String(capability.name || ''))) return 'bare-noun-name';
+    if (/^[A-Za-z][A-Za-z -]{0,24}:\s+\S/.test(String(capability.name || '').trim())) return 'generated-label-prefix';
     const description = String(capability.description || '').trim();
     const descriptionWordCount = description.split(/\s+/).filter(Boolean).length;
     const capabilityName = String(capability.name || ''); const lifecycleActions = new Set((capability.operations || []).map(operation => String(operation.action || '').toLowerCase()).filter(action => /^(?:create|read|update|delete)/.test(action))); const hasBoundFirstPartyOutcome = (capability.criticality_factors || []).some(factor => factor.startsWith('catalog-outcome-requirement:'));
