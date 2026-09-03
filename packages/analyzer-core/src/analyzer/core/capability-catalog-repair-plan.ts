@@ -258,6 +258,7 @@ export function deterministicCapabilityDescriptionFallback(args: {
     groundedTitleSubjects.push(...titleSubjects.filter(subject =>
       audienceTokens.some(audienceToken => subjectMatches(subject, audienceToken))));
   }
+  if (groundedTitleSubjects.length === 0 && firstPartyOutcomeBound) groundedTitleSubjects.push(...titleSubjects);
   if (groundedTitleSubjects.length === 0) return undefined;
   const actionOrder = ['create', 'view', 'update', 'remove'];
   let actions = [...new Set(resolvedCandidates.flatMap(candidate => publicationActionsForOperations(candidate.operations || [])))]

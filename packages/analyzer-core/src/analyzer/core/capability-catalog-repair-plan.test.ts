@@ -186,7 +186,7 @@ describe('capability catalog repair planning', () => {
     });
     assert.equal(boundOutcome?.description, 'Users can keep track of job applications as those job applications change over time.');
 
-    const routingEvidence = evidence("routing-evidence", "Request Handler Routing", ["read"]);
+    const routingEvidence = evidence("routing-evidence", "Routing", ["read"]);
     const qualifiedOutcome = deterministicCapabilityDescriptionFallback({
       identity: { ...capability("routing", ["catalog-candidate:routing-evidence", "catalog-outcome-requirement:all:route"]), name: "Route requests to handlers with a macro free API" },
       evidenceCandidates: [routingEvidence], audience: "Developers", firstPartyTexts: [], validate: allow,
