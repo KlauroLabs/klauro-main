@@ -7,9 +7,12 @@ import { beginHostedProjectQueryWarm, runHostedProjectQueryWorker, resolveHosted
 import { withHostedBackgroundPermit } from './hosted-background-queue';
 
 test('hosted query heap is independently bounded with an explicit override', () => {
-  assert.equal(resolveHostedQueryHeapMb({ KLAURO_ANALYSIS_HEAP_MB: '4096' }), 3072);
-  assert.equal(resolveHostedQueryHeapMb({ KLAURO_HOSTED_QUERY_HEAP_MB: '2048' }), 2048);
-  assert.equal(resolveHostedQueryHeapMb({ KLAURO_HOSTED_QUERY_HEAP_MB: '128' }), 1024);
+  const eightGiB = 8 * 1024 * 1024 * 1024;
+  assert.equal(resolveHostedQueryHeapMb({ KLAURO_ANALYSIS_HEAP_MB: '4096' }, eightGiB), 3072);
+  assert.equal(resolveHostedQueryHeapMb({ KLAURO_ANALYSIS_HEAP_MB: '1024' }, eightGiB), 1024);
+  assert.equal(resolveHostedQueryHeapMb({ KLAURO_HOSTED_QUERY_HEAP_MB: '2048' }, eightGiB), 2048);
+  assert.equal(resolveHostedQueryHeapMb({ KLAURO_HOSTED_QUERY_HEAP_MB: '128' }, eightGiB), 3072);
+  assert.equal(resolveHostedQueryHeapMb({}, 2 * 1024 * 1024 * 1024), 1024);
 });
 
 test('hosted queries reuse one worker until background analysis requests memory', async () => {

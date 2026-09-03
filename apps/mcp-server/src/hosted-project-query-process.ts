@@ -50,10 +50,17 @@ const pending = new Map<number, PendingQuery>();
 const warmedVersions = new Map<string, string>();
 const warmingVersions = new Map<string, { version: string; promise: Promise<void> }>();
 
-export function resolveHostedQueryHeapMb(env: NodeJS.ProcessEnv = process.env): number {
+export function resolveHostedQueryHeapMb(
+  env: NodeJS.ProcessEnv = process.env,
+  totalMemBytes?: number,
+): number {
   const configured = Number(env.KLAURO_HOSTED_QUERY_HEAP_MB);
   if (Number.isFinite(configured) && configured >= 512) return Math.floor(configured);
-  return Math.min(resolveAnalysisHeapMb(env).heapMb, DEFAULT_QUERY_HEAP_MB);
+  const analysisHeap = resolveAnalysisHeapMb(env, totalMemBytes);
+  if (env.KLAURO_ANALYSIS_HEAP_MB !== undefined) {
+    return Math.min(analysisHeap.heapMb, DEFAULT_QUERY_HEAP_MB);
+  }
+  return Math.max(512, Math.min(DEFAULT_QUERY_HEAP_MB, Math.floor(analysisHeap.totalRamMb * 0.5)));
 }
 
 function resolveWorkerEntryPath(kind: 'full' | 'search', env: NodeJS.ProcessEnv = process.env): string {
