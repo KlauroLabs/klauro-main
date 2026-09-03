@@ -80,10 +80,6 @@
     },
     {
       "file": "apps/mcp-server/src/analysis-focus.ts",
-      "name": "FOCUS_ENV_KEYS"
-    },
-    {
-      "file": "apps/mcp-server/src/analysis-focus.ts",
       "name": "FOCUS_PROFILES"
     },
     {
@@ -584,22 +580,6 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/base-analyzer.ts",
-      "name": "<inline:1h1gvx616g3l>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/base-analyzer.ts",
-      "name": "<inline:2ba1lccsobgg>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/base-analyzer.ts",
-      "name": "<inline:8lppdk1oy1kz>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/base-analyzer.ts",
-      "name": "<inline:vqbmyd1qqksn>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/base-analyzer.ts",
       "name": "keyword"
     },
     {
@@ -744,15 +724,7 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/flow-concepts.ts",
-      "name": "EXT_TOKENS"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/flow-concepts.ts",
       "name": "PROCESS_VERB_RE"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/flow-concepts.ts",
-      "name": "TRACEABLE_NODE_TYPES"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/framework-comprehension.ts",
@@ -905,10 +877,6 @@
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
       "name": "<inline:1eoyshb1tyy1>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline:1g16ahi1rlhg>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",

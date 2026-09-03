@@ -131,6 +131,114 @@
       "name": "paths",
       "category": "closed-technical-taxonomy",
       "reason": "Supported source extensions summarize file paths returned by the installed MCP workflow and do not influence analysis or product inference."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/capability-catalog-audience.ts",
+      "name": "danglingModifier",
+      "category": "quality-rejection-taxonomy",
+      "reason": "English modifier endings reject grammatically incomplete generated titles; they cannot create, rank, or identify product purpose."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/capability-catalog-evidence.ts",
+      "name": "genericDeliveryAction",
+      "category": "closed-operation-taxonomy",
+      "reason": "Common delivery operations reject titles that merely restate observed handlers; evidence-derived authored outcomes remain eligible and the taxonomy cannot generate a capability."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/capability-catalog-family-equivalence.ts",
+      "name": "actionTokens",
+      "category": "closed-operation-taxonomy",
+      "reason": "Operation verbs are removed only while comparing evidence-derived capability subjects; entity, operation, and subject evidence still govern family equivalence."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/capability-catalog-family-equivalence.ts",
+      "name": "resourceLifecycleActions",
+      "category": "closed-operation-taxonomy",
+      "reason": "CRUD lifecycle verbs classify whether already-observed operations form one resource lifecycle; the list cannot supply a resource, outcome, or capability."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/capability-catalog-outcome-coverage.ts",
+      "name": "outcomeTokenStopwords",
+      "category": "linguistic-noise",
+      "reason": "English connective words are excluded from evidence-overlap scoring and cannot generate or determine a product subject."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/capability-catalog-outcome-coverage.ts",
+      "name": "scoringSubjectTokens",
+      "category": "closed-operation-taxonomy",
+      "reason": "Generic lifecycle verbs are excluded from authored-clause subject matching so executable subject evidence, rather than CRUD wording, determines coverage."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/capability-catalog-repair-plan.ts",
+      "name": "publicationActions",
+      "category": "closed-operation-taxonomy",
+      "reason": "Observed operation verbs bound repair evidence for an already-identified candidate; they cannot originate a capability or product subject."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/capability-catalog-scheduling.ts",
+      "name": "OUTCOME_ACTION_TOKENS",
+      "category": "closed-operation-taxonomy",
+      "reason": "Operation verbs are excluded from candidate subject comparison so scheduling is based on source-derived subjects and cited evidence."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/capability-naming.ts",
+      "name": "<inline:1omvw741hiur>",
+      "category": "quality-rejection-taxonomy",
+      "reason": "CRUD-leading title forms are rejected only when the observed lifecycle proves they are fragments; the expression cannot create or rank product purpose."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/capability-operation-language.ts",
+      "name": "genericSubjectTokens",
+      "category": "closed-technical-taxonomy",
+      "reason": "Transport, handler, operation, and generic UI tokens are excluded while extracting subjects from source-declared RPC operations; exact remaining declaration and service words provide the subject."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/flow-entry-naming.ts",
+      "name": "extensionTokens",
+      "category": "closed-technical-taxonomy",
+      "reason": "Supported source-file extensions are removed from evidence-derived entry labels and never infer behavior or product purpose."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/journey-projection.ts",
+      "name": "access",
+      "category": "closed-operation-taxonomy",
+      "reason": "Mutation verbs classify an already-observed terminal effect as read or updated; the exit point and terminal node remain source-derived."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/language-builtins.ts",
+      "name": "GO_STANDARD_PACKAGE_ROOTS",
+      "category": "closed-language-taxonomy",
+      "reason": "Go standard-library package roots distinguish language built-ins from external services and cannot infer product behavior."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline:1wjwvak1aton>",
+      "category": "quality-rejection-taxonomy",
+      "reason": "Mutation verbs reject read-only capability claims that contradict observed operations; they cannot create a product claim."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline:7rlh1ubse2f4>",
+      "category": "linguistic-normalization",
+      "reason": "English action prefixes are stripped only when comparing subjects of already-grounded capability candidates; source operations and entities determine whether candidates can merge."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline:1qku9x41ckn6>",
+      "category": "closed-operation-taxonomy",
+      "reason": "Mutation verbs classify the action of an already-grounded capability during deduplication and cannot introduce its subject or purpose."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "name": "<inline:1ijjse41qmhb>",
+      "category": "closed-operation-taxonomy",
+      "reason": "Observation verbs classify the action of an already-grounded capability during deduplication and cannot introduce its subject or purpose."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/understanding-contract.ts",
+      "name": "BEHAVIORAL_CODE_UNIT_TYPES",
+      "category": "closed-cas-taxonomy",
+      "reason": "Canonical CAS node types select executable code units for the understanding contract; node existence and relationships remain source-derived."
     }
   ]
 }
