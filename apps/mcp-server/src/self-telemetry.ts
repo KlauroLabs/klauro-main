@@ -29,7 +29,7 @@ import * as nodePath from 'node:path';
 import * as klauroTelemetry from '../../../packages/klauro-sdk-js/src/index';
 import { klauroHttp } from '../../../packages/klauro-sdk-js/src/middleware/http';
 import type { CasRuntimeEvent } from '../../../packages/klauro-sdk-js/src/types';
-import { ingestTelemetryBatch, type TelemetryEvent } from './telemetry-ingestion';
+import { ingestTelemetryBatch, MAX_TELEMETRY_BATCH_SIZE, type TelemetryEvent } from './telemetry-ingestion';
 import { waitForForegroundAnalysisIdle } from './foreground-analysis';
 import { persistSelfTelemetryInWorker } from './self-telemetry-process';
 
@@ -250,24 +250,49 @@ function scheduleLocalIngest(): void {
     });
 }
 
+export function selfTelemetryWorkerRequests(
+  queued: ReadonlyArray<{ projectPath: string; event: TelemetryEvent }>,
+): Array<Array<{ projectPath: string; events: TelemetryEvent[] }>> {
+  const eventsByProject = new Map<string, TelemetryEvent[]>();
+  for (const item of queued) {
+    const events = eventsByProject.get(item.projectPath) ?? [];
+    events.push(item.event);
+    eventsByProject.set(item.projectPath, events);
+  }
+
+  const requests: Array<Array<{ projectPath: string; events: TelemetryEvent[] }>> = [];
+  let request: Array<{ projectPath: string; events: TelemetryEvent[] }> = [];
+  let requestSize = 0;
+  for (const [projectPath, events] of eventsByProject) {
+    for (let offset = 0; offset < events.length; offset += MAX_TELEMETRY_BATCH_SIZE) {
+      const batch = events.slice(offset, offset + MAX_TELEMETRY_BATCH_SIZE);
+      if (requestSize + batch.length > MAX_TELEMETRY_BATCH_SIZE && request.length > 0) {
+        requests.push(request);
+        request = [];
+        requestSize = 0;
+      }
+      request.push({ projectPath, events: batch });
+      requestSize += batch.length;
+    }
+  }
+  if (request.length > 0) requests.push(request);
+  return requests;
+}
+
 async function flushSelfTelemetryEvents(): Promise<void> {
   while (pendingLocalEvents.length > 0) {
     await waitForForegroundAnalysisIdle();
     const queued = pendingLocalEvents.splice(0, pendingLocalEvents.length);
-    const batches = new Map<string, TelemetryEvent[]>();
-    for (const item of queued) {
-      const events = batches.get(item.projectPath) ?? [];
-      events.push(item.event);
-      batches.set(item.projectPath, events);
-    }
     const ingestStartedAt = Date.now();
-    const grouped = [...batches].map(([projectPath, events]) => ({ projectPath, events }));
-    await persistSelfTelemetryInWorker(grouped, selfCanonicalProjectPath() || undefined);
+    const requests = selfTelemetryWorkerRequests(queued);
+    for (const request of requests) {
+      await persistSelfTelemetryInWorker(request, selfCanonicalProjectPath() || undefined);
+    }
     const ingestElapsedMs = Date.now() - ingestStartedAt;
     if (ingestElapsedMs >= SLOW_SELF_INGEST_MS) {
-      const eventCount = grouped.reduce((sum, batch) => sum + batch.events.length, 0);
+      const projectCount = new Set(queued.map(item => item.projectPath)).size;
       process.stdout.write(
-        `Klauro self-telemetry: isolated ingest of ${eventCount} event(s) across ${grouped.length} project(s) took ${ingestElapsedMs}ms.\n`,
+        `Klauro self-telemetry: isolated ingest of ${queued.length} event(s) across ${projectCount} project(s) took ${ingestElapsedMs}ms.\n`,
       );
     }
   }

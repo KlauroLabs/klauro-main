@@ -7,7 +7,7 @@ import * as fs from 'node:fs';
 import * as fsExtra from 'fs-extra';
 import { getAnalysis } from './analyzer';
 import { beginForegroundAnalysis } from './foreground-analysis';
-import { loadTelemetryObservations, type TelemetryEvent } from './telemetry-ingestion';
+import { loadTelemetryObservations, MAX_TELEMETRY_BATCH_SIZE, type TelemetryEvent } from './telemetry-ingestion';
 
 const REQUIRE = () => import('./self-telemetry');
 
@@ -248,6 +248,30 @@ test('self telemetry waits for foreground analysis before persisting', async () 
     assert.equal(observations.observations.length, 1);
     assert.equal(observations.observations[0].event.route, '/v1/analyze');
   });
+});
+
+test('self telemetry bounds every isolated worker request to the ingestion limit', async () => {
+  const { selfTelemetryWorkerRequests } = await REQUIRE();
+  const queued = [
+    ...Array.from({ length: MAX_TELEMETRY_BATCH_SIZE * 2 + 3 }, (_, index) => ({
+      projectPath: '/tmp/klauro-self-large-a',
+      event: { event_id: `a-${index}`, kind: 'request' as const, route: '/large-a' },
+    })),
+    ...Array.from({ length: 7 }, (_, index) => ({
+      projectPath: '/tmp/klauro-self-large-b',
+      event: { event_id: `b-${index}`, kind: 'request' as const, route: '/large-b' },
+    })),
+  ];
+
+  const requests = selfTelemetryWorkerRequests(queued);
+
+  assert.equal(requests.length, 3);
+  assert.ok(requests.every(request =>
+    request.reduce((sum, batch) => sum + batch.events.length, 0) <= MAX_TELEMETRY_BATCH_SIZE));
+  assert.deepEqual(
+    requests.flatMap(request => request.flatMap(batch => batch.events.map(event => event.event_id))),
+    queued.map(item => item.event.event_id),
+  );
 });
 
 test('self telemetry persistence runs outside the API event loop', async () => {
