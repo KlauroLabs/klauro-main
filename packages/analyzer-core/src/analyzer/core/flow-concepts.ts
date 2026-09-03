@@ -242,7 +242,8 @@ function segmentIntoStepsByRole(
   lineageByNode: Map<string, { writes: CASEntityLineage[]; reads: CASEntityLineage[] }>,
   entryPointsByNode: Map<string, CASEntryPoint[]>,
   terminusNodeId?: string,
-  terminusKind?: string
+  terminusKind?: string,
+  sharedHelperNodeIds: ReadonlySet<string> = new Set(),
 ): Array<{ role: StepRole; nodes: CASNode[]; evidences: string[] }> {
   const occurrences: RoleOccurrence[] = [];
   for (const { node } of chain) {
@@ -252,16 +253,25 @@ function segmentIntoStepsByRole(
   }
 
   const segments: Array<{ role: StepRole; nodes: CASNode[]; evidences: string[] }> = [];
+  let collapsingSharedProcess = false;
   for (const occ of occurrences) {
     const last = segments[segments.length - 1];
     const sameRole = last && last.role === occ.role;
-    const prevNode = last ? last.nodes[last.nodes.length - 1] : undefined;
-    const prevLayer = prevNode ? layerOf(prevNode) : undefined;
-    const layerOk = !sameRole || occ.role !== 'process' || prevLayer === layerOf(occ.node);
-    const bothLayerUnknown = prevLayer === 'unknown' && layerOf(occ.node) === 'unknown';
-    const fileOk = !sameRole || occ.role !== 'process' || !bothLayerUnknown
-      || sourceFileOf(prevNode!) === sourceFileOf(occ.node);
-    if (last && sameRole && layerOk && fileOk) {
+    const sharedProcess = occ.role === 'process'
+      && sharedHelperNodeIds.has(occ.node.id)
+      && !(entryPointsByNode.get(occ.node.id) || []).length;
+    if (last && (sharedProcess || (collapsingSharedProcess && occ.role === 'process'))) {
+      last.nodes.push(occ.node);
+      last.evidences.push(occ.evidence);
+      collapsingSharedProcess = true;
+      continue;
+    }
+    collapsingSharedProcess = sharedProcess;
+    const previousNode = last?.nodes[last.nodes.length - 1];
+    const crossesErrorBoundary = occ.role === 'process' && Boolean(
+      (previousNode?.signature?.throws || []).length || (occ.node.signature?.throws || []).length
+    );
+    if (last && sameRole && !crossesErrorBoundary) {
       last.nodes.push(occ.node);
       last.evidences.push(occ.evidence);
     } else {
@@ -270,6 +280,20 @@ function segmentIntoStepsByRole(
   }
 
   return segments;
+}
+
+function sharedHelperNodeIds(cas: CASOutput): Set<string> {
+  const callersByNode = new Map<string, Set<string>>();
+  for (const edge of cas.edges || []) {
+    const traversable = edge.type === 'calls' || edge.type === 'invokes' || edge.type.includes('call');
+    if (!traversable || edge.source === edge.target) continue;
+    const callers = callersByNode.get(edge.target) || new Set<string>();
+    callers.add(edge.source);
+    callersByNode.set(edge.target, callers);
+  }
+  return new Set([...callersByNode.entries()]
+    .filter(([, callers]) => callers.size >= 3)
+    .map(([nodeId]) => nodeId));
 }
 
 function detectSubSections(
@@ -472,7 +496,12 @@ function nameStepForRoleImpl(
 
 
   const entity = dominantEntityForNodes(nodeIds, lineage);
-  const verbNode = nodes.find(n => verbForNode(n, PROCESS_VERB_RE));
+  const verbNodes = nodes.filter(n => verbForNode(n, PROCESS_VERB_RE));
+  const specificVerbNode = verbNodes.find(n => {
+    const candidate = verbForNode(n, PROCESS_VERB_RE)?.toLowerCase();
+    return candidate !== 'handle' && candidate !== 'process';
+  });
+  const verbNode = specificVerbNode || (nodes.length === 1 ? verbNodes[0] : undefined);
   const verb = verbNode ? verbForNode(verbNode, PROCESS_VERB_RE) : undefined;
   if (verb && entity) {
     return { name: `${titleizeWord(verb)} ${entity}`, description: `Core logic via ${fnNames} (verb "${verb}" on "${verbNode!.name}").`, grounded: true };
@@ -483,10 +512,11 @@ function nameStepForRoleImpl(
   if (verb) {
     return { name: titleizeWord(verb), description: `Core logic (verb "${verb}" on "${verbNode!.name}") via ${fnNames}.`, grounded: true };
   }
-  const lead = titleCaseWords(nodes[0]?.name || '');
-  const name = lead
-    ? (nodes.length === 1 ? lead : `${lead} (+${nodes.length - 1} more)`)
-    : (nodes.length === 1 ? `Process (${nodes[0].name})` : `Process (${nodes.length} functions)`);
+  const representativeNode = nodes.find(node =>
+    layerOf(node) !== 'entry' && !/^(handle|process)/i.test(node.name)
+  ) || nodes[0];
+  const lead = titleCaseWords(representativeNode?.name || '');
+  const name = lead || (nodes.length === 1 ? `Process (${nodes[0].name})` : 'Process');
   return {
     name,
     description: `No entity/verb evidence found for this segment; conservative grouping of ${fnNames}.`,
@@ -1343,8 +1373,24 @@ function isAssetOrProxyPlumbingRoute(ep: CASEntryPoint): boolean {
 }
 
 function flowNameForEntryPoint(ep: CASEntryPoint): string {
-  const handlerName = typeof ep.metadata?.handler_name === 'string' ? ep.metadata.handler_name : undefined;
+  const metadataHandlerName = typeof ep.metadata?.handler_name === 'string'
+    ? ep.metadata.handler_name
+    : undefined;
+  const handlerName = metadataHandlerName || ep.handler?.method_name;
   if (handlerName && handlerName.trim().length > 0) {
+    const formView = handlerName.match(
+      /^(?:show|render|display)(Create|New|Edit|Update)(.+?)(?:Page|Form|View)?$/i
+    );
+    if (formView && ep.trigger?.method?.toUpperCase() === 'GET') {
+      const action = formView[1].toLowerCase();
+      const rawEntity = formView[2].replace(/(?:Page|Form|View)$/i, '');
+      const entity = titleCaseWords(rawEntity);
+      if (entity) {
+        return action === 'create' || action === 'new'
+          ? `View ${entity} Creation Form`
+          : `View ${entity} Editing Form`;
+      }
+    }
     const title = titleCaseWords(handlerName);
     if (title) return title;
   }
@@ -1746,6 +1792,7 @@ function buildTerminalFlows(
   const conditionalOut = buildConditionalOutIndex(cas);
   const deleterNodeIds = buildDeleterNodeIds(cas);
   const mappingEvidence = buildStepMappingEvidence(cas);
+  const sharedHelpers = sharedHelperNodeIds(cas);
   const exitById = new Map((cas.exit_points || []).map(e => [e.id, e]));
   const entryById = new Map((cas.entry_points || []).map(e => [e.id, e]));
   const cronScheduleIndex = buildCronScheduleIndex(cas.nodes || []);
@@ -1830,7 +1877,8 @@ function buildTerminalFlows(
     }
 
     const segments = segmentIntoStepsByRole(
-      chainNodes, exitPointsByNode, lineageByNode, entryPointsByNode, terminusNodeId, exit?.type
+      chainNodes, exitPointsByNode, lineageByNode, entryPointsByNode,
+      terminusNodeId, exit?.type, sharedHelpers
     );
 
     const gaps: string[] = [];
@@ -2355,6 +2403,7 @@ function computeEntryPointFlows(
   const conditionalOut = buildConditionalOutIndex(cas);
   const deleterNodeIds = buildDeleterNodeIds(cas);
   const mappingEvidence = buildStepMappingEvidence(cas);
+  const sharedHelpers = sharedHelperNodeIds(cas);
   const cliOneHopEntities = makeCliOneHopEntities(cas);
 
   const entryPointsByNode = new Map<string, CASEntryPoint[]>();
@@ -2394,7 +2443,9 @@ function computeEntryPointFlows(
       if (!hasExit && !hasLineage && !hasEntity && !hasSurface) continue;
     }
 
-    const segments = segmentIntoStepsByRole(chain, exitPointsByNode, lineageByNode, entryPointsByNode);
+    const segments = segmentIntoStepsByRole(
+      chain, exitPointsByNode, lineageByNode, entryPointsByNode, undefined, undefined, sharedHelpers
+    );
 
     const gaps: string[] = [];
     if (synthesizedRootIds.has(ep.id)) {

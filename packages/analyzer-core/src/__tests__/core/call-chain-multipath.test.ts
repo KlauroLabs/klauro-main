@@ -401,4 +401,20 @@ describe('buildCallChains capability-operation seeded roots', () => {
     expect(chains).toHaveLength(1);
     expect(chains[0].chain_type).toBe('dead-end');
   });
+
+  test('language runtime helpers do not become behavioral terminals', () => {
+    const nodes = [node('handler'), node('formatter'), node('stripe')];
+    const edges = [edge('handler', 'formatter'), edge('handler', 'stripe')];
+    const chains = buildChains(
+      nodes,
+      edges,
+      [entry('ep1', 'handler')],
+      [
+        { ...exit('xFmt', 'formatter', 'sdk'), name: 'External call: fmt.Sprintf' },
+        { ...exit('xStripe', 'stripe', 'sdk'), name: 'External call: stripe.Charge' },
+      ]
+    );
+
+    expect(chains.map(chain => chain.exit_point?.exit_point_id)).toEqual(['xStripe']);
+  });
 });

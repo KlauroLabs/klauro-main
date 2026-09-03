@@ -6,6 +6,7 @@ import type {
   CASExitPoint,
   CASNode,
 } from '../../types/cas.types';
+import { isLanguageBuiltinExitPoint } from './language-builtins';
 
 const CHAIN_EDGE_TYPES = new Set([
   'calls',
@@ -134,6 +135,7 @@ export function buildCanonicalCallChains(
   const nodeById = new Map(nodes.map(node => [node.id, node]));
   const exitBySource = new Map<string, CASExitPoint[]>();
   for (const exitPoint of exitPoints) {
+    if (isLanguageBuiltinExitPoint(exitPoint)) continue;
     const exits = exitBySource.get(exitPoint.source_node) || [];
     exits.push(exitPoint);
     exitBySource.set(exitPoint.source_node, exits);

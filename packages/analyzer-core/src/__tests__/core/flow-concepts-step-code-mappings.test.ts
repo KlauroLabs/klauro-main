@@ -289,11 +289,11 @@ describe('D1 code_mappings — defaults (implements / partially_implements)', ()
     } as unknown as CASOutput;
   }
 
-  test('sole node of a segment with no specific facts → implements', () => {
+  test('consecutive process nodes form one behavioral step → implements', () => {
     const f = computeFlowConcepts(buildPlainChainCas(['n_doWork']))[0];
     const step = stepWithFn(f.steps, 'n_doWork');
     const m = mappingsFor(step, 'n_doWork');
-    expect(m.map(x => x.relationship)).toEqual(['implements']);
+    expect(m.map(x => x.relationship)).toEqual(['partially_implements']);
   });
 
   test('multi-node segment with no specific facts → each node partially_implements', () => {
@@ -357,7 +357,7 @@ describe('D1 code_mappings — many-to-many ACROSS steps (shared node, different
     expect(sharedInB.length).toBeGreaterThan(0);
     // interior helper in A → implements; root of B → initiates. Same node, two
     // steps, DIFFERENT relationships — the many-to-many point.
-    expect(sharedInA.map(m => m.relationship)).toContain('implements');
+    expect(sharedInA.map(m => m.relationship)).toContain('partially_implements');
     expect(sharedInB.map(m => m.relationship)).toContain('initiates');
     // and the mappings belong to different steps (step_id differs).
     expect(sharedInA[0].step_id).not.toBe(sharedInB[0].step_id);

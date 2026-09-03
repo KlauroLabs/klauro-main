@@ -1,5 +1,11 @@
 import type { CASExitPoint } from '../../types/cas.types';
 
+const GO_STANDARD_PACKAGE_ROOTS = new Set([
+  'bufio', 'bytes', 'context', 'crypto', 'encoding', 'errors', 'fmt', 'io',
+  'log', 'math', 'net', 'os', 'path', 'filepath', 'reflect', 'regexp',
+  'runtime', 'sort', 'strconv', 'strings', 'sync', 'time', 'unicode',
+]);
+
 
 
 
@@ -291,7 +297,11 @@ export function isLanguageBuiltinExitPoint(
     const classPart = stripped.split('::')[0]?.trim();
     if (classPart && classPart !== stripped) candidates.push(classPart);
   }
-  return candidates.some(candidate => isLanguageBuiltinName(candidate));
+  return candidates.some(candidate => {
+    if (isLanguageBuiltinName(candidate)) return true;
+    const qualifiedRoot = candidate.split(/[.:]/)[0]?.trim();
+    return Boolean(qualifiedRoot && GO_STANDARD_PACKAGE_ROOTS.has(qualifiedRoot));
+  });
 }
 
 export function languageBuiltinNames(): ReadonlySet<string> {

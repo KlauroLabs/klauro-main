@@ -311,4 +311,26 @@ describe('GoAnalyzer HTTP route extraction', () => {
 
     expect(routes).toHaveLength(0);
   });
+
+  it('distinguishes imported package calls from same-process receiver calls', () => {
+    const classify = (target: string, method: string | undefined, imports: string[]) =>
+      (analyzer as any).isExternalLibraryCall(target, method, 'ui', new Set(imports));
+
+    expect(classify('errors', 'New', ['errors'])).toBe(true);
+    expect(classify('stripe', 'NewClient', ['stripe'])).toBe(true);
+    expect(classify('h.store', 'GetNavMetadata', ['errors', 'http'])).toBe(false);
+    expect(classify('c.request', 'Get', ['errors', 'http'])).toBe(false);
+    expect(classify('this', 'Render', ['errors'])).toBe(false);
+  });
+
+  it('uses Go import aliases as the package identity and ignores side-effect imports', () => {
+    const imports = (analyzer as any).importedGoPackageNames([
+      { path: 'errors' },
+      { path: 'github.com/acme/payments', alias: 'pay' },
+      { path: 'github.com/acme/driver', alias: '_' },
+      { path: 'github.com/acme/dot', alias: '.' },
+    ]);
+
+    expect([...imports]).toEqual(['errors', 'pay']);
+  });
 });

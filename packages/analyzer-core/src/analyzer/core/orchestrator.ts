@@ -15685,17 +15685,12 @@ export class AnalyzerOrchestrator {
         'has_field', 'has_attribute', 'imports', 'inherits', 'exposes', 'maps_to', 'wraps', 'relates_to', 'contains'
       ]);
       const accessFromNodeName = (name: string): string[] | undefined => {
-        const words = name
-          .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-          .toLowerCase()
-          .split(/[^a-z0-9]+/)
-          .filter(Boolean);
-        const hasAny = (...verbs: string[]) => words.some(word => verbs.includes(word));
-        if (hasAny('create', 'creates', 'created', 'add', 'adds', 'added', 'insert', 'inserts')) return createdBy;
-        if (hasAny('get', 'gets', 'find', 'finds', 'read', 'reads', 'fetch', 'fetches', 'list', 'lists', 'show', 'index', 'paginate', 'paginates', 'paginated', 'retrieve', 'retrieves', 'browse', 'browses')) return readBy;
-        if (hasAny('update', 'updates', 'set', 'sets', 'modify', 'modifies', 'save', 'saves')) return updatedBy;
-        if (hasAny('delete', 'deletes', 'remove', 'removes', 'destroy', 'destroys')) return deletedBy;
-        return undefined;
+        const operation = this.crudBucketFromAccessorName(name);
+        return operation === 'create' ? createdBy
+          : operation === 'read' ? readBy
+          : operation === 'update' ? updatedBy
+          : operation === 'delete' ? deletedBy
+          : undefined;
       };
 
       for (const edge of edgesByNode.get(entityNode.id) || []) {
@@ -16216,11 +16211,15 @@ export class AnalyzerOrchestrator {
 
   private crudBucketFromAccessorName(name: string): 'create' | 'read' | 'update' | 'delete' | undefined {
     const words = name.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
-    const hasAny = (...verbs: string[]) => words.some(word => verbs.includes(word));
-    if (hasAny('create', 'creates', 'created', 'add', 'adds', 'added', 'insert', 'inserts', 'register', 'registers')) return 'create';
-    if (hasAny('get', 'gets', 'find', 'finds', 'read', 'reads', 'fetch', 'fetches', 'list', 'lists', 'show', 'index', 'load', 'loads', 'query', 'search', 'paginate', 'paginates', 'paginated', 'retrieve', 'retrieves', 'browse', 'browses')) return 'read';
-    if (hasAny('update', 'updates', 'set', 'sets', 'modify', 'modifies', 'save', 'saves', 'patch', 'edit', 'edits', 'persist', 'persists', 'store', 'stores', 'upsert', 'upserts')) return 'update';
-    if (hasAny('delete', 'deletes', 'remove', 'removes', 'destroy', 'destroys', 'revoke', 'revokes')) return 'delete';
+    const operations: Record<string, 'create' | 'read' | 'update' | 'delete'> = {};
+    for (const verb of ['create', 'creates', 'created', 'add', 'adds', 'added', 'insert', 'inserts', 'register', 'registers']) operations[verb] = 'create';
+    for (const verb of ['get', 'gets', 'find', 'finds', 'read', 'reads', 'fetch', 'fetches', 'list', 'lists', 'show', 'index', 'load', 'loads', 'query', 'search', 'paginate', 'paginates', 'paginated', 'retrieve', 'retrieves', 'browse', 'browses', 'render', 'renders']) operations[verb] = 'read';
+    for (const verb of ['update', 'updates', 'set', 'sets', 'modify', 'modifies', 'save', 'saves', 'patch', 'edit', 'edits', 'persist', 'persists', 'store', 'stores', 'upsert', 'upserts']) operations[verb] = 'update';
+    for (const verb of ['delete', 'deletes', 'remove', 'removes', 'destroy', 'destroys', 'revoke', 'revokes']) operations[verb] = 'delete';
+    for (const word of words) {
+      const operation = operations[word];
+      if (operation) return operation;
+    }
     return undefined;
   }
 

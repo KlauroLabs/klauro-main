@@ -2008,6 +2008,7 @@ export class GoAnalyzer extends BaseAnalyzer {
     index: GoCallGraphIndex
   ): Promise<void> {
     const currentPackage = ast.package || 'main';
+    const importedPackages = this.importedGoPackageNames(ast.imports || []);
     let fileContent = '';
     try { fileContent = fs.readFileSync(fullPath, 'utf-8'); } catch {   }
 
@@ -2026,7 +2027,8 @@ export class GoAnalyzer extends BaseAnalyzer {
 
           if (call.package) {
             const stripPtr = (s: string) => String(s || '').replace(/^[\*&]+/, '');
-            const recvType = stripPtr(recvTypes.get(call.package) || call.package);
+            const rawRecvType = stripPtr(recvTypes.get(call.package) || call.package);
+            const recvType = rawRecvType.split('.').pop() || rawRecvType;
 
             targetFunction = index.methodByNameAndReceiver.get(call.function + '\0' + recvType);
 
@@ -2065,7 +2067,7 @@ export class GoAnalyzer extends BaseAnalyzer {
               ));
               index.edgeIds.add(callEdgeId);
             }
-          } else if (this.isExternalLibraryCall(call.package || call.function, call.package ? call.function : undefined, currentPackage)) {
+          } else if (this.isExternalLibraryCall(call.package || call.function, call.package ? call.function : undefined, currentPackage, importedPackages)) {
             const exitId = `exit_call_${callerFunction.id}_${call.package || ''}_${call.function}_${call.line}`;
             if (!index.exitIds.has(exitId)) {
               exitPoints.push(this.createExitPoint(
@@ -2106,6 +2108,7 @@ export class GoAnalyzer extends BaseAnalyzer {
     const content = await fs.readFile(fullPath, 'utf-8');
     const lines = content.split('\n');
     const currentPackage = this.extractPackage(content) || 'main';
+    const importedPackages = this.importedGoPackageNames(this.extractImports(content));
 
     let currentFunction: CASNode | undefined;
     let currentScope: { start: number; end: number; node: CASNode } | undefined;
@@ -2215,7 +2218,7 @@ export class GoAnalyzer extends BaseAnalyzer {
                 }
               ));
             }
-          } else if (this.isExternalLibraryCall(target, method, currentPackage)) {
+          } else if (this.isExternalLibraryCall(target, method, currentPackage, importedPackages)) {
             const exitId = `exit_call_${currentFunction.id}_${target}_${method || 'func'}_${lineNum}`;
             if (!exitPoints.some(e => e.id === exitId)) {
               exitPoints.push(this.createExitPoint(
@@ -2326,7 +2329,25 @@ export class GoAnalyzer extends BaseAnalyzer {
     return calls;
   }
 
-  private isExternalLibraryCall(packageOrFunc: string, methodName: string | undefined, currentPackage: string): boolean {
+  private importedGoPackageNames(imports: Array<{ path: string; alias?: string }>): Set<string> {
+    return new Set(imports
+      .filter(importedPackage => importedPackage.alias !== '_' && importedPackage.alias !== '.')
+      .map(importedPackage => importedPackage.alias || importedPackage.path.split('/').pop() || '')
+      .filter(Boolean));
+  }
+
+  private isExternalLibraryCall(
+    packageOrFunc: string,
+    methodName: string | undefined,
+    currentPackage: string,
+    importedPackages?: ReadonlySet<string>
+  ): boolean {
+    if (!methodName) return false;
+
+    const root = packageOrFunc.replace(/^[*&]+/, '').split(/[./]/)[0];
+    if (!root || root === currentPackage || root === 'this') return false;
+    if (importedPackages) return importedPackages.has(root);
+
     const standardPackages = [
       'fmt', 'log', 'os', 'io', 'strings', 'strconv', 'time', 'math',
       'net', 'http', 'json', 'encoding', 'crypto', 'bytes', 'bufio',
@@ -2338,10 +2359,9 @@ export class GoAnalyzer extends BaseAnalyzer {
       'gorm', 'sqlx', 'mongo', 'redis', 'grpc', 'protobuf'
     ];
 
-    return standardPackages.includes(packageOrFunc) ||
-           frameworkPackages.includes(packageOrFunc) ||
-           (packageOrFunc.includes('/') && !packageOrFunc.startsWith(currentPackage)) ||
-           (packageOrFunc.includes('.') && packageOrFunc !== currentPackage);
+    return standardPackages.includes(root) ||
+           frameworkPackages.includes(root) ||
+           (packageOrFunc.includes('/') && !packageOrFunc.startsWith(currentPackage));
   }
 
   private identifyGoLibrary(packageName: string): string {

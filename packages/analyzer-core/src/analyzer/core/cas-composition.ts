@@ -150,6 +150,37 @@ function assertValidComprehension(comprehension: CASComprehension): void {
   if (flowStepIds.size !== storedStepIds.size || [...flowStepIds].some(id => !storedStepIds.has(id))) {
     throw new Error('CAS composition steps must exactly match the steps nested in composed flows.');
   }
+
+  const capabilityIds = new Set(comprehension.capabilities.map(item => item.id));
+  const flowIds = new Set(comprehension.flows.map(item => item.flow_id));
+  const entityIds = new Set(comprehension.entities.map(item => item.id));
+  for (const flow of comprehension.flows) {
+    const localStepIds = new Set(flow.steps.map(step => step.step_id));
+    const referencedCapabilityIds = [
+      ...(flow.capability_id ? [flow.capability_id] : []),
+      ...(flow.capability_relationships || []).map(relationship => relationship.capability_id),
+    ];
+    for (const capabilityId of referencedCapabilityIds) {
+      if (!capabilityIds.has(capabilityId)) {
+        throw new Error(`CAS composition flow ${flow.flow_id} references missing capability ${capabilityId}.`);
+      }
+    }
+    for (const entityId of [...flow.entities, ...flow.steps.flatMap(step => step.entities)]) {
+      if (!entityIds.has(entityId)) {
+        throw new Error(`CAS composition flow ${flow.flow_id} references missing entity ${entityId}.`);
+      }
+    }
+    for (const edge of flow.step_graph?.edges || []) {
+      if (!localStepIds.has(edge.from_step_id) || !localStepIds.has(edge.to_step_id)) {
+        throw new Error(`CAS composition flow ${flow.flow_id} has a step edge outside its own step set.`);
+      }
+    }
+    for (const continuationId of [...(flow.continuations || []), ...(flow.continued_from || [])]) {
+      if (!flowIds.has(continuationId)) {
+        throw new Error(`CAS composition flow ${flow.flow_id} references missing continuation ${continuationId}.`);
+      }
+    }
+  }
 }
 
 export function composeCas(input: CASCompositionInput): CASOutput {

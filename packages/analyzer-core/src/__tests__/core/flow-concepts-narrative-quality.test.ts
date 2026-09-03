@@ -195,3 +195,37 @@ describe('adjacent repeated-token dedupe in name assembly (defect #3)', () => {
     expect(flows[0].name).toBe('Order Service Order');
   });
 });
+
+describe('read-only form route naming', () => {
+  test('a GET handler that displays a creation page is named as a view, not a mutation', () => {
+    const handler = node({
+      id: 'n_show_create_category',
+      name: 'showCreateCategoryPage',
+      type: 'function',
+      category: 'presentation',
+    });
+    const cas = {
+      cas_version: '1.0.0',
+      analysis_timestamp: new Date().toISOString(),
+      analysis_id: 'test-form-view',
+      system: { name: 'test-system' } as any,
+      nodes: [handler],
+      edges: [],
+      entry_points: [{
+        id: 'ep_category_create',
+        source_node: handler.id,
+        type: 'http',
+        name: 'GET /category/create',
+        trigger: { method: 'GET', path: '/category/create' },
+        handler: { node_id: handler.id, method_name: handler.name },
+      }],
+      exit_points: [],
+      data_lineage: [],
+      entities: [],
+      capabilities: [],
+      analyzer_contributions: [],
+    } as unknown as CASOutput;
+
+    expect(computeFlowConcepts(cas)[0].name).toBe('View Category Creation Form');
+  });
+});
