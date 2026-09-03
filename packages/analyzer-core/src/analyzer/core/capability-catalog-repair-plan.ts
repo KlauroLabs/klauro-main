@@ -267,7 +267,7 @@ export function deterministicCapabilityDescriptionFallback(args: {
       const rightIndex = actionOrder.indexOf(right);
       return (leftIndex < 0 ? Number.MAX_SAFE_INTEGER : leftIndex) - (rightIndex < 0 ? Number.MAX_SAFE_INTEGER : rightIndex);
     });
-  if (actions.length === 0) return undefined;
+  if (actions.length === 0 && !firstPartyOutcomeBound) return undefined;
   const authenticationSubject = titleSubjects.some(subject => ['auth', 'authenticate', 'authentication', 'session', 'user'].includes(subject));
   if (actions.length > 1 && actions.includes('authenticate') && !authenticationSubject) {
     actions = actions.filter(action => action !== 'authenticate');
@@ -307,7 +307,7 @@ export function deterministicCapabilityDescriptionFallback(args: {
     const evidenceSubject = exactGroupedLifecycle
       ? args.identity.name.trim().replace(/^[^\s]+\s+(?:and\s+[^\s]+\s+)?/i, '').toLowerCase()
       : groundedTitleSubjects.join(' ');
-    if (!normalizedTitle || !evidenceSubject || actions.length === 0) return '';
+    if (!normalizedTitle || !evidenceSubject || (actions.length === 0 && !firstPartyOutcomeBound)) return '';
     const subjectBase = exactGroupedLifecycle ? evidenceSubject : titleSubjects.join(' ') || evidenceSubject;
     const subjectPhrase = /(?:^| )(?:data|information)$/.test(subjectBase) ? subjectBase : pluralSubject(subjectBase);
     if (exactGroupedLifecycle) {
