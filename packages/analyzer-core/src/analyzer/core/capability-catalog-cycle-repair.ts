@@ -145,7 +145,9 @@ export function resolvePendingCapabilityDescriptionsWithoutProvider(args: {
     const boundOutcomePending = (capability.criticality_factors || [])
       .some(factor => factor.startsWith("catalog-outcome-requirement:")) &&
       (!String(capability.description || "").trim() || capability.description_generation?.status === "ai_rejected");
-    if (!pending && !repairGenericGroupedName && !boundOutcomePending) return capability;
+    const descriptionWordCount = String(capability.description || "").trim().split(/s+/).filter(Boolean).length;
+    const weakDescription = capability.description_generation?.status !== "ai_rejected" && (descriptionWordCount < 6 || descriptionWordCount > 32);
+    if (!pending && !repairGenericGroupedName && !boundOutcomePending && !weakDescription) return capability;
     const repaired = deterministicCapabilityDescriptionFallback({
       identity: repairGenericGroupedName ? capability : pending?.identity || capability, evidenceCandidates: args.evidenceCandidates,
       audience: pending?.audience || args.audienceFor(capability), firstPartyTexts: args.firstPartyTexts,

@@ -147,6 +147,29 @@ test('resolves exact pending descriptions without a provider at the deadline and
   assert.equal(stillPending.description, '');
 });
 
+test('repairs a weak final description without requiring a pending registry entry', () => {
+  const evidence = catalogCapability({
+    id: 'jobs', name: 'Job applications', structural_label: 'Job applications',
+    evidence_kind: 'behavior-surface', evidence_role: 'product-outcome',
+    operations: [{ entry_point_id: 'update-job', entry_point_type: 'http', action: 'update' }],
+    related_entities: ['entity_job'], related_domains: ['jobs'],
+  });
+  const identity = catalogCapability({
+    id: 'update-jobs', name: 'Update job applications', description: 'Update job applications quickly.',
+    description_generation: { status: 'ai_applied', attempted: true },
+    operations: evidence.operations, related_entities: evidence.related_entities,
+    criticality_factors: ['catalog-candidate:jobs'],
+  });
+  const expected = 'Users can update job applications as part of their normal workflow whenever needed.';
+  const [repaired] = resolvePendingCapabilityDescriptionsWithoutProvider({
+    capabilities: [identity], pendingEvidenceIdentityByCandidateId: new Map(),
+    evidenceCandidates: [evidence], firstPartyTexts: [], audienceFor: () => 'Users',
+    validate: capability => capability.description === expected,
+  });
+  assert.equal(repaired.description, expected);
+  assert.equal(repaired.description_generation?.reason, 'grounded-cited-lifecycle');
+});
+
 test('repairs a bound authored outcome across multiple evidence families without a pending registry entry', () => {
   const jobs = catalogCapability({
     id: 'jobs', name: 'Job applications', structural_label: 'Job applications',
