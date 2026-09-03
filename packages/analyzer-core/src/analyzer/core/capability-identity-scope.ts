@@ -19,8 +19,9 @@ function capabilityIsIdentityMechanism(
       entryPoint?.trigger?.path,
     ].filter(Boolean).join(' '));
   });
-  return identityPattern.test(`${capability.name} ${capability.structural_label || ''}`) &&
-    identityOperations.length === operations.length;
+  const capabilityIdentity = `${capability.name} ${capability.structural_label || ''}`
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2');
+  return identityPattern.test(capabilityIdentity) && identityOperations.length === operations.length;
 }
 
 export function capabilityIsSupportingIdentityMechanism(

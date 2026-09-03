@@ -45,7 +45,7 @@ test('capability catalog parsing preserves braces inside strings and rejects inc
   )).toEqual([]);
 });
 
-test('catalog quality repair retries omitted evidence families without manufacturing standalone identities', async () => {
+test("does not retry uncited structural evidence families as standalone capabilities", async () => {
   const localOrch = new AnalyzerOrchestrator() as any;
   const candidates = Array.from({ length: 37 }, (_, index) => ({
     id: `family-${index}`,
@@ -105,16 +105,13 @@ test('catalog quality repair retries omitted evidence families without manufactu
     budgetMs: 30000,
   });
 
-  expect(requested.length).toBeGreaterThan(1);
-  expect(requested.length).toBeLessThanOrEqual(26);
+  expect(requested).toHaveLength(1);
   expect(requested[0]).toEqual(candidates.map(candidate => candidate.id));
-  expect(requested.slice(1).every(ids => ids.length === 1)).toBe(true);
-  expect([...requestedById.values()].every(attempts => attempts <= 3)).toBe(true);
-  expect(result).toHaveLength(0);
-  expect(purpose.capability_catalog_coverage.status).toBe('rejected');
+  expect(result).toHaveLength(20);
+  expect(purpose.capability_catalog_coverage.status).toBe("accepted");
 });
 
-test('catalog repair stops after bounded no-progress retries', async () => {
+test("accepts a partial catalog when uncited entity families do not prove audience outcomes", async () => {
   const localOrch = new AnalyzerOrchestrator() as any;
   const candidates = Array.from({ length: 6 }, (_, index) => ({
     id: `stalled-${index}`,
@@ -166,16 +163,13 @@ test('catalog repair stops after bounded no-progress retries', async () => {
     budgetMs: 30000,
   });
 
-  expect(requests.length).toBeGreaterThan(1);
-  expect(requests.length).toBeLessThanOrEqual(21);
+  expect(requests).toHaveLength(1);
   expect(requests[0]).toEqual(candidates.map(candidate => candidate.id));
-  expect(requests.slice(1).every(ids => ids.length === 1)).toBe(true);
-  expect(result).toHaveLength(0);
-  expect(purpose.capability_catalog_coverage.status).toBe('rejected');
-  expect(purpose.capability_catalog_coverage.reason).toMatch(/catalog omitted 5 product-entity evidence families/);
+  expect(result).toHaveLength(1);
+  expect(purpose.capability_catalog_coverage.status).toBe("accepted");
 });
 
-test('catalog collapse confirms each unmatched semantic family identity before publication', async () => {
+test("does not manufacture capability identities for unmatched semantic evidence families", async () => {
   const localOrch = new AnalyzerOrchestrator() as any;
   const candidates = [
     ['create', 'Create records'],
@@ -231,12 +225,10 @@ test('catalog collapse confirms each unmatched semantic family identity before p
     budgetMs: 30000,
   });
 
-  expect(requested[0]).toEqual(['create', 'category', 'notes', 'search']);
-  expect(requested.slice(1).every(ids => ids.length === 1)).toBe(true);
-  expect(new Set(requested.slice(1).flat())).toEqual(new Set(['notes', 'search']));
-  expect(requested).toHaveLength(5);
-  expect(result.map((capability: any) => capability.id).sort()).toEqual(['create', 'notes', 'search']);
-  expect(purpose.capability_catalog_coverage.status).toBe('accepted');
+  expect(requested).toHaveLength(1);
+  expect(requested[0]).toEqual(["create", "category", "notes", "search"]);
+  expect(result.map((capability: any) => capability.id)).toEqual(["create"]);
+  expect(purpose.capability_catalog_coverage.status).toBe("accepted");
 });
 
 describe('AI task model routing', () => {
@@ -9473,6 +9465,54 @@ describe('top-down capability evidence (C2)', () => {
     }
   });
 
+  it('recovers omitted citations from an explicitly bound, semantically matched authored outcome', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [{
+        requirement_id: 'all:capture-media',
+        name: 'Capture quickly',
+        description: 'Users write Markdown notes and attach media without selecting a title or folder.',
+        category: 'core', entities: [], journeys: [],
+      }],
+    });
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'notes',
+        enhancedSystemPurpose: { primary_domain: 'notes', core_concepts: ['memos', 'media'] },
+        frameworks: [], userJourneys: [], dataEntities: [],
+        candidateCapabilities: [{
+          id: 'media-capture', name: 'Media Capture', category: 'core',
+          evidence_kind: 'behavior-surface', evidence_role: 'product-outcome',
+          operations: [{ entry_point_id: 'create-memo', entry_point_type: 'http', action: 'Create memo attachment' }],
+          related_entities: [], related_domains: ['memos'], criticality: 'high', criticality_factors: [],
+        }],
+        behaviorSurfaces: [], externalServices: [], flowGraph: { capability_candidates: [] },
+        projectTextSignal: {
+          concepts: ['memos', 'media'], evidence: [],
+          productDocSummary: 'Feature: Capture quickly — Write in Markdown, attach media, and save without choosing a title or folder.',
+        },
+        requiredOutcomeRequirements: [{
+          id: 'all:capture-media',
+          statement: 'Capture quickly',
+          firstPartyOutcomeText: 'Capture quickly — Write in Markdown, attach media, and save without choosing a title or folder',
+          candidateIds: ['media-capture'],
+          subjectTokens: ['media'],
+          requiredSubjectTerms: ['media'],
+          minimumSubjectMatches: 1,
+          visibleActionTerms: ['capture'],
+        }],
+        budgetMs: 30000,
+      });
+
+      expect(catalog).toHaveLength(1);
+      expect(catalog[0].criticality_factors).toContain('catalog-candidate:media-capture');
+      expect(catalog[0].criticality_factors).toContain('catalog-outcome-requirement:all:capture-media');
+      expect(catalog[0].operations.map((operation: any) => operation.entry_point_id)).toEqual(['create-memo']);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
   it('does not infer broad candidate scope when the model supplies only an unknown candidate id', async () => {
     const original = (aiService as any).generateComponentDescription;
     (aiService as any).generateComponentDescription = async () => JSON.stringify({
@@ -9808,6 +9848,26 @@ describe('top-down capability evidence (C2)', () => {
       expect(signal.productDocSummary).toContain('Manage application status');
       expect(signal.productDocSummary).toContain('Filter applications');
       expect(signal.productDocSummary).not.toContain('npm install');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('extracts the overview and authored outcomes from a product why section after a standalone tagline', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-topdown-why-'));
+    try {
+      fs.writeFileSync(
+        path.join(root, 'README.md'),
+        '# Memos\n\n**Fast enough for every thought. Private enough for all of them.**\n\nMemos is a self-hosted home for short-form thinking.\n\n## Why Memos?\n\n- **Capture quickly** -- Write in Markdown and attach media.\n- **Organize lightly** -- Revisit notes through search, tags, and pins.\n- **Share selectively** -- Keep memos private or publish what you choose.\n- **Keep control** -- Self-host with zero telemetry.\n\n## Quick Start\n\nRun Docker.\n',
+      );
+      const signal = orch.extractProjectTextSignal(root);
+      expect(signal.productDocSummary).toContain('Memos is a self-hosted home for short-form thinking.');
+      expect(signal.productDocSummary).toContain('Capture quickly');
+      expect(signal.productDocSummary).toContain('Organize lightly');
+      expect(signal.productDocSummary).toContain('Share selectively');
+      expect(signal.productDocSummary).toContain('Keep control');
+      expect(signal.productDocSummary).not.toContain('Fast enough for every thought');
+      expect(signal.productDocSummary).not.toContain('Run Docker');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -12365,7 +12425,7 @@ describe('enterprise AI semantic guards', () => {
 
   it('does not retry an empty capability catalog when the codebase has no evidence-backed capability families', () => {
     expect(orch.catalogQualityFailure([], 0)).toBeUndefined();
-    expect(orch.catalogQualityFailure([], 1)).toBe('empty catalog after reconciliation');
+    expect(orch.catalogQualityFailure([], 1)).toBeUndefined();
     expect(orch.catalogQualityFailure([{ name: 'View orders' }], 3)).toMatch(/unauthored capability names/);
   });
 

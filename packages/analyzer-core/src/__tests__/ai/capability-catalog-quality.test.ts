@@ -243,8 +243,8 @@ describe('catalogQualityFailure (post-reconcile gate, defect #33)', () => {
     operations: anchorOp(name),
   });
 
-  it('fails an empty catalog', () => {
-    expect(orch.catalogQualityFailure([], 20)).toContain('empty');
+  it('accepts an empty catalog when no authored outcome is grounded', () => {
+    expect(orch.catalogQualityFailure([], 20)).toBeUndefined();
   });
 
   it('does not impose a structural-family count quota on a small grounded catalog', () => {
@@ -304,7 +304,7 @@ describe('catalogQualityFailure (post-reconcile gate, defect #33)', () => {
     expect(orch.catalogQualityFailure(repairing, 6)).toBeUndefined();
   });
 
-  it('requires every operation-level obligation even when its candidate is already cited', () => {
+  it('does not turn operation-level evidence into a publication quota', () => {
     const capabilities = [
       purposeful('Analyze codebases'),
       purposeful('Coordinate overlapping work'),
@@ -312,15 +312,13 @@ describe('catalogQualityFailure (post-reconcile gate, defect #33)', () => {
     ];
     capabilities[0].criticality_factors = ['catalog-candidate:analysis'];
     capabilities[1].criticality_factors = ['catalog-candidate:fabric'];
-
     capabilities[2].criticality_factors = ['catalog-candidate:runtime'];
+
     expect(orch.catalogQualityFailure(capabilities, 5, ['runtime']))
-      .toContain('runtime');
-    expect(orch.catalogQualityFailure(capabilities, 5, []))
       .toBeUndefined();
   });
 
-  it('requires one cited candidate from every distinct product-entity family', () => {
+  it('does not turn distinct product-entity families into publication quotas', () => {
     const capabilities = [
       purposeful('Track parcels'),
       purposeful('Record inspections'),
@@ -332,17 +330,10 @@ describe('catalogQualityFailure (post-reconcile gate, defect #33)', () => {
       ['parcel-read', 'parcel-write'],
       ['inspection'],
       ['reservation'],
-    ])).toContain('reservation');
-    capabilities.push(purposeful('Manage reservations'));
-    capabilities[2].criticality_factors = ['catalog-candidate:reservation'];
-    expect(orch.catalogQualityFailure(capabilities, 3, [], [
-      ['parcel-read', 'parcel-write'],
-      ['inspection'],
-      ['reservation'],
     ])).toBeUndefined();
   });
 
-  it('requires citation coverage for every deterministic family even when four capabilities meet the count floor', () => {
+  it('does not turn deterministic structural families into publication quotas', () => {
     const capabilities = [
       purposeful('Create records'),
       purposeful('Track record status'),
@@ -359,9 +350,7 @@ describe('catalogQualityFailure (post-reconcile gate, defect #33)', () => {
     ];
 
     expect(orch.catalogQualityFailure(capabilities, 7, [], [], [], families))
-      .toContain('record-notes');
-    capabilities[3].criticality_factors.push('catalog-candidate:record-notes', 'catalog-candidate:record-sites');
-    expect(orch.catalogQualityFailure(capabilities, 7, [], [], [], families)).toBeUndefined();
+      .toBeUndefined();
   });
 
   it('rejects a citation-complete catalog that omits corroborated first-party audience outcomes', () => {
@@ -637,6 +626,10 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(out).toEqual([]);
     expect(calls).toHaveLength(1);
     expect(calls.some(call => call.exactCapabilityLimit)).toBe(false);
+    expect(args.enhancedSystemPurpose.capability_catalog_coverage).toMatchObject({
+      status: 'accepted',
+      published_capabilities: 0,
+    });
   });
 
   it('does not inject a deterministic atomic baseline around provider-authored output', async () => {
@@ -934,7 +927,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(args.enhancedSystemPurpose.capability_naming_coverage.un_enriched).toBe(0);
   });
 
-  it('rejects an empty catalog after tool-shaped proposals make no progress', async () => {
+  it('accepts an empty catalog after tool-shaped proposals provide no grounded authored outcome', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const collapsed = ['View entry points', 'View functions'].map(name => cap({ id: name, name, description: `Surfaces the ${name.toLowerCase()} page for users of the product.` }));
     let calls = 0;
@@ -945,8 +938,8 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     const out = await localOrch.runCapabilityCatalogWithQualityGate(args);
     expect(calls).toBe(1);
     expect(out).toEqual([]);
-    expect(args.enhancedSystemPurpose.capability_catalog_coverage.status).toBe('rejected');
-    expect(args.enhancedSystemPurpose.capability_catalog_coverage.reason).toContain('no publishable capabilities');
+    expect(args.enhancedSystemPurpose.capability_catalog_coverage.status).toBe('accepted');
+    expect(args.enhancedSystemPurpose.capability_catalog_coverage.reason).toBeUndefined();
   });
 
   it('passes a good first catalog through with a single call', async () => {
@@ -1198,7 +1191,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(out[0].criticality_factors).toContain('catalog-candidate:workspace');
   });
 
-  it('repairs rejected wording when the cited evidence is already classified as a product outcome', async () => {
+  it('does not publish or repair structural evidence without a grounded authored outcome', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const args: any = gateArgs(localOrch);
     const operations = [
@@ -1240,9 +1233,9 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
     const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(args);
 
-    expect(calls).toHaveLength(3);
-    expect(calls[2]).toMatchObject({ repairMode: 'evidence', exactCapabilityLimit: 1 });
-    expect(out.map(capability => capability.name)).toEqual([repaired.name]);
+    expect(calls).toHaveLength(2);
+    expect(calls.every(call => call.repairMode === undefined)).toBe(true);
+    expect(out).toEqual([]);
   });
 
   it('accepts scope-relative management wording when first-party intent and structural evidence both require it', async () => {

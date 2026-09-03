@@ -14,6 +14,7 @@ import {
   conciseCapabilityCatalogOutcomeName,
   capabilitySatisfiesCatalogOutcomeRequirement,
   deriveCapabilityCatalogOutcomeRequirements,
+  sanitizeCapabilityCatalogDescription,
   uncoveredCapabilityCatalogOutcomeRequirements,
   type CapabilityCatalogOutcomeRequirement,
 } from './capability-catalog-outcome-coverage';
@@ -90,6 +91,45 @@ test('does not promote marketing-decorated generic management into a second outc
 
   assert.equal(requirements.filter(requirement =>
     requirement.visibleActionTerms?.includes('categorize')).length, 1);
+});
+
+test('treats authored feature bullets as outcomes without promoting overview prose or subordinate steps', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements({
+    productDocSummary: [
+      'Memos is an open-source, self-hosted knowledge hub where links, work logs, and snippets flow into one place.',
+      'Feature: Capture quickly — Write in Markdown, attach media, and save without choosing a folder or title.',
+      'Feature: Organize lightly — Use tags, search, pinning, and simple filters to revisit what matters.',
+      'Feature: Share selectively — Keep memos private, publish them, or share with a link.',
+      'Feature: Keep control — Self-host your data and move it whenever you choose.',
+    ].join(' '),
+  }, [
+    candidate('capture', 'Capture memos', ['create_memo', 'attach_memo_media']),
+    candidate('organize', 'Find and organize memos', ['search_memos', 'tag_memo', 'pin_memo']),
+    candidate('share', 'Share memos selectively', ['publish_memo', 'create_memo_share']),
+    candidate('control', 'Self-host memo data', ['deploy_memos', 'export_memo_data']),
+  ]);
+
+  assert.equal(requirements.length, 4);
+  assert.deepEqual(
+    requirements.map(requirement => requirement.firstPartyOutcomeText),
+    [
+      'Capture quickly — Write in Markdown, attach media, and save without choosing a folder or title',
+      'Organize lightly — Use tags, search, pinning, and simple filters to revisit what matters',
+      'Share selectively — Keep memos private, publish them, or share with a link',
+      'Keep control — Self-host your data and move it whenever you choose',
+    ],
+  );
+  assert.equal(requirements.some(requirement => /^Memos is\b/.test(requirement.firstPartyOutcomeText || '')), false);
+  assert.equal(requirements.some(requirement => /^(?:attach media|save without)/i.test(requirement.firstPartyOutcomeText || '')), false);
+  assert.deepEqual(
+    requirements.map(requirement => requirement.statement),
+    ['Capture quickly', 'Organize lightly', 'Share selectively', 'Keep control'],
+  );
+  assert.deepEqual(
+    requirements.map(requirement => requirement.visibleActionTerms),
+    [['capture'], ['organize'], ['share'], ['keep']],
+  );
+  assert.equal(requirements.some(requirement => /^(?:attach|save|publish)\b/i.test(requirement.statement)), false);
 });
 
 test('prefers a candidate whose identity names the first-party outcome over incidental operation overlap', () => {
@@ -897,4 +937,12 @@ test('moves a proven multi-step implementation clause out of an outcome title', 
     title,
   );
   assert.equal(conciseCapabilityCatalogOutcomeName('Filter applications by category, status, and job board', evidence), 'Filter applications by category, status, and job board');
+});
+
+
+test('repairs an omitted control noun in otherwise grounded capability prose', () => {
+  assert.equal(
+    sanitizeCapabilityCatalogDescription('Users retain full of their infrastructure and data.'),
+    'Users retain full control of their infrastructure and data.',
+  );
 });

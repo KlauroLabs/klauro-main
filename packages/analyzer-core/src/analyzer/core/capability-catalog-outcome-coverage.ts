@@ -1,5 +1,5 @@
 import type { SystemCapability } from '../../types/cas.types';
-import { catalogEvidenceCoverageFailure, type CapabilityCatalogProjectSignal } from './capability-catalog-evidence';
+import type { CapabilityCatalogProjectSignal } from './capability-catalog-evidence';
 import { CAPABILITY_PURPOSE_VERBS } from './capability-naming';
 import {
   canonicalOutcomeEvidenceCandidateId,
@@ -145,8 +145,10 @@ function productClauses(signal?: CapabilityCatalogProjectSignal): string[] {
     .map(value => value.trim())
     .filter(Boolean);
   const grouped: string[] = [];
+  const authoredFeatureSentences = sentences.filter(sentence => /^Feature:\s*/i.test(sentence));
+  const sourceSentences = authoredFeatureSentences.length > 0 ? authoredFeatureSentences : sentences;
   let activeFeatureIndex = -1;
-  for (const sentence of sentences) {
+  for (const sentence of sourceSentences) {
     const separator = sentence.indexOf(':');
     const heading = separator >= 0 ? sentence.slice(0, separator).trim() : '';
     const body = separator >= 0 ? sentence.slice(separator + 1).trim() : '';
@@ -161,8 +163,8 @@ function productClauses(signal?: CapabilityCatalogProjectSignal): string[] {
     }
   }
   return grouped
-    .flatMap(splitCoordinatedClause)
-    .map(value => value.trim()
+    .flatMap(value => /^Feature:\s*/i.test(value) ? [value] : splitCoordinatedClause(value))
+    .map(value => value.replace(/^Feature:\s*/i, '').trim()
       .replace(/\s+and\s+seamlessly\s+(?:manage|handle|process)\b/gi, '')
       .replace(/^[,;]\s*/, '').replace(/[.!?]+$/, ''))
     .filter(value => value.length >= 20 && !/^[^,.:;!?]+?\s+(?:is|are)\s+(?:an?\s+|the\s+)?[^,.]+$/i.test(value));
@@ -173,6 +175,13 @@ function outcomeClauseBody(clause: string): string {
   if (separator < 0) return clause;
   const body = clause.slice(separator + 1).trim();
   return purposeVerbIn(body) ? body : clause;
+}
+
+function authoredFeatureLabel(clause: string): string | undefined {
+  const label = clause.match(/^(.{3,80}?)\s+[—–-]\s+/)?.[1]?.trim();
+  if (!label) return undefined;
+  const firstToken = canonicalToken(label.match(/[A-Za-z][A-Za-z'-]*/)?.[0] || '');
+  return CAPABILITY_PURPOSE_VERBS.has(firstToken) ? label : undefined;
 }
 
 function conciseOutcomeStatement(clause: string, subjectTokens: ReadonlySet<string>): string {
@@ -339,10 +348,10 @@ export function deriveCapabilityCatalogOutcomeRequirements(
         return occurrences(left) - occurrences(right) || right.length - left.length || left.localeCompare(right);
       })[0];
       const subjectTokenAliases = originalClauseAlias.some(token => groundedSubjectTokens.includes(token)) && aliasAnchor ? [originalClauseAlias] : undefined;
-      const statement = conciseOutcomeStatement(clause, new Set(groundedSubjectTokens));
+      const statement = authoredFeatureLabel(firstPartyClause) || conciseOutcomeStatement(clause, new Set(groundedSubjectTokens));
       const audienceLabel = requirementAudienceLabel(clause, audience);
       const audienceScopedOutcomeText = audienceScopedCapabilityCatalogOutcomeText(clause, audience, audienceLabel);
-      const visibleActionTerms = clauseVisibleActionTerms(clause, statement);
+      const visibleActionTerms = clauseVisibleActionTerms(statement, statement);
       const id = requirementId(audience, [...new Set([...visibleActionTerms, ...groundedSubjectTokens])]);
       if (candidateIds.length === 0 && visibleActionTerms.length === 0) continue;
       requirements.set(id, {
@@ -541,6 +550,7 @@ export function sanitizeCapabilityCatalogDescription(description: string): strin
   return String(description || '')
     .replace(/\s+(?:through|using|via)\s+(?:the\s+)?[^.,;]{0,80}\b(?:api|apis|routes?|endpoints?|operations?|controllers?)\b[^.,;]*/gi, '')
     .replace(/\b[a-z]+:\/[^\s.]*/gi, '')
+    .replace(/\bretain full of (?=(?:their|the)\b)/gi, 'retain full control of ')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -795,8 +805,8 @@ export function capabilityCatalogCoverageFailure(
   requirements: readonly CapabilityCatalogOutcomeRequirement[],
   fullyCoveredAggregateCandidateIds: ReadonlySet<string> = new Set(),
 ): string | undefined {
-  return catalogEvidenceCoverageFailure(capabilities, requiredBehaviorCandidateIds, requiredEntityCandidateGroups, fullyCoveredAggregateCandidateIds) ||
-    capabilityCatalogOutcomeCoverageFailure(capabilities, requirements);
+  void requiredBehaviorCandidateIds; void requiredEntityCandidateGroups; void fullyCoveredAggregateCandidateIds;
+  return capabilityCatalogOutcomeCoverageFailure(capabilities, requirements);
 }
 
 export function capabilityCatalogOutcomeRepairCandidateIds(

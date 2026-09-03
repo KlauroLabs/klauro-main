@@ -59,6 +59,28 @@ describe('scope-relative capability evidence', () => {
     expect(classified.evidence_role_reasons).toContain('identity-is-upstream-substrate-outside-an-identity-product');
   });
 
+  it('recognizes generated service-class identity labels as substrate', () => {
+    const generatedService = {
+      ...authCandidate(),
+      id: 'cap_memos_v1_authservice_management',
+      name: 'AuthService Management',
+      structural_label: 'AuthService Management',
+      operations: [
+        { entry_point_id: 'login', entry_point_type: 'http', action: 'SignIn', path_or_command: '/memos.api.v1.AuthService/SignIn' },
+        { entry_point_id: 'register', entry_point_type: 'http', action: 'SignOut', path_or_command: '/memos.api.v1.AuthService/SignOut' },
+      ],
+    };
+    const [classified] = classifyCapabilityEvidence(
+      [generatedService],
+      entities,
+      { productDocTitle: 'Memos', productDocSummary: 'A self-hosted home for daily notes and short-form thinking.' },
+      { entryPoints },
+    );
+
+    expect(classified.evidence_role).toBe('supporting-mechanism');
+    expect(classified.evidence_role_reasons).toContain('identity-is-upstream-substrate-outside-an-identity-product');
+  });
+
   it('allows authentication to be product purpose for an identity system', () => {
     const [classified] = classifyCapabilityEvidence(
       [authCandidate()],

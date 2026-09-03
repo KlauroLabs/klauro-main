@@ -30,7 +30,7 @@ export const CAPABILITY_PURPOSE_VERBS = new Set<string>([
   'discover', 'configure', 'deploy', 'migrate', 'ingest', 'stream', 'route',
   'dispatch', 'reconcile', 'audit', 'log', 'cache', 'queue', 'persist',
   'store', 'serve', 'correlate', 'collect', 'record', 'settle', 'publish', 'categorize', 'classify', 'organize', 'group', 'maintain', 'administer', 'follow', 'unfollow', 'favorite', 'unfavorite',
-  'filter', 'keep', 'search', 'sort', 'index',
+  'capture', 'filter', 'keep', 'search', 'share', 'sort', 'index',
   'visualize',
   'offer', 'onboard',
   'ground', 'help', 'surface', 'turn', 'understand',

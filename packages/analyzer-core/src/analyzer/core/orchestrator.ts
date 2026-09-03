@@ -182,11 +182,11 @@ import {
   synchronizeCapabilityCatalogCoverage,
 } from './capability-catalog-evidence';
 import { mergeCapabilityCatalogFlowEvidence } from './capability-catalog-flow-evidence';
-import { bindAtomicallySatisfiedCatalogOutcomeRequirements, bindUniquelySatisfiedCatalogOutcomeRequirements, canonicalCapabilityCatalogOutcomeToken, capabilityCatalogCoverageFailure, capabilityCatalogOutcomeBindingFailureDetail, capabilityCatalogOutcomeNameFailure, capabilityCatalogOutcomesMayMerge, capabilityCatalogTargetedOutcomeText, capabilitySemanticallySatisfiesCatalogOutcomeRequirement, conciseCapabilityCatalogOutcomeName, deriveCapabilityCatalogOutcomeRequirements, sanitizeCapabilityCatalogDescription, uncoveredCapabilityCatalogOutcomeRequirements, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
+import { bindAtomicallySatisfiedCatalogOutcomeRequirements, bindUniquelySatisfiedCatalogOutcomeRequirements, canonicalCapabilityCatalogOutcomeToken, capabilityCatalogOutcomeCoverageFailure, capabilityCatalogOutcomeBindingFailureDetail, capabilityCatalogOutcomeNameFailure, capabilityCatalogOutcomesMayMerge, capabilityCatalogTargetedOutcomeText, capabilitySemanticallySatisfiesCatalogOutcomeRequirement, conciseCapabilityCatalogOutcomeName, deriveCapabilityCatalogOutcomeRequirements, sanitizeCapabilityCatalogDescription, uncoveredCapabilityCatalogOutcomeRequirements, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
 import { fitCapabilityCatalogContext } from './ai-context-budget';
 import { awaitAiOperation } from './ai-operation-timing';
 import { capabilityDescriptionBatchSize, resolveCapabilityCatalogRoute, resolveCapabilityDescriptionRoute, shouldReauthorCapabilityDescriptions, toAIContextRoute } from './ai-task-model-routing';
-import { capabilitiesWithoutDescriptionDisposition, type CapabilityCatalogRejection, type CapabilityCatalogRejectionsByCandidate, capabilityCatalogCycleDiagnostic, capabilityCatalogPendingRepairKeys, capabilityCatalogRepairCandidateIds, capabilityCatalogRepairEvidenceFacts, capabilityIdentityPendingDescriptionRepair, capabilityOutcomeMatchesEvidence, capabilityTitlesShareOutcome, collectCapabilityCatalogEvidenceBatches, mergeCapabilityCatalogRepairResults, mergeGroundedEntityEvidenceFamilies, mergeUniquelyMatchedBehaviorEvidence, recordCapabilityCatalogRejection, recordCapabilityPublishabilityRejection, retryEmptyCapabilityCatalogOutcome, scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates, trackCapabilityCatalogRepair, uncoveredCapabilityCatalogFamilyRepresentativeIds } from './capability-catalog-scheduling';
+import { capabilitiesWithoutDescriptionDisposition, type CapabilityCatalogRejection, type CapabilityCatalogRejectionsByCandidate, capabilityCatalogCycleDiagnostic, capabilityCatalogPendingRepairKeys, capabilityCatalogRepairCandidateIds, capabilityCatalogRepairEvidenceFacts, capabilityIdentityPendingDescriptionRepair, capabilityOutcomeMatchesEvidence, capabilityTitlesShareOutcome, collectCapabilityCatalogEvidenceBatches, mergeCapabilityCatalogRepairResults, mergeGroundedEntityEvidenceFamilies, mergeUniquelyMatchedBehaviorEvidence, recordCapabilityCatalogRejection, recordCapabilityPublishabilityRejection, retryEmptyCapabilityCatalogOutcome, scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates, trackCapabilityCatalogRepair } from './capability-catalog-scheduling';
 import { buildCapabilityOperationObligationViews, evaluateCapabilityCatalogOperationCoverage, fullyCoveredAggregateCapabilityCandidateIds, normalizeCapabilityOperationObligationEvidence, scopeRequiredCapabilityOperations, uncoveredAggregateOperationObligationIds, uncoveredRequiredBehaviorCandidateIds, uncoveredRequiredCapabilityOperations, type CapabilityOperationCoverageContext } from "./capability-operation-coverage";
 import { capabilityCatalogEvidenceFallback, capabilityCatalogFirstPartyFallback, capabilityCatalogRepairPromptEnvelope, type CapabilityCatalogRepairPromptFact } from './capability-catalog-repair-context';
 import { capabilityCatalogFocusedTask, capabilityCatalogRepairLifecycleKey, capabilityCatalogRepairNudge, capabilityCatalogRepairPlan, captureCapabilityCatalogPendingRequirements, deterministicCapabilityDescriptionFallback, supersedeUnboundPendingOutcomeDuplicates, type CapabilityCatalogRepairBatch, type PendingCapabilityEvidenceIdentity } from './capability-catalog-repair-plan';
@@ -9048,7 +9048,8 @@ export class AnalyzerOrchestrator {
         debugCatalogRejection(name, 'missing-name-or-description');
         continue;
       }
-      const itemCandidateIds = Array.isArray(item.candidate_ids) ? item.candidate_ids.map(value => String(value || '')) : [];
+      let itemCandidateIds = Array.isArray(item.candidate_ids) ? item.candidate_ids.map(value => String(value || '')) : [];
+      if (itemCandidateIds.length === 0 && requiredOutcome?.candidateIds.length && capabilitySemanticallySatisfiesCatalogOutcomeRequirement({ name, description }, requiredOutcome)) itemCandidateIds = [...requiredOutcome.candidateIds];
       const targetedItemFacts = itemCandidateIds
         .map(candidateId => targetedRepairFactByCandidateId.get(candidateId))
         .filter((fact): fact is CapabilityCatalogRepairPromptFact => Boolean(fact));
@@ -9194,8 +9195,7 @@ export class AnalyzerOrchestrator {
               (descriptionToken.startsWith(entityToken.slice(0, 5)) || entityToken.startsWith(descriptionToken.slice(0, 5))))
           )
         );
-      const candidateIds = (Array.isArray(item.candidate_ids) ? item.candidate_ids : [])
-        .map((value: unknown) => String(value || ''))
+      const candidateIds = itemCandidateIds
         .filter(value => candidatePoolForRanking.some(candidate => candidate.id === value));
       if (itemCandidateIds.length > 0 && candidateIds.length === 0) {
         debugCatalogRejection(name, 'unknown-candidate-citation', itemCandidateIds);
@@ -10110,7 +10110,7 @@ export class AnalyzerOrchestrator {
     let audienceRepairFeedback: string | undefined;
     let cyclesRun = 0; let catalogProviderCalls = 0; const maxCatalogProviderCalls = 26;
     let independentBroadConfirmationPending = false;
-    const rejectedProposalCandidateIds = new Set<string>(independentlyGroundedProductOutcomeIds);
+    const rejectedProposalCandidateIds = new Set<string>(groundableOutcomes.flatMap(requirement => requirement.candidateIds).filter(candidateId => independentlyGroundedProductOutcomeIds.has(candidateId)));
     let deadlineExceeded = false; let retainedInterpretationRaw = ''; const catalogRejectionsByCandidate: CapabilityCatalogRejectionsByCandidate = new Map(); const pendingRequirementIdsByLifecycleKey = new Map<string, string[]>(); const descriptionRepairAttemptsByLifecycleKey = new Map<string, number>(); const deterministicFallbackAttemptedLifecycleKeys = new Set<string>(); const exactActionMismatchAttemptsByCandidateId = new Map<string, number>(); const evidenceRepairAttemptsByCandidateId = new Map<string, number>(); const pendingEvidenceIdentityByCandidateId = new Map<string, PendingCapabilityEvidenceIdentity>();
     let uncoveredOutcomes = groundableOutcomes; const repairProgress = trackCapabilityCatalogRepair(Math.max(1, groundableOutcomes.length), requiredBehaviorCandidateIds, requiredEntityCandidateGroups, groundableOutcomes.map(requirement => requirement.id), distinctFamilyCandidateGroups);
     let maxCatalogCycles = repairProgress.maxCycles;
@@ -10325,8 +10325,9 @@ export class AnalyzerOrchestrator {
         (capability.criticality_factors || [])
           .filter(factor => factor.startsWith('catalog-candidate:'))
           .map(factor => factor.slice('catalog-candidate:'.length))));
+      const uncoveredOutcomeCandidateIds = new Set(uncoveredCapabilityCatalogOutcomeRequirements(evidenceCompleteReconciled, groundableOutcomes, capability => this.isPublishableCapability(capability)).flatMap(requirement => requirement.candidateIds));
       const unresolvedRejectedProductOutcomeIds = [...rejectedProposalCandidateIds]
-        .filter(candidateId => productOutcomeEvidenceCandidateIds.has(candidateId) && !cyclePublishedCandidateIds.has(candidateId));
+        .filter(candidateId => uncoveredOutcomeCandidateIds.has(candidateId) && productOutcomeEvidenceCandidateIds.has(candidateId) && !cyclePublishedCandidateIds.has(candidateId));
       if (process.env.KLAURO_DEBUG_CATALOG && rejectedProposalCandidateIds.size > 0) writeAnalyzerStatus('[catalog-debug] rejected product-outcome repair coverage:', {
         rejected_candidate_ids: [...rejectedProposalCandidateIds],
         classified_product_outcome_ids: [...productOutcomeEvidenceCandidateIds],
@@ -10447,9 +10448,7 @@ export class AnalyzerOrchestrator {
       const deadlineLanguageReconciled = deadlineCompleteReconciled;
       const deadlinePublishable = deadlineLanguageReconciled.filter(capability => this.isPublishableCapability(capability));
       const deadlinePublishableAggregateCandidateIds = fullyCoveredAggregateCapabilityCandidateIds(requiredEvidenceCandidates, deadlinePublishable, operationCoverageContext);
-      const deadlinePublishableComplete = uncoveredRequiredBehaviorCandidateIds(requiredEvidenceCandidates, deadlinePublishable, operationCoverageContext).length === 0 &&
-        !capabilityCatalogCoverageFailure(deadlinePublishable, [], requiredEntityCandidateGroups, requiredOutcomes, deadlinePublishableAggregateCandidateIds) &&
-        uncoveredCapabilityCatalogFamilyRepresentativeIds(deadlinePublishable, distinctFamilyCandidateGroups, deadlinePublishableAggregateCandidateIds).length === 0;
+      const deadlinePublishableComplete = !capabilityCatalogOutcomeCoverageFailure(deadlinePublishable, requiredOutcomes);
       const deadlineQualityReconciled = deadlinePublishableComplete ? deadlinePublishable : deadlineLanguageReconciled;
       const deadlineNonPublishable = deadlineQualityReconciled.filter(capability => !this.isPublishableCapability(capability));
       const deadlineQualityFailure = this.catalogQualityFailure(deadlineQualityReconciled, 0, deadlineOperationCoverage.uncoveredCandidateIds, requiredEntityCandidateGroups, groundableOutcomes, distinctFamilyCandidateGroups, deadlinePublishableComplete ? deadlinePublishableAggregateCandidateIds : deadlineOperationCoverage.fullyCoveredAggregateCandidateIds) || (deadlineNonPublishable.length > 0 ? String(deadlineNonPublishable.length) + " catalog capability " + (deadlineNonPublishable.length === 1 ? "requires" : "require") + " publishable description repair: " + deadlineNonPublishable.slice(0, 3).map(capability => capability.name).join(", ") : undefined);
@@ -10467,19 +10466,9 @@ export class AnalyzerOrchestrator {
       publishableBeforeCompaction,
       operationCoverageContext,
     );
-    const compactedUncoveredBehaviorCandidateIds = uncoveredRequiredBehaviorCandidateIds(
-      requiredEvidenceCandidates,
-      compactedPublishable,
-      operationCoverageContext,
+    const compactedCoverageFailure = Boolean(
+      capabilityCatalogOutcomeCoverageFailure(compactedPublishable, requiredOutcomes),
     );
-    const compactedAggregateCandidateIds = fullyCoveredAggregateCapabilityCandidateIds(
-      requiredEvidenceCandidates,
-      compactedPublishable,
-      operationCoverageContext,
-    );
-    const compactedCoverageFailure = compactedUncoveredBehaviorCandidateIds.length > 0 ||
-      Boolean(capabilityCatalogCoverageFailure(compactedPublishable, [], requiredEntityCandidateGroups, requiredOutcomes, compactedAggregateCandidateIds)) ||
-      uncoveredCapabilityCatalogFamilyRepresentativeIds(compactedPublishable, distinctFamilyCandidateGroups, compactedAggregateCandidateIds).length > 0;
     const publishableReconciled = compactedCoverageFailure ? publishableBeforeCompaction : compactedPublishable;
     const normalizedOperationEvidence = normalizeCapabilityOperationObligationEvidence(publishableReconciled, operationCoverageContext.obligationScopes || operationObligationViews.scopes, authoritativeOperationCandidates);
     const publishedCapabilities = normalizePublishedCapabilityIds(normalizedOperationEvidence.capabilities);
@@ -10526,10 +10515,10 @@ export class AnalyzerOrchestrator {
       } : {}),
     };
     const intrinsicQualityFailure = this.catalogQualityFailure(publishedCapabilities, 0, [], [], [], []);
-    const emptyGroundedCatalogFailure = distinctFamilyCount > 0 && publishedCapabilities.length === 0 ? `catalog has no publishable capabilities for ${distinctFamilyCount} grounded evidence ${distinctFamilyCount === 1 ? 'family' : 'families'}` : undefined;
+    const authoredOutcomeCoverageFailure = capabilityCatalogOutcomeCoverageFailure(publishedCapabilities, requiredOutcomes);
     qualityFailure = normalizedOperationEvidence.errors.length > 0
       ? `catalog has invalid operation obligation evidence: ${normalizedOperationEvidence.errors.slice(0, 8).join(', ')}`
-      : emptyGroundedCatalogFailure || intrinsicQualityFailure || retainedQualityFailure || (unresolvedRejectedProductOutcomeIds.length > 0
+      : authoredOutcomeCoverageFailure || intrinsicQualityFailure || retainedQualityFailure || (unresolvedRejectedProductOutcomeIds.length > 0
         ? `catalog has ${unresolvedRejectedProductOutcomeIds.length} unreconciled product-outcome evidence ${unresolvedRejectedProductOutcomeIds.length === 1 ? 'family' : 'families'}: ${unresolvedRejectedProductOutcomeIds.slice(0, 8).join(', ')}`
         : undefined);
     const catalogPath = deadlineExceeded
@@ -14730,7 +14719,7 @@ export class AnalyzerOrchestrator {
       const t = line.trim();
       if (!t) return true;
       if (/^(!\[|<|>|```|\||---|===|\* \* \*|\*\*\*|___)/.test(t)) return true;
-      if (/^!?\[[^\]]*\]\([^)]*\)\s*$/.test(t)) return true;
+      if (/^!?\[[^\]]*\]\([^)]*\)\s*$|^\*\*[^*]+\*\*$/.test(t)) return true;
       if (/^(#{1,6}\s|[-*+]\s|\d+\.\s)/.test(t)) return true;
       if (/^\*\*[^*]{1,40}:\*\*\s*\S/.test(t)) return true;
       if (/^[A-Za-z][A-Za-z ]{1,30}:\s*\S{1,40}$/.test(t) && t.length < 60) return true;
@@ -14761,7 +14750,7 @@ export class AnalyzerOrchestrator {
       const t = lines[i].trim();
       const heading = t.match(/^#{1,6}\s+(.+?)\s*#*$/);
       if (heading) {
-        inFeatureSection = /^(?:key\s+|high(?:-|\s+)level\s+)?(?:features?|capabilities|functionality|use cases?|what (?:it|this|you) (?:does|can do))\b/i.test(
+        inFeatureSection = /^(?:(?:key\s+|high(?:-|\s+)level\s+)?(?:features?|capabilities|functionality|use cases?|what (?:it|this|you) (?:does|can do))\b|why\s+.+\??$)/i.test(
           heading[1].replace(/[`*_]/g, '').trim(),
         );
         continue;
@@ -14777,7 +14766,7 @@ export class AnalyzerOrchestrator {
         .trim();
       if (cleaned.length >= 12) featureItems.push(/[.!?]$/.test(cleaned) ? cleaned : `${cleaned}.`);
     }
-    const summaryParts = [paragraph.join(' '), ...featureItems].filter(Boolean);
+    const summaryParts = [paragraph.join(' '), ...featureItems.map(item => `Feature: ${item}`)].filter(Boolean);
     if (summaryParts.length > 0) {
       summary = summaryParts
         .join(' ')

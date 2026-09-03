@@ -36,8 +36,27 @@ export function capabilityGroundedEntityIds(
   entryPoints: readonly CASEntryPoint[],
 ): Set<string> {
   const owned = new Set(capability.related_entities || []);
-  const ownedEntities = entities.filter(entity => owned.has(entity.id));
   const entryPointById = new Map(entryPoints.map(entryPoint => [entryPoint.id, entryPoint]));
+  if (owned.size === 0 && capability.operations.length > 0) {
+    const contractTokens = capability.operations.map(operation => {
+      const entryPoint = entryPointById.get(operation.entry_point_id);
+      const path = String(entryPoint?.trigger?.path || operation.trigger?.path || operation.path_or_command || '');
+      const terminalContractName = path.split('/').filter(Boolean).pop() || '';
+      return new Set(normalizedEntityTokens([
+        operation.action,
+        terminalContractName,
+        entryPoint?.handler?.method_name,
+        typeof entryPoint?.metadata?.rpc === 'string' ? entryPoint.metadata.rpc : '',
+      ].filter(Boolean).join(' ')));
+    });
+    for (const entity of entities) {
+      const entityTokens = normalizedEntityTokens(entity.name);
+      if (entityTokens.length > 0 && contractTokens.every(tokens => entityTokens.every(token => tokens.has(token)))) {
+        owned.add(entity.id);
+      }
+    }
+  }
+  const ownedEntities = entities.filter(entity => owned.has(entity.id));
   if (ownedEntities.length === 0 || capability.operations.length === 0) return owned;
   const matchedEntries = capability.operations.map(operation => {
     const entryPoint = entryPointById.get(operation.entry_point_id);

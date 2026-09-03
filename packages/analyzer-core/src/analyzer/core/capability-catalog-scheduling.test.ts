@@ -30,7 +30,7 @@ import {
 } from './capability-catalog-scheduling';
 import { capabilityCatalogCycleQualityFailure, deterministicAtomicClosuresForObligationIds, isExactValidatedDeterministicRecovery, filterMismatchedOperationObligationCapabilities, hasPendingCapabilityDescriptionAttempt, hasPendingCapabilityLanguageAttempt, normalizeTargetedCapabilityCatalogDescriptions, resolveCapabilityCatalogDescriptionRepair, resolvePendingCapabilityDescriptionsWithoutProvider, retireIndependentlyCoveredPendingDescriptions, stagePendingCapabilityEvidenceRepairs, stageRejectedCapabilityNameRepair, validatedDeterministicAtomicClosures, validatedDeterministicGroupedOperationClosures, withoutSubsumedDeterministicAtomicClosures } from './capability-catalog-cycle-repair';
 import { capabilityDescriptionProductLanguageViolation, capabilityOutcomeScopeFailure, catalogEntityCandidateGroups } from './capability-catalog-evidence';
-import { capabilityCatalogOutcomeNameFailure } from './capability-catalog-outcome-coverage';
+import { capabilityCatalogOutcomeNameFailure, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
 import { validateElementDescription } from '../../ai/element-description-validator';
 import { evaluateCapabilityCatalogAudience } from './capability-catalog-audience';
 import { capabilityCatalogRepairPlan, deterministicCapabilityActionIdentityFallback, deterministicCapabilityDescriptionFallback } from './capability-catalog-repair-plan';
@@ -2532,6 +2532,39 @@ test('promotes exact pending evidence by candidate lifecycle when reconciliation
     assert.equal(promoted.get(candidateId)?.name, pending.name);
     assert.equal(promoted.get(candidateId)?.description, replacement.description);
   }
+});
+
+test('treats structural families as evidence rather than publication quotas while enforcing grounded authored outcomes', () => {
+  const capability = catalogCapability({
+    id: 'review-invoices',
+    name: 'Review invoices',
+    description: 'Accountants review issued invoices before completing monthly financial reconciliation.',
+    name_source: 'ai',
+    description_source: 'ai',
+    related_entities: ['entity_invoice'],
+    operations: [{ entry_point_id: 'invoice-list', entry_point_type: 'http', action: 'read' }],
+    criticality_factors: ['catalog-candidate:invoices'],
+  });
+  const quality = (requiredOutcomes: CapabilityCatalogOutcomeRequirement[]) => capabilityCatalogCycleQualityFailure({
+    reconciled: [capability],
+    distinctFamilyCount: 4,
+    requiredBehaviorCandidateIds: ['uncited-behavior'],
+    requiredEntityCandidateGroups: [['uncited-entity']],
+    requiredOutcomes,
+    candidateFamilyGroups: [['uncited-family']],
+    isBareNoun: () => false,
+    isStructuralPlaceholder: () => false,
+  });
+
+  assert.equal(quality([]), undefined);
+  assert.match(quality([{
+    id: 'all:capture-note',
+    statement: 'Capture notes',
+    candidateIds: ['notes'],
+    subjectTokens: ['note'],
+    requiredSubjectTerms: ['note'],
+    visibleActionTerms: ['capture'],
+  }]) || '', /first-party product outcome/);
 });
 
 test('accepts only exact grounded deterministic recoveries after bad provider wording', () => {

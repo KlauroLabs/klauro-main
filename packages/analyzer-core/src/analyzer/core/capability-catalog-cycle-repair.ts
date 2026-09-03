@@ -4,12 +4,11 @@ import { hasAuthoritativeCapabilityOperationSubjectLineage, uncoveredRequiredCap
 import { normalizeCapabilityDescriptionForPublication } from './capability-catalog-audience';
 import { capabilityEvidenceSubjectTokens, catalogMinimumCapabilityCount } from './capability-catalog-evidence';
 import { normalizedSubjectTokens, outcomeIdentityTokens, outcomeTokenMatches } from './capability-evidence-language';
-import { capabilityCatalogCoverageFailure, uncoveredCapabilityCatalogOutcomeRequirements, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
+import { capabilityCatalogOutcomeCoverageFailure, uncoveredCapabilityCatalogOutcomeRequirements, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
 import {
   capabilityCatalogEvidenceRepairMatchIndexes,
   capabilityIdentityPendingDescriptionRepair,
   selectValidatedCapabilityDescriptionRepair,
-  uncoveredCapabilityCatalogFamilyRepresentativeIds,
 } from './capability-catalog-scheduling';
 import {
   deterministicCapabilityDescriptionFallback,
@@ -782,17 +781,9 @@ export function capabilityCatalogCycleQualityFailure(args: {
   isStructuralPlaceholder: (description?: string) => boolean;
   isValidatedDeterministicRecovery?: (capability: SystemCapability) => boolean;
 }): string | undefined {
-  if (args.reconciled.length === 0) return args.distinctFamilyCount === 0 ? undefined : 'empty catalog after reconciliation';
-  if (args.requiredBehaviorCandidateIds.length > 0) {
-    return `catalog leaves ${args.requiredBehaviorCandidateIds.length} required operation ${args.requiredBehaviorCandidateIds.length === 1 ? 'obligation' : 'obligations'} uncovered: ${args.requiredBehaviorCandidateIds.slice(0, 8).join(', ')}`;
-  }
-  const coverageFailure = capabilityCatalogCoverageFailure(
-    args.reconciled, [], args.requiredEntityCandidateGroups, args.requiredOutcomes,
-    args.fullyCoveredAggregateCandidateIds,
-  );
+  if (args.reconciled.length === 0) return capabilityCatalogOutcomeCoverageFailure([], args.requiredOutcomes);
+  const coverageFailure = capabilityCatalogOutcomeCoverageFailure(args.reconciled, args.requiredOutcomes);
   if (coverageFailure) return coverageFailure;
-  const uncoveredFamilyIds = uncoveredCapabilityCatalogFamilyRepresentativeIds(args.reconciled, args.candidateFamilyGroups, args.fullyCoveredAggregateCandidateIds);
-  if (uncoveredFamilyIds.length > 0) return `catalog omitted ${uncoveredFamilyIds.length} deterministic capability evidence families: ${uncoveredFamilyIds.slice(0, 8).join(', ')}`;
   const evidenceRejected = args.reconciled.filter(capability =>
     (capability.criticality_factors || []).some(factor => factor.startsWith('catalog-evidence-rejected:')));
   if (evidenceRejected.length > 0) return `catalog contains ${evidenceRejected.length} authored capability ${evidenceRejected.length === 1 ? 'claim' : 'claims'} without product-outcome evidence: ${evidenceRejected.slice(0, 3).map(capability => capability.name).join(', ')}`;
