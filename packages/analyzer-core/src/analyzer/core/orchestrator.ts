@@ -9981,6 +9981,9 @@ export class AnalyzerOrchestrator {
     return operations.some(operation =>
       /^(?:manage|create|update|delete|write|modify|submit|configure|mutate|set|save|persist)$/i.test(operation.action || '')
     );
+  }  private isRepairRetainableCapability(capability: SystemCapability): boolean {
+    const failure = this.capabilityPublishabilityFailure(capability);
+    return !failure || !['name-is-not-authored', 'bare-noun-name', 'generated-label-prefix', 'generic-management-name', 'crud-inventory-name', 'crud-lifecycle-fragment-name'].includes(failure);
   }  private isPublishableCapability(capability: SystemCapability): boolean {
     return this.capabilityPublishabilityFailure(capability) === undefined;
   }  private capabilityPublishabilityFailure(capability: SystemCapability): string | undefined {
@@ -10342,6 +10345,7 @@ export class AnalyzerOrchestrator {
         maxCatalogCycles += 1;
         productOutcomeLanguageExtensionGranted = true;
       }
+      const repairRetainableEvidenceCompleteReconciled = evidenceCompleteReconciled.filter(capability => this.isRepairRetainableCapability(capability));
       const cycleQualityFailure = this.catalogQualityFailure(
         evidenceCompleteReconciled,
         0,
@@ -10358,9 +10362,9 @@ export class AnalyzerOrchestrator {
         extractionRejections.length > 0;
       writeAnalyzerStatus(
         `[Klauro] capability catalog cycle ${cycle}/${maxCatalogCycles}${targetedRepair ? ' targeted-repair' : ''}: ${cycleQualityFailure ? `rejected (${cycleQualityFailure})` : `accepted (${evidenceCompleteReconciled.length} capabilities)`}${reconciledCandidates.length > cycleReconciled.length ? `; refused ${reconciledCandidates.length - cycleReconciled.length} non-publishable item(s): ${[...publishabilityFailures.entries()].map(([reason, count]) => `${reason}=${count}`).join(', ')}` : ''}`,
-      ); writeAnalyzerStatus('[Klauro] capability catalog retained identities:', capabilityCatalogCycleDiagnostic(evidenceCompleteReconciled));
+      ); writeAnalyzerStatus('[Klauro] capability catalog retained identities:', capabilityCatalogCycleDiagnostic(cycleQualityFailure ? repairRetainableEvidenceCompleteReconciled : evidenceCompleteReconciled));
       if (needsIndependentBroadConfirmation) {
-        reconciled = evidenceCompleteReconciled;
+        reconciled = repairRetainableEvidenceCompleteReconciled;
         independentBroadConfirmationPending = true;
         if (!retainedInterpretationRaw) retainedInterpretationRaw = extractionRaw;
         qualityFailure = cycleQualityFailure || 'independent broad confirmation required after rejected proposals';
@@ -10375,9 +10379,9 @@ export class AnalyzerOrchestrator {
         retainedQualityFailure = undefined;
         break;
       }
-      uncoveredOutcomes = uncoveredCapabilityCatalogOutcomeRequirements(evidenceCompleteReconciled, groundableOutcomes, capability => this.isPublishableCapability(capability)); const progress = repairProgress.observe(evidenceCompleteReconciled, uncoveredOutcomes.map(requirement => requirement.id), [...capabilityCatalogPendingRepairKeys(nonPublishable), ...[...pendingEvidenceIdentityByCandidateId.keys()].map(candidateId => `candidate:${candidateId}`)], cycleUncoveredBehaviorCandidateIds);
-      if (evidenceCompleteReconciled.length > 0) {
-        reconciled = evidenceCompleteReconciled;
+      uncoveredOutcomes = uncoveredCapabilityCatalogOutcomeRequirements(evidenceCompleteReconciled, groundableOutcomes, capability => this.isPublishableCapability(capability)); const progress = repairProgress.observe(repairRetainableEvidenceCompleteReconciled, uncoveredOutcomes.map(requirement => requirement.id), [...capabilityCatalogPendingRepairKeys(nonPublishable), ...[...pendingEvidenceIdentityByCandidateId.keys()].map(candidateId => `candidate:${candidateId}`)], cycleUncoveredBehaviorCandidateIds);
+      reconciled = repairRetainableEvidenceCompleteReconciled;
+      if (repairRetainableEvidenceCompleteReconciled.length > 0) {
         if (!retainedInterpretationRaw) retainedInterpretationRaw = extractionRaw;
         retainedQualityFailure = cycleQualityFailure;
       }

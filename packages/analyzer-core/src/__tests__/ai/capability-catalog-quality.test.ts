@@ -62,6 +62,17 @@ describe('description repair rejection feedback', () => {
     }))).toBe('generated-label-prefix');
   });
 
+  it('retains description failures for repair but retires malformed names', () => {
+    expect(orch.isRepairRetainableCapability(cap({
+      name: 'filter: Filter between job applications',
+      operations: [{ entry_point_id: 'filter', entry_point_type: 'http', action: 'filter' }] as any,
+    }))).toBe(false);
+    expect(orch.isRepairRetainableCapability(cap({
+      name: 'Filter job applications', description: '',
+      operations: [{ entry_point_id: 'filter', entry_point_type: 'http', action: 'filter' }] as any,
+    }))).toBe(true);
+  });
+
   it('does not let a rejected description mask structural or identity failures', () => {
     const rejected: Pick<SystemCapability, 'description' | 'description_generation'> = {
       description: '',
