@@ -2,6 +2,7 @@ jest.unmock('fs-extra');
 jest.unmock('fs');
 jest.unmock('glob');
 
+import { bindGoHttpRouteHandlers } from '../../analyzer/languages/go-route-handler-binding';
 import { GoAnalyzer } from '../../analyzer/languages/go-analyzer';
 
 describe('GoAnalyzer HTTP route extraction', () => {
@@ -332,5 +333,51 @@ describe('GoAnalyzer HTTP route extraction', () => {
     ]);
 
     expect([...imports]).toEqual(['errors', 'pay']);
+  });
+
+  it('binds a named route handler to its callable node instead of its source file', () => {
+    const entryPoints = [{
+      id: 'entry_status',
+      source_node: 'file_ui',
+      type: 'http',
+      name: 'POST /entry/status',
+      metadata: { framework: 'go', kind: 'route', file: 'internal/ui/ui.go' },
+      handler: { method_name: 'setEntryStatus', file: 'internal/ui/ui.go' },
+    }];
+    const nodes = [
+      {
+        id: 'method_handler_set_entry_status', name: 'setEntryStatus', type: 'method',
+        source: { file: 'internal/ui/entry_status_handler.go', line: 240, end_line: 260 },
+      },
+      {
+        id: 'function_set_entry_status', name: 'setEntryStatus', type: 'function',
+        source: { file: 'internal/ui/entry_status_handler.go', line: 240, end_line: 260 },
+      },
+    ];
+
+    bindGoHttpRouteHandlers(nodes as any, entryPoints as any);
+
+    expect(entryPoints[0].handler).toEqual({
+      method_name: 'setEntryStatus',
+      node_id: 'method_handler_set_entry_status',
+      file: 'internal/ui/entry_status_handler.go',
+      line: 240,
+    });
+  });
+
+  it('leaves an ambiguous same-file handler unresolved instead of guessing', () => {
+    const entryPoints: any[] = [{
+      id: 'entry_shared', source_node: 'file_routes', type: 'http', name: 'GET /shared',
+      metadata: { framework: 'go', kind: 'route', file: 'routes.go' },
+      handler: { method_name: 'serve', file: 'routes.go' },
+    }];
+    const nodes = [
+      { id: 'method_a_serve', name: 'serve', type: 'method', source: { file: 'routes.go', line: 10 } },
+      { id: 'method_b_serve', name: 'serve', type: 'method', source: { file: 'routes.go', line: 30 } },
+    ];
+
+    bindGoHttpRouteHandlers(nodes as any, entryPoints as any);
+
+    expect(entryPoints[0].handler.node_id).toBeUndefined();
   });
 });

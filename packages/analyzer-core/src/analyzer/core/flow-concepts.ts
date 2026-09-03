@@ -26,6 +26,8 @@ import type {
 } from '../../types/cas.types';
 import { buildTerminalSignal } from './terminal-signal';
 import { buildCronScheduleIndex, findCronSchedule, discriminatorLabel, USER_FACING_ENTRY_TYPES } from './journey-builder';
+import { cleanRawFallbackName, dedupeAdjacentWords, flowNameForEntryPoint, titleCaseWords } from './flow-entry-naming';
+export { dedupeAdjacentWords } from './flow-entry-naming';
 import { guardConstraintKind } from './guard-classification';
 import { httpRoutePathsMatch } from './http-route-path';
 import {
@@ -1337,22 +1339,6 @@ function deriveCapabilityOperationRoots(
   return roots;
 }
 
-export function dedupeAdjacentWords(name: string): string {
-  const words = name.split(/\s+/).filter(Boolean);
-  const out: string[] = [];
-  for (const w of words) {
-    const prev = out[out.length - 1];
-    if (prev !== undefined && prev.toLowerCase() === w.toLowerCase()) continue;
-    out.push(w);
-  }
-  return out.join(' ');
-}
-
-function titleCaseWords(raw: string): string {
-  const words = (raw || '').replace(/[-_]/g, ' ').replace(/([a-z0-9])([A-Z])/g, '$1 $2');
-  const title = words.split(' ').filter(Boolean).map(w => w[0].toUpperCase() + w.slice(1)).join(' ');
-  return dedupeAdjacentWords(title);
-}
 
 const IMMUTABLE_CONTENT_PARAM = /(checksum|digest|fingerprint|etag)/i;
 
@@ -1372,53 +1358,6 @@ function isAssetOrProxyPlumbingRoute(ep: CASEntryPoint): boolean {
   return false;
 }
 
-function flowNameForEntryPoint(ep: CASEntryPoint): string {
-  const metadataHandlerName = typeof ep.metadata?.handler_name === 'string'
-    ? ep.metadata.handler_name
-    : undefined;
-  const handlerName = metadataHandlerName || ep.handler?.method_name;
-  if (handlerName && handlerName.trim().length > 0) {
-    const formView = handlerName.match(
-      /^(?:show|render|display)(Create|New|Edit|Update)(.+?)(?:Page|Form|View)?$/i
-    );
-    if (formView && ep.trigger?.method?.toUpperCase() === 'GET') {
-      const action = formView[1].toLowerCase();
-      const rawEntity = formView[2].replace(/(?:Page|Form|View)$/i, '');
-      const entity = titleCaseWords(rawEntity);
-      if (entity) {
-        return action === 'create' || action === 'new'
-          ? `View ${entity} Creation Form`
-          : `View ${entity} Editing Form`;
-      }
-    }
-    const title = titleCaseWords(handlerName);
-    if (title) return title;
-  }
-  if (ep.trigger?.path) {
-    const parts = ep.trigger.path.split('/').filter(Boolean).filter(p => !p.startsWith(':') && !p.startsWith('{'));
-    const last = parts[parts.length - 1] || ep.name;
-    const title = titleCaseWords(last);
-    return title || cleanRawFallbackName(ep.name);
-  }
-  const title = titleCaseWords(ep.name);
-  return title || cleanRawFallbackName(ep.name);
-}
-
-function cleanRawFallbackName(raw: string): string {
-  if (!raw) return raw;
-  let s = raw.replace(/^(entry_|exit_|node:|flow::|chain:|synthflow:)+/i, '');
-
-  const EXT_TOKENS = /(^|_)(tsx|ts|jsx|js|py|rb|go|rs|java|kt|swift|php|cs|cpp|c|mjs|cjs|vue|svelte)_/i;
-  const extMatch = EXT_TOKENS.exec(s);
-  if (extMatch) {
-    s = s.slice(extMatch.index + extMatch[0].length);
-  }
-
-  s = s.replace(/(?:_[0-9a-f]{4,}|_\d+)+$/i, '');
-
-  const title = titleCaseWords(s);
-  return title || titleCaseWords(raw.replace(/^(entry_|exit_|node:|flow::|chain:|synthflow:)+/i, '')) || raw;
-}
 
 function flowIntentForEntryPoint(ep: CASEntryPoint): string {
   const method = ep.trigger?.method ? `${ep.trigger.method} ` : '';
@@ -2427,7 +2366,10 @@ function computeEntryPointFlows(
     const rootNode = nodesById.get(ep.handler?.node_id || ep.source_node);
     if (!rootNode) continue;
 
-    const chain = traceForwardChain(traversal, rootNode.id);
+    const handlerResolved = TRACEABLE_NODE_TYPES.has(rootNode.type);
+    const chain = handlerResolved
+      ? traceForwardChain(traversal, rootNode.id)
+      : [{ node: rootNode, depth: 0 }];
     if (chain.length === 0) continue;
 
     if (unionOpts.significantOnly && chain.length === 1 && !USER_FACING_ENTRY_TYPES.has(ep.type)) {
@@ -2448,6 +2390,9 @@ function computeEntryPointFlows(
     );
 
     const gaps: string[] = [];
+    if (!handlerResolved) {
+      gaps.push(`Entry point handler is unresolved: ${rootNode.type} node ${rootNode.id} is evidence for registration location, not an executable handler. Flow expansion stopped at this boundary.`);
+    }
     if (synthesizedRootIds.has(ep.id)) {
       gaps.push('Root synthesized from a capabilities operation node reference — this codebase\'s entry-point extraction did not surface a dedicated entry point for this handler.');
     }
@@ -2545,7 +2490,7 @@ function computeEntryPointFlows(
 
     flows.push({
       flow_id: `flow::${ep.id}`,
-      name: flowNameForEntryPoint(ep),
+      name: flowNameForEntryPoint(ep, handlerResolved),
       intent: flowIntentForEntryPoint(ep),
       entry_point: ep.id,
       capability_id: capabilityId,

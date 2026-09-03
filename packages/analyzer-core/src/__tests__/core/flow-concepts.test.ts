@@ -1639,3 +1639,35 @@ describe('role-based step segmentation (Step doctrine rewrite)', () => {
     expect(a).toBe(b);
   });
 });
+
+test('an unresolved file-backed entry point cannot absorb unrelated callables', () => {
+  const cas = {
+    cas_version: '1.0.0', analysis_timestamp: new Date().toISOString(), analysis_id: 'unresolved-handler',
+    system: { name: 'test-system' } as any,
+    nodes: [
+      node({ id: 'file_ui', name: 'ui.go', type: 'file' }),
+      node({ id: 'create_user', name: 'createUser', type: 'function' }),
+      node({ id: 'delete_feed', name: 'deleteFeed', type: 'function' }),
+    ],
+    edges: [
+      { id: 'file_uses_create', source: 'file_ui', target: 'create_user', type: 'uses' },
+      { id: 'file_uses_delete', source: 'file_ui', target: 'delete_feed', type: 'uses' },
+    ],
+    entry_points: [{
+      id: 'robots', source_node: 'file_ui', type: 'http', name: 'GET /robots.txt',
+      trigger: { method: 'GET', path: '/robots.txt' },
+      handler: { node_id: 'file_ui', method_name: 'ui.go', file: 'internal/ui/ui.go' },
+    }],
+    exit_points: [], data_lineage: [], entities: [], capabilities: [], analyzer_contributions: [],
+  } as unknown as CASOutput;
+
+  const flow = computeFlowConcepts(cas)[0];
+
+  expect(flow.name).toBe('Robots.txt');
+  expect(flow.steps).toHaveLength(1);
+  expect(flow.steps[0].functions).toEqual([{ function_id: 'file_ui' }]);
+  expect(flow.steps.flatMap(step => step.functions).map(fn => fn.function_id)).not.toContain('create_user');
+  expect(flow.gaps).toContain(
+    'Entry point handler is unresolved: file node file_ui is evidence for registration location, not an executable handler. Flow expansion stopped at this boundary.'
+  );
+});

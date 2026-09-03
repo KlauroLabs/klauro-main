@@ -13,7 +13,7 @@ import {
 } from '../../types/cas.types';
 import { isGuardEnforcementEdge } from './guard-relationships';
 import { classifyGuardKind } from './guard-classification';
-import { dedupeAdjacentWords } from './flow-concepts';
+import { dedupeAdjacentWords } from './flow-entry-naming';
 import type { FlowConcept } from './flow-concepts';
 import { isLanguageBuiltinExitPoint } from './language-builtins';
 import { isStructuralExecutableCliEntry } from './entry-point-product-role';

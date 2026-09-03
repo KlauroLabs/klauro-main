@@ -11,6 +11,7 @@ import { TreeSitterParser } from '../core/tree-sitter-parser';
 import type { GoASTNode } from '../core/ast-types';
 import * as path from 'path';
 import { buildIncrementalLanguageResolution } from '../core/incremental-language-resolution';
+import { bindGoHttpRouteHandlers } from './go-route-handler-binding';
 
 interface GoStruct {
   name: string;
@@ -274,6 +275,7 @@ export class GoAnalyzer extends BaseAnalyzer {
         await this.analyzeGoFile(fullPath, file, nodes, edges, entryPoints, exitPoints, packages, context);
       }
 
+      bindGoHttpRouteHandlers(nodes, entryPoints);
       this.buildPackageHierarchy(packages, nodes, edges);
       this.detectFrameworkPatterns(nodes, edges, entryPoints);
       this.buildTypeRelationships(nodes, edges);
