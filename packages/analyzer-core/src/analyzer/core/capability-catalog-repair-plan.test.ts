@@ -186,6 +186,14 @@ describe('capability catalog repair planning', () => {
     });
     assert.equal(boundOutcome?.description, 'Users can keep track of job applications as those job applications change over time.');
 
+    const routingEvidence = evidence("routing-evidence", "Request Handler Routing", ["read"]);
+    const qualifiedOutcome = deterministicCapabilityDescriptionFallback({
+      identity: { ...capability("routing", ["catalog-candidate:routing-evidence", "catalog-outcome-requirement:all:route"]), name: "Route requests to handlers with a macro free API" },
+      evidenceCandidates: [routingEvidence], audience: "Developers", firstPartyTexts: [], validate: allow,
+    });
+    assert.equal(qualifiedOutcome?.name, "Route requests to handlers with a macro free API");
+    assert.equal(qualifiedOutcome?.description, "Developers can route requests to handlers as part of their normal workflow whenever needed.");
+
     const exactFirstPartyOverride = deterministicCapabilityDescriptionFallback({
       identity: { ...capability('remove-source', ['catalog-candidate:source-evidence']), name: 'Remove tracked requests' },
       evidenceCandidates: [sourceEvidence], audience: 'Operators',

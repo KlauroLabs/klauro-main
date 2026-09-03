@@ -229,6 +229,7 @@ export function deterministicCapabilityDescriptionFallback(args: {
   const resolvedCandidates = candidates.filter((candidate): candidate is SystemCapability => Boolean(candidate));
   const titleTokens = descriptionTokens(args.identity.name);
   const supportedTitleActions = titleActionFamilies(args.identity.name);
+  const firstPartyOutcomeBound = factors(args.identity, "catalog-outcome-requirement:").length > 0;
   const titleObjectTokens = titleTokens.slice(1);
   const titleObjectBoundary = titleObjectTokens.findIndex(token =>
     ['for', 'from', 'through', 'via', 'with'].includes(token));
@@ -239,7 +240,7 @@ export function deterministicCapabilityDescriptionFallback(args: {
   const nonActionTitleSubjects = rawTitleSubjects
     .filter(token => titleActionFamilies(token).length === 0 && !CAPABILITY_PURPOSE_VERBS.has(token));
   const titleSubjects = nonActionTitleSubjects.length > 0 ? nonActionTitleSubjects : rawTitleSubjects;
-  if (supportedTitleActions.length === 0 || titleSubjects.length === 0) return undefined;
+  if ((!firstPartyOutcomeBound && supportedTitleActions.length === 0) || titleSubjects.length === 0) return undefined;
   const evidenceSubjects = [...new Set(resolvedCandidates.flatMap(candidate => capabilityEvidenceSubjectTokens(candidate, args.evidenceEntityNames)))];
   const subjectMatches = (left: string, right: string): boolean => {
     const canonical = (token: string) => token === 'auth' || token === 'authentication' ? 'authenticate' : token;
@@ -289,7 +290,6 @@ export function deterministicCapabilityDescriptionFallback(args: {
     return candidateSubjects.some(evidence =>
       titleSubjects.some(subject => subjectMatches(subject, evidence)));
   });
-  const firstPartyOutcomeBound = factors(args.identity, 'catalog-outcome-requirement:').length > 0;
   if (!exactSentence && !supportedTitleActions.some(action => actions.includes(action)) && !firstPartyOutcomeBound) return undefined;
   const authoredExactGroupedLifecycle = resolvedCandidates.length > 1 &&
     candidateIds.every(candidateId => candidateId.startsWith('operation-obligation:')) &&
@@ -302,6 +302,7 @@ export function deterministicCapabilityDescriptionFallback(args: {
   if (!exactSentence && resolvedCandidates.length !== 1 && !exactGroupedLifecycle && !firstPartyOutcomeBound) return undefined;
   const description = exactSentence || (() => {
     const normalizedTitle = args.identity.name.trim().replace(/[.!?]+$/, '').replace(/^./, value => value.toLowerCase());
+    const coreOutcomeTitle = normalizedTitle.replace(/ +(?:for|from|through|via|with)(?: +|$).*$/i, "").trim();
     const evidenceSubject = exactGroupedLifecycle
       ? args.identity.name.trim().replace(/^[^\s]+\s+(?:and\s+[^\s]+\s+)?/i, '').toLowerCase()
       : groundedTitleSubjects.join(' ');
@@ -356,6 +357,7 @@ export function deterministicCapabilityDescriptionFallback(args: {
       return `${audience} can ${normalizedTitle} as part of their normal workflow whenever needed.`;
     }
     if (firstPartyOutcomeBound) {
+      if (coreOutcomeTitle !== normalizedTitle) return audience + " can " + coreOutcomeTitle + " as part of their normal workflow whenever needed.";
       return `${audience} can ${normalizedTitle} as those ${subjectPhrase} change over time.`;
     }
     if (actions.length > 1) {
