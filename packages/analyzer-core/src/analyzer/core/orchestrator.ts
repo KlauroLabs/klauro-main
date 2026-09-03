@@ -9010,9 +9010,9 @@ export class AnalyzerOrchestrator {
     };
     const staged: StagedCatalogItem[] = []; let activeRequirementId: string | undefined; let bareNounRejected = 0; const catalogRejectionFeedback: CapabilityCatalogRejection[] = [];
     const catalogRejectionReasons = new Map<string, number>();
-    const debugCatalogRejection = (name: string, reason: string, candidateIds: string[] = [], details: Partial<CapabilityCatalogRejection> = {}): void => {
+    const debugCatalogRejection = (name: string, reason: string, candidateIds: string[] = [], details: Partial<CapabilityCatalogRejection> = {}, requirementId = activeRequirementId): void => {
       catalogRejectionReasons.set(reason, (catalogRejectionReasons.get(reason) || 0) + 1);
-      catalogRejectionFeedback.push({ candidateIds, name, reason, ...details, ...(activeRequirementId ? { requirementId: activeRequirementId } : {}) });
+      catalogRejectionFeedback.push({ candidateIds, name, reason, ...details, ...(requirementId ? { requirementId } : {}) });
       if (process.env.KLAURO_DEBUG_CATALOG) {
         writeAnalyzerStatus('[catalog-debug] rejected catalog item:', { name, reason, ...details });
       }
@@ -9482,6 +9482,7 @@ export class AnalyzerOrchestrator {
       const descriptionContradictsOperations = this.capabilityContradictsObservedOperations({
         name: '', description, operations: dedupedOps,
       });
+      if (descriptionContradictsOperations) debugCatalogRejection(name, "description-contradicts-observed-operations", [...anchoredCandidateIds], {}, requirementId);
       if (relatedEntities.length === 0 && dedupedOps.length === 0) {
         unanchoredRejected++;
         unanchoredRejectedNames.push(name);
