@@ -16217,7 +16217,7 @@ export class AnalyzerOrchestrator {
 
   private crudBucketFromAccessorName(name: string): 'create' | 'read' | 'update' | 'delete' | undefined {
     const words = name.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
-    const operations: Record<string, 'create' | 'read' | 'update' | 'delete'> = {};
+    const operations = Object.create(null) as Record<string, 'create' | 'read' | 'update' | 'delete'>;
     for (const verb of ['create', 'creates', 'created', 'add', 'adds', 'added', 'insert', 'inserts', 'register', 'registers']) operations[verb] = 'create';
     for (const verb of ['get', 'gets', 'find', 'finds', 'read', 'reads', 'fetch', 'fetches', 'list', 'lists', 'show', 'index', 'load', 'loads', 'query', 'search', 'paginate', 'paginates', 'paginated', 'retrieve', 'retrieves', 'browse', 'browses', 'render', 'renders']) operations[verb] = 'read';
     for (const verb of ['update', 'updates', 'set', 'sets', 'modify', 'modifies', 'save', 'saves', 'patch', 'edit', 'edits', 'persist', 'persists', 'store', 'stores', 'upsert', 'upserts']) operations[verb] = 'update';

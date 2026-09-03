@@ -12215,6 +12215,8 @@ describe('catalog completeness (live truckspy: fuel/safety/ELD rich evidence, 9-
     expect(orch.crudBucketFromAccessorName('showCreateCategoryPage')).toBe('read');
     expect(orch.crudBucketFromAccessorName('showEditUserPage')).toBe('read');
     expect(orch.crudBucketFromAccessorName('createUser')).toBe('create');
+    expect(orch.crudBucketFromAccessorName('constructor')).toBeUndefined();
+    expect(orch.crudBucketFromAccessorName('toString')).toBeUndefined();
   });
 
   it('prompt-window ranking: own deterministic category breaks evidence ties before name order', () => {
