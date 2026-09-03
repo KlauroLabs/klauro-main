@@ -170,6 +170,22 @@ test('repairs a weak final description without requiring a pending registry entr
   assert.equal(repaired.description_generation?.reason, 'grounded-cited-lifecycle');
 });
 
+test('does not treat a normal multiword description as weak at the repair deadline', () => {
+  const description = 'People review each account record before any change.';
+  const identity = catalogCapability({
+    id: 'review-accounts', name: 'Review account records', description,
+    description_generation: { status: 'ai_applied', attempted: true },
+  });
+  let validationCalls = 0;
+  const [preserved] = resolvePendingCapabilityDescriptionsWithoutProvider({
+    capabilities: [identity], pendingEvidenceIdentityByCandidateId: new Map(),
+    evidenceCandidates: [], firstPartyTexts: [], audienceFor: () => 'People',
+    validate: () => { validationCalls += 1; return false; },
+  });
+  assert.equal(preserved.description, description);
+  assert.equal(validationCalls, 0);
+});
+
 test('repairs a bound authored outcome across multiple evidence families without a pending registry entry', () => {
   const jobs = catalogCapability({
     id: 'jobs', name: 'Job applications', structural_label: 'Job applications',

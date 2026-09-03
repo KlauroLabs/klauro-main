@@ -391,6 +391,8 @@ describe('capability catalog repair planning', () => {
     assert.match(nudge, /description-target-not-grounded/);
     assert.match(nudge, /exact evidence_subject terms/);
     assert.match(nudge, /durable user-outcome language/);
+    assert.match(nudge, /12-28 words and at least 55 characters/);
+    assert.match(nudge, /returning the current rejected wording is invalid/);
     assert.match(nudge, /not by mechanically enumerating transport or CRUD operation labels/);
     assert.match(nudge, /Do not copy a route phrase/);
     assert.match(nudge, /destructive effect in ordinary audience language/);
