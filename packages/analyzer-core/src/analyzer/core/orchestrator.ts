@@ -2955,6 +2955,23 @@ export class AnalyzerOrchestrator {
       related_entities: [...(capability.related_entities || [])],
       operations: [...(capability.operations || [])],
     }));
+    const incrementalCandidateSnapshot = this.filterIsolatedUncorroboratedCandidates(
+      incrementalCapabilityCandidates,
+      incrComprehensionJourneys,
+      incrProjectTextSignal,
+    );
+    const incrementalDescriptionEvidence = this.catalogEvidenceCandidates(
+      mergeCapabilityCatalogFlowEvidence(incrementalCandidateSnapshot, flowGraph.capability_candidates || []),
+      behaviorSurfaces,
+      incrComprehensionDataEntities,
+      String(enhancedSystemPurpose.artifact_type || 'app'),
+      incrProjectTextSignal,
+      { entryPoints, nodes, userJourneys: incrComprehensionJourneys },
+    );
+    const incrementalNarrativeCandidates = selectCapabilityCatalogPromptCandidates(
+      this.rankCatalogPromptCandidates(incrementalDescriptionEvidence, incrComprehensionJourneys),
+      catalogEntityCandidateGroups(catalogRequiredEvidenceCandidates(incrementalDescriptionEvidence)),
+    );
     if (this.shouldRefreshAIInterpretation(
       previousOutput,
       systemName,
@@ -2963,7 +2980,7 @@ export class AnalyzerOrchestrator {
       incrDbEntityNames,
       incrExternalServiceNames,
       domainConcepts,
-      systemCapabilities
+      incrementalNarrativeCandidates
     )) {
       await this.applyAIInterpretation(
         enhancedSystemPurpose,
@@ -10729,7 +10746,7 @@ export class AnalyzerOrchestrator {
         databaseEntities,
         externalServices,
         domainConcepts,
-        candidateSnapshot,
+        narrativeCandidateSnapshot,
       )
     );
 
@@ -13778,6 +13795,11 @@ export class AnalyzerOrchestrator {
     const capabilitySemantics = systemCapabilities
       .filter(capability => {
         const operations = capability.operations || [];
+        const hasSemanticEvidence =
+          (capability.related_entities?.length || 0) > 0 ||
+          (capability.related_domains?.length || 0) > 0 ||
+          operations.some(operation => Boolean(operation.action?.trim()));
+        if (!hasSemanticEvidence) return false;
         const pageOnly = operations.length > 0 && operations.every(operation => operation.entry_point_type === 'page');
         return !pageOnly || (capability.related_entities?.length || 0) > 0 || capability.category === 'core';
       })

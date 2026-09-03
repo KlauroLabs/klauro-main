@@ -13239,6 +13239,38 @@ describe('enterprise AI semantic guards', () => {
     )).toBe(false);
   });
 
+  it('does not refresh comprehension for an evidence-empty helper candidate', () => {
+    const grounded = {
+      id: 'candidate-orders', name: 'View Enterprise Orders', category: 'core',
+      related_domains: ['enterprise-orders'], related_entities: ['order'], operations: [
+        { entry_point_id: 'get-order', entry_point_type: 'http', action: 'View' },
+      ],
+    };
+    const facts = orch.buildAIInterpretationRefreshFingerprint(
+      'order-service', ['Express'], [{ type: 'http', count: 1 }], ['EnterpriseOrder'], [],
+      [{ id: 'orders', name: 'orders', classification: 'core' }], [grounded],
+    );
+    const previous = {
+      enhanced_system_purpose: {
+        inferred_description: 'The order service retrieves EnterpriseOrder records for operators.',
+        ai_input_fingerprint: orch.hashAIInterpretationRefreshFingerprint(facts),
+      },
+      capabilities: [{
+        ...grounded, id: 'view-orders', description: 'Operators can review the selected EnterpriseOrder record.',
+        description_source: 'ai', description_generation: { status: 'ai_applied', attempted: true },
+      }],
+    };
+    const helper = {
+      id: 'analysis-helper', name: 'Analysis helper', category: 'supporting',
+      related_domains: [], related_entities: [], operations: [],
+    };
+
+    expect(orch.getAIInterpretationRefreshDecision(
+      previous, 'order-service', ['Express'], [{ type: 'http', count: 1 }], ['EnterpriseOrder'], [],
+      [{ id: 'orders', name: 'orders', classification: 'core' }], [grounded, helper],
+    )).toEqual({ refresh: false, reason: 'semantic-fingerprint-unchanged' });
+  });
+
   it('compares persisted deterministic AI inputs instead of the curated catalog', () => {
     const deterministicCandidates = [
       { id: 'candidate-orders', name: 'Process Enterprise Orders', category: 'core', related_domains: [], related_entities: ['order'], operations: [] },
