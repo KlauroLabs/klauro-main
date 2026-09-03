@@ -30,11 +30,13 @@ ARG SCIP_TYPESCRIPT_VERSION=0.4.0
 # procps (ps): several suite helpers/benches shell out to `ps` to check for
 #   stray child processes / kill leftover workers between test files; without
 #   it those checks silently no-op instead of catching leaks.
+# python3-pip: telemetry release proofs install the built wheel in an isolated
+#   environment before accepting it as an installable SDK artifact.
 # openssh-client: NOT installed — nothing in the gate needs outbound ssh from
 #   inside the container (sync happens from the dev machine, see gate.sh),
 #   and adding it would be gold-plating with no probe backing it.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl git procps ripgrep universal-ctags \
+  && apt-get install -y --no-install-recommends ca-certificates curl git procps python3-pip ripgrep universal-ctags \
   && npm install --global \
     "@ast-grep/cli@${AST_GREP_VERSION}" \
     "@sourcegraph/scip-typescript@${SCIP_TYPESCRIPT_VERSION}" \
