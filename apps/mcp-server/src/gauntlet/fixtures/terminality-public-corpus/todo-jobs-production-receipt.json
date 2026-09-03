@@ -15,24 +15,24 @@
     }
   },
   "analysis": {
-    "analysis_id": "analysis_1788460876854_9xx4vakcz",
-    "analysis_timestamp": "2026-09-03T18:41:24.819Z",
-    "analyzer_build": "source-sha256:c5ff9d7f07b516c422ef0dbe05cfed5d8e8102f9a8004cb193d837d80539b491",
-    "analyzer_source_base_commit": "fb2975a9d3ca5d126c000b7b2b54ef84f922189a",
-    "analyzer_source_sha256": "c5ff9d7f07b516c422ef0dbe05cfed5d8e8102f9a8004cb193d837d80539b491",
-    "analyzer_source_file_count": 455,
+    "analysis_id": "analysis_1788465635619_jsem5ek6r",
+    "analysis_timestamp": "2026-09-03T20:00:44.592Z",
+    "analyzer_build": "source-sha256:93c9c3512ea20c125d9f710f57f0a4afb5263fc9b92c8d3acb1363c3a05713df",
+    "analyzer_source_base_commit": "5f6d7d44213bbd7ca5c5825c3e57d60b56a8218c",
+    "analyzer_source_sha256": "93c9c3512ea20c125d9f710f57f0a4afb5263fc9b92c8d3acb1363c3a05713df",
+    "analyzer_source_file_count": 454,
     "production_cas": "todo-jobs-production-cas.json.gz",
-    "production_cas_sha256": "6d4e26a27ec0dedaf26622bd3bc5c2ce895c51d9b214b43ecc705f67cec2ac73",
-    "capabilities_sha256": "3b242d487e8b16030958034ac464b2e5393d813671ff3360029a21a6b8d7cc3d",
+    "production_cas_sha256": "b11d6909c588a6f9b7fbeffa73c6dc676a53009d1e7cf6ff4f1180f15b6d7965",
+    "capabilities_sha256": "2964bd3127e2e61c35cd0c81c8d0b5c0c48bbc3237780dd9b86bcd9b2c70d097",
     "provider": "deepinfra",
     "model": "Qwen/Qwen3-Next-80B-A3B-Instruct",
     "prompt_version": "capability_catalog.v2",
     "semantic_schema_version": "e1.1",
     "semantic_trace": "todo-jobs-production-semantic.jsonl",
-    "semantic_trace_sha256": "1d62013ff1be8308b6c1f207e7d4530a15042e421edb2798bb663175d2484210",
+    "semantic_trace_sha256": "581b14f6c17802923c8296ad1f17901711c7b05c1cd93570ee5cc7a564fedbd9",
     "ai_cache": "disabled",
     "parser_fingerprint": "f737e145945ddc1d",
-    "derived_fingerprint": "b2dfa9621b758b10"
+    "derived_fingerprint": "86a5ceeb5beb3029"
   },
   "repo_id": "github:Babadinho/todo-jobs@c7c139a966ee5eafa49066a89222b56ba8233c27",
   "known_node_ids": [
@@ -978,15 +978,15 @@
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-03T18:41:22.174Z"
+          "generated_at": "2026-09-03T20:00:41.975Z"
         },
         "description": "Create and assign job applications to named categories to organize applications by type or priority, with category counts reflecting associated job totals.",
         "description_source": "ai",
         "description_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "budget_ms": 600000,
-          "generated_at": "2026-09-03T18:41:24.505Z"
+          "budget_ms": 20000,
+          "generated_at": "2026-09-03T20:00:44.252Z"
         },
         "category": "core",
         "operations": [
@@ -1034,45 +1034,13 @@
               "method": "POST",
               "path": "/category/delete-category/:userId"
             }
-          },
-          {
-            "entry_point_id": "entry_route_router_router_routes_note_js_post_0",
-            "entry_point_type": "http",
-            "action": "read",
-            "path_or_command": "/note/notes/:userId",
-            "trigger": {
-              "method": "POST",
-              "path": "/note/notes/:userId"
-            }
-          },
-          {
-            "entry_point_id": "entry_route_router_router_routes_note_js_post_1",
-            "entry_point_type": "http",
-            "action": "create",
-            "path_or_command": "/note/add-note/:userId",
-            "trigger": {
-              "method": "POST",
-              "path": "/note/add-note/:userId"
-            }
-          },
-          {
-            "entry_point_id": "entry_route_router_router_routes_note_js_post_2",
-            "entry_point_type": "http",
-            "action": "delete",
-            "path_or_command": "/note/delete-note/:userId",
-            "trigger": {
-              "method": "POST",
-              "path": "/note/delete-note/:userId"
-            }
           }
         ],
         "related_entities": [
-          "entity_category",
-          "entity_note"
+          "entity_category"
         ],
         "related_domains": [
-          "category",
-          "note"
+          "category"
         ],
         "criticality": "high",
         "criticality_factors": [
@@ -1088,11 +1056,7 @@
           "catalog-operation-obligation:operation-obligation:cap_category_management:263f29c82c9c1963",
           "catalog-operation-obligation:operation-obligation:cap_category_management:4acc5366e4967360",
           "catalog-operation-obligation:operation-obligation:cap_category_management:637edd2a26f4724e",
-          "catalog-operation-obligation:operation-obligation:cap_category_management:e6b95279dda1af4b",
-          "catalog-candidate:cap_note_management",
-          "catalog-operation-obligation:operation-obligation:cap_note_management:09b21586e2b7a9ff",
-          "catalog-operation-obligation:operation-obligation:cap_note_management:efefa9007bbe6f75",
-          "catalog-operation-obligation:operation-obligation:cap_note_management:d1cfcb5639fabc0d"
+          "catalog-operation-obligation:operation-obligation:cap_category_management:e6b95279dda1af4b"
         ],
         "evidence_examples": [
           "User click event on AddCategoryModal, handled by handleSubmit"
@@ -1137,21 +1101,6 @@
             "flow_id": "flow::chain:entry_event_entry_client_src_components_categories_tsx_Categories_change_148_28_264f4f69:exit_sdk_Categories_useState_41:5862efd1f205",
             "role": "supporting",
             "rationale": "flow touches entities in this capability's related_entities (entity_category) but its entry point is not among the capability's operations"
-          },
-          {
-            "flow_id": "flow::chain:entry_event_entry_client_src_components_notesmodal_tsx_NotesModal_change_63_18_65a7248a:exit_http_client_client_src_middlewares_note_tsx_axios_POST__param__add_note__param__4:da66c77e4bc7",
-            "role": "supporting",
-            "rationale": "flow calls POST {param}/add-note/{param}, which matches capability operation \"create\"'s route (POST /note/add-note/:userId) — this capability's operation is served by that call"
-          },
-          {
-            "flow_id": "flow::chain:entry_event_entry_client_src_components_notesmodal_tsx_NotesModal_change_63_18_65a7248a:exit_http_client_client_src_middlewares_note_tsx_axios_POST__param__delete_note__param__17:28633c1244fd",
-            "role": "supporting",
-            "rationale": "flow calls POST {param}/delete-note/{param}, which matches capability operation \"delete\"'s route (POST /note/delete-note/:userId) — this capability's operation is served by that call"
-          },
-          {
-            "flow_id": "flow::chain:entry_event_entry_client_src_components_notesmodal_tsx_NotesModal_change_63_18_65a7248a:exit_sdk_NotesModal_useState_34:d456805d60a9",
-            "role": "supporting",
-            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
           },
           {
             "flow_id": "flow::chain:entry_event_entry_client_src_components_sidebar_tsx_SideBar_close_155_8_e94d46cc:exit_http_client_client_src_middlewares_category_tsx_axios_POST__param__add_category__param__13:60a65984ccbd",
@@ -1219,116 +1168,6 @@
             "rationale": "flow touches entities in this capability's related_entities (entity_category) but its entry point is not among the capability's operations"
           },
           {
-            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_http_client_client_src_middlewares_job_tsx_axios_POST__param__jobs__param__13:c8cd4faf7f6d",
-            "role": "supporting",
-            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
-          },
-          {
-            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_http_client_client_src_middlewares_note_tsx_axios_POST__param__add_note__param__4:4da5dbe4e35d",
-            "role": "supporting",
-            "rationale": "flow calls POST {param}/add-note/{param}, which matches capability operation \"create\"'s route (POST /note/add-note/:userId) — this capability's operation is served by that call"
-          },
-          {
-            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_http_client_client_src_middlewares_note_tsx_axios_POST__param__delete_note__param__17:aee4ba8959ac",
-            "role": "supporting",
-            "rationale": "flow calls POST {param}/delete-note/{param}, which matches capability operation \"delete\"'s route (POST /note/delete-note/:userId) — this capability's operation is served by that call"
-          },
-          {
-            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_forwardRef_119:624a36435aa6",
-            "role": "supporting",
-            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
-          },
-          {
-            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_forwardRef_124:19a9bf2026d4",
-            "role": "supporting",
-            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
-          },
-          {
-            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useContext_31:cc0607280ffc",
-            "role": "supporting",
-            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
-          },
-          {
-            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useContext_32:94d82bcdd410",
-            "role": "supporting",
-            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
-          },
-          {
-            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useContext_33:7e7864adefa8",
-            "role": "supporting",
-            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
-          },
-          {
-            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useDisclosure_30:56cecdc8914f",
-            "role": "supporting",
-            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
-          },
-          {
-            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useDisclosure_34:8eea26deaebe",
-            "role": "supporting",
-            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
-          },
-          {
-            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useEffect_115:d728e69471ef",
-            "role": "supporting",
-            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
-          },
-          {
-            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_35:2212fcacea4b",
-            "role": "supporting",
-            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
-          },
-          {
-            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_36:e7a937583f0a",
-            "role": "supporting",
-            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
-          },
-          {
-            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_37:5167a318d676",
-            "role": "supporting",
-            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
-          },
-          {
-            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_38:1993ee534868",
-            "role": "supporting",
-            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
-          },
-          {
-            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_39:a624048413a5",
-            "role": "supporting",
-            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
-          },
-          {
-            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_40:2da4fffd759a",
-            "role": "supporting",
-            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
-          },
-          {
-            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_41:c4ad774e3a1f",
-            "role": "supporting",
-            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
-          },
-          {
-            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_42:e24235ca996c",
-            "role": "supporting",
-            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
-          },
-          {
-            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_43:96b8d4571ace",
-            "role": "supporting",
-            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
-          },
-          {
-            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_44:4cde4a599f03",
-            "role": "supporting",
-            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
-          },
-          {
-            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_45:2e48f5c40395",
-            "role": "supporting",
-            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
-          },
-          {
             "flow_id": "flow::chain:synthflow:function_client/src/middlewares/auth.tsx_signinGoogle_1",
             "role": "supporting",
             "rationale": "flow calls POST {param}/signin-google, which matches capability operation \"create\"'s route (POST /category/add-category/:userId) — this capability's operation is served by that call"
@@ -1372,21 +1211,6 @@
             "flow_id": "flow::entry_route_router_router_routes_category_js_post_3",
             "role": "primary",
             "rationale": "capability operation \"delete\" (entry_point_id=entry_route_router_router_routes_category_js_post_3) references this flow's entry point"
-          },
-          {
-            "flow_id": "flow::entry_route_router_router_routes_note_js_post_0",
-            "role": "primary",
-            "rationale": "capability operation \"read\" (entry_point_id=entry_route_router_router_routes_note_js_post_0) references this flow's entry point"
-          },
-          {
-            "flow_id": "flow::entry_route_router_router_routes_note_js_post_1",
-            "role": "primary",
-            "rationale": "capability operation \"create\" (entry_point_id=entry_route_router_router_routes_note_js_post_1) references this flow's entry point"
-          },
-          {
-            "flow_id": "flow::entry_route_router_router_routes_note_js_post_2",
-            "role": "primary",
-            "rationale": "capability operation \"delete\" (entry_point_id=entry_route_router_router_routes_note_js_post_2) references this flow's entry point"
           }
         ]
       },
@@ -1400,9 +1224,6 @@
         "flow::chain:entry_event_entry_client_src_components_categories_tsx_Categories_change_148_28_264f4f69:exit_http_client_client_src_middlewares_category_tsx_axios_POST__param__delete_category__param__47:6ddaae31c1e2",
         "flow::chain:entry_event_entry_client_src_components_categories_tsx_Categories_change_148_28_264f4f69:exit_sdk_Categories_useDisclosure_39:435473485c62",
         "flow::chain:entry_event_entry_client_src_components_categories_tsx_Categories_change_148_28_264f4f69:exit_sdk_Categories_useState_41:5862efd1f205",
-        "flow::chain:entry_event_entry_client_src_components_notesmodal_tsx_NotesModal_change_63_18_65a7248a:exit_http_client_client_src_middlewares_note_tsx_axios_POST__param__add_note__param__4:da66c77e4bc7",
-        "flow::chain:entry_event_entry_client_src_components_notesmodal_tsx_NotesModal_change_63_18_65a7248a:exit_http_client_client_src_middlewares_note_tsx_axios_POST__param__delete_note__param__17:28633c1244fd",
-        "flow::chain:entry_event_entry_client_src_components_notesmodal_tsx_NotesModal_change_63_18_65a7248a:exit_sdk_NotesModal_useState_34:d456805d60a9",
         "flow::chain:entry_event_entry_client_src_components_sidebar_tsx_SideBar_close_155_8_e94d46cc:exit_http_client_client_src_middlewares_category_tsx_axios_POST__param__add_category__param__13:60a65984ccbd",
         "flow::chain:entry_event_entry_client_src_components_sidebar_tsx_SideBar_close_155_8_e94d46cc:exit_http_client_client_src_middlewares_category_tsx_axios_POST__param__delete_category__param__47:0ec71ed9d2cd",
         "flow::chain:entry_event_entry_client_src_components_sidebar_tsx_SideBar_close_155_8_e94d46cc:exit_http_client_client_src_middlewares_category_tsx_axios_POST__param__edit_category__param__30:520335727ca6",
@@ -1416,28 +1237,6 @@
         "flow::chain:entry_event_entry_client_src_components_sidebar_tsx_SideBar_close_155_8_e94d46cc:exit_sdk_SideBar_useState_39:e6733f2ce6ae",
         "flow::chain:entry_event_entry_client_src_components_sidebar_tsx_SideBar_close_155_8_e94d46cc:exit_sdk_SideBar_useState_40:988739e7df04",
         "flow::chain:entry_event_entry_client_src_components_sidebar_tsx_SideBar_close_155_8_e94d46cc:exit_sdk_SideBar_useToast_31:d4a52937ca5b",
-        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_http_client_client_src_middlewares_job_tsx_axios_POST__param__jobs__param__13:c8cd4faf7f6d",
-        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_http_client_client_src_middlewares_note_tsx_axios_POST__param__add_note__param__4:4da5dbe4e35d",
-        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_http_client_client_src_middlewares_note_tsx_axios_POST__param__delete_note__param__17:aee4ba8959ac",
-        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_forwardRef_119:624a36435aa6",
-        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_forwardRef_124:19a9bf2026d4",
-        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useContext_31:cc0607280ffc",
-        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useContext_32:94d82bcdd410",
-        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useContext_33:7e7864adefa8",
-        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useDisclosure_30:56cecdc8914f",
-        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useDisclosure_34:8eea26deaebe",
-        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useEffect_115:d728e69471ef",
-        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_35:2212fcacea4b",
-        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_36:e7a937583f0a",
-        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_37:5167a318d676",
-        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_38:1993ee534868",
-        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_39:a624048413a5",
-        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_40:2da4fffd759a",
-        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_41:c4ad774e3a1f",
-        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_42:e24235ca996c",
-        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_43:96b8d4571ace",
-        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_44:4cde4a599f03",
-        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_45:2e48f5c40395",
         "flow::chain:synthflow:function_client/src/middlewares/auth.tsx_signinGoogle_1",
         "flow::entry_event_entry_client_src_components_addcategorymodal_tsx_AddCategoryModal_change_55_18_2c8b7ffb",
         "flow::entry_route_client_src_app_tsx__jobs_1_815c92bf",
@@ -1446,78 +1245,26 @@
         "flow::entry_route_router_router_routes_category_js_get_0",
         "flow::entry_route_router_router_routes_category_js_post_1",
         "flow::entry_route_router_router_routes_category_js_post_2",
-        "flow::entry_route_router_router_routes_category_js_post_3",
-        "flow::entry_route_router_router_routes_note_js_post_0",
-        "flow::entry_route_router_router_routes_note_js_post_1",
-        "flow::entry_route_router_router_routes_note_js_post_2"
+        "flow::entry_route_router_router_routes_category_js_post_3"
       ]
     },
     {
       "capability": {
-        "id": "capability_manage_application_status",
-        "name": "Manage application status",
+        "id": "capability_edit_and_delete_job_applications",
+        "name": "Edit and delete job applications",
         "name_source": "ai",
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-03T18:41:22.175Z"
+          "generated_at": "2026-09-03T20:00:41.975Z"
         },
-        "description": "Update job application status to Rejected, Assessment, Interview, or Closed, with automatic closure triggered when the application's end date is reached.",
+        "description": "Modify job details or remove applications entirely, with changes reflected in associated notes and category counts.",
         "description_source": "ai",
         "description_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "budget_ms": 600000,
-          "generated_at": "2026-09-03T18:41:24.505Z"
-        },
-        "category": "core",
-        "operations": [
-          {
-            "entry_point_id": "entry_event_entry_client_src_components_status_tsx_Status_click_43_16_18a6d9d6",
-            "entry_point_type": "event",
-            "action": "action",
-            "path_or_command": "click",
-            "trigger": {}
-          }
-        ],
-        "related_entities": [],
-        "related_domains": [],
-        "criticality": "high",
-        "criticality_factors": [
-          "ai-extracted-from-journeys-and-entities",
-          "catalog-outcome-requirement:all:manage-status",
-          "catalog-candidate:capability_status_click"
-        ],
-        "related_flows": [
-          {
-            "flow_id": "flow::entry_route_client_src_app_tsx__jobs_1_815c92bf",
-            "role": "supporting",
-            "rationale": "capability operation \"action\" (entry_point_id=entry_event_entry_client_src_components_status_tsx_Status_click_43_16_18a6d9d6) is realized as an interior step on this flow's path"
-          }
-        ]
-      },
-      "source_node_ids": [],
-      "source_flow_ids": [
-        "flow::entry_route_client_src_app_tsx__jobs_1_815c92bf"
-      ]
-    },
-    {
-      "capability": {
-        "id": "capability_edit_or_delete_job_applications",
-        "name": "Edit or delete job applications",
-        "name_source": "ai",
-        "name_generation": {
-          "status": "ai_applied",
-          "attempted": true,
-          "generated_at": "2026-09-03T18:41:22.175Z"
-        },
-        "description": "Modify job details or remove applications entirely, with changes reflected across associated notes and categories.",
-        "description_source": "ai",
-        "description_generation": {
-          "status": "ai_applied",
-          "attempted": true,
-          "budget_ms": 600000,
-          "generated_at": "2026-09-03T18:41:24.505Z"
+          "budget_ms": 20000,
+          "generated_at": "2026-09-03T20:00:44.252Z"
         },
         "category": "core",
         "operations": [
@@ -2081,21 +1828,369 @@
     },
     {
       "capability": {
-        "id": "capability_filter_job_applications_by_status_and_category",
-        "name": "Filter job applications by status and category",
+        "id": "capability_track_job_application_notes",
+        "name": "Track job application notes",
         "name_source": "ai",
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-03T18:41:23.982Z"
+          "generated_at": "2026-09-03T20:00:43.612Z"
         },
-        "description": "Users track and organize job applications by filtering them using status, category, and job board source to maintain clear visibility across active and pending opportunities.",
+        "description": "Job applications surface note counts to show when users have added contextual details, helping them quickly identify applications with supplemental information.",
         "description_source": "ai",
         "description_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "budget_ms": 600000,
-          "generated_at": "2026-09-03T18:41:24.505Z"
+          "budget_ms": 20000,
+          "generated_at": "2026-09-03T20:00:44.252Z"
+        },
+        "category": "core",
+        "operations": [
+          {
+            "entry_point_id": "entry_route_router_router_routes_note_js_post_0",
+            "entry_point_type": "http",
+            "action": "read",
+            "path_or_command": "/note/notes/:userId",
+            "trigger": {
+              "method": "POST",
+              "path": "/note/notes/:userId"
+            }
+          },
+          {
+            "entry_point_id": "entry_route_router_router_routes_note_js_post_1",
+            "entry_point_type": "http",
+            "action": "create",
+            "path_or_command": "/note/add-note/:userId",
+            "trigger": {
+              "method": "POST",
+              "path": "/note/add-note/:userId"
+            }
+          },
+          {
+            "entry_point_id": "entry_route_router_router_routes_note_js_post_2",
+            "entry_point_type": "http",
+            "action": "delete",
+            "path_or_command": "/note/delete-note/:userId",
+            "trigger": {
+              "method": "POST",
+              "path": "/note/delete-note/:userId"
+            }
+          }
+        ],
+        "related_entities": [
+          "entity_note"
+        ],
+        "related_domains": [
+          "note"
+        ],
+        "criticality": "high",
+        "criticality_factors": [
+          "ai-extracted-from-journeys-and-entities",
+          "Requires authentication",
+          "Performs data mutations",
+          "Administrative operations",
+          "catalog-aggregate-operation-view",
+          "catalog-candidate:cap_note_management",
+          "catalog-operation-obligation:operation-obligation:cap_note_management:09b21586e2b7a9ff",
+          "catalog-operation-obligation:operation-obligation:cap_note_management:efefa9007bbe6f75",
+          "catalog-operation-obligation:operation-obligation:cap_note_management:d1cfcb5639fabc0d"
+        ],
+        "evidence_examples": [],
+        "related_flows": [
+          {
+            "flow_id": "flow::chain:entry_event_entry_client_src_auth_login_tsx_Login_change_174_18_d9086938:exit_http_client_client_src_middlewares_auth_tsx_axios_POST__param__login_10:34d8ba5d4ab1",
+            "role": "supporting",
+            "rationale": "flow calls POST {param}/login, which matches capability operation \"read\"'s route (POST /note/notes/:userId) — this capability's operation is served by that call"
+          },
+          {
+            "flow_id": "flow::chain:entry_event_entry_client_src_auth_login_tsx_Login_change_174_18_d9086938:exit_http_client_client_src_middlewares_auth_tsx_axios_POST__param__signin_google_7:5b75198e7c2c",
+            "role": "supporting",
+            "rationale": "flow calls POST {param}/signin-google, which matches capability operation \"read\"'s route (POST /note/notes/:userId) — this capability's operation is served by that call"
+          },
+          {
+            "flow_id": "flow::chain:entry_event_entry_client_src_auth_register_tsx_Register_change_189_22_b01cac6d:exit_http_client_client_src_middlewares_auth_tsx_axios_POST__param__register_4:959259bb512e",
+            "role": "supporting",
+            "rationale": "flow calls POST {param}/register, which matches capability operation \"read\"'s route (POST /note/notes/:userId) — this capability's operation is served by that call"
+          },
+          {
+            "flow_id": "flow::chain:entry_event_entry_client_src_auth_register_tsx_Register_change_189_22_b01cac6d:exit_http_client_client_src_middlewares_auth_tsx_axios_POST__param__signin_google_7:45d9ced0674b",
+            "role": "supporting",
+            "rationale": "flow calls POST {param}/signin-google, which matches capability operation \"read\"'s route (POST /note/notes/:userId) — this capability's operation is served by that call"
+          },
+          {
+            "flow_id": "flow::chain:entry_event_entry_client_src_components_addjobmodal_tsx_AddJobModal_change_253_28_66f9665b:exit_http_client_client_src_middlewares_job_tsx_axios_POST__param__fetch_job_4:a734f1827244",
+            "role": "supporting",
+            "rationale": "flow calls POST {param}/fetch-job, which matches capability operation \"read\"'s route (POST /note/notes/:userId) — this capability's operation is served by that call"
+          },
+          {
+            "flow_id": "flow::chain:entry_event_entry_client_src_components_notesmodal_tsx_NotesModal_change_63_18_65a7248a:exit_http_client_client_src_middlewares_note_tsx_axios_POST__param__add_note__param__4:da66c77e4bc7",
+            "role": "supporting",
+            "rationale": "flow calls POST {param}/add-note/{param}, which matches capability operation \"create\"'s route (POST /note/add-note/:userId) — this capability's operation is served by that call"
+          },
+          {
+            "flow_id": "flow::chain:entry_event_entry_client_src_components_notesmodal_tsx_NotesModal_change_63_18_65a7248a:exit_http_client_client_src_middlewares_note_tsx_axios_POST__param__delete_note__param__17:28633c1244fd",
+            "role": "supporting",
+            "rationale": "flow calls POST {param}/delete-note/{param}, which matches capability operation \"delete\"'s route (POST /note/delete-note/:userId) — this capability's operation is served by that call"
+          },
+          {
+            "flow_id": "flow::chain:entry_event_entry_client_src_components_notesmodal_tsx_NotesModal_change_63_18_65a7248a:exit_sdk_NotesModal_useState_34:d456805d60a9",
+            "role": "supporting",
+            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
+          },
+          {
+            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_http_client_client_src_middlewares_job_tsx_axios_POST__param__jobs__param__13:c8cd4faf7f6d",
+            "role": "supporting",
+            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
+          },
+          {
+            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_http_client_client_src_middlewares_note_tsx_axios_POST__param__add_note__param__4:4da5dbe4e35d",
+            "role": "supporting",
+            "rationale": "flow calls POST {param}/add-note/{param}, which matches capability operation \"create\"'s route (POST /note/add-note/:userId) — this capability's operation is served by that call"
+          },
+          {
+            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_http_client_client_src_middlewares_note_tsx_axios_POST__param__delete_note__param__17:aee4ba8959ac",
+            "role": "supporting",
+            "rationale": "flow calls POST {param}/delete-note/{param}, which matches capability operation \"delete\"'s route (POST /note/delete-note/:userId) — this capability's operation is served by that call"
+          },
+          {
+            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_forwardRef_119:624a36435aa6",
+            "role": "supporting",
+            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
+          },
+          {
+            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_forwardRef_124:19a9bf2026d4",
+            "role": "supporting",
+            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
+          },
+          {
+            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useContext_31:cc0607280ffc",
+            "role": "supporting",
+            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
+          },
+          {
+            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useContext_32:94d82bcdd410",
+            "role": "supporting",
+            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
+          },
+          {
+            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useContext_33:7e7864adefa8",
+            "role": "supporting",
+            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
+          },
+          {
+            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useDisclosure_30:56cecdc8914f",
+            "role": "supporting",
+            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
+          },
+          {
+            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useDisclosure_34:8eea26deaebe",
+            "role": "supporting",
+            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
+          },
+          {
+            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useEffect_115:d728e69471ef",
+            "role": "supporting",
+            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
+          },
+          {
+            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_35:2212fcacea4b",
+            "role": "supporting",
+            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
+          },
+          {
+            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_36:e7a937583f0a",
+            "role": "supporting",
+            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
+          },
+          {
+            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_37:5167a318d676",
+            "role": "supporting",
+            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
+          },
+          {
+            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_38:1993ee534868",
+            "role": "supporting",
+            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
+          },
+          {
+            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_39:a624048413a5",
+            "role": "supporting",
+            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
+          },
+          {
+            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_40:2da4fffd759a",
+            "role": "supporting",
+            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
+          },
+          {
+            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_41:c4ad774e3a1f",
+            "role": "supporting",
+            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
+          },
+          {
+            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_42:e24235ca996c",
+            "role": "supporting",
+            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
+          },
+          {
+            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_43:96b8d4571ace",
+            "role": "supporting",
+            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
+          },
+          {
+            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_44:4cde4a599f03",
+            "role": "supporting",
+            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
+          },
+          {
+            "flow_id": "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_45:2e48f5c40395",
+            "role": "supporting",
+            "rationale": "flow touches entities in this capability's related_entities (entity_note) but its entry point is not among the capability's operations"
+          },
+          {
+            "flow_id": "flow::chain:synthflow:function_client/src/middlewares/auth.tsx_signinGoogle_1",
+            "role": "supporting",
+            "rationale": "flow calls POST {param}/signin-google, which matches capability operation \"read\"'s route (POST /note/notes/:userId) — this capability's operation is served by that call"
+          },
+          {
+            "flow_id": "flow::entry_route_client_src_app_tsx__jobs_1_815c92bf",
+            "role": "supporting",
+            "rationale": "flow calls POST {param}/fetch-job, which matches capability operation \"read\"'s route (POST /note/notes/:userId) — this capability's operation is served by that call"
+          },
+          {
+            "flow_id": "flow::entry_route_client_src_app_tsx__login_2_104b3970",
+            "role": "supporting",
+            "rationale": "flow calls POST {param}/login, which matches capability operation \"read\"'s route (POST /note/notes/:userId) — this capability's operation is served by that call"
+          },
+          {
+            "flow_id": "flow::entry_route_client_src_app_tsx__register_3_ab6868a8",
+            "role": "supporting",
+            "rationale": "flow calls POST {param}/register, which matches capability operation \"read\"'s route (POST /note/notes/:userId) — this capability's operation is served by that call"
+          },
+          {
+            "flow_id": "flow::entry_route_router_router_routes_note_js_post_0",
+            "role": "primary",
+            "rationale": "capability operation \"read\" (entry_point_id=entry_route_router_router_routes_note_js_post_0) references this flow's entry point"
+          },
+          {
+            "flow_id": "flow::entry_route_router_router_routes_note_js_post_1",
+            "role": "primary",
+            "rationale": "capability operation \"create\" (entry_point_id=entry_route_router_router_routes_note_js_post_1) references this flow's entry point"
+          },
+          {
+            "flow_id": "flow::entry_route_router_router_routes_note_js_post_2",
+            "role": "primary",
+            "rationale": "capability operation \"delete\" (entry_point_id=entry_route_router_router_routes_note_js_post_2) references this flow's entry point"
+          }
+        ]
+      },
+      "source_node_ids": [],
+      "source_flow_ids": [
+        "flow::chain:entry_event_entry_client_src_auth_login_tsx_Login_change_174_18_d9086938:exit_http_client_client_src_middlewares_auth_tsx_axios_POST__param__login_10:34d8ba5d4ab1",
+        "flow::chain:entry_event_entry_client_src_auth_login_tsx_Login_change_174_18_d9086938:exit_http_client_client_src_middlewares_auth_tsx_axios_POST__param__signin_google_7:5b75198e7c2c",
+        "flow::chain:entry_event_entry_client_src_auth_register_tsx_Register_change_189_22_b01cac6d:exit_http_client_client_src_middlewares_auth_tsx_axios_POST__param__register_4:959259bb512e",
+        "flow::chain:entry_event_entry_client_src_auth_register_tsx_Register_change_189_22_b01cac6d:exit_http_client_client_src_middlewares_auth_tsx_axios_POST__param__signin_google_7:45d9ced0674b",
+        "flow::chain:entry_event_entry_client_src_components_addjobmodal_tsx_AddJobModal_change_253_28_66f9665b:exit_http_client_client_src_middlewares_job_tsx_axios_POST__param__fetch_job_4:a734f1827244",
+        "flow::chain:entry_event_entry_client_src_components_notesmodal_tsx_NotesModal_change_63_18_65a7248a:exit_http_client_client_src_middlewares_note_tsx_axios_POST__param__add_note__param__4:da66c77e4bc7",
+        "flow::chain:entry_event_entry_client_src_components_notesmodal_tsx_NotesModal_change_63_18_65a7248a:exit_http_client_client_src_middlewares_note_tsx_axios_POST__param__delete_note__param__17:28633c1244fd",
+        "flow::chain:entry_event_entry_client_src_components_notesmodal_tsx_NotesModal_change_63_18_65a7248a:exit_sdk_NotesModal_useState_34:d456805d60a9",
+        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_http_client_client_src_middlewares_job_tsx_axios_POST__param__jobs__param__13:c8cd4faf7f6d",
+        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_http_client_client_src_middlewares_note_tsx_axios_POST__param__add_note__param__4:4da5dbe4e35d",
+        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_http_client_client_src_middlewares_note_tsx_axios_POST__param__delete_note__param__17:aee4ba8959ac",
+        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_forwardRef_119:624a36435aa6",
+        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_forwardRef_124:19a9bf2026d4",
+        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useContext_31:cc0607280ffc",
+        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useContext_32:94d82bcdd410",
+        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useContext_33:7e7864adefa8",
+        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useDisclosure_30:56cecdc8914f",
+        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useDisclosure_34:8eea26deaebe",
+        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useEffect_115:d728e69471ef",
+        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_35:2212fcacea4b",
+        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_36:e7a937583f0a",
+        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_37:5167a318d676",
+        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_38:1993ee534868",
+        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_39:a624048413a5",
+        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_40:2da4fffd759a",
+        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_41:c4ad774e3a1f",
+        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_42:e24235ca996c",
+        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_43:96b8d4571ace",
+        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_44:4cde4a599f03",
+        "flow::chain:entry_event_entry_client_src_pages_jobs_tsx_Jobs_change_251_22_f12a76ba:exit_sdk_Jobs_useState_45:2e48f5c40395",
+        "flow::chain:synthflow:function_client/src/middlewares/auth.tsx_signinGoogle_1",
+        "flow::entry_route_client_src_app_tsx__jobs_1_815c92bf",
+        "flow::entry_route_client_src_app_tsx__login_2_104b3970",
+        "flow::entry_route_client_src_app_tsx__register_3_ab6868a8",
+        "flow::entry_route_router_router_routes_note_js_post_0",
+        "flow::entry_route_router_router_routes_note_js_post_1",
+        "flow::entry_route_router_router_routes_note_js_post_2"
+      ]
+    },
+    {
+      "capability": {
+        "id": "capability_manage_application_status",
+        "name": "Manage application status",
+        "name_source": "ai",
+        "name_generation": {
+          "status": "ai_applied",
+          "attempted": true,
+          "generated_at": "2026-09-03T20:00:43.453Z"
+        },
+        "description": "Application status updates reflect edits and deletions to job applications, ensuring the user's tracked progress aligns with their active choices.",
+        "description_source": "ai",
+        "description_generation": {
+          "status": "ai_applied",
+          "attempted": true,
+          "budget_ms": 20000,
+          "generated_at": "2026-09-03T20:00:44.252Z"
+        },
+        "category": "core",
+        "operations": [
+          {
+            "entry_point_id": "entry_event_entry_client_src_components_status_tsx_Status_click_43_16_18a6d9d6",
+            "entry_point_type": "event",
+            "action": "action",
+            "path_or_command": "click",
+            "trigger": {}
+          }
+        ],
+        "related_entities": [],
+        "related_domains": [],
+        "criticality": "high",
+        "criticality_factors": [
+          "ai-extracted-from-journeys-and-entities",
+          "catalog-outcome-requirement:all:manage-status",
+          "catalog-candidate:capability_status_click"
+        ],
+        "related_flows": [
+          {
+            "flow_id": "flow::entry_route_client_src_app_tsx__jobs_1_815c92bf",
+            "role": "supporting",
+            "rationale": "capability operation \"action\" (entry_point_id=entry_event_entry_client_src_components_status_tsx_Status_click_43_16_18a6d9d6) is realized as an interior step on this flow's path"
+          }
+        ]
+      },
+      "source_node_ids": [],
+      "source_flow_ids": [
+        "flow::entry_route_client_src_app_tsx__jobs_1_815c92bf"
+      ]
+    },
+    {
+      "capability": {
+        "id": "capability_filter_job_applications_by_status",
+        "name": "Filter job applications by status",
+        "name_source": "ai",
+        "name_generation": {
+          "status": "ai_applied",
+          "attempted": true,
+          "generated_at": "2026-09-03T20:00:43.458Z"
+        },
+        "description": "Job applications surface filtered views based on status and category to help the user track progress across job boards.",
+        "description_source": "ai",
+        "description_generation": {
+          "status": "ai_applied",
+          "attempted": true,
+          "budget_ms": 20000,
+          "generated_at": "2026-09-03T20:00:44.252Z"
         },
         "category": "core",
         "operations": [
