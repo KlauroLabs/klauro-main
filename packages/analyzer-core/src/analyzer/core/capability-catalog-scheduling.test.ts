@@ -3033,6 +3033,17 @@ test('preserves same-name sibling obligations unless one complete validated pare
   assert.deepEqual(withoutSubsumedDeterministicAtomicClosures(
     [authoredCompleteParent, getStats, listStats], [], [authoredCompleteParent, getStats, listStats], context,
   ).map(capability => capability.id), [authoredCompleteParent.id]);
+  const sameIdentityAuthored = {
+    ...authoredCompleteParent,
+    id: getStats.id,
+    name: getStats.name,
+    operations: [operation('get-stats')],
+    criticality_factors: [`catalog-candidate:${getId}`],
+  };
+  const sameIdentityResult = withoutSubsumedDeterministicAtomicClosures(
+    [sameIdentityAuthored, getStats], [], [sameIdentityAuthored, getStats], context,
+  );
+  assert.deepEqual(sameIdentityResult.map(capability => capability.name_source), ['ai']);
 });
 
 test('empty-entity atomic subject grounding rejects ambiguous, generic, support-only, and forged lineage', () => {

@@ -419,10 +419,53 @@ export function recoverGroundedAuthoredOutcomeCapabilities(
   requirements: readonly CapabilityCatalogOutcomeRequirement[],
   evidenceCandidates: readonly SystemCapability[],
   obligationScopes: ReadonlyMap<string, { parentCandidateId: string }> = new Map(),
+  preferredCapabilities: readonly SystemCapability[] = [],
 ): SystemCapability[] {
   const evidenceById = new Map(evidenceCandidates.map(candidate => [candidate.id, candidate]));
-  const missing = uncoveredCapabilityCatalogOutcomeRequirements(capabilities, requirements);
-  const recovered = missing.flatMap(requirement => {
+  const recoveryId = (requirement: CapabilityCatalogOutcomeRequirement): string =>
+    `capability_authored_${requirement.id.replace(/[^a-z0-9]+/gi, '_').replace(/^_+|_+$/g, '').toLowerCase()}`;
+  const recoverableIds = new Set(requirements.map(recoveryId));
+  const capabilityById = new Map<string, SystemCapability>();
+  for (const capability of capabilities) {
+    const existing = capabilityById.get(capability.id);
+    const descriptionWords = String(capability.description || '').trim().split(/\s+/).filter(Boolean).length;
+    const existingDescriptionWords = String(existing?.description || '').trim().split(/\s+/).filter(Boolean).length;
+    const authored = ['ai', 'manual', 'reused'].includes(String(capability.description_source || ''));
+    const existingAuthored = ['ai', 'manual', 'reused'].includes(String(existing?.description_source || ''));
+    if (!existing || (authored && !existingAuthored) || (authored === existingAuthored && descriptionWords > existingDescriptionWords)) {
+      capabilityById.set(capability.id, capability);
+    }
+  }
+  for (const capability of preferredCapabilities) {
+    const existing = capabilityById.get(capability.id);
+    if (!existing) {
+      if (recoverableIds.has(capability.id)) capabilityById.set(capability.id, capability);
+      continue;
+    }
+    const descriptionWords = String(capability.description || '').trim().split(/\s+/).filter(Boolean).length;
+    const existingDescriptionWords = String(existing.description || '').trim().split(/\s+/).filter(Boolean).length;
+    const authored = ['ai', 'manual', 'reused'].includes(String(capability.description_source || ''));
+    const existingAuthored = ['ai', 'manual', 'reused'].includes(String(existing.description_source || ''));
+    if ((authored && !existingAuthored) || (authored === existingAuthored && descriptionWords > existingDescriptionWords)) {
+      capabilityById.set(capability.id, capability);
+    }
+  }
+  const uniqueCapabilities = [...capabilityById.values()];
+  const missing = uncoveredCapabilityCatalogOutcomeRequirements(uniqueCapabilities, requirements);
+  const existingRequirementIds = new Set<string>();
+  const retained = uniqueCapabilities.map(capability => {
+    const requirement = missing.find(candidate => recoveryId(candidate) === capability.id);
+    if (!requirement) return capability;
+    existingRequirementIds.add(requirement.id);
+    return {
+      ...capability,
+      criticality_factors: [...new Set([
+        ...(capability.criticality_factors || []),
+        `catalog-outcome-requirement:${requirement.id}`,
+      ])],
+    };
+  });
+  const recovered = missing.filter(requirement => !existingRequirementIds.has(requirement.id)).flatMap(requirement => {
     const evidence = requirement.candidateIds.slice(0, 1)
       .map(candidateId => evidenceById.get(candidateId))
       .filter((candidate): candidate is SystemCapability => Boolean(candidate));
@@ -437,7 +480,7 @@ export function recoverGroundedAuthoredOutcomeCapabilities(
     const source = evidence[0];
     return [{
       ...source,
-      id: `capability_authored_${requirement.id.replace(/[^a-z0-9]+/gi, '_').replace(/^_+|_+$/g, '').toLowerCase()}`,
+      id: recoveryId(requirement),
       name: requirement.statement,
       description: `${requirement.statement.replace(/[.!?]+$/, '')}.`,
       name_source: 'deterministic' as const,
@@ -455,7 +498,7 @@ export function recoverGroundedAuthoredOutcomeCapabilities(
       ],
     }];
   });
-  return [...capabilities, ...recovered];
+  return [...retained, ...recovered];
 }
 function capabilityMatchesAudience(capabilityText: string, audience?: 'agent' | 'human'): boolean {
   if (!audience) return true;

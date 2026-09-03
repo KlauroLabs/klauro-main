@@ -194,6 +194,42 @@ test('recovers only structurally grounded authored outcomes after AI omission', 
   assert.ok(recovered[0].criticality_factors.includes('catalog-candidate:risk'));
   assert.ok(recovered[0].criticality_factors.includes('catalog-outcome-requirement:all:risk'));
 });
+test('retains a richer authored capability when grounding recovery resolves the same outcome identity', () => {
+  const grounded = candidate('invoice', 'Invoice', ['settle_invoice']);
+  const requirement: CapabilityCatalogOutcomeRequirement = {
+    candidateIds: ['invoice'],
+    firstPartyOutcomeText: 'Settle customer invoices',
+    id: 'all:invoice-settle',
+    statement: 'Settle customer invoices',
+    subjectTokens: ['settle', 'invoice'],
+    requiredSubjectTerms: ['settle', 'invoice'],
+    minimumSubjectMatches: 2,
+  };
+  const authored = {
+    ...grounded,
+    id: 'capability_authored_all_invoice_settle',
+    name: 'Settle customer invoices',
+    description: 'Billing staff settle customer invoices after capturing payments and preserve the resulting status.',
+    name_source: 'ai' as const,
+    description_source: 'ai' as const,
+    description_generation: { attempted: true, status: 'success' as const },
+  };
+
+  const placeholder = {
+    ...authored,
+    name: 'settle customer invoices',
+    description: 'settle customer invoices.',
+    name_source: 'deterministic' as const,
+    description_source: 'deterministic' as const,
+  };
+
+  const recovered = recoverGroundedAuthoredOutcomeCapabilities([placeholder], [requirement], [grounded], new Map(), [authored]);
+
+  assert.equal(recovered.length, 1);
+  assert.equal(recovered[0].description, authored.description);
+  assert.equal(recovered[0].description_source, 'ai');
+  assert.ok(recovered[0].criticality_factors.includes('catalog-outcome-requirement:all:invoice-settle'));
+});
 test('prefers a candidate whose identity names the first-party outcome over incidental operation overlap', () => {
   const requirements = deriveCapabilityCatalogOutcomeRequirements({
     productDocSummary: 'Route requests to handlers with a macro-free API.',

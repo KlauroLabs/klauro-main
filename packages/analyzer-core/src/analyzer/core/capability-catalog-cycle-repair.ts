@@ -639,11 +639,8 @@ export function withoutSubsumedDeterministicAtomicClosures(
   const citedCandidateIds = (capability: SystemCapability): string[] => (capability.criticality_factors || [])
     .filter(factor => factor.startsWith('catalog-candidate:'))
     .map(factor => factor.slice('catalog-candidate:'.length));
-  const atomicIds = new Set(capabilities
-    .filter(capability => (capability.criticality_factors || []).includes('catalog-deterministic-atomic-closure'))
-    .map(capability => capability.id));
   const retainedNonAtomic = establishedCapabilities.filter(capability =>
-    !atomicIds.has(capability.id) && !(capability.criticality_factors || []).includes('catalog-deterministic-atomic-closure'));
+    !(capability.criticality_factors || []).includes('catalog-deterministic-atomic-closure'));
   const groupedCapabilities = establishedCapabilities.filter(capability => {
     if ((capability.criticality_factors || []).includes('catalog-deterministic-grouped-lifecycle')) return true;
     if (!operationCoverageContext?.obligationScopes) return false;
@@ -665,7 +662,7 @@ export function withoutSubsumedDeterministicAtomicClosures(
     const requiredCandidateIds = citedCandidateIds(capability);
     const requiredOperations = new Set((capability.operations || []).map(operationKey));
     return requiredCandidateIds.length > 0 && requiredOperations.size > 0 && establishedCapabilities.some(established => {
-      if (established.id === capability.id || established.name_source === 'deterministic') return false;
+      if (established === capability || established.name_source === 'deterministic') return false;
       if (pendingCapabilityEvidenceObservableActionFailure(established, capability)) return false;
       const establishedCandidateIds = new Set(citedCandidateIds(established));
       if (!requiredCandidateIds.every(candidateId => establishedCandidateIds.has(candidateId))) return false;
