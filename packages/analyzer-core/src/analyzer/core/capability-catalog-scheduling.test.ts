@@ -1998,6 +1998,7 @@ test('description rejection preserves the grounded identity but never the reject
     status: 'ai_rejected', attempted: true, reason: 'description-marketing-language',
   });
   assert.equal(capabilityIdentityPendingDescriptionRepair(capability, 'bare-noun-name'), undefined);
+  assert.equal(capabilityIdentityPendingDescriptionRepair(capability, 'generated-label-prefix'), undefined);
 });
 
 test('accepted grounded identity clears an earlier description-repair request for the same family', () => {

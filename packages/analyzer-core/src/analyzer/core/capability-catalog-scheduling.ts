@@ -791,7 +791,7 @@ export function capabilityIdentityPendingDescriptionRepair(
 ): SystemCapability | undefined {
   const persistedDescriptionFailure = capability.description_generation?.status === 'ai_rejected' &&
     capability.description_generation.reason === failure &&
-    !['name-is-not-authored', 'missing-structural-anchor', 'bare-noun-name'].includes(failure);
+    !['name-is-not-authored', 'missing-structural-anchor', 'bare-noun-name', 'generated-label-prefix'].includes(failure);
   const descriptionFailure = persistedDescriptionFailure || failure === 'missing-description' ||
     failure === 'structural-placeholder-description' ||
     failure === 'description-too-short' ||
