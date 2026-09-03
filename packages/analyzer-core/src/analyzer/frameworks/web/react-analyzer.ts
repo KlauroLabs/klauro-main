@@ -147,6 +147,10 @@ export class ReactAnalyzer extends BaseAnalyzer {
     return this.capAndPrioritizeSourceFiles(applicable.filter((file): file is string => Boolean(file)).sort(), 'React source files');
   }
 
+  async getClaimedFiles(projectPath: string, context?: AnalysisContext): Promise<string[]> {
+    return this.reactSourceFiles(context || { projectPath });
+  }
+
   async analyzeFileSingle(context: FileAnalysisContext): Promise<FileAnalysisResult> {
     const nodes: CASNode[] = [];
     const edges: CASEdge[] = [];
@@ -2452,17 +2456,20 @@ export class ReactAnalyzer extends BaseAnalyzer {
           }
         ));
 
-        for (const reference of handlerReferences) {
-          if (reference.binding_node_id) {
-            edges.push(this.createEdge(
-              this.generateEdgeId(entryId, reference.binding_node_id, 'triggers'),
-              'entry_' + entryId,
-              reference.binding_node_id,
-              'triggers',
-              'behavioral',
-              { event: handler.event, source_component: component.name, handler_reference: reference.name }
-            ));
-          }
+        const referencesByBinding = new Map<string, typeof handlerReferences>();
+        for (const reference of handlerReferences.filter(reference => Boolean(reference.binding_node_id))) {
+          const bindingNodeId = reference.binding_node_id!;
+          referencesByBinding.set(bindingNodeId, [...(referencesByBinding.get(bindingNodeId) || []), reference]);
+        }
+        for (const [bindingNodeId, references] of referencesByBinding) {
+          edges.push(this.createEdge(
+            this.generateEdgeId(entryId, bindingNodeId, 'triggers'),
+            'entry_' + entryId,
+            bindingNodeId,
+            'triggers',
+            'behavioral',
+            { event: handler.event, source_component: component.name, handler_reference: references[0].name, handler_references: references.map(reference => reference.name) }
+          ));
         }
         if (handlerReferences.length === 1 && handlerReferences[0].binding_node_id) {
           for (const binding of stateTargetBindings) {

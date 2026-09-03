@@ -203,9 +203,9 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
     return true;
   }
 
-  async getRelevantFiles(projectPath: string): Promise<string[]> {
+  async getRelevantFiles(projectPath: string, context?: AnalysisContext): Promise<string[]> {
     try {
-      return await this.getCandidateFiles(projectPath);
+      return await this.getCandidateFiles(projectPath, context);
     } catch {
       return [];
     }

@@ -14,6 +14,7 @@ import {
   conciseCapabilityCatalogOutcomeName,
   capabilitySatisfiesCatalogOutcomeRequirement,
   deriveCapabilityCatalogOutcomeRequirements,
+  recoverGroundedAuthoredOutcomeCapabilities,
   sanitizeCapabilityCatalogDescription,
   uncoveredCapabilityCatalogOutcomeRequirements,
   type CapabilityCatalogOutcomeRequirement,
@@ -132,6 +133,67 @@ test('treats authored feature bullets as outcomes without promoting overview pro
   assert.equal(requirements.some(requirement => /^(?:attach|save|publish)\b/i.test(requirement.statement)), false);
 });
 
+
+test('preserves concise authored capability statements without vocabulary-dependent merging', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements({
+    productDocSummary: [
+      'Feature: Understand what a codebase actually built.',
+      'Feature: Onboard to an unfamiliar system without reading every file.',
+      'Feature: Know what will break before changing something.',
+      'Feature: Verify AI-generated code beyond the demo path.',
+      'Feature: Work alongside other people and agents on one codebase without duplicating or colliding.',
+    ].join(' '),
+  }, [
+    candidate('cap_comprehension', 'Comprehension', ['explain_system_behavior']),
+    candidate('cap_agent_adoption', 'Agent Adoption', ['get_agent_start_context']),
+    candidate('cap_risk', 'Risk', ['assess_change_risk']),
+    candidate('cap_tests', 'Tests', ['validate_behavioral_invariants']),
+    candidate('cap_overlap', 'Overlap', ['coordinate_overlapping_work']),
+  ]);
+
+  assert.deepEqual(
+    requirements.map(requirement => requirement.statement),
+    [
+      'Understand what a codebase actually built',
+      'Onboard to an unfamiliar system without reading every file',
+      'Know what will break before changing something',
+      'Verify AI-generated code beyond the demo path',
+      'Work alongside other people and agents on one codebase without duplicating or colliding',
+    ],
+  );
+  assert.equal(requirements.filter(requirement => requirement.statement.startsWith('Work alongside')).length, 1);
+  assert.deepEqual(requirements.map(requirement => requirement.candidateIds), [
+    ['cap_comprehension'], ['cap_agent_adoption'], ['cap_risk'], ['cap_tests'], ['cap_overlap'],
+  ]);
+});
+
+test('recovers only structurally grounded authored outcomes after AI omission', () => {
+  const grounded = candidate('risk', 'Risk', ['assess_change_risk']);
+  const requirements: CapabilityCatalogOutcomeRequirement[] = [
+    {
+      candidateIds: ['risk'],
+      firstPartyOutcomeText: 'Know what will break before changing something',
+      id: 'all:risk',
+      statement: 'Know what will break before changing something',
+      subjectTokens: ['risk'],
+    },
+    {
+      candidateIds: [],
+      firstPartyOutcomeText: 'Promise an outcome that is not implemented',
+      id: 'all:missing',
+      statement: 'Promise an outcome that is not implemented',
+      subjectTokens: ['promise'],
+    },
+  ];
+
+  const recovered = recoverGroundedAuthoredOutcomeCapabilities([], requirements, [grounded]);
+
+  assert.equal(recovered.length, 1);
+  assert.equal(recovered[0].name, 'Know what will break before changing something');
+  assert.deepEqual(recovered[0].operations, grounded.operations);
+  assert.ok(recovered[0].criticality_factors.includes('catalog-candidate:risk'));
+  assert.ok(recovered[0].criticality_factors.includes('catalog-outcome-requirement:all:risk'));
+});
 test('prefers a candidate whose identity names the first-party outcome over incidental operation overlap', () => {
   const requirements = deriveCapabilityCatalogOutcomeRequirements({
     productDocSummary: 'Route requests to handlers with a macro-free API.',

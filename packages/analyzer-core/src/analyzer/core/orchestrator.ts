@@ -182,7 +182,7 @@ import {
   synchronizeCapabilityCatalogCoverage,
 } from './capability-catalog-evidence';
 import { mergeCapabilityCatalogFlowEvidence } from './capability-catalog-flow-evidence';
-import { bindAtomicallySatisfiedCatalogOutcomeRequirements, bindUniquelySatisfiedCatalogOutcomeRequirements, canonicalCapabilityCatalogOutcomeToken, capabilityCatalogOutcomeCoverageFailure, capabilityCatalogOutcomeBindingFailureDetail, capabilityCatalogOutcomeNameFailure, capabilityCatalogOutcomesMayMerge, capabilityCatalogTargetedOutcomeText, capabilitySemanticallySatisfiesCatalogOutcomeRequirement, conciseCapabilityCatalogOutcomeName, deriveCapabilityCatalogOutcomeRequirements, sanitizeCapabilityCatalogDescription, uncoveredCapabilityCatalogOutcomeRequirements, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
+import { bindAtomicallySatisfiedCatalogOutcomeRequirements, bindUniquelySatisfiedCatalogOutcomeRequirements, canonicalCapabilityCatalogOutcomeToken, capabilityCatalogOutcomeCoverageFailure, capabilityCatalogOutcomeBindingFailureDetail, capabilityCatalogOutcomeNameFailure, capabilityCatalogOutcomesMayMerge, capabilityCatalogTargetedOutcomeText, capabilitySemanticallySatisfiesCatalogOutcomeRequirement, conciseCapabilityCatalogOutcomeName, deriveCapabilityCatalogOutcomeRequirements, recoverGroundedAuthoredOutcomeCapabilities, sanitizeCapabilityCatalogDescription, uncoveredCapabilityCatalogOutcomeRequirements, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
 import { fitCapabilityCatalogContext } from './ai-context-budget';
 import { awaitAiOperation } from './ai-operation-timing';
 import { capabilityDescriptionBatchSize, resolveCapabilityCatalogRoute, resolveCapabilityDescriptionRoute, shouldReauthorCapabilityDescriptions, toAIContextRoute } from './ai-task-model-routing';
@@ -10445,7 +10445,7 @@ export class AnalyzerOrchestrator {
         ? evaluateCapabilityCatalogOperationCoverage(deadlineMerged, requiredEvidenceCandidates, operationCoverageContext, capability => this.isPublishableCapability(capability))
         : deadlineFilteredCoverage;
       const deadlineCompleteReconciled = bindAtomicallySatisfiedCatalogOutcomeRequirements(deadlineOperationCoverage.capabilities, requiredOutcomes, deadlineOperationCoverage.fullyCoveredAggregateCandidateIds, operationCoverageContext.obligationScopes || aggregateOperationObligationViews.scopes, deadlineOperationCoverage.publishableCapabilities);
-      const deadlineLanguageReconciled = deadlineCompleteReconciled;
+      const deadlineLanguageReconciled = recoverGroundedAuthoredOutcomeCapabilities(deadlineCompleteReconciled, groundableOutcomes, evidenceCandidates, operationCoverageContext.obligationScopes || aggregateOperationObligationViews.scopes);
       const deadlinePublishable = deadlineLanguageReconciled.filter(capability => this.isPublishableCapability(capability));
       const deadlinePublishableAggregateCandidateIds = fullyCoveredAggregateCapabilityCandidateIds(requiredEvidenceCandidates, deadlinePublishable, operationCoverageContext);
       const deadlinePublishableComplete = !capabilityCatalogOutcomeCoverageFailure(deadlinePublishable, requiredOutcomes);
@@ -10471,7 +10471,7 @@ export class AnalyzerOrchestrator {
     );
     const publishableReconciled = compactedCoverageFailure ? publishableBeforeCompaction : compactedPublishable;
     const normalizedOperationEvidence = normalizeCapabilityOperationObligationEvidence(publishableReconciled, operationCoverageContext.obligationScopes || operationObligationViews.scopes, authoritativeOperationCandidates);
-    const publishedCapabilities = normalizePublishedCapabilityIds(normalizedOperationEvidence.capabilities);
+    const publishedCapabilities = normalizePublishedCapabilityIds(recoverGroundedAuthoredOutcomeCapabilities(normalizedOperationEvidence.capabilities, groundableOutcomes, evidenceCandidates, operationCoverageContext.obligationScopes || aggregateOperationObligationViews.scopes));
     const finalPublishedCandidateIds = new Set(publishedCapabilities.flatMap(capability =>
       (capability.criticality_factors || [])
         .filter(factor => factor.startsWith('catalog-candidate:'))
@@ -14585,11 +14585,18 @@ export class AnalyzerOrchestrator {
     }
     return found;
   }
-
+  private projectTextDocumentRoots(projectPath: string): string[] {
+    const projectRoot = path.resolve(projectPath);
+    for (let current = projectRoot; ; current = path.dirname(current)) {
+      if (fs.existsSync(path.join(current, ".git"))) return current === projectRoot ? [projectRoot] : [projectRoot, current];
+      if (path.dirname(current) === current) return [projectRoot];
+    }
+  }
   private extractProjectTextSignal(projectPath: string): ProjectTextSignal {
     const textParts: string[] = [];
     const productTextParts: string[] = [];
     const evidence: string[] = [];
+    const documentRoots = this.projectTextDocumentRoots(projectPath);
 
     let manifestDescription: string | undefined;
     const packageJson = this.safeReadJson(path.join(projectPath, 'package.json'));
@@ -14602,22 +14609,23 @@ export class AnalyzerOrchestrator {
     }
     if (packageJson?.name) textParts.push(String(packageJson.name));
 
-    for (const readmeName of ['README.md', 'README.mdx', 'readme.md']) {
-      const readmePath = path.join(projectPath, readmeName);
-      const content = stripProjectDocumentMedia(this.safeReadText(readmePath, 12000));
-      if (!content) continue;
-      const useful = this.stripBoilerplateProjectText(content);
-      if (useful.length > 80) {
-        textParts.push(useful);
-        productTextParts.push(useful);
-        evidence.push(readmeName);
+    readmeSearch:
+    for (const documentRoot of documentRoots) {
+      for (const readmeName of ['README.md', 'README.mdx', 'readme.md']) {
+        const content = stripProjectDocumentMedia(this.safeReadText(path.join(documentRoot, readmeName), 12000));
+        if (!content) continue;
+        const useful = this.stripBoilerplateProjectText(content);
+        if (useful.length > 80) {
+          textParts.push(useful);
+          productTextParts.push(useful);
+          evidence.push(readmeName);
+        }
+        break readmeSearch;
       }
-      break;
     }
 
-    let productDocTitle: string | undefined;
-    let productDocSummary: string | undefined;
-    let productDocSource: string | undefined;
+    let productDocTitle: string | undefined; let productDocSummary: string | undefined;
+    let productDocSource: string | undefined; let productDocumentRoot = projectPath;
     const PRODUCT_DOC_CANDIDATES = [
       'README.md', 'README.mdx', 'readme.md',
       'docs/README.md',
@@ -14625,21 +14633,25 @@ export class AnalyzerOrchestrator {
       'PRODUCT.md', 'docs/PRODUCT.md',
       'OVERVIEW.md', 'docs/OVERVIEW.md',
     ];
-    for (const docName of PRODUCT_DOC_CANDIDATES) {
-      const content = stripProjectDocumentMedia(this.safeReadText(path.join(projectPath, docName), 16000));
-      if (!content) continue;
-      const framing = this.extractProductDocFraming(content);
-      if (framing.title || framing.summary) {
-        productDocTitle = framing.title;
-        productDocSummary = framing.summary;
-        productDocSource = docName;
-        if (!evidence.includes(docName)) evidence.push(docName);
-        break;
+    productDocumentSearch:
+    for (const documentRoot of documentRoots) {
+      for (const docName of PRODUCT_DOC_CANDIDATES) {
+        const content = stripProjectDocumentMedia(this.safeReadText(path.join(documentRoot, docName), 16000));
+        if (!content) continue;
+        const framing = this.extractProductDocFraming(content);
+        if (framing.title || framing.summary) {
+          productDocTitle = framing.title;
+          productDocSummary = framing.summary;
+          productDocSource = docName;
+          productDocumentRoot = documentRoot;
+          if (!evidence.includes(docName)) evidence.push(docName);
+          break productDocumentSearch;
+        }
       }
     }
 
     for (const guideName of ['CLAUDE.md', 'AGENTS.md', 'KLAURO.md']) {
-      const guidePath = path.join(projectPath, guideName);
+      const guidePath = path.join(productDocumentRoot, guideName);
       const content = this.safeReadText(guidePath, 30000);
       if (!content) continue;
       const stripped = this.stripBoilerplateProjectText(content);
@@ -14656,7 +14668,7 @@ export class AnalyzerOrchestrator {
       'docs/VISION.md', 'docs/CONTEXT.md', 'docs/PRODUCT.md', 'docs/PRD.md', 'docs/OVERVIEW.md',
       'docs/context/VISION.md', 'docs/context/CONTEXT.md',
     ]) {
-      const content = this.safeReadText(path.join(projectPath, productDocName), 30000);
+      const content = this.safeReadText(path.join(productDocumentRoot, productDocName), 30000);
       if (!content) continue;
       const useful = this.stripBoilerplateProjectText(content);
       if (useful.length <= 80) continue;

@@ -9,10 +9,11 @@ function blank(value: string): string {
 
 function recoverLine(line: string, snippet: string): string {
   let recovered = line;
-  if (snippet === '&&' || snippet === '||') {
+  if (snippet.trimStart().startsWith('&')) {
     recovered = recovered.replace(
-      /(<[A-Za-z][^>]*>)([^<>{}]*(?:&&|\|\|)[^<>{}]*)(<\/[A-Za-z][^>]*>)/g,
-      (_match: string, open: string, text: string, close: string) => open + text.replace(/&&|\|\|/g, token => blank(token)) + close,
+      /(<([A-Za-z][\w:.-]*)\b[^>]*>)([^<>{}]*(?:&&|\|\|)[^<>{}]*)(<\/\2\s*>)/g,
+      (_match: string, open: string, _tag: string, text: string, close: string) =>
+        open + text.replace(/&&|\|\|/g, token => blank(token)) + close,
     );
   }
   if (snippet.includes('>()')) {

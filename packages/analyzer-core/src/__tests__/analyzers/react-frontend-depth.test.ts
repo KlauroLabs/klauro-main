@@ -204,6 +204,7 @@ describe('ReactAnalyzer: component-tree depth (render edges, props, event entry 
     for (const entry of cas.entry_points.filter((item: any) => item.metadata?.source_analyzer === 'react')) {
       const targets = (cas.edges || []).filter((edge: any) => edge.type === 'triggers' && edge.source === entry.id).map((edge: any) => edge.target).sort();
       expect(targets).toEqual([...(entry.metadata?.handler_binding_node_ids || [])].sort());
+    expect(new Set(cas.edges.map((edge: any) => edge.id)).size).toBe(cas.edges.length);
     }
     expect(new Set(cas.entry_points.filter((item: any) => item.metadata?.source_analyzer === 'react').map((item: any) => item.id)).size)
       .toBe(cas.entry_points.filter((item: any) => item.metadata?.source_analyzer === 'react').length);

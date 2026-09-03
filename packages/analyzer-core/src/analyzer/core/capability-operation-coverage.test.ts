@@ -561,6 +561,17 @@ test('normalizes obligation citations to their parent while preserving exact ope
   assert.ok(normalized.capabilities[0].criticality_factors?.includes('catalog-operation-obligation:' + view.id));
   assert.ok(!normalized.capabilities[0].criticality_factors?.includes('catalog-candidate:' + view.id));
   assert.deepEqual(normalized.capabilities[0].operations, view.operations);
+
+  const candidateOnly = normalizeCapabilityOperationObligationEvidence(
+    [{ ...view, criticality_factors: ['catalog-candidate:' + view.id] }],
+    views.scopes,
+    new Map([[candidate.id, candidate], ...views.candidates.map(item => [item.id, item] as const)]),
+  );
+  assert.deepEqual(candidateOnly.errors, []);
+  assert.ok(candidateOnly.capabilities[0].criticality_factors?.includes('catalog-candidate:record-lifecycle'));
+  assert.ok(candidateOnly.capabilities[0].criticality_factors?.includes('catalog-operation-obligation:' + view.id));
+  assert.ok(!candidateOnly.capabilities[0].criticality_factors?.includes('catalog-candidate:' + view.id));
+  assert.deepEqual(candidateOnly.capabilities[0].operations, view.operations);
 });
 
 test('rejects unresolved, uncited, and missing evidence while projecting away foreign operations', () => {

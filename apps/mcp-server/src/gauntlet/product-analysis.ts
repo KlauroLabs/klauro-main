@@ -468,6 +468,30 @@ function isStagingExcluded(relPath: string): boolean {
   const normalized = relPath.split(path.sep).join('/');
   return normalized.split('/').some((segment) => matchExcludedDirectoryName(segment).excluded);
 }
+const INHERITED_PRODUCT_DOCUMENTS = [
+  'README.md', 'README.mdx', 'readme.md',
+  'CONTEXT.md', 'VISION.md', 'PRODUCT.md', 'PRD.md', 'OVERVIEW.md',
+  'docs/CONTEXT.md', 'docs/VISION.md', 'docs/PRODUCT.md', 'docs/PRD.md', 'docs/OVERVIEW.md',
+  'docs/context/CONTEXT.md', 'docs/context/VISION.md',
+];
+
+async function stageAncestorProductDocuments(sourceRoot: string, stagedRoot: string): Promise<void> {
+  let repositoryRoot = path.resolve(sourceRoot);
+  while (!await fs.pathExists(path.join(repositoryRoot, '.git'))) {
+    const parent = path.dirname(repositoryRoot);
+    if (parent === repositoryRoot) return;
+    repositoryRoot = parent;
+  }
+  if (repositoryRoot === path.resolve(sourceRoot)) return;
+  for (const relative of INHERITED_PRODUCT_DOCUMENTS) {
+    const target = path.join(stagedRoot, relative);
+    if (await fs.pathExists(target)) continue;
+    const source = path.join(repositoryRoot, relative);
+    if (!await fs.pathExists(source) || !(await fs.stat(source)).isFile()) continue;
+    await fs.copy(source, target);
+  }
+}
+
 
 
 export async function stageAsGitRepo(dir: string): Promise<string> {
@@ -480,6 +504,7 @@ export async function stageAsGitRepo(dir: string): Promise<string> {
       return !isStagingExcluded(rel);
     },
   });
+  await stageAncestorProductDocuments(root, tmp);
   const stagedSnapshot = await buildSourceSnapshot(tmp);
   const context = await deriveLocalPackageImportContext(
     root,

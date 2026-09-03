@@ -48,15 +48,10 @@ describe('hostile input guards', () => {
       expect(extraction.hasSyntaxErrors).toBe(false);
     });
 
-    // quality-iter-1 #9 verify-first: two "contains syntax errors" flags on
-    // real, valid analyzer-core source (cas.types.ts, revision.ts) were
-    // hypothesized to be a pre-parse heuristic choking on non-ASCII
-    // punctuation (an em dash in JSDoc). Reproducing against the real
-    // tree-sitter-typescript grammar shows that hypothesis was WRONG — em
-    // dashes parse fine — and finds the two ACTUAL, narrow, genuine grammar/
-    // scanner limitations instead. Both are real (not a heuristic bug): the
-    // fix here is not suppressing the flag but reporting WHERE precisely,
-    // via syntaxErrorLocations, instead of a blanket file-level claim.
+    // Real analyzer-core source previously exposed native grammar limitations
+    // around NUL separators and inline import-type suffixes. Parser-only,
+    // length-preserving rewrites now handle those valid constructs without
+    // changing the source used to build evidence.
     it('does NOT flag an em dash in a JSDoc comment (the original false-positive hypothesis)', () => {
       const extractor = new TreeSitterTSExtractor();
       const extraction = extractor.extractFromSource(
@@ -66,15 +61,14 @@ describe('hostile input guards', () => {
       expect(extraction.hasSyntaxErrors).toBe(false);
     });
 
-    it('genuinely flags (and localizes) an array-suffixed inline import-type: `import(\'m\').T[]`', () => {
+    it('parses an array-suffixed inline import-type without losing later declarations', () => {
       const extractor = new TreeSitterTSExtractor();
       const extraction = extractor.extractFromSource(
-        "type X = { codebase_type_signals?: import('../analyzer/core/codebase-type').CodebaseTypeSignal[]; };\n",
+        "type X = { codebase_type_signals?: import('../analyzer/core/codebase-type').CodebaseTypeSignal[]; };\nexport function retained() { return 1; }\n",
         'cas.types.ts'
       );
-      expect(extraction.hasSyntaxErrors).toBe(true);
-      expect(extraction.syntaxErrorLocations?.length).toBeGreaterThan(0);
-      expect(extraction.syntaxErrorLocations?.[0].line).toBe(1);
+      expect(extraction.hasSyntaxErrors).toBe(false);
+      expect(extraction.functions.some(item => item.name === 'retained')).toBe(true);
     });
 
     // Contract change (sanitizeForTreeSitterParse): a raw NUL is a deliberate,

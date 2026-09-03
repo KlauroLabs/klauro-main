@@ -60,6 +60,10 @@ function canonicalToken(token: string): string {
   if (/^(?:apps|jobs|maps|tags)$/.test(value)) value = value.slice(0, -1);
 
   if (/^(?:compreh|explain|explor|inspect|understand)/.test(value)) return 'understand';
+  if (/^(?:adopt|onboard|orient)/.test(value)) return 'onboard';
+  if (/^(?:break|risk)/.test(value)) return 'risk';
+  if (/^(?:test|validat|verify)/.test(value)) return 'verify';
+  if (/^(?:collid|duplicat|overlap)/.test(value)) return 'collaborate';
   if (/^(?:accur|reliab|trust)/.test(value)) return 'trust';
   if (value === 'mapp') return 'mapping';
   if (/^(?:collabor|coordin)/.test(value)) return 'collaborate';
@@ -152,7 +156,8 @@ function productClauses(signal?: CapabilityCatalogProjectSignal): string[] {
     const separator = sentence.indexOf(':');
     const heading = separator >= 0 ? sentence.slice(0, separator).trim() : '';
     const body = separator >= 0 ? sentence.slice(separator + 1).trim() : '';
-    const featureHeading = heading.length > 0 && heading.split(/\s+/).length <= 6 && purposeVerbIn(body);
+    const featureHeading = /^Feature$/i.test(heading) ||
+      (heading.length > 0 && heading.split(/\s+/).length <= 6 && purposeVerbIn(body));
     if (featureHeading) {
       grouped.push(sentence);
       activeFeatureIndex = grouped.length - 1;
@@ -164,8 +169,7 @@ function productClauses(signal?: CapabilityCatalogProjectSignal): string[] {
   }
   return grouped
     .flatMap(value => /^Feature:\s*/i.test(value) ? [value] : splitCoordinatedClause(value))
-    .map(value => value.replace(/^Feature:\s*/i, '').trim()
-      .replace(/\s+and\s+seamlessly\s+(?:manage|handle|process)\b/gi, '')
+    .map(value => value.trim()
       .replace(/^[,;]\s*/, '').replace(/[.!?]+$/, ''))
     .filter(value => value.length >= 20 && !/^[^,.:;!?]+?\s+(?:is|are)\s+(?:an?\s+|the\s+)?[^,.]+$/i.test(value));
 }
@@ -178,7 +182,12 @@ function outcomeClauseBody(clause: string): string {
 }
 
 function authoredFeatureLabel(clause: string): string | undefined {
-  const label = clause.match(/^(.{3,80}?)\s+[—–-]\s+/)?.[1]?.trim();
+  const explicitFeature = clause.match(/^Feature:\s*(.+)$/i)?.[1]?.trim();
+  if (explicitFeature && !explicitFeature.includes(':') && !explicitFeature.includes('—') &&
+      !explicitFeature.includes('–') && !/ +-- +/.test(explicitFeature) && explicitFeature.split(/ +/).length <= 14) {
+    return explicitFeature;
+  }
+  const label = (explicitFeature || clause).match(/^(.{3,80}?) +[—–-] +/)?.[1]?.trim();
   if (!label) return undefined;
   const firstToken = canonicalToken(label.match(/[A-Za-z][A-Za-z'-]*/)?.[0] || '');
   return CAPABILITY_PURPOSE_VERBS.has(firstToken) ? label : undefined;
@@ -205,6 +214,9 @@ function conciseOutcomeStatement(clause: string, subjectTokens: ReadonlySet<stri
 }
 
 function requirementAudiences(clause: string): Array<'agent' | 'human' | undefined> {
+  if (coordinatedAudienceList.test(clause) && /\b(?:work|collaborat|coordinat)\w*\b/i.test(clause)) {
+    return [undefined];
+  }
   const audiences: Array<'agent' | 'human'> = [];
   if (humanAudience.test(clause)) audiences.push('human');
   if (agentAudience.test(clause)) audiences.push('agent');
@@ -284,12 +296,14 @@ export function deriveCapabilityCatalogOutcomeRequirements(
   const subjectStopwords = new Set(['also', 'different', 'easier', 'extra', 'faster', 'feature', 'seamlessly', 'that', 'their', 'this', 'using', 'with', 'your']);
   for (const firstPartyClause of productClauses(signal)) {
     const clause = outcomeClauseBody(firstPartyClause);
+    const explicitAuthoredFeature = /^Feature: */i.test(firstPartyClause);
     const clauseTokens = tokens(clause, true);
     const subjectTokens = clauseTokens.filter(token => !subjectStopwords.has(token));
     const scoringSubjectTokens = subjectTokens.filter(token => !/^(?:add|change|close|create|delete|edit|get|handle|list|manage|process|read|remove|update|view)$/.test(token));
     const multiActionFeature = String(clause || '')
       .split(/(?<=[.!?;])\s+/i)
       .filter(sentence => purposeVerbIn(sentence)).length > 1;
+    const semanticOutcomeTokens = new Set(clauseTokens.filter(token => ['understand', 'onboard', 'risk', 'verify', 'collaborate'].includes(token)));
     if (subjectTokens.length === 0) continue;
     for (const audience of requirementAudiences(clause)) {
       const audienceCandidates = candidateTokens.filter(item => !audience || (audience === 'human'
@@ -317,10 +331,13 @@ export function deriveCapabilityCatalogOutcomeRequirements(
         left.evidenceRank - right.evidenceRank ||
         left.aggregateRank - right.aggregateRank ||
         left.id.localeCompare(right.id));
-      const bestIdentityScore = scored[0]?.identityScore;
-      const bestScore = scored[0]?.score;
-      const bestSymbolScore = scored[0]?.symbolScore;
-      const strongestCandidateIds = bestScore === undefined ? [] : scored
+      const actionAnchored = explicitAuthoredFeature ? scored.filter(item => semanticOutcomeTokens.size > 0 && audienceCandidates.some(candidate =>
+        candidate.candidate.id === item.id && [...semanticOutcomeTokens].some(token => candidate.identityTokens.has(token)))) : [];
+      const ranked = actionAnchored.length > 0 ? actionAnchored : scored;
+      const bestIdentityScore = ranked[0]?.identityScore;
+      const bestScore = ranked[0]?.score;
+      const bestSymbolScore = ranked[0]?.symbolScore;
+      const strongestCandidateIds = bestScore === undefined ? [] : ranked
         .filter(item => item.identityScore === bestIdentityScore && item.symbolScore === bestSymbolScore && item.score === bestScore)
         .slice(0, 3)
         .map(item => item.id);
@@ -359,8 +376,8 @@ export function deriveCapabilityCatalogOutcomeRequirements(
         audienceLabel,
         ...(audienceScopedOutcomeText ? { audienceScopedOutcomeText } : {}),
         candidateIds,
+        firstPartyOutcomeText: firstPartyClause.replace(/^Feature: */i, ''),
         id,
-        firstPartyOutcomeText: firstPartyClause,
         minimumSubjectMatches: Math.min(2, groundedSubjectTokens.length),
         requiredSubjectTerms: groundedSubjectTokens,
         visibleActionTerms,
@@ -396,6 +413,50 @@ export function deriveCapabilityCatalogOutcomeRequirements(
   return ordered.filter(requirement => !redundantRequirementIds.has(requirement.id));
 }
 
+
+export function recoverGroundedAuthoredOutcomeCapabilities(
+  capabilities: readonly SystemCapability[],
+  requirements: readonly CapabilityCatalogOutcomeRequirement[],
+  evidenceCandidates: readonly SystemCapability[],
+  obligationScopes: ReadonlyMap<string, { parentCandidateId: string }> = new Map(),
+): SystemCapability[] {
+  const evidenceById = new Map(evidenceCandidates.map(candidate => [candidate.id, candidate]));
+  const missing = uncoveredCapabilityCatalogOutcomeRequirements(capabilities, requirements);
+  const recovered = missing.flatMap(requirement => {
+    const evidence = requirement.candidateIds.slice(0, 1)
+      .map(candidateId => evidenceById.get(candidateId))
+      .filter((candidate): candidate is SystemCapability => Boolean(candidate));
+    if (evidence.length === 0) return [];
+    const operations = [...new Map(evidence.flatMap(candidate => candidate.operations || [])
+      .map(operation => [JSON.stringify(operation), operation])).values()];
+    const relatedEntities = [...new Set(evidence.flatMap(candidate => candidate.related_entities || []))];
+    const obligationIds = [...obligationScopes.entries()]
+      .filter(([, scope]) => scope.parentCandidateId === evidence[0]?.id)
+      .map(([id]) => id);
+    if (operations.length === 0 && relatedEntities.length === 0) return [];
+    const source = evidence[0];
+    return [{
+      ...source,
+      id: `capability_authored_${requirement.id.replace(/[^a-z0-9]+/gi, '_').replace(/^_+|_+$/g, '').toLowerCase()}`,
+      name: requirement.statement,
+      description: `${requirement.statement.replace(/[.!?]+$/, '')}.`,
+      name_source: 'deterministic' as const,
+      description_source: 'deterministic' as const,
+      description_generation: { attempted: true, status: 'deterministic_kept' as const, reason: 'grounded-first-party-outcome' },
+      operations,
+      related_entities: relatedEntities,
+      related_domains: [...new Set(evidence.flatMap(candidate => candidate.related_domains || []))],
+      criticality_factors: [
+        ...evidence.map(candidate => "catalog-candidate:" + candidate.id),
+        ...obligationIds.map(id => "catalog-operation-obligation:" + id),
+        `catalog-outcome-requirement:${requirement.id}`,
+        'catalog-deterministic-atomic-closure',
+        'catalog-grounded-authored-outcome-recovery',
+      ],
+    }];
+  });
+  return [...capabilities, ...recovered];
+}
 function capabilityMatchesAudience(capabilityText: string, audience?: 'agent' | 'human'): boolean {
   if (!audience) return true;
   return audience === 'human' ? humanAudience.test(capabilityText) : agentAudience.test(capabilityText);

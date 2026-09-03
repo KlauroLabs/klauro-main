@@ -352,6 +352,10 @@ export class ArchitecturalLibraryAnalyzer extends BaseAnalyzer {
     return this.sourceFiles({ projectPath });
   }
 
+  async getClaimedFiles(projectPath: string, context?: AnalysisContext): Promise<string[]> {
+    return this.sourceFiles(context || { projectPath });
+  }
+
   async analyze(context: AnalysisContext): Promise<CASContribution> {
     const { nodes, exitPoints, libraries } = await this.analyzeArchitectureLibraries(
       context.projectPath,

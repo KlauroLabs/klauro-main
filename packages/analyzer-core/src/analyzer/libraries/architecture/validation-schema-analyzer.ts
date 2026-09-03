@@ -85,9 +85,9 @@ export class ValidationSchemaAnalyzer extends BaseAnalyzer {
     return true;
   }
 
-  async getRelevantFiles(projectPath: string): Promise<string[]> {
+  async getRelevantFiles(projectPath: string, context?: AnalysisContext): Promise<string[]> {
     const relevant: string[] = [];
-    for (const relativeFile of await this.sourceFiles(projectPath)) {
+    for (const relativeFile of await this.sourceFiles(context || projectPath)) {
       const content = await this.safeRead(path.join(projectPath, relativeFile));
       if (content && this.fileMayContainValidation(content)) relevant.push(relativeFile);
     }

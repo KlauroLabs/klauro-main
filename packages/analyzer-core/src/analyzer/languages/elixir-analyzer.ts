@@ -411,12 +411,12 @@ export class ElixirAnalyzer extends BaseAnalyzer {
     const kind = m[1] as 'use' | 'import' | 'require' | 'alias';
     const target = m[2];
     const rest = m[3] || '';
-    let as: string | undefined;
+    let alias: string | undefined;
     if (kind === 'alias') {
       const asMatch = rest.match(/,\s*as:\s*([A-Z][A-Za-z0-9_.]*)/);
-      if (asMatch) as = asMatch[1].split('.').pop();
+      if (asMatch) alias = asMatch[1].split('.').pop();
     }
-    return { kind, target, as, raw: trimmed };
+    return { kind, target, as: alias, raw: trimmed };
   }
 
   private matchFunctionHead(trimmed: string, lineNo: number, moduleQN: string): ElixirFunction | undefined {

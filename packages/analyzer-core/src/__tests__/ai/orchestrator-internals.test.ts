@@ -9873,6 +9873,38 @@ describe('top-down capability evidence (C2)', () => {
     }
   });
 
+  it('inherits authored product outcomes from the enclosing repository when a workspace package has no product document', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-topdown-workspace-'));
+    const child = path.join(root, 'apps', 'worker');
+    try {
+      fs.mkdirSync(path.join(root, '.git'), { recursive: true });
+      fs.mkdirSync(child, { recursive: true });
+      fs.writeFileSync(path.join(root, 'README.md'), [
+        '# Product Atlas',
+        '',
+        'Product Atlas helps teams understand unfamiliar software before they change it.',
+        '',
+        '## What you can do',
+        '',
+        '- Understand what a codebase actually built.',
+        '- Know what will break before changing something.',
+      ].join('\n'));
+      fs.writeFileSync(path.join(child, 'package.json'), JSON.stringify({
+        name: '@atlas/worker',
+        description: 'Worker package for Product Atlas',
+      }));
+
+      const signal = orch.extractProjectTextSignal(child);
+      expect(signal.productDocTitle).toBe('Product Atlas');
+      expect(signal.productDocSummary).toContain('Understand what a codebase actually built.');
+      expect(signal.productDocSummary).toContain('Know what will break before changing something.');
+      expect(signal.productDocSource).toBe('README.md');
+      expect(signal.manifestDescription).toBe('Worker package for Product Atlas');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('falls back to a PRD/product doc when no README states the product, skipping bold metadata', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-topdown-prd-'));
     try {

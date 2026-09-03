@@ -47,6 +47,8 @@ describe('parser stage fingerprint source coverage', () => {
   it('covers the TypeScript extractor, worker, sanitizer implementation, and native Rust build inputs', async () => {
     expect(manifest.source_files).toEqual(expect.arrayContaining([
       'src/analyzer/core/tree-sitter-ts-extractor.ts',
+      'src/analyzer/core/tree-sitter-grammar-limitations.ts',
+      'src/analyzer/core/tree-sitter-ts-recovery.ts',
       'src/analyzer/core/tree-sitter-ts-worker.ts',
       'src/analyzer/core/source-corpus.ts',
       'native/klauro-parse/build.rs',
@@ -93,6 +95,8 @@ describe('parser stage fingerprint source coverage', () => {
 
   it.each([
     'src/analyzer/core/tree-sitter-ts-extractor.ts',
+    'src/analyzer/core/tree-sitter-grammar-limitations.ts',
+    'src/analyzer/core/tree-sitter-ts-recovery.ts',
     'src/analyzer/core/tree-sitter-ts-worker.ts',
     'native/klauro-parse/build.rs',
     'native/klauro-parse/Cargo.toml',

@@ -4,6 +4,14 @@ Klauro is the software-understanding platform for any codebase. It builds a trus
 
 Software produced heavily with AI may benefit disproportionately from that visibility, but it is not a separate product category and does not define Klauro's scope.
 
+## What you can do
+
+- Understand what a codebase actually built.
+- Onboard to an unfamiliar system without reading every file.
+- Know what will break before changing something.
+- Verify AI-generated code beyond the demo path.
+- Work alongside other people and agents on one codebase without duplicating or colliding.
+
 ## Layout
 
 - `apps/mcp-server/` - MCP server, CLI, hosted analyzer HTTP service, proof gauntlets, proposal preview tooling, remote sync, and agent contexts.

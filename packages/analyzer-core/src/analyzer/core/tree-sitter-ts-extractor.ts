@@ -1,6 +1,9 @@
 import * as fs from 'fs';
 import { NativeAddonUnavailableError, isNativeAddonUnavailableError } from './errors';
-import { classifyKnownTypeScriptGrammarLimitation, sanitizeTaggedTemplateTypeArguments } from './tree-sitter-grammar-limitations';
+import {
+  classifyKnownTypeScriptGrammarLimitation, sanitizeContextualUsingIdentifiers,
+  sanitizeInlineImportTypePrefixes, sanitizeTaggedTemplateTypeArguments,
+} from './tree-sitter-grammar-limitations';
 import { originalNodeText, recoverTypeScriptTree } from './tree-sitter-ts-recovery';
 
 export function sanitizeForTreeSitterParse(source: string): string {
@@ -392,7 +395,11 @@ export class TreeSitterTSExtractor {
     this.imports.clear();
 
     const parser = this.getParser(filePath);
-    const forParse = sanitizeTaggedTemplateTypeArguments(sanitizeAbstractPropertyKeyword(sanitizeForTreeSitterParse(content)));
+    const forParse = sanitizeContextualUsingIdentifiers(
+      sanitizeInlineImportTypePrefixes(
+        sanitizeTaggedTemplateTypeArguments(sanitizeAbstractPropertyKeyword(sanitizeForTreeSitterParse(content))),
+      ),
+    );
     const initialTree = parser.parse(forParse);
     const { tree, root, hasSyntaxErrors } = recoverTypeScriptTree(parser, initialTree, content, forParse, getRootNode, treeHasSyntaxErrors, collectSyntaxErrorLocations);
     try {

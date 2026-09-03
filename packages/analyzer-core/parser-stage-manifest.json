@@ -18,6 +18,8 @@
     "parser-stage-manifest.json",
     "src/analyzer/core/tree-sitter-parser.ts",
     "src/analyzer/core/tree-sitter-ts-extractor.ts",
+    "src/analyzer/core/tree-sitter-grammar-limitations.ts",
+    "src/analyzer/core/tree-sitter-ts-recovery.ts",
     "src/analyzer/core/tree-sitter-ts-worker.ts",
     "src/analyzer/core/tree-sitter-ts-extraction-cache.ts",
     "src/analyzer/core/native-parse.ts",

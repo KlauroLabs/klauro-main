@@ -1,5 +1,5 @@
 import { TreeSitterTSExtractor, sanitizeForTreeSitterParse, sanitizeAbstractPropertyKeyword } from '../../analyzer/core/tree-sitter-ts-extractor';
-import { sanitizeTaggedTemplateTypeArguments } from '../../analyzer/core/tree-sitter-grammar-limitations';
+import { sanitizeContextualUsingIdentifiers, sanitizeInlineImportTypePrefixes, sanitizeTaggedTemplateTypeArguments } from '../../analyzer/core/tree-sitter-grammar-limitations';
 
 /**
  * Regression fixtures for the self-analysis defect class where valid TS/JS
@@ -107,6 +107,19 @@ describe('TreeSitterTSExtractor parse quirks (NUL separator + abstract-as-proper
     expect(sanitizeTaggedTemplateTypeArguments(source)).toBe(source);
   });
 
+  it('does not consume comparisons that precede later template literals', () => {
+    const source = `
+      export function summarize(values: number[], coverage: number): string {
+        for (let index = 0; index < values.length; index++) {
+          if (coverage <= 1) return \`\${Math.round(coverage * 100)}%\`;
+        }
+        return \`count: \${values.length}\`;
+      }
+    `;
+    expect(sanitizeTaggedTemplateTypeArguments(source)).toBe(source);
+    expect(extractor.extractFromSource(source, 'comparisons.ts').hasSyntaxErrors).toBe(false);
+  });
+
   it('skips parser child slots that resolve to no node', () => {
     const root = {
       type: 'program',
@@ -119,20 +132,13 @@ describe('TreeSitterTSExtractor parse quirks (NUL separator + abstract-as-proper
 });
 
 /**
- * Regression fixtures for task #84: two further genuinely-valid-TS
- * constructs that tree-sitter-typescript 0.23.2 cannot parse (confirmed by
- * direct repro against the native grammar; `tsc` accepts both). Unlike the
- * NUL-separator/`abstract`-as-key class above, there is no safe source-level
- * rewrite for either — sanitizing the array/generic suffix off an inline
- * import-type, or renaming a real `using` identifier, would corrupt what the
- * extractor reports. So the fix here is honest degrade-gracefully: the file
- * still contributes every OTHER construct that IS parseable, hasSyntaxErrors
- * stays true, and `syntaxErrorLocations[].knownLimitation` names the
- * limitation instead of the surfaced warning blaming the analyzed file's
- * syntax (see classifyKnownGrammarLimitation in tree-sitter-ts-extractor.ts
- * and its caller in typescript-javascript-analyzer.ts).
+ * Regression fixtures for valid TypeScript constructs that the pinned native
+ * grammar cannot parse directly. Parser-only rewrites preserve byte offsets:
+ * inline import-type prefixes are blanked while retaining the referenced type,
+ * and contextual `using` identifiers are renamed without touching resource
+ * declarations. Extraction still reads names from the original source.
  */
-describe('TreeSitterTSExtractor known grammar limitations (degrade gracefully, name the limitation)', () => {
+describe('TreeSitterTSExtractor known grammar limitations', () => {
   const extractor = new TreeSitterTSExtractor();
 
   it('flags an array-suffixed inline import type as a known limitation, still extracts the rest of the file', () => {
@@ -148,10 +154,10 @@ describe('TreeSitterTSExtractor known grammar limitations (degrade gracefully, n
       }
     `;
     const extraction = extractor.extractFromSource(source, 'import-type-array-suffix.ts');
-    expect(extraction.hasSyntaxErrors).toBe(true);
-    expect(extraction.syntaxErrorLocations?.length).toBeGreaterThan(0);
-    expect(extraction.syntaxErrorLocations?.every(l => l.knownLimitation)).toBe(true);
-    // Degrade gracefully: everything after the broken construct still extracts.
+    expect(sanitizeInlineImportTypePrefixes(source)).toHaveLength(source.length);
+    expect(sanitizeInlineImportTypePrefixes(source)).toContain('Bar[]');
+    expect(extraction.hasSyntaxErrors).toBe(false);
+    // The parser-only rewrite retains the constructs after the import type.
     expect(extraction.functions.some(f => f.name === 'realFunctionAfter')).toBe(true);
     expect(extraction.classes.some(c => c.name === 'RealClassAfter')).toBe(true);
   });
@@ -171,9 +177,8 @@ describe('TreeSitterTSExtractor known grammar limitations (degrade gracefully, n
       }
     `;
     const extraction = extractor.extractFromSource(source, 'import-type-indexed-access.ts');
-    expect(extraction.hasSyntaxErrors).toBe(true);
-    expect(extraction.syntaxErrorLocations?.length).toBeGreaterThan(0);
-    expect(extraction.syntaxErrorLocations?.every(location => location.knownLimitation)).toBe(true);
+    expect(sanitizeInlineImportTypePrefixes(source)).toHaveLength(source.length);
+    expect(extraction.hasSyntaxErrors).toBe(false);
   });
 
   it('flags `using` used as an arrow-function parameter name as a known limitation, still extracts the rest of the file', () => {
@@ -185,8 +190,8 @@ describe('TreeSitterTSExtractor known grammar limitations (degrade gracefully, n
       }
     `;
     const extraction = extractor.extractFromSource(source, 'using-arrow-param.ts');
-    expect(extraction.hasSyntaxErrors).toBe(true);
-    expect(extraction.syntaxErrorLocations?.some(l => l.knownLimitation?.includes('using'))).toBe(true);
+    expect(sanitizeContextualUsingIdentifiers(source)).toContain('us1ng => us1ng.x');
+    expect(extraction.hasSyntaxErrors).toBe(false);
     expect(extraction.functions.some(f => f.name === 'realFunctionAfter')).toBe(true);
   });
 
@@ -197,8 +202,7 @@ describe('TreeSitterTSExtractor known grammar limitations (degrade gracefully, n
       }
     `;
     const extraction = extractor.extractFromSource(source, 'using-fn-param.ts');
-    expect(extraction.hasSyntaxErrors).toBe(true);
-    expect(extraction.syntaxErrorLocations?.some(l => l.knownLimitation?.includes('using'))).toBe(true);
+    expect(extraction.hasSyntaxErrors).toBe(false);
     expect(extraction.functions.some(f => f.name === 'processResource')).toBe(true);
   });
 
@@ -210,6 +214,7 @@ describe('TreeSitterTSExtractor known grammar limitations (degrade gracefully, n
       }
     `;
     const extraction = extractor.extractFromSource(source, 'using-real-declaration.ts');
+    expect(sanitizeContextualUsingIdentifiers(source)).toContain('using x = getResource()');
     expect(extraction.hasSyntaxErrors).toBe(false);
   });
 

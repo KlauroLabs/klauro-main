@@ -127,23 +127,25 @@ function groundedDescriptionFor(ctx: any): string {
 }
 
 function capabilityCatalogResponse(context: any): string | undefined {
-  if (!/cataloging the/i.test(String(context?.task || ''))) return undefined;
-  const requiredOutcome = Array.isArray(context?.facts?.required_outcomes) ? context.facts.required_outcomes[0] : undefined;
-  if (requiredOutcome) {
-    const outcomeText = [requiredOutcome.outcome, requiredOutcome.first_party_outcome_text].filter(Boolean).join(' ');
-    const retrieval = /retrieve|assist/i.test(outcomeText) && !/onboard/i.test(outcomeText);
-    return JSON.stringify({ capabilities: [{
-      requirement_id: requiredOutcome.requirement_id,
-      name: retrieval ? 'Retrieve customer profiles' : 'Onboard customers with profiles',
-      description: retrieval
-        ? 'Support staff retrieve customer profiles containing names and email addresses while assisting customers.'
-        : 'Customer profiles preserve names and email addresses that support staff use while onboarding customers.',
-      category: 'core',
-      entities: [],
-      journeys: [],
-      candidate_ids: requiredOutcome.candidate_ids || [],
-    }] });
+  const requiredOutcomes = Array.isArray(context?.facts?.required_outcomes) ? context.facts.required_outcomes : [];
+  if (requiredOutcomes.length > 0) {
+    return JSON.stringify({ capabilities: requiredOutcomes.map((requiredOutcome: any) => {
+      const requirementText = JSON.stringify(requiredOutcome);
+      const retrieval = /retrieve/i.test(requirementText);
+      return {
+        requirement_id: requiredOutcome.requirement_id,
+        name: retrieval ? 'Retrieve customer profiles' : 'Onboard customers with profiles',
+        description: retrieval
+          ? 'Support staff read stored names and email addresses when retrieving customer profiles.'
+          : 'Support staff use stored names and email addresses when creating customer profiles.',
+        category: 'core',
+        entities: [],
+        journeys: [],
+        candidate_ids: requiredOutcome.candidate_ids || [],
+      };
+    }) });
   }
+  if (!/cataloging the/i.test(String(context?.task || ''))) return undefined;
   const entities: Array<{ name?: string }> = Array.isArray(context?.facts?.entities) ? context.facts.entities : [];
   const journeys: Array<{ name?: string }> = Array.isArray(context?.facts?.user_journeys) ? context.facts.user_journeys : [];
   const subjects = entities.map(entity => String(entity.name || '')).filter(Boolean).slice(0, 8);
@@ -186,7 +188,7 @@ function mockSuccess(): void {
       const subject = item.relatedDomains?.join(' ') || name;
       return {
         id: item.id,
-        description: `Keeps ${subject} details accurate and available so callers can complete supported product workflows.`,
+        description: `Describes ${subject} so support staff can create and retrieve customer profiles.`,
       };
     });
     return JSON.stringify({
@@ -255,7 +257,7 @@ function mockDegradedSystemDescriptionOnly(): void {
       const subject = item.relatedDomains?.join(' ') || name;
       return {
         id: item.id,
-        description: `Keeps ${subject} details accurate and available so callers can complete supported product workflows.`,
+        description: `Describes ${subject} so support staff can create and retrieve customer profiles.`,
       };
     });
     return JSON.stringify({

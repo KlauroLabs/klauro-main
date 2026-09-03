@@ -247,14 +247,36 @@ export class AIStackAnalyzer extends BaseAnalyzer {
     return true;
   }
 
-  async getRelevantFiles(projectPath: string): Promise<string[]> {
+  async getRelevantFiles(projectPath: string, context?: AnalysisContext): Promise<string[]> {
     let sourceFiles: string[] = [];
     try {
-      sourceFiles = (await glob(`**/*.{${[...TS_EXTENSIONS, ...PY_EXTENSIONS].join(',')}}`, {
-        cwd: projectPath,
-        ignore: this.getIgnorePatterns({ projectPath }),
-        nodir: true,
-      })).filter(file => !isTestFileName(path.basename(file)));
+      const analysisContext = context || { projectPath };
+      const groundedFiles = this.filesFromExistingAnalysis(
+        analysisContext,
+        source => this.isAIPackage(source) || this.isAIPackage(source.split(/[/.]/)[0]),
+        true
+      );
+      const conventionFiles = analysisContext.existingAnalysis?.length
+        ? await glob([
+          '**/*{agent,prompt,mcp,retriever,embedding,vector,llm,chat,completion}*.{ts,tsx,js,jsx,mjs,cjs,py}',
+          '**/{agents,prompts,mcp,ai}/**/*.{ts,tsx,js,jsx,mjs,cjs,py}',
+        ], {
+          cwd: projectPath,
+          ignore: this.getIgnorePatterns(analysisContext),
+          nodir: true,
+        })
+        : [];
+      sourceFiles = analysisContext.existingAnalysis?.length
+        ? [...new Set([...groundedFiles, ...conventionFiles])]
+        : await glob(`**/*.{${[...TS_EXTENSIONS, ...PY_EXTENSIONS].join(',')}}`, {
+          cwd: projectPath,
+          ignore: this.getIgnorePatterns(analysisContext),
+          nodir: true,
+        });
+      sourceFiles = this.capAndPrioritizeSourceFiles(
+        sourceFiles.filter(file => !isTestFileName(path.basename(file))),
+        'AI stack source files'
+      );
     } catch {
       return [];
     }

@@ -706,8 +706,6 @@ export function normalizeCapabilityOperationObligationEvidence(
       .map(id => authoritativeCandidates.get(id))
       .filter((candidate): candidate is SystemCapability => Boolean(candidate));
     if (resolvedScopes.length === 0) return capability;
-    const obligationFactorIds = new Set(obligationIds);
-    for (const scope of citedScopes) if (!obligationFactorIds.has(scope.id)) errors.push(`operation-obligation-missing-factor:${scope.id}`);
     const authoritativeOperations = [
       ...resolvedScopes.flatMap(scope => authoritativeCandidates.get(scope.id)?.operations || []),
       ...directCandidates.flatMap(candidate => candidate.operations || []),
