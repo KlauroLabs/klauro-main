@@ -42,6 +42,30 @@ describe('classifyArtifactType', () => {
     expect(result.evidence.join(' ')).toMatch(/Cargo lib target/);
   });
 
+  test('Cargo workspace library ignores example HTTP entry points (axum shape)', () => {
+    const result = classifyArtifactType(input({
+      manifest: {
+        cargo: {
+          description: undefined,
+          hasLibSection: false,
+          hasBinTarget: false,
+          hasLibFile: false,
+          hasMainFile: false,
+          isWorkspace: true,
+          dependencyNames: [],
+        },
+        readmeLead: '# axum\n\naxum is an HTTP routing and request-handling library focused on ergonomics.',
+      },
+      nodes: [
+        node('Router', 'axum/src/lib.rs', { is_exported: true }),
+        node('ExampleHandler', 'examples/chat/src/main.rs'),
+      ],
+      entryPointSummary: [{ type: 'http', count: 87 }],
+    }));
+    expect(result.artifactType).toBe('library');
+    expect(result.evidence.join(' ')).toMatch(/Cargo workspace README declares a library/);
+  });
+
   test('Cargo crate with src/main.rs stays app', () => {
     const result = classifyArtifactType(input({
       manifest: {

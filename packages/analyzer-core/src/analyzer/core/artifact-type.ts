@@ -31,6 +31,7 @@ export interface ArtifactManifestSignal {
     hasBinTarget: boolean;
     hasLibFile: boolean;
     hasMainFile: boolean;
+    isWorkspace?: boolean;
     dependencyNames: string[];
   };
   composer?: {
@@ -257,7 +258,20 @@ function detectLibrary(
   appEntries: number,
   cliEntries: number
 ): ArtifactTypeResult | null {
-  if (appEntries > 0 || cliEntries > 0) return null;
+  const readmeDeclaresLibrary = /\b(?:is|provides?)\s+(?:an?\s+)?[^.\n]{0,120}\blibrar(?:y|ies)\b/i.test(manifest.readmeLead || '');
+  const workspaceLibrarySurface = Boolean(
+    manifest.cargo?.isWorkspace &&
+    readmeDeclaresLibrary &&
+    nodes.some(node => /^(?!examples?\/|tests?\/)[^/]+\/src\/lib\.rs$/i.test(String(node.source?.file || '').replace(/\\/g, '/')))
+  );
+  if ((appEntries > 0 || cliEntries > 0) && !workspaceLibrarySurface) return null;
+
+  if (workspaceLibrarySurface) {
+    return {
+      artifactType: 'library',
+      evidence: ['Cargo workspace README declares a library and exposes member src/lib.rs targets'],
+    };
+  }
 
   if (manifest.cargo) {
     const cargoLib = (manifest.cargo.hasLibSection || manifest.cargo.hasLibFile) &&
@@ -399,6 +413,7 @@ export function collectArtifactManifestSignal(projectPath: string): ArtifactMani
       hasBinTarget: /^\s*\[\[bin\]\]/m.test(cargoText),
       hasLibFile: fs.existsSync(path.join(projectPath, 'src', 'lib.rs')),
       hasMainFile: fs.existsSync(path.join(projectPath, 'src', 'main.rs')),
+      isWorkspace: /^\s*\[workspace\]/m.test(cargoText),
       dependencyNames: extractCargoDependencyNames(cargoText),
     };
   }

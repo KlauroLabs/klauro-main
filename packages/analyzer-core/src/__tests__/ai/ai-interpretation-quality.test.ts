@@ -768,6 +768,7 @@ describe('element description grounding parity with the system validator', () =>
     expect(result.reason).toContain('unsupported-marketing-language');
     expect(result.reason).toContain('enhancing');
     expect(result.reason).toContain('efficiency');
+    expect(result.offendingTerms).toEqual(['enhancing', 'efficiency']);
   });
 
   it('REJECTS marketing words in otherwise grounded AI descriptions instead of deleting them mid-sentence', () => {

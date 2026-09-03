@@ -12618,6 +12618,21 @@ describe('enterprise AI semantic guards', () => {
     )).toEqual({ ok: true });
   });
 
+  it('preserves public request and handler vocabulary for a developer library', () => {
+    const purpose = { primary_domain: 'http-routing-library', core_concepts: ['http', 'routing', 'request', 'response'] };
+    const description = 'Axum is an HTTP routing library for developers building HTTP services. Consumers map incoming HTTP requests to typed handlers and extract request data into application values. Handler results become HTTP responses with status, header, and body content. Developers package these routing contracts with their service code as a reusable dependency.';
+    const facts = {
+      systemName: 'axum',
+      artifactType: 'library',
+      structuralTokens: ['http', 'routing', 'request', 'response', 'handler'],
+      projectTextConcepts: ['http', 'routing', 'request', 'response', 'handler'],
+      projectTextSummary: 'Axum routes HTTP requests to handlers and converts handler results into responses.',
+    };
+    expect(orch.validateGeneratedAIInterpretation(description, purpose, facts)).toEqual({ ok: true });
+    expect(orch.validateGeneratedAIInterpretation(description, purpose, { ...facts, artifactType: 'app' }).reason)
+      .toBe('source-implementation-mechanics');
+  });
+
   it('rejects incomplete and implementation-led AI system descriptions', () => {
     const purpose = { primary_domain: 'enterprise-orders', core_concepts: ['enterprise', 'orders'] };
     const facts = {
@@ -13245,6 +13260,14 @@ describe('P0 (v1.0.127): no vocabulary-substitution table on ANY description pat
     expect(orchestratorSource).not.toMatch(/replace\(\s*\/\\befficient\(\?:ly\)\?\\b\/gi,\s*''\)/);
     expect(orchestratorSource).not.toMatch(/replace\(\s*\/\\badvanced\\b\/gi,\s*''\)/);
     expect(orchestratorSource).not.toMatch(/seamless\(\?:ly\)\?\|robust\|comprehensive/);
+  });
+
+  it('removes an unsupported absence clause while preserving the grounded system narrative', () => {
+    const description = 'Axum is an HTTP routing library without requiring standalone deployment. Developers map requests to handlers. Typed extractors parse incoming values. Response types produce HTTP results.';
+    expect(orch.mechanicallyRepairAIInterpretation(
+      description,
+      'unsupported-system-absence-claim:without requiring standalone deployment',
+    )).toBe('Axum is an HTTP routing library. Developers map requests to handlers. Typed extractors parse incoming values. Response types produce HTTP results.');
   });
 
   it('marketing language triggers rejection/regeneration on BOTH paths, never mutation', () => {

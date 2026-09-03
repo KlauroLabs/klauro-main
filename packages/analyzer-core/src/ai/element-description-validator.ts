@@ -457,7 +457,10 @@ export function validateElementDescription(
     (subject.domainVocabulary || []).join(' '),
   );
   if (marketingMatches.length > 0) {
-    return { ok: false, reason: `unsupported-marketing-language: ${marketingMatches.join(', ')}` };
+    return descriptionFailure(
+      `unsupported-marketing-language: ${marketingMatches.join(', ')}`,
+      marketingMatches,
+    );
   }
 
   if (subjectTokens.length === 0) return { ok: true };

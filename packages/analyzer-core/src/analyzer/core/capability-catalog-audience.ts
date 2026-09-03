@@ -246,10 +246,9 @@ export function normalizeCapabilityDescriptionForPublication(
   }
   normalized = normalized
     .replace(/\s+(?:in response to|after|when)\s+(?:an?\s+)?(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+requests?(?:\s+(?:to|through|against)\s+[^,.;]+)?/gi, '')
-    .replace(/\s+(?:via|through|using)\s+(?:the\s+)?(?:API(?:\s+endpoint)?|endpoint|route)(?:\s+[^,.;]+)?/gi, '')
     .replace(/\s+(?:using|via|by|based on)\s+(?:the\s+)?(?:article(?:'s)?\s+)?slug(?:\s+as\s+(?:an?\s+)?identifier)?/gi, '')
     .replace(/,\s*as\s+(?:evidenced|shown|confirmed|supported|indicated|demonstrated|observed)\s+(?:by|in)\b[^.;]*/gi, '')
-    .replace(/(?:,\s*)?(?:reflecting|using|via|through|in|from|after|when|with)\b[^.;]*(?:\b(?:api|endpoint|http|route|slug|requests?|responses?)\b|\/[a-z0-9{}:_/-]+)[^.;]*/gi, '')
+    .replace(/(?:,\s*)?(?:reflecting|using|via|through|in|from|after|when|with)\b[^.;]*(?:\b(?:api\s+endpoint|http\s+(?:method|request)|endpoint)\b|\/[a-z0-9{}:_/-]+)[^.;]*/gi, '')
     .replace(/\s+([,.;:!?])/g, '$1')
     .replace(/[,;:]\s*([.!?])/g, '$1')
     .replace(/\s{2,}/g, ' ')

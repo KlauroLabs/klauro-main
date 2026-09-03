@@ -804,6 +804,12 @@ it('normalizes unsupported timing and transport mechanics while preserving produ
     'Comments appear in real time in the article discussion.',
     ['The product provides real-time article discussions.'],
   )).toBe('Comments appear in real time in the article discussion.');
+  expect(normalizeCapabilityDescriptionForPublication(
+    'Axum maps incoming HTTP requests to handler functions using a macro-free routing system.',
+  )).toBe('Axum maps incoming HTTP requests to handler functions using a macro-free routing system.');
+  expect(normalizeCapabilityDescriptionForPublication(
+    'Axum produces HTTP responses from handler outputs using built-in conversion traits.',
+  )).toBe('Axum produces HTTP responses from handler outputs using built-in conversion traits.');
 });
 
 
