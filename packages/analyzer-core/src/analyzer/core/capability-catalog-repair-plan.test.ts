@@ -395,6 +395,8 @@ describe('capability catalog repair planning', () => {
     assert.match(nudge, /returning the current rejected wording is invalid/);
     assert.match(nudge, /not by mechanically enumerating transport or CRUD operation labels/);
     assert.match(nudge, /Do not copy a route phrase/);
+    assert.match(nudge, /unsupported-absence-claim/);
+    assert.match(nudge, /remove the forbidden absence or benefit clause completely/);
     assert.match(nudge, /destructive effect in ordinary audience language/);
   });
 

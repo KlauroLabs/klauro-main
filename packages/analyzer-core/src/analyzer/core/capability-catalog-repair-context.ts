@@ -154,11 +154,10 @@ function customerSafeRejectedName(value: unknown): string | undefined {
 }
 
 function customerSafeForbiddenSubjectTerms(values: readonly string[] = []): string[] {
-  return values.filter(value => {
-    const source = String(value || '').trim();
-    return source.length > 0 && /^[A-Za-z][A-Za-z ]+$/.test(source) &&
-      !/(?:[a-z0-9][A-Z]|[A-Z]{2,}[a-z]|\b[A-Z]{2,}\b)/.test(source);
-  }).slice(0, 12);
+  return values.map(value => String(value || '').trim().replace(/[,;:]+/g, ' ').replace(/\s+/g, ' '))
+    .filter(source => source.length > 0 && /^[A-Za-z][A-Za-z ]+$/.test(source) &&
+      !/(?:[a-z0-9][A-Z]|[A-Z]{2,}[a-z]|\b[A-Z]{2,}\b)/.test(source))
+    .slice(0, 12);
 }
 
 export function capabilityCatalogRepairPromptFacts(

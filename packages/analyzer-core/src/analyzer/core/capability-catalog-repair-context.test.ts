@@ -104,6 +104,23 @@ test('repair facts preserve safe exact observable-action feedback for the next r
   assert.deepEqual(envelope.facts[0].prior_rejections, [{ reason: 'required-observable-action-missing:create', rejected_name: 'Track jobs' }]);
 });
 
+test('repair facts preserve sanitized validator clauses containing punctuation', () => {
+  const candidate = {
+    id: 'routing', name: 'Routing', structural_label: 'Routing', category: 'core',
+    operations: [{ entry_point_id: 'route', entry_point_type: 'http', action: 'read' }],
+    related_entities: [], related_domains: [], criticality: 'high', criticality_factors: [],
+  } as SystemCapability;
+  const rejections = new Map([['routing', [{
+    name: 'Route requests', reason: 'unsupported-absence-claim',
+    forbidden_subject_terms: ['without requiring macros, focusing on ergonomics and modularity'],
+  }]]]);
+
+  const envelope = capabilityCatalogRepairPromptEnvelope([candidate], ['routing'], [], rejections);
+
+  assert.deepEqual(envelope.facts[0].prior_rejections[0].forbidden_subject_terms,
+    ['without requiring macros focusing on ergonomics and modularity']);
+});
+
 test('route-backed repair facts retain product subjects without framework path scaffolding', () => {
   const candidates = [
     { id: 'auth', name: 'Auth', structural_label: 'Auth Workflow', path: '/api/users/login', actions: ['Create'] },
