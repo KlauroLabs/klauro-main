@@ -296,7 +296,9 @@ export function groundedCapabilityAudience(
   productText: CapabilityCatalogProductText | undefined,
   userJourneys: readonly CASUserJourney[],
   entryPoints: readonly CASEntryPoint[] = [],
+  artifactType?: string,
 ): string | undefined {
+  if (artifactType === 'library' || artifactType === 'client-sdk') return 'Developers';
   const productTextEvidence = [
     productText?.productDocTitle,
     productText?.productDocSummary,

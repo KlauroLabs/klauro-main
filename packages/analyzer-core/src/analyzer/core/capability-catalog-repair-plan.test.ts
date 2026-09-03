@@ -2,12 +2,23 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SystemCapability } from '../../types/cas.types';
 import type { CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
+import { groundedCapabilityAudience } from './capability-catalog-audience';
 import { capabilityCatalogFocusedTask, capabilityCatalogPendingRequirementIds, capabilityCatalogRepairNudge, capabilityCatalogRepairPlan, captureCapabilityCatalogPendingRequirements, deterministicCapabilityActionIdentityFallback, deterministicCapabilityDescriptionFallback, establishPendingCapabilityEvidenceIdentity, pendingCapabilityEvidenceObservableActionFailure, preserveCapabilityCatalogDescriptionIdentity, supersedeUnboundPendingOutcomeDuplicates, type PendingCapabilityEvidenceIdentity } from './capability-catalog-repair-plan';
 
 const capability = (id: string, factors: string[], description = '') => ({
   id, name: `Outcome ${id}`, description, category: 'core', criticality: 'high', criticality_factors: factors,
   operations: [], related_entities: [], related_domains: [],
 }) as SystemCapability;
+
+test('reusable libraries use their consumer audience for deterministic comprehension repair', () => {
+  assert.equal(groundedCapabilityAudience(
+    capability('routing', []),
+    { concepts: [], evidence: [] },
+    [],
+    [],
+    'library',
+  ), 'Developers');
+});
 
 describe('capability catalog repair planning', () => {
 
