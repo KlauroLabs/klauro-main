@@ -145,7 +145,7 @@ import {
   updatedIncrementalFileRecord,
   type ProjectContributionRefreshFailure,
 } from './incremental-contribution-refresh';
-import { previousDescriptionNeedsCurrentValidation } from './previous-description-validation';
+import { CURRENT_NARRATIVE_VALIDATION_VERSION, previousDescriptionNeedsCurrentValidation } from './previous-description-validation';
 import { projectCapabilityCatalogPromptEvidence } from './capability-catalog-prompt-evidence';
 import { refreshIncrementalStateFromGraph } from './incremental-state-refresh';
 import { buildImportedHandlerResolver } from './imported-handler-resolver';
@@ -3004,6 +3004,7 @@ export class AnalyzerOrchestrator {
         attempted: false,
         reason: previousOutput.enhanced_system_purpose.description_generation?.status,
         generated_at: new Date().toISOString(),
+        validation_version: previousOutput.enhanced_system_purpose.description_generation?.validation_version,
         origin_source: previousOutput.enhanced_system_purpose.description_generation?.origin_source
           || (previousOutput.enhanced_system_purpose.description_source === 'ai' ? 'ai'
             : previousOutput.enhanced_system_purpose.description_source === 'manual' ? 'manual'
@@ -12446,6 +12447,7 @@ export class AnalyzerOrchestrator {
       reason,
       budget_ms: Number.isFinite(budgetMs) ? budgetMs : undefined,
       generated_at: new Date().toISOString(),
+      validation_version: status === 'ai_applied' ? CURRENT_NARRATIVE_VALIDATION_VERSION : undefined,
     };
   }
 

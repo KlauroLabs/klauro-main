@@ -1,6 +1,8 @@
 import type { CASOutput } from '../../types/cas.types';
 import { isLanguageBuiltinName } from './language-builtins';
 
+export const CURRENT_NARRATIVE_VALIDATION_VERSION = 1;
+
 function hasUnsupportedExternalClaim(previousOutput: CASOutput): boolean {
   const description = previousOutput.enhanced_system_purpose?.inferred_description || '';
   if (/\b(?:connects to|connected to|calls out to)\b[^.]*\b(?:Self|gtk|objc_sys|[A-Z][A-Za-z0-9]*(?:Data|Decl|Item|Pool|Size))\b/.test(description)) {
@@ -18,6 +20,12 @@ function hasUnsupportedExternalClaim(previousOutput: CASOutput): boolean {
 
 export function previousDescriptionNeedsCurrentValidation(previousOutput: CASOutput): boolean {
   const description = previousOutput.enhanced_system_purpose?.inferred_description || '';
+  if (
+    description.trim() &&
+    previousOutput.enhanced_system_purpose?.description_generation?.validation_version === CURRENT_NARRATIVE_VALIDATION_VERSION
+  ) {
+    return false;
+  }
   const domain = previousOutput.enhanced_system_purpose?.primary_domain || '';
   const previousOperations = (previousOutput.capabilities || []).flatMap(capability => capability.operations || []);
   const previousHasRead = previousOperations.some(operation =>

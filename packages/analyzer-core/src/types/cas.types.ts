@@ -3194,6 +3194,7 @@ export interface CASDescriptionGeneration {
   reason?: string;
   budget_ms?: number;
   generated_at?: string;
+  validation_version?: number;
 
 
   origin_source?: 'deterministic' | 'ai' | 'manual';

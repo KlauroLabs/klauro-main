@@ -8,7 +8,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { emptyFlowGraph } from '../helpers/empty-flow-graph';
 import { validateElementDescription } from '../../ai/element-description-validator';
-import { previousDescriptionNeedsCurrentValidation } from '../../analyzer/core/previous-description-validation';
+import { CURRENT_NARRATIVE_VALIDATION_VERSION, previousDescriptionNeedsCurrentValidation } from '../../analyzer/core/previous-description-validation';
 import {
   capabilityDescriptionBatchSize,
   resolveCapabilityCatalogRoute,
@@ -13705,6 +13705,30 @@ describe('P0 follow-up: the sentence-level DROP filter carries no hardcoded voca
       },
     } as any;
     expect(previousDescriptionNeedsCurrentValidation(noClassification)).toBe(false);
+  });
+
+  it('(gate c) trusts a narrative that already passed the current validation contract', () => {
+    const currentHttpLibraryDescription = {
+      enhanced_system_purpose: {
+        inferred_description: 'Axum is an HTTP routing and request-handling library for Rust developers. Developers route requests to handlers and generate responses with minimal boilerplate.',
+        primary_domain: 'http-routing-request-handling',
+        description_generation: {
+          status: 'ai_applied',
+          attempted: true,
+          validation_version: CURRENT_NARRATIVE_VALIDATION_VERSION,
+        },
+      },
+    } as any;
+    expect(previousDescriptionNeedsCurrentValidation(currentHttpLibraryDescription)).toBe(false);
+
+    const legacyUnstampedDescription = {
+      enhanced_system_purpose: {
+        inferred_description: currentHttpLibraryDescription.enhanced_system_purpose.inferred_description,
+        primary_domain: 'http-routing-request-handling',
+        description_generation: { status: 'ai_applied', attempted: true },
+      },
+    } as any;
+    expect(previousDescriptionNeedsCurrentValidation(legacyUnstampedDescription)).toBe(true);
   });
 });
 
