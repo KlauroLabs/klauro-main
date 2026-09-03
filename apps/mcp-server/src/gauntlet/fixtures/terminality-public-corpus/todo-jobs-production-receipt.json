@@ -15,24 +15,24 @@
     }
   },
   "analysis": {
-    "analysis_id": "analysis_1788444078428_jmeng6qrm",
-    "analysis_timestamp": "2026-09-03T14:01:27.331Z",
-    "analyzer_build": "source-sha256:8c3739b4b8386f40b4850e306104aba6594b6c5c17a40388b6e9895725d96b88",
-    "analyzer_source_base_commit": "c3cd176fa67094b79a8b86ae59126146546d7632",
-    "analyzer_source_sha256": "8c3739b4b8386f40b4850e306104aba6594b6c5c17a40388b6e9895725d96b88",
+    "analysis_id": "analysis_1788456272082_x5zi6pgfk",
+    "analysis_timestamp": "2026-09-03T17:24:39.365Z",
+    "analyzer_build": "source-sha256:54bdd5f0f48866f7deef3da7f272c6e247f6862596aa486a482d261fdd565c33",
+    "analyzer_source_base_commit": "a6c1f74670f124c647f04df726f1bde89e07ac94",
+    "analyzer_source_sha256": "54bdd5f0f48866f7deef3da7f272c6e247f6862596aa486a482d261fdd565c33",
     "analyzer_source_file_count": 455,
     "production_cas": "todo-jobs-production-cas.json.gz",
-    "production_cas_sha256": "1a839e46e06df63d9054284056f6994965c5412910f5664f8a46083eaa485e00",
-    "capabilities_sha256": "cfb9b46d2bae5e6ea6cf4eb1c3f37cc1c6ecf3412ab8265676149f7e17573ea6",
+    "production_cas_sha256": "ed244f34cc0ad2e7bd2ba0987faf96cd20a56392e6d08de66988bffe405fb8a6",
+    "capabilities_sha256": "74d37f51fe4c3f8c2595283a62ff7e45d8efbe53e0cc14b5ed83c89485ab2c6d",
     "provider": "deepinfra",
     "model": "Qwen/Qwen3-Next-80B-A3B-Instruct",
     "prompt_version": "capability_catalog.v2",
     "semantic_schema_version": "e1.1",
     "semantic_trace": "todo-jobs-production-semantic.jsonl",
-    "semantic_trace_sha256": "fceb03554e59228a3be21f23c38bd031b3006cc19ce19c0b48e8453e8e3c5b68",
+    "semantic_trace_sha256": "fa132cb9a080fa75932f760ccfc416367419cd8571b91e68dca681ffcfb1971a",
     "ai_cache": "disabled",
     "parser_fingerprint": "2ce1e07040cb30c7",
-    "derived_fingerprint": "e8beee6a65fd5ea7"
+    "derived_fingerprint": "95e517eb8b66e4d1"
   },
   "repo_id": "github:Babadinho/todo-jobs@c7c139a966ee5eafa49066a89222b56ba8233c27",
   "known_node_ids": [
@@ -978,15 +978,15 @@
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-03T14:01:26.236Z"
+          "generated_at": "2026-09-03T17:24:38.399Z"
         },
         "description": "Create and assign job applications to named categories to organize applications by type or priority, with categories visible in the application list.",
         "description_source": "ai",
         "description_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "budget_ms": 20000,
-          "generated_at": "2026-09-03T14:01:26.948Z"
+          "budget_ms": 600000,
+          "generated_at": "2026-09-03T17:24:39.034Z"
         },
         "category": "core",
         "operations": [
@@ -1256,15 +1256,15 @@
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-03T14:01:26.237Z"
+          "generated_at": "2026-09-03T17:24:38.400Z"
         },
         "description": "Update job application status to Rejected, Assessment, Interview, or Closed, with automatic closure triggered by end date expiration.",
         "description_source": "ai",
         "description_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "budget_ms": 20000,
-          "generated_at": "2026-09-03T14:01:26.948Z"
+          "budget_ms": 600000,
+          "generated_at": "2026-09-03T17:24:39.034Z"
         },
         "category": "core",
         "operations": [
@@ -1305,15 +1305,15 @@
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-03T14:01:26.237Z"
+          "generated_at": "2026-09-03T17:24:38.400Z"
         },
         "description": "Modify job details or remove applications entirely, with changes reflected in the application list and associated categories.",
         "description_source": "ai",
         "description_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "budget_ms": 20000,
-          "generated_at": "2026-09-03T14:01:26.948Z"
+          "budget_ms": 600000,
+          "generated_at": "2026-09-03T17:24:39.034Z"
         },
         "category": "core",
         "operations": [
@@ -1883,15 +1883,15 @@
         "name_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "generated_at": "2026-09-03T14:01:26.237Z"
+          "generated_at": "2026-09-03T17:24:38.400Z"
         },
-        "description": "Narrow job listings by category, status, or job board to locate specific applications quickly using built-in filtering controls.",
+        "description": "Narrow job applications by category, status, or job board to locate specific entries quickly using visible filters and search.",
         "description_source": "ai",
         "description_generation": {
           "status": "ai_applied",
           "attempted": true,
-          "budget_ms": 20000,
-          "generated_at": "2026-09-03T14:01:26.948Z"
+          "budget_ms": 600000,
+          "generated_at": "2026-09-03T17:24:39.034Z"
         },
         "category": "core",
         "operations": [
