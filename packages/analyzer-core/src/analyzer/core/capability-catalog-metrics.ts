@@ -1,13 +1,6 @@
 import type { CASDataEntity, SystemCapability } from '../../types/cas.types';
 import { outcomeIdentityTokens } from './capability-evidence-language';
 
-interface CapabilityCatalogProjectSignal {
-  productDocTitle?: string;
-  productDocSummary?: string;
-  manifestDescription?: string;
-  summary?: string;
-}
-
 export function catalogCandidateEntityFacts(
   candidate: SystemCapability,
   entityById: Map<string, CASDataEntity>,
@@ -18,14 +11,14 @@ export function catalogCandidateEntityFacts(
   });
 }
 
-export function catalogPromptCapabilityLimit(
-  distinctFamilyCount: number,
+export function catalogPromptResponseComplexity(
+  evidenceFamilyCount: number,
   behaviorFamilyCount: number,
   entityFamilyCount: number,
   requiredOutcomeCount = 0,
 ): number {
   return Math.max(1, Math.max(
-    distinctFamilyCount,
+    evidenceFamilyCount,
     behaviorFamilyCount,
     entityFamilyCount,
     requiredOutcomeCount,
@@ -52,15 +45,4 @@ export function uniquelyMatchingCapabilityEntityIds(
       entityTokens.every((token, index) => token === resourceTokens[index]);
   });
   return matches.length === 1 ? [matches[0].id] : [];
-}
-
-export function firstPartySupportsIdentityProduct(signal?: CapabilityCatalogProjectSignal): boolean {
-  if (!signal) return false;
-  const text = [signal.productDocTitle, signal.productDocSummary, signal.manifestDescription, signal.summary]
-    .filter(Boolean)
-    .join(' ');
-  const identity = '(?:identity|authentication|authorization|access[ -]?control)';
-  const product = '(?:platform|service|provider|product|system|server|gateway)';
-  return new RegExp(`\\b${identity}\\b[^.]{0,60}\\b${product}\\b|\\b${product}\\b[^.]{0,60}\\b${identity}\\b`, 'i').test(text) ||
-    new RegExp(`\\b(?:provides?|delivers?|offers?|sells?|issues?|verifies?|authenticates?|authorizes?)\\b[^.]{0,60}\\b${identity}\\b`, 'i').test(text);
 }

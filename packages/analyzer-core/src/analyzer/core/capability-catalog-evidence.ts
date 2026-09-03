@@ -6,10 +6,8 @@ import { analyzeTerminality } from './terminality';
 import { observedCapabilityLifecycleActions } from './capability-lifecycle-actions';
 import { normalizedSubjectTokens, outcomeIdentityTokens, outcomeTokenMatches, productTextCorroboratesActionAndSubject } from './capability-evidence-language';
 import { CAPABILITY_PURPOSE_VERBS, isBareNounCapabilityLabel, isCrudInventoryCapabilityLabel, isGenericManagementCapabilityLabel } from "./capability-naming";
-import { capabilityIsSupportingIdentityMechanism } from './capability-identity-scope';
 import { capabilityHasReversibleUserActionLifecycle } from './capability-reversible-lifecycle';
-export { catalogCandidateEntityFacts, catalogPromptCapabilityLimit, catalogRelatedEntityIds, uniquelyMatchingCapabilityEntityIds } from './capability-catalog-metrics';
-export { firstPartySupportsIdentityProduct } from './capability-catalog-metrics';
+export { catalogCandidateEntityFacts, catalogPromptResponseComplexity, catalogRelatedEntityIds, uniquelyMatchingCapabilityEntityIds } from './capability-catalog-metrics';
 import { isStructuralExecutableCliEntry } from './entry-point-product-role';
 import { demoteCoveredImplementationAggregates as demoteCoveredImplementationAggregatesImpl } from './capability-catalog-aggregate-demotion';
 export type CapabilityEvidenceRole = NonNullable<SystemCapability['evidence_role']>;
@@ -687,6 +685,7 @@ export function classifyCapabilityEvidence(
 ): SystemCapability[] {
   const entityById = new Map(dataEntities.map(entity => [entity.id, entity]));
   const entryPointById = new Map((context.entryPoints || []).map(entryPoint => [entryPoint.id, entryPoint]));
+  const terminalityById = catalogCandidateTerminality(candidates);
   const nodeById = new Map((context.nodes || []).map(node => [node.id, node]));
   return candidates.map(candidate => {
     let evidenceRole: CapabilityEvidenceRole;
@@ -694,6 +693,8 @@ export function classifyCapabilityEvidence(
     const operations = candidate.operations || [];
     const allStructuralExecutableCli = operations.length > 0 && operations.every(operation =>
       isStructuralExecutableCliEntry(entryPointById.get(operation.entry_point_id)));
+    const firstParty = productTextCorroboratesCapability(candidate, projectTextSignal);
+    const upstreamPrerequisite = (terminalityById.get(candidate.id)?.distance_to_terminal || 0) > 0;
     const bareDeliveryAggregate = isBareNounCapabilityLabel(candidate.name) &&
       operations.length > 0 && operations.every(operation =>
         /^(?:event|route)$/i.test(operation.entry_point_type || ''));
@@ -706,9 +707,9 @@ export function classifyCapabilityEvidence(
     } else if (allStructuralExecutableCli) {
       evidenceRole = 'supporting-mechanism';
       reasons.push('filesystem-executable-without-product-command-registration');
-    } else if (capabilityIsSupportingIdentityMechanism(candidate, entryPointById, projectTextSignal)) {
+    } else if (upstreamPrerequisite && !firstParty) {
       evidenceRole = 'supporting-mechanism';
-      reasons.push('identity-is-upstream-substrate-outside-an-identity-product');
+      reasons.push('upstream-prerequisite-outside-product-purpose');
     } else if (bareDeliveryAggregate) {
       evidenceRole = 'supporting-mechanism';
       reasons.push('bare-page-and-event-aggregate-supports-outcomes');
@@ -719,7 +720,6 @@ export function classifyCapabilityEvidence(
         ? 'first-party-product-delivery-surface-supports-outcome'
         : 'delivery-surface-is-evidence-not-product-outcome');
     } else {
-      const firstParty = productTextCorroboratesCapability(candidate, projectTextSignal);
       const externalReach = capabilityHasExternalReach(candidate, entryPointById);
       const productEntity = candidateHasProductEntity(candidate, entityById, projectTextSignal);
       const userOutcomeJourney = capabilityHasUserOutcomeJourney(candidate, context.userJourneys || []);

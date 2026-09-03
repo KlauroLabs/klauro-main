@@ -8941,16 +8941,32 @@ describe('top-down capability evidence (C2)', () => {
         frameworks: [], userJourneys: [], dataEntities: [],
         candidateCapabilities: [{
           id: 'cap_signin_google', name: 'Signin Google', category: 'core',
-          evidence_role: 'product-outcome',
+          evidence_role: 'supporting-mechanism',
+          evidence_role_reasons: ['upstream-prerequisite-outside-product-purpose'],
           evidence_examples: ['Google sign in', 'authenticate user'],
           related_entities: [], related_domains: ['authentication'],
           operations: [{ entry_point_id: 'signin', entry_point_type: 'http', action: 'Authenticate', path_or_command: '/auth/signin-google' }],
         }, {
           id: 'cap_google_token', name: 'Google Token', category: 'supporting',
-          evidence_role: 'product-outcome',
+          evidence_role: 'supporting-mechanism',
+          evidence_role_reasons: ['upstream-prerequisite-outside-product-purpose'],
           evidence_examples: ['Google authentication token'],
           related_entities: [], related_domains: ['authentication'],
           operations: [{ entry_point_id: 'token', entry_point_type: 'http', action: 'Authenticate', path_or_command: '/auth/google-token' }],
+        }, {
+          id: 'cap_track_applications', name: 'Track job applications', category: 'core',
+          evidence_kind: 'entity', evidence_examples: ['track job applications'],
+          related_entities: [], related_domains: ['job tracking'],
+          operations: [{ entry_point_id: 'applications', entry_point_type: 'http', action: 'Track', path_or_command: '/applications' }],
+          depends_on: [{
+            from_capability: 'cap_track_applications', to_capability: 'cap_signin_google',
+            dependency_type: 'requires', strength: 'required',
+            evidence: { shared_services: [], shared_nodes: [] }, description: 'Tracking applications requires sign in',
+          }, {
+            from_capability: 'cap_track_applications', to_capability: 'cap_google_token',
+            dependency_type: 'requires', strength: 'required',
+            evidence: { shared_services: [], shared_nodes: [] }, description: 'Tracking applications requires a session token',
+          }],
         }],
         externalServices: ['Google'], flowGraph: { capability_candidates: [] },
         projectTextSignal: {
@@ -10113,7 +10129,8 @@ describe('top-down capability evidence (C2)', () => {
       expect(withCtx.task).toMatch(/INTENT RECONCILIATION/);
       expect(withCtx.facts.top_down_signals.product_overview).toMatch(/real-time multiplayer and AI opponents/);
       expect(withCtx.task).toMatch(/Never return two capabilities whose descriptions assert the same result/);
-      expect(withCtx.task).toMatch(/access control/i);
+      expect(withCtx.task).toMatch(/scope-relative test/i);
+      expect(withCtx.task).toMatch(/never decide from a domain-word blacklist/i);
       expect(withCtx.task).toMatch(/12-28 words and at least 55 characters/);
       expect(withCtx.task).toMatch(/Do not start with actor scaffolding/);
       expect(withCtx.task).toMatch(/do not replace them with generic "data" or "information"/);
@@ -12981,7 +12998,7 @@ describe('enterprise AI semantic guards', () => {
       { name: 'Access Enterprise Dashboard', category: 'supporting', related_entities: [], operations: [{ entry_point_type: 'page' }] },
       { name: 'Workspace Overview', category: 'supporting', related_entities: [], related_domains: ['workspace'], operations: [{ entry_point_type: 'route' }] },
     ];
-    expect(orch.catalogDistinctFamilyCount(candidates)).toBe(1);
+    expect(orch.catalogDistinctFamilies(candidates).length).toBe(1);
   });
 
   it('groups different operations around the same distinctive entity into one product family', () => {
@@ -12989,7 +13006,7 @@ describe('enterprise AI semantic guards', () => {
       { name: 'View Enterprise Orders', related_entities: ['entity_enterpriseorder'], operations: [] },
       { name: 'Calculate Enterprise Totals', related_entities: ['entity_enterpriseorder'], operations: [] },
     ];
-    expect(orch.catalogDistinctFamilyCount(candidates)).toBe(1);
+    expect(orch.catalogDistinctFamilies(candidates).length).toBe(1);
   });
 
   it('counts route-backed operations as a product family when they touch a domain entity', () => {
@@ -12999,7 +13016,7 @@ describe('enterprise AI semantic guards', () => {
       related_entities: ['entity_customer'],
       operations: [{ entry_point_type: 'route', action: 'create' }],
     }];
-    expect(orch.catalogDistinctFamilyCount(candidates)).toBe(1);
+    expect(orch.catalogDistinctFamilies(candidates).length).toBe(1);
   });
 
   it('ignores a transport label shared by most candidates when counting product families', () => {
@@ -13023,7 +13040,7 @@ describe('enterprise AI semantic guards', () => {
       operations: [{ entry_point_type: 'external' }],
     });
 
-    expect(orch.catalogDistinctFamilyCount(candidates)).toBe(6);
+    expect(orch.catalogDistinctFamilies(candidates).length).toBe(6);
   });
 
   it('removes an aggregate registry parent when multiple semantic child surfaces cover it', () => {
@@ -13381,7 +13398,7 @@ describe('enterprise AI semantic guards', () => {
   it('keeps genuinely distinct product areas as separate evidence families', () => {
     const candidates = ['Orders', 'Invoices', 'Payments', 'Subscriptions', 'Inventory', 'Shipping', 'Returns', 'Catalog']
       .map((name, index) => ({ name: `Manage ${name}`, related_entities: [`entity_${index}`], operations: [] }));
-    expect(orch.catalogDistinctFamilyCount(candidates)).toBe(8);
+    expect(orch.catalogDistinctFamilies(candidates).length).toBe(8);
   });
 });
 

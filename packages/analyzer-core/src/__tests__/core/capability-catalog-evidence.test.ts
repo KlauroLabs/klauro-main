@@ -12,7 +12,7 @@ import {
   capabilityOutcomeNameUnsupportedTokens,
   narrowCapabilityEvidenceCandidates,
   capabilityRequiresCatalogCoverage,
-  catalogPromptCapabilityLimit,
+  catalogPromptResponseComplexity,
   catalogEntityCandidateGroups,
   catalogEvidenceCandidates,
   catalogRequiredEvidenceCandidates,
@@ -833,8 +833,8 @@ describe('capability evidence roles', () => {
 
 describe('catalogEntityCandidateGroups', () => {
   test('sizes only the prompt response ceiling without defining a catalog minimum', () => {
-    expect(catalogPromptCapabilityLimit(37, 0, 37)).toBe(37);
-    expect(catalogPromptCapabilityLimit(2, 1, 1, 5)).toBe(5);
+    expect(catalogPromptResponseComplexity(37, 0, 37)).toBe(37);
+    expect(catalogPromptResponseComplexity(2, 1, 1, 5)).toBe(5);
   });
 
   test('groups candidates sharing an entity while preserving unrelated product families', () => {

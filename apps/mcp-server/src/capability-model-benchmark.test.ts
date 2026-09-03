@@ -34,6 +34,8 @@ test('scores grounded product language above implementation-shaped output', () =
   }, 'model-b', 1, 180000);
   assert.ok(product.score > implementation.score);
   assert.equal(product.score_components.product_language, 25);
+  assert.equal(product.score_components.outcome_presence, 10);
+  assert.equal(product.score_components.catalog_size, undefined);
   assert.equal(implementation.score_components.duration, 0);
 });
 

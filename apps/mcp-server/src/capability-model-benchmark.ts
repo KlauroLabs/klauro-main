@@ -120,7 +120,7 @@ export function scoreCapabilityModelTrial(
     narrative: narrative * 25,
     product_language: language * 25,
     evidence_grounding: evidence * 15,
-    catalog_size: count * 10,
+    outcome_presence: count * 10,
   };
   const score = rounded(Object.values(components).reduce((sum, value) => sum + value, 0));
   return {
