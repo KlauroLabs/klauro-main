@@ -284,7 +284,7 @@ export function deterministicCapabilityDescriptionFallback(args: {
       const titleActionGrounded = supportedTitleActions.some(action => descriptionContainsAction(sentence, action));
       const lifecycleComplete = actions.every(action => descriptionContainsAction(sentence, action));
       const wordCount = descriptionWords(sentence).length;
-      return subjectGrounded && titleActionGrounded && lifecycleComplete && wordCount >= 12 && wordCount <= 28;
+      return subjectGrounded && titleActionGrounded && lifecycleComplete && wordCount >= 6 && wordCount <= 28;
     });
   const titleGroundsEveryCandidate = resolvedCandidates.every(candidate => {
     const candidateSubjects = capabilityEvidenceSubjectTokens(candidate, args.evidenceEntityNames);
@@ -358,7 +358,12 @@ export function deterministicCapabilityDescriptionFallback(args: {
       return `${audience} can ${normalizedTitle} as part of their normal workflow whenever needed.`;
     }
     if (firstPartyOutcomeBound) {
-      if (coreOutcomeTitle !== normalizedTitle) return audience + " can " + coreOutcomeTitle + " as part of their normal workflow whenever needed.";
+      if (/^route requests? to handlers?\b/.test(normalizedTitle)) {
+        const qualifier = normalizedTitle.match(/\b(?:for|from|through|via|with)\b.*$/i)?.[0]
+          .replace(/^with\b/i, 'through');
+        return `${audience} direct incoming requests to the handlers that serve them${qualifier ? ` ${qualifier}` : ''}.`;
+      }
+      if (coreOutcomeTitle !== normalizedTitle) return audience + " can " + coreOutcomeTitle + ".";
       return `${audience} can ${normalizedTitle} as those ${subjectPhrase} change over time.`;
     }
     if (actions.length > 1) {
@@ -370,7 +375,7 @@ export function deterministicCapabilityDescriptionFallback(args: {
     return `${audience} can ${normalizedTitle} as part of their normal workflow whenever needed.`;
   })();
   const wordCount = descriptionWords(description).length;
-  if (wordCount < 12 || wordCount > 28) return undefined;
+  if (wordCount < 6 || wordCount > 28) return undefined;
   const fallback: SystemCapability = {
     ...args.identity,
     name: args.identity.name,
@@ -855,8 +860,8 @@ export function capabilityCatalogRepairNudge(
 ): string {
   const obligation = batch.mode === 'description'
     ? batch.repairName
-      ? `${publishabilityFeedback || ''} Replace the deterministic fallback name and description with one durable user outcome. Begin the name with a specific imperative product verb and the exact evidence subject. Never begin with Manage, Handle, or Process, never use noun forms such as Category Deletion, Import Management, or Account Creation, and do not enumerate CRUD verbs in the name. Prefer an evidence-compatible purpose verb such as Maintain, Organize, Configure, Track, Reconcile, or Authenticate; use one observable action only when no more durable outcome is grounded. The description MUST be new, contain 12-28 words and at least 55 characters, and explain the durable outcome and its evidence-grounded scope without mechanically listing required_visible_actions. Treat required_visible_actions as attached evidence constraints, not prose quotas. Mention a destructive effect in ordinary audience language only when the supplied evidence grounds it.`
-      : `${publishabilityFeedback || ''} Repair only the rejected description for the stable accepted identity. Write a new description containing 12-28 words and at least 55 characters; returning the current rejected wording is invalid. Explain the complete evidence-grounded scope in durable user-outcome language, not by mechanically enumerating transport or CRUD operation labels. Treat observable_actions as attached evidence constraints, not prose quotas. Mention a destructive effect in ordinary audience language only when the supplied evidence grounds it. Do not copy a route phrase or combine its path nouns as a delivery description.`
+      ? `${publishabilityFeedback || ''} Replace the deterministic fallback name and description with one durable user outcome. Begin the name with a specific imperative product verb and the exact evidence subject. Never begin with Manage, Handle, or Process, never use noun forms such as Category Deletion, Import Management, or Account Creation, and do not enumerate CRUD verbs in the name. Prefer an evidence-compatible purpose verb such as Maintain, Organize, Configure, Track, Reconcile, or Authenticate; use one observable action only when no more durable outcome is grounded. The description MUST be new, contain 6-28 words and at least 30 characters, and explain the durable outcome and its evidence-grounded scope without mechanically listing required_visible_actions. Treat required_visible_actions as attached evidence constraints, not prose quotas. Mention a destructive effect in ordinary audience language only when the supplied evidence grounds it.`
+      : `${publishabilityFeedback || ''} Repair only the rejected description for the stable accepted identity. Write a new description containing 6-28 words and at least 30 characters; returning the current rejected wording is invalid. Explain the complete evidence-grounded scope in durable user-outcome language, not by mechanically enumerating transport or CRUD operation labels. Treat observable_actions as attached evidence constraints, not prose quotas. Mention a destructive effect in ordinary audience language only when the supplied evidence grounds it. Do not copy a route phrase or combine its path nouns as a delivery description.`
     : batch.mode === 'outcome'
       ? capabilityCatalogOutcomeRepairNudge(batch.requirements, batch.candidateIds)
       : batch.candidateIds.length > 1

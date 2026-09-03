@@ -149,6 +149,30 @@ test('capability publication treats generic lifecycle prose as an unresolved tem
   assert.equal(orchestrator.capabilityPublishabilityFailure(capability), 'structural-placeholder-description');
 });
 
+test('capability publication accepts a concise grounded audience outcome', () => {
+  const orchestrator = new AnalyzerOrchestrator() as any;
+  const capability = {
+    id: 'routing', name: 'Route requests to handlers with a macro free API', name_source: 'ai',
+    description: 'Developers direct incoming requests to the handlers that serve them through a macro free API.',
+    description_source: 'deterministic', category: 'core', criticality: 'high',
+    criticality_factors: ['catalog-outcome-requirement:all:route'],
+    related_entities: [], related_domains: ['routing'],
+    operations: [{ entry_point_id: 'routing-entry', entry_point_type: 'http', action: 'route' }],
+  };
+
+  assert.equal(orchestrator.capabilityPublishabilityFailure(capability), undefined);
+  assert.deepEqual(orchestrator.validateElementDescription(capability.description, {
+    id: 'routing',
+    name: capability.name,
+    kind: 'capability',
+    operations: ['route requests to handlers'],
+    relatedEntities: [],
+    relatedDomains: ['routing'],
+    rawIdentifiers: [],
+    productOutcomeTerms: ['Users can route requests to handlers with a macro free API.'],
+  }), { ok: true });
+});
+
 test('a scoped AI repair attempt cannot outlive its scheduler deadline', async () => {
   const orchestrator = new AnalyzerOrchestrator() as any;
   const startedAt = Date.now();

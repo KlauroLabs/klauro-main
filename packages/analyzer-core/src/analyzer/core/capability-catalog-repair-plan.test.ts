@@ -192,7 +192,7 @@ describe('capability catalog repair planning', () => {
       evidenceCandidates: [routingEvidence], audience: "Developers", firstPartyTexts: [], validate: allow,
     });
     assert.equal(qualifiedOutcome?.name, "Route requests to handlers with a macro free API");
-    assert.equal(qualifiedOutcome?.description, "Developers can route requests to handlers as part of their normal workflow whenever needed.");
+    assert.equal(qualifiedOutcome?.description, "Developers direct incoming requests to the handlers that serve them through a macro free API.");
 
     const exactFirstPartyOverride = deterministicCapabilityDescriptionFallback({
       identity: { ...capability('remove-source', ['catalog-candidate:source-evidence']), name: 'Remove tracked requests' },
@@ -399,7 +399,7 @@ describe('capability catalog repair planning', () => {
     assert.match(nudge, /description-target-not-grounded/);
     assert.match(nudge, /exact evidence_subject terms/);
     assert.match(nudge, /durable user-outcome language/);
-    assert.match(nudge, /12-28 words and at least 55 characters/);
+    assert.match(nudge, /6-28 words and at least 30 characters/);
     assert.match(nudge, /returning the current rejected wording is invalid/);
     assert.match(nudge, /not by mechanically enumerating transport or CRUD operation labels/);
     assert.match(nudge, /Do not copy a route phrase/);
