@@ -45,6 +45,84 @@ test('capability catalog parsing preserves braces inside strings and rejects inc
   )).toEqual([]);
 });
 
+test('recovers a grounded lifecycle outcome when AI produces no publishable proposal', async () => {
+  const localOrch = new AnalyzerOrchestrator() as any;
+  const operations = [
+    ['create', 'POST', '/work_orders'],
+    ['read', 'GET', '/work_orders'],
+    ['read', 'GET', '/work_orders/:id'],
+    ['update', 'PATCH', '/work_orders/:id'],
+    ['delete', 'DELETE', '/work_orders/:id'],
+  ].map(([action, method, route], index) => ({
+    entry_point_id: `entry-${index}`,
+    entry_point_type: 'http',
+    action,
+    path_or_command: route,
+    trigger: { method, path: route },
+  }));
+  const candidate = {
+    id: 'cap_work_orders_management',
+    name: 'delete and read and update and create work and order',
+    structural_label: 'work orders management',
+    category: 'core',
+    evidence_kind: 'entity',
+    evidence_role: 'product-outcome',
+    related_entities: ['entity_workorder'],
+    related_domains: ['work-orders'],
+    operations,
+    criticality: 'medium',
+    criticality_factors: [],
+  };
+  jest.spyOn(localOrch, 'catalogEvidenceCandidates').mockImplementation((candidates: any) => candidates);
+  jest.spyOn(localOrch, 'aiExtractCapabilityCatalog').mockResolvedValue([]);
+  jest.spyOn(localOrch, 'reconcileCatalogedCapabilities').mockImplementation((value: any) => value);
+  const purpose: any = { primary_domain: 'field-service', core_concepts: [] };
+
+  const result = await localOrch.runCapabilityCatalogWithQualityGate({
+    systemName: 'work-orders',
+    enhancedSystemPurpose: purpose,
+    frameworks: ['rails'],
+    userJourneys: operations.map((operation, index) => ({
+      id: `journey-${index}`,
+      name: `${operation.action} work orders`,
+      journey_kind: 'user-facing',
+      entry_point_id: operation.entry_point_id,
+      terminal_entities: [{ name: 'WorkOrder', access: operation.action, node_id: 'entity_workorder', terminal_kind: 'entity' }],
+      terminal_effects: { entities_read: ['WorkOrder'], entities_written: ['WorkOrder'], external_services: [], messages_emitted: [] },
+    })),
+    dataEntities: [{
+      id: 'entity_workorder',
+      name: 'WorkOrder',
+      fields: [
+        { name: 'status', type: 'string', is_sensitive: false },
+        { name: 'customer_id', type: 'references', is_sensitive: false },
+      ],
+      lifecycle: { created_by: ['entry-0'], read_by: ['entry-1', 'entry-2'], updated_by: ['entry-3'], deleted_by: ['entry-4'] },
+    }],
+    candidateSnapshot: [candidate],
+    behaviorSurfaces: [],
+    externalServices: [],
+    flowGraph: emptyFlowGraph(),
+    projectTextSignal: { concepts: [], evidence: ['README.md'], productDocSummary: 'Operators organize work orders for customers.', productVocabulary: ['organize', 'work', 'order', 'customer'] },
+    entryPoints: operations.map(operation => ({
+      id: operation.entry_point_id,
+      name: `${operation.trigger.method} ${operation.trigger.path}`,
+      type: 'http',
+      route: { method: operation.trigger.method, path: operation.trigger.path },
+      handler: { file: 'app/controllers/work_orders_controller.rb' },
+      metadata: {},
+    })),
+    edges: [],
+    exitPoints: [],
+    nodes: [],
+    budgetMs: 30000,
+  });
+
+  expect(result).toHaveLength(1);
+  expect(result[0].name).toBe('Organize work orders');
+  expect(purpose.capability_catalog_coverage.status).toBe('accepted');
+});
+
 test("does not retry uncited structural evidence families as standalone capabilities", async () => {
   const localOrch = new AnalyzerOrchestrator() as any;
   const candidates = Array.from({ length: 37 }, (_, index) => ({
@@ -9900,6 +9978,25 @@ describe('top-down capability evidence (C2)', () => {
       expect(signal.productDocSummary).toContain('Know what will break before changing something.');
       expect(signal.productDocSource).toBe('README.md');
       expect(signal.manifestDescription).toBe('Worker package for Product Atlas');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not inherit enclosing product documents into a scaffold analysis root', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-topdown-fixture-scope-'));
+    const fixture = path.join(root, 'packages', 'analyzer', 'fixtures', 'invoice-sample');
+    try {
+      fs.mkdirSync(path.join(root, '.git'), { recursive: true });
+      fs.mkdirSync(fixture, { recursive: true });
+      fs.writeFileSync(path.join(root, 'README.md'), ['# Parent Product', '', 'Parent Product helps teams coordinate unrelated codebase work.'].join(String.fromCharCode(10)));
+      fs.writeFileSync(path.join(root, 'AGENTS.md'), ['# Product rules', '', 'Work alongside people and agents without duplicating or colliding.'].join(String.fromCharCode(10)));
+      fs.writeFileSync(path.join(fixture, 'package.json'), JSON.stringify({ name: 'invoice-sample' }));
+
+      const signal = orch.extractProjectTextSignal(fixture);
+      expect(signal.productDocTitle).toBeUndefined();
+      expect(signal.productDocSummary).toBeUndefined();
+      expect(signal.productVocabulary).not.toEqual(expect.arrayContaining(['coordinate', 'collide']));
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

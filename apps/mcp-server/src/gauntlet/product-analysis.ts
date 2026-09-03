@@ -37,6 +37,7 @@ import {
   deriveLocalPackageImportContext,
   LOCAL_PACKAGE_IMPORT_CONTEXT_PATH,
 } from '../../../../packages/analyzer-core/src/analyzer/core/local-package-import-context';
+import { isScaffoldOrTestPath } from '../../../../packages/analyzer-core/src/analyzer/core/scaffold-paths';
 import { appendStoredLocalPackageContext } from '../source-snapshot-package-context';
 
 let localServerUrl: string | null = null;
@@ -475,6 +476,11 @@ const INHERITED_PRODUCT_DOCUMENTS = [
   'docs/context/CONTEXT.md', 'docs/context/VISION.md',
 ];
 
+export function shouldInheritAncestorProductDocuments(sourceRoot: string, repositoryRoot: string): boolean {
+  const relativeSourceRoot = path.relative(repositoryRoot, sourceRoot).split(path.sep).join('/');
+  return Boolean(relativeSourceRoot && !relativeSourceRoot.startsWith('../') && !isScaffoldOrTestPath(relativeSourceRoot));
+}
+
 async function stageAncestorProductDocuments(sourceRoot: string, stagedRoot: string): Promise<void> {
   let repositoryRoot = path.resolve(sourceRoot);
   while (!await fs.pathExists(path.join(repositoryRoot, '.git'))) {
@@ -482,7 +488,7 @@ async function stageAncestorProductDocuments(sourceRoot: string, stagedRoot: str
     if (parent === repositoryRoot) return;
     repositoryRoot = parent;
   }
-  if (repositoryRoot === path.resolve(sourceRoot)) return;
+  if (!shouldInheritAncestorProductDocuments(path.resolve(sourceRoot), repositoryRoot)) return;
   for (const relative of INHERITED_PRODUCT_DOCUMENTS) {
     const target = path.join(stagedRoot, relative);
     if (await fs.pathExists(target)) continue;

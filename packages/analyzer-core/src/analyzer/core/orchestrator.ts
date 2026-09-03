@@ -1,6 +1,6 @@
 import { BaseAnalyzer, CASNode, CASEdge, AnalysisContext, FileAnalysisContext } from './base-analyzer';
 import * as incrementalScope from './incremental-scope';
-import { SCAFFOLD_DIR_NAMES, SCAFFOLD_GLOBS, isScaffoldDirName, isTestFileName } from './scaffold-paths';
+import { SCAFFOLD_DIR_NAMES, SCAFFOLD_GLOBS, isScaffoldDirName, isScaffoldOrTestPath, isTestFileName } from './scaffold-paths';
 import { BUILD_ARTIFACT_GLOBS, THIRD_PARTY_SOURCE_GLOBS, isBuildArtifactDirectoryName } from './build-artifact-paths';
 import {
   CASOutput,
@@ -187,7 +187,7 @@ import { fitCapabilityCatalogContext } from './ai-context-budget';
 import { awaitAiOperation } from './ai-operation-timing';
 import { capabilityDescriptionBatchSize, resolveCapabilityCatalogRoute, resolveCapabilityDescriptionRoute, shouldReauthorCapabilityDescriptions, toAIContextRoute } from './ai-task-model-routing';
 import { capabilitiesWithoutDescriptionDisposition, type CapabilityCatalogRejection, type CapabilityCatalogRejectionsByCandidate, capabilityCatalogCycleDiagnostic, capabilityCatalogPendingRepairKeys, capabilityCatalogRepairCandidateIds, capabilityCatalogRepairEvidenceFacts, capabilityIdentityPendingDescriptionRepair, capabilityOutcomeMatchesEvidence, capabilityTitlesShareOutcome, collectCapabilityCatalogEvidenceBatches, mergeCapabilityCatalogRepairResults, mergeGroundedEntityEvidenceFamilies, mergeUniquelyMatchedBehaviorEvidence, recordCapabilityCatalogRejection, recordCapabilityPublishabilityRejection, retryEmptyCapabilityCatalogOutcome, scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates, trackCapabilityCatalogRepair } from './capability-catalog-scheduling';
-import { buildCapabilityOperationObligationViews, evaluateCapabilityCatalogOperationCoverage, fullyCoveredAggregateCapabilityCandidateIds, normalizeCapabilityOperationObligationEvidence, scopeRequiredCapabilityOperations, uncoveredAggregateOperationObligationIds, uncoveredRequiredBehaviorCandidateIds, uncoveredRequiredCapabilityOperations, type CapabilityOperationCoverageContext } from "./capability-operation-coverage";
+import { buildCapabilityOperationObligationViews, evaluateCapabilityCatalogOperationCoverage, fullyCoveredAggregateCapabilityCandidateIds, hasAuthoritativeCapabilityOperationSubjectLineage, normalizeCapabilityOperationObligationEvidence, scopeRequiredCapabilityOperations, uncoveredAggregateOperationObligationIds, uncoveredRequiredBehaviorCandidateIds, uncoveredRequiredCapabilityOperations, type CapabilityOperationCoverageContext } from "./capability-operation-coverage";
 import { capabilityCatalogEvidenceFallback, capabilityCatalogFirstPartyFallback, capabilityCatalogRepairPromptEnvelope, type CapabilityCatalogRepairPromptFact } from './capability-catalog-repair-context';
 import { capabilityCatalogFocusedTask, capabilityCatalogRepairLifecycleKey, capabilityCatalogRepairNudge, capabilityCatalogRepairPlan, captureCapabilityCatalogPendingRequirements, deterministicCapabilityDescriptionFallback, supersedeUnboundPendingOutcomeDuplicates, type CapabilityCatalogRepairBatch, type PendingCapabilityEvidenceIdentity } from './capability-catalog-repair-plan';
 import { groupCapabilityCatalogFamilies } from './capability-catalog-family-equivalence';
@@ -10391,7 +10391,11 @@ export class AnalyzerOrchestrator {
         break;
       }
     }
-    if ((deadlineExceeded || qualityFailure) && reconciled.length > 0) {
+    const hasRejectedSemanticallyGroundedProductOutcome = [...rejectedProposalCandidateIds].some(candidateId => {
+      const candidate = evidenceCandidates.find(item => item.id === candidateId);
+      return Boolean(candidate && productOutcomeEvidenceCandidateIds.has(candidateId) && (candidate.related_entities || []).some(entityId => (entityFieldsById.get(entityId) || []).length > 0) && hasAuthoritativeCapabilityOperationSubjectLineage(candidate, operationCoverageContext));
+    });
+    if (((deadlineExceeded || qualityFailure) && reconciled.length > 0) || hasRejectedSemanticallyGroundedProductOutcome) {
       const deadlineFirstPartyTexts = [args.projectTextSignal.productDocTitle, args.projectTextSignal.productDocSummary, args.projectTextSignal.manifestDescription, ...(args.projectTextSignal.productVocabulary || [])].filter((value): value is string => Boolean(String(value || '').trim()));
       const deadlineDescriptionReconciled = resolvePendingCapabilityDescriptionsWithoutProvider({
         capabilities: reconciled, pendingEvidenceIdentityByCandidateId, evidenceCandidates,
@@ -14584,7 +14588,7 @@ export class AnalyzerOrchestrator {
   private projectTextDocumentRoots(projectPath: string): string[] {
     const projectRoot = path.resolve(projectPath);
     for (let current = projectRoot; ; current = path.dirname(current)) {
-      if (fs.existsSync(path.join(current, ".git"))) return current === projectRoot ? [projectRoot] : [projectRoot, current];
+      if (fs.existsSync(path.join(current, ".git"))) return current === projectRoot || isScaffoldOrTestPath(path.relative(current, projectRoot).split(path.sep).join('/')) ? [projectRoot] : [projectRoot, current];
       if (path.dirname(current) === current) return [projectRoot];
     }
   }
