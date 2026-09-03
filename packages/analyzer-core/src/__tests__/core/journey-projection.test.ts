@@ -89,3 +89,49 @@ test('current CAS derives journeys from flows without a persisted journey collec
   expect(cas.user_journeys).toBeUndefined();
   expect(projectUserJourneysFromCas(cas).journeys[0]?.derived_from_flow_id).toBe('approve');
 });
+
+test('indexed projection preserves exits, guards, tests, and entry aliases without a terminus', () => {
+  const unboundedFlow = flow('inspect', 'unused-exit', 'worker-node') as any;
+  delete unboundedFlow.terminus;
+  const result = projectUserJourneysFromFlows({
+    nodes: [
+      { id: 'review-node', name: 'review', type: 'controller' },
+      { id: 'handler-node', name: 'handleReview', type: 'method' },
+      { id: 'worker-node', name: 'inspectApplication', type: 'method', testing: { tested_by: ['metadata-test'] } },
+      { id: 'guard-node', name: 'ApplicationPolicy', type: 'guard' },
+    ] as any,
+    edges: [
+      { source: 'worker-node', target: 'guard-node', type: 'guarded_by' },
+      { source: 'edge-test', target: 'worker-node', type: 'tests' },
+    ] as any,
+    entryPoints: [{
+      id: 'review-entry',
+      name: 'POST /applications/:id/review',
+      type: 'http',
+      source_node: 'review-node',
+      handler: { node_id: 'handler-node' },
+    }] as any,
+    exitPoints: [
+      { id: 'worker-exit', name: 'worker effect', type: 'api', source_node: 'worker-node' },
+      { id: 'entry-exit', name: 'entry effect', type: 'api', source_node: 'handler-node' },
+      { id: 'unrelated-exit', name: 'other effect', type: 'api', source_node: 'other-node' },
+    ] as any,
+    callChains: [
+      { id: 'source-chain', entry_point: { node_id: 'review-node' }, call_path: [{ node_id: 'worker-node' }] },
+      { id: 'handler-chain', entry_point: { node_id: 'handler-node' }, call_path: [{ node_id: 'worker-node' }] },
+      { id: 'unrelated-chain', entry_point: { node_id: 'other-node' }, call_path: [{ node_id: 'worker-node' }] },
+    ] as any,
+    dataEntities: [{ id: 'application', name: 'Application', fields: [] }] as any,
+    changeRisks: [],
+    flows: [unboundedFlow],
+  });
+
+  expect(result.journeys).toHaveLength(1);
+  expect(result.journeys[0].exit_point_ids).toEqual(['worker-exit', 'entry-exit']);
+  expect(result.journeys[0].call_chain_ids).toEqual(['source-chain', 'handler-chain']);
+  expect(result.journeys[0].security_boundaries).toContainEqual(expect.objectContaining({
+    node_id: 'guard-node',
+    name: 'ApplicationPolicy',
+  }));
+  expect(result.journeys[0].tests_covering).toEqual(['edge-test', 'metadata-test']);
+});

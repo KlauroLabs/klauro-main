@@ -462,3 +462,29 @@ test('product map keeps direct operation relationships and uniquely owned entity
   const map = buildProductMap(cas);
   assert.deepEqual(map.capabilities[0].journeys.map(journey => journey.id), ['journey_agent', 'journey_context_read']);
 });
+
+test('product map reuses a supplied canonical journey projection', () => {
+  const projection = {
+    journeys: [{
+      id: 'journey_canonical',
+      name: 'Reach a verified outcome',
+      journey_kind: 'user-facing',
+      entry_point_id: 'entry_canonical',
+      entry: { type: 'http', name: 'POST /outcome' },
+      steps: [],
+      terminal_effects: { entities_written: [], entities_read: [], external_services: [], messages_emitted: [] },
+      terminal_entities: [],
+      security_boundaries: [],
+      tests_covering: [],
+      risk: 'low',
+      criticality: 'high',
+      call_chain_ids: [],
+      exit_point_ids: [],
+    }],
+    summary: { total_discovered: 1, included: 1, by_kind: { 'user-facing': 1, system: 0, scheduled: 0 } },
+  } as any;
+
+  const map = buildProductMap(baseCas(), projection);
+  assert.equal(map.journeys.total, 1);
+  assert.equal(map.journeys.top[0]?.id, 'journey_canonical');
+});

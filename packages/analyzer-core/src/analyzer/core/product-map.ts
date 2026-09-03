@@ -11,7 +11,7 @@ import {
   SystemCapability,
 } from '../../types/cas.types';
 import { exposureScore } from './data-lineage';
-import { projectUserJourneysFromCas } from './journey-projection';
+import { projectUserJourneysFromCas, type JourneyProjectionResult } from './journey-projection';
 import { partitionAnalysisDiagnostics } from './analysis-diagnostics';
 import { journeyPrimaryEntityNames, linkJourneysToCapability, normalizeProductMapEntityName } from './product-map-journey-linking';
 
@@ -122,8 +122,7 @@ function capabilityRiskLevel(
   return 'medium';
 }
 
-function buildCapabilities(cas: CASOutput): CASProductMapCapability[] {
-  const journeys = projectUserJourneysFromCas(cas).journeys;
+function buildCapabilities(cas: CASOutput, journeys: CASUserJourney[]): CASProductMapCapability[] {
   const primaryNamesByJourney = new Map(journeys.map(journey => [journey.id, journeyPrimaryEntityNames(journey)]));
   const entityNameById = new Map((cas.entities || []).map(entity => [entity.id, entity.name]));
   const entityOwnerCounts = new Map<string, number>();
@@ -184,8 +183,7 @@ function buildCapabilities(cas: CASOutput): CASProductMapCapability[] {
   );
 }
 
-function buildJourneys(cas: CASOutput): CASProductMap['journeys'] {
-  const projection = projectUserJourneysFromCas(cas);
+function buildJourneys(projection: JourneyProjectionResult): CASProductMap['journeys'] {
   const { journeys, summary } = projection;
 
   const top: CASProductMapJourney[] = [...journeys]
@@ -576,7 +574,10 @@ function buildRuntimeTopology(cas: CASOutput): CASProductMapRuntimeTopology | un
   };
 }
 
-export function buildProductMap(cas: CASOutput): CASProductMap {
+export function buildProductMap(
+  cas: CASOutput,
+  journeyProjection: JourneyProjectionResult = projectUserJourneysFromCas(cas),
+): CASProductMap {
   const purpose = cas.enhanced_system_purpose;
   const identityDescription = purpose?.inferred_description || cas.system?.description || '';
   const unanalyzedLanguages = [...(cas.system?.technologies?.unanalyzed_languages || [])].sort(
@@ -597,8 +598,8 @@ export function buildProductMap(cas: CASOutput): CASProductMap {
       unanalyzed_languages: unanalyzedLanguages,
       ...(nestedRepositories.length > 0 ? { nested_repositories: nestedRepositories } : {}),
     },
-    capabilities: buildCapabilities(cas),
-    journeys: buildJourneys(cas),
+    capabilities: buildCapabilities(cas, journeyProjection.journeys),
+    journeys: buildJourneys(journeyProjection),
     data: buildData(cas),
     conventions: buildConventions(cas),
     health: buildHealth(cas),

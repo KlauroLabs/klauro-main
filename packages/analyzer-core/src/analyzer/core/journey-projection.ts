@@ -35,6 +35,17 @@ export interface JourneyProjectionResult {
   summary: CASUserJourneySummary;
 }
 
+interface JourneyProjectionIndexes {
+  exitsById: Map<string, CASExitPoint[]>;
+  exitsBySource: Map<string, CASExitPoint[]>;
+  exitOrder: Map<CASExitPoint, number>;
+  guardEdgesByNode: Map<string, CASEdge[]>;
+  guardEdgeOrder: Map<CASEdge, number>;
+  testIdsByTarget: Map<string, string[]>;
+  chainsByEntryKey: Map<string, CASCallChain[]>;
+  chainOrder: Map<CASCallChain, number>;
+}
+
 const RISK_ORDER: Record<string, number> = { low: 0, medium: 1, high: 2, critical: 3 };
 const CRITICALITY_ORDER: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 const ENTRY_LAYER_TYPES = /(^|[_\s])(controller|gateway|resolver|handler|page|route|api_route|view|component|widget|screen|command|subscriber|listener)([_\s]|$)/;
@@ -92,20 +103,64 @@ function accessForEntity(entity: CASDataEntity, stateChanges: string[]): 'create
   return 'read';
 }
 
+function appendIndexed<T>(index: Map<string, T[]>, key: string | undefined, value: T): void {
+  if (!key) return;
+  const values = index.get(key);
+  if (values) values.push(value);
+  else index.set(key, [value]);
+}
+
+function buildProjectionIndexes(input: JourneyProjectionInput): JourneyProjectionIndexes {
+  const exitsById = new Map<string, CASExitPoint[]>();
+  const exitsBySource = new Map<string, CASExitPoint[]>();
+  const exitOrder = new Map<CASExitPoint, number>();
+  input.exitPoints.forEach((exitPoint, index) => {
+    appendIndexed(exitsById, exitPoint.id, exitPoint);
+    appendIndexed(exitsBySource, exitPoint.source_node, exitPoint);
+    exitOrder.set(exitPoint, index);
+  });
+  const guardEdgesByNode = new Map<string, CASEdge[]>();
+  const guardEdgeOrder = new Map<CASEdge, number>();
+  const testIdsByTarget = new Map<string, string[]>();
+  input.edges.forEach((edge, index) => {
+    if (isGuardEnforcementEdge(edge)) {
+      appendIndexed(guardEdgesByNode, edge.source, edge);
+      if (edge.target !== edge.source) appendIndexed(guardEdgesByNode, edge.target, edge);
+      guardEdgeOrder.set(edge, index);
+    }
+    if (edge.type === 'tests' || edge.type === 'covers') appendIndexed(testIdsByTarget, edge.target, edge.source);
+  });
+  const chainsByEntryKey = new Map<string, CASCallChain[]>();
+  const chainOrder = new Map<CASCallChain, number>();
+  input.callChains.forEach((chain, index) => {
+    appendIndexed(chainsByEntryKey, chain.entry_point.entry_point_id, chain);
+    if (chain.entry_point.node_id !== chain.entry_point.entry_point_id) {
+      appendIndexed(chainsByEntryKey, chain.entry_point.node_id, chain);
+    }
+    chainOrder.set(chain, index);
+  });
+  return {
+    exitsById, exitsBySource, exitOrder, guardEdgesByNode, guardEdgeOrder,
+    testIdsByTarget, chainsByEntryKey, chainOrder,
+  };
+}
+
 function relatedChains(
   flow: FlowConcept,
   entryPoint: CASEntryPoint,
   nodeIds: ReadonlySet<string>,
-  chains: CASCallChain[],
+  indexes: JourneyProjectionIndexes,
 ): CASCallChain[] {
-  return chains.filter(chain => {
-    const sameEntry = chain.entry_point.entry_point_id === entryPoint.id ||
-      chain.entry_point.node_id === entryPoint.source_node ||
-      chain.entry_point.node_id === entryPoint.handler?.node_id;
-    if (!sameEntry) return false;
-    if (flow.terminus?.exit_point_id) return chain.exit_point?.exit_point_id === flow.terminus.exit_point_id;
-    return chain.call_path.some(call => nodeIds.has(call.node_id));
-  });
+  const candidates = new Set<CASCallChain>();
+  for (const key of [entryPoint.id, entryPoint.source_node, entryPoint.handler?.node_id]) {
+    for (const chain of indexes.chainsByEntryKey.get(key || '') || []) candidates.add(chain);
+  }
+  return [...candidates]
+    .sort((left, right) => (indexes.chainOrder.get(left) || 0) - (indexes.chainOrder.get(right) || 0))
+    .filter(chain => {
+      if (flow.terminus?.exit_point_id) return chain.exit_point?.exit_point_id === flow.terminus.exit_point_id;
+      return chain.call_path.some(call => nodeIds.has(call.node_id));
+    });
 }
 
 function selectJourneys(journeys: CASUserJourney[], maxJourneys?: number): CASUserJourney[] {
@@ -140,6 +195,7 @@ export function projectUserJourneysFromFlows(
   const risksByNode = new Map((input.changeRisks || []).map(risk => [risk.node_id, risk.risk_level]));
   const cronSchedules = buildCronScheduleIndex(input.nodes);
   const journeys: CASUserJourney[] = [];
+  const indexes = buildProjectionIndexes(input);
 
   for (const flow of input.flows) {
     const entryPoint = entriesByKey.get(flow.entry_point);
@@ -163,17 +219,21 @@ export function projectUserJourneysFromFlows(
     const participantAccess = participants.map(entity => ({ entity, access: accessForEntity(entity, stateChanges) }));
     const entitiesWritten = participantAccess.filter(item => item.access !== 'read').map(item => item.entity.name);
     const entitiesRead = participantAccess.filter(item => item.access === 'read').map(item => item.entity.name);
-    const exits = input.exitPoints.filter(exitPoint =>
-      exitPoint.id === flow.terminus?.exit_point_id ||
-      (!flow.terminus && nodeIds.has(exitPoint.source_node)));
+    const exits = flow.terminus?.exit_point_id
+      ? [...(indexes.exitsById.get(flow.terminus.exit_point_id) || [])]
+      : [...new Set([...nodeIds].flatMap(nodeId => indexes.exitsBySource.get(nodeId) || []))]
+        .sort((left, right) => (indexes.exitOrder.get(left) || 0) - (indexes.exitOrder.get(right) || 0));
     const externalServices = new Set(flow.contract.side_effects.external_integrations || []);
     const messagesEmitted = new Set<string>();
+    const terminalNodeIds = new Set(terminalEntities.flatMap(terminal =>
+      terminal.node_id ? [terminal.node_id] : []));
     for (const exitPoint of exits) {
       const terminalNode = nodesById.get(exitPoint.source_node);
-      if (terminalNode && !terminalEntities.some(terminal => terminal.node_id === terminalNode.id)) {
+      if (terminalNode && !terminalNodeIds.has(terminalNode.id)) {
         const action = String(exitPoint.operation?.action || exitPoint.operation?.method || '').toLowerCase();
         const access = /(?:create|insert|save|write|update|delete|remove|upsert|set|put|post)/.test(action) ? 'updated' as const : 'read' as const;
         terminalEntities.push({ node_id: terminalNode.id, name: terminalNode.name, access, terminal_kind: 'node' });
+        terminalNodeIds.add(terminalNode.id);
       }
       if (exitPoint.type === 'message' || exitPoint.type === 'event') messagesEmitted.add(exitPoint.name);
       else if ((exitPoint.target?.service_id || exitPoint.target?.sdk) && !isLanguageBuiltinExitPoint(exitPoint)) {
@@ -184,8 +244,12 @@ export function projectUserJourneysFromFlows(
     for (const guard of entryPoint.security?.guards || []) {
       securityBoundaries.set(guard, { name: guard, mechanism: 'entry-guard', kind: classifyGuardKind(guard) });
     }
-    for (const edge of input.edges) {
-      if (!isGuardEnforcementEdge(edge) || (!nodeIds.has(edge.source) && !nodeIds.has(edge.target))) continue;
+    const guardEdges = new Set<CASEdge>();
+    for (const nodeId of nodeIds) {
+      for (const edge of indexes.guardEdgesByNode.get(nodeId) || []) guardEdges.add(edge);
+    }
+    for (const edge of [...guardEdges]
+      .sort((left, right) => (indexes.guardEdgeOrder.get(left) || 0) - (indexes.guardEdgeOrder.get(right) || 0))) {
       const guardId = nodeIds.has(edge.source) ? edge.target : edge.source;
       const guard = nodesById.get(guardId);
       if (guard) securityBoundaries.set(guard.id, {
@@ -193,13 +257,11 @@ export function projectUserJourneysFromFlows(
       });
     }
     const tests = new Set<string>();
-    for (const edge of input.edges) {
-      if ((edge.type === 'tests' || edge.type === 'covers') && nodeIds.has(edge.target)) tests.add(edge.source);
-    }
     for (const nodeId of nodeIds) {
+      for (const testId of indexes.testIdsByTarget.get(nodeId) || []) tests.add(testId);
       for (const testId of nodesById.get(nodeId)?.testing?.tested_by || []) tests.add(testId);
     }
-    const chains = relatedChains(flow, entryPoint, nodeIds, input.callChains);
+    const chains = relatedChains(flow, entryPoint, nodeIds, indexes);
     let risk: CASUserJourney['risk'];
     for (const nodeId of nodeIds) {
       const candidate = risksByNode.get(nodeId);

@@ -1753,12 +1753,6 @@ export class AnalyzerOrchestrator {
     entryPointsWithContractAndCapability = attachDeployable(entryPointsWithContractAndCapability, deployableEvidence, allNodes);
     logTiming('pp_entryPointContractCapability', phaseStart);
     await yieldToEventLoop();
-    const totalTime = Date.now() - startTime;
-    const overBudget = totalTime > 180_000;
-    writeAnalyzerStatus(
-      `[Klauro] Analysis completed in ${totalTime}ms${overBudget ? ' (OVER the 180s hard budget)' : ''}. Breakdown:`,
-      JSON.stringify(timings),
-    );
     const dependencyRoles = deriveDependencyRoles(dependencyManifest, allExitPoints);
     const moduleHealth = computeModuleHealth({
       nodes: allNodes,
@@ -1888,7 +1882,6 @@ export class AnalyzerOrchestrator {
       test_summary: testSummary
     } as CASOutput;
     this.enforceCapabilityDescriptionProvenanceInvariant(output.capabilities);
-    output.product_map = buildProductMap(output);
     try {
       const infraLinks = linkInfraTopology(output);
       if (infraLinks.nodes.length > 0) appendAll(output.nodes, infraLinks.nodes);
@@ -1942,7 +1935,7 @@ export class AnalyzerOrchestrator {
       console.error('[Klauro] codebase-type/coverage-gaps pass failed:', error);
     }
     this.enforceCapabilityDescriptionProvenanceInvariant(output.capabilities);
-    output.product_map = buildProductMap(output);
+    output.product_map = buildProductMap(output, userJourneyResult);
     if (deferAiEnrichment) {
       output.ai_enrichment = this.analysisAiEnrichmentStatus(true);
       if (output.ai_enrichment === 'pending') {
@@ -1999,7 +1992,7 @@ export class AnalyzerOrchestrator {
         this.recordComprehensionSkipped(enhancedSystemPurpose, systemCapabilities, dataEntities, 'no-ai-provider-configured');
         output.capabilities = systemCapabilities.length > 0 ? systemCapabilities : undefined;
         this.enforceCapabilityDescriptionProvenanceInvariant(output.capabilities);
-        output.product_map = buildProductMap(output);
+        output.product_map = buildProductMap(output, userJourneyResult);
       }
     } else {
       this.settleCapabilityCatalogStatus(output, this.analysisAiEnrichmentStatus(false));
@@ -2011,7 +2004,6 @@ export class AnalyzerOrchestrator {
     if (output.analysis_phases) {
       this.stampPhaseTimings(output.analysis_phases, phaseTimingRecords);
     }
-    output.timings = this.buildTimingsBlock(phaseTimingRecords, Date.now() - startTime, contributions, cpuUsageStart);
     output.entry_points = attachDeployable(output.entry_points || [], output.deployable_evidence, output.nodes);
     linkStructuralOwnership(output.nodes, output.edges);
     assignNodeRoles({ nodes: output.nodes, edges: output.edges, entry_points: output.entry_points, exit_points: output.exit_points, resetDerivedRoles: true });
@@ -2026,6 +2018,13 @@ export class AnalyzerOrchestrator {
       output.analysis_facts || []
     );
     output.terminality = buildCasTerminality(output);
+    const totalTime = Date.now() - startTime;
+    const overBudget = totalTime > 180_000;
+    output.timings = this.buildTimingsBlock(phaseTimingRecords, totalTime, contributions, cpuUsageStart);
+    writeAnalyzerStatus(
+      `[Klauro] Analysis completed in ${totalTime}ms${overBudget ? ' (OVER the 180s hard budget)' : ''}. Breakdown:`,
+      JSON.stringify(timings),
+    );
     const sourceFiles = new Set<string>();
     for (const node of output.nodes) {
       if (node.source?.file) sourceFiles.add(node.source.file);
