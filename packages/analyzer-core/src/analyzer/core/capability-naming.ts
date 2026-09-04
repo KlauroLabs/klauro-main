@@ -18,7 +18,7 @@
 
 
 export const CAPABILITY_PURPOSE_VERBS = new Set<string>([
-  'get', 'set', 'fetch', 'list', 'find', 'load', 'show', 'view', 'read', 'browse', 'retrieve', 'review',
+  'get', 'set', 'ask', 'fetch', 'interact', 'list', 'find', 'load', 'show', 'view', 'read', 'browse', 'retrieve', 'review',
   'create', 'add', 'new', 'update', 'edit', 'adjust', 'change', 'delete', 'remove', 'save', 'reset', 'transfer',
   'submit', 'send', 'sync', 'run', 'execute', 'process', 'handle', 'make',
   'build', 'init', 'initialize', 'validate', 'check', 'resolve', 'generate', 'parse', 'extract',

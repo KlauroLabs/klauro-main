@@ -3478,6 +3478,18 @@ describe('architecture and capability inference', () => {
       expect(outcome.text).toBe(oneWord);
     });
 
+    it('accepts product terminology that would otherwise look promotional when first-party documentation uses it', async () => {
+      const documented = groundedParagraph.replace(
+        'across exchanges.',
+        'across the documented middleware ecosystem.',
+      );
+      const verdict = orch.validateGeneratedAIInterpretation(documented, purpose, {
+        ...grounding,
+        projectTextSummary: `${grounding.projectTextSummary}. The library shares a middleware ecosystem across applications.`,
+      });
+      expect(verdict).toEqual({ ok: true });
+    });
+
     it('heals a HYPHENATED single ungrounded modifier ("third-party") instead of misparsing it as a two-token fabrication (prod: Qwen3 on rpg-server hard-failed enrichment)', async () => {
       // The reason payload joins multi-token phrases with '-', so a hyphenated
       // single word is ambiguous by splitting alone. It appears VERBATIM in the

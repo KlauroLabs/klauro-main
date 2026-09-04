@@ -69,6 +69,75 @@ test('spot-read quality passes strong behavior-oriented analysis output', () => 
   assert.equal(result.summary.weak_capabilities.length, 0);
 });
 
+test('spot-read quality recognizes evidence retained by the product-map projection', () => {
+  const capabilities = [
+    ['Find owners by pet', ['Owner', 'Pet']],
+    ['Record pet visits', ['Visit']],
+    ['Find veterinarians by specialty', ['Vet', 'Specialty']],
+    ['Ask questions about clinic records', ['Owner', 'Pet', 'Vet']],
+  ].map(([name], index) => ({
+    id: `cap-${index}`,
+    name,
+    description: `Customers can ${String(name).toLowerCase()} using the clinic information available to them.`,
+    operations: [{ path_or_command: `/capability/${index}` }],
+  }));
+  const productMapCapabilities = capabilities.map((capability, index) => ({
+    name: capability.name,
+    description: capability.description,
+    entities: index === 3 ? [] : ['Owner'],
+    journeys: index === 3 ? [{ id: 'journey-chat', name: 'Ask a clinic question' }] : [],
+  }));
+  const result = evaluateSpotReadCas(baseCas({
+    enhanced_system_purpose: {
+      primary_domain: 'pet-clinic',
+      inferred_description: 'This pet clinic application helps staff find owners and veterinarians, maintain pet records, record visits, and answer questions about clinic information. It keeps those connected behaviors visible for review and change planning.',
+      description_source: 'ai',
+      description_generation: { attempted: true, status: 'ai_applied' },
+    },
+    capabilities,
+    product_map: { capabilities: productMapCapabilities },
+  }), '/tmp/projected.json');
+
+  const capabilityGate = result.gates.find(gate => gate.id === 'capability-quality');
+  assert.equal(capabilityGate?.status, 'pass');
+  assert.doesNotMatch(capabilityGate?.detail || '', /do not match domain/);
+});
+
+test('spot-read quality accepts developer-facing library outcomes grounded by catalog provenance', () => {
+  const capabilities = [
+    'Route requests to handlers',
+    'Parse requests with extractors',
+    'Generate HTTP responses',
+    'Share middleware across applications',
+  ].map((name, index) => ({
+    id: `library-cap-${index}`,
+    name,
+    description: `Application developers can ${name.toLowerCase()} with predictable behavior and minimal integration code.`,
+    criticality_factors: [`catalog-candidate:public-api-${index}`],
+  }));
+  const result = evaluateSpotReadCas(baseCas({
+    system_purpose: { primary_type: 'library-package', confidence: 0.9 },
+    enhanced_system_purpose: {
+      primary_domain: 'http-routing-library',
+      inferred_description: 'This HTTP routing library helps application developers route requests, parse inputs, generate responses, and compose reusable middleware. Its public interfaces support predictable request handling without imposing an application architecture.',
+      description_source: 'ai',
+      description_generation: { attempted: true, status: 'ai_applied' },
+    },
+    capabilities,
+    product_map: {
+      capabilities: capabilities.map(capability => ({
+        name: capability.name,
+        description: capability.description,
+        entities: [],
+        journeys: [],
+      })),
+    },
+  }), '/tmp/library.json');
+
+  const capabilityGate = result.gates.find(gate => gate.id === 'capability-quality');
+  assert.equal(capabilityGate?.status, 'pass');
+});
+
 test('spot-read quality fails stale narrative, weak capabilities, missing patterns, false idioms, and empty coverage', () => {
   const result = evaluateSpotReadCas(baseCas({
     system_purpose: { primary_type: 'sync-service', confidence: 0.1 },

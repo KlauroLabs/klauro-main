@@ -1,4 +1,4 @@
-import { AnalyzerOrchestrator } from '../../analyzer/core/orchestrator';
+import { removeTestEntryPoints } from '../../analyzer/core/analysis-comprehension-surface';
 import type { CASEdge, CASEntryPoint, CASNode } from '../../types/cas.types';
 
 function node(id: string, type: string, file: string, categories: string[] = []): CASNode {
@@ -16,7 +16,6 @@ function node(id: string, type: string, file: string, categories: string[] = [])
 
 describe('test entry-point separation', () => {
   it('keeps test evidence in nodes while removing it from the production entry surface', () => {
-    const orchestrator = new AnalyzerOrchestrator() as any;
     const nodes = [
       node('route', 'method', 'src/users.controller.ts'),
       node('unit', 'test', 'src/users.controller.spec.ts', ['test']),
@@ -38,7 +37,7 @@ describe('test entry-point separation', () => {
       { id: 'test-edge', source: 'unit', target: 'unit-entry', type: 'handles' },
     ] as CASEdge[];
 
-    orchestrator.removeTestEntryPoints(nodes, edges, entryPoints);
+    removeTestEntryPoints(nodes, edges, entryPoints, () => false);
 
     expect(entryPoints.map(entryPoint => entryPoint.id)).toEqual(['http-entry']);
     expect(edges.map(edge => edge.id)).toEqual(['route-edge']);

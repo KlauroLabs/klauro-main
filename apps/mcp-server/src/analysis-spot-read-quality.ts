@@ -309,11 +309,15 @@ function scoreCapabilityQuality(cas: CASOutput): SpotReadGate {
   const domainSpecificLater = capabilities.slice(3).some(capability => isEvidenceSpecificCapability(capability));
   const genericPrimaryMismatch = domainSpecificLater && genericPrimary.length >= 2;
   const visiblePrimaryCapabilities = visibleCapabilities.slice(0, Math.min(6, visibleCapabilities.length));
-  const visibleGenericPrimary = visiblePrimaryCapabilities.filter((capability: any) => isGenericPrimaryCapability(capability));
-  const visiblePrimaryDomainSpecificCount = visiblePrimaryCapabilities.filter((capability: any) => isEvidenceSpecificCapability(capability)).length;
+  const canonicalCapabilityByName = new Map(capabilities.map(capability => [clean(capability.name), capability]));
+  const canonicalVisibleCapability = (capability: any) => canonicalCapabilityByName.get(clean(capability.name)) || capability;
+  const visibleGenericPrimary = visiblePrimaryCapabilities.filter((capability: any) =>
+    isGenericPrimaryCapability(canonicalVisibleCapability(capability)));
+  const visiblePrimaryDomainSpecificCount = visiblePrimaryCapabilities.filter((capability: any) =>
+    isEvidenceSpecificCapability(canonicalVisibleCapability(capability))).length;
   const visibleDomainSpecificLater = visibleCapabilities
     .slice(3)
-    .some((capability: any) => isEvidenceSpecificCapability(capability));
+    .some((capability: any) => isEvidenceSpecificCapability(canonicalVisibleCapability(capability)));
   const visibleGenericPrimaryMismatch = visibleDomainSpecificLater && visibleGenericPrimary.length >= 2;
   const expectsDomainSpecificPrimary = Boolean(domain) && !/^(unknown|application|service|library-package|testing-utilities)$/i.test(domain);
   const primaryDomainMismatch = expectsDomainSpecificPrimary && primaryCapabilities.length >= 4 && primaryDomainSpecificCount < 3;
@@ -480,27 +484,30 @@ function isWeakCapability(capability: any): boolean {
   if (/\bCapability$/i.test(name)) return true;
   if (/^[A-Z]?[a-z]+(?:[A-Z][a-z0-9]+)+(?: Workflow| Management| Capability)?$/.test(name)) return true;
   if (/\b(?:mutation|query|handler|controller|route|page|component|command|function|method|file|event|message|http|api|graphql)\s+management\b/i.test(name)) return true;
-  if (description.length < 50) return true;
-  if (/\b(?:operations for|handles? operations|coordinates? operations|internal files?|specific functions?|helper functions?|routes?|handlers?|ui components?|source components?)\b/i.test(description)) return true;
+  if (description.split(/\s+/).filter(Boolean).length < 6) return true;
+  if (/\b(?:operations for|handles? operations|coordinates? operations|internal files?|specific functions?|helper functions?|source components?)\b/i.test(description)) return true;
   return false;
+}
+
+function hasBehaviorEvidence(capability: any): boolean {
+  return (capability?.operations || []).length > 0 ||
+    (capability?.related_entities || capability?.entities || []).length > 0 ||
+    (capability?.related_domains || []).length > 0 ||
+    (capability?.related_flows || capability?.journeys || []).length > 0 ||
+    (capability?.evidence_examples || []).length > 0 ||
+    (capability?.criticality_factors || []).some((factor: unknown) =>
+      /^catalog-(?:candidate|operation-obligation):/.test(String(factor)));
 }
 
 function isGenericPrimaryCapability(capability: any): boolean {
   const name = clean(capability?.name);
-  const hasBehaviorEvidence = (capability?.operations || []).length > 0 ||
-    (capability?.related_entities || []).length > 0 ||
-    (capability?.related_domains || []).length > 0 ||
-    (capability?.related_flows || []).length > 0;
-  return !hasBehaviorEvidence || /\b(?:handler|controller|route|component|function|method|file|module)\s+(?:management|workflow|capability)\b/i.test(name);
+  return !hasBehaviorEvidence(capability) ||
+    /\b(?:handler|controller|route|component|function|method|file|module)\s+(?:management|workflow|capability)\b/i.test(name);
 }
 
 function isEvidenceSpecificCapability(capability: any): boolean {
   if (isWeakCapability(capability)) return false;
-  return (capability?.operations || []).length > 0 ||
-    (capability?.related_entities || []).length > 0 ||
-    (capability?.related_domains || []).length > 0 ||
-    (capability?.related_flows || []).length > 0 ||
-    (capability?.evidence_examples || []).length > 0;
+  return hasBehaviorEvidence(capability);
 }
 
 const EVIDENCE_STOP_WORDS = new Set([

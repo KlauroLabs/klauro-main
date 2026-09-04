@@ -1451,13 +1451,19 @@ test('repairs an authored exact grouped lifecycle description from cited operati
     firstPartyTexts: [],
     validate: capability =>
       capability.name === 'Track transfers' &&
-      /create, view, update, and remove transfers/.test(capability.description),
+      !capabilityDescriptionProductLanguageViolation(
+        capability.description || '', ['Transfer'],
+        candidates.flatMap(candidate => candidate.operations || []).map(operation => JSON.stringify([operation.action, operation.entry_point_id])),
+      ) &&
+      validateElementDescription(capability.description || '', {
+        name: capability.name, kind: 'capability', relatedEntities: ['Transfer'], relatedDomains: ['transfer'],
+      }).ok,
   });
 
   assert.equal(repaired?.name, 'Track transfers');
   assert.equal(
     repaired?.description,
-    'Users can create, view, update, and remove transfers while keeping those transfers current over time.',
+    'Users can track transfers so their recorded details remain current and available over time.',
   );
 });
 
@@ -1512,7 +1518,7 @@ test('a grounded authored name can repair a deterministic identity without accep
   assert.ok(repaired.criticality_factors.includes('catalog-description-repair-lifecycle:candidates:imports|upload'));
 });
 
-test('a nonempty invalid second description response yields only a validated deterministic fallback', () => {
+test('a nonempty invalid first description response yields a validated deterministic fallback without another provider cycle', () => {
   const evidence = catalogCapability({
     id: 'invoice-list', name: 'Invoice records', structural_label: 'Invoice records',
     evidence_kind: 'behavior-surface', evidence_role: 'product-outcome',
@@ -1526,7 +1532,7 @@ test('a nonempty invalid second description response yields only a validated det
   });
   const invalid = { ...identity, description: 'Operators delete unrelated credentials.' };
   const repaired = resolveCapabilityCatalogDescriptionRepair({
-    validated: [invalid], attempt: 2, identity, attemptedFallbackIdentityIds: new Set(),
+    validated: [invalid], attempt: 1, identity, attemptedFallbackIdentityIds: new Set(),
     pendingEvidenceIdentityByCandidateId: new Map(), evidenceCandidates: [evidence], audience: 'Operators',
     firstPartyTexts: ['Operators view invoice records to understand current billing status before reviewing customer follow-up work.'],
     validate: capability => capability.description === 'Operators view invoice records to understand current billing status before reviewing customer follow-up work.',
@@ -2574,7 +2580,7 @@ test('promotes exact pending evidence by candidate lifecycle when reconciliation
   }
 });
 
-test('treats structural families as evidence rather than publication quotas while enforcing grounded authored outcomes', () => {
+test('requires every independently grounded product-evidence family without imposing an arbitrary catalog count', () => {
   const capability = catalogCapability({
     id: 'review-invoices',
     name: 'Review invoices',
@@ -2596,7 +2602,7 @@ test('treats structural families as evidence rather than publication quotas whil
     isStructuralPlaceholder: () => false,
   });
 
-  assert.equal(quality([]), undefined);
+  assert.match(quality([]) || '', /omits 1 grounded product-evidence family: uncited-family/);
   assert.match(quality([{
     id: 'all:capture-note',
     statement: 'Capture notes',
@@ -2788,7 +2794,7 @@ test('closes an opted-in authoritative multi-action entity lifecycle from one ex
   assert.deepEqual(run(), []);
   const [closure] = run(new Set([candidate.id]));
   assert.equal(closure?.name, 'Manage identity providers');
-  assert.equal(closure?.description, 'Users can create, view, update, and remove identity providers while keeping those identity providers current over time.');
+  assert.equal(closure?.description, 'Users can manage identity providers so their recorded details remain current and available over time.');
   assert.deepEqual(closure?.operations, candidate.operations);
   assert.ok(closure?.criticality_factors.includes('catalog-deterministic-grouped-lifecycle'));
 });
@@ -2828,7 +2834,7 @@ test('uses an exact controller namespace when a shared route subject is also an 
     completeLifecycleCandidateIds: new Set([candidate.id]), validate: () => true,
   });
   assert.equal(closure?.name, 'Manage uploads');
-  assert.equal(closure?.description, 'Users can view and update uploads while keeping those uploads current over time.');
+  assert.equal(closure?.description, 'Users can manage uploads so their recorded details remain current and available over time.');
   assert.equal(closure?.operations.length, 2);
 });
 
@@ -2850,7 +2856,7 @@ test('groups a lifecycle across a resource route and its nested category route b
   });
 
   assert.equal(closure?.name, 'Manage budgets');
-  assert.equal(closure?.description, 'Users can view and update budgets while keeping those budgets current over time.');
+  assert.equal(closure?.description, 'Users can manage budgets so their recorded details remain current and available over time.');
   assert.equal(closure?.operations.length, 3);
   assert.equal(capabilityDescriptionProductLanguageViolation(
     closure?.description || '', ['Budget'],
@@ -2974,7 +2980,7 @@ test('grounds a compound product noun from an exact route action without mixing 
     completeLifecycleCandidateIds: new Set([linked.id]), validate: () => true,
   })[0];
   assert.equal(linkedClosure?.name, 'Manage linked identities');
-  assert.equal(linkedClosure?.description, 'Users can create and remove linked identities while keeping those linked identities current over time.');
+  assert.equal(linkedClosure?.description, 'Users can manage linked identities so their recorded details remain current and available over time.');
   const subordinate = catalogCapability({
     id: 'capability_linked_identity_service', name: 'View linked identity service',
     criticality_factors: ['catalog-candidate:capability_linked_identity_service', 'catalog-deterministic-atomic-closure'],
@@ -3171,7 +3177,7 @@ test('closes an incomplete aggregate with one evidence-cited lifecycle capabilit
   });
   assert.equal(closure?.name, 'Organize categories');
   assert.equal(isExactValidatedDeterministicRecovery(closure!), true);
-  assert.equal(closure?.description, 'Users can create, view, update, and remove categories while keeping those categories current over time.');
+  assert.equal(closure?.description, 'Users can organize categories so their recorded details remain current and available over time.');
   assert.deepEqual(
     closure?.criticality_factors?.filter(factor => factor.startsWith('catalog-candidate:')),
     candidates.map(candidate => `catalog-candidate:${candidate.id}`),
@@ -3219,7 +3225,7 @@ test('deterministically recovers a reversible user-action lifecycle', () => {
     validate: capability => Boolean(capability.description),
   });
   assert.equal(closure?.name, 'Follow and unfollow profiles');
-  assert.equal(closure?.description, 'Users can follow and unfollow profiles while keeping those profiles current over time.');
+  assert.equal(closure?.description, 'Users can follow and unfollow profiles so their recorded details remain current and available over time.');
   assert.deepEqual(closure?.operations, candidates.flatMap(candidate => candidate.operations));
 });
 

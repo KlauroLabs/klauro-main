@@ -189,6 +189,84 @@ test('normalizes reference-style Markdown and rejects leaked document fragments'
   }), 'malformed-document-fragment-name');
 });
 
+test('extracts authored outcomes from overview and integration sections', () => {
+  const orchestrator = new AnalyzerOrchestrator() as any;
+  const framing = orchestrator.extractProductDocFraming([
+    '# Distributed Pet Clinic',
+    '',
+    'A sample application demonstrating a microservices architecture.',
+    '',
+    '## Starting services locally without Docker',
+    '',
+    'Start Config Server and Discovery Server before every application.',
+    '',
+    '## Microservices Overview',
+    '',
+    '- **Customers Service**: manages customer and pet data.',
+    '- **Vets Service**: helps users find veterinarian information.',
+    '- **Visits Service**: records pet visit history.',
+    '',
+    '## Integrating the Chatbot',
+    '',
+    'Users can ask natural-language questions about owners, pets, and veterinarians.',
+    '',
+    '## Quick Start',
+    '',
+    '- Run ./mvnw clean install.',
+  ].join('\n'));
+  assert.match(framing.summary, /Context: Customers Service: manages customer and pet data/);
+  assert.match(framing.summary, /find veterinarian information/);
+  assert.match(framing.summary, /records pet visit history/);
+  assert.match(framing.summary, /Feature: Users can ask natural-language questions/);
+  assert.doesNotMatch(framing.summary, /Config Server and Discovery Server/);
+  assert.doesNotMatch(framing.summary, /mvnw clean install/);
+});
+
+test('keeps documented examples and fenced usage code out of capability requirements', () => {
+  const orchestrator = new AnalyzerOrchestrator() as any;
+  const framing = orchestrator.extractProductDocFraming([
+    '# Routing Library',
+    '',
+    '[![Build status](https://example.test/status.svg)](https://example.test/build)',
+    '',
+    'An HTTP routing library for application developers.',
+    '',
+    '## High level features',
+    '',
+    '- Route requests to handlers with a macro-free API.',
+    '- Share middleware with applications built on other HTTP libraries.',
+    '',
+    'This is what sets the library apart from other frameworks.',
+    '',
+    '## Integrating the Chatbot',
+    '',
+    'Users can ask natural-language questions about clinic records. Here are some examples of what you could ask:',
+    '- Which owners have dogs?',
+    '- Are there any vets that specialize in surgery?',
+    '',
+    '1. Configure a provider API key.',
+    '',
+    '## In case you find a bug in Routing Library',
+    '',
+    'Our issue tracker is available online.',
+    '',
+    '## Usage example',
+    '',
+    '```rust',
+    'use axum::{routing::{get, post}, http::StatusCode, Json, Router};',
+    '```',
+  ].join('\n'));
+
+  assert.match(framing.summary, /Feature: Route requests to handlers/);
+  assert.match(framing.summary, /Feature: Share middleware/);
+  assert.match(framing.summary, /Feature: Users can ask natural-language questions/);
+  assert.match(framing.summary, /Example: Which owners have dogs/);
+  assert.doesNotMatch(framing.summary, /Feature: Which owners have dogs/);
+  assert.doesNotMatch(framing.summary, /sets the library apart/);
+  assert.doesNotMatch(framing.summary, /Build status|provider API key|issue tracker/);
+  assert.doesNotMatch(framing.summary, /StatusCode|Json, Router|get, post/);
+});
+
 test('a scoped AI repair attempt cannot outlive its scheduler deadline', async () => {
   const orchestrator = new AnalyzerOrchestrator() as any;
   const startedAt = Date.now();

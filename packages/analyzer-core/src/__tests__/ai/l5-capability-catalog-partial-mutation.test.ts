@@ -217,6 +217,8 @@ describe('applyAIInterpretation partial mutation on later failure (root cause of
     expect(purpose.inferred_description).toBeFalsy();
     expect(purpose.system_description_degradation).toBeDefined();
 
-    expect(capabilities).toEqual([]);
+    expect(capabilities.map(capability => capability.name)).toEqual([
+      'Monitor driver safety',
+    ]);
   });
 });

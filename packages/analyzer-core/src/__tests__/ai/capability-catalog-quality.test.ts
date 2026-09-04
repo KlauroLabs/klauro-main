@@ -351,7 +351,7 @@ describe('catalogQualityFailure (post-reconcile gate, defect #33)', () => {
     ])).toBeUndefined();
   });
 
-  it('does not turn deterministic structural families into publication quotas', () => {
+  it('fails closed when a catalog omits independently grounded product-evidence families', () => {
     const capabilities = [
       purposeful('Create records'),
       purposeful('Track record status'),
@@ -368,7 +368,7 @@ describe('catalogQualityFailure (post-reconcile gate, defect #33)', () => {
     ];
 
     expect(orch.catalogQualityFailure(capabilities, 7, [], [], [], families))
-      .toBeUndefined();
+      .toContain('omits 2 grounded product-evidence families: record-notes, record-sites');
   });
 
   it('rejects a citation-complete catalog that omits corroborated first-party audience outcomes', () => {
@@ -889,7 +889,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(targetedPromptFacts).not.toContain('CrossCodebaseSystemGraph');
     expect(targetedPromptFacts).not.toContain('CASEdge');
     expect(targetedPromptFacts).not.toContain('KlauroConfig');
-    expect(emptyGraphAttempts).toBe(2);
+    expect(emptyGraphAttempts).toBe(1);
   });
 
   it('does not retry rejected ungrounded proposals merely to fill the catalog', async () => {

@@ -335,9 +335,7 @@ export function deterministicCapabilityDescriptionFallback(args: {
         return (leftIndex < 0 ? Number.MAX_SAFE_INTEGER : leftIndex) - (rightIndex < 0 ? Number.MAX_SAFE_INTEGER : rightIndex);
       });
       if (verbs.length !== actions.length) return '';
-      const actionPhrase = verbs.length === 2 ? `${verbs[0]} and ${verbs[1]}`
-        : `${verbs.slice(0, -1).join(', ')}, and ${verbs[verbs.length - 1]}`;
-      return `${audience} can ${actionPhrase} ${subjectPhrase} while keeping those ${subjectPhrase} current over time.`;
+      return `${audience} can ${normalizedTitle} so their recorded details remain current and available over time.`;
     }
     if ((args.identity.criticality_factors || []).includes('catalog-deterministic-single-operation-aggregate')) {
       const outcomeByAction: Record<string, string> = {

@@ -157,8 +157,7 @@ function productClauses(signal?: CapabilityCatalogProjectSignal): string[] {
     .map(value => value.trim())
     .filter(Boolean);
   const grouped: string[] = [];
-  const authoredFeatureSentences = sentences.filter(sentence => /^Feature:\s*/i.test(sentence));
-  const sourceSentences = authoredFeatureSentences.length > 0 ? authoredFeatureSentences : sentences;
+  const sourceSentences = sentences.filter(sentence => !/^(?:Context|Example):\s*/i.test(sentence));
   let activeFeatureIndex = -1;
   for (const sentence of sourceSentences) {
     const separator = sentence.indexOf(':');
@@ -187,22 +186,35 @@ function productClauses(signal?: CapabilityCatalogProjectSignal): string[] {
 }
 
 function outcomeClauseBody(clause: string): string {
-  const illustratedCollection = clause.match(/^(?:an?\s+)?collection of (.+?) that (?:illustrate|demonstrate|show) (.+)$/i);
+  const authored = clause.replace(/^Feature:\s*/i, '').trim();
+  const enabledAction = authored.match(/\b(?:allows?|enables?)\s+you\s+to\s+(.+?)(?:\s+Here are some examples.*)?$/i);
+  if (enabledAction && /\bchatbot\b/i.test(authored) && /^interact\b/i.test(enabledAction[1])) {
+    return 'Ask questions in natural language through the chatbot';
+  }
+  if (enabledAction) return enabledAction[1].replace(/\bin a natural language\b/i, 'in natural language');
+  const politeAction = authored.match(/^please\s+((?:add|browse|create|find|get|list|search|show|view)\b.+)$/i);
+  if (politeAction) return politeAction[1];
+  const existenceQuestion = authored.match(/^(?:are there any|is there (?:an?|the))\s+(.+)$/i);
+  if (existenceQuestion) return `Find ${existenceQuestion[1]}`;
+  const whichQuestion = authored.match(/^which\s+(.+?)\s+have\s+(.+)$/i);
+  if (whichQuestion) return `Find ${whichQuestion[1]} with ${whichQuestion[2]}`;
+  const illustratedCollection = authored.match(/^(?:an?\s+)?collection of (.+?) that (?:illustrate|demonstrate|show) (.+)$/i);
   if (illustratedCollection) {
     const lesson = illustratedCollection[2].replace(/^best practices for (.+)$/i, '$1 best practices');
     return `Learn ${lesson} from ${illustratedCollection[1]}`;
   }
-  const demonstratedLesson = clause.match(/\b(?:to|that)\s+(?:demonstrate|illustrate|show)s?\s+how\s+to\s+(.+)$/i);
+  const demonstratedLesson = authored.match(/\b(?:to|that)\s+(?:demonstrate|illustrate|show)s?\s+how\s+to\s+(.+)$/i);
   if (demonstratedLesson) return `Learn how to ${demonstratedLesson[1]}`;
-  const separator = clause.indexOf(':');
-  if (separator < 0) return clause;
-  const body = clause.slice(separator + 1).trim();
-  return purposeVerbIn(body) ? body : clause;
+  const separator = authored.indexOf(':');
+  if (separator < 0) return authored;
+  const body = authored.slice(separator + 1).trim();
+  return purposeVerbIn(body) ? body : authored;
 }
 
 function authoredFeatureLabel(clause: string): string | undefined {
   const explicitFeature = clause.match(/^Feature:\s*(.+)$/i)?.[1]?.trim();
-  if (explicitFeature && !explicitFeature.includes(':') && !explicitFeature.includes('—') &&
+  if (explicitFeature && !/^(?:are|can|could|do|does|how|is|please|what|when|where|which|who|why)\b/i.test(explicitFeature) &&
+      !explicitFeature.includes(':') && !explicitFeature.includes('—') &&
       !explicitFeature.includes('–') && !/ +-- +/.test(explicitFeature) && explicitFeature.split(/ +/).length <= 14) {
     return explicitFeature;
   }
@@ -292,6 +304,14 @@ export function deriveCapabilityCatalogOutcomeRequirements(
   signal: CapabilityCatalogProjectSignal | undefined,
   candidates: readonly SystemCapability[],
 ): CapabilityCatalogOutcomeRequirement[] {
+  const contextualProductClauses = String(signal?.productDocSummary || '')
+    .split(/(?<=[.!?;])\s+/i)
+    .map(value => value.trim())
+    .filter(value => /^Context:\s*/i.test(value));
+  const genericContextAnchors = new Set([
+    'app', 'application', 'component', 'core', 'handler', 'management', 'module', 'operation',
+    'repository', 'route', 'service', 'system', 'workflow',
+  ]);
   const candidateTokens = candidates.filter(candidate => candidate.evidence_role !== 'verification-harness').map(candidate => {
     const text = candidateText(candidate);
     const rawTokens = tokens(text, true);
@@ -303,10 +323,26 @@ export function deriveCapabilityCatalogOutcomeRequirements(
     const symbolRawTokens = tokens((candidate.operations || []).map(operation =>
       String(operation.entry_point_id || '').split(':').pop() || '',
     ).join(' '), true);
+    const contextAnchorTokens = identityRawTokens.filter(token => !genericContextAnchors.has(token));
+    const contextualAliasTokens = contextualProductClauses.flatMap(clause => {
+      const clauseTokens = tokens(clause.replace(/^Context:\s*/i, ''), true);
+      const anchorsContext = contextAnchorTokens.some(anchor => clauseTokens.some(token =>
+        token === anchor || (Math.min(token.length, anchor.length) >= 3 && (token.startsWith(anchor) || anchor.startsWith(token)))));
+      return anchorsContext
+        ? clauseTokens.filter(token => !genericContextAnchors.has(token) && !CAPABILITY_PURPOSE_VERBS.has(token))
+        : [];
+    });
     return {
       candidate,
       text,
-      tokens: new Set([...rawTokens, ...symbolRawTokens, ...rawTokens.map(comparableEvidenceToken), ...symbolRawTokens.map(comparableEvidenceToken)]),
+      tokens: new Set([
+        ...rawTokens,
+        ...symbolRawTokens,
+        ...contextualAliasTokens,
+        ...rawTokens.map(comparableEvidenceToken),
+        ...symbolRawTokens.map(comparableEvidenceToken),
+        ...contextualAliasTokens.map(comparableEvidenceToken),
+      ]),
       identityTokens: new Set([...identityRawTokens, ...identityRawTokens.map(comparableEvidenceToken)]),
       symbolTokens: new Set([...symbolRawTokens, ...symbolRawTokens.map(comparableEvidenceToken)]),
     };

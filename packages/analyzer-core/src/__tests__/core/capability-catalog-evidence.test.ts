@@ -1114,6 +1114,11 @@ describe('capabilityDescriptionProductLanguageFailure', () => {
       ['["Get","get_observations",null,"message"]', '["Correlate","correlate_event_data",null,"message"]'],
     )).toBeUndefined();
     expect(capabilityDescriptionProductLanguageFailure(
+      'Users can track owners and pets so their recorded details remain current and available over time.',
+      ['Owner', 'Pet', 'PetType'],
+      ['["read","/owners/:ownerId","GET","http"]', '["read","/owners/*/pets/:petId","GET","http"]'],
+    )).toBeUndefined();
+    expect(capabilityDescriptionProductLanguageFailure(
       'Correlates event data with static behavior to reveal production discrepancies.',
       [],
       ['["Correlate","correlate_event_data",null,"message"]'],
@@ -1292,4 +1297,134 @@ test('uses verified flow dependency subjects when grounding an outcome name', ()
   }];
 
   expect(capabilityEvidenceSubjectTokens(rules)).toEqual(expect.arrayContaining(['rule', 'transaction', 'category']));
+});
+
+
+describe('structural CRUD evidence classification', () => {
+  it('does not promote a single terminal entity read into a product outcome without authored support', () => {
+    const candidate = {
+      id: 'cap_pettypes_management',
+      name: 'read pettype',
+      structural_label: 'Pet Types Management',
+      category: 'core',
+      evidence_kind: 'entity',
+      related_entities: ['entity_pettype'],
+      related_domains: ['pets'],
+      evidence_examples: [],
+      operations: [{
+        entry_point_id: 'get-pet-types',
+        entry_point_type: 'http',
+        action: 'read',
+        path_or_command: '/pettypes',
+        trigger: { method: 'GET', path: '/pettypes' },
+      }],
+    } as any;
+    const [classified] = classifyCapabilityEvidence(
+      [candidate],
+      [{ id: 'entity_pettype', name: 'PetType', kind: 'persisted-entity', fields: [], lifecycle: { created_by: [], read_by: ['get-pet-types'], updated_by: [], deleted_by: [] } }] as any,
+      { productDocTitle: 'Distributed Pet Clinic', productDocSummary: 'A sample application demonstrating a microservices architecture.' },
+      {
+        entryPoints: [{ id: 'get-pet-types', type: 'http', name: 'Get Pet Types', interaction_reach: 'external', trigger: { method: 'GET', path: '/pettypes' } }] as any,
+        userJourneys: [{
+          id: 'view-pet-types',
+          name: 'View Pet Types',
+          entry_point_id: 'get-pet-types',
+          journey_kind: 'user-facing',
+          steps: [],
+          terminal_entities: [{ entity_id: 'entity_pettype', terminal_kind: 'entity' }],
+          terminal_effects: { entities_read: ['entity_pettype'], entities_written: [], messages_emitted: [] },
+        }] as any,
+      },
+    );
+    expect(classified.evidence_role).not.toBe('product-outcome');
+  });
+
+  it('promotes an entity lifecycle when first-party context names the exact managed subject', () => {
+    const candidate = {
+      id: 'cap_visits_management',
+      name: 'Visits',
+      structural_label: 'Visits',
+      category: 'core',
+      evidence_kind: 'entity',
+      related_entities: ['entity_visit'],
+      related_domains: ['visits'],
+      evidence_examples: [],
+      operations: [
+        {
+          entry_point_id: 'create-visit',
+          entry_point_type: 'http',
+          action: 'create',
+          path_or_command: '/owners/:ownerId/pets/:petId/visits',
+          trigger: { method: 'POST', path: '/owners/:ownerId/pets/:petId/visits' },
+        },
+        {
+          entry_point_id: 'list-visits',
+          entry_point_type: 'http',
+          action: 'read',
+          path_or_command: '/owners/:ownerId/pets/:petId/visits',
+          trigger: { method: 'GET', path: '/owners/:ownerId/pets/:petId/visits' },
+        },
+      ],
+    } as any;
+    const [classified] = classifyCapabilityEvidence(
+      [candidate],
+      [{ id: 'entity_visit', name: 'Visit', kind: 'persisted-entity', fields: [], lifecycle: { created_by: ['create-visit'], read_by: ['list-visits'], updated_by: [], deleted_by: [] } }] as any,
+      { productDocTitle: 'Distributed Pet Clinic', productDocSummary: 'Context: Visits Service: Manages pet visit records.' },
+      {
+        entryPoints: [
+          { id: 'create-visit', type: 'http', name: 'Create Visit', interaction_reach: 'external', trigger: { method: 'POST', path: '/owners/:ownerId/pets/:petId/visits' } },
+          { id: 'list-visits', type: 'http', name: 'List Visits', interaction_reach: 'external', trigger: { method: 'GET', path: '/owners/:ownerId/pets/:petId/visits' } },
+        ] as any,
+        userJourneys: [{
+          id: 'record-visits',
+          name: 'Record Pet Visits',
+          entry_point_id: 'create-visit',
+          journey_kind: 'user-facing',
+          steps: [],
+          terminal_entities: [{ entity_id: 'entity_visit', terminal_kind: 'entity' }],
+          terminal_effects: { entities_read: ['entity_visit'], entities_written: ['entity_visit'], messages_emitted: [] },
+        }] as any,
+      },
+    );
+    expect(classified.evidence_role).toBe('product-outcome');
+    expect(classified.evidence_role_reasons).toContain('first-party-product-text');
+  });
+
+  it('allows an authored single read outcome to remain product evidence', () => {
+    const candidate = {
+      id: 'find-vets',
+      name: 'Find veterinarians',
+      structural_label: 'Find Veterinarians',
+      category: 'core',
+      evidence_kind: 'entity',
+      related_entities: ['entity_vet'],
+      related_domains: ['veterinarians'],
+      evidence_examples: [],
+      operations: [{
+        entry_point_id: 'get-vets',
+        entry_point_type: 'http',
+        action: 'find',
+        path_or_command: '/vets',
+        trigger: { method: 'GET', path: '/vets' },
+      }],
+    } as any;
+    const [classified] = classifyCapabilityEvidence(
+      [candidate],
+      [{ id: 'entity_vet', name: 'Veterinarian', kind: 'persisted-entity', fields: [], lifecycle: { created_by: [], read_by: ['get-vets'], updated_by: [], deleted_by: [] } }] as any,
+      { productDocTitle: 'Distributed Pet Clinic', productDocSummary: 'Users can find veterinarian information by specialty.' },
+      {
+        entryPoints: [{ id: 'get-vets', type: 'http', name: 'Find Veterinarians', interaction_reach: 'external', trigger: { method: 'GET', path: '/vets' } }] as any,
+        userJourneys: [{
+          id: 'find-veterinarians',
+          name: 'Find Veterinarians',
+          entry_point_id: 'get-vets',
+          journey_kind: 'user-facing',
+          steps: [],
+          terminal_entities: [{ entity_id: 'entity_vet', terminal_kind: 'entity' }],
+          terminal_effects: { entities_read: ['entity_vet'], entities_written: [], messages_emitted: [] },
+        }] as any,
+      },
+    );
+    expect(classified.evidence_role).toBe('product-outcome');
+  });
 });

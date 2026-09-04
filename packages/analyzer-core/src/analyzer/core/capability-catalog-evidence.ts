@@ -4,7 +4,7 @@ import { USER_FACING_ENTRY_TYPES } from './journey-builder';
 import { isScaffoldOrTestPath } from './scaffold-paths';
 import { analyzeTerminality } from './terminality';
 import { observedCapabilityLifecycleActions } from './capability-lifecycle-actions';
-import { normalizedSubjectTokens, outcomeIdentityTokens, outcomeTokenMatches, productTextCorroboratesActionAndSubject } from './capability-evidence-language';
+import { normalizedSubjectTokens, outcomeIdentityTokens, outcomeTokenMatches, productTextCorroboratesActionAndSubject, productTextCorroboratesCapability } from './capability-evidence-language';
 import { CAPABILITY_PURPOSE_VERBS, isBareNounCapabilityLabel, isCrudInventoryCapabilityLabel, isGenericManagementCapabilityLabel } from "./capability-naming";
 import { capabilityHasReversibleUserActionLifecycle } from './capability-reversible-lifecycle';
 export { catalogCandidateEntityFacts, catalogPromptResponseComplexity, catalogRelatedEntityIds, uniquelyMatchingCapabilityEntityIds } from './capability-catalog-metrics';
@@ -391,9 +391,11 @@ export function capabilityDescriptionProductLanguageViolation(
     }
     const pathOrCommand = Array.isArray(operationParts) ? operationParts[1] : operationParts;
     const phrase = [...new Set(outcomeIdentityTokens(String(pathOrCommand || '')))];
-    const exactEntitySubject = relatedEntities.some(entity =>
-      outcomeIdentityTokens(entity).join(' ') === phrase.join(' '));
-    if (exactEntitySubject) return false;
+    const relatedEntityTokens = new Set(relatedEntities.flatMap(outcomeIdentityTokens));
+    const routeSubjectTokens = phrase.filter(token => token !== 'id');
+    const productEntitySubject = routeSubjectTokens.length > 0 &&
+      routeSubjectTokens.every(token => outcomeTokenMatches(token, relatedEntityTokens));
+    if (productEntitySubject) return false;
     if (phrase.length < 2) return false;
     return normalizedDescription.some((_, index) => phrase.every((token, offset) => normalizedDescription[index + offset] === token));
   });
@@ -481,22 +483,6 @@ export function capabilityDescriptionProductLanguageViolation(
   const graphInventoryTerms = description.match(/\b(?:entry points?|exit points?|method calls?|call chains?|methods?|nodes?|edges?)\b/gi) || [];
   const uniqueGraphTerms = [...new Set(graphInventoryTerms.map(term => term.toLowerCase()))];
   return uniqueGraphTerms.length >= 2 ? { reason: 'implementation-graph-inventory', forbiddenTerms: uniqueGraphTerms } : undefined;
-}
-
-export function productTextCorroboratesCapability(candidate: SystemCapability, signal?: CapabilityCatalogProjectSignal): boolean {
-  if (!signal) return false;
-  const productTokens = normalizedSubjectTokens([
-    ...(signal.concepts || []),
-    signal.productDocTitle,
-    signal.productDocSummary,
-    signal.manifestDescription,
-    signal.summary,
-  ].filter(Boolean).join(' '));
-  const subjectTokens = normalizedSubjectTokens([candidate.structural_label, candidate.name].filter(Boolean).join(' '));
-  const matches = [...subjectTokens].filter(token => productTokens.has(token) ||
-    [...productTokens].some(productToken => Math.min(token.length, productToken.length) >= 3 &&
-      (token.startsWith(productToken) || productToken.startsWith(token)))).length;
-  return subjectTokens.size > 0 && matches >= Math.min(2, subjectTokens.size);
 }
 
 export function hasFirstPartyCorroboratedCatalogOperations(
@@ -732,13 +718,27 @@ export function classifyCapabilityEvidence(
       const userFacingLifecycle = capabilityHasUserFacingLifecycleBreadth(candidate, entryPointById);
       const mechanismShapedCandidate = deliverySurfaceShapedCandidate ||
         /\b(?:workflow|service|repository|layer|settings|configuration)\b/i.test(candidate.name);
-      const outcomeShapedCandidate = outcomeIdentityTokens(candidate.name).length >= 2 &&
+      const candidateNameTokens = outcomeIdentityTokens(candidate.name);
+      const relatedEntityNames = (candidate.related_entities || [])
+        .map(entityId => entityById.get(entityId)?.name || '')
+        .filter(Boolean);
+      const relatedEntityTokens = new Set(relatedEntityNames.flatMap(outcomeIdentityTokens));
+      const candidateSubject = candidateNameTokens.slice(1).join('');
+      const entityOnlySubject = candidateNameTokens.slice(1).every(token => outcomeTokenMatches(token, relatedEntityTokens)) ||
+        relatedEntityNames.some(name => outcomeIdentityTokens(name).join('') === candidateSubject);
+      const genericCrudSubject = candidateNameTokens.length === 2 || entityOnlySubject;
+      const structurallyInferredEntityCrud = /^(?:access|add|archive|browse|change|create|delete|edit|find|get|list|read|record|register|remove|retrieve|review|search|show|update|view)\b/i.test(candidate.name) &&
+        candidateNameTokens.length >= 2 &&
+        genericCrudSubject &&
+        !firstPartyCoreOutcome;
+      const outcomeShapedCandidate = candidateNameTokens.length >= 2 &&
         !mechanismShapedCandidate &&
+        !structurallyInferredEntityCrud &&
         !isCrudInventoryCapabilityLabel(candidate.name) &&
         !isGenericManagementCapabilityLabel(candidate.name);
       const reversibleUserActionLifecycle = capabilityHasReversibleUserActionLifecycle(candidate, entryPointById);
       const actionHeadedOutcome = !isBareNounCapabilityLabel(candidate.name);
-      const interpretableOutcomeEvidence = outcomeShapedCandidate || firstParty;
+      const interpretableOutcomeEvidence = outcomeShapedCandidate || firstPartyCoreOutcome;
       const terminalOutcomeEvidence = !deliverySurfaceShapedCandidate && interpretableOutcomeEvidence && userOutcomeJourney &&
         (candidate.evidence_kind !== 'behavior-surface' || operations.length > 1 || firstParty);
       const externallyReachableOutcomeEvidence = !deliverySurfaceShapedCandidate && interpretableOutcomeEvidence && actionHeadedOutcome && externalReach && productEntity && operations.length > 1;

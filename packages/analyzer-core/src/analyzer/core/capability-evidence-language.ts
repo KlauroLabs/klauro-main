@@ -19,6 +19,25 @@ export function normalizedSubjectTokens(value: string): Set<string> {
     .map(token => token.length > 4 && token.endsWith('ies') ? `${token.slice(0, -3)}y` : token.length > 4 && token.endsWith('s') && !token.endsWith('ss') ? token.slice(0, -1) : token));
 }
 
+export function productTextCorroboratesCapability(
+  candidate: SystemCapability,
+  signal?: CapabilityProductTextSignal,
+): boolean {
+  if (!signal) return false;
+  const productTokens = normalizedSubjectTokens([
+    ...(signal.concepts || []),
+    signal.productDocTitle,
+    signal.productDocSummary,
+    signal.manifestDescription,
+    signal.summary,
+  ].filter(Boolean).join(' '));
+  const subjectTokens = normalizedSubjectTokens([candidate.structural_label, candidate.name].filter(Boolean).join(' '));
+  const matches = [...subjectTokens].filter(token => productTokens.has(token) ||
+    [...productTokens].some(productToken => Math.min(token.length, productToken.length) >= 3 &&
+      (token.startsWith(productToken) || productToken.startsWith(token)))).length;
+  return subjectTokens.size > 0 && matches >= Math.min(2, subjectTokens.size);
+}
+
 export function outcomeIdentityTokens(value: string): string[] {
   const ignored = new Set([
     'a', 'an', 'and', 'as', 'at', 'by', 'for', 'from', 'in', 'into', 'of', 'on', 'or', 'the', 'through', 'to', 'using', 'via', 'with',
@@ -121,9 +140,12 @@ export function productTextCorroboratesActionAndSubject(
     const clauseActions = new Set(clauseTokens.map(canonicalPurposeVerb).filter((token): token is string => Boolean(token)));
     const inflectedClauseActions = new Set(String(clause || '').toLowerCase().split(/[^a-z0-9]+/).flatMap(inflectedActionBases));
     const clauseEvidence = new Set(clauseTokens);
-    const actionMatches = [...actionTerms].some(action => clauseActions.has(action)) ||
+    const clauseActionEvidence = new Set([...clauseActions, ...inflectedClauseActions]);
+    const actionMatches = [...actionTerms].some(action => outcomeTokenMatches(action, clauseActionEvidence)) ||
       identityTerms.some(action => inflectedClauseActions.has(action));
+    const authoredBroadLifecycle = [...clauseActions].some(action => action === 'manage' || action === 'handle') &&
+      actionTerms.size > 0;
     const subjectMatches = subjectTerms.filter(subject => outcomeTokenMatches(subject, clauseEvidence)).length;
-    return actionMatches && subjectMatches >= Math.min(2, subjectTerms.length);
+    return (actionMatches || authoredBroadLifecycle) && subjectMatches >= Math.min(2, subjectTerms.length);
   });
 }

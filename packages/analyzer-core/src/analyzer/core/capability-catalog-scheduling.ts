@@ -25,7 +25,7 @@ export function selectValidatedCapabilityDescriptionRepair<T>(
   fallback: () => T | undefined,
 ): T | undefined {
   if (validated[0] !== undefined) return validated[0];
-  return attempt >= 2 ? fallback() : undefined;
+  return attempt >= 1 ? fallback() : undefined;
 }
 
 export interface CapabilityCatalogRejection {
@@ -445,7 +445,7 @@ export function mergeGroundedEntityEvidenceFamilies(
         group,
         candidates: group.map(candidateId => {
           const candidate = evidenceById.get(candidateId);
-          return { id: candidateId, kind: candidate?.evidence_kind, role: candidate?.evidence_role, entities: candidate?.related_entities };
+          return { id: candidateId, kind: candidate?.evidence_kind, role: candidate?.evidence_role, reasons: candidate?.evidence_role_reasons, entities: candidate?.related_entities };
         }),
         matches: ranked.map(item => ({ capability: merged[item.index]?.name, candidate: item.match.candidate.id, score: item.match.score })),
       }));
@@ -458,7 +458,8 @@ export function mergeGroundedEntityEvidenceFamilies(
       .map(factor => factor.slice('catalog-candidate:'.length))
       .some(candidateId => group.includes(candidateId) ||
         candidateId.startsWith(`operation-obligation:${selected.match.candidate.id}:`));
-    const completeFamilyEvidence = citedFamilyMember && !selected.match.candidate.id.startsWith('operation-obligation:')
+    const selectedParentEvidence = !selected.match.candidate.id.startsWith('operation-obligation:');
+    const completeFamilyEvidence = selectedParentEvidence
       ? [
           selected.match.candidate,
           ...evidenceCandidates.filter(candidate =>
@@ -466,9 +467,15 @@ export function mergeGroundedEntityEvidenceFamilies(
         ]
       : [selected.match.candidate];
     merged[selected.index] = completeFamilyEvidence.reduce(
-      (capability, evidence) => mergeCapabilityEvidence(capability, evidence, citedFamilyMember),
+      (capability, evidence) => mergeCapabilityEvidence(capability, evidence, selectedParentEvidence || citedFamilyMember),
       selectedCapability,
     );
+    if (selectedParentEvidence) {
+      merged[selected.index].criticality_factors = [...new Set([
+        ...(merged[selected.index].criticality_factors || []),
+        `catalog-candidate:${selected.match.candidate.id}`,
+      ])];
+    }
     for (const evidence of completeFamilyEvidence) citedIds.add(evidence.id);
   }
   return merged;

@@ -9,6 +9,7 @@ import {
   capabilityCatalogEvidenceRepairMatchIndexes,
   capabilityIdentityPendingDescriptionRepair,
   selectValidatedCapabilityDescriptionRepair,
+  uncoveredCapabilityCatalogFamilyRepresentativeIds,
 } from './capability-catalog-scheduling';
 import {
   deterministicCapabilityDescriptionFallback,
@@ -783,6 +784,14 @@ export function capabilityCatalogCycleQualityFailure(args: {
   if (args.reconciled.length === 0) return capabilityCatalogOutcomeCoverageFailure([], args.requiredOutcomes);
   const coverageFailure = capabilityCatalogOutcomeCoverageFailure(args.reconciled, args.requiredOutcomes);
   if (coverageFailure) return coverageFailure;
+  const uncoveredEvidenceFamilies = uncoveredCapabilityCatalogFamilyRepresentativeIds(
+    args.reconciled,
+    args.candidateFamilyGroups,
+    args.fullyCoveredAggregateCandidateIds,
+  );
+  if (uncoveredEvidenceFamilies.length > 0) {
+    return `catalog omits ${uncoveredEvidenceFamilies.length} grounded product-evidence ${uncoveredEvidenceFamilies.length === 1 ? 'family' : 'families'}: ${uncoveredEvidenceFamilies.slice(0, 3).join(', ')}`;
+  }
   const evidenceRejected = args.reconciled.filter(capability =>
     (capability.criticality_factors || []).some(factor => factor.startsWith('catalog-evidence-rejected:')));
   if (evidenceRejected.length > 0) return `catalog contains ${evidenceRejected.length} authored capability ${evidenceRejected.length === 1 ? 'claim' : 'claims'} without product-outcome evidence: ${evidenceRejected.slice(0, 3).map(capability => capability.name).join(', ')}`;

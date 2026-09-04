@@ -80,6 +80,25 @@ test('treats support staff as the audience and onboarding as the visible action'
   assert.equal(capabilityCatalogOutcomeNameFailure('Onboard customers with profiles', onboarding), undefined);
 });
 
+test('does not promote authored usage examples into capability requirements', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements({
+    productDocSummary: [
+      'A pet clinic application for maintaining owner, pet, visit, and veterinarian records.',
+      'Feature: Ask questions in natural language through the chatbot.',
+      'Example: Which owners have dogs?',
+      'Example: Are there any vets that specialize in surgery?',
+    ].join(' '),
+  }, [
+    candidate('chatbot', 'Ask questions about clinic records', ['ask_clinic_question']),
+    candidate('owners', 'Find owners with dogs', ['find_owners_with_dogs']),
+    candidate('vets', 'Find veterinarians by specialty', ['find_vets_by_specialty']),
+  ]);
+
+  assert.equal(requirements.some(requirement => /owners with dogs/i.test(requirement.firstPartyOutcomeText || '')), false);
+  assert.equal(requirements.some(requirement => /vets that specialize/i.test(requirement.firstPartyOutcomeText || '')), false);
+  assert.equal(requirements.some(requirement => /questions in natural language/i.test(requirement.firstPartyOutcomeText || '')), true);
+});
+
 test('does not promote marketing-decorated generic management into a second outcome', () => {
   const requirements = deriveCapabilityCatalogOutcomeRequirements({
     productDocSummary: 'Categorize and seamlessly manage your job applications. Categorize your applications by creating categories and adding job applications to them.',
@@ -284,6 +303,53 @@ test('keeps demonstration outcomes and rejects technology-stack listings as auth
   assert.equal(requirements.some(requirement => requirement.statement === 'Learn how to split a sample Spring application into microservices'), true);
   assert.equal(requirements.some(requirement => /open telemetry|cloud gateway/i.test(requirement.statement)), false);
   assert.equal(requirements.some(requirement => requirement.requiredSubjectTerms?.includes('telemetry')), false);
+});
+
+test('uses contextual architecture to inform synthesis without making it an authored outcome requirement', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements({
+    productDocSummary: [
+      'This sample application exists to demonstrate how to split an application into microservices.',
+      'Context: Vets Service handles information about veterinarians.',
+      'Context: API Gateway routes client requests to services.',
+      'Feature: Users can ask natural-language questions about owners and veterinarians.',
+    ].join(' '),
+  }, [
+    candidate('microservices', 'Split application into microservices', ['split_application']),
+    candidate('vets', 'Find veterinarians', ['read_veterinarian']),
+    candidate('gateway', 'Route client requests', ['route_request']),
+    candidate('chatbot', 'Ask questions about owners and veterinarians', ['ask_question']),
+  ]);
+
+  assert.equal(requirements.some(requirement => /split.*microservices/i.test(requirement.statement)), true);
+  assert.equal(requirements.some(requirement => /natural-language questions/i.test(requirement.statement)), true);
+  assert.equal(requirements.some(requirement => /api gateway|routes client requests/i.test(requirement.statement)), false);
+  assert.equal(requirements.some(requirement => /^Vets Service/i.test(requirement.statement)), false);
+});
+
+test('normalizes conversational product examples into outcome-shaped requirements', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements({
+    productDocSummary: [
+      'Context: GenAI Service provides a chatbot interface to the application.',
+      'Feature: Spring Petclinic integrates a Chatbot that allows you to interact with the application in a natural language.',
+      'Feature: Please list the owners that come to the clinic.',
+      'Feature: Are there any vets that specialize in surgery?',
+      'Feature: Which owners have dogs?',
+    ].join(' '),
+  }, [
+    candidate('genai', 'Genai workflow', ['chat']),
+    candidate('owners', 'List owners', ['read_owner']),
+    candidate('vets', 'Find veterinarians by specialty', ['read_vet_specialty']),
+    candidate('pets', 'Find owners with pets', ['read_owner_pet']),
+  ]);
+
+  const statements = requirements.map(requirement => requirement.statement);
+  assert.equal(statements.some(statement => /^Ask questions in natural language through the chatbot$/i.test(statement)), true);
+  assert.equal(statements.some(statement => /^List the owners that come to the clinic$/i.test(statement)), true);
+  assert.equal(statements.some(statement => /^Find vets that specialize in surgery$/i.test(statement)), true);
+  assert.equal(statements.some(statement => /^Find owners with dogs$/i.test(statement)), true);
+  assert.equal(statements.some(statement => /^(?:Are there|Which|Please)\b/i.test(statement)), false);
+  assert.deepEqual(requirements.find(requirement => /^Ask questions in natural language through the chatbot$/i.test(requirement.statement))?.candidateIds, ['genai']);
+  assert.equal(Boolean(requirements.find(requirement => /split.*microservices/i.test(requirement.statement))?.candidateIds.includes('genai')), false);
 });
 
 test('turns a sample-collection README description into an audience outcome', () => {

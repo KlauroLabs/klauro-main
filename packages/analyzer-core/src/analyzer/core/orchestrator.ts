@@ -161,6 +161,8 @@ import {
 import { degradedComprehensionRefreshDecision, isComprehensionInertPrivateAddition, removeTestEntryPoints, shouldReuseComprehensionForInertPrivateAddition } from './analysis-comprehension-surface';
 import { USER_FACING_ENTRY_TYPES } from './journey-builder';
 import { buildComprehensionGraph } from './comprehension-graph';
+import { productTextCorroboratesCapability } from './capability-evidence-language';
+import { extractProductDocumentFraming } from './product-document-framing';
 import { buildTerminalSignal, type TerminalSignal } from './terminal-signal';
 import { buildCasTerminality } from './terminality';
 import { assertUnderstandingContractIntegrity } from './understanding-contract-integrity';
@@ -169,7 +171,7 @@ import {
   behaviorSurfaceEntryCount as countBehaviorSurfaceEntries, catalogCandidateEntityFacts,
   capabilityDescriptionProductLanguageFailure, capabilityDescriptionProductLanguageViolation, capabilityOutcomeScopeFailure,
   capabilityEvidencePublicationFailure, capabilityCanRepairRejectedOutcomeProposal, classifyCapabilityEvidence,
-  hasFirstPartyCorroboratedCatalogOperations, productTextCorroboratesCapability,
+  hasFirstPartyCorroboratedCatalogOperations,
   catalogCandidateTerminality as analyzeCatalogCandidateTerminality,
   catalogPromptResponseComplexity, catalogEntityCandidateGroups,
   catalogEvidenceCandidates as selectCatalogEvidenceCandidates,
@@ -10057,11 +10059,13 @@ export class AnalyzerOrchestrator {
       args.projectTextSignal,
       { entryPoints: args.entryPoints, nodes: args.nodes, userJourneys: args.userJourneys },
     );
+    const productOutcomeEvidenceCandidateIds = new Set(evidenceCandidates
+      .filter(candidate => candidate.evidence_role === 'product-outcome')
+      .map(candidate => candidate.id));
     const operationCoverageContext: CapabilityOperationCoverageContext = { edges: args.edges, entryPoints: args.entryPoints, exitPoints: args.exitPoints, nodes: args.nodes };
     const operationScopedById = new Map(scopeRequiredCapabilityOperations(evidenceCandidates, operationCoverageContext).map(candidate => [candidate.id, candidate]));
     for (let index = 0; index < evidenceCandidates.length; index += 1) evidenceCandidates[index] = operationScopedById.get(evidenceCandidates[index].id) || evidenceCandidates[index];
     const evidenceRoleSummary = summarizeCapabilityEvidenceRoles(evidenceCandidates);
-    const productOutcomeEvidenceCandidateIds = new Set(evidenceCandidates.filter(candidate => candidate.evidence_role === 'product-outcome').map(candidate => candidate.id));
     const independentlyGroundedProductOutcomeIds = new Set(evidenceCandidates.filter(candidate =>
       candidate.evidence_role === 'product-outcome' && candidate.evidence_kind !== 'behavior-surface' &&
       ((candidate.related_entities || []).length > 0 || (candidate.operations || []).some(operation => Boolean(operation.path_or_command)))).map(candidate => candidate.id));
@@ -10071,12 +10075,24 @@ export class AnalyzerOrchestrator {
     for (const candidate of operationObligationViews.candidates) authoritativeOperationCandidates.set(candidate.id, candidate); for (const candidate of aggregateOperationObligationViews.candidates) if (aggregateOperationObligationViews.scopes.has(candidate.id)) authoritativeOperationCandidates.set(candidate.id, candidate);
     evidenceCandidates.splice(0, evidenceCandidates.length, ...operationObligationViews.candidates); evidenceCandidates.push(...aggregateOperationObligationViews.candidates.filter(candidate => aggregateOperationObligationViews.scopes.has(candidate.id))); operationCoverageContext.obligationScopes = new Map([...operationObligationViews.scopes, ...aggregateOperationObligationViews.scopes]);
     const debugOperationProvenance = (stage: string, capabilities: readonly SystemCapability[]): void => { if (!process.env.KLAURO_DEBUG_CATALOG) return; const exact = capabilities.flatMap(capability => { const candidates = (capability.criticality_factors || []).filter(factor => factor.startsWith('catalog-candidate:operation-obligation:')); const obligations = (capability.criticality_factors || []).filter(factor => factor.startsWith('catalog-operation-obligation:')); return candidates.length || obligations.length ? [{ stage, id: capability.id, name: capability.name, description: capability.description, publishability_failure: this.capabilityPublishabilityFailure(capability), candidates, obligations, entry_point_ids: (capability.operations || []).map(operation => operation.entry_point_id) }] : []; }); if (exact.length > 0) writeAnalyzerStatus('[catalog-debug] operation provenance:', exact); };
-    const structuralProductEvidenceCandidates = catalogRequiredEvidenceCandidates(evidenceCandidates).filter(candidate => !(candidate.criticality_factors || []).includes('catalog-aggregate-operation-view'));
+    const authoritativeEntryPointIds = new Set(args.entryPoints.map(entryPoint => entryPoint.id));
+    const structuralProductEvidenceCandidates = catalogRequiredEvidenceCandidates(evidenceCandidates).filter(candidate =>
+      productOutcomeEvidenceCandidateIds.has(candidate.id) &&
+      ((candidate.evidence_role_reasons || []).includes('first-party-product-text') ||
+        (candidate.operations || []).some(operation => authoritativeEntryPointIds.has(operation.entry_point_id))) &&
+      !(candidate.criticality_factors || []).includes('catalog-aggregate-operation-view'));
     const distinctFamilies = this.catalogDistinctFamilies(structuralProductEvidenceCandidates);
     const distinctFamilyCount = distinctFamilies.length;
     const requiredOutcomes = deriveCapabilityCatalogOutcomeRequirements(args.projectTextSignal, evidenceCandidates);
     const groundableOutcomes = requiredOutcomes.filter(requirement => requirement.candidateIds.length > 0);
-    const requiredEvidenceCandidates = catalogRequiredEvidenceCandidates(evidenceCandidates); const distinctFamilyCandidateGroups = distinctFamilies.map(family => family.map(candidate => candidate.id).filter(Boolean)).filter(family => family.length > 0);
+    const requiredEvidenceCandidates = catalogRequiredEvidenceCandidates(evidenceCandidates); const distinctFamilyCandidateGroups = distinctFamilies.map(family => {
+      const parentIds = family.map(candidate => candidate.id).filter(Boolean);
+      return [...new Set([
+        ...parentIds,
+        ...evidenceCandidates.filter(candidate => parentIds.some(parentId =>
+          candidate.id.startsWith(`operation-obligation:${parentId}:`))).map(candidate => candidate.id),
+      ])];
+    }).filter(family => family.length > 0);
     const candidateFamilyKeyById = new Map<string, string>();
     for (const family of distinctFamilyCandidateGroups) {
       const familyKey = [...family].sort().join('|');
@@ -13148,6 +13164,7 @@ export class AnalyzerOrchestrator {
     ));
     if (marketingMatches.length > 0) {
       const deterministicOverview = (enhancedSystemPurpose.inferred_description || '').toLowerCase();
+      const authoredProductText = String(facts.projectTextSummary || '').toLowerCase();
       const groundedTokenStems = new Set(
         [...groundedTerms, ...deterministicOverview.split(/[^a-z0-9]+/)]
           .flatMap(term => term.split(/[^a-z0-9]+/))
@@ -13159,6 +13176,7 @@ export class AnalyzerOrchestrator {
         if (codebaseAnalysisContext && /\binsights?(?:\s+into)?\b/.test(match)) {
           return false;
         }
+        if (authoredProductText.includes(match)) return false;
         const tokens = match.split(/\s+/);
         if (tokens.length > 1) {
           return !groundedTerms.some(term => term.includes(match)) && !deterministicOverview.includes(match);
@@ -14721,74 +14739,7 @@ export class AnalyzerOrchestrator {
   }
 
   private extractProductDocFraming(content: string): { title?: string; summary?: string } {
-    const lines = String(content || '').replace(/\r\n/g, '\n').split('\n');
-    let title: string | undefined;
-    let summary: string | undefined;
-    const paragraph: string[] = [];
-    const featureItems: string[] = [];
-    const isNoise = (line: string): boolean => {
-      const t = line.trim();
-      if (!t) return true;
-      if (/^(!\[|<|>|```|\||---|===|\* \* \*|\*\*\*|___)/.test(t)) return true;
-      if (/^!?\[[^\]]*\]\([^)]*\)\s*$|^\*\*[^*]+\*\*$/.test(t)) return true;
-      if (/^(#{1,6}\s|[-*+]\s|\d+\.\s)/.test(t)) return true;
-      if (/^\*\*[^*]{1,40}:\*\*\s*\S/.test(t)) return true;
-      if (/^[A-Za-z][A-Za-z ]{1,30}:\s*\S{1,40}$/.test(t) && t.length < 60) return true;
-      return false;
-    };
-    for (let i = 0; i < lines.length && i < 200; i++) {
-      const raw = lines[i];
-      const t = raw.trim();
-      if (!title) {
-        const heading = t.match(/^#{1,6}\s+(.+?)\s*#*$/);
-        if (heading) {
-          const cleaned = heading[1].replace(/[`*_]/g, '').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').trim();
-          if (cleaned) title = cleaned.slice(0, 120);
-          continue;
-        }
-      }
-      if (paragraph.length === 0 && isNoise(t)) continue;
-      if (paragraph.length > 0 && !t) break;
-      if (isNoise(t) && paragraph.length === 0) continue;
-      if (!isNoise(t) || paragraph.length > 0) {
-        if (isNoise(t)) break;
-        paragraph.push(t);
-        if (paragraph.join(' ').length > 400) break;
-      }
-    }
-    let inFeatureSection = false;
-    for (let i = 0; i < lines.length && i < 300 && featureItems.length < 8; i++) {
-      const t = lines[i].trim();
-      const heading = t.match(/^#{1,6}\s+(.+?)\s*#*$/);
-      if (heading) {
-        inFeatureSection = /^(?:(?:key\s+|high(?:-|\s+)level\s+)?(?:features?|capabilities|functionality|use cases?|what (?:it|this|you) (?:does|can do))\b|why\s+.+\??$)/i.test(
-          heading[1].replace(/[`*_]/g, '').trim(),
-        );
-        continue;
-      }
-      if (!inFeatureSection) continue;
-      const item = t.match(/^(?:[-*+]|\d+\.)\s+(.+)$/);
-      if (!item) continue;
-      const cleaned = item[1]
-        .replace(/\*\*([^*]+)\*\*/g, '$1')
-        .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
-        .replace(/[`*_]/g, '')
-        .replace(/\s+/g, ' ')
-        .trim();
-      if (cleaned.length >= 12) featureItems.push(/[.!?]$/.test(cleaned) ? cleaned : `${cleaned}.`);
-    }
-    const summaryParts = [paragraph.join(' '), ...featureItems.map(item => `Feature: ${item}`)].filter(Boolean);
-    if (summaryParts.length > 0) {
-      summary = summaryParts
-        .join(' ')
-        .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
-        .replace(/\[([^\]]+)\](?:\[[^\]]*\])?/g, '$1')
-        .replace(/[`*_]/g, '')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, 2000);
-    }
-    return { title, summary };
+    return extractProductDocumentFraming(content);
   }
 
   private safeReadJson(filePath: string): any | null {
