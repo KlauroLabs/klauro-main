@@ -272,6 +272,20 @@ test('grounds library outcomes in matching public symbols instead of incidental 
   assert.deepEqual(responses.candidateIds, ['into']);
 });
 
+test('keeps demonstration outcomes and rejects technology-stack listings as authored capabilities', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements({
+    productDocSummary: 'This microservices branch was derived from an earlier application to demonstrate how to split a sample Spring application into microservices. To achieve that goal, we use Spring Cloud Gateway, Circuit Breaker, Open Telemetry, and Eureka Service Discovery.',
+  }, [
+    candidate('microservices', 'Split Spring application into microservices', ['split_spring_application']),
+    candidate('gateway', 'Spring Cloud Gateway', ['gateway_route']),
+    candidate('telemetry', 'Open Telemetry', ['telemetry_collect']),
+  ]);
+
+  assert.equal(requirements.some(requirement => requirement.statement === 'Learn how to split a sample Spring application into microservices'), true);
+  assert.equal(requirements.some(requirement => /open telemetry|cloud gateway/i.test(requirement.statement)), false);
+  assert.equal(requirements.some(requirement => requirement.requiredSubjectTerms?.includes('telemetry')), false);
+});
+
 test('turns a sample-collection README description into an audience outcome', () => {
   const requirements = deriveCapabilityCatalogOutcomeRequirements({
     productDocSummary: 'A collection of open source samples that illustrate best practices for Flutter.',

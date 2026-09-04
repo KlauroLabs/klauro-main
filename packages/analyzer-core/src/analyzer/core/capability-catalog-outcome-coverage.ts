@@ -119,9 +119,17 @@ function candidateAggregationRank(candidate: SystemCapability): number {
   return (candidate.operations || []).length > 1 ? 0 : 1;
 }
 
+function purposeVerbIndex(words: readonly string[]): number {
+  return words.findIndex((word, index) => {
+    const token = canonicalToken(word);
+    if (!CAPABILITY_PURPOSE_VERBS.has(token)) return false;
+    if (token === 'support' && /^(?:staff|team|teams|engineers?|operators?|agents?)$/i.test(words[index + 1] || '')) return false;
+    return index === 0 || !/^[A-Z]/.test(word);
+  });
+}
+
 function purposeVerbIn(value: string): boolean {
-  return (value.match(/[A-Za-z][A-Za-z'-]*/g) || [])
-    .some(word => CAPABILITY_PURPOSE_VERBS.has(canonicalToken(word)));
+  return purposeVerbIndex(value.match(/[A-Za-z][A-Za-z'-]*/g) || []) >= 0;
 }
 
 function splitCoordinatedClause(value: string): string[] {
@@ -158,7 +166,11 @@ function productClauses(signal?: CapabilityCatalogProjectSignal): string[] {
     const body = separator >= 0 ? sentence.slice(separator + 1).trim() : '';
     const featureHeading = /^Feature$/i.test(heading) ||
       (heading.length > 0 && heading.split(/\s+/).length <= 6 && purposeVerbIn(body));
-    if (featureHeading) {
+    const pluralFeatureHeading = /^(?:(?:key\s+|high(?:-|\s+)level\s+)?(?:features?|capabilities|functionality|use cases?))$/i.test(heading);
+    if (pluralFeatureHeading && body) {
+      grouped.push(`Feature: ${body}`);
+      activeFeatureIndex = -1;
+    } else if (featureHeading) {
       grouped.push(sentence);
       activeFeatureIndex = grouped.length - 1;
     } else if (activeFeatureIndex >= 0) {
@@ -180,6 +192,8 @@ function outcomeClauseBody(clause: string): string {
     const lesson = illustratedCollection[2].replace(/^best practices for (.+)$/i, '$1 best practices');
     return `Learn ${lesson} from ${illustratedCollection[1]}`;
   }
+  const demonstratedLesson = clause.match(/\b(?:to|that)\s+(?:demonstrate|illustrate|show)s?\s+how\s+to\s+(.+)$/i);
+  if (demonstratedLesson) return `Learn how to ${demonstratedLesson[1]}`;
   const separator = clause.indexOf(':');
   if (separator < 0) return clause;
   const body = clause.slice(separator + 1).trim();
@@ -204,9 +218,9 @@ function conciseOutcomeStatement(clause: string, subjectTokens: ReadonlySet<stri
     .replace(agentAudience, ' ')
     .trim()
     .split(/\s+/);
-  const actionIndex = words.findIndex(word => CAPABILITY_PURPOSE_VERBS.has(canonicalToken(
+  const actionIndex = purposeVerbIndex(words.map(word =>
     (word.match(/[A-Za-z][A-Za-z'-]*/)?.[0]) || '',
-  )));
+  ));
   const matchingIndexes = words.flatMap((word, index) =>
     tokens(word).some(token => subjectTokens.has(token)) ? [index] : []);
   if (matchingIndexes.length === 0) return '';
@@ -262,11 +276,11 @@ function requirementId(audience: string | undefined, subjectTokens: readonly str
 
 function clauseVisibleActionTerms(clause: string, statement: string): string[] {
   const words = String(clause || '').match(/[A-Za-z][A-Za-z'-]*/g) || [];
-  const action = words
-    .map((word, index) => ({ index, token: canonicalToken(word) }))
-    .find(({ index, token }) => CAPABILITY_PURPOSE_VERBS.has(token) &&
-      !(token === 'support' && /^(?:staff|team|teams|engineers?|operators?|agents?)$/i.test(words[index + 1] || '')))
-    ?.token;
+  const actionIndex = purposeVerbIndex(words);
+  const action = actionIndex >= 0 &&
+    !(canonicalToken(words[actionIndex]) === 'support' && /^(?:staff|team|teams|engineers?|operators?|agents?)$/i.test(words[actionIndex + 1] || ''))
+    ? canonicalToken(words[actionIndex])
+    : undefined;
   if (action && !/^(?:handle|manage|process)$/.test(action)) return [action];
   const statementLeading = canonicalToken((String(statement || '').match(/[A-Za-z][A-Za-z'-]*/)?.[0]) || '');
   return CAPABILITY_PURPOSE_VERBS.has(statementLeading) && !/^(?:handle|manage|process)$/.test(statementLeading)
@@ -374,6 +388,8 @@ export function deriveCapabilityCatalogOutcomeRequirements(
       const audienceLabel = requirementAudienceLabel(clause, audience);
       const audienceScopedOutcomeText = audienceScopedCapabilityCatalogOutcomeText(clause, audience, audienceLabel);
       const visibleActionTerms = clauseVisibleActionTerms(statement, statement);
+      const statementWords = statement.match(/[A-Za-z][A-Za-z'-]*/g) || [];
+      if (!explicitAuthoredFeature && visibleActionTerms.length === 0 && purposeVerbIndex(statementWords) !== 0) continue;
       const id = requirementId(audience, [...new Set([...visibleActionTerms, ...groundedSubjectTokens])]);
       if (candidateIds.length === 0 && visibleActionTerms.length === 0) continue;
       requirements.set(id, {
