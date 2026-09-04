@@ -10917,7 +10917,12 @@ export class AnalyzerOrchestrator {
     const observedMethods = entryPoints
       .map(entry => String(entry.trigger?.method || '').toUpperCase())
       .filter(Boolean);
-    const observedReadOnly = observedMethods.some(method => ['GET', 'HEAD', 'OPTIONS'].includes(method)) &&
+    // "Read-only" describes a product that owns routes and data and only ever
+    // serves them. A library, client SDK, or CLI owns neither, so the observed
+    // method mix says nothing about it and the rule must not apply.
+    const ownsReadWriteSurface = !['library', 'client-sdk', 'cli-tool'].includes(String(artifactType || ''));
+    const observedReadOnly = ownsReadWriteSurface &&
+      observedMethods.some(method => ['GET', 'HEAD', 'OPTIONS'].includes(method)) &&
       !observedMethods.some(method => ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method));
     const readOnlyNarrativeRule = observedReadOnly
       ? ' The observed product is a retrieval and review surface. Use affirmative sentences whose product-action verbs are retrieves, presents, returns, views, reviews, compares, or analyzes. Describe what is available to users, not ownership or state transitions. Do not discuss missing abilities or limitations. The domain label must describe the information or review purpose and must not use an ownership-oriented suffix.'
@@ -11024,7 +11029,7 @@ export class AnalyzerOrchestrator {
       projectTextConcepts: projectTextSignal.concepts,
       deployableCount,
       artifactType,
-      readOnlyProduct: observedReadOnly || (() => {
+      readOnlyProduct: observedReadOnly || (ownsReadWriteSurface && (() => {
         const MUTATING_METHOD = /^(?:POST|PUT|PATCH|DELETE)$/i;
         const READ_METHOD = /^(?:GET|HEAD|OPTIONS)$/i;
         const operations = systemCapabilities.flatMap(capability => capability.operations || []);
@@ -11037,7 +11042,7 @@ export class AnalyzerOrchestrator {
           entryPoints.some(entry => MUTATING_METHOD.test(entryMethod(entry))) ||
           dataEntities.some(entity => entity.lifecycle.created_by.length > 0 || entity.lifecycle.updated_by.length > 0 || entity.lifecycle.deleted_by.length > 0);
         return hasRead && !hasMutation;
-      })(),
+      })()),
     };
 
     const combined = this.parseCombinedInterpretation(raw);
