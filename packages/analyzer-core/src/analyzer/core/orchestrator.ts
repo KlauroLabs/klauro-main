@@ -13268,7 +13268,10 @@ export class AnalyzerOrchestrator {
     if (sourceBucketMatch) {
       return { ok: false, reason: `source-bucket-restatement: ${sourceBucketMatch[0].toLowerCase()}` };
     }
-    if (/\b(?:react components?|express routes?|route handlers?|api routes?|framework routes?)\b/i.test(description)) {
+    // For an application these phrases restate its implementation; for a
+    // library they can be the product itself (a router's product IS route
+    // handling), so the rule applies only when the artifact is not a library.
+    if (facts.artifactType !== 'library' && /\b(?:react components?|express routes?|route handlers?|api routes?|framework routes?)\b/i.test(description)) {
       return { ok: false, reason: 'framework-source-mechanics' };
     }
     if (/\b(?:utiliz(?:e|es|ing)|leverag(?:e|es|ing))\s+(?:frameworks?|libraries?)\b|\bframeworks?\s+(?:like|such as)\b|\bbuilt\s+using\s+(?:a\s+)?combination\s+of\s+frameworks?\b/i.test(description)) {

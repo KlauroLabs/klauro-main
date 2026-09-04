@@ -3157,6 +3157,15 @@ describe('architecture and capability inference', () => {
     }).ok).toBe(true);
   });
 
+  it('lets a library describe the mechanism that is its product, while an app naming the same mechanism is restating implementation', async () => {
+    const purpose = { primary_domain: 'http-routing', core_concepts: ['router', 'middleware', 'request'] };
+    const description = 'Express maps incoming HTTP requests to route handlers and middleware chains, and sends the resulting response back to the client.';
+    const facts = { systemName: 'express', frameworks: ['Express'], structuralTokens: ['router', 'middleware', 'request', 'response'] };
+
+    expect(orch.validateAIInterpretation(description, purpose, { ...facts, artifactType: 'app' }).reason).toBe('framework-source-mechanics');
+    expect(orch.validateAIInterpretation(description, purpose, { ...facts, artifactType: 'library' }).ok).toBe(true);
+  });
+
   it('requires generated AI overviews to be paragraph-style, not a single compressed sentence', async () => {
     const purpose = { primary_domain: 'portfolio-management', core_concepts: ['portfolio', 'automation', 'market'] };
     const oneSentence = 'soon-ui is a portfolio management system that coordinates portfolio data, market discovery, and automation workflows using React and TanStack Query.';
