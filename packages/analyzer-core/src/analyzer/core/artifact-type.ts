@@ -99,6 +99,8 @@ export function classifyArtifactType(input: ArtifactTypeInput): ArtifactTypeResu
   const { nodes, entryPointSummary, exitPoints, frameworks, manifest } = input;
   const appEntries = entryCount(entryPointSummary, type => APP_ENTRY_TYPES.has(type));
   const cliEntries = entryCount(entryPointSummary, type => type === 'cli');
+  const apiEntries = entryCount(entryPointSummary, type => type === 'api' || type === 'rpc');
+  const libraryDominant = apiEntries > appEntries;
   const outboundExits = exitPoints.filter(exit => OUTBOUND_EXIT_TYPES.has(exit.type)).length;
 
   const clientSdk = detectClientSdk(nodes, manifest, appEntries, outboundExits);
@@ -113,7 +115,7 @@ export function classifyArtifactType(input: ArtifactTypeInput): ArtifactTypeResu
   const cliTool = detectCliTool(manifest, appEntries, cliEntries, publicSurfaceSize(nodes));
   if (cliTool) return cliTool;
 
-  const library = detectLibrary(nodes, manifest, frameworks, appEntries, cliEntries);
+  const library = detectLibrary(nodes, manifest, frameworks, libraryDominant ? 0 : appEntries, cliEntries);
   if (library) return library;
 
   return { artifactType: 'app', evidence: ['default: no library/client/cli/boilerplate markers'] };

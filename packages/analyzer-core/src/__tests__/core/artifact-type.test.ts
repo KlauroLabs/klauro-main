@@ -236,6 +236,14 @@ describe('classifyArtifactType', () => {
     expect(withCompanionCli.evidence[0]).toMatch(/companion CLI/);
   });
 
+  test('a package whose public-API surface outnumbers its own registered routes is a library (framework with utility routes)', () => {
+    const publicNodes = ['FastAPI', 'APIRouter', 'Depends', 'Body', 'BackgroundTasks', 'HTTPException'].map(name => node(name, 'pkg/core.py', { access_modifier: 'public' }));
+    const manifest = { pythonSetup: { description: 'FastAPI framework', hasConsoleScripts: true, dependencyNames: ['starlette'] } };
+    expect(classifyArtifactType(input({ manifest, nodes: publicNodes, entryPointSummary: [{ type: 'api', count: 76 }, { type: 'http', count: 24 }, { type: 'cli', count: 1 }] })).artifactType).toBe('library');
+    expect(classifyArtifactType(input({ manifest, nodes: publicNodes, entryPointSummary: [{ type: 'http', count: 24 }] })).artifactType).toBe('app');
+    expect(classifyArtifactType(input({ manifest, nodes: publicNodes, entryPointSummary: [{ type: 'api', count: 3 }, { type: 'http', count: 24 }] })).artifactType).toBe('app');
+  });
+
   test('python console_scripts + click is a cli-tool (yisda-cli shape)', () => {
     const result = classifyArtifactType(input({
       manifest: {
