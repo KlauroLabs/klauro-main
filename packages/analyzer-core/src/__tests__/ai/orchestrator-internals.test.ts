@@ -5303,13 +5303,32 @@ describe('orchestrator dedupeUtilNodeDuplicates (2026-07-04 references-idshapes)
     const nodes = [canonical, utilDup];
     const edges = [consumerCallsUtil];
 
-    orch.dedupeUtilNodeDuplicates(nodes, edges);
+    orch.dedupeUtilNodeDuplicates(nodes, edges, '/Users/dev/project/ui');
 
     expect(nodes).toHaveLength(1);
     expect(nodes[0].id).toBe(canonical.id);
     // The edge that used to target the dropped util node must be redirected onto the
     // canonical node — evidence is preserved, not dropped.
     expect(edges[0].target).toBe(canonical.id);
+  });
+
+  it('does not collapse util nodes across distinct nested applications with identical src suffixes', async () => {
+    const first = node({
+      id: 'variable_first',
+      name: 'HELPER',
+      source: { file: '/workspace/project/apps/first/src/helpers.ts' },
+    });
+    const second = node({
+      id: 'util_second',
+      name: 'HELPER',
+      type: 'function_util',
+      source: { file: '/workspace/project/apps/second/src/helpers.ts' },
+    });
+    const nodes = [first, second];
+
+    orch.dedupeUtilNodeDuplicates(nodes, [], '/workspace/project');
+
+    expect(nodes.map((candidate: CASNode) => candidate.id).sort()).toEqual([first.id, second.id].sort());
   });
 
   it('leaves distinct util nodes for genuinely different declarations untouched', async () => {
@@ -5430,6 +5449,31 @@ describe('orchestrator resolveNodeTwins (task #27: analyzer twin nodes/entries)'
     // the SAME node the calls edge targets.
     expect(exitPoints[0].source_node).toBe(survivingMethod.id);
     expect(callsEdge.target).toBe(survivingMethod.id);
+  });
+
+  it('preserves same-named entry-point classes in distinct nested applications', () => {
+    const first = node({
+      id: 'class_first_main_activity',
+      name: 'MainActivity',
+      type: 'class',
+      source: { file: '/workspace/project/apps/first/src/main/java/example/MainActivity.kt', line: 1 },
+    });
+    const second = node({
+      id: 'class_second_main_activity',
+      name: 'MainActivity',
+      type: 'class',
+      source: { file: '/workspace/project/apps/second/src/main/java/example/MainActivity.kt', line: 1 },
+    });
+    const entryPoints: CASEntryPoint[] = [
+      { id: 'entry_first', source_node: first.id, type: 'page', name: 'First MainActivity', handler: { node_id: first.id, method_name: 'MainActivity', file: 'apps/first/src/main/java/example/MainActivity.kt' } },
+      { id: 'entry_second', source_node: second.id, type: 'page', name: 'Second MainActivity', handler: { node_id: second.id, method_name: 'MainActivity', file: 'apps/second/src/main/java/example/MainActivity.kt' } },
+    ];
+    const nodes = [first, second];
+
+    orch.resolveNodeTwins(nodes, [], entryPoints, [], '/workspace/project');
+
+    expect(nodes.map((candidate: CASNode) => candidate.id).sort()).toEqual([first.id, second.id].sort());
+    expect(entryPoints.map((entry: CASEntryPoint) => entry.source_node).sort()).toEqual([first.id, second.id]);
   });
 
   it('does NOT merge two methods with the same name in genuinely different classes (identity requires file+class+member, not name alone)', () => {

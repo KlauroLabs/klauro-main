@@ -91,3 +91,14 @@ export function toRepoRelativeSourceFile(rawFile: string | undefined, projectRoo
   const prefixes = [`${root}${path.sep}`, `${root.replace(/\\/g, '/')}/`];
   return relativizeString(rawFile, prefixes);
 }
+
+
+export function canonicalSourceFileIdentity(rawFile: string | undefined, projectRoot?: string): string {
+  if (!rawFile) return '';
+  const normalized = rawFile.replace(/\\/g, '/').replace(/^\.\//, '');
+  if (projectRoot) return toRepoRelativeSourceFile(normalized, projectRoot) || '';
+  const boundaryIndex = normalized.lastIndexOf('/src/');
+  if (boundaryIndex !== -1) return normalized.slice(boundaryIndex + 1);
+  const sourceIndex = normalized.indexOf('src/');
+  return sourceIndex === -1 ? normalized : normalized.slice(sourceIndex);
+}

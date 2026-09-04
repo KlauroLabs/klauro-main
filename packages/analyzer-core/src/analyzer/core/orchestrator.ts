@@ -232,7 +232,7 @@ import { buildProductMap } from './product-map';
 import { buildReachabilityIndexFromCas } from './reachability-index';
 import { detectLibrariesFromManifests } from './manifest-library-detection';
 import { buildPerspectiveHierarchy, calculatePerspectivePriority } from './perspective-presentation';
-import { relativizeProjectPaths, toRepoRelativeSourceFile } from './relativize-project-paths';
+import { canonicalSourceFileIdentity, relativizeProjectPaths, toRepoRelativeSourceFile } from './relativize-project-paths';
 import { isRegisteredManifest, isRegisteredSourceExtension, isPackageBoundaryManifest } from './language-registry';
 import { discoverWorkspaceGlobRootsWithoutManifest } from './workspace-globs';
 import { CallGraphBuilder } from './call-graph-builder';
@@ -1291,8 +1291,8 @@ export class AnalyzerOrchestrator {
     }
     phaseStart = startPhase();
     removeTestEntryPoints(allNodes, allEdges, allEntryPoints, node => this.isTestFileNode(node));
-    this.dedupeUtilNodeDuplicates(allNodes, allEdges);
-    this.resolveNodeTwins(allNodes, allEdges, allEntryPoints, allExitPoints);
+    this.dedupeUtilNodeDuplicates(allNodes, allEdges, projectPath);
+    this.resolveNodeTwins(allNodes, allEdges, allEntryPoints, allExitPoints, projectPath);
     this.applyCanonicalOrdering(allNodes, allEdges, allEntryPoints, allExitPoints, allLibraries);
     this.linkRouteHandlers(allNodes, allEdges, allEntryPoints);
     this.linkHookUsageFetchers(allNodes, allEdges);
@@ -2804,8 +2804,8 @@ export class AnalyzerOrchestrator {
     const buildGitDerivedFacts = gitAnalyzer.isAvailable() && filePathsForGit.length <= 500;
     if (buildGitDerivedFacts) gitAnalyzer.preloadAllFileMetrics(filePathsForGit);
     removeTestEntryPoints(nodes, edges, entryPoints, node => this.isTestFileNode(node));
-    this.dedupeUtilNodeDuplicates(nodes, edges);
-    this.resolveNodeTwins(nodes, edges, entryPoints, exitPoints);
+    this.dedupeUtilNodeDuplicates(nodes, edges, projectPath);
+    this.resolveNodeTwins(nodes, edges, entryPoints, exitPoints, projectPath);
     this.applyCanonicalOrdering(nodes, edges, entryPoints, exitPoints, previousOutput.libraries || []);
     this.linkRouteHandlers(nodes, edges, entryPoints);
     this.liftValidationToEntryPoints(nodes, entryPoints);
@@ -22047,15 +22047,11 @@ export class AnalyzerOrchestrator {
     nodes: CASNode[],
     edges: CASEdge[],
     entryPoints: CASEntryPoint[],
-    exitPoints: CASExitPoint[]
+    exitPoints: CASExitPoint[],
+    projectPath?: string
   ): void {
-    const normalizeFile = (file: string | undefined): string => {
-      if (!file) return '';
-      const idx = file.indexOf('src/');
-      if (idx === -1) return file;
-      const boundaryIdx = file.lastIndexOf('/src/');
-      return boundaryIdx !== -1 ? file.slice(boundaryIdx + 1) : file.slice(idx);
-    };
+    const normalizeFile = (file: string | undefined): string =>
+      canonicalSourceFileIdentity(file, projectPath);
 
     const callEdgeSources = new Set<string>();
     for (const edge of edges) {
@@ -22193,15 +22189,10 @@ export class AnalyzerOrchestrator {
     dedupeCanonicalEdges(edges);
   }
 
-  private dedupeUtilNodeDuplicates(nodes: CASNode[], edges: CASEdge[]): void {
+  private dedupeUtilNodeDuplicates(nodes: CASNode[], edges: CASEdge[], projectPath?: string): void {
     const isUtilNode = (n: CASNode) => typeof n.type === 'string' && n.type.endsWith('_util');
-    const normalizeFile = (file: string | undefined): string => {
-      if (!file) return '';
-      const idx = file.indexOf('src/');
-      if (idx === -1) return file;
-      const boundaryIdx = file.lastIndexOf('/src/');
-      return boundaryIdx !== -1 ? file.slice(boundaryIdx + 1) : file.slice(idx);
-    };
+    const normalizeFile = (file: string | undefined): string =>
+      canonicalSourceFileIdentity(file, projectPath);
     const keyOf = (n: CASNode) => `${normalizeFile(n.source?.file)}::${n.name}`;
 
     const canonicalByKey = new Map<string, CASNode>();
