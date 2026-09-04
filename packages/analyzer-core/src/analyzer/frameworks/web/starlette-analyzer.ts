@@ -1,4 +1,5 @@
 import { BaseAnalyzer, CASAnalysisResult, CASNode, CASEdge, CASEntryPoint, CASExitPoint, AnalysisContext, FileAnalysisContext, FileAnalysisResult } from '../../core/base-analyzer';
+import { maskPythonTripleQuotedStrings } from './python-source-text';
 import { AnalyzerError } from '../../core/errors';
 import * as path from 'path';
 import * as fs from 'fs-extra';
@@ -265,7 +266,7 @@ export class StarletteAnalyzer extends BaseAnalyzer {
   }
 
 
-  private extractRoutesListEntries(content: string, lines: string[]): StarletteRoute[] {
+  private extractRoutesListEntries(rawContent: string, lines: string[]): StarletteRoute[] { const content = maskPythonTripleQuotedStrings(rawContent);
     const routes: StarletteRoute[] = [];
     const routesArgMatch = /routes\s*=\s*\[/.exec(content);
     if (!routesArgMatch) return routes;
@@ -299,7 +300,7 @@ export class StarletteAnalyzer extends BaseAnalyzer {
   }
 
 
-  private extractDecoratorRoutes(content: string, lines: string[], application: StarletteApplication | null): StarletteRoute[] {
+  private extractDecoratorRoutes(rawContent: string, lines: string[], application: StarletteApplication | null): StarletteRoute[] { const content = maskPythonTripleQuotedStrings(rawContent);
     const routes: StarletteRoute[] = [];
     if (!application) return routes;
 

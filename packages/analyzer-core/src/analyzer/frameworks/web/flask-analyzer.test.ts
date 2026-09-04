@@ -94,3 +94,36 @@ test('FlaskAnalyzer resolves nested templates and represents missing templates w
   assert.equal((contribution.nodes || []).some(node => node.name === 'missing.html' && node.metadata?.attributes?.resolution === 'unresolved-reference'), true);
   await fs.remove(root);
 });
+
+test('FlaskAnalyzer ignores route decorators quoted inside docstrings (documentation examples are not entry points)', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'flask-docstring-'));
+  await fs.writeFile(path.join(root, 'app.py'), [
+    'from flask import Flask',
+    'app = Flask(__name__)',
+    '',
+    'def helper():',
+    '    """Register a view.',
+    '',
+    '    Example::',
+    '',
+    '        @app.route("/hidden")',
+    '        def hidden():',
+    '            return "no"',
+    '    """',
+    '    return None',
+    '',
+    '@app.route("/real")',
+    'def real():',
+    '    return "ok"',
+    '',
+  ].join('\n'));
+  try {
+    const analyzer = new FlaskAnalyzer();
+    const contribution = await analyzer.analyze({ projectPath: root } as any);
+    const names = (contribution.entry_points || []).map(entryPoint => entryPoint.name);
+    assert.ok(names.some(name => name.includes('/real')), `expected /real in ${names.join(', ')}`);
+    assert.ok(!names.some(name => name.includes('/hidden')), `docstring example leaked: ${names.join(', ')}`);
+  } finally {
+    await fs.remove(root);
+  }
+});

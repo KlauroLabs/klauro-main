@@ -117,3 +117,33 @@ test('StarletteAnalyzer returns an empty-but-valid contribution when no routes a
   assert.equal((contribution.entry_points || []).length, 0);
   await fs.remove(root);
 });
+
+test('StarletteAnalyzer ignores route decorators quoted inside docstrings', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'starlette-docstring-'));
+  await fs.writeFile(path.join(root, 'app.py'), [
+    'from starlette.applications import Starlette',
+    'from starlette.routing import Route',
+    'app = Starlette()',
+    '',
+    'def helper():',
+    '    """Example::',
+    '',
+    '        @app.route("/hidden")',
+    '        async def hidden(request): ...',
+    '    """',
+    '',
+    '@app.route("/real")',
+    'async def real(request):',
+    '    return None',
+    '',
+  ].join('\n'));
+  try {
+    const analyzer = new StarletteAnalyzer();
+    const contribution = await analyzer.analyze({ projectPath: root } as any);
+    const names = (contribution.entry_points || []).map(entryPoint => entryPoint.name);
+    assert.ok(names.some(name => name.includes('/real')), `expected /real in ${names.join(', ')}`);
+    assert.ok(!names.some(name => name.includes('/hidden')), `docstring example leaked: ${names.join(', ')}`);
+  } finally {
+    await fs.remove(root);
+  }
+});

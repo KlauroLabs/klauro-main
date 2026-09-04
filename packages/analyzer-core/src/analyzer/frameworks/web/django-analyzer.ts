@@ -1,4 +1,5 @@
 import { BaseAnalyzer, AnalysisContext } from '../../core/base-analyzer';
+import { maskPythonTripleQuotedStrings } from './python-source-text';
 import {
   CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint,
   CASDocumentation, CASComment, CASTodo, CASImplementationStatus, CASPerspective
@@ -1386,7 +1387,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
     return this.resolveUrlGraph(modules);
   }
 
-  parseUrlModule(content: string, filePath: string): DjangoUrlModule {
+  parseUrlModule(rawContent: string, filePath: string): DjangoUrlModule { const content = maskPythonTripleQuotedStrings(rawContent);
     const imports = this.extractModuleImports(content);
     const module: DjangoUrlModule = {
       file: filePath,

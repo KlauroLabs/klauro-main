@@ -1,4 +1,5 @@
 import { BaseAnalyzer, CASAnalysisResult, CASNode, CASEdge, CASExitPoint, AnalysisContext, FileAnalysisContext, FileAnalysisResult } from '../../core/base-analyzer';
+import { maskPythonTripleQuotedStrings } from './python-source-text';
 import {
   CASEntryPoint,
   CASDocumentation, CASComment, CASTodo, CASImplementationStatus
@@ -1255,7 +1256,7 @@ export class FlaskAnalyzer extends BaseAnalyzer {
     return errorHandlers;
   }
 
-  private extractRoutesImpl(content: string, blueprintName?: string): FlaskRoute[] {
+  private extractRoutesImpl(rawContent: string, blueprintName?: string): FlaskRoute[] { const content = maskPythonTripleQuotedStrings(rawContent);
     const routes: FlaskRoute[] = [];
     const routePattern = /@(?:(\w+)\.)?(route|get|post|put|patch|delete)\s*\(\s*['"]([^'"]+)['"](?:,\s*methods\s*=\s*\[([^\]]+)\])?\s*\)[\s\S]*?def\s+(\w+)\s*\(/g;
 
