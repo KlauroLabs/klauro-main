@@ -309,6 +309,7 @@
   "frameworks/web/nextjs-analyzer.ts": 2,
   "frameworks/web/node-http-analyzer.ts": 2,
   "frameworks/web/nuxt-analyzer.ts": 2,
+  "frameworks/web/python-source-text.ts": 2,
   "frameworks/web/qwik-analyzer.ts": 2,
   "frameworks/web/rails-analyzer.ts": 2,
   "frameworks/web/rails-controller-actions.ts": 2,

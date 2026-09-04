@@ -1,4 +1,5 @@
 import { BaseAnalyzer, CASAnalysisResult, CASNode, CASEdge, AnalysisContext, FileAnalysisContext, FileAnalysisResult } from '../../core/base-analyzer';
+import { maskPythonTripleQuotedStrings } from './python-source-text';
 import {
   CASEntryPoint, CASExitPoint,
   CASPerspective
@@ -995,7 +996,7 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
     return preserveTrailingSlash ? `${normalized}/` : normalized;
   }
 
-  private extractBalancedCalls(content: string, methodName: string): string[] {
+  private extractBalancedCalls(rawContent: string, methodName: string): string[] { const content = maskPythonTripleQuotedStrings(rawContent);
     const calls: string[] = [];
     const pattern = new RegExp(`\\.\\s*${methodName}\\s*\\(`, 'g');
     let match: RegExpExecArray | null;
@@ -1232,9 +1233,9 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
     return dependencies;
   }
 
-  private extractRoutes(content: string): FastAPIRoute[] {
+  private extractRoutes(rawContent: string): FastAPIRoute[] {
     const routes: FastAPIRoute[] = [];
-    const lines = content.split('\n');
+    const content = maskPythonTripleQuotedStrings(rawContent); const lines = content.split('\n');
     const lineOffsets: number[] = [];
     let offset = 0;
     for (const line of lines) {
