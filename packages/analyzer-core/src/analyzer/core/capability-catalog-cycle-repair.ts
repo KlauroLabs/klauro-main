@@ -777,6 +777,15 @@ export function capabilityCatalogCycleQualityFailure(args: {
   requiredOutcomes: readonly CapabilityCatalogOutcomeRequirement[];
   candidateFamilyGroups: ReadonlyArray<ReadonlyArray<string>>;
   fullyCoveredAggregateCandidateIds?: ReadonlySet<string>;
+  // Uncovered behavior obligations whose parent candidate is classified as a
+  // product outcome. Only these make an empty catalog a wrong answer; tool-
+  // shaped or supporting surfaces do not, so a catalog is never filled merely
+  // to fill it.
+  uncoveredProductOutcomeCandidateIds?: readonly string[];
+  // True only on the first cycle. An empty first answer with grounded product
+  // evidence earns one targeted repair; an empty answer after that repair is
+  // the honest catalog and is never retried merely to fill it.
+  emptyCatalogRepairEligible?: boolean;
   isBareNoun: (name: string) => boolean;
   isStructuralPlaceholder: (description?: string) => boolean;
   isValidatedDeterministicRecovery?: (capability: SystemCapability) => boolean;
@@ -789,10 +798,10 @@ export function capabilityCatalogCycleQualityFailure(args: {
   const coverageFailure = capabilityCatalogOutcomeCoverageFailure(args.reconciled, args.requiredOutcomes);
   if (coverageFailure) return coverageFailure;
   if (args.reconciled.length === 0) {
-    const uncoveredBehaviors = args.requiredBehaviorCandidateIds.length;
-    const uncoveredEntityGroups = args.requiredEntityCandidateGroups.filter(group => group.length > 0).length;
-    if (uncoveredBehaviors > 0 || uncoveredEntityGroups > 0) {
-      return `catalog is empty while ${uncoveredBehaviors} grounded behavior obligation(s) and ${uncoveredEntityGroups} entity group(s) remain uncovered`;
+    if (!args.emptyCatalogRepairEligible) return undefined;
+    const uncoveredProductOutcomes = (args.uncoveredProductOutcomeCandidateIds || []).length;
+    if (uncoveredProductOutcomes > 0) {
+      return `catalog is empty while ${uncoveredProductOutcomes} grounded product-outcome behavior obligation(s) remain uncovered`;
     }
   }
   const uncoveredEvidenceFamilies = uncoveredCapabilityCatalogFamilyRepresentativeIds(

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SystemCapability } from '../../types/cas.types';
 import { capabilityCatalogOutcomeBindingFailure } from './capability-catalog-outcome-coverage';
-import { capabilityCatalogEvidenceFallback, capabilityCatalogFirstPartyFallback, capabilityCatalogRepairPromptEnvelope } from './capability-catalog-repair-context';
+import { capabilityCatalogEvidenceFallback, capabilityCatalogFirstPartyFallback, capabilityCatalogRepairPromptEnvelope, capabilityCatalogRepairPromptFacts } from './capability-catalog-repair-context';
 
 test('targeted repair exposes opaque ids and customer-language facts without raw structural evidence', () => {
   const candidates = [{
@@ -501,4 +501,16 @@ test('targeted repair retains verified cross-subject flow relationships', () => 
   assert.deepEqual(envelope.facts[0].relationships, [
     'Observed together in one flow: Rule, Transaction, Category',
   ]);
+});
+
+test('an operation obligation requires the entity it acts on as subject, never the folder or file tokens that locate it', () => {
+  const candidates = [{
+    id: 'operation-obligation:capability_signup:1', name: 'Signup', structural_label: 'create page sign', category: 'core',
+    evidence_kind: 'behavior-surface', related_entities: ['entity_user'],
+    operations: [{ entry_point_id: 'e1', entry_point_type: 'http', action: 'Create User', path_or_command: 'orm/pages/signup/index.tsx' }],
+  }] as SystemCapability[];
+  const [fact] = capabilityCatalogRepairPromptFacts(candidates, [candidates[0].id], [], new Map(), new Map([['entity_user', 'User']]));
+  assert.ok(fact);
+  for (const pathToken of ['orm', 'page', 'index', 'sign', 'tsx']) assert.ok(!fact.required_subject_terms.includes(pathToken), `${pathToken} must not be required: ${fact.required_subject_terms.join(',')}`);
+  assert.ok(fact.required_subject_terms.includes('user'), `entity subject must be required: ${fact.required_subject_terms.join(',')}`);
 });

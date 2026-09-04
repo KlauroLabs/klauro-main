@@ -481,6 +481,13 @@ export interface OrchestrateAnalysisOptions {
   conventions?: KlauroConventionsInput;
   packGlobs?: string[];
 }
+// An operation obligation id is operation-obligation:<parent candidate>:<hash>;
+// any other id is its own parent.
+function catalogObligationParentId(candidateId: string): string {
+  const parts = String(candidateId || '').split(':');
+  return parts[0] === 'operation-obligation' && parts.length >= 3 ? parts[1] : candidateId;
+}
+
 export class AnalyzerOrchestrator {
   private readonly GENERIC_STRUCTURAL_NAME_PATTERN = /^(mono-?repo|root|workspace|workspaces|repo|repository|source|src|main|app|apps|packages?|projects?|core|server|client|web|www|api|frontend|backend)$/i;
   private analyzers: Map<string, AnalyzerRegistration> = new Map();
@@ -10032,10 +10039,12 @@ export class AnalyzerOrchestrator {
     requiredEntityCandidateGroups: string[][] = [], requiredOutcomes: readonly CapabilityCatalogOutcomeRequirement[] = [],
     candidateFamilyGroups: ReadonlyArray<ReadonlyArray<string>> = [],
     fullyCoveredAggregateCandidateIds: ReadonlySet<string> = new Set(),
+    uncoveredProductOutcomeCandidateIds: readonly string[] = [],
+    emptyCatalogRepairEligible = false,
   ): string | undefined {
     return capabilityCatalogCycleQualityFailure({
       reconciled, distinctFamilyCount, requiredBehaviorCandidateIds, requiredEntityCandidateGroups,
-      requiredOutcomes, candidateFamilyGroups, fullyCoveredAggregateCandidateIds,
+      requiredOutcomes, candidateFamilyGroups, fullyCoveredAggregateCandidateIds, uncoveredProductOutcomeCandidateIds, emptyCatalogRepairEligible,
       isBareNoun: name => this.isBareNounCapabilityLabel(name),
       isStructuralPlaceholder: description => this.isStructuralPlaceholderCapabilityDescription(description || ''),
     });
@@ -10133,6 +10142,7 @@ export class AnalyzerOrchestrator {
     let uncoveredOutcomes = groundableOutcomes; const repairProgress = trackCapabilityCatalogRepair(Math.max(1, groundableOutcomes.length), requiredBehaviorCandidateIds, requiredEntityCandidateGroups, groundableOutcomes.map(requirement => requirement.id), distinctFamilyCandidateGroups);
     let maxCatalogCycles = repairProgress.maxCycles;
     let productOutcomeLanguageExtensionGranted = false;
+    let emptyCatalogRepairGrantedAtCycle: number | undefined;
     for (let cycle = 1; cycle <= maxCatalogCycles; cycle++) {
       if (args.hardDeadlineAt !== undefined && Date.now() >= args.hardDeadlineAt) {
         deadlineExceeded = true;
@@ -10374,6 +10384,11 @@ export class AnalyzerOrchestrator {
         groundableOutcomes,
         distinctFamilyCandidateGroups,
         operationCoverage.fullyCoveredAggregateCandidateIds,
+        // An empty first cycle with uncovered product-outcome obligations earns
+        // exactly one targeted repair; an empty result after that repair is
+        // accepted as the honest answer rather than retried to fill the catalog.
+        cycleUncoveredBehaviorCandidateIds.filter(candidateId => productOutcomeEvidenceCandidateIds.has(catalogObligationParentId(candidateId))),
+        cycle === 1,
       ) || (unresolvedRejectedProductOutcomeIds.length > 0
         ? `catalog requires grounded repair for ${unresolvedRejectedProductOutcomeIds.length} rejected product-outcome evidence ${unresolvedRejectedProductOutcomeIds.length === 1 ? 'family' : 'families'}`
         : undefined) || (nonPublishable.length > 0 ? `${nonPublishable.length} catalog capability ${nonPublishable.length === 1 ? 'requires' : 'require'} publishable description repair: ${nonPublishable.slice(0, 3).map(capability => capability.name).join(', ')}` : undefined);
@@ -10383,6 +10398,18 @@ export class AnalyzerOrchestrator {
       writeAnalyzerStatus(
         `[Klauro] capability catalog cycle ${cycle}/${maxCatalogCycles}${targetedRepair ? ' targeted-repair' : ''}: ${cycleQualityFailure ? `rejected (${cycleQualityFailure})` : `accepted (${evidenceCompleteReconciled.length} capabilities)`}${reconciledCandidates.length > cycleReconciled.length ? `; refused ${reconciledCandidates.length - cycleReconciled.length} non-publishable item(s): ${[...publishabilityFailures.entries()].map(([reason, count]) => `${reason}=${count}`).join(', ')}` : ''}`,
       ); writeAnalyzerStatus('[Klauro] capability catalog retained identities:', capabilityCatalogCycleDiagnostic(cycleQualityFailure ? repairRetainableEvidenceCompleteReconciled : evidenceCompleteReconciled));
+      if (cycle === 1 && evidenceCompleteReconciled.length === 0 && cycleQualityFailure &&
+        (cycleQualityFailure.startsWith('catalog is empty while') || cycleQualityFailure.startsWith('catalog omits'))) emptyCatalogRepairGrantedAtCycle = cycle;
+      if (emptyCatalogRepairGrantedAtCycle !== undefined && cycle > emptyCatalogRepairGrantedAtCycle &&
+        evidenceCompleteReconciled.filter(capability => this.isPublishableCapability(capability)).length === 0) {
+        // The one repair granted to an empty catalog produced nothing
+        // publishable: the empty catalog is the honest answer, not a quota.
+        writeAnalyzerStatus('[Klauro] capability catalog: the single repair granted for an empty catalog produced nothing publishable; accepting the empty catalog');
+        reconciled = [];
+        qualityFailure = undefined;
+        retainedQualityFailure = undefined;
+        break;
+      }
       if (needsIndependentBroadConfirmation) {
         reconciled = repairRetainableEvidenceCompleteReconciled;
         independentBroadConfirmationPending = true;

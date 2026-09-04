@@ -1428,3 +1428,16 @@ describe('structural CRUD evidence classification', () => {
     expect(classified.evidence_role).toBe('product-outcome');
   });
 });
+
+describe('delivery subject anchoring', () => {
+  test('a description that names the delivery subject anchors an outcome whose name chose the outcome word', () => {
+    const toggle = {
+      id: 'operation-obligation:capability_toggle:1', name: 'Toggle post', structural_label: 'resolve toggle', category: 'core',
+      evidence_kind: 'behavior-surface' as const, related_entities: ['entity_post'],
+      operations: [{ entry_point_id: 'e1', entry_point_type: 'http', action: 'Update Post', path_or_command: '/api/publish/[id]' }],
+    } as any;
+    const description = 'The post updates its published state to reflect the intent to make it visible or hidden in the feed.';
+    expect(capabilityOutcomeScopeFailure('Toggle publication status', [toggle], undefined, false, description)).not.toContain('delivery-subject-missing');
+    expect(capabilityOutcomeScopeFailure('Toggle publication status', [toggle], undefined, false, 'Switches a flag.')).toContain('delivery-subject-missing');
+  });
+});

@@ -3272,22 +3272,26 @@ test('evidence merging prunes unrelated operations already attached to a focused
 });
 
 test('an empty catalog with grounded evidence families is rejected, not accepted as complete', () => {
-  const quality = (candidateFamilyGroups: string[][]) => capabilityCatalogCycleQualityFailure({
+  const quality = (candidateFamilyGroups: string[][], emptyCatalogRepairEligible = true) => capabilityCatalogCycleQualityFailure({
     reconciled: [], distinctFamilyCount: candidateFamilyGroups.length, requiredBehaviorCandidateIds: [], requiredEntityCandidateGroups: [],
-    requiredOutcomes: [], candidateFamilyGroups, isBareNoun: () => false, isStructuralPlaceholder: () => false,
+    requiredOutcomes: [], candidateFamilyGroups, emptyCatalogRepairEligible, isBareNoun: () => false, isStructuralPlaceholder: () => false,
   });
   assert.match(quality([['post-lifecycle'], ['comment-lifecycle']]) || '', /omits 2 grounded product-evidence families/);
   assert.equal(quality([]), undefined);
+  // after the one granted repair, an empty catalog is the honest answer
+  assert.equal(quality([['post-lifecycle']], false), undefined);
 });
 
-test('an empty catalog with uncovered grounded behavior obligations is rejected even without evidence families', () => {
-  // The candidate pool had entity-backed operations (sign up, toggle a post) that
-  // never earned structural-family status; an empty answer still omits them.
-  const quality = (requiredBehaviorCandidateIds: string[], requiredEntityCandidateGroups: string[][]) => capabilityCatalogCycleQualityFailure({
-    reconciled: [], distinctFamilyCount: 0, requiredBehaviorCandidateIds, requiredEntityCandidateGroups,
-    requiredOutcomes: [], candidateFamilyGroups: [], isBareNoun: () => false, isStructuralPlaceholder: () => false,
+test('an empty catalog with uncovered product-outcome obligations is rejected; tool-shaped or supporting obligations never force a fill', () => {
+  // The candidate pool had entity-backed product operations (sign up, toggle a
+  // post) that never earned structural-family status; an empty answer omits
+  // them. Uncovered supporting surfaces alone keep the empty answer honest.
+  const quality = (requiredBehaviorCandidateIds: string[], uncoveredProductOutcomeCandidateIds: string[]) => capabilityCatalogCycleQualityFailure({
+    reconciled: [], distinctFamilyCount: 0, requiredBehaviorCandidateIds, requiredEntityCandidateGroups: [],
+    requiredOutcomes: [], candidateFamilyGroups: [], uncoveredProductOutcomeCandidateIds, emptyCatalogRepairEligible: true, isBareNoun: () => false, isStructuralPlaceholder: () => false,
   });
-  assert.match(quality(['operation-obligation:capability_signup:1', 'operation-obligation:capability_toggle:2'], []) || '', /empty while 2 grounded behavior obligation\(s\) and 0 entity group\(s\)/);
-  assert.match(quality([], [['entity_post']]) || '', /empty while 0 grounded behavior obligation\(s\) and 1 entity group\(s\)/);
+  const obligations = ['operation-obligation:capability_signup:1', 'operation-obligation:capability_toggle:2'];
+  assert.match(quality(obligations, obligations) || '', /empty while 2 grounded product-outcome behavior obligation\(s\) remain uncovered/);
+  assert.equal(quality(obligations, []), undefined);
   assert.equal(quality([], []), undefined);
 });

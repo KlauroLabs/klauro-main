@@ -267,3 +267,15 @@ describe('CapabilityDetector producer naming (evidence-grounded, no bare-noun gr
     expect(normalizeCapabilityActionName('Access control')).toBe('Access control');
   });
 });
+
+describe('bare-noun detection knows outcome verbs', () => {
+  test('a verb phrase naming what a person accomplishes is not a bare noun', () => {
+    for (const name of ['Complete signup', 'Toggle visibility', 'Approve requests', 'Register accounts', 'Bookmark articles']) {
+      expect(isBareNounCapabilityLabel(name)).toBe(false);
+    }
+  });
+  test('a noun pair without a verb is still a bare noun', () => {
+    expect(isBareNounCapabilityLabel('User profile')).toBe(true);
+    expect(isBareNounCapabilityLabel('Post')).toBe(true);
+  });
+});

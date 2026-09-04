@@ -197,13 +197,26 @@ export function capabilityCatalogRepairPromptFacts(
     const candidateNameIsCustomerVisible = !/(?:[a-z0-9][A-Z]|[A-Z]{2,}[a-z]|[_:/])/.test(candidate.name || '');
     const routeNameHasRecoverableProductTerms = candidate.evidence_kind === 'behavior-surface' &&
       /\/[A-Za-z]/.test(candidate.name || '');
-    const scopedSubjectCandidate = candidate.id.startsWith('operation-obligation:')
-      ? { ...candidate, related_domains: [], evidence_examples: [] }
+    // An operation obligation's structural label and operation paths are
+    // built from code identifiers (folder and function names). They locate the
+    // evidence; they are not the subject a product sentence must name. The
+    // subject the author must keep is the candidate's own name and the
+    // entities it acts on, and an entity's name counts even when the same
+    // word is generic elsewhere.
+    const isOperationObligation = candidate.id.startsWith('operation-obligation:');
+    const entityNameTokens = new Set(isOperationObligation
+      ? (candidate.related_entities || [])
+        .flatMap(entityId => String(entityNamesById.get(entityId) || '').toLowerCase().split(/[^a-z0-9]+/))
+        .filter(token => token.length >= 3)
+        .map(canonicalCapabilityCatalogOutcomeToken)
+      : []);
+    const scopedSubjectCandidate = isOperationObligation
+      ? { ...candidate, related_domains: [], evidence_examples: [], structural_label: undefined, operations: [] }
       : candidate;
     const evidenceSubjectTerms = candidateNameIsCustomerVisible || routeNameHasRecoverableProductTerms
       ? capabilityEvidenceSubjectTokens(scopedSubjectCandidate, (candidate.related_entities || []).map(entityId => entityNamesById.get(entityId) || ''))
         .map(canonicalCapabilityCatalogOutcomeToken)
-        .filter(token => token.length >= 3 && (!genericEvidenceTerms.has(token) || (token === 'user' && exactCandidateSubject === 'user')))
+        .filter(token => token.length >= 3 && (!genericEvidenceTerms.has(token) || entityNameTokens.has(token) || (token === 'user' && exactCandidateSubject === 'user')))
         .slice(0, 8)
       : [];
     const requiredSubjectTerms = candidateRequirements.length > 0
