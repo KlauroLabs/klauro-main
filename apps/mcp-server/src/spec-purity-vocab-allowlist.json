@@ -239,6 +239,24 @@
       "name": "BEHAVIORAL_CODE_UNIT_TYPES",
       "category": "closed-cas-taxonomy",
       "reason": "Canonical CAS node types select executable code units for the understanding contract; node existence and relationships remain source-derived."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/analysis-comprehension-surface.ts",
+      "name": "capabilityBearingNodeTypes",
+      "category": "closed-cas-taxonomy",
+      "reason": "Canonical CAS node types whose addition can change the comprehension surface, used only to decide whether an incremental reanalysis must re-run comprehension; node existence and types remain source-derived."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/capability-catalog-evidence.ts",
+      "name": "structurallyInferredEntityCrud",
+      "category": "linguistic-lifecycle-verbs",
+      "reason": "Canonical lifecycle action verbs, the same closed English set capability-naming.ts (baselined) uses; decides only whether a candidate name is a bare lifecycle restatement of an entity and never classifies a domain."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/capability-catalog-outcome-coverage.ts",
+      "name": "<inline:1omqc0sngnwg>",
+      "category": "linguistic-noise",
+      "reason": "English auxiliary and question words; a README feature bullet starting with one is a question or usage example, not an authored outcome. Closed grammar, no product vocabulary."
     }
   ]
 }
