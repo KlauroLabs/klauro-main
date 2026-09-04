@@ -11267,7 +11267,7 @@ export class AnalyzerOrchestrator {
       });
     }
 
-    let domainApplied = enhancedSystemPurpose.domain_source === 'ai' || enhancedSystemPurpose.domain_source === 'ai-refined'; const domainGroundingSignal: ProjectTextSignal = { ...projectTextSignal, concepts: [...(projectTextSignal.concepts || []), ...systemCapabilities.map(capability => String(capability.name || ''))] };
+    let domainApplied = enhancedSystemPurpose.domain_source === 'ai' || enhancedSystemPurpose.domain_source === 'ai-refined'; const domainGroundingSignal: ProjectTextSignal = { ...projectTextSignal, concepts: [...(projectTextSignal.concepts || []), ...systemCapabilities.map(capability => String(capability.name || '')), ...dataEntities.map(entity => String(entity.name || ''))] };
     for (const candidate of domainCandidates) {
       const label = this.normalizeAIDomainLabel(candidate);
       if (!label) continue;
@@ -11693,6 +11693,7 @@ export class AnalyzerOrchestrator {
         projectTextSignal.productDocTitle,
         projectTextSignal.productDocSummary,
         projectTextSignal.manifestDescription,
+        ...(projectTextSignal.concepts || []),
       ]
         .flatMap(value => String(value || '').toLowerCase().split(/[^a-z0-9]+/))
         .filter(token => token.length > 2)

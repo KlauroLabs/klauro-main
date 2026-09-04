@@ -11406,6 +11406,12 @@ describe('domain grounding gate: dependency-name salience (live defect — a men
     const groundedByCapabilities = orch.evaluateAIDomainCandidate('http-web-framework', { ...purpose, inferred_description: '', core_concepts: [] }, ['starlette'],
       { concepts: ['web framework', 'Raise standardized HTTP errors', 'Authenticate requests with HTTP schemes'], evidence: [] });
     expect(groundedByCapabilities.accepted).toBe(true);
+    const appPurpose = { ...purpose, artifact_type: 'app', inferred_description: '', core_concepts: [] };
+    const entityNamedPost = orch.evaluateAIDomainCandidate('post-quote-user', appPurpose, [], { concepts: ['Post', 'Quote', 'User', 'blog'], evidence: [] });
+    expect(entityNamedPost.reason).not.toBe('implementation-mechanism-domain');
+    const verbPost = orch.evaluateAIDomainCandidate('post-quote-user', appPurpose, [], { concepts: ['quote', 'user'], evidence: [] });
+    expect(verbPost.accepted).toBe(false);
+    expect(['implementation-mechanism-domain', 'not-grounded-in-facts']).toContain(verbPost.reason);
     const appMechanism = orch.evaluateAIDomainCandidate('http-web-framework', { ...purpose, artifact_type: 'app' }, ['starlette'], { concepts: ['web framework'], evidence: [] });
     expect(appMechanism.reason).toBe('implementation-mechanism-domain');
     const onlyDependencies = orch.evaluateAIDomainCandidate('cookie-send', purpose, ['http-errors', 'cookie', 'send'], { concepts: ['web framework'], evidence: [] });
