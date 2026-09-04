@@ -11401,6 +11401,10 @@ describe('domain grounding gate: dependency-name salience (live defect — a men
     const purpose: any = { primary_domain: '', artifact_type: 'library', inferred_description: 'A minimalist web framework for building HTTP servers.', core_concepts: ['web framework'] };
     const verdict = orch.evaluateAIDomainCandidate('web-http-server', purpose, ['http-errors', 'cookie', 'send'], { concepts: ['web framework', 'server'], evidence: [] });
     expect(verdict.reason).not.toBe('dependency-name-domain-pollution');
+    const mechanism = orch.evaluateAIDomainCandidate('http-web-framework', purpose, ['starlette'], { concepts: ['web framework'], evidence: [] });
+    expect(mechanism.reason).not.toBe('implementation-mechanism-domain');
+    const appMechanism = orch.evaluateAIDomainCandidate('http-web-framework', { ...purpose, artifact_type: 'app' }, ['starlette'], { concepts: ['web framework'], evidence: [] });
+    expect(appMechanism.reason).toBe('implementation-mechanism-domain');
     const onlyDependencies = orch.evaluateAIDomainCandidate('cookie-send', purpose, ['http-errors', 'cookie', 'send'], { concepts: ['web framework'], evidence: [] });
     expect(onlyDependencies.accepted).toBe(false);
   });

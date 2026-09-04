@@ -11700,7 +11700,8 @@ export class AnalyzerOrchestrator {
     const productTextGrounded = labelTokens.length > 0 &&
       labelTokens.every(token => productTextTokens.has(stem(token)));
     const implementationMechanismTokens = new Set(['get', 'post', 'put', 'patch', 'delete', 'http', 'https', 'graphql', 'grpc']);
-    if (labelTokens.some(token => implementationMechanismTokens.has(token) && !productTextTokens.has(stem(token)))) {
+    const mechanismIsTheProduct = ['library', 'client-sdk'].includes(String(enhancedSystemPurpose.artifact_type || ''));
+    if (!mechanismIsTheProduct && labelTokens.some(token => implementationMechanismTokens.has(token) && !productTextTokens.has(stem(token)))) {
       return { accepted: false, refined: false, reason: 'implementation-mechanism-domain' };
     }
     const supportingMechanismTokens = new Set(['auth', 'authentication', 'authorization', 'guard', 'middleware', 'validation', 'security', 'session', 'logging', 'cache', 'queue']);
