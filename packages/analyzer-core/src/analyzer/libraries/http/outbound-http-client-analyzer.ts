@@ -180,7 +180,7 @@ export class OutboundHttpClientAnalyzer extends BaseAnalyzer {
           nodeId,
           'api',
           `${call.method.toUpperCase()} ${call.endpoint}`,
-          call.endpointResolution === 'dynamic'
+          (call.endpointResolution === 'dynamic' || call.endpoint === RUNTIME_RESOLVED_ENDPOINT)
             ? `${call.library} outbound HTTP call; the endpoint is built at runtime and is not readable from source.`
             : `${call.library} outbound HTTP call to ${call.endpoint}.`,
           {
@@ -367,21 +367,6 @@ export class OutboundHttpClientAnalyzer extends BaseAnalyzer {
       this.addCall(calls, 'net/http', match[1] || match[3], match[2] || match[4], content, match.index);
     }
 
-    const dynamicNewRequest = /\bhttp\.NewRequest\s*\(\s*([^,\n]+)\s*,\s*(?!")([^,\n)]+)|\bhttp\.NewRequestWithContext\s*\(\s*[^,\n]+\s*,\s*([^,\n]+)\s*,\s*(?!")([^,\n)]+)/g;
-    while ((match = dynamicNewRequest.exec(content)) !== null) {
-      const endpointExpression = (match[2] || match[4] || '').trim();
-      if (endpointExpression.startsWith('"')) continue;
-      const methodExpression = (match[1] || match[3] || '').trim();
-      const literalMethod = methodExpression.match(/^"([A-Z]+)"$/)?.[1];
-      this.addCall(
-        calls,
-        'net/http',
-        literalMethod || 'ANY',
-        '(runtime-resolved)',
-        content,
-        match.index,
-      );
-    }
 
     const clientCall = /\b([A-Za-z_][A-Za-z0-9_]*)\.(Get|Post|Head)\s*\(\s*"([^"]+)"/g;
     while ((match = clientCall.exec(content)) !== null) {
