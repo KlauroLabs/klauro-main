@@ -360,7 +360,6 @@ export function deriveCapabilityCatalogOutcomeRequirements(
       .filter(sentence => purposeVerbIn(sentence)).length > 1;
     const semanticOutcomeTokens = new Set(clauseTokens.filter(token => ['understand', 'onboard', 'risk', 'verify', 'collaborate'].includes(token)));
     if (subjectTokens.length === 0) continue;
-    if (!subjectTokens.some(token => !CAPABILITY_PURPOSE_VERBS.has(token) && !/^(?:make|makes|made|making)$/.test(token))) continue;
     for (const audience of requirementAudiences(clause)) {
       const audienceCandidates = candidateTokens.filter(item => !audience || (audience === 'human'
         ? !agentAudience.test(item.text) || humanAudience.test(item.text)
@@ -411,6 +410,7 @@ export function deriveCapabilityCatalogOutcomeRequirements(
         ? subjectTokens.filter(token => candidateTokens.some(item =>
           candidateIdSet.has(canonicalOutcomeEvidenceCandidateId(item.candidate.id)) && item.tokens.has(comparableEvidenceToken(token))))
         : subjectTokens.slice(0, 8);
+      if (!explicitAuthoredFeature && semanticOutcomeTokens.size === 0 && groundedSubjectTokens.length > 0 && groundedSubjectTokens.every(token => CAPABILITY_PURPOSE_VERBS.has(token))) continue;
       const originalClauseAlias = clauseTokens
         .filter(token => audienceCandidates.some(item =>
           candidateIdSet.has(canonicalOutcomeEvidenceCandidateId(item.candidate.id)) && item.tokens.has(token)))

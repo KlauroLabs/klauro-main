@@ -1138,6 +1138,18 @@ test('repairs an omitted control noun in otherwise grounded capability prose', (
   );
 });
 
+test('a product-goal clause whose only grounded subject is a verb does not become an outcome requirement (corpus shape)', () => {
+  const apiGroup = (id: string, name: string, ops: string[]) => ({ id, name, category: 'core', evidence_role: 'product-outcome', evidence_kind: 'behavior-surface', related_entities: [], related_domains: [],
+    operations: ops.map(action => ({ entry_point_id: `e_${action}`, entry_point_type: 'api', action })), evidence_examples: ops.map(action => `${action}: ${action.replace(/_/g, ' ')}`), criticality: 'medium', criticality_factors: [] } as any);
+  const requirements = deriveCapabilityCatalogOutcomeRequirements({
+    concepts: ['web application framework', 'wsgi'],
+    productDocTitle: 'Flask',
+    productDocSummary: 'Flask is a lightweight WSGI web application framework. It is designed to make getting started quick and easy, with the ability to scale up to complex applications.',
+    manifestDescription: 'A simple framework for building complex web applications.',
+  } as any, [apiGroup('cap_flask_helpers_api_management', 'Flask Helpers API', ['make_response', 'flash', 'redirect', 'abort', 'url_for']), apiGroup('cap_flask_app_api_management', 'Flask App API', ['route', 'run', 'make_config', 'test_client'])]);
+  assert.equal(requirements.length, 0, JSON.stringify(requirements.map(requirement => [requirement.id, requirement.subjectTokens])));
+});
+
 test('a product-goal clause with no object (only a verb) does not become an outcome requirement', () => {
   const requirements = deriveCapabilityCatalogOutcomeRequirements({
     productDocTitle: 'Flask',
