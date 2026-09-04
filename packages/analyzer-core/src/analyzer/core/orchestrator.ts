@@ -202,10 +202,7 @@ import { capabilityCatalogCycleQualityFailure, deterministicAtomicClosuresForObl
 import { normalizePublishedCapabilityIds } from './capability-catalog-publication';
 import { TRACEABLE_NODE_TYPES, computeFlowConcepts, materializeNodeUnderstandingContracts, type FlowConcept } from './flow-concepts';
 import { capabilitySubjectTokens } from './capability-audience-test';
-import {
-  capabilityAudienceRepairFeedback, capabilityPublishabilityRepairFeedback, capabilityCatalogProductTerms,
-  evaluateCapabilityCatalogAudience, groundedCapabilityAudience, removeUnsupportedCapabilityAbsenceClaims, schemaGroundedEntityNames, unsupportedCapabilityOperationalClaims,
-} from './capability-catalog-audience';
+import { capabilityAudienceRepairFeedback, capabilityPublishabilityRepairFeedback, capabilityCatalogProductTerms, evaluateCapabilityCatalogAudience, groundedCapabilityAudience, removeUnsupportedCapabilityAbsenceClaims, schemaGroundedEntityNames, unsupportedCapabilityOperationalClaims, rejectionsAreVocabularyCollisionsOnly } from './capability-catalog-audience';
 import { capabilityGroundedEntityIds } from './capability-entity-grounding';
 import { canonicalCapabilityLifecycleAction } from './capability-lifecycle-actions';
 import { projectReversibleCapabilityEvidence, scopeCapabilityOperationsToOutcomeName } from './capability-operation-attribution';
@@ -10144,7 +10141,7 @@ export class AnalyzerOrchestrator {
     let uncoveredOutcomes = groundableOutcomes; const repairProgress = trackCapabilityCatalogRepair(Math.max(1, groundableOutcomes.length), requiredBehaviorCandidateIds, requiredEntityCandidateGroups, groundableOutcomes.map(requirement => requirement.id), distinctFamilyCandidateGroups);
     let maxCatalogCycles = repairProgress.maxCycles;
     let productOutcomeLanguageExtensionGranted = false;
-    let emptyCatalogRepairGrantedAtCycle: number | undefined;
+    let emptyCatalogRepairGrantedAtCycle: number | undefined; let emptyCatalogSecondRepairGranted = false; let emptyCatalogPhrasingRepairContinued = false;
     for (let cycle = 1; cycle <= maxCatalogCycles; cycle++) {
       if (args.hardDeadlineAt !== undefined && Date.now() >= args.hardDeadlineAt) {
         deadlineExceeded = true;
@@ -10404,13 +10401,16 @@ export class AnalyzerOrchestrator {
         (cycleQualityFailure.startsWith('catalog is empty while') || cycleQualityFailure.startsWith('catalog omits'))) emptyCatalogRepairGrantedAtCycle = cycle;
       if (emptyCatalogRepairGrantedAtCycle !== undefined && cycle > emptyCatalogRepairGrantedAtCycle &&
         evidenceCompleteReconciled.filter(capability => this.isPublishableCapability(capability)).length === 0) {
-        
-        
+        if (rejectionsAreVocabularyCollisionsOnly(audienceEvaluation.rejections) && !emptyCatalogSecondRepairGranted) {
+          emptyCatalogSecondRepairGranted = true; emptyCatalogRepairGrantedAtCycle = cycle; if (cycle >= maxCatalogCycles) maxCatalogCycles = cycle + 1;
+          writeAnalyzerStatus(`[Klauro] capability catalog: the empty-catalog repair named ${audienceEvaluation.rejections.length} candidate-bound item(s) rejected only for vocabulary collisions; granting one more repair`); continue;
+        } else if (emptyCatalogSecondRepairGranted && !emptyCatalogPhrasingRepairContinued && repairRetainableEvidenceCompleteReconciled.length > 0) { emptyCatalogPhrasingRepairContinued = true; if (cycle >= maxCatalogCycles) maxCatalogCycles = cycle + 1; } else {
         writeAnalyzerStatus('[Klauro] capability catalog: the single repair granted for an empty catalog produced nothing publishable; accepting the empty catalog');
         reconciled = [];
         qualityFailure = undefined;
         retainedQualityFailure = undefined;
         break;
+        }
       }
       if (needsIndependentBroadConfirmation) {
         reconciled = repairRetainableEvidenceCompleteReconciled;
@@ -11280,6 +11280,7 @@ export class AnalyzerOrchestrator {
       if (label === enhancedSystemPurpose.primary_domain && !domainApplied) {
         const verdict = this.evaluateAIDomainCandidate(label, enhancedSystemPurpose, libraryNames, projectTextSignal);
         if (!verdict.accepted) {
+          writeAnalyzerStatus(`[Klauro] domain candidate rejected: "${label}" (${verdict.reason})`);
           enhancedSystemPurpose.primary_domain = '';
           enhancedSystemPurpose.domain_rejected_candidates = [
             ...(enhancedSystemPurpose.domain_rejected_candidates || []),

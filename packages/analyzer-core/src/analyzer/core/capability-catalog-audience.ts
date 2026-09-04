@@ -376,7 +376,7 @@ export function evaluateCapabilityCatalogAudience(
       .map(entity => entity.name);
     const dependencyGroundedEntityNames = (capability.depends_on || [])
       .flatMap(dependency => dependency.evidence.shared_entities || []);
-    const capabilityProductTerms = [...productTerms, ...integrationTerms, ...operationTerms, ...relatedEntityTerms];
+    const capabilityProductTerms = [...productTerms, ...integrationTerms, ...operationTerms, ...relatedEntityTerms, ...(capability.evidence_examples || [])];
     
     
     
@@ -542,4 +542,9 @@ export function capabilityPublishabilityRepairFeedback(
     forbidden_terms: rejection.forbidden_terms || [],
   }));
   return `Replace every non-publishable item using only its cited evidence: ${JSON.stringify(rejectedItems)}. Preserve each requirement_id exactly and remove every forbidden_terms phrase. For internal-analysis-vocabulary, translate inventory terms into the concrete software behavior, risk, relationship, or change context visible to the user. For implementation-graph-inventory, state the behavior-level understanding or relationship outcome without enumerating graph contents. For raw-related-entity-identifier, replace source identifiers with audience-readable product language grounded by the same evidence. For delivery-operation-restatement, describe the durable user outcome shared by the evidence instead of a click, command, event, or handler. For generic-structural-phrase, state the evidence-specific outcome directly without implementation scaffolding. Do not enumerate response objects, graph structures, commands, or configuration fields.`;
+}
+
+export function rejectionsAreVocabularyCollisionsOnly(rejections: readonly CapabilityAudienceRejection[]): boolean {
+  return rejections.length > 0 && rejections.every(rejection =>
+    rejection.reasons.length > 0 && rejection.reasons.every(reason => reason === 'shortened-product-term' || reason === 'unrelated-entity-vocabulary'));
 }

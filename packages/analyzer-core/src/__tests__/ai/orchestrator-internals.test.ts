@@ -15169,3 +15169,39 @@ test('removes discovered routes whose resolved handler belongs to test code', ()
   expect(entryPoints).toEqual([]);
   expect(edges).toEqual([]);
 });
+
+test("an empty catalog whose granted repair named candidates that were all rejected earns exactly one more repair", async () => {
+  const localOrch = new AnalyzerOrchestrator() as any;
+  const candidate = {
+    id: 'capability_register_users', name: 'Register users', category: 'core', evidence_kind: 'entity',
+    evidence_role: 'product-outcome', related_entities: ['entity_user'], related_domains: [],
+    operations: [{ entry_point_id: 'entry_signup', entry_point_type: 'http', action: 'create' }],
+    criticality: 'medium', criticality_factors: [],
+  };
+  let calls = 0;
+  jest.spyOn(localOrch, 'aiExtractCapabilityCatalog').mockImplementation(async () => {
+    calls += 1;
+    if (calls === 1) return [];
+    const description = calls === 2
+      ? 'New visitors create a profile with a verified email so they can sign in later.'
+      : `Visitors register a user account with a verified email address before signing in (attempt ${calls}).`;
+    return [{ ...candidate, name: 'Register users', name_source: 'ai', description,
+      description_source: 'ai', criticality_factors: [`catalog-candidate:${candidate.id}`] }];
+  });
+  jest.spyOn(localOrch, 'reconcileCatalogedCapabilities').mockImplementation((value: any) => value);
+  const purpose: any = { primary_domain: 'accounts', core_concepts: [] };
+  const result = await localOrch.runCapabilityCatalogWithQualityGate({
+    systemName: 'signup-fixture', enhancedSystemPurpose: purpose, frameworks: [], userJourneys: [],
+    dataEntities: [
+      { id: 'entity_user', name: 'User', kind: 'persisted-entity', lifecycle: { created_by: ['entry_signup'], read_by: [], updated_by: [], deleted_by: [] } },
+      { id: 'entity_profile', name: 'Profile', kind: 'persisted-entity', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
+    ],
+    candidateSnapshot: [candidate], behaviorSurfaces: [], externalServices: [], flowGraph: emptyFlowGraph(),
+    projectTextSignal: { concepts: ['register users', 'user accounts'], evidence: [], summary: 'Visitors register users and sign in to manage their accounts.', productVocabulary: ['register', 'users', 'accounts'] } as any,
+    entryPoints: [{ id: 'entry_signup', type: 'http', name: 'POST /signup', source_node: 'node_signup', source_analyzer: 'test', handler: { node_id: 'node_signup', file: 'src/signup.ts' } } as any],
+    nodes: [{ id: 'node_signup', name: 'signup', type: 'function', level: 2, source: { file: 'src/signup.ts', line: 1 } } as any],
+    budgetMs: 30000,
+  });
+  expect(calls).toBeGreaterThanOrEqual(3);
+  expect(result.map((capability: any) => capability.name)).toEqual(['Register users']);
+});

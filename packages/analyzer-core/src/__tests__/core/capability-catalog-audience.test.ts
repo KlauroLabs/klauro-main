@@ -473,6 +473,14 @@ describe('capability catalog audience evaluation', () => {
     expect(evaluation.rejections.filter(rejection => rejection.reasons.includes('shortened-product-term'))).toEqual([]);
   });
 
+  it('trusts words from the capability\'s own evidence examples in the identifier-vocabulary test', () => {
+    const subject = capability('Define API endpoints with path operations', 'Developers declare HTTP path operations that route incoming requests to their handler functions.');
+    subject.operations = [{ entry_point_id: 'api_get', entry_point_type: 'api', action: 'Define' }];
+    subject.evidence_examples = ['get: get path operation http route handler'];
+    const evaluation = evaluateCapabilityCatalogAudience([subject], [], ['httpx', 'starlette'], ['web framework', 'path operations']);
+    expect(evaluation.rejections.filter(rejection => rejection.reasons.includes('identifier-vocabulary'))).toEqual([]);
+  });
+
   it('accepts an exact first-party noun even when it prefixes a longer trusted identifier', () => {
     const subject = capability(
       'View memo views',
