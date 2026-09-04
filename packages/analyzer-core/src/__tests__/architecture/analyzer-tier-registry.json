@@ -156,6 +156,7 @@
   "core/previous-description-validation.ts": 3,
   "core/product-map-journey-linking.ts": 3,
   "core/product-document-framing.ts": 3,
+  "core/product-entry-points.ts": 1,
   "core/product-map.ts": 3,
   "core/product-roots.ts": 1,
   "core/project-document-framing.ts": 1,

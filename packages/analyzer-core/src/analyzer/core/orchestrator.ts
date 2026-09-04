@@ -167,6 +167,7 @@ import { buildTerminalSignal, type TerminalSignal } from './terminal-signal';
 import { buildCasTerminality } from './terminality';
 import { declaredProductRoots, isWithinDeclaredRoots } from './product-roots';
 import { defaultPackageIndexEntry, libraryApiResourceKey, libraryPublicApiSurfaceFiles } from './library-public-api-surface';
+import { libraryApiEvidenceFields, productEntryPoints as productEntryPointsOf } from './product-entry-points';
 import { assertUnderstandingContractIntegrity } from './understanding-contract-integrity';
 import { rollupSystemCapabilityDependencies } from './system-capability-dependencies';
 import {
@@ -1471,7 +1472,7 @@ export class AnalyzerOrchestrator {
     await yieldToEventLoop();
     phaseStart = startPhase();
     const flowGraph = this.buildFlowGraph(
-      allEntryPoints,
+      this.productEntryPointsFor(allEntryPoints, allNodes, projectPath),
       callChains,
       allNodes,
       allEdges,
@@ -2880,7 +2881,7 @@ export class AnalyzerOrchestrator {
     });
     const structuralImportance = this.computeAndStampStructuralImportance(nodes, edges, entryPoints);
     const flowGraph = this.buildFlowGraph(
-      entryPoints,
+      this.productEntryPointsFor(entryPoints, nodes, projectPath),
       callChains,
       nodes,
       edges,
@@ -15173,6 +15174,9 @@ export class AnalyzerOrchestrator {
     return result;
   }
 
+  private productEntryPointsFor(entryPoints: CASEntryPoint[], nodes: CASNode[], projectPath?: string): CASEntryPoint[] {
+    return productEntryPointsOf(entryPoints, nodes, node => projectPath ? this.isPrimaryProductNodeForProject(node, projectPath) : this.isPrimaryProductNode(node), file => projectPath ? this.isPrimaryProductPathForProject(file, projectPath) : this.isPrimaryProductPath(file));
+  }
   private buildFlowGraph(
     entryPoints: CASEntryPoint[],
     callChains: CASCallChain[],
@@ -17892,10 +17896,7 @@ export class AnalyzerOrchestrator {
       await maybeYield();
     }
     const productNodeIds = new Set(productNodes.map(node => node.id));
-    const productEntryPoints = entryPoints.filter(ep =>
-      (!ep.source_node || productNodeIds.has(ep.source_node)) &&
-      (!ep.handler?.file || isProductPath(ep.handler.file))
-    );
+    const productEntryPoints = productEntryPointsOf(entryPoints, nodes, isProductNode, isProductPath);
     const productExitPoints = (exitPoints || []).filter(ep =>
       (!ep.source_node || productNodeIds.has(ep.source_node))
     );
@@ -18166,6 +18167,7 @@ export class AnalyzerOrchestrator {
           generated_at: new Date().toISOString(),
         },
         structural_label: structuralLabel,
+        ...libraryApiEvidenceFields(group.entryPoints, productNodeById),
         description: this.generateCapabilityDescription(capabilityName, operations, relatedEntities, group.entryPoints),
         description_source: undefined,
         description_generation: {
