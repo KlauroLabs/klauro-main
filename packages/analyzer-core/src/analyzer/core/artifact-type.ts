@@ -318,7 +318,8 @@ function detectLibrary(
     readmeDeclaresLibrary &&
     nodes.some(node => /^(?!examples?\/|tests?\/)[^/]+\/src\/lib\.rs$/i.test(String(node.source?.file || '').replace(/\\/g, '/')))
   );
-  if ((appEntries > 0 || cliEntries > 0) && !workspaceLibrarySurface) return null;
+  const pythonCompanionCli = Boolean(manifest.pythonSetup) && appEntries === 0 && publicSurfaceSize(nodes) >= 5;
+  if ((appEntries > 0 || (cliEntries > 0 && !pythonCompanionCli)) && !workspaceLibrarySurface) return null;
 
   if (workspaceLibrarySurface) {
     return {

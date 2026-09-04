@@ -230,6 +230,7 @@ describe('classifyArtifactType', () => {
     const withCompanionCli = classifyArtifactType(input({
       manifest: { pythonSetup: { description: 'FastAPI framework', hasConsoleScripts: true, dependencyNames: ['starlette', 'typer'] } },
       nodes: publicNodes,
+      entryPointSummary: [{ type: 'cli', count: 1 }],
     }));
     expect(withCompanionCli.artifactType).toBe('library');
     expect(withCompanionCli.evidence[0]).toMatch(/companion CLI/);
