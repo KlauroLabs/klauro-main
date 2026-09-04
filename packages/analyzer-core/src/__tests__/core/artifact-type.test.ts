@@ -227,6 +227,12 @@ describe('classifyArtifactType', () => {
       entryPointSummary: [{ type: 'http', count: 12 }],
     }));
     expect(withRoutes.artifactType).toBe('app');
+    const withCompanionCli = classifyArtifactType(input({
+      manifest: { pythonSetup: { description: 'FastAPI framework', hasConsoleScripts: true, dependencyNames: ['starlette', 'typer'] } },
+      nodes: publicNodes,
+    }));
+    expect(withCompanionCli.artifactType).toBe('library');
+    expect(withCompanionCli.evidence[0]).toMatch(/companion CLI/);
   });
 
   test('python console_scripts + click is a cli-tool (yisda-cli shape)', () => {

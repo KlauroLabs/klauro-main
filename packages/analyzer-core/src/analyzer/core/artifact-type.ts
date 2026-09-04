@@ -110,7 +110,7 @@ export function classifyArtifactType(input: ArtifactTypeInput): ArtifactTypeResu
   const infrastructure = detectInfrastructure(nodes, appEntries);
   if (infrastructure) return infrastructure;
 
-  const cliTool = detectCliTool(manifest, appEntries, cliEntries);
+  const cliTool = detectCliTool(manifest, appEntries, cliEntries, publicSurfaceSize(nodes));
   if (cliTool) return cliTool;
 
   const library = detectLibrary(nodes, manifest, frameworks, appEntries, cliEntries);
@@ -231,12 +231,19 @@ function detectBoilerplate(manifest: ArtifactManifestSignal, appEntries: number)
 }
 
 
+function publicSurfaceSize(nodes: ArtifactTypeInput['nodes']): number {
+  return nodes.filter(node => node.metadata?.is_exported === true || node.metadata?.access_modifier === 'public').length;
+}
+
 function detectCliTool(
   manifest: ArtifactManifestSignal,
   appEntries: number,
-  cliEntries: number
+  cliEntries: number,
+  publicNodes = 0
 ): ArtifactTypeResult | null {
   if (appEntries > 0) return null;
+  const companionScript = Boolean(manifest.pythonSetup?.hasConsoleScripts) && !manifest.packageJson?.hasBin && publicNodes >= 5;
+  if (companionScript) return null;
 
   const evidence: string[] = [];
   if (manifest.packageJson?.hasBin) evidence.push('package.json bin field');
@@ -338,12 +345,12 @@ function detectLibrary(
     };
   }
 
-  if (manifest.pythonSetup && !manifest.pythonSetup.hasConsoleScripts) {
-    const publicNodes = nodes.filter(node => node.metadata?.is_exported === true || node.metadata?.access_modifier === 'public').length;
+  if (manifest.pythonSetup) {
+    const publicNodes = publicSurfaceSize(nodes);
     if (publicNodes >= 5) {
       return {
         artifactType: 'library',
-        evidence: [`python package manifest without console scripts, ${publicNodes} public nodes, no app or cli entry points`],
+        evidence: [`python package manifest, ${publicNodes} public nodes, no app entry points${manifest.pythonSetup.hasConsoleScripts ? ', console script kept as a companion CLI' : ''}`],
       };
     }
   }
