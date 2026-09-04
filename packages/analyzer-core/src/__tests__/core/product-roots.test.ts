@@ -13,6 +13,9 @@ describe('declaredProductRoots', () => {
     // examples/ and test/ beside them. Those had been producing entry points that
     // made the framework look like an application.
     await fs.writeJson(path.join(dir, 'package.json'), { name: 'fw', files: ['LICENSE', 'Readme.md', 'index.js', 'lib/'] });
+    await fs.writeFile(path.join(dir, 'index.js'), '');
+    await fs.ensureDir(path.join(dir, 'lib'));
+    await fs.ensureDir(path.join(dir, 'examples'));
     const { roots, source } = declaredProductRoots(dir);
     expect(source).toBe('package.json');
     expect(isWithinDeclaredRoots('lib/router/index.js', roots)).toBe(true);
@@ -21,11 +24,28 @@ describe('declaredProductRoots', () => {
     expect(isWithinDeclaredRoots('test/app.js', roots)).toBe(false);
   });
 
-  it('falls back to main/bin when there is no files list, and to no restriction when there is neither', async () => {
-    await fs.writeJson(path.join(dir, 'package.json'), { name: 'a', main: 'src/index.js', bin: { a: 'bin/a.js' } });
-    expect(declaredProductRoots(dir).roots).toEqual(['bin/a.js', 'src/index.js']);
-    await fs.writeJson(path.join(dir, 'package.json'), { name: 'b' });
+  it('never treats main or bin as a boundary on their own', async () => {
+    // `main: dist/analyzer/index.js` is exactly the shape that excluded every
+    // src/ node in this repository's own tests: it names a build artifact, not the
+    // source tree, and dist/ does not even exist in a checkout.
+    await fs.writeJson(path.join(dir, 'package.json'), { name: 'a', main: 'dist/analyzer/index.js', bin: { a: 'bin/a.js' } });
+    await fs.ensureDir(path.join(dir, 'src'));
     expect(declaredProductRoots(dir).roots).toEqual([]);
+  });
+
+  it('ignores a files allow-list whose entries are absent from the checkout', async () => {
+    // A library that publishes only its build output: `files: ["dist"]` with no
+    // dist/ present. No boundary can be built from missing paths, so no restriction.
+    await fs.writeJson(path.join(dir, 'package.json'), { name: 'lib', files: ['dist'], main: 'dist/index.js' });
+    await fs.ensureDir(path.join(dir, 'src'));
+    expect(declaredProductRoots(dir).roots).toEqual([]);
+  });
+
+  it('adds main and bin to an existing files boundary', async () => {
+    await fs.writeJson(path.join(dir, 'package.json'), { name: 'c', files: ['lib/'], main: 'index.js' });
+    await fs.ensureDir(path.join(dir, 'lib'));
+    await fs.writeFile(path.join(dir, 'index.js'), '');
+    expect(declaredProductRoots(dir).roots).toEqual(['index.js', 'lib']);
   });
 
   it('uses the pyproject default package layout, so docs_src is outside the product', async () => {
@@ -42,12 +62,16 @@ describe('declaredProductRoots', () => {
 
   it('prefers an explicit packages declaration over the default layout', async () => {
     await fs.writeFile(path.join(dir, 'pyproject.toml'), '[project]\nname = "x"\n[tool.hatch.build]\npackages = ["src/x", "src/y"]\n');
+    await fs.ensureDir(path.join(dir, 'src/x'));
+    await fs.ensureDir(path.join(dir, 'src/y'));
     expect(declaredProductRoots(dir).roots).toEqual(['src/x', 'src/y']);
   });
 
   it('treats a Cargo crate as shipping src/ plus any declared bin or lib paths', async () => {
     await fs.writeFile(path.join(dir, 'Cargo.toml'), '[package]\nname = "c"\n[[bin]]\nname = "tool"\npath = "tools/main.rs"\n');
     await fs.ensureDir(path.join(dir, 'src'));
+    await fs.ensureDir(path.join(dir, 'tools'));
+    await fs.writeFile(path.join(dir, 'tools/main.rs'), '');
     expect(declaredProductRoots(dir).roots).toEqual(['src', 'tools/main.rs']);
   });
 
@@ -60,6 +84,7 @@ describe('declaredProductRoots', () => {
 
   it('uses a Composer library autoload map as its boundary', async () => {
     await fs.writeJson(path.join(dir, 'composer.json'), { type: 'library', autoload: { 'psr-4': { 'Vendor\\Lib\\': 'src/' } } });
+    await fs.ensureDir(path.join(dir, 'src'));
     expect(declaredProductRoots(dir).roots).toEqual(['src']);
   });
 

@@ -58,18 +58,19 @@ function fromPackageJson(projectPath: string): DeclaredProductRoots | undefined 
   } catch {
     return undefined;
   }
+  // `files` is the publish allow-list — the one npm declaration that is a
+  // BOUNDARY. `main`/`module`/`browser`/`bin` name a built artifact: they prove
+  // something ships, not where the source lives (a `main` of dist/index.js says
+  // nothing about src/). So they never form a boundary on their own; they are
+  // only added once `files` has established one.
+  if (!Array.isArray(manifest.files)) return undefined;
   const roots = new Set<string>();
-  // `files` is the publish allow-list — the strongest ship declaration npm has.
-  if (Array.isArray(manifest.files)) {
-    for (const entry of manifest.files) {
-      if (typeof entry !== 'string') continue;
-      const cleaned = normalize(entry).replace(/\/\*\*?$/, '');
-      // Negations and globs are not roots.
-      if (!cleaned || cleaned.startsWith('!') || /[*?{}]/.test(cleaned)) continue;
-      roots.add(cleaned);
-    }
+  for (const entry of manifest.files) {
+    if (typeof entry !== 'string') continue;
+    const cleaned = normalize(entry).replace(/\/\*\*?$/, '');
+    if (!cleaned || cleaned.startsWith('!') || /[*?{}]/.test(cleaned)) continue;
+    roots.add(cleaned);
   }
-  // Entry files always ship, and so does the directory holding them.
   for (const key of ['main', 'module', 'browser']) {
     const value = manifest[key];
     if (typeof value === 'string' && value.trim()) roots.add(normalize(value));
@@ -81,8 +82,23 @@ function fromPackageJson(projectPath: string): DeclaredProductRoots | undefined 
       if (typeof value === 'string') roots.add(normalize(value));
     }
   }
-  if (roots.size === 0) return undefined;
-  return { roots: [...roots].sort(), source: 'package.json' };
+  return existingRoots(projectPath, roots, 'package.json');
+}
+
+/**
+ * A declared root counts only if it exists in the checkout as source. A build
+ * output named in the manifest (`dist/`) is usually absent from a checkout; if
+ * nothing declared is present there is no boundary to apply, and the caller
+ * falls back to convention. Never a partial boundary built from missing paths.
+ */
+function existingRoots(
+  projectPath: string,
+  candidates: Set<string>,
+  source: DeclaredProductRoots['source'],
+): DeclaredProductRoots | undefined {
+  const present = [...candidates].filter(root => exists(path.join(projectPath, root)));
+  if (present.length === 0) return undefined;
+  return { roots: present.sort(), source };
 }
 
 function fromPyproject(projectPath: string): DeclaredProductRoots | undefined {
@@ -108,8 +124,7 @@ function fromPyproject(projectPath: string): DeclaredProductRoots | undefined {
       }
     }
   }
-  if (roots.size === 0) return undefined;
-  return { roots: [...roots].sort(), source: 'pyproject.toml' };
+  return existingRoots(projectPath, roots, 'pyproject.toml');
 }
 
 function fromCargo(projectPath: string): DeclaredProductRoots | undefined {
@@ -120,8 +135,7 @@ function fromCargo(projectPath: string): DeclaredProductRoots | undefined {
   const roots = new Set<string>();
   for (const match of raw.matchAll(/^\s*path\s*=\s*["']([^"']+)["']/gm)) roots.add(normalize(match[1]));
   if (isDirectory(path.join(projectPath, 'src'))) roots.add('src');
-  if (roots.size === 0) return undefined;
-  return { roots: [...roots].sort(), source: 'Cargo.toml' };
+  return existingRoots(projectPath, roots, 'Cargo.toml');
 }
 
 function fromComposer(projectPath: string): DeclaredProductRoots | undefined {
@@ -147,8 +161,16 @@ function fromComposer(projectPath: string): DeclaredProductRoots | undefined {
       for (const entry of entries) if (typeof entry === 'string') roots.add(normalize(entry));
     }
   }
-  if (roots.size === 0) return undefined;
-  return { roots: [...roots].sort(), source: 'composer.json' };
+  return existingRoots(projectPath, roots, 'composer.json');
+}
+
+function exists(candidate: string): boolean {
+  try {
+    fs.statSync(candidate);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function isDirectory(candidate: string): boolean {
