@@ -347,10 +347,6 @@ export function capabilityOutcomeScopeFailure(
   const boundVisibleActions = new Set((boundRequirement?.visibleActionTerms || []).flatMap(outcomeIdentityTokens));
   if (capabilityOutcomeUsesBroadDeliveryAction(name, citedCandidates, signal) && !boundVisibleActions.has(leading || '')) return ['delivery-action-evidence-too-broad'];
   const productTextCorroborates = capabilityOutcomeCorroboratedByProductText(name, citedCandidates, signal, !boundRequirement);
-  
-  
-  
-  
   if (!productTextCorroborates && !capabilityOutcomeUsesDeliverySubject(name, citedCandidates, description)) return ['delivery-subject-missing'];
   if (acceptedOutcome) return [];
   const audienceTokens = new Set(evidenceBackedAudienceTokens.flatMap(outcomeIdentityTokens));
