@@ -33,3 +33,9 @@ export function stripApplicationImplementationFillerSentences(description: strin
   if (productSentences.length < 2 || productSentences.length === sentences.length) return description;
   return productSentences.join(' ');
 }
+
+export function isNarrativePhrasingFailure(reason: string | undefined): boolean {
+  const head = String(reason || '').split(':')[0];
+  return ['generic-concept-ending', 'unsupported-marketing-language', 'unsupported-system-operational-claim', 'malformed-prose',
+    'malformed-missing-verb', 'duplicate-workflow-wording', 'too-short-for-ai-paragraph', 'single-sentence-ai-summary'].includes(head);
+}

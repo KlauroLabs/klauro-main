@@ -1,6 +1,6 @@
 import { aiService } from '../../ai/ai-service';
 import { buildGroundedDomainVocabulary, recoverAIDomainLabel } from '../../analyzer/core/ai-domain-recovery';
-import { containsGenericImplementationMechanicFiller, implementationNamesOtherThanSelf, mentionsDeclaredImplementationName, stripApplicationImplementationFillerSentences } from '../../analyzer/core/ai-product-narrative';
+import { containsGenericImplementationMechanicFiller, implementationNamesOtherThanSelf, isNarrativePhrasingFailure, mentionsDeclaredImplementationName, stripApplicationImplementationFillerSentences } from '../../analyzer/core/ai-product-narrative';
 
 describe('AI product domain recovery', () => {
   it('keeps first-party nouns while removing framework and protocol pollution', () => {
@@ -86,5 +86,19 @@ describe('implementationNamesOtherThanSelf', () => {
   test('short or absent self names never strip declared implementation names', () => {
     expect(implementationNamesOtherThanSelf(['Express'], undefined)).toEqual(['Express']);
     expect(implementationNamesOtherThanSelf(['Express'], 'api')).toEqual(['Express']);
+  });
+});
+
+describe('isNarrativePhrasingFailure', () => {
+  test('phrasing-class rejections earn a second focused repair', () => {
+    for (const reason of ['generic-concept-ending', 'unsupported-marketing-language: seamlessly', 'unsupported-system-operational-claim:permanently', 'single-sentence-ai-summary']) {
+      expect(isNarrativePhrasingFailure(reason)).toBe(true);
+    }
+  });
+
+  test('substance rejections do not', () => {
+    for (const reason of ['source-implementation-mechanics', 'implementation-stack-filler', 'read-only-product-mutation-claim', 'omits-core-capability', undefined]) {
+      expect(isNarrativePhrasingFailure(reason)).toBe(false);
+    }
   });
 });

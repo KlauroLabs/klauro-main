@@ -279,7 +279,7 @@ import { aiConfig, getAIConfig, getAIProviderChain } from '../../config/ai.confi
 import { capabilityDescriptionEntityProvidesProductEvidence, capabilityDescriptionEvidenceMaps, humanizeExactRelatedEntityIdentifiers, validateElementDescription as validateSharedElementDescription } from '../../ai/element-description-validator';
 import { filterPlausibleExternalServices, isCommandShapedLabel, isHostnameLikeServiceName } from '../../ai/external-service-plausibility';
 import { buildGroundedDomainVocabulary, recoverAIDomainLabel } from './ai-domain-recovery';
-import { containsGenericImplementationMechanicFiller, implementationNamesOtherThanSelf, mentionsDeclaredImplementationName, stripApplicationImplementationFillerSentences } from './ai-product-narrative';
+import { containsGenericImplementationMechanicFiller, implementationNamesOtherThanSelf, isNarrativePhrasingFailure, mentionsDeclaredImplementationName, stripApplicationImplementationFillerSentences } from './ai-product-narrative';
 export type { CASOutput } from '../../types/cas.types';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob, beginGlobRun, endGlobRun } from './glob-cache';
@@ -11189,7 +11189,7 @@ export class AnalyzerOrchestrator {
         console.warn(`[Klauro] targeted capability description repair skipped (${error instanceof Error ? error.message : String(error)})`);
       }
     }
-    for (let focusedAttempt = 0; !validation.ok && focusedAttempt < 1; focusedAttempt++) {
+    for (let focusedAttempt = 0; !validation.ok && focusedAttempt < (isNarrativePhrasingFailure(validation.reason) ? 2 : 1); focusedAttempt++) {
       try {
         const focusedRepairRaw = await awaitAiOperation(aiService.generateComponentDescription({
           additionalContext: {
