@@ -1,6 +1,6 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import type { CASNode } from '../../types/cas.types';
+import type { CASEntryPoint, CASNode } from '../../types/cas.types';
 
 export function defaultPackageIndexEntry(packageDir: string): string | undefined {
   return ['index.js', 'index.cjs', 'index.mjs', 'index.ts'].find(file => fs.existsSync(path.join(packageDir, file)));
@@ -38,4 +38,13 @@ sourcePathMatches: (sourceFile: string, expectedRelativeFile: string) => boolean
     }
   }
   return surface;
+}
+
+export function libraryApiResourceKey(entryPoint: CASEntryPoint): string {
+  const handlerFile = String(entryPoint.handler?.file || '').replace(/\\/g, '/');
+  const baseName = path.posix.basename(handlerFile, path.posix.extname(handlerFile));
+  const moduleName = (baseName === 'index' ? path.posix.basename(path.posix.dirname(handlerFile)) : baseName)
+    .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  const packageName = String(entryPoint.name || '').split('.')[0].toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  return [packageName, moduleName].filter(Boolean).join('-') || 'api';
 }

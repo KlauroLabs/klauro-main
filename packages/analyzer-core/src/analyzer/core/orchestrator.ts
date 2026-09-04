@@ -166,7 +166,7 @@ import { extractProductDocumentFraming } from './product-document-framing';
 import { buildTerminalSignal, type TerminalSignal } from './terminal-signal';
 import { buildCasTerminality } from './terminality';
 import { declaredProductRoots, isWithinDeclaredRoots } from './product-roots';
-import { defaultPackageIndexEntry, libraryPublicApiSurfaceFiles } from './library-public-api-surface';
+import { defaultPackageIndexEntry, libraryApiResourceKey, libraryPublicApiSurfaceFiles } from './library-public-api-surface';
 import { assertUnderstandingContractIntegrity } from './understanding-contract-integrity';
 import { rollupSystemCapabilityDependencies } from './system-capability-dependencies';
 import {
@@ -20778,6 +20778,8 @@ export class AnalyzerOrchestrator {
         'commands';
     }
 
+    if (ep.type === 'api' || ep.type === 'rpc') return libraryApiResourceKey(ep);
+
     if (ep.type === 'event' || ep.type === 'message') {
       return this.domainKeyFromEntryPointText(ep.name) ||
         this.domainKeyFromEntryPointText(ep.trigger?.event || '') ||
@@ -20894,7 +20896,7 @@ export class AnalyzerOrchestrator {
     if ([
       'http', 'websocket', 'ws_handler', 'cli', 'event', 'message',
       'schedule', 'scheduled', 'cron', 'queue', 'grpc', 'graphql',
-      'page', 'route',
+      'page', 'route', 'api', 'rpc',
       'train', 'notebook-cell',
     ].includes(type)) {
       return true;
@@ -20973,13 +20975,9 @@ export class AnalyzerOrchestrator {
       .map(w => w.charAt(0).toUpperCase() + w.slice(1))
       .join(' ');
 
-    if (ep.type === 'cli') {
-      return `${name} Commands`;
-    }
-
-    if (ep.type === 'event' || ep.type === 'message') {
-      return `${name} Handlers`;
-    }
+    if (ep.type === 'cli') return `${name} Commands`;
+    if (ep.type === 'api' || ep.type === 'rpc') return `${name} API`;
+    if (ep.type === 'event' || ep.type === 'message') return `${name} Handlers`;
 
     if (ep.type === 'schedule') {
       return 'Scheduled Tasks';

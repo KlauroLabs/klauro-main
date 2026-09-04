@@ -3132,6 +3132,16 @@ describe('architecture and capability inference', () => {
     }
   });
 
+  it('groups public-API entry points by the module that exports them', async () => {
+    const api = (name: string, file: string) => ({ id: name, source_node: 'n', type: 'api', name, handler: { file, method_name: name.split('.').pop() } } as any);
+    expect(orch.isCapabilityBearingEntryPoint(api('express.use', 'lib/application.js'))).toBe(true);
+    expect(orch.inferResourceKey(api('express.use', 'lib/application.js'))).toBe('express-application');
+    expect(orch.inferResourceKey(api('express.send', 'lib/response.js'))).toBe('express-response');
+    expect(orch.inferResourceKey(api('express.Router', 'lib/router/index.js'))).toBe('express-router');
+    expect(orch.inferResourceName(api('express.use', 'lib/application.js'), 'express-application')).toBe('Express Application API');
+    expect(orch.isGenericCapabilityResourceKey('express-application', 'Express Application API')).toBe(false);
+  });
+
   it('treats CAS harness files as non-product source', async () => {
     expect(orch.isPrimaryProductPath('packages/analyzer-core/cas-tests/test-hoggan-analysis.ts')).toBe(false);
     expect(orch.isPrimaryProductPath('src/test-hoggan-analysis.ts')).toBe(false);
