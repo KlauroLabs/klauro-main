@@ -32,7 +32,7 @@ export const CAPABILITY_PURPOSE_VERBS = new Set<string>([
   'store', 'serve', 'correlate', 'collect', 'record', 'settle', 'publish', 'categorize', 'classify', 'organize', 'group', 'maintain', 'administer', 'follow', 'unfollow', 'favorite', 'unfavorite',
   'capture', 'filter', 'keep', 'search', 'share', 'sort', 'index',
   'visualize',
-  'offer', 'onboard',
+  'learn', 'offer', 'onboard',
   'ground', 'help', 'surface', 'turn', 'understand',
 ]);
 

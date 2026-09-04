@@ -9985,6 +9985,7 @@ export class AnalyzerOrchestrator {
     if (!authored) return 'name-is-not-authored';
     if ((capability.related_entities || []).length === 0 && (capability.operations || []).length === 0) return 'missing-structural-anchor';
     if (this.isBareNounCapabilityLabel(String(capability.name || ''))) return 'bare-noun-name';
+    if (/[\[\]]/.test(String(capability.name || '')) || /^open source samples?\b/i.test(String(capability.name || '').trim())) return 'malformed-document-fragment-name';
     if (/^[A-Za-z][A-Za-z -]{0,24}:\s+\S/.test(String(capability.name || '').trim())) return 'generated-label-prefix';
     const description = String(capability.description || '').trim();
     const descriptionWordCount = description.split(/\s+/).filter(Boolean).length;
@@ -10387,7 +10388,6 @@ export class AnalyzerOrchestrator {
     });
     if (((deadlineExceeded || qualityFailure) && reconciled.length > 0) || (Boolean(qualityFailure) && hasRejectedSemanticallyGroundedProductOutcome)) {
       const deadlineFirstPartyTexts = [args.projectTextSignal.productDocTitle, args.projectTextSignal.productDocSummary, args.projectTextSignal.manifestDescription, ...(args.projectTextSignal.productVocabulary || [])].filter((value): value is string => Boolean(String(value || '').trim()));
-      if (process.env.KLAURO_DEBUG_CATALOG) writeAnalyzerStatus('[catalog-debug] deadline description recovery input:', reconciled.map(capability => ({ name: capability.name, description: capability.description, description_status: capability.description_generation?.status, candidate_ids: (capability.criticality_factors || []).filter(factor => factor.startsWith('catalog-candidate:')), requirement_ids: (capability.criticality_factors || []).filter(factor => factor.startsWith('catalog-outcome-requirement:')), audience: groundedCapabilityAudience(capability, args.projectTextSignal, args.userJourneys, args.entryPoints, artifactType) })));
       const deadlineDescriptionReconciled = resolvePendingCapabilityDescriptionsWithoutProvider({
         capabilities: reconciled, pendingEvidenceIdentityByCandidateId, evidenceCandidates,
         firstPartyTexts: deadlineFirstPartyTexts,
@@ -14783,6 +14783,7 @@ export class AnalyzerOrchestrator {
       summary = summaryParts
         .join(' ')
         .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+        .replace(/\[([^\]]+)\](?:\[[^\]]*\])?/g, '$1')
         .replace(/[`*_]/g, '')
         .replace(/\s+/g, ' ')
         .trim()

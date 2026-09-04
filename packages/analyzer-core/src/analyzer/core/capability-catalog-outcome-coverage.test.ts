@@ -272,6 +272,19 @@ test('grounds library outcomes in matching public symbols instead of incidental 
   assert.deepEqual(responses.candidateIds, ['into']);
 });
 
+test('turns a sample-collection README description into an audience outcome', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements({
+    productDocSummary: 'A collection of open source samples that illustrate best practices for Flutter.',
+  }, [candidate('flutter-samples', 'Flutter samples', ['open_flutter_sample'])]);
+
+  assert.equal(requirements.length, 1);
+  assert.equal(requirements[0].statement, 'Learn Flutter best practices from open source samples');
+  assert.equal(requirements[0].firstPartyOutcomeText,
+    'A collection of open source samples that illustrate best practices for Flutter');
+  assert.deepEqual(requirements[0].visibleActionTerms, ['learn']);
+  assert.deepEqual(requirements[0].candidateIds, ['flutter-samples']);
+});
+
 test('grounds an operator-facing list outcome through equivalent read evidence', () => {
   const requirements = deriveCapabilityCatalogOutcomeRequirements({
     productDocSummary: 'Fleet operators list vehicles for daily dispatch.',

@@ -173,6 +173,22 @@ test('capability publication accepts a concise grounded audience outcome', () =>
   }), { ok: true });
 });
 
+test('normalizes reference-style Markdown and rejects leaked document fragments', () => {
+  const orchestrator = new AnalyzerOrchestrator() as any;
+  const framing = orchestrator.extractProductDocFraming([
+    '# Flutter samples',
+    '',
+    'A collection of open source samples that illustrate best practices for',
+    '[Flutter].',
+  ].join('\n'));
+  assert.equal(framing.summary, 'A collection of open source samples that illustrate best practices for Flutter.');
+  assert.equal(orchestrator.capabilityPublishabilityFailure({
+    id: 'bad', name: 'open source samples that illustrate best practices for [Flutter', name_source: 'ai',
+    description: 'Developers inspect Flutter examples.', related_entities: [], related_domains: ['flutter'],
+    operations: [{ entry_point_id: 'sample', entry_point_type: 'event', action: 'open' }],
+  }), 'malformed-document-fragment-name');
+});
+
 test('a scoped AI repair attempt cannot outlive its scheduler deadline', async () => {
   const orchestrator = new AnalyzerOrchestrator() as any;
   const startedAt = Date.now();

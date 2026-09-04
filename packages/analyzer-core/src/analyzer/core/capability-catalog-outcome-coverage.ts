@@ -175,6 +175,11 @@ function productClauses(signal?: CapabilityCatalogProjectSignal): string[] {
 }
 
 function outcomeClauseBody(clause: string): string {
+  const illustratedCollection = clause.match(/^(?:an?\s+)?collection of (.+?) that (?:illustrate|demonstrate|show) (.+)$/i);
+  if (illustratedCollection) {
+    const lesson = illustratedCollection[2].replace(/^best practices for (.+)$/i, '$1 best practices');
+    return `Learn ${lesson} from ${illustratedCollection[1]}`;
+  }
   const separator = clause.indexOf(':');
   if (separator < 0) return clause;
   const body = clause.slice(separator + 1).trim();
