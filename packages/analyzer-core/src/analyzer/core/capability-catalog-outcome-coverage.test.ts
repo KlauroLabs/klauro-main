@@ -1137,3 +1137,18 @@ test('repairs an omitted control noun in otherwise grounded capability prose', (
     'Users retain full control of their infrastructure and data.',
   );
 });
+
+test('a product-goal clause with no object (only a verb) does not become an outcome requirement', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements({
+    productDocTitle: 'Flask',
+    productDocSummary: 'Flask is a lightweight WSGI web application framework. It is designed to make getting started quick and easy, with the ability to scale up to complex applications.',
+  }, [candidate('helpers', 'Flask Helpers API', ['make_response', 'flash', 'redirect', 'abort']), candidate('app', 'Flask App API', ['route', 'run', 'make_config'])]);
+  assert.equal(requirements.filter(requirement => requirement.subjectTokens.every(token => token === 'make')).length, 0);
+});
+
+test('a fulfilled requirement only rejects a later item that names its subject; unrelated outcomes stay independent', () => {
+  const requirement = { id: 'all:profile', subjectTokens: ['customer', 'profile'], candidateIds: ['profiles'], requiredSubjectTerms: ['customer', 'profile'] } as any;
+  const fulfilled = new Set(['all:profile']);
+  assert.equal(capabilityCatalogOutcomeBindingFailureDetail({ name: 'Onboard customer profiles', description: 'Support staff onboard customer profiles.' }, ['profiles'], 'all:profile', [requirement], fulfilled)?.reason, 'required-outcome-already-fulfilled:all:profile');
+  assert.equal(capabilityCatalogOutcomeBindingFailureDetail({ name: 'Render dynamic templates', description: 'Developers render templates with Jinja.' }, ['profiles'], 'all:profile', [requirement], fulfilled), undefined);
+});
