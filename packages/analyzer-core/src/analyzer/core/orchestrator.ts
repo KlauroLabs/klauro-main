@@ -9129,8 +9129,8 @@ export class AnalyzerOrchestrator {
         }
       }
       const boundRequirement = input.requiredOutcomeRequirements?.find(requirement => requirement.id === activeRequirementId); const bindingFailure = capabilityCatalogOutcomeBindingFailureDetail({ name, description }, itemCandidateIds, rawRequirementId || '', input.requiredOutcomeRequirements || [], fulfilledOutcomeRequirements);
-      if (bindingFailure) { debugCatalogRejection(name, bindingFailure.reason, itemCandidateIds, bindingFailure); continue; }
-      if (input.requiredOutcomeRequirements?.length) boundRequirementId = activeRequirementId;
+      if (bindingFailure && bindingFailure.reason !== 'independent-outcome') { debugCatalogRejection(name, bindingFailure.reason, itemCandidateIds, bindingFailure); continue; }
+      if (input.requiredOutcomeRequirements?.length && !bindingFailure) boundRequirementId = activeRequirementId;
       if (/(->|→|»)/.test(name)) {
         if (/^run\s+[a-z_$][\w$.]*/i.test(name) || /\b[a-z][a-z0-9]*_[a-z0-9]+\b/.test(name)) continue;
         const head = name.split(/->|→|»/)[0].trim().replace(/[:\-–—\s]+$/, '');
@@ -9472,6 +9472,7 @@ export class AnalyzerOrchestrator {
     const unanchoredRejectedNames: string[] = [];
 
     if (process.env.KLAURO_DEBUG_CATALOG) {
+      writeAnalyzerStatus('[catalog-debug] outcome requirements:', (input.requiredOutcomeRequirements || []).map(requirement => ({ id: requirement.id, subject: requirement.subjectTokens, required: requirement.requiredSubjectTerms, candidates: requirement.candidateIds })));
       writeAnalyzerStatus('[catalog-debug] candidate pool:', candidatePoolForRanking.map(candidate => ({
         id: candidate.id,
         name: candidate.name,

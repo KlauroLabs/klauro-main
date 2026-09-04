@@ -892,12 +892,12 @@ export function capabilityCatalogOutcomeBindingFailureDetail(
   const matches = requiredTerms.length - allMissingSubjectTerms.length;
   const minimumMatches = requirement.minimumSubjectMatches ?? Math.min(2, requiredTerms.length);
   const aliasMatches = capabilityMatchesSubjectAlias(capabilityTokens, requiredTerms, requirement.subjectTokenAliases, requirement.subjectAliasAnchorTokens);
-  if (fulfilledRequirementIds.has(requirementId)) {
-    return matches >= minimumMatches || aliasMatches ? { missingSubjectTerms: [], reason: `required-outcome-already-fulfilled:${requirementId}` } : undefined;
-  }
-  if (!candidateIds.some(candidateId => requirement.candidateIds.includes(candidateId))) {
-    return { missingSubjectTerms: [], reason: `required-outcome-candidate-mismatch:${requirementId}` };
-  }
+  const subjectMatched = matches >= minimumMatches || aliasMatches;
+  const citesRequirementCandidate = candidateIds.some(candidateId => requirement.candidateIds.includes(candidateId));
+  const independent = { missingSubjectTerms: allMissingSubjectTerms, reason: 'independent-outcome' };
+  if (fulfilledRequirementIds.has(requirementId)) return subjectMatched ? { missingSubjectTerms: [], reason: `required-outcome-already-fulfilled:${requirementId}` } : independent;
+  if (matches === 0 && !aliasMatches && !citesRequirementCandidate) return independent;
+  if (!citesRequirementCandidate) return { missingSubjectTerms: [], reason: `required-outcome-candidate-mismatch:${requirementId}` };
   const missingSubjectTerms = matches >= minimumMatches || aliasMatches ? [] : allMissingSubjectTerms;
   const audienceFailure = capabilityAudienceBindingFailure(capability, requirement);
   if (audienceFailure) return { ...audienceFailure, missingSubjectTerms };

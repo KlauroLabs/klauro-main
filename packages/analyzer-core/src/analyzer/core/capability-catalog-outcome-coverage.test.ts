@@ -1150,5 +1150,13 @@ test('a fulfilled requirement only rejects a later item that names its subject; 
   const requirement = { id: 'all:profile', subjectTokens: ['customer', 'profile'], candidateIds: ['profiles'], requiredSubjectTerms: ['customer', 'profile'] } as any;
   const fulfilled = new Set(['all:profile']);
   assert.equal(capabilityCatalogOutcomeBindingFailureDetail({ name: 'Onboard customer profiles', description: 'Support staff onboard customer profiles.' }, ['profiles'], 'all:profile', [requirement], fulfilled)?.reason, 'required-outcome-already-fulfilled:all:profile');
-  assert.equal(capabilityCatalogOutcomeBindingFailureDetail({ name: 'Render dynamic templates', description: 'Developers render templates with Jinja.' }, ['profiles'], 'all:profile', [requirement], fulfilled), undefined);
+  assert.equal(capabilityCatalogOutcomeBindingFailureDetail({ name: 'Render dynamic templates', description: 'Developers render templates with Jinja.' }, ['profiles'], 'all:profile', [requirement], fulfilled)?.reason, 'independent-outcome');
+});
+
+test('an item sharing no subject term with the active requirement is an independent outcome, not a mismatch', () => {
+  const requirement = { id: 'all:profile', subjectTokens: ['customer', 'profile'], candidateIds: ['profiles'], requiredSubjectTerms: ['customer', 'profile'] } as any;
+  const verdict = capabilityCatalogOutcomeBindingFailureDetail({ name: 'Render dynamic templates', description: 'Developers render templates.' }, ['templating'], 'all:profile', [requirement], new Set());
+  assert.equal(verdict?.reason, 'independent-outcome');
+  const wrongCandidate = capabilityCatalogOutcomeBindingFailureDetail({ name: 'Onboard customer profiles', description: 'Staff onboard customer profiles.' }, ['templating'], 'all:profile', [requirement], new Set());
+  assert.equal(wrongCandidate?.reason, 'required-outcome-candidate-mismatch:all:profile');
 });
