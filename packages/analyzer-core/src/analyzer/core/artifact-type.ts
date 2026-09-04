@@ -76,15 +76,15 @@ export const APP_FRAMEWORK_MARKERS = /\b(next(\.js)?|nuxt|express|fastify|koa|ne
 
 const BOILERPLATE_TEXT = /\b(boilerplate|starter[ -]?(kit|template|project|app)?|skeleton|scaffold(ing)?|template)\b/i;
 
-// A description whose grammatical subject is the scaffold phrase ("The skeleton
-// application for ...", "A starter kit for ...") declares what the artifact IS,
-// the same way a README title does. A description that merely mentions a
-// template as an object ("Built from a starter template", "email template
-// manager") does not, and keeps its app entry points as the deciding evidence.
+
+
+
+
+
 const DECLARED_SCAFFOLD_SUBJECT = /^\s*(?:the|a|an)\s+(?:[\w-]+\s+){0,2}?(?:boilerplate|starter|skeleton|scaffold(?:ing)?|template)\s+(?:application|app|project|repo(?:sitory)?|kit|codebase)\b/i;
 
-// Tokens that name a kind of artifact rather than a specific one; they never
-// establish identity between a manifest name and a detected framework.
+
+
 const ARTIFACT_KIND_TOKENS = /^(?:framework|library|platform|core|js|ts|node)$/;
 
 const GENERATED_CLIENT_TEXT = /\b(wsdl2?php|wsdl|openapi-generator|swagger-codegen|autorest|auto-?generated client|generated (api )?client)\b/i;
@@ -271,11 +271,11 @@ function identityTokens(name: string | undefined): string[] {
     .filter(token => token.length >= 3 && !ARTIFACT_KIND_TOKENS.test(token));
 }
 
-// The manifest's own name coinciding with a detected framework means the
-// repository IS that framework, not a consumer of it. Its example servers and
-// test apps are how a framework demonstrates itself, so app entry points do
-// not outweigh this identity. Composer names carry the vendor as organization
-// identity, not product identity, so only the package part is compared.
+
+
+
+
+
 function detectSelfNamedFramework(manifest: ArtifactManifestSignal, frameworks: string[]): ArtifactTypeResult | null {
   const selfNames = [
     manifest.packageJson?.name,

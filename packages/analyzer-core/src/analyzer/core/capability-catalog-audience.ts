@@ -162,8 +162,8 @@ function capabilityNameProductLanguageFailures(name: string, productTerms: strin
     reasons.push('incomplete-modifier-tail');
     flaggedTokens.push(danglingModifier);
   }
-  // A trusted identifier word with a numeric suffix (ProductArea10 -> area10)
-  // vouches for its bare stem too; "area" is that word, not a shortening.
+  
+  
   const trustedWords = new Set(productTerms.flatMap(splitIdentifierWords)
     .flatMap(word => [word.toLowerCase(), word.toLowerCase().replace(/\d+$/, '')])
     .filter(Boolean));
@@ -377,9 +377,9 @@ export function evaluateCapabilityCatalogAudience(
     const dependencyGroundedEntityNames = (capability.depends_on || [])
       .flatMap(dependency => dependency.evidence.shared_entities || []);
     const capabilityProductTerms = [...productTerms, ...integrationTerms, ...operationTerms, ...relatedEntityTerms];
-    // The capability's own entity names are product language by definition:
-    // "post" in "Toggle post" is the Post entity, not a shortening of a longer
-    // product word that happens to start the same way.
+    
+    
+    
     const productLanguageFailures = capabilityNameProductLanguageFailures(capability.name, capabilityProductTerms);
     if (productLanguageFailures.reasons.length > 0) {
       rejections.push({

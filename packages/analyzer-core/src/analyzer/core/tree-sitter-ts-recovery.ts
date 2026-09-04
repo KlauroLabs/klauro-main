@@ -122,10 +122,10 @@ export function typeScriptSourceDiagnostics(
   };
 }
 
-// A skipped file contributed nothing; a partial file was analyzed and its
-// recovered declarations are in the output, with the unparsed span recorded.
-// They are different facts and consumers weigh them differently, so the scope
-// reports them separately instead of folding partial parses into files_skipped.
+
+
+
+
 export function typeScriptAnalysisScope(
   filesEligible: number,
   filesAnalyzed: number,

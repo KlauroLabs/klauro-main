@@ -7,10 +7,10 @@ export function mentionsDeclaredImplementationName(description: string, names: s
     .some(token => descriptionTokens.has(token)));
 }
 
-// A product that shares its name with a framework it detects (or IS that
-// framework) must be allowed to say its own name. Its own name is identity,
-// not implementation stack, so it is removed from the declared-name list
-// before any filler check.
+
+
+
+
 export function implementationNamesOtherThanSelf(names: string[], selfName: string | undefined): string[] {
   const selfTokens = new Set(String(selfName || '').toLowerCase().split(/[^a-z0-9]+/).filter(token => token.length >= 5));
   if (selfTokens.size === 0) return names;

@@ -347,10 +347,10 @@ export function capabilityOutcomeScopeFailure(
   const boundVisibleActions = new Set((boundRequirement?.visibleActionTerms || []).flatMap(outcomeIdentityTokens));
   if (capabilityOutcomeUsesBroadDeliveryAction(name, citedCandidates, signal) && !boundVisibleActions.has(leading || '')) return ['delivery-action-evidence-too-broad'];
   const productTextCorroborates = capabilityOutcomeCorroboratedByProductText(name, citedCandidates, signal, !boundRequirement);
-  // The authored description is product prose grounded in the same candidate;
-  // when it names the delivery subject the outcome is anchored even if the
-  // name chose an outcome word over the subject noun ("Toggle publication
-  // status" describing how a post's published state changes).
+  
+  
+  
+  
   if (!productTextCorroborates && !capabilityOutcomeUsesDeliverySubject(name, citedCandidates, description)) return ['delivery-subject-missing'];
   if (acceptedOutcome) return [];
   const audienceTokens = new Set(evidenceBackedAudienceTokens.flatMap(outcomeIdentityTokens));

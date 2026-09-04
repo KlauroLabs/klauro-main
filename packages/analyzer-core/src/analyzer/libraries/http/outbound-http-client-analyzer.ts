@@ -13,20 +13,20 @@ interface HttpClientCall {
   line: number;
   serviceAlias?: string;
   declaration?: string;
-  /** 'dynamic' when the URL is built at runtime and cannot be read from source. */
+  
   endpointResolution?: 'literal' | 'dynamic';
 }
 
-// An outbound call whose URL is a variable is still an outbound call. Every
-// pattern here used to require a quoted literal URL, so a system that calls
-// addresses held in configuration, a database, or user input recorded NO external
-// effects at all. Measured on a feed reader whose single fetch site is
-// `http.NewRequest("GET", requestURL, nil)`: external_services was empty on every
-// flow, and the only literal-URL calls in the repository were in test files. An
-// unknown endpoint is a gap in ONE FIELD; dropping the call loses the fact that
-// the system reaches the network at all.
+
+
+
+
+
+
+
+
 const RUNTIME_RESOLVED_ENDPOINT = '(runtime-resolved)';
-// Used when the HTTP verb is itself a variable, so it is never guessed.
+
 const UNKNOWN_HTTP_METHOD = 'ANY';
 
 interface FileHttpContext {
@@ -476,7 +476,7 @@ export class OutboundHttpClientAnalyzer extends BaseAnalyzer {
     });
   }
 
-  /** Records an outbound call whose endpoint cannot be resolved from source. */
+  
   private addDynamicCall(
     calls: HttpClientCall[],
     library: string,
@@ -493,11 +493,11 @@ export class OutboundHttpClientAnalyzer extends BaseAnalyzer {
     });
   }
 
-  /**
-   * Go calls whose URL argument is an expression rather than a quoted literal.
-   * The literal patterns run first; any line they already matched is skipped, so
-   * one call is never recorded twice.
-   */
+  
+
+
+
+
   private addGoDynamicCalls(content: string, calls: HttpClientCall[]): void {
     const literalLines = new Set(calls.map(call => call.line));
     const isLiteral = (argument: string): boolean => /^\s*"/.test(argument);

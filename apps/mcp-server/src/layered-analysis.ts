@@ -175,11 +175,11 @@ export function buildLayersReady(
 
 
 
-// Source coverage gaps degrade confidence, never existence. A single oversized
-// or partially parsed file is reported on the structural layers as a warning;
-// the analysis only errors when coverage is unknowable (scope unreported) or
-// when nothing was extracted at all, because then there is no product to
-// describe rather than a product described from incomplete evidence.
+
+
+
+
+
 function analyzerCoverage(output: CASOutput): { error?: string; warning?: string } {
   const incomplete: string[] = [];
   const unknown: string[] = [];

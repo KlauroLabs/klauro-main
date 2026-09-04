@@ -298,8 +298,8 @@ export interface CASLayerStatus {
 
   error?: string;
 
-  // Present when the layer is ready but built on degraded input (e.g. source
-  // coverage gaps). The layer still answers; the gap is reported, not hidden.
+  
+  
   warning?: string;
   fields: string[];
 }

@@ -30,11 +30,11 @@ export const CAPABILITY_PURPOSE_VERBS = new Set<string>([
   'discover', 'configure', 'deploy', 'migrate', 'ingest', 'stream', 'route',
   'dispatch', 'reconcile', 'audit', 'log', 'cache', 'queue', 'persist',
   'store', 'serve', 'correlate', 'collect', 'record', 'settle', 'publish', 'categorize', 'classify', 'organize', 'group', 'maintain', 'administer', 'follow', 'unfollow', 'favorite', 'unfavorite',
-  // Outcome verbs that name what a person accomplishes, not only what code
-  // does. Words that are as often nouns in product prose (order, request,
-  // comment, tag, link, flag, ...) are deliberately absent: this list also
-  // reads README sentences, where "links flow into one place" must not become
-  // the action "link".
+  
+  
+  
+  
+  
   'complete', 'finish', 'toggle', 'approve', 'reject', 'confirm', 'verify', 'cancel', 'pause', 'resume', 'restore', 'archive',
   'share', 'invite', 'join', 'leave', 'reserve', 'assign', 'grant', 'revoke', 'enroll', 'register', 'upload', 'download',
   'search', 'filter', 'sort', 'measure', 'calculate', 'convert', 'translate', 'compare', 'merge', 'split', 'preview',

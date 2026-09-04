@@ -481,8 +481,8 @@ export interface OrchestrateAnalysisOptions {
   conventions?: KlauroConventionsInput;
   packGlobs?: string[];
 }
-// An operation obligation id is operation-obligation:<parent candidate>:<hash>;
-// any other id is its own parent.
+
+
 function catalogObligationParentId(candidateId: string): string {
   const parts = String(candidateId || '').split(':');
   return parts[0] === 'operation-obligation' && parts.length >= 3 ? parts[1] : candidateId;
@@ -6846,10 +6846,10 @@ export class AnalyzerOrchestrator {
         ? path.relative(resolvedProject, normalized).replace(/\\/g, '/')
         : normalized;
       const inside = Boolean(relative && !relative.startsWith('..') && !path.isAbsolute(relative));
-      // What the manifest declares it ships is the product boundary; everything
-      // else in the folder (examples, docs source, benchmarks) is outside it.
-      // Applied only when a declaration exists, so a manifest-less repo keeps the
-      // convention-based checks below.
+      
+      
+      
+      
       const roots = this.declaredProductRootsFor(resolvedProject);
       const outsideDeclaredRoots = roots.length > 0 && inside && !isWithinDeclaredRoots(relative, roots);
       result = inside && !outsideDeclaredRoots && this.isPrimaryProductPath(relative);
@@ -10384,9 +10384,9 @@ export class AnalyzerOrchestrator {
         groundableOutcomes,
         distinctFamilyCandidateGroups,
         operationCoverage.fullyCoveredAggregateCandidateIds,
-        // An empty first cycle with uncovered product-outcome obligations earns
-        // exactly one targeted repair; an empty result after that repair is
-        // accepted as the honest answer rather than retried to fill the catalog.
+        
+        
+        
         cycleUncoveredBehaviorCandidateIds.filter(candidateId => productOutcomeEvidenceCandidateIds.has(catalogObligationParentId(candidateId))),
         cycle === 1,
       ) || (unresolvedRejectedProductOutcomeIds.length > 0
@@ -10402,8 +10402,8 @@ export class AnalyzerOrchestrator {
         (cycleQualityFailure.startsWith('catalog is empty while') || cycleQualityFailure.startsWith('catalog omits'))) emptyCatalogRepairGrantedAtCycle = cycle;
       if (emptyCatalogRepairGrantedAtCycle !== undefined && cycle > emptyCatalogRepairGrantedAtCycle &&
         evidenceCompleteReconciled.filter(capability => this.isPublishableCapability(capability)).length === 0) {
-        // The one repair granted to an empty catalog produced nothing
-        // publishable: the empty catalog is the honest answer, not a quota.
+        
+        
         writeAnalyzerStatus('[Klauro] capability catalog: the single repair granted for an empty catalog produced nothing publishable; accepting the empty catalog');
         reconciled = [];
         qualityFailure = undefined;
@@ -10917,9 +10917,9 @@ export class AnalyzerOrchestrator {
     const observedMethods = entryPoints
       .map(entry => String(entry.trigger?.method || '').toUpperCase())
       .filter(Boolean);
-    // "Read-only" describes a product that owns routes and data and only ever
-    // serves them. A library, client SDK, or CLI owns neither, so the observed
-    // method mix says nothing about it and the rule must not apply.
+    
+    
+    
     const ownsReadWriteSurface = !['library', 'client-sdk', 'cli-tool'].includes(String(artifactType || ''));
     const observedReadOnly = ownsReadWriteSurface &&
       observedMethods.some(method => ['GET', 'HEAD', 'OPTIONS'].includes(method)) &&
@@ -13300,9 +13300,9 @@ export class AnalyzerOrchestrator {
     if (sourceBucketMatch) {
       return { ok: false, reason: `source-bucket-restatement: ${sourceBucketMatch[0].toLowerCase()}` };
     }
-    // For an application these phrases restate its implementation; for a
-    // library they can be the product itself (a router's product IS route
-    // handling), so the rule applies only when the artifact is not a library.
+    
+    
+    
     if (facts.artifactType !== 'library' && /\b(?:react components?|express routes?|route handlers?|api routes?|framework routes?)\b/i.test(description)) {
       return { ok: false, reason: 'framework-source-mechanics' };
     }

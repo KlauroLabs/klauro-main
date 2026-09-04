@@ -777,24 +777,24 @@ export function capabilityCatalogCycleQualityFailure(args: {
   requiredOutcomes: readonly CapabilityCatalogOutcomeRequirement[];
   candidateFamilyGroups: ReadonlyArray<ReadonlyArray<string>>;
   fullyCoveredAggregateCandidateIds?: ReadonlySet<string>;
-  // Uncovered behavior obligations whose parent candidate is classified as a
-  // product outcome. Only these make an empty catalog a wrong answer; tool-
-  // shaped or supporting surfaces do not, so a catalog is never filled merely
-  // to fill it.
+  
+  
+  
+  
   uncoveredProductOutcomeCandidateIds?: readonly string[];
-  // True only on the first cycle. An empty first answer with grounded product
-  // evidence earns one targeted repair; an empty answer after that repair is
-  // the honest catalog and is never retried merely to fill it.
+  
+  
+  
   emptyCatalogRepairEligible?: boolean;
   isBareNoun: (name: string) => boolean;
   isStructuralPlaceholder: (description?: string) => boolean;
   isValidatedDeterministicRecovery?: (capability: SystemCapability) => boolean;
 }): string | undefined {
-  // An empty catalog is judged by the same evidence as a populated one. Zero
-  // capabilities is only an acceptable answer when there is no required
-  // outcome AND no grounded evidence family to cover; otherwise the empty
-  // catalog omits every family and must go back for repair like any other
-  // catalog that omits one.
+  
+  
+  
+  
+  
   const coverageFailure = capabilityCatalogOutcomeCoverageFailure(args.reconciled, args.requiredOutcomes);
   if (coverageFailure) return coverageFailure;
   if (args.reconciled.length === 0) {

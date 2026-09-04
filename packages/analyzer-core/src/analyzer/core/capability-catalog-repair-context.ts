@@ -197,12 +197,12 @@ export function capabilityCatalogRepairPromptFacts(
     const candidateNameIsCustomerVisible = !/(?:[a-z0-9][A-Z]|[A-Z]{2,}[a-z]|[_:/])/.test(candidate.name || '');
     const routeNameHasRecoverableProductTerms = candidate.evidence_kind === 'behavior-surface' &&
       /\/[A-Za-z]/.test(candidate.name || '');
-    // An operation obligation's structural label and operation paths are
-    // built from code identifiers (folder and function names). They locate the
-    // evidence; they are not the subject a product sentence must name. The
-    // subject the author must keep is the candidate's own name and the
-    // entities it acts on, and an entity's name counts even when the same
-    // word is generic elsewhere.
+    
+    
+    
+    
+    
+    
     const isOperationObligation = candidate.id.startsWith('operation-obligation:');
     const entityNameTokens = new Set(isOperationObligation
       ? (candidate.related_entities || [])
@@ -213,9 +213,9 @@ export function capabilityCatalogRepairPromptFacts(
     const scopedSubjectCandidate = isOperationObligation
       ? { ...candidate, related_domains: [], evidence_examples: [], structural_label: undefined, operations: [] }
       : candidate;
-    // An obligation's name IS its structural label ("create orm", "read
-    // index"), so for obligations the subject is the entities acted on and
-    // nothing else.
+    
+    
+    
     const evidenceSubjectTerms = isOperationObligation
       ? [...entityNameTokens].slice(0, 8)
       : candidateNameIsCustomerVisible || routeNameHasRecoverableProductTerms
