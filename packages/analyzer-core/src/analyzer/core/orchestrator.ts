@@ -165,6 +165,7 @@ import { productTextCorroboratesCapability } from './capability-evidence-languag
 import { extractProductDocumentFraming } from './product-document-framing';
 import { buildTerminalSignal, type TerminalSignal } from './terminal-signal';
 import { buildCasTerminality } from './terminality';
+import { declaredProductRoots, isWithinDeclaredRoots } from './product-roots';
 import { assertUnderstandingContractIntegrity } from './understanding-contract-integrity';
 import { rollupSystemCapabilityDependencies } from './system-capability-dependencies';
 import {
@@ -504,6 +505,7 @@ export class AnalyzerOrchestrator {
   private activeArtifactType: CASArtifactType | null = null;
   private bundledFrontendRootsCache: Map<string, string[]> = new Map();
   private primaryProductPathCache: Map<string, boolean> = new Map();
+  private declaredProductRootsCache: Map<string, string[]> = new Map();
   private elementDescriptionGroundingVocabulary: string[] = [];
   private elementDescriptionArtifactType?: string;
   private deferredAiEnrichments: WeakMap<CASOutput, () => Promise<void>> = new WeakMap();
@@ -6832,15 +6834,29 @@ export class AnalyzerOrchestrator {
     let result: boolean;
     if (this.isBundledFrontendPath(normalized, resolvedProject)) {
       result = false;
-    } else if (path.isAbsolute(normalized)) {
-      const relative = path.relative(resolvedProject, normalized).replace(/\\/g, '/');
-      result = Boolean(relative && !relative.startsWith('..') && !path.isAbsolute(relative)) &&
-        this.isPrimaryProductPath(relative);
     } else {
-      result = this.isPrimaryProductPath(normalized);
+      const relative = path.isAbsolute(normalized)
+        ? path.relative(resolvedProject, normalized).replace(/\\/g, '/')
+        : normalized;
+      const inside = Boolean(relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+      // What the manifest declares it ships is the product boundary; everything
+      // else in the folder (examples, docs source, benchmarks) is outside it.
+      // Applied only when a declaration exists, so a manifest-less repo keeps the
+      // convention-based checks below.
+      const roots = this.declaredProductRootsFor(resolvedProject);
+      const outsideDeclaredRoots = roots.length > 0 && inside && !isWithinDeclaredRoots(relative, roots);
+      result = inside && !outsideDeclaredRoots && this.isPrimaryProductPath(relative);
     }
     this.primaryProductPathCache.set(cacheKey, result);
     return result;
+  }
+
+  private declaredProductRootsFor(resolvedProject: string): string[] {
+    const cached = this.declaredProductRootsCache.get(resolvedProject);
+    if (cached) return cached;
+    const roots = declaredProductRoots(resolvedProject).roots;
+    this.declaredProductRootsCache.set(resolvedProject, roots);
+    return roots;
   }
 
   private isPrimaryProductPath(filePath: string): boolean {
