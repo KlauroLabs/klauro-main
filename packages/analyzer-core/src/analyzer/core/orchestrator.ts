@@ -14228,7 +14228,7 @@ export class AnalyzerOrchestrator {
       frameworks,
       manifest: artifactManifest,
     });
-    this.activeArtifactType = artifactResult.artifactType;
+    this.activeArtifactType = artifactResult.artifactType; writeAnalyzerStatus(`[Klauro] artifact type: ${artifactResult.artifactType} (${artifactResult.evidence.join('; ')})`);
     const coreConceptNames = this.rankCoreConcepts(
       projectTextSignal.concepts,
       coreConcepts,
