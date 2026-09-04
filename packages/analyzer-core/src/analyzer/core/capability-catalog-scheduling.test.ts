@@ -3270,3 +3270,24 @@ test('evidence merging prunes unrelated operations already attached to a focused
     [],
   );
 });
+
+test('an empty catalog with grounded evidence families is rejected, not accepted as complete', () => {
+  const quality = (candidateFamilyGroups: string[][]) => capabilityCatalogCycleQualityFailure({
+    reconciled: [], distinctFamilyCount: candidateFamilyGroups.length, requiredBehaviorCandidateIds: [], requiredEntityCandidateGroups: [],
+    requiredOutcomes: [], candidateFamilyGroups, isBareNoun: () => false, isStructuralPlaceholder: () => false,
+  });
+  assert.match(quality([['post-lifecycle'], ['comment-lifecycle']]) || '', /omits 2 grounded product-evidence families/);
+  assert.equal(quality([]), undefined);
+});
+
+test('an empty catalog with uncovered grounded behavior obligations is rejected even without evidence families', () => {
+  // The candidate pool had entity-backed operations (sign up, toggle a post) that
+  // never earned structural-family status; an empty answer still omits them.
+  const quality = (requiredBehaviorCandidateIds: string[], requiredEntityCandidateGroups: string[][]) => capabilityCatalogCycleQualityFailure({
+    reconciled: [], distinctFamilyCount: 0, requiredBehaviorCandidateIds, requiredEntityCandidateGroups,
+    requiredOutcomes: [], candidateFamilyGroups: [], isBareNoun: () => false, isStructuralPlaceholder: () => false,
+  });
+  assert.match(quality(['operation-obligation:capability_signup:1', 'operation-obligation:capability_toggle:2'], []) || '', /empty while 2 grounded behavior obligation\(s\) and 0 entity group\(s\)/);
+  assert.match(quality([], [['entity_post']]) || '', /empty while 0 grounded behavior obligation\(s\) and 1 entity group\(s\)/);
+  assert.equal(quality([], []), undefined);
+});

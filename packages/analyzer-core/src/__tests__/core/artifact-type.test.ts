@@ -172,6 +172,48 @@ describe('classifyArtifactType', () => {
     expect(result.artifactType).toBe('boilerplate');
   });
 
+  test('a repository whose manifest name is the detected framework is that framework (library), even with example HTTP entries', () => {
+    const result = classifyArtifactType(input({
+      manifest: {
+        packageJson: {
+          name: 'express',
+          description: 'Fast, unopinionated, minimalist web framework',
+          isPrivate: false,
+          hasBin: false,
+          hasLibraryEntry: false,
+          dependencyNames: ['body-parser', 'debug'],
+        },
+      },
+      frameworks: ['Express'],
+      entryPointSummary: [{ type: 'http', count: 40 }],
+    }));
+    expect(result.artifactType).toBe('library');
+    expect(result.evidence[0]).toMatch(/is the detected framework "Express"/);
+  });
+
+  test('a composer package whose vendor matches the framework is NOT self-named (vendor is organization identity)', () => {
+    const result = classifyArtifactType(input({
+      manifest: {
+        composer: { name: 'laravel/nova', description: 'Administration panel.', type: 'project', requireNames: ['laravel/framework'] },
+      },
+      frameworks: ['Laravel'],
+      entryPointSummary: [{ type: 'http', count: 12 }],
+    }));
+    expect(result.artifactType).toBe('app');
+  });
+
+  test('a description whose subject is the scaffold phrase declares boilerplate even with routes (framework skeleton shape)', () => {
+    const result = classifyArtifactType(input({
+      manifest: {
+        composer: { name: 'laravel/laravel', description: 'The skeleton application for the Laravel framework.', type: 'project', requireNames: ['laravel/framework'] },
+      },
+      frameworks: ['Laravel'],
+      entryPointSummary: [{ type: 'http', count: 6 }],
+    }));
+    expect(result.artifactType).toBe('boilerplate');
+    expect(result.evidence[0]).toMatch(/composer.json description declares "skeleton"/);
+  });
+
   test('python console_scripts + click is a cli-tool (yisda-cli shape)', () => {
     const result = classifyArtifactType(input({
       manifest: {

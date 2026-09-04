@@ -280,7 +280,7 @@ import { aiConfig, getAIConfig, getAIProviderChain } from '../../config/ai.confi
 import { capabilityDescriptionEntityProvidesProductEvidence, capabilityDescriptionEvidenceMaps, humanizeExactRelatedEntityIdentifiers, validateElementDescription as validateSharedElementDescription } from '../../ai/element-description-validator';
 import { filterPlausibleExternalServices, isCommandShapedLabel, isHostnameLikeServiceName } from '../../ai/external-service-plausibility';
 import { buildGroundedDomainVocabulary, recoverAIDomainLabel } from './ai-domain-recovery';
-import { containsGenericImplementationMechanicFiller, mentionsDeclaredImplementationName, stripApplicationImplementationFillerSentences } from './ai-product-narrative';
+import { containsGenericImplementationMechanicFiller, implementationNamesOtherThanSelf, mentionsDeclaredImplementationName, stripApplicationImplementationFillerSentences } from './ai-product-narrative';
 export type { CASOutput } from '../../types/cas.types';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob, beginGlobRun, endGlobRun } from './glob-cache';
@@ -12719,7 +12719,7 @@ export class AnalyzerOrchestrator {
         return { ok: false, reason: 'infrastructure-source-mechanic-restatement' };
       }
     }
-    if (facts.artifactType === 'app' && mentionsDeclaredImplementationName(cleaned, facts.frameworks || [])) {
+    if (facts.artifactType === 'app' && mentionsDeclaredImplementationName(cleaned, implementationNamesOtherThanSelf(facts.frameworks || [], facts.systemName))) {
       return { ok: false, reason: 'implementation-stack-filler' };
     }
     if (facts.artifactType === 'app' && containsGenericImplementationMechanicFiller(cleaned)) {
@@ -12921,7 +12921,7 @@ export class AnalyzerOrchestrator {
       validation.reason === 'implementation-stack-filler' ||
       validation.reason === 'generic-implementation-mechanic-filler'
     )) {
-      const productSentences = stripApplicationImplementationFillerSentences(text, facts.frameworks || []);
+      const productSentences = stripApplicationImplementationFillerSentences(text, implementationNamesOtherThanSelf(facts.frameworks || [], facts.systemName));
       if (productSentences !== text) {
         const productValidation = this.validateGeneratedAIInterpretation(productSentences, enhancedSystemPurpose, facts);
         if (productValidation.ok) return { text: productSentences, validation: productValidation };

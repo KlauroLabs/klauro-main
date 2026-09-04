@@ -7,6 +7,16 @@ export function mentionsDeclaredImplementationName(description: string, names: s
     .some(token => descriptionTokens.has(token)));
 }
 
+// A product that shares its name with a framework it detects (or IS that
+// framework) must be allowed to say its own name. Its own name is identity,
+// not implementation stack, so it is removed from the declared-name list
+// before any filler check.
+export function implementationNamesOtherThanSelf(names: string[], selfName: string | undefined): string[] {
+  const selfTokens = new Set(String(selfName || '').toLowerCase().split(/[^a-z0-9]+/).filter(token => token.length >= 5));
+  if (selfTokens.size === 0) return names;
+  return names.filter(name => !String(name || '').toLowerCase().split(/[^a-z0-9]+/).some(token => selfTokens.has(token)));
+}
+
 export function containsGenericImplementationMechanicFiller(description: string): boolean {
   return /\b(?:the\s+)?(?:system|application|app|service|product)\s+(?:runs|operates|is\s+(?:hosted|deployed))\s+(?:on|as|within)\s+(?:a\s+)?(?:server|backend|frontend|database)\b/i.test(description) ||
     /\b(?:the\s+)?(?:system|application|app|service|product)\s+(?:interacts|connects|communicates)\s+with\s+(?:a\s+)?(?:database|server|backend|frontend)\b/i.test(description) ||

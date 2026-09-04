@@ -76,6 +76,17 @@ export const APP_FRAMEWORK_MARKERS = /\b(next(\.js)?|nuxt|express|fastify|koa|ne
 
 const BOILERPLATE_TEXT = /\b(boilerplate|starter[ -]?(kit|template|project|app)?|skeleton|scaffold(ing)?|template)\b/i;
 
+// A description whose grammatical subject is the scaffold phrase ("The skeleton
+// application for ...", "A starter kit for ...") declares what the artifact IS,
+// the same way a README title does. A description that merely mentions a
+// template as an object ("Built from a starter template", "email template
+// manager") does not, and keeps its app entry points as the deciding evidence.
+const DECLARED_SCAFFOLD_SUBJECT = /^\s*(?:the|a|an)\s+(?:[\w-]+\s+){0,2}?(?:boilerplate|starter|skeleton|scaffold(?:ing)?|template)\s+(?:application|app|project|repo(?:sitory)?|kit|codebase)\b/i;
+
+// Tokens that name a kind of artifact rather than a specific one; they never
+// establish identity between a manifest name and a detected framework.
+const ARTIFACT_KIND_TOKENS = /^(?:framework|library|platform|core|js|ts|node)$/;
+
 const GENERATED_CLIENT_TEXT = /\b(wsdl2?php|wsdl|openapi-generator|swagger-codegen|autorest|auto-?generated client|generated (api )?client)\b/i;
 
 function entryCount(summary: Array<{ type: string; count: number }>, predicate: (type: string) => boolean): number {
@@ -207,7 +218,8 @@ function detectBoilerplate(manifest: ArtifactManifestSignal, appEntries: number)
     const match = candidate.text.match(BOILERPLATE_TEXT);
     if (match) {
       const declaredInTitleOrName = candidate.where === 'README title region' ||
-        candidate.where === 'package.json name';
+        candidate.where === 'package.json name' ||
+        DECLARED_SCAFFOLD_SUBJECT.test(candidate.text);
       if (appEntries > 0 && !declaredInTitleOrName) continue;
       return {
         artifactType: 'boilerplate',
@@ -251,6 +263,38 @@ function detectCliTool(
 
 
 
+function identityTokens(name: string | undefined): string[] {
+  return String(name || '')
+    .replace(/^@[^/]+\//, '')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(token => token.length >= 3 && !ARTIFACT_KIND_TOKENS.test(token));
+}
+
+// The manifest's own name coinciding with a detected framework means the
+// repository IS that framework, not a consumer of it. Its example servers and
+// test apps are how a framework demonstrates itself, so app entry points do
+// not outweigh this identity. Composer names carry the vendor as organization
+// identity, not product identity, so only the package part is compared.
+function detectSelfNamedFramework(manifest: ArtifactManifestSignal, frameworks: string[]): ArtifactTypeResult | null {
+  const selfNames = [
+    manifest.packageJson?.name,
+    manifest.composer?.name?.split('/').pop(),
+  ];
+  for (const selfName of selfNames) {
+    const self = new Set(identityTokens(selfName));
+    if (self.size === 0) continue;
+    const framework = frameworks.find(candidate => identityTokens(candidate).some(token => self.has(token)));
+    if (framework) {
+      return {
+        artifactType: 'library',
+        evidence: [`manifest name "${selfName}" is the detected framework "${framework}": the repository is the framework, not an application built on it`],
+      };
+    }
+  }
+  return null;
+}
+
 function detectLibrary(
   nodes: ArtifactTypeInput['nodes'],
   manifest: ArtifactManifestSignal,
@@ -258,6 +302,9 @@ function detectLibrary(
   appEntries: number,
   cliEntries: number
 ): ArtifactTypeResult | null {
+  const selfNamedFramework = detectSelfNamedFramework(manifest, frameworks);
+  if (selfNamedFramework) return selfNamedFramework;
+
   const readmeDeclaresLibrary = /\b(?:is|provides?)\s+(?:an?\s+)?[^.\n]{0,120}\blibrar(?:y|ies)\b/i.test(manifest.readmeLead || '');
   const workspaceLibrarySurface = Boolean(
     manifest.cargo?.isWorkspace &&

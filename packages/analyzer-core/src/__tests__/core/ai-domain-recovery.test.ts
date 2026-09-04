@@ -1,6 +1,6 @@
 import { aiService } from '../../ai/ai-service';
 import { buildGroundedDomainVocabulary, recoverAIDomainLabel } from '../../analyzer/core/ai-domain-recovery';
-import { containsGenericImplementationMechanicFiller, mentionsDeclaredImplementationName, stripApplicationImplementationFillerSentences } from '../../analyzer/core/ai-product-narrative';
+import { containsGenericImplementationMechanicFiller, implementationNamesOtherThanSelf, mentionsDeclaredImplementationName, stripApplicationImplementationFillerSentences } from '../../analyzer/core/ai-product-narrative';
 
 describe('AI product domain recovery', () => {
   it('keeps first-party nouns while removing framework and protocol pollution', () => {
@@ -69,5 +69,22 @@ describe('AI product narrative implementation filtering', () => {
     expect(containsGenericImplementationMechanicFiller('The system includes an authentication guard to control access.')).toBe(true);
     expect(stripApplicationImplementationFillerSentences(description, ['NestJS', 'React']))
       .toBe('Operators create and retrieve user information. Creating a user returns the preserved record. Operators can retrieve a specific user by identifier.');
+  });
+});
+
+describe('implementationNamesOtherThanSelf', () => {
+  test('a product that is the framework may say its own name', () => {
+    const names = implementationNamesOtherThanSelf(['Express', 'Mocha'], 'express');
+    expect(names).toEqual(['Mocha']);
+    expect(mentionsDeclaredImplementationName('Express routes requests to handlers.', names)).toBe(false);
+  });
+
+  test('an unrelated product name removes nothing', () => {
+    expect(implementationNamesOtherThanSelf(['Express', 'TypeORM'], 'fleet-dispatch')).toEqual(['Express', 'TypeORM']);
+  });
+
+  test('short or absent self names never strip declared implementation names', () => {
+    expect(implementationNamesOtherThanSelf(['Express'], undefined)).toEqual(['Express']);
+    expect(implementationNamesOtherThanSelf(['Express'], 'api')).toEqual(['Express']);
   });
 });

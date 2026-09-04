@@ -781,9 +781,20 @@ export function capabilityCatalogCycleQualityFailure(args: {
   isStructuralPlaceholder: (description?: string) => boolean;
   isValidatedDeterministicRecovery?: (capability: SystemCapability) => boolean;
 }): string | undefined {
-  if (args.reconciled.length === 0) return capabilityCatalogOutcomeCoverageFailure([], args.requiredOutcomes);
+  // An empty catalog is judged by the same evidence as a populated one. Zero
+  // capabilities is only an acceptable answer when there is no required
+  // outcome AND no grounded evidence family to cover; otherwise the empty
+  // catalog omits every family and must go back for repair like any other
+  // catalog that omits one.
   const coverageFailure = capabilityCatalogOutcomeCoverageFailure(args.reconciled, args.requiredOutcomes);
   if (coverageFailure) return coverageFailure;
+  if (args.reconciled.length === 0) {
+    const uncoveredBehaviors = args.requiredBehaviorCandidateIds.length;
+    const uncoveredEntityGroups = args.requiredEntityCandidateGroups.filter(group => group.length > 0).length;
+    if (uncoveredBehaviors > 0 || uncoveredEntityGroups > 0) {
+      return `catalog is empty while ${uncoveredBehaviors} grounded behavior obligation(s) and ${uncoveredEntityGroups} entity group(s) remain uncovered`;
+    }
+  }
   const uncoveredEvidenceFamilies = uncoveredCapabilityCatalogFamilyRepresentativeIds(
     args.reconciled,
     args.candidateFamilyGroups,

@@ -155,6 +155,7 @@
   "core/product-map-journey-linking.ts": 3,
   "core/product-document-framing.ts": 3,
   "core/product-map.ts": 3,
+  "core/product-roots.ts": 1,
   "core/project-document-framing.ts": 1,
   "core/reachability-index.ts": 1,
   "core/recursive-cas.ts": 1,
