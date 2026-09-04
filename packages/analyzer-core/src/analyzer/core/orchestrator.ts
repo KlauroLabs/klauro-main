@@ -11675,7 +11675,7 @@ export class AnalyzerOrchestrator {
         if (dependencyOnlyGrounded) {
           return { accepted: false, refined: false, reason: 'dependency-name-only-grounded' };
         }
-        const dependencyPolluted = labelTokens.some(token => {
+        const dependencyPolluted = !['library', 'client-sdk'].includes(String(enhancedSystemPurpose.artifact_type || '')) && labelTokens.some(token => {
           const stemmed = stem(token);
           return dependencyTokens.has(stemmed) && !independentEvidenceTokens.has(stemmed);
         });

@@ -11381,6 +11381,14 @@ describe('domain grounding gate: dependency-name salience (live defect — a men
     expect(verdict.reason).not.toBe('dependency-name-only-grounded');
   });
 
+  it('lets a library name its domain with words it shares with its own dependencies', () => {
+    const purpose: any = { primary_domain: '', artifact_type: 'library', inferred_description: 'A minimalist web framework for building HTTP servers.', core_concepts: ['web framework'] };
+    const verdict = orch.evaluateAIDomainCandidate('web-http-server', purpose, ['http-errors', 'cookie', 'send'], { concepts: ['web framework', 'server'], evidence: [] });
+    expect(verdict.reason).not.toBe('dependency-name-domain-pollution');
+    const onlyDependencies = orch.evaluateAIDomainCandidate('cookie-send', purpose, ['http-errors', 'cookie', 'send'], { concepts: ['web framework'], evidence: [] });
+    expect(onlyDependencies.accepted).toBe(false);
+  });
+
   it('rejects a mixed product domain polluted by dependency and transport names', () => {
     const purpose: any = {
       primary_domain: '',
