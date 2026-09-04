@@ -1,4 +1,6 @@
 import * as fs from 'fs';
+import { calculateComplexity } from './ts-extractor-metrics';
+import { collectCommonJsExports, isCommonJsExportObject, type TSCommonJsExports } from './commonjs-exports';
 import { NativeAddonUnavailableError, isNativeAddonUnavailableError } from './errors';
 import {
   classifyKnownTypeScriptGrammarLimitation, sanitizeContextualUsingIdentifiers,
@@ -221,7 +223,10 @@ export interface TSFileExtraction {
   comments: Array<{ type: string; text: string; line: number }>;
   hasSyntaxErrors: boolean;
   syntaxErrorLocations?: TSSyntaxErrorLocation[];
+  commonJsReexports?: string[];
 }
+
+
 
 export function treeHasSyntaxErrors(root: any): boolean {
   try {
@@ -375,6 +380,7 @@ interface TSTraversalFrame {
 export class TreeSitterTSExtractor {
   private parsers = new Map<string, any>();
   private currentFile: string = ''; private currentSource = Buffer.alloc(0);
+  private currentCommonJs: TSCommonJsExports = { roots: new Set(), exportedNames: new Set(), reexports: [] };
   private imports = new Map<string, TSExtractedImport>();
 
   private getParser(filePath: string): any {
@@ -403,6 +409,7 @@ export class TreeSitterTSExtractor {
     const initialTree = parser.parse(forParse);
     const { tree, root, hasSyntaxErrors } = recoverTypeScriptTree(parser, initialTree, content, forParse, getRootNode, treeHasSyntaxErrors, collectSyntaxErrorLocations);
     try {
+      this.currentCommonJs = collectCommonJsExports(root);
       const traversal = this.buildTraversalIndex(root);
 
       const result: TSFileExtraction = {
@@ -433,6 +440,7 @@ export class TreeSitterTSExtractor {
 
       result.variables = this.extractVariables(root, traversal.variables, true);
       result.exports = this.extractExports(root, traversal.exports);
+      if (this.currentCommonJs.reexports.length > 0) result.commonJsReexports = [...this.currentCommonJs.reexports];
 
       return result;
     } finally {
@@ -561,8 +569,10 @@ export class TreeSitterTSExtractor {
         const left = parent.childForFieldName('left');
         if (left?.type === 'member_expression') {
           funcName = left.childForFieldName('property')?.text;
+          if (isCommonJsExportObject(this.currentCommonJs, left.childForFieldName('object')?.text)) isExported = true;
         } else if (left?.type === 'identifier') {
           funcName = left.text;
+          if (this.currentCommonJs.exportedNames.has(left.text)) isExported = true;
         }
       }
     }
@@ -600,6 +610,7 @@ export class TreeSitterTSExtractor {
         isExported = true;
       }
     }
+    if (funcName && this.currentCommonJs.exportedNames.has(funcName)) isExported = true;
 
     const isAsync = this.hasAsyncKeyword(func);
     const isGenerator = func.type === 'generator_function_declaration' ||
@@ -610,7 +621,7 @@ export class TreeSitterTSExtractor {
     const decorators = this.extractDecorators(func);
     const decoratorArgs = this.extractDecoratorArgs(func);
     const calls = this.extractCalls(func, funcName, className, traversal);
-    const complexity = traversal?.complexity ?? this.calculateComplexity(func);
+    const complexity = traversal?.complexity ?? calculateComplexity(func);
     const documentation = this.extractDocumentation(func);
     const throws = traversal
       ? (traversal.throwTypes.size > 0 ? Array.from(traversal.throwTypes) : undefined)
@@ -1327,42 +1338,6 @@ export class TreeSitterTSExtractor {
     return { isConditional, conditionalDepth, isInLoop, loopDepth, blockDepth, isInTry, isInCatch, isInFinally, isInCallback, isInPromise };
   }
 
-  private calculateComplexity(func: any): number {
-    let complexity = 1;
-    const body = func.childForFieldName('body');
-    if (!body) return complexity;
-
-    const complexityNodes = new Set([
-      'if_statement', 'ternary_expression', 'switch_case',
-      'for_statement', 'for_in_statement', 'for_of_statement',
-      'while_statement', 'do_statement',
-      'catch_clause',
-      'binary_expression'
-    ]);
-
-    const stack = [body];
-    while (stack.length > 0) {
-      const node = stack.pop()!;
-      if (!node) continue;
-      if (complexityNodes.has(node.type)) {
-        if (node.type === 'binary_expression') {
-          const op = node.childForFieldName('operator')?.text;
-          if (op === '&&' || op === '||' || op === '??') {
-            complexity++;
-          }
-        } else {
-          complexity++;
-        }
-      }
-      for (let i = node.namedChildCount - 1; i >= 0; i--) {
-        const child = node.namedChild(i);
-        if (child) stack.push(child);
-      }
-    }
-
-    return complexity;
-  }
-
   private extractDocumentation(node: any): string | undefined {
     let sibling = node.previousSibling;
     while (sibling && (sibling.type === 'decorator' || sibling.type === 'comment')) {
@@ -1423,7 +1398,8 @@ export class TreeSitterTSExtractor {
       }
     }
 
-    const isExported = cls.parent?.type === 'export_statement';
+    const isExported = cls.parent?.type === 'export_statement' ||
+      this.currentCommonJs.exportedNames.has(cls.childForFieldName('name')?.text || '');
     const isAbstract = cls.children?.some((c: any) => c.type === 'abstract') || false;
     const decorators = this.extractDecorators(cls);
     const decoratorArgs = this.extractDecoratorArgs(cls);
@@ -1635,7 +1611,7 @@ export class TreeSitterTSExtractor {
           value: valueNode?.text,
           kind,
           line: declarator.startPosition.row + 1,
-          isExported
+          isExported: isExported || this.currentCommonJs.exportedNames.has(name)
         });
       }
     }

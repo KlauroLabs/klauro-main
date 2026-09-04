@@ -584,6 +584,7 @@ export interface CASNode {
     language?: string;
     framework?: string;
     paradigm?: string;
+    commonjs_reexports?: string[];
     access_modifier?: 'public' | 'private' | 'protected';
     is_abstract?: boolean;
     is_static?: boolean;

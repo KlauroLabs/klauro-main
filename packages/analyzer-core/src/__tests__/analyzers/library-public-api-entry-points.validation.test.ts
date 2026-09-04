@@ -82,6 +82,37 @@ describe('validation: real TS analyzer + library entry-point expansion', () => {
     expect(entryPoints.some(ep => ep.type === 'lifecycle')).toBe(false);
   }, 30000);
 
+  it('follows CommonJS re-exports from a default index entry and surfaces prototype-object members as api entry points', async () => {
+    const cjsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-cjs-lib-'));
+    try {
+      fs.mkdirSync(path.join(cjsDir, 'lib'));
+      fs.writeFileSync(path.join(cjsDir, 'package.json'), JSON.stringify({ name: 'tinyweb', version: '1.0.0', description: 'Minimal web toolkit', dependencies: {} }));
+      fs.writeFileSync(path.join(cjsDir, 'index.js'), "module.exports = require('./lib/tinyweb');\n");
+      fs.writeFileSync(path.join(cjsDir, 'lib', 'tinyweb.js'), [
+        "var app = exports = module.exports = {};",
+        "app.use = function use(fn) { return fn; };",
+        "app.listen = function listen(port) { return port; };",
+        "function privateHelper() { return 1; }",
+        "exports.Router = require('./router');",
+      ].join('\n'));
+      fs.writeFileSync(path.join(cjsDir, 'lib', 'router.js'), [
+        "function Router() {}",
+        "Router.prototype.route = function route(path) { return path; };",
+        "module.exports = Router;",
+      ].join('\n'));
+      const analyzer = new TypeScriptJavaScriptAnalyzer();
+      const contribution = await analyzer.analyze({ projectPath: cjsDir } as any);
+      const orch = new AnalyzerOrchestrator() as any;
+      const entryPoints: CASEntryPoint[] = [];
+      orch.addDiscoveredEntryPoints(cjsDir, contribution.nodes, entryPoints, contribution.edges || []);
+      const apiNames = entryPoints.filter(ep => ep.type === 'api').map(ep => ep.name).sort();
+      expect(apiNames).toEqual(expect.arrayContaining(['tinyweb.use', 'tinyweb.listen', 'tinyweb.Router']));
+      expect(apiNames.some(name => name.endsWith('.privateHelper'))).toBe(false);
+    } finally {
+      fs.rmSync(cjsDir, { recursive: true, force: true });
+    }
+  });
+
   it('tags exported variables with the is_exported CAS contract field', async () => {
     const analyzer = new TypeScriptJavaScriptAnalyzer();
     const contribution = await analyzer.analyze({ projectPath: fixtureDir });

@@ -166,6 +166,7 @@ import { extractProductDocumentFraming } from './product-document-framing';
 import { buildTerminalSignal, type TerminalSignal } from './terminal-signal';
 import { buildCasTerminality } from './terminality';
 import { declaredProductRoots, isWithinDeclaredRoots } from './product-roots';
+import { defaultPackageIndexEntry, libraryPublicApiSurfaceFiles } from './library-public-api-surface';
 import { assertUnderstandingContractIntegrity } from './understanding-contract-integrity';
 import { rollupSystemCapabilityDependencies } from './system-capability-dependencies';
 import {
@@ -22521,12 +22522,18 @@ export class AnalyzerOrchestrator {
         }
       }
 
-      const depsText = JSON.stringify({ ...(packageJson.dependencies || {}), ...(packageJson.devDependencies || {}) }).toLowerCase();
-      const isLibraryShaped = Boolean(packageJson.main || packageJson.module || packageJson.exports) &&
+      const selfNameTokens = new Set(String(packageJson.name || '').replace(/^@[^/]+\//, '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean));
+      const depsText = JSON.stringify(Object.keys({ ...(packageJson.dependencies || {}), ...(packageJson.devDependencies || {}) })
+        .filter(dependency => !dependency.toLowerCase().split(/[^a-z0-9]+/).some(token => selfNameTokens.has(token)))).toLowerCase();
+      const declaresEntry = Boolean(packageJson.main || packageJson.module || packageJson.exports);
+      const defaultIndexEntry = declaresEntry ? undefined : defaultPackageIndexEntry(path.join(projectPath, manifestDir));
+      const isLibraryShaped = (declaresEntry || Boolean(defaultIndexEntry)) &&
         !packageJson.bin && packageJson.private !== true && !APP_FRAMEWORK_MARKERS.test(depsText);
-
-      for (const field of ['main', 'module', 'exports']) {
-        const value = packageJson[field];
+      const entryFields: Array<[string, unknown]> = [
+        ...(defaultIndexEntry ? [['main', defaultIndexEntry] as [string, unknown]] : []),
+        ...['main', 'module', 'exports'].map(field => [field, packageJson[field]] as [string, unknown]),
+      ];
+      for (const [field, value] of entryFields) {
         if (typeof value === 'string') {
           add({
             file: packageFile(value),
@@ -22656,11 +22663,12 @@ export class AnalyzerOrchestrator {
     };
     const EXPORTABLE_NODE_TYPES = /^(function|class|const|variable|interface|type|enum|struct|component)$/i;
 
+    const surfaceFiles = libraryPublicApiSurfaceFiles(nodes, normalizedEntryFile, (sourceFile, file) => this.sourcePathMatches(projectPath, sourceFile, file));
     const exportedNodes = nodes.filter(node => {
       if (node.id === entryFileNode.id) return false;
       if (!EXPORTABLE_NODE_TYPES.test(node.type)) return false;
       const sourceFile = node.source?.file;
-      if (!sourceFile || !this.sourcePathMatches(projectPath, sourceFile, normalizedEntryFile)) return false;
+      if (!sourceFile || !surfaceFiles.some(file => this.sourcePathMatches(projectPath, sourceFile, file))) return false;
       return isPublicExport(node);
     });
 

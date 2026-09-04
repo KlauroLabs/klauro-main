@@ -590,6 +590,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
           isTypeScript: relativePath.endsWith('.ts') || relativePath.endsWith('.tsx'),
           commentCount: fileComments.length,
           todoCount: fileTodos.length,
+          ...(extraction.commonJsReexports?.length ? { commonjs_reexports: [...extraction.commonJsReexports] } : {}),
         }
       );
       if (fileComments.length > 0) fileNode.comments = fileComments;
