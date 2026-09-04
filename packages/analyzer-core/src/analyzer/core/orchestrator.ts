@@ -9475,7 +9475,7 @@ export class AnalyzerOrchestrator {
       writeAnalyzerStatus('[catalog-debug] candidate pool:', candidatePoolForRanking.map(candidate => ({
         id: candidate.id,
         name: candidate.name,
-        operations: (candidate.operations || []).length, entities: candidate.related_entities,
+        operations: (candidate.operations || []).length, entities: candidate.related_entities, evidence: (candidate.evidence_examples || []).length,
       })));
       writeAnalyzerStatus('[catalog-debug] candidate assignments:', staged.map((item, index) => ({
         name: item.name,

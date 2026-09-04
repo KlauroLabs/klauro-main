@@ -36,6 +36,16 @@ describe('libraryApiEvidenceExamples', () => {
     }
   });
 
+  it('reads parameter names and return annotations kept under metadata attributes (Python shape)', () => {
+    const route = node('route', 'pkg/routing.py', {
+      name: 'add_api_route',
+      metadata: { attributes: { parameters: [{ name: 'path', annotation: 'str' }, { name: 'endpoint' }], returnAnnotation: 'APIRoute' } },
+      documentation: { raw: 'Add a path operation.', summary: 'Add a path operation.' },
+    } as unknown as Partial<CASNode>);
+    const [example] = libraryApiEvidenceExamples([entry('api_route', 'api', 'route', 'pkg/routing.py')], new Map([['route', route]]));
+    for (const word of ['add', 'api', 'route', 'path', 'str', 'endpoint', 'operation']) expect(example).toContain(word);
+  });
+
   it('ignores non-API entry points and handlers without a node', () => {
     expect(libraryApiEvidenceExamples([entry('http_x', 'http', 'missing')], new Map())).toEqual([]);
   });
