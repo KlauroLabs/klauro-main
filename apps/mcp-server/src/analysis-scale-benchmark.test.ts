@@ -32,6 +32,7 @@ test('incremental probes change executable syntax across supported language fami
     assert.doesNotMatch(probe, /^\s*(?:\/\/|#)/);
     assert.equal(supportsSemanticSourceProbe(`source${extension}`), true);
   }
+  assert.match(semanticProbeForExtension('.dart', 3) || '', /int _analysisBenchmarkProbe3/);
   assert.equal(semanticProbeForExtension('.md', 3), null);
   assert.equal(supportsSemanticSourceProbe('README.md'), false);
 });

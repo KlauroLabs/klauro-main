@@ -17,7 +17,11 @@ import {
 } from '../../analyzer/core/ai-task-model-routing';
 import { filterMismatchedOperationObligationCapabilities } from '../../analyzer/core/capability-catalog-cycle-repair';
 import { deterministicCapabilityActionIdentityFallback } from '../../analyzer/core/capability-catalog-repair-plan';
-import { isComprehensionInertPrivateAddition, removeTestEntryPoints } from '../../analyzer/core/analysis-comprehension-surface';
+import {
+  isComprehensionInertPrivateAddition,
+  removeTestEntryPoints,
+  shouldReuseComprehensionForInertPrivateAddition,
+} from '../../analyzer/core/analysis-comprehension-surface';
 
 // These exercise internal heuristics of the orchestrator. They are private by
 // design (not part of the public CAS contract) so the tests reach them via a
@@ -10132,7 +10136,7 @@ describe('top-down capability evidence (C2)', () => {
       expect(withCtx.task).toMatch(/Never return two capabilities whose descriptions assert the same result/);
       expect(withCtx.task).toMatch(/scope-relative test/i);
       expect(withCtx.task).toMatch(/never decide from a domain-word blacklist/i);
-      expect(withCtx.task).toMatch(/12-28 words and at least 55 characters/);
+      expect(withCtx.task).toMatch(/6-28 words and at least 30 characters/);
       expect(withCtx.task).toMatch(/Do not start with actor scaffolding/);
       expect(withCtx.task).toMatch(/do not replace them with generic "data" or "information"/);
       expect(withCtx.task).toMatch(/Do not invent value claims/);
@@ -13302,6 +13306,51 @@ describe('enterprise AI semantic guards', () => {
     )).toEqual({ refresh: false, reason: 'semantic-fingerprint-unchanged' });
   });
 
+  it('reuses a settled degraded interpretation while its semantic fingerprint is unchanged', () => {
+    const candidates = [
+      { id: 'learn-flutter', name: 'Learn Flutter best practices from open source samples', category: 'core', related_domains: [], related_entities: [], operations: [] },
+    ];
+    const facts = orch.buildAIInterpretationRefreshFingerprint(
+      'flutter', ['Flutter'], [{ type: 'ui_route', count: 4 }], [], [],
+      [{ id: 'samples', name: 'samples', classification: 'core' }], candidates,
+    );
+    const previous = {
+      enhanced_system_purpose: {
+        inferred_description: '',
+        ai_input_fingerprint: orch.hashAIInterpretationRefreshFingerprint(facts),
+        description_generation: { status: 'ai_rejected', attempted: true, reason: 'implementation-stack-filler' },
+      },
+      capabilities: [{
+        ...candidates[0],
+        description: 'Developers learn Flutter best practices from maintained open source examples.',
+        description_source: 'deterministic',
+        description_generation: { status: 'deterministic_kept', attempted: true },
+      }],
+    };
+
+    expect(orch.getAIInterpretationRefreshDecision(
+      previous, 'flutter', ['Flutter'], [{ type: 'ui_route', count: 4 }], [], [],
+      [{ id: 'samples', name: 'samples', classification: 'core' }], candidates,
+    )).toEqual({ refresh: false, reason: 'degraded-semantic-fingerprint-unchanged' });
+    expect(orch.getAIInterpretationRefreshDecision(
+      previous, 'flutter', ['Flutter'], [{ type: 'ui_route', count: 4 }], [], ['analytics-service'],
+      [{ id: 'samples', name: 'samples', classification: 'core' }], candidates,
+    ).reason).toMatch(/^degraded-semantic-fingerprint-changed:/);
+  });
+
+  it('does not treat an unattempted missing narrative as settled degradation', () => {
+    const previous = {
+      enhanced_system_purpose: {
+        inferred_description: '',
+        ai_input_fingerprint: 'prior',
+        description_generation: { status: 'ai_skipped', attempted: false, reason: 'disabled-by-env' },
+      },
+    };
+    expect(orch.getAIInterpretationRefreshDecision(
+      previous, 'flutter', ['Flutter'], [], [], [], [], [],
+    )).toEqual({ refresh: true, reason: 'missing-previous-description' });
+  });
+
   it('trusts a description already accepted by the current AI generation path', () => {
     const candidates = [
       { id: 'candidate-orders', name: 'Process Enterprise Orders', category: 'core', related_domains: [], related_entities: ['entity_order'], operations: [] },
@@ -15003,6 +15052,29 @@ test('treats only isolated private additions as comprehension-inert', () => {
     [],
     [],
   )).toBe(false);
+
+  const dartPrivateHelper: CASNode = {
+    ...privateHelper,
+    id: 'function:lib/value.dart:_helper',
+    name: '_helper',
+    source: { file: 'lib/value.dart', line: 3, end_line: 3 },
+    metadata: {},
+  };
+  expect(isComprehensionInertPrivateAddition(
+    previous,
+    [existingNode, dartPrivateHelper],
+    [{ id: 'contains-helper', source: existingNode.id, target: dartPrivateHelper.id, type: 'contains' }],
+    [],
+    [],
+    [],
+  )).toBe(true);
+});
+test('reuses settled comprehension when a private addition only exposes an absent rejected narrative', () => {
+  expect(shouldReuseComprehensionForInertPrivateAddition(true, 'missing-previous-description')).toBe(true);
+  expect(shouldReuseComprehensionForInertPrivateAddition(true, 'semantic-fingerprint-changed:before->after')).toBe(true);
+  expect(shouldReuseComprehensionForInertPrivateAddition(true, 'degraded-semantic-fingerprint-changed:before->after')).toBe(true);
+  expect(shouldReuseComprehensionForInertPrivateAddition(true, 'previous-capability-description-failed-current-validation')).toBe(false);
+  expect(shouldReuseComprehensionForInertPrivateAddition(false, 'missing-previous-description')).toBe(false);
 });
 test('removes discovered routes whose resolved handler belongs to test code', () => {
   const nodes: CASNode[] = [

@@ -158,7 +158,7 @@ import {
   type AnalyzerContributionCacheEvidence,
   stableAnalyzerCacheIdentity,
 } from './analyzer-contribution-cache';
-import { isComprehensionInertPrivateAddition, removeTestEntryPoints } from './analysis-comprehension-surface';
+import { degradedComprehensionRefreshDecision, isComprehensionInertPrivateAddition, removeTestEntryPoints, shouldReuseComprehensionForInertPrivateAddition } from './analysis-comprehension-surface';
 import { USER_FACING_ENTRY_TYPES } from './journey-builder';
 import { buildComprehensionGraph } from './comprehension-graph';
 import { buildTerminalSignal, type TerminalSignal } from './terminal-signal';
@@ -2994,10 +2994,7 @@ export class AnalyzerOrchestrator {
       exitPoints,
       dataEntities,
     );
-    const skipSemanticRefresh = comprehensionInertAddition && (
-      incrementalAIRefreshDecision.reason.startsWith('semantic-fingerprint-changed:') ||
-      incrementalAIRefreshDecision.reason === 'legacy-semantic-facts-changed'
-    );
+    const skipSemanticRefresh = shouldReuseComprehensionForInertPrivateAddition(comprehensionInertAddition, incrementalAIRefreshDecision.reason);
     const refreshAIInterpretation = incrementalAIRefreshRequested && !skipSemanticRefresh;
     writeAnalyzerStatus(`[Klauro] AI interpretation refresh=${refreshAIInterpretation} reason=${skipSemanticRefresh ? 'comprehension-inert-private-addition' : incrementalAIRefreshDecision.reason}`);
     if (refreshAIInterpretation) {
@@ -3029,29 +3026,32 @@ export class AnalyzerOrchestrator {
         systemCapabilities,
       );
       systemCapabilities.splice(0, systemCapabilities.length, ...stabilizedCapabilities);
-    } else if (
-      previousOutput.enhanced_system_purpose?.inferred_description &&
-      !previousDescriptionNeedsCurrentValidation(previousOutput)
-    ) {
-      enhancedSystemPurpose.inferred_description = previousOutput.enhanced_system_purpose.inferred_description;
-      enhancedSystemPurpose.description_source = 'reused';
-      enhancedSystemPurpose.description_generation = {
-        status: 'reused_previous',
-        attempted: false,
-        reason: previousOutput.enhanced_system_purpose.description_generation?.status,
-        generated_at: new Date().toISOString(),
-        validation_version: previousOutput.enhanced_system_purpose.description_generation?.validation_version,
-        origin_source: previousOutput.enhanced_system_purpose.description_generation?.origin_source
-          || (previousOutput.enhanced_system_purpose.description_source === 'ai' ? 'ai'
-            : previousOutput.enhanced_system_purpose.description_source === 'manual' ? 'manual'
-              : previousOutput.enhanced_system_purpose.description_source === 'deterministic' ? 'deterministic'
-                : previousOutput.enhanced_system_purpose.description_generation?.reason === 'ai_applied' ? 'ai'
-                  : undefined),
-      };
-      enhancedSystemPurpose.ai_input_fingerprint = previousOutput.enhanced_system_purpose.ai_input_fingerprint;
-      if (['ai', 'ai-refined', 'reused'].includes(previousOutput.enhanced_system_purpose.domain_source || '') &&
-        previousOutput.enhanced_system_purpose.primary_domain) {
-        enhancedSystemPurpose.primary_domain = previousOutput.enhanced_system_purpose.primary_domain;
+    } else {
+      const previousPurpose = previousOutput.enhanced_system_purpose;
+      if (previousPurpose?.inferred_description && !previousDescriptionNeedsCurrentValidation(previousOutput)) {
+        enhancedSystemPurpose.inferred_description = previousPurpose.inferred_description;
+        enhancedSystemPurpose.description_source = 'reused';
+        enhancedSystemPurpose.description_generation = {
+          status: 'reused_previous',
+          attempted: false,
+          reason: previousPurpose.description_generation?.status,
+          generated_at: new Date().toISOString(),
+          validation_version: previousPurpose.description_generation?.validation_version,
+          origin_source: previousPurpose.description_generation?.origin_source
+            || (previousPurpose.description_source === 'ai' ? 'ai'
+              : previousPurpose.description_source === 'manual' ? 'manual'
+                : previousPurpose.description_source === 'deterministic' ? 'deterministic'
+                  : previousPurpose.description_generation?.reason === 'ai_applied' ? 'ai'
+                    : undefined),
+        };
+      } else if (skipSemanticRefresh && previousPurpose) {
+        enhancedSystemPurpose.description_generation = previousPurpose.description_generation;
+        enhancedSystemPurpose.system_description_degradation = previousPurpose.system_description_degradation;
+        enhancedSystemPurpose.ai_phase_status = previousPurpose.ai_phase_status;
+      }
+      enhancedSystemPurpose.ai_input_fingerprint = previousPurpose?.ai_input_fingerprint;
+      if (['ai', 'ai-refined', 'reused'].includes(previousPurpose?.domain_source || '') && previousPurpose?.primary_domain) {
+        enhancedSystemPurpose.primary_domain = previousPurpose.primary_domain;
         enhancedSystemPurpose.domain_source = 'reused';
       }
       const reusedCapabilities = this.reusePreviousCapabilityCatalog(
@@ -13703,18 +13703,6 @@ export class AnalyzerOrchestrator {
     if (process.env.KLAURO_AI_INTERPRETATION_FORCE === 'true' || process.env.KLAURO_AI_INTERPRETATION_FORCE === '1') {
       return { refresh: true, reason: 'forced-by-configuration' };
     }
-    if (!previousOutput.enhanced_system_purpose?.inferred_description) {
-      return { refresh: true, reason: 'missing-previous-description' };
-    }
-    if (previousDescriptionNeedsCurrentValidation(previousOutput)) {
-      return { refresh: true, reason: 'previous-description-failed-current-validation' };
-    }
-    if ((previousOutput.capabilities || []).slice(0, 8).some(capability =>
-      this.previousCapabilityDescriptionNeedsRefresh(capability)
-    )) {
-      return { refresh: true, reason: 'previous-capability-description-failed-current-validation' };
-    }
-
     const nextFacts = this.buildAIInterpretationRefreshFingerprint(
       systemName,
       frameworks,
@@ -13725,6 +13713,17 @@ export class AnalyzerOrchestrator {
       systemCapabilities
     );
     const nextFingerprint = this.hashAIInterpretationRefreshFingerprint(nextFacts);
+    if (!previousOutput.enhanced_system_purpose?.inferred_description) return degradedComprehensionRefreshDecision(
+      previousOutput.enhanced_system_purpose, nextFingerprint,
+    ) || { refresh: true, reason: 'missing-previous-description' };
+    if (previousDescriptionNeedsCurrentValidation(previousOutput)) {
+      return { refresh: true, reason: 'previous-description-failed-current-validation' };
+    }
+    if ((previousOutput.capabilities || []).slice(0, 8).some(capability =>
+      this.previousCapabilityDescriptionNeedsRefresh(capability)
+    )) {
+      return { refresh: true, reason: 'previous-capability-description-failed-current-validation' };
+    }
     if (previousOutput.enhanced_system_purpose.ai_input_fingerprint) {
       return previousOutput.enhanced_system_purpose.ai_input_fingerprint !== nextFingerprint
         ? { refresh: true, reason: `semantic-fingerprint-changed:${previousOutput.enhanced_system_purpose.ai_input_fingerprint}->${nextFingerprint}` }

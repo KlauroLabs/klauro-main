@@ -299,6 +299,8 @@ export class DartAnalyzer extends BaseAnalyzer {
         .withMetadata({
           language: 'dart',
           framework: isFlutterProject ? 'flutter' : 'dart',
+          access_modifier: fn.name.startsWith('_') ? 'private' : 'public',
+          is_exported: !fn.name.startsWith('_'),
           is_test: isTest || fn.name.startsWith('test') || fn.name.startsWith('testWidgets'),
           attributes: {
             return_type: fn.returnType,

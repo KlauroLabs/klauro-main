@@ -36,7 +36,7 @@ export function semanticProbeForExtension(extension: string, index: number): str
     case '.rs':
       return `fn analysis_benchmark_probe_${suffix}() -> usize { ${suffix} }`;
     case '.dart':
-      return `int analysisBenchmarkProbe${suffix}() => ${suffix};`;
+      return `int _analysisBenchmarkProbe${suffix}() => ${suffix};`;
     case '.py':
       return `def analysis_benchmark_probe_${suffix}():\n    return ${suffix}`;
     case '.rb':

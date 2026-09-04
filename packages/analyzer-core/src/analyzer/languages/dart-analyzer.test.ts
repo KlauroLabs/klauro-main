@@ -34,3 +34,27 @@ test('DartAnalyzer resolves the nearest nested pubspec for Flutter lifecycle cla
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+
+test('DartAnalyzer records library-private and public function visibility', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dart-function-visibility-'));
+  try {
+    fs.mkdirSync(path.join(root, 'lib'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'pubspec.yaml'), 'name: visibility_fixture\n');
+    fs.writeFileSync(path.join(root, 'lib', 'helpers.dart'), [
+      'int _internalValue() => 1;',
+      'int publicValue() => _internalValue();',
+      '',
+    ].join('\n'));
+
+    const contribution = await new DartAnalyzer().analyze({ projectPath: root });
+    const privateFunction = contribution.nodes.find(node => node.name === '_internalValue');
+    const publicFunction = contribution.nodes.find(node => node.name === 'publicValue');
+    assert.equal(privateFunction?.metadata?.access_modifier, 'private');
+    assert.equal(privateFunction?.metadata?.is_exported, false);
+    assert.equal(publicFunction?.metadata?.access_modifier, 'public');
+    assert.equal(publicFunction?.metadata?.is_exported, true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

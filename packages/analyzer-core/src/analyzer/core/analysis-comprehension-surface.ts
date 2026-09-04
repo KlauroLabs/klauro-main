@@ -4,6 +4,7 @@ import type {
   CASEntryPoint,
   CASExitPoint,
   CASOutput,
+  EnhancedSystemPurpose,
 } from '../../types/cas.types';
 import { isScaffoldOrTestPath } from './scaffold-paths';
 
@@ -71,7 +72,8 @@ export function isComprehensionInertPrivateAddition(
   const capabilityBearingNodeTypes = /^(controller|route|endpoint|page|screen|command|entity|model|schema|message|event|job|consumer|producer)$/;
   if (addedNodes.some(node => {
     const visibility = (node.metadata as any)?.visibility || node.metadata?.access_modifier || node.metadata?.attributes?.visibility;
-    return visibility !== 'private' || node.metadata?.is_exported === true || capabilityBearingNodeTypes.test(node.type);
+    const languagePrivate = node.name.startsWith('_') && /\.dart$/i.test(node.source?.file || '');
+    return (visibility !== 'private' && !languagePrivate) || node.metadata?.is_exported === true || capabilityBearingNodeTypes.test(node.type);
   })) return false;
 
   const previousEdgeIds = new Set(previousOutput.edges.map(edge => edge.id));
@@ -89,4 +91,29 @@ export function isComprehensionInertPrivateAddition(
   const previousEntities = previousOutput.entities || [];
   return previousEntities.length === dataEntities.length &&
     previousEntities.map(entityIdentity).sort().join('\n') === dataEntities.map(entityIdentity).sort().join('\n');
+}
+
+export function shouldReuseComprehensionForInertPrivateAddition(
+  comprehensionInertAddition: boolean,
+  refreshReason: string,
+): boolean {
+  return comprehensionInertAddition && (
+    refreshReason === 'missing-previous-description' ||
+    refreshReason === 'legacy-semantic-facts-changed' ||
+    refreshReason.startsWith('semantic-fingerprint-changed:') ||
+    refreshReason.startsWith('degraded-semantic-fingerprint-changed:')
+  );
+}
+
+export function degradedComprehensionRefreshDecision(
+  purpose: EnhancedSystemPurpose | undefined,
+  nextFingerprint: string,
+): { refresh: boolean; reason: string } | undefined {
+  const generation = purpose?.description_generation;
+  const settledDegradation = generation?.attempted === true &&
+    (generation.status === 'ai_rejected' || generation.status === 'ai_failed');
+  if (!settledDegradation || !purpose?.ai_input_fingerprint) return undefined;
+  return purpose.ai_input_fingerprint === nextFingerprint
+    ? { refresh: false, reason: 'degraded-semantic-fingerprint-unchanged' }
+    : { refresh: true, reason: `degraded-semantic-fingerprint-changed:${purpose.ai_input_fingerprint}->${nextFingerprint}` };
 }
