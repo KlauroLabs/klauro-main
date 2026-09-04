@@ -166,7 +166,7 @@ import { extractProductDocumentFraming } from './product-document-framing';
 import { buildTerminalSignal, type TerminalSignal } from './terminal-signal';
 import { buildCasTerminality } from './terminality';
 import { declaredProductRoots, isWithinDeclaredRoots } from './product-roots';
-import { defaultPackageIndexEntry, libraryApiResourceKey, libraryPublicApiSurfaceFiles } from './library-public-api-surface';
+import { defaultPackageIndexEntry, libraryApiResourceKey, libraryManifestEntries, libraryPublicApiSurfaceFiles } from './library-public-api-surface';
 import { libraryApiEvidenceFields, productEntryPoints as productEntryPointsOf } from './product-entry-points';
 import { assertUnderstandingContractIntegrity } from './understanding-contract-integrity';
 import { rollupSystemCapabilityDependencies } from './system-capability-dependencies';
@@ -22529,10 +22529,8 @@ export class AnalyzerOrchestrator {
       const defaultIndexEntry = declaresEntry ? undefined : defaultPackageIndexEntry(path.join(projectPath, manifestDir));
       const isLibraryShaped = (declaresEntry || Boolean(defaultIndexEntry)) &&
         !packageJson.bin && packageJson.private !== true && !APP_FRAMEWORK_MARKERS.test(depsText);
-      const entryFields: Array<[string, unknown]> = [
-        ...(defaultIndexEntry ? [['main', defaultIndexEntry] as [string, unknown]] : []),
-        ...['main', 'module', 'exports'].map(field => [field, packageJson[field]] as [string, unknown]),
-      ];
+      const entryFields: Array<[string, unknown]> = [...(defaultIndexEntry ? [['main', defaultIndexEntry] as [string, unknown]] : []),
+        ...['main', 'module', 'exports'].map(field => [field, packageJson[field]] as [string, unknown])];
       for (const [field, value] of entryFields) {
         if (typeof value === 'string') {
           add({
@@ -22550,6 +22548,7 @@ export class AnalyzerOrchestrator {
     };
 
     addPackageManifestEntries('package.json');
+    for (const entry of libraryManifestEntries(projectPath)) add(entry);
     const nestedPackageJsonFiles = globSync('{apps,packages,libs}/*/package.json', {
       cwd: projectPath,
       nodir: true,
@@ -22656,11 +22655,8 @@ export class AnalyzerOrchestrator {
     existingSourceNodes: Set<string>
   ): CASEntryPoint[] {
     const normalizedEntryFile = candidate.file.replace(/\\/g, '/').replace(/^\.\//, '');
-    const isPublicExport = (node: CASNode): boolean => {
-      if (node.metadata?.is_exported === true) return true;
-      if (node.metadata?.access_modifier === 'public') return true;
-      return false;
-    };
+    const isPublicExport = (node: CASNode): boolean => node.metadata?.is_exported === true || node.metadata?.access_modifier === 'public' ||
+      (node.metadata as Record<string, unknown> | undefined)?.visibility === 'public' || (node.metadata as Record<string, unknown> | undefined)?.isPrivate === false;
     const EXPORTABLE_NODE_TYPES = /^(function|class|const|variable|interface|type|enum|struct|component)$/i;
 
     const surfaceFiles = libraryPublicApiSurfaceFiles(nodes, normalizedEntryFile, (sourceFile, file) => this.sourcePathMatches(projectPath, sourceFile, file));

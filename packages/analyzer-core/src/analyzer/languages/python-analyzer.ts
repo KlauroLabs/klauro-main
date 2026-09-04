@@ -571,6 +571,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
       .withSource({ file: relativePath, line: cls.lineStart, end_line: cls.lineEnd })
       .withMetadata({
         framework: this.analyzerName.toLowerCase().replace(' analyzer', ''),
+        access_modifier: cls.name.startsWith('_') ? 'private' : 'public',
         attributes: {
           moduleName: cls.moduleName,
           baseClasses: cls.baseClasses,
@@ -677,6 +678,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
       .withSource({ file: relativePath, line: func.lineStart, end_line: func.lineEnd })
       .withMetadata({
         framework: this.analyzerName.toLowerCase().replace(' analyzer', ''),
+        access_modifier: func.isPrivate ? 'private' : 'public',
         attributes: {
           parameters: func.parameters,
           decorators: func.decorators,

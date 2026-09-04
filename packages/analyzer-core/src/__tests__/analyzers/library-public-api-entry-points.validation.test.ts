@@ -113,6 +113,41 @@ describe('validation: real TS analyzer + library entry-point expansion', () => {
     }
   });
 
+  it('surfaces a Python package re-export and a Rust crate pub item as api entry points', async () => {
+    const { PythonAnalyzer } = await import('../../analyzer/languages/python-analyzer');
+    const { RustAnalyzer } = await import('../../analyzer/languages/rust-analyzer');
+    const pyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-py-lib-'));
+    const rsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-rs-lib-'));
+    try {
+      fs.writeFileSync(path.join(pyDir, 'pyproject.toml'), '[project]\nname = "tinyapi"\nversion = "0.1.0"\n');
+      fs.mkdirSync(path.join(pyDir, 'tinyapi'));
+      fs.writeFileSync(path.join(pyDir, 'tinyapi', '__init__.py'), 'from .core import make_app\n');
+      fs.writeFileSync(path.join(pyDir, 'tinyapi', 'core.py'), 'def make_app(name):\n    return name\n\ndef _helper():\n    return 1\n');
+      const pyContribution = await new PythonAnalyzer().analyze({ projectPath: pyDir } as any);
+      const pyOrch = new AnalyzerOrchestrator() as any;
+      const pyEntries: CASEntryPoint[] = [];
+      pyOrch.addDiscoveredEntryPoints(pyDir, pyContribution.nodes, pyEntries, pyContribution.edges || []);
+      const pyApi = pyEntries.filter(ep => ep.type === 'api').map(ep => ep.name);
+      expect(pyApi).toContain('tinyapi.make_app');
+      expect(pyApi.some(name => name.endsWith('._helper'))).toBe(false);
+
+      fs.writeFileSync(path.join(rsDir, 'Cargo.toml'), '[package]\nname = "tinyweb"\nversion = "0.1.0"\n');
+      fs.mkdirSync(path.join(rsDir, 'src'));
+      fs.writeFileSync(path.join(rsDir, 'src', 'lib.rs'), 'pub mod routing;\npub use routing::Router;\n');
+      fs.writeFileSync(path.join(rsDir, 'src', 'routing.rs'), 'pub struct Router;\npub fn route(path: &str) -> Router { Router }\nfn hidden() {}\n');
+      const rsContribution = await new RustAnalyzer().analyze({ projectPath: rsDir } as any);
+      const rsOrch = new AnalyzerOrchestrator() as any;
+      const rsEntries: CASEntryPoint[] = [];
+      rsOrch.addDiscoveredEntryPoints(rsDir, rsContribution.nodes, rsEntries, rsContribution.edges || []);
+      const rsApi = rsEntries.filter(ep => ep.type === 'api').map(ep => ep.name);
+      expect(rsApi).toEqual(expect.arrayContaining(['tinyweb.route', 'tinyweb.Router']));
+      expect(rsApi.some(name => name.endsWith('.hidden'))).toBe(false);
+    } finally {
+      fs.rmSync(pyDir, { recursive: true, force: true });
+      fs.rmSync(rsDir, { recursive: true, force: true });
+    }
+  });
+
   it('tags exported variables with the is_exported CAS contract field', async () => {
     const analyzer = new TypeScriptJavaScriptAnalyzer();
     const contribution = await analyzer.analyze({ projectPath: fixtureDir });
