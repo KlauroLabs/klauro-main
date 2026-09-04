@@ -3142,6 +3142,22 @@ describe('architecture and capability inference', () => {
     expect(orch.isGenericCapabilityResourceKey('express-application', 'Express Application API')).toBe(false);
   });
 
+  it('keeps public-API groups whose module names read as generic words (exceptions, http)', async () => {
+    const node = (id: string, file: string) => ({ id, name: id.split('.').pop(), type: 'function', level: 2, source: { file, line: 1 }, metadata: { access_modifier: 'public' } } as any);
+    const api = (name: string, nodeId: string, file: string) => ({ id: `entry_api_${name}`, source_node: nodeId, source_analyzer: 'orchestrator', type: 'api', name, handler: { node_id: nodeId, file, method_name: name.split('.').pop() } } as any);
+    const nodes = [
+      node('exc.HTTPException', 'fastapi/exceptions.py'), node('exc.WebSocketException', 'fastapi/exceptions.py'),
+      node('http.HTTPBasic', 'fastapi/security/http.py'), node('http.HTTPBearer', 'fastapi/security/http.py'),
+    ];
+    const entryPoints = [
+      api('fastapi.HTTPException', 'exc.HTTPException', 'fastapi/exceptions.py'), api('fastapi.WebSocketException', 'exc.WebSocketException', 'fastapi/exceptions.py'),
+      api('fastapi.HTTPBasic', 'http.HTTPBasic', 'fastapi/security/http.py'), api('fastapi.HTTPBearer', 'http.HTTPBearer', 'fastapi/security/http.py'),
+    ];
+    const { capabilities } = await orch.buildSystemCapabilities(entryPoints, [], nodes, []);
+    const keys = capabilities.flatMap((capability: any) => capability.related_domains || []);
+    expect(keys).toEqual(expect.arrayContaining(['fastapi-exceptions', 'fastapi-http']));
+  });
+
   it('treats CAS harness files as non-product source', async () => {
     expect(orch.isPrimaryProductPath('packages/analyzer-core/cas-tests/test-hoggan-analysis.ts')).toBe(false);
     expect(orch.isPrimaryProductPath('src/test-hoggan-analysis.ts')).toBe(false);

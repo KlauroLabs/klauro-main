@@ -338,6 +338,16 @@ function detectLibrary(
     };
   }
 
+  if (manifest.pythonSetup && !manifest.pythonSetup.hasConsoleScripts) {
+    const publicNodes = nodes.filter(node => node.metadata?.is_exported === true || node.metadata?.access_modifier === 'public').length;
+    if (publicNodes >= 5) {
+      return {
+        artifactType: 'library',
+        evidence: [`python package manifest without console scripts, ${publicNodes} public nodes, no app or cli entry points`],
+      };
+    }
+  }
+
   if (manifest.packageJson?.hasLibraryEntry && !manifest.packageJson.hasBin && !manifest.packageJson.isPrivate) {
     const frameworkText = frameworks.join(' ');
     const hasAppFramework = APP_FRAMEWORK_MARKERS.test(frameworkText);

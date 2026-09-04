@@ -214,6 +214,21 @@ describe('classifyArtifactType', () => {
     expect(result.evidence[0]).toMatch(/composer.json description declares "skeleton"/);
   });
 
+  test('a python package manifest with public nodes and no scripts or entry points is a library (web-framework package shape)', () => {
+    const publicNodes = ['FastAPI', 'APIRouter', 'Depends', 'Body', 'BackgroundTasks'].map(name => node(name, 'pkg/core.py', { access_modifier: 'public' }));
+    const result = classifyArtifactType(input({
+      manifest: { pythonSetup: { description: 'FastAPI framework, high performance, easy to learn', hasConsoleScripts: false, dependencyNames: ['starlette', 'pydantic'] } },
+      nodes: publicNodes,
+    }));
+    expect(result.artifactType).toBe('library');
+    const withRoutes = classifyArtifactType(input({
+      manifest: { pythonSetup: { description: 'Shop backend', hasConsoleScripts: false, dependencyNames: ['fastapi'] } },
+      nodes: publicNodes,
+      entryPointSummary: [{ type: 'http', count: 12 }],
+    }));
+    expect(withRoutes.artifactType).toBe('app');
+  });
+
   test('python console_scripts + click is a cli-tool (yisda-cli shape)', () => {
     const result = classifyArtifactType(input({
       manifest: {

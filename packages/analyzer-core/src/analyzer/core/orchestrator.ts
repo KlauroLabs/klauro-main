@@ -17956,7 +17956,7 @@ export class AnalyzerOrchestrator {
 
       const resourceKey = this.inferResourceKey(ep, preferredNestedHttpResources);
       const resourceName = this.inferResourceName(ep, resourceKey);
-      if (this.isGenericCapabilityResourceKey(resourceKey, resourceName) &&
+      if (ep.type !== 'api' && ep.type !== 'rpc' && this.isGenericCapabilityResourceKey(resourceKey, resourceName) &&
         !this.domainVariantInSet(resourceKey, productEntityDomains)) continue;
 
       if (!resourceGroups.has(resourceKey)) {
