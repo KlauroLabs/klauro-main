@@ -461,6 +461,18 @@ describe('capability catalog audience evaluation', () => {
     expect(capabilityAudienceRepairFeedback(evaluation.rejections)).toContain('observable action and subject');
   });
 
+  it('trusts the capability\'s own entity name even when a longer product word starts with it', () => {
+    const subject = capability('Toggle post', 'Post authors change the published state of their posts to control whether readers can see them.');
+    subject.related_entities = ['entity_post'];
+    subject.operations = [{ entry_point_id: 'publish', entry_point_type: 'http', action: 'Update Post' }];
+
+    const evaluation = evaluateCapabilityCatalogAudience(
+      [subject], [dataEntity('entity_post', 'Post', 'persisted-entity')], [], ['postgres', 'blog posts'],
+    );
+
+    expect(evaluation.rejections.filter(rejection => rejection.reasons.includes('shortened-product-term'))).toEqual([]);
+  });
+
   it('accepts an exact first-party noun even when it prefixes a longer trusted identifier', () => {
     const subject = capability(
       'View memo views',

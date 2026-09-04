@@ -213,10 +213,15 @@ export function capabilityCatalogRepairPromptFacts(
     const scopedSubjectCandidate = isOperationObligation
       ? { ...candidate, related_domains: [], evidence_examples: [], structural_label: undefined, operations: [] }
       : candidate;
-    const evidenceSubjectTerms = candidateNameIsCustomerVisible || routeNameHasRecoverableProductTerms
+    // An obligation's name IS its structural label ("create orm", "read
+    // index"), so for obligations the subject is the entities acted on and
+    // nothing else.
+    const evidenceSubjectTerms = isOperationObligation
+      ? [...entityNameTokens].slice(0, 8)
+      : candidateNameIsCustomerVisible || routeNameHasRecoverableProductTerms
       ? capabilityEvidenceSubjectTokens(scopedSubjectCandidate, (candidate.related_entities || []).map(entityId => entityNamesById.get(entityId) || ''))
         .map(canonicalCapabilityCatalogOutcomeToken)
-        .filter(token => token.length >= 3 && (!genericEvidenceTerms.has(token) || entityNameTokens.has(token) || (token === 'user' && exactCandidateSubject === 'user')))
+        .filter(token => token.length >= 3 && (!genericEvidenceTerms.has(token) || (token === 'user' && exactCandidateSubject === 'user')))
         .slice(0, 8)
       : [];
     const requiredSubjectTerms = candidateRequirements.length > 0

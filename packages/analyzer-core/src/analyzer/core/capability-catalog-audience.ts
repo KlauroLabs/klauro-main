@@ -162,7 +162,11 @@ function capabilityNameProductLanguageFailures(name: string, productTerms: strin
     reasons.push('incomplete-modifier-tail');
     flaggedTokens.push(danglingModifier);
   }
-  const trustedWords = new Set(productTerms.flatMap(splitIdentifierWords).map(word => word.toLowerCase()));
+  // A trusted identifier word with a numeric suffix (ProductArea10 -> area10)
+  // vouches for its bare stem too; "area" is that word, not a shortening.
+  const trustedWords = new Set(productTerms.flatMap(splitIdentifierWords)
+    .flatMap(word => [word.toLowerCase(), word.toLowerCase().replace(/\d+$/, '')])
+    .filter(Boolean));
   const ordinaryShortWords = new Set(['api', 'app', 'code', 'data', 'map', 'run', 'task', 'user', 'view', 'work']);
   const grammaticalConnectors = new Set([
     'a', 'an', 'and', 'as', 'by', 'for', 'from', 'in', 'into', 'of', 'on', 'or', 'the', 'through', 'to', 'via', 'with',
@@ -373,7 +377,10 @@ export function evaluateCapabilityCatalogAudience(
     const dependencyGroundedEntityNames = (capability.depends_on || [])
       .flatMap(dependency => dependency.evidence.shared_entities || []);
     const capabilityProductTerms = [...productTerms, ...integrationTerms, ...operationTerms, ...relatedEntityTerms];
-    const productLanguageFailures = capabilityNameProductLanguageFailures(capability.name, productTerms);
+    // The capability's own entity names are product language by definition:
+    // "post" in "Toggle post" is the Post entity, not a shortening of a longer
+    // product word that happens to start the same way.
+    const productLanguageFailures = capabilityNameProductLanguageFailures(capability.name, capabilityProductTerms);
     if (productLanguageFailures.reasons.length > 0) {
       rejections.push({
         capabilityId: capability.id,

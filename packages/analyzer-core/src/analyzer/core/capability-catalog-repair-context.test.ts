@@ -505,7 +505,7 @@ test('targeted repair retains verified cross-subject flow relationships', () => 
 
 test('an operation obligation requires the entity it acts on as subject, never the folder or file tokens that locate it', () => {
   const candidates = [{
-    id: 'operation-obligation:capability_signup:1', name: 'Signup', structural_label: 'create page sign', category: 'core',
+    id: 'operation-obligation:capability_signup:1', name: 'create page sign', structural_label: 'create page sign', category: 'core',
     evidence_kind: 'behavior-surface', related_entities: ['entity_user'],
     operations: [{ entry_point_id: 'e1', entry_point_type: 'http', action: 'Create User', path_or_command: 'orm/pages/signup/index.tsx' }],
   }] as SystemCapability[];
