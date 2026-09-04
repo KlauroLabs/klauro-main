@@ -345,7 +345,7 @@ export function evaluateCapabilityCatalogAudience(
   dataEntities: CASDataEntity[],
   libraryNames: string[],
   productTerms: string[],
-  context: { productText?: CapabilityCatalogProductText; userJourneys?: readonly CASUserJourney[]; entryPoints?: readonly CASEntryPoint[] } = {},
+  context: { productText?: CapabilityCatalogProductText; userJourneys?: readonly CASUserJourney[]; entryPoints?: readonly CASEntryPoint[]; artifactType?: string } = {},
 ): CapabilityAudienceEvaluation {
   const libraries = libraryNames.map(name => ({ name }));
   const integrationTerms = capabilityCatalogIntegrationTerms(libraryNames);
@@ -482,7 +482,7 @@ export function evaluateCapabilityCatalogAudience(
     }
     if (descriptionVerdict.failsAudienceTest) {
       const reason = `catalog-audience:${descriptionVerdict.reasons.join(',')}`;
-      const groundedAudience = groundedCapabilityAudience(capability, context.productText, context.userJourneys || []);
+      const groundedAudience = groundedCapabilityAudience(capability, context.productText, context.userJourneys || [], context.entryPoints, context.artifactType);
       rejections.push({
         capabilityId: capability.id,
         capabilityIndex,
