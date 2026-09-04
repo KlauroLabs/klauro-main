@@ -242,11 +242,12 @@ if [ "$TARBALL_CODE" != "200" ] && [ "$TARBALL_CODE" != "206" ]; then
   echo "    !! Common cause: api container missing the /opt/klauro/downloads mount." >&2
   exit 1
 fi
-if [ -n "$WITH_RELEASE" ] && { [ "$DIST_VER" != "$LOCAL_VER" ] || [ "$DIST_SHA" != "$GIT_SHA" ]; }; then
+DIST_SHA_SHORT="${DIST_SHA:0:12}"
+if [ -n "$WITH_RELEASE" ] && { [ "$DIST_VER" != "$LOCAL_VER" ] || [ "$DIST_SHA_SHORT" != "$GIT_SHA" ]; }; then
   echo "    !! Released $LOCAL_VER+$GIT_SHA but hosted /dist reports $DIST_VER+$DIST_SHA — upload/mount mismatch." >&2
   exit 1
 fi
-if [ -z "$WITH_RELEASE" ] && { [ "$DIST_VER" != "$LOCAL_VER" ] || [ "$DIST_SHA" != "$GIT_SHA" ]; }; then
+if [ -z "$WITH_RELEASE" ] && { [ "$DIST_VER" != "$LOCAL_VER" ] || [ "$DIST_SHA_SHORT" != "$GIT_SHA" ]; }; then
   echo "    !! Client-channel skew: deploying server $LOCAL_VER+$GIT_SHA but /dist publishes CLI $DIST_VER+$DIST_SHA." >&2
   echo "    !! Installed clients keep the OLD client contract; if this deploy tightens one (e.g. the" >&2
   echo "    !! analysis protocol version), every installed CLI is rejected with nothing to upgrade to." >&2
