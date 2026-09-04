@@ -297,6 +297,10 @@ export interface CASLayerStatus {
   duration_ms?: number;
 
   error?: string;
+
+  // Present when the layer is ready but built on degraded input (e.g. source
+  // coverage gaps). The layer still answers; the gap is reported, not hidden.
+  warning?: string;
   fields: string[];
 }
 
@@ -1792,8 +1796,8 @@ export interface CASAnalyzerContribution {
   capabilities?: string[];
   analysis_scope?: {
     files_eligible?: number; files_analyzed?: number;
-    files_skipped?: number; complete?: boolean; applicability?: 'file-coverage' | 'not-applicable';
-    patterns_detected?: string[]; incomplete_reason?: string; omitted_paths?: string[];
+    files_skipped?: number; files_partial?: number; complete?: boolean; applicability?: 'file-coverage' | 'not-applicable';
+    patterns_detected?: string[]; incomplete_reason?: string; omitted_paths?: string[]; partial_paths?: string[];
   };
   contributed_categories?: string[];
   contributed_entry_points?: number;

@@ -202,8 +202,13 @@ test('TypeScript treats recovered parser artifacts as complete but records genui
     const partial = await new TypeScriptJavaScriptAnalyzer().analyze({ projectPath: partialRoot });
     assert.equal(partial.analyzer_metadata?.analysis_scope?.complete, false);
     assert.equal(partial.analyzer_metadata?.analysis_scope?.files_analyzed, 1);
-    assert.equal(partial.analyzer_metadata?.analysis_scope?.files_skipped, 1);
-    assert.deepEqual(partial.analyzer_metadata?.analysis_scope?.omitted_paths, ['broken.ts']);
+    // Partially parsed is not skipped: the file was analyzed and its recovered
+    // declarations are in the output. The two counts are reported separately.
+    assert.equal(partial.analyzer_metadata?.analysis_scope?.files_skipped, 0);
+    assert.equal(partial.analyzer_metadata?.analysis_scope?.files_partial, 1);
+    assert.equal(partial.analyzer_metadata?.analysis_scope?.omitted_paths, undefined);
+    assert.deepEqual(partial.analyzer_metadata?.analysis_scope?.partial_paths, ['broken.ts']);
+    assert.match(partial.analyzer_metadata?.analysis_scope?.incomplete_reason || '', /1 source file\(s\) were only partially parsed/);
     assert.deepEqual(partial.analyzer_metadata?.framework_specific?.partial_source_files, [{
       path: 'broken.ts',
       reason: partial.analyzer_metadata?.framework_specific?.partial_source_files[0].reason,

@@ -308,7 +308,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       }
 
       const warnings = this.collectAnalysisWarnings();
-      const incompleteSourceFiles = [...this.omittedSourceFiles, ...this.partialSourceFiles];
       return this.createContribution(nodes, edges, entryPoints, exitPoints, {
         framework_specific: {
           isTypeScriptProject: this.isTypeScriptProject,
@@ -316,7 +315,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
           filesAnalyzed: preloadedFiles.length,
           ...typeScriptSourceDiagnostics(this.omittedSourceFiles, this.partialSourceFiles),
         },
-        analysis_scope: typeScriptAnalysisScope(sourceFiles.length, preloadedFiles.length, incompleteSourceFiles),
+        analysis_scope: typeScriptAnalysisScope(sourceFiles.length, preloadedFiles.length, this.omittedSourceFiles, this.partialSourceFiles),
         categories,
         perspectives,
         provided_perspectives: perspectives.map(p => p.id),

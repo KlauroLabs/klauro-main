@@ -29,7 +29,7 @@ function outputWithCatalog(
   } as unknown as CASOutput;
 }
 
-function layer(output: CASOutput, id: 'L4' | 'L5') {
+function layer(output: CASOutput, id: 'L0' | 'L1' | 'L2' | 'L3' | 'L4' | 'L5') {
   return buildCompletedAnalysisLayersReady(output).layers.find(candidate => candidate.layer === id);
 }
 
@@ -70,11 +70,14 @@ test('reports disabled required AI comprehension as an L5 error', () => {
   assert.match(layer(output, 'L5')?.error || '', /disabled/);
 });
 
-test('fails every derived layer when an analyzer reports incomplete source coverage', () => {
+test('incomplete source coverage degrades the structural layers to ready-with-warning, never to error', () => {
+  // One oversized or partially parsed file must not zero a product that was
+  // otherwise fully extracted: confidence degrades, existence does not.
   const scopes = [
     { files_eligible: 3, files_analyzed: 2, files_skipped: 0, complete: true },
     { files_eligible: 3, files_analyzed: 3, files_skipped: 1, complete: true },
     { files_eligible: 3, files_analyzed: 3, files_skipped: 0, complete: false },
+    { files_eligible: 3, files_analyzed: 3, files_skipped: 0, files_partial: 1, complete: false },
   ];
 
   for (const analysisScope of scopes) {
@@ -87,11 +90,39 @@ test('fails every derived layer when an analyzer reports incomplete source cover
     }];
     const readiness = buildCompletedAnalysisLayersReady(output);
 
-    assert.equal(readiness.complete, false);
+    assert.equal(readiness.complete, true);
     for (const candidate of readiness.layers) {
-      assert.equal(candidate.status, 'error');
-      assert.match(candidate.error || '', /Canonical source extraction is incomplete/);
+      assert.equal(candidate.status, 'ready');
+      assert.equal(candidate.error, undefined);
     }
+    for (const structural of ['L0', 'L1', 'L2', 'L3'] as const) {
+      assert.match(layer(output, structural)?.warning || '', /Canonical source extraction is partial.*partial-analyzer/);
+    }
+  }
+  const partialOnly = outputWithCatalog('accepted', 8);
+  partialOnly.analyzer_contributions = [{
+    analyzer_id: 'typescript-javascript',
+    analyzer_name: 'TypeScript',
+    contribution_type: 'language',
+    analysis_scope: { files_eligible: 400, files_analyzed: 400, files_skipped: 0, files_partial: 1, complete: false },
+  }];
+  assert.match(layer(partialOnly, 'L0')?.warning || '', /analyzed 400 of 400, 1 partially parsed/);
+});
+
+test('fails every derived layer only when nothing was extracted from eligible source at all', () => {
+  const output = outputWithCatalog('accepted', 8);
+  output.analyzer_contributions = [{
+    analyzer_id: 'typescript-javascript',
+    analyzer_name: 'TypeScript',
+    contribution_type: 'language',
+    analysis_scope: { files_eligible: 12, files_analyzed: 0, files_skipped: 12, complete: false },
+  }];
+  const readiness = buildCompletedAnalysisLayersReady(output);
+
+  assert.equal(readiness.complete, false);
+  for (const candidate of readiness.layers) {
+    assert.equal(candidate.status, 'error');
+    assert.match(candidate.error || '', /no eligible source file was analyzed \(12 eligible\)/);
   }
 });
 

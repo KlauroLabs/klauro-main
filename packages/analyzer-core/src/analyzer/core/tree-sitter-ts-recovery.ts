@@ -122,19 +122,30 @@ export function typeScriptSourceDiagnostics(
   };
 }
 
+// A skipped file contributed nothing; a partial file was analyzed and its
+// recovered declarations are in the output, with the unparsed span recorded.
+// They are different facts and consumers weigh them differently, so the scope
+// reports them separately instead of folding partial parses into files_skipped.
 export function typeScriptAnalysisScope(
   filesEligible: number,
   filesAnalyzed: number,
-  incomplete: readonly TypeScriptSourceFailure[],
-): { files_eligible: number; files_analyzed: number; files_skipped: number; complete: boolean; incomplete_reason?: string; omitted_paths?: string[] } {
+  omitted: readonly TypeScriptSourceFailure[],
+  partial: readonly TypeScriptSourceFailure[] = [],
+): {
+  files_eligible: number; files_analyzed: number; files_skipped: number; files_partial: number;
+  complete: boolean; incomplete_reason?: string; omitted_paths?: string[]; partial_paths?: string[];
+} {
+  const reasons: string[] = [];
+  if (omitted.length > 0) reasons.push(omitted.length + ' source file(s) were not analyzed');
+  if (partial.length > 0) reasons.push(partial.length + ' source file(s) were only partially parsed');
   return {
     files_eligible: filesEligible,
     files_analyzed: filesAnalyzed,
-    files_skipped: incomplete.length,
-    complete: incomplete.length === 0,
-    ...(incomplete.length > 0 ? {
-      incomplete_reason: incomplete.length + ' source file(s) could not be fully parsed; see framework_specific omission diagnostics',
-      omitted_paths: incomplete.map(file => file.path).sort(),
-    } : {}),
+    files_skipped: omitted.length,
+    files_partial: partial.length,
+    complete: omitted.length === 0 && partial.length === 0,
+    ...(reasons.length > 0 ? { incomplete_reason: reasons.join('; ') + '; see framework_specific omission diagnostics' } : {}),
+    ...(omitted.length > 0 ? { omitted_paths: omitted.map(file => file.path).sort() } : {}),
+    ...(partial.length > 0 ? { partial_paths: partial.map(file => file.path).sort() } : {}),
   };
 }

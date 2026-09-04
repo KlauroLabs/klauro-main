@@ -137,7 +137,7 @@ const LAYER_DEFINITIONS: Array<{ layer: CASLayerStatus['layer']; name: string; f
 ];
 
 export function buildLayersReady(
-  statuses: Partial<Record<CASLayerStatus['layer'], { status: 'pending' | 'ready' | 'error'; completedAt?: string; durationMs?: number; error?: string }>>,
+  statuses: Partial<Record<CASLayerStatus['layer'], { status: 'pending' | 'ready' | 'error'; completedAt?: string; durationMs?: number; error?: string; warning?: string }>>,
   options: { generatedAt?: string } = {},
 ): CASLayersReady {
   const layers: CASLayerStatus[] = LAYER_DEFINITIONS.map(def => {
@@ -149,6 +149,7 @@ export function buildLayersReady(
       ...(entry?.completedAt ? { completed_at: entry.completedAt } : {}),
       ...(entry?.durationMs !== undefined ? { duration_ms: entry.durationMs } : {}),
       ...(entry?.error ? { error: entry.error } : {}),
+      ...(entry?.warning ? { warning: entry.warning } : {}),
       fields: def.fields,
     };
   });
@@ -174,9 +175,16 @@ export function buildLayersReady(
 
 
 
-function analyzerCoverageError(output: CASOutput): string | undefined {
+// Source coverage gaps degrade confidence, never existence. A single oversized
+// or partially parsed file is reported on the structural layers as a warning;
+// the analysis only errors when coverage is unknowable (scope unreported) or
+// when nothing was extracted at all, because then there is no product to
+// describe rather than a product described from incomplete evidence.
+function analyzerCoverage(output: CASOutput): { error?: string; warning?: string } {
   const incomplete: string[] = [];
   const unknown: string[] = [];
+  let totalEligible = 0;
+  let totalAnalyzed = 0;
   for (const contribution of output.analyzer_contributions || []) {
     const scope = contribution.analysis_scope;
     if (!scope) {
@@ -194,14 +202,24 @@ function analyzerCoverageError(output: CASOutput): string | undefined {
       unknown.push(contribution.analyzer_id);
       continue;
     }
-    if (scope.complete === false || analyzed < eligible || skipped > 0) {
-      incomplete.push(contribution.analyzer_id);
+    totalEligible += eligible;
+    totalAnalyzed += analyzed;
+    const partial = Number(scope.files_partial) || 0;
+    if (scope.complete === false || analyzed < eligible || skipped > 0 || partial > 0) {
+      const detail = [
+        `analyzed ${analyzed} of ${eligible}`,
+        ...(skipped > 0 ? [`${skipped} skipped`] : []),
+        ...(partial > 0 ? [`${partial} partially parsed`] : []),
+      ].join(', ');
+      incomplete.push(`${contribution.analyzer_id} (${detail})`);
     }
   }
-  const reasons: string[] = [];
-  if (incomplete.length > 0) reasons.push(`incomplete for analyzer(s): ${incomplete.join(', ')}`);
-  if (unknown.length > 0) reasons.push(`scope unreported for analyzer(s): ${unknown.join(', ')}`);
-  return reasons.length > 0 ? `Canonical source extraction is ${reasons.join('; ')}` : undefined;
+  const errors: string[] = [];
+  if (unknown.length > 0) errors.push(`scope unreported for analyzer(s): ${unknown.join(', ')}`);
+  if (totalEligible > 0 && totalAnalyzed === 0) errors.push(`no eligible source file was analyzed (${totalEligible} eligible)`);
+  if (errors.length > 0) return { error: `Canonical source extraction is unavailable: ${errors.join('; ')}` };
+  if (incomplete.length > 0) return { warning: `Canonical source extraction is partial for analyzer(s): ${incomplete.join('; ')}` };
+  return {};
 }
 
 function canonicalCapabilityCount(output: CASOutput): number {
@@ -216,10 +234,13 @@ function canonicalCapabilityCount(output: CASOutput): number {
 export function buildCompletedAnalysisLayersReady(output: CASOutput): CASLayersReady {
   const generatedAt = output.analysis_timestamp || new Date().toISOString();
   const ready = { status: 'ready' as const, completedAt: generatedAt };
-  const extractionError = analyzerCoverageError(output);
+  const coverage = analyzerCoverage(output);
+  const extractionError = coverage.error;
   const structural = extractionError
     ? { status: 'error' as const, completedAt: generatedAt, error: extractionError }
-    : ready;
+    : coverage.warning
+      ? { ...ready, warning: coverage.warning }
+      : ready;
   const catalogCoverage = output.enhanced_system_purpose?.capability_catalog_coverage;
   const canonicalCapabilities = canonicalCapabilityCount(output);
   const catalogError = !catalogCoverage
