@@ -12935,6 +12935,15 @@ describe('enterprise AI semantic guards', () => {
     )).toEqual({ ok: true });
   });
 
+  it('narrative facts carry the artifact type once the purpose says the codebase is a library', () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    expect(localOrch.activeArtifactType).toBeNull();
+    localOrch.activeArtifactType = 'library';
+    const facts = localOrch.buildAIInterpretationFacts('tinyapi', ['Starlette'], [], [], [], emptyFlowGraph(), [], [], [], { concepts: [], evidence: [] }, [], 'A minimal API toolkit.', []);
+    expect(facts.artifactType).toBe('library');
+    expect(String(facts.artifactTypeInstruction || '')).toMatch(/This codebase is/);
+  });
+
   it('preserves public request and handler vocabulary for a developer library', () => {
     const purpose = { primary_domain: 'http-routing-library', core_concepts: ['http', 'routing', 'request', 'response'] };
     const description = 'Axum is an HTTP routing library for developers building HTTP services. Consumers map incoming HTTP requests to typed handlers and extract request data into application values. Handler results become HTTP responses with status, header, and body content. Developers package these routing contracts with their service code as a reusable dependency.';

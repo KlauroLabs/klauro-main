@@ -10732,7 +10732,7 @@ export class AnalyzerOrchestrator {
     entryPoints: CASEntryPoint[] = [],
     exitPoints: CASExitPoint[] = []
   ): Promise<void> {
-    this.elementDescriptionArtifactType = enhancedSystemPurpose.artifact_type;
+    this.elementDescriptionArtifactType = enhancedSystemPurpose.artifact_type; this.activeArtifactType = (enhancedSystemPurpose.artifact_type as CASArtifactType | undefined) || this.activeArtifactType;
     this.setElementDescriptionGrounding(
       enhancedSystemPurpose.primary_domain,
       enhancedSystemPurpose.core_concepts,
