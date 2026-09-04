@@ -11266,7 +11266,7 @@ export class AnalyzerOrchestrator {
       });
     }
 
-    let domainApplied = enhancedSystemPurpose.domain_source === 'ai' || enhancedSystemPurpose.domain_source === 'ai-refined';
+    let domainApplied = enhancedSystemPurpose.domain_source === 'ai' || enhancedSystemPurpose.domain_source === 'ai-refined'; const domainGroundingSignal: ProjectTextSignal = { ...projectTextSignal, concepts: [...(projectTextSignal.concepts || []), ...systemCapabilities.map(capability => String(capability.name || ''))] };
     for (const candidate of domainCandidates) {
       const label = this.normalizeAIDomainLabel(candidate);
       if (!label) continue;
@@ -11278,7 +11278,7 @@ export class AnalyzerOrchestrator {
         continue;
       }
       if (label === enhancedSystemPurpose.primary_domain && !domainApplied) {
-        const verdict = this.evaluateAIDomainCandidate(label, enhancedSystemPurpose, libraryNames, projectTextSignal);
+        const verdict = this.evaluateAIDomainCandidate(label, enhancedSystemPurpose, libraryNames, domainGroundingSignal);
         if (!verdict.accepted) {
           writeAnalyzerStatus(`[Klauro] domain candidate rejected: "${label}" (${verdict.reason})`);
           enhancedSystemPurpose.primary_domain = '';
@@ -11299,7 +11299,7 @@ export class AnalyzerOrchestrator {
         continue;
       }
       if (label === enhancedSystemPurpose.primary_domain) continue;
-      const verdict = this.evaluateAIDomainCandidate(label, enhancedSystemPurpose, libraryNames, projectTextSignal);
+      const verdict = this.evaluateAIDomainCandidate(label, enhancedSystemPurpose, libraryNames, domainGroundingSignal);
       if (verdict.accepted) {
         enhancedSystemPurpose.primary_domain = label;
         enhancedSystemPurpose.domain_source = verdict.refined ? 'ai-refined' : 'ai';
@@ -11312,7 +11312,7 @@ export class AnalyzerOrchestrator {
         domainApplied = true;
         break;
       }
-      enhancedSystemPurpose.domain_rejected_candidates = [
+      writeAnalyzerStatus(`[Klauro] domain candidate rejected: "${label}" (${verdict.reason})`); enhancedSystemPurpose.domain_rejected_candidates = [
         ...(enhancedSystemPurpose.domain_rejected_candidates || []),
         { label, reason: verdict.reason },
       ];
