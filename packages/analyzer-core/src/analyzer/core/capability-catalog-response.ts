@@ -3,8 +3,8 @@ export type CapabilityCatalogResponse =
   | { ok: false; reason: string };
 
 export class CapabilityCatalogResponseError extends Error {
-  constructor(reason: string) {
-    super(`Capability catalog response is unusable: ${reason}`);
+  constructor(readonly reason: string, readonly partialCapabilities: Array<Record<string, unknown>> = [], readonly unprocessedCandidateIds: string[] = []) {
+    super(`Capability catalog response is unusable: ${reason}${unprocessedCandidateIds.length ? `; unprocessed candidates: ${unprocessedCandidateIds.join(', ')}` : ''}`);
     this.name = 'CapabilityCatalogResponseError';
   }
 }

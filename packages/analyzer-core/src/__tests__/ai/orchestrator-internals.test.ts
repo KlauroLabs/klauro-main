@@ -78,6 +78,70 @@ for (const [label, response, expectedStatus, expectedCalls] of [
   });
 }
 
+test.each([true, false])('incomplete evidence preserves only individually publishable catalog members: %s', async publishable => {
+  const localOrch = new AnalyzerOrchestrator() as any;
+  const candidate: any = {
+    id: 'family-0', name: 'Review evidence family 0', category: 'core', evidence_kind: 'entity',
+    related_entities: ['entity-0'], related_domains: [],
+    operations: [{ entry_point_id: 'entry-0', entry_point_type: 'http', action: 'review' }],
+    criticality: 'medium', criticality_factors: [],
+  };
+  const value = {
+    ...candidate, name: 'Review product area 0', name_source: 'ai',
+    description: publishable ? 'Product area 0 presents grounded activity for operator review before proposed updates.' : '',
+    description_source: publishable ? 'ai' : undefined,
+    criticality_factors: ['catalog-candidate:family-0'],
+  };
+  jest.spyOn(localOrch, 'aiExtractCapabilityCatalog').mockImplementation(async (input: any) => {
+    input.onIncompleteEvidence('provider-request-budget-exhausted; unprocessed candidates: family-1');
+    return [value];
+  });
+  jest.spyOn(localOrch, 'reconcileCatalogedCapabilities').mockImplementation((values: any) => values);
+  const accepted = jest.fn();
+  const purpose: any = { primary_domain: 'product-review', core_concepts: [] };
+  const result = await localOrch.runCapabilityCatalogWithQualityGate({
+    systemName: 'review system', enhancedSystemPurpose: purpose, frameworks: [], userJourneys: [],
+    dataEntities: [{ id: 'entity-0', name: 'ProductArea0', lifecycle: { created_by: [], read_by: ['entry-0'], updated_by: [], deleted_by: [] } }],
+    candidateSnapshot: [candidate], behaviorSurfaces: [], externalServices: [], flowGraph: emptyFlowGraph(),
+    projectTextSignal: { concepts: [], evidence: [] }, entryPoints: [], nodes: [], budgetMs: 30000,
+    onInterpretationAccepted: accepted,
+  });
+  expect(result).toHaveLength(publishable ? 1 : 0);
+  expect(purpose.capability_catalog_coverage.status).toBe(publishable ? 'partial' : 'rejected');
+  expect(purpose.capability_catalog_coverage.published_capabilities).toBe(result.length);
+  expect(purpose.capability_catalog_coverage.reason).toContain('provider-request-budget-exhausted');
+  expect(accepted).not.toHaveBeenCalled();
+});
+
+test('catalog batches share one provider budget and do not publish incomplete evidence as success', async () => {
+  const localOrch = new AnalyzerOrchestrator() as any;
+  const provider = jest.spyOn(aiService, 'generateComponentDescription').mockResolvedValue('{"capabilities":[]}');
+  const reserve = jest.fn().mockReturnValueOnce(true).mockReturnValue(false);
+  const nodes = Array.from({ length: 18 }, (_, index) => ({
+    id: 'node-' + index, name: 'readRecord' + index,
+    documentation: { raw: 'Returns the supplied record without verifying it. '.repeat(40) },
+  }));
+  const candidates = nodes.map((node, index) => ({
+    id: 'candidate-' + index, name: 'Record API ' + index, category: 'core', description: '',
+    operations: [{ entry_point_id: 'entry-' + index, entry_point_type: 'api', action: 'read' }],
+    operation_evidence: [{ entry_point_id: 'entry-' + index, source_node_id: node.id, text: 'read record' }],
+    related_entities: [], related_domains: [], criticality: 'medium', criticality_factors: [],
+  }));
+  try {
+    await expect(localOrch.aiExtractCapabilityCatalog({
+      systemName: 'record library', enhancedSystemPurpose: { artifact_type: 'library' },
+      frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: candidates,
+      nodes, externalServices: [], flowGraph: emptyFlowGraph(),
+      projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
+      reserveProviderCall: reserve,
+    })).rejects.toThrow('provider-request-budget-exhausted');
+    expect(provider).toHaveBeenCalledTimes(1);
+    expect(reserve).toHaveBeenCalledTimes(2);
+  } finally {
+    provider.mockRestore();
+  }
+});
+
 test('catalog output capacity follows supplied API evidence without requiring a capability count', async () => {
   const localOrch = new AnalyzerOrchestrator() as any;
   const provider = jest.spyOn(aiService, 'generateComponentDescription')

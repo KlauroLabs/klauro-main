@@ -51,7 +51,7 @@ function boundedTextArray(value: unknown, limit: number, maxLength: number): str
 function compactCandidate(value: unknown, required: boolean): Record<string, unknown> {
   const candidate = value && typeof value === 'object' ? value as Record<string, unknown> : {};
   const repairFact = compactCapabilityCatalogRepairPromptFact(candidate, required);
-  if (repairFact) return repairFact;
+  if (repairFact) return { ...repairFact, ...(Array.isArray(candidate.declared_contracts) ? { declared_contracts: candidate.declared_contracts } : {}) };
   return {
     candidate_id: boundedText(candidate.candidate_id, 180),
     family: boundedText(candidate.family, required ? 120 : 180),
@@ -63,6 +63,7 @@ function compactCandidate(value: unknown, required: boolean): Record<string, unk
     entity_names: boundedTextArray(candidate.entity_names, required ? 4 : 8, required ? 100 : 160),
     terminality: candidate.terminality,
     distance_to_terminal: candidate.distance_to_terminal,
+    ...(Array.isArray(candidate.declared_contracts) ? { declared_contracts: candidate.declared_contracts } : {}),
   };
 }
 

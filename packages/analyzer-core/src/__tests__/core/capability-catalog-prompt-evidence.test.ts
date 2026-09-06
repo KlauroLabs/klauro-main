@@ -1,5 +1,5 @@
 import { projectCapabilityCatalogPromptEvidence, capabilityCatalogStructuralApiLabels } from '../../analyzer/core/capability-catalog-prompt-evidence';
-import type { SystemCapability } from '../../types/cas.types';
+import type { CASNode, SystemCapability } from '../../types/cas.types';
 
 function capability(overrides: Partial<SystemCapability>): SystemCapability {
   return {
@@ -17,6 +17,29 @@ function capability(overrides: Partial<SystemCapability>): SystemCapability {
 }
 
 describe('capability catalog prompt evidence', () => {
+  it('preserves source contract qualifications and excludes illustrative code from owned behavior', () => {
+    const prose = 'Returns a supplied record without verifying it. It does not accept or reject records. The caller must decide whether to accept it.';
+    const raw = prose + '\n\n~~~typescript\nacceptRecord(record);\n~~~\n\nNo record is stored by this helper.';
+    const node = { id: 'reader', name: 'readRecord', documentation: { raw, summary: 'Returns a supplied record.' } } as CASNode;
+    const value = capability({
+      name: 'Record API',
+      operations: [{ entry_point_id: 'read', entry_point_type: 'api', action: 'read' }],
+      operation_evidence: [
+        { entry_point_id: 'read', source_node_id: 'reader', text: 'read record verify accept reject' },
+        { entry_point_id: 'removed', source_node_id: 'reader', text: 'unrelated' },
+        { entry_point_id: 'read', source_node_id: 'absent', text: 'unresolvable' },
+      ],
+    });
+    const projected = projectCapabilityCatalogPromptEvidence(value, new Map([['reader', node]]));
+    expect(projected.declared_contracts).toEqual([{
+      entry_point_id: 'read', source_node_id: 'reader',
+      text: prose + '\n\n\nNo record is stored by this helper.',
+      example_blocks_omitted: 1,
+    }]);
+    expect(JSON.stringify(projected.declared_contracts)).not.toContain('acceptRecord(record)');
+    expect(node.documentation?.raw).toBe(raw);
+  });
+
   it('keeps public API groups as structure and proposes from their behavior', () => {
     const candidate = capability({
       name: 'Courier Request API', structural_label: 'Courier Request API Management',

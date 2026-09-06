@@ -27,6 +27,7 @@
   "core/capability-audience-test.ts": 3,
   "core/capability-catalog-aggregate-demotion.ts": 3,
   "core/capability-catalog-audience.ts": 3,
+  "core/capability-catalog-context-batches.ts": 3,
   "core/capability-catalog-cycle-repair.ts": 3,
   "core/capability-catalog-evidence.ts": 3,
   "core/capability-catalog-family-equivalence.ts": 3,
