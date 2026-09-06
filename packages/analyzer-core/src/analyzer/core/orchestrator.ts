@@ -9090,12 +9090,12 @@ export class AnalyzerOrchestrator {
       if (description.length < 25 && itemEntityNamesRaw.length) {
         description = `${name} manages ${itemEntityNamesRaw.slice(0, 4).join(', ')}.`;
       }
-      if (!name || description.length < 20) {
-        debugCatalogRejection(name, 'missing-name-or-description');
-        continue;
-      }
       let itemCandidateIds = Array.isArray(item.candidate_ids) ? item.candidate_ids.map(value => String(value || '')) : [];
       if (itemCandidateIds.length === 0 && requiredOutcome?.candidateIds.length && capabilitySemanticallySatisfiesCatalogOutcomeRequirement({ name, description }, requiredOutcome)) itemCandidateIds = [...requiredOutcome.candidateIds];
+      if (!name || description.length < 20) {
+        debugCatalogRejection(name, 'missing-name-or-description', itemCandidateIds);
+        continue;
+      }
       const targetedItemFacts = itemCandidateIds
         .map(candidateId => targetedRepairFactByCandidateId.get(candidateId))
         .filter((fact): fact is CapabilityCatalogRepairPromptFact => Boolean(fact));
@@ -9162,12 +9162,12 @@ export class AnalyzerOrchestrator {
       if (bindingFailure && bindingFailure.reason !== 'independent-outcome') { debugCatalogRejection(name, bindingFailure.reason, itemCandidateIds, bindingFailure); continue; }
       if (input.requiredOutcomeRequirements?.length && !bindingFailure) boundRequirementId = activeRequirementId;
       if (/(->|→|»)/.test(name)) {
-        if (/^run\s+[a-z_$][\w$.]*/i.test(name) || /\b[a-z][a-z0-9]*_[a-z0-9]+\b/.test(name)) continue;
+        if (/^run\s+[a-z_$][\w$.]*/i.test(name) || /\b[a-z][a-z0-9]*_[a-z0-9]+\b/.test(name)) { debugCatalogRejection(name, 'raw-candidate-label', itemCandidateIds); continue; }
         const head = name.split(/->|→|»/)[0].trim().replace(/[:\-–—\s]+$/, '');
         const headIsPurposePhrase =
           /^[A-Za-z][A-Za-z0-9' ]+$/.test(head) &&
           head.split(/\s+/).length >= 2;
-        if (!headIsPurposePhrase || this.isRawCandidateLabelName(head, candidateAreas, structuralApiLabels)) continue;
+        if (!headIsPurposePhrase || this.isRawCandidateLabelName(head, candidateAreas, structuralApiLabels)) { debugCatalogRejection(name, 'raw-candidate-label', itemCandidateIds); continue; }
         name = head;
       }
       if (this.isRawCandidateLabelName(name, candidateAreas, structuralApiLabels)) {
@@ -9379,7 +9379,7 @@ export class AnalyzerOrchestrator {
         !hasEntitySubjectEvidence &&
         !hasEntityDescriptionEvidence
       ) {
-        debugCatalogRejection(name, 'purpose-noun-missing-global-evidence');
+        debugCatalogRejection(name, 'purpose-noun-missing-global-evidence', narrowedCandidateIds);
         continue;
       }
       if (narrowedCandidateIds.length > 0 && purposeNouns.length > 0 && !hasCitedEvidenceBridge && !hasEntitySubjectEvidence) {
@@ -9391,7 +9391,7 @@ export class AnalyzerOrchestrator {
         continue;
       }
       if (seen.has(key)) {
-        debugCatalogRejection(name, 'duplicate-name');
+        debugCatalogRejection(name, 'duplicate-name', narrowedCandidateIds);
         continue;
       }
       if (boundRequirementId) fulfilledOutcomeRequirements.add(boundRequirementId);
@@ -9533,7 +9533,7 @@ export class AnalyzerOrchestrator {
       const resolvedName = name;
       if (!resolvedName) continue;
       const resolvedKey = resolvedName.toLowerCase();
-      if (this.capabilityContradictsObservedOperations({ name: resolvedName, description: '', operations: dedupedOps })) continue;
+      if (this.capabilityContradictsObservedOperations({ name: resolvedName, description: '', operations: dedupedOps })) { debugCatalogRejection(name, 'name-contradicts-observed-operations', [...anchoredCandidateIds], {}, requirementId); continue; }
       const descriptionContradictsOperations = this.capabilityContradictsObservedOperations({
         name: '', description, operations: dedupedOps,
       });
@@ -9541,6 +9541,7 @@ export class AnalyzerOrchestrator {
       if (relatedEntities.length === 0 && dedupedOps.length === 0) {
         unanchoredRejected++;
         unanchoredRejectedNames.push(name);
+        debugCatalogRejection(name, 'unanchored-capability', staged[index].candidateIds, {}, requirementId);
         continue;
       }
       out.push({
@@ -9603,7 +9604,7 @@ export class AnalyzerOrchestrator {
       final_outcome: out.length > 0 ? 'ai' : 'degraded',
     });
 
-    for (const feedback of catalogRejectionFeedback.slice(0, 12)) input.onRejection?.(feedback);
+    for (const feedback of catalogRejectionFeedback) input.onRejection?.(feedback);
     input.onResponse?.(raw);
     const boundedOutput = input.exactCapabilityLimit === undefined ? out : out.slice(0, input.exactCapabilityLimit); if (!usedDeterministicFallback && boundedOutput.length === 0 && input.allowDeterministicFallback && deterministicFallback) return this.aiExtractCapabilityCatalog({ ...input, allowDeterministicFallback: false, catalogOverride: [deterministicFallback] });
     if (!usedDeterministicFallback) return boundedOutput;

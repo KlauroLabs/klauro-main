@@ -27,6 +27,41 @@ import {
 
 // These exercise internal heuristics of the orchestrator. They are private by
 
+test('catalog extraction forwards every candidate-bound rejection for targeted repair', async () => {
+  const localOrch = new AnalyzerOrchestrator() as any;
+  const candidate = {
+    id: 'routing', name: 'Routing API', category: 'core', evidence_role: 'unresolved',
+    operations: [{ entry_point_id: 'route_request', entry_point_type: 'api', action: 'Route requests' }],
+    related_entities: [], related_domains: ['requests', 'handlers'], criticality: 'medium', criticality_factors: [],
+  };
+  const missingDescriptions = Array.from({ length: 25 }, (_, index) => ({
+    name: 'Route request ' + index, description: '', candidate_ids: ['routing'], entities: [],
+  }));
+  const malformedNames = ['run route_request -> calls helper', 'x -> internal', 'Route_request -> internal'].map(name => ({
+    name, description: 'Requests reach the handler registered for their path.', candidate_ids: ['routing'], entities: [],
+  }));
+  const provider = jest.spyOn(aiService, 'generateComponentDescription').mockResolvedValue(JSON.stringify({
+    capabilities: [...missingDescriptions, ...malformedNames],
+  }));
+  const rejections: any[] = [];
+  try {
+    const catalog = await localOrch.aiExtractCapabilityCatalog({
+      systemName: 'request library', enhancedSystemPurpose: { artifact_type: 'library' },
+      frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [candidate],
+      externalServices: [], flowGraph: emptyFlowGraph(),
+      projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
+      onRejection: (feedback: any) => rejections.push(feedback),
+    });
+    expect(catalog).toEqual([]);
+    expect(rejections).toHaveLength(28);
+    expect(rejections.every(feedback => feedback.candidateIds.includes('routing'))).toBe(true);
+    expect(rejections.filter(feedback => feedback.reason === 'missing-name-or-description')).toHaveLength(25);
+    expect(rejections.filter(feedback => feedback.reason === 'raw-candidate-label')).toHaveLength(3);
+  } finally {
+    provider.mockRestore();
+  }
+});
+
 test('public API construction retains exports from the end of a large cyclic surface', () => {
   const count = 193;
   const nodes = Array.from({ length: count }, (_, index) => [
