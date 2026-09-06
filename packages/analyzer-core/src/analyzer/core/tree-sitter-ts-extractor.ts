@@ -1339,12 +1339,24 @@ export class TreeSitterTSExtractor {
   }
 
   private extractDocumentation(node: any): string | undefined {
-    let sibling = node.previousSibling;
-    while (sibling && (sibling.type === 'decorator' || sibling.type === 'comment')) {
-      if (sibling.type === 'comment' && sibling.text.startsWith('/**')) {
-        return sibling.text;
+    let owner = node;
+    while (owner) {
+      let sibling = owner.previousSibling;
+      while (sibling && (sibling.type === 'decorator' || sibling.type === 'comment')) {
+        if (sibling.type === 'comment' && sibling.text.startsWith('/**')) return sibling.text;
+        sibling = sibling.previousSibling;
       }
-      sibling = sibling.previousSibling;
+      const parent = owner.parent;
+      if (!parent) break;
+      if (parent.type === 'assignment_expression' || parent.type === 'variable_declarator' || parent.type === 'pair') {
+        const value = parent.childForFieldName(parent.type === 'assignment_expression' ? 'right' : 'value');
+        if (!value || value.id !== owner.id) break;
+      } else if (parent.type === 'lexical_declaration' || parent.type === 'variable_declaration') {
+        if (parent.namedChildren.filter((child: any) => child.type === 'variable_declarator').length !== 1) break;
+      } else if (!['export_statement', 'expression_statement', 'parenthesized_expression'].includes(parent.type)) {
+        break;
+      }
+      owner = parent;
     }
     return undefined;
   }

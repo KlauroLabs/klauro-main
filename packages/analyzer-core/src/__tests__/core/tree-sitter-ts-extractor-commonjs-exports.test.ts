@@ -3,6 +3,38 @@ import { TreeSitterTSExtractor } from '../../analyzer/core/tree-sitter-ts-extrac
 describe('TreeSitterTSExtractor CommonJS export marking', () => {
   const extractor = new TreeSitterTSExtractor();
 
+  it('attaches documentation through assignment, declaration and export wrappers', () => {
+    const documented = extractor.extractFromSource(`
+      /** Return request headers to the caller. */
+      exports.get = exports.header = function header(name) { return name; };
+      /** Negotiate the response format. */
+      export const negotiate = (type) => type;
+      /** Construct a documented client. */
+      export default function client() {}
+    `, 'api.ts');
+    expect(documented.functions.find(fn => fn.name === 'header')?.documentation).toContain('Return request headers');
+    expect(documented.functions.find(fn => fn.name === 'negotiate')?.documentation).toContain('Negotiate the response format');
+    expect(documented.functions.find(fn => fn.name === 'client')?.documentation).toContain('Construct a documented client');
+  });
+
+  it('does not inherit documentation from an unrelated statement or an enclosing callback call', () => {
+    const extraction = extractor.extractFromSource(`
+      /** Configure the client. */
+      configure();
+      exports.send = function send(value) { return value; };
+      /** Schedule a callback, not its implementation. */
+      schedule(function callback() {});
+      /** Describe the outer function, not the nested one. */
+      exports.outer = function outer() {
+        return function inner() {};
+      };
+    `, 'api.js');
+    for (const name of ['send', 'callback', 'inner']) {
+      expect(extraction.functions.find(fn => fn.name === name)?.documentation).toBeUndefined();
+    }
+    expect(extraction.functions.find(fn => fn.name === 'outer')?.documentation).toContain('Describe the outer function');
+  });
+
   it('marks exports.name = fn, module.exports = ident, and members of an export root object', () => {
     const source = `
       var app = exports = module.exports = {};
