@@ -3,6 +3,53 @@ import assert from 'node:assert/strict';
 import { KlauroClient } from '../src/client';
 import type { CasRuntimeEvent } from '../src/types';
 
+test('overlapping flushes share one operation and drain events arriving during delivery', async () => {
+  let release!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const delivered: string[] = [];
+  const client = new KlauroClient({
+    projectId: 'p', flushInterval: 0,
+    fetchImpl: (async (_url: any, init: any) => {
+      await blocked;
+      const events = JSON.parse(init.body).events as CasRuntimeEvent[];
+      delivered.push(...events.map(event => event.signal!));
+      return { ok: true, json: async () => ({ event_count: events.length }) } as Response;
+    }) as typeof fetch,
+  });
+  client.record('first');
+  const first = client.flush();
+  try {
+    await new Promise<void>(resolve => setImmediate(resolve));
+    client.record('second');
+    for (let index = 0; index < 2000; index += 1) assert.equal(client.flush(), first);
+  } finally {
+    release();
+    await first;
+    await client.shutdown();
+  }
+  assert.deepEqual(delivered, ['first', 'second']);
+  assert.equal(client.pending, 0);
+});
+
+test('overlapping flush requests do not multiply retries after a delivery failure', async () => {
+  let attempts = 0;
+  const client = new KlauroClient({
+    projectId: 'p', flushInterval: 0, retryAttempts: 1, retryBaseDelay: 0,
+    fetchImpl: (async () => { attempts += 1; throw new Error('offline'); }) as typeof fetch,
+  });
+  client.record('retained');
+  const flushes = Array.from({ length: 2000 }, () => client.flush());
+  await Promise.all(flushes);
+  try {
+    assert.equal(attempts, 1);
+    assert.equal(client.pending, 1);
+    await client.flush();
+    assert.equal(attempts, 2, 'a later explicit flush can retry');
+  } finally {
+    await client.shutdown();
+  }
+});
+
 interface Capture {
   url: string;
   body: { events: CasRuntimeEvent[] };

@@ -11,6 +11,56 @@ import { loadTelemetryObservations, MAX_TELEMETRY_BATCH_SIZE, type TelemetryEven
 
 const REQUIRE = () => import('./self-telemetry');
 
+test('the SDK receives a durable acknowledgement from the in-process telemetry receiver', async () => {
+  await withTempStorage(async storage => {
+    const telemetry = await REQUIRE();
+    const sdk = await import('../../../packages/klauro-sdk-js/src/index');
+    const keys = ['KLAURO_SELF_TELEMETRY', 'KLAURO_SELF_TELEMETRY_PROJECT',
+      'KLAURO_SELF_TELEMETRY_ENDPOINT', 'KLAURO_SELF_TELEMETRY_CANONICAL_PROJECT',
+      'KLAURO_SELF_TELEMETRY_WORKER_ENTRY'];
+    const previous = keys.map(key => process.env[key]);
+    const project = nodePath.join(storage, 'project');
+    const finishAnalysis = beginForegroundAnalysis();
+    try {
+      process.env.KLAURO_SELF_TELEMETRY = '1';
+      process.env.KLAURO_SELF_TELEMETRY_PROJECT = project;
+      delete process.env.KLAURO_SELF_TELEMETRY_ENDPOINT;
+      delete process.env.KLAURO_SELF_TELEMETRY_CANONICAL_PROJECT;
+      delete process.env.KLAURO_SELF_TELEMETRY_WORKER_ENTRY;
+      assert.equal(telemetry.initSelfTelemetry(), true);
+      const client = sdk.getClient()!;
+      client.recordEvent({ type: 'request', event_id: 'durable-event', route: '/orders', status_code: 200 });
+      let acknowledged = false;
+      const flush = client.flush().then(() => { acknowledged = true; });
+      await new Promise<void>(resolve => setTimeout(resolve, 400));
+      assert.equal(acknowledged, false, 'delivery must wait for durable persistence');
+      assert.equal((await loadTelemetryObservations(project)).observations.length, 0);
+      finishAnalysis();
+      await flush;
+      assert.equal(client.pending, 0, 'the SDK must not replay a persisted batch');
+      assert.equal((await loadTelemetryObservations(project)).observations.length, 1);
+
+      process.env.KLAURO_SELF_TELEMETRY_WORKER_ENTRY = nodePath.join(storage, 'missing-worker.cjs');
+      client.recordEvent({ type: 'request', event_id: 'retry-event', route: '/orders', status_code: 200 });
+      await client.flush();
+      assert.equal(client.pending, 1, 'failed persistence must not acknowledge the event');
+      assert.equal((await loadTelemetryObservations(project)).observations.length, 1);
+      delete process.env.KLAURO_SELF_TELEMETRY_WORKER_ENTRY;
+      await client.flush();
+      assert.equal(client.pending, 0);
+      assert.equal((await loadTelemetryObservations(project)).observations.length, 2);
+    } finally {
+      finishAnalysis();
+      delete process.env.KLAURO_SELF_TELEMETRY_WORKER_ENTRY;
+      await telemetry.shutdownSelfTelemetry();
+      keys.forEach((key, index) => {
+        if (previous[index] === undefined) delete process.env[key];
+        else process.env[key] = previous[index];
+      });
+    }
+  });
+});
+
 function withEnv(value: string | undefined, fn: () => void): void {
   const prev = process.env.KLAURO_SELF_TELEMETRY;
   if (value === undefined) delete process.env.KLAURO_SELF_TELEMETRY;

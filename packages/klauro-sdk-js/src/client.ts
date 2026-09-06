@@ -57,7 +57,7 @@ export class KlauroClient {
   private queue: CasRuntimeEvent[] = [];
   private timer: ReturnType<typeof setInterval> | undefined;
   private shuttingDown = false;
-  private flushChain: Promise<void> = Promise.resolve();
+  private flushPromise: Promise<void> | undefined;
 
   constructor(config: KlauroConfig) {
     const projectId = config.projectId;
@@ -167,10 +167,13 @@ export class KlauroClient {
     return this.queue.length;
   }
 
-  async flush(): Promise<void> {
-    const operation = this.flushChain.then(() => this.deliverQueuedEvents());
-    this.flushChain = operation.catch(() => {});
-    await operation;
+  flush(): Promise<void> {
+    if (this.flushPromise) return this.flushPromise;
+    const operation = Promise.resolve()
+      .then(() => this.deliverQueuedEvents())
+      .finally(() => { this.flushPromise = undefined; });
+    this.flushPromise = operation;
+    return operation;
   }
 
   private async deliverQueuedEvents(): Promise<void> {

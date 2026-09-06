@@ -152,7 +152,6 @@ export async function mirrorToCanonicalBucket(
 
 let installed = false;
 let localIngestPromise: Promise<void> | undefined;
-const pendingLocalEvents: Array<{ projectPath: string; event: TelemetryEvent }> = [];
 
 
 
@@ -230,24 +229,23 @@ export async function waitForSelfTelemetryIngest(): Promise<void> {
   while (localIngestPromise) await localIngestPromise;
 }
 
-export function enqueueSelfTelemetryEvents(projectPath: string, events: TelemetryEvent[]): void {
-  if (events.length === 0) return;
-  pendingLocalEvents.push(...events.map(event => ({ projectPath, event })));
-  scheduleLocalIngest();
-}
-
-function scheduleLocalIngest(): void {
-  if (localIngestPromise) return;
-  localIngestPromise = flushSelfTelemetryEvents()
-    .catch(err => {
-      process.stderr.write(
-        `Klauro self-telemetry local ingest failed: ${err instanceof Error ? err.message : String(err)}\n`,
-      );
-    })
-    .finally(() => {
-      localIngestPromise = undefined;
-      if (pendingLocalEvents.length > 0) scheduleLocalIngest();
-    });
+export function enqueueSelfTelemetryEvents(projectPath: string, events: TelemetryEvent[]): Promise<void> {
+  if (events.length === 0) return Promise.resolve();
+  const queued = events.map(event => ({ projectPath, event }));
+  const operation = (localIngestPromise || Promise.resolve())
+    .catch(() => {})
+    .then(() => flushSelfTelemetryEvents(queued));
+  localIngestPromise = operation;
+  const clear = (): void => {
+    if (localIngestPromise === operation) localIngestPromise = undefined;
+  };
+  void operation.then(clear, err => {
+    clear();
+    process.stderr.write(
+      `Klauro self-telemetry local ingest failed: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+  });
+  return operation;
 }
 
 export function selfTelemetryWorkerRequests(
@@ -279,22 +277,21 @@ export function selfTelemetryWorkerRequests(
   return requests;
 }
 
-async function flushSelfTelemetryEvents(): Promise<void> {
-  while (pendingLocalEvents.length > 0) {
-    await waitForForegroundAnalysisIdle();
-    const queued = pendingLocalEvents.splice(0, pendingLocalEvents.length);
-    const ingestStartedAt = Date.now();
-    const requests = selfTelemetryWorkerRequests(queued);
-    for (const request of requests) {
-      await persistSelfTelemetryInWorker(request, selfCanonicalProjectPath() || undefined);
-    }
-    const ingestElapsedMs = Date.now() - ingestStartedAt;
-    if (ingestElapsedMs >= SLOW_SELF_INGEST_MS) {
-      const projectCount = new Set(queued.map(item => item.projectPath)).size;
-      process.stdout.write(
-        `Klauro self-telemetry: isolated ingest of ${queued.length} event(s) across ${projectCount} project(s) took ${ingestElapsedMs}ms.\n`,
-      );
-    }
+async function flushSelfTelemetryEvents(
+  queued: ReadonlyArray<{ projectPath: string; event: TelemetryEvent }>,
+): Promise<void> {
+  await waitForForegroundAnalysisIdle();
+  const ingestStartedAt = Date.now();
+  const requests = selfTelemetryWorkerRequests(queued);
+  for (const request of requests) {
+    await persistSelfTelemetryInWorker(request, selfCanonicalProjectPath() || undefined);
+  }
+  const ingestElapsedMs = Date.now() - ingestStartedAt;
+  if (ingestElapsedMs >= SLOW_SELF_INGEST_MS) {
+    const projectCount = new Set(queued.map(item => item.projectPath)).size;
+    process.stdout.write(
+      `Klauro self-telemetry: isolated ingest of ${queued.length} event(s) across ${projectCount} project(s) took ${ingestElapsedMs}ms.\n`,
+    );
   }
 }
 
@@ -305,19 +302,14 @@ async function flushSelfTelemetryEvents(): Promise<void> {
 
 function localIngestFetch(projectPath: string): typeof fetch {
   const impl = (async (_input: unknown, init?: { body?: unknown }): Promise<unknown> => {
-    try {
-      const events = parseSdkBatch(init?.body);
-      if (events.length > 0) {
-        const mapped = events.map(mapSdkEvent);
-        enqueueSelfTelemetryEvents(projectPath, mapped);
-      }
-    } catch (err) {
-      process.stderr.write(
-        `Klauro self-telemetry local ingest failed: ${err instanceof Error ? err.message : String(err)}\n`,
-      );
+    const events = parseSdkBatch(init?.body);
+    if (events.length > 0) {
+      await enqueueSelfTelemetryEvents(projectPath, events.map(mapSdkEvent));
     }
-
-    return { ok: true, status: 202, statusText: 'Accepted', async text() { return ''; } };
+    return new Response(JSON.stringify({ event_count: events.length }), {
+      status: 202,
+      headers: { 'content-type': 'application/json' },
+    });
   }) as unknown as typeof fetch;
   return impl;
 }
