@@ -1,5 +1,6 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
+import { createHash } from 'crypto';
 import type { CASEntryPoint, CASNode } from '../../types/cas.types';
 import { declaredProductRoots } from './product-roots';
 
@@ -10,6 +11,12 @@ export interface LibraryEntryCandidate {
   description: string;
   trigger?: CASEntryPoint['trigger'];
   libraryPublicApi?: { packageName: string; field: string };
+}
+
+export function libraryPublicApiEntryId(packageName: string, node: Pick<CASNode, 'id' | 'name'>): string {
+  const identity = createHash('sha256').update(JSON.stringify([packageName, node.id])).digest('hex');
+  const label = `entry_api_${packageName}_${node.name}`.replace(/[^a-zA-Z0-9]/g, '_');
+  return `${label}_${identity}`;
 }
 
 export function defaultPackageIndexEntry(packageDir: string): string | undefined {

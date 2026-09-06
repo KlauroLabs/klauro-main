@@ -166,7 +166,7 @@ import { extractProductDocumentFraming } from './product-document-framing';
 import { buildTerminalSignal, type TerminalSignal } from './terminal-signal';
 import { buildCasTerminality } from './terminality';
 import { declaredProductRoots, isWithinDeclaredRoots } from './product-roots';
-import { defaultPackageIndexEntry, libraryApiResourceKey, libraryManifestEntries, libraryPublicApiSurfaceFiles } from './library-public-api-surface';
+import { defaultPackageIndexEntry, libraryApiResourceKey, libraryManifestEntries, libraryPublicApiEntryId, libraryPublicApiSurfaceFiles } from './library-public-api-surface';
 import { libraryApiEvidenceFields, productEntryPoints as productEntryPointsOf } from './product-entry-points';
 import { assertUnderstandingContractIntegrity } from './understanding-contract-integrity';
 import { rollupSystemCapabilityDependencies } from './system-capability-dependencies';
@@ -22666,11 +22666,13 @@ export class AnalyzerOrchestrator {
     });
 
     const results: CASEntryPoint[] = [];
+    const seenSourceNodes = new Set(existingSourceNodes);
     const packageName = candidate.libraryPublicApi?.packageName || path.basename(projectPath);
     for (const node of exportedNodes) {
-      if (existingSourceNodes.has(node.id)) continue;
-      const entryId = `entry_api_${packageName}_${node.name}`.replace(/[^a-zA-Z0-9]/g, '_');
+      if (seenSourceNodes.has(node.id)) continue;
+      const entryId = libraryPublicApiEntryId(packageName, node);
       if (existingIds.has(entryId)) continue;
+      seenSourceNodes.add(node.id);
 
       results.push({
         id: entryId,

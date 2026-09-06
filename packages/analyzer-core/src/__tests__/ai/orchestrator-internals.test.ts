@@ -27,6 +27,29 @@ import {
 
 // These exercise internal heuristics of the orchestrator. They are private by
 
+test('public API identities distinguish same-name exports and remain independent of traversal order', () => {
+  const localOrch = new AnalyzerOrchestrator() as any;
+  const entry = { id: 'index', type: 'file', name: 'index.js', source: { file: 'index.js' }, metadata: { commonjs_reexports: ['./reader', './writer'] } };
+  const exported = ['reader', 'writer'].map(module => ({
+    id: 'function_' + module + '_header', type: 'function', name: 'header',
+    source: { file: module + '.js', line: 1 }, metadata: { is_exported: true },
+  }));
+  const build = (nodes: any[], packageName = 'protocol-lib', ids = new Set()) => localOrch.buildLibraryPublicApiEntryPoints(
+    [entry, ...nodes], '/repo',
+    { file: 'index.js', libraryPublicApi: { packageName, field: 'main' } },
+    entry, ids, new Set(),
+  );
+  const result = build(exported);
+  expect(result).toHaveLength(2);
+  expect(new Set(result.map((item: any) => item.id)).size).toBe(2);
+  const bySource = (entries: any[]) => entries.map(item => [item.source_node, item.id]).sort();
+  expect(bySource(build([...exported].reverse()))).toEqual(bySource(result));
+  expect(bySource(build([...exported, exported[0]]))).toEqual(bySource(result));
+  expect(build(exported, 'protocol-lib', new Set([result[0].id]))).toEqual([result[1]]);
+  expect(build(exported, 'protocol_lib').map((item: any) => item.id))
+    .not.toEqual(result.map((item: any) => item.id));
+});
+
 test('catalog extraction preserves only cited and retained public operation evidence', async () => {
   const localOrch = new AnalyzerOrchestrator() as any;
   const retained = { entry_point_id: 'route_request', source_node_id: 'route_node', text: 'Route HTTP requests to registered handlers.' };
