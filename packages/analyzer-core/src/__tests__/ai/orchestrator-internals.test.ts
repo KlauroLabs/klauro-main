@@ -1,4 +1,5 @@
 import { AnalyzerOrchestrator } from '../../analyzer/core/orchestrator';
+import { capabilityCatalogStructuralApiLabels } from '../../analyzer/core/capability-catalog-prompt-evidence';
 import { detectLibrariesFromManifests } from '../../analyzer/core/manifest-library-detection';
 import { TerraformAnalyzer } from '../../analyzer/languages/terraform-analyzer';
 import { aiService } from '../../ai/ai-service';
@@ -27,6 +28,25 @@ import {
 // design (not part of the public CAS contract) so the tests reach them via a
 // typed `any` handle rather than widening the class surface.
 const orch = new AnalyzerOrchestrator() as any;
+
+test('catalog names cannot echo structural API groups even with product-shaped descriptions', () => {
+  const entry = { id: 'api', type: 'api', name: 'courier.accepts', source_node: 'request', handler: { file: 'lib/request.js' } };
+  const key = orch.inferResourceKey(entry);
+  const operations = [{ entry_point_id: 'api', entry_point_type: 'api', action: 'read' }];
+  const structuralLabel = orch.formatDomainCapabilityName(key, orch.inferResourceName(entry, key), operations, 0);
+  const name = orch.terminalGroundedCapabilityName(structuralLabel, []);
+  const generatedLabels = capabilityCatalogStructuralApiLabels([{
+    id: 'candidate', name, structural_label: structuralLabel, operations,
+    description: '', category: 'core', related_entities: [], related_domains: [],
+    criticality: 'low', criticality_factors: [],
+  }]);
+  expect(generatedLabels).toContain(name);
+  expect(orch.isRawCandidateLabelName(name, [], generatedLabels)).toBe(true);
+  const labels = ['Courier Request API'];
+  expect(orch.isRawCandidateLabelName('Courier Request API', [], labels)).toBe(true);
+  expect(orch.isRawCandidateLabelName('courier request api', [], labels)).toBe(true);
+  expect(orch.isRawCandidateLabelName('Negotiate response formats through an API', [], labels)).toBe(false);
+});
 
 test('capability catalog parsing accepts one balanced JSON value and ignores trailing envelope noise', () => {
   const raw = '{"capabilities":[{"name":"Track budgets","description":"Budgets track category targets across the planning period.","candidate_ids":["candidate_1"]}]}}';

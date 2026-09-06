@@ -1,4 +1,4 @@
-import { projectCapabilityCatalogPromptEvidence } from '../../analyzer/core/capability-catalog-prompt-evidence';
+import { projectCapabilityCatalogPromptEvidence, capabilityCatalogStructuralApiLabels } from '../../analyzer/core/capability-catalog-prompt-evidence';
 import type { SystemCapability } from '../../types/cas.types';
 
 function capability(overrides: Partial<SystemCapability>): SystemCapability {
@@ -17,6 +17,29 @@ function capability(overrides: Partial<SystemCapability>): SystemCapability {
 }
 
 describe('capability catalog prompt evidence', () => {
+  it('keeps public API groups as structure and proposes from their behavior', () => {
+    const candidate = capability({
+      name: 'Courier Request API', structural_label: 'Courier Request API Management',
+      operations: [{ entry_point_id: 'request', entry_point_type: 'api', action: 'read' }],
+      evidence_examples: ['request.accepts: Negotiate the response content type'],
+    });
+    expect(capabilityCatalogStructuralApiLabels([candidate])).toEqual(['Courier Request API', 'Courier Request API Management']);
+    const result = projectCapabilityCatalogPromptEvidence(candidate);
+    expect(result.name).not.toBe(candidate.name);
+    expect(result.operations.join(' ')).toContain('Negotiate the response content type');
+    expect(candidate.name).toBe('Courier Request API');
+    expect(candidate.operations).toHaveLength(1);
+  });
+
+  it('does not classify authored library outcomes or ordinary API mentions as raw groups', () => {
+    const authored = capability({
+      name: 'Negotiate response formats through an API', name_source: 'manual',
+      operations: [{ entry_point_id: 'request', entry_point_type: 'api', action: 'read' }],
+    });
+    expect(capabilityCatalogStructuralApiLabels([authored])).toEqual([]);
+    expect(projectCapabilityCatalogPromptEvidence(authored).name).toBe(authored.name);
+  });
+
   it('removes structural surface vocabulary from implementation-shaped evidence', () => {
     const result = projectCapabilityCatalogPromptEvidence(capability({
       name: 'Celery Task Surface',

@@ -146,7 +146,7 @@ import {
   type ProjectContributionRefreshFailure,
 } from './incremental-contribution-refresh';
 import { CURRENT_NARRATIVE_VALIDATION_VERSION, previousDescriptionNeedsCurrentValidation } from './previous-description-validation';
-import { projectCapabilityCatalogPromptEvidence } from './capability-catalog-prompt-evidence';
+import { projectCapabilityCatalogPromptEvidence, capabilityCatalogStructuralApiLabels } from './capability-catalog-prompt-evidence';
 import { refreshIncrementalStateFromGraph } from './incremental-state-refresh';
 import { buildImportedHandlerResolver } from './imported-handler-resolver';
 import { dedupeCanonicalEdges } from './canonical-edge-deduplication';
@@ -8780,14 +8780,14 @@ export class AnalyzerOrchestrator {
     const promptCandidateAreas = selectCapabilityCatalogPromptCandidates(rankedCandidateAreas, requiredEntityCandidateGroups);
     const candidateTerminality = this.catalogCandidateTerminality(candidatePoolForRanking);
     const catalogEntityById = new Map(promptDataEntities.map(entity => [entity.id, entity]));
-    const candidateAreas = promptCandidateAreas.map(capability => capability.name);
+    const candidateAreas = promptCandidateAreas.map(capability => capability.name); const structuralApiLabels = capabilityCatalogStructuralApiLabels(candidatePoolForRanking);
     const candidateAreaFacts = promptCandidateAreas
       .map(capability => {
         const promptEvidence = projectCapabilityCatalogPromptEvidence(capability);
         const entityFacts = catalogCandidateEntityFacts(capability, catalogEntityById);
         return {
           candidate_id: capability.id,
-          family: capability.name,
+          family: structuralApiLabels.includes(capability.name) ? undefined : capability.name, structural_group_label: capability.structural_label,
           operations: promptEvidence.operations,
           relationships: promptEvidence.relationships,
           name: promptEvidence.name,
@@ -9137,10 +9137,10 @@ export class AnalyzerOrchestrator {
         const headIsPurposePhrase =
           /^[A-Za-z][A-Za-z0-9' ]+$/.test(head) &&
           head.split(/\s+/).length >= 2;
-        if (!headIsPurposePhrase || this.isRawCandidateLabelName(head, candidateAreas)) continue;
+        if (!headIsPurposePhrase || this.isRawCandidateLabelName(head, candidateAreas, structuralApiLabels)) continue;
         name = head;
       }
-      if (this.isRawCandidateLabelName(name, candidateAreas)) {
+      if (this.isRawCandidateLabelName(name, candidateAreas, structuralApiLabels)) {
         debugCatalogRejection(name, 'raw-candidate-label', itemCandidateIds);
         continue;
       }
@@ -9907,9 +9907,9 @@ export class AnalyzerOrchestrator {
     }
   }
 
-  private isRawCandidateLabelName(name: string, candidateAreas: string[]): boolean {
+  private isRawCandidateLabelName(name: string, candidateAreas: string[], structuralLabels: string[] = []): boolean {
     const trimmed = name.trim();
-    if (!trimmed) return true;
+    if (!trimmed || structuralLabels.some(label => label.toLowerCase() === trimmed.toLowerCase())) return true;
     if (this.looksMechanicallyRawCapabilityLabel(trimmed)) return true;
     if (candidateAreas.some(area => {
       const areaTrimmed = area.trim();

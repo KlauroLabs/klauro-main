@@ -63,6 +63,28 @@ function baseCas(overrides: any = {}): any {
   };
 }
 
+test('spot-read quality fails published API group names despite authored descriptions and anchors', () => {
+  const groups = ['Courier Application API', 'Courier Request API'].map((name, index) => ({
+    id: `group-${index}`, name, structural_label: `${name} Management`,
+    description: 'Application developers can inspect request information and choose response formats.',
+    operations: [{ entry_point_id: `api-${index}`, entry_point_type: 'api', action: 'read' }],
+  }));
+  const cas = baseCas({
+    structural_capability_candidates: groups,
+    capabilities: groups.map(group => ({ ...group, name_source: 'ai', description_source: 'ai' })),
+  });
+  const result = evaluateSpotReadCas(cas, '/tmp/api-groups.json');
+  const gate = result.gates.find(gate => gate.id === 'capability-quality');
+  assert.equal(gate?.status, 'fail');
+  assert.match(gate?.detail || '', /structural API group/);
+  const translated = evaluateSpotReadCas({
+    ...cas,
+    capabilities: [{ ...cas.capabilities[0], name: 'Negotiate response formats through an API' }],
+  }, '/tmp/api-outcomes.json');
+  assert.equal(translated.gates.find(gate => gate.id === 'capability-quality')?.status, 'pass');
+  assert.deepEqual(cas.structural_capability_candidates, groups);
+});
+
 test('spot-read quality passes strong behavior-oriented analysis output', () => {
   const result = evaluateSpotReadCas(baseCas(), '/tmp/sample.json');
   assert.equal(result.status, 'pass');

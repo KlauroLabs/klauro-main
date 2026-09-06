@@ -294,6 +294,11 @@ function scoreNarrativeProvenance(cas: CASOutput): SpotReadGate {
 function scoreCapabilityQuality(cas: CASOutput): SpotReadGate {
   const capabilities = cas.capabilities || [];
   if (capabilities.length === 0) return gate('capability-quality', 0, 'no capabilities inferred');
+  const structuralApiLabels = new Set([...(cas.structural_capability_candidates || []), ...(cas.behavior_surfaces || [])]
+    .filter(candidate => !candidate.name_source && /\bAPI$/i.test(candidate.name) &&
+      candidate.operations.length > 0 && candidate.operations.every(operation => ['api', 'rpc'].includes(operation.entry_point_type)))
+    .flatMap(candidate => [candidate.name, candidate.structural_label].map(value => clean(value).toLowerCase()).filter(Boolean)));
+  const structuralEchoes = capabilities.filter(capability => structuralApiLabels.has(clean(capability.name).toLowerCase()));
   const visibleCapabilities = Array.isArray((cas as any).product_map?.capabilities)
     ? (cas as any).product_map.capabilities
     : capabilities;
@@ -324,6 +329,7 @@ function scoreCapabilityQuality(cas: CASOutput): SpotReadGate {
   const visiblePrimaryDomainMismatch = expectsDomainSpecificPrimary && visiblePrimaryCapabilities.length >= 4 && visiblePrimaryDomainSpecificCount < 3;
   const weakRatio = weak.length / capabilities.length;
   let score = 100 - Math.round(weakRatio * 100);
+  if (structuralEchoes.length > 0) score = Math.min(score, 55);
   if (weakPrimary.length > 0) score = Math.min(score, 65);
   if (weakVisiblePrimary.length > 0) score = Math.min(score, 65);
   if (genericPrimaryMismatch) score = Math.min(score, 60);
@@ -331,6 +337,7 @@ function scoreCapabilityQuality(cas: CASOutput): SpotReadGate {
   if (primaryDomainMismatch) score = Math.min(score, 60);
   if (visiblePrimaryDomainMismatch) score = Math.min(score, 55);
   const problems: string[] = [];
+  if (structuralEchoes.length > 0) problems.push(`structural API group labels published as outcomes: ${structuralEchoes.map(capability => clean(capability.name)).join(', ')}`);
   if (weak.length) problems.push(`weak capability labels/descriptions (${weak.length}/${capabilities.length}): ${weak.slice(0, 8).map(capability => clean(capability.name) || capability.id).join(', ')}`);
   if (weakVisiblePrimary.length) problems.push(`weak visible primary capabilities: ${weakVisiblePrimary.map((capability: any) => clean(capability.name) || capability.id).join(', ')}`);
   if (genericPrimaryMismatch) problems.push(`generic capabilities outrank domain capabilities: ${genericPrimary.map(capability => clean(capability.name)).join(', ')}`);
