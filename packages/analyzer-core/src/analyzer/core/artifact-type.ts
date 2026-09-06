@@ -1,6 +1,7 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import type { CASArtifactType, CASExitPoint, CASNode } from '../../types/cas.types';
+import { defaultPackageIndexEntry } from './library-public-api-surface';
 
 
 
@@ -464,7 +465,7 @@ export function collectArtifactManifestSignal(projectPath: string): ArtifactMani
       description: stringOrUndefined(packageJson.description),
       isPrivate: packageJson.private === true,
       hasBin: Boolean(packageJson.bin),
-      hasLibraryEntry: Boolean(packageJson.main || packageJson.module || packageJson.exports || packageJson.types),
+      hasLibraryEntry: Boolean(packageJson.main || packageJson.module || packageJson.exports || packageJson.types || defaultPackageIndexEntry(projectPath)),
       dependencyNames: [
         ...Object.keys(packageJson.dependencies || {}),
         ...Object.keys(packageJson.devDependencies || {}),

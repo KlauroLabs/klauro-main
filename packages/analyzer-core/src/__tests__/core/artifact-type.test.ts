@@ -362,6 +362,26 @@ describe('artifactLedDomainLabel', () => {
 });
 
 describe('collectArtifactManifestSignal', () => {
+  test('recognizes an implicit package entry consistently with public API discovery', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'artifact-implicit-entry-'));
+    try {
+      fs.writeJsonSync(path.join(dir, 'package.json'), { name: 'protocol-functions', version: '1.0.0' });
+      expect(collectArtifactManifestSignal(dir).packageJson?.hasLibraryEntry).toBe(false);
+      fs.writeFileSync(path.join(dir, 'index.js'), "module.exports = require('./implementation');");
+      const manifest = collectArtifactManifestSignal(dir);
+      expect(manifest.packageJson?.hasLibraryEntry).toBe(true);
+      const evidence = input({
+        manifest, frameworks: [],
+        nodes: Array.from({ length: 8 }, (_, index) => node('operation' + index, 'implementation.js', { is_exported: true })),
+        entryPointSummary: [{ type: 'api', count: 8 }, { type: 'http', count: 1 }],
+      });
+      expect(classifyArtifactType(evidence).artifactType).toBe('library');
+      expect(classifyArtifactType({ ...evidence, manifest: { packageJson: { ...manifest.packageJson!, isPrivate: true } } }).artifactType).toBe('app');
+    } finally {
+      fs.removeSync(dir);
+    }
+  });
+
   test('reads Cargo lib shape and README lead from disk', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'artifact-type-test-'));
     try {
