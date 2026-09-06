@@ -28,6 +28,29 @@ it.each([
   expect(evaluation.rejections.some(rejection => rejection.reasons.includes('identifier-vocabulary'))).toBe(rejected);
 });
 
+it.each([
+  ['library', 'api', 'send_response', 'response_node', false],
+  ['client-sdk', 'rpc', 'send_response', 'response_node', false],
+  ['app', 'api', 'send_response', 'response_node', true],
+  ['library', 'page', 'send_response', 'response_node', true],
+  ['library', 'api', 'removed', 'response_node', true],
+  ['library', 'api', 'send_response', '', true],
+] as const)('evaluates public interface language in its actual audience: %s/%s/%s/%s', (artifactType, type, entryId, sourceId, rejected) => {
+  const subject = capability('Send structured responses', 'The response body carries structured results back to the requesting client.');
+  subject.operations = [{ entry_point_id: 'send_response', entry_point_type: type, action: 'Send responses' }];
+  subject.operation_evidence = [{ entry_point_id: entryId, source_node_id: sourceId, text: 'Send structured responses to clients.' }];
+  const evaluation = evaluateCapabilityCatalogAudience([subject], [], [], ['structured responses'], { artifactType });
+  expect(evaluation.rejections.some(rejection => rejection.reasons.includes('internal-mechanism-language'))).toBe(rejected);
+});
+
+it('does not let public library evidence excuse generated candidate placeholders', () => {
+  const subject = capability('Send structured responses', 'The response body from candidate_42 carries structured results back to the requesting client.');
+  subject.operations = [{ entry_point_id: 'send_response', entry_point_type: 'api', action: 'Send responses' }];
+  subject.operation_evidence = [{ entry_point_id: 'send_response', source_node_id: 'response_node', text: 'Send structured responses to clients.' }];
+  const evaluation = evaluateCapabilityCatalogAudience([subject], [], [], ['structured responses'], { artifactType: 'library' });
+  expect(evaluation.rejections.some(rejection => rejection.flaggedTokens.includes('candidate_42'))).toBe(true);
+});
+
 function capability(name: string, description = ''): SystemCapability {
   return {
     id: name.toLowerCase().replace(/\s+/g, '-'),

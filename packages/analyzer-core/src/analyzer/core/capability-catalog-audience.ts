@@ -12,7 +12,7 @@ import {
   testCapabilityNameAgainstIdentifierVocabulary,
 } from './capability-audience-test';
 import { capabilityGroundedEntityIds } from './capability-entity-grounding';
-import { capabilityOperationEvidenceTexts } from './capability-subject-evidence';
+import { capabilityOperationEvidenceTexts, retainedCapabilityOperationEvidence } from './capability-subject-evidence';
 
 export interface CapabilityCatalogProductText {
   concepts?: string[];
@@ -449,6 +449,7 @@ export function evaluateCapabilityCatalogAudience(
       libraries,
       dataEntities,
       capabilityProductTerms,
+      { artifactType: context.artifactType, publicOperationEvidence: retainedCapabilityOperationEvidence(capability).map(evidence => evidence.text).filter(Boolean) },
     );
     if (/\bmessage handling\b/i.test(capability.description || '') &&
       !/\b(?:message|messaging)\b/i.test(productTerms.join(' '))) {

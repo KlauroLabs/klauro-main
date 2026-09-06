@@ -313,6 +313,7 @@ export function testCapabilityDescriptionAgainstAudience(
   libraries: Pick<CASLibrary, 'name'>[],
   entities: AudienceEntity[],
   productTerms: string[] = [],
+  context: { artifactType?: string; publicOperationEvidence?: readonly string[] } = {},
 ): AudienceDescriptionTestResult {
   const trimmed = String(description || '').trim();
   if (!trimmed) {
@@ -322,10 +323,14 @@ export function testCapabilityDescriptionAgainstAudience(
   const flaggedTokens: string[] = [];
   if (SOURCE_FILE_PATH_PATTERN.test(trimmed)) reasons.push('source-file-path');
   if (IMPLEMENTATION_PROSE_PATTERN.test(trimmed)) reasons.push('implementation-language');
-  const internalMechanismMatch = trimmed.match(INTERNAL_MECHANISM_PROSE_PATTERN)?.[0];
-  if (internalMechanismMatch) {
+  const publicLibraryInterface = (context.artifactType === 'library' || context.artifactType === 'client-sdk') &&
+    Boolean(context.publicOperationEvidence?.length);
+  const internalMechanismMatches = [...trimmed.matchAll(new RegExp(INTERNAL_MECHANISM_PROSE_PATTERN.source, 'gi'))]
+    .map(match => match[0])
+    .filter(phrase => !publicLibraryInterface || /\bcandidate[_ -]?\d+\b/i.test(phrase));
+  for (const phrase of internalMechanismMatches) {
     reasons.push('internal-mechanism-language');
-    flaggedTokens.push(internalMechanismMatch);
+    flaggedTokens.push(phrase);
   }
   const passiveCrudInventory = trimmed.match(CRUD_INVENTORY_PATTERN)?.[0];
   if (passiveCrudInventory) {
