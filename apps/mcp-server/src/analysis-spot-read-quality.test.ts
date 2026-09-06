@@ -85,6 +85,25 @@ test('spot-read quality fails published API group names despite authored descrip
   assert.deepEqual(cas.structural_capability_candidates, groups);
 });
 
+for (const status of ['partial', 'rejected', 'unavailable'] as const) {
+  test('spot-read quality cannot pass an explicitly ' + status + ' catalog with attractive capability names', () => {
+    const cas = baseCas();
+    cas.enhanced_system_purpose.capability_catalog_coverage = {
+      status, evidence_families: 0, published_capabilities: 1,
+      reason: 'provider-request-budget-exhausted',
+    };
+    const result = evaluateSpotReadCas(cas);
+    const quality = result.gates.find(value => value.id === 'capability-quality');
+    assert.equal(quality?.status, 'fail');
+    assert.match(quality?.detail || '', new RegExp(status));
+    assert.match(quality?.detail || '', /provider-request-budget-exhausted/);
+    assert.equal(result.status, 'fail');
+    assert.equal(result.summary.capabilities, 1);
+    cas.enhanced_system_purpose.capability_catalog_coverage.status = 'accepted';
+    assert.equal(evaluateSpotReadCas(cas).gates.find(value => value.id === 'capability-quality')?.status, 'pass');
+  });
+}
+
 test('spot-read quality passes strong behavior-oriented analysis output', () => {
   const result = evaluateSpotReadCas(baseCas(), '/tmp/sample.json');
   assert.equal(result.status, 'pass');

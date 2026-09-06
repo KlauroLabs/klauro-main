@@ -294,6 +294,8 @@ function scoreNarrativeProvenance(cas: CASOutput): SpotReadGate {
 function scoreCapabilityQuality(cas: CASOutput): SpotReadGate {
   const capabilities = cas.capabilities || [];
   if (capabilities.length === 0) return gate('capability-quality', 0, 'no capabilities inferred');
+  const coverage = cas.enhanced_system_purpose?.capability_catalog_coverage;
+  if (coverage && coverage.status !== 'accepted') return gate('capability-quality', 55, `catalog coverage is ${coverage.status}: ${coverage.reason || 'comprehension is incomplete'}; ${capabilities.length} published capabilities remain available`);
   const structuralApiLabels = new Set([...(cas.structural_capability_candidates || []), ...(cas.behavior_surfaces || [])]
     .filter(candidate => !candidate.name_source && /\bAPI$/i.test(candidate.name) &&
       candidate.operations.length > 0 && candidate.operations.every(operation => ['api', 'rpc'].includes(operation.entry_point_type)))
