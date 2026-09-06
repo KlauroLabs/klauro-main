@@ -7,6 +7,7 @@ import { AnalyzerError } from '../../core/errors';
 import { classifyGuardKind, isAuthenticationGuardName } from '../../core/guard-classification';
 import * as path from 'path';
 import * as fs from 'fs-extra';
+import * as ts from 'typescript';
 import { cachedGlob as glob } from '../../core/glob-cache';
 import { createYieldBudget } from '../../core/event-loop-yield';
 import { loadSourceFiles, type LoadedSourceFile } from '../../core/source-file-loader';
@@ -39,6 +40,8 @@ interface ExpressRoute {
   parameters: Array<{ name: string; type: string; source: string }>;
   description?: string;
   handlerFile?: string;
+  line?: number;
+  endLine?: number;
 }
 
 interface ExpressRouter {
@@ -373,7 +376,7 @@ export class ExpressAnalyzer extends BaseAnalyzer {
             const routeNode = this.createNodeBuilder(routeId, `${route.method.toUpperCase()} ${fullPath}`, 'route')
               .withLevel(3, 'code')
               .withCategory('route', ['http', 'endpoint'])
-              .withSource({ file: route.handlerFile || router.filePath, line: 1, end_line: 1 })
+              .withSource({ file: route.handlerFile || router.filePath, line: route.line || 1, end_line: route.endLine || route.line || 1 })
               .withDescription(`Express.js HTTP endpoint: ${route.method.toUpperCase()} ${fullPath}`)
               .withMetadata({
                 framework: 'express',
@@ -421,7 +424,8 @@ export class ExpressAnalyzer extends BaseAnalyzer {
               handler: {
                 node_id: routeId,
                 method_name: route.handler,
-                file: route.handlerFile || router.filePath
+                file: route.handlerFile || router.filePath,
+                line: route.line,
               },
               security: {
                 authenticated: authMiddleware.length > 0,
@@ -884,37 +888,44 @@ export class ExpressAnalyzer extends BaseAnalyzer {
   }
 
   private extractRoutes(content: string): ExpressRoute[] {
+    const source = ts.createSourceFile('routes.ts', content, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
+    const receivers = new Set(['app', 'router']);
+    const calls: ts.CallExpression[] = [];
+    const pending: ts.Node[] = [source];
+    while (pending.length > 0) {
+      const node = pending.pop()!;
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) &&
+          node.initializer && ts.isCallExpression(node.initializer) &&
+          /^(?:express|express\.Router|Router)$/.test(node.initializer.expression.getText(source))) receivers.add(node.name.text);
+      if (ts.isCallExpression(node)) calls.push(node);
+      const children: ts.Node[] = [];
+      ts.forEachChild(node, child => { children.push(child); });
+      for (let index = children.length - 1; index >= 0; index--) pending.push(children[index]);
+    }
     const routes: ExpressRoute[] = [];
-
-
-
-
-
-    const head = /(?:router|app)\.(get|post|put|delete|patch|head|options)\s*\(\s*(['"`])([^'"`]+)\2\s*/g;
-
-    let match;
-    while ((match = head.exec(content)) !== null) {
-      const method = match[1];
-      const path = this.normalizeTemplateLiteralRoutePath(match[3]);
-      const args = this.parseRemainingCallArgs(content, head.lastIndex);
-
-
-
-      const middleware = args
-        .slice(0, -1)
-        .map(a => a.trim())
-        .filter(a => this.isMiddlewareIdentifier(a));
-      const handler = (args[args.length - 1] || '').trim();
-
+    for (const call of calls) {
+      if (!ts.isPropertyAccessExpression(call.expression) || call.arguments.length < 2) continue;
+      const method = call.expression.name.text;
+      if (!/^(?:get|post|put|delete|patch|head|options)$/.test(method)) continue;
+      const receiver = call.expression.expression;
+      const receiverName = ts.isIdentifier(receiver) ? receiver.text :
+        ts.isPropertyAccessExpression(receiver) ? receiver.name.text : '';
+      if (!receivers.has(receiverName)) continue;
+      const routePath = call.arguments[0];
+      const literal = ts.isStringLiteral(routePath) || ts.isNoSubstitutionTemplateLiteral(routePath)
+        ? routePath.text
+        : ts.isTemplateExpression(routePath) ? routePath.getText(source).slice(1, -1) : undefined;
+      if (literal === undefined) continue;
+      const path = this.normalizeTemplateLiteralRoutePath(literal);
+      const args = call.arguments.slice(1).map(argument => argument.getText(source).trim());
       routes.push({
-        method,
-        path,
-        handler,
-        middleware,
-        parameters: this.extractRouteParameters(path)
+        method, path, handler: args[args.length - 1],
+        middleware: args.slice(0, -1).filter(argument => this.isMiddlewareIdentifier(argument)),
+        parameters: this.extractRouteParameters(path),
+        line: source.getLineAndCharacterOfPosition(call.getStart(source)).line + 1,
+        endLine: source.getLineAndCharacterOfPosition(call.end).line + 1,
       });
     }
-
     return routes;
   }
 
@@ -946,31 +957,6 @@ export class ExpressAnalyzer extends BaseAnalyzer {
 
 
 
-  private parseRemainingCallArgs(content: string, pos: number): string[] {
-    const args: string[] = [];
-    let depth = 1;
-    let cur = '';
-    let inStr: string | null = null;
-    for (let i = pos; i < content.length; i++) {
-      const ch = content[i];
-      if (inStr) {
-        cur += ch;
-        if (ch === inStr && content[i - 1] !== '\\') inStr = null;
-        continue;
-      }
-      if (ch === '"' || ch === "'" || ch === '`') { inStr = ch; cur += ch; continue; }
-      if (ch === '(' || ch === '[' || ch === '{') { depth++; cur += ch; continue; }
-      if (ch === ')' || ch === ']' || ch === '}') {
-        depth--;
-        if (depth === 0) { if (cur.trim()) args.push(cur.trim()); break; }
-        cur += ch;
-        continue;
-      }
-      if (ch === ',' && depth === 1) { if (cur.trim()) args.push(cur.trim()); cur = ''; continue; }
-      cur += ch;
-    }
-    return args;
-  }
 
 
 

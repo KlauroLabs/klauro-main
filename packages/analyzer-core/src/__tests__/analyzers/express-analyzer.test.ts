@@ -28,6 +28,42 @@ import {
  * the regex now also matches `import * as X from 'express'` and
  * `import { Router } from 'express'` forms.
  */
+test('route extraction retains factory-bound aliases, nested callbacks, and source locations', () => {
+  const analyzer = new ExpressAnalyzer() as any;
+  const source = [
+    'const api = express.Router();',
+    'const service = express();',
+    "api.get('/alpha', guard('a,b'), (req, res) => { res.send(/[/]{2}/.test(req.path)); });",
+    "service.post('/beta', handlers.create);",
+  ].join('\n');
+  const routes = analyzer.extractRoutes(source);
+  expect(routes.map((route: any) => [route.method, route.path, route.line, route.endLine])).toEqual([
+    ['get', '/alpha', 3, 3], ['post', '/beta', 4, 4],
+  ]);
+  expect(routes[0].middleware).toEqual(["guard('a,b')"]);
+  expect(routes[0].handler).toBe('(req, res) => { res.send(/[/]{2}/.test(req.path)); }');
+});
+
+test('route extraction distinguishes executable registrations from getters and documented examples', () => {
+  const analyzer = new ExpressAnalyzer() as any;
+  const source = [
+    "/** app.get('/doc-route', function(req, res) { res.send('example'); }); */",
+    "// router.get('/comment-route', readComment);",
+    'const quoted = "app.get(\'/quoted-route\', readQuoted)";',
+    'const template = `router.get("/template-route", readTemplate)`;',
+    "const setting = app.get('trust proxy fn');",
+    "const otherSetting = req.app.get('/route-like-setting');",
+    "app.get('/real', authenticate, (req, res) => res.send('https://example.invalid/a//b'));",
+    'router.post(`/items/${itemId}`, controller.create);',
+  ].join('\n');
+  expect(analyzer.extractRoutes(source).map((route: any) => ({
+    method: route.method, path: route.path, middleware: route.middleware, handler: route.handler,
+  }))).toEqual([
+    { method: 'get', path: '/real', middleware: ['authenticate'], handler: "(req, res) => res.send('https://example.invalid/a//b')" },
+    { method: 'post', path: '/items/:itemId', middleware: [], handler: 'controller.create' },
+  ]);
+});
+
 describe('ExpressAnalyzer.canAnalyze import-form detection', () => {
   let root: string;
   let analyzer: ExpressAnalyzer;
