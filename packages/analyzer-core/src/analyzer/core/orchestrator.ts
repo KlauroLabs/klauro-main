@@ -274,6 +274,7 @@ import { semanticPackIdentityForProject } from '../packs/pack-loader';
 import { EmbeddingPhase, type EmbeddingPhaseConfig } from '../embedding/embedding-phase';
 import { aiService, isProviderUnavailableFailure } from '../../ai/ai-service';
 import { recordSemanticDecision } from '../../ai/semantic-dataset';
+import { CapabilityCatalogResponseError, parseCapabilityCatalogResponse } from './capability-catalog-response';
 import { setAICacheProjectScope } from '../../ai/ai-cache';
 import { aiConfig, getAIConfig, getAIProviderChain } from '../../config/ai.config';
 import { capabilityDescriptionEntityProvidesProductEvidence, capabilityDescriptionEvidenceMaps, humanizeExactRelatedEntityIdentifiers, validateElementDescription as validateSharedElementDescription } from '../../ai/element-description-validator';
@@ -8805,7 +8806,7 @@ export class AnalyzerOrchestrator {
       });
     const services = (input.externalServices || []).slice(0, 12);
     const promptEvidenceFamilyCount = this.catalogDistinctFamilies(requiredCandidatePool).length;
-    const catalogResponseComplexity = catalogPromptResponseComplexity(promptEvidenceFamilyCount, requiredBehaviorCandidateAreas.length, requiredEntityCandidateGroups.length, input.requiredOutcomeCount || 0);
+    const catalogResponseComplexity = catalogPromptResponseComplexity(promptEvidenceFamilyCount, requiredBehaviorCandidateAreas.length, requiredEntityCandidateGroups.length, input.requiredOutcomeCount || 0, candidateAreaFacts.length);
     const infrastructureResponsibilityTokens = new Set([
       'environment', 'infrastructure', 'platform', 'provision', 'resource',
       'runtime', 'service', 'topology', 'workload',
@@ -8898,18 +8899,26 @@ export class AnalyzerOrchestrator {
       );
     };
     let catalog: Array<Record<string, unknown>> = input.catalogOverride || [];
+    let responseAccepted = Boolean(input.catalogOverride);
+    let responseFailure: unknown;
+    let rejectedMemberIndices: number[] = [];
     let raw = ''; let usedDeterministicFallback = Boolean(input.catalogOverride);
     const maxInitialAttempts = input.qualityNudge ? 1 : 2;
     for (let attempt = 1; !input.catalogOverride && attempt <= maxInitialAttempts; attempt++) {
       try {
         raw = await requestCatalog(attempt, input.qualityNudge);
-        const parsed = this.parseCapabilityCatalog(raw).map(item => targetedRepair ? { ...item, candidate_ids: (Array.isArray(item.candidate_ids) ? item.candidate_ids : []).map(value => input.targetedRepairCandidateMap?.[String(value)] || '') } : item);
+        const response = parseCapabilityCatalogResponse(raw);
+        if (!response.ok) throw new CapabilityCatalogResponseError(response.reason);
+        responseAccepted = true;
+        rejectedMemberIndices = response.rejectedMemberIndices || [];
+        const parsed = response.capabilities.map(item => targetedRepair ? { ...item, candidate_ids: (Array.isArray(item.candidate_ids) ? item.candidate_ids : []).map(value => input.targetedRepairCandidateMap?.[String(value)] || '') } : item);
         if (parsed.length > catalog.length) catalog = parsed;
       } catch (error) {
         if (process.env.KLAURO_DEBUG_CATALOG) console.error(`[catalog-debug] attempt ${attempt} failed:`, error instanceof Error ? error.message : String(error));
-        if (isAiCatalogHardDeadlineExceeded(error)) break;
+        responseFailure = error;
+        if (!(error instanceof CapabilityCatalogResponseError)) break;
       }
-      if (catalog.length > 0) break;
+      if (responseAccepted) break;
     }
     const firstPartyFallback = input.requiredOutcomeRequirements?.length === 1 ? capabilityCatalogFirstPartyFallback(input.requiredOutcomeRequirements[0]) : undefined;
     const evidenceFallbackFact = input.repairMode === 'evidence' && input.targetedRepairFacts?.length === 1
@@ -8955,12 +8964,17 @@ export class AnalyzerOrchestrator {
         prompt_version: 'capability_catalog.v2',
         input_evidence_digest: catalogEvidenceDigest,
         raw_output_excerpt: raw,
-        parse_ok: false,
-        gate_verdict: 'degraded',
-        gate_reason: 'empty-or-unparseable-catalog',
-        final_outcome: 'degraded',
+        parse_ok: responseAccepted,
+        gate_verdict: responseAccepted ? 'accepted' : 'degraded',
+        gate_reason: responseAccepted ? 'valid-empty-catalog' : 'unusable-catalog-response',
+        final_outcome: responseAccepted ? 'ai' : 'degraded',
       });
       input.onResponse?.(raw);
+      if (!responseAccepted) {
+        if (isAiCatalogHardDeadlineExceeded(responseFailure)) throw responseFailure;
+        if (responseFailure instanceof CapabilityCatalogResponseError) throw responseFailure;
+        throw new CapabilityCatalogResponseError('provider-request-failed');
+      }
       return [];
     }
     const entityIdByName = new Map(input.dataEntities.map(entity => [entity.name.toLowerCase(), entity.id]));
@@ -9041,6 +9055,7 @@ export class AnalyzerOrchestrator {
         writeAnalyzerStatus('[catalog-debug] rejected catalog item:', { name, reason, ...details });
       }
     };
+    for (const index of rejectedMemberIndices) debugCatalogRejection('catalog item ' + (index + 1), 'invalid-capability-member');
     const targetedRepairFactByCandidateId = new Map((input.targetedRepairFacts || []).flatMap(fact => {
       const candidateId = input.targetedRepairCandidateMap?.[fact.candidate_id];
       return candidateId ? [[candidateId, fact] as const] : [];
@@ -9933,58 +9948,6 @@ export class AnalyzerOrchestrator {
     return false;
   }
 
-  private firstBalancedJsonValue(raw: string): string | undefined {
-    const start = raw.search(/[\[{]/);
-    if (start < 0) return undefined;
-    const stack: string[] = [];
-    let inString = false;
-    let escaped = false;
-    for (let index = start; index < raw.length; index += 1) {
-      const character = raw[index];
-      if (inString) {
-        if (escaped) {
-          escaped = false;
-        } else if (character === '\\') {
-          escaped = true;
-        } else if (character === '"') {
-          inString = false;
-        }
-        continue;
-      }
-      if (character === '"') {
-        inString = true;
-        continue;
-      }
-      if (character === '{' || character === '[') {
-        stack.push(character);
-        continue;
-      }
-      if (character !== '}' && character !== ']') continue;
-      const expected = character === '}' ? '{' : '[';
-      if (stack.pop() !== expected) return undefined;
-      if (stack.length === 0) return raw.slice(start, index + 1);
-    }
-    return undefined;
-  }
-
-  private parseCapabilityCatalog(raw: string): Array<Record<string, unknown>> {
-    if (!raw) return [];
-    let text = String(raw).trim().replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim();
-    const start = text.indexOf('{');
-    const end = text.lastIndexOf('}');
-    if (start >= 0 && end > start) text = text.slice(start, end + 1);
-    const balancedText = this.firstBalancedJsonValue(text);
-    if (!balancedText) return [];
-    try {
-      const parsed = JSON.parse(balancedText);
-      const list = Array.isArray(parsed?.capabilities) ? parsed.capabilities
-        : Array.isArray(parsed?.key_capabilities) ? parsed.key_capabilities
-        : Array.isArray(parsed) ? parsed : [];
-      return list.filter((item: unknown) => item && typeof item === 'object');
-    } catch {
-      return [];
-    }
-  }
   private capabilityHasObservedRead(operations: SystemCapability['operations']): boolean {
     return operations.some(operation =>
       /^(?:view|read|list|get|show|access|retrieve|review|analyze|compare|present|render)$/i.test(operation.action || '') ||
@@ -10134,6 +10097,7 @@ export class AnalyzerOrchestrator {
     let reconciled: SystemCapability[] = [];
     let qualityFailure: string | undefined;
     let retainedQualityFailure: string | undefined;
+    let catalogResponseFailure: string | undefined;
     let audienceRepairFeedback: string | undefined;
     let cyclesRun = 0; let catalogProviderCalls = 0; const maxCatalogProviderCalls = 26;
     let independentBroadConfirmationPending = false;
@@ -10225,6 +10189,10 @@ export class AnalyzerOrchestrator {
           },
         });
       } catch (error) {
+        if (error instanceof CapabilityCatalogResponseError) {
+          catalogResponseFailure = error.message;
+          break;
+        }
         if (isAiCatalogHardDeadlineExceeded(error)) {
           deadlineExceeded = true;
           console.warn(`[Klauro] capability catalog: hard deadline exceeded during cycle ${cycle}/${maxCatalogCycles}; stopping with ${reconciled.length} capabilities from prior cycle(s)`);
@@ -10570,7 +10538,7 @@ export class AnalyzerOrchestrator {
         }),
       } : {}),
     };
-    const intrinsicQualityFailure = this.catalogQualityFailure(publishedCapabilities, 0, [], [], [], []);
+    const intrinsicQualityFailure = catalogResponseFailure || this.catalogQualityFailure(publishedCapabilities, 0, [], [], [], []);
     const authoredOutcomeCoverageFailure = capabilityCatalogOutcomeCoverageFailure(publishedCapabilities, normalizedOutcomeRequirements);
     qualityFailure = normalizedOperationEvidence.errors.length > 0
       ? `catalog has invalid operation obligation evidence: ${normalizedOperationEvidence.errors.slice(0, 8).join(', ')}`
@@ -10600,7 +10568,7 @@ export class AnalyzerOrchestrator {
         lastFailure: gateReason,
         hardDeadlineExceeded: deadlineExceeded,
       },
-      parse_ok: true,
+      parse_ok: !catalogResponseFailure,
       gate_verdict: deadlineExceeded ? 'degraded' : (qualityFailure ? 'degraded' : 'accepted'),
       gate_reason: gateReason,
       final_outcome: deadlineExceeded || qualityFailure ? 'degraded' : 'ai',

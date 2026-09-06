@@ -36,7 +36,7 @@ export { catalogPromptEntities, type CapabilityCatalogEntityFact } from './capab
 export function capabilityCatalogAiPhaseStatus(
   coverage?: { evidence_families: number; status: 'accepted' | 'partial' | 'rejected' | 'unavailable' },
 ): 'complete' | 'degraded' {
-  return coverage && coverage.evidence_families > 0 && coverage.status !== 'accepted' ? 'degraded' : 'complete';
+  return coverage && coverage.status !== 'accepted' && (coverage.evidence_families > 0 || coverage.status !== 'unavailable') ? 'degraded' : 'complete';
 }
 export function synchronizeCapabilityCatalogCoverage(
   purpose: EnhancedSystemPurpose,

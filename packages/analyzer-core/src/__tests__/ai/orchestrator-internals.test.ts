@@ -1,4 +1,5 @@
 import { AnalyzerOrchestrator } from '../../analyzer/core/orchestrator';
+import { parseCapabilityCatalogResponse } from '../../analyzer/core/capability-catalog-response';
 import { capabilityCatalogStructuralApiLabels } from '../../analyzer/core/capability-catalog-prompt-evidence';
 import { detectLibrariesFromManifests } from '../../analyzer/core/manifest-library-detection';
 import { TerraformAnalyzer } from '../../analyzer/languages/terraform-analyzer';
@@ -29,6 +30,143 @@ import {
 // typed `any` handle rather than widening the class surface.
 const orch = new AnalyzerOrchestrator() as any;
 
+test('catalog parser preserves every item in a top-level array', () => {
+  const items = [
+    { name: 'Route requests', candidate_ids: ['request'] },
+    { name: 'Negotiate responses', candidate_ids: ['response'] },
+  ];
+  expect(parseCapabilityCatalogResponse(JSON.stringify(items))).toEqual({ ok: true, capabilities: items });
+});
+
+for (const [label, response, expectedStatus, expectedCalls] of [
+  ['truncated response', '{"capabilities":[{"name":"Route requests"', 'rejected', 2],
+  ['wrong response shape', '{"system_description":"A reusable request library."}', 'rejected', 2],
+  ['invalid catalog member', '{"capabilities":[null]}', 'rejected', 2],
+  ['valid empty catalog', '{"capabilities":[]}', 'accepted', 1],
+] as const) {
+  test(`catalog gate distinguishes ${label} from unavailable evidence`, async () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    const provider = jest.spyOn(aiService, 'generateComponentDescription').mockResolvedValue(response);
+    const purpose: any = { artifact_type: 'library', primary_domain: 'request-processing', core_concepts: [] };
+    const accepted: string[] = [];
+    try {
+      const result = await localOrch.runCapabilityCatalogWithQualityGate({
+        systemName: 'request library', enhancedSystemPurpose: purpose,
+        frameworks: [], userJourneys: [], dataEntities: [],
+        candidateSnapshot: [{
+          id: 'request', name: 'Request API', category: 'core', description: '',
+          operations: [{ entry_point_id: 'api_request', entry_point_type: 'api', action: 'read' }],
+          related_entities: [], related_domains: ['request'],
+          criticality: 'medium', criticality_factors: [],
+        }],
+        behaviorSurfaces: [], externalServices: [], flowGraph: emptyFlowGraph(),
+        projectTextSignal: { concepts: [], evidence: [] },
+        entryPoints: [{ id: 'api_request', type: 'api', name: 'request', source_node: 'request' }],
+        edges: [], exitPoints: [], nodes: [], budgetMs: 30000,
+        onInterpretationAccepted: (raw: string) => accepted.push(raw),
+      });
+      expect(result).toEqual([]);
+      expect(purpose.capability_catalog_coverage.status).toBe(expectedStatus);
+      expect(provider).toHaveBeenCalledTimes(expectedCalls);
+      if (expectedStatus === 'rejected') {
+        expect(purpose.capability_catalog_coverage.reason).toMatch(/catalog response/i);
+        expect(accepted).toEqual([]);
+      }
+    } finally {
+      provider.mockRestore();
+    }
+  });
+}
+
+test('catalog output capacity follows supplied API evidence without requiring a capability count', async () => {
+  const localOrch = new AnalyzerOrchestrator() as any;
+  const provider = jest.spyOn(aiService, 'generateComponentDescription')
+    .mockResolvedValue('{"capabilities":[]}');
+  try {
+    const candidates = Array.from({ length: 12 }, (_, index) => ({
+      id: 'public-api-' + index, name: 'Contract group ' + index,
+      category: 'core', description: '', evidence_role: 'unresolved',
+      operations: [{ entry_point_id: 'entry-' + index, entry_point_type: 'api', action: 'invoke' }],
+      related_entities: [], related_domains: [], criticality: 'medium', criticality_factors: [],
+    }));
+    const result = await localOrch.aiExtractCapabilityCatalog({
+      systemName: 'request library', enhancedSystemPurpose: { artifact_type: 'library' },
+      frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: candidates,
+      externalServices: [], flowGraph: emptyFlowGraph(),
+      projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
+    });
+    expect(result).toEqual([]);
+    expect(provider).toHaveBeenCalledTimes(1);
+    const context = provider.mock.calls[0][0].additionalContext!;
+    expect(context.maxTokens).toBeGreaterThan(1200);
+    expect(context.maxTokens).toBeLessThanOrEqual(3400);
+  } finally {
+    provider.mockRestore();
+  }
+});
+
+test('catalog parser preserves valid members and attributes malformed siblings', () => {
+  const valid = { name: 'Route requests', candidate_ids: ['request'] };
+  expect(parseCapabilityCatalogResponse(JSON.stringify({ capabilities: [null, valid, 'bad', []] })))
+    .toEqual({
+      ok: true,
+      capabilities: [valid],
+      rejectedMemberIndices: [0, 2, 3],
+    });
+});
+
+test('catalog extraction does not multiply the provider retry budget after a request failure', async () => {
+  const localOrch = new AnalyzerOrchestrator() as any;
+  const request = jest.spyOn(localOrch, 'awaitAiBoundedThenUncapped')
+    .mockRejectedValue(new Error('provider unavailable'));
+  try {
+    await expect(localOrch.aiExtractCapabilityCatalog({
+      systemName: 'request library', enhancedSystemPurpose: { artifact_type: 'library' },
+      frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [],
+      externalServices: [], flowGraph: emptyFlowGraph(),
+      projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
+    })).rejects.toThrow('provider-request-failed');
+    expect(request).toHaveBeenCalledTimes(1);
+  } finally {
+    request.mockRestore();
+  }
+});
+
+test.each([
+  ['', { ok: false, reason: 'empty-response' }],
+  ['[]', { ok: true, capabilities: [] }],
+  ['{"key_capabilities":[]}', { ok: true, capabilities: [] }],
+  ['{"capabilities":{}}', { ok: false, reason: 'missing-capability-array' }],
+  ['{"capabilities":[,]}', { ok: false, reason: 'invalid-json' }],
+  ['{"capabilities":[[]]}', { ok: false, reason: 'invalid-capability-member' }],
+  ['{"capabilities":null,"key_capabilities":[]}', { ok: false, reason: 'missing-capability-array' }],
+])('catalog response shape %s is classified without inventing outcomes', (raw, expected) => {
+  expect(parseCapabilityCatalogResponse(raw)).toEqual(expected);
+});
+
+test('catalog response rejects a non-string provider value', () => {
+  expect(parseCapabilityCatalogResponse(undefined as unknown as string))
+    .toEqual({ ok: false, reason: 'empty-response' });
+});
+
+test('catalog extraction recovers from a malformed response within its existing retry budget', async () => {
+  const localOrch = new AnalyzerOrchestrator() as any;
+  const provider = jest.spyOn(aiService, 'generateComponentDescription')
+    .mockResolvedValueOnce('{"capabilities":[')
+    .mockResolvedValueOnce('{"capabilities":[]}');
+  try {
+    expect(await localOrch.aiExtractCapabilityCatalog({
+      systemName: 'empty library', enhancedSystemPurpose: { artifact_type: 'library' },
+      frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [],
+      externalServices: [], flowGraph: emptyFlowGraph(),
+      projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
+    })).toEqual([]);
+    expect(provider).toHaveBeenCalledTimes(2);
+  } finally {
+    provider.mockRestore();
+  }
+});
+
 test('catalog names cannot echo structural API groups even with product-shaped descriptions', () => {
   const entry = { id: 'api', type: 'api', name: 'courier.accepts', source_node: 'request', handler: { file: 'lib/request.js' } };
   const key = orch.inferResourceKey(entry);
@@ -51,23 +189,25 @@ test('catalog names cannot echo structural API groups even with product-shaped d
 test('capability catalog parsing accepts one balanced JSON value and ignores trailing envelope noise', () => {
   const raw = '{"capabilities":[{"name":"Track budgets","description":"Budgets track category targets across the planning period.","candidate_ids":["candidate_1"]}]}}';
 
-  expect(orch.parseCapabilityCatalog(raw)).toEqual([{
+  expect(parseCapabilityCatalogResponse(raw)).toEqual({ ok: true, capabilities: [{
     name: 'Track budgets',
     description: 'Budgets track category targets across the planning period.',
     candidate_ids: ['candidate_1'],
-  }]);
+  }] });
 });
 
 test('capability catalog parsing preserves braces inside strings and rejects incomplete JSON', () => {
   const fenced = 'prefix \`\`\`json\\n{"capabilities":[{"name":"Track {budgets}","description":"Budgets track category targets across the planning period.","candidate_ids":["candidate_1"]}]}\\n\`\`\` trailing';
 
-  expect(orch.parseCapabilityCatalog(fenced)).toHaveLength(1);
-  expect(orch.parseCapabilityCatalog(
+  const parsed = parseCapabilityCatalogResponse(fenced);
+  expect(parsed.ok).toBe(true);
+  if (parsed.ok) expect(parsed.capabilities).toHaveLength(1);
+  expect(parseCapabilityCatalogResponse(
     '{"capabilities":[{"name":"Track budgets","description":"Budgets track category targets"',
-  )).toEqual([]);
-  expect(orch.parseCapabilityCatalog(
+  )).toEqual({ ok: false, reason: 'incomplete-json' });
+  expect(parseCapabilityCatalogResponse(
     '{"capabilities":[{"name":"Track budgets"]}]}',
-  )).toEqual([]);
+  )).toEqual({ ok: false, reason: 'incomplete-json' });
 });
 
 test('recovers a grounded lifecycle outcome when AI produces no publishable proposal', async () => {

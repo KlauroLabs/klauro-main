@@ -25,6 +25,11 @@ import {
 } from '../../analyzer/core/capability-catalog-evidence';
 import type { CASDataEntity, SystemCapability } from '../../types/cas.types';
 import { libraryApiEvidenceFields } from '../../analyzer/core/product-entry-points';
+test('an explicitly rejected or partial catalog never reports a complete AI phase because its family count is zero', () => {
+  expect(capabilityCatalogAiPhaseStatus({ evidence_families: 0, status: 'rejected' })).toBe('degraded');
+  expect(capabilityCatalogAiPhaseStatus({ evidence_families: 0, status: 'partial' })).toBe('degraded');
+});
+
 
 test('grounds specialized API behavior in one cited operation without requiring repeated words', () => {
   const entries = [
@@ -868,6 +873,7 @@ describe('catalogEntityCandidateGroups', () => {
   test('sizes only the prompt response ceiling without defining a catalog minimum', () => {
     expect(catalogPromptResponseComplexity(37, 0, 37)).toBe(37);
     expect(catalogPromptResponseComplexity(2, 1, 1, 5)).toBe(5);
+    expect(catalogPromptResponseComplexity(0, 0, 0, 0, 12)).toBe(12);
   });
 
   test('groups candidates sharing an entity while preserving unrelated product families', () => {

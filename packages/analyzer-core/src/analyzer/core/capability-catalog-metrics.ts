@@ -16,12 +16,14 @@ export function catalogPromptResponseComplexity(
   behaviorFamilyCount: number,
   entityFamilyCount: number,
   requiredOutcomeCount = 0,
+  candidateFactCount = 0,
 ): number {
   return Math.max(1, Math.max(
     evidenceFamilyCount,
     behaviorFamilyCount,
     entityFamilyCount,
     requiredOutcomeCount,
+    candidateFactCount,
   ));
 }
 
