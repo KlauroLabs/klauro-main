@@ -530,7 +530,6 @@ function capabilityIsVerificationHarness(
   if ((capability.operations || []).length === 0) return false;
   for (const operation of capability.operations || []) {
     const anchors: boolean[] = [];
-    if (operation.path_or_command) anchors.push(isScaffoldOrTestPath(operation.path_or_command));
     const entryPoint = entryPointById.get(operation.entry_point_id);
     if (entryPoint?.handler?.file) anchors.push(isScaffoldOrTestPath(entryPoint.handler.file));
     const nodeIds = new Set<string>();
@@ -541,6 +540,7 @@ function capabilityIsVerificationHarness(
       const node = nodeById.get(nodeId);
       if (node) anchors.push(node.metadata?.is_test === true || isScaffoldOrTestPath(node.source?.file || ''));
     }
+    if (anchors.length === 0 && operation.path_or_command) anchors.push(isScaffoldOrTestPath(operation.path_or_command));
     if (anchors.length === 0 || anchors.some(anchor => !anchor)) return false;
   }
   return true;

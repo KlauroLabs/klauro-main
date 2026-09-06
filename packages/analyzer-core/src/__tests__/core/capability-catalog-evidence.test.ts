@@ -143,6 +143,25 @@ test('retains public behavior with a domain terminal journey when entity linkage
   expect(classified.evidence_role).toBe('unresolved');
 });
 
+test('does not treat a public URL as counterevidence to an explicitly test-marked source', () => {
+  const surface = {
+    ...candidate('records', 'GET /published', 'supporting', []),
+    evidence_kind: 'behavior-surface' as const,
+    related_entities: ['record'],
+    operations: [{ entry_point_id: 'query', entry_point_type: 'http', action: 'read', path_or_command: '/published' }],
+  };
+  const context = {
+    entryPoints: [{ id: 'query', type: 'http', source_node: 'handler', name: 'GET /published', interaction_reach: 'external' }],
+    nodes: [{ id: 'handler', type: 'function', metadata: { is_test: true }, source: { file: 'tests/catalog.spec.ts' } }],
+  } as any;
+  const [verification] = classifyCapabilityEvidence([surface], [entity('record', 'Record', 'persisted-entity')], undefined, context);
+  expect(verification.evidence_role).toBe('verification-harness');
+  const [production] = classifyCapabilityEvidence([surface], [entity('record', 'Record', 'persisted-entity')], undefined, {
+    ...context, nodes: [{ id: 'handler', type: 'function', metadata: { is_test: false }, source: { file: 'src/catalog.ts' } }],
+  });
+  expect(production.evidence_role).toBe('unresolved');
+});
+
 describe('narrowCapabilityEvidenceCandidates', () => {
   test('removes a broad sibling when a cited candidate matches the distinctive outcome', () => {
     const article = candidate('article', 'Article Slug', 'supporting', ['Read', 'Update', 'Delete']);
