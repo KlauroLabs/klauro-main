@@ -9552,7 +9552,7 @@ describe('top-down capability evidence (C2)', () => {
   it('retains a grounded independent outcome without binding an unknown requirement citation', async () => {
     const original = (aiService as any).generateComponentDescription;
     try {
-      for (const requirementId of ['', 'understanding']) {
+      for (const requirementId of ['', 'understanding', 'all:shipment']) {
         (aiService as any).generateComponentDescription = async () => JSON.stringify({ capabilities: [{
           requirement_id: requirementId, name: 'Help people understand software behavior',
           description: 'Human engineers understand connected software behavior before making changes.',
@@ -9570,7 +9570,7 @@ describe('top-down capability evidence (C2)', () => {
           externalServices: [], flowGraph: { capability_candidates: [] },
           projectTextSignal: { concepts: ['software behavior'], evidence: [], productDocSummary: 'Helps people understand connected software behavior.' },
           budgetMs: 30000, exactCapabilityLimit: 1,
-          requiredOutcomeRequirements: [{ id: 'all:shipment', statement: 'Track shipments', subjectTokens: ['shipment'], candidateIds: [] }],
+          requiredOutcomeRequirements: [{ id: 'all:shipment', statement: 'Track shipments', subjectTokens: ['shipment'], visibleActionTerms: ['track'], candidateIds: [] }],
         });
         expect(catalog.map((capability: any) => capability.name)).toEqual(['Help people understand software behavior']);
         expect(catalog[0].criticality_factors).toContain('catalog-candidate:understanding');

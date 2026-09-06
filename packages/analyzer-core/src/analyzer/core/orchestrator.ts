@@ -9158,8 +9158,10 @@ export class AnalyzerOrchestrator {
           continue;
         }
       }
-      const boundRequirement = input.requiredOutcomeRequirements?.find(requirement => requirement.id === activeRequirementId); const bindingFailure = capabilityCatalogOutcomeBindingFailureDetail({ name, description }, itemCandidateIds, rawRequirementId || '', input.requiredOutcomeRequirements || [], fulfilledOutcomeRequirements);
+      const bindingFailure = capabilityCatalogOutcomeBindingFailureDetail({ name, description }, itemCandidateIds, rawRequirementId || '', input.requiredOutcomeRequirements || [], fulfilledOutcomeRequirements);
       if (bindingFailure && bindingFailure.reason !== 'independent-outcome') { debugCatalogRejection(name, bindingFailure.reason, itemCandidateIds, bindingFailure); continue; }
+      if (bindingFailure) activeRequirementId = undefined;
+      const boundRequirement = input.requiredOutcomeRequirements?.find(requirement => requirement.id === activeRequirementId);
       if (input.requiredOutcomeRequirements?.length && !bindingFailure) boundRequirementId = activeRequirementId;
       if (/(->|→|»)/.test(name)) {
         if (/^run\s+[a-z_$][\w$.]*/i.test(name) || /\b[a-z][a-z0-9]*_[a-z0-9]+\b/.test(name)) { debugCatalogRejection(name, 'raw-candidate-label', itemCandidateIds); continue; }
