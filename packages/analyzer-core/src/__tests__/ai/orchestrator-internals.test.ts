@@ -9549,6 +9549,38 @@ describe('top-down capability evidence (C2)', () => {
     }
   });
 
+  it('retains a grounded independent outcome without binding an unknown requirement citation', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    try {
+      for (const requirementId of ['', 'understanding']) {
+        (aiService as any).generateComponentDescription = async () => JSON.stringify({ capabilities: [{
+          requirement_id: requirementId, name: 'Help people understand software behavior',
+          description: 'Human engineers understand connected software behavior before making changes.',
+          category: 'core', candidate_ids: ['understanding'],
+        }] });
+        const catalog = await orch.aiExtractCapabilityCatalog({
+          systemName: 'software-platform',
+          enhancedSystemPurpose: { primary_domain: 'software-understanding', core_concepts: ['software behavior'] },
+          frameworks: [], userJourneys: [], dataEntities: [],
+          candidateCapabilities: [{
+            id: 'understanding', name: 'Explore connected software behavior', category: 'core',
+            related_entities: [], related_domains: ['software behavior'],
+            operations: [{ entry_point_id: 'understanding', entry_point_type: 'message', action: 'Explore' }],
+          }],
+          externalServices: [], flowGraph: { capability_candidates: [] },
+          projectTextSignal: { concepts: ['software behavior'], evidence: [], productDocSummary: 'Helps people understand connected software behavior.' },
+          budgetMs: 30000, exactCapabilityLimit: 1,
+          requiredOutcomeRequirements: [{ id: 'all:shipment', statement: 'Track shipments', subjectTokens: ['shipment'], candidateIds: [] }],
+        });
+        expect(catalog.map((capability: any) => capability.name)).toEqual(['Help people understand software behavior']);
+        expect(catalog[0].criticality_factors).toContain('catalog-candidate:understanding');
+        expect(catalog[0].criticality_factors.some((factor: string) => factor.startsWith('catalog-outcome-requirement:'))).toBe(false);
+      }
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
   it('rejects a focused repair result that omits or changes its requested requirement id', async () => {
     const original = (aiService as any).generateComponentDescription;
     const responses = [undefined, 'agent:behavior-understand'];

@@ -1172,3 +1172,41 @@ test('an item sharing no subject term with the active requirement is an independ
   const wrongCandidate = capabilityCatalogOutcomeBindingFailureDetail({ name: 'Onboard customer profiles', description: 'Staff onboard customer profiles.' }, ['templating'], 'all:profile', [requirement], new Set());
   assert.equal(wrongCandidate?.reason, 'required-outcome-candidate-mismatch:all:profile');
 });
+
+test('unknown or missing requirement citations do not erase independent outcomes', () => {
+  const requirement = { id: 'all:profile', subjectTokens: ['customer', 'profile'], candidateIds: ['profiles'] } as CapabilityCatalogOutcomeRequirement;
+  const outcome = { name: 'Render templates', description: 'Developers render templates with supplied values.' };
+  for (const citation of ['', 'templating', 'unknown']) {
+    const result = capabilityCatalogOutcomeBindingFailureDetail(outcome, ['templating'], citation, [requirement], new Set());
+    assert.equal(result?.reason, 'independent-outcome');
+    assert.equal(uncoveredCapabilityCatalogOutcomeRequirements([], [requirement]).length, 1);
+  }
+});
+
+test('unknown requirement citations cannot bypass any overlapping requirement', () => {
+  const unrelated = { id: 'all:shipping', subjectTokens: ['shipment'], candidateIds: ['shipping'] } as CapabilityCatalogOutcomeRequirement;
+  const requirement = { id: 'all:profile', subjectTokens: ['customer', 'profile'], candidateIds: ['profiles'] } as CapabilityCatalogOutcomeRequirement;
+  const cases = [
+    { name: 'Onboard customer profiles', description: 'Staff onboard customer profiles.', candidates: ['templating'] },
+    { name: 'Render templates', description: 'Developers render templates.', candidates: ['profiles'] },
+  ];
+  for (const outcome of cases) {
+    for (const citation of ['', 'unknown']) {
+      const result = capabilityCatalogOutcomeBindingFailureDetail(outcome, outcome.candidates, citation, [unrelated, requirement], new Set([requirement.id]));
+      assert.equal(result?.reason, `required-outcome-requirement-mismatch:${citation || 'missing'}`);
+    }
+  }
+});
+
+test('unknown citations preserve anchored subject-alias overlap instead of treating it as independent', () => {
+  const requirement = {
+    id: 'all:profile', subjectTokens: ['customer', 'profile'], candidateIds: ['profiles'],
+    subjectTokenAliases: [['client', 'profile']],
+    subjectAliasAnchorTokens: [['client']],
+  } as CapabilityCatalogOutcomeRequirement;
+  const result = capabilityCatalogOutcomeBindingFailureDetail(
+    { name: 'Update client profiles', description: 'Staff update client profiles.' },
+    ['other'], 'unknown', [requirement], new Set(),
+  );
+  assert.equal(result?.reason, 'required-outcome-requirement-mismatch:unknown');
+});

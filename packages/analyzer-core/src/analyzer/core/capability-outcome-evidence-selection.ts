@@ -16,6 +16,18 @@ export function canonicalOutcomeEvidenceCandidateId(id: string): string {
   return id.match(operationObligationId)?.[1] || id;
 }
 
+export function capabilityMatchesSubjectAlias(
+  capabilityTokens: ReadonlySet<string>,
+  primaryTerms: readonly string[],
+  aliases: readonly string[][] = [],
+  aliasAnchors: readonly string[][] = [],
+): boolean {
+  const primary = new Set(primaryTerms);
+  return aliases.some((alias, index) => alias.filter(token => capabilityTokens.has(token)).length >= Math.min(2, alias.length) &&
+    alias.some(token => primary.has(token) && capabilityTokens.has(token)) &&
+    (aliasAnchors[index] || []).some(token => capabilityTokens.has(token)));
+}
+
 function actionClass(token: string): string {
   if (/^(?:add|create|record|register)$/.test(token)) return 'create';
   if (/^(?:change|edit|modify|set|update)$/.test(token)) return 'update';

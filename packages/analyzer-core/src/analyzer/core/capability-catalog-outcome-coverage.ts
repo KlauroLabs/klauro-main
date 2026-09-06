@@ -2,6 +2,7 @@ import type { SystemCapability } from '../../types/cas.types';
 import type { CapabilityCatalogProjectSignal } from './capability-catalog-evidence';
 import { CAPABILITY_PURPOSE_VERBS } from './capability-naming';
 import {
+  capabilityMatchesSubjectAlias,
   canonicalOutcomeEvidenceCandidateId,
   selectMultiActionOutcomeCandidateIds,
 } from './capability-outcome-evidence-selection';
@@ -600,17 +601,6 @@ function capabilityAudienceBindingFailure(
   return undefined;
 }
 
-function capabilityMatchesSubjectAlias(
-  capabilityTokens: ReadonlySet<string>,
-  primaryTerms: readonly string[],
-  aliases: readonly string[][] = [],
-  aliasAnchors: readonly string[][] = [],
-): boolean {
-  const primary = new Set(primaryTerms);
-  return aliases.some((alias, index) => alias.filter(token => capabilityTokens.has(token)).length >= Math.min(2, alias.length) &&
-    alias.some(token => primary.has(token) && capabilityTokens.has(token)) &&
-    (aliasAnchors[index] || []).some(token => capabilityTokens.has(token)));
-}
 
 export function capabilitySatisfiesCatalogOutcomeRequirement(
   capability: Pick<SystemCapability, 'name' | 'description'> & Partial<Pick<SystemCapability, 'criticality_factors'>>,
@@ -884,9 +874,19 @@ export function capabilityCatalogOutcomeBindingFailureDetail(
 ): CapabilityCatalogOutcomeBindingFailure | undefined {
   if (requirements.length === 0) return undefined;
   const requirement = requirements.find(candidate => candidate.id === requirementId);
-  if (!requirement) return { missingSubjectTerms: [], reason: `required-outcome-requirement-mismatch:${requirementId || 'missing'}` };
   const capabilityText = `${capability.name || ''} ${capability.description || ''}`;
   const capabilityTokens = new Set(tokens(capabilityText));
+  if (!requirement) {
+    const overlapsRequirement = requirements.some(candidate => {
+      const terms = candidate.requiredSubjectTerms || candidate.subjectTokens;
+      return terms.some(token => capabilityTokens.has(token))
+        || capabilityMatchesSubjectAlias(capabilityTokens, terms, candidate.subjectTokenAliases, candidate.subjectAliasAnchorTokens)
+        || candidateIds.some(candidateId => candidate.candidateIds.includes(candidateId));
+    });
+    return { missingSubjectTerms: [], reason: overlapsRequirement
+      ? `required-outcome-requirement-mismatch:${requirementId || 'missing'}`
+      : 'independent-outcome' };
+  }
   const requiredTerms = requirement.requiredSubjectTerms || requirement.subjectTokens;
   const allMissingSubjectTerms = requiredTerms.filter(token => !capabilityTokens.has(token));
   const matches = requiredTerms.length - allMissingSubjectTerms.length;
