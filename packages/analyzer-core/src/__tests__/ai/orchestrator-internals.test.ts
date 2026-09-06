@@ -26,6 +26,37 @@ import {
 } from '../../analyzer/core/analysis-comprehension-surface';
 
 // These exercise internal heuristics of the orchestrator. They are private by
+
+test('catalog extraction preserves only cited and retained public operation evidence', async () => {
+  const localOrch = new AnalyzerOrchestrator() as any;
+  const retained = { entry_point_id: 'route_request', source_node_id: 'route_node', text: 'Route HTTP requests to registered handlers.' };
+  const provider = jest.spyOn(aiService, 'generateComponentDescription').mockResolvedValue(JSON.stringify({
+    capabilities: [{
+      name: 'Route requests to handlers',
+      description: 'Developers direct HTTP requests to registered handlers selected by the requested path.',
+      category: 'core', candidate_ids: ['routing'], entities: [], journeys: [],
+    }],
+  }));
+  try {
+    const candidate = {
+      id: 'routing', name: 'Routing API', category: 'core', evidence_role: 'unresolved',
+      operations: [{ entry_point_id: 'route_request', entry_point_type: 'api', action: 'Route requests' }],
+      operation_evidence: [retained, { entry_point_id: 'removed', source_node_id: 'removed_node', text: 'Sell products.' }],
+      related_entities: [], related_domains: ['requests', 'handlers'], criticality: 'medium', criticality_factors: [],
+    };
+    const catalog = await localOrch.aiExtractCapabilityCatalog({
+      systemName: 'request library', enhancedSystemPurpose: { artifact_type: 'library' },
+      frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [candidate],
+      externalServices: [], flowGraph: emptyFlowGraph(),
+      projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
+    });
+    expect(catalog).toHaveLength(1);
+    expect(catalog[0].operation_evidence).toEqual([retained]);
+  } finally {
+    provider.mockRestore();
+  }
+});
+
 // design (not part of the public CAS contract) so the tests reach them via a
 // typed `any` handle rather than widening the class surface.
 const orch = new AnalyzerOrchestrator() as any;

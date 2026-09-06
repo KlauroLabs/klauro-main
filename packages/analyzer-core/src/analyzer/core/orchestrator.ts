@@ -194,6 +194,7 @@ import { fitCapabilityCatalogContexts, requestCapabilityCatalogContexts } from '
 import { awaitAiOperation } from './ai-operation-timing';
 import { capabilityDescriptionBatchSize, resolveCapabilityCatalogRoute, resolveCapabilityDescriptionRoute, shouldReauthorCapabilityDescriptions, toAIContextRoute } from './ai-task-model-routing';
 import { capabilitiesWithoutDescriptionDisposition, type CapabilityCatalogRejection, type CapabilityCatalogRejectionsByCandidate, capabilityCatalogCycleDiagnostic, capabilityCatalogPendingRepairKeys, capabilityCatalogRepairCandidateIds, capabilityCatalogRepairEvidenceFacts, capabilityIdentityPendingDescriptionRepair, capabilityOutcomeMatchesEvidence, capabilityTitlesShareOutcome, collectCapabilityCatalogEvidenceBatches, mergeCapabilityCatalogRepairResults, mergeGroundedEntityEvidenceFamilies, mergeUniquelyMatchedBehaviorEvidence, recordCapabilityCatalogRejection, recordCapabilityPublishabilityRejection, retryEmptyCapabilityCatalogOutcome, scheduleCapabilityCatalog, scheduleRejectedCapabilityDescriptions, selectCapabilityCatalogPromptCandidates, trackCapabilityCatalogRepair } from './capability-catalog-scheduling';
+import { capabilityOperationEvidenceTexts, retainedCapabilityOperationEvidence } from './capability-subject-evidence';
 import { buildCapabilityOperationObligationViews, evaluateCapabilityCatalogOperationCoverage, fullyCoveredAggregateCapabilityCandidateIds, hasAuthoritativeCapabilityOperationSubjectLineage, normalizeCapabilityOperationObligationEvidence, scopeRequiredCapabilityOperations, uncoveredAggregateOperationObligationIds, uncoveredRequiredBehaviorCandidateIds, uncoveredRequiredCapabilityOperations, type CapabilityOperationCoverageContext } from "./capability-operation-coverage";
 import { capabilityCatalogEvidenceFallback, capabilityCatalogFirstPartyFallback, capabilityCatalogRepairPromptEnvelope, type CapabilityCatalogRepairPromptFact } from './capability-catalog-repair-context';
 import { capabilityCatalogFocusedTask, capabilityCatalogRepairLifecycleKey, capabilityCatalogRepairNudge, capabilityCatalogRepairPlan, captureCapabilityCatalogPendingRequirements, deterministicCapabilityDescriptionFallback, supersedeUnboundPendingOutcomeDuplicates, type CapabilityCatalogRepairBatch, type PendingCapabilityEvidenceIdentity } from './capability-catalog-repair-plan';
@@ -9018,7 +9019,7 @@ export class AnalyzerOrchestrator {
     const capabilityEvidenceVocabulary = new Set<string>();
     for (const value of [
       ...candidateAreas,
-      ...candidatePoolForRanking.flatMap(candidate => candidate.evidence_examples || []),
+      ...candidatePoolForRanking.flatMap(capabilityOperationEvidenceTexts),
       ...input.dataEntities.map(entity => entity.name),
       ...(input.userJourneys || []).map(journey => journey.name),
       String(purpose.primary_domain || ''),
@@ -9558,6 +9559,13 @@ export class AnalyzerOrchestrator {
             : { status: 'ai_applied', attempted: true, generated_at: new Date().toISOString() },
         category,
         operations: dedupedOps,
+        ...([...anchoredCandidateIds].some(candidateId => candidatePoolForRanking.find(candidate => candidate.id === candidateId)?.operation_evidence !== undefined) ? {
+          operation_evidence: retainedCapabilityOperationEvidence({
+            operations: dedupedOps,
+            operation_evidence: [...anchoredCandidateIds].flatMap(candidateId =>
+              candidatePoolForRanking.find(candidate => candidate.id === candidateId)?.operation_evidence || []),
+          }),
+        } : {}),
         related_entities: allRelatedEntities,
         related_domains: Array.from(new Set([...anchoredCandidateIds].flatMap(candidateId => candidatePoolForRanking.find(candidate => candidate.id === candidateId)?.related_domains || []))).slice(0, 6),
         depends_on: candidateDependencies,

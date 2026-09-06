@@ -12,6 +12,7 @@ import {
   testCapabilityNameAgainstIdentifierVocabulary,
 } from './capability-audience-test';
 import { capabilityGroundedEntityIds } from './capability-entity-grounding';
+import { capabilityOperationEvidenceTexts } from './capability-subject-evidence';
 
 export interface CapabilityCatalogProductText {
   concepts?: string[];
@@ -376,7 +377,8 @@ export function evaluateCapabilityCatalogAudience(
       .map(entity => entity.name);
     const dependencyGroundedEntityNames = (capability.depends_on || [])
       .flatMap(dependency => dependency.evidence.shared_entities || []);
-    const capabilityProductTerms = [...productTerms, ...integrationTerms, ...operationTerms, ...relatedEntityTerms, ...(capability.evidence_examples || [])];
+    const operationEvidenceTerms = capabilityOperationEvidenceTexts(capability);
+    const capabilityProductTerms = [...productTerms, ...integrationTerms, ...operationTerms, ...relatedEntityTerms, ...operationEvidenceTerms];
     
     
     

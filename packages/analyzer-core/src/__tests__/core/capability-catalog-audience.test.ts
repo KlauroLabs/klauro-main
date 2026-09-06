@@ -11,6 +11,23 @@ import {
 } from '../../analyzer/core/capability-catalog-audience';
 import { testCapabilityDescriptionAgainstAudience } from '../../analyzer/core/capability-audience-test';
 
+
+it.each([
+  ['retained public operation', 'api_get', 'node_get', 'api', false],
+  ['removed operation', 'api_removed', 'node_removed', 'api', true],
+  ['missing source reference', 'api_get', '', 'api', true],
+  ['non-public operation', 'api_get', 'node_get', 'function', true],
+] as const)('scopes audience vocabulary to source-linked evidence: %s', (_label, entryId, sourceId, entryType, rejected) => {
+  const subject = capability('Define API endpoints', 'Developers declare HTTP path operations that route incoming requests to their handler functions.');
+  subject.operations = [{ entry_point_id: 'api_get', entry_point_type: entryType, action: 'Define' }];
+  subject.operation_evidence = [{ entry_point_id: entryId, source_node_id: sourceId, text: 'Define HTTP path operations.' }];
+  if (rejected) subject.evidence_examples = ['HTTP from a previous broader candidate'];
+  const evaluation = evaluateCapabilityCatalogAudience(
+    [subject], [], ['httpx'], ['web framework', 'path operations'], { artifactType: 'library' },
+  );
+  expect(evaluation.rejections.some(rejection => rejection.reasons.includes('identifier-vocabulary'))).toBe(rejected);
+});
+
 function capability(name: string, description = ''): SystemCapability {
   return {
     id: name.toLowerCase().replace(/\s+/g, '-'),

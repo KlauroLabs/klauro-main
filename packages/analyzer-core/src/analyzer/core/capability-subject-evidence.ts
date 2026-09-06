@@ -1,6 +1,27 @@
 import type { SystemCapability } from '../../types/cas.types';
 import { outcomeIdentityTokens } from './capability-evidence-language';
 
+export function retainedCapabilityOperationEvidence(
+  capability: Pick<SystemCapability, 'operations' | 'operation_evidence'>,
+): NonNullable<SystemCapability['operation_evidence']> {
+  const publicEntryIds = new Set(capability.operations
+    .filter(operation => operation.entry_point_type === 'api' || operation.entry_point_type === 'rpc')
+    .map(operation => operation.entry_point_id));
+  return [...new Map((capability.operation_evidence || [])
+    .filter(evidence => evidence.source_node_id && publicEntryIds.has(evidence.entry_point_id))
+    .map(evidence => [
+      JSON.stringify([evidence.entry_point_id, evidence.source_node_id, evidence.text]), evidence,
+    ] as const)).values()];
+}
+
+export function capabilityOperationEvidenceTexts(
+  capability: Pick<SystemCapability, 'operations' | 'operation_evidence' | 'evidence_examples'>,
+): string[] {
+  return capability.operation_evidence
+    ? retainedCapabilityOperationEvidence(capability).map(evidence => evidence.text)
+    : capability.evidence_examples || [];
+}
+
 export function capabilityEvidenceSubjectTokens(
   candidate: SystemCapability,
   entityNames: readonly string[] = [],
@@ -23,14 +44,7 @@ export function capabilityEvidenceSubjectTokens(
       ...(dependency.evidence.shared_entities || []),
     ]),
   ].filter(Boolean).join(' ')).filter(token => !ignored.has(token));
-  const apiEntryIds = new Set((candidate.operations || [])
-    .filter(operation => operation.entry_point_type === 'api' || operation.entry_point_type === 'rpc')
-    .map(operation => operation.entry_point_id));
-  const examples = candidate.operation_evidence
-    ? candidate.operation_evidence
-      .filter(evidence => evidence.source_node_id && apiEntryIds.has(evidence.entry_point_id))
-      .map(evidence => evidence.text)
-    : candidate.evidence_examples || [];
+  const examples = capabilityOperationEvidenceTexts(candidate);
   const minimumOccurrences = candidate.operation_evidence ? 1 : Math.min(2, examples.length || 1);
   const exampleCounts = new Map<string, number>();
   for (const example of examples) {

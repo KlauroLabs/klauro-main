@@ -17,6 +17,23 @@ function capability(overrides: Partial<SystemCapability>): SystemCapability {
 }
 
 describe('capability catalog prompt evidence', () => {
+  it.each(['api', 'rpc'] as const)('projects only retained %s evidence without reviving legacy examples', entryType => {
+    const retained = { entry_point_id: 'request', source_node_id: 'node_request', text: 'Route HTTP requests.' };
+    const candidate = capability({
+      name: 'Protocol handling',
+      operations: [{ entry_point_id: 'request', entry_point_type: entryType, action: 'read' }],
+      operation_evidence: [
+        retained, retained,
+        { entry_point_id: 'removed', source_node_id: 'node_removed', text: 'Sell products.' },
+        { entry_point_id: 'request', source_node_id: '', text: 'Manage payments.' },
+      ],
+      evidence_examples: ['Delete user accounts.'],
+    });
+    expect(projectCapabilityCatalogPromptEvidence(candidate).operations).toEqual(['Route HTTP requests']);
+    expect(candidate.operation_evidence).toHaveLength(4);
+    expect(projectCapabilityCatalogPromptEvidence({ ...candidate, operation_evidence: [] }).operations).toEqual(['Read']);
+  });
+
   it('preserves source contract qualifications and excludes illustrative code from owned behavior', () => {
     const prose = 'Returns a supplied record without verifying it. It does not accept or reject records. The caller must decide whether to accept it.';
     const raw = prose + '\n\n~~~typescript\nacceptRecord(record);\n~~~\n\nNo record is stored by this helper.';

@@ -1,4 +1,5 @@
 import type { CASNode, SystemCapability } from '../../types/cas.types';
+import { capabilityOperationEvidenceTexts } from './capability-subject-evidence';
 
 export interface CapabilityCatalogPromptEvidence {
   name: string;
@@ -84,7 +85,7 @@ export function projectCapabilityCatalogPromptEvidence(
       : [],
   );
   const operations = Array.from(new Set(
-    (capability.evidence_examples || [])
+    capabilityOperationEvidenceTexts(capability)
       .map(example => words(example)
         .filter(word => !structuralTokens.has(normalized(word)))
         .join(' '))
