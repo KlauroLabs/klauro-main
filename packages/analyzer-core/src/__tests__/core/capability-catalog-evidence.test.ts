@@ -96,6 +96,53 @@ function entity(id: string, name: string, kind: CASDataEntity['kind'], lifecycle
   };
 }
 
+test('retains externally reachable domain behavior as unresolved despite a supporting surface category', () => {
+  const surface = {
+    ...candidate('published-records', 'GET /published', 'supporting', ['Read']),
+    evidence_kind: 'behavior-surface' as const,
+    related_entities: ['record'],
+    operations: [{ entry_point_id: 'records-query', entry_point_type: 'http', action: 'read', path_or_command: '/published' }],
+  };
+  const context = { entryPoints: [{ id: 'records-query', type: 'http', source_node: 'query', name: 'GET /published', interaction_reach: 'external' }] } as any;
+  const [classified] = classifyCapabilityEvidence([surface], [entity('record', 'Record', 'persisted-entity')], undefined, context);
+  expect(classified.evidence_role).toBe('unresolved');
+  expect(classified.evidence_role_reasons).toEqual(['potential-user-outcome-requires-catalog-resolution']);
+  expect(capabilityCanRepairRejectedOutcomeProposal(classified)).toBe(true);
+  expect(capabilityRequiresCatalogCoverage(classified)).toBe(false);
+  expect(classified.operations).toEqual(surface.operations);
+  expect(capabilityEvidencePublicationFailure({
+    ...candidate('read-published', 'Read published records', 'core', []),
+    criticality_factors: ['catalog-candidate:published-records'],
+  }, [classified])).toBeUndefined();
+  const [heuristicallyInternal] = classifyCapabilityEvidence(
+    [{ ...surface, category: 'internal' }], [entity('record', 'Record', 'persisted-entity')], undefined, context,
+  );
+  expect(heuristicallyInternal.evidence_role).toBe('unresolved');
+
+
+  const [internal] = classifyCapabilityEvidence([surface], [entity('record', 'Record', 'persisted-entity')], undefined, {
+    entryPoints: [{ ...context.entryPoints[0], interaction_reach: 'internal' }],
+  });
+  expect(internal.evidence_role).toBe('supporting-mechanism');
+  const [withoutDomain] = classifyCapabilityEvidence([{ ...surface, related_entities: [] }], [], undefined, context);
+  expect(withoutDomain.evidence_role).toBe('supporting-mechanism');
+  const testSurface = { ...surface, operations: [{ ...surface.operations[0], path_or_command: '/tests/published' }] };
+  const [verification] = classifyCapabilityEvidence([testSurface], [entity('record', 'Record', 'persisted-entity')], undefined, {
+    ...context, nodes: [{ id: 'query', type: 'function', metadata: { is_test: true } }],
+  } as any);
+  expect(verification.evidence_role).toBe('verification-harness');
+});
+
+test('retains public behavior with a domain terminal journey when entity linkage is incomplete', () => {
+  const surface = { ...candidate('publish', 'POST /release', 'supporting', ['Publish']), evidence_kind: 'behavior-surface' as const };
+  surface.operations[0].entry_point_type = 'http';
+  const [classified] = classifyCapabilityEvidence([surface], [], undefined, {
+    userJourneys: [{ entry_point_id: surface.operations[0].entry_point_id, journey_kind: 'user-facing',
+      terminal_effects: { entities_written: ['Release'], entities_read: [], messages_emitted: [] }, terminal_entities: [] }],
+  } as any);
+  expect(classified.evidence_role).toBe('unresolved');
+});
+
 describe('narrowCapabilityEvidenceCandidates', () => {
   test('removes a broad sibling when a cited candidate matches the distinctive outcome', () => {
     const article = candidate('article', 'Article Slug', 'supporting', ['Read', 'Update', 'Delete']);

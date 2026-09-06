@@ -668,6 +668,12 @@ export function classifyCapabilityEvidence(
     } else if (bareDeliveryAggregate) {
       evidenceRole = 'supporting-mechanism';
       reasons.push('bare-page-and-event-aggregate-supports-outcomes');
+    } else if (candidate.evidence_kind === 'behavior-surface' && candidate.category !== 'core' &&
+        capabilityHasExternalReach(candidate, entryPointById) &&
+        (candidateHasProductEntity(candidate, entityById, projectTextSignal) ||
+          capabilityHasUserOutcomeJourney(candidate, context.userJourneys || []))) {
+      evidenceRole = 'unresolved';
+      reasons.push('potential-user-outcome-requires-catalog-resolution');
     } else if ((candidate.evidence_kind === 'behavior-surface' && candidate.category !== 'core') || candidate.category === 'internal') {
       const firstParty = productTextCorroboratesCapability(candidate, projectTextSignal);
       evidenceRole = 'supporting-mechanism';
