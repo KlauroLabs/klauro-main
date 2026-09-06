@@ -27,6 +27,23 @@ import {
 
 // These exercise internal heuristics of the orchestrator. They are private by
 
+test('public API construction retains exports from the end of a large cyclic surface', () => {
+  const count = 193;
+  const nodes = Array.from({ length: count }, (_, index) => [
+    { id: 'file_' + index, type: 'file', name: 'file-' + index + '.js', source: { file: 'pkg/file-' + index + '.js' },
+      metadata: { commonjs_reexports: ['./file-' + ((index + 1) % count)] } },
+    { id: 'export_' + index, type: 'function', name: 'export_' + index,
+      source: { file: 'pkg/file-' + index + '.js', line: 1 }, metadata: { is_exported: true } },
+  ]).flat();
+  const localOrch = new AnalyzerOrchestrator() as any;
+  const result = localOrch.buildLibraryPublicApiEntryPoints(nodes, '/repo',
+    { file: 'pkg/file-0.js', libraryPublicApi: { packageName: 'large-library', field: 'main' } },
+    nodes[0], new Set(), new Set());
+  expect(result).toHaveLength(count);
+  expect(result[count - 1].source_node).toBe('export_192');
+  expect(new Set(result.map((entry: any) => entry.id)).size).toBe(count);
+});
+
 test('public API identities distinguish same-name exports and remain independent of traversal order', () => {
   const localOrch = new AnalyzerOrchestrator() as any;
   const entry = { id: 'index', type: 'file', name: 'index.js', source: { file: 'index.js' }, metadata: { commonjs_reexports: ['./reader', './writer'] } };

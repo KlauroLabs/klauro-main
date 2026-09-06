@@ -107,30 +107,70 @@ function candidatePaths(fromFile: string, specifier: string, language: ReturnTyp
     ...['index.js', 'index.cjs', 'index.mjs', 'index.ts'].map(index => path.posix.join(base, index))];
 }
 
-export function libraryPublicApiSurfaceFiles(
+export interface LibraryPublicApiSurface {
+  files: string[];
+  nodes: CASNode[];
+}
+
+interface SourceFileSuffixIndex {
+  sources: string[];
+  children: Map<string, SourceFileSuffixIndex>;
+}
+
+export function libraryPublicApiSurface(
   nodes: CASNode[],
   entryFile: string,
   sourcePathMatches: (sourceFile: string, expectedRelativeFile: string) => boolean,
-): string[] {
-  const knownFiles = new Set(nodes
-    .map(node => String(node.source?.file || '').replace(/\\/g, '/').replace(/^\.\//, ''))
-    .filter(Boolean));
-  const resolve = (candidates: string[]): string | undefined =>
-    candidates.find(candidate => knownFiles.has(candidate) || [...knownFiles].some(file => file.endsWith('/' + candidate)));
-  const surface: string[] = [];
-  const queue = [entryFile];
-  const seen = new Set<string>();
-  while (queue.length > 0 && surface.length < 64) {
-    const file = queue.shift()!;
-    if (seen.has(file)) continue;
-    seen.add(file);
-    surface.push(file);
-    const language = languageOf(file);
-    const fileNodes = nodes.filter(node => node.source?.file && sourcePathMatches(node.source.file, file));
-    for (const specifier of reexportSpecifiers(fileNodes, language)) {
-      const resolved = resolve(candidatePaths(file, specifier, language));
-      if (resolved && !seen.has(resolved)) queue.push(resolved);
+): LibraryPublicApiSurface {
+  const nodesBySource = new Map<string, CASNode[]>();
+  for (const node of nodes) {
+    const sourceFile = node.source?.file;
+    if (!sourceFile) continue;
+    const bucket = nodesBySource.get(sourceFile) || [];
+    bucket.push(node);
+    nodesBySource.set(sourceFile, bucket);
+  }
+  const suffixes: SourceFileSuffixIndex = { sources: [], children: new Map() };
+  for (const sourceFile of nodesBySource.keys()) {
+    const parts = sourceFile.replace(/\\/g, '/').replace(/^\.\//, '').split('/');
+    let branch = suffixes;
+    for (let index = parts.length - 1; index >= 0; index--) {
+      let child = branch.children.get(parts[index]);
+      if (!child) {
+        child = { sources: [], children: new Map() };
+        branch.children.set(parts[index], child);
+      }
+      child.sources.push(sourceFile);
+      branch = child;
     }
   }
-  return surface;
+  const matchingSources = (file: string): readonly string[] => {
+    let branch: SourceFileSuffixIndex | undefined = suffixes;
+    const parts = file.split('/');
+    for (let index = parts.length - 1; index >= 0 && branch; index--) branch = branch.children.get(parts[index]);
+    return branch?.sources || [];
+  };
+  const resolve = (candidates: string[]): string | undefined =>
+    candidates.find(candidate => matchingSources(candidate).length > 0);
+  const files = [entryFile];
+  const scheduled = new Set(files);
+  const selectedSources = new Set<string>();
+  for (let cursor = 0; cursor < files.length; cursor++) {
+    const file = files[cursor];
+    const language = languageOf(file);
+    for (const sourceFile of matchingSources(file)) {
+      if (!sourcePathMatches(sourceFile, file)) continue;
+      selectedSources.add(sourceFile);
+      for (const specifier of reexportSpecifiers(nodesBySource.get(sourceFile)!, language)) {
+        const resolved = resolve(candidatePaths(file, specifier, language));
+        if (!resolved || scheduled.has(resolved)) continue;
+        scheduled.add(resolved);
+        files.push(resolved);
+      }
+    }
+  }
+  return {
+    files,
+    nodes: nodes.filter(node => Boolean(node.source?.file && selectedSources.has(node.source.file))),
+  };
 }

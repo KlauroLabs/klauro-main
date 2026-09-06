@@ -166,7 +166,7 @@ import { extractProductDocumentFraming } from './product-document-framing';
 import { buildTerminalSignal, type TerminalSignal } from './terminal-signal';
 import { buildCasTerminality } from './terminality';
 import { declaredProductRoots, isWithinDeclaredRoots } from './product-roots';
-import { defaultPackageIndexEntry, libraryApiResourceKey, libraryManifestEntries, libraryPublicApiEntryId, libraryPublicApiSurfaceFiles } from './library-public-api-surface';
+import { defaultPackageIndexEntry, libraryApiResourceKey, libraryManifestEntries, libraryPublicApiEntryId, libraryPublicApiSurface } from './library-public-api-surface';
 import { libraryApiEvidenceFields, productEntryPoints as productEntryPointsOf } from './product-entry-points';
 import { assertUnderstandingContractIntegrity } from './understanding-contract-integrity';
 import { rollupSystemCapabilityDependencies } from './system-capability-dependencies';
@@ -22656,12 +22656,10 @@ export class AnalyzerOrchestrator {
       (node.metadata as Record<string, unknown> | undefined)?.visibility === 'public' || (node.metadata as Record<string, unknown> | undefined)?.isPrivate === false;
     const EXPORTABLE_NODE_TYPES = /^(function|class|const|variable|interface|type|enum|struct|component)$/i;
 
-    const surfaceFiles = libraryPublicApiSurfaceFiles(nodes, normalizedEntryFile, (sourceFile, file) => this.sourcePathMatches(projectPath, sourceFile, file));
-    const exportedNodes = nodes.filter(node => {
+    const surface = libraryPublicApiSurface(nodes, normalizedEntryFile, (sourceFile, file) => this.sourcePathMatches(projectPath, sourceFile, file));
+    const exportedNodes = surface.nodes.filter(node => {
       if (node.id === entryFileNode.id) return false;
       if (!EXPORTABLE_NODE_TYPES.test(node.type)) return false;
-      const sourceFile = node.source?.file;
-      if (!sourceFile || !surfaceFiles.some(file => this.sourcePathMatches(projectPath, sourceFile, file))) return false;
       return isPublicExport(node);
     });
 
