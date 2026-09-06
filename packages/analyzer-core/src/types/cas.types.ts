@@ -3674,6 +3674,11 @@ export interface SystemCapability {
 
 
   evidence_examples?: string[];
+  operation_evidence?: Array<{
+    entry_point_id: string;
+    source_node_id: string;
+    text: string;
+  }>;
 
 
 

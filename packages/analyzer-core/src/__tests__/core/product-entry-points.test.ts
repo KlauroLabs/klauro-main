@@ -1,6 +1,25 @@
-import { libraryApiEvidenceExamples, productEntryPoints } from '../../analyzer/core/product-entry-points';
+import { libraryApiEvidenceExamples, libraryApiEvidenceFields, productEntryPoints } from '../../analyzer/core/product-entry-points';
 import type { CASEntryPoint, CASNode } from '../../types/cas.types';
 
+
+test('public API evidence retains the entry point and implementation node that support it', () => {
+  const implementation = node('accept', 'src/request.ts', {
+    name: 'acceptCharset',
+    documentation: { summary: 'Negotiate acceptable character encodings.', raw: 'Negotiate acceptable character encodings.' },
+  } as Partial<CASNode>);
+  const fields = libraryApiEvidenceFields([
+    entry('api_accept', 'api', 'accept'),
+    entry('unresolved', 'api', 'missing'),
+    entry('http_accept', 'http', 'accept'),
+  ], new Map([['accept', implementation]]));
+  expect(fields).toMatchObject({
+    operation_evidence: [{
+      entry_point_id: 'api_accept',
+      source_node_id: 'accept',
+      text: expect.stringContaining('encodings'),
+    }],
+  });
+});
 function node(id: string, file: string, extra: Partial<CASNode> = {}): CASNode {
   return { id, name: id, type: 'function', level: 2, source: { file, line: 1 }, ...extra } as CASNode;
 }

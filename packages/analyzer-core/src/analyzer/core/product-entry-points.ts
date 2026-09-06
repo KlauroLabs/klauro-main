@@ -1,4 +1,4 @@
-import type { CASEntryPoint, CASNode } from '../../types/cas.types';
+import type { CASEntryPoint, CASNode, SystemCapability } from '../../types/cas.types';
 
 export function productEntryPoints(
   entryPoints: CASEntryPoint[],
@@ -20,11 +20,11 @@ function identifierWords(value: string | undefined): string[] {
     .filter(word => word.length >= 3);
 }
 
-export function libraryApiEvidenceExamples(
+function libraryApiOperationEvidence(
   entryPoints: CASEntryPoint[],
   nodeById: Map<string, CASNode>,
-): string[] {
-  const examples = new Set<string>();
+): NonNullable<SystemCapability['operation_evidence']> {
+  const evidence: NonNullable<SystemCapability['operation_evidence']> = [];
   for (const ep of entryPoints) {
     if (ep.type !== 'api' && ep.type !== 'rpc') continue;
     const node = nodeById.get(ep.handler?.node_id || '') || nodeById.get(ep.source_node || '');
@@ -39,15 +39,29 @@ export function libraryApiEvidenceExamples(
       ...identifierWords(typeof attributes.returnAnnotation === 'string' ? attributes.returnAnnotation : undefined),
       ...identifierWords(node.documentation?.summary || node.documentation?.raw?.split(/\n/)[0]),
     ];
-    if (words.length > 0) examples.add(`${node.name}: ${[...new Set(words)].join(' ')}`);
+    if (words.length > 0) evidence.push({
+      entry_point_id: ep.id,
+      source_node_id: node.id,
+      text: `${node.name}: ${[...new Set(words)].join(' ')}`,
+    });
   }
-  return [...examples];
+  return evidence;
+}
+
+export function libraryApiEvidenceExamples(
+  entryPoints: CASEntryPoint[],
+  nodeById: Map<string, CASNode>,
+): string[] {
+  return [...new Set(libraryApiOperationEvidence(entryPoints, nodeById).map(evidence => evidence.text))];
 }
 
 export function libraryApiEvidenceFields(
   entryPoints: CASEntryPoint[],
   nodeById: Map<string, CASNode>,
-): { evidence_examples?: string[] } {
-  const examples = libraryApiEvidenceExamples(entryPoints, nodeById);
-  return examples.length > 0 ? { evidence_examples: examples } : {};
+): Pick<SystemCapability, 'evidence_examples' | 'operation_evidence'> {
+  const evidence = libraryApiOperationEvidence(entryPoints, nodeById);
+  return evidence.length > 0 ? {
+    evidence_examples: [...new Set(evidence.map(item => item.text))],
+    operation_evidence: evidence,
+  } : {};
 }

@@ -24,6 +24,39 @@ import {
   uniquelyMatchingCapabilityEntityIds,
 } from '../../analyzer/core/capability-catalog-evidence';
 import type { CASDataEntity, SystemCapability } from '../../types/cas.types';
+import { libraryApiEvidenceFields } from '../../analyzer/core/product-entry-points';
+
+test('grounds specialized API behavior in one cited operation without requiring repeated words', () => {
+  const entries = [
+    { id: 'ep_encoding', source_node: 'encoding', type: 'api', name: 'acceptCharset' },
+    { id: 'ep_cookie', source_node: 'cookie', type: 'api', name: 'parseCookie' },
+    { id: 'ep_validation', source_node: 'validation', type: 'api', name: 'validateCharset' },
+  ] as any;
+  const nodes = new Map<string, any>([
+    ['encoding', { id: 'encoding', name: 'acceptCharset', documentation: { summary: 'Negotiate acceptable encodings and charsets for request content.' } }],
+    ['cookie', { id: 'cookie', name: 'parseCookie', documentation: { summary: 'Parse signed cookie parameters for requests.' } }],
+    ['validation', { id: 'validation', name: 'validateCharset', documentation: { summary: 'Validate supported request charsets.' } }],
+  ]);
+  const surface: SystemCapability = {
+    ...candidate('request_api', 'Request API', 'core', []),
+    evidence_kind: 'behavior-surface',
+    operations: entries.map((entry: any) => ({
+      entry_point_id: entry.id, entry_point_type: entry.type, action: 'Handle',
+    })),
+    ...libraryApiEvidenceFields(entries, nodes),
+  };
+  expect(capabilityEvidenceSubjectTokens(surface)).toContain('charset');
+  expect(capabilityOutcomeNameUnsupportedTokens('Negotiate request charsets', [surface])).toEqual([]);
+  expect(capabilityOutcomeNameUnsupportedTokens('Negotiate request appointments', [surface])).toContain('appointment');
+  expect(capabilityOutcomeNameUnsupportedTokens('Negotiate request encodings', [surface])).toEqual([]);
+
+  const unrelated = { ...surface, operations: [surface.operations[1]] };
+  expect(capabilityOutcomeNameUnsupportedTokens('Negotiate request charsets', [unrelated])).toContain('charset');
+  const nonApi = { ...surface, operations: surface.operations.map(operation => ({
+    ...operation, entry_point_type: 'http',
+  })) };
+  expect(capabilityOutcomeNameUnsupportedTokens('Negotiate request charsets', [nonApi])).toContain('charset');
+});
 
 function candidate(id: string, name: string, category: SystemCapability['category'], actions: string[]): SystemCapability {
   return {

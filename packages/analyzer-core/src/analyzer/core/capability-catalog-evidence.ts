@@ -1,4 +1,6 @@
 import { CASDataEntity, CASEntryPoint, CASNode, CASUserJourney, EnhancedSystemPurpose, SystemCapability } from '../../types/cas.types';
+import { capabilityEvidenceSubjectTokens } from './capability-subject-evidence';
+export { capabilityEvidenceSubjectTokens } from './capability-subject-evidence';
 import { capabilityMarketingLanguageTerms } from './capability-audience-test';
 import { USER_FACING_ENTRY_TYPES } from './journey-builder';
 import { isScaffoldOrTestPath } from './scaffold-paths';
@@ -95,39 +97,6 @@ function capabilityOutcomeHasSpecificFirstPartySupport(
   if (!hasSpecificProductSubject) return false;
   const evidenceTokens = new Set(citedCandidates.flatMap(candidate => capabilityEvidenceSubjectTokens(candidate)));
   return subjects.some(token => outcomeTokenMatches(token, evidenceTokens));
-}
-export function capabilityEvidenceSubjectTokens(
-  candidate: SystemCapability,
-  entityNames: readonly string[] = [],
-): string[] {
-  const ignored = new Set([
-    'analyze', 'api', 'app', 'cap', 'check', 'entry', 'extend', 'fetch', 'get', 'id', 'identifier', 'install', 'internal', 'list', 'load', 'mcp', 'model',
-    'preview', 'read', 'record', 'release', 'route', 'router', 'run', 'show', 'slug', 'start', 'stop', 'supporting', 'sync', 'system', 'username', 'validate', 'value',
-  ]);
-  const tokens = outcomeIdentityTokens([
-    candidate.name,
-    candidate.structural_label,
-    ...(candidate.related_domains || []),
-    ...entityNames,
-    ...(candidate.evidence_kind === 'behavior-surface' ? [] : (candidate.operations || []).flatMap(operation => [
-      operation.path_or_command,
-      operation.trigger?.path,
-    ])),
-    ...(candidate.depends_on || []).flatMap(dependency => [
-      dependency.description,
-      ...(dependency.evidence.shared_entities || []),
-    ]),
-  ].filter(Boolean).join(' ')).filter(token => !ignored.has(token));
-  const exampleCounts = new Map<string, number>();
-  for (const example of candidate.evidence_examples || []) {
-    for (const token of new Set(outcomeIdentityTokens(example).filter(value => !ignored.has(value)))) {
-      exampleCounts.set(token, (exampleCounts.get(token) || 0) + 1);
-    }
-  }
-  const recurringExampleTokens = [...exampleCounts.entries()]
-    .filter(([, count]) => count >= Math.min(2, candidate.evidence_examples?.length || 1))
-    .map(([token]) => token);
-  return [...new Set([...tokens, ...recurringExampleTokens])].sort();
 }
 export function narrowCapabilityEvidenceCandidates(
   outcomeName: string,
