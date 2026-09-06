@@ -14,6 +14,8 @@ export function compactSmallRepoTargetResolution(resolution: any) {
   return {
     query: resolution.query,
     selected_node_id: resolution.selected_node_id,
+    candidate_count: Array.isArray(resolution.candidates) ? resolution.candidates.length : undefined,
+    candidates_truncated: Array.isArray(resolution.candidates) ? resolution.candidates.length > 4 : undefined,
     candidates: Array.isArray(resolution.candidates) ? resolution.candidates.slice(0, 4) : resolution.candidates,
     gaps: Array.isArray(resolution.gaps) ? resolution.gaps.slice(0, 2) : resolution.gaps,
   };

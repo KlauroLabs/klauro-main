@@ -470,6 +470,41 @@ test('agent context prioritizes documentation files for documentation tasks', as
   });
 });
 
+test('agent context resolves an exact implementation symbol before interpreting documentation intent', async () => {
+  await withWorkspace(async workspace => {
+    const cas = fixtureCas();
+    cas.system = { ...cas.system, root_path: workspace } as any;
+    cas.nodes.push(node('extract-doc', 'extractDocumentation', 'method', 'src/parser.ts', 35));
+    const context = await getAgentContext(cas, workspace, {
+      task_type: 'debug', target: 'extractDocumentation',
+      instructions: 'Fix documentation lost from assigned functions and find regression tests.',
+    }) as any;
+    assert.equal(context.target_resolution.selected_node_id, 'extract-doc');
+    assert.equal(context.file_read_plan[0].file, 'src/parser.ts');
+    assert.match(context.file_read_plan[0].reason, /selected target/);
+  });
+});
+
+test('agent context exposes alternative implementations of an exact documentation symbol', async () => {
+  await withWorkspace(async workspace => {
+    const cas = fixtureCas();
+    cas.system = { ...cas.system, root_path: workspace } as any;
+    cas.nodes.push(
+      node('extract-js', 'extractDocumentation', 'method', 'src/javascript-parser.ts', 35),
+      node('extract-py', 'extractDocumentation', 'method', 'src/python-parser.ts', 35),
+    );
+    for (const response_profile of ['minimal', 'first-turn', 'capsule-only'] as const) {
+      const context = await getAgentContext(cas, workspace, {task_type: 'debug', target: 'extractDocumentation', response_profile}) as any;
+      assert.match(context.target_resolution.gaps.join(' '), /ambiguous/);
+      assert.ok(context.target_resolution.candidates.some((candidate: any) => candidate.id === 'extract-js'));
+      assert.ok(context.target_resolution.candidates.some((candidate: any) => candidate.id === 'extract-py'));
+      assert.equal(context.target_resolution.candidate_count, 2);
+      assert.equal(context.target_resolution.candidates_truncated, false);
+      assert.ok(context.readiness.status);
+    }
+  });
+});
+
 test('agent context treats audit proof targets as documentation-first', async () => {
   await withWorkspace(async workspace => {
     fs.mkdirSync(path.join(workspace, 'docs', 'mcp'), { recursive: true });

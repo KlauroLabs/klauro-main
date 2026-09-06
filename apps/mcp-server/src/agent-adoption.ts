@@ -2116,11 +2116,13 @@ function compactCapsuleOnlyAgentContext<T extends Record<string, any>>(context: 
   const payload = {
     context_profile: 'capsule-only',
     context_capsule: contextCapsule.capsule,
+    readiness: compactContext.readiness,
+    target_resolution: compactContext.target_resolution,
     execution_capsule: executionCapsule,
     estimated_tokens: Math.ceil(`${contextCapsule.capsule}\n${executionCapsule}`.length / 4),
     selected: compactContext.selected,
     files: compactContext.files,
-    rule: 'Read K15 context, execute K5, then expand only if blocked by source evidence or validation.',
+    rule: compactContext.target_resolution ? 'Resolve target uncertainty before choosing an edit scope; request exact candidate node context.' : 'Read K15 context, execute K5, then expand only if blocked by source evidence or validation.',
   };
   return payload as unknown as T;
 }
@@ -2144,6 +2146,8 @@ function buildFirstTurnCompactContext<T extends Record<string, any>>(context: T)
     : null;
   return {
     context_profile: 'first-turn',
+    readiness: compactSmallRepoReadiness(context.readiness),
+    target_resolution: context.target_resolution?.gaps?.length ? compactSmallRepoTargetResolution(context.target_resolution) : undefined,
     task: [context.task?.task_type, compactFirstTurnText(String(context.task?.target || ''), 90)].filter(Boolean).join(': '),
     capsule: context.execution_brief?.capsule || formatExecutionCapsule(context.execution_brief),
     ...(freshness ? { analysis_freshness: freshness } : {}),
@@ -2155,7 +2159,7 @@ function buildFirstTurnCompactContext<T extends Record<string, any>>(context: T)
     risks: risks.slice(0, 2),
     reuse: capabilityMemory,
     execution: compactFirstTurnExecution(context.execution_brief),
-    rule: staleWarning || 'Read files in order. Preserve idioms. Expand only if blocked.',
+    rule: staleWarning || (context.target_resolution?.gaps?.length ? 'Resolve target uncertainty before choosing an edit scope; request exact candidate node context.' : 'Read files in order. Preserve idioms. Expand only if blocked.'),
   };
 }
 
@@ -2399,10 +2403,7 @@ function compactTinyAgentContext<T extends Record<string, any>>(context: T): T {
       profile: context.readiness?.profile,
       gaps: Array.isArray(context.readiness?.gaps) ? context.readiness.gaps.slice(0, 2) : context.readiness?.gaps,
     },
-    target_resolution: {
-      query: context.target_resolution?.query,
-      selected_node_id: context.target_resolution?.selected_node_id,
-    },
+    target_resolution: compactSmallRepoTargetResolution(context.target_resolution),
     selected_node: compactTinyTarget(selected),
     work_context: {
       coding_context: compactTinyCodingContext(workContext.coding_context),
@@ -2693,10 +2694,8 @@ function compactTokenMinimalAgentContext<T extends Record<string, any>>(context:
       gaps: Array.isArray(context.readiness?.gaps) ? context.readiness.gaps.slice(0, 2) : context.readiness?.gaps,
     },
     target_resolution: {
-      query: context.target_resolution?.query,
-      selected_node_id: context.target_resolution?.selected_node_id,
+      ...compactSmallRepoTargetResolution(context.target_resolution),
       selected_node: context.target_resolution?.selected_node,
-      gaps: Array.isArray(context.target_resolution?.gaps) ? context.target_resolution.gaps.slice(0, 2) : context.target_resolution?.gaps,
     },
     selected_node: context.selected_node,
     work_context: {
@@ -3622,7 +3621,7 @@ async function resolveTaskTarget(cas: CASOutput, projectPath: string, target?: s
       selectedNode = chooseBestFileTargetNode(fileMatches);
     }
 
-    if (!targetFile && targetLooksLikeDocumentationFirstWork(target)) {
+    if (!targetFile && !cas.nodes.some(node => node.name === target || node.qualified_name === target) && targetLooksLikeDocumentationFirstWork(target)) {
       return {
         query: target,
         selected_node_id: null,
