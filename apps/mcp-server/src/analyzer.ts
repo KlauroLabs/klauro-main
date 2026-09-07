@@ -6,6 +6,7 @@ import { partitionAnalysisDiagnostics } from '../../../packages/analyzer-core/sr
 import type { CASOutput, IncrementalState, ChangeReport, ChangeHistoryEntry } from '../../../packages/analyzer-core/src/types/cas.types';
 import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
 import { buildCompletedAnalysisLayersReady } from './layered-analysis';
+import { resolveLayeredEnrichmentPhase } from './layered-analysis-metadata';
 import { beginForegroundAnalysis } from './foreground-analysis';
 import { registerHostedBackgroundPreflight, withHostedForegroundPermit } from './hosted-background-queue';
 import { architectureLibraryAnalyzerDefinitions } from '../../../packages/analyzer-core/src/analyzer/libraries/architecture';
@@ -3018,11 +3019,9 @@ export async function runLayeredAnalysis(
       const enrichmentPersistsOutput = deferred.output.ai_enrichment === 'pending';
       await deferred.enrichment.catch(() => undefined);
       if ((options.repoFacts || options.repoFactsUnavailable) && !enrichmentPersistsOutput) await saveAnalysis(projectPath, deferred.output, 'main', { deferSegmentedWrite: true });
-      const aiEnrichment = deferred.output.ai_enrichment;
       options.onPhase?.({
         phase: 'enrichment',
-        status: aiEnrichment === 'error' ? 'failed' : 'succeeded',
-        error: aiEnrichment === 'error' ? deferred.output.ai_enrichment_error : undefined,
+        ...resolveLayeredEnrichmentPhase(deferred.output),
       });
       return summarizeLayeredAnalysis(projectPath, deferred.output);
       });

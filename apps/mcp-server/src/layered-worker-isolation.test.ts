@@ -88,11 +88,9 @@ test('layered job persists structural layers and reports disabled comprehension 
     onPhase: (event) => { events.push(event); },
   });
 
-  // All three phases fired, in order, all succeeded (AI is disabled in this
-  // fixture's env, so enrichment has nothing to do and is honestly 'disabled'
-  // rather than silently skipped).
   assert.deepEqual(events.map(e => e.phase), ['l0', 'rest', 'enrichment']);
-  assert.ok(events.every(e => e.status === 'succeeded'), `expected every phase to succeed, got ${JSON.stringify(events)}`);
+  assert.deepEqual(events.map(event => event.status), ['succeeded', 'succeeded', 'failed']);
+  assert.ok(events[2].error);
 
   // The function's own resolved value is a small counts summary, never the
   // CASOutput itself.
@@ -116,6 +114,21 @@ test('layered job persists structural layers and reports disabled comprehension 
   );
   assert.equal(landed.system.analysis_focus, 'full');
   assert.equal(landed.system.repo_facts?.contributor_count, 7);
+});
+
+test('in-process layered analysis also reports rejected enrichment as failed', async () => {
+  const previous = process.env.KLAURO_ANALYSIS_IN_PROCESS;
+  process.env.KLAURO_ANALYSIS_IN_PROCESS = '1';
+  try {
+    const events: LayeredJobPhaseEvent[] = [];
+    const summary = await runLayeredAnalysis(fixtureProject, { analysisFocus: 'full', onPhase: event => { events.push(event); } });
+    assert.ok(summary.failedLayers.some(layer => layer.layer === 'L5'));
+    assert.deepEqual(events.map(event => event.status), ['succeeded', 'succeeded', 'failed']);
+    assert.match(events[2].error!, /L5:/);
+  } finally {
+    if (previous === undefined) delete process.env.KLAURO_ANALYSIS_IN_PROCESS;
+    else process.env.KLAURO_ANALYSIS_IN_PROCESS = previous;
+  }
 });
 
 test('a child crash after L1-4 lands is a clean, phase-attributed failure — not a hang — and the worker recovers for the next call', async () => {

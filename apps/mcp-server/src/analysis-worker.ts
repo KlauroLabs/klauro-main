@@ -13,7 +13,7 @@ import { AnalysisRunLog } from '../../../packages/analyzer-core/src/analyzer/cor
 import { applyAnalysisFocus, type AnalysisFocus } from './analysis-focus';
 import { saveAnalysis, waitForPendingSegmentedWrites } from './storage';
 import type { RepoFacts } from './remote-source';
-import { applyLayeredAnalysisMetadata } from './layered-analysis-metadata';
+import { applyLayeredAnalysisMetadata, resolveLayeredEnrichmentPhase } from './layered-analysis-metadata';
 
 interface WorkerAnalyzeRequest {
   type: 'analyze';
@@ -174,13 +174,8 @@ async function executeLayeredAnalysis(request: WorkerLayeredRequest): Promise<La
     await saveAnalysis(request.projectPath, deferred.output, 'main', { deferSegmentedWrite: true });
   }
   await waitForPendingSegmentedWrites();
-  const aiEnrichment = deferred.output.ai_enrichment;
-  sendPhase(
-    request.id,
-    'enrichment',
-    aiEnrichment === 'error' ? 'failed' : 'succeeded',
-    aiEnrichment === 'error' ? deferred.output.ai_enrichment_error : undefined,
-  );
+  const enrichmentPhase = resolveLayeredEnrichmentPhase(deferred.output);
+  sendPhase(request.id, 'enrichment', enrichmentPhase.status, enrichmentPhase.error);
 
   const enrichmentDoneAt = Date.now();
   console.error(
