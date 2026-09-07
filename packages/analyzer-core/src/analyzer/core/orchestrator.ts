@@ -193,6 +193,7 @@ import {
   synchronizeCapabilityCatalogCoverage,
 } from './capability-catalog-evidence';
 import { mergeCapabilityCatalogFlowEvidence } from './capability-catalog-flow-evidence';
+import { buildCapabilityCatalogReconciliation } from './capability-catalog-reconciliation';
 import { bindAtomicallySatisfiedCatalogOutcomeRequirements, bindUniquelySatisfiedCatalogOutcomeRequirements, canonicalCapabilityCatalogOutcomeToken, capabilityCatalogOutcomeCoverageFailure, capabilityCatalogOutcomeBindingFailureDetail, capabilityCatalogOutcomeNameFailure, capabilityCatalogOutcomesMayMerge, capabilityCatalogTargetedOutcomeText, capabilitySemanticallySatisfiesCatalogOutcomeRequirement, conciseCapabilityCatalogOutcomeName, deriveCapabilityCatalogOutcomeRequirements, recoverGroundedAuthoredOutcomeCapabilities, sanitizeCapabilityCatalogDescription, uncoveredCapabilityCatalogOutcomeRequirements, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
 import { fitCapabilityCatalogContexts, requestCapabilityCatalogContexts } from './capability-catalog-context-batches';
 import { awaitAiOperation } from './ai-operation-timing';
@@ -10254,41 +10255,10 @@ export class AnalyzerOrchestrator {
     const intentGapRequirements = uncoveredCapabilityCatalogOutcomeRequirements(publishedCapabilities, normalizedOutcomeRequirements);
     const ungroundedNormalizedRequirementIds = new Set(intentGapRequirements.map(requirement => requirement.id));
     const unresolvedRejectedProductOutcomeIds = [...rejectedProposalCandidateIds].filter(candidateId => productOutcomeEvidenceCandidateIds.has(candidateId) && !finalPublishedCandidateIds.has(candidateId) && requiredOutcomes.some(requirement => requirement.candidateIds.includes(candidateId) && ungroundedNormalizedRequirementIds.has(requirement.id)));
-    const normalizedOutcomeRequirementById = new Map(normalizedOutcomeRequirements.map(requirement => [requirement.id, requirement]));
-    const groundedCapabilityIdsFor = (requirement: CapabilityCatalogOutcomeRequirement): string[] => publishedCapabilities.filter(capability => uncoveredCapabilityCatalogOutcomeRequirements([capability], [normalizedOutcomeRequirementById.get(requirement.id) || requirement]).length === 0).map(capability => capability.id);
-    const intentGapRequirementIds = new Set(intentGapRequirements.map(requirement => requirement.id));
-    const groundedRequirementIds = new Set(requiredOutcomes.filter(requirement => !intentGapRequirementIds.has(requirement.id)).map(requirement => requirement.id));
-    args.enhancedSystemPurpose.capability_reconciliation = {
-      proposals: requiredOutcomes.map(requirement => {
-        const capabilityIds = groundedCapabilityIdsFor(requirement);
-        return {
-          requirement_id: requirement.id,
-          statement: requirement.statement,
-          ...(requirement.firstPartyOutcomeText ? { first_party_outcome_text: requirement.firstPartyOutcomeText } : {}),
-          ...(requirement.audience ? { audience: requirement.audience } : {}),
-          candidate_ids: [...requirement.candidateIds],
-          disposition: capabilityIds.length > 0 ? 'grounded' as const : 'intent-gap' as const,
-          capability_ids: capabilityIds,
-        };
-      }),
-      undocumented_capabilities: publishedCapabilities
-        .filter(capability => requiredOutcomes.every(requirement =>
-          !groundedRequirementIds.has(requirement.id) ||
-          uncoveredCapabilityCatalogOutcomeRequirements([capability], [
-            normalizedOutcomeRequirementById.get(requirement.id) || requirement,
-          ]).length > 0))
-        .map(capability => ({ capability_id: capability.id, name: capability.name })),
-      ...(unresolvedRejectedProductOutcomeIds.length > 0 ? {
-        structural_gaps: unresolvedRejectedProductOutcomeIds.map(candidateId => {
-          const candidate = evidenceCandidates.find(item => item.id === candidateId);
-          return {
-            candidate_id: candidateId,
-            name: candidate?.structural_label || candidate?.name || candidateId,
-            reason: 'grounded product-outcome evidence was not reconciled into a publishable capability',
-          };
-        }),
-      } : {}),
-    };
+    args.enhancedSystemPurpose.capability_reconciliation = buildCapabilityCatalogReconciliation({
+      requiredOutcomes, normalizedOutcomeRequirements, publishedCapabilities,
+      intentGapRequirements, unresolvedRejectedProductOutcomeIds, evidenceCandidates,
+    });
     const intrinsicQualityFailure = this.catalogQualityFailure(publishedCapabilities, 0, [], [], [], []);
     const authoredOutcomeCoverageFailure = capabilityCatalogOutcomeCoverageFailure(publishedCapabilities, normalizedOutcomeRequirements);
     qualityFailure = normalizedOperationEvidence.errors.length > 0
