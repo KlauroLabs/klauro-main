@@ -174,7 +174,7 @@ test('read failures close file descriptors and retain explicit uncertainty', t =
   const actualClose = fs.closeSync;
   let closed = 0;
   t.mock.method(fs, 'readSync', () => { throw Object.assign(new Error('io'), { code: 'EIO' }); });
-  t.mock.method(fs, 'closeSync', descriptor => { closed++; return actualClose(descriptor); });
+  t.mock.method(fs, 'closeSync', (descriptor: number) => { closed++; return actualClose(descriptor); });
   const result = verifyAgentSourceInputs(root, ['target.ts'], [contribution('same')]);
   assert.equal(result.results[0].error_code, 'EIO');
   assert.equal(closed, 1);
