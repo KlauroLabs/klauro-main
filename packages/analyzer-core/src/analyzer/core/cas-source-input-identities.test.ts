@@ -86,7 +86,7 @@ test('invalid references never get rebound to a new table entry', () => {
     cas.analyzer_contributions.push(contributor([row('b.ts')], 'second'));
     const before = structuredClone(cas);
     compactCasSourceInputIdentities(cas);
-    assert.deepEqual(cas, before);
+    assert.deepEqual(cas, { ...before, source_input_catalog: { status: 'unnormalized', reason: 'invalid-input-reference' } });
     assert.equal(sourceInputIdentityAt(cas.source_input_identities, reference), undefined);
   }
 });
@@ -98,7 +98,7 @@ test('sparse or absent tables and nonobject identities cannot invent evidence', 
   const cas: Catalog = { analyzer_contributions: [contributor([null as unknown as CASSourceInputIdentity])] };
   const before = structuredClone(cas);
   compactCasSourceInputIdentities(cas);
-  assert.deepEqual(cas, before);
+  assert.deepEqual(cas, { ...before, source_input_catalog: { status: 'unnormalized', reason: 'invalid-input-identity' } });
 });
 
 test('child CAS identities remain local and never implicitly inherit the parent table', () => {

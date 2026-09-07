@@ -101,6 +101,9 @@ export function verifyAgentSourceInputs(
   }
 
   const results: SourceInputComparison[] = citations.map(file => {
+    if (!within(root, path.resolve(root, file)) || (path.win32.isAbsolute(file) && !path.isAbsolute(file))) {
+      return { file, status: 'unverified', reason: 'outside-workspace' };
+    }
     const entry = index.get(keys.get(file)!);
     const reason = indexGap || entry?.reason || (!entry?.identities.size ? 'analyzed-content-identity-unavailable' : undefined);
     if (reason) return { file, status: 'unverified', reason };

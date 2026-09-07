@@ -62,6 +62,12 @@ test('referenced input observations remain subject to the same scan budget', t =
   assert.equal(result.summary.scan.bytes_read, 0);
 });
 
+test('outside-workspace citations are labeled before unavailable-identity lookup', t => {
+  const result = verifyAgentSourceInputs(fixture(t), ['../outside.ts', 'C:\\outside\\file.ts']);
+  assert.ok(result.results.every(item => item.reason === 'outside-workspace'));
+  assert.equal(result.summary.scan.bytes_read, 0);
+});
+
 test('valid observed identities match without claiming complete analysis coverage', t => {
   const root = fixture(t);
   const baseline = contribution(fs.readFileSync(path.join(root, 'target.ts'), 'utf8'));

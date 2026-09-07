@@ -27,4 +27,5 @@ export type CASAnalyzerSourceInputEvidence = CASAnalyzerSourceInputs | CASAnalyz
 export interface CASSourceInputCatalog {
   source_input_identities?: CASSourceInputIdentity[];
   source_input_root?: string;
+  source_input_catalog?: { status: 'shared' | 'not-recorded' | 'unnormalized'; reason?: string };
 }

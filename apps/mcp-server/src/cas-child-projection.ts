@@ -36,6 +36,7 @@ export const CAS_CHILD_FIELD_POLICY = {
   analyzer_contributions: { mode: 'inherit' },
   source_input_identities: { mode: 'inherit' },
   source_input_root: { mode: 'inherit' },
+  source_input_catalog: { mode: 'inherit' },
   method_calls: { mode: 'scope' },
   call_chains: { mode: 'scope' },
   decorators: { mode: 'inherit' },

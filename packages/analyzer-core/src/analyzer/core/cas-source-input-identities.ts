@@ -1,6 +1,6 @@
 import type { CASOutput, CASSourceInputIdentity } from '../../types/cas.types';
 
-type SourceInputCatalog = Pick<CASOutput, 'analyzer_contributions' | 'source_input_identities' | 'source_input_root'> & Partial<Pick<CASOutput, 'system'>>;
+type SourceInputCatalog = Pick<CASOutput, 'analyzer_contributions' | 'source_input_identities' | 'source_input_root' | 'source_input_catalog'> & Partial<Pick<CASOutput, 'system'>>;
 
 function isIdentity(value: unknown): value is CASSourceInputIdentity {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -19,10 +19,12 @@ function identityKey(identity: CASSourceInputIdentity): string {
 }
 
 export function compactCasSourceInputIdentities(cas: SourceInputCatalog): void {
-  if (!Array.isArray(cas.analyzer_contributions) || (cas.source_input_identities !== undefined && !Array.isArray(cas.source_input_identities))) return;
+  const incomplete = (reason: string) => { cas.source_input_catalog = { status: 'unnormalized', reason }; };
+  if (!Array.isArray(cas.analyzer_contributions)) return incomplete('contributions-unavailable');
+  if (cas.source_input_identities !== undefined && !Array.isArray(cas.source_input_identities)) return incomplete('invalid-identity-table');
   const unique = new Map<string, { key: string; identity: CASSourceInputIdentity }>();
   for (const identity of cas.source_input_identities || []) {
-    if (!isIdentity(identity)) return;
+    if (!isIdentity(identity)) return incomplete('invalid-identity-table-row');
     const key = identityKey(identity);
     if (!unique.has(key)) unique.set(key, { key, identity });
   }
@@ -32,20 +34,20 @@ export function compactCasSourceInputIdentities(cas: SourceInputCatalog): void {
     const inputs = contribution?.source_inputs;
     if (!inputs) { observations.push(undefined); continue; }
     hasEvidence = true;
-    if (inputs.version !== 1 && inputs.version !== 2) return;
+    if (inputs.version !== 1 && inputs.version !== 2) return incomplete('unsupported-input-version');
     const rows = inputs.version === 1 ? inputs.files : inputs.identity_indices;
-    if (!Array.isArray(rows)) return;
+    if (!Array.isArray(rows)) return incomplete('input-observations-unavailable');
     const keys: string[] = [];
     for (const row of rows) {
       const identity = inputs.version === 1 ? row : sourceInputIdentityAt(cas.source_input_identities, row);
-      if (!isIdentity(identity)) return;
+      if (!isIdentity(identity)) return incomplete(inputs.version === 1 ? 'invalid-input-identity' : 'invalid-input-reference');
       const key = identityKey(identity);
       if (!unique.has(key)) unique.set(key, { key, identity });
       keys.push(unique.get(key)!.key);
     }
     observations.push(keys);
   }
-  if (!hasEvidence) return;
+  if (!hasEvidence) { cas.source_input_catalog = { status: 'not-recorded' }; return; }
   const keys = [...unique.keys()].sort();
   const indices = new Map(keys.map((key, index) => [key, index]));
   const contributions = cas.analyzer_contributions.map((contribution, index) => {
@@ -62,4 +64,5 @@ export function compactCasSourceInputIdentities(cas: SourceInputCatalog): void {
   if (cas.source_input_root === undefined && cas.system?.root_path !== undefined) cas.source_input_root = cas.system.root_path;
   cas.source_input_identities = keys.map(key => ({ ...unique.get(key)!.identity }));
   cas.analyzer_contributions = contributions;
+  cas.source_input_catalog = { status: 'shared' };
 }
