@@ -312,6 +312,8 @@ test('get_agent_context on the light-plus-scoped projection matches the whole-gr
       assert.ok(failingObserver && typeof failingObserver === 'object', 'an observer failure never fails the query');
       assert.equal(scoped.selected_node?.id, 'node-0');
       assert.deepEqual(scoped, whole, 'agent context is identical on the projection');
+      const deferred = strip(await executeHostedProjectQuery({ cas: scopedCas, tool: 'get_agent_context', args, projectPath: project, deferBound: true }));
+      assert.deepEqual(deferred, unboundedScoped, 'deferBound returns the complete pre-bound body for the worker to bound after diagnostics');
       assert.deepEqual(unboundedScoped, unboundedWhole, 'the complete pre-bound context is identical too');
       const marked = JSON.parse(JSON.stringify(scoped));
       assert.deepEqual(markNotComputedOnProjection(marked), ['work_context.coding_context.conventions'], 'heavy-field global scans are marked explicitly on projections');
@@ -590,6 +592,34 @@ test('source input tables are skipped with an explicit reason when the catalog i
     try {
       const loaded = await loadScopedSourceInputs(pinned, graph, [{ id: 'node-0', source: { file: 'src/target.ts' } }] as any);
       assert.ok(loaded && 'gap' in loaded && /no source input table/.test(loaded.gap));
+    } finally {
+      await pinned.release();
+    }
+  });
+});
+
+test('a malformed path on a current source input reference skips the table explicitly while malformed historical rows are ignored', async () => {
+  await withStorage(async project => {
+    const cas = sourceInputFixture();
+    (cas as any).source_input_identities.push({ path: '../outside/escape.ts', status: 'captured', representation: 'utf8-text', sha256: 'a'.repeat(64), bytes: 1 });
+    await saveAnalysis(project, cas, 'main', { canonicalSegmented: true });
+    let manifest = (await loadAnalysisSectionManifest(project))!;
+    assert.ok(manifest.semantic_store!.extras!.source_inputs, 'an unreferenced malformed historical row does not block the table');
+    assert.equal(manifest.semantic_store!.extras!.source_inputs!.row_count, 4);
+  });
+  await withStorage(async project => {
+    const cas = sourceInputFixture();
+    (cas as any).source_input_identities.push({ path: 'src\\escaped\\path.ts', status: 'captured', representation: 'utf8-text', sha256: 'b'.repeat(64), bytes: 1 });
+    (cas as any).analyzer_contributions[2].source_inputs.identity_indices.push(5);
+    await saveAnalysis(project, cas, 'main', { canonicalSegmented: true });
+    const manifest = (await loadAnalysisSectionManifest(project))!;
+    assert.equal(manifest.semantic_store!.extras!.source_inputs, undefined);
+    assert.match(manifest.semantic_store!.extras!.source_inputs_skipped!, /malformed path/);
+    const graph = (await loadCompactAnalysisGraph(project))!;
+    const pinned = (await acquirePinnedAnalysis(project))!;
+    try {
+      const loaded = await loadScopedSourceInputs(pinned, graph, [{ id: 'node-0', source: { file: 'src/target.ts' } }] as any);
+      assert.ok(loaded && 'gap' in loaded && /malformed path/.test(loaded.gap));
     } finally {
       await pinned.release();
     }

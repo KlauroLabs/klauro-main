@@ -644,6 +644,12 @@ export interface CasSourceInputsRead {
 
 const SOURCE_INPUT_STATUSES = new Set(['captured', 'conflicting', 'unavailable']);
 
+export function isValidSourceInputPath(file: unknown): file is string {
+  return typeof file === 'string' && file.length > 0 && file !== '.' && !file.includes('\\')
+    && !path.posix.isAbsolute(file) && !path.win32.isAbsolute(file)
+    && path.posix.normalize(file) === file && file !== '..' && !file.startsWith('../');
+}
+
 function comparePaths(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
@@ -678,6 +684,7 @@ function buildSourceInputs(output: CASOutput): { rows: CasSourceInputRow[]; offs
       if (!Number.isSafeInteger(reference) || (reference as number) < 0 || (reference as number) >= table.length) throw new CasSourceInputsSkipped(`contribution ${contributionIndex} references identity ${String(reference)} outside the table of ${table.length}`);
       const identity = table[reference as number] as CASSourceInputIdentity;
       if (!identity || typeof identity !== 'object' || typeof identity.path !== 'string' || !SOURCE_INPUT_STATUSES.has(identity.status)) throw new CasSourceInputsSkipped(`identity ${String(reference)} referenced by contribution ${contributionIndex} is malformed`);
+      if (!isValidSourceInputPath(identity.path)) throw new CasSourceInputsSkipped(`identity ${String(reference)} referenced by contribution ${contributionIndex} has a malformed path ${JSON.stringify(identity.path)}; the scoped view would hide what the full verifier rejects`);
       staged.push({ path: identity.path, contribution: contributionIndex, ordinal, identity });
     });
   });
