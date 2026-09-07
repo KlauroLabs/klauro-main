@@ -32,7 +32,7 @@ test('streaming JSON preserves packed values across chunk boundaries', async t =
   const source = path.join(root, 'source.json');
   const compressed = path.join(root, 'source.json.zst');
   const longKey = 'key'.repeat(24_000);
-  const longValue = 'value\\n\\t\\u0000\\u00e9\\ud834\\udd1e"\\\\'.repeat(12_000);
+  const longValue = ('value"\\' + String.fromCodePoint(0, 9, 10, 0xe9, 0x1d11e)).repeat(12_000);
   const values = [
     { [longKey]: longValue, empty: '', nullable: null, enabled: false, rows: [[], {}, [1, -2.5, 1e100, 1e-100]] },
     longValue,
