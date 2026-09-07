@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { z } from 'zod';
+import { FIND_TESTS_INPUT_SCHEMA } from './test-query-schema';
 import { analyzeCodebaseRemotely, syncWorkingTreeRemotely } from './remote-sync-client';
 import { buildUploadManifest, isDefaultSensitiveSourceFile } from './remote-source';
 import { getAgentRevisionTracks } from './agent-revision-tracks';
@@ -519,8 +520,8 @@ export function createServer(): McpServer {
   }, async ({ path, ...args }: any) => json(await hostedProjectQuery(path, 'assess_change_risk', args)));
 
   register('find_tests', {
-    description: 'Find hosted test suites and cases covering a node or file.',
-    inputSchema: { path: z.string(), node_id: z.string().optional(), file_path: z.string().optional(), limit: z.number().optional(), offset: z.number().optional() },
+    description: 'Find hosted test suites covering a node or file, with mocks and fixtures related to the returned page. With suite_id, limit and offset page the tests inside that suite.',
+    inputSchema: FIND_TESTS_INPUT_SCHEMA,
   }, async ({ path, ...args }: any) => json(await hostedProjectQuery(path, 'find_tests', args)));
 
   register('get_user_journeys', {

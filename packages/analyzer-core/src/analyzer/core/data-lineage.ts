@@ -12,6 +12,7 @@ import {
   CASGuardKind
 } from '../../types/cas.types';
 import { isLanguageBuiltinExitPoint } from './language-builtins';
+import { hasUnresolvedDependencyEffect } from './exit-point-effects';
 import { classifyGuardKind } from './guard-classification';
 
 export interface DataLineageInput {
@@ -116,7 +117,7 @@ export function exposureScore(lineage: CASEntityLineage): number {
   let score = 0;
   if (lineage.exposure.sensitive) score += 4;
   if (lineage.exposure.unguarded_paths > 0) score += 2;
-  if (lineage.exposure.external_transfer) score += 1;
+  if (lineage.exposure.external_transfer || lineage.exposure.external_transfer_unresolved) score += 1;
   return score;
 }
 
@@ -261,8 +262,13 @@ function buildEntityLineage(entity: CASDataEntity, index: LineageIndex): CASEnti
   const journeys = collectJourneys(entity, index);
 
   const recipients = new Map<string, CASEntityLineageExternalRecipient>();
+  const unresolvedExitPointIds = new Set<string>();
   const recordRecipient = (exitPoint: CASExitPoint) => {
     if (!EXTERNAL_EXIT_TYPES.has(exitPoint.type) || recipients.has(exitPoint.id)) return;
+    if (hasUnresolvedDependencyEffect(exitPoint)) {
+      unresolvedExitPointIds.add(exitPoint.id);
+      return;
+    }
     if (isLanguageBuiltinExitPoint(exitPoint)) return;
     const service = resolveRecipientService(exitPoint);
 
@@ -328,12 +334,14 @@ function buildEntityLineage(entity: CASDataEntity, index: LineageIndex): CASEnti
     writers: [...writers.values()].sort((a, b) => a.node_id.localeCompare(b.node_id)),
     readers: [...readers.values()].sort((a, b) => a.node_id.localeCompare(b.node_id)),
     external_recipients: [...recipients.values()].sort((a, b) => a.exit_point_id.localeCompare(b.exit_point_id)),
+    ...(unresolvedExitPointIds.size > 0 ? { unresolved_exit_point_ids: [...unresolvedExitPointIds].sort() } : {}),
     boundaries_crossed: [...boundaries.values()].sort((a, b) => a.boundary.localeCompare(b.boundary)),
     journeys_carrying: journeys.map(journey => journey.id).sort(),
     exposure: {
       unguarded_paths: unguardedPaths,
       non_auth_guarded_paths: nonAuthGuardedPaths,
       external_transfer: recipients.size > 0,
+      ...(unresolvedExitPointIds.size > 0 ? { external_transfer_unresolved: true } : {}),
       sensitive: sensitiveFields.length > 0,
     },
   };

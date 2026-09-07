@@ -15,10 +15,7 @@ import {
   extractEntryPointFilePath,
   type DeployableRoot,
 } from '../../../packages/analyzer-core/src/analyzer/core/entry-point-deployable';
-import {
-  ReachabilityIndex,
-  reachabilityEdgePairs,
-} from '../../../packages/analyzer-core/src/analyzer/core/reachability-index';
+import { reachabilityEdgePairs } from '../../../packages/analyzer-core/src/analyzer/core/reachability-index';
 import { assertValidCasTree } from '../../../packages/analyzer-core/src/analyzer/core/recursive-cas';
 import { buildCasTerminality } from '../../../packages/analyzer-core/src/analyzer/core/terminality';
 import { deployableAnalysisCache } from './deployable-analysis-cache';
@@ -338,7 +335,7 @@ interface CasSliceContext {
 
 
   filesBySuffixKey: Map<string, string[]>;
-  reach: ReachabilityIndex;
+  targetsBySource: Map<string, string[]>;
 }
 
 const sliceContexts = new WeakMap<CASOutput, CasSliceContext>();
@@ -399,11 +396,18 @@ function sliceContextFor(cas: CASOutput): CasSliceContext {
     }
   }
 
-  const reach = cas.reachability_index?.includes_invokes_edges
-    ? ReachabilityIndex.from(cas.reachability_index)
-    : ReachabilityIndex.build(nodes.map(n => n.id), reachabilityEdgePairs(cas as any));
+  const targetsBySource = new Map<string, string[]>();
+  const pairs = reachabilityEdgePairs(cas);
+  for (const edge of cas.edges || []) {
+    if (['delegates_to', 'branches_to', 'continues_to'].includes(edge.type)) pairs.push([edge.source, edge.target]);
+  }
+  for (const [source, target] of pairs) {
+    const targets = targetsBySource.get(source) || [];
+    targets.push(target);
+    targetsBySource.set(source, targets);
+  }
 
-  const context: CasSliceContext = { nodesById, nodeIdsByFile, filesBySuffixKey, reach };
+  const context: CasSliceContext = { nodesById, nodeIdsByFile, filesBySuffixKey, targetsBySource };
   sliceContexts.set(cas, context);
   return context;
 }
@@ -589,18 +593,23 @@ function seedsForUnit(
 
 
 function closureForSeeds(seedNodeIds: Set<string>, ctx: CasSliceContext): Set<string> {
-  if (seedNodeIds.size === 0) return new Set();
   const closure = new Set(seedNodeIds);
-  const { affected } = ctx.reach.affectedSet(seedNodeIds, { direction: 'downstream', includeSeeds: false });
-  for (const id of affected) closure.add(id);
-
+  const queue = [...closure];
   const files = new Set<string>();
-  for (const id of closure) {
-    const file = ctx.nodesById.get(id)?.source?.file;
-    if (file) files.add(normalizeEvidencePath(file));
-  }
-  for (const file of files) {
-    for (const sibling of ctx.nodeIdsByFile.get(file) || []) closure.add(sibling);
+  const include = (id: string) => {
+    if (closure.has(id)) return;
+    closure.add(id);
+    queue.push(id);
+  };
+  for (let cursor = 0; cursor < queue.length; cursor++) {
+    const id = queue[cursor];
+    for (const target of ctx.targetsBySource.get(id) || []) include(target);
+    const sourceFile = ctx.nodesById.get(id)?.source?.file;
+    if (!sourceFile) continue;
+    const file = normalizeEvidencePath(sourceFile);
+    if (files.has(file)) continue;
+    files.add(file);
+    for (const sibling of ctx.nodeIdsByFile.get(file) || []) include(sibling);
   }
   return closure;
 }
@@ -1045,6 +1054,14 @@ export interface SubCasNodeIndexEntry {
 
 
   node_count: number;
+  size_disclosure?: {
+    edge_count: number;
+    root_node_ratio: number;
+    root_edge_ratio: number;
+    large_scope_threshold: number;
+    large_scope: boolean;
+    note: string;
+  };
 
   exclusive_node_count: number;
 
@@ -1692,6 +1709,14 @@ export function buildDeployableAnalyses(cas: CASOutput): BuildDeployableAnalyses
       tier: unit.tier,
       kind: unit.kind,
       node_count: units[i].slice.nodes.length,
+      size_disclosure: {
+        edge_count: units[i].slice.edges.length,
+        root_node_ratio: graphNodeCount ? units[i].slice.nodes.length / graphNodeCount : 0,
+        root_edge_ratio: cas.edges.length ? units[i].slice.edges.length / cas.edges.length : 0,
+        large_scope_threshold: 0.5,
+        large_scope: units[i].slice.nodes.length > graphNodeCount * 0.5 || units[i].slice.edges.length > cas.edges.length * 0.5,
+        note: 'Ratios describe retained graph records, not serialized bytes. Above one half of either root collection is a large scope; all required records remain included.',
+      },
       exclusive_node_count: perUnitCounts[i].exclusive,
       shared_node_count: perUnitCounts[i].shared,
       owned_shared_node_count: perUnitCounts[i].ownedShared,

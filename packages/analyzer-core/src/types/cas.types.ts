@@ -1,4 +1,7 @@
 import { createHash } from 'crypto';
+import type { CASExitPoint } from './cas-exit-point.types';
+export { EXIT_POINT_TYPES } from './cas-exit-point.types';
+export type { CASExitPoint, CASExitPointType } from './cas-exit-point.types';
 import type { CASCoverageGap } from './cas-coverage.types';
 import type { CASAnalyzerSourceInputEvidence, CASSourceInputCatalog } from './cas-source-input.types';
 export type { CASAnalyzerSourceInputs, CASAnalyzerSourceInputEvidence, CASAnalyzerSourceInputReferences, CASSourceInputCatalog, CASSourceInputIdentity } from './cas-source-input.types';
@@ -823,12 +826,7 @@ export interface CASEntryPoint {
 
 
 
-export const EXIT_POINT_TYPES = [
-  'database', 'api', 'file', 'message', 'event', 'cache', 'sdk',
-  'webhook', 'navigation', 'client_storage', 'analytics',
-] as const;
 
-export type CASExitPointType = typeof EXIT_POINT_TYPES[number];
 
 
 
@@ -886,39 +884,7 @@ export const NODE_ROLES = [
 
 export type CASNodeRole = typeof NODE_ROLES[number];
 
-export interface CASExitPoint {
-  id: string;
-  source_node: string;
-  source_analyzer?: string;
-  type: CASExitPointType;
-  name: string;
-  description?: string;
-  description_source?: 'deterministic' | 'ai' | 'manual' | 'reused';
-  description_generation?: CASDescriptionGeneration;
-  target?: {
-    service_id?: string;
-    endpoint?: string;
-    resource?: string;
-    sdk?: string;
-  };
-  operation?: {
-    action?: string;
-    method?: string;
-    async?: boolean;
-  };
-  data?: {
-    input_type?: string;
-    output_type?: string;
-    transformation_node?: string;
-  };
-  reliability?: {
-    retry_attempts?: number;
-    timeout_ms?: number;
-    circuit_breaker?: boolean;
-  };
-  connected_nodes?: string[];
-  metadata?: Record<string, any>;
-}
+
 
 export interface CASBehavior {
   id: string;
@@ -1318,6 +1284,8 @@ export interface CASProductMap {
       unguarded_paths: number;
       non_auth_guarded_paths?: number;
       external_transfer: boolean;
+      external_transfer_unresolved?: boolean;
+      unresolved_exit_point_ids?: string[];
       external_recipients: string[];
     }>;
   };
@@ -3768,6 +3736,7 @@ export interface CASUserJourney {
   criticality: 'critical' | 'high' | 'medium' | 'low';
   call_chain_ids: string[];
   exit_point_ids: string[];
+  unresolved_exit_point_ids?: string[];
 
 
 
@@ -3834,12 +3803,14 @@ export interface CASEntityLineage {
   writers: CASEntityLineageAccessor[];
   readers: CASEntityLineageAccessor[];
   external_recipients: CASEntityLineageExternalRecipient[];
+  unresolved_exit_point_ids?: string[];
   boundaries_crossed: CASEntityLineageBoundary[];
   journeys_carrying: string[];
   exposure: {
     unguarded_paths: number;
     non_auth_guarded_paths?: number;
     external_transfer: boolean;
+    external_transfer_unresolved?: boolean;
     sensitive: boolean;
   };
 }
@@ -4270,6 +4241,7 @@ export interface ICELOTContract {
   side_effects: {
     state_changes: string[];
     external_integrations: string[];
+    unresolved_exit_point_ids?: string[];
   };
   output: string[];
   constraints: FacetConstraint[];

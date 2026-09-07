@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { FIND_TESTS_QUERY_SCHEMA } from './test-query-schema';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import type { RuntimeMetricLike } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';
 import * as agentAdoption from './agent-adoption';
@@ -61,10 +62,7 @@ export const HOSTED_PROJECT_QUERY_SCHEMAS = {
     callee_limit: z.number().int().positive().max(500).optional(),
   }).strict(),
   assess_change_risk: z.object({ node_id: z.string().min(1) }).strict(),
-  find_tests: z.object({
-    node_id: z.string().optional(), file_path: z.string().optional(), suite_id: z.string().optional(),
-    limit: z.number().int().positive().max(200).optional(), offset: z.number().int().nonnegative().optional(),
-  }).strict(),
+  find_tests: FIND_TESTS_QUERY_SCHEMA,
   get_product_map: z.object({}).strict(),
   get_user_journeys: z.object({
     journey_id: z.string().optional(), kind: z.string().optional(),
