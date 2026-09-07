@@ -297,6 +297,15 @@ async function makeReviewProject(): Promise<string> {
     '}, async () => ({ content: [] }));',
     "server.tool('twice', 'first site', async () => ({ content: [] })); server.tool('twice', 'second site', async () => ({ content: [] }));",
     "server.registerTool('text_in_other_prop', { title: \"description: 'not this'\" }, async () => ({ content: [] }));",
+    "const key = dynamicValue;",
+    "server.registerTool('computed_after', { description: 'A', [key]: dynamicValue }, async () => ({ content: [] }));",
+    "server.registerTool('computed_before', { [key]: dynamicValue, description: 'A' }, async () => ({ content: [] }));",
+    "server.registerTool('computed_restored', { description: 'A', [key]: dynamicValue, description: 'C' }, async () => ({ content: [] }));",
+    "const other = { tool: (..._args: unknown[]) => undefined };",
+    "other.tool('foreign', 'Not MCP', async () => ({ content: [] })); server.tool('foreign', 'Actual MCP', async () => ({ content: [] }));",
+    "class Holder { server = server; register() { this.server.tool('prop_receiver', 'Property receiver', async () => ({ content: [] })); } }",
+    "server",
+    "  .tool('multiline_receiver', 'Multiline receiver', async () => ({ content: [] }));",
     '',
   ].join('\n'));
   return dir;
@@ -335,6 +344,15 @@ test('McpToolRegistrationAnalyzer resolves descriptions structurally: nested key
     assert.deepEqual(twice.map(node => node.description).sort(), ['first site', 'second site']);
     assert.ok(twice.every(node => /_c\d+$/.test(node.id)), 'shared-line ids carry the call column');
     assert.ok(/_\d+$/.test(one('multi').id) && !/_c\d+$/.test(one('multi').id), 'unshared sites keep the stable id shape');
+
+    assert.equal(source(one('computed_after')), 'dynamic', 'a computed key after the literal may override it');
+    assert.equal(one('computed_before').description, 'A', 'a computed key before the literal cannot override it');
+    assert.equal(one('computed_restored').description, 'C', 'a later explicit literal restores certainty');
+    const foreign = one('foreign');
+    assert.equal(foreign.description, 'Actual MCP', 'the same-line foreign receiver does not consume the MCP registration');
+    assert.equal(foreign.metadata.attributes.receiver, 'server');
+    assert.equal(one('prop_receiver').description, 'Property receiver');
+    assert.equal(one('multiline_receiver').description, 'Multiline receiver');
   } finally {
     await fs.remove(dir);
   }

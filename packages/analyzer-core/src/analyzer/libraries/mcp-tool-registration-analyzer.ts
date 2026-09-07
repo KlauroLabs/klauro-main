@@ -22,6 +22,7 @@ interface McpToolRegistration {
   descriptionLine?: number;
   descriptionEndLine?: number;
   column?: number;
+  methodOffset?: number;
 
   handlerRef?: string;
 
@@ -304,6 +305,7 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
         kind: 'registerTool',
         filePath,
         line: this.lineAt(content, match.index),
+        methodOffset: match.index + match[0].indexOf('registerTool', match[1].length),
         receiver,
         descriptionSource: 'dynamic',
         handlerRef: this.extractHandlerRef(args),
@@ -332,6 +334,7 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
         kind: 'tool',
         filePath,
         line: this.lineAt(content, match.index),
+        methodOffset: match.index + match[0].indexOf('tool', match[1].length),
         receiver,
         descriptionSource: 'dynamic',
         handlerRef: this.extractHandlerRef(args),
@@ -379,12 +382,10 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
     } catch {
       return;
     }
-    const pending = new Map<string, McpToolRegistration[]>();
+    const pending = new Map<number, McpToolRegistration>();
     for (const reg of registrations) {
-      if (reg.kind === 'setRequestHandler') continue;
-      const key = `${reg.kind}:${reg.name}:${reg.line}`;
-      const bucket = pending.get(key);
-      if (bucket) bucket.push(reg); else pending.set(key, [reg]);
+      if (reg.kind === 'setRequestHandler' || reg.methodOffset === undefined) continue;
+      pending.set(reg.methodOffset, reg);
     }
     const visit = (node: ts.Node): void => {
       if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
@@ -392,8 +393,9 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
         const first = node.arguments[0];
         if ((method === 'registerTool' || method === 'tool') && first && this.isPlainStringLiteral(first)) {
           const position = source.getLineAndCharacterOfPosition(node.getStart(source));
-          const reg = pending.get(`${method}:${first.text}:${position.line + 1}`)?.shift();
-          if (reg) {
+          const reg = pending.get(node.expression.name.getStart(source));
+          if (reg && reg.kind === method && reg.name === first.text) {
+            pending.delete(reg.methodOffset!);
             reg.column = position.character + 1;
             Object.assign(reg, method === 'registerTool'
               ? this.describeConfigObject(node.arguments[1], source)
@@ -441,7 +443,11 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
       let key: string | undefined;
       if (ts.isIdentifier(name) || ts.isPrivateIdentifier(name) || this.isPlainStringLiteral(name) || ts.isNumericLiteral(name)) key = name.text;
       else if (ts.isComputedPropertyName(name) && this.isPlainStringLiteral(name.expression)) key = name.expression.text;
-      else { uncertain = true; continue; }
+      else {
+        uncertain = true;
+        if (verdict.descriptionSource !== 'absent') verdict = { descriptionSource: 'dynamic' };
+        continue;
+      }
       if (key !== 'description') continue;
       uncertain = false;
       verdict = ts.isPropertyAssignment(property) && this.isPlainStringLiteral(property.initializer)
