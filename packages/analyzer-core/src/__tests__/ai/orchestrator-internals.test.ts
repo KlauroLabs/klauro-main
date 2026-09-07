@@ -15773,7 +15773,7 @@ test("an empty catalog whose granted repair named candidates that were all rejec
   expect(result.map((capability: any) => capability.name)).toEqual(['Register users']);
 });
 
-test.each([false, true])('missing required outcomes preserve grounded catalog members and their reconciliation with pending language: %s', async pendingLanguage => {
+test.each([false, true, 'shared'])('missing required outcomes preserve grounded catalog members and their reconciliation with pending language: %s', async pendingLanguage => {
   const localOrch = new AnalyzerOrchestrator() as any;
   const candidates = [
     { id: 'articles', name: 'Read subscribed articles', description: 'Readers open the articles from feeds they subscribe to.', subject: 'article', action: 'read' },
@@ -15788,8 +15788,12 @@ test.each([false, true])('missing required outcomes preserve grounded catalog me
     ...candidates[0], name_source: 'ai', description_source: 'ai',
     criticality_factors: ['catalog-candidate:articles'],
   }, ...(pendingLanguage ? [{
-    ...candidates[1], name_source: 'deterministic', description_source: 'deterministic',
-    criticality_factors: ['catalog-candidate:subscriptions'],
+    ...(pendingLanguage === 'shared' ? candidates[0] : candidates[1]),
+    id: 'pending-language',
+    ...(pendingLanguage === 'shared' ? { name: 'Inspect article sources' } : {}),
+    name_source: 'deterministic', description_source: 'deterministic',
+    description_generation: { status: 'deterministic_kept', attempted: true, reason: 'unsupported-description-claim-removed' },
+    criticality_factors: [pendingLanguage === 'shared' ? 'catalog-candidate:articles' : 'catalog-candidate:subscriptions'],
   }] : [])]);
   jest.spyOn(localOrch, 'reconcileCatalogedCapabilities').mockImplementation((values: any) => values);
   const purpose: any = { primary_domain: 'feed-reading', core_concepts: [] };
