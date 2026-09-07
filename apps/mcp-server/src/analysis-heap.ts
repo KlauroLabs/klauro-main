@@ -1,4 +1,4 @@
-import * as os from 'os';
+import { readAnalysisMemoryCapacity } from './analysis-memory';
 
 export const DEFAULT_ANALYSIS_HEAP_MB = 1024;
 export const MINIMUM_ANALYSIS_HEAP_MB = 256;
@@ -14,7 +14,7 @@ export interface AnalysisHeapResolution {
 
 export function resolveAnalysisHeapMb(
   env: NodeJS.ProcessEnv = process.env,
-  totalMemBytes: number = os.totalmem(),
+  totalMemBytes: number = readAnalysisMemoryCapacity().limitBytes,
 ): AnalysisHeapResolution {
   const totalRamMb = Math.floor(totalMemBytes / (1024 * 1024));
   const raw = env.KLAURO_ANALYSIS_HEAP_MB;
@@ -48,13 +48,13 @@ function defaultHeapMb(totalRamMb: number): number {
 export function describeAnalysisHeap(resolution: AnalysisHeapResolution): string {
   const ramGb = (resolution.totalRamMb / 1024).toFixed(0);
   if (resolution.source === 'env') {
-    return `Analysis worker heap: ${resolution.heapMb} MB (from KLAURO_ANALYSIS_HEAP_MB; machine RAM ${ramGb} GB).`;
+    return `Analysis worker heap: ${resolution.heapMb} MB (from KLAURO_ANALYSIS_HEAP_MB; memory limit ${ramGb} GB).`;
   }
   if (resolution.envInvalid) {
     return `Analysis worker heap: ${resolution.heapMb} MB (default; ignored invalid KLAURO_ANALYSIS_HEAP_MB=${resolution.envValue}, minimum ${MINIMUM_ANALYSIS_HEAP_MB}).`;
   }
   if (resolution.source === 'default-capped') {
-    return `Analysis worker heap: ${resolution.heapMb} MB (default ${DEFAULT_ANALYSIS_HEAP_MB} MB capped to ${Math.round(DEFAULT_HEAP_TOTAL_RAM_FRACTION * 100)}% of ${ramGb} GB RAM). Set KLAURO_ANALYSIS_HEAP_MB to override.`;
+    return `Analysis worker heap: ${resolution.heapMb} MB (default ${DEFAULT_ANALYSIS_HEAP_MB} MB capped to ${Math.round(DEFAULT_HEAP_TOTAL_RAM_FRACTION * 100)}% of the ${ramGb} GB memory limit). Set KLAURO_ANALYSIS_HEAP_MB to override.`;
   }
-  return `Analysis worker heap: ${resolution.heapMb} MB (default; machine RAM ${ramGb} GB). Set KLAURO_ANALYSIS_HEAP_MB to override.`;
+  return `Analysis worker heap: ${resolution.heapMb} MB (default; memory limit ${ramGb} GB). Set KLAURO_ANALYSIS_HEAP_MB to override.`;
 }

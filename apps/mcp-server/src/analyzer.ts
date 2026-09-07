@@ -22,6 +22,7 @@ import {
   type AnalysisRunStartRecord,
 } from '../../../packages/analyzer-core/src/analyzer/core/run-log';
 import { resolveAnalysisHeapMb, type AnalysisHeapResolution } from './analysis-heap';
+import { AnalysisMemoryCapacityError, assertAnalysisWorkerMemoryAvailable, readContainerMemory } from './analysis-memory';
 import {
   executeHostedAnalysis,
   reserveHostedAnalysisOrThrow,
@@ -1591,23 +1592,6 @@ function getMemoryContainerRatio(): number {
 
 
 
-function readContainerMemory(): { usage: number; limit: number } | null {
-  try {
-    const limit = Number(nodeFs.readFileSync('/sys/fs/cgroup/memory.max', 'utf8').trim());
-    const usage = Number(nodeFs.readFileSync('/sys/fs/cgroup/memory.current', 'utf8').trim());
-    if (Number.isFinite(limit) && limit > 0 && Number.isFinite(usage)) return { usage, limit };
-  } catch {   }
-  try {
-    const limit = Number(nodeFs.readFileSync('/sys/fs/cgroup/memory/memory.limit_in_bytes', 'utf8').trim());
-    const usage = Number(nodeFs.readFileSync('/sys/fs/cgroup/memory/memory.usage_in_bytes', 'utf8').trim());
-
-
-    if (Number.isFinite(limit) && limit > 0 && limit < 1024 ** 4 && Number.isFinite(usage)) {
-      return { usage, limit };
-    }
-  } catch {   }
-  return null;
-}
 
 
 
@@ -1616,7 +1600,7 @@ let memoryGuardOverrideForTests: (() => boolean) | null = null;
 function isMemoryTight(): boolean {
   if (memoryGuardOverrideForTests) return memoryGuardOverrideForTests();
   const container = readContainerMemory();
-  if (container) return container.usage / container.limit > getMemoryContainerRatio();
+  if (container) return container.usage === null || container.usage / container.limit > getMemoryContainerRatio();
   return process.memoryUsage().rss > getMemoryRssLimitBytes();
 }
 
@@ -2681,13 +2665,12 @@ function buildWorkerCrashMessage(
   const oom = workerLooksOutOfMemory(handle, code, signal);
   const heap = handle.heap;
   const heapSource = heap.source === 'env' ? 'from KLAURO_ANALYSIS_HEAP_MB' : 'default';
-  const suggestedHeap = Math.min(heap.totalRamMb, heap.heapMb * 2);
   return [
     `Analysis worker for ${job.projectPath} ${exitDescription}${oom ? ' after exhausting its heap' : ''}.`,
     oom
-      ? `The worker heap was ${heap.heapMb} MB (${heapSource}); raise it with KLAURO_ANALYSIS_HEAP_MB=${suggestedHeap} in the analyzer service environment and retry the complete analysis.`
+      ? `The worker heap was ${heap.heapMb} MB (${heapSource}); inspect the shared container memory budget before changing KLAURO_ANALYSIS_HEAP_MB or retrying the complete analysis.`
       : 'The process ended without heap-exhaustion evidence; inspect the worker lifecycle and service logs before retrying.',
-    `The MCP server itself is unaffected; a run-failed record was written to ${getAnalysisRunLogPath()}.`,
+    `A run-failed record was written to ${getAnalysisRunLogPath()}; inspect service health because the worker and API may share a container memory limit.`,
   ].join(' ');
 }
 
@@ -2781,6 +2764,7 @@ function ensureAnalysisWorker(): WorkerHandle {
   if (workerHandle && workerHandle.heap.heapMb !== heap.heapMb) {
     shutdownAnalysisWorker();
   }
+  assertAnalysisWorkerMemoryAvailable(heap.heapMb, workerHandle?.child.pid);
   if (!workerHandle) {
     workerHandle = spawnAnalysisWorker(heap);
   }
@@ -2789,7 +2773,13 @@ function ensureAnalysisWorker(): WorkerHandle {
 }
 
 export function prewarmAnalysisWorker(): void {
-  if (!analysisRunsInProcess()) ensureAnalysisWorker();
+  if (analysisRunsInProcess()) return;
+  try {
+    ensureAnalysisWorker();
+  } catch (error) {
+    if (!(error instanceof AnalysisMemoryCapacityError)) throw error;
+    console.error(`[Klauro] Worker prewarm deferred: ${error.message}`);
+  }
 }
 
 export function shutdownAnalysisWorker(): void {
