@@ -2038,6 +2038,26 @@ test('composite test scripts are broad and never receive fabricated focused argu
   });
 });
 
+test('a focused sibling package does not certify a composite target test script', async () => {
+  await withWorkspace(async workspace => {
+    fs.writeFileSync(path.join(workspace, 'package.json'), JSON.stringify({ scripts: { test: 'npm run first && npm run second' } }));
+    const sibling = path.join(workspace, 'packages', 'checks');
+    fs.mkdirSync(sibling, { recursive: true });
+    fs.writeFileSync(path.join(sibling, 'package.json'), JSON.stringify({ scripts: { test: 'jest' } }));
+    fs.writeFileSync(path.join(sibling, 'users.service.spec.ts'), 'describe("UsersService", () => {});');
+    const cas = fixtureCas();
+    const target = cas.nodes.find(node => node.name === 'UsersService')!;
+    cas.test_suites!.push({
+      id: 'sibling-tests', name: 'Sibling checks', file_path: 'packages/checks/users.service.spec.ts',
+      test_type: 'unit', framework: 'jest', tests: [], coverage: { nodes_tested: [target.id] },
+    });
+    const context = await getAgentContext(cas, workspace, { task_type: 'modify', target: 'UsersService' }) as any;
+    assert.notEqual(context.validation_plan.strategy, 'focused-tests-first');
+    assert.match(context.validation_plan.run_policy, /before executing any broad suite/);
+    assert.ok(context.validation_plan.gaps.some((gap: string) => /unverified focused-file/.test(gap)));
+  });
+});
+
 test('unknown JavaScript runners are not invented when no test script exists', async () => {
   await withWorkspace(async workspace => {
     fs.writeFileSync(path.join(workspace, 'package.json'), '{}');

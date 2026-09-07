@@ -5107,9 +5107,7 @@ function buildValidationPlan(
     .filter(match => match.reason === 'explicit CAS coverage')
     .map(match => normalizeValidationFile(projectPath, match.file_path)));
   const coverageVerified = testFiles.length > 0 && testFiles.every(file => explicitFiles.has(file));
-  const validationGaps = testFiles.length > 0 && !coverageVerified
-    ? ['Coverage of every selected test file is not established by explicit CAS links; inspect the tests before treating them as target coverage.']
-    : [];
+  const validationGaps: string[] = [];
   const scriptContexts = buildScriptContexts(projectPath, fileReadPlan, testFiles);
   for (const context of scriptContexts) {
     const focusedTestCommand = buildFocusedTestCommand(context.root, context.scripts, context.testFiles);
@@ -5167,6 +5165,11 @@ function buildValidationPlan(
   if (testFiles.length > 0 && !commands.some(command => command.scope === 'focused-test')) {
     validationGaps.push('No focused test command was verified for the selected files; broad commands do not substitute for targeted validation.');
   }
+  if (testFiles.length > 0 && !coverageVerified) {
+    validationGaps.push('Coverage of every selected test file is not established by explicit CAS links; inspect the tests before treating them as target coverage.');
+  }
+  const focusedPlan = commands.some(command => command.scope === 'focused-test')
+    && !commands.some(command => command.scope === 'broad-test');
   const manualChecks = [
     selectedNode ? `Confirm the edit preserves the contract of ${selectedNode.name}.` : 'Confirm the edit target was resolved before changing source files.',
     selectedNode ? `After edits, call validate_behavioral_invariants for ${selectedNode.id}.` : 'After edits, call validate_behavioral_invariants with the task target or current working diff.',
@@ -5191,13 +5194,13 @@ function buildValidationPlan(
   }));
 
   return {
-    strategy: commands.some(command => command.scope === 'focused-test')
+    strategy: focusedPlan
       ? 'focused-tests-first'
       : commands.length > 0 ? 'repo-script-fallback' : 'manual-validation-required',
     commands: commands.slice(0, 4),
     tests_to_inspect: testsToInspect,
     manual_checks: uniqueStrings(manualChecks).slice(0, 10),
-    run_policy: !commands.some(command => command.scope === 'focused-test')
+    run_policy: !focusedPlan
       ? 'A focused test command was not verified. Inspect the declared test runner before executing any broad suite.'
       : risk?.risk?.risk_level === 'high' || risk?.risk?.risk_level === 'critical'
       ? 'Run the focused validation once after all edits are complete, and rerun only the failing command after each fix. Change risk is elevated, so a final full focused pass is required before finishing.'
