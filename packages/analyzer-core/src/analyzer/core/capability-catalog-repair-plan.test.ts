@@ -1,4 +1,16 @@
 
+import { describe, test } from 'node:test';
+import assert from 'node:assert/strict';
+import type { SystemCapability } from '../../types/cas.types';
+import type { CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
+import { groundedCapabilityAudience, unsupportedCapabilityAbsenceClaims } from './capability-catalog-audience';
+import { capabilityCatalogFocusedTask, capabilityCatalogPendingRequirementIds, capabilityCatalogRepairNudge, capabilityCatalogRepairPlan, captureCapabilityCatalogPendingRequirements, deterministicCapabilityActionIdentityFallback, deterministicCapabilityDescriptionFallback, establishPendingCapabilityEvidenceIdentity, pendingCapabilityEvidenceObservableActionFailure, preserveCapabilityCatalogDescriptionIdentity, supersedeUnboundPendingOutcomeDuplicates, type PendingCapabilityEvidenceIdentity } from './capability-catalog-repair-plan';
+
+const capability = (id: string, factors: string[], description = '') => ({
+  id, name: `Outcome ${id}`, description, category: 'core', criticality: 'high', criticality_factors: factors,
+  operations: [], related_entities: [], related_domains: [],
+}) as SystemCapability;
+
 test('bound outcome recovery preserves authored clauses instead of verbalizing normalized search tokens', () => {
   for (const name of [
     'Know what will break before changing something',
@@ -38,17 +50,7 @@ test('bound outcome recovery never invents temporal behavior to pad a short desc
   assert.equal(identity.name, 'Categorize job applications');
   assert.equal(candidate.operations.length, 1);
 });
-import { describe, test } from 'node:test';
-import assert from 'node:assert/strict';
-import type { SystemCapability } from '../../types/cas.types';
-import type { CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
-import { groundedCapabilityAudience, unsupportedCapabilityAbsenceClaims } from './capability-catalog-audience';
-import { capabilityCatalogFocusedTask, capabilityCatalogPendingRequirementIds, capabilityCatalogRepairNudge, capabilityCatalogRepairPlan, captureCapabilityCatalogPendingRequirements, deterministicCapabilityActionIdentityFallback, deterministicCapabilityDescriptionFallback, establishPendingCapabilityEvidenceIdentity, pendingCapabilityEvidenceObservableActionFailure, preserveCapabilityCatalogDescriptionIdentity, supersedeUnboundPendingOutcomeDuplicates, type PendingCapabilityEvidenceIdentity } from './capability-catalog-repair-plan';
 
-const capability = (id: string, factors: string[], description = '') => ({
-  id, name: `Outcome ${id}`, description, category: 'core', criticality: 'high', criticality_factors: factors,
-  operations: [], related_entities: [], related_domains: [],
-}) as SystemCapability;
 
 
 test('bound description recovery validates a positive clause without changing qualified outcome evidence', () => {
