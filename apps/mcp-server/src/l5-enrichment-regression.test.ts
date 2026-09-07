@@ -362,7 +362,7 @@ test('MOCKED FAILURE: L5 reaches error (never pending), ai_enrichment=error, no 
   });
 });
 
-test('MOCKED DEGRADED SYSTEM DESCRIPTION: a rejected system paragraph must not blast-radius per-item L5 comprehension', async () => {
+test('MOCKED DEGRADED SYSTEM DESCRIPTION: L5 reports narrative failure while accepted L4 and per-item evidence survive', async () => {
   await withScopedStorage(async repo => {
     mockDegradedSystemDescriptionOnly();
     const layered = await analyzeProjectLayered(repo);
@@ -390,15 +390,21 @@ test('MOCKED DEGRADED SYSTEM DESCRIPTION: a rejected system paragraph must not b
     assert.equal(degradation?.failure_class, 'failed-grounding');
     assert.ok((degradation?.reason || '').length > 0);
 
-    // BUT: this is the blast-radius fix under test. A rejected system
-    // paragraph alone must not fail the whole L5 pass — ai_enrichment reaches
-    // 'ready', not 'error', and per-item comprehension survives.
     assert.equal(
       stored.ai_enrichment,
       'ready',
       'a system-description-only rejection must still reach ready — it is not a total AI failure',
     );
-    assert.equal(l5Status(stored), 'ready');
+    assert.equal(l5Status(stored), 'error');
+    assert.match(stored.layers_ready?.layers.find(layer => layer.layer === 'L5')?.error || '', /AI system narrative/);
+    assert.equal(stored.layers_ready?.complete, false);
+    assert.equal(stored.layers_ready?.layers.find(layer => layer.layer === 'L4')?.status, 'ready');
+    assert.equal(stored.enhanced_system_purpose?.ai_phase_status, 'degraded');
+    assert.equal(stored.enhanced_system_purpose?.capability_catalog_coverage?.status, 'accepted');
+    assert.deepEqual(stored.capabilities?.map(capability => capability.name).sort(), [
+      'Onboard customers with profiles',
+      'Retrieve customer profiles',
+    ]);
     const aiCapabilities = (stored.capabilities || []).filter(cap => cap.description_source === 'ai');
     const aiEntities = (stored.entities || []).filter(entity => entity.description_source === 'ai');
     assert.ok(
