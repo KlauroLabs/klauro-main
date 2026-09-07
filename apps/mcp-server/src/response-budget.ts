@@ -185,7 +185,7 @@ export function buildContinuation(options: BoundOptions, truncatedPaths: Truncat
     `Response exceeded the ${budget}-byte budget; large collections under 'data' were truncated in place.`,
   ];
   const parameterNames = (options.parameterNames ?? []).filter(name => name !== 'path');
-  if (options.tool === 'find_tests' && parameterNames.includes('suite_id') &&
+  if (options.tool === 'find_tests' &&
     truncatedPaths.some(item => /^suites\[\d+\]\.tests(?:\[|$)/.test(item.path))) {
     lines.push("Recover omitted test cases with find_tests { suite_id: '<suite.id>', limit: 1, offset: 0 }; follow next_page to traverse the suite. Without suite_id, offset pages suites, not their tests.");
   }
