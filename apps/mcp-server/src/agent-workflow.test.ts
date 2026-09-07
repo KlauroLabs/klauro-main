@@ -2032,6 +2032,9 @@ test('composite test scripts are broad and never receive fabricated focused argu
     assert.ok(context.validation_plan.commands.every((command: any) => command.scope !== 'focused-test' && !command.command.includes(' -- ')));
     assert.ok(context.validation_plan.gaps.some((gap: string) => /unverified focused-file/.test(gap)));
     assert.match(context.validation_plan.run_policy, /before executing any broad suite/);
+    assert.ok(context.execution_brief.validate.every((command: string) => !command.includes('npm test')));
+    const compact = await getAgentContext(fixtureCas(), workspace, { task_type: 'modify', target: 'UsersService', response_profile: 'first-turn' }) as any;
+    assert.ok(!JSON.stringify(compact.execution?.validate || []).includes('npm test'));
   });
 });
 

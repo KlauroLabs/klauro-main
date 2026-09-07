@@ -978,7 +978,8 @@ function buildAgentExecutionBrief(input: {
     ...input.fileReadPlan.map((item: any) => String(item.file || '').trim()).filter(Boolean),
   ]).slice(0, 5);
   const commands = Array.isArray(input.validationPlan?.commands)
-    ? input.validationPlan.commands.map((item: any) => String(item.command || '').trim()).filter(Boolean).slice(0, 2)
+    ? input.validationPlan.commands.filter((item: any) => item.scope !== 'broad-test')
+      .map((item: any) => String(item.command || '').trim()).filter(Boolean).slice(0, 2)
     : [];
   const idiomRules = summarizeExecutionBriefRules(input.idiomContext, 3);
   const reuseRules = summarizeExecutionBriefReuse(input.capabilityMemory, 3);
@@ -2348,6 +2349,8 @@ function compactTinyAgentContext<T extends Record<string, any>>(context: T): T {
     execution_brief: context.execution_brief,
     validation_plan: {
       strategy: context.validation_plan?.strategy,
+      gaps: context.validation_plan?.gaps,
+      run_policy: context.validation_plan?.run_policy,
       commands: Array.isArray(context.validation_plan?.commands) ? context.validation_plan.commands.slice(0, 1) : context.validation_plan?.commands,
       manual_checks: Array.isArray(context.validation_plan?.manual_checks) ? context.validation_plan.manual_checks.slice(0, 2) : context.validation_plan?.manual_checks,
     },
@@ -2870,7 +2873,8 @@ function compactMinimalValidationPlan(plan: any) {
     strategy: plan.strategy,
     commands: Array.isArray(plan.commands) ? plan.commands.slice(0, 1) : [],
     manual_checks: compactManualChecks(plan.manual_checks, 3),
-    gaps: Array.isArray(plan.gaps) ? plan.gaps.slice(0, 2) : [],
+    gaps: Array.isArray(plan.gaps) ? plan.gaps : [],
+    run_policy: plan.run_policy,
   };
 }
 
@@ -3317,7 +3321,8 @@ function compactMicroValidationPlan(plan: any) {
     tests_to_inspect: Array.isArray(plan.tests_to_inspect) ? plan.tests_to_inspect.slice(0, 4) : plan.tests_to_inspect,
     manual_checks: Array.isArray(plan.manual_checks) ? plan.manual_checks.slice(0, 6) : plan.manual_checks,
     environment_rule: plan.environment_rule,
-    gaps: Array.isArray(plan.gaps) ? plan.gaps.slice(0, 3) : plan.gaps,
+    gaps: plan.gaps,
+    run_policy: plan.run_policy,
   };
 }
 
@@ -5155,6 +5160,7 @@ function buildValidationPlan(
       files: focusedTestCommand.scope === 'focused-test' ? testFiles : undefined,
       confidence: focusedTestCommand.scope === 'focused-test' ? coverageVerified ? 0.9 : 0.65 : 0.58,
       });
+      if (focusedTestCommand.gap) validationGaps.push(focusedTestCommand.gap);
     }
   }
 
