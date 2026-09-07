@@ -139,10 +139,6 @@
       "name": "<inline:6mv2n83wcn40>"
     },
     {
-      "file": "apps/mcp-server/src/analyzer.ts",
-      "name": "<inline:ra8vlg3nr9xc>"
-    },
-    {
       "file": "apps/mcp-server/src/cas-sections.ts",
       "name": "IDENTITY_FIELDS"
     },
