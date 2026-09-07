@@ -90,7 +90,7 @@ interface ShrinkCandidate {
   key: string | number;
 }
 
-function collectCandidates(value: unknown, path: string, container: Record<string, unknown> | unknown[] | null, key: string | number, out: ShrinkCandidate[]): void {
+function collectCandidates(value: unknown, path: string, container: Record<string, unknown> | unknown[] | null, key: string | number, out: ShrinkCandidate[], minimumArrayLength = 1): void {
   if (/(?:^|\.)(?:gaps|run_policy|projection_gaps|manual_checks)(?:\.|\[|$)|(?:^|\.)execution_brief\.preserve(?:\.|\[|$)/.test(path)) return;
   if (typeof value === 'string') {
     const executable = /(?:^|\.)(?:commands?|validate|(?:execution_|context_)?capsule)$|(?:^|\.)(?:commands?|validate)\[\d+\]$/.test(path);
@@ -103,16 +103,16 @@ function collectCandidates(value: unknown, path: string, container: Record<strin
 
 
 
-    if (container && value.length > 1 && !isFactArrayPath(path)) {
+    if (container && value.length > minimumArrayLength && !isFactArrayPath(path)) {
       out.push({ path, kind: 'array', size: byteLength(JSON.stringify(value)), container, key });
     }
-    value.forEach((item, index) => collectCandidates(item, `${path}[${index}]`, value, index, out));
+    value.forEach((item, index) => collectCandidates(item, `${path}[${index}]`, value, index, out, minimumArrayLength));
     return;
   }
   if (value !== null && typeof value === 'object') {
     for (const [childKey, childValue] of Object.entries(value as Record<string, unknown>)) {
       const childPath = path ? `${path}.${childKey}` : childKey;
-      collectCandidates(childValue, childPath, value as Record<string, unknown>, childKey, out);
+      collectCandidates(childValue, childPath, value as Record<string, unknown>, childKey, out, minimumArrayLength);
     }
   }
 }
@@ -123,15 +123,14 @@ interface TrimRecord {
   current: () => number;
 }
 
-function shrinkToBudget(root: { data: unknown }, targetBytes: number): Map<string, TrimRecord> {
-  const trims = new Map<string, TrimRecord>();
+function shrinkToBudget(root: { data: unknown }, targetBytes: number, trims = new Map<string, TrimRecord>(), minimumArrayLength = 1): Map<string, TrimRecord> {
   for (let pass = 0; pass < MAX_SHRINK_PASSES; pass++) {
     const serialized = serializeToolResponse(root.data);
     let remainingExcess = byteLength(serialized) - targetBytes;
     if (remainingExcess <= 0) break;
 
     const candidates: ShrinkCandidate[] = [];
-    collectCandidates(root.data, '', null, '', candidates);
+    collectCandidates(root.data, '', null, '', candidates, minimumArrayLength);
     if (candidates.length === 0) break;
     candidates.sort((a, b) => b.size - a.size);
 
@@ -140,9 +139,9 @@ function shrinkToBudget(root: { data: unknown }, targetBytes: number): Map<strin
       if (remainingExcess <= 0) break;
       if (candidate.kind === 'array') {
         const array = (candidate.container as Record<string | number, unknown>)[candidate.key];
-        if (!Array.isArray(array) || array.length <= 1) continue;
+        if (!Array.isArray(array) || array.length <= minimumArrayLength) continue;
         const averageItemBytes = Math.max(1, Math.ceil(candidate.size / array.length));
-        const remove = Math.min(array.length - 1, Math.max(1, Math.ceil(remainingExcess / averageItemBytes)));
+        const remove = Math.min(array.length - minimumArrayLength, Math.max(1, Math.ceil(remainingExcess / averageItemBytes)));
         if (!trims.has(candidate.path)) {
           const trimmedArray = array;
           trims.set(candidate.path, { kind: 'array', total: array.length, current: () => trimmedArray.length });
@@ -208,6 +207,35 @@ export function buildContinuation(options: BoundOptions, truncatedPaths: Truncat
   return lines;
 }
 
+function buildBoundedEnvelope(root: { data: unknown }, trims: Map<string, TrimRecord>, fullSize: number, budget: number, options: BoundOptions): BoundedEnvelope {
+  const allTruncatedPaths: TruncatedPath[] = [...trims.entries()].map(([path, record]) => ({
+    path: path || '(root)',
+    kind: record.kind,
+    total: record.total,
+    returned: record.current(),
+  }));
+
+  const truncatedPaths = [...allTruncatedPaths]
+    .sort((a, b) => {
+      const lostFraction = (record: TruncatedPath) =>
+        record.total > 0 ? (record.total - record.returned) / record.total : 0;
+      return (lostFraction(b) - lostFraction(a)) || ((b.total - b.returned) - (a.total - a.returned));
+    })
+    .slice(0, MAX_REPORTED_TRUNCATED_PATHS);
+
+  return {
+    truncated: true,
+    has_more: true,
+    full_size_bytes: fullSize,
+    budget_bytes: budget,
+    truncated_path_count: allTruncatedPaths.length,
+    truncated_paths: truncatedPaths,
+    continuation: buildContinuation(options, truncatedPaths),
+    data: root.data,
+  };
+
+}
+
 export function boundToolPayload(data: unknown, options: BoundOptions): unknown {
   const budget = options.budgetBytes ?? RESPONSE_BUDGET_BYTES;
   if (!Number.isSafeInteger(budget) || budget < MIN_RESPONSE_BUDGET_BYTES) {
@@ -219,35 +247,15 @@ export function boundToolPayload(data: unknown, options: BoundOptions): unknown 
 
   const root = { data: JSON.parse(serialized) };
   const trims = shrinkToBudget(root, Math.max(budget - ENVELOPE_RESERVE_BYTES, 1024));
-  const allTruncatedPaths: TruncatedPath[] = [...trims.entries()].map(([path, record]) => ({
-    path: path || '(root)',
-    kind: record.kind,
-    total: record.total,
-    returned: record.current(),
-  }));
-
-
-
-
-
-  const truncatedPaths = [...allTruncatedPaths]
-    .sort((a, b) => {
-      const lostFraction = (record: TruncatedPath) =>
-        record.total > 0 ? (record.total - record.returned) / record.total : 0;
-      return (lostFraction(b) - lostFraction(a)) || ((b.total - b.returned) - (a.total - a.returned));
-    })
-    .slice(0, MAX_REPORTED_TRUNCATED_PATHS);
-
-  const envelope: BoundedEnvelope = {
-    truncated: true,
-    has_more: true,
-    full_size_bytes: fullSize,
-    budget_bytes: budget,
-    truncated_path_count: allTruncatedPaths.length,
-    truncated_paths: truncatedPaths,
-    continuation: buildContinuation(options, truncatedPaths),
-    data: root.data,
-  };
+  let envelope = buildBoundedEnvelope(root, trims, fullSize, budget, options);
+  for (let pass = 0; pass < MAX_SHRINK_PASSES; pass++) {
+    const excess = byteLength(serializeToolResponse(envelope)) - budget;
+    if (excess <= 0) break;
+    const before = byteLength(serializeToolResponse(root.data));
+    shrinkToBudget(root, Math.max(0, before - excess - 128), trims, 0);
+    envelope = buildBoundedEnvelope(root, trims, fullSize, budget, options);
+    if (byteLength(serializeToolResponse(root.data)) >= before) break;
+  }
 
   if (byteLength(serializeToolResponse(envelope)) > budget) {
     envelope.payload_omitted = true;

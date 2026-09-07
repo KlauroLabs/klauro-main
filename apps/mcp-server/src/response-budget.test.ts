@@ -129,6 +129,20 @@ test('trimming repeated examples cannot mutate aliased warnings or post-edit che
   assert.ok(Buffer.byteLength(serializeToolResponse(bounded)) <= 8000);
 });
 
+test('an oversized singleton can be withheld without discarding the target and safety checks', () => {
+  const target = { id: 'selected', name: 'SelectedClass', file: 'src/selected.ts' };
+  const checks = ['Validate behavioral invariants.', 'Validate codebase idioms.'];
+  const payload = { selected_node: target, optional_examples: [{ command: 'x'.repeat(40000) }], validation_plan: { manual_checks: checks, gaps: ['Coverage is not verified.'] } };
+  const bounded = boundToolPayload(payload, { tool: 'get_agent_context' }) as BoundedEnvelope;
+  assert.equal(bounded.payload_omitted, undefined);
+  const returned = bounded.data as typeof payload;
+  assert.deepEqual(returned.selected_node, target);
+  assert.deepEqual(returned.validation_plan, payload.validation_plan);
+  assert.deepEqual(returned.optional_examples, []);
+  assert.ok(bounded.truncated_paths.some(item => item.path === 'optional_examples' && item.total === 1 && item.returned === 0));
+  assert.ok(Buffer.byteLength(serializeToolResponse(bounded)) <= RESPONSE_BUDGET_BYTES);
+});
+
 test('invalid response budgets are refused instead of returning an oversized envelope', () => {
   for (const budgetBytes of [0, -1, 1023, NaN, Infinity, 4000.5]) {
     assert.throws(() => boundToolPayload({}, { tool: 'get_agent_context', budgetBytes }), RangeError);
