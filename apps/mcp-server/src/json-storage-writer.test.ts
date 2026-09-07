@@ -156,16 +156,28 @@ test('field-wise compressed writer emits exactly the native JSON bytes and measu
       text: 'plain "quoted" \\ text',
       hidden: { inner: undefined, kept: false },
     };
+    value.big = Array.from({ length: 5_000 }, (_, index) => ({ index, label: `item ${index}`, odd: index % 2 === 1 ? undefined : null }));
+    value.wide = Object.fromEntries(Array.from({ length: 3_000 }, (_, index) => [`k${index}`, index % 7 === 0 ? undefined : { index }]));
     const target = path.join(dir, 'section.json.zst');
     const bytes = await writeCompressedJsonFieldsAtomic(target, value);
     const expected = JSON.stringify(value);
     const decoded = await readZstdJson(target);
     assert.equal(JSON.stringify(decoded), expected);
-    assert.deepEqual(Object.keys(bytes), ['identity', 'nodes', 'count', 'text', 'hidden']);
+    const { execFileSync } = await import('node:child_process');
+    assert.equal(execFileSync('zstd', ['-dqc', target]).toString('utf8'), `${expected}\n`);
+    assert.deepEqual(Object.keys(bytes), ['identity', 'nodes', 'count', 'text', 'hidden', 'big', 'wide']);
     for (const key of Object.keys(bytes)) assert.equal(bytes[key], Buffer.byteLength(JSON.stringify(value[key]), 'utf8'), key);
     const plain = path.join(dir, 'section.json');
     await writeCompressedJsonFieldsAtomic(plain, value);
-    assert.equal(fs.readFileSync(plain, 'utf8'), expected);
+    assert.equal(fs.readFileSync(plain, 'utf8'), `${expected}\n`);
+    const fallback = path.join(dir, 'fallback.json.zst');
+    const throwing: (input: unknown) => string | undefined = input => {
+      if (input === value.big) throw new RangeError('Invalid string length');
+      return JSON.stringify(input);
+    };
+    const fallbackBytes = await writeCompressedJsonFieldsAtomic(fallback, value, throwing);
+    assert.equal(execFileSync('zstd', ['-dqc', fallback]).toString('utf8'), `${expected}\n`);
+    assert.deepEqual(fallbackBytes, bytes);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

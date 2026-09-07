@@ -84,29 +84,76 @@ export async function writeCompressedChunksAtomic(
 
 class JsonFieldTooLarge extends Error {}
 
+const JSON_FIELD_CHUNK_ITEMS = 2_048;
+
+type JsonStringify = (value: unknown) => string | undefined;
+
 function serializableField(value: unknown): boolean {
   return value !== undefined && typeof value !== 'function' && typeof value !== 'symbol';
 }
 
-async function* serializeJsonFields(value: Record<string, unknown>, bytes: Record<string, number>): AsyncGenerator<string> {
+function isPlainChunkableObject(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return (prototype === Object.prototype || prototype === null) && typeof (value as { toJSON?: unknown }).toJSON !== 'function';
+}
+
+function stringifyOrThrow(stringify: JsonStringify, value: unknown, key: string): string | undefined {
+  try {
+    return stringify(value);
+  } catch (error) {
+    if (isJsonStringTooLargeError(error)) throw new JsonFieldTooLarge(key);
+    throw error;
+  }
+}
+
+async function* serializeJsonValueChunked(value: unknown, key: string, stringify: JsonStringify, count: (bytes: number) => void): AsyncGenerator<string> {
+  const emit = (text: string): string => { count(Buffer.byteLength(text, 'utf8')); return text; };
+  if (Array.isArray(value) && value.length > JSON_FIELD_CHUNK_ITEMS) {
+    yield emit('[');
+    for (let offset = 0; offset < value.length; offset += JSON_FIELD_CHUNK_ITEMS) {
+      const slice = stringifyOrThrow(stringify, value.slice(offset, offset + JSON_FIELD_CHUNK_ITEMS), key)!;
+      yield emit(`${offset === 0 ? '' : ','}${slice.slice(1, -1)}`);
+    }
+    yield emit(']');
+    return;
+  }
+  if (isPlainChunkableObject(value) && Object.keys(value).length > JSON_FIELD_CHUNK_ITEMS) {
+    yield emit('{');
+    let first = true;
+    for (const inner of Object.keys(value)) {
+      if (!serializableField(value[inner])) continue;
+      const serialized = stringifyOrThrow(stringify, value[inner], key);
+      if (serialized === undefined) continue;
+      yield emit(`${first ? '' : ','}${JSON.stringify(inner)}:${serialized}`);
+      first = false;
+    }
+    yield emit('}');
+    return;
+  }
+  yield emit(stringifyOrThrow(stringify, value, key)!);
+}
+
+async function* serializeJsonFields(value: Record<string, unknown>, bytes: Record<string, number>, stringify: JsonStringify): AsyncGenerator<string> {
   yield '{';
   let first = true;
   for (const key of Object.keys(value)) {
     const field = value[key];
     if (!serializableField(field)) continue;
-    let serialized: string | undefined;
-    try {
-      serialized = JSON.stringify(field);
-    } catch (error) {
-      if (isJsonStringTooLargeError(error)) throw new JsonFieldTooLarge(key);
-      throw error;
-    }
-    if (serialized === undefined) continue;
-    yield `${first ? '' : ','}${JSON.stringify(key)}:${serialized}`;
-    bytes[key] = Buffer.byteLength(serialized, 'utf8');
+    const probe = Array.isArray(field) || isPlainChunkableObject(field) ? '' : stringifyOrThrow(stringify, field, key);
+    if (probe === undefined) continue;
+    yield `${first ? '' : ','}${JSON.stringify(key)}:`;
     first = false;
+    let total = 0;
+    if (probe !== '') {
+      total = Buffer.byteLength(probe, 'utf8');
+      yield probe;
+    } else {
+      for await (const chunk of serializeJsonValueChunked(field, key, stringify, length => { total += length; })) yield chunk;
+    }
+    bytes[key] = total;
   }
-  yield '}';
+  yield '}\n';
 }
 
 async function countJsonBytes(value: unknown): Promise<number> {
@@ -122,10 +169,14 @@ async function countJsonBytes(value: unknown): Promise<number> {
   return total;
 }
 
-export async function writeCompressedJsonFieldsAtomic(filePath: string, value: Record<string, unknown>): Promise<Record<string, number>> {
+export async function writeCompressedJsonFieldsAtomic(
+  filePath: string,
+  value: Record<string, unknown>,
+  stringify: JsonStringify = JSON.stringify,
+): Promise<Record<string, number>> {
   const bytes: Record<string, number> = {};
   try {
-    await writeCompressedChunksAtomic(filePath, serializeJsonFields(value, bytes));
+    await writeCompressedChunksAtomic(filePath, serializeJsonFields(value, bytes, stringify));
     return bytes;
   } catch (error) {
     if (!(error instanceof JsonFieldTooLarge)) throw error;
