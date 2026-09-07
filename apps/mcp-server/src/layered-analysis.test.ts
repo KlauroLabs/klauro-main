@@ -20,7 +20,7 @@ test('L0 inventories every registered extension, mixed-case and hidden first-par
     const index = await computeL0Index(root);
     assert.equal(index.total_files, extensions.length + 3);
     assert.equal(index.languages.reduce((sum, language) => sum + language.files, 0), index.total_files);
-    assert.equal(index.languages.find(language => language.name === 'R')?.files, 3);
+    assert.equal(index.languages.find(language => language.name === 'R')?.files, 4);
     assert.equal(index.languages.find(language => language.name === 'TypeScript')?.files, 3);
   } finally {
     await fs.remove(root);
