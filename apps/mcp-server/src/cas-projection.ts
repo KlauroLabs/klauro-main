@@ -5,6 +5,7 @@ export interface CasProjectionMetadata {
   loaded_sections: readonly CasSectionName[];
   node_count?: number;
   edge_count?: number;
+  collection_totals?: Readonly<Record<string, number>>;
 }
 
 const CAS_PROJECTION = Symbol.for('klauro.cas.projection');
@@ -62,4 +63,11 @@ export function projectedLayerEvidence(
   if (persisted?.status === 'ready') return { status: 'pass', score: 100, detail: `${detail}; persisted ${layer} status is ready` };
   if (persisted?.status === 'error') return { status: 'fail', score: 0, detail: `${detail}; persisted ${layer} status is error${persisted.error ? `: ${persisted.error}` : ''}` };
   return { status: 'warn', score: 80, detail: `${detail}; persisted ${layer} readiness is unavailable` };
+}
+
+export function casCollectionTotal(cas: CASOutput, field: string): number | undefined {
+  const pinned = casProjection(cas)?.collection_totals?.[field];
+  if (typeof pinned === 'number') return pinned;
+  const value = (cas as unknown as Record<string, unknown>)[field];
+  return Array.isArray(value) ? value.length : undefined;
 }

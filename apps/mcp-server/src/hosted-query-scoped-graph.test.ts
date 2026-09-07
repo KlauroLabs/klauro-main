@@ -9,6 +9,8 @@ import { acquirePinnedAnalysis, computeAgentContextScope, loadAgentContextProjec
 import { assessChangeRisk, findTests } from './query';
 import { loadCompleteAnalysisFromSections } from './storage';
 import { executeHostedProjectQuery, hostedProjectQuerySections } from './hosted-project-query';
+import { attachCasProjection, casCollectionTotal } from './cas-projection';
+import { loadAnalysisSectionManifest } from './storage';
 import { resolveHostedQueryHeapMb } from './hosted-project-query-process';
 
 function fixture(): CASOutput {
@@ -323,6 +325,16 @@ test('get_agent_context on the light-plus-scoped projection matches the whole-gr
       assert.ok(second.keepIds.has('far-1') && second.keepIds.has('node-30'));
       assert.equal(projection.edgeOrder, 'original');
       assert.equal(projection.fullEdgesTruncated, false);
+      const manifest = (await loadAnalysisSectionManifest(project))!;
+      assert.equal(manifest.collection_totals?.nodes, full.nodes.length, 'the manifest carries exact per-collection totals');
+      assert.equal(manifest.collection_totals?.edges, full.edges.length);
+      assert.equal(manifest.collection_totals?.test_suites, 1);
+      assert.ok((manifest.collection_bytes?.nodes ?? 0) > 1000 && (manifest.collection_bytes?.system ?? 0) > 0, 'and measured bytes per top-level field');
+      const projected = attachCasProjection({ ...full, nodes: full.nodes.slice(0, 3), analysis_facts: [] } as CASOutput, { loaded_sections: ['identity', 'graph'], collection_totals: manifest.collection_totals });
+      assert.equal(casCollectionTotal(projected, 'nodes'), full.nodes.length, 'totals come from the generation, not the projected array');
+      assert.equal(casCollectionTotal(projected, 'analysis_facts'), 0);
+      assert.equal(casCollectionTotal(full, 'edges'), full.edges.length, 'without a projection the array length is the total');
+      assert.equal(casCollectionTotal(full, 'no_such_field'), undefined);
     } finally {
       await pinned.release();
     }

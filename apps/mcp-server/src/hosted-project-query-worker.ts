@@ -7,6 +7,7 @@ import { getAnalysisFileFingerprint, loadAnalysisProjection, loadAnalysisSection
 import { acquirePinnedAnalysis, SCOPED_QUERY_TOOLS, scopedQueryTarget, scopedSmallSections } from './hosted-query-scoped-graph';
 import type { CasSectionName } from './cas-sections';
 import { attachCasProjection, casProjection } from './cas-projection';
+import { loadAnalysisSectionManifest } from './storage';
 import type { SubCasNodeIndex } from './deployable-analysis';
 import { loadTelemetryObservations } from './telemetry-ingestion';
 import { buildNodeRuntimeMetrics } from './product';
@@ -74,6 +75,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
       const scopedEligible = request.type === 'query' && process.env.KLAURO_HOSTED_QUERY_SCOPED !== '0' && SCOPED_QUERY_TOOLS.has(request.tool)
         && Boolean(scopedQueryTarget(request.tool, request.args as Record<string, unknown> | undefined));
       const pinned = scopedEligible ? await acquirePinnedAnalysis(request.workspace) : null;
+      const collectionTotals = pinned?.segmented.manifest.collection_totals ?? (await loadAnalysisSectionManifest(request.workspace).catch(() => null))?.collection_totals;
       let scopedCas: CASOutput | undefined;
       let scopedContext: Record<string, unknown> | undefined;
       let scopedCapacityOutcome: Record<string, unknown> | undefined;
@@ -124,6 +126,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
           loaded_sections: ['identity', ...smallSections, 'graph'],
           node_count: totalNodes,
           edge_count: totalEdges,
+          ...(collectionTotals ? { collection_totals: collectionTotals } : {}),
         });
         scopedContext = 'scope' in scopedPlan
           ? {
@@ -178,6 +181,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
           ...loaded.cas,
         } as CASOutput, {
           loaded_sections: ['identity', ...loadedSections],
+          ...(collectionTotals ? { collection_totals: collectionTotals } : {}),
           node_count: loaded.inventory?.node_count,
           edge_count: loaded.inventory?.edge_count,
         });
@@ -218,6 +222,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
           index: undefined,
         } as CASOutput, {
           loaded_sections: ['identity', ...WARM_SECTIONS],
+          ...(collectionTotals ? { collection_totals: collectionTotals } : {}),
           node_count: loadedInventory(activeCas, 'node_count'),
           edge_count: loadedInventory(activeCas, 'edge_count'),
         });
@@ -268,7 +273,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
             nodes: secondProjection.nodes,
             edges: secondProjection.edges,
             index: undefined,
-          } as unknown as CASOutput, { loaded_sections: ['identity', ...Object.keys(agentSmallSections ?? {}), 'graph'] as CasSectionName[], node_count: agentPlan.graph.nodeCount, edge_count: secondProjection.edges.length });
+          } as unknown as CASOutput, { loaded_sections: ['identity', ...Object.keys(agentSmallSections ?? {}), 'graph'] as CasSectionName[], node_count: agentPlan.graph.nodeCount, edge_count: secondProjection.edges.length, ...(collectionTotals ? { collection_totals: collectionTotals } : {}) });
           result = await queryModule!.executeHostedProjectQuery({ cas: activeCas, tool: request.tool, args: request.args, projectPath: request.workspace, runtimeMetrics });
           if (scopedContext) Object.assign(scopedContext, { passes: 2, second_pass_target: selectedId, full_nodes: secondProjection.keepIds.size, light_nodes: secondProjection.lightNodes, light_edges: secondProjection.lightEdges, source: secondProjection.source, ...(secondScope.incomplete ? { incomplete: secondScope.incomplete } : {}) });
         }

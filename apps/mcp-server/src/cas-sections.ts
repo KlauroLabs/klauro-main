@@ -91,6 +91,8 @@ export interface CasSectionManifest {
   analysis_timestamp: string;
   sections: CasSectionDescriptor[];
   logical_fields: string[];
+  collection_totals?: Record<string, number>;
+  collection_bytes?: Record<string, number>;
   tree_projection?: CasTreeProjectionV1 | CasTreeProjectionV2;
   compact_graph?: {
     format: 'klauro-compact-cas-graph';
@@ -195,10 +197,23 @@ export function casSectionForField(field: string): CasSectionName {
   return 'supplemental';
 }
 
+export function measureCasCollections(cas: CASOutput): { totals: Record<string, number>; bytes: Record<string, number> } {
+  const totals: Record<string, number> = {};
+  const bytes: Record<string, number> = {};
+  for (const field of Object.keys(cas).sort()) {
+    const value = (cas as unknown as Record<string, unknown>)[field];
+    if (value === undefined) continue;
+    if (Array.isArray(value)) totals[field] = value.length;
+    bytes[field] = Buffer.byteLength(JSON.stringify(value) ?? 'null', 'utf8');
+  }
+  return { totals, bytes };
+}
+
 export function createCasSectionManifest(cas: CASOutput): CasSectionManifest {
   const fields = Object.keys(cas).sort();
   const grouped = new Map<CasSectionName, string[]>(CAS_SECTION_NAMES.map(name => [name, []]));
   for (const field of fields) grouped.get(casSectionForField(field))!.push(field);
+  const measured = measureCasCollections(cas);
   return {
     manifest_version: 1,
     cas_version: cas.cas_version,
@@ -208,6 +223,8 @@ export function createCasSectionManifest(cas: CASOutput): CasSectionManifest {
       .map(name => ({ name, fields: grouped.get(name)! }))
       .filter(section => section.fields.length > 0),
     logical_fields: fields,
+    collection_totals: measured.totals,
+    collection_bytes: measured.bytes,
   };
 }
 
