@@ -147,7 +147,7 @@ import {
   type ProjectContributionRefreshFailure,
 } from './incremental-contribution-refresh';
 import { CURRENT_NARRATIVE_VALIDATION_VERSION, previousDescriptionNeedsCurrentValidation } from './previous-description-validation';
-import { capabilityCatalogStructuralApiLabels } from './capability-catalog-prompt-evidence';
+import { capabilityCatalogStructuralApiLabels, capabilityCatalogValidationEvidence } from './capability-catalog-prompt-evidence';
 import { capabilityCatalogEvidenceContract, projectCapabilityCatalogPromptFacts } from './capability-catalog-prompt-facts';
 import { refreshIncrementalStateFromGraph } from './incremental-state-refresh';
 import { buildImportedHandlerResolver } from './imported-handler-resolver';
@@ -8786,9 +8786,12 @@ export class AnalyzerOrchestrator {
     const candidateTerminality = this.catalogCandidateTerminality(candidatePoolForRanking);
     const catalogEntityById = new Map(promptDataEntities.map(entity => [entity.id, entity]));
     const catalogNodeById = new Map((input.nodes || []).map(node => [node.id, node]));
+    const catalogEntryById = new Map((input.entryPoints || []).map(entry => [entry.id, entry]));
+    const validationCandidates = candidatePoolForRanking.map(candidate =>
+      capabilityCatalogValidationEvidence(candidate, catalogNodeById, catalogEntryById));
     const candidateAreas = promptCandidateAreas.map(capability => capability.name); const structuralApiLabels = capabilityCatalogStructuralApiLabels(candidatePoolForRanking);
     const candidateAreaFacts = projectCapabilityCatalogPromptFacts(
-      promptCandidateAreas, catalogNodeById, new Map((input.entryPoints || []).map(entry => [entry.id, entry])),
+      promptCandidateAreas, catalogNodeById, catalogEntryById,
       catalogEntityById, candidateTerminality,
     );
     const services = (input.externalServices || []).slice(0, 12);
@@ -9000,7 +9003,7 @@ export class AnalyzerOrchestrator {
     const capabilityEvidenceVocabulary = new Set<string>();
     for (const value of [
       ...candidateAreas,
-      ...candidatePoolForRanking.flatMap(capabilityOperationEvidenceTexts),
+      ...validationCandidates.flatMap(capabilityOperationEvidenceTexts),
       ...input.dataEntities.map(entity => entity.name),
       ...(input.userJourneys || []).map(journey => journey.name),
       String(purpose.primary_domain || ''),
@@ -9234,7 +9237,7 @@ export class AnalyzerOrchestrator {
         debugCatalogRejection(name, 'targeted-evidence-citations-incomplete', candidateIds);
         continue;
       }
-      const citedCandidatePool = candidatePoolForRanking.filter(candidate => candidateIds.includes(candidate.id));
+      const citedCandidatePool = validationCandidates.filter(candidate => candidateIds.includes(candidate.id));
       const citedCandidates = targetedRepair && requiresCompleteTargetedCitations
         ? citedCandidatePool
         : narrowCapabilityEvidenceCandidates(name, citedCandidatePool);
@@ -9276,7 +9279,7 @@ export class AnalyzerOrchestrator {
         id: 'catalog-proposal', name, description, category: 'core', operations: [],
         related_entities: [], related_domains: [], criticality: 'medium',
         criticality_factors: citedCandidates.map(candidate => 'catalog-candidate:' + candidate.id),
-      }, candidatePoolForRanking, signal);
+      }, validationCandidates, signal);
       if (!targetedRepair && (upstreamPrerequisiteEvidence ||
           (!boundRequirement && supportingOnlyEvidence && !reusesAcceptedOutcome && !firstPartyGroundedDelivery))) {
         debugCatalogRejection(name, upstreamPrerequisiteEvidence
@@ -9469,11 +9472,11 @@ export class AnalyzerOrchestrator {
             : { status: 'ai_applied', attempted: true, generated_at: new Date().toISOString() },
         category,
         operations: dedupedOps,
-        ...([...anchoredCandidateIds].some(candidateId => candidatePoolForRanking.find(candidate => candidate.id === candidateId)?.operation_evidence !== undefined) ? {
+        ...([...anchoredCandidateIds].some(candidateId => validationCandidates.find(candidate => candidate.id === candidateId)?.operation_evidence !== undefined) ? {
           operation_evidence: retainedCapabilityOperationEvidence({
             operations: dedupedOps,
             operation_evidence: [...anchoredCandidateIds].flatMap(candidateId =>
-              candidatePoolForRanking.find(candidate => candidate.id === candidateId)?.operation_evidence || []),
+              validationCandidates.find(candidate => candidate.id === candidateId)?.operation_evidence || []),
           }),
         } : {}),
         related_entities: allRelatedEntities,

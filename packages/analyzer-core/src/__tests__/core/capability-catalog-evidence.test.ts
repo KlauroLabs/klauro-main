@@ -57,10 +57,11 @@ test('grounds specialized API behavior in one cited operation without requiring 
 
   const unrelated = { ...surface, operations: [surface.operations[1]] };
   expect(capabilityOutcomeNameUnsupportedTokens('Negotiate request charsets', [unrelated])).toContain('charset');
-  const nonApi = { ...surface, operations: surface.operations.map(operation => ({
+  const httpSurface = { ...surface, operations: surface.operations.map(operation => ({
     ...operation, entry_point_type: 'http',
   })) };
-  expect(capabilityOutcomeNameUnsupportedTokens('Negotiate request charsets', [nonApi])).toContain('charset');
+  expect(capabilityOutcomeNameUnsupportedTokens('Negotiate request charsets', [httpSurface])).toEqual([]);
+  expect(capabilityOutcomeNameUnsupportedTokens('Negotiate request appointments', [httpSurface])).toContain('appointment');
 });
 
 function candidate(id: string, name: string, category: SystemCapability['category'], actions: string[]): SystemCapability {

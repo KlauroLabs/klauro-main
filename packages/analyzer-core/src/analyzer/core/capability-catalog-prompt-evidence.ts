@@ -59,11 +59,14 @@ function declaredContractText(raw: string): { text: string; example_blocks_omitt
 function declaredContracts(
   capability: SystemCapability,
   nodeById: ReadonlyMap<string, CASNode>,
+  entryById?: ReadonlyMap<string, CASEntryPoint>,
 ): NonNullable<CapabilityCatalogPromptEvidence['declared_contracts']> {
-  const entryIds = new Set(capability.operations
-    .filter(operation => operation.entry_point_type === 'api' || operation.entry_point_type === 'rpc')
-    .map(operation => operation.entry_point_id));
-  return (capability.operation_evidence || []).flatMap(evidence => {
+  const entryIds = new Set(capability.operations.map(operation => operation.entry_point_id));
+  const sources = capability.operation_evidence ?? capability.operations.flatMap(operation => {
+    const entry = entryById?.get(operation.entry_point_id);
+    return entry?.source_node ? [{ entry_point_id: entry.id, source_node_id: entry.source_node }] : [];
+  });
+  const contracts = sources.flatMap(evidence => {
     if (!entryIds.has(evidence.entry_point_id)) return [];
     const node = nodeById.get(evidence.source_node_id);
     if (!node) return [];
@@ -73,6 +76,25 @@ function declaredContracts(
     const contract = declaredContractText(raw);
     return contract.text ? [{ entry_point_id: evidence.entry_point_id, source_node_id: node.id, ...contract }] : [];
   });
+  return [...new Map(contracts.map(contract => [
+    JSON.stringify([contract.entry_point_id, contract.source_node_id, contract.text]), contract,
+  ])).values()];
+}
+
+export function capabilityCatalogValidationEvidence(
+  capability: SystemCapability,
+  nodeById: ReadonlyMap<string, CASNode>,
+  entryById: ReadonlyMap<string, CASEntryPoint>,
+): SystemCapability {
+  const contracts = declaredContracts(capability, nodeById, entryById);
+  if (contracts.length === 0) return capability;
+  const records = [
+    ...(capability.operation_evidence || []),
+    ...contracts.map(({ entry_point_id, source_node_id, text }) => ({ entry_point_id, source_node_id, text })),
+  ];
+  return { ...capability, operation_evidence: [...new Map(records.map(record => [
+    JSON.stringify([record.entry_point_id, record.source_node_id, record.text]), record,
+  ])).values()] };
 }
 
 export function projectCapabilityCatalogPromptEvidence(
@@ -115,7 +137,7 @@ export function projectCapabilityCatalogPromptEvidence(
     return [humanize(dependency.description), sharedEntities.length > 0 ? `Shared subjects: ${sharedEntities.join(', ')}` : '']
       .filter(Boolean).join('. ');
   }).filter(Boolean)));
-  const contracts = declaredContracts(capability, nodeById);
+  const contracts = declaredContracts(capability, nodeById, entryById);
   return {
     name: (capability.evidence_kind === 'behavior-surface' || structuralApiGroup) && projectedOperations.length > 0
       ? projectedOperations.slice(0, 8).join(', ')
