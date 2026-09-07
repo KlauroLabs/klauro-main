@@ -9,6 +9,7 @@ const PARENT_GROWTH_RESERVE_BYTES = 256 * MIB;
 export interface ContainerMemory {
   limit: number;
   usage: number | null;
+  reclaimableFileBytes?: number;
 }
 
 export interface AnalysisMemoryCapacity {
@@ -28,16 +29,56 @@ function readMemoryBytes(file: string, read: (file: string) => string): number |
   }
 }
 
+function readContainerUsage(
+  limit: number,
+  usagePath: string,
+  statPath: string,
+  version: 1 | 2,
+  read: (file: string) => string,
+): ContainerMemory {
+  const before = readMemoryBytes(usagePath, read);
+  if (before === null) return { limit, usage: null };
+  let stats: Map<string, number>;
+  const keys = version === 2
+    ? ['file', 'inactive_file', 'file_dirty', 'file_writeback', 'shmem', 'anon']
+    : ['total_cache', 'total_inactive_file', 'total_dirty', 'total_writeback', 'total_shmem', 'total_rss'];
+  try {
+    stats = new Map();
+    for (const line of read(statPath).trim().split('\n')) {
+      const match = /^([a-z_]+)\s+(\d+)$/.exec(line);
+      if (!match) return { limit, usage: before };
+      if (!keys.includes(match[1])) continue;
+      if (stats.has(match[1])) return { limit, usage: before };
+      const value = Number(match[2]);
+      if (!Number.isSafeInteger(value)) return { limit, usage: before };
+      stats.set(match[1], value);
+    }
+  } catch {
+    return { limit, usage: before };
+  }
+  const values = keys.map(key => stats.get(key));
+  if (values.some(value => value === undefined)) return { limit, usage: before };
+  const [file, inactive, dirty, writeback, shared, anonymous] = values as number[];
+  const after = readMemoryBytes(usagePath, read);
+  if (after === null) return { limit, usage: null };
+  const usage = Math.max(before, after);
+  const reclaimableFileBytes = Math.max(0, Math.min(
+    Math.min(file, inactive) - dirty - writeback - shared,
+    usage - anonymous,
+  ));
+  return { limit, usage, ...(reclaimableFileBytes > 0 ? { reclaimableFileBytes } : {}) };
+}
+
 export function readContainerMemory(
   read: (file: string) => string = file => fs.readFileSync(file, 'utf8'),
 ): ContainerMemory | null {
   const v2Limit = readMemoryBytes('/sys/fs/cgroup/memory.max', read);
   if (v2Limit !== null && v2Limit > 0) {
-    return { limit: v2Limit, usage: readMemoryBytes('/sys/fs/cgroup/memory.current', read) };
+    return readContainerUsage(v2Limit, '/sys/fs/cgroup/memory.current', '/sys/fs/cgroup/memory.stat', 2, read);
   }
   const v1Limit = readMemoryBytes('/sys/fs/cgroup/memory/memory.limit_in_bytes', read);
   if (v1Limit !== null && v1Limit > 0 && v1Limit < 1024 ** 4) {
-    return { limit: v1Limit, usage: readMemoryBytes('/sys/fs/cgroup/memory/memory.usage_in_bytes', read) };
+    return readContainerUsage(v1Limit, '/sys/fs/cgroup/memory/memory.usage_in_bytes', '/sys/fs/cgroup/memory/memory.stat', 1, read);
   }
   return null;
 }
@@ -48,9 +89,13 @@ export function readAnalysisMemoryCapacity(
   freeBytes: number = os.freemem(),
 ): AnalysisMemoryCapacity {
   if (container) {
+    const cache = container.reclaimableFileBytes ?? 0;
+    const reclaimable = Number.isSafeInteger(cache) && cache >= 0 && container.usage !== null && cache <= container.usage
+      ? cache
+      : 0;
     return {
       limitBytes: Math.min(totalBytes, container.limit),
-      availableBytes: container.usage === null ? null : Math.max(0, Math.min(freeBytes, container.limit - container.usage)),
+      availableBytes: container.usage === null ? null : Math.max(0, Math.min(freeBytes, container.limit - container.usage + reclaimable)),
       source: 'cgroup',
     };
   }
