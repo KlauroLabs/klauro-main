@@ -4,7 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { buildSourceSnapshot, buildStreamingSourceSnapshot, sourceSnapshotDigest } from './remote-source';
+import { buildSourceSnapshot, buildStreamingSourceSnapshot, sourceSnapshotDigest, buildHeadSourceSnapshot } from './remote-source';
 import { LOCAL_PACKAGE_IMPORT_CONTEXT_PATH } from '../../../packages/analyzer-core/src/analyzer/core/local-package-import-context';
 
 /**
@@ -243,5 +243,22 @@ test('hosted snapshots fail closed when the explicit total-byte limit is exceede
       buildStreamingSourceSnapshot(dir),
       /Source snapshot is \d+ bytes, exceeding configured source\.maxTotalBytes=1024/,
     );
+  });
+});
+
+test('committed-head snapshots report files excluded only by source.maxFileBytes instead of dropping them silently', async () => {
+  await withTempDir(async dir => {
+    initGitRepo(dir);
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'small.ts'), 'export const small = 1;\n');
+    fs.writeFileSync(path.join(dir, 'src', 'huge.ts'), `export const huge = "${'x'.repeat(4096)}";\n`);
+    fs.writeFileSync(path.join(dir, '.klaurorc'), JSON.stringify({ source: { maxFileBytes: 1024 } }));
+    git(dir, ['add', '.']);
+    commitAt(dir, '2026-09-07T00:00:00Z', 'fixture');
+    const snapshot = await buildHeadSourceSnapshot(dir);
+    assert.ok(snapshot.files.some(file => file.path === 'src/small.ts'));
+    assert.ok(!snapshot.files.some(file => file.path === 'src/huge.ts'));
+    assert.deepEqual(snapshot.manifest.excluded_oversize_files?.map(file => file.path), ['src/huge.ts']);
+    assert.ok((snapshot.manifest.excluded_oversize_files?.[0].bytes || 0) > 4096);
   });
 });

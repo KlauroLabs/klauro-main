@@ -134,7 +134,15 @@ const LIGHTWEIGHT_ANSWER_SECTIONS = [
 interface HostedQuerySectionArgs {
   node_id?: unknown;
   section?: unknown;
+  include?: unknown;
   task?: { task_type?: unknown; target?: unknown; related_paths?: unknown[] };
+}
+
+function codingContextSections(include: unknown): readonly CasSectionName[] {
+  const requested = Array.isArray(include) ? include.filter((item): item is string => typeof item === 'string') : [];
+  const sections: CasSectionName[] = ['graph', 'quality', 'supplemental'];
+  if (requested.length === 0 || requested.includes('tests')) sections.push('tests');
+  return sections;
 }
 
 export function hostedProjectQuerySections(tool: string, args: HostedQuerySectionArgs = {}): readonly CasSectionName[] {
@@ -157,7 +165,7 @@ export function hostedProjectQuerySections(tool: string, args: HostedQuerySectio
     case 'validate_behavioral_invariants': return ['quality'];
     case 'find_tests': return args.node_id ? ['graph', 'tests'] : ['tests'];
     case 'assess_change_risk': return ['graph', 'calls', 'tests', 'quality'];
-    case 'get_coding_context': return ['graph', 'calls', 'facts', 'comprehension', 'tests', 'quality', 'supplemental'];
+    case 'get_coding_context': return codingContextSections(args.include);
     case 'get_agent_start_context':
     case 'get_agent_tool_plan': return ORIENTATION_SECTIONS;
     case 'get_agent_context': return !args.task?.target && !args.task?.related_paths?.length

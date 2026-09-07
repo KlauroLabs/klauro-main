@@ -16,7 +16,8 @@ x-analysis-environment: &analysis-environment
   KLAURO_ANALYSIS_WORKER_IDLE_MS: "0"
   KLAURO_ANALYSIS_STALL_MS: "600000"
   KLAURO_ANALYSIS_WORKER_SOCKET: /run/klauro/analysis-worker.sock
-  KLAURO_ANALYSIS_HEAP_MB: "2432"
+  KLAURO_ANALYSIS_HEAP_MB: "2240"
+  KLAURO_HOSTED_QUERY_HEAP_MB: "1280"
   REDIS_HOST: redis
 
 services:
@@ -31,8 +32,8 @@ services:
     restart: unless-stopped
     init: true
     cpus: "2.0"
-    mem_limit: 1536m
-    memswap_limit: 1536m
+    mem_limit: 2048m
+    memswap_limit: 2048m
     env_file:
       - /opt/klauro/.env
     environment:
@@ -41,7 +42,7 @@ services:
       KLAURO_TELEMETRY_LOCK_INSTANCE: "hosted-api"
       KLAURO_SELF_TELEMETRY_PROJECT: /data/workspaces/prj_wbW33m-wfETn1N41
       KLAURO_ANALYSIS_QUEUE_CAPACITY: "4"
-      NODE_OPTIONS: --max-old-space-size=1024
+      NODE_OPTIONS: --max-old-space-size=768
     expose:
       - "8787"
     depends_on:
@@ -71,8 +72,8 @@ services:
     command: ["/app/node_modules/.bin/tsx", "/app/apps/mcp-server/src/analysis-worker-service.ts"]
     init: true
     cpus: "3.0"
-    mem_limit: 3584m
-    memswap_limit: 3584m
+    mem_limit: 3328m
+    memswap_limit: 3328m
     env_file:
       - /opt/klauro/.env
     environment:
@@ -102,8 +103,8 @@ services:
     restart: unless-stopped
     command: ["/app/node_modules/.bin/tsx", "src/fabric.ts"]
     cpus: "1.0"
-    mem_limit: 1024m
-    memswap_limit: 1024m
+    mem_limit: 768m
+    memswap_limit: 768m
     env_file:
       - /opt/klauro/.env
     environment:
@@ -114,7 +115,7 @@ services:
       KLAURO_TS_PARSE_WORKERS: "1"
       KLAURO_ANALYSIS_CONCURRENCY: "1"
       KLAURO_ANALYSIS_WORKER_IDLE_MS: "0"
-      NODE_OPTIONS: --max-old-space-size=768
+      NODE_OPTIONS: --max-old-space-size=512
     expose:
       - "8788"
     volumes:

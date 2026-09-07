@@ -9,6 +9,7 @@ import { attachCasProjection, casProjection } from './cas-projection';
 import type { SubCasNodeIndex } from './deployable-analysis';
 import { loadTelemetryObservations } from './telemetry-ingestion';
 import { buildNodeRuntimeMetrics } from './product';
+import { loadScopedGraphSection, planScopedQuery } from './hosted-query-scoped-graph';
 
 if (!process.send) {
   process.stderr.write('hosted-project-query-worker must be started through child_process.fork.\n');
@@ -68,10 +69,55 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
       const requiredSections: CasSectionName[] = request.type === 'query'
         ? [...queryModule!.hostedProjectQuerySections(request.tool, request.args as any)]
         : [...WARM_SECTIONS];
+      const scopedPlan = request.type === 'query'
+        ? await planScopedQuery(request.workspace, request.tool, request.args as Record<string, unknown> | undefined)
+        : null;
+      let scopedCas: CASOutput | undefined;
+      let scopedContext: Record<string, unknown> | undefined;
+      if (scopedPlan) {
+        const loadStartedAt = Date.now();
+        const smallSections = requiredSections.filter(section => section !== 'graph' && section !== 'calls');
+        const loaded = await loadAnalysisProjection(request.workspace, smallSections);
+        if (!loaded) throw new Error(`No analysis found for: ${request.workspace}. Run analyze_codebase first.`);
+        const graphSection = 'scope' in scopedPlan
+          ? await loadScopedGraphSection(request.workspace, scopedPlan.scope.keepIds)
+          : null;
+        scopedCas = attachCasProjection({
+          analyzer_contributions: [],
+          ...loaded.cas,
+          nodes: graphSection?.nodes ?? [],
+          edges: graphSection?.edges ?? [],
+          index: undefined,
+        } as CASOutput, {
+          loaded_sections: ['identity', ...smallSections, 'graph'],
+          node_count: loaded.inventory?.node_count,
+          edge_count: loaded.inventory?.edge_count,
+        });
+        scopedContext = 'scope' in scopedPlan
+          ? {
+              mode: 'scoped',
+              target_id: scopedPlan.scope.targetId,
+              loaded_nodes: graphSection?.nodes.length ?? 0,
+              loaded_edges: graphSection?.edges.length ?? 0,
+              total_nodes: loaded.inventory?.node_count ?? graphSection?.scanned.nodes,
+              total_edges: loaded.inventory?.edge_count ?? graphSection?.scanned.edges,
+              callers_total: scopedPlan.scope.callerCount,
+              callees_total: scopedPlan.scope.calleeCount,
+              truncated: scopedPlan.scope.truncated,
+            }
+          : { mode: 'scoped', target_not_found: scopedPlan.targetNotFound, loaded_nodes: 0, loaded_edges: 0 };
+        process.stderr.write(`${JSON.stringify({
+          event: 'hosted_query_scoped_graph',
+          tool: request.tool,
+          duration_ms: Date.now() - loadStartedAt,
+          ...scopedContext,
+          rss_mb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+        })}\n`);
+      }
       const sameProfile = cachedSections.size === requiredSections.length
         && requiredSections.every(section => cachedSections.has(section))
         && (request.type !== 'analysis-status' || Boolean(cachedSubCasNodes));
-      if (!cachedCas || !sameProfile) {
+      if (!scopedCas && (!cachedCas || !sameProfile)) {
         cachedCas = undefined;
         cachedSections = new Set<CasSectionName>();
         const loadStartedAt = Date.now();
@@ -109,7 +155,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
           rss_mb: Math.round(process.memoryUsage().rss / 1024 / 1024),
         })}\n`);
       }
-      const activeCas = cachedCas;
+      const activeCas = scopedCas || cachedCas;
       if (!activeCas) throw new Error(`No analysis found for: ${request.workspace}. Run analyze_codebase first.`);
       if (request.type === 'warm') {
         process.send!({ type: 'result', id: request.id, analysisTimestamp: activeCas.analysis_timestamp });
@@ -170,6 +216,9 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
             runtimeMetrics,
           });
       debugMemory('result');
+      if (scopedContext && result && typeof result === 'object' && !Array.isArray(result)) {
+        (result as Record<string, unknown>).scoped_context = scopedContext;
+      }
       process.send!({
         type: 'result',
         id: request.id,

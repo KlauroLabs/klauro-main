@@ -96,6 +96,7 @@ export interface SourceManifest {
 
   snapshot_digest?: string;
   excluded_directories: string[];
+  excluded_oversize_files?: Array<{ path: string; bytes: number }>;
   config_file?: string;
   ignore_file?: string;
   upload_mode?: string;
@@ -403,9 +404,13 @@ async function buildStreamingHeadSnapshot(
   const trackedPaths = listGitTrackedPathsAtHead(root).map(normalizeRelativePath).filter(Boolean);
   const objectSizes = readFileSizesAtRef(root, 'HEAD', trackedPaths);
   const included: string[] = [];
+  const oversize: Array<{ path: string; bytes: number }> = [];
   for (const relativePath of trackedPaths) {
     const size = objectSizes.get(relativePath);
-    if (size !== undefined && await shouldIncludeRelativePath(root, relativePath, loaded, size)) included.push(relativePath);
+    if (size === undefined) continue;
+    const verdict = await shouldIncludeRelativePathVerbose(root, relativePath, loaded, size);
+    if (verdict.included) included.push(relativePath);
+    else if (verdict.reason === OVERSIZE_REASON) oversize.push({ path: relativePath, bytes: size });
   }
 
   const files: StreamingSourceFile[] = [];
@@ -440,7 +445,7 @@ async function buildStreamingHeadSnapshot(
     base_commit: head,
     snapshot_source: 'committed-head',
     files,
-    manifest: buildManifestFromStats(root, loaded, files),
+    manifest: buildManifestFromStats(root, loaded, files, 'full', oversize),
   };
 }
 
@@ -542,12 +547,13 @@ export async function buildHeadSourceSnapshot(
     .filter(Boolean);
   const objectSizes = readFileSizesAtRef(root, 'HEAD', trackedPaths);
   const includedPaths: string[] = [];
+  const oversize: Array<{ path: string; bytes: number }> = [];
   for (const normalized of trackedPaths) {
     const byteSize = objectSizes.get(normalized);
     if (byteSize === undefined) continue;
-    if (await shouldIncludeRelativePath(root, normalized, loaded, byteSize)) {
-      includedPaths.push(normalized);
-    }
+    const verdict = await shouldIncludeRelativePathVerbose(root, normalized, loaded, byteSize);
+    if (verdict.included) includedPaths.push(normalized);
+    else if (verdict.reason === OVERSIZE_REASON) oversize.push({ path: normalized, bytes: byteSize });
   }
   const contents = readFilesAtRef(root, 'HEAD', includedPaths);
   const files: RemoteSourceFile[] = [];
@@ -566,7 +572,7 @@ export async function buildHeadSourceSnapshot(
     base_commit: head,
     snapshot_source: 'committed-head',
     files: files.sort((left, right) => left.path.localeCompare(right.path)),
-    manifest: buildManifest(root, loaded, files),
+    manifest: buildManifest(root, loaded, files, 'full', oversize),
   };
 }
 
@@ -919,6 +925,8 @@ async function shouldIncludeRelativePath(
 
 type IncludeVerdict = { included: true } | { included: false; reason: string };
 
+const OVERSIZE_REASON = 'file exceeds source.maxFileBytes';
+
 async function shouldIncludeRelativePathVerbose(
   root: string,
   relativePath: string,
@@ -953,11 +961,11 @@ async function shouldIncludeRelativePathVerbose(
   }
 
   if (sizeOverride != null) {
-    if (loaded.config.source.maxFileBytes > 0 && sizeOverride > loaded.config.source.maxFileBytes) return { included: false, reason: 'file exceeds source.maxFileBytes' };
+    if (loaded.config.source.maxFileBytes > 0 && sizeOverride > loaded.config.source.maxFileBytes) return { included: false, reason: OVERSIZE_REASON };
   } else {
     try {
       const stat = await fs.stat(path.join(root, normalized));
-      if (loaded.config.source.maxFileBytes > 0 && stat.size > loaded.config.source.maxFileBytes) return { included: false, reason: 'file exceeds source.maxFileBytes' };
+      if (loaded.config.source.maxFileBytes > 0 && stat.size > loaded.config.source.maxFileBytes) return { included: false, reason: OVERSIZE_REASON };
     } catch {
       return { included: false, reason: 'file not readable (stat failed)' };
     }
@@ -1256,10 +1264,12 @@ function buildManifest(
   loaded: LoadedKlauroConfig,
   files: Array<{ path?: string; content: string; hash?: string }>,
   mode: 'full' | 'dirty-tree' = 'full',
+  excludedOversize: Array<{ path: string; bytes: number }> = [],
 ): SourceManifest {
   const gitRemote = readGitRemote(root);
   const remoteProvider = detectRemoteProvider(gitRemote);
   return {
+    ...(excludedOversize.length > 0 ? { excluded_oversize_files: excludedOversize } : {}),
     generated_at: new Date().toISOString(),
     root,
     git_remote: gitRemote,
@@ -1290,10 +1300,12 @@ function buildManifestFromStats(
   loaded: LoadedKlauroConfig,
   files: Array<{ path: string; hash: string; bytes: number }>,
   mode: 'full' | 'dirty-tree' = 'full',
+  excludedOversize: Array<{ path: string; bytes: number }> = [],
 ): SourceManifest {
   const gitRemote = readGitRemote(root);
   const remoteProvider = detectRemoteProvider(gitRemote);
   return {
+    ...(excludedOversize.length > 0 ? { excluded_oversize_files: excludedOversize } : {}),
     generated_at: new Date().toISOString(),
     root,
     git_remote: gitRemote,
