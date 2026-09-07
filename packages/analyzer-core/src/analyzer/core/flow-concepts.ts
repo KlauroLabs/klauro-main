@@ -24,6 +24,7 @@ import type {
   StepCodeRegion,
   StepCodeRelationship,
 } from '../../types/cas.types';
+import { hasUnresolvedDependencyEffect } from './exit-point-effects';
 import { buildTerminalSignal } from './terminal-signal';
 import { buildCronScheduleIndex, findCronSchedule, discriminatorLabel, USER_FACING_ENTRY_TYPES } from './journey-builder';
 import { cleanRawFallbackName, dedupeAdjacentWords, flowNameForEntryPoint, titleCaseWords } from './flow-entry-naming';
@@ -613,6 +614,7 @@ interface ContractFactIndex {
   lineageByNode: Map<string, CASEntityLineage[]>;
   lineageOrdinal: Map<CASEntityLineage, number>;
   exitSourceById: Map<string, string>;
+  unresolvedExitPointIds: Set<string>;
   entryPointNameById: Map<string, string>;
   tryCatchNodeIds: Set<string>;
   callChains: Array<{
@@ -713,6 +715,7 @@ function contractFactIndex(cas: CASOutput): ContractFactIndex {
     lineageByNode,
     lineageOrdinal,
     exitSourceById,
+    unresolvedExitPointIds: new Set((cas.exit_points || []).filter(hasUnresolvedDependencyEffect).map(exit => exit.id)),
     entryPointNameById,
     tryCatchNodeIds,
     callChains,
@@ -887,6 +890,7 @@ function buildEvidenceContract(
   const output = new Set<string>();
   const stateChanges = new Set<string>();
   const externalIntegrations = new Set<string>();
+  const unresolvedExitPointIds = new Set<string>();
   const constraints: FacetConstraint[] = [];
   const provenanceByKey = new Map<string, FacetProvenance>();
   const recordEvidence = (facet: ProvenanceFacet, value: string, evidence: string, contributedNodeIds: Iterable<string>) => {
@@ -932,6 +936,10 @@ function buildEvidenceContract(
     }
 
     for (const ep of exitPointsByNode.get(node.id) || []) {
+      if (hasUnresolvedDependencyEffect(ep)) {
+        unresolvedExitPointIds.add(ep.id);
+        continue;
+      }
       const label = ep.target?.service_id || ep.target?.resource || `${ep.type}:${ep.name}`;
       if (ep.type === 'database' || ep.type === 'cache' || ep.type === 'file') {
         stateChanges.add(label);
@@ -980,6 +988,10 @@ function buildEvidenceContract(
     for (const recipient of entry.external_recipients) {
       const carrier = recipient.via_node ?? facts.exitSourceById.get(recipient.exit_point_id);
       if (!carrier || !nodeIds.has(carrier)) continue;
+      if (facts.unresolvedExitPointIds.has(recipient.exit_point_id)) {
+        unresolvedExitPointIds.add(recipient.exit_point_id);
+        continue;
+      }
       externalIntegrations.add(recipient.service);
       recordEvidence('external_integration', recipient.service,
         `data_lineage "${entry.entity_name}" transfer to ${recipient.service} through node ${carrier} at exit ${recipient.exit_point_id}`,
@@ -1001,6 +1013,7 @@ function buildEvidenceContract(
     side_effects: {
       state_changes: [...stateChanges],
       external_integrations: [...externalIntegrations],
+      ...(unresolvedExitPointIds.size > 0 ? { unresolved_exit_point_ids: [...unresolvedExitPointIds].sort() } : {}),
     },
     output: [...output],
     constraints,

@@ -68,6 +68,27 @@ test('a Go stdlib/local call misclassified as an exit point (no structured targe
   assert.equal(lineages[0].exposure.external_transfer, false);
 });
 
+test('a dependency name alone leaves transfer unresolved without dropping the exit', () => {
+  const dependency = exitPoint({ id: 'dependency', target: { sdk: 'formatting-library', endpoint: 'transform' } });
+  const input = lineageInputFor([dependency]);
+  const before = JSON.stringify(input);
+  const [lineage] = buildDataLineage(input);
+  assert.deepEqual(lineage.external_recipients, []);
+  assert.deepEqual((lineage as any).unresolved_exit_point_ids, ['dependency']);
+  assert.equal(lineage.exposure.external_transfer, false);
+  assert.equal((lineage.exposure as any).external_transfer_unresolved, true);
+  assert.equal(JSON.stringify(input), before);
+});
+
+test('an SDK call with an explicit destination retains its transfer evidence', () => {
+  const [lineage] = buildDataLineage(lineageInputFor([
+    exitPoint({ id: 'delivery', target: { sdk: 'delivery-library', service_id: 'delivery-service' } }),
+  ]));
+  assert.deepEqual(lineage.external_recipients.map(recipient => recipient.service), ['delivery-service']);
+  assert.equal(lineage.exposure.external_transfer, true);
+  assert.equal((lineage as any).unresolved_exit_point_ids, undefined);
+});
+
 test('a real outbound HTTP client call (structured target.service_id) IS surfaced as a recipient', () => {
   const realExit = exitPoint({
     id: 'e8',

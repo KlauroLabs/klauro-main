@@ -38,6 +38,23 @@ function flow(id: string, exitId: string, nodeId: string): FlowConcept {
   };
 }
 
+test('projects dependency uncertainty without losing the canonical flow or exit', () => {
+  const projected = projectUserJourneysFromFlows({
+    nodes: [{ id: 'approve-node', name: 'handleReview', type: 'function' }] as any,
+    edges: [],
+    entryPoints: [{ id: 'review-entry', name: 'POST /review', type: 'http', source_node: 'approve-node' }] as any,
+    exitPoints: [{ id: 'dependency', source_node: 'approve-node', type: 'sdk', name: 'Call to transform', target: { sdk: 'formatting-library' } }] as any,
+    callChains: [],
+    dataEntities: [],
+    changeRisks: [],
+    flows: [flow('approve', 'dependency', 'approve-node')],
+  });
+  expect(projected.journeys).toHaveLength(1);
+  expect(projected.journeys[0].terminal_effects.external_services).toEqual([]);
+  expect(projected.journeys[0].exit_point_ids).toEqual(['dependency']);
+  expect(projected.journeys[0].unresolved_exit_point_ids).toEqual(['dependency']);
+});
+
 test('journey views are one-to-one projections of canonical flows sharing an entry', () => {
   const flows = [flow('approve', 'approve-exit', 'approve-node'), flow('reject', 'reject-exit', 'reject-node')];
   const result = projectUserJourneysFromFlows({

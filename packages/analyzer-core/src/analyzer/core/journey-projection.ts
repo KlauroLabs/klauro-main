@@ -18,6 +18,7 @@ import { isGuardEnforcementEdge } from './guard-relationships';
 import { isStructuralExecutableCliEntry } from './entry-point-product-role';
 import { buildCronScheduleIndex, findCronSchedule, USER_FACING_ENTRY_TYPES } from './journey-builder';
 import { isLanguageBuiltinExitPoint } from './language-builtins';
+import { hasUnresolvedDependencyEffect } from './exit-point-effects';
 
 export interface JourneyProjectionInput {
   nodes: CASNode[];
@@ -225,9 +226,14 @@ export function projectUserJourneysFromFlows(
         .sort((left, right) => (indexes.exitOrder.get(left) || 0) - (indexes.exitOrder.get(right) || 0));
     const externalServices = new Set(flow.contract.side_effects.external_integrations || []);
     const messagesEmitted = new Set<string>();
+    const unresolvedExitPointIds = new Set(flow.contract.side_effects.unresolved_exit_point_ids || []);
     const terminalNodeIds = new Set(terminalEntities.flatMap(terminal =>
       terminal.node_id ? [terminal.node_id] : []));
     for (const exitPoint of exits) {
+      if (hasUnresolvedDependencyEffect(exitPoint)) {
+        unresolvedExitPointIds.add(exitPoint.id);
+        continue;
+      }
       const terminalNode = nodesById.get(exitPoint.source_node);
       if (terminalNode && !terminalNodeIds.has(terminalNode.id)) {
         const action = String(exitPoint.operation?.action || exitPoint.operation?.method || '').toLowerCase();
@@ -300,6 +306,7 @@ export function projectUserJourneysFromFlows(
       criticality: flow.criticality || (entitiesWritten.length > 0 || exits.length > 0 ? 'high' : kind === 'user-facing' ? 'medium' : 'low'),
       call_chain_ids: chains.map(chain => chain.id),
       exit_point_ids: exits.map(exitPoint => exitPoint.id),
+      ...(unresolvedExitPointIds.size > 0 ? { unresolved_exit_point_ids: [...unresolvedExitPointIds].sort() } : {}),
       derived_from_flow_id: flow.flow_id,
       ...(flow.capability_relationships?.length ? { capability_relationships: flow.capability_relationships } : {}),
     });

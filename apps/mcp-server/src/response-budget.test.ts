@@ -5,6 +5,7 @@ import * as nodePath from 'path';
 import { test } from 'node:test';
 import {
   RESPONSE_BUDGET_BYTES,
+  buildContinuation,
   boundToolPayload,
   boundToolText,
   serializeToolResponse,
@@ -14,6 +15,15 @@ import { buildAnswerPackDigest, describeAnswerPackCatalog, runAnswerPack, type A
 import { getTestSummary } from './query';
 import { createServer } from './server';
 import { listAnalyses } from './storage';
+
+test('nested suite test truncation points to supported within-suite pagination', () => {
+  const continuation = buildContinuation(
+    { tool: 'find_tests', parameterNames: ['path', 'node_id', 'limit', 'offset'] },
+    [{ path: 'suites[0].tests', kind: 'array', total: 100, returned: 8 }],
+  );
+  assert.ok(continuation.some(line => line.includes('suite_id') && line.includes('next_page')));
+  assert.ok(continuation.some(line => line.includes('offset pages suites, not their tests')));
+});
 
 const SIZE_SLACK_BYTES = 0;
 

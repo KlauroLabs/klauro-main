@@ -7,6 +7,25 @@ import {
   CASParadigmConformance,
 } from '../../types/cas.types';
 
+test('keeps unresolved transfer exposure visible without asserting a destination', () => {
+  const cas = {
+    ...fullCas,
+    data_lineage: [{
+      entity_id: 'entity', entity_name: 'Article', sensitive_fields: [],
+      writers: [], readers: [], external_recipients: [],
+      unresolved_exit_point_ids: ['dependency'],
+      boundaries_crossed: [], journeys_carrying: [],
+      exposure: { unguarded_paths: 0, sensitive: false, external_transfer: false, external_transfer_unresolved: true },
+    }],
+  } as unknown as CASOutput;
+  const map = buildProductMap(cas);
+  expect(map.data.exposure_highlights).toHaveLength(1);
+  expect(map.data.exposure_highlights[0]).toMatchObject({
+    external_transfer: false, external_recipients: [],
+    external_transfer_unresolved: true, unresolved_exit_point_ids: ['dependency'],
+  });
+});
+
 function journey(overrides: Partial<CASUserJourney> & { id: string; name: string }): CASUserJourney {
   return {
     journey_kind: 'user-facing',

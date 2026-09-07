@@ -16,6 +16,7 @@ import { classifyGuardKind } from './guard-classification';
 import { dedupeAdjacentWords } from './flow-entry-naming';
 import type { FlowConcept } from './flow-concepts';
 import { isLanguageBuiltinExitPoint } from './language-builtins';
+import { hasUnresolvedDependencyEffect, type TerminalEffects } from './exit-point-effects';
 import { isStructuralExecutableCliEntry } from './entry-point-product-role';
 
 export interface UserJourneyInput {
@@ -288,7 +289,7 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
     steps.sort((a, b) => a.depth - b.depth || a.node_id.localeCompare(b.node_id));
 
     const effects = collectTerminalEffects(entryPoint, pathNodeIds, chains, graph);
-    if (steps.length < 2 && !effects.hasAnyEffect) continue;
+    if (steps.length < 2 && !effects.hasAnyEffect && effects.unresolvedExitPointIds.length === 0) continue;
 
     const securityBoundaries = collectSecurityBoundaries(entryPoint, pathNodeIds, graph.guardEdgesByNode, graph.nodesById);
     const testsCovering = collectTestsCovering(pathNodeIds, graph.testEdgesByTarget, graph.nodesById);
@@ -348,6 +349,7 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
         criticality,
         call_chain_ids: chains.map(chain => chain.id),
         exit_point_ids: effects.exitPointIds,
+        ...(effects.unresolvedExitPointIds.length > 0 ? { unresolved_exit_point_ids: effects.unresolvedExitPointIds } : {}),
         ...(matchingFlows?.length ? { derived_from_flow_id: matchingFlows[0].flow_id } : {}),
         ...(capabilityRelationships?.length ? { capability_relationships: capabilityRelationships } : {}),
       },
@@ -692,15 +694,7 @@ function stateMachineOwnerKey(node: CASNode): string | undefined {
   return `${file.replace(/\\/g, '/').toLowerCase()}::${node.name.toLowerCase()}`;
 }
 
-interface TerminalEffects {
-  entitiesWritten: string[];
-  entitiesRead: string[];
-  externalServices: string[];
-  messagesEmitted: string[];
-  terminalEntities: CASUserJourneyTerminalEntity[];
-  exitPointIds: string[];
-  hasAnyEffect: boolean;
-}
+
 
 interface TerminalCandidate {
   entity_id?: string;
@@ -720,6 +714,7 @@ function collectTerminalEffects(
   const externalServices = new Set<string>();
   const messagesEmitted = new Set<string>();
   const exitPointIds = new Set<string>();
+  const unresolvedExitPointIds = new Set<string>();
   const candidates: TerminalCandidate[] = [];
   const entryAccess = inferEntryAccess(entryPoint);
   const routeResourceKeys = routeResourceEntityKeys(entryPoint);
@@ -751,6 +746,10 @@ function collectTerminalEffects(
 
   for (const { exitPoint, depth } of reachableExitPoints) {
     exitPointIds.add(exitPoint.id);
+    if (hasUnresolvedDependencyEffect(exitPoint)) {
+      unresolvedExitPointIds.add(exitPoint.id);
+      continue;
+    }
     if (exitPoint.type === 'database') {
       const resource = exitPoint.target?.resource || exitPoint.name;
       const entity = matchEntityByName(resource, graph.entitiesByKey);
@@ -882,6 +881,7 @@ function collectTerminalEffects(
     messagesEmitted: [...messagesEmitted].sort(),
     terminalEntities,
     exitPointIds: [...exitPointIds].sort(),
+    unresolvedExitPointIds: [...unresolvedExitPointIds].sort(),
     hasAnyEffect:
       entitiesWritten.size > 0 || entitiesRead.size > 0 ||
       externalServices.size > 0 || messagesEmitted.size > 0,

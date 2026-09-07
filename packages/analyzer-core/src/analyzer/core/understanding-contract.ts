@@ -78,6 +78,7 @@ export function mergeNodeContracts(nodes: CASNode[]): ICELOTContract {
   const output = [...new Set(nodes.flatMap(node => node.contract?.output || []))];
   const stateChanges = [...new Set(nodes.flatMap(node => node.contract?.side_effects.state_changes || []))];
   const externalIntegrations = [...new Set(nodes.flatMap(node => node.contract?.side_effects.external_integrations || []))];
+  const unresolvedExitPointIds = [...new Set(nodes.flatMap(node => node.contract?.side_effects.unresolved_exit_point_ids || []))].sort();
   const constraints = [...new Map(nodes.flatMap(node => node.contract?.constraints || [])
     .map(constraint => [`${constraint.kind}::${constraint.rule}`, constraint])).values()];
   const logic = nodes.map(node => node.contract?.logic || '').filter(Boolean).join(' -> ');
@@ -110,7 +111,11 @@ export function mergeNodeContracts(nodes: CASNode[]): ICELOTContract {
   const contract: ICELOTContract = {
     input,
     logic,
-    side_effects: { state_changes: stateChanges, external_integrations: externalIntegrations },
+    side_effects: {
+      state_changes: stateChanges,
+      external_integrations: externalIntegrations,
+      ...(unresolvedExitPointIds.length > 0 ? { unresolved_exit_point_ids: unresolvedExitPointIds } : {}),
+    },
     output,
     constraints,
     facet_provenance: sortFacetProvenance([...provenanceByKey.values()]),
@@ -185,6 +190,7 @@ export function aggregateFlowContract(steps: FlowStep[]): FlowICELOTContract {
 
   const stateChanges = new Set<string>();
   const externalIntegrations = new Set<string>();
+  const unresolvedExitPointIds = [...new Set(steps.flatMap(step => step.contract.side_effects.unresolved_exit_point_ids || []))].sort();
   for (const step of steps) {
     for (const v of step.contract.side_effects.state_changes) {
       stateChanges.add(v);
@@ -223,6 +229,7 @@ export function aggregateFlowContract(steps: FlowStep[]): FlowICELOTContract {
     side_effects: {
       state_changes: [...stateChanges],
       external_integrations: [...externalIntegrations],
+      ...(unresolvedExitPointIds.length > 0 ? { unresolved_exit_point_ids: unresolvedExitPointIds } : {}),
     },
     output,
     constraints,
