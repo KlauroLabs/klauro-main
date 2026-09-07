@@ -108,7 +108,7 @@ export function verifyAgentSourceInputs(
       if (!within(realRoot, realFile)) return { file, status: 'unverified', reason: 'outside-workspace' };
       const before = fs.statSync(realFile);
       if (!before.isFile()) return { file, status: 'unverified', reason: 'not-a-regular-file' };
-      if (before.size > maxBytes - bytesRead) return { file, status: 'unverified', reason: 'source-byte-budget' };
+      if (before.size * 2 > maxBytes - bytesRead) return { file, status: 'unverified', reason: 'source-byte-budget' };
       descriptor = fs.openSync(realFile, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
       const opened = fs.fstatSync(descriptor);
       if (!opened.isFile() || !unchanged(before, opened)) {
@@ -132,12 +132,26 @@ export function verifyAgentSourceInputs(
         bytesRead += read;
       }
       addText(decoder.end());
+      const rawDigest = rawHash.digest('hex');
+      const confirmationHash = createHash('sha256');
+      let confirmed = 0;
+      while (confirmed < opened.size) {
+        if (expired()) return { file, status: 'unverified', reason: 'verification-time-budget' };
+        const read = fs.readSync(descriptor, buffer, 0, Math.min(buffer.length, opened.size - confirmed), confirmed);
+        if (!read) return { file, status: 'unverified', reason: 'source-changed-during-verification' };
+        confirmationHash.update(buffer.subarray(0, read));
+        confirmed += read;
+        bytesRead += read;
+      }
+      if (confirmationHash.digest('hex') !== rawDigest) {
+        return { file, status: 'unverified', reason: 'source-changed-during-verification' };
+      }
       if (!unchanged(opened, fs.fstatSync(descriptor)) || fs.realpathSync(absolute) !== realFile
         || !unchanged(opened, fs.statSync(absolute))) {
         return { file, status: 'unverified', reason: 'source-changed-during-verification' };
       }
       if (expired()) return { file, status: 'unverified', reason: 'verification-time-budget' };
-      const digests = { bytes: { sha256: rawHash.digest('hex'), bytes: offset },
+      const digests = { bytes: { sha256: rawDigest, bytes: offset },
         'utf8-text': { sha256: textHash.digest('hex'), bytes: textBytes } };
       filesCompared++;
       const matched = [...entry!.identities.values()].every(identity => {
@@ -165,7 +179,7 @@ export function verifyAgentSourceInputs(
       mismatched: summarize('mismatched'),
       unverified: summarize('unverified'),
       scan: { method: 'sha256-observed-inputs' as const, bytes_read: bytesRead, files_compared: filesCompared,
-        input_records_scanned: recordsScanned, max_bytes: maxBytes, max_duration_ms: maxDuration,
+        input_records_scanned: recordsScanned, content_read_passes: 2, max_bytes: maxBytes, max_duration_ms: maxDuration,
         max_input_records: maxRecords, duration_ms: performance.now() - startedAt },
       note: 'Matches cover recorded input observations only, not unobserved analyzer inputs, dependencies, graph correctness, or future edits.',
     },

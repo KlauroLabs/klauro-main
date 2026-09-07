@@ -31,7 +31,7 @@ test('valid observed identities match without claiming complete analysis coverag
   assert.equal(result.results[0].status, 'matched');
   assert.equal(result.summary.certifies_complete_analysis, false);
   assert.equal(result.summary.scan.files_compared, 1);
-  assert.equal(result.summary.scan.bytes_read, 24);
+  assert.equal(result.summary.scan.bytes_read, 48);
 });
 
 test('comparison preserves raw bytes and decoded UTF8 semantics across chunk boundaries', t => {
@@ -39,7 +39,7 @@ test('comparison preserves raw bytes and decoded UTF8 semantics across chunk bou
   const root = fixture(t, content);
   const result = verifyAgentSourceInputs(root, ['target.ts'], [contribution(content), contribution(content.toString('utf8'))]);
   assert.equal(result.results[0].status, 'matched');
-  assert.equal(result.summary.scan.bytes_read, content.length);
+  assert.equal(result.summary.scan.bytes_read, content.length * 2);
 });
 
 test('empty input identities are valid evidence', t => {
@@ -114,7 +114,7 @@ test('a shared byte budget bounds multiple file comparisons', t => {
   const root = fixture(t, '1234');
   fs.writeFileSync(path.join(root, 'second.ts'), '5678');
   const result = verifyAgentSourceInputs(root, ['target.ts', 'second.ts'],
-    [contribution('1234'), contribution('5678', 'second.ts')], { max_bytes: 6 });
+    [contribution('1234'), contribution('5678', 'second.ts')], { max_bytes: 10 });
   assert.equal(result.results[0].status, 'matched');
   assert.equal(result.results[1].reason, 'source-byte-budget');
   assert.equal(result.summary.scan.bytes_read, 4);
@@ -156,8 +156,11 @@ test('mutating a file during the read cannot yield a content match', t => {
 test('replacing a path with identical bytes during a read remains unverifiable', t => {
   const root = fixture(t, 'same');
   const originalRead = fs.readSync;
+  let replaced = false;
   t.mock.method(fs, 'readSync', (...args: Parameters<typeof fs.readSync>) => {
     const result = originalRead(...args);
+    if (replaced) return result;
+    replaced = true;
     fs.renameSync(path.join(root, 'target.ts'), path.join(root, 'previous.ts'));
     fs.writeFileSync(path.join(root, 'target.ts'), 'same');
     return result;
