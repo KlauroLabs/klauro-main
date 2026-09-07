@@ -5378,7 +5378,7 @@ function buildScriptCommand(scripts: Record<string, string>, preferred: string[]
 
 function pickScript(scripts: Record<string, string>, preferred: string[]): string | null {
   for (const name of preferred) {
-    if (scripts[name]) return name;
+    if (typeof scripts[name] === 'string' && scripts[name].trim()) return name;
   }
   return null;
 }

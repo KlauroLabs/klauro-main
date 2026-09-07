@@ -52,4 +52,5 @@ test('alias cycles and missing scripts stay unresolved', () => {
   assert.equal(resolveFileAwareTestScript({ test: 'npm run unit', unit: 'npm test' }), null);
   assert.equal(resolveFileAwareTestScript({ test: 'npm run missing' }), null);
   assert.equal(resolveFileAwareTestScript({}), null);
+  assert.equal(resolveFileAwareTestScript({ test: 42 } as any), null);
 });

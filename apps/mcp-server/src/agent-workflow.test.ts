@@ -2048,6 +2048,17 @@ test('unknown JavaScript runners are not invented when no test script exists', a
   });
 });
 
+test('malformed package script values do not crash validation planning', async () => {
+  await withWorkspace(async workspace => {
+    for (const value of [42, {}, null]) {
+      fs.writeFileSync(path.join(workspace, 'package.json'), JSON.stringify({ scripts: { test: value } }));
+      const context = await getAgentContext(fixtureCas(), workspace, { task_type: 'modify', target: 'UsersService' }) as any;
+      assert.equal(context.validation_plan.strategy, 'manual-validation-required');
+      assert.ok(context.validation_plan.gaps.length > 0);
+    }
+  });
+});
+
 test('filename-neighbor tests remain useful without claiming explicit target coverage', async () => {
   await withWorkspace(async workspace => {
     const cas = fixtureCas();

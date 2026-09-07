@@ -4,7 +4,7 @@ export function resolveFileAwareTestScript(scripts: Record<string, string>): str
   const resolve = (name: string, visited: Set<string>): string | null => {
     if (visited.has(name)) return null;
     visited.add(name);
-    const script = scripts[name]?.trim();
+    const script = typeof scripts[name] === 'string' ? scripts[name].trim() : '';
     if (!script) return null;
     if (FILE_AWARE_RUNNER.test(script)) return name;
     const alias = /^(?:npm run ([a-zA-Z0-9:_-]+)|npm (test))$/.exec(script);
