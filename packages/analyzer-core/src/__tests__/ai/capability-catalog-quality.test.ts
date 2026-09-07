@@ -633,7 +633,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
   });
 
-  it('recovers grounded authored outcomes in the first cycle without broad repair calls', async () => {
+  it('does not publish an authored intent from a matching operation name when every provider response is empty', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const args: any = gateArgs(localOrch);
     const outcome = 'Understand what a codebase actually built';
@@ -664,11 +664,12 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
     const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(args);
 
-    expect(calls).toBe(1);
-    expect(out).toEqual([expect.objectContaining({ name: outcome })]);
+    expect(calls).toBeGreaterThan(0);
+    expect(calls).toBeLessThanOrEqual(3);
+    expect(out).toEqual([]);
     expect(args.enhancedSystemPurpose.capability_catalog_coverage).toMatchObject({
-      status: 'accepted',
-      published_capabilities: 1,
+      status: 'rejected',
+      published_capabilities: 0,
     });
   });
 
@@ -801,7 +802,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     void rich;
   });
 
-  it('recovers one shared-benefit obligation without audience-duplicate repairs', async () => {
+  it('keeps one shared-benefit obligation unresolved rather than inventing an omitted outcome', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const outcome = (name: string) => cap({
       id: name,
@@ -846,24 +847,22 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
     const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(args);
 
-    expect(out.map(capability => capability.name)).toEqual(expect.arrayContaining([
-      'Build a trustworthy relationship graph',
-      'turns that graph into behavior comprehension',
-    ]));
+    expect(out).toEqual([]);
     expect(calls.length).toBeGreaterThan(1);
+    expect(calls.length).toBeLessThanOrEqual(13);
     const understandingCalls = calls.filter(call => call.candidateCapabilities[0]?.id === 'understanding');
-    expect(understandingCalls).toHaveLength(0);
+    expect(understandingCalls.length).toBeGreaterThan(0);
     const requirements = deriveCapabilityCatalogOutcomeRequirements(args.projectTextSignal, args.candidateSnapshot);
     const shared = requirements.filter(requirement => requirement.beneficiaryAudiences);
     expect(shared).toHaveLength(1);
     expect(shared[0].beneficiaryAudiences).toEqual(['human', 'agent']);
-    expect(out.filter(capability => capability.criticality_factors?.includes('catalog-outcome-requirement:' + shared[0].id))).toHaveLength(1);
+    expect(out.filter(capability => capability.criticality_factors?.includes('catalog-outcome-requirement:' + shared[0].id))).toHaveLength(0);
     const targetedPromptFacts = JSON.stringify(calls.slice(1).flatMap(call => call.targetedRepairFacts || []));
     expect(targetedPromptFacts).toContain('candidate_1');
     expect(targetedPromptFacts).not.toContain('CrossCodebaseSystemGraph');
     expect(targetedPromptFacts).not.toContain('CASEdge');
     expect(targetedPromptFacts).not.toContain('KlauroConfig');
-    expect(emptyGraphAttempts).toBe(1);
+    expect(emptyGraphAttempts).toBe(2);
   });
 
   it('does not retry rejected ungrounded proposals merely to fill the catalog', async () => {
@@ -1516,7 +1515,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(args.enhancedSystemPurpose.capability_catalog_coverage.reason).toBeUndefined();
   });
 
-  it('retains an uncorroborated first-party intent despite recovering a shared-benefit obligation', async () => {
+  it('retains uncorroborated first-party intent when an incomplete catalog cannot be published', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const args: any = gateArgs(localOrch);
     args.projectTextSignal = {
@@ -1547,14 +1546,14 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
     const out = await localOrch.runCapabilityCatalogWithQualityGate(args);
 
-    expect(out).toHaveLength(5);
+    expect(out).toHaveLength(0);
     expect(out.some((capability: SystemCapability) => /veterinary appointments/.test(capability.name))).toBe(false);
     expect(args.enhancedSystemPurpose.capability_catalog_coverage).toMatchObject({
-      actual_publishable_capabilities: 5,
-      published_capabilities: 5,
-      status: 'accepted',
+      actual_publishable_capabilities: incomplete.length,
+      published_capabilities: 0,
+      status: 'rejected',
     });
-    expect(args.enhancedSystemPurpose.capability_catalog_coverage.reason).toBeUndefined();
+    expect(args.enhancedSystemPurpose.capability_catalog_coverage.reason).toBeDefined();
     expect(args.enhancedSystemPurpose.capability_reconciliation.proposals).toEqual(
       expect.arrayContaining([expect.objectContaining({ disposition: 'intent-gap' })]),
     );
