@@ -10,6 +10,7 @@ import {
   selectCasSections,
   CAS_SECTION_PROFILES,
   validateCasTreeProjection,
+  casSectionForField,
 } from './cas-sections';
 import { getCallers, getFileNodes, getNode, searchNodes } from './query';
 
@@ -112,4 +113,12 @@ test('section-hydrated MCP query answers equal full-CAS answers', () => {
   assert.deepStrictEqual(getFileNodes(graph, 'src/run.ts'), getFileNodes(cas, 'src/run.ts'));
   assert.deepStrictEqual(getNode(detail, 'n1'), getNode(cas, 'n1'));
   assert.deepStrictEqual(getCallers(calls, 'n1'), getCallers(cas, 'n1'));
+});
+
+test('source input identity fields are routed to supplemental beside the contribution references, never by keyword match', () => {
+  for (const field of ['source_input_identities', 'source_input_root', 'source_input_catalog']) {
+    assert.equal(casSectionForField(field), 'supplemental', field);
+  }
+  assert.equal(casSectionForField('analyzer_contributions'), 'supplemental');
+  assert.equal(casSectionForField('data_entities'), 'comprehension');
 });

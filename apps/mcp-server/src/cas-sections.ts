@@ -174,6 +174,9 @@ const EXPLICIT_SECTIONS: Partial<Record<string, CasSectionName>> = {
   reachability_index: 'calls',
   analysis_facts: 'facts',
   runtime_static_links: 'facts',
+  source_input_identities: 'supplemental',
+  source_input_root: 'supplemental',
+  source_input_catalog: 'supplemental',
 };
 
 export const CAS_SECTION_PROFILES = {
