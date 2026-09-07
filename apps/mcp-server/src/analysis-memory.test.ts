@@ -6,6 +6,7 @@ import {
   assertAnalysisWorkerMemoryAvailable,
   readAnalysisMemoryCapacity,
   readContainerMemory,
+  type ContainerMemory,
 } from './analysis-memory';
 import { resolveAnalysisHeapMb } from './analysis-heap';
 
@@ -18,6 +19,98 @@ function files(values: Record<string, string>): (file: string) => string {
     return values[file];
   };
 }
+
+function cacheStats(overrides: Record<string, number> = {}): string {
+  return Object.entries({
+    file: 1536 * MIB, inactive_file: 1280 * MIB, file_dirty: 64 * MIB,
+    file_writeback: 32 * MIB, shmem: 128 * MIB, anon: 128 * MIB, ...overrides,
+  }).map(([key, value]) => `${key} ${value}`).join('\n');
+}
+
+function cachedContainer(stat = cacheStats()): ContainerMemory | null {
+  return readContainerMemory(files({
+    '/sys/fs/cgroup/memory.max': String(3 * GIB),
+    '/sys/fs/cgroup/memory.current': String(2 * GIB),
+    '/sys/fs/cgroup/memory.stat': stat,
+  }));
+}
+
+test('credits only clean inactive file cache without changing raw cgroup usage or worker reserves', () => {
+  const container = cachedContainer()!;
+  assert.deepEqual(container, { limit: 3 * GIB, usage: 2 * GIB, reclaimableFileBytes: 1056 * MIB });
+  const capacity = readAnalysisMemoryCapacity(container, 8 * GIB, 6 * GIB);
+  assert.equal(capacity.availableBytes, 2080 * MIB);
+  assert.equal(analysisWorkerMemoryRequiredBytes(1024), 1536 * MIB);
+  assert.throws(() => assertAnalysisWorkerMemoryAvailable(1024, undefined,
+    readAnalysisMemoryCapacity({ limit: 3 * GIB, usage: 2 * GIB }, 8 * GIB, 6 * GIB)), AnalysisMemoryCapacityError);
+  assert.doesNotThrow(() => assertAnalysisWorkerMemoryAvailable(1024, undefined, capacity));
+  const hostLimited = readAnalysisMemoryCapacity(container, 8 * GIB, 128 * MIB);
+  assert.equal(hostLimited.availableBytes, 128 * MIB);
+  assert.throws(() => assertAnalysisWorkerMemoryAvailable(1024, undefined, hostLimited), AnalysisMemoryCapacityError);
+});
+
+test('active, dirty, shared and anonymous pages do not turn into reclaimable capacity', () => {
+  for (const overrides of [
+    { inactive_file: 0 }, { file_dirty: 1536 * MIB }, { file_writeback: 1536 * MIB },
+    { shmem: 1536 * MIB }, { anon: 2 * GIB },
+  ]) {
+    assert.equal(cachedContainer(cacheStats(overrides))?.reclaimableFileBytes, undefined);
+  }
+  assert.equal(cachedContainer(cacheStats({ file: 128 * MIB }))?.reclaimableFileBytes, undefined);
+  assert.equal(cachedContainer(cacheStats({ anon: 1920 * MIB }))?.reclaimableFileBytes, 128 * MIB);
+});
+
+test('unavailable or malformed cache statistics retain conservative raw usage', () => {
+  for (const stat of [
+    '', 'file 1024', cacheStats().replace('file_dirty 67108864', ''),
+    cacheStats({ file: -1 }), cacheStats({ inactive_file: Infinity }),
+    cacheStats({ shmem: Number.MAX_SAFE_INTEGER + 1 }), cacheStats() + '\nfile 1024',
+  ]) {
+    assert.deepEqual(cachedContainer(stat), { limit: 3 * GIB, usage: 2 * GIB });
+  }
+});
+
+test('cgroup v1 cache accounting uses hierarchical counters and ignores unrelated unlimited sentinels', () => {
+  const container = readContainerMemory(files({
+    '/sys/fs/cgroup/memory.max': 'max',
+    '/sys/fs/cgroup/memory/memory.limit_in_bytes': String(3 * GIB),
+    '/sys/fs/cgroup/memory/memory.usage_in_bytes': String(2 * GIB),
+    '/sys/fs/cgroup/memory/memory.stat': [
+      'hierarchical_memsw_limit 9223372036854771712', `total_cache ${1536 * MIB}`,
+      `total_inactive_file ${1280 * MIB}`, `total_dirty ${64 * MIB}`,
+      `total_writeback ${32 * MIB}`, `total_shmem ${128 * MIB}`, `total_rss ${128 * MIB}`,
+      'cache 0', 'inactive_file 0',
+    ].join('\n'),
+  }));
+  assert.deepEqual(container, { limit: 3 * GIB, usage: 2 * GIB, reclaimableFileBytes: 1056 * MIB });
+});
+
+test('uses the larger usage sample around cache statistics and refuses an unknown second sample', () => {
+  for (const samples of [[2 * GIB, 2304 * MIB], [2304 * MIB, 2 * GIB]]) {
+    let index = 0;
+    const read = files({
+      '/sys/fs/cgroup/memory.max': String(3 * GIB),
+      '/sys/fs/cgroup/memory.stat': cacheStats(),
+    });
+    const container = readContainerMemory(file => file.endsWith('/memory.current') ? String(samples[index++]) : read(file));
+    assert.equal(container?.usage, 2304 * MIB);
+  }
+  let samples = 0;
+  const read = files({
+    '/sys/fs/cgroup/memory.max': String(3 * GIB),
+    '/sys/fs/cgroup/memory.stat': cacheStats(),
+  });
+  const container = readContainerMemory(file => file.endsWith('/memory.current') ? (++samples === 1 ? String(2 * GIB) : 'unknown') : read(file));
+  assert.deepEqual(container, { limit: 3 * GIB, usage: null });
+  assert.throws(() => assertAnalysisWorkerMemoryAvailable(1024, undefined,
+    readAnalysisMemoryCapacity(container, 8 * GIB, 6 * GIB)), AnalysisMemoryCapacityError);
+});
+
+test('invalid injected cache credits cannot inflate admission headroom', () => {
+  for (const reclaimableFileBytes of [-1, Infinity, NaN, 2 * GIB + 1, 0.5]) {
+    assert.equal(readAnalysisMemoryCapacity({ limit: 3 * GIB, usage: 2 * GIB, reclaimableFileBytes }, 8 * GIB, 6 * GIB).availableBytes, GIB);
+  }
+});
 
 test('reads finite cgroup v2 capacity and all resident usage', () => {
   assert.deepEqual(readContainerMemory(files({
