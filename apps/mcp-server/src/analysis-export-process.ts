@@ -45,8 +45,23 @@ function workerExecArgv(entry: string): string[] {
     if (argument.startsWith('--max-old-space-size=') || argument.startsWith('--max_old_space_size=')) continue;
     args.push(argument);
   }
-  if (entry.endsWith('.ts')) args.push('--require', require.resolve(['ts-node', 'register', 'transpile-only'].join('/')));
+  if (entry.endsWith('.ts')) args.push(...typescriptLoaderArgs());
   return args.concat(`--max-old-space-size=${configuredMb('KLAURO_ANALYSIS_EXPORT_HEAP_MB', DEFAULT_EXPORT_HEAP_MB)}`);
+}
+
+export function typescriptLoaderArgs(resolve: (specifier: string) => string = specifier => require.resolve(specifier)): string[] {
+  const candidates: Array<() => string[]> = [
+    () => ['--import', resolve('tsx')],
+    () => ['--require', resolve(['ts-node', 'register', 'transpile-only'].join('/'))],
+  ];
+  for (const candidate of candidates) {
+    try {
+      return candidate();
+    } catch {
+      continue;
+    }
+  }
+  throw new Error('No TypeScript loader is available for the analysis export worker source entry; build the hosted bundle or install tsx.');
 }
 
 async function assertExportMemoryAvailable(): Promise<void> {

@@ -229,8 +229,8 @@ async function loadScopedRecords(
   }
   edgeOrdinals.sort((left, right) => left - right);
   return {
-    nodes: store.nodes.read(denseIds),
-    edges: store.edges.read(edgeOrdinals),
+    nodes: await store.nodes.read(denseIds),
+    edges: await store.edges.read(edgeOrdinals),
     scanned: { nodes: graph.nodeCount, edges: graph.edgeCount },
     edgesTruncated,
     source: 'record-store',
