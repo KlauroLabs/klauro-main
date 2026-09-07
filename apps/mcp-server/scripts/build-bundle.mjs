@@ -77,6 +77,8 @@ if (hostedBuild) {
   rmSync(output, { recursive: true, force: true });
   mkdirSync(output, { recursive: true });
   await build({ ...shared, entryPoints: ['src/analysis-worker.ts'], outfile: 'dist-hosted/analysis-worker.cjs', plugins: [nativeExternals] });
+  await build({ ...shared, entryPoints: ['src/analysis-worker-proxy.ts'], outfile: 'dist-hosted/analysis-worker-proxy.cjs', plugins: [nativeExternals] });
+  await build({ ...shared, entryPoints: ['src/analysis-worker-service.ts'], outfile: 'dist-hosted/analysis-worker-service.cjs', plugins: [nativeExternals] });
   await build({ ...shared, entryPoints: ['src/analysis-export-worker.ts'], outfile: 'dist-hosted/analysis-export-worker.cjs', plugins: [nativeExternals] });
   await build({ ...shared, entryPoints: ['src/account-workspace-analysis-worker.ts'], outfile: 'dist-hosted/account-workspace-analysis-worker.cjs', plugins: [nativeExternals] });
   await build({ ...shared, entryPoints: ['src/self-telemetry-worker.ts'], outfile: 'dist-hosted/self-telemetry-worker.cjs', plugins: [nativeExternals] });

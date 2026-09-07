@@ -23,6 +23,8 @@ import {
 } from '../../../packages/analyzer-core/src/analyzer/core/run-log';
 import { resolveAnalysisHeapMb, type AnalysisHeapResolution } from './analysis-heap';
 import { AnalysisMemoryCapacityError, assertAnalysisWorkerMemoryAvailable, readContainerMemory } from './analysis-memory';
+import { analysisWorkerExecArgv, resolveAnalysisWorkerEntry } from './analysis-worker-channel';
+export { analysisWorkerExecArgv } from './analysis-worker-channel';
 import {
   executeHostedAnalysis,
   reserveHostedAnalysisOrThrow,
@@ -2507,6 +2509,7 @@ interface PendingWorkerJob<T = AnalysisRunSummary> {
 
 interface WorkerHandle {
   child: ChildProcess;
+  remote: boolean;
   heap: AnalysisHeapResolution;
   stderrTail: string;
   idleTimer?: NodeJS.Timeout;
@@ -2540,6 +2543,11 @@ function clearWorkerIdleTimer(handle: WorkerHandle): void {
 function scheduleWorkerIdleShutdown(handle: WorkerHandle): void {
   clearWorkerIdleTimer(handle);
   if (handle.pending.size > 0 || workerHandle !== handle) return;
+  if (handle.remote) {
+    workerHandle = null;
+    if (handle.child.connected) handle.child.disconnect();
+    return;
+  }
   const idleMs = resolveAnalysisWorkerIdleMs();
   if (idleMs === null) return;
   handle.idleTimer = setTimeout(() => {
@@ -2551,13 +2559,6 @@ function scheduleWorkerIdleShutdown(handle: WorkerHandle): void {
   handle.idleTimer.unref();
 }
 
-function resolveWorkerEntryPath(): string {
-  for (const candidate of ['analysis-worker.cjs', 'analysis-worker.ts']) {
-    const candidatePath = path.join(__dirname, candidate);
-    if (nodeFs.existsSync(candidatePath)) return candidatePath;
-  }
-  throw new Error(`Analysis worker entry not found next to ${__dirname}; rebuild the bundle (npm run build).`);
-}
 
 function collectKlauroEnvSnapshot(): Record<string, string> {
   const snapshot: Record<string, string> = {};
@@ -2568,13 +2569,14 @@ function collectKlauroEnvSnapshot(): Record<string, string> {
 }
 
 function spawnAnalysisWorker(heap: AnalysisHeapResolution): WorkerHandle {
-  const child = fork(resolveWorkerEntryPath(), [], {
-    execArgv: [...analysisWorkerExecArgv(process.execArgv), `--max-old-space-size=${heap.heapMb}`],
+  const remote = Boolean(process.env.KLAURO_ANALYSIS_WORKER_SOCKET);
+  const child = fork(resolveAnalysisWorkerEntry(remote ? 'analysis-worker-proxy' : 'analysis-worker'), [], {
+    execArgv: [...analysisWorkerExecArgv(process.execArgv), `--max-old-space-size=${remote ? 64 : heap.heapMb}`],
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     env: process.env,
   });
 
-  const handle: WorkerHandle = { child, heap, stderrTail: '', pending: new Map() };
+  const handle: WorkerHandle = { child, remote, heap, stderrTail: '', pending: new Map() };
 
   const captureOutput = (chunk: Buffer) => {
     process.stderr.write(chunk);
@@ -2627,24 +2629,6 @@ function spawnAnalysisWorker(heap: AnalysisHeapResolution): WorkerHandle {
   return handle;
 }
 
-export function analysisWorkerExecArgv(execArgv: readonly string[]): string[] {
-  const safe: string[] = [];
-  for (let index = 0; index < execArgv.length; index += 1) {
-    const argument = execArgv[index];
-    if (['-e', '--eval', '-p', '--print'].includes(argument)) {
-      index += 1;
-      continue;
-    }
-    if (
-      argument.startsWith('--eval=')
-      || argument.startsWith('--print=')
-      || argument.startsWith('--max-old-space-size=')
-      || argument.startsWith('--max_old_space_size=')
-    ) continue;
-    safe.push(argument);
-  }
-  return safe;
-}
 
 function workerLooksOutOfMemory(handle: WorkerHandle, code: number | null, signal: NodeJS.Signals | null): boolean {
   if (/Reached heap limit|JavaScript heap out of memory|FATAL ERROR/i.test(handle.stderrTail)) return true;
@@ -2667,7 +2651,9 @@ function buildWorkerCrashMessage(
   const heapSource = heap.source === 'env' ? 'from KLAURO_ANALYSIS_HEAP_MB' : 'default';
   return [
     `Analysis worker for ${job.projectPath} ${exitDescription}${oom ? ' after exhausting its heap' : ''}.`,
-    oom
+    handle.remote
+      ? 'The isolated worker service or its IPC proxy ended; inspect both service logs and their separate memory budgets before retrying.'
+      : oom
       ? `The worker heap was ${heap.heapMb} MB (${heapSource}); inspect the shared container memory budget before changing KLAURO_ANALYSIS_HEAP_MB or retrying the complete analysis.`
       : 'The process ended without heap-exhaustion evidence; inspect the worker lifecycle and service logs before retrying.',
     `A run-failed record was written to ${getAnalysisRunLogPath()}; inspect service health because the worker and API may share a container memory limit.`,
@@ -2761,10 +2747,10 @@ export function finalizeWorkerRunFailure(projectPath: string, jobStartedAtMs: nu
 
 function ensureAnalysisWorker(): WorkerHandle {
   const heap = resolveAnalysisHeapMb();
-  if (workerHandle && workerHandle.heap.heapMb !== heap.heapMb) {
+  if (workerHandle && (workerHandle.heap.heapMb !== heap.heapMb || workerHandle.remote !== Boolean(process.env.KLAURO_ANALYSIS_WORKER_SOCKET))) {
     shutdownAnalysisWorker();
   }
-  assertAnalysisWorkerMemoryAvailable(heap.heapMb, workerHandle?.child.pid);
+  assertAnalysisWorkerMemoryAvailable(process.env.KLAURO_ANALYSIS_WORKER_SOCKET ? 64 : heap.heapMb, workerHandle?.child.pid);
   if (!workerHandle) {
     workerHandle = spawnAnalysisWorker(heap);
   }

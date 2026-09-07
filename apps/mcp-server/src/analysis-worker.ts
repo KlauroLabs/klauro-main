@@ -211,6 +211,7 @@ async function handleRequest(request: WorkerRequest): Promise<void> {
       return;
     }
     const summary = await executeAnalysis(request);
+    await waitForPendingSegmentedWrites();
     process.send!({ type: 'result', id: request.id, summary });
   } catch (error) {
     const message = errorMessage(error);
