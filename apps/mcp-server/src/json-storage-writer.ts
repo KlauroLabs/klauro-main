@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as zlib from 'zlib';
 import { execFile, spawn, spawnSync } from 'child_process';
 import { open } from 'node:fs/promises';
-import { Writable } from 'stream';
+import { PassThrough, Writable } from 'stream';
 import { finished, pipeline } from 'stream/promises';
 import { promisify } from 'util';
 
@@ -85,6 +85,7 @@ export async function writeCompressedChunksAtomic(
 class JsonFieldTooLarge extends Error {}
 
 const JSON_FIELD_CHUNK_ITEMS = 2_048;
+const JSON_FIELD_CHUNK_TARGET_BYTES = 8 * 1024 * 1024;
 
 type JsonStringify = (value: unknown) => string | undefined;
 
@@ -92,10 +93,22 @@ function serializableField(value: unknown): boolean {
   return value !== undefined && typeof value !== 'function' && typeof value !== 'symbol';
 }
 
+function hasIndexSensitiveToJson(value: unknown): boolean {
+  return Boolean(value) && typeof value === 'object' && !(value instanceof Date) && typeof (value as { toJSON?: unknown }).toJSON === 'function';
+}
+
 function isPlainChunkableObject(value: unknown): value is Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
   return (prototype === Object.prototype || prototype === null) && typeof (value as { toJSON?: unknown }).toJSON !== 'function';
+}
+
+function chunkableArray(value: unknown): value is unknown[] {
+  return Array.isArray(value) && value.length > JSON_FIELD_CHUNK_ITEMS && !hasIndexSensitiveToJson(value) && !value.some(hasIndexSensitiveToJson);
+}
+
+function chunkableObject(value: unknown): value is Record<string, unknown> {
+  return isPlainChunkableObject(value) && Object.keys(value).length > JSON_FIELD_CHUNK_ITEMS && !Object.values(value).some(hasIndexSensitiveToJson);
 }
 
 function stringifyOrThrow(stringify: JsonStringify, value: unknown, key: string): string | undefined {
@@ -107,23 +120,71 @@ function stringifyOrThrow(stringify: JsonStringify, value: unknown, key: string)
   }
 }
 
+async function* streamJsonValue(value: unknown): AsyncGenerator<string> {
+  const passthrough = new PassThrough({ encoding: 'utf8' });
+  const producer = writeJsonToStream(passthrough, value, 0).then(() => passthrough.end(), error => passthrough.destroy(error));
+  let pending = '';
+  for await (const chunk of passthrough) {
+    if (pending) yield pending;
+    pending = chunk as string;
+  }
+  await producer;
+  if (pending.endsWith('\n')) pending = pending.slice(0, -1);
+  if (pending) yield pending;
+}
+
+function nextChunkItems(current: number, emittedBytes: number): number {
+  if (emittedBytes <= 0) return current;
+  const scaled = Math.floor(current * (JSON_FIELD_CHUNK_TARGET_BYTES / emittedBytes));
+  return Math.max(64, Math.min(JSON_FIELD_CHUNK_ITEMS, scaled));
+}
+
 async function* serializeJsonValueChunked(value: unknown, key: string, stringify: JsonStringify, count: (bytes: number) => void): AsyncGenerator<string> {
   const emit = (text: string): string => { count(Buffer.byteLength(text, 'utf8')); return text; };
-  if (Array.isArray(value) && value.length > JSON_FIELD_CHUNK_ITEMS) {
+  if (chunkableArray(value)) {
     yield emit('[');
-    for (let offset = 0; offset < value.length; offset += JSON_FIELD_CHUNK_ITEMS) {
-      const slice = stringifyOrThrow(stringify, value.slice(offset, offset + JSON_FIELD_CHUNK_ITEMS), key)!;
-      yield emit(`${offset === 0 ? '' : ','}${slice.slice(1, -1)}`);
+    let items = JSON_FIELD_CHUNK_ITEMS;
+    for (let offset = 0; offset < value.length;) {
+      const slice = value.slice(offset, offset + items);
+      let serialized: string | undefined;
+      try {
+        serialized = stringifyOrThrow(stringify, slice, key);
+      } catch (error) {
+        if (!(error instanceof JsonFieldTooLarge) || slice.length > 1) {
+          if (error instanceof JsonFieldTooLarge && slice.length > 1) { items = Math.max(1, Math.floor(slice.length / 2)); continue; }
+          throw error;
+        }
+      }
+      if (serialized === undefined) {
+        if (offset > 0) yield emit(',');
+        for await (const piece of streamJsonValue(slice[0] === undefined ? null : slice[0])) yield emit(piece);
+        offset += 1;
+        continue;
+      }
+      const inner = serialized.slice(1, -1);
+      yield emit(`${offset === 0 ? '' : ','}${inner}`);
+      offset += slice.length;
+      items = nextChunkItems(slice.length, Buffer.byteLength(inner, 'utf8'));
     }
     yield emit(']');
     return;
   }
-  if (isPlainChunkableObject(value) && Object.keys(value).length > JSON_FIELD_CHUNK_ITEMS) {
+  if (chunkableObject(value)) {
     yield emit('{');
     let first = true;
     for (const inner of Object.keys(value)) {
-      if (!serializableField(value[inner])) continue;
-      const serialized = stringifyOrThrow(stringify, value[inner], key);
+      const field = value[inner];
+      if (!serializableField(field)) continue;
+      let serialized: string | undefined;
+      try {
+        serialized = stringifyOrThrow(stringify, field, key);
+      } catch (error) {
+        if (!(error instanceof JsonFieldTooLarge)) throw error;
+        yield emit(`${first ? '' : ','}${JSON.stringify(inner)}:`);
+        for await (const piece of streamJsonValue(field)) yield emit(piece);
+        first = false;
+        continue;
+      }
       if (serialized === undefined) continue;
       yield emit(`${first ? '' : ','}${JSON.stringify(inner)}:${serialized}`);
       first = false;
@@ -140,12 +201,13 @@ async function* serializeJsonFields(value: Record<string, unknown>, bytes: Recor
   for (const key of Object.keys(value)) {
     const field = value[key];
     if (!serializableField(field)) continue;
-    const probe = Array.isArray(field) || isPlainChunkableObject(field) ? '' : stringifyOrThrow(stringify, field, key);
+    const chunked = chunkableArray(field) || chunkableObject(field);
+    const probe = chunked ? '' : stringifyOrThrow(stringify, field, key);
     if (probe === undefined) continue;
     yield `${first ? '' : ','}${JSON.stringify(key)}:`;
     first = false;
     let total = 0;
-    if (probe !== '') {
+    if (!chunked) {
       total = Buffer.byteLength(probe, 'utf8');
       yield probe;
     } else {
@@ -158,15 +220,18 @@ async function* serializeJsonFields(value: Record<string, unknown>, bytes: Recor
 
 async function countJsonBytes(value: unknown): Promise<number> {
   let total = 0;
+  let endsWithNewline = false;
   const counter = new Writable({
     write(chunk, _encoding, callback) {
-      total += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(String(chunk), 'utf8');
+      const text = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+      total += Buffer.byteLength(text, 'utf8');
+      if (text.length > 0) endsWithNewline = text.endsWith('\n');
       callback();
     },
   });
   await writeJsonToStream(counter, value, 0);
   await new Promise<void>((resolve, reject) => counter.end((error?: Error | null) => (error ? reject(error) : resolve())));
-  return total;
+  return endsWithNewline ? total - 1 : total;
 }
 
 export async function writeCompressedJsonFieldsAtomic(

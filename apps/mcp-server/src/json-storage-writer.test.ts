@@ -170,14 +170,39 @@ test('field-wise compressed writer emits exactly the native JSON bytes and measu
     const plain = path.join(dir, 'section.json');
     await writeCompressedJsonFieldsAtomic(plain, value);
     assert.equal(fs.readFileSync(plain, 'utf8'), `${expected}\n`);
+    class Indexed { constructor(private readonly n: number) {} toJSON(key: string) { return { key, n: this.n }; } }
+    value.indexed = Array.from({ length: 2_600 }, (_, index) => new Indexed(index));
+    const taggedArray = Array.from({ length: 2_500 }, (_, index) => index) as number[] & { toJSON?: () => unknown };
+    taggedArray.toJSON = () => ({ collapsed: true });
+    value.tagged = taggedArray;
+    value.dated = Array.from({ length: 2_200 }, (_, index) => new Date(Date.UTC(2026, 0, 1, 0, 0, index)));
+    value.keyed = Object.fromEntries(Array.from({ length: 2_100 }, (_, index) => [`i${index}`, new Indexed(index)]));
+    const expectedAll = JSON.stringify(value);
+    const withToJson = path.join(dir, 'tojson.json.zst');
+    const toJsonBytes = await writeCompressedJsonFieldsAtomic(withToJson, value);
+    assert.equal(execFileSync('zstd', ['-dqc', withToJson]).toString('utf8'), `${expectedAll}\n`);
+    for (const key of ['indexed', 'tagged', 'dated', 'keyed']) assert.equal(toJsonBytes[key], Buffer.byteLength(JSON.stringify(value[key]), 'utf8'), key);
+    delete value.indexed; delete value.tagged; delete value.dated; delete value.keyed;
     const fallback = path.join(dir, 'fallback.json.zst');
+    const oversizedElement = (value.big as Array<{ index: number }>)[3_000];
     const throwing: (input: unknown) => string | undefined = input => {
-      if (input === value.big) throw new RangeError('Invalid string length');
+      if (input === value.identity) throw new RangeError('Invalid string length');
+      if (Array.isArray(input) && input.includes(oversizedElement)) throw new RangeError('Invalid string length');
+      if (input === (value.wide as Record<string, unknown>).k7) throw new RangeError('Invalid string length');
       return JSON.stringify(input);
     };
     const fallbackBytes = await writeCompressedJsonFieldsAtomic(fallback, value, throwing);
     assert.equal(execFileSync('zstd', ['-dqc', fallback]).toString('utf8'), `${expected}\n`);
     assert.deepEqual(fallbackBytes, bytes);
+    const elementOnly = path.join(dir, 'element-fallback.json.zst');
+    const elementThrowing: (input: unknown) => string | undefined = input => {
+      if (Array.isArray(input) && input.includes(oversizedElement)) throw new RangeError('Invalid string length');
+      if (input === (value.wide as Record<string, unknown>).k7) throw new RangeError('Invalid string length');
+      return JSON.stringify(input);
+    };
+    const elementBytes = await writeCompressedJsonFieldsAtomic(elementOnly, value, elementThrowing);
+    assert.equal(execFileSync('zstd', ['-dqc', elementOnly]).toString('utf8'), `${expected}\n`);
+    assert.deepEqual(elementBytes, bytes);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
