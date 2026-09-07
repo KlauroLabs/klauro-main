@@ -24,6 +24,36 @@ describe('TreeSitterTSExtractor throw-statement type extraction', () => {
     return undefined;
   }
 
+  it('keeps expression-body calls separate from parameter defaults', () => {
+    const source = `
+      const invoke = (value = defaultValue()) => handle(value);
+      const create = () => (value: string) => persist(value);
+    `;
+    const { functions } = extractor.extractFromSource(source, 'file.ts');
+    const invoke = functions.find(fn => fn.name === 'invoke');
+    const create = functions.find(fn => fn.name === 'create');
+
+    expect(invoke).toBeDefined();
+    expect(invoke!.calls.map(call => call.target)).toContain('handle');
+    expect(invoke!.calls.map(call => call.target)).not.toContain('defaultValue');
+    expect(create).toBeDefined();
+    expect(create!.calls.map(call => call.target)).toContain('persist');
+    expect(create!.calls.filter(call => call.target === 'persist')).toHaveLength(1);
+  });
+
+  it('keeps nested function and object-method throws in their own bodies', () => {
+    const source = `
+      function outer() {
+        function inner() { throw new InnerError(); }
+        const operations = { run() { throw new MethodError(); } };
+        throw new OuterError();
+      }
+    `;
+    expect(fnThrows(source, 'outer')).toEqual(['OuterError']);
+    expect(fnThrows(source, 'inner')).toEqual(['InnerError']);
+    expect(fnThrows(source, 'run')).toEqual(['MethodError']);
+  });
+
   it('lifts the constructor name from `throw new Foo()`', () => {
     const source = `
       function loadConfig() {

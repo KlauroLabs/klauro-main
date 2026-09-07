@@ -358,6 +358,7 @@ interface TSRootTraversal {
 
 interface TSTraversalFrame {
   node: any;
+  bodyOwner?: TSFunctionTraversal;
   parent: any | null;
   grandparent: any | null;
   parentType?: string;
@@ -1698,7 +1699,7 @@ export class TreeSitterTSExtractor {
       objectMethods: [],
       functions: new Map()
     };
-    const bodyOwners = new Map<any, TSFunctionTraversal>();
+
     const stack: TSTraversalFrame[] = [{
       node: root,
       parent: null,
@@ -1742,6 +1743,7 @@ export class TreeSitterTSExtractor {
       }
 
       let functionTraversal: TSFunctionTraversal | undefined;
+      let functionBodyId: number | undefined;
       if (EXTRACTED_FUNCTION_TYPES.has(type)) {
         functionTraversal = {
           node,
@@ -1756,7 +1758,7 @@ export class TreeSitterTSExtractor {
         };
         traversal.functions.set(node.id, functionTraversal);
         const body = node.childForFieldName('body');
-        if (body) bodyOwners.set(body.id, functionTraversal);
+        functionBodyId = body?.id;
 
         if (frame.classDepth === 0) {
           if (type === 'method_definition') {
@@ -1767,7 +1769,7 @@ export class TreeSitterTSExtractor {
         }
       }
 
-      const bodyOwner = bodyOwners.get(node.id);
+      const bodyOwner = frame.bodyOwner;
       const activeFunctions = bodyOwner
         ? [...frame.activeFunctions, bodyOwner]
         : frame.activeFunctions;
@@ -1867,6 +1869,7 @@ export class TreeSitterTSExtractor {
         if (!child) continue;
         stack.push({
           node: child,
+          bodyOwner: functionTraversal && child.id === functionBodyId ? functionTraversal : undefined,
           parent: node,
           grandparent: frame.parent,
           parentType: type,
