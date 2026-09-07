@@ -847,7 +847,14 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
     const out: SystemCapability[] = await localOrch.runCapabilityCatalogWithQualityGate(args);
 
-    expect(out).toEqual([]);
+    expect(out.length).toBeGreaterThan(0);
+    expect(out.every(capability => localOrch.isPublishableCapability(capability))).toBe(true);
+    expect(args.enhancedSystemPurpose.capability_catalog_coverage).toMatchObject({
+      status: 'partial',
+      actual_publishable_capabilities: out.length,
+      published_capabilities: out.length,
+      reason: expect.any(String),
+    });
     expect(calls.length).toBeGreaterThan(1);
     expect(calls.length).toBeLessThanOrEqual(13);
     const understandingCalls = calls.filter(call => call.candidateCapabilities[0]?.id === 'understanding');
@@ -856,6 +863,13 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     const shared = requirements.filter(requirement => requirement.beneficiaryAudiences);
     expect(shared).toHaveLength(1);
     expect(shared[0].beneficiaryAudiences).toEqual(['human', 'agent']);
+    expect(args.enhancedSystemPurpose.capability_reconciliation.proposals).toEqual(
+      expect.arrayContaining([expect.objectContaining({
+        requirement_id: shared[0].id,
+        disposition: 'intent-gap',
+        capability_ids: [],
+      })]),
+    );
     expect(out.filter(capability => capability.criticality_factors?.includes('catalog-outcome-requirement:' + shared[0].id))).toHaveLength(0);
     const targetedPromptFacts = JSON.stringify(calls.slice(1).flatMap(call => call.targetedRepairFacts || []));
     expect(targetedPromptFacts).toContain('candidate_1');
@@ -1515,7 +1529,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(args.enhancedSystemPurpose.capability_catalog_coverage.reason).toBeUndefined();
   });
 
-  it('retains uncorroborated first-party intent when an incomplete catalog cannot be published', async () => {
+  it('retains uncorroborated first-party intent beside an explicitly partial catalog', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const args: any = gateArgs(localOrch);
     args.projectTextSignal = {
@@ -1546,17 +1560,31 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
     const out = await localOrch.runCapabilityCatalogWithQualityGate(args);
 
-    expect(out).toHaveLength(0);
+    expect(out.map((capability: SystemCapability) => capability.id).sort()).toEqual(incomplete.map(capability => capability.id).sort());
+    expect(out.every((capability: SystemCapability) => localOrch.isPublishableCapability(capability))).toBe(true);
     expect(out.some((capability: SystemCapability) => /veterinary appointments/.test(capability.name))).toBe(false);
     expect(args.enhancedSystemPurpose.capability_catalog_coverage).toMatchObject({
       actual_publishable_capabilities: incomplete.length,
-      published_capabilities: 0,
-      status: 'rejected',
+      published_capabilities: incomplete.length,
+      status: 'partial',
+      reason: expect.any(String),
     });
-    expect(args.enhancedSystemPurpose.capability_catalog_coverage.reason).toBeDefined();
     expect(args.enhancedSystemPurpose.capability_reconciliation.proposals).toEqual(
-      expect.arrayContaining([expect.objectContaining({ disposition: 'intent-gap' })]),
+      expect.arrayContaining([expect.objectContaining({
+        requirement_id: unsupported.id,
+        disposition: 'intent-gap',
+        candidate_ids: [],
+        capability_ids: [],
+      })]),
     );
+    const publishedIds = new Set(out.map((capability: SystemCapability) => capability.id));
+    for (const proposal of args.enhancedSystemPurpose.capability_reconciliation.proposals) {
+      if (proposal.disposition === 'intent-gap') expect(proposal.capability_ids).toEqual([]);
+      else {
+        expect(proposal.capability_ids.length).toBeGreaterThan(0);
+        expect(proposal.capability_ids.every((id: string) => publishedIds.has(id))).toBe(true);
+      }
+    }
   });
 
   it('does not replace rejected bare abstractions merely to fill a catalog', async () => {
