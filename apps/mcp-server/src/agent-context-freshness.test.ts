@@ -1,6 +1,7 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { buildAgentContextFreshness } from './agent-context-freshness';
@@ -12,6 +13,40 @@ function workspace(t: TestContext): string {
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   fs.writeFileSync(path.join(root, 'target.ts'), 'export const value = 1;\n');
   return root;
+}
+
+test('captured input comparison detects changed content even when timestamps are old', t => {
+  const root = workspace(t);
+  const original = fs.readFileSync(path.join(root, 'target.ts'), 'utf8');
+  const contributions = capturedContributions('target.ts', original);
+  fs.writeFileSync(path.join(root, 'target.ts'), 'export const value = 2;\n');
+  fs.utimesSync(path.join(root, 'target.ts'), 1, 1);
+  const result = buildAgentContextFreshness(analyzedAt, root, ['target.ts'], 'target.ts', contributions);
+  assert.equal(result.summary.source_input_comparison.mismatched.count, 1);
+  assert.equal(result.summary.citation_verification, 'invalid');
+  assert.equal(result.summary.files_changed_since_analysis.count, null);
+  assert.match(result.target_file_note || '', /differs from captured/);
+});
+
+test('captured input matches do not certify complete analyzer provenance', t => {
+  const root = workspace(t);
+  const contributions = capturedContributions('target.ts', fs.readFileSync(path.join(root, 'target.ts'), 'utf8'));
+  const result = buildAgentContextFreshness(analyzedAt, root, ['target.ts'], 'target.ts', contributions);
+  assert.equal(result.summary.source_input_comparison.matched.count, 1);
+  assert.equal(result.summary.newer_mtime_hints.count, 1);
+  assert.equal(result.summary.citation_verification, 'unverified');
+  assert.equal(result.requires_verification, true);
+  assert.match(result.summary.warning, /matched.*captured inputs/i);
+});
+
+function capturedContributions(file: string, content: string) {
+  return [{
+    source_inputs: {
+      version: 1, coverage: 'observed-reads', digest_algorithm: 'sha256', outside_root_reads: 0,
+      files: [{ path: file, status: 'captured', representation: 'utf8-text',
+        sha256: createHash('sha256').update(content).digest('hex'), bytes: Buffer.byteLength(content) }],
+    },
+  }];
 }
 
 test('identical copied content is not called changed because of its timestamp', t => {
