@@ -12,6 +12,8 @@ import type { SubCasNodeIndex } from './deployable-analysis';
 import { loadTelemetryObservations } from './telemetry-ingestion';
 import { buildNodeRuntimeMetrics } from './product';
 import { CasRecordStoreCapacityError } from './cas-record-store';
+import { attachAgentRiskSource } from './agent-risk-context';
+import { createRankedRiskSource, type AgentRiskSource } from './hosted-query-risk-source';
 import { agentContextProjectionGaps, computeAgentContextScope, markNotComputedOnProjection, selectedNodeIdOf, loadAgentContextProjection, loadScopedGraphSection, loadScopedSemanticCollections, loadScopedSourceInputs, planScopedQuery, scopedQueryCapacityOutcome, type AgentContextProjection, type ScopedSourceInputs } from './hosted-query-scoped-graph';
 
 if (!process.send) {
@@ -83,6 +85,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
       let agentSmallSections: Record<string, unknown> | undefined;
       let agentPlan: { graph: import('../../../packages/analyzer-core/src/analyzer/core/compact-cas-graph').CompactCASGraph } | undefined;
       let agentSourceInputs: ScopedSourceInputs | { gap: string } | undefined;
+      let riskSource: AgentRiskSource | null = null;
       try {
       const scopedPlan = pinned
         ? await planScopedQuery(pinned, request.tool, request.args as Record<string, unknown> | undefined)
@@ -140,12 +143,17 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
           ...(collectionTotals ? { collection_totals: collectionTotals } : {}),
           ...(semanticEligible ? { projected_collections: semanticEligible.projected } : {}),
         });
+        if (agentProjection && agentPlan) {
+          riskSource = await createRankedRiskSource(pinned, agentPlan.graph);
+          if (riskSource) attachAgentRiskSource(scopedCas, riskSource);
+        }
         scopedContext = 'scope' in scopedPlan
           ? {
               mode: 'scoped',
               generation: path.basename(pinned.segmented.directory),
               source: graphSection?.source,
               target_id: scopedPlan.scope.targetId,
+              ...(agentProjection ? { risk_source: riskSource ? 'ranked-column' : null } : {}),
               loaded_nodes: graphSection?.nodes.length ?? 0,
               loaded_edges: graphSection?.edges.length ?? 0,
               total_nodes: totalNodes,
@@ -303,6 +311,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
             edges: secondProjection.edges,
             index: undefined,
           } as unknown as CASOutput, { loaded_sections: ['identity', ...Object.keys(agentSmallSections ?? {}), 'graph'] as CasSectionName[], node_count: agentPlan.graph.nodeCount, edge_count: secondProjection.edges.length, ...(collectionTotals ? { collection_totals: collectionTotals } : {}) });
+          if (riskSource) attachAgentRiskSource(activeCas, riskSource);
           result = await queryModule!.executeHostedProjectQuery({ cas: activeCas, tool: request.tool, args: request.args, projectPath: request.workspace, runtimeMetrics, deferBound: true, ...(observeUnbounded ? { observeUnbounded } : {}), ...(transformUnbounded ? { transformUnbounded } : {}) });
           if (scopedContext) Object.assign(scopedContext, { passes: 2, second_pass_target: selectedId, full_nodes: secondProjection.keepIds.size, light_nodes: secondProjection.lightNodes, light_edges: secondProjection.lightEdges, source: secondProjection.source, ...(secondScope.incomplete ? { incomplete: secondScope.incomplete } : {}), ...(agentSourceInputs ? { source_inputs: 'cas' in agentSourceInputs ? { source: 'semantic-store', ...agentSourceInputs.projected } : { not_computed: agentSourceInputs.gap } } : {}) });
         }
