@@ -13,7 +13,7 @@ import {
   shutdownAnalysisWorker,
   type LayeredJobPhaseEvent,
 } from './analyzer';
-import { saveAnalysis, loadAnalysis, getAnalysisVersionInfo } from './storage';
+import { saveAnalysis, loadAnalysis, getAnalysisVersionInfo, getAnalysisEntry } from './storage';
 
 // Task: layered-worker-isolation (2026-07-18). analyzeProjectLayered's L0 ->
 // L1-4 -> L5 pipeline used to run entirely inside the API/MCP server process
@@ -105,11 +105,14 @@ test('layered job persists structural layers and reports disabled comprehension 
   assert.equal(landed.layers_ready?.complete, false);
   assert.deepEqual(
     landed.layers_ready?.layers.filter(layer => layer.status === 'error').map(layer => layer.layer),
-    ['L5'],
+    ['L4', 'L5'],
   );
+  assert.deepEqual(summary.failedLayers.map(layer => layer.layer), ['L4', 'L5']);
+  const indexed = await getAnalysisEntry(fixtureProject);
+  assert.deepEqual(indexed?.layers_ready, landed.layers_ready);
   assert.ok(
     landed.layers_ready?.layers
-      .filter(layer => layer.layer !== 'L5')
+      .filter(layer => !['L4', 'L5'].includes(layer.layer))
       .every(layer => layer.status === 'ready'),
   );
   assert.equal(landed.system.analysis_focus, 'full');
@@ -122,7 +125,9 @@ test('in-process layered analysis also reports rejected enrichment as failed', a
   try {
     const events: LayeredJobPhaseEvent[] = [];
     const summary = await runLayeredAnalysis(fixtureProject, { analysisFocus: 'full', onPhase: event => { events.push(event); } });
-    assert.ok(summary.failedLayers.some(layer => layer.layer === 'L5'));
+    assert.deepEqual(summary.failedLayers.map(layer => layer.layer), ['L4', 'L5']);
+    const indexed = await getAnalysisEntry(fixtureProject);
+    assert.deepEqual(indexed?.layers_ready?.layers.filter(layer => layer.status === 'error').map(layer => layer.layer), ['L4', 'L5']);
     assert.deepEqual(events.map(event => event.status), ['succeeded', 'succeeded', 'failed']);
     assert.match(events[2].error!, /L5:/);
   } finally {

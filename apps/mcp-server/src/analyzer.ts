@@ -1202,7 +1202,7 @@ export async function analyzeProjectLayered(
   })();
 
   const restPromise = l0Promise.then(async () => {
-    const { buildCompletedAnalysisLayersReady, buildLayersReady } = await import('./layered-analysis.js');
+
 
 
 
@@ -1218,20 +1218,7 @@ export async function analyzeProjectLayered(
       previous && previous.layers_ready?.complete === true && (previous.nodes?.length ?? 0) > 0
     );
     const stampStructuralLayers = (output: CASOutput): void => {
-      const contentGeneratedAt = output.analysis_timestamp || new Date().toISOString();
-      const aiConfigured = output.ai_enrichment !== undefined && output.ai_enrichment !== 'disabled';
-      output.layers_ready = buildLayersReady({
-        L0: { status: 'ready', completedAt: contentGeneratedAt },
-        L1: { status: 'ready', completedAt: contentGeneratedAt },
-        L2: { status: 'ready', completedAt: contentGeneratedAt },
-        L3: { status: 'ready', completedAt: contentGeneratedAt },
-        L4: aiConfigured && output.ai_enrichment === 'pending'
-          ? { status: 'pending' }
-          : { status: 'ready', completedAt: contentGeneratedAt },
-        L5: output.ai_enrichment === 'disabled'
-          ? { status: 'error', error: 'AI comprehension is disabled; required product narrative and capability comprehension were not generated' }
-          : { status: aiConfigured ? (output.ai_enrichment === 'ready' || output.ai_enrichment === 'synchronous' ? 'ready' : 'pending') : 'ready' },
-      }, { generatedAt: contentGeneratedAt });
+      output.layers_ready = buildCompletedAnalysisLayersReady(output);
     };
     let structuralCheckpointPrepared = false;
     const prepareStructuralCheckpoint = (output: CASOutput): void => {
@@ -1281,7 +1268,7 @@ export async function analyzeProjectLayered(
 
 
     const enrichment = deferred.enrichment.then(async () => {
-      if (deferred.output.ai_enrichment !== 'ready' && deferred.output.ai_enrichment !== 'error') return;
+      if (deferred.output.ai_enrichment === 'pending') return;
       const nextLayers = buildCompletedAnalysisLayersReady(deferred.output);
       if (JSON.stringify(deferred.output.layers_ready) === JSON.stringify(nextLayers)) return;
       deferred.output.layers_ready = nextLayers;

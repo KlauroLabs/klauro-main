@@ -253,8 +253,10 @@ export function buildCompletedAnalysisLayersReady(output: CASOutput): CASLayersR
   const l4 = extractionError
     ? structural
     : catalogError
-    ? { status: 'error' as const, completedAt: generatedAt, error: catalogError }
-    : ready;
+      ? output.ai_enrichment === 'pending'
+        ? { status: 'pending' as const }
+        : { status: 'error' as const, completedAt: generatedAt, error: catalogError }
+      : ready;
   const narrativeError = comprehensionNarrativeFailure(output.enhanced_system_purpose);
   const l5 = extractionError
     ? structural

@@ -103,12 +103,49 @@ test('keeps a grounded partial catalog queryable without claiming its layers are
   assert.equal(output.enhanced_system_purpose?.capability_catalog_coverage?.published_capabilities, 5);
 });
 
-test('reports disabled required AI comprehension as an L5 error', () => {
+test('keeps unavailable comprehension pending only while enrichment is running', () => {
+  const output = outputWithCatalog('rejected', 0);
+  output.ai_enrichment = 'pending';
+  assert.equal(layer(output, 'L4')?.status, 'pending');
+  assert.equal(layer(output, 'L5')?.status, 'pending');
+  assert.equal(buildCompletedAnalysisLayersReady(output).complete, false);
+
+  for (const state of ['disabled', 'error', 'synchronous', 'ready', undefined] as const) {
+    output.ai_enrichment = state;
+    assert.equal(layer(output, 'L4')?.status, 'error');
+    assert.equal(layer(output, 'L5')?.status, 'error');
+    assert.equal(buildCompletedAnalysisLayersReady(output).complete, false);
+  }
+
+  const accepted = outputWithCatalog('accepted', 2);
+  accepted.ai_enrichment = 'pending';
+  assert.equal(layer(accepted, 'L4')?.status, 'ready');
+  assert.equal(layer(accepted, 'L5')?.status, 'pending');
+});
+
+test('does not hide unavailable source extraction behind pending enrichment', () => {
+  const output = outputWithCatalog('rejected', 0);
+  output.ai_enrichment = 'pending';
+  output.analyzer_contributions = [{
+    analyzer_id: 'typescript-javascript',
+    analyzer_name: 'TypeScript',
+    contribution_type: 'language',
+    analysis_scope: { files_eligible: 2, files_analyzed: 0, files_skipped: 2, complete: false },
+  }];
+  for (const candidate of buildCompletedAnalysisLayersReady(output).layers) {
+    assert.equal(candidate.status, 'error');
+    assert.match(candidate.error || '', /no eligible source file was analyzed/);
+  }
+});
+
+test('reports disabled required AI comprehension as L4 and L5 errors', () => {
   const output = {
     analysis_timestamp: '2026-08-20T00:00:00.000Z',
     ai_enrichment: 'disabled',
   } as CASOutput;
 
+  assert.equal(layer(output, 'L4')?.status, 'error');
+  assert.match(layer(output, 'L4')?.error || '', /coverage was not reported/);
   assert.equal(layer(output, 'L5')?.status, 'error');
   assert.match(layer(output, 'L5')?.error || '', /disabled/);
 });
