@@ -82,7 +82,7 @@ test('blocks split by bytes before the count limit and reads stay bounded by the
     const graph = (await loadCompactAnalysisGraph(project))!;
     const pinned = (await acquirePinnedAnalysis(project))!;
     try {
-      const small = await openCasRecordStore(pinned.segmented.directory, manifest.record_store!, { nodeCount: graph.nodeCount, edgeCount: graph.edgeCount }, { maxDecodedBytes: payload * 3, cacheBytes: payload * 3 });
+      const small = await openCasRecordStore(pinned.segmented.directory, manifest.record_store!, { nodeCount: graph.nodeCount, edgeCount: graph.edgeCount }, { maxDecodedBytes: payload * 4, cacheBytes: payload * 3 });
       const dense = (id: string) => graph.nodeById(id)!.denseId;
       const one = await small.nodes.read([dense('n-3')]);
       assert.equal(one[0].id, 'n-3');
@@ -247,7 +247,7 @@ test('reads decode each planned block once even with no cache, and the stats acc
       assert.equal(stats.blockReads, 1, 'one disk read and decode for the block');
       assert.equal(stats.cacheHits, 0);
       assert.equal(stats.indexBytes, tableIndexBytes(manifest.record_store!.nodes) + tableIndexBytes(manifest.record_store!.edges) + manifest.record_store!.edges.count, 'index residency includes the record map and its permutation check bitmap');
-      assert.ok(stats.compressedBytesRead > 0 && stats.compressedBytesRead < stats.decodedBytes);
+      assert.ok(stats.compressedBytesRead > 0 && stats.compressedBytesRead < stats.decodeWorkBytes, 'compressed bytes read are below the decoded block work');
       const dense = (id: string) => graph.nodeById(id)!.denseId;
       const spread = await uncached.nodes.read([dense('n-0'), dense(`n-${count - 1}`)]);
       assert.deepEqual(spread.map(node => node.id), ['n-0', `n-${count - 1}`]);

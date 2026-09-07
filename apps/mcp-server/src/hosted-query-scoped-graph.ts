@@ -344,14 +344,7 @@ export function computeAgentContextScope(graph: CompactCASGraph, seedIds: readon
       for (const denseId of siblings.denseIds) keepIds.add(graph.nodeAt(denseId).id);
       if (siblings.nextOffset !== undefined) reasons.push(`${seed.sourceFile} has more nodes than the scope can carry`);
     }
-    if (seedId === seedIds[0]) {
-      const upstream = graph.traverse(seed.denseId, { direction: 'incoming', maxDepth: MAX_UPSTREAM_DEPTH, maxNodes: MAX_SCOPED_NODES, maxEdges: MAX_SCOPED_EDGES });
-      for (const denseId of upstream.nodeDenseIds) {
-        if (keepIds.size >= MAX_SCOPED_NODES) { reasons.push(`the caller closure of ${seed.id} exceeds the ${MAX_SCOPED_NODES}-node scope`); break; }
-        keepIds.add(graph.nodeAt(denseId).id);
-      }
-      if (upstream.truncated) reasons.push(`the caller closure of ${seed.id} was cut at ${MAX_SCOPED_NODES} nodes or ${MAX_SCOPED_EDGES} edges`);
-    }
+
   }
   const unique = [...new Set(reasons)];
   return {
@@ -429,6 +422,7 @@ export function agentContextProjectionGaps(projection: AgentContextProjection): 
     light_node_fields_absent: [...LIGHT_NODE_ABSENT_FIELDS],
     light_edge_fields_absent: [...LIGHT_EDGE_ABSENT_FIELDS],
     computed_on_light_records: [
+      'transitive caller closure for the embedded change-risk summary (exact for ids, names, types and files; the closure itself is walked on light edges)',
       'readiness gates that count nodes, edges and method calls (exact: counts do not need heavy fields)',
       'language coverage note (exact: file and type only)',
       'architecture and conformance relevance scans over id, name, qualified name, type and file (exact)',

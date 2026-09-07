@@ -39,6 +39,7 @@ export interface CasRecordStoreDescriptor {
 export interface CasRecordStoreReadBudget {
   maxRecords: number;
   maxDecodedBytes: number;
+  maxDecodeWorkBytes: number;
   maxCompressedBytes: number;
   maxIndexBytes: number;
   cacheBytes: number;
@@ -53,11 +54,13 @@ export interface CasRecordStoreReadStats {
   compressedBytesPlanned: number;
   compressedBytesRead: number;
   decodedBytes: number;
+  decodeWorkBytes: number;
 }
 
 export const DEFAULT_RECORD_STORE_READ_BUDGET: CasRecordStoreReadBudget = {
   maxRecords: 25_000,
   maxDecodedBytes: 64 * 1024 * 1024,
+  maxDecodeWorkBytes: 512 * 1024 * 1024,
   maxCompressedBytes: 64 * 1024 * 1024,
   maxIndexBytes: 64 * 1024 * 1024,
   cacheBytes: 32 * 1024 * 1024,
@@ -357,7 +360,7 @@ class SharedBlockCache {
 }
 
 class ReadLedger {
-  readonly stats: CasRecordStoreReadStats = { indexBytes: 0, records: 0, blocksPlanned: 0, blockReads: 0, cacheHits: 0, compressedBytesPlanned: 0, compressedBytesRead: 0, decodedBytes: 0 };
+  readonly stats: CasRecordStoreReadStats = { indexBytes: 0, records: 0, blocksPlanned: 0, blockReads: 0, cacheHits: 0, compressedBytesPlanned: 0, compressedBytesRead: 0, decodedBytes: 0, decodeWorkBytes: 0 };
 
   constructor(private readonly budget: CasRecordStoreReadBudget) {}
 
@@ -366,12 +369,14 @@ class ReadLedger {
     this.stats.indexBytes += bytes;
   }
 
-  reserve(records: number, decodedBytes: number, compressedBytes: number, blocks: number): void {
+  reserve(records: number, residentBytes: number, compressedBytes: number, blocks: number, decodeWorkBytes = residentBytes): void {
     if (this.stats.records + records > this.budget.maxRecords) throw new CasRecordStoreCapacityError(`CAS record store query of ${this.stats.records + records} records exceeds ${this.budget.maxRecords}`);
-    if (this.stats.decodedBytes + decodedBytes > this.budget.maxDecodedBytes) throw new CasRecordStoreCapacityError(`CAS record store query needs ${this.stats.decodedBytes + decodedBytes} decoded bytes, above ${this.budget.maxDecodedBytes}`);
+    if (this.stats.decodedBytes + residentBytes > this.budget.maxDecodedBytes) throw new CasRecordStoreCapacityError(`CAS record store query needs ${this.stats.decodedBytes + residentBytes} resident decoded bytes, above ${this.budget.maxDecodedBytes}`);
+    if (this.stats.decodeWorkBytes + decodeWorkBytes > this.budget.maxDecodeWorkBytes) throw new CasRecordStoreCapacityError(`CAS record store query would decode ${this.stats.decodeWorkBytes + decodeWorkBytes} block bytes, above ${this.budget.maxDecodeWorkBytes}`);
     if (this.stats.compressedBytesPlanned + compressedBytes > this.budget.maxCompressedBytes) throw new CasRecordStoreCapacityError(`CAS record store query needs ${this.stats.compressedBytesPlanned + compressedBytes} compressed bytes, above ${this.budget.maxCompressedBytes}`);
     this.stats.records += records;
-    this.stats.decodedBytes += decodedBytes;
+    this.stats.decodedBytes += residentBytes;
+    this.stats.decodeWorkBytes += decodeWorkBytes;
     this.stats.compressedBytesPlanned += compressedBytes;
     this.stats.blocksPlanned += blocks;
   }
@@ -467,7 +472,10 @@ export class CasRecordTable<T> {
       decodedBytes += this.decodedBlockBytes(block);
       compressedBytes += this.blockOffsets[block + 1] - this.blockOffsets[block];
     }
-    this.ledger.reserve(unique.length, decodedBytes, compressedBytes, blocks.size);
+    let residentBytes = 0;
+    for (const ordinal of unique) residentBytes += this.recordOffsets[ordinal + 1] - this.recordOffsets[ordinal];
+    const largestBlock = [...blocks].reduce((max, block) => Math.max(max, this.decodedBlockBytes(block)), 0);
+    this.ledger.reserve(unique.length, residentBytes + largestBlock, compressedBytes, blocks.size, decodedBytes);
     return { ordinals: unique, blocks: [...blocks].sort((left, right) => left - right), decodedBytes, compressedBytes };
   }
 

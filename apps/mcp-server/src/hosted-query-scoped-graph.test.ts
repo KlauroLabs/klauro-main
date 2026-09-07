@@ -382,7 +382,8 @@ test('semantic tables serve method calls, change risks and tests for a scope by 
       { id: 'suite-1', name: 'target.test', file_path: 'src/target.test.ts', tests: [{ name: 'covers target', targets: ['node-0'] }], coverage: { nodes_tested: ['node-0'] } },
     ];
     (cas as any).mocks = [{ id: 'mock-1', name: 'targetMock', target_node: 'node-0' }, { id: 'mock-far', name: 'farMock', target_node: 'node-30' }];
-    (cas as any).fixtures = [{ id: 'fixture-1', name: 'targetFixture', used_by: ['node-0', 'node-1'] }];
+    (cas as any).fixtures = [{ id: 'fixture-1', name: 'targetFixture', used_by: ['node-0', 'node-1'] }, { id: 'fixture-unreferenced', name: 'sharedFixture' }];
+    (cas as any).test_suites.push({ id: 'suite-colocated', name: 'target.spec', file_path: 'src/target.spec.ts', tests: [{ name: 'no explicit targets' }] });
     await saveAnalysis(project, cas, 'main', { canonicalSegmented: true });
     const manifest = (await loadAnalysisSectionManifest(project))!;
     assert.ok(manifest.semantic_store, 'the generation carries a semantic store');
@@ -401,12 +402,17 @@ test('semantic tables serve method calls, change risks and tests for a scope by 
       assert.deepEqual((semantic.collections.test_suites as any[]).map(suite => suite.id), ['suite-1']);
       assert.deepEqual((semantic.collections.mocks as any[]).map(mock => mock.id), ['mock-1']);
       assert.deepEqual((semantic.collections.fixtures as any[]).map(fixture => fixture.id), ['fixture-1']);
-      assert.equal(semantic.projected.test_suites.total, 2);
+      assert.equal(semantic.projected.test_suites.total, 3);
       const section = (await loadScopedGraphSection(pinned, keepIds, graph))!;
-      const scopedCas = { ...full, nodes: section.nodes, edges: section.edges, ...semantic.collections } as unknown as CASOutput;
+      const scopedCas = { ...full, nodes: section.nodes, edges: section.edges, method_calls: semantic.collections.method_calls, change_risks: semantic.collections.change_risks, reachability_index: semantic.collections.reachability_index } as unknown as CASOutput;
       const strip = (value: unknown) => JSON.parse(JSON.stringify(value));
       assert.deepEqual(strip(assessChangeRisk(scopedCas, 'node-0')), strip(assessChangeRisk(full, 'node-0')), 'precomputed risk parity on the semantic subset');
-      assert.deepEqual(strip(findTests(scopedCas, { nodeId: 'node-0' })), strip(findTests(full, { nodeId: 'node-0' })), 'tests parity');
+      const scopedTests = strip(findTests(scopedCas, { nodeId: 'node-0' }));
+      const fullTests = strip(findTests(full, { nodeId: 'node-0' }));
+      assert.deepEqual(scopedTests, fullTests, 'tests parity: the tests section stays whole so an unreferenced fixture and a filename-only co-located suite survive');
+      assert.ok(fullTests.fixtures.some((fixture: any) => fixture.id === 'fixture-unreferenced'), 'the full path returns fixtures that reference no node');
+      assert.ok(fullTests.suites.some((suite: any) => suite.id === 'suite-colocated'), 'the full path ranks the co-located suite without explicit coverage');
+      assert.equal(semantic.projected.test_suites?.matched, 1, 'the by-node table alone would have missed the co-located suite, which is why it is not applied');
       assert.deepEqual(strip(getErrorContracts(scopedCas, 'node-0', 'both')), strip(getErrorContracts(full, 'node-0', 'both')), 'error contracts parity on scoped method calls');
       const empty = await loadScopedSemanticCollections(pinned, graph, new Set(['node-20']));
       assert.deepEqual((empty!.collections.method_calls as any[]).map(call => call.id), ['mc-3']);
