@@ -13,6 +13,7 @@ export interface HostedProjectQueryWorkerRequest {
   args?: unknown;
   projectId: string;
   analysisId: string;
+  diagnostics?: { unbounded_dump_path?: string };
 }
 
 interface HostedProjectQueryWorkerResponse {

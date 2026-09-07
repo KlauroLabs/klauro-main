@@ -302,21 +302,12 @@ test('get_agent_context on the light-plus-scoped projection matches the whole-gr
       assert.equal(projection.nodes.find(node => node.id === 'node-0')!.description, 'targetFn does work in src/target.ts', 'kept nodes carry full records');
       const scopedCas = { ...full, nodes: projection.nodes, edges: projection.edges } as CASOutput;
       const strip = (value: unknown) => JSON.parse(JSON.stringify(value, (key, inner) => (key === 'generated_at' || key === 'scoped_context' ? undefined : inner)));
-      const dumpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-unbounded-'));
-      const previousDump = process.env.KLAURO_HOSTED_QUERY_UNBOUNDED_DUMP;
       let unboundedScoped: unknown;
       let unboundedWhole: unknown;
-      try {
-        process.env.KLAURO_HOSTED_QUERY_UNBOUNDED_DUMP = path.join(dumpDir, 'scoped');
-        var scoped = strip(await executeHostedProjectQuery({ cas: scopedCas, tool: 'get_agent_context', args, projectPath: project }));
-        unboundedScoped = strip(JSON.parse(fs.readFileSync(path.join(dumpDir, 'scoped.get_agent_context.json'), 'utf8')));
-        process.env.KLAURO_HOSTED_QUERY_UNBOUNDED_DUMP = path.join(dumpDir, 'whole');
-        var whole = strip(await executeHostedProjectQuery({ cas: full, tool: 'get_agent_context', args, projectPath: project }));
-        unboundedWhole = strip(JSON.parse(fs.readFileSync(path.join(dumpDir, 'whole.get_agent_context.json'), 'utf8')));
-      } finally {
-        if (previousDump === undefined) delete process.env.KLAURO_HOSTED_QUERY_UNBOUNDED_DUMP; else process.env.KLAURO_HOSTED_QUERY_UNBOUNDED_DUMP = previousDump;
-        fs.rmSync(dumpDir, { recursive: true, force: true });
-      }
+      const scoped = strip(await executeHostedProjectQuery({ cas: scopedCas, tool: 'get_agent_context', args, projectPath: project, observeUnbounded: (_tool, value) => { unboundedScoped = strip(value); } }));
+      const whole = strip(await executeHostedProjectQuery({ cas: full, tool: 'get_agent_context', args, projectPath: project, observeUnbounded: (_tool, value) => { unboundedWhole = strip(value); } }));
+      const failingObserver = await executeHostedProjectQuery({ cas: full, tool: 'get_agent_context', args, projectPath: project, observeUnbounded: () => { throw new Error('observer broke'); } });
+      assert.ok(failingObserver && typeof failingObserver === 'object', 'an observer failure never fails the query');
       assert.equal(scoped.selected_node?.id, 'node-0');
       assert.deepEqual(scoped, whole, 'agent context is identical on the projection');
       assert.deepEqual(unboundedScoped, unboundedWhole, 'the complete pre-bound context is identical too');

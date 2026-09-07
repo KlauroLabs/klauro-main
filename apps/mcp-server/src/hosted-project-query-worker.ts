@@ -249,6 +249,13 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
       const runtimeSet = !unavailable && needsRuntimeMetrics
         ? await loadTelemetryObservations(request.workspace, { source: 'ingested', limit: 5000 }) : null;
       const runtimeMetrics = runtimeSet ? buildNodeRuntimeMetrics(activeCas, runtimeSet.observations || []) : [];
+      const dumpPath = typeof request.diagnostics?.unbounded_dump_path === 'string' && request.diagnostics.unbounded_dump_path.trim() ? request.diagnostics.unbounded_dump_path.trim() : undefined;
+      const observeUnbounded = dumpPath
+        ? (tool: string, value: unknown): void => {
+            const target = `${dumpPath}.${tool}.${process.pid}.json`;
+            fs.writeFileSync(target, JSON.stringify(value ?? null), { mode: 0o600, flag: 'w' });
+          }
+        : undefined;
       let result = unavailable
         ? undefined
         : scopedCapacityOutcome ?? await queryModule!.executeHostedProjectQuery({
@@ -257,6 +264,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
             args: request.args,
             projectPath: request.workspace,
             runtimeMetrics,
+            ...(observeUnbounded ? { observeUnbounded } : {}),
           });
       const selectedId = agentProjection && result && typeof result === 'object'
         ? (result as { selected_node?: { id?: unknown } }).selected_node?.id
@@ -274,7 +282,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
             edges: secondProjection.edges,
             index: undefined,
           } as unknown as CASOutput, { loaded_sections: ['identity', ...Object.keys(agentSmallSections ?? {}), 'graph'] as CasSectionName[], node_count: agentPlan.graph.nodeCount, edge_count: secondProjection.edges.length, ...(collectionTotals ? { collection_totals: collectionTotals } : {}) });
-          result = await queryModule!.executeHostedProjectQuery({ cas: activeCas, tool: request.tool, args: request.args, projectPath: request.workspace, runtimeMetrics });
+          result = await queryModule!.executeHostedProjectQuery({ cas: activeCas, tool: request.tool, args: request.args, projectPath: request.workspace, runtimeMetrics, ...(observeUnbounded ? { observeUnbounded } : {}) });
           if (scopedContext) Object.assign(scopedContext, { passes: 2, second_pass_target: selectedId, full_nodes: secondProjection.keepIds.size, light_nodes: secondProjection.lightNodes, light_edges: secondProjection.lightEdges, source: secondProjection.source, ...(secondScope.incomplete ? { incomplete: secondScope.incomplete } : {}) });
         }
       }

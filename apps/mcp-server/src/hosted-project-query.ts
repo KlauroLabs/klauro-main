@@ -195,6 +195,7 @@ export async function executeHostedProjectQuery(input: {
   args?: unknown;
   projectPath: string;
   runtimeMetrics?: RuntimeMetricLike[];
+  observeUnbounded?: (tool: string, result: unknown) => void;
 }): Promise<unknown> {
   if (!Object.prototype.hasOwnProperty.call(HOSTED_PROJECT_QUERY_SCHEMAS, input.tool)) {
     throw new Error(`Unsupported hosted query tool '${input.tool}'`);
@@ -318,10 +319,12 @@ export async function executeHostedProjectQuery(input: {
       break;
   }
 
-  const dumpPath = process.env.KLAURO_HOSTED_QUERY_UNBOUNDED_DUMP;
-  if (dumpPath) {
-    const fsModule = await import('node:fs');
-    fsModule.writeFileSync(`${dumpPath}.${tool}.json`, JSON.stringify(result ?? null));
+  if (input.observeUnbounded) {
+    try {
+      input.observeUnbounded(tool, result);
+    } catch (error) {
+      process.stderr.write(`${JSON.stringify({ event: 'hosted_query_unbounded_observer_failed', tool, message: error instanceof Error ? error.message : String(error) })}\n`);
+    }
   }
   return boundHostedProjectQueryResult(tool, args, result);
 }
