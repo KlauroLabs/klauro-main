@@ -1,3 +1,24 @@
+x-analysis-environment: &analysis-environment
+  KLAURO_COORD_DIR: /data/coordination
+  KLAURO_TS_EXTRACTION_CACHE_PATH: /data/cache/ts-extractions
+  KLAURO_ANALYZER_CONTRIBUTION_CACHE_PATH: /data/cache/analyzer-contributions
+  KLAURO_AI_CACHE_PATH: /data/cache/ai
+  KLAURO_AI_INTERPRETATION_FORCE: "false"
+  AI_TIMEOUT: "30000"
+  KLAURO_AI_PROVIDER_RETRIES: "0"
+  DEEPINFRA_NARRATIVE_MODEL: "${DEEPINFRA_NARRATIVE_MODEL:-mistralai/Mistral-Small-3.2-24B-Instruct-2506}"
+  DEEPINFRA_STRUCTURED_MODEL: "${DEEPINFRA_STRUCTURED_MODEL:-Qwen/Qwen3-Next-80B-A3B-Instruct}"
+  DEEPINFRA_FAST_FALLBACK_MODEL: "${DEEPINFRA_FAST_FALLBACK_MODEL:-meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo}"
+  OPENROUTER_MODEL: "${OPENROUTER_MODEL:-tencent/hy3}"
+  KLAURO_TS_PARSE_WORKERS: "2"
+  KLAURO_ANALYSIS_CONCURRENCY: "1"
+  KLAURO_CANONICAL_SEGMENTED_STORAGE: "1"
+  KLAURO_ANALYSIS_WORKER_IDLE_MS: "0"
+  KLAURO_ANALYSIS_STALL_MS: "600000"
+  KLAURO_ANALYSIS_WORKER_SOCKET: /run/klauro/analysis-worker.sock
+  KLAURO_ANALYSIS_HEAP_MB: "2432"
+  REDIS_HOST: redis
+
 services:
   api:
     build:
@@ -8,42 +29,30 @@ services:
         KLAURO_BUILD_TIME: "${KLAURO_BUILD_TIME:-}"
     image: klauro/api:alpha
     restart: unless-stopped
-    cpus: "4.0"
-    mem_limit: 6144m
-    memswap_limit: 6144m
+    init: true
+    cpus: "2.0"
+    mem_limit: 1536m
+    memswap_limit: 1536m
     env_file:
       - /opt/klauro/.env
     environment:
+      <<: *analysis-environment
       KLAURO_SELF_TELEMETRY: "1"
       KLAURO_TELEMETRY_LOCK_INSTANCE: "hosted-api"
-      KLAURO_COORD_DIR: /data/coordination
       KLAURO_SELF_TELEMETRY_PROJECT: /data/workspaces/prj_wbW33m-wfETn1N41
-      KLAURO_TS_EXTRACTION_CACHE_PATH: /data/cache/ts-extractions
-      KLAURO_ANALYZER_CONTRIBUTION_CACHE_PATH: /data/cache/analyzer-contributions
-      KLAURO_AI_CACHE_PATH: /data/cache/ai
-      KLAURO_AI_INTERPRETATION_FORCE: "false"
-      AI_TIMEOUT: "30000"
-      KLAURO_AI_PROVIDER_RETRIES: "0"
-      DEEPINFRA_NARRATIVE_MODEL: "${DEEPINFRA_NARRATIVE_MODEL:-mistralai/Mistral-Small-3.2-24B-Instruct-2506}"
-      DEEPINFRA_STRUCTURED_MODEL: "${DEEPINFRA_STRUCTURED_MODEL:-Qwen/Qwen3-Next-80B-A3B-Instruct}"
-      DEEPINFRA_FAST_FALLBACK_MODEL: "${DEEPINFRA_FAST_FALLBACK_MODEL:-meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo}"
-      OPENROUTER_MODEL: "${OPENROUTER_MODEL:-tencent/hy3}"
-      KLAURO_TS_PARSE_WORKERS: "2"
-      KLAURO_ANALYSIS_CONCURRENCY: "1"
       KLAURO_ANALYSIS_QUEUE_CAPACITY: "4"
-      KLAURO_CANONICAL_SEGMENTED_STORAGE: "1"
-      KLAURO_ANALYSIS_WORKER_IDLE_MS: "0"
-      KLAURO_ANALYSIS_STALL_MS: "600000"
-      NODE_OPTIONS: --max-old-space-size=4096
-      REDIS_HOST: redis
+      NODE_OPTIONS: --max-old-space-size=1024
     expose:
       - "8787"
     depends_on:
       redis:
         condition: service_healthy
+      analysis-worker:
+        condition: service_healthy
     volumes:
       - /opt/klauro/data:/data
       - /opt/klauro/downloads:/opt/klauro/downloads:ro
+      - analysis-worker-socket:/run/klauro
     logging:
       driver: json-file
       options:
@@ -56,13 +65,45 @@ services:
       retries: 5
       start_period: 15s
 
+  analysis-worker:
+    image: klauro/api:alpha
+    restart: unless-stopped
+    command: ["/app/node_modules/.bin/tsx", "/app/apps/mcp-server/src/analysis-worker-service.ts"]
+    init: true
+    cpus: "3.0"
+    mem_limit: 3584m
+    memswap_limit: 3584m
+    env_file:
+      - /opt/klauro/.env
+    environment:
+      <<: *analysis-environment
+      KLAURO_SELF_TELEMETRY: "0"
+      NODE_OPTIONS: --max-old-space-size=512
+    volumes:
+      - /opt/klauro/data:/data
+      - /opt/klauro/downloads:/opt/klauro/downloads:ro
+      - analysis-worker-socket:/run/klauro
+    tmpfs:
+      - /tmp:size=512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD", "sh", "-c", "test -S /run/klauro/analysis-worker.sock"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
   fabric:
     image: klauro/api:alpha
     restart: unless-stopped
     command: ["/app/node_modules/.bin/tsx", "src/fabric.ts"]
-    cpus: "1.5"
-    mem_limit: 1536m
-    memswap_limit: 1536m
+    cpus: "1.0"
+    mem_limit: 1024m
+    memswap_limit: 1024m
     env_file:
       - /opt/klauro/.env
     environment:
@@ -73,7 +114,7 @@ services:
       KLAURO_TS_PARSE_WORKERS: "1"
       KLAURO_ANALYSIS_CONCURRENCY: "1"
       KLAURO_ANALYSIS_WORKER_IDLE_MS: "0"
-      NODE_OPTIONS: --max-old-space-size=1280
+      NODE_OPTIONS: --max-old-space-size=768
     expose:
       - "8788"
     volumes:
@@ -93,6 +134,8 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    mem_limit: 640m
+    memswap_limit: 640m
     command: >-
       redis-server
       --save 60 1
@@ -117,6 +160,8 @@ services:
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
+    mem_limit: 128m
+    memswap_limit: 128m
     depends_on:
       api:
         condition: service_healthy
@@ -135,3 +180,6 @@ services:
       options:
         max-size: "20m"
         max-file: "5"
+
+volumes:
+  analysis-worker-socket:
