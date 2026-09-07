@@ -168,7 +168,7 @@ export function projectCasChild(
         : projected[field as ProjectedKey];
     if (value !== undefined) (output as Record<string, unknown>)[field] = value;
   }
-  if (parent.analyzer_contributions.some(contribution => contribution.source_inputs)) {
+  if (Array.isArray(parent.analyzer_contributions) && parent.analyzer_contributions.some(contribution => contribution?.source_inputs)) {
     output.source_input_root = parent.source_input_root ?? parent.system.root_path;
   }
   return output as CASOutput;

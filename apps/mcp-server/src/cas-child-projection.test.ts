@@ -153,6 +153,18 @@ test('a legacy raw child gets an explicit origin without rewriting its parent ev
   assert.equal(child.analyzer_contributions, parent.analyzer_contributions);
 });
 
+test('partial legacy projections without contribution metadata remain queryable', () => {
+  const parent = parentCas();
+  delete (parent as Partial<CASOutput>).analyzer_contributions;
+  const child = projectCasChild(parent, {
+    id: 'child', parent_id: 'root', label: 'child', analysis_id: 'analysis:child',
+    system: { ...parent.system, root_path: 'apps/child' },
+  }, projectedValues());
+  assert.equal(child.source_input_root, undefined);
+  assert.equal(child.analyzer_contributions, undefined);
+  assert.deepEqual(child.nodes, []);
+});
+
 test('child projection rejects runtime fields absent from its exhaustive policy', () => {
   const parent = { ...parentCas(), future_cas_section: { value: true } } as CASOutput;
   assert.throws(
