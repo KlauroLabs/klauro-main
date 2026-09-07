@@ -8,6 +8,7 @@ import {
   capabilityCatalogOutcomeBindingFailure,
   capabilityCatalogOutcomeBindingFailureDetail,
   capabilityCatalogOutcomeCoverageFailure,
+  capabilityCatalogOutcomeRepairNudge,
   canonicalCapabilityCatalogOutcomeToken,
   capabilityCatalogOutcomeNameFailure,
   capabilityCatalogOutcomesMayMerge,
@@ -390,35 +391,28 @@ test('preserves authored outcomes without matching implementation as intent-gap 
     'an ungrounded product promise remains an intent gap and does not become a fabricated catalog quota');
 });
 
-test('requires separately stated first-party human, agent, and truth outcomes when structural evidence corroborates them', () => {
+test('preserves all independently stated outcomes without multiplying shared beneficiaries', () => {
   const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, evidence);
-  const human = requirements.find(requirement => requirement.audience === 'human')!;
-  const agent = requirements.find(requirement => requirement.audience === 'agent')!;
+  const comprehension = requirements.find(requirement => requirement.beneficiaryAudiences)!;
   const graph = requirements.find(requirement => requirement.subjectTokens.includes('relation'))!;
   const collaboration = requirements.find(requirement => requirement.subjectTokens.includes('collaborate'))!;
   const runtime = requirements.find(requirement => requirement.subjectTokens.includes('runtime'))!;
-  assert.match(human.firstPartyOutcomeText || '', /people and AI agents/i);
-  assert.equal(human.audienceScopedOutcomeText, 'turns that graph into behavior-level comprehension for people');
-  assert.equal(agent.audienceScopedOutcomeText, 'turns that graph into behavior-level comprehension for agents');
+  assert.equal(requirements.length, 4);
+  assert.equal(comprehension.audienceScopedOutcomeText, undefined);
+  assert.deepEqual(comprehension.visibleActionTerms, ['turn']);
   assert.deepEqual(graph.visibleActionTerms, ['build']);
-  assert.deepEqual(human.visibleActionTerms, ['turn']);
-  assert.deepEqual(agent.visibleActionTerms, ['turn']);
   assert.deepEqual(collaboration.visibleActionTerms, ['enable']);
   assert.deepEqual(runtime.visibleActionTerms, ['correlate']);
   const incomplete = [
-    cited(published('Give AI agents software comprehension', 'Agents understand connected software behavior before changing code.'), agent),
     cited(published('Coordinate concurrent work', 'Collaborators coordinate overlapping changes in real time.'), collaboration),
     cited(published('Correlate runtime evidence', 'Runtime telemetry is correlated with static software understanding.'), runtime),
   ];
-  const uncovered = uncoveredCapabilityCatalogOutcomeRequirements(incomplete, requirements);
-
-  assert.deepEqual(new Set(uncovered.map(requirement => requirement.audience)), new Set(['human', undefined]));
+  assert.deepEqual(uncoveredCapabilityCatalogOutcomeRequirements(incomplete, requirements), [graph, comprehension]);
   assert.match(capabilityCatalogOutcomeCoverageFailure(incomplete, requirements) || '', /first-party product outcomes/);
-
   const complete = [
     ...incomplete,
-    cited(published('Help people explore software behavior', 'Human engineers explore connected software behavior and change risks.'), human),
-    cited(published('Build a trustworthy relationship graph', 'A trustworthy relationship graph connects the software structure and behavior.'), graph),
+    cited(published('Understand software behavior', 'People and agents understand connected software behavior before changes.'), comprehension),
+    cited(published('Build a trustworthy relationship graph', 'A trustworthy relationship graph connects software structure and behavior.'), graph),
   ];
   assert.equal(capabilityCatalogOutcomeCoverageFailure(complete, requirements), undefined);
 });
@@ -451,8 +445,8 @@ test('derives visible actions only from canonical purpose verbs after plural and
     {
       summary: 'Humans and AI agents inspect connected software behavior before making changes.',
       candidates: [candidate('shared', 'People and agents understand connected software behavior', ['inspect_behavior'])],
-      expected: ['understand', 'understand'],
-      audiences: ['human', 'agent'],
+      expected: ['understand'],
+      audiences: [undefined],
     },
     {
       summary: 'Analyzes connected software behavior for change risk.',
@@ -537,17 +531,13 @@ test('matches a grounded original-clause alias without admitting unrelated prose
   assert.equal(capabilitySatisfiesCatalogOutcomeRequirement(unrelated, requirement), false);
 });
 
-test('does not satisfy an outcome with matching prose cited to the wrong candidate', () => {
+test('does not satisfy a shared outcome with matching prose cited to the wrong candidate', () => {
   const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, evidence);
-  const human = requirements.find(requirement => requirement.audience === 'human')!;
+  const shared = requirements.find(requirement => requirement.beneficiaryAudiences)!;
   const runtime = requirements.find(requirement => requirement.subjectTokens.includes('runtime'))!;
-  const wrongCandidate = cited(
-    published('Help people understand software behavior', 'Human engineers understand connected software behavior before changing code.'),
-    runtime,
-  );
-
-  assert.equal(capabilitySatisfiesCatalogOutcomeRequirement(wrongCandidate, human), true);
-  assert.equal(uncoveredCapabilityCatalogOutcomeRequirements([wrongCandidate], [human]).length, 1);
+  const wrongCandidate = cited(published('Understand software behavior', 'People and agents understand connected software behavior.'), runtime);
+  assert.equal(capabilitySatisfiesCatalogOutcomeRequirement(wrongCandidate, shared), true);
+  assert.deepEqual(uncoveredCapabilityCatalogOutcomeRequirements([wrongCandidate], [shared]), [shared]);
 });
 
 test('retains uncorroborated first-party outcomes as explicit intent gaps', () => {
@@ -575,125 +565,75 @@ test('supporting delivery evidence can corroborate a first-party outcome but ver
   assert.deepEqual(humanGap.candidateIds, []);
 });
 
-test('does not let one combined audience statement satisfy two explicitly distinct audience outcomes', () => {
-  const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, evidence);
-  const audienceRequirements = requirements.filter(requirement => requirement.audience);
-  const combined = cited(published(
-    'Explain software behavior to people and AI agents',
-    'Human engineers and AI agents understand connected software behavior from the same context.',
-  ), audienceRequirements[0]);
-  const audienceGaps = uncoveredCapabilityCatalogOutcomeRequirements([combined], requirements)
-    .filter(requirement => requirement.audience);
-
-  assert.deepEqual(audienceRequirements.map(requirement => requirement.statement), [
-    'turns that graph into behavior-level comprehension',
-    'turns that graph into behavior-level comprehension',
-  ]);
-  assert.ok(audienceGaps.length >= 1);
-});
-
-test('does not assign a bound capability to a different shared-candidate slot', () => {
-  const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, evidence).filter(requirement => requirement.audience);
-  const human = requirements.find(requirement => requirement.audience === 'human')!;
-  const combined = ['first', 'second'].map(id => ({
-    ...published(id, 'People and AI agents understand connected software behavior before making changes.'),
-    criticality_factors: [`catalog-candidate:${human.candidateIds[0]}`, `catalog-outcome-requirement:${human.id}`],
-  }));
-  assert.deepEqual(uncoveredCapabilityCatalogOutcomeRequirements(combined, requirements).map(requirement => requirement.audience), ['human', 'agent']);
-});
-
-test('binds an audience-specific repair to its exact requested outcome', () => {
-  const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, evidence);
-  const human = requirements.find(requirement => requirement.audience === 'human')!;
-  const agent = requirements.find(requirement => requirement.audience === 'agent')!;
-  const humanOutcome = published(
-    'Help people understand software behavior',
-    'Human engineers understand connected software behavior before making changes.',
-  );
-
-  assert.equal(capabilitySatisfiesCatalogOutcomeRequirement(humanOutcome, human), true);
-  assert.equal(capabilitySatisfiesCatalogOutcomeRequirement(humanOutcome, agent), false);
-  humanOutcome.name = 'Surface behavior-level comprehension';
-  humanOutcome.description = 'Connected software behavior remains understandable after description refinement.';
-  humanOutcome.criticality_factors = [`catalog-outcome-requirement:${human.id}`];
-  assert.equal(capabilitySatisfiesCatalogOutcomeRequirement(humanOutcome, human), false);
-  assert.equal(capabilitySatisfiesCatalogOutcomeRequirement(humanOutcome, agent), false);
-});
-
-test('reports the exact failed audience, candidate, and subject binding', () => {
-  const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, evidence);
-  const human = requirements.find(requirement => requirement.audience === 'human')!;
-  const actorless = published('Surface behavior comprehension', 'Connected software behavior is explained before changes.');
-  assert.equal(capabilityCatalogOutcomeBindingFailure(actorless, human.candidateIds, human.id, [human], new Set()), 'required-outcome-audience-missing:human');
-  const wrongCandidate = published('Help people understand software behavior', 'Human engineers understand connected software behavior before making changes.');
-  assert.equal(capabilityCatalogOutcomeBindingFailure(wrongCandidate, ['runtime'], human.id, [human], new Set()), `required-outcome-candidate-mismatch:${human.id}`);
-  const wrongSubject = published('Help people review changes', 'Human engineers review changes before making decisions.');
-  assert.equal(capabilityCatalogOutcomeBindingFailure(wrongSubject, human.candidateIds, human.id, [human], new Set()), `required-outcome-subject-mismatch:${human.id}`);
-  const corrected = published('Help people understand software behavior', 'Human engineers understand connected software behavior before making changes.');
-  assert.equal(capabilityCatalogOutcomeBindingFailure(corrected, human.candidateIds, human.id, [human], new Set()), undefined);
-  assert.deepEqual(capabilityCatalogOutcomeBindingFailureDetail(actorless, human.candidateIds, human.id, [human], new Set()), {
-    missingAudience: human.audienceLabel,
-    missingAudienceLocations: ['name', 'description'],
-    missingSubjectTerms: [],
-    reason: 'required-outcome-audience-missing:human',
-  });
-  const mixed = published('Help people and agents understand software behavior', 'People and agents understand connected software behavior.');
-  assert.deepEqual(capabilityCatalogOutcomeBindingFailureDetail(mixed, human.candidateIds, human.id, [human], new Set()), {
-    missingSubjectTerms: [], oppositeAudienceLabels: ['agents'], oppositeAudienceLocations: ['name', 'description'],
-    reason: 'required-outcome-audience-conflict:human',
-  });
-  const actorlessMixed = published('Turn behavior into comprehension', 'Turns behavior into comprehension for people and AI agents.');
-  assert.deepEqual(capabilityCatalogOutcomeBindingFailureDetail(actorlessMixed, human.candidateIds, human.id, [human], new Set()), {
-    missingAudience: human.audienceLabel, missingAudienceLocations: ['name'], missingSubjectTerms: [],
-    oppositeAudienceLabels: ['agents'], oppositeAudienceLocations: ['description'],
-    reason: 'required-outcome-audience-missing:human',
-  });
-  assert.deepEqual(capabilityCatalogOutcomeBindingFailureDetail(wrongSubject, human.candidateIds, human.id, [human], new Set()), {
-    missingSubjectTerms: human.requiredSubjectTerms,
-    reason: `required-outcome-subject-mismatch:${human.id}`,
-  });
-});
-
-test('requires audience identity in both the bound title and description', () => {
-  const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, evidence);
-  const human = requirements.find(requirement => requirement.audience === 'human')!;
-  const agent = requirements.find(requirement => requirement.audience === 'agent')!;
-  const actorlessTitle = published('Understand connected software behavior', 'People understand connected software behavior before changing it.');
-  const actorlessDescription = published('Help people understand connected software behavior', 'Connected software behavior is explained before changes.');
-  const people = published('Help people understand connected software behavior', 'People understand connected software behavior before changing it.');
-  const agents = published('Help agents understand connected software behavior', 'Agents understand connected software behavior before changing it.');
-  const mixed = published('Help people and agents understand connected software behavior', 'People and agents understand connected software behavior before changing it.');
-
-  assert.equal(capabilityCatalogOutcomeBindingFailure(actorlessTitle, human.candidateIds, human.id, [human], new Set()), 'required-outcome-audience-missing:human');
-  assert.equal(capabilityCatalogOutcomeBindingFailure(actorlessDescription, human.candidateIds, human.id, [human], new Set()), 'required-outcome-audience-missing:human');
-  assert.equal(capabilityCatalogOutcomeBindingFailure(people, human.candidateIds, human.id, [human], new Set()), undefined);
-  assert.equal(capabilityCatalogOutcomeBindingFailure(agents, agent.candidateIds, agent.id, [agent], new Set()), undefined);
-  assert.equal(capabilityCatalogOutcomeBindingFailure(mixed, human.candidateIds, human.id, [human], new Set()), 'required-outcome-audience-conflict:human');
-  assert.equal(capabilityCatalogOutcomeBindingFailure(mixed, agent.candidateIds, agent.id, [agent], new Set()), 'required-outcome-audience-conflict:agent');
-  assert.equal(capabilitySatisfiesCatalogOutcomeRequirement({
-    ...actorlessTitle,
-    criticality_factors: [`catalog-outcome-requirement:${human.id}`],
-  }, human), false);
+test('keeps different role outcomes distinct even when their candidates share a delivery mechanism', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements({
+    productDocSummary: 'People review release approvals. Agents execute deployment tasks.',
+  }, [candidate('delivery', 'Release approvals and deployment tasks', ['review_release_approval', 'execute_deployment_task'])]);
+  assert.equal(requirements.length, 2);
+  assert.deepEqual(requirements.map(requirement => requirement.audience), ['human', 'agent']);
+  assert.ok(requirements.every(requirement => !requirement.beneficiaryAudiences));
+  const approvals = requirements.find(requirement => requirement.audience === 'human')!;
+  const deployments = requirements.find(requirement => requirement.audience === 'agent')!;
+  const review = cited(published('Review release approvals', 'People review release approvals before deployment.'), approvals);
+  assert.deepEqual(uncoveredCapabilityCatalogOutcomeRequirements([review], requirements), [deployments]);
   assert.equal(capabilityCatalogOutcomesMayMerge(
-    { ...people, criticality_factors: [`catalog-outcome-requirement:${human.id}`] },
-    { ...agents, criticality_factors: [`catalog-outcome-requirement:${agent.id}`] },
-  ), false);
-  assert.equal(capabilityCatalogOutcomesMayMerge(
-    { ...people, criticality_factors: [] },
-    { ...people, criticality_factors: [] },
+    { ...review, criticality_factors: ['catalog-outcome-requirement:' + approvals.id] },
+    { ...published('Execute deployment tasks', 'Agents execute deployment tasks.'), criticality_factors: ['catalog-outcome-requirement:' + deployments.id] },
   ), false);
 });
 
-test('initial one-to-one stamping cannot bind actorless or mixed-audience identities', () => {
+test('does not reassign a shared capability already bound to another outcome', () => {
   const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, evidence);
-  const human = requirements.find(requirement => requirement.audience === 'human')!;
-  const actorless = cited(published('Understand connected software behavior', 'People understand connected software behavior before changing it.'), human);
-  const mixed = cited(published('Help people and agents understand software behavior', 'People and agents understand connected software behavior.'), human);
-  const specific = cited(published('Help people understand software behavior', 'People understand connected software behavior before changing it.'), human);
-  for (const capability of bindUniquelySatisfiedCatalogOutcomeRequirements([actorless, mixed], [human])) {
-    assert.equal(capability.criticality_factors.some(factor => factor.startsWith('catalog-outcome-requirement:')), false);
+  const shared = requirements.find(requirement => requirement.beneficiaryAudiences)!;
+  const runtime = requirements.find(requirement => requirement.subjectTokens.includes('runtime'))!;
+  const capability = {
+    ...cited(published('Understand software behavior', 'People and AI agents understand connected software behavior.'), shared),
+    criticality_factors: ['catalog-candidate:' + shared.candidateIds[0], 'catalog-outcome-requirement:' + runtime.id],
+  };
+  assert.deepEqual(uncoveredCapabilityCatalogOutcomeRequirements([capability], [shared]), [shared]);
+});
+
+test('binds a shared-benefit repair once without inventing audience-specific slots', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, evidence);
+  const shared = requirements.find(requirement => requirement.beneficiaryAudiences)!;
+  const capability = cited(published('Understand connected software behavior', 'People and AI agents understand connected software behavior.'), shared);
+  const [bound] = bindUniquelySatisfiedCatalogOutcomeRequirements([capability], requirements);
+  assert.deepEqual(bound.criticality_factors.filter(factor => factor.startsWith('catalog-outcome-requirement:')), ['catalog-outcome-requirement:' + shared.id]);
+  assert.deepEqual(uncoveredCapabilityCatalogOutcomeRequirements([bound], [shared]), []);
+});
+
+test('shared-benefit binding still reports exact candidate and subject failures', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, evidence);
+  const shared = requirements.find(requirement => requirement.beneficiaryAudiences)!;
+  const valid = published('Understand software behavior', 'People and agents understand connected software behavior.');
+  assert.equal(capabilityCatalogOutcomeBindingFailure(valid, ['runtime'], shared.id, [shared], new Set()), 'required-outcome-candidate-mismatch:' + shared.id);
+  const wrongSubject = published('Review changes', 'People and agents review changes before making decisions.');
+  assert.deepEqual(capabilityCatalogOutcomeBindingFailureDetail(wrongSubject, shared.candidateIds, shared.id, [shared], new Set()), {
+    missingSubjectTerms: shared.requiredSubjectTerms,
+    reason: 'required-outcome-subject-mismatch:' + shared.id,
+  });
+  assert.equal(capabilityCatalogOutcomeBindingFailure(valid, shared.candidateIds, shared.id, [shared], new Set()), undefined);
+});
+
+test('does not require beneficiary labels in the title of a shared outcome', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, evidence);
+  const shared = requirements.find(requirement => requirement.beneficiaryAudiences)!;
+  for (const capability of [
+    published('Understand software behavior', 'People and AI agents understand connected software behavior.'),
+    published('Help people and AI agents understand software behavior', 'Connected software behavior becomes understandable.'),
+    published('Understand software behavior', 'Connected software behavior becomes understandable.'),
+  ]) {
+    assert.equal(capabilityCatalogOutcomeBindingFailure(capability, shared.candidateIds, shared.id, [shared], new Set()), undefined);
   }
-  assert.equal(bindUniquelySatisfiedCatalogOutcomeRequirements([specific], [human])[0].criticality_factors.includes(`catalog-outcome-requirement:${human.id}`), true);
+});
+
+test('initial stamping binds shared-benefit identities but does not guess between duplicate candidates', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, evidence);
+  const shared = requirements.find(requirement => requirement.beneficiaryAudiences)!;
+  const first = cited(published('Understand software behavior', 'People and agents understand connected software behavior.'), shared);
+  const second = { ...first, id: 'second' };
+  const bound = bindUniquelySatisfiedCatalogOutcomeRequirements([first, second], [shared]);
+  assert.ok(bound.every(capability => !capability.criticality_factors.some(factor => factor.startsWith('catalog-outcome-requirement:'))));
 });
 
 test('uses the outcome action to disambiguate shared subjects during unique binding', () => {
@@ -729,50 +669,38 @@ test('uses the outcome action to disambiguate shared subjects during unique bind
   );
 });
 
-test('derives machine-readable extraction requirements from first-party audience and subjects', () => {
-  const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, evidence).filter(requirement => requirement.audience);
-  const human = requirements.find(requirement => requirement.audience === 'human')!;
-  const agent = requirements.find(requirement => requirement.audience === 'agent')!;
-  assert.equal(human.audienceLabel, 'people');
-  assert.equal(agent.audienceLabel, 'agents');
-  assert.deepEqual(human.requiredSubjectTerms, human.subjectTokens);
-  assert.equal(human.minimumSubjectMatches, Math.min(2, human.subjectTokens.length));
+test('retains machine-readable shared beneficiaries alongside the original outcome and subjects', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, evidence);
+  const shared = requirements.find(requirement => requirement.beneficiaryAudiences)!;
+  assert.deepEqual(shared.beneficiaryAudiences, ['human', 'agent']);
+  assert.equal(shared.audienceLabel, undefined);
+  assert.match(shared.firstPartyOutcomeText || '', /people and AI agents/);
+  assert.deepEqual(shared.requiredSubjectTerms, shared.subjectTokens);
+  assert.equal(shared.minimumSubjectMatches, Math.min(2, shared.subjectTokens.length));
 });
 
-test('stamps only unambiguous initial audience and runtime outcomes', () => {
+test('stamps shared-benefit and runtime outcomes independently', () => {
   const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, evidence);
-  const human = published('Help people understand software behavior', 'Human engineers understand connected software behavior before making changes.');
-  const agent = published('Ground agents in software behavior', 'AI agents understand connected software behavior before making changes.');
-  const runtime = published('Correlate static analysis with runtime evidence', 'Static software understanding is compared with runtime evidence.');
-  const ambiguous = published('Explain behavior to people and agents', 'People and AI agents understand connected software behavior.');
-  const humanRequirement = requirements.find(requirement => requirement.audience === 'human')!;
-  const agentRequirement = requirements.find(requirement => requirement.audience === 'agent')!;
-  const runtimeRequirement = requirements.find(requirement => requirement.subjectTokens.includes('runtime'))!;
-  human.criticality_factors = [`catalog-candidate:${humanRequirement.candidateIds[0]}`];
-  agent.criticality_factors = [`catalog-candidate:${agentRequirement.candidateIds[0]}`];
-  runtime.criticality_factors = [`catalog-candidate:${runtimeRequirement.candidateIds[0]}`];
-  ambiguous.criticality_factors = [`catalog-candidate:${humanRequirement.candidateIds[0]}`];
-  const bound = bindUniquelySatisfiedCatalogOutcomeRequirements([human, agent, runtime], requirements);
-  const ambiguousBound = bindUniquelySatisfiedCatalogOutcomeRequirements([ambiguous], requirements.filter(requirement => requirement.audience));
-
-  assert.equal(bound[0].criticality_factors.some(factor => factor.startsWith('catalog-outcome-requirement:human:')), true);
-  assert.equal(bound[1].criticality_factors.some(factor => factor.startsWith('catalog-outcome-requirement:agent:')), true);
-  assert.equal(bound[2].criticality_factors.some(factor => factor.startsWith('catalog-outcome-requirement:')), true);
-  assert.equal(ambiguousBound[0].criticality_factors.some(factor => factor.startsWith('catalog-outcome-requirement:')), false);
+  const shared = requirements.find(requirement => requirement.beneficiaryAudiences)!;
+  const runtime = requirements.find(requirement => requirement.subjectTokens.includes('runtime'))!;
+  const outputs = [
+    cited(published('Understand software behavior', 'People and agents understand connected software behavior.'), shared),
+    cited(published('Correlate static analysis with runtime evidence', 'Static software understanding is compared with runtime evidence.'), runtime),
+  ];
+  const bound = bindUniquelySatisfiedCatalogOutcomeRequirements(outputs, requirements);
+  assert.ok(bound[0].criticality_factors.includes('catalog-outcome-requirement:' + shared.id));
+  assert.ok(bound[1].criticality_factors.includes('catalog-outcome-requirement:' + runtime.id));
 });
 
-test('does not bind unique prose across candidate families or reassign an existing requirement', () => {
+test('does not bind shared-benefit prose across candidate families or overwrite a prior binding', () => {
   const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, evidence);
-  const human = requirements.find(requirement => requirement.audience === 'human')!;
-  const agent = requirements.find(requirement => requirement.audience === 'agent')!;
-  const wrongCandidate = published('Help people understand software behavior', 'Human engineers understand connected software behavior before making changes.');
+  const shared = requirements.find(requirement => requirement.beneficiaryAudiences)!;
+  const wrongCandidate = published('Understand software behavior', 'People and agents understand connected software behavior.');
   wrongCandidate.criticality_factors = ['catalog-candidate:unrelated'];
-  const alreadyBound = published('Help people understand software behavior', 'Human engineers and AI agents understand connected software behavior.');
-  alreadyBound.criticality_factors = [`catalog-candidate:${agent.candidateIds[0]}`, `catalog-outcome-requirement:${human.id}`];
-  const result = bindUniquelySatisfiedCatalogOutcomeRequirements([wrongCandidate, alreadyBound], [human, agent]);
-
-  assert.deepEqual(result[0].criticality_factors, ['catalog-candidate:unrelated']);
-  assert.deepEqual(result[1].criticality_factors, [`catalog-candidate:${agent.candidateIds[0]}`, `catalog-outcome-requirement:${human.id}`]);
+  const alreadyBound = { ...wrongCandidate, id: 'bound', criticality_factors: ['catalog-candidate:' + shared.candidateIds[0], 'catalog-outcome-requirement:another'] };
+  const result = bindUniquelySatisfiedCatalogOutcomeRequirements([wrongCandidate, alreadyBound], requirements);
+  assert.deepEqual(result[0].criticality_factors, wrongCandidate.criticality_factors);
+  assert.deepEqual(result[1].criticality_factors, alreadyBound.criticality_factors);
 });
 
 test('uses the product brief instead of treating package identity metadata as another outcome', () => {
@@ -802,14 +730,12 @@ test('removes identity prose and prior-clause references from broad supporting e
   assert.deepEqual(requirements.map(requirement => requirement.statement), [
     'builds a relationship graph',
     'turns that graph into behavior-level comprehension',
-    'turns that graph into behavior-level comprehension',
     'correlates static understanding with runtime evidence',
   ]);
-  const [graph, human, agent, runtime] = requirements;
+  const [graph, shared, runtime] = requirements;
   assert.equal(capabilityCatalogOutcomeCoverageFailure([
     cited(published('Build a relationship graph', 'A relationship graph connects software structure and behavior.'), graph),
-    cited(published('Help people understand software behavior', 'Human engineers understand connected software behavior and change risks.'), human),
-    cited(published('Give agents software comprehension', 'AI agents understand connected software behavior before making changes.'), agent),
+    cited(published('Understand software behavior', 'People and AI agents understand connected software behavior and change risks.'), shared),
     cited(published('Correlate static analysis with runtime evidence', 'Static code structure and runtime evidence refine behavioral understanding.'), runtime),
   ], requirements), undefined);
 });
@@ -1209,4 +1135,77 @@ test('unknown citations preserve anchored subject-alias overlap instead of treat
     ['other'], 'unknown', [requirement], new Set(),
   );
   assert.equal(result?.reason, 'required-outcome-requirement-mismatch:unknown');
+});
+
+test('a shared benefit keeps both beneficiaries without duplicating its outcome obligation', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, evidence);
+  const comprehension = requirements.filter(requirement => /behavior-level comprehension/.test(requirement.statement));
+  assert.equal(comprehension.length, 1);
+  assert.equal(comprehension[0].audience, undefined);
+  assert.deepEqual(comprehension[0].beneficiaryAudiences, ['human', 'agent']);
+  assert.match(comprehension[0].firstPartyOutcomeText || '', /people and AI agents/);
+  const combined = cited(published(
+    'Understand connected software behavior',
+    'People and AI agents understand connected software behavior before making changes.',
+  ), comprehension[0]);
+  assert.deepEqual(uncoveredCapabilityCatalogOutcomeRequirements([combined], comprehension), []);
+});
+
+test('shared audience syntax is independent of the outcome verb and audience order', () => {
+  for (const summary of [
+    'People and AI agents inspect connected software behavior.',
+    'AI agents & people inspect connected software behavior.',
+    'Explains connected software behavior to people / agents.',
+    'Explains connected software behavior for agents, and people.',
+    'Helps people and agents understand connected software behavior.',
+  ]) {
+    const requirements = deriveCapabilityCatalogOutcomeRequirements({ productDocSummary: summary }, evidence);
+    assert.equal(requirements.length, 1, summary);
+    assert.deepEqual(requirements[0].beneficiaryAudiences, ['human', 'agent'], summary);
+    assert.equal(requirements[0].audience, undefined, summary);
+  }
+});
+
+test('shared beneficiaries do not erase an unsupported first-party intent', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements({
+    productDocSummary: 'People and agents understand customer demand.',
+  }, []);
+  assert.equal(requirements.length, 1);
+  assert.deepEqual(requirements[0].candidateIds, []);
+  assert.deepEqual(requirements[0].beneficiaryAudiences, ['human', 'agent']);
+  assert.deepEqual(uncoveredCapabilityCatalogOutcomeRequirements([], requirements), requirements);
+});
+
+test('a coordinated relationship object does not become a shared beneficiary list', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements({
+    productDocSummary: 'People inspect dependencies between users and AI agents.',
+  }, [candidate('dependencies', 'Inspect dependencies', ['inspect_dependency'])]);
+  assert.ok(requirements.length > 0);
+  assert.ok(requirements.every(requirement => !requirement.beneficiaryAudiences));
+});
+
+test('repair instructions retain shared beneficiaries without demanding separate audience outcomes', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, evidence);
+  const shared = requirements.find(requirement => requirement.beneficiaryAudiences)!;
+  const nudge = capabilityCatalogOutcomeRepairNudge([shared], shared.candidateIds);
+  assert.match(nudge, /"shared_beneficiary_audiences":\["human","agent"\]/);
+  assert.doesNotMatch(nudge, /"required_audience_label":/);
+  assert.doesNotMatch(nudge, /including separate outcomes for different explicit audiences/);
+  assert.match(nudge, /do not split an outcome/);
+});
+
+test('an explicitly single-audience publication does not cover a shared-benefit requirement', () => {
+  const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, evidence);
+  const shared = requirements.find(requirement => requirement.beneficiaryAudiences)!;
+  for (const [present, missing] of [['people', 'agent'], ['agents', 'human']]) {
+    const capability = cited(published(
+      'Understand connected software behavior',
+      present + ' understand connected software behavior before changing it.',
+    ), shared);
+    assert.deepEqual(uncoveredCapabilityCatalogOutcomeRequirements([capability], [shared]), [shared]);
+    assert.equal(capabilityCatalogOutcomeBindingFailure(capability, shared.candidateIds, shared.id, [shared], new Set()),
+      'required-outcome-audience-missing:' + missing);
+    capability.criticality_factors.push('catalog-outcome-requirement:' + shared.id);
+    assert.equal(capabilitySatisfiesCatalogOutcomeRequirement(capability, shared), false);
+  }
 });

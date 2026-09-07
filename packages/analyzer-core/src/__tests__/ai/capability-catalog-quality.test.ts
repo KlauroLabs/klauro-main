@@ -371,7 +371,7 @@ describe('catalogQualityFailure (post-reconcile gate, defect #33)', () => {
       .toContain('omits 2 grounded product-evidence families: record-notes, record-sites');
   });
 
-  it('rejects a citation-complete catalog that omits corroborated first-party audience outcomes', () => {
+  it('rejects a citation-complete catalog that still omits a corroborated first-party outcome', () => {
     const evidence = [
       cap({ id: 'understanding', name: 'Explore connected software behavior', structural_label: 'Software behavior exploration', evidence_examples: ['inspect_behavior'] }),
       cap({ id: 'graph', name: 'Relationship graph analysis', structural_label: 'Trustworthy relationship graph', evidence_examples: ['query_relationships'] }),
@@ -383,7 +383,7 @@ describe('catalogQualityFailure (post-reconcile gate, defect #33)', () => {
     agentOnly.description = 'AI agents understand connected software behavior before making changes.';
     agentOnly.criticality_factors = ['catalog-candidate:understanding', 'catalog-candidate:graph'];
 
-    expect(orch.catalogQualityFailure([agentOnly], 1, [], [], requirements)).toContain('first-party product outcomes');
+    expect(orch.catalogQualityFailure([agentOnly], 1, [], [], requirements)).toContain('first-party product outcome');
   });
 });
 
@@ -801,7 +801,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     void rich;
   });
 
-  it('repairs paired audience and truth outcomes even when they share one evidence family', async () => {
+  it('recovers one shared-benefit obligation without audience-duplicate repairs', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const outcome = (name: string) => cap({
       id: name,
@@ -832,7 +832,6 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     initial[1].description = 'Coordinate overlapping work warns collaborators about conflicting changes while they continue working in parallel.';
     initial[2].description = 'Runtime evidence reveals how observed software behavior compares with its analyzed structure.';
     const calls: any[] = [];
-    const attemptsByRequirement = new Map<string, number>();
     let emptyGraphAttempts = 0;
     localOrch.aiExtractCapabilityCatalog = async (input: any) => {
       calls.push(input);
@@ -841,28 +840,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
         emptyGraphAttempts++;
         return emptyGraphAttempts === 1 ? [] : [cap({ ...outcome('Build a trustworthy relationship graph'), criticality_factors: ['catalog-candidate:graph'] })];
       }
-      const requirement = input.requiredOutcomeRequirements?.[0];
-      const attempts = (attemptsByRequirement.get(requirement.id) || 0) + 1;
-      attemptsByRequirement.set(requirement.id, attempts);
-      if (attempts === 1) {
-        input.onRejection?.({
-          candidateIds: ['understanding'], requirementId: requirement.id,
-          name: requirement.audience === 'human' ? 'Surface behavior understanding' : 'Explain behavioral relationships to agents',
-          reason: requirement.audience === 'human' ? 'required-outcome-audience-missing:human' : `required-outcome-subject-mismatch:${requirement.id}`,
-          ...(requirement.audience === 'human' ? {
-            missingAudience: requirement.audienceLabel, missingAudienceLocations: ['name'],
-            oppositeAudienceLabels: ['agents'], oppositeAudienceLocations: ['description'],
-          } : { missingSubjectTerms: requirement.requiredSubjectTerms }),
-        });
-        return [];
-      }
-      return [requirement.audience === 'human'
-        ? cap({ ...outcome('Turn software behavior into comprehension for people'), description: 'Human engineers explore connected software behavior and change risks.', criticality_factors: ['catalog-candidate:understanding'] })
-        : cap({
-            ...outcome('Turn software behavior into comprehension for AI agents'),
-            description: 'AI agents understand connected software behavior before making changes.',
-            criticality_factors: ['catalog-candidate:understanding'],
-          })];
+      return [];
     };
     localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
 
@@ -870,25 +848,16 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
     expect(out.map(capability => capability.name)).toEqual(expect.arrayContaining([
       'Build a trustworthy relationship graph',
-      'Turn software behavior into comprehension for people',
-      'Turn software behavior into comprehension for AI agents',
+      'turns that graph into behavior comprehension',
     ]));
     expect(calls.length).toBeGreaterThan(1);
     const understandingCalls = calls.filter(call => call.candidateCapabilities[0]?.id === 'understanding');
-    expect(understandingCalls).toHaveLength(4);
-    expect(understandingCalls.every(call => call.requiredOutcomeRequirements?.length === 1 && call.exactCapabilityLimit === 1)).toBe(true);
-    expect([...new Set(understandingCalls.map(call => call.requiredOutcomeRequirements[0].audience))].sort()).toEqual(['agent', 'human']);
-    expect(understandingCalls.every(call => call.qualityNudge.includes('required_audience_label') && call.qualityNudge.includes('required_subject_terms'))).toBe(true);
-    expect(understandingCalls.every(call => call.requiredOutcomeRequirements[0].visibleActionTerms?.includes('turn'))).toBe(true);
-    expect(understandingCalls.filter(call => call.requiredOutcomeRequirements[0].audience === 'human')[1].qualityNudge).toContain('missing_audience');
-    expect(understandingCalls.filter(call => call.requiredOutcomeRequirements[0].audience === 'human')[1].qualityNudge).toContain('opposite_audience_labels');
-    expect(understandingCalls.filter(call => call.requiredOutcomeRequirements[0].audience === 'agent')[1].qualityNudge).toContain('missing_subject_terms');
-    for (const call of understandingCalls) {
-      const [requirement] = call.requiredOutcomeRequirements;
-      const promptText = call.targetedRepairFacts[0].first_party_outcomes[0];
-      if (requirement.audience === 'human') { expect(promptText).toContain('people'); expect(promptText).not.toContain('agents'); }
-      if (requirement.audience === 'agent') { expect(promptText).toContain('agents'); expect(promptText).not.toContain('people'); }
-    }
+    expect(understandingCalls).toHaveLength(0);
+    const requirements = deriveCapabilityCatalogOutcomeRequirements(args.projectTextSignal, args.candidateSnapshot);
+    const shared = requirements.filter(requirement => requirement.beneficiaryAudiences);
+    expect(shared).toHaveLength(1);
+    expect(shared[0].beneficiaryAudiences).toEqual(['human', 'agent']);
+    expect(out.filter(capability => capability.criticality_factors?.includes('catalog-outcome-requirement:' + shared[0].id))).toHaveLength(1);
     const targetedPromptFacts = JSON.stringify(calls.slice(1).flatMap(call => call.targetedRepairFacts || []));
     expect(targetedPromptFacts).toContain('candidate_1');
     expect(targetedPromptFacts).not.toContain('CrossCodebaseSystemGraph');
@@ -1547,11 +1516,11 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     expect(args.enhancedSystemPurpose.capability_catalog_coverage.reason).toBeUndefined();
   });
 
-  it('publishes grounded outcomes while retaining a missing first-party outcome as an intent gap', async () => {
+  it('retains an uncorroborated first-party intent despite recovering a shared-benefit obligation', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const args: any = gateArgs(localOrch);
     args.projectTextSignal = {
-      productDocSummary: 'The product builds a trustworthy relationship graph, turns that graph into behavior-level comprehension for people and AI agents, enables real-time collaboration, and correlates static understanding with runtime evidence.',
+      productDocSummary: 'The product builds a trustworthy relationship graph, turns that graph into behavior-level comprehension for people and AI agents, enables real-time collaboration, and correlates static understanding with runtime evidence. Feature: Schedule veterinary appointments.',
       evidence: [],
     };
     args.candidateSnapshot = [
@@ -1564,34 +1533,28 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     const factor = (candidateId: string) => [`catalog-candidate:${candidateId}`];
     const incomplete = [
       cap({ id: 'published-graph', name: 'Build a trustworthy relationship graph', description: 'A trustworthy relationship graph connects software structure and behavior.', operations: anchorOp('graph'), criticality_factors: factor('graph') }),
-      cap({ id: 'published-agent', name: 'Give AI agents software comprehension', description: 'AI agents understand connected software behavior before changing code.', operations: anchorOp('agent'), criticality_factors: factor('understanding') }),
       cap({ id: 'published-collaboration', name: 'Coordinate concurrent work', description: 'Collaborators coordinate overlapping changes in real time.', operations: anchorOp('collaboration'), criticality_factors: factor('collaboration') }),
       cap({ id: 'published-runtime', name: 'Correlate runtime evidence', description: 'Runtime telemetry is correlated with static software understanding.', operations: anchorOp('runtime'), criticality_factors: factor('runtime') }),
       cap({ id: 'published-impact', name: 'Review change impact', description: 'Engineers review the impact of connected changes before proceeding.', operations: anchorOp('impact') }),
     ];
-    const complete = [...incomplete.slice(0, 4), cap({
-      id: 'published-human',
-      name: 'Help people understand software behavior',
-      description: 'Human engineers understand connected software behavior before changing code.',
-      operations: anchorOp('human'),
-      criticality_factors: factor('understanding'),
-    })];
     expect(requirements).toHaveLength(5);
-    complete.forEach((_: SystemCapability, index: number) => expect(capabilityCatalogOutcomeCoverageFailure(
-      complete.filter((__: SystemCapability, candidateIndex: number) => candidateIndex !== index), requirements,
-    )).toContain('first-party product outcome'));
+    const unsupported = requirements.find(requirement => /veterinary appointments/.test(requirement.statement))!;
+    expect(unsupported).toBeDefined();
+    expect(unsupported.candidateIds).toEqual([]);
+    expect(capabilityCatalogOutcomeCoverageFailure(incomplete, [unsupported])).toBeUndefined();
     localOrch.aiExtractCapabilityCatalog = async () => incomplete;
     localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
 
     const out = await localOrch.runCapabilityCatalogWithQualityGate(args);
 
-    expect(out).toEqual([]);
+    expect(out).toHaveLength(5);
+    expect(out.some((capability: SystemCapability) => /veterinary appointments/.test(capability.name))).toBe(false);
     expect(args.enhancedSystemPurpose.capability_catalog_coverage).toMatchObject({
-      actual_publishable_capabilities: 6,
-      published_capabilities: 0,
-      status: 'rejected',
+      actual_publishable_capabilities: 5,
+      published_capabilities: 5,
+      status: 'accepted',
     });
-    expect(args.enhancedSystemPurpose.capability_catalog_coverage.reason).toContain('first-party product outcome');
+    expect(args.enhancedSystemPurpose.capability_catalog_coverage.reason).toBeUndefined();
     expect(args.enhancedSystemPurpose.capability_reconciliation.proposals).toEqual(
       expect.arrayContaining([expect.objectContaining({ disposition: 'intent-gap' })]),
     );
