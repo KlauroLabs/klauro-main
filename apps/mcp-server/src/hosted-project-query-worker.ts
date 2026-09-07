@@ -10,7 +10,7 @@ import { attachCasProjection, casProjection } from './cas-projection';
 import type { SubCasNodeIndex } from './deployable-analysis';
 import { loadTelemetryObservations } from './telemetry-ingestion';
 import { buildNodeRuntimeMetrics } from './product';
-import { loadScopedGraphSection, planScopedQuery, scopedQueryCapacityOutcome } from './hosted-query-scoped-graph';
+import { computeAgentContextScope, loadAgentContextProjection, loadScopedGraphSection, planScopedQuery, scopedQueryCapacityOutcome, type AgentContextProjection } from './hosted-query-scoped-graph';
 
 if (!process.send) {
   process.stderr.write('hosted-project-query-worker must be started through child_process.fork.\n');
@@ -76,6 +76,9 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
       let scopedCas: CASOutput | undefined;
       let scopedContext: Record<string, unknown> | undefined;
       let scopedCapacityOutcome: Record<string, unknown> | undefined;
+      let agentProjection: AgentContextProjection | undefined;
+      let agentSmallSections: Record<string, unknown> | undefined;
+      let agentPlan: { graph: import('../../../packages/analyzer-core/src/analyzer/core/compact-cas-graph').CompactCASGraph } | undefined;
       try {
       const scopedPlan = pinned
         ? await planScopedQuery(pinned, request.tool, request.args as Record<string, unknown> | undefined)
@@ -85,8 +88,16 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
         const smallSections = scopedSmallSections(request.tool, requiredSections);
         const loadedSections = await loadAnalysisSections(request.workspace, smallSections, { pinned: { filePath: pinned.filePath, segmented: pinned.segmented } });
         if (!loadedSections) throw new Error(`No analysis found for: ${request.workspace}. Run analyze_codebase first.`);
+        if ('scope' in scopedPlan && request.tool === 'get_agent_context') {
+          agentProjection = (await loadAgentContextProjection(pinned, scopedPlan.graph, scopedPlan.scope)) ?? undefined;
+          if (!agentProjection) throw new Error(`Canonical graph section is unavailable for: ${request.workspace}. Re-run analyze_codebase.`);
+          agentSmallSections = loadedSections as Record<string, unknown>;
+          agentPlan = { graph: scopedPlan.graph };
+        }
         const graphSection = 'scope' in scopedPlan
-          ? await loadScopedGraphSection(pinned, scopedPlan.scope.keepIds, scopedPlan.graph)
+          ? (agentProjection
+              ? { nodes: agentProjection.nodes, edges: agentProjection.edges, scanned: { nodes: scopedPlan.graphNodeCount, edges: agentProjection.edges.length }, edgesTruncated: false, source: agentProjection.source, stats: agentProjection.stats }
+              : await loadScopedGraphSection(pinned, scopedPlan.scope.keepIds, scopedPlan.graph))
           : null;
         if ('scope' in scopedPlan) {
           if (!graphSection) throw new Error(`Canonical graph section is unavailable for: ${request.workspace}. Re-run analyze_codebase.`);
@@ -124,6 +135,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
               truncated: scopedPlan.scope.truncated || Boolean(graphSection?.edgesTruncated),
               edges_truncated: Boolean(graphSection?.edgesTruncated),
               ...(scopedPlan.scope.incomplete ? { incomplete: scopedPlan.scope.incomplete } : {}),
+              ...(agentProjection ? { mode: 'agent-context', full_nodes: agentProjection.keepIds.size, light_nodes: agentProjection.lightNodes, light_edges: agentProjection.lightEdges, target_resolution: 'compact-index', passes: 1 } : {}),
             }
           : { mode: 'scoped', target_not_found: scopedPlan.targetNotFound, loaded_nodes: 0, loaded_edges: 0 };
         process.stderr.write(`${JSON.stringify({
@@ -175,7 +187,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
           rss_mb: Math.round(process.memoryUsage().rss / 1024 / 1024),
         })}\n`);
       }
-      const activeCas = scopedCas || cachedCas;
+      let activeCas = scopedCas || cachedCas;
       if (!activeCas) throw new Error(`No analysis found for: ${request.workspace}. Run analyze_codebase first.`);
       if (request.type === 'warm') {
         process.send!({ type: 'result', id: request.id, analysisTimestamp: activeCas.analysis_timestamp });
@@ -226,7 +238,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
       const runtimeSet = !unavailable && needsRuntimeMetrics
         ? await loadTelemetryObservations(request.workspace, { source: 'ingested', limit: 5000 }) : null;
       const runtimeMetrics = runtimeSet ? buildNodeRuntimeMetrics(activeCas, runtimeSet.observations || []) : [];
-      const result = unavailable
+      let result = unavailable
         ? undefined
         : scopedCapacityOutcome ?? await queryModule!.executeHostedProjectQuery({
             cas: activeCas,
@@ -235,6 +247,26 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
             projectPath: request.workspace,
             runtimeMetrics,
           });
+      const selectedId = agentProjection && result && typeof result === 'object'
+        ? (result as { selected_node?: { id?: unknown } }).selected_node?.id
+        : undefined;
+      if (agentProjection && agentPlan && pinned && typeof selectedId === 'string' && !agentProjection.keepIds.has(selectedId)) {
+        const task = ((request.args as { task?: { related_paths?: string[] } } | undefined)?.task) ?? {};
+        const secondScope = computeAgentContextScope(agentPlan.graph, [selectedId], (task.related_paths ?? []).filter((file): file is string => typeof file === 'string'));
+        const secondProjection = await loadAgentContextProjection(pinned, agentPlan.graph, secondScope);
+        if (secondProjection) {
+          agentProjection = secondProjection;
+          activeCas = attachCasProjection({
+            analyzer_contributions: [],
+            ...(agentSmallSections ?? {}),
+            nodes: secondProjection.nodes,
+            edges: secondProjection.edges,
+            index: undefined,
+          } as unknown as CASOutput, { loaded_sections: ['identity', ...Object.keys(agentSmallSections ?? {}), 'graph'] as CasSectionName[], node_count: agentPlan.graph.nodeCount, edge_count: secondProjection.edges.length });
+          result = await queryModule!.executeHostedProjectQuery({ cas: activeCas, tool: request.tool, args: request.args, projectPath: request.workspace, runtimeMetrics });
+          if (scopedContext) Object.assign(scopedContext, { passes: 2, second_pass_target: selectedId, full_nodes: secondProjection.keepIds.size, light_nodes: secondProjection.lightNodes, light_edges: secondProjection.lightEdges, source: secondProjection.source, ...(secondScope.incomplete ? { incomplete: secondScope.incomplete } : {}) });
+        }
+      }
       debugMemory('result');
       if (scopedContext && result && typeof result === 'object' && !Array.isArray(result)) {
         (result as Record<string, unknown>).scoped_context = scopedContext;

@@ -25,13 +25,15 @@ export async function acquirePinnedAnalysis(projectPath: string, options?: { tra
   return resolved && lease ? { filePath: resolved.filePath, segmented: lease.segmented, entry: resolved.entry, release: lease.release } : null;
 }
 
-export const SCOPED_QUERY_TOOLS = new Set(['get_coding_context', 'assess_change_risk', 'find_tests']);
+export const SCOPED_QUERY_TOOLS = new Set(['get_coding_context', 'assess_change_risk', 'find_tests', 'get_agent_context']);
+const MAX_AGENT_SEEDS = 12;
+const MAX_FILE_NODES = 400;
 const EXACT_ID_SCOPED_TOOLS = new Set(['assess_change_risk', 'find_tests']);
 const MAX_UPSTREAM_DEPTH = 1000;
 const MAX_CONTAINS_DEPTH = 32;
 
 export function scopedSmallSections(tool: string, required: readonly CasSectionName[]): CasSectionName[] {
-  return required.filter(section => section !== 'graph' && (section !== 'calls' || tool === 'assess_change_risk'));
+  return required.filter(section => section !== 'graph' && (section !== 'calls' || tool === 'assess_change_risk' || tool === 'get_agent_context'));
 }
 const DEFAULT_NEIGHBOR_LIMIT = 10;
 const MAX_NEIGHBOR_LIMIT = 500;
@@ -58,6 +60,18 @@ export interface ScopedGraphSection {
   edgesTruncated: boolean;
   source: 'record-store' | 'stream';
   stats?: CasRecordStoreReadStats;
+  edgeRecordOrdinals?: number[];
+}
+
+export interface AgentContextProjection {
+  nodes: CASNode[];
+  edges: CASEdge[];
+  keepIds: Set<string>;
+  scope: ScopedQueryScope;
+  source: 'record-store' | 'stream';
+  lightNodes: number;
+  lightEdges: number;
+  stats?: CasRecordStoreReadStats;
 }
 
 function boundedLimit(value: unknown): number {
@@ -68,6 +82,11 @@ function boundedLimit(value: unknown): number {
 export function scopedQueryTarget(tool: string, args: Record<string, unknown> | undefined): string | undefined {
   if (!args) return undefined;
   if (tool === 'get_coding_context' && typeof args.target === 'string' && args.target.trim()) return args.target.trim();
+  if (tool === 'get_agent_context') {
+    const task = args.task as { target?: unknown; related_paths?: unknown } | undefined;
+    if (typeof task?.target === 'string' && task.target.trim()) return task.target.trim();
+    if (Array.isArray(task?.related_paths) && typeof task.related_paths[0] === 'string' && task.related_paths[0].trim()) return task.related_paths[0].trim();
+  }
   if ((tool === 'assess_change_risk' || tool === 'find_tests') && typeof args.node_id === 'string' && args.node_id.trim()) return args.node_id.trim();
   return undefined;
 }
@@ -270,6 +289,122 @@ export function computeTestLookupScope(graph: CompactCASGraph, target: CompactNo
   };
 }
 
+function lightNode(view: CompactNodeView): CASNode {
+  return {
+    id: view.id,
+    name: view.name,
+    type: view.type,
+    ...(view.qualifiedName !== undefined ? { qualified_name: view.qualifiedName } : {}),
+    ...(view.category !== undefined ? { category: view.category } : {}),
+    ...(view.level !== undefined ? { level: view.level } : {}),
+    ...(view.levelName !== undefined ? { level_name: view.levelName } : {}),
+    ...(view.tags ? { tags: [...view.tags] } : {}),
+    ...(view.sourceFile !== undefined ? { source: { file: view.sourceFile, ...(view.sourceLine !== undefined ? { line: view.sourceLine } : {}) } } : {}),
+    ...(view.isTest ? { metadata: { is_test: true } } : {}),
+  } as CASNode;
+}
+
+export function computeAgentContextScope(graph: CompactCASGraph, seedIds: readonly string[], files: readonly string[]): ScopedQueryScope {
+  const keepIds = new Set<string>();
+  const reasons: string[] = [];
+  let callerCount = 0;
+  let calleeCount = 0;
+  for (const file of files) {
+    const siblings = graph.findNodes({ sourceFile: file, limit: MAX_FILE_NODES });
+    for (const denseId of siblings.denseIds) keepIds.add(graph.nodeAt(denseId).id);
+    if (siblings.nextOffset !== undefined) reasons.push(`${file} has more than ${MAX_FILE_NODES} nodes; only the first ${MAX_FILE_NODES} carry full records`);
+  }
+  for (const seedId of seedIds.slice(0, MAX_AGENT_SEEDS)) {
+    const seed = graph.nodeById(seedId);
+    if (!seed) continue;
+    keepIds.add(seed.id);
+    const incoming = collectNeighbors(graph, seed.denseId, 'incoming', keepIds);
+    const outgoing = collectNeighbors(graph, seed.denseId, 'outgoing', keepIds);
+    if (seedId === seedIds[0]) { callerCount = incoming.total; calleeCount = outgoing.total; }
+    collectContainingAncestors(graph, seed, keepIds);
+    if (incoming.incomplete || outgoing.incomplete) reasons.push(`${seed.id} has more incident edges than the ${MAX_SCOPED_NODES}-node scope`);
+    const neighborhood = graph.traverse(seed.denseId, { direction: 'both', maxDepth: 2, maxNodes: MAX_SCOPED_NODES, maxEdges: MAX_SCOPED_EDGES });
+    for (const denseId of neighborhood.nodeDenseIds) {
+      if (keepIds.size >= MAX_SCOPED_NODES) { reasons.push(`the two-hop neighbourhood of ${seed.id} exceeds the ${MAX_SCOPED_NODES}-node scope`); break; }
+      keepIds.add(graph.nodeAt(denseId).id);
+    }
+    if (neighborhood.truncated) reasons.push(`the two-hop neighbourhood of ${seed.id} was cut at ${MAX_SCOPED_EDGES} edges`);
+    if (seed.sourceFile && !files.includes(seed.sourceFile)) {
+      const siblings = graph.findNodes({ sourceFile: seed.sourceFile, limit: Math.max(0, Math.min(MAX_FILE_NODES, MAX_SCOPED_NODES - keepIds.size)) });
+      for (const denseId of siblings.denseIds) keepIds.add(graph.nodeAt(denseId).id);
+      if (siblings.nextOffset !== undefined) reasons.push(`${seed.sourceFile} has more nodes than the scope can carry`);
+    }
+    if (seedId === seedIds[0]) {
+      const upstream = graph.traverse(seed.denseId, { direction: 'incoming', maxDepth: MAX_UPSTREAM_DEPTH, maxNodes: MAX_SCOPED_NODES, maxEdges: MAX_SCOPED_EDGES });
+      for (const denseId of upstream.nodeDenseIds) {
+        if (keepIds.size >= MAX_SCOPED_NODES) { reasons.push(`the caller closure of ${seed.id} exceeds the ${MAX_SCOPED_NODES}-node scope`); break; }
+        keepIds.add(graph.nodeAt(denseId).id);
+      }
+      if (upstream.truncated) reasons.push(`the caller closure of ${seed.id} was cut at ${MAX_SCOPED_NODES} nodes or ${MAX_SCOPED_EDGES} edges`);
+    }
+  }
+  const unique = [...new Set(reasons)];
+  return {
+    targetId: seedIds[0] ?? '',
+    keepIds,
+    callerCount,
+    calleeCount,
+    truncated: unique.length > 0,
+    ...(unique.length > 0 ? { incomplete: unique.join('; ') } : {}),
+  };
+}
+
+export async function loadAgentContextProjection(
+  pinned: PinnedAnalysisGeneration,
+  graph: CompactCASGraph,
+  scope: ScopedQueryScope,
+): Promise<AgentContextProjection | null> {
+  const section = scope.keepIds.size > 0 ? await loadScopedGraphSection(pinned, scope.keepIds, graph) : { nodes: [], edges: [], scanned: { nodes: graph.nodeCount, edges: graph.edgeCount }, edgesTruncated: false, source: 'record-store' as const };
+  if (!section) return null;
+  const fullById = new Map(section.nodes.map(node => [node.id, node]));
+  const ordered: Array<{ ordinal: number; node: CASNode }> = [];
+  for (let denseId = 0; denseId < graph.nodeCount; denseId += 1) {
+    const view = graph.nodeAt(denseId);
+    ordered.push({ ordinal: view.originalOrdinal, node: fullById.get(view.id) ?? lightNode(view) });
+  }
+  ordered.sort((left, right) => left.ordinal - right.ordinal);
+  const nodes = ordered.map(entry => entry.node);
+  const edges: CASEdge[] = new Array(graph.edgeCount);
+  const recordOrdinals = section.edgeRecordOrdinals;
+  if (recordOrdinals && section.source === 'record-store') {
+    const descriptor = pinned.segmented.manifest.record_store;
+    const store = isSupportedCasRecordStoreDescriptor(descriptor) ? await openCasRecordStore(pinned.segmented.directory, descriptor, { nodeCount: graph.nodeCount, edgeCount: graph.edgeCount }) : null;
+    for (let ordinal = 0; ordinal < graph.edgeCount; ordinal += 1) {
+      const view = graph.edgeAt(ordinal);
+      const slot = store ? store.edges.recordOrdinal(ordinal) : ordinal;
+      edges[slot] = { id: view.id, source: view.sourceId, target: view.targetId, type: view.type, ...(view.category !== undefined ? { category: view.category } : {}) } as CASEdge;
+    }
+    recordOrdinals.forEach((slot, index) => { edges[slot] = section.edges[index]; });
+  } else {
+    const full = new Map<string, CASEdge[]>();
+    for (const edge of section.edges) {
+      const key = `${edge.source}\u0001${edge.target}\u0001${edge.type}\u0001${edge.id}`;
+      const bucket = full.get(key);
+      if (bucket) bucket.push(edge); else full.set(key, [edge]);
+    }
+    for (let ordinal = 0; ordinal < graph.edgeCount; ordinal += 1) {
+      const view = graph.edgeAt(ordinal);
+      const bucket = full.get(`${view.sourceId}\u0001${view.targetId}\u0001${view.type}\u0001${view.id}`);
+      edges[ordinal] = bucket?.shift() ?? ({ id: view.id, source: view.sourceId, target: view.targetId, type: view.type, ...(view.category !== undefined ? { category: view.category } : {}) } as CASEdge);
+    }
+  }
+  return {
+    nodes,
+    edges,
+    keepIds: new Set(scope.keepIds),
+    scope,
+    source: section.source,
+    lightNodes: graph.nodeCount - fullById.size,
+    lightEdges: graph.edgeCount - section.edges.length,
+    stats: section.stats,
+  };
+}
+
 export function scopedQueryCapacityOutcome(tool: string, scope: ScopedQueryScope): Record<string, unknown> | undefined {
   if (!scope.incomplete) return undefined;
   const reason = `${tool} could not be answered exactly within the bounded query worker: ${scope.incomplete}. No partial result is returned; nothing was scored.`;
@@ -335,6 +470,7 @@ async function loadScopedRecords(
   for (const denseId of denseIds) originalOrdinal.set(graph.nodeAt(denseId).id, graph.nodeAt(denseId).originalOrdinal);
   nodes.sort((left, right) => (originalOrdinal.get(left.id) ?? 0) - (originalOrdinal.get(right.id) ?? 0));
   const edges = await store.edges.read(edgeOrdinals);
+  const edgeRecordOrdinals = edgeOrdinals.map(ordinal => store.edges.recordOrdinal(ordinal)).sort((left, right) => left - right);
   return {
     nodes,
     edges,
@@ -342,6 +478,7 @@ async function loadScopedRecords(
     edgesTruncated,
     source: 'record-store',
     stats: store.stats(),
+    edgeRecordOrdinals,
   };
 }
 
@@ -405,6 +542,17 @@ export async function planScopedQuery(
   if (!target || !SCOPED_QUERY_TOOLS.has(tool)) return null;
   const graph = await loadCompactCASGraph(pinned.filePath, pinned.segmented);
   if (!graph) return null;
+  if (tool === 'get_agent_context') {
+    const task = (args?.task ?? {}) as { target?: string; related_paths?: string[] };
+    const seeds: string[] = [];
+    const resolved = task.target ? resolveCompactTarget(graph, task.target, await searchCandidateIds(pinned, task.target)) : undefined;
+    if (resolved) seeds.push(resolved.id);
+    if (task.target) for (const id of await searchCandidateIds(pinned, task.target)) if (!seeds.includes(id) && graph.nodeById(id)) seeds.push(id);
+    const files = (task.related_paths ?? []).filter((file): file is string => typeof file === 'string' && file.trim().length > 0);
+    if (seeds.length === 0 && files.length === 0) return { targetNotFound: target };
+    const scope = computeAgentContextScope(graph, seeds, files);
+    return { scope, target: resolved ?? graph.nodeById(seeds[0]) ?? graph.nodeAt(0), graphNodeCount: graph.nodeCount, graph };
+  }
   if (EXACT_ID_SCOPED_TOOLS.has(tool)) {
     const exact = graph.nodeById(target);
     if (!exact) return { targetNotFound: target };

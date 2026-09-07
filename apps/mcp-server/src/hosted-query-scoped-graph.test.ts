@@ -5,10 +5,10 @@ import * as path from 'node:path';
 import test from 'node:test';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { saveAnalysis, loadCompactAnalysisGraph } from './storage';
-import { acquirePinnedAnalysis, computeChangeRiskScope, computeScopedQueryScope, computeTestLookupScope, loadScopedGraphSection, planScopedQuery, resolveCompactTarget, scopedQueryCapacityOutcome, scopedQueryTarget, scopedSmallSections } from './hosted-query-scoped-graph';
+import { acquirePinnedAnalysis, computeAgentContextScope, loadAgentContextProjection, computeChangeRiskScope, computeScopedQueryScope, computeTestLookupScope, loadScopedGraphSection, planScopedQuery, resolveCompactTarget, scopedQueryCapacityOutcome, scopedQueryTarget, scopedSmallSections } from './hosted-query-scoped-graph';
 import { assessChangeRisk, findTests } from './query';
 import { loadCompleteAnalysisFromSections } from './storage';
-import { hostedProjectQuerySections } from './hosted-project-query';
+import { executeHostedProjectQuery, hostedProjectQuerySections } from './hosted-project-query';
 import { resolveHostedQueryHeapMb } from './hosted-project-query-process';
 
 function fixture(): CASOutput {
@@ -268,5 +268,44 @@ test('a target whose incident edges exceed the bounded scope yields an explicit 
     assert.equal(scopedQueryCapacityOutcome('find_tests', tests)!.suites, null);
     const complete = computeTestLookupScope(graph, graph.nodeById('node-3')!);
     assert.equal(scopedQueryCapacityOutcome('find_tests', complete), undefined, 'a complete scope answers normally');
+  });
+});
+
+test('get_agent_context on the light-plus-scoped projection matches the whole-graph answer', async () => {
+  await withStorage(async project => {
+    const cas = fixture();
+    const nodes = (cas as any).nodes as any[];
+    const edges = (cas as any).edges as any[];
+    for (const node of nodes) node.description = `${node.name} does work in ${node.source.file}`;
+    nodes.push({ id: 'far-1', name: 'farHelper', type: 'function', level: 1, source: { file: 'src/far.ts', line: 3 }, description: 'unrelated helper' });
+    edges.push({ id: 'e-far', source: 'far-1', target: 'node-30', type: 'calls' });
+    (cas as any).test_suites = [{ id: 'suite-1', name: 'target.test', file_path: 'src/target.test.ts', tests: [{ name: 'covers target', targets: ['node-0'] }], coverage: { nodes_tested: ['node-0'] } }];
+    await saveAnalysis(project, cas, 'main', { canonicalSegmented: true });
+    const full = (await loadCompleteAnalysisFromSections(project))!;
+    const graph = (await loadCompactAnalysisGraph(project))!;
+    const pinned = (await acquirePinnedAnalysis(project))!;
+    try {
+      const args = { task: { task_type: 'modify', target: 'targetFn', instructions: 'change the target' } };
+      const plan = await planScopedQuery(pinned, 'get_agent_context', args);
+      assert.ok(plan && 'scope' in plan && plan.scope.keepIds.has('node-0'));
+      const projection = (await loadAgentContextProjection(pinned, graph, (plan as { scope: any }).scope))!;
+      assert.equal(projection.nodes.length, full.nodes.length, 'every node is present, light or full');
+      assert.equal(projection.edges.length, full.edges.length, 'every edge is present');
+      assert.deepEqual(projection.nodes.map(node => node.id), full.nodes.map(node => node.id), 'original node order');
+      assert.deepEqual(projection.edges.map(edge => edge.id), full.edges.map(edge => edge.id), 'original edge order');
+      assert.ok(projection.lightNodes > 0 && projection.keepIds.has('node-0') && !projection.keepIds.has('far-1'));
+      assert.equal(projection.nodes.find(node => node.id === 'far-1')!.description, undefined, 'far nodes are light');
+      assert.equal(projection.nodes.find(node => node.id === 'node-0')!.description, 'targetFn does work in src/target.ts', 'kept nodes carry full records');
+      const scopedCas = { ...full, nodes: projection.nodes, edges: projection.edges } as CASOutput;
+      const strip = (value: unknown) => JSON.parse(JSON.stringify(value, (key, inner) => (key === 'generated_at' || key === 'scoped_context' ? undefined : inner)));
+      const scoped = strip(await executeHostedProjectQuery({ cas: scopedCas, tool: 'get_agent_context', args, projectPath: project }));
+      const whole = strip(await executeHostedProjectQuery({ cas: full, tool: 'get_agent_context', args, projectPath: project }));
+      assert.equal(scoped.selected_node?.id, 'node-0');
+      assert.deepEqual(scoped, whole, 'agent context is identical on the projection');
+      const second = computeAgentContextScope(graph, ['far-1'], []);
+      assert.ok(second.keepIds.has('far-1') && second.keepIds.has('node-30'));
+    } finally {
+      await pinned.release();
+    }
   });
 });

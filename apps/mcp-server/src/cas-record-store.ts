@@ -433,6 +433,11 @@ export class CasRecordTable<T> {
     return new CasRecordTable<T>(filePath, `${directory}:${prefix}`, blocksColumn.bytes, blockOffsets, blockRecords, recordOffsets, checksums, count, cache, ledger, recordMap);
   }
 
+  recordOrdinal(ordinal: number): number {
+    if (!Number.isInteger(ordinal) || ordinal < 0 || ordinal >= this.count) throw new Error(`CAS record store ordinal ${ordinal} is out of range`);
+    return this.recordMap ? this.recordMap[ordinal] : ordinal;
+  }
+
   private blockOf(ordinal: number): number {
     let low = 0;
     let high = this.blockRecords.length - 2;
