@@ -28,9 +28,10 @@ services:
         KLAURO_BUILD_TIME: "${KLAURO_BUILD_TIME:-}"
     image: klauro/api:alpha
     restart: unless-stopped
+    init: true
     cpus: "2.0"
-    mem_limit: 2048m
-    memswap_limit: 2048m
+    mem_limit: 1536m
+    memswap_limit: 1536m
     env_file:
       - /opt/klauro/.env
     environment:
@@ -39,7 +40,7 @@ services:
       KLAURO_TELEMETRY_LOCK_INSTANCE: "hosted-api"
       KLAURO_SELF_TELEMETRY_PROJECT: /data/workspaces/prj_wbW33m-wfETn1N41
       KLAURO_ANALYSIS_QUEUE_CAPACITY: "4"
-      NODE_OPTIONS: --max-old-space-size=1280
+      NODE_OPTIONS: --max-old-space-size=1024
     expose:
       - "8787"
     depends_on:
@@ -67,15 +68,16 @@ services:
     image: klauro/api:alpha
     restart: unless-stopped
     command: ["/app/node_modules/.bin/tsx", "/app/apps/mcp-server/src/analysis-worker-service.ts"]
+    init: true
     cpus: "3.0"
-    mem_limit: 3072m
-    memswap_limit: 3072m
+    mem_limit: 3584m
+    memswap_limit: 3584m
     env_file:
       - /opt/klauro/.env
     environment:
       <<: *analysis-environment
       KLAURO_SELF_TELEMETRY: "0"
-      KLAURO_ANALYSIS_HEAP_MB: "1920"
+      KLAURO_ANALYSIS_HEAP_MB: "2432"
     volumes:
       - /opt/klauro/data:/data
       - /opt/klauro/downloads:/opt/klauro/downloads:ro

@@ -304,6 +304,11 @@ fi
 
 echo "==> Smoke: running one real analysis through the isolated worker service"
 rsync -az -e "$SSH" "$APP_DIR/infrastructure/vps/analysis-smoke.mjs" "$DEST:/opt/klauro/analysis-smoke.mjs"
+IMAGE_IDS="$($SSH "$DEST" 'docker inspect -f "{{.Image}}" klauro-api-1 klauro-analysis-worker-1 2>/dev/null | sort -u | wc -l' || echo 0)"
+if [ "$IMAGE_IDS" != "1" ]; then
+  echo "    !! api and analysis-worker run different images (source identity mismatch); the worker was not recreated." >&2
+  exit 1
+fi
 RESTARTS_BEFORE="$($SSH "$DEST" 'docker inspect -f "{{.Name}}={{.RestartCount}}" klauro-api-1 klauro-analysis-worker-1 2>/dev/null | tr "\n" " "' || echo "")"
 echo "    restart counts before: $RESTARTS_BEFORE"
 if ! $SSH "$DEST" '
