@@ -12,7 +12,7 @@ import type { SubCasNodeIndex } from './deployable-analysis';
 import { loadTelemetryObservations } from './telemetry-ingestion';
 import { buildNodeRuntimeMetrics } from './product';
 import { CasRecordStoreCapacityError } from './cas-record-store';
-import { agentContextProjectionGaps, computeAgentContextScope, markNotComputedOnProjection, selectedNodeIdOf, loadAgentContextProjection, loadScopedGraphSection, loadScopedSemanticCollections, planScopedQuery, scopedQueryCapacityOutcome, type AgentContextProjection } from './hosted-query-scoped-graph';
+import { agentContextProjectionGaps, computeAgentContextScope, markNotComputedOnProjection, selectedNodeIdOf, loadAgentContextProjection, loadScopedGraphSection, loadScopedSemanticCollections, loadScopedSourceInputs, planScopedQuery, scopedQueryCapacityOutcome, type AgentContextProjection, type ScopedSourceInputs } from './hosted-query-scoped-graph';
 
 if (!process.send) {
   process.stderr.write('hosted-project-query-worker must be started through child_process.fork.\n');
@@ -82,6 +82,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
       let agentProjection: AgentContextProjection | undefined;
       let agentSmallSections: Record<string, unknown> | undefined;
       let agentPlan: { graph: import('../../../packages/analyzer-core/src/analyzer/core/compact-cas-graph').CompactCASGraph } | undefined;
+      let agentSourceInputs: ScopedSourceInputs | { gap: string } | undefined;
       try {
       const scopedPlan = pinned
         ? await planScopedQuery(pinned, request.tool, request.args as Record<string, unknown> | undefined)
@@ -103,6 +104,8 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
           if (!agentProjection) throw new Error(`Canonical graph section is unavailable for: ${request.workspace}. Re-run analyze_codebase.`);
           agentSmallSections = loadedSections as Record<string, unknown>;
           agentPlan = { graph: scopedPlan.graph };
+          const projection = agentProjection;
+          agentSourceInputs = await loadScopedSourceInputs(pinned, scopedPlan.graph, projection.nodes.filter(node => projection.keepIds.has(node.id))) ?? undefined;
         }
         let loaderCapacityFailure: string | undefined;
         const graphSection = 'scope' in scopedPlan
@@ -125,6 +128,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
         const totalEdges = graphSection?.scanned.edges;
         scopedCas = attachCasProjection({
           analyzer_contributions: [],
+          ...(agentSourceInputs && 'cas' in agentSourceInputs ? agentSourceInputs.cas : {}),
           ...loadedSections,
           nodes: graphSection?.nodes ?? [],
           edges: graphSection?.edges ?? [],
@@ -154,6 +158,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
               ...(scopedPlan.scope.incomplete ? { incomplete: scopedPlan.scope.incomplete } : {}),
               ...(semanticEligible ? { projected_collections: semanticEligible.projected, semantic_source: 'semantic-store', read_budget: { graph: (graphSection as { stats?: unknown } | null)?.stats ?? null, semantic: semanticEligible.stats, note: 'graph and semantic stores each hold one ledger and one cache; retained payload bound per store = decoded records + largest block + cache limit + index residency' } } : {}),
               ...(agentProjection ? { mode: 'agent-context', full_nodes: agentProjection.keepIds.size, light_nodes: agentProjection.lightNodes, light_edges: agentProjection.lightEdges, full_edges_truncated: agentProjection.fullEdgesTruncated, edge_order: agentProjection.edgeOrder, target_resolution: 'compact-index', passes: 1 } : {}),
+              ...(agentSourceInputs ? { source_inputs: 'cas' in agentSourceInputs ? { source: 'semantic-store', ...agentSourceInputs.projected } : { not_computed: agentSourceInputs.gap } } : {}),
             }
           : { mode: 'scoped', target_not_found: scopedPlan.targetNotFound, loaded_nodes: 0, loaded_edges: 0 };
         process.stderr.write(`${JSON.stringify({
@@ -288,15 +293,17 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
         const secondProjection = await loadAgentContextProjection(pinned, agentPlan.graph, secondScope);
         if (secondProjection) {
           agentProjection = secondProjection;
+          agentSourceInputs = await loadScopedSourceInputs(pinned, agentPlan.graph, secondProjection.nodes.filter(node => secondProjection.keepIds.has(node.id))) ?? undefined;
           activeCas = attachCasProjection({
             analyzer_contributions: [],
+            ...(agentSourceInputs && 'cas' in agentSourceInputs ? agentSourceInputs.cas : {}),
             ...(agentSmallSections ?? {}),
             nodes: secondProjection.nodes,
             edges: secondProjection.edges,
             index: undefined,
           } as unknown as CASOutput, { loaded_sections: ['identity', ...Object.keys(agentSmallSections ?? {}), 'graph'] as CasSectionName[], node_count: agentPlan.graph.nodeCount, edge_count: secondProjection.edges.length, ...(collectionTotals ? { collection_totals: collectionTotals } : {}) });
           result = await queryModule!.executeHostedProjectQuery({ cas: activeCas, tool: request.tool, args: request.args, projectPath: request.workspace, runtimeMetrics, ...(observeUnbounded ? { observeUnbounded } : {}), ...(transformUnbounded ? { transformUnbounded } : {}) });
-          if (scopedContext) Object.assign(scopedContext, { passes: 2, second_pass_target: selectedId, full_nodes: secondProjection.keepIds.size, light_nodes: secondProjection.lightNodes, light_edges: secondProjection.lightEdges, source: secondProjection.source, ...(secondScope.incomplete ? { incomplete: secondScope.incomplete } : {}) });
+          if (scopedContext) Object.assign(scopedContext, { passes: 2, second_pass_target: selectedId, full_nodes: secondProjection.keepIds.size, light_nodes: secondProjection.lightNodes, light_edges: secondProjection.lightEdges, source: secondProjection.source, ...(secondScope.incomplete ? { incomplete: secondScope.incomplete } : {}), ...(agentSourceInputs ? { source_inputs: 'cas' in agentSourceInputs ? { source: 'semantic-store', ...agentSourceInputs.projected } : { not_computed: agentSourceInputs.gap } } : {}) });
         }
       }
       debugMemory('result');

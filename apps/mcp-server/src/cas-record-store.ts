@@ -2,7 +2,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as zlib from 'node:zlib';
-import type { CASEdge, CASNode, CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
+import type { CASEdge, CASNode, CASOutput, CASSourceInputIdentity } from '../../../packages/analyzer-core/src/types/cas.types';
 import type { CompactCASGraph } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-graph';
 import type { CasRawColumnDescriptor } from './cas-sections';
 
@@ -587,6 +587,14 @@ export interface CasSemanticTableDescriptor extends CasRecordStoreTable {
   by_node: { offsets: CasRawColumnDescriptor; postings: CasRawColumnDescriptor };
 }
 
+export interface CasSourceInputsDescriptor {
+  rows: CasRecordStoreTable;
+  index: CasRawColumnDescriptor & { decoded_bytes: number };
+  offsets: CasRawColumnDescriptor;
+  path_count: number;
+  row_count: number;
+}
+
 export interface CasSemanticStoreDescriptor {
   format: typeof CAS_SEMANTIC_STORE_FORMAT;
   version: typeof CAS_SEMANTIC_STORE_VERSION;
@@ -594,7 +602,107 @@ export interface CasSemanticStoreDescriptor {
   node_count: number;
   postings_budget: number;
   tables: Partial<Record<CasSemanticTableName, CasSemanticTableDescriptor>>;
-  extras?: { reachability_index?: CasRawColumnDescriptor & { decoded_bytes: number } };
+  extras?: {
+    reachability_index?: CasRawColumnDescriptor & { decoded_bytes: number };
+    source_inputs?: CasSourceInputsDescriptor;
+    source_inputs_skipped?: string;
+  };
+}
+
+export interface CasSourceInputRow {
+  contribution: number;
+  identity: CASSourceInputIdentity;
+}
+
+export interface CasSourceInputEnvelope {
+  index: number;
+  analyzer_id?: string;
+  coverage: string;
+  digest_algorithm: string;
+  reason?: string;
+  outside_root_reads: number;
+}
+
+interface CasSourceInputIndex {
+  version: 1;
+  root: string | null;
+  catalog: unknown;
+  paths: string[];
+  contributions: CasSourceInputEnvelope[];
+}
+
+export interface CasSourceInputsRead {
+  rows: CasSourceInputRow[];
+  root: string | null;
+  catalog: unknown;
+  contributions: CasSourceInputEnvelope[];
+  requested_paths: number;
+  matched_paths: number;
+  path_count: number;
+  row_count: number;
+}
+
+const SOURCE_INPUT_STATUSES = new Set(['captured', 'conflicting', 'unavailable']);
+
+function comparePaths(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+class CasSourceInputsSkipped extends Error {}
+
+function buildSourceInputs(output: CASOutput): { rows: CasSourceInputRow[]; offsets: Uint32Array; index: CasSourceInputIndex } | undefined {
+  const contributions = Array.isArray(output.analyzer_contributions) ? output.analyzer_contributions : [];
+  if (!contributions.some(contribution => contribution && typeof contribution === 'object' && (contribution as { source_inputs?: unknown }).source_inputs)) return undefined;
+  const catalog = (output as { source_input_catalog?: { status?: string; reason?: string } }).source_input_catalog;
+  if (catalog && catalog.status !== 'shared') throw new CasSourceInputsSkipped(`source input catalog is ${String(catalog.status)}${catalog.reason ? ` (${catalog.reason})` : ''}`);
+  const table = (output as { source_input_identities?: unknown }).source_input_identities;
+  if (!Array.isArray(table)) throw new CasSourceInputsSkipped('source input identity table is absent while contributions carry source input references');
+  const staged: Array<{ path: string; contribution: number; ordinal: number; identity: CASSourceInputIdentity }> = [];
+  const envelopes: CasSourceInputEnvelope[] = [];
+  contributions.forEach((contribution, contributionIndex) => {
+    const inputs = (contribution as { source_inputs?: Record<string, unknown> } | undefined)?.source_inputs;
+    if (!inputs || typeof inputs !== 'object') return;
+    if (inputs.version !== 2) throw new CasSourceInputsSkipped(`contribution ${contributionIndex} carries source input version ${String(inputs.version)}, expected the shared catalog (version 2)`);
+    const references = inputs.identity_indices;
+    if (!Array.isArray(references)) throw new CasSourceInputsSkipped(`contribution ${contributionIndex} has no identity_indices`);
+    const analyzerId = (contribution as { analyzer_id?: unknown }).analyzer_id;
+    envelopes.push({
+      index: contributionIndex,
+      ...(typeof analyzerId === 'string' ? { analyzer_id: analyzerId } : {}),
+      coverage: String(inputs.coverage),
+      digest_algorithm: String(inputs.digest_algorithm),
+      ...(typeof inputs.reason === 'string' ? { reason: inputs.reason } : {}),
+      outside_root_reads: Number.isSafeInteger(inputs.outside_root_reads) ? inputs.outside_root_reads as number : 0,
+    });
+    references.forEach((reference, ordinal) => {
+      if (!Number.isSafeInteger(reference) || (reference as number) < 0 || (reference as number) >= table.length) throw new CasSourceInputsSkipped(`contribution ${contributionIndex} references identity ${String(reference)} outside the table of ${table.length}`);
+      const identity = table[reference as number] as CASSourceInputIdentity;
+      if (!identity || typeof identity !== 'object' || typeof identity.path !== 'string' || !SOURCE_INPUT_STATUSES.has(identity.status)) throw new CasSourceInputsSkipped(`identity ${String(reference)} referenced by contribution ${contributionIndex} is malformed`);
+      staged.push({ path: identity.path, contribution: contributionIndex, ordinal, identity });
+    });
+  });
+  staged.sort((left, right) => comparePaths(left.path, right.path) || left.contribution - right.contribution || left.ordinal - right.ordinal);
+  const paths: string[] = [];
+  const offsets: number[] = [0];
+  for (const row of staged) {
+    if (paths.length === 0 || paths[paths.length - 1] !== row.path) { paths.push(row.path); offsets.push(offsets[offsets.length - 1]); }
+    offsets[offsets.length - 1] += 1;
+  }
+  const root = (output as { source_input_root?: unknown }).source_input_root;
+  return {
+    rows: staged.map(row => ({ contribution: row.contribution, identity: row.identity })),
+    offsets: Uint32Array.from(offsets),
+    index: { version: 1, root: typeof root === 'string' ? root : null, catalog: catalog ?? null, paths, contributions: envelopes },
+  };
+}
+
+function collectSourceInputs(output: CASOutput): ReturnType<typeof buildSourceInputs> | { skipped: string } {
+  try {
+    return buildSourceInputs(output);
+  } catch (error) {
+    if (error instanceof CasSourceInputsSkipped) return { skipped: error.message };
+    throw error;
+  }
 }
 
 function semanticRecordNodeIds(table: CasSemanticTableName, record: Record<string, unknown>): string[] {
@@ -696,6 +804,33 @@ export async function writeCasSemanticStore(
       written.push(file);
       extras = { reachability_index: { file, encoding: 'uint8', length: compressed.byteLength, bytes: compressed.byteLength, sha256: sha256(compressed), decoded_bytes: decoded.byteLength } };
     }
+    const sourceInputs = collectSourceInputs(output);
+    if (sourceInputs && 'skipped' in sourceInputs) {
+      extras = { ...(extras ?? {}), source_inputs_skipped: sourceInputs.skipped };
+    } else if (sourceInputs) {
+      const prefix = 'semantic.source_inputs';
+      const indexBytes = Buffer.from(JSON.stringify(sourceInputs.index), 'utf8');
+      if (indexBytes.byteLength > MAX_SEMANTIC_EXTRA_BYTES) {
+        extras = { ...(extras ?? {}), source_inputs_skipped: `source input path index is ${indexBytes.byteLength} bytes, above ${MAX_SEMANTIC_EXTRA_BYTES}` };
+      } else {
+        const writer = new StreamingTableWriter(directory, prefix);
+        writers.push(writer);
+        for (const row of sourceInputs.rows) await writer.push(row);
+        const rows = await writer.finish();
+        written.push(rows.columns.blocks.file, ...Object.values(rows.columns).map(column => column.file));
+        const writeRaw = async (file: string, bytes: Buffer): Promise<CasRawColumnDescriptor> => {
+          const handle = await fs.promises.open(path.join(directory, file), 'w');
+          try { await writeFully(handle, bytes); await handle.sync(); } finally { await handle.close(); }
+          written.push(file);
+          return { file, encoding: 'uint8', length: bytes.byteLength, bytes: bytes.byteLength, sha256: sha256(bytes) };
+        };
+        const compressedIndex = zlib.brotliCompressSync(indexBytes, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5, [zlib.constants.BROTLI_PARAM_SIZE_HINT]: indexBytes.byteLength } });
+        const index = { ...(await writeRaw(`${prefix}.index.json.br`, compressedIndex)), decoded_bytes: indexBytes.byteLength };
+        const offsetBytes = uint32ToBuffer(sourceInputs.offsets);
+        const offsets = { ...(await writeRaw(`${prefix}.byPath.offsets.bin`, offsetBytes)), encoding: 'uint32-le' as const, length: sourceInputs.offsets.length };
+        extras = { ...(extras ?? {}), source_inputs: { rows, index, offsets, path_count: sourceInputs.index.paths.length, row_count: sourceInputs.rows.length } };
+      }
+    }
     return { descriptor: { format: CAS_SEMANTIC_STORE_FORMAT, version: CAS_SEMANTIC_STORE_VERSION, codec: 'brotli', node_count: graph.nodeCount, postings_budget: budget, tables, ...(extras ? { extras } : {}) } };
   } catch (error) {
     for (const writer of writers) await writer.abort();
@@ -716,6 +851,7 @@ export interface CasSemanticStore {
   tables: ReadonlySet<CasSemanticTableName>;
   readByNodes<T>(table: CasSemanticTableName, denseIds: readonly number[]): Promise<CasSemanticTableRead<T>>;
   readReachabilityIndex(): Promise<unknown | undefined>;
+  readSourceInputsByPaths(paths: readonly string[]): Promise<CasSourceInputsRead | { gap: string } | undefined>;
   stats(): CasRecordStoreReadStats;
 }
 
@@ -748,6 +884,7 @@ export async function openCasSemanticStore(
     const records = await CasRecordTable.open<unknown>(directory, prefix, table, cache, ledger);
     opened.set(name, { table: records, offsets, postings });
   }
+  let sourceInputs: { index: CasSourceInputIndex; offsets: Uint32Array; rows: CasRecordTable<unknown> } | undefined;
   return {
     tables: new Set(opened.keys()),
     async readByNodes<T>(name: CasSemanticTableName, denseIds: readonly number[]): Promise<CasSemanticTableRead<T>> {
@@ -774,6 +911,52 @@ export async function openCasSemanticStore(
       if (decoded.byteLength !== extra.decoded_bytes) throw new Error(`CAS semantic store reachability index decoded to ${decoded.byteLength} bytes, expected ${extra.decoded_bytes}`);
       return JSON.parse(decoded.toString('utf8'));
     },
+    async readSourceInputsByPaths(paths: readonly string[]): Promise<CasSourceInputsRead | { gap: string } | undefined> {
+      const extra = descriptor.extras?.source_inputs;
+      if (!extra) return descriptor.extras?.source_inputs_skipped ? { gap: descriptor.extras.source_inputs_skipped } : undefined;
+      if (!sourceInputs) sourceInputs = await openSourceInputs(extra);
+      const { index, offsets, rows } = sourceInputs;
+      const ordinals = new Set<number>();
+      const requested = new Set(paths);
+      let matched = 0;
+      for (const wanted of requested) {
+        let low = 0;
+        let high = index.paths.length - 1;
+        let found = -1;
+        while (low <= high) {
+          const middle = (low + high) >>> 1;
+          const order = comparePaths(index.paths[middle], wanted);
+          if (order === 0) { found = middle; break; }
+          if (order < 0) low = middle + 1; else high = middle - 1;
+        }
+        if (found < 0) continue;
+        matched += 1;
+        for (let position = offsets[found]; position < offsets[found + 1]; position += 1) ordinals.add(position);
+      }
+      const sorted = [...ordinals].sort((left, right) => left - right);
+      const records = await rows.read(sorted) as CasSourceInputRow[];
+      return { rows: records, root: index.root, catalog: index.catalog, contributions: index.contributions, requested_paths: requested.size, matched_paths: matched, path_count: extra.path_count, row_count: extra.row_count };
+    },
     stats: () => ({ ...ledger.stats }),
   };
+  async function openSourceInputs(extra: CasSourceInputsDescriptor): Promise<{ index: CasSourceInputIndex; offsets: Uint32Array; rows: CasRecordTable<unknown> }> {
+    const prefix = 'semantic.source_inputs';
+    const pathCount = safeCount(extra.path_count, 'source input path count', MAX_SEMANTIC_POSTINGS);
+    const rowCount = safeCount(extra.row_count, 'source input row count', MAX_SEMANTIC_POSTINGS);
+    safeCount(extra.index.decoded_bytes, 'source input index decoded bytes', MAX_SEMANTIC_EXTRA_BYTES);
+    ledger.reserve(0, extra.index.decoded_bytes + (pathCount + 1) * UINT32_BYTES, extra.index.bytes, 1);
+    const compressed = await readVerifiedColumn(directory, `${prefix}.index`, extra.index, extra.index.bytes);
+    ledger.stats.blockReads += 1;
+    ledger.stats.compressedBytesRead += compressed.byteLength;
+    const decoded = zlib.brotliDecompressSync(compressed, { maxOutputLength: extra.index.decoded_bytes });
+    if (decoded.byteLength !== extra.index.decoded_bytes) throw new Error(`CAS semantic store source input index decoded to ${decoded.byteLength} bytes, expected ${extra.index.decoded_bytes}`);
+    const index = JSON.parse(decoded.toString('utf8')) as CasSourceInputIndex;
+    if (index?.version !== 1 || !Array.isArray(index.paths) || index.paths.length !== pathCount || !Array.isArray(index.contributions)) throw new Error('CAS semantic store source input index is malformed');
+    for (let position = 1; position < index.paths.length; position += 1) if (comparePaths(index.paths[position - 1], index.paths[position]) >= 0) throw new Error('CAS semantic store source input paths are not strictly ordered');
+    const offsets = readUint32Column(await readVerifiedColumn(directory, `${prefix}.byPath.offsets`, extra.offsets, (pathCount + 1) * UINT32_BYTES));
+    assertMonotone(offsets, `${prefix}.byPath.offsets`, MAX_SEMANTIC_POSTINGS);
+    if (offsets[0] !== 0 || offsets[pathCount] !== rowCount || extra.rows.count !== rowCount) throw new Error('CAS semantic store source input offsets do not cover the rows');
+    const rows = await CasRecordTable.open<unknown>(directory, prefix, extra.rows, cache, ledger);
+    return { index, offsets, rows };
+  }
 }

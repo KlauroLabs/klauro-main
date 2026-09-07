@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as zlib from 'node:zlib';
-import type { CASEdge, CASNode } from '../../../packages/analyzer-core/src/types/cas.types';
+import type { CASEdge, CASNode, CASSourceInputIdentity } from '../../../packages/analyzer-core/src/types/cas.types';
 import type { CompactCASGraph, CompactNodeView } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-graph';
 import * as path from 'node:path';
 import { acquireCurrentSegmentedAnalysisLease, resolveAnalysisForLoad, type AnalysisEntry } from './storage';
@@ -8,7 +8,7 @@ import type { AnalysisTrack } from './track';
 import type { ResolvedSegmentedAnalysis } from './segmented-analysis-storage';
 import { loadCompactCASGraph, loadCompactCASSearch } from './segmented-analysis-storage';
 import { compressionCodecForPath } from './json-storage-writer';
-import { CAS_SEMANTIC_TABLES, edgeRecordKey, isSupportedCasRecordStoreDescriptor, isSupportedCasSemanticStoreDescriptor, openCasRecordStore, openCasSemanticStore, type CasRecordStoreReadStats, type CasSemanticTableName } from './cas-record-store';
+import { CAS_SEMANTIC_TABLES, edgeRecordKey, isSupportedCasRecordStoreDescriptor, isSupportedCasSemanticStoreDescriptor, openCasRecordStore, openCasSemanticStore, type CasRecordStoreReadStats, type CasSemanticTableName, type CasSourceInputRow } from './cas-record-store';
 import type { CasSectionName } from './cas-sections';
 import { searchCompactCAS } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-search';
 
@@ -725,4 +725,81 @@ export async function loadScopedSemanticCollections(
     projected[table] = { total: result.total, matched: result.matched, read: result.read };
   }
   return { collections, projected, stats: store.stats() };
+}
+
+export const SOURCE_INPUT_PATH_LIMIT = 1_000;
+
+export function sourceInputCitationPath(file: unknown): string | undefined {
+  if (typeof file !== 'string' || file.length === 0) return undefined;
+  const normalized = file.replace(/\\/g, '/').replace(/^\.\//, '');
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+export interface ScopedSourceInputs {
+  cas: {
+    analyzer_contributions: Array<{ analyzer_id?: string; source_inputs: { version: 2; coverage: string; digest_algorithm: string; reason?: string; outside_root_reads: number; identity_indices: number[] } }>;
+    source_input_identities: CASSourceInputIdentity[];
+    source_input_root?: string;
+    source_input_catalog?: unknown;
+  };
+  projected: { paths_requested: number; paths_matched: number; rows: number; identities: number; envelopes: number; table_paths: number; table_rows: number; paths_truncated: boolean };
+  stats: CasRecordStoreReadStats;
+}
+
+export function scopedSourceInputsFromRows(read: { rows: CasSourceInputRow[]; root: string | null; catalog: unknown; contributions: Array<{ index: number; analyzer_id?: string; coverage: string; digest_algorithm: string; reason?: string; outside_root_reads: number }> }): ScopedSourceInputs['cas'] {
+  const identities: CASSourceInputIdentity[] = [];
+  const identityIndex = new Map<string, number>();
+  const byContribution = new Map<number, number[]>();
+  for (const row of read.rows) {
+    const identity = row.identity;
+    const key = JSON.stringify([identity.path, Object.keys(identity).sort().map(field => [field, (identity as unknown as Record<string, unknown>)[field]])]);
+    let index = identityIndex.get(key);
+    if (index === undefined) { index = identities.length; identities.push({ ...identity }); identityIndex.set(key, index); }
+    const references = byContribution.get(row.contribution) ?? [];
+    references.push(index);
+    byContribution.set(row.contribution, references);
+  }
+  const contributions = [...read.contributions].sort((left, right) => left.index - right.index).map(envelope => ({
+    ...(envelope.analyzer_id ? { analyzer_id: envelope.analyzer_id } : {}),
+    source_inputs: {
+      version: 2 as const,
+      coverage: envelope.coverage,
+      digest_algorithm: envelope.digest_algorithm,
+      ...(envelope.reason ? { reason: envelope.reason } : {}),
+      outside_root_reads: envelope.outside_root_reads,
+      identity_indices: byContribution.get(envelope.index) ?? [],
+    },
+  }));
+  return {
+    analyzer_contributions: contributions,
+    source_input_identities: identities,
+    ...(typeof read.root === 'string' ? { source_input_root: read.root } : {}),
+    ...(read.catalog !== null && read.catalog !== undefined ? { source_input_catalog: read.catalog } : {}),
+  };
+}
+
+export async function loadScopedSourceInputs(
+  pinned: PinnedAnalysisGeneration,
+  graph: CompactCASGraph,
+  nodes: readonly CASNode[],
+): Promise<ScopedSourceInputs | { gap: string } | null> {
+  const descriptor = pinned.segmented.manifest.semantic_store;
+  if (!isSupportedCasSemanticStoreDescriptor(descriptor)) return null;
+  const store = await openCasSemanticStore(pinned.segmented.directory, descriptor, { nodeCount: graph.nodeCount });
+  const paths = new Set<string>();
+  for (const node of nodes) {
+    const file = sourceInputCitationPath((node as { source?: { file?: unknown } }).source?.file);
+    if (file) paths.add(file);
+  }
+  const requested = [...paths].sort();
+  const truncated = requested.length > SOURCE_INPUT_PATH_LIMIT;
+  const read = await store.readSourceInputsByPaths(truncated ? requested.slice(0, SOURCE_INPUT_PATH_LIMIT) : requested);
+  if (read === undefined) return { gap: 'the pinned generation has no source input table; analyzed-content identity is unavailable to the scoped worker' };
+  if ('gap' in read) return { gap: `source input table was not stored for this generation: ${read.gap}` };
+  const cas = scopedSourceInputsFromRows(read);
+  return {
+    cas,
+    projected: { paths_requested: read.requested_paths, paths_matched: read.matched_paths, rows: read.rows.length, identities: cas.source_input_identities.length, envelopes: cas.analyzer_contributions.length, table_paths: read.path_count, table_rows: read.row_count, paths_truncated: truncated },
+    stats: store.stats(),
+  };
 }

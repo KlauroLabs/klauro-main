@@ -5,13 +5,15 @@ import * as path from 'node:path';
 import test from 'node:test';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { saveAnalysis, loadCompactAnalysisGraph } from './storage';
-import { acquirePinnedAnalysis, computeAgentContextScope, loadAgentContextProjection, loadScopedSemanticCollections, markNotComputedOnProjection, selectedNodeIdOf, computeChangeRiskScope, computeScopedQueryScope, computeTestLookupScope, loadScopedGraphSection, planScopedQuery, resolveCompactTarget, scopedQueryCapacityOutcome, scopedQueryTarget, scopedSmallSections } from './hosted-query-scoped-graph';
+import { acquirePinnedAnalysis, computeAgentContextScope, loadAgentContextProjection, loadScopedSemanticCollections, loadScopedSourceInputs, scopedSourceInputsFromRows, markNotComputedOnProjection, selectedNodeIdOf, computeChangeRiskScope, computeScopedQueryScope, computeTestLookupScope, loadScopedGraphSection, planScopedQuery, resolveCompactTarget, scopedQueryCapacityOutcome, scopedQueryTarget, scopedSmallSections } from './hosted-query-scoped-graph';
 import { assessChangeRisk, findTests, getErrorContracts } from './query';
 import { loadCompleteAnalysisFromSections } from './storage';
 import { executeHostedProjectQuery, hostedProjectQuerySections } from './hosted-project-query';
 import { attachCasProjection, casCollectionTotal } from './cas-projection';
 import { loadAnalysisSectionManifest } from './storage';
 import { resolveHostedQueryHeapMb } from './hosted-project-query-process';
+import { verifyAgentSourceInputs } from './agent-source-input-verification';
+import * as crypto from 'node:crypto';
 
 function fixture(): CASOutput {
   const nodes = Array.from({ length: 40 }, (_, index) => ({
@@ -301,7 +303,7 @@ test('get_agent_context on the light-plus-scoped projection matches the whole-gr
       assert.equal(projection.nodes.find(node => node.id === 'far-1')!.description, undefined, 'far nodes are light');
       assert.equal(projection.nodes.find(node => node.id === 'node-0')!.description, 'targetFn does work in src/target.ts', 'kept nodes carry full records');
       const scopedCas = { ...full, nodes: projection.nodes, edges: projection.edges } as CASOutput;
-      const strip = (value: unknown) => JSON.parse(JSON.stringify(value, (key, inner) => (key === 'generated_at' || key === 'scoped_context' ? undefined : inner)));
+      const strip = (value: unknown) => JSON.parse(JSON.stringify(value, (key, inner) => (key === 'generated_at' || key === 'scoped_context' || key === 'duration_ms' ? undefined : inner)));
       let unboundedScoped: unknown;
       let unboundedWhole: unknown;
       const scoped = strip(await executeHostedProjectQuery({ cas: scopedCas, tool: 'get_agent_context', args, projectPath: project, observeUnbounded: (_tool, value) => { unboundedScoped = strip(value); } }));
@@ -484,4 +486,112 @@ test('selected node id and not-computed markers resolve through raw, bounded-env
   assert.deepEqual(markNotComputedOnProjection(enveloped), ['work_context.coding_context.conventions'], 'the marker finds the path under a bounded data envelope');
   assert.equal((enveloped.data.work_context.coding_context.conventions as any).not_computed, 'bounded-projection');
   assert.deepEqual(markNotComputedOnProjection(compact), []);
+});
+
+function sourceInputFixture(): CASOutput {
+  const cas = fixture();
+  const sha = (text: string) => crypto.createHash('sha256').update(text).digest('hex');
+  (cas as any).source_input_root = '/analysis/root';
+  (cas as any).source_input_catalog = { status: 'shared' };
+  (cas as any).source_input_identities = [
+    { path: 'src/target.ts', status: 'captured', representation: 'utf8-text', sha256: sha('export const targetFn = 1;\n'), bytes: 27 },
+    { path: 'src/other6.ts', status: 'captured', representation: 'utf8-text', sha256: sha('six\n'), bytes: 4 },
+    { path: 'src/target.ts', status: 'conflicting', reason: 'captured-then-unavailable', error_code: 'EIO' },
+    { path: 'src/historical.ts', status: 'captured', representation: 'utf8-text', sha256: sha('gone\n'), bytes: 5 },
+    { path: 'src/other20.ts', status: 'unavailable', reason: 'unsupported-text-encoding' },
+  ];
+  (cas as any).analyzer_contributions = [
+    { analyzer_id: 'typescript', source_inputs: { version: 2, coverage: 'observed-reads', digest_algorithm: 'sha256', outside_root_reads: 1, identity_indices: [0, 1] } },
+    { analyzer_id: 'no-inputs' },
+    { analyzer_id: 'imports', source_inputs: { version: 2, coverage: 'observed-reads', digest_algorithm: 'sha256', outside_root_reads: 0, identity_indices: [2, 4] } },
+    { analyzer_id: 'incremental', source_inputs: { version: 2, coverage: 'unavailable', digest_algorithm: 'sha256', reason: 'incremental-input-identities-not-refreshed', outside_root_reads: 0, identity_indices: [] } },
+  ];
+  return cas;
+}
+
+test('the semantic store serves source input identities by cited path, joined only to current envelopes, and feeds the verifier unchanged', async () => {
+  await withStorage(async project => {
+    await saveAnalysis(project, sourceInputFixture(), 'main', { canonicalSegmented: true });
+    const manifest = (await loadAnalysisSectionManifest(project))!;
+    const extras = manifest.semantic_store!.extras!;
+    assert.ok(extras.source_inputs, 'the generation carries the source input table');
+    assert.equal(extras.source_inputs!.row_count, 4, 'only rows referenced by current envelopes are stored');
+    assert.equal(extras.source_inputs!.path_count, 3);
+    const graph = (await loadCompactAnalysisGraph(project))!;
+    const pinned = (await acquirePinnedAnalysis(project))!;
+    try {
+      const nodes = graph.nodeById('node-0') && graph.nodeById('node-6') ? [{ id: 'node-0', source: { file: './src/target.ts' } }, { id: 'node-6', source: { file: 'src\\other6.ts' } }, { id: 'node-9', source: { file: 'src/other9.ts' } }] : [];
+      const loaded = await loadScopedSourceInputs(pinned, graph, nodes as any);
+      assert.ok(loaded && 'cas' in loaded, `expected a scoped source input view, got ${JSON.stringify(loaded)}`);
+      const view = loaded as Exclude<typeof loaded, null | { gap: string }>;
+      assert.deepEqual(view.projected, { paths_requested: 3, paths_matched: 2, rows: 3, identities: 3, envelopes: 3, table_paths: 3, table_rows: 4, paths_truncated: false });
+      assert.equal(view.cas.source_input_root, '/analysis/root');
+      assert.deepEqual(view.cas.source_input_catalog, { status: 'shared' });
+      assert.deepEqual(view.cas.source_input_identities.map(identity => [identity.path, identity.status]), [['src/other6.ts', 'captured'], ['src/target.ts', 'captured'], ['src/target.ts', 'conflicting']]);
+      assert.ok(!view.cas.source_input_identities.some(identity => identity.path === 'src/historical.ts'), 'an unreferenced historical row never becomes a baseline');
+      const envelopes = view.cas.analyzer_contributions;
+      assert.deepEqual(envelopes.map(envelope => [envelope.analyzer_id, envelope.source_inputs.coverage, envelope.source_inputs.identity_indices]), [
+        ['typescript', 'observed-reads', [0, 1]],
+        ['imports', 'observed-reads', [2]],
+        ['incremental', 'unavailable', []],
+      ]);
+      assert.equal(envelopes[0].source_inputs.outside_root_reads, 1);
+      assert.equal(envelopes[2].source_inputs.reason, 'incremental-input-identities-not-refreshed');
+
+      fs.mkdirSync(path.join(project, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(project, 'src/target.ts'), 'export const targetFn = 1;\n');
+      fs.writeFileSync(path.join(project, 'src/other6.ts'), 'SIX\n');
+      const verified = verifyAgentSourceInputs(project, ['src/target.ts', 'src/other6.ts', 'src/other9.ts'], envelopes, {}, view.cas.source_input_identities);
+      assert.deepEqual(verified.results.map(result => [result.file, result.status, result.reason]), [
+        ['src/target.ts', 'unverified', 'conflicting-input-identities'],
+        ['src/other6.ts', 'mismatched', undefined],
+        ['src/other9.ts', 'unverified', 'analyzed-content-identity-unavailable'],
+      ]);
+      const onlyTarget = scopedSourceInputsFromRows({ rows: [{ contribution: 0, identity: view.cas.source_input_identities[1] }], root: '/analysis/root', catalog: null, contributions: [{ index: 0, analyzer_id: 'typescript', coverage: 'observed-reads', digest_algorithm: 'sha256', outside_root_reads: 0 }] });
+      const matched = verifyAgentSourceInputs(project, ['src/target.ts'], onlyTarget.analyzer_contributions, {}, onlyTarget.source_input_identities);
+      assert.deepEqual(matched.results.map(result => [result.file, result.status]), [['src/target.ts', 'matched']]);
+    } finally {
+      await pinned.release();
+    }
+  });
+});
+
+test('source input tables are skipped with an explicit reason when the catalog is unnormalized, and absent for generations without identities', async () => {
+  await withStorage(async project => {
+    const cas = sourceInputFixture();
+    (cas as any).source_input_catalog = { status: 'unnormalized', reason: 'invalid-reference' };
+    await saveAnalysis(project, cas, 'main', { canonicalSegmented: true });
+    const manifest = (await loadAnalysisSectionManifest(project))!;
+    assert.equal(manifest.semantic_store!.extras!.source_inputs, undefined);
+    assert.match(manifest.semantic_store!.extras!.source_inputs_skipped!, /unnormalized \(invalid-reference\)/);
+    const graph = (await loadCompactAnalysisGraph(project))!;
+    const pinned = (await acquirePinnedAnalysis(project))!;
+    try {
+      const loaded = await loadScopedSourceInputs(pinned, graph, [{ id: 'node-0', source: { file: 'src/target.ts' } }] as any);
+      assert.ok(loaded && 'gap' in loaded && /unnormalized/.test(loaded.gap));
+    } finally {
+      await pinned.release();
+    }
+  });
+  await withStorage(async project => {
+    const cas = sourceInputFixture();
+    (cas as any).analyzer_contributions[0].source_inputs = { version: 1, coverage: 'observed-reads', digest_algorithm: 'sha256', outside_root_reads: 0, files: [] };
+    await saveAnalysis(project, cas, 'main', { canonicalSegmented: true });
+    const manifest = (await loadAnalysisSectionManifest(project))!;
+    assert.match(manifest.semantic_store!.extras!.source_inputs_skipped!, /version 1/);
+  });
+  await withStorage(async project => {
+    await saveAnalysis(project, fixture(), 'main', { canonicalSegmented: true });
+    const manifest = (await loadAnalysisSectionManifest(project))!;
+    assert.equal(manifest.semantic_store?.extras?.source_inputs, undefined);
+    assert.equal(manifest.semantic_store?.extras?.source_inputs_skipped, undefined);
+    const graph = (await loadCompactAnalysisGraph(project))!;
+    const pinned = (await acquirePinnedAnalysis(project))!;
+    try {
+      const loaded = await loadScopedSourceInputs(pinned, graph, [{ id: 'node-0', source: { file: 'src/target.ts' } }] as any);
+      assert.ok(loaded && 'gap' in loaded && /no source input table/.test(loaded.gap));
+    } finally {
+      await pinned.release();
+    }
+  });
 });
