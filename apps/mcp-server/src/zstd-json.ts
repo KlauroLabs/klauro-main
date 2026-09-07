@@ -41,7 +41,7 @@ async function readZstdJsonBuffered(filePath: string): Promise<any> {
 
 async function readZstdJsonStreaming(filePath: string): Promise<any> {
   const child = spawn('zstd', ['-q', '-d', '-c', filePath], { stdio: ['ignore', 'pipe', 'pipe'] });
-  const tokens = child.stdout.pipe(parserStream());
+  const tokens = child.stdout.pipe(parserStream({ streamValues: false, packValues: true }));
   const assembler = new Assembler<any>();
   let stderr = '';
   child.stderr.on('data', chunk => {
