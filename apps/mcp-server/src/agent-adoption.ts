@@ -398,6 +398,7 @@ async function buildAgentContextForTask(cas: CASOutput, path: string, taskInput:
     cas.analysis_timestamp, path,
     fileReadPlan.map(item => normalizeSourceFile(item.file, cas.system?.root_path)),
     pillarTargetFile || undefined,
+    cas.analyzer_contributions,
   );
   if (analysisFreshness.requires_verification) {
     gaps.push(`analysis-freshness: ${analysisFreshness.summary.warning}`);
