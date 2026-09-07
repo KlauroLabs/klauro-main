@@ -117,6 +117,7 @@ test('the hosted worker persists R function evidence from the packaged runtime',
       KLAURO_STORAGE_PATH: storage, KLAURO_EMBEDDING_ENABLED: 'false',
       KLAURO_AI_INTERPRETATION: 'false', KLAURO_AI_ELEMENT_DESCRIPTIONS: 'false',
     };
+    let diagnostics = '';
     await new Promise<void>((resolve, reject) => {
       const child = fork(workerPath, [], {
         execArgv: ['--max-old-space-size=512'], silent: true,
@@ -124,8 +125,7 @@ test('the hosted worker persists R function evidence from the packaged runtime',
       });
       let result = false;
       let failure: Error | undefined;
-      let diagnostics = '';
-      child.stdout?.resume();
+      child.stdout?.on('data', chunk => { diagnostics = (diagnostics + chunk.toString()).slice(-16384); });
       child.stderr?.on('data', chunk => { diagnostics = (diagnostics + chunk.toString()).slice(-8192); });
       const timeout = setTimeout(() => {
         failure = new Error('Bundled analysis worker timed out');
@@ -155,7 +155,7 @@ test('the hosted worker persists R function evidence from the packaged runtime',
     const cas = await loadAnalysis(project, { preferCache: false });
     assert.ok(cas, 'bundled worker must persist canonical CAS');
     assert.ok(cas.nodes.some(node => node.name === fixture.truth && node.source?.file?.endsWith('main.r')),
-      'CAS must contain the R run function, not only a file node');
+      `CAS must contain the R run function: ${JSON.stringify({ nodes: cas.nodes.map(node => ({ name: node.name, type: node.type, source: node.source })), errors: cas.analysis_errors })}; worker: ${diagnostics}`);
     assert.equal(cas.analysis_errors?.filter(error => error.severity === 'error').length ?? 0, 0);
   } finally {
     if (previousStorage === undefined) delete process.env.KLAURO_STORAGE_PATH;

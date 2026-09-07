@@ -2,8 +2,7 @@ import { BaseAnalyzer, AnalysisContext } from '../core/base-analyzer';
 import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint } from '../../types/cas.types';
 import { extractStructure } from '../core/generic-tree-sitter-analyzer';
 import { LANGUAGE_SPECS } from '../core/language-spec';
-import { LANGUAGE_REGISTRY } from '../core/language-registry';
-import { LanguageAnalyzers } from '../core/language-analyzer-catalog';
+import { breadthLanguageExtensions } from '../core/language-analyzer-catalog';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../core/glob-cache';
 import * as path from 'path';
@@ -16,22 +15,7 @@ import { genericScriptEntryPoint } from './generic-script-entry-point';
 
 
 
-let extToGrammar: Map<string, string> | null = null;
-function extensionToGrammar(): Map<string, string> {
-  if (extToGrammar) return extToGrammar;
-  const deepLangIds = new Set<string>(Object.keys(LanguageAnalyzers));
-  const map = new Map<string, string>();
-  for (const entry of LANGUAGE_REGISTRY) {
-    const grammar = entry.id;
-    if (deepLangIds.has(grammar)) continue;
-    if (!LANGUAGE_SPECS[grammar]) continue;
-    for (const ext of entry.extensions) {
-      map.set(`.${ext.toLowerCase()}`, grammar);
-    }
-  }
-  extToGrammar = map;
-  return map;
-}
+const extensionToGrammar = breadthLanguageExtensions();
 
 
 
@@ -279,7 +263,7 @@ export class GenericTreeSitterLanguageAnalyzer extends BaseAnalyzer {
     context: AnalysisContext,
     stopEarly: boolean
   ): Promise<BreadthFile[]> {
-    const map = extensionToGrammar();
+    const map = extensionToGrammar;
     if (map.size === 0) return [];
 
     const jvmExts: string[] = [];

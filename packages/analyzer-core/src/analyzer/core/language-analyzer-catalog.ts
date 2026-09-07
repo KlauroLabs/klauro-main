@@ -1,3 +1,6 @@
+import { LANGUAGE_REGISTRY } from './language-registry';
+import { LANGUAGE_SPECS } from './language-spec';
+
 export const LanguageAnalyzers = {
   python: "PythonAnalyzer",
   javascript: "TypeScriptJavaScriptAnalyzer",
@@ -26,3 +29,15 @@ export const LanguageAnalyzers = {
   wsdl: "SoapWsdlAnalyzer",
   xsd: "SoapWsdlAnalyzer",
 } as const;
+
+export function breadthLanguageExtensions(): ReadonlyMap<string, string> {
+  const deepLanguages = new Set<string>(Object.keys(LanguageAnalyzers));
+  const extensions = new Map<string, string>();
+  for (const entry of LANGUAGE_REGISTRY) {
+    if (deepLanguages.has(entry.id) || !LANGUAGE_SPECS[entry.id]) continue;
+    for (const extension of entry.extensions) {
+      extensions.set(`.${extension.toLowerCase()}`, entry.id);
+    }
+  }
+  return extensions;
+}
