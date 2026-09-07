@@ -12,9 +12,44 @@ import {
   validateAgentChange,
 } from './agent-workflow';
 import { buildArchitectureContextForAgent, evaluateAgentReadiness, formatExecutionCapsule, getAgentStartContext, getAgentToolPlan, getAgentContext } from './agent-adoption';
-import { benchmarkAgentContextCodecs, parseAgentContextCapsule } from './agent-context-codec';
+import { benchmarkAgentContextCodecs, formatAgentContextCapsule, parseAgentContextCapsule } from './agent-context-codec';
 import { ingestTelemetryBatch } from './telemetry-ingestion';
 import { attachCasProjection } from './cas-projection';
+
+
+test('agent regression guidance reuses known test coverage instead of proposing duplicate files', async () => {
+  await withWorkspace(async workspace => {
+    const context = await getAgentContext(fixtureCas(), workspace, {
+      task_type: 'debug',
+      target: 'UsersService',
+      instructions: 'Find the connected callers and regression tests before correcting user creation behavior.',
+    }) as any;
+    assert.ok(context.work_context.tests.suites.some((suite: any) => suite.file_path === 'src/users/users.service.spec.ts'));
+    assert.ok(!context.file_read_plan.some((item: any) => item.reason.includes('likely focused regression test path')));
+    assert.ok(context.execution_brief.read_first.every((file: string) => fs.existsSync(path.join(workspace, file))));
+    assert.ok(!context.execution_brief.edit_scope.some((file: string) => /^tests\/users\.service\./.test(file)));
+  });
+});
+
+
+test('function debugging keeps observed tests ahead of speculative test paths', async () => {
+  await withWorkspace(async workspace => {
+    const cas = fixtureCas();
+    fs.writeFileSync(path.join(workspace, 'src', 'recovery.ts'), 'export function recoverDescription() {}\n');
+    fs.writeFileSync(path.join(workspace, 'src', 'recovery.test.ts'), 'test("recovers descriptions", () => {});\n');
+    cas.nodes.push(node('recover', 'recoverDescription', 'function', 'src/recovery.ts', 1), node('recover-test', 'recovers descriptions', 'test', 'src/recovery.test.ts', 1));
+    cas.edges.push({ id: 'test-recover', source: 'recover-test', target: 'recover', type: 'tests' });
+    cas.test_suites!.push({ id: 'recover-suite', name: 'recovers descriptions', file_path: 'src/recovery.test.ts', test_type: 'unit', framework: 'node', tests: [] } as any);
+    const context = await getAgentContext(cas, workspace, {
+      task_type: 'debug', target: 'recoverDescription',
+      instructions: 'Identify description publication validators, connected callers and regression tests for repeated rejection of an outcome description.',
+    }) as any;
+    assert.equal(context.selected_node.id, 'recover');
+    assert.ok(context.work_context.tests.suites.some((suite: any) => suite.file_path === 'src/recovery.test.ts'));
+    assert.ok(!context.file_read_plan.some((item: any) => item.reason.includes('likely focused regression test path')));
+    assert.ok(!context.execution_brief.read_first.some((file: string) => /^tests\/recovery\./.test(file)));
+  });
+});
 
 test('bounded agent orientation uses canonical graph counts and persisted call-layer readiness', async () => {
   await withWorkspace(async workspace => {
@@ -268,7 +303,7 @@ test('agent contexts include telemetry-backed operational priorities for debug/r
   });
 });
 
-test('K15 agent context language beats JSON-like and binary cache formats on balanced agent-use score', () => {
+test('codec recommendations require exact validation while retaining failed compression measurements', () => {
   const compact = {
     context_profile: 'first-turn',
     task: 'modify: UsersService tenant-scoped user creation',
@@ -291,41 +326,70 @@ test('K15 agent context language beats JSON-like and binary cache formats on bal
   };
 
   const benchmark = benchmarkAgentContextCodecs(compact);
-  assert.equal(benchmark.recommendation, 'k15-agent-context-language');
+  const recommended = benchmark.results.find(result => result.name === benchmark.recommendation)!;
   const k15 = benchmark.results.find(result => result.name === 'k15-agent-context-language')!;
   const k14 = benchmark.results.find(result => result.name === 'k14-agent-context-language')!;
-  const k13 = benchmark.results.find(result => result.name === 'k13-agent-context-language')!;
-  const k12 = benchmark.results.find(result => result.name === 'k12-agent-context-language')!;
-  const k11 = benchmark.results.find(result => result.name === 'k11-agent-context-language')!;
-  const k10 = benchmark.results.find(result => result.name === 'k10-agent-context-language')!;
-  const k9 = benchmark.results.find(result => result.name === 'k9-agent-context-language')!;
-  const k8 = benchmark.results.find(result => result.name === 'k8-agent-context-language')!;
-  const k7 = benchmark.results.find(result => result.name === 'k7-agent-context-language')!;
-  const k6 = benchmark.results.find(result => result.name === 'k6-context-capsule')!;
   const minJson = benchmark.results.find(result => result.name === 'min-json')!;
-  const gzip = benchmark.results.find(result => result.name === 'gzip-k7-base64')!;
-  const messagePack = benchmark.results.find(result => result.name === 'messagepack-base64-proxy')!;
-
+  assert.equal(recommended.validation_fidelity, 'exact');
+  assert.equal(k15.validation_fidelity, 'exact');
+  assert.equal(k14.validation_fidelity, 'lossy');
+  assert.equal(minJson.validation_fidelity, 'exact');
   assert.ok(k15.estimated_tokens < minJson.estimated_tokens);
-  assert.ok(k15.estimated_tokens < k14.estimated_tokens);
-  assert.ok(k15.estimated_tokens < k13.estimated_tokens);
-  assert.ok(k15.estimated_tokens < k12.estimated_tokens);
-  assert.ok(k15.estimated_tokens < k11.estimated_tokens);
-  assert.ok(k15.estimated_tokens < k10.estimated_tokens);
-  assert.ok(k15.estimated_tokens < k9.estimated_tokens);
-  assert.ok(k15.estimated_tokens < k8.estimated_tokens);
-  assert.ok(k15.estimated_tokens < k7.estimated_tokens);
-  assert.ok(k15.estimated_tokens < k6.estimated_tokens);
-  assert.ok(k15.token_reduction_vs_min_json > k14.token_reduction_vs_min_json);
-  assert.ok(k15.promptish_tokens < minJson.promptish_tokens);
-  assert.ok(k15.promptish_tokens < k14.promptish_tokens);
-  assert.ok(k15.promptish_tokens < k13.promptish_tokens);
-  assert.ok(k15.promptish_tokens < k12.promptish_tokens);
-  assert.ok(k15.promptish_tokens < k11.promptish_tokens);
-  assert.ok(k15.promptish_token_reduction_vs_min_json > k14.promptish_token_reduction_vs_min_json);
-  assert.ok(k15.context_slots_per_100_promptish_tokens > k14.context_slots_per_100_promptish_tokens);
-  assert.ok(k15.balanced_score > gzip.balanced_score);
-  assert.ok(k15.balanced_score > messagePack.balanced_score);
+  assert.ok(k15.estimated_tokens > k14.estimated_tokens, 'corrupted commands can be smaller, but are not eligible');
+  assert.notEqual(benchmark.recommendation, k14.name);
+  assert.equal(benchmark.gates.find(gate => gate.id === 'agent-context-codec:k15-beats-k14')?.status, 'fail');
+  assert.equal(benchmark.status, 'fail', 'unchanged compression gates remain visibly failed');
+});
+
+test('codec fidelity checks all long validation commands, not just the first short command', () => {
+  const context = {
+    task: 'debug: description recovery',
+    execution: { validate: [
+      'npm run typecheck',
+      "cd 'packages/analyzer-core' && npm test -- 'src/analyzer/core/capability-catalog-repair-plan.test.ts' 'src/analyzer/core/capability-catalog-scheduling.test.ts'",
+      "node -e 'console.log(\"repository  capability; 1 | 2\")'\nnode --version",
+    ] },
+  };
+  const benchmark = benchmarkAgentContextCodecs(context);
+  assert.equal(benchmark.results.find(result => result.name === benchmark.recommendation)!.validation_fidelity, 'exact');
+  assert.equal(benchmark.results.find(result => result.name === 'k15-agent-context-language')!.validation_fidelity, 'exact');
+  assert.equal(benchmark.results.find(result => result.name === 'k14-agent-context-language')!.validation_fidelity, 'lossy');
+  assert.equal(benchmark.results.find(result => result.name === 'gzip-json-base64')!.validation_fidelity, 'exact');
+  assert.equal(benchmark.results.find(result => result.name === 'protobuf-text')!.validation_fidelity, 'unverified');
+});
+
+test('execution capsules preserve every validation command without rewriting paths or arguments', () => {
+  const commands = [
+    "cd 'packages/analyzer-core' && npm test -- 'src/analyzer/core/capability-catalog-repair-plan.test.ts' 'src/analyzer/core/capability-catalog-scheduling.test.ts'",
+    "node -e 'console.log(\"service controller capability\")'",
+  ];
+  const capsule = formatExecutionCapsule({ task_type: 'debug', target: 'recoverDescription', validate: commands });
+  for (const command of commands) assert.ok(capsule.includes('V|' + command), capsule);
+});
+
+test('context capsule validation round trips shell syntax and long commands exactly', () => {
+  const commands = [
+    "cd 'packages/analyzer-core' && npm test -- 'src/analyzer/core/capability-catalog-repair-plan.test.ts' 'src/analyzer/core/capability-catalog-scheduling.test.ts'",
+    "node -e 'console.log(\"service  controller; capability | 1\")'\nnode --version",
+    "npm run typecheck",
+  ];
+  const capsule = formatAgentContextCapsule({
+    task: 'debug: recoverDescription',
+    files: ['src/analyzer/core/capability-catalog-repair-plan.test.ts'],
+    execution: { validate: commands },
+  });
+  assert.deepEqual(parseAgentContextCapsule(capsule.capsule).validation, commands);
+});
+
+test('first-turn execution retains complete validation commands from standard context', async () => {
+  await withWorkspace(async workspace => {
+    const task = { task_type: 'modify' as const, target: 'UsersService', instructions: 'Change tenant-scoped user creation behavior.' };
+    const standard = await getAgentContext(fixtureCas(), workspace, task) as any;
+    const compact = await getAgentContext(fixtureCas(), workspace, { ...task, response_profile: 'first-turn' }) as any;
+    assert.ok(standard.execution_brief.validate.length > 0);
+    assert.deepEqual(compact.execution.validate, standard.execution_brief.validate);
+    assert.deepEqual(parseAgentContextCapsule(compact.context_capsule.capsule).validation, standard.execution_brief.validate);
+  });
 });
 
 test('execution capsule packs first-action context into a compact agent-readable line set', () => {
