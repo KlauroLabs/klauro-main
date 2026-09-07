@@ -7,7 +7,7 @@ import type { CompactCASGraph } from '../../../packages/analyzer-core/src/analyz
 import type { CasRawColumnDescriptor } from './cas-sections';
 
 export const CAS_RECORD_STORE_FORMAT = 'klauro-cas-record-store';
-export const CAS_RECORD_STORE_VERSION = 3;
+export const CAS_RECORD_STORE_VERSION = 4;
 export const CAS_RECORD_STORE_MAX_BLOCK_RECORDS = 256;
 export const CAS_RECORD_STORE_TARGET_BLOCK_BYTES = 1024 * 1024;
 export const CAS_RECORD_STORE_MAX_BLOCK_BYTES = 16 * 1024 * 1024;
@@ -18,6 +18,7 @@ const MAX_TABLE_RECORDS = 8_000_000;
 const SHA256_BYTES = 32;
 const UINT32_BYTES = 4;
 const INDEX_COLUMNS = ['blockOffsets', 'blockRecords', 'recordOffsets', 'blockChecksums'] as const;
+const RECORD_MAP_COLUMN = 'recordMap';
 
 export interface CasRecordStoreTable {
   count: number;
@@ -87,7 +88,7 @@ function uint32ToBuffer(values: readonly number[]): Buffer {
   return buffer;
 }
 
-export function indexColumnBytes(name: (typeof INDEX_COLUMNS)[number], count: number, blocks: number): number {
+export function indexColumnBytes(name: (typeof INDEX_COLUMNS)[number] | typeof RECORD_MAP_COLUMN, count: number, blocks: number): number {
   switch (name) {
     case 'blockOffsets':
     case 'blockRecords':
@@ -96,11 +97,14 @@ export function indexColumnBytes(name: (typeof INDEX_COLUMNS)[number], count: nu
       return (count + 1) * UINT32_BYTES;
     case 'blockChecksums':
       return blocks * SHA256_BYTES;
+    case 'recordMap':
+      return count * UINT32_BYTES;
   }
 }
 
-export function tableIndexBytes(table: Pick<CasRecordStoreTable, 'count' | 'blocks'>): number {
-  return INDEX_COLUMNS.reduce((sum, name) => sum + indexColumnBytes(name, table.count, table.blocks), 0);
+export function tableIndexBytes(table: Pick<CasRecordStoreTable, 'count' | 'blocks'> & { columns?: Record<string, unknown> }): number {
+  const base = INDEX_COLUMNS.reduce((sum, name) => sum + indexColumnBytes(name, table.count, table.blocks), 0);
+  return base + (table.columns && RECORD_MAP_COLUMN in table.columns ? indexColumnBytes(RECORD_MAP_COLUMN, table.count, table.blocks) : 0);
 }
 
 export interface WritableHandle {
@@ -129,7 +133,7 @@ class StreamingTableWriter {
   private handle: fs.promises.FileHandle | undefined;
   private readonly blocksHash = crypto.createHash('sha256');
 
-  constructor(private readonly directory: string, private readonly prefix: 'records.nodes' | 'records.edges') {}
+  constructor(private readonly directory: string, private readonly prefix: 'records.nodes' | 'records.edges', private readonly recordMap?: readonly number[]) {}
 
   private get blocksFile(): string {
     return `${this.prefix}.blocks.bin`;
@@ -178,7 +182,7 @@ class StreamingTableWriter {
     const columns: Record<string, CasRawColumnDescriptor> = {
       blocks: { file: this.blocksFile, encoding: 'uint8', length: this.compressedBytes, bytes: this.compressedBytes, sha256: this.blocksHash.digest('hex') },
     };
-    const writeIndex = async (name: (typeof INDEX_COLUMNS)[number], bytes: Buffer, encoding: 'uint8' | 'uint32-le', length: number): Promise<void> => {
+    const writeIndex = async (name: (typeof INDEX_COLUMNS)[number] | typeof RECORD_MAP_COLUMN, bytes: Buffer, encoding: 'uint8' | 'uint32-le', length: number): Promise<void> => {
       const file = `${this.prefix}.${name}.bin`;
       const target = path.join(this.directory, file);
       const handle = await fs.promises.open(target, 'w');
@@ -197,6 +201,10 @@ class StreamingTableWriter {
     await writeIndex('recordOffsets', uint32ToBuffer(this.recordOffsets), 'uint32-le', this.recordOffsets.length);
     const checksumBytes = Buffer.concat(this.checksums);
     await writeIndex('blockChecksums', checksumBytes, 'uint8', checksumBytes.byteLength);
+    if (this.recordMap) {
+      if (this.recordMap.length !== this.count) throw new Error(`CAS record store ${this.prefix} record map covers ${this.recordMap.length} of ${this.count} records`);
+      await writeIndex(RECORD_MAP_COLUMN, uint32ToBuffer(this.recordMap), 'uint32-le', this.recordMap.length);
+    }
     return {
       count: this.count,
       blocks: this.blockOffsets.length - 1,
@@ -225,7 +233,7 @@ function orderedNodes(output: CASOutput, graph: CompactCASGraph): CASNode[] {
   return ordered;
 }
 
-function orderedEdges(output: CASOutput, graph: CompactCASGraph): CASEdge[] {
+function compactEdgeRecordMap(output: CASOutput, graph: CompactCASGraph): number[] {
   const edges = output.edges || [];
   const buckets = new Map<string, number[]>();
   edges.forEach((edge, index) => {
@@ -234,7 +242,7 @@ function orderedEdges(output: CASOutput, graph: CompactCASGraph): CASEdge[] {
     if (bucket) bucket.push(index); else buckets.set(key, [index]);
   });
   const cursors = new Map<string, number>();
-  const ordered: CASEdge[] = new Array(graph.edgeCount);
+  const recordMap: number[] = new Array(graph.edgeCount);
   for (let ordinal = 0; ordinal < graph.edgeCount; ordinal += 1) {
     const view = graph.edgeAt(ordinal);
     const key = edgeRecordKey({ id: view.id, source: view.sourceId, target: view.targetId, type: view.type, category: view.category });
@@ -242,9 +250,10 @@ function orderedEdges(output: CASOutput, graph: CompactCASGraph): CASEdge[] {
     const cursor = cursors.get(key) ?? 0;
     if (!bucket || cursor >= bucket.length) throw new Error(`CAS record store cannot find edge ${view.id} for compact ordinal ${ordinal}`);
     cursors.set(key, cursor + 1);
-    ordered[ordinal] = edges[bucket[cursor]];
+    recordMap[ordinal] = bucket[cursor];
   }
-  return ordered;
+  if (edges.length !== graph.edgeCount) throw new Error(`CAS record store edge count ${edges.length} does not match the compact graph ${graph.edgeCount}`);
+  return recordMap;
 }
 
 export async function writeCasRecordStore(
@@ -253,16 +262,17 @@ export async function writeCasRecordStore(
   graph: CompactCASGraph,
 ): Promise<{ descriptor: CasRecordStoreDescriptor } | { skipped: string }> {
   const nodesWriter = new StreamingTableWriter(directory, 'records.nodes');
-  const edgesWriter = new StreamingTableWriter(directory, 'records.edges');
+  let edgesWriter = new StreamingTableWriter(directory, 'records.edges');
   try {
     for (const node of orderedNodes(output, graph)) await nodesWriter.push(node);
-    for (const edge of orderedEdges(output, graph)) await edgesWriter.push(edge);
+    edgesWriter = new StreamingTableWriter(directory, 'records.edges', compactEdgeRecordMap(output, graph));
+    for (const edge of output.edges || []) await edgesWriter.push(edge);
     const [nodes, edges] = [await nodesWriter.finish(), await edgesWriter.finish()];
     return { descriptor: { format: CAS_RECORD_STORE_FORMAT, version: CAS_RECORD_STORE_VERSION, codec: 'brotli', nodes, edges } };
   } catch (error) {
     await nodesWriter.abort();
     await edgesWriter.abort();
-    for (const suffix of INDEX_COLUMNS) {
+    for (const suffix of [...INDEX_COLUMNS, RECORD_MAP_COLUMN]) {
       for (const prefix of ['records.nodes', 'records.edges']) await fs.promises.rm(path.join(directory, `${prefix}.${suffix}.bin`), { force: true }).catch(() => undefined);
     }
     if (error instanceof CasRecordStoreCapacityError) return { skipped: error.message };
@@ -379,6 +389,7 @@ export class CasRecordTable<T> {
     readonly count: number,
     private readonly cache: SharedBlockCache,
     private readonly ledger: ReadLedger,
+    private readonly recordMap: Uint32Array | undefined,
   ) {}
 
   static async open<T>(directory: string, prefix: string, table: CasRecordStoreTable, cache: SharedBlockCache, ledger: ReadLedger): Promise<CasRecordTable<T>> {
@@ -393,8 +404,8 @@ export class CasRecordTable<T> {
     const filePath = path.join(directory, blocksColumn.file);
     const stat = await fs.promises.stat(filePath).catch(() => null);
     if (!stat || !stat.isFile() || stat.size !== blocksColumn.bytes) throw new Error(`CAS record store ${prefix} blocks file size ${stat?.size ?? 'missing'} does not match ${blocksColumn.bytes}`);
-    ledger.chargeIndex(tableIndexBytes({ count, blocks }));
-    const column = (name: (typeof INDEX_COLUMNS)[number]): Promise<Buffer> => readVerifiedColumn(directory, `${prefix}.${name}`, table.columns[name], indexColumnBytes(name, count, blocks));
+    ledger.chargeIndex(tableIndexBytes({ count, blocks, columns: table.columns }));
+    const column = (name: (typeof INDEX_COLUMNS)[number] | typeof RECORD_MAP_COLUMN): Promise<Buffer> => readVerifiedColumn(directory, `${prefix}.${name}`, table.columns[name], indexColumnBytes(name, count, blocks));
     const blockOffsets = readUint32Column(await column('blockOffsets'));
     const blockRecords = readUint32Column(await column('blockRecords'));
     const recordOffsets = readUint32Column(await column('recordOffsets'));
@@ -409,7 +420,17 @@ export class CasRecordTable<T> {
       if (blockOffsets[block + 1] <= blockOffsets[block]) throw new Error(`CAS record store ${prefix} block ${block} has no compressed data`);
       if (recordOffsets[blockRecords[block + 1]] - recordOffsets[blockRecords[block]] > CAS_RECORD_STORE_MAX_BLOCK_BYTES) throw new Error(`CAS record store ${prefix} block ${block} exceeds the decoded block limit`);
     }
-    return new CasRecordTable<T>(filePath, `${directory}:${prefix}`, blocksColumn.bytes, blockOffsets, blockRecords, recordOffsets, checksums, count, cache, ledger);
+    let recordMap: Uint32Array | undefined;
+    if (RECORD_MAP_COLUMN in table.columns) {
+      recordMap = readUint32Column(await column(RECORD_MAP_COLUMN));
+      const seen = new Uint8Array(count);
+      for (let ordinal = 0; ordinal < count; ordinal += 1) {
+        const record = recordMap[ordinal];
+        if (record >= count || seen[record]) throw new Error(`CAS record store ${prefix} record map is not a permutation at ${ordinal}`);
+        seen[record] = 1;
+      }
+    }
+    return new CasRecordTable<T>(filePath, `${directory}:${prefix}`, blocksColumn.bytes, blockOffsets, blockRecords, recordOffsets, checksums, count, cache, ledger, recordMap);
   }
 
   private blockOf(ordinal: number): number {
@@ -427,12 +448,12 @@ export class CasRecordTable<T> {
   }
 
   plan(ordinals: readonly number[]): { ordinals: number[]; blocks: number[]; decodedBytes: number; compressedBytes: number } {
-    const unique = [...new Set(ordinals)].sort((left, right) => left - right);
-    const blocks = new Set<number>();
-    for (const ordinal of unique) {
+    for (const ordinal of ordinals) {
       if (!Number.isInteger(ordinal) || ordinal < 0 || ordinal >= this.count) throw new Error(`CAS record store ordinal ${ordinal} is out of range`);
-      blocks.add(this.blockOf(ordinal));
     }
+    const unique = [...new Set(this.recordMap ? ordinals.map(ordinal => this.recordMap![ordinal]) : ordinals)].sort((left, right) => left - right);
+    const blocks = new Set<number>();
+    for (const ordinal of unique) blocks.add(this.blockOf(ordinal));
     let decodedBytes = 0;
     let compressedBytes = 0;
     for (const block of blocks) {

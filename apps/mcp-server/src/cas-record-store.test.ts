@@ -177,12 +177,12 @@ test('scoped loads use the record store, stay bound to the pinned generation, an
       assert.equal(older.source, 'stream', 'an older optional store version streams instead of failing');
       assert.deepEqual(older.nodes.map(node => JSON.stringify(node)).sort(), fast.nodes.map(node => JSON.stringify(node)).sort());
       assert.deepEqual(older.edges.map(edge => JSON.stringify(edge)).sort(), fast.edges.map(edge => JSON.stringify(edge)).sort());
-      (pinned.segmented.manifest.record_store as { version: number }).version = 3;
+      (pinned.segmented.manifest.record_store as { version: number }).version = 4;
       delete (pinned.segmented.manifest as { record_store?: unknown }).record_store;
       const slow = (await loadScopedGraphSection(pinned, keep, graph))!;
       assert.equal(slow.source, 'stream');
-      assert.deepEqual(slow.nodes.map(node => node.id).sort(), fast.nodes.map(node => node.id).sort());
-      assert.deepEqual(slow.edges.map(edge => edge.id).sort(), fast.edges.map(edge => edge.id).sort());
+      assert.deepEqual(fast.nodes.map(node => node.id), slow.nodes.map(node => node.id), 'record-store nodes come back in the original CAS order');
+      assert.deepEqual(JSON.stringify(fast.edges), JSON.stringify(slow.edges), 'record-store edges are byte-identical to the streamed section, order included');
     } finally {
       await pinned.release();
     }

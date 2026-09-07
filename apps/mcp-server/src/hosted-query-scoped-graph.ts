@@ -27,7 +27,8 @@ export async function acquirePinnedAnalysis(projectPath: string, options?: { tra
 
 export const SCOPED_QUERY_TOOLS = new Set(['get_coding_context', 'assess_change_risk', 'find_tests']);
 const EXACT_ID_SCOPED_TOOLS = new Set(['assess_change_risk', 'find_tests']);
-const MAX_UPSTREAM_DEPTH = 64;
+const MAX_UPSTREAM_DEPTH = 1000;
+const MAX_CONTAINS_DEPTH = 32;
 
 export function scopedSmallSections(tool: string, required: readonly CasSectionName[]): CasSectionName[] {
   return required.filter(section => section !== 'graph' && (section !== 'calls' || tool === 'assess_change_risk'));
@@ -47,6 +48,7 @@ export interface ScopedQueryScope {
   callerCount: number;
   calleeCount: number;
   truncated: boolean;
+  incomplete?: string;
 }
 
 export interface ScopedGraphSection {
@@ -183,9 +185,48 @@ export function computeScopedQueryScope(
   };
 }
 
-export function computeChangeRiskScope(graph: CompactCASGraph, target: CompactNodeView): ScopedQueryScope & { upstreamNodes: number; upstreamTruncated: boolean } {
-  const base = computeScopedQueryScope(graph, target, {});
-  const keepIds = new Set(base.keepIds);
+function collectNeighbors(graph: CompactCASGraph, denseId: number, direction: 'incoming' | 'outgoing', keepIds: Set<string>): { total: number; incomplete: boolean } {
+  let offset: number | undefined = 0;
+  let total = 0;
+  while (offset !== undefined) {
+    const page: ReturnType<CompactCASGraph['incomingEdges']> = direction === 'incoming' ? graph.incomingEdges(denseId, { offset, limit: 500 }) : graph.outgoingEdges(denseId, { offset, limit: 500 });
+    total = page.total;
+    for (const edge of page.items) {
+      if (keepIds.size >= MAX_SCOPED_NODES) return { total, incomplete: true };
+      keepIds.add(direction === 'incoming' ? edge.sourceId : edge.targetId);
+    }
+    offset = page.nextOffset;
+  }
+  return { total, incomplete: false };
+}
+
+function collectContainingAncestors(graph: CompactCASGraph, target: CompactNodeView, keepIds: Set<string>): void {
+  let current = target.denseId;
+  for (let depth = 0; depth < MAX_CONTAINS_DEPTH; depth += 1) {
+    let parentDenseId: number | undefined;
+    let offset: number | undefined = 0;
+    while (offset !== undefined && parentDenseId === undefined) {
+      const page: ReturnType<CompactCASGraph['incomingEdges']> = graph.incomingEdges(current, { offset, limit: 500 });
+      const parent = page.items.find(edge => edge.type === 'contains');
+      if (parent) parentDenseId = parent.source;
+      offset = page.nextOffset;
+    }
+    if (parentDenseId === undefined) return;
+    keepIds.add(graph.nodeAt(parentDenseId).id);
+    current = parentDenseId;
+  }
+}
+
+export interface ExactScopedQueryScope extends ScopedQueryScope {
+  upstreamNodes: number;
+  upstreamTruncated: boolean;
+}
+
+export function computeChangeRiskScope(graph: CompactCASGraph, target: CompactNodeView): ExactScopedQueryScope {
+  const keepIds = new Set<string>([target.id]);
+  const incoming = collectNeighbors(graph, target.denseId, 'incoming', keepIds);
+  const outgoing = collectNeighbors(graph, target.denseId, 'outgoing', keepIds);
+  collectContainingAncestors(graph, target, keepIds);
   const upstream = graph.traverse(target.denseId, {
     direction: 'incoming',
     maxDepth: MAX_UPSTREAM_DEPTH,
@@ -197,13 +238,43 @@ export function computeChangeRiskScope(graph: CompactCASGraph, target: CompactNo
     if (keepIds.size >= MAX_SCOPED_NODES) { upstreamTruncated = true; break; }
     keepIds.add(graph.nodeAt(denseId).id);
   }
+  const reasons = [
+    incoming.incomplete ? `${incoming.total} direct callers exceed the ${MAX_SCOPED_NODES}-node scope` : null,
+    outgoing.incomplete ? `${outgoing.total} direct callees exceed the ${MAX_SCOPED_NODES}-node scope` : null,
+    upstreamTruncated ? `the transitive caller closure exceeds ${MAX_SCOPED_NODES} nodes or ${MAX_SCOPED_EDGES} edges` : null,
+  ].filter((reason): reason is string => Boolean(reason));
   return {
-    ...base,
+    targetId: target.id,
     keepIds,
-    truncated: base.truncated || upstreamTruncated,
+    callerCount: incoming.total,
+    calleeCount: outgoing.total,
+    truncated: reasons.length > 0,
+    ...(reasons.length > 0 ? { incomplete: reasons.join('; ') } : {}),
     upstreamNodes: upstream.nodeDenseIds.length,
     upstreamTruncated,
   };
+}
+
+export function computeTestLookupScope(graph: CompactCASGraph, target: CompactNodeView): ScopedQueryScope {
+  const keepIds = new Set<string>([target.id]);
+  const incoming = collectNeighbors(graph, target.denseId, 'incoming', keepIds);
+  collectContainingAncestors(graph, target, keepIds);
+  const outgoing = graph.outgoingEdges(target.denseId, { limit: 1 });
+  return {
+    targetId: target.id,
+    keepIds,
+    callerCount: incoming.total,
+    calleeCount: outgoing.total,
+    truncated: incoming.incomplete,
+    ...(incoming.incomplete ? { incomplete: `${incoming.total} direct callers exceed the ${MAX_SCOPED_NODES}-node scope` } : {}),
+  };
+}
+
+export function scopedQueryCapacityOutcome(tool: string, scope: ScopedQueryScope): Record<string, unknown> | undefined {
+  if (!scope.incomplete) return undefined;
+  const reason = `${tool} could not be answered exactly within the bounded query worker: ${scope.incomplete}. No partial result is returned; nothing was scored.`;
+  if (tool === 'assess_change_risk') return { risk: null, incomplete: true, reason, transitive_impact: null, change_risk_context: null };
+  return { incomplete: true, reason, suites: null, total_suites: null };
 }
 
 function decompressStream(filePath: string, codec: 'none' | 'brotli' | 'zstd'): NodeJS.ReadableStream {
@@ -260,6 +331,9 @@ async function loadScopedRecords(
   }
   edgeOrdinals.sort((left, right) => left - right);
   const nodes = await store.nodes.read(denseIds);
+  const originalOrdinal = new Map<string, number>();
+  for (const denseId of denseIds) originalOrdinal.set(graph.nodeAt(denseId).id, graph.nodeAt(denseId).originalOrdinal);
+  nodes.sort((left, right) => (originalOrdinal.get(left.id) ?? 0) - (originalOrdinal.get(right.id) ?? 0));
   const edges = await store.edges.read(edgeOrdinals);
   return {
     nodes,
@@ -334,7 +408,7 @@ export async function planScopedQuery(
   if (EXACT_ID_SCOPED_TOOLS.has(tool)) {
     const exact = graph.nodeById(target);
     if (!exact) return { targetNotFound: target };
-    const scope = tool === 'assess_change_risk' ? computeChangeRiskScope(graph, exact) : computeScopedQueryScope(graph, exact, {});
+    const scope = tool === 'assess_change_risk' ? computeChangeRiskScope(graph, exact) : computeTestLookupScope(graph, exact);
     return { scope, target: exact, graphNodeCount: graph.nodeCount, graph };
   }
   const resolved = resolveCompactTarget(graph, target, await searchCandidateIds(pinned, target));

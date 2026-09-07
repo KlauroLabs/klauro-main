@@ -10,7 +10,7 @@ import { attachCasProjection, casProjection } from './cas-projection';
 import type { SubCasNodeIndex } from './deployable-analysis';
 import { loadTelemetryObservations } from './telemetry-ingestion';
 import { buildNodeRuntimeMetrics } from './product';
-import { loadScopedGraphSection, planScopedQuery } from './hosted-query-scoped-graph';
+import { loadScopedGraphSection, planScopedQuery, scopedQueryCapacityOutcome } from './hosted-query-scoped-graph';
 
 if (!process.send) {
   process.stderr.write('hosted-project-query-worker must be started through child_process.fork.\n');
@@ -75,6 +75,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
       const pinned = scopedEligible ? await acquirePinnedAnalysis(request.workspace) : null;
       let scopedCas: CASOutput | undefined;
       let scopedContext: Record<string, unknown> | undefined;
+      let scopedCapacityOutcome: Record<string, unknown> | undefined;
       try {
       const scopedPlan = pinned
         ? await planScopedQuery(pinned, request.tool, request.args as Record<string, unknown> | undefined)
@@ -93,6 +94,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
             throw new Error(`Graph section and compact index of generation ${path.basename(pinned.segmented.directory)} disagree (${graphSection.scanned.nodes} vs ${scopedPlan.graphNodeCount} nodes).`);
           }
         }
+        if ('scope' in scopedPlan) scopedCapacityOutcome = scopedQueryCapacityOutcome(request.tool, scopedPlan.scope);
         const totalNodes = 'scope' in scopedPlan ? scopedPlan.graphNodeCount : graphSection?.scanned.nodes;
         const totalEdges = graphSection?.scanned.edges;
         scopedCas = attachCasProjection({
@@ -121,6 +123,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
               ...('upstreamNodes' in scopedPlan.scope ? { upstream_nodes: (scopedPlan.scope as unknown as { upstreamNodes: number }).upstreamNodes, upstream_truncated: (scopedPlan.scope as unknown as { upstreamTruncated: boolean }).upstreamTruncated } : {}),
               truncated: scopedPlan.scope.truncated || Boolean(graphSection?.edgesTruncated),
               edges_truncated: Boolean(graphSection?.edgesTruncated),
+              ...(scopedPlan.scope.incomplete ? { incomplete: scopedPlan.scope.incomplete } : {}),
             }
           : { mode: 'scoped', target_not_found: scopedPlan.targetNotFound, loaded_nodes: 0, loaded_edges: 0 };
         process.stderr.write(`${JSON.stringify({
@@ -225,7 +228,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
       const runtimeMetrics = runtimeSet ? buildNodeRuntimeMetrics(activeCas, runtimeSet.observations || []) : [];
       const result = unavailable
         ? undefined
-        : await queryModule!.executeHostedProjectQuery({
+        : scopedCapacityOutcome ?? await queryModule!.executeHostedProjectQuery({
             cas: activeCas,
             tool: request.tool,
             args: request.args,
