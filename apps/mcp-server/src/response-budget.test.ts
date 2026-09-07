@@ -21,6 +21,36 @@ function byteLength(text: string): number {
   return Buffer.byteLength(text, 'utf8');
 }
 
+
+test('bounded agent responses never turn commands or capsules into truncated executable text', () => {
+  const command = 'npm test -- ' + Array.from({ length: 1000 }, (_, index) => "'tests/behavior-" + index + ".test.ts'").join(' ');
+  const capsule = 'K5|d|behavior\nT|' + command;
+  const cases = [
+    { payload: { validation_plan: { commands: [{ command }] } }, read: (value: any) => value.validation_plan?.commands?.[0]?.command, expected: command },
+    { payload: { execution_brief: { validate: [command] } }, read: (value: any) => value.execution_brief?.validate?.[0], expected: command },
+    { payload: { execution_brief: { capsule } }, read: (value: any) => value.execution_brief?.capsule, expected: capsule },
+  ];
+  for (const item of cases) {
+    const bounded = boundToolPayload(item.payload, { tool: 'get_agent_context', budgetBytes: 4000 }) as BoundedEnvelope;
+    const returned = item.read(bounded.data);
+    assert.ok(returned === undefined || returned === item.expected, 'execution instructions must be whole or withheld');
+    assert.equal(bounded.truncated, true);
+    assert.ok(Buffer.byteLength(JSON.stringify(bounded)) <= 4000);
+  }
+});
+
+test('bounded agent responses preserve fitting executable instructions while trimming prose', () => {
+  const command = 'npm test -- ' + Array.from({ length: 20 }, (_, index) => "'tests/behavior-" + index + ".test.ts'").join(' ');
+  const capsule = 'K5|d|behavior\nT|' + command;
+  const payload = { report: 'context '.repeat(12000), validation_plan: { commands: [{ command }] }, execution_brief: { validate: [command], capsule } };
+  const bounded = boundToolPayload(payload, { tool: 'get_agent_context' }) as BoundedEnvelope;
+  const returned = bounded.data as typeof payload;
+  assert.equal(returned.validation_plan.commands[0].command, command);
+  assert.equal(returned.execution_brief.validate[0], command);
+  assert.equal(returned.execution_brief.capsule, capsule);
+  assert.equal(payload.report.length, 96000);
+});
+
 test('serializeToolResponse keeps top-level keys on separate lines and stays parseable', () => {
   const data = { first: { nested: [1, 2, 3] }, second: 'value', third: 42 };
   const text = serializeToolResponse(data);

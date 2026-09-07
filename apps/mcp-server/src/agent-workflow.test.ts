@@ -16,6 +16,21 @@ import { benchmarkAgentContextCodecs, parseAgentContextCapsule } from './agent-c
 import { ingestTelemetryBatch } from './telemetry-ingestion';
 import { attachCasProjection } from './cas-projection';
 
+
+test('agent regression guidance reuses known test coverage instead of proposing duplicate files', async () => {
+  await withWorkspace(async workspace => {
+    const context = await getAgentContext(fixtureCas(), workspace, {
+      task_type: 'debug',
+      target: 'UsersService',
+      instructions: 'Find the connected callers and regression tests before correcting user creation behavior.',
+    }) as any;
+    assert.ok(context.work_context.tests.suites.some((suite: any) => suite.file_path === 'src/users/users.service.spec.ts'));
+    assert.ok(!context.file_read_plan.some((item: any) => item.reason.includes('likely focused regression test path')));
+    assert.ok(context.execution_brief.read_first.every((file: string) => fs.existsSync(path.join(workspace, file))));
+    assert.ok(!context.execution_brief.edit_scope.some((file: string) => /^tests\/users\.service\./.test(file)));
+  });
+});
+
 test('bounded agent orientation uses canonical graph counts and persisted call-layer readiness', async () => {
   await withWorkspace(async workspace => {
     const full = fixtureCas();
