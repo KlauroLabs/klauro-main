@@ -270,3 +270,72 @@ test('McpToolRegistrationAnalyzer preserves literal registration descriptions ve
     await fs.remove(dir);
   }
 });
+
+async function makeReviewProject(): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'mcp-tool-registration-review-'));
+  await fs.writeJson(path.join(dir, 'package.json'), { name: 'mcp-review-fixture', dependencies: { '@modelcontextprotocol/sdk': '^1.0.0' } });
+  await fs.ensureDir(path.join(dir, 'src'));
+  await fs.writeFile(path.join(dir, 'src', 'server.ts'), [
+    "import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';",
+    "const server = new McpServer({ name: 'fixture', version: '1.0.0' });",
+    "const dynamicValue = process.env.X || 'y';",
+    "const config = { description: 'from config' };",
+    "server.registerTool('nested_only', { inputSchema: { description: 'An input field' } }, async () => ({ content: [] }));",
+    "server.registerTool('concat', { description: 'Reads ' + dynamicValue }, async () => ({ content: [] }));",
+    "server.registerTool('spread_after', { description: 'A', ...config }, async () => ({ content: [] }));",
+    "server.registerTool('spread_before', { ...config, description: 'B' }, async () => ({ content: [] }));",
+    "server.registerTool('spread_only', { ...config }, async () => ({ content: [] }));",
+    "server.registerTool('dup_last', { description: 'first', title: 't', description: 'last' }, async () => ({ content: [] }));",
+    "server.registerTool('quoted_key', { 'description': 'Quoted' }, async () => ({ content: [] }));",
+    "server.registerTool('escapes', { description: 'A\\x41\\u{42}\\b\\0end' }, async () => ({ content: [] }));",
+    "server.registerTool('shorthand', { description }, async () => ({ content: [] }));",
+    "server.registerTool('getter', { get description() { return 'g'; } }, async () => ({ content: [] }));",
+    "server.registerTool('multi', {",
+    '  description: `line one',
+    'line two',
+    'line three`,',
+    '}, async () => ({ content: [] }));',
+    "server.tool('twice', 'first site', async () => ({ content: [] })); server.tool('twice', 'second site', async () => ({ content: [] }));",
+    "server.registerTool('text_in_other_prop', { title: \"description: 'not this'\" }, async () => ({ content: [] }));",
+    '',
+  ].join('\n'));
+  return dir;
+}
+
+test('McpToolRegistrationAnalyzer resolves descriptions structurally: nested keys, concatenation, spreads, duplicates, escapes, end lines, same-line sites', async () => {
+  const dir = await makeReviewProject();
+  try {
+    const result = await new McpToolRegistrationAnalyzer().analyze({ projectPath: dir } as any);
+    const nodes = (name: string) => result.nodes.filter(node => node.name === name);
+    const one = (name: string) => { const found = nodes(name); assert.equal(found.length, 1, `${name} once`); return found[0]; };
+    const source = (node: any) => node.metadata.attributes.descriptionSource;
+
+    assert.equal(source(one('nested_only')), 'absent');
+    assert.equal(one('nested_only').description_source, undefined);
+    assert.equal(source(one('concat')), 'dynamic');
+    assert.equal(one('concat').description_source, undefined);
+    assert.equal(source(one('spread_after')), 'dynamic');
+    assert.equal(one('spread_before').description, 'B');
+    assert.equal(source(one('spread_only')), 'dynamic');
+    assert.equal(one('dup_last').description, 'last');
+    assert.equal(one('quoted_key').description, 'Quoted');
+    assert.equal(one('escapes').description, 'AAB\b\0end');
+    assert.equal(source(one('shorthand')), 'dynamic');
+    assert.equal(source(one('getter')), 'dynamic');
+    assert.equal(source(one('text_in_other_prop')), 'absent');
+
+    const multi = one('multi');
+    assert.equal(multi.description, 'line one\nline two\nline three');
+    assert.equal(multi.documentation?.location.start_line, 16);
+    assert.equal(multi.documentation?.location.end_line, 18);
+
+    const twice = nodes('twice');
+    assert.equal(twice.length, 2, 'two same-line registrations are two records');
+    assert.equal(new Set(twice.map(node => node.id)).size, 2, 'same-line sites get distinct ids');
+    assert.deepEqual(twice.map(node => node.description).sort(), ['first site', 'second site']);
+    assert.ok(twice.every(node => /_c\d+$/.test(node.id)), 'shared-line ids carry the call column');
+    assert.ok(/_\d+$/.test(one('multi').id) && !/_c\d+$/.test(one('multi').id), 'unshared sites keep the stable id shape');
+  } finally {
+    await fs.remove(dir);
+  }
+});
