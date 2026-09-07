@@ -160,7 +160,6 @@ export function capabilityOutcomeMisusesCoordination(
   );
 }
 
-function capabilityOutcomeUsesBroadDeliveryAction(
 function capabilityDeliveryActionTokens(operation: SystemCapability['operations'][number]): Set<string> {
   const action = outcomeIdentityTokens(operation.action || '')[0];
   const commandActions = [operation.path_or_command, operation.trigger?.path]
@@ -169,6 +168,7 @@ function capabilityDeliveryActionTokens(operation: SystemCapability['operations'
   return new Set([action, ...commandActions].filter((value): value is string => Boolean(value)));
 }
 
+function capabilityOutcomeUsesBroadDeliveryAction(
   name: string,
   citedCandidates: SystemCapability[],
   signal?: CapabilityCatalogProjectSignal,
