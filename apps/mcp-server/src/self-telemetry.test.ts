@@ -461,14 +461,44 @@ test('shutdown drains a coalescing window immediately in a real child process wi
     const script = nodePath.join(storage, 'shutdown-child.mts');
     fs.writeFileSync(script, [
       'const started = Date.now();',
-      `const telemetry = await import(${JSON.stringify(nodePath.join(sourceDir, 'self-telemetry.ts'))});`,
-      `const sdk = await import(${JSON.stringify(nodePath.resolve(sourceDir, '../../../packages/klauro-sdk-js/src/index.ts'))});`,
-      "if (!telemetry.initSelfTelemetry()) throw new Error('self telemetry did not initialize');",
-      "sdk.getClient().recordEvent({ type: 'request', event_id: 'shutdown-event', route: '/orders', status_code: 200 });",
-      'await telemetry.shutdownSelfTelemetry();',
-      'process.stdout.write(String(Date.now() - started));',
+      `import * as telemetry from ${JSON.stringify(nodePath.join(sourceDir, 'self-telemetry.ts'))};`,
+      `import * as sdk from ${JSON.stringify(nodePath.resolve(sourceDir, '../../../packages/klauro-sdk-js/src/index.ts'))};`,
+      'async function main() {',
+      "  if (!telemetry.initSelfTelemetry()) throw new Error('self telemetry did not initialize');",
+      "  sdk.getClient().recordEvent({ type: 'request', event_id: 'shutdown-event', route: '/orders', status_code: 200 });",
+      '  await telemetry.shutdownSelfTelemetry();',
+      '  process.stdout.write(String(Date.now() - started));',
+      '}',
+      'void main().then(() => undefined, error => { console.error(error); process.exit(1); });',
     ].join('\n'));
-    const child = spawnSync(process.execPath, [nodePath.resolve(sourceDir, '../../../node_modules/.bin/tsx'), script], {
+    const esbuild = await import('esbuild');
+    const bundleDir = fs.mkdtempSync(nodePath.resolve(sourceDir, '../.shutdown-child-'));
+    const bundled = nodePath.join(bundleDir, 'shutdown-child.bundle.cjs');
+    const { createRequire, builtinModules } = await import('node:module');
+    const builtins = new Set(builtinModules);
+    const absoluteExternals = {
+      name: 'absolute-externals',
+      setup(build: any) {
+        build.onResolve({ filter: /^[^./]/ }, (args: any) => {
+          if (args.kind === 'entry-point' || !args.resolveDir) return undefined;
+          if (args.path.startsWith('node:') || builtins.has(args.path)) return { path: args.path, external: true };
+          try {
+            return { path: createRequire(nodePath.join(args.resolveDir, 'resolve-anchor.js')).resolve(args.path), external: true };
+          } catch {
+            return { path: args.path, external: true };
+          }
+        });
+      },
+    };
+    await esbuild.build({ entryPoints: [script], bundle: true, platform: 'node', format: 'cjs', plugins: [absoluteExternals], outfile: bundled, logLevel: 'silent' });
+    const runs: Array<[string, string[]]> = [
+      ['tsx', [nodePath.resolve(sourceDir, '../../../node_modules/.bin/tsx'), script]],
+      ['plain node', [bundled]],
+    ];
+    try {
+    for (const [label, args] of runs) {
+    fs.rmSync(probeFile, { force: true });
+    const child = spawnSync(process.execPath, args, {
       cwd: nodePath.resolve(sourceDir, '..'),
       encoding: 'utf8',
       timeout: 60_000,
@@ -483,9 +513,13 @@ test('shutdown drains a coalescing window immediately in a real child process wi
         KLAURO_SELF_TELEMETRY_CANONICAL_PROJECT: undefined,
       },
     });
-    assert.equal(child.status, 0, child.stderr);
+    assert.equal(child.status, 0, `${label}: ${child.stderr}`);
     const elapsedMs = Number(child.stdout.trim());
-    assert.ok(elapsedMs < 15_000, `shutdown waited ${elapsedMs}ms; the coalescing window must not gate shutdown`);
-    assert.deepEqual(fs.readFileSync(probeFile, 'utf8').trim().split('\n'), ['[1]']);
+    assert.ok(elapsedMs < 15_000, `${label}: shutdown waited ${elapsedMs}ms; the coalescing window must not gate shutdown`);
+    assert.deepEqual(fs.readFileSync(probeFile, 'utf8').trim().split('\n'), ['[1]'], label);
+    }
+    } finally {
+      fs.rmSync(bundleDir, { recursive: true, force: true });
+    }
   });
 });

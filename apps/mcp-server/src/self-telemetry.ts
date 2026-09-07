@@ -256,10 +256,14 @@ export function enqueueSelfTelemetryEvents(projectPath: string, events: Telemetr
   if (!pendingDrain) {
     let start: () => void = () => undefined;
     const gate = new Promise<void>(resolve => { start = resolve; });
-    const timer = setTimeout(start, shuttingDown ? 0 : selfTelemetryIngestCoalesceMs());
-    timer.unref();
+    let timer: NodeJS.Timeout | undefined;
+    if (shuttingDown) start();
+    else {
+      timer = setTimeout(start, selfTelemetryIngestCoalesceMs());
+      timer.unref();
+    }
     const promise = gate.then(() => {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       const queued = pendingEvents;
       pendingEvents = [];
       pendingDrain = undefined;
