@@ -9,7 +9,7 @@ import type { ResolvedSegmentedAnalysis } from './segmented-analysis-storage';
 import { loadCompactCASGraph, loadCompactCASSearch } from './segmented-analysis-storage';
 import { compressionCodecForPath } from './json-storage-writer';
 import { CHANGE_RISK_RANK_NO_NODE } from './cas-change-risk-rank';
-import { CAS_SEMANTIC_TABLES, edgeRecordKey, isSupportedCasRecordStoreDescriptor, isSupportedCasSemanticStoreDescriptor, openCasRecordStore, openCasSemanticStore, type CasRecordStoreReadStats, type CasSemanticTableName, type CasSourceInputRow } from './cas-record-store';
+import { CAS_SEMANTIC_TABLES, edgeRecordKey, isSupportedCasRecordStoreDescriptor, isSupportedCasSemanticStoreDescriptor, openCasRecordStore, openCasSemanticStore, type CasRecordStoreReadStats, type CasSemanticStore, type CasSemanticTableName, type CasSourceInputRow } from './cas-record-store';
 import type { CasSectionName } from './cas-sections';
 import { searchCompactCAS } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-search';
 
@@ -693,19 +693,34 @@ export interface ScopedSemanticCollections {
 
 export const NODE_KEYED_SEMANTIC_TABLES: readonly CasSemanticTableName[] = ['method_calls', 'change_risks'];
 
+const pinnedSemanticStores = new WeakMap<PinnedAnalysisGeneration, Promise<CasSemanticStore>>();
+
+export function openPinnedSemanticStore(pinned: PinnedAnalysisGeneration, graph: CompactCASGraph): Promise<CasSemanticStore> | null {
+  const descriptor = pinned.segmented.manifest.semantic_store;
+  if (!isSupportedCasSemanticStoreDescriptor(descriptor)) return null;
+  let opening = pinnedSemanticStores.get(pinned);
+  if (!opening) {
+    const totals = pinned.segmented.manifest.collection_totals;
+    opening = openCasSemanticStore(pinned.segmented.directory, descriptor, {
+      nodeCount: graph.nodeCount,
+      totals: totals ? Object.fromEntries(CAS_SEMANTIC_TABLES.filter(name => typeof totals[name] === 'number').map(name => [name, totals[name]])) : undefined,
+    });
+    pinnedSemanticStores.set(pinned, opening);
+    opening.catch(() => pinnedSemanticStores.delete(pinned));
+  }
+  return opening;
+}
+
 export async function loadScopedSemanticCollections(
   pinned: PinnedAnalysisGeneration,
   graph: CompactCASGraph,
   keepIds: ReadonlySet<string>,
   tables: readonly CasSemanticTableName[] = NODE_KEYED_SEMANTIC_TABLES,
 ): Promise<ScopedSemanticCollections | null> {
-  const descriptor = pinned.segmented.manifest.semantic_store;
-  if (!isSupportedCasSemanticStoreDescriptor(descriptor)) return null;
+  const opening = openPinnedSemanticStore(pinned, graph);
+  if (!opening) return null;
+  const store = await opening;
   const totals = pinned.segmented.manifest.collection_totals;
-  const store = await openCasSemanticStore(pinned.segmented.directory, descriptor, {
-    nodeCount: graph.nodeCount,
-    totals: totals ? Object.fromEntries(CAS_SEMANTIC_TABLES.filter(name => typeof totals[name] === 'number').map(name => [name, totals[name]])) : undefined,
-  });
   const denseIds: number[] = [];
   for (const id of keepIds) {
     const node = graph.nodeById(id);
@@ -745,9 +760,9 @@ export async function loadRankedChangeRisks(
   excludeIds: ReadonlySet<string>,
   prefetch = 32,
 ): Promise<RankedChangeRisks | null> {
-  const descriptor = pinned.segmented.manifest.semantic_store;
-  if (!isSupportedCasSemanticStoreDescriptor(descriptor)) return null;
-  const store = await openCasSemanticStore(pinned.segmented.directory, descriptor, { nodeCount: graph.nodeCount });
+  const opening = openPinnedSemanticStore(pinned, graph);
+  if (!opening) return null;
+  const store = await opening;
   const ranking = await store.readChangeRiskRanking();
   if (!ranking) return null;
   const order: string[] = [];
@@ -833,9 +848,9 @@ export async function loadScopedSourceInputs(
   graph: CompactCASGraph,
   nodes: readonly CASNode[],
 ): Promise<ScopedSourceInputs | { gap: string } | null> {
-  const descriptor = pinned.segmented.manifest.semantic_store;
-  if (!isSupportedCasSemanticStoreDescriptor(descriptor)) return null;
-  const store = await openCasSemanticStore(pinned.segmented.directory, descriptor, { nodeCount: graph.nodeCount });
+  const opening = openPinnedSemanticStore(pinned, graph);
+  if (!opening) return null;
+  const store = await opening;
   const paths = new Set<string>();
   for (const node of nodes) {
     const file = sourceInputCitationPath((node as { source?: { file?: unknown } }).source?.file);

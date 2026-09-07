@@ -666,7 +666,10 @@ test('the ranked change-risk column serves the complete repo ranking with lazy r
       assert.equal((read.get(0) as any).node_id, 'node-30');
       assert.equal((read.get(2) as any).node_id, 'node-20');
       await assert.rejects(source.read([9]), /out of range/);
-      assert.equal(await createRankedRiskSource(pinned, graph).then(value => value && 'getIndex' in value), true);
+      const before = source.stats().indexBytes;
+      const semantic = (await loadScopedSemanticCollections(pinned, graph, new Set(['node-0']), ['change_risks']))!;
+      assert.ok(semantic.stats.indexBytes >= before && semantic.stats.records >= 2, 'one store per pinned generation: the scoped loader and the risk source share a single ledger');
+      assert.equal(source.stats().indexBytes, semantic.stats.indexBytes, 'stats read through either helper are the same aggregate');
     } finally {
       await pinned.release();
     }

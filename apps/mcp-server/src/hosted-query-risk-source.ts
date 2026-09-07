@@ -1,8 +1,8 @@
 import type { CompactCASGraph } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-graph';
 import type { CASChangeRisk } from '../../../packages/analyzer-core/src/types/cas.types';
 import { CHANGE_RISK_RANK_NO_NODE } from './cas-change-risk-rank';
-import { isSupportedCasSemanticStoreDescriptor, openCasSemanticStore, type CasRecordStoreReadStats, type CasSemanticStore } from './cas-record-store';
-import type { PinnedAnalysisGeneration } from './hosted-query-scoped-graph';
+import { isSupportedCasSemanticStoreDescriptor, type CasRecordStoreReadStats, type CasSemanticStore } from './cas-record-store';
+import { openPinnedSemanticStore, type PinnedAnalysisGeneration } from './hosted-query-scoped-graph';
 
 export interface AgentRiskIndexEntry {
   ordinal: number;
@@ -31,7 +31,9 @@ function riskNodeId(record: unknown, ordinal: number): string {
 export async function createRankedRiskSource(pinned: PinnedAnalysisGeneration, graph: CompactCASGraph): Promise<AgentRiskSource | null> {
   const descriptor = pinned.segmented.manifest.semantic_store;
   if (!isSupportedCasSemanticStoreDescriptor(descriptor) || !descriptor.extras?.change_risk_rank) return null;
-  const store: CasSemanticStore = await openCasSemanticStore(pinned.segmented.directory, descriptor, { nodeCount: graph.nodeCount });
+  const opening = openPinnedSemanticStore(pinned, graph);
+  if (!opening) return null;
+  const store: CasSemanticStore = await opening;
   let index: Promise<AgentRiskIndex> | undefined;
   const readRecords = async (ordinals: readonly number[]): Promise<Map<number, CASChangeRisk>> => {
     const wanted = [...new Set(ordinals)].sort((left, right) => left - right);
