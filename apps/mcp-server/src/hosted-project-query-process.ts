@@ -1,6 +1,7 @@
 import { fork, type ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { readAnalysisMemoryCapacity, type AnalysisMemoryCapacity } from './analysis-memory';
 import { resolveAnalysisHeapMb } from './analysis-heap';
 import { registerHostedBackgroundPreflight, withHostedForegroundPermit } from './hosted-background-queue';
 
@@ -50,17 +51,23 @@ const pending = new Map<number, PendingQuery>();
 const warmedVersions = new Map<string, string>();
 const warmingVersions = new Map<string, { version: string; promise: Promise<void> }>();
 
+const QUERY_HEAP_CGROUP_FRACTION = 0.6;
+
 export function resolveHostedQueryHeapMb(
   env: NodeJS.ProcessEnv = process.env,
   totalMemBytes?: number,
+  capacity: AnalysisMemoryCapacity = readAnalysisMemoryCapacity(),
 ): number {
+  const cgroupCapMb = capacity.source === 'cgroup'
+    ? Math.max(512, Math.floor((capacity.limitBytes / (1024 * 1024)) * QUERY_HEAP_CGROUP_FRACTION))
+    : Number.POSITIVE_INFINITY;
   const configured = Number(env.KLAURO_HOSTED_QUERY_HEAP_MB);
-  if (Number.isFinite(configured) && configured >= 512) return Math.floor(configured);
+  if (Number.isFinite(configured) && configured >= 512) return Math.min(Math.floor(configured), cgroupCapMb);
   const analysisHeap = resolveAnalysisHeapMb(env, totalMemBytes);
   if (env.KLAURO_ANALYSIS_HEAP_MB !== undefined) {
-    return Math.min(analysisHeap.heapMb, DEFAULT_QUERY_HEAP_MB);
+    return Math.min(analysisHeap.heapMb, DEFAULT_QUERY_HEAP_MB, cgroupCapMb);
   }
-  return Math.max(512, Math.min(DEFAULT_QUERY_HEAP_MB, Math.floor(analysisHeap.totalRamMb * 0.5)));
+  return Math.max(512, Math.min(DEFAULT_QUERY_HEAP_MB, Math.floor(analysisHeap.totalRamMb * 0.5), cgroupCapMb));
 }
 
 function resolveWorkerEntryPath(kind: 'full' | 'search', env: NodeJS.ProcessEnv = process.env): string {
