@@ -51,13 +51,21 @@ function boundedTextArray(value: unknown, limit: number, maxLength: number): str
 function compactCandidate(value: unknown, required: boolean): Record<string, unknown> {
   const candidate = value && typeof value === 'object' ? value as Record<string, unknown> : {};
   const repairFact = compactCapabilityCatalogRepairPromptFact(candidate, required);
-  if (repairFact) return { ...repairFact, ...(Array.isArray(candidate.declared_contracts) ? { declared_contracts: candidate.declared_contracts } : {}) };
+  if (repairFact) return {
+    ...repairFact,
+    evidence_window: candidate.evidence_window,
+    ...(Array.isArray(candidate.declared_contracts) ? { declared_contracts: candidate.declared_contracts } : {}),
+  };
   return {
     candidate_id: boundedText(candidate.candidate_id, 180),
     family: boundedText(candidate.family, required ? 120 : 180),
-    operations: boundedTextArray(candidate.operations, required ? 3 : 6, required ? 120 : 240),
-    relationships: boundedTextArray(candidate.relationships, required ? 4 : 8, required ? 180 : 320),
+    operations: Array.isArray(candidate.operations) ? candidate.operations : [],
+    relationships: Array.isArray(candidate.relationships) ? candidate.relationships : [],
+    evidence_role: candidate.evidence_role,
+    evidence_role_reasons: candidate.evidence_role_reasons,
+    evidence_window: candidate.evidence_window,
     name: boundedText(candidate.name, required ? 320 : 900),
+    unresolved_entry_point_ids: candidate.unresolved_entry_point_ids,
     entry_points: candidate.entry_points,
     entities: candidate.entities,
     entity_names: boundedTextArray(candidate.entity_names, required ? 4 : 8, required ? 100 : 160),
@@ -199,12 +207,6 @@ export function fitCapabilityCatalogContext<T extends Record<string, unknown>>(
     const [removed] = includedCandidates.splice(removableIndex, 1);
     const candidateId = String(removed.candidate_id || '');
     omittedCandidateIds.unshift(candidateId);
-  }
-  while (byteLength(buildContext()) > maxBytes) {
-    const candidate = [...includedCandidates].reverse().find(value => Array.isArray(value.relationships) && value.relationships.length > 0);
-    if (!candidate) break;
-    (candidate.relationships as unknown[]).pop();
-    if ((candidate.relationships as unknown[]).length === 0) delete candidate.relationships;
   }
   if (targetedRepairIds.length > 0) shrinkCapabilityCatalogRepairPromptToBudget(compactBase, boundedFacts, maxBytes, () => byteLength(buildContext()));
   const context = buildContext();

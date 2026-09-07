@@ -14,6 +14,72 @@ const candidate = (index: number) => ({
   declared_contracts: [contract(index)],
 });
 
+test('retains all operations and their qualifications through bounded batches', () => {
+  const operations = Array.from({ length: 85 }, (_, index) =>
+    'Inspect record ' + index + '. ' + 'Context detail. '.repeat(35) + ' Does not change or store the record.');
+  const relationships = ['Record inspection depends on authorization and does not provide authorization itself.'];
+  const facts = { candidate_route_areas: [{ candidate_id: 'surface', operations, relationships, evidence_role: 'supporting-mechanism' }],
+    required_behavior_candidate_ids: ['surface'] };
+  const batches = fitCapabilityCatalogContexts({ task: 'Catalog observed behavior.' }, facts, env);
+  const delivered = batches.flatMap(batch => batch.context.facts.candidate_route_areas as Array<Record<string, unknown>>);
+  expect([...new Set(delivered.flatMap(candidate => candidate.operations as string[]))]).toEqual(operations);
+  expect(delivered.every(candidate => candidate.evidence_role === 'supporting-mechanism')).toBe(true);
+  expect(delivered.every(candidate => (candidate.relationships as string[]).includes(relationships[0]))).toBe(true);
+  expect(batches.every(batch => batch.byteLength <= resolveAIInputByteBudget(env))).toBe(true);
+  let offset = 0;
+  for (const value of delivered) {
+    expect(value.evidence_window).toEqual({ operations: { offset, total: 85 } });
+    offset += (value.operations as string[]).length;
+  }
+  expect(offset).toBe(85);
+  expect(facts.candidate_route_areas[0].operations).toEqual(operations);
+});
+
+test('keeps partial-contract window metadata during targeted repair compaction', () => {
+  const contracts = Array.from({ length: 20 }, (_, index) => contract(index));
+  const batches = fitCapabilityCatalogContexts({ task: 'Repair documented outcomes.' }, {
+    candidate_route_areas: [{ candidate_id: 'candidate-0', first_party_outcomes: ['Read records'], declared_contracts: contracts }],
+  }, env);
+  const delivered = batches.flatMap(batch => batch.context.facts.candidate_route_areas as Array<Record<string, unknown>>);
+  expect(delivered.flatMap(value => value.declared_contracts)).toEqual(contracts);
+  expect(delivered.every(value => (value.evidence_window as any).declared_contracts.total === 20)).toBe(true);
+  expect(batches.every(batch => batch.byteLength <= resolveAIInputByteBudget(env))).toBe(true);
+});
+
+test('reports an indivisible oversized operation without cutting off its qualifying evidence', () => {
+  expect(() => fitCapabilityCatalogContexts({ task: 'Catalog observed behavior.' }, {
+    candidate_route_areas: [{ candidate_id: 'surface', operations: ['Read records. ' + 'detail '.repeat(5000) + 'Never writes records.'] }],
+  }, env)).toThrow('source-contract-exceeds-context-budget');
+});
+
+test('partitions operations and contracts together instead of multiplying requests across both arrays', () => {
+  const operations = Array.from({ length: 20 }, (_, index) => 'Read record ' + index + '. ' + 'Operation detail. '.repeat(40));
+  const contracts = Array.from({ length: 20 }, (_, index) => contract(index));
+  const batches = fitCapabilityCatalogContexts({ task: 'Catalog behavior.' }, {
+    candidate_route_areas: [{ ...candidate(0), operations, declared_contracts: contracts }],
+  }, env);
+  const delivered = batches.flatMap(batch => batch.context.facts.candidate_route_areas as Array<Record<string, unknown>>);
+  expect(delivered.flatMap(value => value.operations)).toEqual(operations);
+  expect(delivered.flatMap(value => value.declared_contracts)).toEqual(contracts);
+  expect(batches.length).toBeLessThanOrEqual(20);
+  expect(batches.every(batch => batch.byteLength <= resolveAIInputByteBudget(env))).toBe(true);
+});
+
+test('does not remove an oversized relationship to manufacture a fitting context', () => {
+  expect(() => fitCapabilityCatalogContexts({ task: 'Catalog behavior.' }, {
+    candidate_route_areas: [{ ...candidate(0), relationships: ['Read access requires authorization. ' + 'detail '.repeat(5000)] }],
+  }, env)).toThrow('source-contract-exceeds-context-budget');
+});
+
+test('keeps an ordinary complete surface in one request', () => {
+  const operations = Array.from({ length: 85 }, (_, index) => 'Inspect record ' + index);
+  const batches = fitCapabilityCatalogContexts({ task: 'Catalog behavior.' }, {
+    candidate_route_areas: [{ candidate_id: 'surface', operations }],
+  }, env);
+  expect(batches).toHaveLength(1);
+  expect((batches[0].context.facts.candidate_route_areas as Array<Record<string, unknown>>)[0].operations).toEqual(operations);
+});
+
 test('batches all candidate contracts when the single-prompt fitter omits evidence', () => {
   const candidates = Array.from({ length: 30 }, (_, index) => candidate(index));
   const facts = { candidate_route_areas: candidates };

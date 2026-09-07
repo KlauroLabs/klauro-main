@@ -1,5 +1,6 @@
 import { projectCapabilityCatalogPromptEvidence, capabilityCatalogStructuralApiLabels } from '../../analyzer/core/capability-catalog-prompt-evidence';
-import type { CASNode, SystemCapability } from '../../types/cas.types';
+import { projectCapabilityCatalogPromptFacts } from '../../analyzer/core/capability-catalog-prompt-facts';
+import type { CASEntryPoint, CASNode, SystemCapability } from '../../types/cas.types';
 
 function capability(overrides: Partial<SystemCapability>): SystemCapability {
   return {
@@ -17,6 +18,39 @@ function capability(overrides: Partial<SystemCapability>): SystemCapability {
 }
 
 describe('capability catalog prompt evidence', () => {
+  it('resolves all retained surface operations from CAS entries rather than a five-name sample', () => {
+    const entries: CASEntryPoint[] = Array.from({ length: 85 }, (_, index) => ({
+      id: 'entry-' + index, source_node: 'node-' + index, type: 'message', name: 'inspect_record_' + index,
+    }));
+    const value = capability({
+      evidence_kind: 'behavior-surface', evidence_role: 'supporting-mechanism',
+      evidence_examples: entries.slice(0, 5).map(entry => entry.name),
+      operations: entries.map(entry => ({ entry_point_id: entry.id, entry_point_type: entry.type, action: 'Handle' })),
+    });
+    const [fact] = projectCapabilityCatalogPromptFacts([value], new Map(), new Map(entries.map(entry => [entry.id, entry])), new Map(), new Map());
+    expect(fact.operations).toEqual(entries.map((_, index) => 'Inspect record ' + index));
+    expect(fact.entry_points).toBe(85);
+    expect(fact.evidence_role).toBe('supporting-mechanism');
+    expect(value.evidence_examples).toHaveLength(5);
+    expect(value.operations.every(operation => operation.action === 'Handle')).toBe(true);
+    const missing = { ...value, operations: [...value.operations, { entry_point_id: 'missing:invented_effect', entry_point_type: 'message' as const, action: 'Handle' }] };
+    const projected = projectCapabilityCatalogPromptEvidence(missing, new Map(), new Map(entries.map(entry => [entry.id, entry])));
+    expect(projected.unresolved_entry_point_ids).toEqual(['missing:invented_effect']);
+    expect(projected.operations).toEqual(fact.operations);
+  });
+
+  it('retains every operation description instead of treating the first eight as the whole surface', () => {
+    const evidence = Array.from({ length: 85 }, (_, index) => 'Inspect record ' + index);
+    const candidate = capability({
+      evidence_kind: 'behavior-surface', evidence_examples: evidence,
+      operations: evidence.map((name, index) => ({ entry_point_id: 'entry-' + index, entry_point_type: 'message', action: name })),
+    });
+    const result = projectCapabilityCatalogPromptEvidence(candidate);
+    expect(result.operations).toEqual(evidence);
+    expect(candidate.evidence_examples).toEqual(evidence);
+    expect(result.name.length).toBeLessThan(result.operations.join(', ').length);
+  });
+
   it.each(['api', 'rpc'] as const)('projects only retained %s evidence without reviving legacy examples', entryType => {
     const retained = { entry_point_id: 'request', source_node_id: 'node_request', text: 'Route HTTP requests.' };
     const candidate = capability({

@@ -3,6 +3,7 @@ import {
   resolveAIInputByteBudget,
   resolveAIInputTokenBudget,
 } from '../../analyzer/core/ai-context-budget';
+import { fitCapabilityCatalogContexts } from '../../analyzer/core/capability-catalog-context-batches';
 
 describe('AI context budgeting', () => {
   it('fits large catalog evidence deterministically while retaining ranked evidence families', () => {
@@ -33,10 +34,13 @@ describe('AI context budgeting', () => {
       },
     };
     const env = { AI_MAX_CONTEXT_LENGTH: '8000' } as NodeJS.ProcessEnv;
-    const first = fitCapabilityCatalogContext({ task: 'Return only valid JSON.', style: 'Product language.' }, facts, env);
-    const second = fitCapabilityCatalogContext({ task: 'Return only valid JSON.', style: 'Product language.' }, facts, env);
+    const batches = fitCapabilityCatalogContexts({ task: 'Return only valid JSON.', style: 'Product language.' }, facts, env);
+    const second = fitCapabilityCatalogContexts({ task: 'Return only valid JSON.', style: 'Product language.' }, facts, env);
+    const first = batches[0];
     const included = first.context.facts.candidate_route_areas as Array<Record<string, unknown>>;
-    expect(first.byteLength).toBeLessThanOrEqual(resolveAIInputByteBudget(env));
+    expect(batches.every(batch => batch.byteLength <= resolveAIInputByteBudget(env))).toBe(true);
+    const delivered = batches.flatMap(batch => batch.context.facts.candidate_route_areas as Array<Record<string, unknown>>);
+    expect(delivered.map(value => value.operations)).toEqual(candidates.map(value => value.operations));
     expect(first.inputTokenBudget).toBe(8000);
     expect(included.length).toBeGreaterThan(0);
     expect(included[0]?.candidate_id).toBe('candidate-0');
@@ -44,7 +48,7 @@ describe('AI context budgeting', () => {
     expect((first.context.facts.top_down_signals as Record<string, unknown>).product_title).toBe('Evidence platform');
     expect(first.context.facts.accepted_outcome_names).toEqual(['Analyze codebases', 'Coordinate overlapping work']);
     expect(first.context.facts.required_outcomes).toEqual([{ requirement_id: 'agent:behavior-understand', audience: 'agent', required_audience_label: 'agents', required_subject_terms: ['understand', 'behavior'], required_visible_actions: [], minimum_subject_matches: 2, outcome: 'understand behavior', candidate_ids: ['candidate-0'] }]);
-    expect(first).toEqual(second);
+    expect(batches).toEqual(second);
   });
 
   it('enforces a safe minimum context budget', () => {

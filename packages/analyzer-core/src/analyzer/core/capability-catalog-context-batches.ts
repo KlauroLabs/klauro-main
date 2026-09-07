@@ -34,11 +34,24 @@ export function fitCapabilityCatalogContexts<T extends Record<string, unknown>>(
       return;
     }
     const candidate = candidates[0];
-    const contracts = candidate?.declared_contracts;
-    if (Array.isArray(contracts) && contracts.length > 1) {
-      const middle = Math.ceil(contracts.length / 2);
-      visit([{ ...candidate, declared_contracts: contracts.slice(0, middle) }]);
-      visit([{ ...candidate, declared_contracts: contracts.slice(middle) }]);
+    const splitKeys = ['operations', 'declared_contracts'].filter(key =>
+      Array.isArray(candidate?.[key]) && (candidate[key] as unknown[]).length > 1);
+    if (splitKeys.length > 0) {
+      const halves = [{ ...candidate }, { ...candidate }];
+      const previousWindow = candidate.evidence_window as Record<string, { offset: number; total: number }> | undefined;
+      for (const half of halves) half.evidence_window = { ...previousWindow };
+      for (const key of splitKeys) {
+        const values = candidate[key] as unknown[];
+        const middle = Math.ceil(values.length / 2);
+        const offset = previousWindow?.[key]?.offset || 0;
+        const total = previousWindow?.[key]?.total || values.length;
+        halves[0][key] = values.slice(0, middle);
+        halves[1][key] = values.slice(middle);
+        (halves[0].evidence_window as Record<string, unknown>)[key] = { offset, total };
+        (halves[1].evidence_window as Record<string, unknown>)[key] = { offset: offset + middle, total };
+      }
+      visit([halves[0]]);
+      visit([halves[1]]);
       return;
     }
     throw new CapabilityCatalogResponseError('source-contract-exceeds-context-budget');

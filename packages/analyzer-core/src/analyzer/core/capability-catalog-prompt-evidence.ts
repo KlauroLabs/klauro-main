@@ -1,10 +1,11 @@
-import type { CASNode, SystemCapability } from '../../types/cas.types';
+import type { CASEntryPoint, CASNode, SystemCapability } from '../../types/cas.types';
 import { capabilityOperationEvidenceTexts } from './capability-subject-evidence';
 
 export interface CapabilityCatalogPromptEvidence {
   name: string;
   operations: string[];
   relationships: string[];
+  unresolved_entry_point_ids?: string[];
   declared_contracts?: Array<{
     entry_point_id: string;
     source_node_id: string;
@@ -77,6 +78,7 @@ function declaredContracts(
 export function projectCapabilityCatalogPromptEvidence(
   capability: SystemCapability,
   nodeById: ReadonlyMap<string, CASNode> = new Map(),
+  entryById?: ReadonlyMap<string, CASEntryPoint>,
 ): CapabilityCatalogPromptEvidence {
   const structuralApiGroup = capabilityCatalogStructuralApiLabels([capability]).length > 0;
   const structuralTokens = new Set(
@@ -84,32 +86,43 @@ export function projectCapabilityCatalogPromptEvidence(
       ? words(capability.structural_label || capability.name).map(normalized)
       : [],
   );
+  const entryEvidence = capability.operation_evidence === undefined && entryById
+    ? capability.operations.flatMap(operation => {
+      const entry = entryById.get(operation.entry_point_id);
+      return entry?.name ? [entry.name] : [];
+    }) : [];
+  const unresolvedEntryIds = entryById
+    ? [...new Set(capability.operations.filter(operation => !entryById.has(operation.entry_point_id))
+      .map(operation => operation.entry_point_id))]
+    : [];
+  const evidenceTexts = [...capabilityOperationEvidenceTexts(capability), ...entryEvidence];
   const operations = Array.from(new Set(
-    capabilityOperationEvidenceTexts(capability)
+    evidenceTexts
       .map(example => words(example)
         .filter(word => !structuralTokens.has(normalized(word)))
         .join(' '))
       .filter(Boolean)
       .map(humanize),
-  )).slice(0, 8);
+  ));
   const actionFallback = Array.from(new Set(
     (capability.operations || [])
       .map(operation => humanize(operation.action || ''))
       .filter(Boolean),
-  )).slice(0, 8);
+  ));
   const projectedOperations = operations.length > 0 ? operations : actionFallback;
   const relationships = Array.from(new Set((capability.depends_on || []).map(dependency => {
     const sharedEntities = (dependency.evidence.shared_entities || []).map(humanize).filter(Boolean);
     return [humanize(dependency.description), sharedEntities.length > 0 ? `Shared subjects: ${sharedEntities.join(', ')}` : '']
       .filter(Boolean).join('. ');
-  }).filter(Boolean))).slice(0, 8);
+  }).filter(Boolean)));
   const contracts = declaredContracts(capability, nodeById);
   return {
     name: (capability.evidence_kind === 'behavior-surface' || structuralApiGroup) && projectedOperations.length > 0
-      ? projectedOperations.join(', ')
+      ? projectedOperations.slice(0, 8).join(', ')
       : humanize(capability.name),
     operations: projectedOperations,
     relationships,
+    ...(unresolvedEntryIds.length > 0 ? { unresolved_entry_point_ids: unresolvedEntryIds } : {}),
     ...(contracts.length > 0 ? { declared_contracts: contracts } : {}),
   };
 }
