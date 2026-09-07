@@ -38,6 +38,14 @@ interface RepoProofResult {
     architectural_patterns: string;
     risks: string;
   };
+  index?: {
+    nodes: number;
+    edges: number;
+    entry_points: number;
+    entities: number;
+    files: number | null;
+    languages: number;
+  };
   failed_gates: string[];
   warning_gates: string[];
   error?: string;
@@ -154,6 +162,7 @@ async function evaluateRepo(repo: RealRepoTarget, focus: AnalysisFocus, perRepoT
         architectural_patterns: describePatterns(cas),
         risks: describeRisks(cas),
       },
+      index: describeIndex(cas),
       failed_gates: failedGates.map(gate => `${gate.id}: ${gate.detail}`),
       warning_gates: warningGates.map(gate => `${gate.id}: ${gate.detail}`),
     };
@@ -259,6 +268,15 @@ function renderMarkdown(report: AnalysisQualityProofReport): string {
       lines.push('');
     }
   }
+  lines.push('## Index');
+  lines.push('');
+  lines.push('| Repo | Files | Nodes | Edges | Entry points | Entities | Languages | Duration |');
+  lines.push('| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |');
+  for (const result of report.results) {
+    if (!result.index) continue;
+    lines.push(`| ${result.repo.name} | ${result.index.files ?? ''} | ${result.index.nodes} | ${result.index.edges} | ${result.index.entry_points} | ${result.index.entities} | ${result.index.languages} | ${(result.duration_ms / 1000).toFixed(1)} s |`);
+  }
+  lines.push('');
   lines.push('## All Results');
   lines.push('');
   lines.push('| Repo | Status | Score | Description | Domain | Capabilities | Patterns |');
@@ -275,6 +293,18 @@ function renderMarkdown(report: AnalysisQualityProofReport): string {
     ].map(value => String(value).replace(/\|/g, '/')).join(' | ').replace(/^/, '| ').replace(/$/, ' |'));
   }
   return `${lines.join('\n')}\n`;
+}
+
+function describeIndex(cas: CASOutput): RepoProofResult['index'] {
+  const files = (cas as { l0_index?: { total_files?: number } }).l0_index?.total_files;
+  return {
+    nodes: (cas.nodes || []).length,
+    edges: (cas.edges || []).length,
+    entry_points: (cas.entry_points || []).length,
+    entities: (cas.entities || []).length,
+    files: typeof files === 'number' ? files : null,
+    languages: (cas.system?.technologies?.languages || []).length,
+  };
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
