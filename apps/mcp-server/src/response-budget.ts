@@ -91,7 +91,7 @@ interface ShrinkCandidate {
 }
 
 function collectCandidates(value: unknown, path: string, container: Record<string, unknown> | unknown[] | null, key: string | number, out: ShrinkCandidate[]): void {
-  if (/(?:^|\.)(?:gaps|projection_gaps|analysis_freshness|source_input_comparison|run_policy)(?:\.|\[|$)/.test(path)) return;
+  if (/(?:^|\.)(?:gaps|run_policy|projection_gaps|manual_checks)(?:\.|\[|$)|(?:^|\.)execution_brief\.preserve(?:\.|\[|$)/.test(path)) return;
   if (typeof value === 'string') {
     const executable = /(?:^|\.)(?:commands?|validate|(?:execution_|context_)?capsule)$|(?:^|\.)(?:commands?|validate)\[\d+\]$/.test(path);
     if (container && value.length > MIN_STRING_KEEP_CHARS && !executable) {
@@ -213,10 +213,11 @@ export function boundToolPayload(data: unknown, options: BoundOptions): unknown 
   if (!Number.isSafeInteger(budget) || budget < MIN_RESPONSE_BUDGET_BYTES) {
     throw new RangeError(`Response budget must be an integer of at least ${MIN_RESPONSE_BUDGET_BYTES} bytes.`);
   }
-  const fullSize = byteLength(serializeToolResponse(data));
+  const serialized = serializeToolResponse(data);
+  const fullSize = byteLength(serialized);
   if (fullSize <= budget) return data;
 
-  const root = { data: structuredClone(data) };
+  const root = { data: JSON.parse(serialized) };
   const trims = shrinkToBudget(root, Math.max(budget - ENVELOPE_RESERVE_BYTES, 1024));
   const allTruncatedPaths: TruncatedPath[] = [...trims.entries()].map(([path, record]) => ({
     path: path || '(root)',

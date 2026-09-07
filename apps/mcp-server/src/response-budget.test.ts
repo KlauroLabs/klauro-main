@@ -90,7 +90,8 @@ test('bounded contexts preserve safety evidence or withhold the payload as a who
   if (returned.validation_plan) {
     assert.deepEqual(returned.validation_plan.gaps, gaps);
     assert.deepEqual(returned.projection_gaps, payload.projection_gaps);
-    assert.deepEqual(returned.analysis_freshness, payload.analysis_freshness);
+    assert.equal(returned.analysis_freshness.citation_verification, 'invalid');
+    assert.equal(returned.analysis_freshness.source_input_comparison.mismatched.count, 3);
   } else {
     assert.match((bounded.data as any).note, /Payload omitted/);
   }
@@ -107,6 +108,25 @@ test('fitting safety evidence and commands survive prose reduction together', ()
   assert.deepEqual((bounded.data as typeof payload).analysis_freshness, payload.analysis_freshness);
   assert.deepEqual((bounded.data as typeof payload).projection_gaps, payload.projection_gaps);
   assert.ok(Buffer.byteLength(serializeToolResponse(bounded)) <= RESPONSE_BUDGET_BYTES);
+});
+
+test('trimming repeated examples cannot mutate aliased warnings or post-edit checks', () => {
+  const warnings = Array.from({ length: 30 }, (_, index) => `Preserve behavior ${index} and check its callers.`);
+  const payload = {
+    examples: warnings,
+    report: 'x'.repeat(30000),
+    validation_plan: { gaps: warnings, manual_checks: warnings },
+    execution_brief: { preserve: warnings },
+  };
+  const bounded = boundToolPayload(payload, { tool: 'get_agent_context', budgetBytes: 8000 }) as BoundedEnvelope;
+  assert.equal(bounded.payload_omitted, undefined);
+  const returned = bounded.data as typeof payload;
+  assert.deepEqual(returned.validation_plan.gaps, warnings);
+  assert.deepEqual(returned.validation_plan.manual_checks, warnings);
+  assert.deepEqual(returned.execution_brief.preserve, warnings);
+  assert.ok(returned.examples.length < warnings.length);
+  assert.equal(payload.examples.length, 30);
+  assert.ok(Buffer.byteLength(serializeToolResponse(bounded)) <= 8000);
 });
 
 test('invalid response budgets are refused instead of returning an oversized envelope', () => {
