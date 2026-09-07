@@ -1,5 +1,7 @@
-import { projectCapabilityCatalogPromptEvidence, capabilityCatalogStructuralApiLabels } from '../../analyzer/core/capability-catalog-prompt-evidence';
+import { projectCapabilityCatalogPromptEvidence, capabilityCatalogStructuralApiLabels, capabilityCatalogValidationEvidence } from '../../analyzer/core/capability-catalog-prompt-evidence';
 import { projectCapabilityCatalogPromptFacts } from '../../analyzer/core/capability-catalog-prompt-facts';
+import { capabilityOperationEvidenceTexts } from '../../analyzer/core/capability-subject-evidence';
+import { capabilityOutcomeNameUnsupportedTokens } from '../../analyzer/core/capability-catalog-evidence';
 import type { CASEntryPoint, CASNode, SystemCapability } from '../../types/cas.types';
 
 function capability(overrides: Partial<SystemCapability>): SystemCapability {
@@ -18,6 +20,78 @@ function capability(overrides: Partial<SystemCapability>): SystemCapability {
 }
 
 describe('capability catalog prompt evidence', () => {
+  it.each(['message', 'cli', 'http'] as const)('retains an authored %s entry contract without guessing from its name', entryType => {
+    const raw = 'Reports workshop occupancy from maintenance reservations. It does not allocate staff or approve maintenance.';
+    const node = { id: 'public_handler', name: 'lookup', documentation: { raw } } as CASNode;
+    const entry: CASEntryPoint = { id: 'lookup_entry', source_node: node.id, type: entryType, name: 'lookup' };
+    const value = capability({
+      operations: [{ entry_point_id: entry.id, entry_point_type: entryType, action: 'Handle' }],
+    });
+    const nodes = new Map([[node.id, node]]);
+    const entries = new Map([[entry.id, entry]]);
+    const result = projectCapabilityCatalogPromptEvidence(value, nodes, entries);
+    expect(result.operations).toEqual(['Lookup']);
+    expect(result.declared_contracts).toEqual([{
+      entry_point_id: entry.id, source_node_id: node.id, text: raw, example_blocks_omitted: 0,
+    }]);
+    expect(projectCapabilityCatalogPromptEvidence({ ...value, operation_evidence: [] }, nodes, entries).declared_contracts).toBeUndefined();
+    expect(projectCapabilityCatalogPromptEvidence(value, new Map(), entries).declared_contracts).toBeUndefined();
+    expect(projectCapabilityCatalogPromptEvidence(value, nodes, new Map()).declared_contracts).toBeUndefined();
+    const validation = capabilityCatalogValidationEvidence(value, nodes, entries);
+    expect(capabilityOperationEvidenceTexts(validation)).toEqual([raw]);
+    expect(validation.operations).toBe(value.operations);
+    expect(validation.name).toBe(value.name);
+    expect(capabilityCatalogValidationEvidence(validation, nodes, entries)).toEqual(validation);
+    const excluded = { ...value, operation_evidence: [] };
+    expect(capabilityCatalogValidationEvidence(excluded, nodes, entries)).toBe(excluded);
+    expect(value.operation_evidence).toBeUndefined();
+    expect(node.documentation?.raw).toBe(raw);
+  });
+
+  it.each(['message', 'cli', 'http'] as const)('uses only retained source-linked %s contract evidence during validation', entryType => {
+    const record = { entry_point_id: 'lookup', source_node_id: 'handler', text: 'Reports workshop occupancy without allocating staff.' };
+    const value = capability({
+      operations: [{ entry_point_id: 'lookup', entry_point_type: entryType, action: 'Handle' }],
+      operation_evidence: [record, record,
+        { entry_point_id: 'removed', source_node_id: 'handler', text: 'Approve maintenance.' },
+        { entry_point_id: 'lookup', source_node_id: '', text: 'Allocate staff.' }],
+      evidence_examples: ['Assign work automatically.'],
+    });
+    expect(capabilityOperationEvidenceTexts(value)).toEqual([record.text]);
+    expect(capabilityOperationEvidenceTexts({ ...value, operation_evidence: [] })).toEqual([]);
+    expect(value.operation_evidence).toHaveLength(4);
+  });
+
+  it.each(['api', 'message', 'cli', 'http'] as const)('keeps curated %s evidence authoritative in the outcome scope gate', entryType => {
+    const value = capability({
+      name: 'Lookup surface',
+      operations: [{ entry_point_id: 'lookup', entry_point_type: entryType, action: 'Handle' }],
+      operation_evidence: [{ entry_point_id: 'lookup', source_node_id: 'handler', text: 'Reports workshop occupancy.' }],
+      evidence_examples: ['Pay employee salaries.'],
+    });
+    expect(capabilityOutcomeNameUnsupportedTokens('Inspect workshop occupancy', [value])).toEqual([]);
+    expect(capabilityOutcomeNameUnsupportedTokens('Pay employee salaries', [value])).toEqual(['employee', 'salary']);
+    expect(capabilityOutcomeNameUnsupportedTokens('Inspect workshop occupancy', [{ ...value, operation_evidence: [] }]))
+      .toEqual(['workshop', 'occupancy']);
+    expect(capabilityOutcomeNameUnsupportedTokens('Inspect workshop occupancy', [value, capability({ name: 'Other area' })])).toEqual([]);
+    expect(value.evidence_examples).toEqual(['Pay employee salaries.']);
+  });
+
+  it('does not promote generated node descriptions or unlinked documentation to declared contracts', () => {
+    const entry: CASEntryPoint = { id: 'lookup', source_node: 'handler', type: 'message', name: 'lookup' };
+    const value = capability({
+      operations: [{ entry_point_id: entry.id, entry_point_type: entry.type, action: 'Handle' }],
+    });
+    const nodes = new Map<string, CASNode>([
+      ['handler', { id: 'handler', name: 'lookup', description: 'Automatically assign maintenance work.' } as CASNode],
+      ['unrelated', { id: 'unrelated', name: 'assign', documentation: { raw: 'Assign work to mechanics.' } } as CASNode],
+    ]);
+    const entries = new Map([[entry.id, entry]]);
+    expect(projectCapabilityCatalogPromptEvidence(value, nodes, entries).declared_contracts).toBeUndefined();
+    expect(capabilityCatalogValidationEvidence(value, nodes, entries)).toBe(value);
+    expect(value.operation_evidence).toBeUndefined();
+  });
+
   it('resolves all retained surface operations from CAS entries rather than a five-name sample', () => {
     const entries: CASEntryPoint[] = Array.from({ length: 85 }, (_, index) => ({
       id: 'entry-' + index, source_node: 'node-' + index, type: 'message', name: 'inspect_record_' + index,

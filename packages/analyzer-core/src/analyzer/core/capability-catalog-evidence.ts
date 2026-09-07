@@ -1,7 +1,7 @@
 import { CASDataEntity, CASEntryPoint, CASNode, CASUserJourney, SystemCapability } from '../../types/cas.types';
 export { comprehensionAiPhaseStatus, synchronizeCapabilityCatalogCoverage } from './comprehension-status';
 import type { ProductDocumentStatement } from './product-document-framing';
-import { capabilityEvidenceSubjectTokens } from './capability-subject-evidence';
+import { capabilityEvidenceSubjectTokens, capabilityOperationEvidenceTexts } from './capability-subject-evidence';
 export { capabilityEvidenceSubjectTokens } from './capability-subject-evidence';
 import { capabilityMarketingLanguageTerms } from './capability-audience-test';
 import { USER_FACING_ENTRY_TYPES } from './journey-builder';
@@ -128,7 +128,7 @@ export function capabilityOutcomeRestatesDeliveryOperation(
   if (!citedCandidates.some(candidate => candidate.evidence_kind === 'behavior-surface')) return false;
   const words = outcomeIdentityTokens(name);
   const namePhrase = words.join(' ');
-  const copiesOperationPhrase = citedCandidates.some(candidate => (candidate.evidence_examples || []).some(example => {
+  const copiesOperationPhrase = citedCandidates.some(candidate => capabilityOperationEvidenceTexts(candidate).some(example => {
     const operationPhrase = outcomeIdentityTokens(example).join(' ');
     return operationPhrase.split(' ').length >= 2 && (` ${namePhrase} `).includes(` ${operationPhrase} `);
   }));
@@ -153,7 +153,7 @@ export function capabilityOutcomeMisusesCoordination(
     candidate.name,
     candidate.structural_label,
     ...(candidate.related_domains || []),
-    ...(candidate.evidence_examples || []),
+    ...capabilityOperationEvidenceTexts(candidate),
   ].filter(Boolean).join(' '))));
   return !['claim', 'collision', 'conflict', 'concurrent', 'collaborat', 'overlap', 'participant', 'reserv'].some(signal =>
     [...coordinationEvidence].some(token => token.startsWith(signal))
@@ -239,7 +239,7 @@ export function capabilityOutcomeNameUnsupportedTokens(
       candidate.structural_label,
       ...(candidate.related_domains || []),
       ...(candidate.related_entities || []).map(entityId => entityId.replace(/^entity[_:-]?/i, '')),
-      ...(candidate.evidence_examples || []),
+      ...capabilityOperationEvidenceTexts(candidate),
       ...(candidate.operations || []).flatMap(operation => [operation.action, operation.entry_point_id, operation.path_or_command, operation.trigger?.path]),
     ].filter(Boolean).join(' '))));
   const leadingAction = nameTokens[0];
@@ -265,7 +265,7 @@ export function capabilityOutcomeNameUnsupportedTokens(
   );
   if (!focusedBehaviorSurface || unsupportedTokens.length < 2 || !/\band\b/i.test(name)) return unsupportedTokens;
   const hasRecurringSubject = subjectTokens.some(token => outcomeTokenMatches(token, citedIdentityTokens));
-  const operationTokenSets = (citedCandidates[0].evidence_examples || []).map(example =>
+  const operationTokenSets = capabilityOperationEvidenceTexts(citedCandidates[0]).map(example =>
     new Set(outcomeIdentityTokens(example)));
   const matchedOperations = new Set<number>();
   const everyUnsupportedTokenIsOperationBacked = unsupportedTokens.every(token => {

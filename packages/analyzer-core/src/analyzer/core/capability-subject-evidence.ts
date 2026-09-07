@@ -4,11 +4,9 @@ import { outcomeIdentityTokens } from './capability-evidence-language';
 export function retainedCapabilityOperationEvidence(
   capability: Pick<SystemCapability, 'operations' | 'operation_evidence'>,
 ): NonNullable<SystemCapability['operation_evidence']> {
-  const publicEntryIds = new Set(capability.operations
-    .filter(operation => operation.entry_point_type === 'api' || operation.entry_point_type === 'rpc')
-    .map(operation => operation.entry_point_id));
+  const retainedEntryIds = new Set(capability.operations.map(operation => operation.entry_point_id));
   return [...new Map((capability.operation_evidence || [])
-    .filter(evidence => evidence.source_node_id && publicEntryIds.has(evidence.entry_point_id))
+    .filter(evidence => evidence.source_node_id && retainedEntryIds.has(evidence.entry_point_id))
     .map(evidence => [
       JSON.stringify([evidence.entry_point_id, evidence.source_node_id, evidence.text]), evidence,
     ] as const)).values()];

@@ -89,6 +89,58 @@ test('provider output cannot relabel itself as deterministic recovery', async ()
   }
 });
 
+test.each((['message', 'cli', 'http'] as const).flatMap(entryType =>
+  [true, false].map(withContract => ({ entryType, withContract })),
+))('catalog validation sees the same source-linked $entryType contract as the provider: $withContract', async ({ entryType, withContract }) => {
+  const localOrch = new AnalyzerOrchestrator() as any;
+  const raw = 'Reports workshop occupancy from maintenance reservations. It does not allocate staff or approve maintenance.';
+  const node = { id: 'handler', name: 'lookup', documentation: withContract ? { raw } : undefined };
+  const entry = { id: 'entry', source_node: node.id, type: entryType, name: 'lookup' };
+  const candidate = {
+    id: 'occupancy', name: 'Lookup surface', category: 'core',
+    operations: [{ entry_point_id: entry.id, entry_point_type: entryType, action: 'Handle' }],
+    related_entities: [], related_domains: [], criticality: 'medium', criticality_factors: [],
+  };
+  const provider = jest.spyOn(aiService, 'generateComponentDescription').mockResolvedValue(JSON.stringify({
+    capabilities: [{ requirement_id: 'occupancy-reporting', name: 'Inspect workshop occupancy',
+      description: 'Workshop operators inspect occupancy derived from maintenance reservations without allocating staff or approving maintenance.',
+      category: 'core', candidate_ids: [candidate.id], entities: [] }],
+  }));
+  const rejections: any[] = [];
+  try {
+    const result = await localOrch.aiExtractCapabilityCatalog({
+      systemName: 'Workshop', enhancedSystemPurpose: { artifact_type: 'application' },
+      frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [candidate],
+      nodes: [node], entryPoints: [entry], externalServices: [], flowGraph: emptyFlowGraph(), budgetMs: 30000,
+      requiredOutcomeRequirements: [{ id: 'occupancy-reporting', candidateIds: [candidate.id],
+        statement: 'Inspect workshop occupancy', subjectTokens: ['workshop', 'occupancy'] }],
+      onRejection: (feedback: any) => rejections.push(feedback),
+    });
+    const context = provider.mock.calls[0][0].additionalContext! as any;
+    const fact = context.facts.candidate_route_areas.find((value: any) => value.candidate_id === candidate.id);
+    if (!withContract) {
+      expect(fact.declared_contracts).toBeUndefined();
+      expect(result).toEqual([]);
+      expect(rejections.some(item => item.reason.startsWith('outcome-scope-unsupported'))).toBe(true);
+      return;
+    }
+    expect(fact.declared_contracts).toEqual([{
+      entry_point_id: entry.id, source_node_id: node.id, text: raw, example_blocks_omitted: 0,
+    }]);
+    expect(rejections).toEqual([]);
+    expect(result).toHaveLength(1);
+    expect(result[0].name).toBe('Inspect workshop occupancy');
+    expect(result[0].operations).toEqual(candidate.operations);
+    expect(result[0].operation_evidence).toEqual([{
+      entry_point_id: entry.id, source_node_id: node.id, text: raw,
+    }]);
+    expect(candidate).not.toHaveProperty('operation_evidence');
+    expect(node.documentation?.raw).toBe(raw);
+  } finally {
+    provider.mockRestore();
+  }
+});
+
 test('catalog provider receives the full observed tool surface and distinct evidence namespaces', async () => {
   const localOrch = new AnalyzerOrchestrator() as any;
   const entries: CASEntryPoint[] = Array.from({ length: 85 }, (_, index) => ({
