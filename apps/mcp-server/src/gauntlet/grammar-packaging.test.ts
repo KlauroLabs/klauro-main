@@ -131,14 +131,18 @@ test('the hosted worker persists R function evidence from the packaged runtime',
         failure = new Error('Bundled analysis worker timed out');
         child.kill('SIGKILL');
       }, 50_000);
-      child.on('error', error => { failure = error; });
+      child.on('error', error => {
+        failure = error;
+        clearTimeout(timeout);
+        reject(error);
+      });
       child.on('message', (message: { type: string; message?: string }) => {
         if (message.type !== 'result' && message.type !== 'error') return;
         if (message.type === 'error') failure = new Error(message.message);
         else result = true;
         if (child.connected) child.disconnect();
       });
-      child.on('close', code => {
+      child.on('exit', code => {
         clearTimeout(timeout);
         if (failure) reject(failure);
         else if (!result || code !== 0) reject(new Error(`Bundled worker exited ${code}: ${diagnostics}`));
