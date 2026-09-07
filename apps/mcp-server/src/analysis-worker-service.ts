@@ -22,7 +22,7 @@ async function removeStaleSocket(socketPath: string): Promise<void> {
 }
 
 function terminateWorker(child?: ChildProcess): void {
-  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  if (!child) return;
   try {
     if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, 'SIGKILL');
     else child.kill('SIGKILL');
@@ -31,27 +31,57 @@ function terminateWorker(child?: ChildProcess): void {
   }
 }
 
+export interface AnalysisWorkerService extends net.Server {
+  shutdown(): Promise<void>;
+}
+
 export async function startAnalysisWorkerService(
   socketPath: string,
   workerEntry: string = resolveAnalysisWorkerEntry('analysis-worker'),
-): Promise<net.Server> {
+): Promise<AnalysisWorkerService> {
   if (!path.isAbsolute(socketPath)) throw new Error('Analysis worker socket must be an absolute private path.');
   fs.mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 });
   await removeStaleSocket(socketPath);
   let active: net.Socket | undefined;
   let activeChild: ChildProcess | undefined;
+  const sockets = new Set<net.Socket>();
+  const workers = new Map<ChildProcess, Promise<void>>();
+  let stopping = false;
+  let shutdownPromise: Promise<void> | undefined;
+  const shutdown = (): Promise<void> => {
+    if (shutdownPromise) return shutdownPromise;
+    stopping = true;
+    const closed = new Promise<void>((resolve, reject) => {
+      server.close(error => {
+        if (error && (error as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING') reject(error);
+        else resolve();
+      });
+    });
+    for (const socket of sockets) socket.destroy();
+    for (const child of workers.keys()) terminateWorker(child);
+    shutdownPromise = Promise.all([closed, ...workers.values()]).then(() => undefined);
+    return shutdownPromise;
+  };
   const server = net.createServer(socket => {
+    if (stopping) { socket.destroy(); return; }
+    sockets.add(socket);
     let child: ChildProcess | undefined;
     let requestId: number | undefined;
     let terminalMessage: unknown;
     const idleTimer = setTimeout(() => socket.destroy(), 10_000);
     const cleanup = (): void => {
       clearTimeout(idleTimer);
-      terminateWorker(child);
+      sockets.delete(socket);
+      if (child && workers.has(child)) {
+        terminateWorker(child);
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+      }
       if (active === socket && !child) active = undefined;
     };
     socket.once('close', cleanup);
     const channel = workerChannel(socket, request => {
+      if (stopping) throw new Error('Analysis worker service is shutting down.');
       if (requestId !== undefined) throw new Error('Worker service accepts one job per connection.');
       if (!request || !['analyze', 'layered'].includes(request.type) || !Number.isSafeInteger(request.id)
         || typeof request.projectPath !== 'string' || !path.isAbsolute(request.projectPath)
@@ -77,6 +107,13 @@ export async function startAnalysisWorkerService(
           env: process.env,
         });
         activeChild = child;
+        const ownedChild = child;
+        workers.set(ownedChild, new Promise<void>(resolve => {
+          ownedChild.once('close', () => {
+            workers.delete(ownedChild);
+            resolve();
+          });
+        }));
         const send = (message: unknown): void => {
           try { channel.send(message); } catch { socket.destroy(); }
         };
@@ -106,6 +143,7 @@ export async function startAnalysisWorkerService(
           socket.end();
         });
         child.once('exit', (code, signal) => {
+          terminateWorker(ownedChild);
           if (active === socket) { active = undefined; activeChild = undefined; }
           if (!socket.destroyed) {
             if (terminalMessage && code === 0 && signal === null) send(terminalMessage);
@@ -137,13 +175,24 @@ export async function startAnalysisWorkerService(
       resolve();
     });
   });
-  return server;
+  return Object.assign(server, { shutdown });
 }
 
 if (require.main === module) {
   const socketPath = process.env.KLAURO_ANALYSIS_WORKER_SOCKET;
   if (!socketPath) throw new Error('KLAURO_ANALYSIS_WORKER_SOCKET must name the private service socket.');
-  startAnalysisWorkerService(socketPath).then(() => {
+  startAnalysisWorkerService(socketPath).then(server => {
+    const shutdown = (): void => {
+      void server.shutdown().catch(error => {
+        console.error(error);
+        process.exitCode = 1;
+      }).finally(() => {
+        process.removeListener('SIGTERM', shutdown);
+        process.removeListener('SIGINT', shutdown);
+      });
+    };
+    process.on('SIGTERM', shutdown);
+    process.on('SIGINT', shutdown);
     process.stdout.write('Analysis worker service ready.\n');
   }).catch(error => {
     console.error(error);
