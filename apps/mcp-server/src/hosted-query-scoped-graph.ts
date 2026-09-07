@@ -8,7 +8,7 @@ import type { AnalysisTrack } from './track';
 import type { ResolvedSegmentedAnalysis } from './segmented-analysis-storage';
 import { loadCompactCASGraph, loadCompactCASSearch } from './segmented-analysis-storage';
 import { compressionCodecForPath } from './json-storage-writer';
-import { openCasRecordStore, type CasRecordStoreReadStats } from './cas-record-store';
+import { isSupportedCasRecordStoreDescriptor, openCasRecordStore, type CasRecordStoreReadStats } from './cas-record-store';
 import { searchCompactCAS } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-search';
 
 export interface PinnedAnalysisGeneration {
@@ -204,7 +204,7 @@ async function loadScopedRecords(
   graph: CompactCASGraph,
 ): Promise<ScopedGraphSection | null> {
   const descriptor = pinned.segmented.manifest.record_store;
-  if (!descriptor) return null;
+  if (!isSupportedCasRecordStoreDescriptor(descriptor)) return null;
   const store = await openCasRecordStore(pinned.segmented.directory, descriptor, { nodeCount: graph.nodeCount, edgeCount: graph.edgeCount });
   const denseIds: number[] = [];
   for (const id of keepIds) {

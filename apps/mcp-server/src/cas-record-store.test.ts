@@ -172,6 +172,12 @@ test('scoped loads use the record store, stay bound to the pinned generation, an
       await saveAnalysis(project, replacement, 'main', { canonicalSegmented: true });
       const again = (await loadScopedGraphSection(pinned, keep, graph))!;
       assert.ok(again.nodes.every(node => !node.name.startsWith('renamed')), 'pinned generation still serves its own records');
+      (pinned.segmented.manifest.record_store as { version: number }).version = 2;
+      const older = (await loadScopedGraphSection(pinned, keep, graph))!;
+      assert.equal(older.source, 'stream', 'an older optional store version streams instead of failing');
+      assert.deepEqual(older.nodes.map(node => JSON.stringify(node)).sort(), fast.nodes.map(node => JSON.stringify(node)).sort());
+      assert.deepEqual(older.edges.map(edge => JSON.stringify(edge)).sort(), fast.edges.map(edge => JSON.stringify(edge)).sort());
+      (pinned.segmented.manifest.record_store as { version: number }).version = 3;
       delete (pinned.segmented.manifest as { record_store?: unknown }).record_store;
       const slow = (await loadScopedGraphSection(pinned, keep, graph))!;
       assert.equal(slow.source, 'stream');
@@ -229,8 +235,17 @@ test('reads decode each planned block once even with no cache, and the stats acc
       assert.equal(uncached.cacheBytes(), 0, 'nothing is cached under a zero budget');
       const cached = await openCasRecordStore(pinned.segmented.directory, manifest.record_store!, expected);
       await cached.nodes.read([1]);
+      const afterFirst = cached.stats();
+      assert.equal(afterFirst.compressedBytesRead, afterFirst.compressedBytesPlanned, 'a cold read reads what it planned');
       await cached.nodes.read([2]);
-      assert.deepEqual([cached.stats().blockReads, cached.stats().cacheHits], [1, 1]);
+      const afterSecond = cached.stats();
+      assert.deepEqual([afterSecond.blockReads, afterSecond.cacheHits], [1, 1]);
+      assert.equal(afterSecond.compressedBytesRead, afterFirst.compressedBytesRead, 'a cache hit adds no actual compressed I/O');
+      assert.equal(afterSecond.compressedBytesPlanned, afterFirst.compressedBytesPlanned * 2, 'the reservation budget still charges the cached block');
+      const reserved = await openCasRecordStore(pinned.segmented.directory, manifest.record_store!, expected, { maxCompressedBytes: afterFirst.compressedBytesPlanned });
+      await reserved.nodes.read([1]);
+      await assert.rejects(reserved.nodes.read([2]), (error: unknown) => error instanceof CasRecordStoreCapacityError, 'cumulative reservation applies even to cached blocks');
+      assert.ok(stats.compressedBytesRead === stats.compressedBytesPlanned);
     } finally {
       await pinned.release();
     }

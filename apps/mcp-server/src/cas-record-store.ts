@@ -49,6 +49,7 @@ export interface CasRecordStoreReadStats {
   blocksPlanned: number;
   blockReads: number;
   cacheHits: number;
+  compressedBytesPlanned: number;
   compressedBytesRead: number;
   decodedBytes: number;
 }
@@ -60,6 +61,13 @@ export const DEFAULT_RECORD_STORE_READ_BUDGET: CasRecordStoreReadBudget = {
   maxIndexBytes: 64 * 1024 * 1024,
   cacheBytes: 32 * 1024 * 1024,
 };
+
+export function isSupportedCasRecordStoreDescriptor(descriptor: unknown): descriptor is CasRecordStoreDescriptor {
+  return !!descriptor && typeof descriptor === 'object'
+    && (descriptor as CasRecordStoreDescriptor).format === CAS_RECORD_STORE_FORMAT
+    && (descriptor as CasRecordStoreDescriptor).version === CAS_RECORD_STORE_VERSION
+    && (descriptor as CasRecordStoreDescriptor).codec === 'brotli';
+}
 
 export class CasRecordStoreCapacityError extends Error {
   readonly code = 'cas_record_store_capacity_exhausted';
@@ -339,7 +347,7 @@ class SharedBlockCache {
 }
 
 class ReadLedger {
-  readonly stats: CasRecordStoreReadStats = { indexBytes: 0, records: 0, blocksPlanned: 0, blockReads: 0, cacheHits: 0, compressedBytesRead: 0, decodedBytes: 0 };
+  readonly stats: CasRecordStoreReadStats = { indexBytes: 0, records: 0, blocksPlanned: 0, blockReads: 0, cacheHits: 0, compressedBytesPlanned: 0, compressedBytesRead: 0, decodedBytes: 0 };
 
   constructor(private readonly budget: CasRecordStoreReadBudget) {}
 
@@ -351,10 +359,10 @@ class ReadLedger {
   reserve(records: number, decodedBytes: number, compressedBytes: number, blocks: number): void {
     if (this.stats.records + records > this.budget.maxRecords) throw new CasRecordStoreCapacityError(`CAS record store query of ${this.stats.records + records} records exceeds ${this.budget.maxRecords}`);
     if (this.stats.decodedBytes + decodedBytes > this.budget.maxDecodedBytes) throw new CasRecordStoreCapacityError(`CAS record store query needs ${this.stats.decodedBytes + decodedBytes} decoded bytes, above ${this.budget.maxDecodedBytes}`);
-    if (this.stats.compressedBytesRead + compressedBytes > this.budget.maxCompressedBytes) throw new CasRecordStoreCapacityError(`CAS record store query needs ${this.stats.compressedBytesRead + compressedBytes} compressed bytes, above ${this.budget.maxCompressedBytes}`);
+    if (this.stats.compressedBytesPlanned + compressedBytes > this.budget.maxCompressedBytes) throw new CasRecordStoreCapacityError(`CAS record store query needs ${this.stats.compressedBytesPlanned + compressedBytes} compressed bytes, above ${this.budget.maxCompressedBytes}`);
     this.stats.records += records;
     this.stats.decodedBytes += decodedBytes;
-    this.stats.compressedBytesRead += compressedBytes;
+    this.stats.compressedBytesPlanned += compressedBytes;
     this.stats.blocksPlanned += blocks;
   }
 }
@@ -451,6 +459,7 @@ export class CasRecordTable<T> {
       const { bytesRead } = await handle.read(compressed, read, compressed.byteLength - read, start + read);
       if (bytesRead <= 0) throw new Error(`CAS record store block ${block} is truncated`);
       read += bytesRead;
+      this.ledger.stats.compressedBytesRead += bytesRead;
     }
     this.ledger.stats.blockReads += 1;
     const expectedChecksum = this.checksums.subarray(block * SHA256_BYTES, (block + 1) * SHA256_BYTES);
@@ -500,8 +509,7 @@ export async function openCasRecordStore(
   expected: { nodeCount: number; edgeCount: number },
   budget: Partial<CasRecordStoreReadBudget> = {},
 ): Promise<CasRecordStore> {
-  if (!descriptor || descriptor.format !== CAS_RECORD_STORE_FORMAT || descriptor.version !== CAS_RECORD_STORE_VERSION) throw new Error('CAS record store format or version is unsupported');
-  if (descriptor.codec !== 'brotli') throw new Error(`CAS record store codec ${String(descriptor.codec)} is unsupported`);
+  if (!isSupportedCasRecordStoreDescriptor(descriptor)) throw new Error('CAS record store format, version or codec is unsupported');
   if (!descriptor.nodes || !descriptor.edges || descriptor.nodes.count !== expected.nodeCount || descriptor.edges.count !== expected.edgeCount) {
     throw new Error(`CAS record store counts (${String(descriptor.nodes?.count)}/${String(descriptor.edges?.count)}) do not match the compact graph (${expected.nodeCount}/${expected.edgeCount})`);
   }
