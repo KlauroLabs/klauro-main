@@ -1,3 +1,43 @@
+
+test('bound outcome recovery preserves authored clauses instead of verbalizing normalized search tokens', () => {
+  for (const name of [
+    'Know what will break before changing something',
+    'Understand what a codebase actually built',
+    'Avoid outages when deploying services',
+    'Decide whether to approve an application',
+    'Compare eligible plans without sharing private records',
+  ]) {
+    const candidate = { ...capability('evidence', []), name, operations: [
+      { entry_point_id: 'observed', entry_point_type: 'event' as const, action: 'read' },
+    ] };
+    const identity = { ...capability('outcome', [
+      'catalog-candidate:evidence', 'catalog-outcome-requirement:authored',
+    ]), name };
+    const recovered = deterministicCapabilityDescriptionFallback({
+      identity, evidenceCandidates: [candidate], audience: 'People', firstPartyTexts: [],
+      validate: () => true,
+    });
+    assert.equal(recovered?.description, `People can ${name[0].toLowerCase()}${name.slice(1)}.`);
+    assert.equal(recovered?.name, name);
+    assert.equal(recovered?.description_source, 'deterministic');
+    assert.deepEqual(recovered?.criticality_factors, identity.criticality_factors);
+  }
+});
+
+test('bound outcome recovery never invents temporal behavior to pad a short description', () => {
+  const candidate = { ...capability('jobs', []), name: 'Job applications', operations: [
+    { entry_point_id: 'categorize', entry_point_type: 'event' as const, action: 'update' },
+  ] };
+  const identity = { ...capability('outcome', [
+    'catalog-candidate:jobs', 'catalog-outcome-requirement:authored',
+  ]), name: 'Categorize job applications' };
+  assert.equal(deterministicCapabilityDescriptionFallback({
+    identity, evidenceCandidates: [candidate], audience: 'Users', firstPartyTexts: [],
+    validate: () => true,
+  }), undefined);
+  assert.equal(identity.name, 'Categorize job applications');
+  assert.equal(candidate.operations.length, 1);
+});
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SystemCapability } from '../../types/cas.types';
@@ -195,7 +235,7 @@ describe('capability catalog repair planning', () => {
       ]), name: 'Keep track of job applications' },
       evidenceCandidates: [managedEvidence], audience: 'Users', firstPartyTexts: [], validate: allow,
     });
-    assert.equal(boundOutcome?.description, 'Users can keep track of job applications as those job applications change over time.');
+    assert.equal(boundOutcome?.description, 'Users can keep track of job applications.');
 
     const routingEvidence = evidence("routing-evidence", "Routing", ["route"]);
     const qualifiedOutcome = deterministicCapabilityDescriptionFallback({
@@ -203,7 +243,7 @@ describe('capability catalog repair planning', () => {
       evidenceCandidates: [routingEvidence], audience: "Developers", firstPartyTexts: [], validate: allow,
     });
     assert.equal(qualifiedOutcome?.name, "Route requests to handlers with a macro free API");
-    assert.equal(qualifiedOutcome?.description, "Developers direct incoming requests to the handlers that serve them through a macro free API.");
+    assert.equal(qualifiedOutcome?.description, "Developers can route requests to handlers with a macro free API.");
 
     const responseEvidence = evidence('response-evidence', 'Into', ['generate']);
     const responseOutcome = deterministicCapabilityDescriptionFallback({
@@ -213,7 +253,7 @@ describe('capability catalog repair planning', () => {
       ]), name: 'Generate responses with minimal boilerplate' },
       evidenceCandidates: [responseEvidence], audience: 'Developers', firstPartyTexts: [], validate: allow,
     });
-    assert.equal(responseOutcome?.description, 'Developers produce responses with minimal boilerplate.');
+    assert.equal(responseOutcome?.description, 'Developers can generate responses with minimal boilerplate.');
 
     const extractorEvidence = evidence('extractor-evidence', 'Axum', ['extract']);
     const extractorOutcome = deterministicCapabilityDescriptionFallback({
@@ -223,7 +263,7 @@ describe('capability catalog repair planning', () => {
       ]), name: 'Declaratively parse requests using extractors' },
       evidenceCandidates: [extractorEvidence], audience: 'Developers', firstPartyTexts: [], validate: allow,
     });
-    assert.equal(extractorOutcome?.description, 'Developers extract incoming request data through declarative extractors.');
+    assert.equal(extractorOutcome?.description, 'Developers can declaratively parse requests using extractors.');
 
     const exactFirstPartyOverride = deterministicCapabilityDescriptionFallback({
       identity: { ...capability('remove-source', ['catalog-candidate:source-evidence']), name: 'Remove tracked requests' },

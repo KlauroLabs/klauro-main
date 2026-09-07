@@ -259,10 +259,10 @@ function requirementId(audience: string | undefined, subjectTokens: readonly str
 
 function clauseVisibleActionTerms(clause: string, statement: string): string[] {
   const words = String(clause || '').match(/[A-Za-z][A-Za-z'-]*/g) || [];
-  const actionIndex = purposeVerbIndex(words);
-  const action = actionIndex >= 0 &&
-    !(canonicalToken(words[actionIndex]) === 'support' && /^(?:staff|team|teams|engineers?|operators?|agents?)$/i.test(words[actionIndex + 1] || ''))
-    ? canonicalToken(words[actionIndex])
+  const leadingWord = words[0] || '';
+  const action = purposeVerbIndex(words) === 0 &&
+    !(canonicalToken(leadingWord) === 'support' && /^(?:staff|team|teams|engineers?|operators?|agents?)$/i.test(words[1] || ''))
+    ? canonicalToken(leadingWord)
     : undefined;
   if (action && !/^(?:handle|manage|process)$/.test(action)) return [action];
   const statementLeading = canonicalToken((String(statement || '').match(/[A-Za-z][A-Za-z'-]*/)?.[0]) || '');

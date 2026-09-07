@@ -15772,3 +15772,53 @@ test("an empty catalog whose granted repair named candidates that were all rejec
   expect(calls).toBeGreaterThanOrEqual(3);
   expect(result.map((capability: any) => capability.name)).toEqual(['Register users']);
 });
+
+test.each([false, true, 'shared'])('missing required outcomes preserve grounded catalog members and their reconciliation with pending language: %s', async pendingLanguage => {
+  const localOrch = new AnalyzerOrchestrator() as any;
+  const candidates = [
+    { id: 'articles', name: 'Read subscribed articles', description: 'Readers open the articles from feeds they subscribe to.', subject: 'article', action: 'read' },
+    { id: 'subscriptions', name: 'Subscribe to publications', description: 'Readers choose publications whose articles they want to receive.', subject: 'publication', action: 'subscribe' },
+  ].map(item => ({
+    ...item, category: 'core', evidence_kind: 'entity', related_entities: ['entity-' + item.subject],
+    related_domains: [item.subject],
+    operations: [{ entry_point_id: 'entry-' + item.id, entry_point_type: 'http', action: item.action }],
+    criticality: 'medium', criticality_factors: [],
+  }));
+  jest.spyOn(localOrch, 'aiExtractCapabilityCatalog').mockResolvedValue([{
+    ...candidates[0], name_source: 'ai', description_source: 'ai',
+    criticality_factors: ['catalog-candidate:articles'],
+  }, ...(pendingLanguage ? [{
+    ...(pendingLanguage === 'shared' ? candidates[0] : candidates[1]),
+    id: 'pending-language',
+    ...(pendingLanguage === 'shared' ? { name: 'Inspect article sources' } : {}),
+    name_source: 'deterministic', description_source: 'deterministic',
+    description_generation: { status: 'deterministic_kept', attempted: true, reason: 'unsupported-description-claim-removed' },
+    criticality_factors: [pendingLanguage === 'shared' ? 'catalog-candidate:articles' : 'catalog-candidate:subscriptions'],
+  }] : [])]);
+  jest.spyOn(localOrch, 'reconcileCatalogedCapabilities').mockImplementation((values: any) => values);
+  const purpose: any = { primary_domain: 'feed-reading', core_concepts: [] };
+  const accepted = jest.fn();
+  const result = await localOrch.runCapabilityCatalogWithQualityGate({
+    systemName: 'feed reader', enhancedSystemPurpose: purpose,
+    frameworks: [], userJourneys: [],
+    dataEntities: candidates.map(item => ({
+      id: 'entity-' + item.subject, name: item.subject,
+      lifecycle: { created_by: [], read_by: ['entry-' + item.id], updated_by: [], deleted_by: [] },
+    })),
+    candidateSnapshot: candidates, behaviorSurfaces: [], externalServices: [], flowGraph: emptyFlowGraph(),
+    projectTextSignal: { concepts: [], evidence: [], productDocSummary: 'Feature: Read subscribed articles. Feature: Subscribe to publications.' },
+    entryPoints: [], nodes: [], budgetMs: 30000, onInterpretationAccepted: accepted,
+  });
+  expect(purpose.capability_catalog_coverage.reason).toMatch(/omits.*Subscribe to publications/);
+  expect(result.map((item: any) => item.name)).toEqual(['Read subscribed articles']);
+  expect(purpose.capability_catalog_coverage).toMatchObject({
+    status: 'partial', actual_publishable_capabilities: 1, published_capabilities: 1,
+  });
+  localOrch.finalizeSystemCapabilityNames(result, [], purpose);
+  expect(purpose.ai_phase_status).toBe('degraded');
+  expect(purpose.capability_reconciliation.proposals).toEqual(expect.arrayContaining([
+    expect.objectContaining({ statement: 'Read subscribed articles', disposition: 'grounded', capability_ids: [result[0].id] }),
+    expect.objectContaining({ statement: 'Subscribe to publications', disposition: 'intent-gap', capability_ids: [] }),
+  ]));
+  expect(accepted).not.toHaveBeenCalled();
+});

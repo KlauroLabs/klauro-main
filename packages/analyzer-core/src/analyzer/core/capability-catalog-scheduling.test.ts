@@ -186,7 +186,7 @@ test('does not treat a normal multiword description as weak at the repair deadli
   assert.equal(validationCalls, 0);
 });
 
-test('repairs a bound authored outcome across multiple evidence families without a pending registry entry', () => {
+test('preserves pending authored evidence when its description would require invented padding', () => {
   const jobs = catalogCapability({
     id: 'jobs', name: 'Job applications', structural_label: 'Job applications',
     evidence_kind: 'behavior-surface', evidence_role: 'product-outcome',
@@ -213,7 +213,7 @@ test('repairs a bound authored outcome across multiple evidence families without
       'catalog-candidate:jobs', 'catalog-candidate:categories',
     ],
   });
-  const expected = 'Users can categorize job applications as those job applications change over time.';
+  const expected = '';
   const [repaired] = resolvePendingCapabilityDescriptionsWithoutProvider({
     capabilities: [identity], pendingEvidenceIdentityByCandidateId: new Map(),
     evidenceCandidates: [jobs, categories], firstPartyTexts: [], audienceFor: () => 'Users',
@@ -221,6 +221,7 @@ test('repairs a bound authored outcome across multiple evidence families without
   });
   assert.equal(repaired.name, identity.name);
   assert.equal(repaired.description, expected);
+  assert.equal(repaired.description_generation?.status, 'ai_rejected');
   assert.deepEqual(
     repaired.criticality_factors?.filter(factor => factor.startsWith('catalog-candidate:')).sort(),
     ['catalog-candidate:categories', 'catalog-candidate:jobs'],
@@ -3310,4 +3311,34 @@ test('an empty catalog with uncovered product-outcome obligations is rejected; t
   assert.match(quality(obligations, obligations) || '', /empty while 2 grounded product-outcome behavior obligation\(s\) remain uncovered/);
   assert.equal(quality(obligations, []), undefined);
   assert.equal(quality([], []), undefined);
+});
+
+test('delivery action evidence does not confuse command subjects with actions', () => {
+  const cases = [
+    { name: 'Work alongside other people and agents on one codebase without duplicating or colliding', command: 'fab_claim_work' },
+    { name: 'Report incidents to responders', command: 'export_incident_report' },
+    { name: 'Monitor manufacturing equipment', command: 'configure_equipment_monitor' },
+  ];
+  for (const { name, command } of cases) {
+    const broad = catalogCapability({
+      id: 'surface', name: 'Product operations', structural_label: 'Product operations', evidence_kind: 'behavior-surface',
+      operations: [command, 'get_account', 'create_project', 'list_events'].map((path, index) => ({
+        action: 'Handle', path_or_command: path, entry_point_id: String(index), entry_point_type: 'message' as const,
+      })),
+    });
+    const signal = { productDocSummary: name };
+    assert.notDeepEqual(capabilityOutcomeScopeFailure(name, [broad], signal, true), ['delivery-action-evidence-too-broad'], name);
+  }
+});
+
+test('actual delivery actions still require focused operation evidence across command namespaces', () => {
+  for (const command of ['preview_codebase_iteration', 'workspace_preview_codebase_iteration']) {
+    const broad = catalogCapability({
+      id: 'surface', name: 'Product operations', structural_label: 'Product operations', evidence_kind: 'behavior-surface',
+      operations: [command, 'get_account', 'create_project', 'list_events'].map((path, index) => ({
+        action: 'Handle', path_or_command: path, entry_point_id: String(index), entry_point_type: 'message' as const,
+      })),
+    });
+    assert.deepEqual(capabilityOutcomeScopeFailure('Preview codebase iterations', [broad], undefined, true), ['delivery-action-evidence-too-broad']);
+  }
 });

@@ -160,6 +160,14 @@ export function capabilityOutcomeMisusesCoordination(
   );
 }
 
+function capabilityDeliveryActionTokens(operation: SystemCapability['operations'][number]): Set<string> {
+  const action = outcomeIdentityTokens(operation.action || '')[0];
+  const commandActions = [operation.path_or_command, operation.trigger?.path]
+    .filter((value): value is string => Boolean(value))
+    .map(value => outcomeIdentityTokens(value).find(token => CAPABILITY_PURPOSE_VERBS.has(token)));
+  return new Set([action, ...commandActions].filter((value): value is string => Boolean(value)));
+}
+
 function capabilityOutcomeUsesBroadDeliveryAction(
   name: string,
   citedCandidates: SystemCapability[],
@@ -186,14 +194,12 @@ function capabilityOutcomeUsesBroadDeliveryAction(
       candidate.evidence_kind !== 'behavior-surface' && lifecycleBreadth(candidate) >= 3);
   if (groundedAggregateManagement) return false;
   const matching = citedCandidates.filter(candidate => (candidate.operations || []).some(operation =>
-    outcomeTokenMatches(leading, new Set(outcomeIdentityTokens([operation.action, operation.path_or_command, operation.trigger?.path].filter(Boolean).join(' '))))));
+    outcomeTokenMatches(leading, capabilityDeliveryActionTokens(operation))));
   if (matching.length === 0) return false;
   return !matching.some(candidate => {
     const identity = new Set(outcomeIdentityTokens([candidate.name, candidate.structural_label].filter(Boolean).join(' ')));
     if (outcomeTokenMatches(leading, identity)) return true;
-    const actions = (candidate.operations || []).map(operation => new Set(outcomeIdentityTokens([
-      operation.action, operation.path_or_command, operation.trigger?.path,
-    ].filter(Boolean).join(' ')))).filter(value => value.size > 0);
+    const actions = (candidate.operations || []).map(capabilityDeliveryActionTokens).filter(value => value.size > 0);
     return actions.length > 0 && actions.filter(action => outcomeTokenMatches(leading, action)).length * 2 >= actions.length;
   });
 }
