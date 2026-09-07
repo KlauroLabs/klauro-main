@@ -70,7 +70,8 @@ test('worker dispatch answers scoped risk from the record store, then from the s
     assert.equal(store.scoped_context?.source, 'record-store');
     assert.equal(store.scoped_context?.truncated, false);
     assert.equal(store.scoped_context?.semantic_source, 'semantic-store', 'risk reads its collections from the semantic tables');
-    assert.deepEqual(store.scoped_context?.projected_collections?.test_suites, { total: 1, matched: 1, read: 1 });
+    assert.deepEqual(Object.keys(store.scoped_context?.projected_collections ?? {}), ['method_calls'], 'the fixture has an empty method_calls array and no change_risks field');
+    assert.deepEqual(store.scoped_context?.projected_collections?.method_calls, { total: 0, matched: 0, read: 0 });
     assert.equal(store.risk?.node_id, 'node-0');
     assert.ok(JSON.stringify(store.risk).includes('external'), 'the external edge reached the score');
     const stream = (await runHostedProjectQueryWorker({ ...request, workspace: withoutStore })).result as any;

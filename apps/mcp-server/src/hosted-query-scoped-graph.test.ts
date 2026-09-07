@@ -394,7 +394,7 @@ test('semantic tables serve method calls, change risks and tests for a scope by 
       const plan = await planScopedQuery(pinned, 'assess_change_risk', { node_id: 'node-0' });
       assert.ok(plan && 'scope' in plan);
       const keepIds = (plan as { scope: { keepIds: Set<string> } }).scope.keepIds;
-      const semantic = (await loadScopedSemanticCollections(pinned, graph, keepIds))!;
+      const semantic = (await loadScopedSemanticCollections(pinned, graph, keepIds, ['method_calls', 'change_risks', 'test_suites', 'mocks', 'fixtures']))!;
       assert.deepEqual((semantic.collections.method_calls as any[]).map(call => call.id), ['mc-1', 'mc-2', 'mc-4'], 'calls touching the scope, original order, far call excluded');
       assert.deepEqual(semantic.projected.method_calls, { total: 4, matched: 3, read: 3 });
       assert.deepEqual((semantic.collections.change_risks as any[]).map(risk => risk.node_id), ['node-0']);
@@ -411,6 +411,7 @@ test('semantic tables serve method calls, change risks and tests for a scope by 
       const empty = await loadScopedSemanticCollections(pinned, graph, new Set(['node-20']));
       assert.deepEqual((empty!.collections.method_calls as any[]).map(call => call.id), ['mc-3']);
       assert.deepEqual(empty!.collections.change_risks, []);
+      assert.deepEqual(Object.keys(empty!.collections).sort(), ['change_risks', 'method_calls'], 'only node-keyed collections are applied by default; suites rank by file co-location and fixtures are returned whole');
     } finally {
       await pinned.release();
     }

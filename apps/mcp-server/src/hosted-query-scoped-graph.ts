@@ -658,11 +658,13 @@ export interface ScopedSemanticCollections {
   stats: CasRecordStoreReadStats;
 }
 
+export const NODE_KEYED_SEMANTIC_TABLES: readonly CasSemanticTableName[] = ['method_calls', 'change_risks'];
+
 export async function loadScopedSemanticCollections(
   pinned: PinnedAnalysisGeneration,
   graph: CompactCASGraph,
   keepIds: ReadonlySet<string>,
-  tables: readonly CasSemanticTableName[] = CAS_SEMANTIC_TABLES,
+  tables: readonly CasSemanticTableName[] = NODE_KEYED_SEMANTIC_TABLES,
 ): Promise<ScopedSemanticCollections | null> {
   const descriptor = pinned.segmented.manifest.semantic_store;
   if (!isSupportedCasSemanticStoreDescriptor(descriptor)) return null;
