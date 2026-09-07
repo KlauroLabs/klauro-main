@@ -150,7 +150,7 @@ test('the hosted worker persists R function evidence from the packaged runtime',
     const { loadAnalysis } = await import('../storage');
     const cas = await loadAnalysis(project, { preferCache: false });
     assert.ok(cas, 'bundled worker must persist canonical CAS');
-    assert.ok(cas.nodes.some(node => node.name === fixture.truth && node.source?.file.endsWith('main.r')),
+    assert.ok(cas.nodes.some(node => node.name === fixture.truth && node.source?.file?.endsWith('main.r')),
       'CAS must contain the R run function, not only a file node');
     assert.equal(cas.analysis_errors?.filter(error => error.severity === 'error').length ?? 0, 0);
   } finally {
