@@ -314,7 +314,7 @@ async function writeSegmentedAnalysisUnlocked(
       posting_runs: postingArtifacts.runCount,
       columns: searchColumns,
     };
-    const recordStore = await writeCasRecordStore(tmpDir, output, compactGraph);
+    const recordStore = process.env.KLAURO_CAS_RECORD_STORE === '0' ? { skipped: 'disabled by KLAURO_CAS_RECORD_STORE=0' } : await writeCasRecordStore(tmpDir, output, compactGraph);
     if ('descriptor' in recordStore) manifest.record_store = recordStore.descriptor;
     else process.stderr.write(`${JSON.stringify({ event: 'cas_record_store_skipped', reason: recordStore.skipped })}\n`);
     const compactDurationMs = Date.now() - compactStartedAt;

@@ -148,6 +148,26 @@ test('malformed offsets, truncated block data and corrupt blocks are explicit er
       await assert.rejects(openCasRecordStore(directory, manifest.record_store!, expected, { maxIndexBytes: tableIndexBytes(manifest.record_store!.nodes) }), (error: unknown) => error instanceof CasRecordStoreCapacityError && /index/.test(error.message));
       fs.writeFileSync(offsetsFile, offsets);
       await assert.rejects(openCasRecordStore(directory, manifest.record_store!, { nodeCount: graph.nodeCount + 1, edgeCount: graph.edgeCount }), /do not match the compact graph/);
+      const noMap = JSON.parse(JSON.stringify(manifest.record_store));
+      delete noMap.edges.columns.recordMap;
+      await assert.rejects(openCasRecordStore(directory, noMap, expected), /missing its required record map/);
+      const mapFile = path.join(directory, manifest.record_store!.edges.columns.recordMap.file);
+      const mapBytes = fs.readFileSync(mapFile);
+      const duplicated = Buffer.from(mapBytes);
+      duplicated.writeUInt32LE(duplicated.readUInt32LE(0), 4);
+      const badMap = JSON.parse(JSON.stringify(manifest.record_store));
+      badMap.edges.columns.recordMap.sha256 = require('node:crypto').createHash('sha256').update(duplicated).digest('hex');
+      fs.writeFileSync(mapFile, duplicated);
+      await assert.rejects(openCasRecordStore(directory, badMap, expected), /not a permutation/);
+      const outOfRange = Buffer.from(mapBytes);
+      outOfRange.writeUInt32LE(graph.edgeCount + 5, 0);
+      badMap.edges.columns.recordMap.sha256 = require('node:crypto').createHash('sha256').update(outOfRange).digest('hex');
+      fs.writeFileSync(mapFile, outOfRange);
+      await assert.rejects(openCasRecordStore(directory, badMap, expected), /not a permutation/);
+      fs.writeFileSync(mapFile, mapBytes);
+      const shortMap = JSON.parse(JSON.stringify(manifest.record_store));
+      shortMap.edges.columns.recordMap.bytes = 4;
+      await assert.rejects(openCasRecordStore(directory, shortMap, expected), /declares 4 bytes/);
     } finally {
       await pinned.release();
     }
@@ -226,7 +246,7 @@ test('reads decode each planned block once even with no cache, and the stats acc
       assert.equal(stats.blocksPlanned, 1, 'forty records from one block plan one block');
       assert.equal(stats.blockReads, 1, 'one disk read and decode for the block');
       assert.equal(stats.cacheHits, 0);
-      assert.equal(stats.indexBytes, tableIndexBytes(manifest.record_store!.nodes) + tableIndexBytes(manifest.record_store!.edges));
+      assert.equal(stats.indexBytes, tableIndexBytes(manifest.record_store!.nodes) + tableIndexBytes(manifest.record_store!.edges) + manifest.record_store!.edges.count, 'index residency includes the record map and its permutation check bitmap');
       assert.ok(stats.compressedBytesRead > 0 && stats.compressedBytesRead < stats.decodedBytes);
       const dense = (id: string) => graph.nodeById(id)!.denseId;
       const spread = await uncached.nodes.read([dense('n-0'), dense(`n-${count - 1}`)]);

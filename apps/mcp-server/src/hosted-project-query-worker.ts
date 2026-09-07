@@ -10,7 +10,7 @@ import { attachCasProjection, casProjection } from './cas-projection';
 import type { SubCasNodeIndex } from './deployable-analysis';
 import { loadTelemetryObservations } from './telemetry-ingestion';
 import { buildNodeRuntimeMetrics } from './product';
-import { computeAgentContextScope, loadAgentContextProjection, loadScopedGraphSection, planScopedQuery, scopedQueryCapacityOutcome, type AgentContextProjection } from './hosted-query-scoped-graph';
+import { agentContextProjectionGaps, computeAgentContextScope, loadAgentContextProjection, loadScopedGraphSection, planScopedQuery, scopedQueryCapacityOutcome, type AgentContextProjection } from './hosted-query-scoped-graph';
 
 if (!process.send) {
   process.stderr.write('hosted-project-query-worker must be started through child_process.fork.\n');
@@ -58,7 +58,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
     try {
       const fingerprint = await getAnalysisFileFingerprint(request.workspace);
       debugMemory('fingerprint');
-      if (!fingerprint) throw new Error(`No analysis found for: ${request.workspace}. Run analyze_codebase first.`);
+      if (!fingerprint) throw new Error(`No analysis found for: ${request.workspace} (storage ${process.env.KLAURO_STORAGE_PATH || 'default'}). Run analyze_codebase first.`);
       if (cachedWorkspace !== request.workspace || cachedFingerprint !== fingerprint) {
         cachedCas = undefined;
         cachedSections = new Set<CasSectionName>();
@@ -87,7 +87,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
         const loadStartedAt = Date.now();
         const smallSections = scopedSmallSections(request.tool, requiredSections);
         const loadedSections = await loadAnalysisSections(request.workspace, smallSections, { pinned: { filePath: pinned.filePath, segmented: pinned.segmented } });
-        if (!loadedSections) throw new Error(`No analysis found for: ${request.workspace}. Run analyze_codebase first.`);
+        if (!loadedSections) throw new Error(`Canonical sections are unavailable for: ${request.workspace} (pinned generation could not be read).`);
         if ('scope' in scopedPlan && request.tool === 'get_agent_context') {
           agentProjection = (await loadAgentContextProjection(pinned, scopedPlan.graph, scopedPlan.scope)) ?? undefined;
           if (!agentProjection) throw new Error(`Canonical graph section is unavailable for: ${request.workspace}. Re-run analyze_codebase.`);
@@ -105,7 +105,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
             throw new Error(`Graph section and compact index of generation ${path.basename(pinned.segmented.directory)} disagree (${graphSection.scanned.nodes} vs ${scopedPlan.graphNodeCount} nodes).`);
           }
         }
-        if ('scope' in scopedPlan) scopedCapacityOutcome = scopedQueryCapacityOutcome(request.tool, scopedPlan.scope);
+        if ('scope' in scopedPlan) scopedCapacityOutcome = scopedQueryCapacityOutcome(request.tool, scopedPlan.scope, Boolean(graphSection?.edgesTruncated));
         const totalNodes = 'scope' in scopedPlan ? scopedPlan.graphNodeCount : graphSection?.scanned.nodes;
         const totalEdges = graphSection?.scanned.edges;
         scopedCas = attachCasProjection({
@@ -157,7 +157,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
           require_sub_cas_index: request.type === 'analysis-status',
         });
         debugMemory('sections');
-        if (!loaded) throw new Error(`No analysis found for: ${request.workspace}. Run analyze_codebase first.`);
+        if (!loaded) throw new Error(`Analysis projection is unavailable for: ${request.workspace}. Run analyze_codebase first.`);
         const persistedSubCasNodes = loaded.manifest.tree_projection?.format === 'recursive-cas-section-references'
           ? loaded.manifest.tree_projection.sub_cas_nodes
           : undefined;
@@ -270,6 +270,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
       debugMemory('result');
       if (scopedContext && result && typeof result === 'object' && !Array.isArray(result)) {
         (result as Record<string, unknown>).scoped_context = scopedContext;
+        if (agentProjection) (result as Record<string, unknown>).projection_gaps = agentContextProjectionGaps(agentProjection);
       }
       process.send!({
         type: 'result',

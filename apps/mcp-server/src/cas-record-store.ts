@@ -392,7 +392,7 @@ export class CasRecordTable<T> {
     private readonly recordMap: Uint32Array | undefined,
   ) {}
 
-  static async open<T>(directory: string, prefix: string, table: CasRecordStoreTable, cache: SharedBlockCache, ledger: ReadLedger): Promise<CasRecordTable<T>> {
+  static async open<T>(directory: string, prefix: string, table: CasRecordStoreTable, cache: SharedBlockCache, ledger: ReadLedger, requireRecordMap = false): Promise<CasRecordTable<T>> {
     const count = safeCount(table.count, `${prefix} count`, MAX_TABLE_RECORDS);
     const blocks = safeCount(table.blocks, `${prefix} blocks`, MAX_TABLE_RECORDS);
     if (table.max_block_bytes !== CAS_RECORD_STORE_MAX_BLOCK_BYTES || table.max_block_records !== CAS_RECORD_STORE_MAX_BLOCK_RECORDS) throw new Error(`CAS record store ${prefix} block limits are unsupported`);
@@ -421,7 +421,9 @@ export class CasRecordTable<T> {
       if (recordOffsets[blockRecords[block + 1]] - recordOffsets[blockRecords[block]] > CAS_RECORD_STORE_MAX_BLOCK_BYTES) throw new Error(`CAS record store ${prefix} block ${block} exceeds the decoded block limit`);
     }
     let recordMap: Uint32Array | undefined;
+    if (requireRecordMap && !(RECORD_MAP_COLUMN in table.columns)) throw new Error(`CAS record store ${prefix} is missing its required record map`);
     if (RECORD_MAP_COLUMN in table.columns) {
+      ledger.chargeIndex(count);
       recordMap = readUint32Column(await column(RECORD_MAP_COLUMN));
       const seen = new Uint8Array(count);
       for (let ordinal = 0; ordinal < count; ordinal += 1) {
@@ -546,12 +548,12 @@ export async function openCasRecordStore(
     safeCount(table.count, 'table count', MAX_TABLE_RECORDS);
     safeCount(table.blocks, 'table blocks', MAX_TABLE_RECORDS);
   }
-  const indexBytes = tableIndexBytes(descriptor.nodes) + tableIndexBytes(descriptor.edges);
+  const indexBytes = tableIndexBytes(descriptor.nodes) + tableIndexBytes(descriptor.edges) + descriptor.edges.count;
   if (indexBytes > resolved.maxIndexBytes) throw new CasRecordStoreCapacityError(`CAS record store index needs ${indexBytes} bytes, above ${resolved.maxIndexBytes}`);
   const cache = new SharedBlockCache(resolved.cacheBytes);
   return {
     nodes: await CasRecordTable.open<CASNode>(directory, 'records.nodes', descriptor.nodes, cache, ledger),
-    edges: await CasRecordTable.open<CASEdge>(directory, 'records.edges', descriptor.edges, cache, ledger),
+    edges: await CasRecordTable.open<CASEdge>(directory, 'records.edges', descriptor.edges, cache, ledger, true),
     cacheBytes: () => cache.usedBytes,
     stats: () => ({ ...ledger.stats }),
   };

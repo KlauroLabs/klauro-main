@@ -268,6 +268,8 @@ test('a target whose incident edges exceed the bounded scope yields an explicit 
     assert.equal(scopedQueryCapacityOutcome('find_tests', tests)!.suites, null);
     const complete = computeTestLookupScope(graph, graph.nodeById('node-3')!);
     assert.equal(scopedQueryCapacityOutcome('find_tests', complete), undefined, 'a complete scope answers normally');
+    assert.match(String(scopedQueryCapacityOutcome('assess_change_risk', complete, true)!.reason), /loader bound/, 'loader truncation of the induced edge set also refuses');
+    assert.equal(scopedQueryCapacityOutcome('get_agent_context', risk), undefined, 'agent context reports gaps instead of refusing');
   });
 });
 

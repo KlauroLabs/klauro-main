@@ -103,6 +103,7 @@ function workerExecArgv(execArgv: readonly string[]): string[] {
       continue;
     }
     if (argument.startsWith('--eval=') || argument.startsWith('--print=') || argument.startsWith('--max-old-space-size=') || argument.startsWith('--max_old_space_size=')) continue;
+    if (argument === '--test' || argument.startsWith('--test-') || argument.startsWith('--test=') || argument.startsWith('--experimental-test')) continue;
     safe.push(argument);
   }
   return safe;

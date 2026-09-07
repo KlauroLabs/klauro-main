@@ -28,6 +28,10 @@ export async function acquirePinnedAnalysis(projectPath: string, options?: { tra
 export const SCOPED_QUERY_TOOLS = new Set(['get_coding_context', 'assess_change_risk', 'find_tests', 'get_agent_context']);
 const MAX_AGENT_SEEDS = 12;
 const MAX_FILE_NODES = 400;
+const MAX_AGENT_NEIGHBORHOOD_NODES = 600;
+const MAX_AGENT_NEIGHBORHOOD_EDGES = 4000;
+export const LIGHT_NODE_ABSENT_FIELDS = ['description', 'description_source', 'metadata', 'documentation', 'call_graph', 'perspectives', 'contract', 'subcategories', 'analyzers', 'role'] as const;
+export const LIGHT_EDGE_ABSENT_FIELDS = ['metadata', 'weight', 'evidence'] as const;
 const EXACT_ID_SCOPED_TOOLS = new Set(['assess_change_risk', 'find_tests']);
 const MAX_UPSTREAM_DEPTH = 1000;
 const MAX_CONTAINS_DEPTH = 32;
@@ -323,12 +327,12 @@ export function computeAgentContextScope(graph: CompactCASGraph, seedIds: readon
     if (seedId === seedIds[0]) { callerCount = incoming.total; calleeCount = outgoing.total; }
     collectContainingAncestors(graph, seed, keepIds);
     if (incoming.incomplete || outgoing.incomplete) reasons.push(`${seed.id} has more incident edges than the ${MAX_SCOPED_NODES}-node scope`);
-    const neighborhood = graph.traverse(seed.denseId, { direction: 'both', maxDepth: 2, maxNodes: MAX_SCOPED_NODES, maxEdges: MAX_SCOPED_EDGES });
+    const neighborhood = graph.traverse(seed.denseId, { direction: 'both', maxDepth: 2, maxNodes: MAX_AGENT_NEIGHBORHOOD_NODES, maxEdges: MAX_AGENT_NEIGHBORHOOD_EDGES });
     for (const denseId of neighborhood.nodeDenseIds) {
       if (keepIds.size >= MAX_SCOPED_NODES) { reasons.push(`the two-hop neighbourhood of ${seed.id} exceeds the ${MAX_SCOPED_NODES}-node scope`); break; }
       keepIds.add(graph.nodeAt(denseId).id);
     }
-    if (neighborhood.truncated) reasons.push(`the two-hop neighbourhood of ${seed.id} was cut at ${MAX_SCOPED_EDGES} edges`);
+    if (neighborhood.truncated) reasons.push(`the two-hop neighbourhood of ${seed.id} carries full records for its first ${MAX_AGENT_NEIGHBORHOOD_NODES} nodes only`);
     if (seed.sourceFile && !files.includes(seed.sourceFile)) {
       const siblings = graph.findNodes({ sourceFile: seed.sourceFile, limit: Math.max(0, Math.min(MAX_FILE_NODES, MAX_SCOPED_NODES - keepIds.size)) });
       for (const denseId of siblings.denseIds) keepIds.add(graph.nodeAt(denseId).id);
@@ -405,8 +409,29 @@ export async function loadAgentContextProjection(
   };
 }
 
-export function scopedQueryCapacityOutcome(tool: string, scope: ScopedQueryScope): Record<string, unknown> | undefined {
-  if (!scope.incomplete) return undefined;
+export function agentContextProjectionGaps(projection: AgentContextProjection): Record<string, unknown> {
+  return {
+    mode: 'bounded-projection',
+    full_record_nodes: projection.keepIds.size,
+    light_nodes: projection.lightNodes,
+    light_edges: projection.lightEdges,
+    light_node_fields_absent: [...LIGHT_NODE_ABSENT_FIELDS],
+    light_edge_fields_absent: [...LIGHT_EDGE_ABSENT_FIELDS],
+    computed_on_light_records: [
+      'readiness gates that count nodes, edges and method calls (exact: counts do not need heavy fields)',
+      'language coverage note (exact: file and type only)',
+      'architecture and conformance relevance scans over id, name, qualified name, type and file (exact)',
+      'natural-language target scoring outside the kept neighbourhood (approximate: description text is absent on light nodes; the compact search index supplied the candidate seeds)',
+      'representative target ranking (approximate: synthetic call-site filtering reads description on light nodes)',
+    ],
+    ...(projection.scope.incomplete ? { full_record_coverage: projection.scope.incomplete } : {}),
+  };
+}
+
+export function scopedQueryCapacityOutcome(tool: string, scope: ScopedQueryScope, loaderTruncated = false): Record<string, unknown> | undefined {
+  if (!EXACT_ID_SCOPED_TOOLS.has(tool)) return undefined;
+  if (!scope.incomplete && !loaderTruncated) return undefined;
+  if (!scope.incomplete) scope = { ...scope, incomplete: `the induced edge set of the scope exceeds the ${MAX_SCOPED_EDGES}-edge loader bound` };
   const reason = `${tool} could not be answered exactly within the bounded query worker: ${scope.incomplete}. No partial result is returned; nothing was scored.`;
   if (tool === 'assess_change_risk') return { risk: null, incomplete: true, reason, transitive_impact: null, change_risk_context: null };
   return { incomplete: true, reason, suites: null, total_suites: null };
