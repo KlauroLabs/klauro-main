@@ -208,7 +208,7 @@ import { capabilitySubjectTokens } from './capability-audience-test';
 import { capabilityAudienceRepairFeedback, capabilityPublishabilityRepairFeedback, capabilityCatalogProductTerms, evaluateCapabilityCatalogAudience, groundedCapabilityAudience, removeUnsupportedCapabilityAbsenceClaims, schemaGroundedEntityNames, unsupportedCapabilityOperationalClaims, rejectionsAreVocabularyCollisionsOnly } from './capability-catalog-audience';
 import { capabilityGroundedEntityIds } from './capability-entity-grounding';
 import { canonicalCapabilityLifecycleAction } from './capability-lifecycle-actions';
-import { projectReversibleCapabilityEvidence, scopeCapabilityOperationsToOutcomeName } from './capability-operation-attribution';
+import { isReadOnlyCapabilityOutcomeName, projectReversibleCapabilityEvidence, scopeCapabilityOperationsToOutcomeName } from './capability-operation-attribution';
 import { applyPreferredAiCapabilityDescription } from './capability-merge';
 import { stripProjectDocumentMedia } from './project-document-framing';
 import { systemNarrativeGroundingFailure } from './system-narrative-grounding';
@@ -9765,7 +9765,7 @@ export class AnalyzerOrchestrator {
       return /^(?:add|manage|maintain|create|update|delete|modify|write|submit|set|configure)\b/i.test(capability.name) ||
         /\b(?:manag(?:e|es|ing|ement)|maintain(?:s|ed|ing|ance)?|creat(?:e|es|ing)|updat(?:e|es|ing)|delet(?:e|es|ing)|modif(?:y|ies|ying)|mutat(?:e|es|ing)|writ(?:e|es|ing)|submits?|configur(?:e|es|ing))\b/i.test(capability.description || '');
     }
-    if (hasRead && hasMutation && /^(?:browse|get|list|read|retrieve|show|view)\b/i.test(capability.name) &&
+    if (hasRead && hasMutation && isReadOnlyCapabilityOutcomeName(capability.name) &&
         !/\b(?:add|create|delete|edit|manage|remove|submit|update|write)\b/i.test(capability.name)) return true;
     return false;
   }

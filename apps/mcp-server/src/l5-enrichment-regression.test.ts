@@ -310,6 +310,15 @@ test('MOCKED SUCCESS: L5 reaches ready, description_source=ai, no deterministic 
       'description must be non-empty on success',
     );
     assert.ok((stored.capabilities || []).length > 0, 'deferred enrichment must retain structural candidates until the AI catalog is published');
+    const retrieval = stored.capabilities?.find(capability => capability.name === 'Retrieve customer profiles');
+    const onboarding = stored.capabilities?.find(capability => capability.name === 'Onboard customers with profiles');
+    assert.ok(retrieval, 'the grounded retrieval requirement must remain in the catalog');
+    assert.ok(onboarding, 'the independent onboarding requirement must remain in the catalog');
+    assert.ok(retrieval.operations.length > 0);
+    assert.ok(retrieval.operations.every(operation => operation.trigger?.method === 'GET'),
+      'retrieval must not inherit the sibling creation operation');
+    assert.ok(onboarding.operations.some(operation => operation.trigger?.method === 'POST'),
+      'scoping retrieval must not remove creation evidence from onboarding');
     assert.equal(stored.product_map?.capabilities.length, stored.capabilities?.length);
     assert.equal(
       stored.enhanced_system_purpose?.capability_catalog_coverage?.published_capabilities,

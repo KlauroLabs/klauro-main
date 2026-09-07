@@ -3,10 +3,14 @@ import { canonicalCapabilityLifecycleAction } from './capability-lifecycle-actio
 
 type CapabilityOperation = SystemCapability['operations'][number];
 
+export function isReadOnlyCapabilityOutcomeName(name: string): boolean {
+  return /^(?:browse|get|list|read|retrieve|show|view)\b/i.test(String(name || '').trim());
+}
+
 function requestedOutcomeActions(name: string): string[] {
   const actions = String(name || '').trim().toLowerCase().split(/[^a-z]+/).flatMap(token => {
     if (/^(?:create|add|attach|publish|post|submit|register)$/.test(token)) return token === 'attach' ? ['create', 'update'] : ['create'];
-    if (/^(?:read|view|list|browse|search|find|filter|get)$/.test(token)) return ['read'];
+    if (isReadOnlyCapabilityOutcomeName(token) || /^(?:search|find|filter)$/.test(token)) return ['read'];
     if (/^(?:update|edit|change|categorize|assign)$/.test(token)) return ['update'];
     if (/^(?:delete|remove|archive)$/.test(token)) return ['delete'];
     if (/^(?:comment|favorite|follow|unfavorite|unfollow)$/.test(token)) return [token];

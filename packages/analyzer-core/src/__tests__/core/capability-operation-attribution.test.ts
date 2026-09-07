@@ -27,6 +27,22 @@ describe('capability operation attribution', () => {
     expect(scopeCapabilityOperationsToOutcomeName(name, operations).map(operation => operation.entry_point_id)).toEqual(expectedIds);
   });
 
+  it.each(['Browse', 'Get', 'List', 'Read', 'Retrieve', 'Show', 'View'])(
+    'attributes the read-only intent %s consistently with catalog contradiction checks',
+    verb => {
+      expect(scopeCapabilityOperationsToOutcomeName(`${verb} customer profiles`, operations)).toEqual([operations[1]]);
+    },
+  );
+
+  it('preserves explicit compound intent and unmatched evidence without mutating the candidate', () => {
+    const before = JSON.stringify(operations);
+    expect(scopeCapabilityOperationsToOutcomeName('Create and retrieve profiles', operations)).toEqual([
+      operations[0], operations[1],
+    ]);
+    expect(scopeCapabilityOperationsToOutcomeName('Retrieve profiles', [operations[0]])).toEqual([operations[0]]);
+    expect(JSON.stringify(operations)).toBe(before);
+  });
+
   it('retains the complete operation set for a broad outcome', () => {
     expect(scopeCapabilityOperationsToOutcomeName('Organize articles', operations)).toHaveLength(4);
   });
