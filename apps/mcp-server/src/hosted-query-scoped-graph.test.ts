@@ -5,7 +5,9 @@ import * as path from 'node:path';
 import test from 'node:test';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { saveAnalysis, loadCompactAnalysisGraph } from './storage';
-import { acquirePinnedAnalysis, computeScopedQueryScope, loadScopedGraphSection, planScopedQuery, resolveCompactTarget, scopedQueryTarget } from './hosted-query-scoped-graph';
+import { acquirePinnedAnalysis, computeChangeRiskScope, computeScopedQueryScope, loadScopedGraphSection, planScopedQuery, resolveCompactTarget, scopedQueryTarget, scopedSmallSections } from './hosted-query-scoped-graph';
+import { assessChangeRisk, findTests } from './query';
+import { loadCompleteAnalysisFromSections } from './storage';
 import { hostedProjectQuerySections } from './hosted-project-query';
 import { resolveHostedQueryHeapMb } from './hosted-project-query-process';
 
@@ -146,7 +148,8 @@ test('compact target resolution follows the coding-target contract for paths, st
     assert.equal(resolveCompactTarget(graph, 'dup-7')?.id, 'dup-7');
     const pinned = (await acquirePinnedAnalysis(project))!;
     try {
-      assert.equal(await planScopedQuery(pinned, 'assess_change_risk', { node_id: 'svc-run' }), null);
+            const riskPlan = await planScopedQuery(pinned, 'assess_change_risk', { node_id: 'svc-run' });
+      assert.ok(riskPlan && 'scope' in riskPlan && riskPlan.scope.targetId === 'svc-run', 'risk is scoped by exact id');
     } finally {
       await pinned.release();
     }
@@ -179,5 +182,41 @@ test('a pinned generation keeps serving its own records when a same-sized replac
     } finally {
       await pinned.release();
     }
+  });
+});
+
+test('change-risk and test lookups scope by exact node id with the full upstream closure, and match the whole-graph answers', async () => {
+  await withStorage(async project => {
+    const cas = fixture();
+    (cas as any).edges.push({ id: 'e-7', source: 'node-7', target: 'node-1', type: 'calls' }, { id: 'e-8', source: 'node-8', target: 'node-7', type: 'calls' }, { id: 'e-9', source: 'node-9', target: 'node-8', type: 'calls' });
+    await saveAnalysis(project, cas, 'main', { canonicalSegmented: true });
+    const graph = (await loadCompactAnalysisGraph(project))!;
+    const target = graph.nodeById('node-0')!;
+    const risk = computeChangeRiskScope(graph, target);
+    for (const id of ['node-1', 'node-2', 'node-7', 'node-8', 'node-9']) assert.ok(risk.keepIds.has(id), `${id} is in the upstream closure`);
+    assert.equal(risk.upstreamNodes, 6, 'target plus five transitive callers');
+    assert.equal(risk.upstreamTruncated, false);
+    assert.ok(!risk.keepIds.has('node-20'));
+    const pinned = (await acquirePinnedAnalysis(project))!;
+    try {
+      const byName = await planScopedQuery(pinned, 'assess_change_risk', { node_id: 'targetFn' });
+      assert.deepEqual(byName, { targetNotFound: 'targetFn' }, 'risk and tests take exact ids, never fuzzy names');
+      const plan = await planScopedQuery(pinned, 'assess_change_risk', { node_id: 'node-0' });
+      assert.ok(plan && 'scope' in plan && plan.scope.keepIds.has('node-9'));
+      const testsPlan = await planScopedQuery(pinned, 'find_tests', { node_id: 'node-0' });
+      assert.ok(testsPlan && 'scope' in testsPlan && testsPlan.scope.keepIds.has('node-1') && !testsPlan.scope.keepIds.has('node-9'), 'test lookup keeps the neighborhood only');
+      const section = (await loadScopedGraphSection(pinned, (plan as { scope: { keepIds: Set<string> } }).scope.keepIds, graph))!;
+      const full = (await loadCompleteAnalysisFromSections(project))!;
+      const scopedCas = { ...full, nodes: section.nodes, edges: section.edges } as CASOutput;
+      const scopedRisk = assessChangeRisk(scopedCas, 'node-0');
+      const fullRisk = assessChangeRisk(full, 'node-0');
+      assert.deepEqual(scopedRisk.transitive_impact, fullRisk.transitive_impact, 'transitive impact is identical on the scoped graph');
+      assert.deepEqual(JSON.parse(JSON.stringify(scopedRisk)), JSON.parse(JSON.stringify(fullRisk)));
+      assert.deepEqual(findTests(scopedCas, { nodeId: 'node-0' }), findTests(full, { nodeId: 'node-0' }));
+    } finally {
+      await pinned.release();
+    }
+    assert.deepEqual(scopedSmallSections('assess_change_risk', ['graph', 'calls', 'tests', 'quality']), ['calls', 'tests', 'quality'], 'risk keeps the reachability index section');
+    assert.deepEqual(scopedSmallSections('get_coding_context', ['graph', 'calls', 'quality']), ['quality']);
   });
 });

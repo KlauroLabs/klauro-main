@@ -4,7 +4,7 @@ import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.ty
 import { unavailableComprehensionResponse } from './analysis-response-readiness';
 import type { HostedProjectQueryWorkerRequest } from './hosted-project-query-process';
 import { getAnalysisFileFingerprint, loadAnalysisProjection, loadAnalysisSections } from './storage';
-import { acquirePinnedAnalysis, SCOPED_QUERY_TOOLS, scopedQueryTarget } from './hosted-query-scoped-graph';
+import { acquirePinnedAnalysis, SCOPED_QUERY_TOOLS, scopedQueryTarget, scopedSmallSections } from './hosted-query-scoped-graph';
 import type { CasSectionName } from './cas-sections';
 import { attachCasProjection, casProjection } from './cas-projection';
 import type { SubCasNodeIndex } from './deployable-analysis';
@@ -81,7 +81,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
         : null;
       if (scopedPlan && pinned) {
         const loadStartedAt = Date.now();
-        const smallSections = requiredSections.filter(section => section !== 'graph' && section !== 'calls');
+        const smallSections = scopedSmallSections(request.tool, requiredSections);
         const loadedSections = await loadAnalysisSections(request.workspace, smallSections, { pinned: { filePath: pinned.filePath, segmented: pinned.segmented } });
         if (!loadedSections) throw new Error(`No analysis found for: ${request.workspace}. Run analyze_codebase first.`);
         const graphSection = 'scope' in scopedPlan
@@ -118,6 +118,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
               total_edges: totalEdges,
               callers_total: scopedPlan.scope.callerCount,
               callees_total: scopedPlan.scope.calleeCount,
+              ...('upstreamNodes' in scopedPlan.scope ? { upstream_nodes: (scopedPlan.scope as unknown as { upstreamNodes: number }).upstreamNodes, upstream_truncated: (scopedPlan.scope as unknown as { upstreamTruncated: boolean }).upstreamTruncated } : {}),
               truncated: scopedPlan.scope.truncated || Boolean(graphSection?.edgesTruncated),
               edges_truncated: Boolean(graphSection?.edgesTruncated),
             }

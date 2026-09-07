@@ -9,6 +9,7 @@ import type { ResolvedSegmentedAnalysis } from './segmented-analysis-storage';
 import { loadCompactCASGraph, loadCompactCASSearch } from './segmented-analysis-storage';
 import { compressionCodecForPath } from './json-storage-writer';
 import { isSupportedCasRecordStoreDescriptor, openCasRecordStore, type CasRecordStoreReadStats } from './cas-record-store';
+import type { CasSectionName } from './cas-sections';
 import { searchCompactCAS } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-search';
 
 export interface PinnedAnalysisGeneration {
@@ -24,7 +25,13 @@ export async function acquirePinnedAnalysis(projectPath: string, options?: { tra
   return resolved && lease ? { filePath: resolved.filePath, segmented: lease.segmented, entry: resolved.entry, release: lease.release } : null;
 }
 
-export const SCOPED_QUERY_TOOLS = new Set(['get_coding_context']);
+export const SCOPED_QUERY_TOOLS = new Set(['get_coding_context', 'assess_change_risk', 'find_tests']);
+const EXACT_ID_SCOPED_TOOLS = new Set(['assess_change_risk', 'find_tests']);
+const MAX_UPSTREAM_DEPTH = 64;
+
+export function scopedSmallSections(tool: string, required: readonly CasSectionName[]): CasSectionName[] {
+  return required.filter(section => section !== 'graph' && (section !== 'calls' || tool === 'assess_change_risk'));
+}
 const DEFAULT_NEIGHBOR_LIMIT = 10;
 const MAX_NEIGHBOR_LIMIT = 500;
 const MAX_SCOPED_NODES = 4000;
@@ -176,6 +183,29 @@ export function computeScopedQueryScope(
   };
 }
 
+export function computeChangeRiskScope(graph: CompactCASGraph, target: CompactNodeView): ScopedQueryScope & { upstreamNodes: number; upstreamTruncated: boolean } {
+  const base = computeScopedQueryScope(graph, target, {});
+  const keepIds = new Set(base.keepIds);
+  const upstream = graph.traverse(target.denseId, {
+    direction: 'incoming',
+    maxDepth: MAX_UPSTREAM_DEPTH,
+    maxNodes: MAX_SCOPED_NODES,
+    maxEdges: MAX_SCOPED_EDGES,
+  });
+  let upstreamTruncated = upstream.truncated;
+  for (const denseId of upstream.nodeDenseIds) {
+    if (keepIds.size >= MAX_SCOPED_NODES) { upstreamTruncated = true; break; }
+    keepIds.add(graph.nodeAt(denseId).id);
+  }
+  return {
+    ...base,
+    keepIds,
+    truncated: base.truncated || upstreamTruncated,
+    upstreamNodes: upstream.nodeDenseIds.length,
+    upstreamTruncated,
+  };
+}
+
 function decompressStream(filePath: string, codec: 'none' | 'brotli' | 'zstd'): NodeJS.ReadableStream {
   const raw = fs.createReadStream(filePath);
   if (codec === 'brotli') return raw.pipe(zlib.createBrotliDecompress());
@@ -301,6 +331,12 @@ export async function planScopedQuery(
   if (!target || !SCOPED_QUERY_TOOLS.has(tool)) return null;
   const graph = await loadCompactCASGraph(pinned.filePath, pinned.segmented);
   if (!graph) return null;
+  if (EXACT_ID_SCOPED_TOOLS.has(tool)) {
+    const exact = graph.nodeById(target);
+    if (!exact) return { targetNotFound: target };
+    const scope = tool === 'assess_change_risk' ? computeChangeRiskScope(graph, exact) : computeScopedQueryScope(graph, exact, {});
+    return { scope, target: exact, graphNodeCount: graph.nodeCount, graph };
+  }
   const resolved = resolveCompactTarget(graph, target, await searchCandidateIds(pinned, target));
   if (!resolved) return { targetNotFound: target };
   const scope = computeScopedQueryScope(graph, resolved, {
