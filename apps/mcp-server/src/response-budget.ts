@@ -90,7 +90,8 @@ interface ShrinkCandidate {
 
 function collectCandidates(value: unknown, path: string, container: Record<string, unknown> | unknown[] | null, key: string | number, out: ShrinkCandidate[]): void {
   if (typeof value === 'string') {
-    if (container && value.length > MIN_STRING_KEEP_CHARS) {
+    const executable = /(?:^|\.)(?:commands?|capsule)$|(?:^|\.)(?:commands?|validate)\[\d+\]$/.test(path);
+    if (container && value.length > MIN_STRING_KEEP_CHARS && !executable) {
       out.push({ path, kind: 'string', size: byteLength(value), container, key });
     }
     return;

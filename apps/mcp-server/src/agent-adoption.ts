@@ -4913,6 +4913,7 @@ function shouldSuggestFocusedRegressionTest(tokens: Set<string>): boolean {
 }
 
 function inferLikelyNewTestPlanItems(plan: FileReadPlanItem[], existing: Set<string>): FileReadPlanItem[] {
+  if (plan.some(item => isTestPath(item.file))) return [];
   return plan
     .filter(item => !isTestPath(item.file) && /\.(ts|tsx|js|jsx|mjs|cjs)$/i.test(item.file))
     .slice(0, 2)
