@@ -1,4 +1,5 @@
 import { CASDataEntity, CASEntryPoint, CASNode, CASUserJourney, EnhancedSystemPurpose, SystemCapability } from '../../types/cas.types';
+import type { ProductDocumentStatement } from './product-document-framing';
 import { capabilityEvidenceSubjectTokens } from './capability-subject-evidence';
 export { capabilityEvidenceSubjectTokens } from './capability-subject-evidence';
 import { capabilityMarketingLanguageTerms } from './capability-audience-test';
@@ -28,6 +29,7 @@ export interface CapabilityCatalogProjectSignal {
   concepts?: string[];
   productDocTitle?: string;
   productDocSummary?: string;
+  productDocStatements?: ProductDocumentStatement[];
   manifestDescription?: string;
   summary?: string;
   productVocabulary?: string[];

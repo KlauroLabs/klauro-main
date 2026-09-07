@@ -88,7 +88,7 @@ import { classifyArtifactType, collectArtifactManifestSignal, APP_FRAMEWORK_MARK
 import { executeLanguageAnalyzers, type AnalysisAccumulators as LanguageAnalysisAccumulators } from './language-analyzer-execution';
 import { executeFrameworkAnalyzers, type FrameworkExecutionEvent } from './framework-analyzer-execution';
 import { withEstreeParseCacheLifecycle } from './estree-parse-cache';
-import { buildFirstPartyProductEvidence } from './first-party-product-evidence';
+import { buildFirstPartyProductEvidence, firstPartyProductEvidenceRefreshDecision, type FirstPartyProductSignal } from './first-party-product-evidence';
 import { collectDeployableEvidence } from './deployable-evidence';
 import { attachDeployable } from './entry-point-deployable';
 import { determineSystemType as determineSystemTypeImpl } from './system-type';
@@ -410,15 +410,11 @@ interface SourceFileInventory {
   basenames: Map<string, string[]>;
   extensions: Map<string, string[]>;
 }
-interface ProjectTextSignal {
+interface ProjectTextSignal extends FirstPartyProductSignal {
   primaryDomain?: string;
   concepts: string[];
   summary?: string;
   evidence: string[];
-  manifestDescription?: string;
-  productDocTitle?: string;
-  productDocSummary?: string;
-  productDocSource?: string;
   productVocabulary?: string[];
 }
 type DescriptionTargetKind = 'capability' | 'entity';
@@ -2987,7 +2983,9 @@ export class AnalyzerOrchestrator {
       this.rankCatalogPromptCandidates(incrementalDescriptionEvidence, incrComprehensionJourneys),
       catalogEntityCandidateGroups(catalogRequiredEvidenceCandidates(incrementalDescriptionEvidence)),
     );
-    const incrementalAIRefreshDecision = this.getAIInterpretationRefreshDecision(
+    const incrementalAIRefreshDecision = firstPartyProductEvidenceRefreshDecision(
+      previousOutput.enhanced_system_purpose?.first_party_product_evidence, enhancedSystemPurpose.first_party_product_evidence,
+    ) || this.getAIInterpretationRefreshDecision(
       previousOutput,
       systemName,
       incrFrameworkNames,
@@ -2997,7 +2995,7 @@ export class AnalyzerOrchestrator {
       domainConcepts,
       incrementalNarrativeCandidates
     );
-    const incrementalAIRefreshRequested = this.shouldRefreshAIInterpretation(previousOutput, systemName, incrFrameworkNames, incrEntryPointSummary, incrDbEntityNames, incrExternalServiceNames, domainConcepts, incrementalNarrativeCandidates, false);
+    const incrementalAIRefreshRequested = incrementalAIRefreshDecision.refresh || this.shouldRefreshAIInterpretation(previousOutput, systemName, incrFrameworkNames, incrEntryPointSummary, incrDbEntityNames, incrExternalServiceNames, domainConcepts, incrementalNarrativeCandidates, false);
     const comprehensionInertAddition = isComprehensionInertPrivateAddition(
       previousOutput,
       nodes,
@@ -14696,6 +14694,7 @@ export class AnalyzerOrchestrator {
 
     let productDocTitle: string | undefined; let productDocSummary: string | undefined;
     let productDocSource: string | undefined; let productDocumentRoot = projectPath;
+    let productDocStatements: FirstPartyProductSignal['productDocStatements'];
     const PRODUCT_DOC_CANDIDATES = [
       'README.md', 'README.mdx', 'readme.md',
       'docs/README.md',
@@ -14712,6 +14711,7 @@ export class AnalyzerOrchestrator {
         if (framing.title || framing.summary) {
           productDocTitle = framing.title;
           productDocSummary = framing.summary;
+          productDocStatements = framing.statements;
           productDocSource = docName;
           productDocumentRoot = documentRoot;
           if (!evidence.includes(docName)) evidence.push(docName);
@@ -14787,11 +14787,12 @@ export class AnalyzerOrchestrator {
       productDocTitle,
       productDocSummary,
       productDocSource,
+      productDocStatements,
       productVocabulary,
     };
   }
 
-  private extractProductDocFraming(content: string): { title?: string; summary?: string } {
+  private extractProductDocFraming(content: string): ReturnType<typeof extractProductDocumentFraming> {
     return extractProductDocumentFraming(content);
   }
 
