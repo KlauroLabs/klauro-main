@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { SystemCapability } from '../../types/cas.types';
+import type { CASEntryPoint, SystemCapability } from '../../types/cas.types';
 import {
   audienceScopedCapabilityCatalogOutcomeText,
   bindAtomicallySatisfiedCatalogOutcomeRequirements,
@@ -187,7 +187,7 @@ test('preserves concise authored capability statements without vocabulary-depend
   ]);
 });
 
-test('recovers only structurally grounded authored outcomes after AI omission', () => {
+test('keeps authored intent unresolved when the only corroboration is an operation name', () => {
   const grounded = candidate('risk', 'Risk', ['assess_change_risk']);
   const requirements: CapabilityCatalogOutcomeRequirement[] = [
     {
@@ -208,11 +208,48 @@ test('recovers only structurally grounded authored outcomes after AI omission', 
 
   const recovered = recoverGroundedAuthoredOutcomeCapabilities([], requirements, [grounded]);
 
-  assert.equal(recovered.length, 1);
-  assert.equal(recovered[0].name, 'Know what will break before changing something');
-  assert.deepEqual(recovered[0].operations, grounded.operations);
-  assert.ok(recovered[0].criticality_factors.includes('catalog-candidate:risk'));
-  assert.ok(recovered[0].criticality_factors.includes('catalog-outcome-requirement:all:risk'));
+  assert.deepEqual(recovered, []);
+  assert.deepEqual(uncoveredCapabilityCatalogOutcomeRequirements(recovered, requirements), requirements);
+  assert.deepEqual(grounded.operations.map(operation => operation.action), ['assess_change_risk']);
+});
+
+test('does not derive semantic evidence from an opaque entry identifier', () => {
+  const helper = candidate('helper', 'Utility', []);
+  helper.operations = [{ entry_point_id: 'internal:verify_code_risk', entry_point_type: 'internal', action: 'Handle' }];
+  const signal = { productDocSummary: 'Feature: Verify code before changes.' };
+  const before = deriveCapabilityCatalogOutcomeRequirements(signal, [helper]);
+  const after = deriveCapabilityCatalogOutcomeRequirements(signal, [{ ...helper, operations: [{ ...helper.operations[0], entry_point_id: 'opaque-123' }] }]);
+  assert.equal(before.length, 1);
+  assert.deepEqual(before, after);
+  assert.deepEqual(before[0].candidateIds, []);
+});
+
+test('retrieves observed boundary behavior before an incidental helper identity match', () => {
+  const helper = { ...candidate('helper', 'Compare stock levels', ['compare_stock_levels']), evidence_role: 'supporting-mechanism' as const };
+  const surface = { ...candidate('surface', 'Warehouse interface', ['read_configuration']), evidence_kind: 'behavior-surface' as const };
+  surface.operations = [{ entry_point_id: 'boundary-123', entry_point_type: 'message', action: 'Handle' }];
+  const entries: CASEntryPoint[] = [{
+    id: 'boundary-123', source_node: 'comparison', type: 'message', name: 'compare_stock_levels',
+    interaction_reach: 'external', description: 'Compare stock levels across locations.',
+  }];
+  const requirements = deriveCapabilityCatalogOutcomeRequirements({
+    productDocSummary: 'Feature: Compare stock levels across locations.',
+  }, [helper, surface], { entryPoints: entries });
+  assert.deepEqual(requirements[0].candidateIds, ['surface']);
+});
+
+test('retains a previously accepted authored outcome without synthesizing a README copy', () => {
+  const evidence = candidate('invoice', 'Invoice', ['settle_invoice']);
+  const accepted = { ...evidence, id: 'accepted-invoice', name: 'Settle customer invoices',
+    description: 'Billing staff settle customer invoices after recording payments and preserve the resulting status.',
+    name_source: 'ai' as const, description_source: 'ai' as const,
+    criticality_factors: ['catalog-candidate:invoice', 'catalog-outcome-requirement:invoice-settle'],
+  };
+  const requirement: CapabilityCatalogOutcomeRequirement = {
+    id: 'invoice-settle', candidateIds: ['invoice'], statement: 'Settle customer invoices', subjectTokens: ['settle', 'invoice'],
+  };
+  const recovered = recoverGroundedAuthoredOutcomeCapabilities([], [requirement], [evidence], new Map(), [accepted]);
+  assert.deepEqual(recovered, [accepted]);
 });
 test('retains a richer authored capability when grounding recovery resolves the same outcome identity', () => {
   const grounded = candidate('invoice', 'Invoice', ['settle_invoice']);
@@ -231,6 +268,7 @@ test('retains a richer authored capability when grounding recovery resolves the 
     name: 'Settle customer invoices',
     description: 'Billing staff settle customer invoices after capturing payments and preserve the resulting status.',
     name_source: 'ai' as const,
+    criticality_factors: ['catalog-candidate:invoice', 'catalog-outcome-requirement:all:invoice-settle'],
     description_source: 'ai' as const,
     description_generation: { attempted: true, status: 'success' as const },
   };
@@ -262,7 +300,7 @@ test('prefers a candidate whose identity names the first-party outcome over inci
   assert.deepEqual(requirements[0].candidateIds, ['routing']);
 });
 
-test('grounds library outcomes in matching public symbols instead of incidental directory words', () => {
+test('retrieves library outcomes using observed public symbols instead of incidental directory words', () => {
   const clone = candidate('clone', 'Clone', ['Coordinate']);
   clone.evidence_role = 'supporting-mechanism';
   clone.operations[0].entry_point_id = 'node:method:src/extract/cookie.rs:CookieJar:clone';
@@ -282,7 +320,12 @@ test('grounds library outcomes in matching public symbols instead of incidental 
 
   const requirements = deriveCapabilityCatalogOutcomeRequirements({
     productDocSummary: 'High level features: Declaratively parse requests using extractors. Generate responses with minimal boilerplate.',
-  }, [clone, parts, response, pipeline]);
+  }, [clone, parts, response, pipeline], { entryPoints: [
+    { id: clone.operations[0].entry_point_id, source_node: 'clone', type: 'api', name: 'clone', interaction_reach: 'external' },
+    { id: parts.operations[0].entry_point_id, source_node: 'parts', type: 'api', name: 'extract_parts', interaction_reach: 'external' },
+    { id: response.operations[0].entry_point_id, source_node: 'response', type: 'api', name: 'into_response', interaction_reach: 'external' },
+    { id: pipeline.operations[0].entry_point_id, source_node: 'pipeline', type: 'lifecycle', name: 'CI pull_request', interaction_reach: 'internal' },
+  ] });
 
   const extraction = requirements.find(requirement => requirement.firstPartyOutcomeText?.includes('Declaratively parse requests'));
   const responses = requirements.find(requirement => requirement.subjectTokens.includes('response'));
@@ -784,7 +827,7 @@ test('preserves complete outcome clauses from a feature-rich README instead of e
   const categorization = requirements.find(requirement =>
     requirement.statement.startsWith('categorize your applications by creating different categories'));
   assert.ok(categorization?.statement.includes('edit or delete your categories'));
-  assert.deepEqual(categorization?.candidateIds.sort(), ['categories', 'jobs']);
+  assert.deepEqual(categorization?.candidateIds.sort(), ['categories', 'jobs', 'notes']);
   assert.ok(statements.some(statement => statement.startsWith('manage your application status') && statement.includes('Interview or set it to closed')));
   assert.ok(statements.some(statement => statement.startsWith('delete or edit your job applications') && statement.includes('add notes to your job applications')));
   const jobManagement = requirements.find(requirement => requirement.statement.startsWith('delete or edit your job applications'))!;

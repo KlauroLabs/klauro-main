@@ -9037,8 +9037,6 @@ export class AnalyzerOrchestrator {
       description: string;
       category: SystemCapability['category'];
       relatedEntities: string[];
-      entityNameSet: Set<string>;
-      nameTokensAll: string[];
       journeys: unknown;
       candidateIds: string[]; requirementId?: string; deterministicSource: boolean;
     };
@@ -9068,13 +9066,13 @@ export class AnalyzerOrchestrator {
       description = this.repairStrippedSentenceGrammar(description);
       const requiredOutcome = input.requiredOutcomeRequirements?.find(requirement => requirement.id === (input.requiredOutcomeRequirements?.length === 1 ? input.requiredOutcomeRequirements[0].id : String(item.requirement_id || '')));
       name = conciseCapabilityCatalogOutcomeName(name, `${description} ${requiredOutcome ? capabilityCatalogTargetedOutcomeText(requiredOutcome) : ''}`);
-      if (description.length < 25 && itemEntityNamesRaw.length) {
-        description = `${name} manages ${itemEntityNamesRaw.slice(0, 4).join(', ')}.`;
-      }
       let itemCandidateIds = Array.isArray(item.candidate_ids) ? item.candidate_ids.map(value => String(value || '')) : [];
-      if (itemCandidateIds.length === 0 && requiredOutcome?.candidateIds.length && capabilitySemanticallySatisfiesCatalogOutcomeRequirement({ name, description }, requiredOutcome)) itemCandidateIds = [...requiredOutcome.candidateIds];
       if (!name || description.length < 20) {
         debugCatalogRejection(name, 'missing-name-or-description', itemCandidateIds);
+        continue;
+      }
+      if (itemCandidateIds.length === 0) {
+        debugCatalogRejection(name, 'missing-candidate-citation', itemCandidateIds);
         continue;
       }
       const targetedItemFacts = itemCandidateIds
@@ -9226,7 +9224,7 @@ export class AnalyzerOrchestrator {
         );
       const candidateIds = itemCandidateIds
         .filter(value => candidatePoolForRanking.some(candidate => candidate.id === value));
-      if (itemCandidateIds.length > 0 && candidateIds.length === 0) {
+      if (candidateIds.length !== itemCandidateIds.length) {
         debugCatalogRejection(name, 'unknown-candidate-citation', itemCandidateIds);
         continue;
       }
@@ -9291,7 +9289,7 @@ export class AnalyzerOrchestrator {
         continue;
       }
       const preservesDescriptionIdentity = input.repairMode === 'description' && name === input.repairIdentityName;
-      const evidenceGroundedDeterministicRecovery = item.catalog_source === 'deterministic';
+      const evidenceGroundedDeterministicRecovery = usedDeterministicFallback && item.catalog_source === 'deterministic';
       let unsupportedOutcomeTokens = capabilityOutcomeScopeFailure(name, citedScopeCandidates, signal, reusesAcceptedOutcome || preservesDescriptionIdentity || evidenceGroundedDeterministicRecovery, description, boundRequirement?.audience ? [boundRequirement.audience] : [], boundRequirement);
       if (unsupportedOutcomeTokens.length > 0 && input.repairMode === 'evidence') {
         const removable = new Set(unsupportedOutcomeTokens
@@ -9390,88 +9388,16 @@ export class AnalyzerOrchestrator {
         description,
         category,
         relatedEntities,
-        entityNameSet: new Set(itemEntityNames),
-        nameTokensAll: `${key} ${description.toLowerCase()}`
-          .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-          .split(/[^a-z0-9]+/)
-          .map(token => this.stemTerminologyToken(token))
-          .filter(token => token.length > 3 && !GENERIC_CAPABILITY_NAME_TOKENS.has(token) &&
-            (artifactType !== 'app' || !capabilityActionTokens.has(token))),
         journeys: item.journeys,
-        candidateIds: narrowedCandidateIds, requirementId: boundRequirementId, deterministicSource: item.catalog_source === 'deterministic',
+        candidateIds: narrowedCandidateIds, requirementId: boundRequirementId, deterministicSource: evidenceGroundedDeterministicRecovery,
       });
     }
-    const tokenDf = new Map<string, number>();
-    for (const item of staged) {
-      for (const token of new Set(item.nameTokensAll)) tokenDf.set(token, (tokenDf.get(token) || 0) + 1);
-    }
-    const nonDiscriminative = new Set(
-      staged.length >= 3
-        ? [...tokenDf.entries()].filter(([, df]) => df > Math.max(2, staged.length / 2)).map(([token]) => token)
-        : []
-    );
-    const discriminativeTokens = (tokens: string[]) => new Set(tokens.filter(token => !nonDiscriminative.has(token)));
-    const itemTokens = staged.map(item => discriminativeTokens(item.nameTokensAll));
     const opsByItemIndex = new Map<number, SystemCapability['operations']>();
     const entityIdsByItemIndex = new Map<number, Set<string>>();
     const candidateIdsByItemIndex = new Map<number, Set<string>>();
     for (const candidate of candidatePoolForRanking) {
-      const citedIndices = staged
-        .map((item, index) => item.candidateIds.includes(candidate.id) ? index : -1)
-        .filter(index => index >= 0);
-      if (citedIndices.length > 0) {
-        for (const index of citedIndices) {
-          if (!opsByItemIndex.has(index)) opsByItemIndex.set(index, []);
-          opsByItemIndex.get(index)!.push(...scopeCapabilityOperationsToOutcomeName(staged[index].name, candidate.operations));
-          if (!entityIdsByItemIndex.has(index)) entityIdsByItemIndex.set(index, new Set());
-          for (const id of candidate.related_entities || []) entityIdsByItemIndex.get(index)!.add(id);
-          if (!candidateIdsByItemIndex.has(index)) candidateIdsByItemIndex.set(index, new Set());
-          candidateIdsByItemIndex.get(index)!.add(candidate.id);
-        }
-        continue;
-      }
-      const uncitedItemIndices = new Set(
-        staged.map((item, index) => item.candidateIds.length === 0 ? index : -1).filter(index => index >= 0),
-      );
-      if (uncitedItemIndices.size === 0) continue;
-      const candidateEntityNames = candidate.related_entities.map(id => (entityNameById.get(id) || id).toLowerCase());
-      const candidateTokens = discriminativeTokens([...new Set(
-        [candidate.name, ...(candidate.evidence_examples || [])]
-          .flatMap(value => String(value).replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/))
-          .map(token => this.stemTerminologyToken(token))
-          .filter(token => token.length > 3 && !GENERIC_CAPABILITY_NAME_TOKENS.has(token) &&
-            (artifactType !== 'app' || !capabilityActionTokens.has(token)))
-      )]);
-      let best = 0;
-      const entityOverlaps: number[] = [];
-      const scores: number[] = staged.map((item, index) => {
-        if (!uncitedItemIndices.has(index)) {
-          entityOverlaps.push(0);
-          return 0;
-        }
-        const entityOverlap = candidateEntityNames.filter(entityName => item.entityNameSet.has(entityName)).length;
-        entityOverlaps.push(entityOverlap);
-        let tokenOverlap = 0;
-        for (const token of candidateTokens) if (itemTokens[index].has(token)) tokenOverlap++;
-        const score = entityOverlap * 2 + tokenOverlap;
-        if (score > best) best = score;
-        return score;
-      });
-      if (best === 0) continue;
-      const tiedIndices: number[] = [];
       for (let index = 0; index < staged.length; index++) {
-        if (scores[index] === best) tiedIndices.push(index);
-      }
-      let winners: number[];
-      if (tiedIndices.length === 1) {
-        winners = tiedIndices;
-      } else {
-        const maxEntityOverlapAmongTied = Math.max(...tiedIndices.map(index => entityOverlaps[index]));
-        winners = maxEntityOverlapAmongTied > 0
-          ? tiedIndices.filter(index => entityOverlaps[index] === maxEntityOverlapAmongTied)
-          : [tiedIndices[0]];
-      }
-      for (const index of winners) {
+        if (!staged[index].candidateIds.includes(candidate.id)) continue;
         if (!opsByItemIndex.has(index)) opsByItemIndex.set(index, []);
         opsByItemIndex.get(index)!.push(...scopeCapabilityOperationsToOutcomeName(staged[index].name, candidate.operations));
         if (!entityIdsByItemIndex.has(index)) entityIdsByItemIndex.set(index, new Set());
@@ -10077,7 +10003,7 @@ export class AnalyzerOrchestrator {
       !(candidate.criticality_factors || []).includes('catalog-aggregate-operation-view'));
     const distinctFamilies = this.catalogDistinctFamilies(structuralProductEvidenceCandidates);
     const distinctFamilyCount = distinctFamilies.length;
-    const requiredOutcomes = deriveCapabilityCatalogOutcomeRequirements(args.projectTextSignal, evidenceCandidates);
+    const requiredOutcomes = deriveCapabilityCatalogOutcomeRequirements(args.projectTextSignal, evidenceCandidates, { entryPoints: args.entryPoints });
     const groundableOutcomes = requiredOutcomes.filter(requirement => requirement.candidateIds.length > 0);
     const requiredEvidenceCandidates = catalogRequiredEvidenceCandidates(evidenceCandidates); const distinctFamilyCandidateGroups = distinctFamilies.map(family => {
       const parentIds = family.map(candidate => candidate.id).filter(Boolean);
@@ -10877,7 +10803,7 @@ export class AnalyzerOrchestrator {
     const configuredElementLimit = Number(process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT || '');
     const elementLimit = Number.isFinite(configuredElementLimit) && configuredElementLimit > 0 ? configuredElementLimit : 8;
     const { entityNamesById, entityFieldsById, entityEvidenceById } = capabilityDescriptionEvidenceMaps(dataEntities);
-    const requiredOutcomes = deriveCapabilityCatalogOutcomeRequirements(projectTextSignal, descriptionEvidenceCandidates);
+    const requiredOutcomes = deriveCapabilityCatalogOutcomeRequirements(projectTextSignal, descriptionEvidenceCandidates, { entryPoints });
 
     const semanticEvidenceDigest = {
       systemName,

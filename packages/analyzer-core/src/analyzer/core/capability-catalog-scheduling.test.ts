@@ -3119,6 +3119,22 @@ test('empty-entity atomic subject grounding rejects ambiguous, generic, support-
   }), []);
 });
 
+test('a copied authored outcome is not an exact validated closure, even after description repair', () => {
+  for (const description_source of ['deterministic', 'ai'] as const) {
+    const value = catalogCapability({
+      name: 'Know what will break before changing something',
+      description: 'People know what will break before changing something.',
+      description_source,
+      description_generation: { attempted: true,
+        status: description_source === 'ai' ? 'ai_applied' : 'deterministic_kept',
+        reason: 'grounded-first-party-outcome' },
+      operations: [{ entry_point_id: 'helper', entry_point_type: 'internal', action: 'Handle' }],
+      criticality_factors: ['catalog-candidate:helper', 'catalog-deterministic-atomic-closure', 'catalog-grounded-authored-outcome-recovery'],
+    });
+    assert.equal(isExactValidatedDeterministicRecovery(value), false);
+  }
+});
+
 test('scan-ahead fills four-wide disjoint waves and preserves plan order', async () => {
   let active = 0; let peak = 0; const starts: string[] = [];
   const facts = [{ id: 'a1', candidateIds: ['a'] }, { id: 'a2', candidateIds: ['a'] }, { id: 'b', candidateIds: ['b'] }, { id: 'c', candidateIds: ['c'] }, { id: 'd', candidateIds: ['d'] }];

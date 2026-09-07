@@ -738,6 +738,7 @@ export function withoutSubsumedDeterministicAtomicClosures(
 }
 
 export function isExactValidatedDeterministicRecovery(capability: SystemCapability): boolean {
+  if ((capability.criticality_factors || []).includes('catalog-grounded-authored-outcome-recovery')) return false;
   if ((capability.criticality_factors || []).includes('catalog-deterministic-grouped-lifecycle') &&
     /^(?:manage|handle|process)(?:s|d|ing)?\b/i.test(String(capability.name || '').trim())) return false;
   const deterministicDescription = capability.description_generation?.status === "deterministic_kept" &&

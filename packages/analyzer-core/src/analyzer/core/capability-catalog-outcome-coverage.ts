@@ -1,4 +1,4 @@
-import type { SystemCapability } from '../../types/cas.types';
+import type { CASEntryPoint, SystemCapability } from '../../types/cas.types';
 import type { CapabilityCatalogProjectSignal } from './capability-catalog-evidence';
 import { CAPABILITY_PURPOSE_VERBS } from './capability-naming';
 import {
@@ -274,7 +274,9 @@ function clauseVisibleActionTerms(clause: string, statement: string): string[] {
 export function deriveCapabilityCatalogOutcomeRequirements(
   signal: CapabilityCatalogProjectSignal | undefined,
   candidates: readonly SystemCapability[],
+  context: { entryPoints?: readonly CASEntryPoint[] } = {},
 ): CapabilityCatalogOutcomeRequirement[] {
+  const entryById = new Map((context.entryPoints || []).map(entry => [entry.id, entry]));
   const contextualProductClauses = String(signal?.productDocSummary || '')
     .split(/(?<=[.!?;])\s+/i)
     .map(value => value.trim())
@@ -284,16 +286,18 @@ export function deriveCapabilityCatalogOutcomeRequirements(
     'repository', 'route', 'service', 'system', 'workflow',
   ]);
   const candidateTokens = candidates.filter(candidate => candidate.evidence_role !== 'verification-harness').map(candidate => {
-    const text = candidateText(candidate);
+    const entries = candidate.operations.flatMap(operation => {
+      const entry = entryById.get(operation.entry_point_id);
+      return entry ? [entry] : [];
+    });
+    const text = [candidateText(candidate), ...entries.flatMap(entry => [entry.name, entry.description || ''])].join(' ');
     const rawTokens = tokens(text, true);
     const identityRawTokens = tokens([
       candidate.name,
       candidate.structural_label,
       ...(candidate.related_domains || []),
     ].filter(Boolean).join(' '), true);
-    const symbolRawTokens = tokens((candidate.operations || []).map(operation =>
-      String(operation.entry_point_id || '').split(':').pop() || '',
-    ).join(' '), true);
+    const symbolRawTokens = tokens(entries.map(entry => entry.name).join(' '), true);
     const contextAnchorTokens = identityRawTokens.filter(token => !genericContextAnchors.has(token));
     const contextualAliasTokens = contextualProductClauses.flatMap(clause => {
       const clauseTokens = tokens(clause.replace(/^Context:\s*/i, ''), true);
@@ -305,6 +309,8 @@ export function deriveCapabilityCatalogOutcomeRequirements(
     });
     return {
       candidate,
+      observedRank: entries.some(entry => entry.interaction_reach === 'external') ? 0
+        : entries.some(entry => entry.interaction_reach !== 'internal') ? 1 : entries.length > 0 ? 2 : 3,
       text,
       tokens: new Set([
         ...rawTokens,
@@ -329,7 +335,6 @@ export function deriveCapabilityCatalogOutcomeRequirements(
     const multiActionFeature = String(clause || '')
       .split(/(?<=[.!?;])\s+/i)
       .filter(sentence => purposeVerbIn(sentence)).length > 1;
-    const semanticOutcomeTokens = new Set(clauseTokens.filter(token => ['understand', 'onboard', 'risk', 'verify', 'collaborate'].includes(token)));
     if (subjectTokens.length === 0) continue;
     for (const audience of requirementAudiences(clause)) {
       const audienceCandidates = candidateTokens.filter(item => !audience || (audience === 'human'
@@ -339,6 +344,7 @@ export function deriveCapabilityCatalogOutcomeRequirements(
         audienceCandidates.filter(item => item.tokens.has(comparableEvidenceToken(token))).length]));
       const scored = audienceCandidates.map(item => ({
         id: item.candidate.id,
+        observedRank: item.observedRank,
         evidenceRank: item.candidate.evidence_role === 'product-outcome' ? 0
           : item.candidate.evidence_role === 'unresolved' || item.candidate.evidence_role === undefined ? 1 : 2,
         aggregateRank: candidateAggregationRank(item.candidate),
@@ -352,19 +358,19 @@ export function deriveCapabilityCatalogOutcomeRequirements(
         item.identityScore > 0 ||
         item.symbolScore > 0 ||
         (item.score >= 1 && (item.evidenceRank === 0 || item.distinctive))
-      )).sort((left, right) => right.symbolScore - left.symbolScore || right.identityScore - left.identityScore ||
+      )).sort((left, right) => left.observedRank - right.observedRank ||
+        right.symbolScore - left.symbolScore || right.identityScore - left.identityScore ||
         right.score - left.score ||
         left.evidenceRank - right.evidenceRank ||
         left.aggregateRank - right.aggregateRank ||
         left.id.localeCompare(right.id));
-      const actionAnchored = explicitAuthoredFeature ? scored.filter(item => semanticOutcomeTokens.size > 0 && audienceCandidates.some(candidate =>
-        candidate.candidate.id === item.id && [...semanticOutcomeTokens].some(token => candidate.identityTokens.has(token)))) : [];
-      const ranked = actionAnchored.length > 0 ? actionAnchored : scored;
+      const ranked = scored;
+      const bestObservedRank = ranked[0]?.observedRank;
       const bestIdentityScore = ranked[0]?.identityScore;
       const bestScore = ranked[0]?.score;
       const bestSymbolScore = ranked[0]?.symbolScore;
       const strongestCandidateIds = bestScore === undefined ? [] : ranked
-        .filter(item => item.identityScore === bestIdentityScore && item.symbolScore === bestSymbolScore && item.score === bestScore)
+        .filter(item => item.observedRank === bestObservedRank && item.identityScore === bestIdentityScore && item.symbolScore === bestSymbolScore && item.score === bestScore)
         .slice(0, 3)
         .map(item => item.id);
       const candidateIds = multiActionFeature
@@ -381,7 +387,7 @@ export function deriveCapabilityCatalogOutcomeRequirements(
         ? subjectTokens.filter(token => candidateTokens.some(item =>
           candidateIdSet.has(canonicalOutcomeEvidenceCandidateId(item.candidate.id)) && item.tokens.has(comparableEvidenceToken(token))))
         : subjectTokens.slice(0, 8);
-      if (!explicitAuthoredFeature && semanticOutcomeTokens.size === 0 && groundedSubjectTokens.length > 0 && groundedSubjectTokens.every(token => CAPABILITY_PURPOSE_VERBS.has(token))) continue;
+      if (!explicitAuthoredFeature && groundedSubjectTokens.length > 0 && groundedSubjectTokens.every(token => CAPABILITY_PURPOSE_VERBS.has(token))) continue;
       const originalClauseAlias = clauseTokens
         .filter(token => audienceCandidates.some(item =>
           candidateIdSet.has(canonicalOutcomeEvidenceCandidateId(item.candidate.id)) && item.tokens.has(token)))
@@ -448,87 +454,35 @@ export function recoverGroundedAuthoredOutcomeCapabilities(
   capabilities: readonly SystemCapability[],
   requirements: readonly CapabilityCatalogOutcomeRequirement[],
   evidenceCandidates: readonly SystemCapability[],
-  obligationScopes: ReadonlyMap<string, { parentCandidateId: string }> = new Map(),
+  _obligationScopes: ReadonlyMap<string, { parentCandidateId: string }> = new Map(),
   preferredCapabilities: readonly SystemCapability[] = [],
 ): SystemCapability[] {
   const evidenceById = new Map(evidenceCandidates.map(candidate => [candidate.id, candidate]));
-  const recoveryId = (requirement: CapabilityCatalogOutcomeRequirement): string =>
-    `capability_authored_${requirement.id.replace(/[^a-z0-9]+/gi, '_').replace(/^_+|_+$/g, '').toLowerCase()}`;
-  const recoverableIds = new Set(requirements.map(recoveryId));
-  const capabilityById = new Map<string, SystemCapability>();
-  for (const capability of capabilities) {
-    const existing = capabilityById.get(capability.id);
-    const descriptionWords = String(capability.description || '').trim().split(/\s+/).filter(Boolean).length;
-    const existingDescriptionWords = String(existing?.description || '').trim().split(/\s+/).filter(Boolean).length;
-    const authored = ['ai', 'manual', 'reused'].includes(String(capability.description_source || ''));
-    const existingAuthored = ['ai', 'manual', 'reused'].includes(String(existing?.description_source || ''));
-    if (!existing || (authored && !existingAuthored) || (authored === existingAuthored && descriptionWords > existingDescriptionWords)) {
-      capabilityById.set(capability.id, capability);
+  const isAuthored = (capability: SystemCapability): boolean =>
+    ['ai', 'manual', 'reused'].includes(String(capability.description_source || ''));
+  const recoverable = preferredCapabilities.filter(capability => {
+    const factors = capability.criticality_factors || [];
+    if (!isAuthored(capability) || factors.includes('catalog-grounded-authored-outcome-recovery')) return false;
+    const cited = factors.filter(factor => factor.startsWith('catalog-candidate:'))
+      .map(factor => factor.slice('catalog-candidate:'.length));
+    if (cited.length === 0 || cited.some(id => !evidenceById.has(id))) return false;
+    const observedEntries = new Set(cited.flatMap(id => (evidenceById.get(id)?.operations || []).map(operation => operation.entry_point_id)));
+    if (capability.operations.length === 0 || capability.operations.some(operation => !observedEntries.has(operation.entry_point_id))) return false;
+    return requirements.some(requirement =>
+      cited.some(id => requirement.candidateIds.includes(id)) &&
+      capabilitySemanticallySatisfiesCatalogOutcomeRequirement(capability, requirement));
+  });
+  const byId = new Map<string, SystemCapability>();
+  for (const capability of [...capabilities, ...recoverable]) {
+    const existing = byId.get(capability.id);
+    const authored = isAuthored(capability);
+    const existingAuthored = existing && isAuthored(existing);
+    if (!existing || (authored && !existingAuthored) ||
+      (authored === existingAuthored && capability.description.length > existing.description.length)) {
+      byId.set(capability.id, capability);
     }
   }
-  for (const capability of preferredCapabilities) {
-    const existing = capabilityById.get(capability.id);
-    if (!existing) {
-      if (recoverableIds.has(capability.id)) capabilityById.set(capability.id, capability);
-      continue;
-    }
-    const descriptionWords = String(capability.description || '').trim().split(/\s+/).filter(Boolean).length;
-    const existingDescriptionWords = String(existing.description || '').trim().split(/\s+/).filter(Boolean).length;
-    const authored = ['ai', 'manual', 'reused'].includes(String(capability.description_source || ''));
-    const existingAuthored = ['ai', 'manual', 'reused'].includes(String(existing.description_source || ''));
-    if ((authored && !existingAuthored) || (authored === existingAuthored && descriptionWords > existingDescriptionWords)) {
-      capabilityById.set(capability.id, capability);
-    }
-  }
-  const uniqueCapabilities = [...capabilityById.values()];
-  const missing = uncoveredCapabilityCatalogOutcomeRequirements(uniqueCapabilities, requirements);
-  const existingRequirementIds = new Set<string>();
-  const retained = uniqueCapabilities.map(capability => {
-    const requirement = missing.find(candidate => recoveryId(candidate) === capability.id);
-    if (!requirement) return capability;
-    existingRequirementIds.add(requirement.id);
-    return {
-      ...capability,
-      criticality_factors: [...new Set([
-        ...(capability.criticality_factors || []),
-        `catalog-outcome-requirement:${requirement.id}`,
-      ])],
-    };
-  });
-  const recovered = missing.filter(requirement => !existingRequirementIds.has(requirement.id)).flatMap(requirement => {
-    const evidence = requirement.candidateIds.slice(0, 1)
-      .map(candidateId => evidenceById.get(candidateId))
-      .filter((candidate): candidate is SystemCapability => Boolean(candidate));
-    if (evidence.length === 0) return [];
-    const operations = [...new Map(evidence.flatMap(candidate => candidate.operations || [])
-      .map(operation => [JSON.stringify(operation), operation])).values()];
-    const relatedEntities = [...new Set(evidence.flatMap(candidate => candidate.related_entities || []))];
-    const obligationIds = [...obligationScopes.entries()]
-      .filter(([, scope]) => scope.parentCandidateId === evidence[0]?.id)
-      .map(([id]) => id);
-    if (operations.length === 0 && relatedEntities.length === 0) return [];
-    const source = evidence[0];
-    return [{
-      ...source,
-      id: recoveryId(requirement),
-      name: requirement.statement,
-      description: `${requirement.statement.replace(/[.!?]+$/, '')}.`,
-      name_source: 'deterministic' as const,
-      description_source: 'deterministic' as const,
-      description_generation: { attempted: true, status: 'deterministic_kept' as const, reason: 'grounded-first-party-outcome' },
-      operations,
-      related_entities: relatedEntities,
-      related_domains: [...new Set(evidence.flatMap(candidate => candidate.related_domains || []))],
-      criticality_factors: [
-        ...evidence.map(candidate => "catalog-candidate:" + candidate.id),
-        ...obligationIds.map(id => "catalog-operation-obligation:" + id),
-        `catalog-outcome-requirement:${requirement.id}`,
-        'catalog-deterministic-atomic-closure',
-        'catalog-grounded-authored-outcome-recovery',
-      ],
-    }];
-  });
-  return [...retained, ...recovered];
+  return [...byId.values()];
 }
 export function capabilitySatisfiesCatalogOutcomeRequirement(
   capability: Pick<SystemCapability, 'name' | 'description'> & Partial<Pick<SystemCapability, 'criticality_factors'>>,

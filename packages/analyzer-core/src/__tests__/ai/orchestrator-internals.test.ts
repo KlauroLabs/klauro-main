@@ -27,6 +27,68 @@ import {
 
 // These exercise internal heuristics of the orchestrator. They are private by
 
+test.each([
+  [[], 'missing-candidate-citation', false],
+  [['routing', 'invented'], 'unknown-candidate-citation', false],
+  [['routing'], 'missing-name-or-description', true],
+])('does not fabricate model citations or missing prose: %j', async (candidateIds, reason, descriptionMissing) => {
+  const localOrch = new AnalyzerOrchestrator() as any;
+  const candidate = {
+    id: 'routing', name: 'Routing API', category: 'core',
+    operations: [{ entry_point_id: 'route_request', entry_point_type: 'api', action: 'Route requests' }],
+    related_entities: [], related_domains: ['requests', 'handlers'], criticality: 'medium', criticality_factors: [],
+  };
+  const provider = jest.spyOn(aiService, 'generateComponentDescription').mockResolvedValue(JSON.stringify({
+    capabilities: [{ requirement_id: 'request-routing', name: 'Route requests to handlers',
+      description: descriptionMissing ? undefined : 'Developers direct HTTP requests to registered handlers selected by the requested path.',
+      category: 'core', candidate_ids: candidateIds, entities: ['Request'] }],
+  }));
+  const rejections: any[] = [];
+  try {
+    const result = await localOrch.aiExtractCapabilityCatalog({
+      systemName: 'Request library', enhancedSystemPurpose: { artifact_type: 'library' },
+      frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [candidate],
+      externalServices: [], flowGraph: emptyFlowGraph(), budgetMs: 30000,
+      requiredOutcomeRequirements: [{ id: 'request-routing', candidateIds: ['routing'],
+        statement: 'Route requests to handlers', subjectTokens: ['request', 'handler'] }],
+      onRejection: (feedback: any) => rejections.push(feedback),
+    });
+    expect(result).toEqual([]);
+    expect(rejections.some(rejection => rejection.reason === reason)).toBe(true);
+  } finally {
+    provider.mockRestore();
+  }
+});
+
+test('provider output cannot relabel itself as deterministic recovery', async () => {
+  const localOrch = new AnalyzerOrchestrator() as any;
+  const candidate = {
+    id: 'routing', name: 'Routing API', category: 'core',
+    operations: [{ entry_point_id: 'route_request', entry_point_type: 'api', action: 'Route requests' }],
+    operation_evidence: [{ entry_point_id: 'route_request', source_node_id: 'route_handler',
+      text: 'Route HTTP requests to registered handlers selected by the requested path.' }],
+    related_entities: [], related_domains: ['requests', 'handlers'], criticality: 'medium', criticality_factors: [],
+  };
+  const provider = jest.spyOn(aiService, 'generateComponentDescription').mockResolvedValue(JSON.stringify({
+    capabilities: [{ name: 'Route requests to handlers',
+      description: 'HTTP requests reach registered handlers selected by the requested path.',
+      category: 'core', candidate_ids: ['routing'], catalog_source: 'deterministic', entities: [] }],
+  }));
+  try {
+    const result = await localOrch.aiExtractCapabilityCatalog({
+      systemName: 'Request library', enhancedSystemPurpose: { artifact_type: 'library' },
+      frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [candidate],
+      externalServices: [], flowGraph: emptyFlowGraph(), budgetMs: 30000,
+    });
+    expect(result).toHaveLength(1);
+    expect(result[0].name_source).toBe('ai');
+    expect(result[0].description_source).toBe('ai');
+    expect(result[0].description_generation.status).toBe('ai_applied');
+  } finally {
+    provider.mockRestore();
+  }
+});
+
 test('catalog provider receives the full observed tool surface and distinct evidence namespaces', async () => {
   const localOrch = new AnalyzerOrchestrator() as any;
   const entries: CASEntryPoint[] = Array.from({ length: 85 }, (_, index) => ({
@@ -416,7 +478,7 @@ test('capability catalog parsing preserves braces inside strings and rejects inc
   )).toEqual({ ok: false, reason: 'incomplete-json' });
 });
 
-test('recovers a grounded lifecycle outcome when AI produces no publishable proposal', async () => {
+test('does not certify a lifecycle outcome from a route inventory when AI produces no supported proposal', async () => {
   const localOrch = new AnalyzerOrchestrator() as any;
   const operations = [
     ['create', 'POST', '/work_orders'],
@@ -489,9 +551,8 @@ test('recovers a grounded lifecycle outcome when AI produces no publishable prop
     budgetMs: 30000,
   });
 
-  expect(result).toHaveLength(1);
-  expect(result[0].name).toBe('Organize work orders');
-  expect(purpose.capability_catalog_coverage.status).toBe('accepted');
+  expect(result).toEqual([]);
+  expect(purpose.capability_catalog_coverage.status).toBe('rejected');
 });
 
 test("does not retry uncited structural evidence families as standalone capabilities", async () => {
@@ -10016,7 +10077,7 @@ describe('top-down capability evidence (C2)', () => {
     }
   });
 
-  it('derives a missing candidate citation from the deterministic operation-family match', async () => {
+  it('rejects a missing candidate citation instead of deriving one from an operation-family match', async () => {
     const original = (aiService as any).generateComponentDescription;
     (aiService as any).generateComponentDescription = async () => JSON.stringify({
       capabilities: [{
@@ -10045,15 +10106,13 @@ describe('top-down capability evidence (C2)', () => {
         budgetMs: 30000,
       });
 
-      expect(catalog).toHaveLength(1);
-      expect(catalog[0].criticality_factors).toContain('catalog-candidate:codebase');
-      expect(catalog[0].operations.map((operation: any) => operation.entry_point_id)).toEqual(['analyze', 'preview']);
+      expect(catalog).toEqual([]);
     } finally {
       (aiService as any).generateComponentDescription = original;
     }
   });
 
-  it('recovers omitted citations from an explicitly bound, semantically matched authored outcome', async () => {
+  it('does not turn a requirement binding into a missing implementation citation', async () => {
     const original = (aiService as any).generateComponentDescription;
     (aiService as any).generateComponentDescription = async () => JSON.stringify({
       capabilities: [{
@@ -10092,10 +10151,7 @@ describe('top-down capability evidence (C2)', () => {
         budgetMs: 30000,
       });
 
-      expect(catalog).toHaveLength(1);
-      expect(catalog[0].criticality_factors).toContain('catalog-candidate:media-capture');
-      expect(catalog[0].criticality_factors).toContain('catalog-outcome-requirement:all:capture-media');
-      expect(catalog[0].operations.map((operation: any) => operation.entry_point_id)).toEqual(['create-memo']);
+      expect(catalog).toEqual([]);
     } finally {
       (aiService as any).generateComponentDescription = original;
     }
@@ -10552,9 +10608,9 @@ describe('top-down capability evidence (C2)', () => {
     const original = (aiService as any).generateComponentDescription;
     (aiService as any).generateComponentDescription = async () => JSON.stringify({
       capabilities: [
-        { name: 'Exposes codebase analysis', description: 'Analyzes source repositories and produces structural analysis output for agent consumption.', category: 'core', entities: ['Analysis'], journeys: [] },
-        { name: 'Tracks codebase changes', description: 'Tracks change reports across repository revisions so agents can diff behavior over time.', category: 'supporting', entities: ['ChangeReport'], journeys: [] },
-        { name: 'Secures codebase access', description: 'Maintains security contexts governing which accounts may read a given analysis.', category: 'supporting', entities: ['SecurityContext'], journeys: [] },
+        { name: 'Exposes codebase analysis', candidate_ids: ['analysis'], description: 'Analyzes source repositories and produces structural analysis output for agent consumption.', category: 'core', entities: ['Analysis'], journeys: [] },
+        { name: 'Tracks codebase changes', candidate_ids: ['change'], description: 'Tracks change reports across repository revisions so agents can diff behavior over time.', category: 'supporting', entities: ['ChangeReport'], journeys: [] },
+        { name: 'Secures codebase access', candidate_ids: ['security'], description: 'Maintains security contexts governing which accounts may read a given analysis.', category: 'supporting', entities: ['SecurityContext'], journeys: [] },
       ],
     });
     try {
@@ -10564,7 +10620,9 @@ describe('top-down capability evidence (C2)', () => {
         { id: 'entity_securitycontext', name: 'SecurityContext' },
       ];
       const mkOps = (prefix: string, count: number) => Array.from({ length: count }, (_, i) => ({
-        entry_point_id: `node:${prefix}_${i}`, entry_point_type: 'internal', action: 'Coordinate', path_or_command: `src/${prefix}.ts`,
+        entry_point_id: `node:${prefix}_${i}`, entry_point_type: 'api',
+        action: prefix === 'analysis' ? 'Analyze codebase' : prefix === 'change' ? 'Track codebase changes' : 'Secure codebase access',
+        path_or_command: `src/${prefix}.ts`,
       }));
       const catalog = await orch.aiExtractCapabilityCatalog({
         systemName: 'ak',
@@ -10572,10 +10630,16 @@ describe('top-down capability evidence (C2)', () => {
         frameworks: [], userJourneys: [],
         dataEntities,
         candidateCapabilities: [
-          { name: 'Analysis Management', related_entities: ['entity_analysis'], operations: mkOps('analysis', 4) },
-          { name: 'Change Report Management', related_entities: ['entity_changereport'], operations: mkOps('change', 3) },
-          { name: 'Security Context Management', related_entities: ['entity_securitycontext'], operations: mkOps('security', 2) },
-        ],
+          { id: 'analysis', name: 'Analysis Management', related_entities: ['entity_analysis'], operations: mkOps('analysis', 4) },
+          { id: 'change', name: 'Change Report Management', related_entities: ['entity_changereport'], operations: mkOps('change', 3) },
+          { id: 'security', name: 'Security Context Management', related_entities: ['entity_securitycontext'], operations: mkOps('security', 2) },
+        ].map(candidate => ({
+          ...candidate,
+          operation_evidence: candidate.operations.map(operation => ({
+            entry_point_id: operation.entry_point_id, source_node_id: operation.entry_point_id,
+            text: operation.action,
+          })),
+        })),
         externalServices: [], flowGraph: { capability_candidates: [] },
         projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
       });
@@ -10674,7 +10738,7 @@ describe('top-down capability evidence (C2)', () => {
     expect(ranked.indexOf('Dispatch Resource Management')).toBeLessThan(ranked.indexOf('Inspection Resource Management'));
   });
 
-  it('STRUCTURAL ANCHOR GATE: an AI-asserted "core" item with 0 entities and 0 operations is dropped unconditionally — even when it names a real journey or its subject overlaps top-down vocabulary (the escape hatch this gate used to have) — while an entity-anchored or operation-anchored item survives', async () => {
+  it('keeps explicitly cited operations but does not certify uncited core outcomes from entity or journey names', async () => {
     const original = (aiService as any).generateComponentDescription;
     (aiService as any).generateComponentDescription = async () => JSON.stringify({
       capabilities: [
@@ -10682,7 +10746,6 @@ describe('top-down capability evidence (C2)', () => {
         { name: 'Manage pricing', description: 'Maintains pricing records, rate decisions, and billing adjustments for operators.', category: 'core', entities: [], journeys: [] },
         // Fabricated journey strings must not count as journey grounding.
         { name: 'Coordinate partners', description: 'Coordinates partner onboarding workflows and partner account decisions end to end.', category: 'core', entities: [], journeys: ['Totally invented journey'] },
-        // Entity-grounded core item survives as before.
         { name: 'Track trips from booking through completion', description: 'Trips remain visible from booking through completion for dispatch operators.', category: 'core', entities: ['Trip'], journeys: [] },
         // DEFECT (real chat-gateway/assistant-runtime CAS, 25-repo capability
         // corpus): 0-entity/0-operation core items shipped anyway because their
@@ -10696,9 +10759,8 @@ describe('top-down capability evidence (C2)', () => {
         { name: 'Manage inspections', description: 'Owns inspection reports and their review workflow decisions for fleet compliance.', category: 'core', entities: [], journeys: [] },
         // A SINGLE resolvable operation (no entity at all) is sufficient
         // structural anchoring — the gate requires ONE of {operation, entity,
-        // entry point}, not entities specifically. Linked via PASS 2's
-        // token-overlap match against a real candidateCapabilities operation.
-        { name: 'Coordinate inspection dispatch', description: 'Coordinates dispatch operations that route inspectors to pending inspection sites.', category: 'core', entities: [], journeys: [] },
+        // entry point}, not entities specifically.
+        { name: 'Dispatch inspectors', candidate_ids: ['dispatch'], description: 'Inspectors receive assignments to pending inspection sites.', category: 'core', entities: [], journeys: [] },
       ],
     });
     try {
@@ -10709,9 +10771,12 @@ describe('top-down capability evidence (C2)', () => {
         userJourneys: [{ name: 'Create inspection report' }] as any[],
         dataEntities: [{ id: 'entity_trip', name: 'Trip' }] as any[],
         candidateCapabilities: [
-          { name: 'Inspection Dispatch Routing', related_entities: [], operations: [
-            { entry_point_id: 'ep_dispatch_1', entry_point_type: 'http', action: 'Dispatch', path_or_command: '/inspections/dispatch' },
-          ] },
+          { id: 'dispatch', name: 'Inspection Dispatch Routing', related_entities: [], operations: [
+            { entry_point_id: 'ep_dispatch_1', entry_point_type: 'api', action: 'Dispatch inspectors', path_or_command: '/inspections/dispatch' },
+          ], operation_evidence: [{
+            entry_point_id: 'ep_dispatch_1', source_node_id: 'dispatch_handler',
+            text: 'Dispatch inspectors to pending inspection sites by assigning the available inspector.',
+          }] },
         ] as any[],
         externalServices: [], flowGraph: { capability_candidates: [] } as any,
         projectTextSignal: { concepts: [], evidence: [] } as any, budgetMs: 30000,
@@ -10722,9 +10787,9 @@ describe('top-down capability evidence (C2)', () => {
       // No longer survives: 0 entities, 0 operations, 0 entry points — the
       // journey/top-down escape hatch is gone.
       expect(names).not.toContain('Manage inspections');
-      expect(names).toContain('Track trips from booking through completion');
-      expect(names).toContain('Coordinate inspection dispatch');
-      const opAnchored = catalog.find((capability: any) => capability.name === 'Coordinate inspection dispatch') as any;
+      expect(names).not.toContain('Track trips from booking through completion');
+      expect(names).toContain('Dispatch inspectors');
+      const opAnchored = catalog.find((capability: any) => capability.name === 'Dispatch inspectors') as any;
       expect(opAnchored.operations.length).toBeGreaterThan(0);
       expect(opAnchored.related_entities.length).toBe(0);
     } finally {
@@ -10741,7 +10806,7 @@ describe('capability cardinality follows outcomes rather than structural family 
       callCount += 1;
       return JSON.stringify({
         capabilities: [{
-          name: 'Organize widgets',
+          name: 'Organize widgets', candidate_ids: ['widget'],
           description: 'Operators organize Widget records for the product behavior represented by the cited evidence.',
           category: 'core',
           entities: ['Widget'],
@@ -10761,9 +10826,9 @@ describe('capability cardinality follows outcomes rather than structural family 
           { id: 'entity_gizmo', name: 'Gizmo' },
         ],
         candidateCapabilities: [
-          { name: 'Widget route area', related_entities: ['entity_widget'], operations: [{ entry_point_id: 'ep_w', entry_point_type: 'http', action: 'Manage' }] },
-          { name: 'Gadget route area', related_entities: ['entity_gadget'], operations: [{ entry_point_id: 'ep_g', entry_point_type: 'http', action: 'Manage' }] },
-          { name: 'Gizmo route area', related_entities: ['entity_gizmo'], operations: [{ entry_point_id: 'ep_z', entry_point_type: 'http', action: 'Manage' }] },
+          { id: 'widget', name: 'Widget route area', related_entities: ['entity_widget'], operations: [{ entry_point_id: 'ep_w', entry_point_type: 'http', action: 'Manage' }] },
+          { id: 'gadget', name: 'Gadget route area', related_entities: ['entity_gadget'], operations: [{ entry_point_id: 'ep_g', entry_point_type: 'http', action: 'Manage' }] },
+          { id: 'gizmo', name: 'Gizmo route area', related_entities: ['entity_gizmo'], operations: [{ entry_point_id: 'ep_z', entry_point_type: 'http', action: 'Manage' }] },
         ],
         externalServices: [],
         flowGraph: { capability_candidates: [] } as any,
@@ -10972,7 +11037,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     const original = (aiService as any).generateComponentDescription;
     (aiService as any).generateComponentDescription = async () => JSON.stringify({
       capabilities: [
-        { name: 'Keep user profiles current', description: 'User profiles retain current email and name details as people create and update them.', category: 'core', entities: ['User'] },
+        { name: 'Keep user profiles current', candidate_ids: ['profiles'], description: 'User profiles retain current email and name details as people create and update them.', category: 'core', entities: ['User'] },
       ],
     });
     try {
@@ -10983,7 +11048,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
         dataEntities: [{ id: 'entity_user', name: 'User' }],
         candidateCapabilities: [
           {
-            name: 'Keep user profiles current',
+            id: 'profiles', name: 'Keep user profiles current',
             related_entities: ['entity_user'],
             operations: [
               { entry_point_id: 'entry_route_get_0', entry_point_type: 'http', action: 'Read' },
@@ -11012,7 +11077,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     const original = (aiService as any).generateComponentDescription;
     (aiService as any).generateComponentDescription = async () => JSON.stringify({
       capabilities: [
-        { name: 'Run .NET Main entry point', description: 'Runs the .NET Main entry point of the application.', category: 'core', entities: [] },
+        { name: 'Run .NET Main entry point', candidate_ids: ['main'], description: 'Runs the .NET Main entry point of the application.', category: 'core', entities: [] },
       ],
     });
     try {
@@ -11022,7 +11087,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
         frameworks: ['WPF'], userJourneys: [],
         dataEntities: [],
         candidateCapabilities: [
-          { name: 'Run .NET Main entry point', related_entities: [], operations: [{ entry_point_id: 'entry_main', entry_point_type: 'internal', action: 'Run' }] },
+          { id: 'main', name: 'Run .NET Main entry point', related_entities: [], operations: [{ entry_point_id: 'entry_main', entry_point_type: 'internal', action: 'Run' }] },
         ],
         externalServices: [], flowGraph: { capability_candidates: [] },
         projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
@@ -11044,9 +11109,9 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     const original = (aiService as any).generateComponentDescription;
     (aiService as any).generateComponentDescription = async () => JSON.stringify({
       capabilities: [
-        { name: 'Create attack -> Currency created', description: 'Players create attacks which generate currency rewards for combat.', category: 'core', entities: ['Currency'] },
-        { name: 'Update quest objective -> Quest updated', description: 'Players progress quests by completing objectives across the world.', category: 'core', entities: ['Quest'] },
-        { name: 'x -> y', description: 'A meaningless single-letter trace that has no purpose head at all.', category: 'core', entities: [] },
+        { name: 'Create attack -> Currency created', candidate_ids: ['attack'], description: 'Players create attacks which generate currency rewards for combat.', category: 'core', entities: ['Currency'] },
+        { name: 'Update quest objective -> Quest updated', candidate_ids: ['quest'], description: 'Players progress quests by completing objectives across the world.', category: 'core', entities: ['Quest'] },
+        { name: 'x -> y', candidate_ids: ['attack'], description: 'A meaningless single-letter trace that has no purpose head at all.', category: 'core', entities: [] },
       ],
     });
     try {
@@ -11059,8 +11124,8 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
           { id: 'entity_quest', name: 'Quest' },
         ],
         candidateCapabilities: [
-          { name: 'Create attack -> Currency created', related_entities: ['entity_currency'], operations: [] },
-          { name: 'Update quest objective -> Quest updated', related_entities: ['entity_quest'], operations: [] },
+          { id: 'attack', name: 'Create attack -> Currency created', related_entities: ['entity_currency'], operations: [] },
+          { id: 'quest', name: 'Update quest objective -> Quest updated', related_entities: ['entity_quest'], operations: [] },
         ],
         externalServices: [], flowGraph: { capability_candidates: [] },
         projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
@@ -11080,7 +11145,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     const original = (aiService as any).generateComponentDescription;
     (aiService as any).generateComponentDescription = async () => JSON.stringify({
       capabilities: [
-        { name: 'Automate release packaging', description: 'Packages and publishes versioned release artifacts so operators can ship builds.', category: 'core', entities: ['ReleaseConfig'], journeys: [] },
+        { name: 'Automate release packaging', candidate_ids: ['release'], description: 'Packages and publishes versioned release artifacts so operators can ship builds.', category: 'core', entities: ['ReleaseConfig'], journeys: [] },
       ],
     });
     try {
@@ -11090,7 +11155,10 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
         frameworks: [], userJourneys: [],
         dataEntities: [{ id: 'entity_releaseconfig', name: 'ReleaseConfig' }],
         candidateCapabilities: [
-          { name: 'Release Management', related_entities: ['entity_releaseconfig'], operations: [] },
+          { id: 'release', name: 'Release Management', related_entities: ['entity_releaseconfig'], operations: [
+            { entry_point_id: 'release-package', entry_point_type: 'cli', action: 'Package release artifacts' },
+            { entry_point_id: 'release-publish', entry_point_type: 'cli', action: 'Publish versioned release artifacts' },
+          ] },
         ],
         externalServices: [], flowGraph: { capability_candidates: [] },
         projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
@@ -11102,7 +11170,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     }
   });
 
-  it('folds a LARGE behavior-surface family into the ranked candidate window as one coarse candidate', async () => {
+  it('includes a large behavior surface in the prompt without forcing publication of its mechanism label', async () => {
     // Reproduces the live Klauro-self defect: 207 mcp_tool entry points are
     // ALREADY one merged behaviorSurfaces candidate (buildBehaviorCapabilities
     // clusters by registration kind), but the AI catalog previously never saw
@@ -11115,7 +11183,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
       captured.push(opts);
       return JSON.stringify({
         capabilities: [
-          { name: 'Provide MCP tool surface to agents', description: 'Exposes MCP tools that let coding agents query the CAS graph before editing.', category: 'core', entities: [], journeys: [] },
+          { name: 'Provide MCP tool surface to agents', candidate_ids: ['cap_mcp_tool_surface'], description: 'Exposes MCP tools that let coding agents query the CAS graph before editing.', category: 'core', entities: [], journeys: [] },
         ],
       });
     };
@@ -11146,8 +11214,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
         externalServices: [], flowGraph: { capability_candidates: [] },
         projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
       });
-      expect(catalog.length).toBe(1);
-      expect(catalog[0].name).toBe('Provide MCP tool surface to agents');
+      expect(catalog).toEqual([]);
       // Reached the prompt as a real candidate route area (evidence the ranker
       // actually surfaced it, not just that the AI happened to name it) — proving
       // the gate keyed on the TRUE 207 count, not the capped-at-12 operations.
@@ -11158,8 +11225,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
       const mcpCandidate = (facts?.candidate_route_areas || []).find((area: any) => area.name === 'Mcp Tool Surface');
       expect(mcpCandidate).toBeDefined();
       expect(mcpCandidate.entry_points).toBe(207);
-      // Operations link back so the resulting capability stays navigable.
-      expect(catalog[0].operations.length).toBeGreaterThan(0);
+      expect(mcpCandidate.operations).toEqual([...new Set(cappedOps.map(operation => operation.action))]);
     } finally {
       (aiService as any).generateComponentDescription = original;
     }
@@ -11503,7 +11569,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     }
   });
 
-  it('bare-noun capability names: repairs a grounded single-noun label, drops an ungrounded noun phrase, and keeps verb-headed labels untouched', async () => {
+  it('rejects cited bare-noun labels and keeps cited verb-headed labels with supplied descriptions', async () => {
     // Reproduces the live defect measured on a real analyzed Swift macOS repo
     // (v1.0.116): 24 of the capabilities entries were single/two-word
     // module-or-type nouns ("Gateway", "Wizard", "Exec", ...) with no leading
@@ -11514,18 +11580,12 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     const original = (aiService as any).generateComponentDescription;
     (aiService as any).generateComponentDescription = async () => JSON.stringify({
       capabilities: [
-        // Bare single noun, but grounded in a real entity -> repaired to a
-        // purpose-headed "Manage <noun>" name instead of shipping as-is.
-        { name: 'Gateway', entities: ['Gateway'] },
-        // Bare two-word noun phrase (both nouns, no leading verb) with NO
-        // anchor evidence at all -> demoted (dropped), not invented a purpose
-        // for with nothing behind it. Explicit description so it is the
-        // bare-noun guard doing the dropping, not the empty-description gate.
-        { name: 'Exec Approval', description: 'Handles gateway related exec approval processing tasks for the system.', entities: [] },
+        { name: 'Gateway', candidate_ids: ['gateways'], description: 'Gateway monitoring reports current gateway connection status.', entities: ['Gateway'] },
+        { name: 'Exec Approval', candidate_ids: ['gateways'], description: 'Handles gateway related exec approval processing tasks for the system.', entities: [] },
         // Verb-headed two-word label (verb + object) -> never flagged, kept verbatim.
-        { name: 'Detect patterns', entities: ['Pattern'] },
+        { name: 'Detect patterns', candidate_ids: ['patterns'], description: 'Pattern matching identifies repeated structures across supplied records.', entities: ['Pattern'] },
         // "Monitor gateways" is verb-headed -> never flagged, kept verbatim.
-        { name: 'Monitor gateways', entities: ['Gateway'] },
+        { name: 'Monitor gateways', candidate_ids: ['gateways'], description: 'Gateway monitoring reports current gateway connection status.', entities: ['Gateway'] },
       ],
     });
     try {
@@ -11538,7 +11598,10 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
           { id: 'entity_pattern', name: 'Pattern' },
           { id: 'entity_session', name: 'Session' },
         ],
-        candidateCapabilities: [],
+        candidateCapabilities: [
+          { id: 'patterns', name: 'Pattern detection', related_entities: ['entity_pattern'], operations: [{ entry_point_id: 'pattern-detect', entry_point_type: 'api', action: 'Detect patterns' }] },
+          { id: 'gateways', name: 'Gateway monitoring', related_entities: ['entity_gateway'], operations: [{ entry_point_id: 'gateway-monitor', entry_point_type: 'api', action: 'Monitor gateways' }] },
+        ],
         externalServices: [], flowGraph: { capability_candidates: [] },
         projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
       });
@@ -13117,7 +13180,7 @@ describe('enterprise AI semantic guards', () => {
     const original = (aiService as any).generateComponentDescription;
     (aiService as any).generateComponentDescription = async () => JSON.stringify({
       capabilities: [{
-        name: 'Deploy service runtime',
+        name: 'Deploy service runtime', candidate_ids: ['deploy'],
         description: 'Lets operators deploy the declared service runtime consistently.',
         category: 'core',
         entities: [],
@@ -13136,9 +13199,9 @@ describe('enterprise AI semantic guards', () => {
         userJourneys: [],
         dataEntities: [],
         candidateCapabilities: [{
-          name: 'Shell Deploy',
+          id: 'deploy', name: 'Shell Deploy',
           related_entities: [],
-          operations: [{ entry_point_id: 'entry_deploy', entry_point_type: 'cli', action: 'Execute' }],
+          operations: [{ entry_point_id: 'entry_deploy', entry_point_type: 'cli', action: 'Deploy service runtime', path_or_command: 'deploy service-runtime' }],
         }],
         externalServices: [],
         flowGraph: { capability_candidates: [] },
@@ -13159,7 +13222,7 @@ describe('enterprise AI semantic guards', () => {
     const original = (aiService as any).generateComponentDescription;
     (aiService as any).generateComponentDescription = async () => JSON.stringify({
       capabilities: [{
-        name: 'Deploy shell environments',
+        name: 'Deploy shell environments', candidate_ids: ['deploy'],
         description: 'Deploys shell environments for application runtime configuration.',
         category: 'core',
         entities: [],
@@ -13178,7 +13241,7 @@ describe('enterprise AI semantic guards', () => {
         userJourneys: [],
         dataEntities: [],
         candidateCapabilities: [{
-          name: 'Shell Deploy', related_entities: [], operations: [],
+          id: 'deploy', name: 'Shell Deploy', related_entities: [], operations: [],
         }],
         externalServices: [],
         flowGraph: { capability_candidates: [] },
@@ -13196,12 +13259,12 @@ describe('enterprise AI semantic guards', () => {
     (aiService as any).generateComponentDescription = async () => JSON.stringify({
       capabilities: [
         {
-          name: 'View enterprise orders',
+          name: 'View enterprise orders', candidate_ids: ['orders'],
           description: 'Lets users access enterprise orders for tracking and management.',
           category: 'core', entities: ['EnterpriseOrder'], journeys: [],
         },
         {
-          name: 'Monitor enterprise performance',
+          name: 'Monitor enterprise performance', candidate_ids: ['orders'],
           description: 'Gives users a dashboard to monitor enterprise performance.',
           category: 'supporting', entities: ['EnterpriseOrder'], journeys: [],
         },
@@ -13216,7 +13279,7 @@ describe('enterprise AI semantic guards', () => {
         frameworks: ['Express'], userJourneys: [],
         dataEntities: [{ id: 'entity_order', name: 'EnterpriseOrder' }],
         candidateCapabilities: [{
-          name: 'Enterpriseorders', related_entities: ['entity_order'],
+          id: 'orders', name: 'Enterpriseorders', related_entities: ['entity_order'],
           operations: [{
             entry_point_id: 'entry_order', entry_point_type: 'http', action: 'View',
             trigger: { method: 'GET', path: '/orders/{id}' },
@@ -13681,7 +13744,7 @@ describe('enterprise AI semantic guards', () => {
     const original = (aiService as any).generateComponentDescription;
     (aiService as any).generateComponentDescription = async () => JSON.stringify({
       capabilities: [{
-        name: 'Maintain customer profiles',
+        name: 'Maintain customer profiles', candidate_ids: ['profiles'],
         description: 'Keeps user names and email details available for supported customer workflows.',
         category: 'core',
         entities: ['User'],
@@ -13694,9 +13757,11 @@ describe('enterprise AI semantic guards', () => {
         enhancedSystemPurpose: { primary_domain: 'account-management', core_concepts: [] },
         frameworks: [], userJourneys: [],
         dataEntities: [{ id: 'entity_user', name: 'User', kind: 'persisted-entity' }],
-        candidateCapabilities: [], behaviorSurfaces: [], externalServices: [],
+        candidateCapabilities: [{ id: 'profiles', name: 'User profiles', related_entities: ['entity_user'],
+          operations: [{ entry_point_id: 'profile-update', entry_point_type: 'http', action: 'Update profiles' }] }],
+        behaviorSurfaces: [], externalServices: [],
         flowGraph: { capability_candidates: [] },
-        projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
+        projectTextSignal: { concepts: [], evidence: ['README.md'], productDocSummary: 'Customers maintain profiles with user names and email details.' }, budgetMs: 30000,
       });
 
       expect(catalog).toHaveLength(1);
