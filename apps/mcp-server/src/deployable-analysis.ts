@@ -1054,6 +1054,14 @@ export interface SubCasNodeIndexEntry {
 
 
   node_count: number;
+  size_disclosure?: {
+    edge_count: number;
+    root_node_ratio: number;
+    root_edge_ratio: number;
+    large_scope_threshold: number;
+    large_scope: boolean;
+    note: string;
+  };
 
   exclusive_node_count: number;
 
@@ -1701,6 +1709,14 @@ export function buildDeployableAnalyses(cas: CASOutput): BuildDeployableAnalyses
       tier: unit.tier,
       kind: unit.kind,
       node_count: units[i].slice.nodes.length,
+      size_disclosure: {
+        edge_count: units[i].slice.edges.length,
+        root_node_ratio: graphNodeCount ? units[i].slice.nodes.length / graphNodeCount : 0,
+        root_edge_ratio: cas.edges.length ? units[i].slice.edges.length / cas.edges.length : 0,
+        large_scope_threshold: 0.5,
+        large_scope: units[i].slice.nodes.length > graphNodeCount * 0.5 || units[i].slice.edges.length > cas.edges.length * 0.5,
+        note: 'Ratios describe retained graph records, not serialized bytes. Above one half of either root collection is a large scope; all required records remain included.',
+      },
       exclusive_node_count: perUnitCounts[i].exclusive,
       shared_node_count: perUnitCounts[i].shared,
       owned_shared_node_count: perUnitCounts[i].ownedShared,

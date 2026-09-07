@@ -218,6 +218,21 @@ test('child closure preserves every behavioral edge kind used by node contracts'
   }
 });
 
+test('child size disclosure reports broad scopes without truncating retained records', () => {
+  const cas = buildFixtureCas();
+  for (let i = 0; i < 40; i++) cas.nodes.push(node('API_EXTRA_' + i, 'apps/api/extra-' + i + '.ts'));
+  const result = buildDeployableAnalyses(cas);
+  const entry = result.sub_cas_nodes.units.find(unit => unit.name === 'api')!;
+  const child = result.units.find(unit => unit.unit_name === 'api')!.slice;
+  assert.equal(entry.size_disclosure?.root_node_ratio, child.nodes.length / cas.nodes.length);
+  assert.equal(entry.size_disclosure?.root_edge_ratio, child.edges.length / cas.edges.length);
+  assert.equal(entry.size_disclosure?.edge_count, child.edges.length);
+  assert.equal(entry.size_disclosure?.large_scope_threshold, 0.5);
+  assert.equal(entry.size_disclosure?.large_scope, true);
+  assert.equal(child.nodes.filter(item => item.id.startsWith('API_EXTRA_')).length, 40);
+  assert.equal(result.sub_cas_nodes.units.find(unit => unit.name === 'tool1')!.size_disclosure?.large_scope, false);
+});
+
 test('slices carry their reachability closure, shared code is tagged and counted honestly', () => {
   const cas = buildFixtureCas();
   const result = buildDeployableAnalyses(cas);
