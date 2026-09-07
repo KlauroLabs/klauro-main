@@ -338,6 +338,28 @@ test('capsule-only response preserves missing citations without claiming deletio
   });
 });
 
+test('compact target uncertainty guidance survives an unverified freshness warning', async () => {
+  await withTempDir('klauro-freshness-ambiguous-', async root => {
+    writeSourceFixture(root);
+    const cas = freshnessFixtureCas(root, analyzedTime());
+    for (const name of ['javascript-parser', 'python-parser']) {
+      const file = `src/${name}.ts`;
+      fs.writeFileSync(path.join(root, file), 'export function extractDocumentation() {}\n');
+      cas.nodes.push({ id: name, name: 'extractDocumentation', type: 'method', source: { file, line: 1 } });
+    }
+    for (const response_profile of ['first-turn', 'capsule-only'] as const) {
+      const context = await getAgentContext(cas, root, {
+        task_type: 'debug', target: 'extractDocumentation', response_profile,
+      }) as Record<string, any>;
+      assert.ok(context.target_resolution.gaps.length > 0);
+      assert.match(context.rule, /UNVERIFIED/);
+      assert.match(context.rule, /Resolve target uncertainty before choosing an edit scope/);
+      assert.match(context.rule, /[Ii]nspect cited source before editing/);
+      assert.equal(context.analysis_freshness.citation_verification, 'unverified');
+    }
+  });
+});
+
 function analyzedTime(): string {
   return new Date(Date.now() - HOUR_MS).toISOString();
 }
