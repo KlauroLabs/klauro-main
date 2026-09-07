@@ -11,6 +11,7 @@ import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.ty
 import type { SubCasNodeIndex } from './deployable-analysis';
 import {
   createCasSectionManifest,
+  orderedCollectionBytes,
   selectExactCasSection,
   validateCasTreeProjection,
   type CasRawColumnDescriptor,
@@ -34,7 +35,7 @@ import {
   type CompactCASSearchText,
 } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-search';
 import { buildCompactCASPostingArtifacts, decodeCompactCASPostingShard } from './compact-cas-search-storage';
-import { compressionCodecForPath, writeCompressedChunksAtomic } from './json-storage-writer';
+import { compressionCodecForPath, writeCompressedChunksAtomic, writeCompressedJsonAtomic, writeCompressedJsonFieldsAtomic } from './json-storage-writer';
 
 interface SegmentedAnalysisPointerV1 {
   manifest_version: 1;
@@ -165,7 +166,13 @@ async function writeSegmentedAnalysisUnlocked(
   const root = segmentedAnalysisRoot(filePath);
   const staging = `staging-${process.pid}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}`;
   const tmpDir = path.join(root, staging);
-  const manifest = createCasSectionManifest(output);
+  const fieldsWriter = writeCompressedJson === writeCompressedJsonAtomic;
+  const manifest = createCasSectionManifest(output, fieldsWriter ? { collectionBytes: {} } : {});
+  const writeSectionFile = async (target: string, section: Record<string, unknown>): Promise<Record<string, number>> => {
+    if (fieldsWriter) return writeCompressedJsonFieldsAtomic(target, section);
+    await writeCompressedJson(target, section, { spaces: 0 });
+    return {};
+  };
   const projectedChildren = options.rootOnlyTree ? [...(options.childProjections || [])] : [];
   let recursiveProjection: CasTreeProjectionV2 | undefined;
   if (options.rootOnlyTree) {
@@ -189,18 +196,20 @@ async function writeSegmentedAnalysisUnlocked(
   try {
     await fs.ensureDir(tmpDir);
     const sectionMetrics: Array<{ name: string; duration_ms: number; bytes: number }> = [];
+    const collectionBytes: Record<string, number> = {};
     const writeSection = pLimit(4);
     await Promise.all(manifest.sections.map(descriptor => writeSection(async () => {
       const startedAt = Date.now();
       const sectionFile = `${descriptor.name}.json${extension}`;
       const sectionPath = path.join(tmpDir, sectionFile);
-      await writeCompressedJson(sectionPath, selectExactCasSection(output, descriptor.name), { spaces: 0 });
+      Object.assign(collectionBytes, await writeSectionFile(sectionPath, selectExactCasSection(output, descriptor.name) as Record<string, unknown>));
       const stat = await fs.stat(sectionPath);
       descriptor.file = sectionFile;
       descriptor.bytes = stat.size;
       descriptor.sha256 = await checksumFile(sectionPath);
       sectionMetrics.push({ name: descriptor.name, duration_ms: Date.now() - startedAt, bytes: stat.size });
     })));
+    if (fieldsWriter) manifest.collection_bytes = orderedCollectionBytes(output, collectionBytes);
     if (recursiveProjection) {
       const seen = new Set<string>([recursiveProjection.root_id]);
       const stack = projectedChildren.slice().reverse();
@@ -212,14 +221,14 @@ async function writeSegmentedAnalysisUnlocked(
         seen.add(childId);
         const nestedChildren = child.children || [];
         const { children: _children, ...childBody } = child;
-        const childManifest = createCasSectionManifest(childBody as CASOutput);
+        const childManifest = createCasSectionManifest(childBody as CASOutput, fieldsWriter ? { collectionBytes: {} } : {});
         const childFields = Object.entries(childBody).filter(([, value]) => value !== undefined).map(([field]) => field);
         const descriptors: CasTreeNodeDescriptor['sections'] = childManifest.sections;
         for (const descriptor of descriptors) {
           const childStartedAt = Date.now();
           const temporaryFile = `tree.tmp.${childOrdinal}.${descriptor.name}.json${extension}`;
           const temporaryPath = path.join(tmpDir, temporaryFile);
-          await writeCompressedJson(temporaryPath, selectExactCasSection(childBody as CASOutput, descriptor.name), { spaces: 0 });
+          await writeSectionFile(temporaryPath, selectExactCasSection(childBody as CASOutput, descriptor.name) as Record<string, unknown>);
           const stat = await fs.stat(temporaryPath);
           const sha256 = await checksumFile(temporaryPath);
           const childFile = `tree.${sha256}.json${extension}`;

@@ -141,3 +141,32 @@ test('zstd streaming preserves exact bytes and cleans up after serializer failur
     await fs.remove(directory);
   }
 });
+
+test('field-wise compressed writer emits exactly the native JSON bytes and measures each field', async () => {
+  const { writeCompressedJsonFieldsAtomic } = await import('./json-storage-writer');
+  const { readZstdJson } = await import('./zstd-json');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-fields-writer-'));
+  try {
+    const value: Record<string, unknown> = {
+      identity: { id: 'a', when: new Date('2026-09-07T00:00:00.000Z'), nested: { toJSON: () => ({ custom: true }) } },
+      nodes: [{ id: 'n1', name: 'héllo ☃', tags: ['a', 'b'] }, { id: 'n2', empty: null }],
+      skipped: undefined,
+      fn: () => 1,
+      count: 3,
+      text: 'plain "quoted" \\ text',
+      hidden: { inner: undefined, kept: false },
+    };
+    const target = path.join(dir, 'section.json.zst');
+    const bytes = await writeCompressedJsonFieldsAtomic(target, value);
+    const expected = JSON.stringify(value);
+    const decoded = await readZstdJson(target);
+    assert.equal(JSON.stringify(decoded), expected);
+    assert.deepEqual(Object.keys(bytes), ['identity', 'nodes', 'count', 'text', 'hidden']);
+    for (const key of Object.keys(bytes)) assert.equal(bytes[key], Buffer.byteLength(JSON.stringify(value[key]), 'utf8'), key);
+    const plain = path.join(dir, 'section.json');
+    await writeCompressedJsonFieldsAtomic(plain, value);
+    assert.equal(fs.readFileSync(plain, 'utf8'), expected);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

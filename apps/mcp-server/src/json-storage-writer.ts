@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as zlib from 'zlib';
 import { execFile, spawn, spawnSync } from 'child_process';
 import { open } from 'node:fs/promises';
-import type { Writable } from 'stream';
+import { Writable } from 'stream';
 import { finished, pipeline } from 'stream/promises';
 import { promisify } from 'util';
 
@@ -80,6 +80,64 @@ export async function writeCompressedChunksAtomic(
   } finally {
     await fs.remove(tmpPath).catch(() => undefined);
   }
+}
+
+class JsonFieldTooLarge extends Error {}
+
+function serializableField(value: unknown): boolean {
+  return value !== undefined && typeof value !== 'function' && typeof value !== 'symbol';
+}
+
+async function* serializeJsonFields(value: Record<string, unknown>, bytes: Record<string, number>): AsyncGenerator<string> {
+  yield '{';
+  let first = true;
+  for (const key of Object.keys(value)) {
+    const field = value[key];
+    if (!serializableField(field)) continue;
+    let serialized: string | undefined;
+    try {
+      serialized = JSON.stringify(field);
+    } catch (error) {
+      if (isJsonStringTooLargeError(error)) throw new JsonFieldTooLarge(key);
+      throw error;
+    }
+    if (serialized === undefined) continue;
+    yield `${first ? '' : ','}${JSON.stringify(key)}:${serialized}`;
+    bytes[key] = Buffer.byteLength(serialized, 'utf8');
+    first = false;
+  }
+  yield '}';
+}
+
+async function countJsonBytes(value: unknown): Promise<number> {
+  let total = 0;
+  const counter = new Writable({
+    write(chunk, _encoding, callback) {
+      total += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(String(chunk), 'utf8');
+      callback();
+    },
+  });
+  await writeJsonToStream(counter, value, 0);
+  await new Promise<void>((resolve, reject) => counter.end((error?: Error | null) => (error ? reject(error) : resolve())));
+  return total;
+}
+
+export async function writeCompressedJsonFieldsAtomic(filePath: string, value: Record<string, unknown>): Promise<Record<string, number>> {
+  const bytes: Record<string, number> = {};
+  try {
+    await writeCompressedChunksAtomic(filePath, serializeJsonFields(value, bytes));
+    return bytes;
+  } catch (error) {
+    if (!(error instanceof JsonFieldTooLarge)) throw error;
+  }
+  await writeCompressedJsonAtomic(filePath, value, { spaces: 0 });
+  const measured: Record<string, number> = {};
+  for (const key of Object.keys(value)) {
+    const field = value[key];
+    if (!serializableField(field)) continue;
+    measured[key] = await countJsonBytes(field);
+  }
+  return measured;
 }
 
 async function replaceFileAtomic(tmpPath: string, filePath: string): Promise<void> {

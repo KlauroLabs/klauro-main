@@ -923,3 +923,22 @@ test('an inaccessible segmented index pointer is never read as absent, independe
   assert.equal(await segmentedReadFailureFallback(legacyEntry, '/tmp/store/legacy.json', errno('ENOENT'), async () => ({ size: 1 })), null);
   await assert.rejects(segmentedReadFailureFallback({ path: '/p', storage_format: 'segmented-v2' }, '/tmp/store/x.json', errno('ENOENT'), async () => ({ size: 1 })), /ENOENT/);
 });
+
+test('canonical segmented saves record collection bytes measured from the section writes, equal to native JSON byte lengths', async () => {
+  await withStoragePath(async () => {
+    const project = '/tmp/collection-bytes-project';
+    const cas = casFixture('collection-bytes');
+    await saveAnalysis(project, cas, 'main', { canonicalSegmented: true });
+    await waitForPendingSegmentedWrites();
+    const manifest = (await loadAnalysisSectionManifest(project))!;
+    const bytes = manifest.collection_bytes!;
+    clearLoadedAnalysisCache();
+    const persisted = (await loadCompleteAnalysisFromSections(project))! as unknown as Record<string, unknown>;
+    assert.deepEqual(Object.keys(bytes), manifest.logical_fields.filter(field => field in bytes));
+    assert.ok(Object.keys(bytes).length >= 8);
+    for (const field of Object.keys(bytes)) {
+      assert.equal(bytes[field], Buffer.byteLength(JSON.stringify(persisted[field]), 'utf8'), field);
+    }
+    assert.equal(manifest.collection_totals!.nodes, cas.nodes.length);
+  });
+});

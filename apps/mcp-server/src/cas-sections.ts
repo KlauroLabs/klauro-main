@@ -213,11 +213,31 @@ export function measureCasCollections(cas: CASOutput): { totals: Record<string, 
   return { totals, bytes };
 }
 
-export function createCasSectionManifest(cas: CASOutput): CasSectionManifest {
+export function measureCasCollectionTotals(cas: CASOutput): Record<string, number> {
+  const totals: Record<string, number> = {};
+  for (const field of Object.keys(cas).sort()) {
+    const value = (cas as unknown as Record<string, unknown>)[field];
+    if (Array.isArray(value)) totals[field] = value.length;
+  }
+  return totals;
+}
+
+export function orderedCollectionBytes(cas: CASOutput, bytes: Readonly<Record<string, number>>): Record<string, number> {
+  const ordered: Record<string, number> = {};
+  for (const field of Object.keys(cas).sort()) {
+    if ((cas as unknown as Record<string, unknown>)[field] === undefined) continue;
+    if (typeof bytes[field] === 'number') ordered[field] = bytes[field];
+  }
+  return ordered;
+}
+
+export function createCasSectionManifest(cas: CASOutput, options: { collectionBytes?: Readonly<Record<string, number>> } = {}): CasSectionManifest {
   const fields = Object.keys(cas).sort();
   const grouped = new Map<CasSectionName, string[]>(CAS_SECTION_NAMES.map(name => [name, []]));
   for (const field of fields) grouped.get(casSectionForField(field))!.push(field);
-  const measured = measureCasCollections(cas);
+  const measured = options.collectionBytes
+    ? { totals: measureCasCollectionTotals(cas), bytes: orderedCollectionBytes(cas, options.collectionBytes) }
+    : measureCasCollections(cas);
   return {
     manifest_version: 1,
     cas_version: cas.cas_version,
