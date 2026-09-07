@@ -15,6 +15,10 @@ interface McpToolRegistration {
 
   receiver: string;
 
+  description?: string;
+  descriptionSource: 'string-literal' | 'template-literal' | 'dynamic' | 'absent';
+  descriptionLine?: number;
+
   handlerRef?: string;
 
 
@@ -142,23 +146,37 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
         .withLevel(3, 'code')
         .withCategory('mcp_tool', ['mcp', 'tool-registration'])
         .withSource({ file: reg.filePath, line: reg.line, end_line: reg.line })
-        .withDescription(`MCP tool registration: ${reg.name} (via ${reg.receiver}.${reg.kind}())`)
+        .withDescription(reg.description ?? `MCP tool registration: ${reg.name} (via ${reg.receiver}.${reg.kind}())`)
         .withMetadata({
           attributes: {
             mcp: true,
             registrationKind: reg.kind,
             receiver: reg.receiver,
             handlerRef: reg.handlerRef,
-            nameSource: reg.kind === 'setRequestHandler' ? 'schema-identifier' : 'string-literal'
+            nameSource: reg.kind === 'setRequestHandler' ? 'schema-identifier' : 'string-literal',
+            descriptionSource: reg.descriptionSource,
+            descriptionLine: reg.descriptionLine
           }
         });
 
       const node = nodeBuilder.build();
+      if (reg.description !== undefined) {
+        node.description_source = 'deterministic';
+        node.documentation = {
+          format: 'other',
+          type: 'other',
+          raw: reg.description,
+          description: reg.description,
+          summary: reg.description.split(/(?<=[.!?])\s+/)[0],
+          location: { start_line: reg.descriptionLine ?? reg.line, end_line: reg.descriptionLine ?? reg.line }
+        };
+      }
       nodes.push(node);
 
       entryPoints.push({
         id: `entry_${nodeId}`,
         name: reg.name,
+        ...(reg.description !== undefined ? { description: reg.description, description_source: 'deterministic' } : {}),
 
 
 
@@ -178,6 +196,8 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
           receiver: reg.receiver,
           file: reg.filePath,
           line: reg.line,
+          descriptionSource: reg.descriptionSource,
+          descriptionLine: reg.descriptionLine,
 
 
 
@@ -264,12 +284,14 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
       const receiver = match[1];
       const name = match[3];
       const args = this.parseRemainingCallArgs(content, head.lastIndex);
+      const described = this.describeFromConfigObject(args[0] || '', content, head.lastIndex);
       results.push({
         name,
         kind: 'registerTool',
         filePath,
         line: this.lineAt(content, match.index),
         receiver,
+        ...described,
         handlerRef: this.extractHandlerRef(args),
         handlerCallCandidates: this.extractHandlerCallCandidates(args)
       });
@@ -291,12 +313,14 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
       if (!this.looksLikeMcpServerReceiver(receiver)) continue;
       const name = match[3];
       const args = this.parseRemainingCallArgs(content, head.lastIndex);
+      const described = this.describeFromPositionalArg(args[0] || '', content, head.lastIndex);
       results.push({
         name,
         kind: 'tool',
         filePath,
         line: this.lineAt(content, match.index),
         receiver,
+        ...described,
         handlerRef: this.extractHandlerRef(args),
         handlerCallCandidates: this.extractHandlerCallCandidates(args)
       });
@@ -323,6 +347,7 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
         filePath,
         line: this.lineAt(content, match.index),
         receiver,
+        descriptionSource: 'absent',
         handlerRef: this.extractHandlerRef(args,   true),
         handlerCallCandidates: this.extractHandlerCallCandidates(args,   true)
       });
@@ -333,6 +358,73 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
 
 
 
+
+  private describeFromConfigObject(
+    configArg: string,
+    content: string,
+    argsStart: number,
+  ): Pick<McpToolRegistration, 'description' | 'descriptionSource' | 'descriptionLine'> {
+    const trimmed = configArg.trim();
+    if (!trimmed.startsWith('{')) return { descriptionSource: trimmed ? 'dynamic' : 'absent' };
+    const property = /(^|[{,\s])description\s*:\s*/.exec(trimmed);
+    if (!property) return { descriptionSource: 'absent' };
+    const valueStart = property.index + property[0].length;
+    const literal = this.readStringLiteral(trimmed, valueStart);
+    if (!literal) return { descriptionSource: 'dynamic' };
+    const absoluteOffset = content.indexOf(trimmed, argsStart);
+    return {
+      description: literal.value,
+      descriptionSource: literal.source,
+      descriptionLine: absoluteOffset >= 0 ? this.lineAt(content, absoluteOffset + valueStart) : undefined,
+    };
+  }
+
+  private describeFromPositionalArg(
+    arg: string,
+    content: string,
+    argsStart: number,
+  ): Pick<McpToolRegistration, 'description' | 'descriptionSource' | 'descriptionLine'> {
+    const trimmed = arg.trim();
+    if (!trimmed) return { descriptionSource: 'absent' };
+    if (trimmed.startsWith('{')) return { descriptionSource: 'absent' };
+    const literal = this.readStringLiteral(trimmed, 0);
+    if (!literal || literal.end !== trimmed.length) return { descriptionSource: 'dynamic' };
+    const absoluteOffset = content.indexOf(trimmed, argsStart);
+    return {
+      description: literal.value,
+      descriptionSource: literal.source,
+      descriptionLine: absoluteOffset >= 0 ? this.lineAt(content, absoluteOffset) : undefined,
+    };
+  }
+
+  private readStringLiteral(
+    text: string,
+    start: number,
+  ): { value: string; end: number; source: 'string-literal' | 'template-literal' } | undefined {
+    const quote = text[start];
+    if (quote !== '"' && quote !== "'" && quote !== '`') return undefined;
+    let value = '';
+    for (let i = start + 1; i < text.length; i += 1) {
+      const ch = text[i];
+      if (ch === '\\') {
+        const next = text[i + 1];
+        if (next === undefined) return undefined;
+        if (next === 'n') value += '\n';
+        else if (next === 't') value += '\t';
+        else if (next === 'r') value += '\r';
+        else if (next === 'u' && /^[0-9a-fA-F]{4}$/.test(text.slice(i + 2, i + 6))) { value += String.fromCharCode(parseInt(text.slice(i + 2, i + 6), 16)); i += 4; }
+        else if (next === '\n') { }
+        else value += next;
+        i += 1;
+        continue;
+      }
+      if (quote === '`' && ch === '$' && text[i + 1] === '{') return undefined;
+      if (ch === quote) return { value, end: i + 1, source: quote === '`' ? 'template-literal' : 'string-literal' };
+      if (quote !== '`' && ch === '\n') return undefined;
+      value += ch;
+    }
+    return undefined;
+  }
 
   private extractHandlerRef(args: string[], firstArgIsSchema = false): string | undefined {
     const relevant = firstArgIsSchema ? args.slice(1) : args;
