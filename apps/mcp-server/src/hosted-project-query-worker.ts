@@ -10,6 +10,7 @@ import { attachCasProjection, casProjection } from './cas-projection';
 import type { SubCasNodeIndex } from './deployable-analysis';
 import { loadTelemetryObservations } from './telemetry-ingestion';
 import { buildNodeRuntimeMetrics } from './product';
+import { CasRecordStoreCapacityError } from './cas-record-store';
 import { agentContextProjectionGaps, computeAgentContextScope, loadAgentContextProjection, loadScopedGraphSection, planScopedQuery, scopedQueryCapacityOutcome, type AgentContextProjection } from './hosted-query-scoped-graph';
 
 if (!process.send) {
@@ -70,7 +71,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
       const requiredSections: CasSectionName[] = request.type === 'query'
         ? [...queryModule!.hostedProjectQuerySections(request.tool, request.args as any)]
         : [...WARM_SECTIONS];
-      const scopedEligible = request.type === 'query' && SCOPED_QUERY_TOOLS.has(request.tool)
+      const scopedEligible = request.type === 'query' && process.env.KLAURO_HOSTED_QUERY_SCOPED !== '0' && SCOPED_QUERY_TOOLS.has(request.tool)
         && Boolean(scopedQueryTarget(request.tool, request.args as Record<string, unknown> | undefined));
       const pinned = scopedEligible ? await acquirePinnedAnalysis(request.workspace) : null;
       let scopedCas: CASOutput | undefined;
@@ -94,18 +95,23 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
           agentSmallSections = loadedSections as Record<string, unknown>;
           agentPlan = { graph: scopedPlan.graph };
         }
+        let loaderCapacityFailure: string | undefined;
         const graphSection = 'scope' in scopedPlan
           ? (agentProjection
-              ? { nodes: agentProjection.nodes, edges: agentProjection.edges, scanned: { nodes: scopedPlan.graphNodeCount, edges: agentProjection.edges.length }, edgesTruncated: false, source: agentProjection.source, stats: agentProjection.stats }
-              : await loadScopedGraphSection(pinned, scopedPlan.scope.keepIds, scopedPlan.graph))
+              ? { nodes: agentProjection.nodes, edges: agentProjection.edges, scanned: { nodes: scopedPlan.graphNodeCount, edges: agentProjection.edges.length }, edgesTruncated: agentProjection.fullEdgesTruncated, source: agentProjection.source, stats: agentProjection.stats }
+              : await loadScopedGraphSection(pinned, scopedPlan.scope.keepIds, scopedPlan.graph).catch(error => {
+                  if (error instanceof CasRecordStoreCapacityError) { loaderCapacityFailure = error.message; return { nodes: [], edges: [], scanned: { nodes: scopedPlan.graphNodeCount, edges: 0 }, edgesTruncated: true, source: 'record-store' as const }; }
+                  throw error;
+                }))
           : null;
         if ('scope' in scopedPlan) {
           if (!graphSection) throw new Error(`Canonical graph section is unavailable for: ${request.workspace}. Re-run analyze_codebase.`);
-          if (graphSection.scanned.nodes !== scopedPlan.graphNodeCount) {
+          if (!loaderCapacityFailure && graphSection.scanned.nodes !== scopedPlan.graphNodeCount) {
             throw new Error(`Graph section and compact index of generation ${path.basename(pinned.segmented.directory)} disagree (${graphSection.scanned.nodes} vs ${scopedPlan.graphNodeCount} nodes).`);
           }
         }
-        if ('scope' in scopedPlan) scopedCapacityOutcome = scopedQueryCapacityOutcome(request.tool, scopedPlan.scope, Boolean(graphSection?.edgesTruncated));
+        if ('scope' in scopedPlan) scopedCapacityOutcome = scopedQueryCapacityOutcome(request.tool, loaderCapacityFailure ? { ...scopedPlan.scope, incomplete: loaderCapacityFailure } : scopedPlan.scope, Boolean(graphSection?.edgesTruncated));
+        if (loaderCapacityFailure && !scopedCapacityOutcome) throw new Error(`Scoped graph load exceeded the bounded worker budget: ${loaderCapacityFailure}`);
         const totalNodes = 'scope' in scopedPlan ? scopedPlan.graphNodeCount : graphSection?.scanned.nodes;
         const totalEdges = graphSection?.scanned.edges;
         scopedCas = attachCasProjection({
@@ -135,7 +141,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
               truncated: scopedPlan.scope.truncated || Boolean(graphSection?.edgesTruncated),
               edges_truncated: Boolean(graphSection?.edgesTruncated),
               ...(scopedPlan.scope.incomplete ? { incomplete: scopedPlan.scope.incomplete } : {}),
-              ...(agentProjection ? { mode: 'agent-context', full_nodes: agentProjection.keepIds.size, light_nodes: agentProjection.lightNodes, light_edges: agentProjection.lightEdges, target_resolution: 'compact-index', passes: 1 } : {}),
+              ...(agentProjection ? { mode: 'agent-context', full_nodes: agentProjection.keepIds.size, light_nodes: agentProjection.lightNodes, light_edges: agentProjection.lightEdges, full_edges_truncated: agentProjection.fullEdgesTruncated, edge_order: agentProjection.edgeOrder, target_resolution: 'compact-index', passes: 1 } : {}),
             }
           : { mode: 'scoped', target_not_found: scopedPlan.targetNotFound, loaded_nodes: 0, loaded_edges: 0 };
         process.stderr.write(`${JSON.stringify({

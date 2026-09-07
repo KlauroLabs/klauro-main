@@ -56,7 +56,7 @@ export interface CasRecordStoreReadStats {
 }
 
 export const DEFAULT_RECORD_STORE_READ_BUDGET: CasRecordStoreReadBudget = {
-  maxRecords: 20_000,
+  maxRecords: 25_000,
   maxDecodedBytes: 64 * 1024 * 1024,
   maxCompressedBytes: 64 * 1024 * 1024,
   maxIndexBytes: 64 * 1024 * 1024,

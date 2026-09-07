@@ -306,8 +306,38 @@ test('get_agent_context on the light-plus-scoped projection matches the whole-gr
       assert.deepEqual(scoped, whole, 'agent context is identical on the projection');
       const second = computeAgentContextScope(graph, ['far-1'], []);
       assert.ok(second.keepIds.has('far-1') && second.keepIds.has('node-30'));
+      assert.equal(projection.edgeOrder, 'original');
+      assert.equal(projection.fullEdgesTruncated, false);
     } finally {
       await pinned.release();
+    }
+    const previousStore = process.env.KLAURO_CAS_RECORD_STORE;
+    process.env.KLAURO_CAS_RECORD_STORE = '0';
+    const noStoreProject = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-scoped-nostore-'));
+    try {
+      await saveAnalysis(noStoreProject, fixture(), 'main', { canonicalSegmented: true });
+      const noStoreGraph = (await loadCompactAnalysisGraph(noStoreProject))!;
+      const noStorePinned = (await acquirePinnedAnalysis(noStoreProject))!;
+      try {
+        const plan = await planScopedQuery(noStorePinned, 'get_agent_context', { task: { target: 'targetFn' } });
+        const streamed = (await loadAgentContextProjection(noStorePinned, noStoreGraph, (plan as { scope: any }).scope))!;
+        assert.equal(streamed.source, 'stream');
+        assert.equal(streamed.edgeOrder, 'original', 'the stream fallback restores original edge order too');
+        const wholeNoStore = (await loadCompleteAnalysisFromSections(noStoreProject))!;
+        assert.deepEqual(streamed.edges.map(edge => edge.id), wholeNoStore.edges.map(edge => edge.id));
+        assert.deepEqual(streamed.nodes.map(node => node.id), wholeNoStore.nodes.map(node => node.id));
+      } finally {
+        await noStorePinned.release();
+      }
+    } finally {
+      if (previousStore === undefined) delete process.env.KLAURO_CAS_RECORD_STORE; else process.env.KLAURO_CAS_RECORD_STORE = previousStore;
+      fs.rmSync(noStoreProject, { recursive: true, force: true });
+    }
+    const pinnedAgain = (await acquirePinnedAnalysis(project))!;
+    try {
+      assert.ok(pinnedAgain);
+    } finally {
+      await pinnedAgain.release();
     }
   });
 });

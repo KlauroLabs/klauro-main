@@ -8,12 +8,21 @@ import { getAnalysisFileFingerprint, saveAnalysis } from './storage';
 import { runHostedProjectQueryWorker } from './hosted-project-query-process';
 import { withHostedBackgroundPermit } from './hosted-background-queue';
 
-function fixture(callers: number): CASOutput {
+function fixture(callers: number, denseCallees = 0): CASOutput {
   const nodes: any[] = [{ id: 'node-0', name: 'targetFn', type: 'function', level: 1, source: { file: 'src/target.ts', line: 1 }, description: 'the target' }];
   const edges: any[] = [];
   for (let index = 0; index < callers; index += 1) {
     nodes.push({ id: `caller-${index}`, name: `caller${index}`, type: 'function', level: 1, source: { file: `src/c${index % 50}.ts`, line: index + 1 } });
     edges.push({ id: `e-${index}`, source: `caller-${index}`, target: 'node-0', type: 'calls' });
+  }
+  for (let index = 0; index < denseCallees; index += 1) {
+    nodes.push({ id: `callee-${index}`, name: `callee${index}`, type: 'function', level: 1, source: { file: `src/d${index % 20}.ts`, line: index + 1 } });
+    edges.push({ id: `ed-${index}`, source: 'node-0', target: `callee-${index}`, type: 'calls' });
+  }
+  for (let left = 0; left < denseCallees; left += 1) {
+    for (let right = 0; right < denseCallees; right += 1) {
+      if (left !== right) edges.push({ id: `edd-${left}-${right}`, source: `callee-${left}`, target: `callee-${right}`, type: 'calls' });
+    }
   }
   nodes.push({ id: 'ext', name: 'httpClient', type: 'function', level: 1, source: { file: 'src/ext.ts', line: 1 } });
   edges.push({ id: 'e-ext', source: 'node-0', target: 'ext', type: 'external_call', category: 'external' });
@@ -26,7 +35,7 @@ function fixture(callers: number): CASOutput {
   } as unknown as CASOutput;
 }
 
-async function withWorker<T>(callers: number, fn: (projects: { withStore: string; withoutStore: string }) => Promise<T>): Promise<T> {
+async function withWorker<T>(callers: number, fn: (projects: { withStore: string; withoutStore: string }) => Promise<T>, denseCallees = 0): Promise<T> {
   const previous = { storage: process.env.KLAURO_STORAGE_PATH, canonical: process.env.KLAURO_CANONICAL_SEGMENTED_STORAGE, entry: process.env.KLAURO_HOSTED_QUERY_WORKER_ENTRY, heap: process.env.KLAURO_HOSTED_QUERY_HEAP_MB, store: process.env.KLAURO_CAS_RECORD_STORE };
   const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-dispatch-storage-'));
   const withStore = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-dispatch-project-'));
@@ -37,9 +46,9 @@ async function withWorker<T>(callers: number, fn: (projects: { withStore: string
   process.env.KLAURO_HOSTED_QUERY_HEAP_MB = '512';
   try {
     delete process.env.KLAURO_CAS_RECORD_STORE;
-    await saveAnalysis(withStore, fixture(callers), 'main', { canonicalSegmented: true });
+    await saveAnalysis(withStore, fixture(callers, denseCallees), 'main', { canonicalSegmented: true });
     process.env.KLAURO_CAS_RECORD_STORE = '0';
-    await saveAnalysis(withoutStore, fixture(callers), 'main', { canonicalSegmented: true });
+    await saveAnalysis(withoutStore, fixture(callers, denseCallees), 'main', { canonicalSegmented: true });
     delete process.env.KLAURO_CAS_RECORD_STORE;
     assert.ok(await getAnalysisFileFingerprint(withStore) && await getAnalysisFileFingerprint(withoutStore), 'both saved analyses resolve in-process before dispatch');
     return await fn({ withStore, withoutStore });
@@ -87,4 +96,17 @@ test('worker dispatch refuses an exact tool whose scope cannot be completed, on 
     assert.equal(fromStream.risk, null);
     assert.match(fromStream.reason, /direct callers exceed/);
   });
+});
+
+test('worker dispatch refuses an exact tool whose complete scope induces more edges than the loaders keep, on both paths', async () => {
+  await withWorker(0, async ({ withStore, withoutStore }) => {
+    const request = { tool: 'assess_change_risk', args: { node_id: 'node-0' }, projectId: 'p', analysisId: 'a' };
+    for (const workspace of [withStore, withoutStore]) {
+      const result = (await runHostedProjectQueryWorker({ ...request, workspace })).result as any;
+      assert.equal(result.incomplete, true, `${workspace === withStore ? 'store' : 'stream'} path refuses`);
+      assert.equal(result.risk, null);
+      assert.match(result.reason, /loader bound|exceeds/);
+      assert.equal(result.scoped_context?.edges_truncated, true);
+    }
+  }, 150);
 });
