@@ -1,5 +1,6 @@
 import { AnalyzerOrchestrator, type AnalysisProgressEvent } from '../../../packages/analyzer-core/src/analyzer/core/orchestrator';
 import type { BaseAnalyzer } from '../../../packages/analyzer-core/src/analyzer/core/base-analyzer';
+import { breadthLanguageExtensions } from '../../../packages/analyzer-core/src/analyzer/core/language-analyzer-catalog';
 import { linkStructuralOwnership } from '../../../packages/analyzer-core/src/analyzer/core/structural-ownership';
 import { assignNodeRoles } from '../../../packages/analyzer-core/src/analyzer/core/node-roles';
 import { partitionAnalysisDiagnostics } from '../../../packages/analyzer-core/src/analyzer/core/analysis-diagnostics';
@@ -479,7 +480,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
       type: 'language',
       version: '1.0.0',
       detectPatterns: {
-        content: [/\.(zig|hs|lua|ml|erl|ex|exs|clj|jl|nim|f90|ada|d|cr|nix)$/i],
+        files: [...breadthLanguageExtensions().keys()].map(extension => `**/*${extension}`),
       },
       consumesExistingAnalysis: false,
       ...lazyAnalyzerRegistration(() => new (require('../../../packages/analyzer-core/src/analyzer/languages/generic-tree-sitter-language-analyzer').GenericTreeSitterLanguageAnalyzer)(), false),

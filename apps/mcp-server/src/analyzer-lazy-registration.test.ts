@@ -4,6 +4,8 @@ import * as fs from 'fs-extra';
 import * as os from 'os';
 import * as path from 'path';
 import { createOrchestrator } from './analyzer';
+import { LANGUAGE_REGISTRY } from '../../../packages/analyzer-core/src/analyzer/core/language-registry';
+import { LANGUAGE_SPECS } from '../../../packages/analyzer-core/src/analyzer/core/language-spec';
 
 const TYPESCRIPT_ANALYZER_PATH = require.resolve('../../../packages/analyzer-core/src/analyzer/languages/typescript-javascript-analyzer');
 const GENERIC_ANALYZER_PATH = require.resolve('../../../packages/analyzer-core/src/analyzer/languages/generic-tree-sitter-language-analyzer');
@@ -91,6 +93,32 @@ test('registration-driven language detection matches analyzer detection on a rep
       if (!representativeIds.has(registration.id)) continue;
       assert.equal(detectedIds.has(registration.id), await registration.analyzer.canAnalyze(projectPath), registration.id);
     }
+  } finally {
+    await fs.remove(projectPath);
+  }
+});
+
+test('lazy breadth detection includes every supported extension and detects an isolated R project', async () => {
+  const projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-breadth-detection-'));
+  try {
+    const orchestrator = createOrchestrator() as any;
+    const registration = orchestrator.analyzers.get('generic-tree-sitter');
+    const implementation = new (require(GENERIC_ANALYZER_PATH).GenericTreeSitterLanguageAnalyzer)();
+    const { LanguageAnalyzers } = require('../../../packages/analyzer-core/src/analyzer/core/language-analyzer-catalog');
+    const extensions = new Set<string>(registration.detectPatterns.files);
+    let checked = 0;
+    for (const entry of LANGUAGE_REGISTRY) {
+      if (entry.id in LanguageAnalyzers || !LANGUAGE_SPECS[entry.id]) continue;
+      for (const extension of entry.extensions) {
+        assert.ok(extensions.has(`**/*.${extension.toLowerCase()}`), `${entry.id}: .${extension} must reach its analyzer`);
+        checked += 1;
+      }
+    }
+    assert.ok(checked > 100, 'check the complete breadth registry, not a small extension sample');
+    await fs.writeFile(path.join(projectPath, 'main.r'), 'run <- function() helper(5)\n');
+    assert.equal(await implementation.canAnalyze(projectPath), true);
+    const detected = await orchestrator.detectAnalyzers(projectPath);
+    assert.ok(detected.some((item: { id: string }) => item.id === 'generic-tree-sitter'));
   } finally {
     await fs.remove(projectPath);
   }
