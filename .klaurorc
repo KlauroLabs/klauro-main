@@ -56,7 +56,7 @@
       "**/*secret*/**",
       "**/*credential*/**"
     ],
-    "maxFileBytes": 1048576,
+    "maxFileBytes": 8388608,
     "followSymlinks": false
   },
   "upload": {

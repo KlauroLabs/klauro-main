@@ -2,7 +2,8 @@ import * as fs from 'node:fs';
 import * as zlib from 'node:zlib';
 import type { CASEdge, CASNode } from '../../../packages/analyzer-core/src/types/cas.types';
 import type { CompactCASGraph, CompactNodeView } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-graph';
-import { loadCompactAnalysisGraph, resolveAnalysisSectionExportArtifact } from './storage';
+import { loadCompactAnalysisGraph, loadCompactAnalysisSearch, resolveAnalysisSectionExportArtifact } from './storage';
+import { searchCompactCAS } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-search';
 
 export const SCOPED_QUERY_TOOLS = new Set(['get_coding_context', 'assess_change_risk', 'find_tests']);
 const DEFAULT_NEIGHBOR_LIMIT = 10;
@@ -45,13 +46,19 @@ function lastSegment(value: string): string {
   return parts.length > 0 ? parts[parts.length - 1] : trimmed;
 }
 
-export function resolveCompactTarget(graph: CompactCASGraph, target: string): CompactNodeView | undefined {
+export function resolveCompactTarget(graph: CompactCASGraph, target: string, extraCandidateIds: readonly string[] = []): CompactNodeView | undefined {
   const exact = graph.nodeById(target);
   if (exact) return exact;
   const name = lastSegment(target);
   if (!name) return undefined;
   const page = graph.findNodes({ name, limit: TARGET_SEARCH_LIMIT });
-  const candidates = Array.from(page.denseIds, denseId => graph.nodeAt(denseId));
+  const seen = new Set<string>();
+  const candidates: CompactNodeView[] = [];
+  for (const node of [...Array.from(page.denseIds, denseId => graph.nodeAt(denseId)), ...extraCandidateIds.map(id => graph.nodeById(id))]) {
+    if (!node || seen.has(node.id)) continue;
+    seen.add(node.id);
+    candidates.push(node);
+  }
   if (candidates.length === 0) return undefined;
   const lowered = target.toLowerCase();
   const qualified = candidates.find(node => (node.qualifiedName || '').toLowerCase() === lowered)
@@ -148,6 +155,17 @@ export async function loadScopedGraphSection(projectPath: string, keepIds: Reado
   return { nodes, edges, scanned };
 }
 
+async function searchCandidateIds(projectPath: string, target: string): Promise<string[]> {
+  try {
+    const search = await loadCompactAnalysisSearch(projectPath);
+    if (!search) return [];
+    const hits = await searchCompactCAS(search.graph, search.index, target, search.readPostings, search.readSearchText, { limit: 50 });
+    return hits.map(hit => hit.id);
+  } catch {
+    return [];
+  }
+}
+
 export async function planScopedQuery(
   projectPath: string,
   tool: string,
@@ -157,7 +175,7 @@ export async function planScopedQuery(
   if (!target || !SCOPED_QUERY_TOOLS.has(tool)) return null;
   const graph = await loadCompactAnalysisGraph(projectPath);
   if (!graph) return null;
-  const resolved = resolveCompactTarget(graph, target);
+  const resolved = resolveCompactTarget(graph, target, await searchCandidateIds(projectPath, target));
   if (!resolved) return { targetNotFound: target };
   const scope = computeScopedQueryScope(graph, resolved, {
     callerLimit: args?.caller_limit,
