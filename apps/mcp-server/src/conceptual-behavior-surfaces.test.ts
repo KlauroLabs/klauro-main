@@ -130,6 +130,10 @@ test('conceptual endpoint exposes behavior_surfaces so flow capability_relations
         name: undocumentedCapability.name,
       }],
       structural_gaps: [{ candidate_id: 'candidate-analysis', name: 'Analysis behavior', reason: 'no publishable outcome' }],
+      unverified_declarations: Array.from({ length: 7 }, (_, index) => ({
+        role: 'feature', value: 'Unverified declared behavior ' + index, source: 'FEATURES.md',
+        reason: 'no-corroborating-candidate',
+      })),
     };
     await saveAnalysis(workspace, acceptedCas);
     const toolEntryPoint = cas.entry_points?.find(entryPoint => entryPoint.name === 'get_summary');
@@ -148,6 +152,16 @@ test('conceptual endpoint exposes behavior_surfaces so flow capability_relations
     assert.equal(body.capability_reconciliation.proposals.values[0].statement, 'Understand what a codebase actually built');
     assert.equal(body.capability_reconciliation.undocumented_capabilities.values[0].name, undocumentedCapability.name);
     assert.equal(body.capability_reconciliation.structural_gaps.values[0].candidate_id, 'candidate-analysis');
+    assert.equal(body.capability_reconciliation.summary.unverified_declarations, 7);
+    const declarationPage = body.capability_reconciliation.unverified_declarations;
+    assert.equal(declarationPage.values.length, 5);
+    assert.equal(declarationPage.page.has_more, true);
+    const next = await request(port, 'GET', `/api/projects/${project.id}/conceptual?max_flows=50&catalog_offset=5`, undefined, token);
+    assert.equal(next.statusCode, 200);
+    const nextPage = JSON.parse(next.body).capability_reconciliation.unverified_declarations;
+    assert.deepEqual([...declarationPage.values, ...nextPage.values],
+      acceptedCas.enhanced_system_purpose!.capability_reconciliation!.unverified_declarations);
+    assert.equal(nextPage.page.has_more, false);
 
     assert.ok(Array.isArray(body.behavior_surfaces));
     const mcpSurface = body.behavior_surfaces.find((surface: any) => surface.id === storedSurface.id);

@@ -1,4 +1,4 @@
-import type { EnhancedSystemPurpose, SystemCapability } from '../../types/cas.types';
+import type { CASFirstPartyProductEvidence, EnhancedSystemPurpose, SystemCapability } from '../../types/cas.types';
 import { uncoveredCapabilityCatalogOutcomeRequirements, type CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
 
 export interface CapabilityCatalogReconciliationInput {
@@ -8,17 +8,28 @@ export interface CapabilityCatalogReconciliationInput {
   intentGapRequirements: readonly CapabilityCatalogOutcomeRequirement[];
   unresolvedRejectedProductOutcomeIds: readonly string[];
   evidenceCandidates: readonly SystemCapability[];
+  firstPartyEvidence?: CASFirstPartyProductEvidence;
 }
 
 export function buildCapabilityCatalogReconciliation({
   requiredOutcomes, normalizedOutcomeRequirements, publishedCapabilities,
-  intentGapRequirements, unresolvedRejectedProductOutcomeIds, evidenceCandidates,
+  intentGapRequirements, unresolvedRejectedProductOutcomeIds, evidenceCandidates, firstPartyEvidence,
 }: CapabilityCatalogReconciliationInput): NonNullable<EnhancedSystemPurpose['capability_reconciliation']> {
   const normalizedOutcomeRequirementById = new Map(normalizedOutcomeRequirements.map(requirement => [requirement.id, requirement]));
   const groundedCapabilityIdsFor = (requirement: CapabilityCatalogOutcomeRequirement): string[] => publishedCapabilities.filter(capability => uncoveredCapabilityCatalogOutcomeRequirements([capability], [normalizedOutcomeRequirementById.get(requirement.id) || requirement]).length === 0).map(capability => capability.id);
   const intentGapRequirementIds = new Set(intentGapRequirements.map(requirement => requirement.id));
   const groundedRequirementIds = new Set(requiredOutcomes.filter(requirement => !intentGapRequirementIds.has(requirement.id)).map(requirement => requirement.id));
+  const declarationText = (value: string): string => value.trim().replace(/[.!?]+$/, '');
+  const candidateIds = new Set(evidenceCandidates.map(candidate => candidate.id));
+  const corroboratedDeclarations = new Set(requiredOutcomes
+    .filter(requirement => requirement.candidateIds.some(id => candidateIds.has(id)))
+    .map(requirement => declarationText(requirement.firstPartyOutcomeText || requirement.statement)));
   return {
+    ...(firstPartyEvidence?.statements ? {
+      unverified_declarations: firstPartyEvidence.statements
+        .filter(statement => statement.role === 'feature' && !corroboratedDeclarations.has(declarationText(statement.value)))
+        .map(statement => ({ ...statement, role: 'feature' as const, reason: 'no-corroborating-candidate' as const })),
+    } : {}),
     proposals: requiredOutcomes.map(requirement => {
       const capabilityIds = groundedCapabilityIdsFor(requirement);
       return {

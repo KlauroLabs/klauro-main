@@ -244,9 +244,11 @@ export function paginateCapabilityReconciliation(
       intent_gaps: reconciliation.proposals.filter(proposal => proposal.disposition === 'intent-gap').length,
       undocumented_capabilities: reconciliation.undocumented_capabilities.length,
       structural_gaps: reconciliation.structural_gaps?.length || 0,
+      ...(reconciliation.unverified_declarations ? { unverified_declarations: reconciliation.unverified_declarations.length } : {}),
     },
     proposals: pageItems(reconciliation.proposals, boundedPage),
     undocumented_capabilities: pageItems(reconciliation.undocumented_capabilities, boundedPage),
     structural_gaps: pageItems(reconciliation.structural_gaps || [], boundedPage),
+    ...(reconciliation.unverified_declarations ? { unverified_declarations: pageItems(reconciliation.unverified_declarations, boundedPage) } : {}),
   };
 }

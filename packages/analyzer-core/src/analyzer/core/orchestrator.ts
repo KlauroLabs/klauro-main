@@ -10258,6 +10258,7 @@ export class AnalyzerOrchestrator {
     args.enhancedSystemPurpose.capability_reconciliation = buildCapabilityCatalogReconciliation({
       requiredOutcomes, normalizedOutcomeRequirements, publishedCapabilities,
       intentGapRequirements, unresolvedRejectedProductOutcomeIds, evidenceCandidates,
+      firstPartyEvidence: args.enhancedSystemPurpose.first_party_product_evidence,
     });
     const intrinsicQualityFailure = this.catalogQualityFailure(publishedCapabilities, 0, [], [], [], []);
     const authoredOutcomeCoverageFailure = capabilityCatalogOutcomeCoverageFailure(publishedCapabilities, normalizedOutcomeRequirements);

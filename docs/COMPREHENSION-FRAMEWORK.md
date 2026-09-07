@@ -525,6 +525,17 @@ capability to avoid them.
 | **Insufficient evidence** | proposals exist but none ground — e.g. a single file in an unanalysed language, or a compiled binary with no source | "insufficient evidence", with the ungrounded proposals listed as gaps |
 | **Ungrounded proposal** | the product's words claim something the code does not show | documented gap (§2.1), never published as a capability |
 
+The canonical `capability_reconciliation.unverified_declarations` report preserves
+explicit feature declarations for which no corroborating structural candidate was
+found, including unfamiliar wording and claims that may be qualities rather than
+outcomes. Each entry retains its original text, document role and source. It is
+not a capability and does not prove functionality is absent. Declarations with
+candidate evidence but no published outcome remain visible in the existing
+intent-gap proposals. These reports can overlap; their counts must not be added
+as independent missing-capability totals. An absent declaration report in older
+analyses means unreported, not zero gaps. The conceptual catalog pages every
+entry without truncating the canonical collection.
+
 `wifi-fix` is the second: one Swift file, no README, and the only top-down
 evidence is the folder name. "Reconnect wifi when it drops" is a reasonable
 *proposal* — and it must stay a proposal, because nothing grounds it. This is

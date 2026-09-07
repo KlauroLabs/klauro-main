@@ -43,3 +43,53 @@ test('empty reconciliation does not manufacture proposals, capabilities or struc
     intentGapRequirements: [], unresolvedRejectedProductOutcomeIds: [], evidenceCandidates: [],
   }), { proposals: [], undocumented_capabilities: [] });
 });
+
+test('explicit declarations without corroborating candidates stay visible without becoming capabilities', () => {
+  const firstPartyEvidence = { statements: [
+    'Know what will break before changing something.',
+    'Pay bills.',
+    'Predict customer demand.',
+    'Exceptionally fast.',
+    'Hail a ride.',
+  ].map(value => ({ role: 'feature' as const, value, source: 'PRODUCT.md' })) };
+  const requirements = [
+    requirement('risk', firstPartyEvidence.statements[0].value.slice(0, -1), ['risk']),
+    requirement('billing', firstPartyEvidence.statements[1].value.slice(0, -1), ['billing']),
+  ];
+  const original = structuredClone(firstPartyEvidence);
+  const result = buildCapabilityCatalogReconciliation({
+    requiredOutcomes: requirements, normalizedOutcomeRequirements: requirements,
+    publishedCapabilities: [], intentGapRequirements: requirements,
+    unresolvedRejectedProductOutcomeIds: [],
+    evidenceCandidates: [capability('risk', 'Change impact', 'risk'), capability('billing', 'Bill payment', 'billing')],
+    firstPartyEvidence,
+  });
+  assert.deepEqual(result.unverified_declarations,
+    firstPartyEvidence.statements.slice(2).map(statement => ({ ...statement, reason: 'no-corroborating-candidate' })));
+  assert.deepEqual(result.proposals.map(proposal => proposal.disposition), ['intent-gap', 'intent-gap']);
+  assert.deepEqual(result.undocumented_capabilities, []);
+  assert.deepEqual(firstPartyEvidence, original);
+});
+
+test('unverified declaration reporting retains unfamiliar text and qualifications but does not promote examples', () => {
+  const firstPartyEvidence = { statements: [
+    { role: 'feature' as const, value: 'Read records without changing them.', source: 'README.md' },
+    { role: 'feature' as const, value: 'Read records and change them.', source: 'PRD.md' },
+    { role: 'feature' as const, value: '走る', source: 'PRD.md' },
+    { role: 'feature' as const, value: 'Recover bills.', source: 'PRD.md' },
+    { role: 'example' as const, value: 'Which record changed yesterday?', source: 'README.md' },
+    { role: 'context' as const, value: 'Records are persisted.', source: 'README.md' },
+  ] };
+  const requirements = [
+    requirement('read', 'Read records without changing them', ['read']),
+    requirement('stale', 'Recover bills', ['missing']),
+  ];
+  const result = buildCapabilityCatalogReconciliation({
+    requiredOutcomes: requirements, normalizedOutcomeRequirements: requirements,
+    publishedCapabilities: [], intentGapRequirements: requirements,
+    unresolvedRejectedProductOutcomeIds: [], evidenceCandidates: [capability('read', 'Read records', 'read')],
+    firstPartyEvidence,
+  });
+  assert.deepEqual(result.unverified_declarations,
+    firstPartyEvidence.statements.slice(1, 4).map(statement => ({ ...statement, reason: 'no-corroborating-candidate' })));
+});

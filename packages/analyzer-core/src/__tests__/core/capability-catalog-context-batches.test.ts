@@ -14,6 +14,35 @@ const candidate = (index: number) => ({
   declared_contracts: [contract(index)],
 });
 
+test('only outcomes corroborated by a candidate in the current batch reach the model', async () => {
+  const candidates = Array.from({ length: 30 }, (_, index) => candidate(index));
+  const required = candidates.map(item => ({
+    requirement_id: item.candidate_id, outcome: 'Documented behavior', candidate_ids: [item.candidate_id],
+  }));
+  const contexts = fitCapabilityCatalogContexts({ task: 'Catalog documented behavior.' }, {
+    candidate_route_areas: candidates,
+    required_outcomes: [
+      ...required,
+      { requirement_id: 'unmatched', outcome: 'Predict customer demand', candidate_ids: [] },
+      { requirement_id: 'stale', outcome: 'Exceptionally fast', candidate_ids: ['missing'] },
+    ],
+  }, env);
+  expect(contexts.length).toBeGreaterThan(1);
+  const delivered = new Set<string>();
+  await requestCapabilityCatalogContexts(contexts, async context => {
+    const facts = context.facts;
+    const ids = new Set((facts.candidate_route_areas as Array<Record<string, unknown>>).map(item => item.candidate_id));
+    for (const outcome of facts.required_outcomes as Array<{ requirement_id: string; candidate_ids: string[] }>) {
+      expect(outcome.candidate_ids.length).toBeGreaterThan(0);
+      expect(outcome.candidate_ids.every(id => ids.has(id))).toBe(true);
+      expect(['unmatched', 'stale']).not.toContain(outcome.requirement_id);
+      delivered.add(outcome.requirement_id);
+    }
+    return JSON.stringify({ capabilities: [] });
+  });
+  expect([...delivered]).toEqual(required.map(outcome => outcome.requirement_id));
+});
+
 test('retains all operations and their qualifications through bounded batches', () => {
   const operations = Array.from({ length: 85 }, (_, index) =>
     'Inspect record ' + index + '. ' + 'Context detail. '.repeat(35) + ' Does not change or store the record.');

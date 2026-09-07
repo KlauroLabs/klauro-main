@@ -4030,6 +4030,12 @@ export interface EnhancedSystemPurpose extends SystemPurpose {
     reason?: string;
   };
   capability_reconciliation?: {
+    unverified_declarations?: Array<{
+      role: 'feature';
+      value: string;
+      source: string;
+      reason: 'no-corroborating-candidate';
+    }>;
     proposals: Array<{
       requirement_id: string;
       statement: string;

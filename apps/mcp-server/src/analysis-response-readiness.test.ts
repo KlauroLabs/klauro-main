@@ -14,6 +14,28 @@ import {
 } from './analysis-response-readiness';
 import { evaluateComprehensionReadiness } from './comprehension-readiness';
 
+test('pages every unverified declaration with source and reason without labeling legacy reports complete', () => {
+  const unverified_declarations = Array.from({ length: 27 }, (_, index) => ({
+    role: 'feature' as const, value: 'Declared outcome ' + index, source: 'PRODUCT.md',
+    reason: 'no-corroborating-candidate' as const,
+  }));
+  const input = { proposals: [], undocumented_capabilities: [], unverified_declarations };
+  const first = paginateCapabilityReconciliation(input, { limit: 100, offset: 0 });
+  const second = paginateCapabilityReconciliation(input, { limit: 100, offset: 20 });
+  assert(first?.unverified_declarations);
+  assert(second?.unverified_declarations);
+  assert.equal(first.summary.unverified_declarations, 27);
+  assert.equal(first.unverified_declarations.page.total, 27);
+  assert.equal(first.unverified_declarations.page.has_more, true);
+  assert.equal(first.unverified_declarations.values.length, 20);
+  assert.deepEqual([...first.unverified_declarations.values, ...second.unverified_declarations.values], unverified_declarations);
+  assert.equal(second.unverified_declarations.page.has_more, false);
+  const legacy = paginateCapabilityReconciliation({ proposals: [], undocumented_capabilities: [] }, { limit: 20, offset: 0 });
+  assert(legacy);
+  assert.equal('unverified_declarations' in legacy, false);
+  assert.equal('unverified_declarations' in legacy.summary, false);
+});
+
 test('accepted catalog flags cannot override a missing or rejected system narrative', () => {
   for (const purpose of [
     { inferred_description: '', description_generation: { status: 'ai_rejected', attempted: true, reason: 'omits-core-capability' } },
