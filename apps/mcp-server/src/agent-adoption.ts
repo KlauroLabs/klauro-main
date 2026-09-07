@@ -2048,6 +2048,15 @@ function buildFirstTurnCompactContext<T extends Record<string, any>>(context: T)
       ? 'UNVERIFIED: inspect cited source before editing; analyzed-content identity is unavailable.'
       : 'INVALID CITATION: inspect the current workspace; cited files are missing.'
     : null;
+  const targetUncertaintyRule = context.target_resolution?.gaps?.length
+    ? 'Resolve target uncertainty before choosing an edit scope; request exact candidate node context.'
+    : null;
+  const freshnessPrefix = freshnessWarning
+    ? freshness.citation_verification === 'unverified' ? 'UNVERIFIED:' : 'INVALID CITATION:'
+    : null;
+  const rule = targetUncertaintyRule
+    ? [freshnessPrefix, targetUncertaintyRule, freshnessWarning ? 'Inspect cited source before editing.' : null].filter(Boolean).join(' ')
+    : freshnessWarning || 'Read files in order. Preserve idioms. Expand only if blocked.';
   return {
     context_profile: 'first-turn',
     readiness: compactSmallRepoReadiness(context.readiness),
@@ -2063,7 +2072,7 @@ function buildFirstTurnCompactContext<T extends Record<string, any>>(context: T)
     risks: risks.slice(0, 2),
     reuse: capabilityMemory,
     execution: compactFirstTurnExecution(context.execution_brief),
-    rule: freshnessWarning || (context.target_resolution?.gaps?.length ? 'Resolve target uncertainty before choosing an edit scope; request exact candidate node context.' : 'Read files in order. Preserve idioms. Expand only if blocked.'),
+    rule,
   };
 }
 
