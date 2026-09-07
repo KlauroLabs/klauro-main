@@ -36,13 +36,10 @@ import type { CASOutput, CASLayersReady, CASLayerStatus } from '../../../package
 import { CAS_VERSION } from '../../../packages/analyzer-core/src/types/cas.types';
 import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
 import { comprehensionNarrativeFailure } from '../../../packages/analyzer-core/src/analyzer/core/comprehension-status';
+import { getRegisteredSourceExtensions, languageForSourceFile } from '../../../packages/analyzer-core/src/analyzer/core/language-registry';
 
 
 
-
-const L0_SOURCE_PATTERNS = [
-  '**/*.{js,jsx,ts,tsx,mjs,cjs,py,go,rs,java,kt,cs,php,rb,swift,dart,scala,ex,exs,c,cc,cpp,h,hpp,sol,vue,svelte,sh,tf,yaml,yml}',
-];
 
 const L0_IGNORE_PATTERNS = [
   '**/node_modules/**',
@@ -70,6 +67,9 @@ const EXTENSION_LANGUAGE: Record<string, string> = {
   tf: 'Terraform', yaml: 'YAML', yml: 'YAML',
 };
 
+const L0_SOURCE_PATTERNS = [...new Set([...getRegisteredSourceExtensions(), ...Object.keys(EXTENSION_LANGUAGE)])]
+  .map(extension => `**/*.${extension.replace(/[a-z]/g, letter => `[${letter}${letter.toUpperCase()}]`)}`);
+
 export interface L0Index {
   total_files: number;
   languages: Array<{ name: string; files: number }>;
@@ -90,6 +90,7 @@ export async function computeL0Index(projectPath: string): Promise<L0Index> {
   const files = await glob(L0_SOURCE_PATTERNS, {
     cwd: projectPath,
     ignore: L0_IGNORE_PATTERNS,
+    dot: true,
     nodir: true,
     absolute: false,
   });
@@ -97,7 +98,7 @@ export async function computeL0Index(projectPath: string): Promise<L0Index> {
   const languageCounts = new Map<string, number>();
   for (const file of files) {
     const ext = path.extname(file).slice(1).toLowerCase();
-    const language = EXTENSION_LANGUAGE[ext];
+    const language = EXTENSION_LANGUAGE[ext] || languageForSourceFile(file);
     if (!language) continue;
     languageCounts.set(language, (languageCounts.get(language) || 0) + 1);
   }

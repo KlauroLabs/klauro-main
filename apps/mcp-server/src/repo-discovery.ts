@@ -1,7 +1,7 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { isDirectCliInvocation } from './cli-invocation';
-import { isRegisteredManifest, LANGUAGE_REGISTRY } from '../../../packages/analyzer-core/src/analyzer/core/language-registry';
+import { isRegisteredManifest, languageForSourceFile } from '../../../packages/analyzer-core/src/analyzer/core/language-registry';
 
 export type RepoDiscoveryStatus = 'eligible' | 'unsupported' | 'skipped';
 
@@ -78,22 +78,6 @@ const GENERATED_NAME_PATTERNS = [
   /^\.?tmp[-_]/i,
   /^cloned[_-]?repo$/i,
 ];
-
-const LANGUAGE_NAMES: Record<string, string> = {
-  csharp: 'C#',
-  cpp: 'C++',
-  fsharp: 'F#',
-  javascript: 'JavaScript',
-  objc: 'Objective-C',
-  opencl: 'OpenCL',
-  php: 'PHP',
-  powershell: 'PowerShell',
-  sql: 'SQL',
-  sql_more: 'SQL',
-  typescript: 'TypeScript',
-};
-
-const LANGUAGE_BY_EXTENSION = buildLanguageByExtension();
 
 export async function discoverRealRepos(devRoot = path.join(process.env.HOME || '', 'dev')): Promise<RepoDiscoveryReport> {
   const root = path.resolve(devRoot);
@@ -277,34 +261,6 @@ function isGeneratedRepo(repoPath: string): boolean {
 
 function matchesManifest(file: string): boolean {
   return isRegisteredManifest(file);
-}
-
-function buildLanguageByExtension(): Map<string, string> {
-  const languages = new Map<string, string>();
-  for (const entry of LANGUAGE_REGISTRY) {
-    for (const extension of entry.extensions) {
-      const normalized = extension.toLowerCase();
-      if (!languages.has(normalized)) {
-        languages.set(normalized, languageName(entry.id));
-      }
-    }
-  }
-  return languages;
-}
-
-function languageForSourceFile(file: string): string | undefined {
-  const basename = path.basename(file).toLowerCase();
-  const extension = basename.includes('.') ? basename.slice(basename.lastIndexOf('.') + 1) : basename;
-  return LANGUAGE_BY_EXTENSION.get(extension);
-}
-
-function languageName(id: string): string {
-  const canonical = id.replace(/_(?:more|extra|lang|page)$/, '');
-  return LANGUAGE_NAMES[canonical] || canonical
-    .split(/[_-]/)
-    .filter(Boolean)
-    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(' ');
 }
 
 async function main(): Promise<void> {
