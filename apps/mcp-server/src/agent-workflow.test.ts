@@ -31,6 +31,26 @@ test('agent regression guidance reuses known test coverage instead of proposing 
   });
 });
 
+
+test('function debugging keeps observed tests ahead of speculative test paths', async () => {
+  await withWorkspace(async workspace => {
+    const cas = fixtureCas();
+    fs.writeFileSync(path.join(workspace, 'src', 'recovery.ts'), 'export function recoverDescription() {}\n');
+    fs.writeFileSync(path.join(workspace, 'src', 'recovery.test.ts'), 'test("recovers descriptions", () => {});\n');
+    cas.nodes.push(node('recover', 'recoverDescription', 'function', 'src/recovery.ts', 1), node('recover-test', 'recovers descriptions', 'test', 'src/recovery.test.ts', 1));
+    cas.edges.push({ id: 'test-recover', source: 'recover-test', target: 'recover', type: 'tests' });
+    cas.test_suites!.push({ id: 'recover-suite', name: 'recovers descriptions', file_path: 'src/recovery.test.ts', test_type: 'unit', framework: 'node', tests: [] } as any);
+    const context = await getAgentContext(cas, workspace, {
+      task_type: 'debug', target: 'recoverDescription',
+      instructions: 'Identify description publication validators, connected callers and regression tests for repeated rejection of an outcome description.',
+    }) as any;
+    assert.equal(context.selected_node.id, 'recover');
+    assert.ok(context.work_context.tests.suites.some((suite: any) => suite.file_path === 'src/recovery.test.ts'));
+    assert.ok(!context.file_read_plan.some((item: any) => item.reason.includes('likely focused regression test path')));
+    assert.ok(!context.execution_brief.read_first.some((file: string) => /^tests\/recovery\./.test(file)));
+  });
+});
+
 test('bounded agent orientation uses canonical graph counts and persisted call-layer readiness', async () => {
   await withWorkspace(async workspace => {
     const full = fixtureCas();
