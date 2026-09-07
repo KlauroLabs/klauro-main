@@ -167,7 +167,7 @@
     },
     {
       "file": "apps/mcp-server/src/agent-context-codec.ts",
-      "ceiling": 1634
+      "ceiling": 1596
     },
     {
       "file": "packages/analyzer-core/src/analyzer/frameworks/web/spring-boot-analyzer.ts",

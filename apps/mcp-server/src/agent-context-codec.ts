@@ -1,4 +1,5 @@
 import * as zlib from 'zlib';
+import { buildBenchmarkGates, measureValidationFidelity, resultByName } from './agent-context-codec-gates';
 
 export interface AgentContextCodecResult {
   format: 'K14' | 'K15';
@@ -23,6 +24,7 @@ export interface AgentContextCodecBenchmarkResult {
   exact_paths: number;
   prompt_native: number;
   balanced_score: number;
+  validation_fidelity: 'exact' | 'lossy' | 'unverified';
   sample: string;
 }
 
@@ -35,6 +37,7 @@ export interface AgentContextCodecBenchmarkGate {
 type Candidate = {
   name: string;
   encode: () => string;
+  decodeValidation?: (encoded: string) => unknown;
   agentReadable: number;
   actionable: number;
   exactPaths: number;
@@ -121,12 +124,14 @@ export function benchmarkAgentContextCodecs(context: any): {
         exact_paths: candidate.exactPaths,
         prompt_native: candidate.promptNative,
         balanced_score: balancedScore,
+        validation_fidelity: measureValidationFidelity(candidate, output, arrayOfStrings(context.execution?.validate)),
         sample: output.slice(0, 700),
       };
     })
     .sort((a, b) => b.balanced_score - a.balanced_score || a.estimated_tokens - b.estimated_tokens);
 
-  const gates = buildBenchmarkGates(results);
+  const recommendation = results.find(result => result.validation_fidelity === 'exact')?.name || 'none';
+  const gates = buildBenchmarkGates(results, recommendation);
   const passed = gates.filter(gate => gate.status === 'pass').length;
   const k9 = resultByName(results, 'k9-agent-context-language');
   const k10 = resultByName(results, 'k10-agent-context-language');
@@ -148,9 +153,9 @@ export function benchmarkAgentContextCodecs(context: any): {
     benchmark_type: 'agent-context-codec-proof',
     status: passed === gates.length ? 'pass' : 'fail',
     score: Math.round((passed / Math.max(1, gates.length)) * 100),
-    recommendation: results[0]?.name || 'unknown',
+    recommendation,
     summary: {
-      recommended_format: results[0]?.name || 'unknown',
+      recommended_format: recommendation,
       k10_estimated_tokens: k10?.estimated_tokens ?? null,
       k10_promptish_tokens: k10?.promptish_tokens ?? null,
       k10_token_reduction_vs_min_json: k10?.token_reduction_vs_min_json ?? null,
@@ -390,6 +395,10 @@ export function parseAgentContextCapsule(capsule: string): {
           if (match) fileRefs.set(`#${match[1]}`, expanded);
         }
       }
+    } else if (version === 'K15' && line.startsWith('V|[')) {
+      const commands: unknown = JSON.parse(line.slice(2));
+      if (!Array.isArray(commands) || commands.some(command => typeof command !== 'string')) throw new Error('Invalid capsule validation commands');
+      validation.push(...commands);
     } else if (line.startsWith('V ')) {
       validation.push(...line.slice(2).split(';').map(item => expandFileRefs(expandAlias(item, aliases), fileRefs)).filter(Boolean));
     } else if (version === 'K15' && line.startsWith('V')) {
@@ -531,29 +540,29 @@ function buildCandidates(context: any): Candidate[] {
   const gzipK7 = () => zlib.gzipSync(Buffer.from(k7())).toString('base64');
 
   return [
-    { name: 'min-json', encode: minJson, agentReadable: 76, actionable: 70, exactPaths: 100, promptNative: 92, encodeCost: 'text' },
-    { name: 'short-key-json', encode: shortJson, agentReadable: 66, actionable: 74, exactPaths: 100, promptNative: 88, encodeCost: 'text' },
+    { name: 'min-json', encode: minJson, decodeValidation: output => JSON.parse(output).execution?.validate, agentReadable: 76, actionable: 70, exactPaths: 100, promptNative: 92, encodeCost: 'text' },
+    { name: 'short-key-json', encode: shortJson, decodeValidation: output => JSON.parse(output).e?.validate, agentReadable: 66, actionable: 74, exactPaths: 100, promptNative: 88, encodeCost: 'text' },
     { name: 'toonish-table', encode: toonish, agentReadable: 90, actionable: 82, exactPaths: 100, promptNative: 95, encodeCost: 'text' },
     { name: 'yaml-brief', encode: yamlBrief, agentReadable: 88, actionable: 82, exactPaths: 100, promptNative: 94, encodeCost: 'text' },
     { name: 'xml-tags', encode: xmlTags, agentReadable: 80, actionable: 80, exactPaths: 100, promptNative: 90, encodeCost: 'text' },
     { name: 'tsv-opcodes', encode: tsv, agentReadable: 82, actionable: 84, exactPaths: 100, promptNative: 93, encodeCost: 'text' },
     { name: 'protobuf-text', encode: protobufText, agentReadable: 70, actionable: 76, exactPaths: 100, promptNative: 82, encodeCost: 'text' },
     { name: 'jsonb-rowset', encode: jsonbRowset, agentReadable: 74, actionable: 78, exactPaths: 100, promptNative: 84, encodeCost: 'text' },
-    { name: 'cbor-diagnostic-json', encode: cborDiagnostic, agentReadable: 62, actionable: 70, exactPaths: 100, promptNative: 76, encodeCost: 'text' },
-    { name: 'messagepack-base64-proxy', encode: messagePackBase64, agentReadable: 5, actionable: 8, exactPaths: 100, promptNative: 5, encodeCost: 'binary' },
+    { name: 'cbor-diagnostic-json', encode: cborDiagnostic, decodeValidation: output => JSON.parse(output).v, agentReadable: 62, actionable: 70, exactPaths: 100, promptNative: 76, encodeCost: 'text' },
+    { name: 'messagepack-base64-proxy', encode: messagePackBase64, decodeValidation: output => JSON.parse(Buffer.from(output, 'base64').toString('utf8')).v, agentReadable: 5, actionable: 8, exactPaths: 100, promptNative: 5, encodeCost: 'binary' },
     { name: 'k5-plus-short-json', encode: k5PlusShort, agentReadable: 86, actionable: 90, exactPaths: 100, promptNative: 94, encodeCost: 'text' },
-    { name: 'k6-context-capsule', encode: k6, agentReadable: 91, actionable: 94, exactPaths: 100, promptNative: 97, encodeCost: 'text' },
-    { name: 'k7-agent-context-language', encode: k7, agentReadable: 93, actionable: 96, exactPaths: 100, promptNative: 99, encodeCost: 'text' },
-    { name: 'k8-agent-context-language', encode: k8, agentReadable: 94, actionable: 97, exactPaths: 100, promptNative: 99, encodeCost: 'text' },
-    { name: 'k9-agent-context-language', encode: k9, agentReadable: 94, actionable: 98, exactPaths: 100, promptNative: 99, encodeCost: 'text' },
-    { name: 'k10-agent-context-language', encode: k10, agentReadable: 93, actionable: 98, exactPaths: 100, promptNative: 99, encodeCost: 'text' },
-    { name: 'k11-agent-context-language', encode: k11, agentReadable: 92, actionable: 98, exactPaths: 100, promptNative: 99, encodeCost: 'text' },
-    { name: 'k12-agent-context-language', encode: k12, agentReadable: 90, actionable: 98, exactPaths: 100, promptNative: 99, encodeCost: 'text' },
-    { name: 'k13-agent-context-language', encode: k13, agentReadable: 91, actionable: 98, exactPaths: 100, promptNative: 99, encodeCost: 'text' },
-    { name: 'k14-agent-context-language', encode: k14, agentReadable: 90, actionable: 98, exactPaths: 100, promptNative: 99, encodeCost: 'text' },
-    { name: 'k15-agent-context-language', encode: k15, agentReadable: 90, actionable: 98, exactPaths: 100, promptNative: 99, encodeCost: 'text' },
-    { name: 'gzip-json-base64', encode: gzipJson, agentReadable: 5, actionable: 8, exactPaths: 100, promptNative: 5, encodeCost: 'binary' },
-    { name: 'gzip-k7-base64', encode: gzipK7, agentReadable: 5, actionable: 8, exactPaths: 100, promptNative: 5, encodeCost: 'binary' },
+    { name: 'k6-context-capsule', encode: k6, decodeValidation: output => parseAgentContextCapsule(output).validation, agentReadable: 91, actionable: 94, exactPaths: 100, promptNative: 97, encodeCost: 'text' },
+    { name: 'k7-agent-context-language', encode: k7, decodeValidation: output => parseAgentContextCapsule(output).validation, agentReadable: 93, actionable: 96, exactPaths: 100, promptNative: 99, encodeCost: 'text' },
+    { name: 'k8-agent-context-language', encode: k8, decodeValidation: output => parseAgentContextCapsule(output).validation, agentReadable: 94, actionable: 97, exactPaths: 100, promptNative: 99, encodeCost: 'text' },
+    { name: 'k9-agent-context-language', encode: k9, decodeValidation: output => parseAgentContextCapsule(output).validation, agentReadable: 94, actionable: 98, exactPaths: 100, promptNative: 99, encodeCost: 'text' },
+    { name: 'k10-agent-context-language', encode: k10, decodeValidation: output => parseAgentContextCapsule(output).validation, agentReadable: 93, actionable: 98, exactPaths: 100, promptNative: 99, encodeCost: 'text' },
+    { name: 'k11-agent-context-language', encode: k11, decodeValidation: output => parseAgentContextCapsule(output).validation, agentReadable: 92, actionable: 98, exactPaths: 100, promptNative: 99, encodeCost: 'text' },
+    { name: 'k12-agent-context-language', encode: k12, decodeValidation: output => parseAgentContextCapsule(output).validation, agentReadable: 90, actionable: 98, exactPaths: 100, promptNative: 99, encodeCost: 'text' },
+    { name: 'k13-agent-context-language', encode: k13, decodeValidation: output => parseAgentContextCapsule(output).validation, agentReadable: 91, actionable: 98, exactPaths: 100, promptNative: 99, encodeCost: 'text' },
+    { name: 'k14-agent-context-language', encode: k14, decodeValidation: output => parseAgentContextCapsule(output).validation, agentReadable: 90, actionable: 98, exactPaths: 100, promptNative: 99, encodeCost: 'text' },
+    { name: 'k15-agent-context-language', encode: k15, decodeValidation: output => parseAgentContextCapsule(output).validation, agentReadable: 90, actionable: 98, exactPaths: 100, promptNative: 99, encodeCost: 'text' },
+    { name: 'gzip-json-base64', encode: gzipJson, decodeValidation: output => JSON.parse(zlib.gunzipSync(Buffer.from(output, 'base64')).toString('utf8')).execution?.validate, agentReadable: 5, actionable: 8, exactPaths: 100, promptNative: 5, encodeCost: 'binary' },
+    { name: 'gzip-k7-base64', encode: gzipK7, decodeValidation: output => parseAgentContextCapsule(zlib.gunzipSync(Buffer.from(output, 'base64')).toString('utf8')).validation, agentReadable: 5, actionable: 8, exactPaths: 100, promptNative: 5, encodeCost: 'binary' },
   ];
 }
 
@@ -787,7 +796,7 @@ function encodeK15(context: any): string {
     compactListLineK15('I', context.idioms, 3, 22, compactK12Guidance),
     compactListLineK15('U', context.reuse, 2, 24, compactK12Guidance),
     compactListLineK15('R', context.risks, 2, 24, compactK12Guidance),
-    compactListLineK15('V', compactK12Validation(context.execution?.validate, fileRefs), 2, 28, compactCommandText),
+    arrayOfStrings(context.execution?.validate).length ? `V|${JSON.stringify(arrayOfStrings(context.execution.validate))}` : '',
     context.rule ? `!${compactK12Rule(context.rule, 26)}` : '',
   ];
   return lines.filter(Boolean).join('\n');
@@ -1519,54 +1528,6 @@ function estimatePromptishTokens(value: string): number {
 
 function percentReduction(baseline: number, current: number): number {
   return Math.round(((baseline - current) / Math.max(1, baseline)) * 1000) / 10;
-}
-
-function buildBenchmarkGates(results: AgentContextCodecBenchmarkResult[]): AgentContextCodecBenchmarkGate[] {
-  const k14 = resultByName(results, 'k14-agent-context-language');
-  const k15 = resultByName(results, 'k15-agent-context-language');
-  const minJson = resultByName(results, 'min-json');
-  const jsonb = resultByName(results, 'jsonb-rowset');
-  const protobuf = resultByName(results, 'protobuf-text');
-  const toonish = resultByName(results, 'toonish-table');
-  const yaml = resultByName(results, 'yaml-brief');
-  const xml = resultByName(results, 'xml-tags');
-  const gzipK7 = resultByName(results, 'gzip-k7-base64');
-  const msgpack = resultByName(results, 'messagepack-base64-proxy');
-  return [
-    codecGate('agent-context-codec:default-k15',
-      results[0]?.name === 'k15-agent-context-language',
-      `recommendation ${results[0]?.name || 'missing'}`),
-    codecGate('agent-context-codec:k15-token-budget',
-      Boolean(k15) && k15!.estimated_tokens <= 97 && k15!.token_reduction_vs_min_json >= 72,
-      k15 ? `${k15.estimated_tokens} tokens, ${k15.token_reduction_vs_min_json}% reduction vs min JSON` : 'missing K15 result'),
-    codecGate('agent-context-codec:k15-promptish-budget',
-      Boolean(k15 && minJson) &&
-        k15!.promptish_token_reduction_vs_min_json >= 77 &&
-        k15!.context_slots_per_100_promptish_tokens > (k14?.context_slots_per_100_promptish_tokens || 0),
-      k15 ? `${k15.promptish_tokens} promptish tokens, ${k15.promptish_token_reduction_vs_min_json}% reduction vs min JSON, ${k15.context_slots_per_100_promptish_tokens} slots-per-100` : 'missing K15 result'),
-    codecGate('agent-context-codec:k15-beats-k14',
-      Boolean(k15 && k14) && k15!.estimated_tokens < k14!.estimated_tokens && k15!.context_slots_per_100_tokens > k14!.context_slots_per_100_tokens,
-      k15 && k14 ? `K15 ${k15.estimated_tokens} tokens / ${k15.context_slots_per_100_tokens} slots-per-100 vs K14 ${k14.estimated_tokens} / ${k14.context_slots_per_100_tokens}` : 'missing K15/K14 result'),
-    codecGate('agent-context-codec:k15-beats-structured-text-baselines',
-      Boolean(k15 && jsonb && protobuf && toonish && yaml && xml && minJson) &&
-        [jsonb!, protobuf!, toonish!, yaml!, xml!, minJson!].every(result => k15!.balanced_score > result.balanced_score),
-      k15 ? `K15 score ${k15.balanced_score}; JSONB ${jsonb?.balanced_score ?? 'missing'}, protobuf ${protobuf?.balanced_score ?? 'missing'}, TOON-ish ${toonish?.balanced_score ?? 'missing'}, YAML ${yaml?.balanced_score ?? 'missing'}, XML ${xml?.balanced_score ?? 'missing'}, JSON ${minJson?.balanced_score ?? 'missing'}` : 'missing K15 result'),
-    codecGate('agent-context-codec:opaque-binary-not-default',
-      Boolean(k15 && gzipK7 && msgpack) &&
-        k15!.balanced_score > gzipK7!.balanced_score &&
-        k15!.balanced_score > msgpack!.balanced_score &&
-        gzipK7!.prompt_native <= 10 &&
-        msgpack!.prompt_native <= 10,
-      k15 ? `K15 score ${k15.balanced_score}; gzip/base64 score ${gzipK7?.balanced_score ?? 'missing'}, MessagePack/base64 score ${msgpack?.balanced_score ?? 'missing'}` : 'missing K15 result'),
-  ];
-}
-
-function codecGate(id: string, ok: boolean, detail: string): AgentContextCodecBenchmarkGate {
-  return { id, status: ok ? 'pass' : 'fail', detail };
-}
-
-function resultByName(results: AgentContextCodecBenchmarkResult[], name: string): AgentContextCodecBenchmarkResult | undefined {
-  return results.find(result => result.name === name);
 }
 
 function countContextSlots(context: any, output: string): number {
