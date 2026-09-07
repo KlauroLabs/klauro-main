@@ -26,11 +26,12 @@
 
 import * as path from 'path';
 import { analyzeForBench } from './product-analysis';
+import { hasUnresolvedDependencyEffect } from '../../../../packages/analyzer-core/src/analyzer/core/exit-point-effects';
 import {
   getInterfaceSignature,
   getEntryPoints,
   getExitPoints,
-  getDataLineage,
+
   getCallers,
 } from '../query';
 
@@ -69,17 +70,19 @@ export async function runInterfaceSignatureBench(): Promise<InterfaceSignatureBe
     .filter((ep: any) => ep.source_node === targetNodeId || ep.handler?.node_id === targetNodeId);
   const manualExitPoints = getExitPoints(cas, { limit: 500 }).exit_points
     .filter((ep: any) => ep.source_node === targetNodeId);
-  const manualLineage = (getDataLineage(cas, { limit: 500 }) as any).entities
-    .filter((e: any) => {
-
-
-
-      const full = (cas.data_lineage || []).find((d: any) => d.entity_id === e.entity_id);
-      return full && (
-        full.writers.some((w: any) => w.node_id === targetNodeId) ||
-        full.readers.some((r: any) => r.node_id === targetNodeId)
-      );
-    });
+  const exitById = new Map((cas.exit_points || []).map((exit: any) => [exit.id, exit] as const));
+  const expectedRecipients = new Set(manualExitPoints
+    .filter((exit: any) => !['database', 'cache', 'file'].includes(exit.type) && !hasUnresolvedDependencyEffect(exit))
+    .map((exit: any) => exit.target?.service_id || exit.target?.resource || `${exit.type}:${exit.name}`));
+  for (const entry of cas.data_lineage || []) {
+    if (!entry.writers.some((writer: any) => writer.node_id === targetNodeId) &&
+        !entry.readers.some((reader: any) => reader.node_id === targetNodeId)) continue;
+    for (const recipient of entry.external_recipients) {
+      const exit: any = exitById.get(recipient.exit_point_id);
+      const carrier = recipient.via_node ?? exit?.source_node;
+      if (carrier === targetNodeId && (!exit || !hasUnresolvedDependencyEffect(exit))) expectedRecipients.add(recipient.service);
+    }
+  }
   const manualCallers = getCallers(cas, targetNodeId, 1, 50);
 
   const realParamNode = cas.nodes.find((n: any) => n.id === targetNodeId);
@@ -108,12 +111,12 @@ export async function runInterfaceSignatureBench(): Promise<InterfaceSignatureBe
 
   const sideEffectsMatchesManualJoin =
     manualExitPoints.every((ep: any) => sideEffectExitIds.includes(ep.id)) &&
-    manualLineage.length > 0 &&
-    manualLineage.every((entry: any) => {
-      const full = (cas.data_lineage || []).find((candidate: any) => candidate.entity_id === entry.entity_id);
-      return full.external_recipients.every((recipient: any) => sideEffectRecipients.includes(recipient.service)) &&
-        full.boundaries_crossed.every((boundary: any) => sideEffectBoundaries.includes(boundary.boundary));
-    });
+    sideEffectExitIds.length === manualExitPoints.length &&
+    expectedRecipients.size === new Set(sideEffectRecipients).size &&
+    [...expectedRecipients].every(service => sideEffectRecipients.includes(service)) &&
+    sideEffectBoundaries.length === 0 &&
+    Boolean(realParamNode?.contract) &&
+    JSON.stringify(signature.contract) === JSON.stringify(realParamNode.contract);
 
   const logicCallersTotalMatches = signature.logic?.callers_total === manualCallers.total;
 

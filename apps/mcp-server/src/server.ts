@@ -4422,7 +4422,7 @@ function registerTools(server: McpServer) {
     'get_interface_signature',
     {
       title: 'Get Interface Signature',
-      description: 'The I/L/S/O contract for one entity in a single call: Input (required parameters / entry points it triggers on), Logic (blackbox caller/callee wiring — counts + key refs, truncation-signal honest), Side-effects (exit points + external data-lineage recipients + boundaries crossed), Output (return type / produced entities), and purpose (terminal-signal proximity, when reachable). Replaces the manual join of get_entry_points + get_exit_points + get_data_lineage + get_callers/get_callees for the same target. Level-aware: function/flow/capability resolve to one node; project/workspace aggregate from product_map + entry/exit points (gaps are reported honestly, not fabricated). Call this before changing an entity to see its full contract and blast radius.',
+      description: 'The canonical ICELOT contract for a resolved node, with parameters, entry points, return type and caller/callee wiring. Side-effects retain direct exit points plus the node contract’s state changes, integrations and explicitly unresolved exits; shared entity transfers or boundaries are not attributed to the node. The complete contract includes constraints and evidence provenance. Missing contracts are reported as gaps. Function/flow/capability levels resolve to one node; project/workspace aggregate product_map and entry/exit evidence, with scope gaps stated. Use before changing a target to inspect its behavior and connections.',
       inputSchema: {
         path: z.string().describe('Project path'),
         target: z.string().describe('Node ID, file path, search query, or "project"/"workspace" for the aggregate rollup'),

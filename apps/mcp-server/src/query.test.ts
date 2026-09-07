@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CASOutput, CASNode, CASEdge, CASEntryPoint } from '../../../packages/analyzer-core/src/types/cas.types';
-import { getCodingContext, getFlowConcepts, getCallers, assessChangeRisk, getConfiguration, buildSummary, getFlowGraph, getRuntimeStaticLinks, getDataLineage, findTests } from './query';
+import { getCodingContext, getFlowConcepts, getCallers, assessChangeRisk, getConfiguration, buildSummary, getFlowGraph, getRuntimeStaticLinks, getDataLineage, findTests, getInterfaceSignature } from './query';
 import { attachCasProjection } from './cas-projection';
 
 // Builds a synthetic CAS with a single high-fanout "hub" node that has more
@@ -20,6 +20,58 @@ test('lineage summaries expose unresolved transfer counts and exit references', 
   assert.equal(result.entities_with_unresolved_transfer, 1);
   assert.deepEqual(result.entities[0].unresolved_exit_point_ids, ['dependency']);
   assert.equal(result.entities[0].exposure.external_transfer_unresolved, true);
+});
+
+test('interface effects use the canonical node contract, not every transfer and boundary on a shared entity', () => {
+  const cas = buildHighFanoutCas({ callerCount: 0, calleeCount: 1 });
+  const node = cas.nodes[0];
+  node.contract = {
+    input: ['Article'], logic: 'validate article', output: ['Article'],
+    side_effects: { state_changes: ['Article updated'], external_integrations: ['own-service'], unresolved_exit_point_ids: ['dependency'] },
+    constraints: [{ kind: 'auth', rule: 'requires editor', evidence: 'entry entry-hub' }],
+  };
+  cas.data_lineage = [{
+    entity_id: 'article', entity_name: 'Article', sensitive_fields: [], writers: [{ node_id: node.id, via: 'update' }], readers: [],
+    external_recipients: [{ exit_point_id: 'other-exit', service: 'other-service', via_node: cas.nodes[1].id }],
+    boundaries_crossed: [{ boundary: 'other-boundary', guarded: false }], journeys_carrying: [],
+    exposure: { external_transfer: true, sensitive: false, unguarded_paths: 1 },
+  }];
+  const before = JSON.stringify(cas);
+  const result = getInterfaceSignature(cas, node.id) as any;
+  assert.deepEqual(result.contract, node.contract);
+  assert.deepEqual(result.side_effects, [
+    { kind: 'state_change', change: 'Article updated' },
+    { kind: 'external_recipient', service: 'own-service' },
+    { kind: 'unresolved_exit_point', id: 'dependency' },
+  ]);
+  assert.equal(JSON.stringify(cas), before);
+});
+
+test('an absent node contract is a visible gap, not permission to infer effects from shared entity lineage', () => {
+  const cas = buildHighFanoutCas({ callerCount: 0, calleeCount: 0 });
+  const node = cas.nodes[0];
+  cas.exit_points = [{ id: 'direct', type: 'api', name: 'GET (runtime-resolved)', source_node: node.id, target: { service_id: 'external_api' } }] as any;
+  cas.data_lineage = [{
+    entity_id: 'article', entity_name: 'Article', sensitive_fields: [], writers: [], readers: [{ node_id: node.id, via: 'lookup' }],
+    external_recipients: [{ exit_point_id: 'someone-else', service: 'unrelated-vendor' }],
+    boundaries_crossed: [{ boundary: 'somewhere-else', guarded: true }], journeys_carrying: [],
+    exposure: { external_transfer: true, sensitive: false, unguarded_paths: 0 },
+  }];
+  const result = getInterfaceSignature(cas, node.id) as any;
+  assert.equal(result.contract, null);
+  assert.deepEqual(result.side_effects.map((row: any) => row.kind), ['exit_point']);
+  assert.equal(result.side_effects[0].id, 'direct');
+  assert(result.gaps.some((gap: string) => /canonical node contract/i.test(gap)));
+});
+
+test('a complete node contract needs no entity-lineage fallback and retains explicitly unresolved effects', () => {
+  const cas = buildHighFanoutCas({ callerCount: 0, calleeCount: 0 });
+  const node = cas.nodes[0];
+  node.contract = { input: [], output: [], logic: '', constraints: [], side_effects: { state_changes: [], external_integrations: [], unresolved_exit_point_ids: ['sdk-call'] } };
+  const result = getInterfaceSignature(cas, node.id) as any;
+  assert.deepEqual(result.side_effects, [{ kind: 'unresolved_exit_point', id: 'sdk-call' }]);
+  assert.deepEqual(result.contract, node.contract);
+  assert(!result.gaps.some((gap: string) => /data_lineage|canonical node contract/i.test(gap)));
 });
 
 function buildHighFanoutCas(opts: { callerCount: number; calleeCount: number }): CASOutput {
