@@ -230,8 +230,8 @@ test('agent context reports a missing citation without inventing deletion timing
     const freshness = context.analysis_freshness;
     assert.ok(freshness, 'agent context must carry analysis_freshness');
     assert.equal(freshness.staleness, 'stale');
-    assert.ok(freshness.files_missing_now.examples.includes('src/users/users.service.ts'));
-    assert.equal(freshness.files_deleted_since_analysis.count, null);
+    assert.equal(freshness.missing_files, 1);
+    assert.equal(freshness.deleted_files, undefined);
     assert.match(freshness.warning, /missing/i);
     assert.equal(context.agent_context_ready, false);
 
@@ -256,8 +256,7 @@ test('agent context treats a newer target timestamp as a hint, not a content com
     }) as Record<string, any>;
 
     assert.equal(context.analysis_freshness.staleness, 'unknown');
-    assert.equal(context.analysis_freshness.files_changed_since_analysis.count, null);
-    assert.ok(context.analysis_freshness.newer_mtime_hints.examples.includes('src/users/users.service.ts'));
+    assert.equal(context.analysis_freshness.changed_files, undefined);
     assert.match(context.work_context.risk.citation_verification_note, /identity.*unavailable/i);
     assert.equal(context.work_context.risk.target_file_changed_since_analysis, undefined);
     assert.equal(context.agent_context_ready, false);
@@ -302,13 +301,46 @@ test('agent context does not prove unchanged content from old timestamps', async
 
     assert.equal(context.analysis_freshness.staleness, 'unknown');
     assert.equal(context.analysis_freshness.citation_verification, 'unverified');
-    assert.equal(context.analysis_freshness.files_changed_since_analysis.count, null);
-    assert.equal(context.analysis_freshness.newer_mtime_hints.count, 0);
+    assert.equal(context.analysis_freshness.changed_files, undefined);
     assert.match(context.analysis_freshness.warning, /identity.*unavailable/i);
     assert.equal(context.work_context.risk?.target_file_changed_since_analysis, undefined);
     assert.equal(context.agent_context_ready, false);
   });
 });
+
+
+test('every compact response profile retains citation uncertainty and its action', async () => {
+  await withTempDir('klauro-freshness-profiles-', async root => {
+    writeSourceFixture(root);
+    const cas = freshnessFixtureCas(root, analyzedTime());
+    for (const response_profile of ['minimal', 'first-turn', 'capsule-only'] as const) {
+      const context = await getAgentContext(cas, root, {
+        task_type: 'modify', target: 'UsersService', response_profile,
+      }) as Record<string, any>;
+      assert.equal(context.analysis_freshness.citation_verification, 'unverified', response_profile);
+      assert.equal(context.analysis_freshness.staleness, 'unknown', response_profile);
+      assert.match(context.analysis_freshness.warning, /identity.*unavailable/i, response_profile);
+      if (response_profile !== 'minimal') assert.match(context.rule, /UNVERIFIED.*inspect cited source/i);
+    }
+  });
+});
+
+test('capsule-only response preserves missing citations without claiming deletion timing', async () => {
+  await withTempDir('klauro-freshness-missing-capsule-', async root => {
+    const files = writeSourceFixture(root);
+    fs.unlinkSync(files[1]);
+    const context = await getAgentContext(freshnessFixtureCas(root, analyzedTime()), root, {
+      task_type: 'modify', target: 'UsersService', response_profile: 'capsule-only',
+    }) as Record<string, any>;
+    assert.equal(context.analysis_freshness.citation_verification, 'invalid');
+    assert.match(context.rule, /INVALID CITATION.*inspect the current workspace/i);
+    assert.match(context.analysis_freshness.warning, /deletion timing is unknown/i);
+  });
+});
+
+function analyzedTime(): string {
+  return new Date(Date.now() - HOUR_MS).toISOString();
+}
 
 test('resolve_agent_analysis refreshes stale customer analysis through hosted in-flight sync', async () => {
   const previousStorage = process.env.KLAURO_STORAGE_PATH;

@@ -2020,10 +2020,11 @@ function compactCapsuleOnlyAgentContext<T extends Record<string, any>>(context: 
     readiness: compactContext.readiness,
     target_resolution: compactContext.target_resolution,
     execution_capsule: executionCapsule,
+    ...(compactContext.analysis_freshness ? { analysis_freshness: compactContext.analysis_freshness } : {}),
     estimated_tokens: Math.ceil(`${contextCapsule.capsule}\n${executionCapsule}`.length / 4),
     selected: compactContext.selected,
     files: compactContext.files,
-    rule: compactContext.target_resolution ? 'Resolve target uncertainty before choosing an edit scope; request exact candidate node context.' : 'Read K15 context, execute K5, then expand only if blocked by source evidence or validation.',
+    rule: compactContext.analysis_freshness?.warning ? compactContext.rule : compactContext.target_resolution ? 'Resolve target uncertainty before choosing an edit scope; request exact candidate node context.' : 'Read K15 context, execute K5, then expand only if blocked by source evidence or validation.',
   };
   return payload as unknown as T;
 }
