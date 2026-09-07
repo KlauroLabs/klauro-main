@@ -9,7 +9,7 @@
 
 
 import { execFileSync } from 'child_process';
-import { accessSync, readFileSync } from 'fs';
+import { accessSync, closeSync, constants, openSync, readSync } from 'fs';
 import * as path from 'path';
 
 
@@ -30,20 +30,39 @@ const NATIVE_LANGS = new Set([
   'lua', 'scala',
 ]);
 
-function binaryPath(): string {
-  return path.join(__dirname, '..', '..', '..', 'native', 'klauro-parse', 'target', 'release', 'klauro-parse');
+export function hasCompatibleNativeParserBinary(filePath: string): boolean {
+  try {
+    accessSync(filePath, constants.X_OK);
+    const descriptor = openSync(filePath, 'r');
+    try {
+      const header = Buffer.alloc(32);
+      let offset = 0;
+      while (offset < header.length) {
+        const bytes = readSync(descriptor, header, offset, header.length - offset, offset);
+        if (!bytes) return false;
+        offset += bytes;
+      }
+      return binaryMatchesRuntime(header);
+    } finally {
+      closeSync(descriptor);
+    }
+  } catch {
+    return false;
+  }
 }
 
-let binaryOk: boolean | null = null;
-function binaryAvailable(): boolean {
-  if (binaryOk !== null) return binaryOk;
-  try {
-    accessSync(binaryPath());
-    binaryOk = binaryMatchesRuntime(readFileSync(binaryPath(), { encoding: null, flag: 'r' }).subarray(0, 32));
-  } catch {
-    binaryOk = false;
-  }
-  return binaryOk;
+export function resolveNativeParserBinary(directory = __dirname): string | null {
+  const candidates = [
+    path.join(directory, 'native', 'klauro-parse'),
+    path.join(directory, '..', '..', '..', 'native', 'klauro-parse', 'target', 'release', 'klauro-parse'),
+  ];
+  return candidates.find(hasCompatibleNativeParserBinary) || null;
+}
+
+let nativeBinary: string | null | undefined;
+function binaryPath(): string | null {
+  if (nativeBinary === undefined) nativeBinary = resolveNativeParserBinary();
+  return nativeBinary;
 }
 
 export function binaryMatchesRuntime(header: Uint8Array): boolean {
@@ -70,7 +89,7 @@ export function binaryMatchesRuntime(header: Uint8Array): boolean {
 }
 
 export function hasNativeGrammar(lang: string): boolean {
-  return NATIVE_LANGS.has(lang) && binaryAvailable();
+  return NATIVE_LANGS.has(lang) && binaryPath() !== null;
 }
 
 interface RawNode { t: string; s: number; e: number; sr: number; n: boolean; c: RawNode[] }
@@ -100,10 +119,11 @@ export class NativeNode {
 
 
 export function parseNativeRoot(lang: string, source: string): NativeNode | null {
-  if (!hasNativeGrammar(lang)) return null;
+  const binary = NATIVE_LANGS.has(lang) ? binaryPath() : null;
+  if (!binary) return null;
   let out: string;
   try {
-    out = execFileSync(binaryPath(), [lang], { input: source, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+    out = execFileSync(binary, [lang], { input: source, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
   } catch {
     return null;
   }

@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import * as path from 'node:path';
@@ -73,6 +73,16 @@ function copyGrammars(outputDir) {
 }
 
 if (hostedBuild) {
+  const nativeParser = path.join(analyzerCoreRoot, 'native', 'klauro-parse', 'target', 'release', 'klauro-parse');
+  if (!existsSync(nativeParser) || !statSync(nativeParser).isFile()) {
+    throw new Error('Hosted build requires the exact-platform native parser; build packages/analyzer-core/native/klauro-parse first.');
+  }
+  const nativeProbe = JSON.parse(execFileSync(nativeParser, ['r'], {
+    input: '', encoding: 'utf8', timeout: 10_000, maxBuffer: 4096,
+  }));
+  if (nativeProbe.error || !nativeProbe.t) {
+    throw new Error('Hosted build native parser did not return a valid syntax tree.');
+  }
   const output = path.join(packageRoot, 'dist-hosted');
   rmSync(output, { recursive: true, force: true });
   mkdirSync(output, { recursive: true });
@@ -89,6 +99,9 @@ if (hostedBuild) {
   await build({ ...shared, entryPoints: ['src/remote-analyzer-service.ts'], outfile: 'dist-hosted/analyzer-service.cjs', plugins: [nativeExternals] });
   writeFileSync(path.join(output, 'stage-fingerprints.json'), JSON.stringify(stageFingerprints, null, 2));
   copyGrammars(output);
+  mkdirSync(path.join(output, 'native'), { recursive: true });
+  cpSync(nativeParser, path.join(output, 'native', 'klauro-parse'));
+  chmodSync(path.join(output, 'native', 'klauro-parse'), 0o755);
   console.log(`Built hosted analyzer artifacts in ${output}; these are never included in the customer package.`);
   process.exit(0);
 }
