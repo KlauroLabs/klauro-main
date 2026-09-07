@@ -323,6 +323,10 @@ test('get_agent_context on the light-plus-scoped projection matches the whole-gr
         const streamed = (await loadAgentContextProjection(noStorePinned, noStoreGraph, (plan as { scope: any }).scope))!;
         assert.equal(streamed.source, 'stream');
         assert.equal(streamed.edgeOrder, 'original', 'the stream fallback restores original edge order too');
+        assert.equal(streamed.edgeOrderReason, undefined);
+        const section = (await loadScopedGraphSection(noStorePinned, new Set(['node-0']), noStoreGraph, { edgeOrderMap: true }))!;
+        assert.ok(section.edgeOriginalIndexByOrdinal && section.edgeOriginalIndexByOrdinal.length === noStoreGraph.edgeCount);
+        assert.equal(new Set(section.edgeOriginalIndexByOrdinal).size, noStoreGraph.edgeCount, 'every compact ordinal maps to a distinct original index');
         const wholeNoStore = (await loadCompleteAnalysisFromSections(noStoreProject))!;
         assert.deepEqual(streamed.edges.map(edge => edge.id), wholeNoStore.edges.map(edge => edge.id));
         assert.deepEqual(streamed.nodes.map(node => node.id), wholeNoStore.nodes.map(node => node.id));

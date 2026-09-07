@@ -30,6 +30,7 @@ const MAX_AGENT_SEEDS = 12;
 const MAX_FILE_NODES = 400;
 const MAX_AGENT_NEIGHBORHOOD_NODES = 600;
 const MAX_AGENT_NEIGHBORHOOD_EDGES = 4000;
+const MAX_EDGE_ORDER_MAP_BYTES = 96 * 1024 * 1024;
 export const LIGHT_NODE_ABSENT_FIELDS = ['description', 'description_source', 'metadata', 'documentation', 'call_graph', 'perspectives', 'contract', 'subcategories', 'analyzers', 'role'] as const;
 export const LIGHT_EDGE_ABSENT_FIELDS = ['metadata', 'weight', 'evidence'] as const;
 const EXACT_ID_SCOPED_TOOLS = new Set(['assess_change_risk', 'find_tests']);
@@ -66,6 +67,7 @@ export interface ScopedGraphSection {
   stats?: CasRecordStoreReadStats;
   edgeRecordOrdinals?: number[];
   edgeOriginalIndexByOrdinal?: Uint32Array;
+  edgeOrderMapSkipped?: string;
 }
 
 export interface AgentContextProjection {
@@ -78,6 +80,7 @@ export interface AgentContextProjection {
   lightEdges: number;
   fullEdgesTruncated: boolean;
   edgeOrder: 'original' | 'compact-canonical';
+  edgeOrderReason?: string;
   stats?: CasRecordStoreReadStats;
 }
 
@@ -412,6 +415,7 @@ export async function loadAgentContextProjection(
     lightEdges: graph.edgeCount - section.edges.length,
     fullEdgesTruncated: Boolean(section.edgesTruncated),
     edgeOrder: recordOrdinals || section.edgeOriginalIndexByOrdinal ? 'original' : 'compact-canonical',
+    ...(section.edgeOrderMapSkipped ? { edgeOrderReason: section.edgeOrderMapSkipped } : {}),
     stats: section.stats,
   };
 }
@@ -432,6 +436,7 @@ export function agentContextProjectionGaps(projection: AgentContextProjection): 
       'representative target ranking (approximate: synthetic call-site filtering reads description on light nodes)',
     ],
     edge_order: projection.edgeOrder,
+    ...(projection.edgeOrderReason ? { edge_order_reason: projection.edgeOrderReason, approximate_because_of_edge_order: ['direct_callers, callees and call-chain listings follow compact-canonical order instead of analysis order'] } : {}),
     full_edges_truncated: projection.fullEdgesTruncated,
     ...(projection.fullEdgesTruncated ? { approximate_because_of_edge_truncation: [
       'callers and callees beyond the loaded full edges carry light edges only (ids and types exact, edge metadata absent)',
@@ -531,16 +536,24 @@ export async function loadScopedGraphSection(
     const records = await loadScopedRecords(pinned, keepIds, graph);
     if (records) return records;
   }
+  let edgeOrderMapSkipped: string | undefined;
+  let mapBytes = 0;
   const ordinalByKey = graph && options.edgeOrderMap ? new Map<string, number[]>() : undefined;
   if (graph && ordinalByKey) {
     for (let ordinal = 0; ordinal < graph.edgeCount; ordinal += 1) {
       const view = graph.edgeAt(ordinal);
       const key = edgeRecordKey({ id: view.id, source: view.sourceId, target: view.targetId, type: view.type, category: view.category });
+      mapBytes += key.length * 2 + 16;
+      if (mapBytes > MAX_EDGE_ORDER_MAP_BYTES) { edgeOrderMapSkipped = `edge order map would need more than ${MAX_EDGE_ORDER_MAP_BYTES} bytes`; ordinalByKey.clear(); break; }
       const bucket = ordinalByKey.get(key);
       if (bucket) bucket.push(ordinal); else ordinalByKey.set(key, [ordinal]);
     }
   }
-  const originalIndexByOrdinal = graph && ordinalByKey ? new Uint32Array(graph.edgeCount) : undefined;
+  const orderMapActive = Boolean(graph && ordinalByKey && !edgeOrderMapSkipped);
+  const originalIndexByOrdinal = orderMapActive ? new Uint32Array(graph!.edgeCount) : undefined;
+  const assignedOrdinals = orderMapActive ? new Uint8Array(graph!.edgeCount) : undefined;
+  let assignedCount = 0;
+  let unmatchedStreamEdges = 0;
   const artifact = pinnedGraphArtifact(pinned);
   if (!artifact) return null;
   const [{ parser }, { pick }, { streamArray }, { chain }] = await Promise.all(
@@ -556,10 +569,12 @@ export async function loadScopedGraphSection(
       const record = item.value;
       if (!record || typeof record !== 'object') return;
       if (isEdgeRecord(record)) {
-        if (ordinalByKey && originalIndexByOrdinal) {
+        if (orderMapActive && ordinalByKey && originalIndexByOrdinal && assignedOrdinals) {
           const bucket = ordinalByKey.get(edgeRecordKey(record as CASEdge));
           const ordinal = bucket?.shift();
-          if (ordinal !== undefined) originalIndexByOrdinal[ordinal] = scanned.edges;
+          if (ordinal === undefined) unmatchedStreamEdges += 1;
+          else if (assignedOrdinals[ordinal]) unmatchedStreamEdges += 1;
+          else { assignedOrdinals[ordinal] = 1; originalIndexByOrdinal[ordinal] = scanned.edges; assignedCount += 1; }
         }
         scanned.edges += 1;
         if (!keepIds.has(record.source) || !keepIds.has(record.target)) return;
@@ -574,7 +589,21 @@ export async function loadScopedGraphSection(
     pipeline.on('end', resolve);
     pipeline.on('error', reject);
   });
-  return { nodes, edges, scanned, edgesTruncated, source: 'stream', ...(originalIndexByOrdinal ? { edgeOriginalIndexByOrdinal: originalIndexByOrdinal } : {}) };
+  if (orderMapActive && graph) {
+    const leftover = [...ordinalByKey!.values()].reduce((sum, bucket) => sum + bucket.length, 0);
+    if (unmatchedStreamEdges > 0 || leftover > 0 || assignedCount !== graph.edgeCount || scanned.edges !== graph.edgeCount || scanned.nodes !== graph.nodeCount) {
+      edgeOrderMapSkipped = `stream and compact edge sets differ (assigned ${assignedCount} of ${graph.edgeCount}, unmatched ${unmatchedStreamEdges}, leftover ${leftover}, scanned ${scanned.nodes}/${scanned.edges} vs ${graph.nodeCount}/${graph.edgeCount})`;
+    }
+  }
+  return {
+    nodes,
+    edges,
+    scanned,
+    edgesTruncated,
+    source: 'stream',
+    ...(originalIndexByOrdinal && !edgeOrderMapSkipped ? { edgeOriginalIndexByOrdinal: originalIndexByOrdinal } : {}),
+    ...(edgeOrderMapSkipped ? { edgeOrderMapSkipped } : {}),
+  };
 }
 
 async function searchCandidateIds(pinned: PinnedAnalysisGeneration, target: string): Promise<string[]> {
