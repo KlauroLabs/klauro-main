@@ -12,7 +12,7 @@ import {
   validateAgentChange,
 } from './agent-workflow';
 import { buildArchitectureContextForAgent, evaluateAgentReadiness, formatExecutionCapsule, getAgentStartContext, getAgentToolPlan, getAgentContext } from './agent-adoption';
-import { benchmarkAgentContextCodecs, parseAgentContextCapsule } from './agent-context-codec';
+import { benchmarkAgentContextCodecs, formatAgentContextCapsule, parseAgentContextCapsule } from './agent-context-codec';
 import { ingestTelemetryBatch } from './telemetry-ingestion';
 import { attachCasProjection } from './cas-projection';
 
@@ -361,6 +361,40 @@ test('K15 agent context language beats JSON-like and binary cache formats on bal
   assert.ok(k15.context_slots_per_100_promptish_tokens > k14.context_slots_per_100_promptish_tokens);
   assert.ok(k15.balanced_score > gzip.balanced_score);
   assert.ok(k15.balanced_score > messagePack.balanced_score);
+});
+
+test('execution capsules preserve every validation command without rewriting paths or arguments', () => {
+  const commands = [
+    "cd 'packages/analyzer-core' && npm test -- 'src/analyzer/core/capability-catalog-repair-plan.test.ts' 'src/analyzer/core/capability-catalog-scheduling.test.ts'",
+    "node -e 'console.log(\"service controller capability\")'",
+  ];
+  const capsule = formatExecutionCapsule({ task_type: 'debug', target: 'recoverDescription', validate: commands });
+  for (const command of commands) assert.ok(capsule.includes('V|' + command), capsule);
+});
+
+test('context capsule validation round trips shell syntax and long commands exactly', () => {
+  const commands = [
+    "cd 'packages/analyzer-core' && npm test -- 'src/analyzer/core/capability-catalog-repair-plan.test.ts' 'src/analyzer/core/capability-catalog-scheduling.test.ts'",
+    "node -e 'console.log(\"service  controller; capability | 1\")'\nnode --version",
+    "npm run typecheck",
+  ];
+  const capsule = formatAgentContextCapsule({
+    task: 'debug: recoverDescription',
+    files: ['src/analyzer/core/capability-catalog-repair-plan.test.ts'],
+    execution: { validate: commands },
+  });
+  assert.deepEqual(parseAgentContextCapsule(capsule.capsule).validation, commands);
+});
+
+test('first-turn execution retains complete validation commands from standard context', async () => {
+  await withWorkspace(async workspace => {
+    const task = { task_type: 'modify' as const, target: 'UsersService', instructions: 'Change tenant-scoped user creation behavior.' };
+    const standard = await getAgentContext(fixtureCas(), workspace, task) as any;
+    const compact = await getAgentContext(fixtureCas(), workspace, { ...task, response_profile: 'first-turn' }) as any;
+    assert.ok(standard.execution_brief.validate.length > 0);
+    assert.deepEqual(compact.execution.validate, standard.execution_brief.validate);
+    assert.deepEqual(parseAgentContextCapsule(compact.context_capsule.capsule).validation, standard.execution_brief.validate);
+  });
 });
 
 test('execution capsule packs first-action context into a compact agent-readable line set', () => {

@@ -29,6 +29,8 @@ test('bounded agent responses never turn commands or capsules into truncated exe
     { payload: { validation_plan: { commands: [{ command }] } }, read: (value: any) => value.validation_plan?.commands?.[0]?.command, expected: command },
     { payload: { execution_brief: { validate: [command] } }, read: (value: any) => value.execution_brief?.validate?.[0], expected: command },
     { payload: { execution_brief: { capsule } }, read: (value: any) => value.execution_brief?.capsule, expected: capsule },
+    { payload: { execution_capsule: capsule }, read: (value: any) => value.execution_capsule, expected: capsule },
+    { payload: { context_capsule: capsule }, read: (value: any) => value.context_capsule, expected: capsule },
   ];
   for (const item of cases) {
     const bounded = boundToolPayload(item.payload, { tool: 'get_agent_context', budgetBytes: 4000 }) as BoundedEnvelope;
