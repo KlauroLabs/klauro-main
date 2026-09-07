@@ -10510,7 +10510,7 @@ export class AnalyzerOrchestrator {
       gate_reason: gateReason,
       final_outcome: deadlineExceeded || qualityFailure ? 'degraded' : 'ai',
     });
-    const preservePartialCatalog = Boolean(catalogResponseFailure) && publishedCapabilities.length > 0 && !intrinsicQualityFailure && normalizedOperationEvidence.errors.length === 0;
+    const preservePartialCatalog = Boolean(deadlineExceeded || qualityFailure) && publishedCapabilities.length > 0 && !intrinsicQualityFailure && normalizedOperationEvidence.errors.length === 0;
     args.enhancedSystemPurpose.capability_catalog_coverage = {
       evidence_families: distinctFamilyCount,
       product_evidence_candidates: evidenceRoleSummary.product,
