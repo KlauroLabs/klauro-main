@@ -65,6 +65,13 @@ describe('TreeSitterTSExtractor identifier-reference completeness', () => {
         descendants.filter(node => selected.has(node.type)).map(node => node.id),
       );
     }
+    if (language !== 'javascript') {
+      const keyword = tree.rootNode.descendantsOfType('string').find((node: any) => !node.isNamed);
+      expect(keyword).toBeDefined();
+      expect(searches.findFirst(keyword, 'string')?.id).toBe(keyword.id);
+      expect(searches.collectByType(keyword, 'string').map((node: any) => node.id)).toEqual([keyword.id]);
+      expect(searches.collectByTypes(keyword, new Set(['string'])).map((node: any) => node.id)).toEqual([keyword.id]);
+    }
     expect(searches.collectByType(null, 'identifier')).toEqual([]);
     expect(searches.collectByTypes(null, new Set(['identifier']))).toEqual([]);
     expect(searches.findFirst(null, 'identifier')).toBeNull();
