@@ -54,6 +54,7 @@
   "core/capability-operation-attribution.ts": 3,
   "core/capability-operation-coverage.ts": 3,
   "core/capability-operation-language.ts": 3,
+  "core/capability-outcome-audience.ts": 3,
   "core/capability-outcome-evidence-selection.ts": 3,
   "core/capability-reversible-lifecycle.ts": 3,
   "core/capability-subject-evidence.ts": 3,
