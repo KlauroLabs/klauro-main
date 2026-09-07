@@ -3,8 +3,10 @@ import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint } from '
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../core/glob-cache';
+import * as ts from 'typescript';
 
 type McpRegistrationKind = 'registerTool' | 'tool' | 'setRequestHandler';
+type McpDescriptionVerdict = Pick<McpToolRegistration, 'description' | 'descriptionSource' | 'descriptionLine' | 'descriptionEndLine'>;
 
 interface McpToolRegistration {
 
@@ -14,6 +16,13 @@ interface McpToolRegistration {
   line: number;
 
   receiver: string;
+
+  description?: string;
+  descriptionSource: 'string-literal' | 'template-literal' | 'dynamic' | 'absent';
+  descriptionLine?: number;
+  descriptionEndLine?: number;
+  column?: number;
+  methodOffset?: number;
 
   handlerRef?: string;
 
@@ -130,35 +139,59 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
       const scannable = this.blankComments(content);
       if (!this.hasRegistrationEvidence(scannable)) continue;
 
-      registrations.push(...this.extractRegisterToolCalls(scannable, file));
-      registrations.push(...this.extractToolShorthandCalls(scannable, file));
-      registrations.push(...this.extractSetRequestHandlerCalls(scannable, file));
+      const found = [
+        ...this.extractRegisterToolCalls(scannable, file),
+        ...this.extractToolShorthandCalls(scannable, file),
+        ...this.extractSetRequestHandlerCalls(scannable, file),
+      ];
+      this.applyAuthoredDescriptions(content, found);
+      registrations.push(...found);
+    }
+    const siteCounts = new Map<string, number>();
+    for (const reg of registrations) {
+      const key = `${reg.filePath}:${reg.name}:${reg.line}`;
+      siteCounts.set(key, (siteCounts.get(key) || 0) + 1);
     }
 
     for (const reg of registrations) {
-      const nodeId = `mcp_tool_${this.sanitizeId(reg.name)}_${this.sanitizeId(reg.filePath)}_${reg.line}`;
+      const sharedLine = (siteCounts.get(`${reg.filePath}:${reg.name}:${reg.line}`) || 0) > 1;
+      const nodeId = `mcp_tool_${this.sanitizeId(reg.name)}_${this.sanitizeId(reg.filePath)}_${reg.line}${sharedLine && reg.column !== undefined ? `_c${reg.column}` : ''}`;
 
       const nodeBuilder = this.createNodeBuilder(nodeId, reg.name, 'mcp_tool')
         .withLevel(3, 'code')
         .withCategory('mcp_tool', ['mcp', 'tool-registration'])
         .withSource({ file: reg.filePath, line: reg.line, end_line: reg.line })
-        .withDescription(`MCP tool registration: ${reg.name} (via ${reg.receiver}.${reg.kind}())`)
+        .withDescription(reg.description ?? `MCP tool registration: ${reg.name} (via ${reg.receiver}.${reg.kind}())`)
         .withMetadata({
           attributes: {
             mcp: true,
             registrationKind: reg.kind,
             receiver: reg.receiver,
             handlerRef: reg.handlerRef,
-            nameSource: reg.kind === 'setRequestHandler' ? 'schema-identifier' : 'string-literal'
+            nameSource: reg.kind === 'setRequestHandler' ? 'schema-identifier' : 'string-literal',
+            descriptionSource: reg.descriptionSource,
+            descriptionLine: reg.descriptionLine
           }
         });
 
       const node = nodeBuilder.build();
+      if (reg.description !== undefined) {
+        node.description_source = 'deterministic';
+        node.documentation = {
+          format: 'other',
+          type: 'other',
+          raw: reg.description,
+          description: reg.description,
+          summary: reg.description.split(/(?<=[.!?])\s+/)[0],
+          location: { start_line: reg.descriptionLine ?? reg.line, end_line: reg.descriptionEndLine ?? reg.descriptionLine ?? reg.line }
+        };
+      }
       nodes.push(node);
 
       entryPoints.push({
         id: `entry_${nodeId}`,
         name: reg.name,
+        ...(reg.description !== undefined ? { description: reg.description, description_source: 'deterministic' } : {}),
 
 
 
@@ -178,6 +211,9 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
           receiver: reg.receiver,
           file: reg.filePath,
           line: reg.line,
+          descriptionSource: reg.descriptionSource,
+          descriptionLine: reg.descriptionLine,
+          descriptionEndLine: reg.descriptionEndLine,
 
 
 
@@ -269,7 +305,9 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
         kind: 'registerTool',
         filePath,
         line: this.lineAt(content, match.index),
+        methodOffset: match.index + match[0].indexOf('registerTool', match[1].length),
         receiver,
+        descriptionSource: 'dynamic',
         handlerRef: this.extractHandlerRef(args),
         handlerCallCandidates: this.extractHandlerCallCandidates(args)
       });
@@ -296,7 +334,9 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
         kind: 'tool',
         filePath,
         line: this.lineAt(content, match.index),
+        methodOffset: match.index + match[0].indexOf('tool', match[1].length),
         receiver,
+        descriptionSource: 'dynamic',
         handlerRef: this.extractHandlerRef(args),
         handlerCallCandidates: this.extractHandlerCallCandidates(args)
       });
@@ -323,6 +363,7 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
         filePath,
         line: this.lineAt(content, match.index),
         receiver,
+        descriptionSource: 'absent',
         handlerRef: this.extractHandlerRef(args,   true),
         handlerCallCandidates: this.extractHandlerCallCandidates(args,   true)
       });
@@ -333,6 +374,88 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
 
 
 
+
+  private applyAuthoredDescriptions(content: string, registrations: McpToolRegistration[]): void {
+    let source: ts.SourceFile;
+    try {
+      source = ts.createSourceFile('registrations.ts', content, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
+    } catch {
+      return;
+    }
+    const pending = new Map<number, McpToolRegistration>();
+    for (const reg of registrations) {
+      if (reg.kind === 'setRequestHandler' || reg.methodOffset === undefined) continue;
+      pending.set(reg.methodOffset, reg);
+    }
+    const visit = (node: ts.Node): void => {
+      if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+        const method = node.expression.name.text;
+        const first = node.arguments[0];
+        if ((method === 'registerTool' || method === 'tool') && first && this.isPlainStringLiteral(first)) {
+          const position = source.getLineAndCharacterOfPosition(node.getStart(source));
+          const reg = pending.get(node.expression.name.getStart(source));
+          if (reg && reg.kind === method && reg.name === first.text) {
+            pending.delete(reg.methodOffset!);
+            reg.column = position.character + 1;
+            Object.assign(reg, method === 'registerTool'
+              ? this.describeConfigObject(node.arguments[1], source)
+              : this.describePositional(node.arguments[1], source));
+          }
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+  }
+
+  private isPlainStringLiteral(node: ts.Node): node is ts.StringLiteral | ts.NoSubstitutionTemplateLiteral {
+    return ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node);
+  }
+
+  private literalVerdict(node: ts.StringLiteral | ts.NoSubstitutionTemplateLiteral, source: ts.SourceFile): McpDescriptionVerdict {
+    return {
+      description: node.text,
+      descriptionSource: ts.isStringLiteral(node) ? 'string-literal' : 'template-literal',
+      descriptionLine: source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1,
+      descriptionEndLine: source.getLineAndCharacterOfPosition(node.end).line + 1,
+    };
+  }
+
+  private describePositional(arg: ts.Expression | undefined, source: ts.SourceFile): McpDescriptionVerdict {
+    if (!arg || ts.isObjectLiteralExpression(arg)) return { descriptionSource: 'absent' };
+    if (this.isPlainStringLiteral(arg)) return this.literalVerdict(arg, source);
+    return { descriptionSource: 'dynamic' };
+  }
+
+  private describeConfigObject(arg: ts.Expression | undefined, source: ts.SourceFile): McpDescriptionVerdict {
+    if (!arg) return { descriptionSource: 'absent' };
+    if (!ts.isObjectLiteralExpression(arg)) return { descriptionSource: 'dynamic' };
+    let verdict: McpDescriptionVerdict = { descriptionSource: 'absent' };
+    let uncertain = false;
+    for (const property of arg.properties) {
+      if (ts.isSpreadAssignment(property)) {
+        uncertain = true;
+        if (verdict.descriptionSource !== 'absent') verdict = { descriptionSource: 'dynamic' };
+        continue;
+      }
+      const name = property.name;
+      if (!name) continue;
+      let key: string | undefined;
+      if (ts.isIdentifier(name) || ts.isPrivateIdentifier(name) || this.isPlainStringLiteral(name) || ts.isNumericLiteral(name)) key = name.text;
+      else if (ts.isComputedPropertyName(name) && this.isPlainStringLiteral(name.expression)) key = name.expression.text;
+      else {
+        uncertain = true;
+        if (verdict.descriptionSource !== 'absent') verdict = { descriptionSource: 'dynamic' };
+        continue;
+      }
+      if (key !== 'description') continue;
+      uncertain = false;
+      verdict = ts.isPropertyAssignment(property) && this.isPlainStringLiteral(property.initializer)
+        ? this.literalVerdict(property.initializer, source)
+        : { descriptionSource: 'dynamic' };
+    }
+    return verdict.descriptionSource === 'absent' && uncertain ? { descriptionSource: 'dynamic' } : verdict;
+  }
 
   private extractHandlerRef(args: string[], firstArgIsSchema = false): string | undefined {
     const relevant = firstArgIsSchema ? args.slice(1) : args;
