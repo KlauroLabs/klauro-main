@@ -2623,6 +2623,7 @@ Self-discovered gaps this analysis pass encountered but does not yet understand:
 
 ```typescript
 type CASCoverageGapKind =
+  | 'source-file-excluded'
   | 'unknown-dependency' | 'low-extraction-ratio'
   | 'zero-entry-points' | 'unhandled-node-type';
 
@@ -2635,6 +2636,10 @@ interface CASCoverageGap {
   detail?: Record<string, unknown>;
 }
 ```
+
+Client-reported file-size exclusions use `source-file-excluded`, with the relative file path and `detail.bytes`, `detail.origin: 'source-upload'`, and `detail.reason: 'upload-file-size-limit'`. They also emit a `SOURCE_FILE_EXCLUDED` warning in `analysis_errors`. They do not erase graph records or fail otherwise available analysis layers. Agent readiness and analysis-truth evaluation must disclose the omission; analysis-only understanding cannot be complete while a known source exclusion remains.
+
+Hosted snapshots retain this disclosure outside the scanned source and reapply it to persisted analysis checkpoints and stored-snapshot rebuilds. Incremental updates retain untouched omissions and clear an omission only when that path is supplied or deleted. Missing disclosure from an older client is not proof that the original repository was scanned completely.
 
 #### CASReachabilityIndex / CASStructuralImportanceMeta
 Persisted structural-intelligence layer over the call graph (Tarjan SCC condensation + pruned 2-hop landmark labeling), enabling near-O(1) reachability/affected-set queries without a per-query traversal:

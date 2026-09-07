@@ -3,6 +3,7 @@ import * as path from 'path';
 import type { CASOutput, CASEntryPoint, CASExitPoint, CASNode } from '../../../packages/analyzer-core/src/types/cas.types';
 import { buildCrossRepositoryLinks, buildCrossRepoJourneys, buildCrossRepoRouteDrift, pathsCompatible } from './product';
 import { getAgentContext, type AgentTask } from './agent-adoption';
+import { sourceExclusionReadiness } from './source-coverage';
 
 type GateStatus = 'pass' | 'warn' | 'fail';
 
@@ -45,6 +46,7 @@ export async function loadTruthExpectation(projectPath: string): Promise<Analysi
 }
 
 export function evaluateAnalysisTruth(cas: CASOutput, expectation: AnalysisTruthExpectation) {
+  const sourceCoverage = sourceExclusionReadiness(cas);
   const checks: MasteryCheck[] = [
     ...checkNames('framework', expectation.frameworks || [], detectedFrameworks(cas)),
     ...checkNames('language', expectation.languages || [], detectedLanguages(cas)),
@@ -58,6 +60,9 @@ export function evaluateAnalysisTruth(cas: CASOutput, expectation: AnalysisTruth
     ...checkNames('runtime-signal', expectation.runtime_signals || [], (cas.runtime_static_links || []).map(link => link.runtime_signal)),
     ...checkMinimums(cas, expectation.minimums || {}),
   ];
+  if (sourceCoverage.count > 0) {
+    checks.push({ id: 'source-coverage', status: 'warn', score: 75, expected: 'No known pre-analysis source omissions', actual: sourceCoverage.count, detail: sourceCoverage.detail });
+  }
   const score = checks.length === 0
     ? 100
     : Math.round(checks.reduce((sum, check) => sum + check.score, 0) / checks.length);

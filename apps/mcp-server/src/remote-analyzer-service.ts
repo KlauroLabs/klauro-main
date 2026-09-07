@@ -87,6 +87,8 @@ import {
 } from './analyzer-identity-reuse';
 import { z } from 'zod';
 import { analysisJobMetadata } from './analysis-job-metadata';
+import { applySourceExclusions, normalizeSourceExclusions, readWorkspaceSourceExclusions, validateSnapshotSourceCoverage } from './source-coverage';
+import { applySnapshotChanges, writeSnapshot } from './hosted-source-snapshot';
 import { IdempotentRequestStore, IdempotentSyncStore } from './idempotent-sync-store';
 import { reserveHostedAnalysis } from './hosted-analysis-admission';
 
@@ -449,6 +451,13 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
             writeJson(response, 400, { status: 'error', error: 'Remote analyze requires a source snapshot with files' });
             return;
           }
+          let excludedSourceFiles;
+          try {
+            excludedSourceFiles = validateSnapshotSourceCoverage(body.snapshot.manifest, body.snapshot.files);
+          } catch (error) {
+            writeJson(response, 400, { status: 'error', error: error instanceof Error ? error.message : String(error) });
+            return;
+          }
           const rawAcceptedId = body.project_id || makeAnalysisId(body.project_path || body.snapshot.project_name);
           const acceptedAnalysisId = resolveStorageAnalysisId(rawAcceptedId, accountSaltFor(authorization.clientId));
           const visibleAnalysisId = clientVisibleAnalysisId(rawAcceptedId, acceptedAnalysisId, authorization.clientId);
@@ -466,7 +475,9 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           const activeIdentity = activeCommittedSnapshots.get(acceptedAnalysisId);
           const revisions = await readProjectRevisions(dataDir, acceptedAnalysisId);
           const currentRevision = revisions.revisions[0];
-          const reusableRevision = currentRevision && revisionMatchesSnapshot(currentRevision, body.snapshot.manifest, body.snapshot.base_commit, body.analysis_focus)
+          const sourceCoverageUnchanged = JSON.stringify(await readWorkspaceSourceExclusions(acceptedWorkspace) || [])
+            === JSON.stringify(excludedSourceFiles);
+          const reusableRevision = sourceCoverageUnchanged && currentRevision && revisionMatchesSnapshot(currentRevision, body.snapshot.manifest, body.snapshot.base_commit, body.analysis_focus)
             ? currentRevision
             : undefined;
           const storedAnalysisExists = reusableRevision
@@ -549,7 +560,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           try {
             await fs.remove(acceptedWorkspace);
             await fs.ensureDir(acceptedWorkspace);
-            await writeSnapshot(acceptedWorkspace, body.snapshot.files);
+            await writeSnapshot(acceptedWorkspace, body.snapshot.files, body.snapshot.manifest);
           } catch (error) {
             admission.ticket.cancel();
             if (snapshotIdentity && activeCommittedSnapshots.get(acceptedAnalysisId) === snapshotIdentity) {
@@ -3241,7 +3252,7 @@ async function handleAccountApi(
       const snapshot = await buildSourceSnapshot(sourceRoot);
       await fs.remove(workspace);
       await fs.ensureDir(workspace);
-      await writeSnapshot(workspace, snapshot.files);
+      await writeSnapshot(workspace, snapshot.files, snapshot.manifest);
       manifestForResponse = snapshot.manifest;
       baseCommitForResponse = snapshot.base_commit;
     }
@@ -3484,7 +3495,7 @@ async function handleProposalPreview(dataDir: string, request: RemoteProposalPre
   if (request.snapshot?.files?.length) {
     await fs.remove(workspace);
     await fs.ensureDir(workspace);
-    await writeSnapshot(workspace, request.snapshot.files);
+    await writeSnapshot(workspace, request.snapshot.files, request.snapshot.manifest);
   }
   return previewCodebaseIteration({
     path: request.project_path || workspace,
@@ -3606,6 +3617,7 @@ function committedSnapshotIdentity(manifest: SourceManifest, baseCommit?: string
     manifest.snapshot_digest || '',
     manifest.file_count,
     manifest.total_bytes,
+    JSON.stringify(normalizeSourceExclusions(manifest.excluded_oversize_files)),
   ].join(':');
 }
 
@@ -3832,7 +3844,7 @@ async function prepareSync(dataDir: string, request: RemoteSyncRequest, accountS
   if (!(await fs.pathExists(workspace))) {
     throw new Error(`No remote workspace found for analysis_id=${request.analysis_id}; run remote analyze first`);
   }
-  await applyChanges(workspace, request.changes.changed_files || []);
+  await applySnapshotChanges(workspace, request.changes.changed_files || [], request.changes.manifest);
   const displayName = resolveDisplayName(request.changes.project_name, request.project_path);
   const manifest = request.changes.manifest || buildChangeManifest(workspace, request.changes.changed_files || []);
   return { analysisId, workspace, displayName, manifest };
@@ -3886,8 +3898,10 @@ async function recordCompletedSync(
 }
 
 export async function stampRepoFacts(workspace: string, cas: CASOutput, manifest: SourceManifest | undefined): Promise<void> {
-  if (!manifest?.repo_facts) return;
-  cas.system.repo_facts = manifest.repo_facts;
+  const exclusions = await readWorkspaceSourceExclusions(workspace);
+  if (!manifest?.repo_facts && exclusions === undefined) return;
+  if (manifest?.repo_facts) cas.system.repo_facts = manifest.repo_facts;
+  applySourceExclusions(cas, exclusions);
   await saveAnalysis(workspace, cas);
 }
 
@@ -3908,25 +3922,7 @@ export async function stampRepoFactsFromLastKnownOrMarkAbsent(
   await saveAnalysis(workspace, cas);
 }
 
-async function writeSnapshot(workspace: string, files: Array<{ path: string; content: string }>): Promise<void> {
-  for (const file of files) {
-    const destination = safeDestination(workspace, file.path);
-    await fs.ensureDir(path.dirname(destination));
-    await fs.writeFile(destination, file.content, 'utf8');
-  }
-}
 
-async function applyChanges(workspace: string, changes: RemoteFileChange[]): Promise<void> {
-  for (const change of changes) {
-    const destination = safeDestination(workspace, change.path);
-    if (change.status === 'deleted') {
-      await fs.remove(destination);
-      continue;
-    }
-    await fs.ensureDir(path.dirname(destination));
-    await fs.writeFile(destination, change.content, 'utf8');
-  }
-}
 
 async function readJsonBody<T>(request: http.IncomingMessage, maxBodyBytes: number): Promise<T> {
   let size = 0;
@@ -4119,14 +4115,6 @@ function corsHeaders(extra: Record<string, string> = {}): Record<string, string>
   };
 }
 
-function safeDestination(workspace: string, relativePath: string): string {
-  const normalized = relativePath.replace(/\\/g, '/').replace(/^\/+/, '');
-  const destination = path.resolve(workspace, normalized);
-  if (!(destination === workspace || destination.startsWith(`${workspace}${path.sep}`))) {
-    throw new Error(`Refusing to write path outside workspace: ${relativePath}`);
-  }
-  return destination;
-}
 
 function workspacePath(dataDir: string, analysisId: string): string {
   return path.join(dataDir, 'workspaces', safeName(analysisId));
@@ -4411,6 +4399,7 @@ async function buildWorkspaceManifest(workspace: string): Promise<SourceManifest
   return {
     generated_at: new Date().toISOString(),
     root: workspace,
+    excluded_oversize_files: await readWorkspaceSourceExclusions(workspace),
     file_count: fileCount,
     total_bytes: totalBytes,
     excluded_directories: [],

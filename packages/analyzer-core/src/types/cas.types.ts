@@ -1,4 +1,6 @@
 import { createHash } from 'crypto';
+import type { CASCoverageGap } from './cas-coverage.types';
+export type { CASCoverageGap, CASCoverageGapKind } from './cas-coverage.types';
 import type { CASComposedClaimProvenance, CASTerminalityProvenance } from './cas-composition.types';
 export type { CASComposedClaimProvenance, CASTerminalityEdge, CASTerminalityProvenance, CASTerminalityRelationEvidence } from './cas-composition.types';
 import type { CASFirstPartyProductEvidence } from './cas-product-evidence.types';
@@ -1616,24 +1618,6 @@ export interface CASTestCoverage {
 
 
 
-export type CASCoverageGapKind =
-  | 'unknown-dependency'
-  | 'low-extraction-ratio'
-  | 'zero-entry-points'
-  | 'unhandled-node-type';
-
-export interface CASCoverageGap {
-  kind: CASCoverageGapKind;
-
-  evidence: string;
-  file?: string;
-  severity: 'low' | 'medium' | 'high';
-
-
-  key?: string;
-
-  detail?: Record<string, unknown>;
-}
 
 export interface CASLibrary {
   id: string;
