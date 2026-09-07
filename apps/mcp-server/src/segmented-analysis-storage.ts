@@ -1,3 +1,4 @@
+import { CAS_RECORD_STORE_FORMAT, CAS_RECORD_STORE_VERSION, encodeCasRecordStore, writeCasRecordStoreTable } from './cas-record-store';
 import * as crypto from 'node:crypto';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -312,6 +313,12 @@ async function writeSegmentedAnalysisUnlocked(
       posting_records: postingArtifacts.recordCount,
       posting_runs: postingArtifacts.runCount,
       columns: searchColumns,
+    };
+    const recordStore = encodeCasRecordStore(output, compactGraph);
+    manifest.record_store = {
+      format: CAS_RECORD_STORE_FORMAT, version: CAS_RECORD_STORE_VERSION, codec: 'brotli',
+      nodes: await writeCasRecordStoreTable(tmpDir, 'records.nodes', recordStore.nodes),
+      edges: await writeCasRecordStoreTable(tmpDir, 'records.edges', recordStore.edges),
     };
     const compactDurationMs = Date.now() - compactStartedAt;
     if (compactDurationMs >= 1_000) {

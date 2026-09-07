@@ -85,7 +85,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
         const loadedSections = await loadAnalysisSections(request.workspace, smallSections, { pinned: { filePath: pinned.filePath, segmented: pinned.segmented } });
         if (!loadedSections) throw new Error(`No analysis found for: ${request.workspace}. Run analyze_codebase first.`);
         const graphSection = 'scope' in scopedPlan
-          ? await loadScopedGraphSection(pinned, scopedPlan.scope.keepIds)
+          ? await loadScopedGraphSection(pinned, scopedPlan.scope.keepIds, scopedPlan.graph)
           : null;
         if ('scope' in scopedPlan) {
           if (!graphSection) throw new Error(`Canonical graph section is unavailable for: ${request.workspace}. Re-run analyze_codebase.`);
@@ -110,6 +110,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
           ? {
               mode: 'scoped',
               generation: path.basename(pinned.segmented.directory),
+              source: graphSection?.source,
               target_id: scopedPlan.scope.targetId,
               loaded_nodes: graphSection?.nodes.length ?? 0,
               loaded_edges: graphSection?.edges.length ?? 0,

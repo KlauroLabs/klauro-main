@@ -8,6 +8,7 @@ import type { AnalysisTrack } from './track';
 import type { ResolvedSegmentedAnalysis } from './segmented-analysis-storage';
 import { loadCompactCASGraph, loadCompactCASSearch } from './segmented-analysis-storage';
 import { compressionCodecForPath } from './json-storage-writer';
+import { openCasRecordStore } from './cas-record-store';
 import { searchCompactCAS } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-search';
 
 export interface PinnedAnalysisGeneration {
@@ -46,6 +47,7 @@ export interface ScopedGraphSection {
   edges: CASEdge[];
   scanned: { nodes: number; edges: number };
   edgesTruncated: boolean;
+  source: 'record-store' | 'stream';
 }
 
 function boundedLimit(value: unknown): number {
@@ -195,7 +197,55 @@ function pinnedGraphArtifact(pinned: PinnedAnalysisGeneration): { filePath: stri
   return { filePath, codec: compressionCodecForPath(filePath) };
 }
 
-export async function loadScopedGraphSection(pinned: PinnedAnalysisGeneration, keepIds: ReadonlySet<string>): Promise<ScopedGraphSection | null> {
+async function loadScopedRecords(
+  pinned: PinnedAnalysisGeneration,
+  keepIds: ReadonlySet<string>,
+  graph: CompactCASGraph,
+): Promise<ScopedGraphSection | null> {
+  const descriptor = pinned.segmented.manifest.record_store;
+  if (!descriptor) return null;
+  const store = await openCasRecordStore(pinned.segmented.directory, descriptor, { nodeCount: graph.nodeCount, edgeCount: graph.edgeCount });
+  const denseIds: number[] = [];
+  for (const id of keepIds) {
+    const node = graph.nodeById(id);
+    if (node) denseIds.push(node.denseId);
+  }
+  denseIds.sort((left, right) => left - right);
+  const edgeOrdinals: number[] = [];
+  let edgesTruncated = false;
+  for (const denseId of denseIds) {
+    let offset = 0;
+    while (true) {
+      const page = graph.outgoingEdges(denseId, { offset, limit: 500 });
+      for (const edge of page.items) {
+        if (!keepIds.has(edge.targetId)) continue;
+        if (edgeOrdinals.length >= MAX_SCOPED_EDGES) { edgesTruncated = true; break; }
+        edgeOrdinals.push(edge.ordinal);
+      }
+      if (edgesTruncated || page.nextOffset === undefined) break;
+      offset = page.nextOffset;
+    }
+    if (edgesTruncated) break;
+  }
+  edgeOrdinals.sort((left, right) => left - right);
+  return {
+    nodes: store.nodes.read(denseIds),
+    edges: store.edges.read(edgeOrdinals),
+    scanned: { nodes: graph.nodeCount, edges: graph.edgeCount },
+    edgesTruncated,
+    source: 'record-store',
+  };
+}
+
+export async function loadScopedGraphSection(
+  pinned: PinnedAnalysisGeneration,
+  keepIds: ReadonlySet<string>,
+  graph?: CompactCASGraph,
+): Promise<ScopedGraphSection | null> {
+  if (graph) {
+    const records = await loadScopedRecords(pinned, keepIds, graph);
+    if (records) return records;
+  }
   const artifact = pinnedGraphArtifact(pinned);
   if (!artifact) return null;
   const [{ parser }, { pick }, { streamArray }, { chain }] = await Promise.all(
@@ -224,7 +274,7 @@ export async function loadScopedGraphSection(pinned: PinnedAnalysisGeneration, k
     pipeline.on('end', resolve);
     pipeline.on('error', reject);
   });
-  return { nodes, edges, scanned, edgesTruncated };
+  return { nodes, edges, scanned, edgesTruncated, source: 'stream' };
 }
 
 async function searchCandidateIds(pinned: PinnedAnalysisGeneration, target: string): Promise<string[]> {
@@ -242,7 +292,7 @@ export async function planScopedQuery(
   pinned: PinnedAnalysisGeneration,
   tool: string,
   args: Record<string, unknown> | undefined,
-): Promise<{ scope: ScopedQueryScope; target: CompactNodeView; graphNodeCount: number } | { targetNotFound: string } | null> {
+): Promise<{ scope: ScopedQueryScope; target: CompactNodeView; graphNodeCount: number; graph: CompactCASGraph } | { targetNotFound: string } | null> {
   const target = scopedQueryTarget(tool, args);
   if (!target || !SCOPED_QUERY_TOOLS.has(tool)) return null;
   const graph = await loadCompactCASGraph(pinned.filePath, pinned.segmented);
@@ -253,5 +303,5 @@ export async function planScopedQuery(
     callerLimit: args?.caller_limit,
     calleeLimit: args?.callee_limit,
   });
-  return { scope, target: resolved, graphNodeCount: graph.nodeCount };
+  return { scope, target: resolved, graphNodeCount: graph.nodeCount, graph };
 }

@@ -111,6 +111,7 @@ export interface CasSectionManifest {
     };
     columns: Record<string, CasRawColumnDescriptor>;
   };
+  record_store?: import('./cas-record-store').CasRecordStoreDescriptor;
   compact_search?: {
     format: 'klauro-compact-cas-search';
     version: 2 | 3;
