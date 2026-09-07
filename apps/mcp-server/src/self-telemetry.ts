@@ -152,6 +152,15 @@ export async function mirrorToCanonicalBucket(
 
 let installed = false;
 let localIngestPromise: Promise<void> | undefined;
+let pendingEvents: Array<{ projectPath: string; event: TelemetryEvent }> = [];
+let pendingDrain: { promise: Promise<void>; start: () => void } | undefined;
+
+const DEFAULT_INGEST_COALESCE_MS = 30_000;
+
+export function selfTelemetryIngestCoalesceMs(env: NodeJS.ProcessEnv = process.env): number {
+  const configured = Number(env.KLAURO_SELF_TELEMETRY_COALESCE_MS);
+  return Number.isFinite(configured) && configured >= 0 ? Math.floor(configured) : DEFAULT_INGEST_COALESCE_MS;
+}
 
 
 
@@ -226,12 +235,38 @@ export async function shutdownSelfTelemetry(): Promise<void> {
 }
 
 export async function waitForSelfTelemetryIngest(): Promise<void> {
-  while (localIngestPromise) await localIngestPromise;
+  while (pendingDrain || localIngestPromise) {
+    const drain = pendingDrain;
+    if (drain) {
+      drain.start();
+      await drain.promise.catch(() => {});
+    } else {
+      await localIngestPromise?.catch(() => {});
+    }
+  }
 }
 
 export function enqueueSelfTelemetryEvents(projectPath: string, events: TelemetryEvent[]): Promise<void> {
   if (events.length === 0) return Promise.resolve();
-  const queued = events.map(event => ({ projectPath, event }));
+  pendingEvents.push(...events.map(event => ({ projectPath, event })));
+  if (!pendingDrain) {
+    let start: () => void = () => undefined;
+    const gate = new Promise<void>(resolve => { start = resolve; });
+    const timer = setTimeout(start, selfTelemetryIngestCoalesceMs());
+    timer.unref();
+    const promise = gate.then(() => {
+      clearTimeout(timer);
+      const queued = pendingEvents;
+      pendingEvents = [];
+      pendingDrain = undefined;
+      return ingestQueuedSelfTelemetry(queued);
+    });
+    pendingDrain = { promise, start };
+  }
+  return pendingDrain.promise;
+}
+
+function ingestQueuedSelfTelemetry(queued: Array<{ projectPath: string; event: TelemetryEvent }>): Promise<void> {
   const operation = (localIngestPromise || Promise.resolve())
     .catch(() => {})
     .then(() => flushSelfTelemetryEvents(queued));

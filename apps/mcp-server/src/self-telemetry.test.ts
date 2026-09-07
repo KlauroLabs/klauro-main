@@ -17,12 +17,13 @@ test('the SDK receives a durable acknowledgement from the in-process telemetry r
     const sdk = await import('../../../packages/klauro-sdk-js/src/index');
     const keys = ['KLAURO_SELF_TELEMETRY', 'KLAURO_SELF_TELEMETRY_PROJECT',
       'KLAURO_SELF_TELEMETRY_ENDPOINT', 'KLAURO_SELF_TELEMETRY_CANONICAL_PROJECT',
-      'KLAURO_SELF_TELEMETRY_WORKER_ENTRY'];
+      'KLAURO_SELF_TELEMETRY_WORKER_ENTRY', 'KLAURO_SELF_TELEMETRY_COALESCE_MS'];
     const previous = keys.map(key => process.env[key]);
     const project = nodePath.join(storage, 'project');
     const finishAnalysis = beginForegroundAnalysis();
     try {
       process.env.KLAURO_SELF_TELEMETRY = '1';
+      process.env.KLAURO_SELF_TELEMETRY_COALESCE_MS = '0';
       process.env.KLAURO_SELF_TELEMETRY_PROJECT = project;
       delete process.env.KLAURO_SELF_TELEMETRY_ENDPOINT;
       delete process.env.KLAURO_SELF_TELEMETRY_CANONICAL_PROJECT;
@@ -400,4 +401,46 @@ test('mapSdkEvent leaves direct CAS-id fields undefined (not fabricated) when th
   assert.equal(mapped.entry_point_id, undefined);
   assert.equal(mapped.exit_point_id, undefined);
   assert.equal(mapped.call_chain_id, undefined);
+});
+
+test('self-telemetry ingests are coalesced into one isolated worker run per window instead of one fork per SDK batch', async () => {
+  await withTempStorage(async storage => {
+    const telemetry = await REQUIRE();
+    const keys = ['KLAURO_SELF_TELEMETRY_WORKER_ENTRY', 'KLAURO_SELF_TELEMETRY_COALESCE_MS', 'KLAURO_SELF_TELEMETRY_PROBE_FILE'];
+    const previous = keys.map(key => process.env[key]);
+    const probeFile = nodePath.join(storage, 'ingest-runs.log');
+    const workerEntry = nodePath.join(storage, 'probe-worker.cjs');
+    fs.writeFileSync(workerEntry, [
+      "const fs = require('node:fs');",
+      "process.on('message', request => {",
+      "  fs.appendFileSync(process.env.KLAURO_SELF_TELEMETRY_PROBE_FILE, JSON.stringify(request.batches.map(batch => batch.events.length)) + '\\n');",
+      "  process.send({ type: 'result' });",
+      '});',
+    ].join('\n'));
+    try {
+      process.env.KLAURO_SELF_TELEMETRY_WORKER_ENTRY = workerEntry;
+      process.env.KLAURO_SELF_TELEMETRY_COALESCE_MS = '150';
+      process.env.KLAURO_SELF_TELEMETRY_PROBE_FILE = probeFile;
+      const project = nodePath.join(storage, 'project');
+      const event = (id: string): TelemetryEvent => ({ type: 'request', event_id: id, route: '/orders', status_code: 200 } as unknown as TelemetryEvent);
+      const first = telemetry.enqueueSelfTelemetryEvents(project, [event('a')]);
+      const second = telemetry.enqueueSelfTelemetryEvents(project, [event('b')]);
+      const third = telemetry.enqueueSelfTelemetryEvents(project, [event('c'), event('d')]);
+      assert.equal(first, second);
+      await Promise.all([first, second, third]);
+      assert.deepEqual(fs.readFileSync(probeFile, 'utf8').trim().split('\n'), ['[4]']);
+      const later = telemetry.enqueueSelfTelemetryEvents(project, [event('e')]);
+      await telemetry.waitForSelfTelemetryIngest();
+      await later;
+      assert.deepEqual(fs.readFileSync(probeFile, 'utf8').trim().split('\n'), ['[4]', '[1]']);
+      assert.equal(telemetry.selfTelemetryIngestCoalesceMs({}), 30_000);
+      assert.equal(telemetry.selfTelemetryIngestCoalesceMs({ KLAURO_SELF_TELEMETRY_COALESCE_MS: '0' }), 0);
+    } finally {
+      await telemetry.waitForSelfTelemetryIngest();
+      keys.forEach((key, index) => {
+        if (previous[index] === undefined) delete process.env[key];
+        else process.env[key] = previous[index];
+      });
+    }
+  });
 });
