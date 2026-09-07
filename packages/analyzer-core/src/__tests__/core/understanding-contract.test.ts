@@ -72,6 +72,38 @@ function transferFixture(): CASOutput {
 }
 
 describe('canonical code-unit ICELOT contracts', () => {
+  test('keeps dependency effects unresolved through node, step and flow contracts', () => {
+    const cas = transferFixture();
+    const exit = cas.exit_points!.find(candidate => candidate.id === 'exit-transfer')!;
+    exit.type = 'sdk';
+    exit.target = { sdk: 'formatting-library', endpoint: 'transform' };
+    cas.data_lineage![0].external_recipients[0].service = 'formatting-library';
+    const before = JSON.stringify({ exits: cas.exit_points, edges: cas.edges, lineage: cas.data_lineage });
+    materializeNodeUnderstandingContracts(cas);
+    const contracts = [
+      cas.nodes.find(node => node.id === 'observe')!.contract!,
+      cas.flows![0].steps.find(step => step.step_id === 'step-observe')!.contract,
+      cas.flows![0].contract,
+    ];
+    for (const contract of contracts) {
+      expect(contract.side_effects.external_integrations).toEqual([]);
+      expect((contract.side_effects as any).unresolved_exit_point_ids).toEqual(['exit-transfer']);
+    }
+    expect(JSON.stringify({ exits: cas.exit_points, edges: cas.edges, lineage: cas.data_lineage })).toBe(before);
+    expect(validateUnderstandingContractIntegrity(cas)).toEqual([]);
+  });
+  test('retains confirmed dynamic HTTP effects alongside unresolved dependency calls', () => {
+    const cas = transferFixture();
+    cas.exit_points!.push({
+      id: 'dependency', source_node: 'observe', type: 'sdk', name: 'Call to transform',
+      target: { sdk: 'formatting-library' },
+    });
+    materializeNodeUnderstandingContracts(cas);
+    const effects = cas.nodes.find(node => node.id === 'observe')!.contract!.side_effects;
+    expect(effects.external_integrations).toEqual(expect.arrayContaining(['api:send', 'delivery-service']));
+    expect(effects.unresolved_exit_point_ids).toEqual(['dependency']);
+  });
+
   test('attributes entity transfers only to the carrier while preserving node-to-flow evidence', () => {
     const cas = transferFixture();
     const lineageBefore = JSON.stringify(cas.data_lineage);

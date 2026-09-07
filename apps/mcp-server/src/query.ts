@@ -2200,6 +2200,7 @@ export function getDataLineage(
     analysis_version_notice: lineageNotice,
     sensitive_entities: lineage.filter(item => item.exposure.sensitive).length,
     entities_with_external_transfer: lineage.filter(item => item.exposure.external_transfer).length,
+    entities_with_unresolved_transfer: lineage.filter(item => item.exposure.external_transfer_unresolved).length,
     entities_with_unguarded_paths: lineage.filter(item => item.exposure.unguarded_paths > 0).length,
     entities_with_non_auth_guarded_paths: lineage.filter(item => (item.exposure.non_auth_guarded_paths || 0) > 0).length,
     entities: filtered.slice(offset, offset + limit).map(item => ({
@@ -2215,6 +2216,7 @@ export function getDataLineage(
       writers: rankLineageSites(item.writers).slice(0, 6).map(writer => ({ file: writer.file, via: writer.via, node_id: writer.node_id })),
       readers: rankLineageSites(item.readers).slice(0, 6).map(reader => ({ file: reader.file, via: reader.via, node_id: reader.node_id })),
       external_recipients: item.external_recipients.map(recipient => recipient.service),
+      ...(item.unresolved_exit_point_ids?.length ? { unresolved_exit_point_ids: item.unresolved_exit_point_ids } : {}),
       boundaries_crossed: item.boundaries_crossed,
       journey_count: item.journeys_carrying.length,
       exposure: item.exposure,
@@ -2399,6 +2401,7 @@ export function productMapToMarkdown(map: CASProductMap): string {
       details.push(`${highlight.unguarded_paths} unguarded path${highlight.unguarded_paths === 1 ? '' : 's'}${nonAuthSuffix}`);
     }
     if (highlight.external_transfer) details.push(`external transfer to ${joinLabels(highlight.external_recipients) || 'unknown service'}`);
+    if (highlight.external_transfer_unresolved) details.push('dependency effects unresolved; external transfer cannot be ruled out');
     lines.push(`- ${asLabel(highlight.entity)}: ${details.join('; ')}`);
   }
 

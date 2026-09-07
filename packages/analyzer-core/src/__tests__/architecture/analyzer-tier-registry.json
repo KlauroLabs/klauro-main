@@ -115,6 +115,7 @@
   "core/estree-parse-cache.ts": 1,
   "core/event-loop-yield.ts": 1,
   "core/external-service-graph.ts": 2,
+  "core/exit-point-effects.ts": 1,
   "core/external-service-identity.ts": 1,
   "core/file-node-resolution.ts": 1,
   "core/first-party-product-evidence.ts": 3,

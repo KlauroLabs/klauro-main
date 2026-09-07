@@ -1,12 +1,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CASOutput, CASNode, CASEdge, CASEntryPoint } from '../../../packages/analyzer-core/src/types/cas.types';
-import { getCodingContext, getFlowConcepts, getCallers, assessChangeRisk, getConfiguration, buildSummary, getFlowGraph, getRuntimeStaticLinks } from './query';
+import { getCodingContext, getFlowConcepts, getCallers, assessChangeRisk, getConfiguration, buildSummary, getFlowGraph, getRuntimeStaticLinks, getDataLineage } from './query';
 import { attachCasProjection } from './cas-projection';
 
 // Builds a synthetic CAS with a single high-fanout "hub" node that has more
 // callers/callees than the default display limit, plus a handful of
 // low-fanout nodes for control/comparison.
+test('lineage summaries expose unresolved transfer counts and exit references', () => {
+  const cas = buildHighFanoutCas({ callerCount: 0, calleeCount: 0 });
+  cas.data_lineage = [{
+    entity_id: 'entity', entity_name: 'Article', sensitive_fields: [], writers: [], readers: [],
+    external_recipients: [], unresolved_exit_point_ids: ['dependency'],
+    boundaries_crossed: [], journeys_carrying: [],
+    exposure: { unguarded_paths: 0, sensitive: false, external_transfer: false, external_transfer_unresolved: true },
+  }];
+  const result = getDataLineage(cas, {}) as any;
+  assert.equal(result.entities_with_external_transfer, 0);
+  assert.equal(result.entities_with_unresolved_transfer, 1);
+  assert.deepEqual(result.entities[0].unresolved_exit_point_ids, ['dependency']);
+  assert.equal(result.entities[0].exposure.external_transfer_unresolved, true);
+});
+
 function buildHighFanoutCas(opts: { callerCount: number; calleeCount: number }): CASOutput {
   const nodes: CASNode[] = [];
   const edges: CASEdge[] = [];

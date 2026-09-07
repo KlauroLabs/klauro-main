@@ -46,6 +46,20 @@ function chain(id: string, entryNodeId: string, entryPointId: string, path: Arra
 }
 
 describe('buildUserJourneys', () => {
+  it('retains a single-step path whose only call has unresolved dependency effects', () => {
+    const result = buildUserJourneys({
+      nodes: [node('handler', 'handleDelivery', 'function')],
+      edges: [],
+      entryPoints: [{ id: 'entry', source_node: 'handler', type: 'http', name: 'POST /delivery' }] as CASEntryPoint[],
+      exitPoints: [{ id: 'dependency', source_node: 'handler', type: 'sdk', name: 'Call to transform', target: { sdk: 'formatting-library' } }],
+      callChains: [],
+      dataEntities: [],
+    });
+    expect(result.journeys).toHaveLength(1);
+    expect(result.journeys[0].terminal_effects.external_services).toEqual([]);
+    expect(result.journeys[0].exit_point_ids).toEqual(['dependency']);
+    expect(result.journeys[0].unresolved_exit_point_ids).toEqual(['dependency']);
+  });
   const nodes: CASNode[] = [
     node('n_controller', 'WorkOrdersController', 'controller'),
     node('n_service', 'WorkOrderService', 'service'),
@@ -2317,7 +2331,7 @@ describe('buildUserJourneys external_services evidence-only standard', () => {
     expect(journey.terminal_effects.external_services).toEqual(['stripe']);
   });
 
-  it('includes a genuine external destination that resolved a structured sdk field', () => {
+  it('keeps an SDK package boundary unresolved without declared destination evidence', () => {
     const journey = journeyFor({
       id: 'exit_x',
       source_node: 'n_svc',
@@ -2326,6 +2340,8 @@ describe('buildUserJourneys external_services evidence-only standard', () => {
       target: { sdk: 'sendgrid' },
     } as CASExitPoint);
 
-    expect(journey.terminal_effects.external_services).toEqual(['sendgrid']);
+    expect(journey.terminal_effects.external_services).toEqual([]);
+    expect(journey.exit_point_ids).toEqual(['exit_x']);
+    expect(journey.unresolved_exit_point_ids).toEqual(['exit_x']);
   });
 });
