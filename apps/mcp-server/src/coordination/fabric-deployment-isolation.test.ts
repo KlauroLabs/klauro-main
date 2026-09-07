@@ -14,7 +14,12 @@ test('hosted Fabric has a resource-isolated process and proxy route', () => {
   assert.match(fabricService, /command: \["\/app\/node_modules\/\.bin\/tsx", "src\/fabric\.ts"\]/);
   assert.match(fabricService, /KLAURO_SELF_TELEMETRY: "0"/);
   assert.match(fabricService, /KLAURO_COORDINATION_ONLY: "1"/);
-  assert.match(fabricService, /mem_limit: 1536m/);
+  const fabricLimit = Number(fabricService.match(/mem_limit: (\d+)m/)?.[1]);
+  const fabricHeap = Number(fabricService.match(/--max-old-space-size=(\d+)/)?.[1]);
+  assert.ok(fabricLimit >= 512, 'fabric runs under its own memory limit');
+  assert.ok(fabricHeap > 0 && fabricHeap <= fabricLimit - Math.max(256, Math.floor(fabricLimit / 4)), 'fabric heap leaves the deploy lint headroom inside its limit');
+  assert.match(fabricService, /memswap_limit: (\d+)m/);
+  assert.equal(fabricService.match(/memswap_limit: (\d+)m/)?.[1], String(fabricLimit), 'no swap beyond the limit');
   assert.match(fabricService, /KLAURO_FABRIC_PORT: "8788"/);
   assert.doesNotMatch(entrypoint, /prewarmAnalysisWorker/);
 

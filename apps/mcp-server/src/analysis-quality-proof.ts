@@ -44,6 +44,8 @@ interface RepoProofResult {
     entry_points: number;
     entities: number;
     files: number | null;
+    files_provenance: 'l0-inventory' | 'unknown';
+    node_source_files: number;
     languages: number;
   };
   failed_gates: string[];
@@ -270,11 +272,11 @@ function renderMarkdown(report: AnalysisQualityProofReport): string {
   }
   lines.push('## Index');
   lines.push('');
-  lines.push('| Repo | Files | Nodes | Edges | Entry points | Entities | Languages | Duration |');
-  lines.push('| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |');
+  lines.push('| Repo | Files (inventory) | Files with nodes | Nodes | Edges | Entry points | Entities | Languages | Duration |');
+  lines.push('| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |');
   for (const result of report.results) {
     if (!result.index) continue;
-    lines.push(`| ${result.repo.name} | ${result.index.files ?? ''} | ${result.index.nodes} | ${result.index.edges} | ${result.index.entry_points} | ${result.index.entities} | ${result.index.languages} | ${(result.duration_ms / 1000).toFixed(1)} s |`);
+    lines.push(`| ${result.repo.name} | ${result.index.files ?? 'unknown'} | ${result.index.node_source_files} | ${result.index.nodes} | ${result.index.edges} | ${result.index.entry_points} | ${result.index.entities} | ${result.index.languages} | ${(result.duration_ms / 1000).toFixed(1)} s |`);
   }
   lines.push('');
   lines.push('## All Results');
@@ -303,7 +305,9 @@ function describeIndex(cas: CASOutput): RepoProofResult['index'] {
     edges: (cas.edges || []).length,
     entry_points: (cas.entry_points || []).length,
     entities: (cas.entities || []).length,
-    files: typeof indexed === 'number' ? indexed : sourceFiles.size || null,
+    files: typeof indexed === 'number' ? indexed : null,
+    files_provenance: typeof indexed === 'number' ? 'l0-inventory' : 'unknown',
+    node_source_files: sourceFiles.size,
     languages: (cas.system?.technologies?.languages || []).length,
   };
 }

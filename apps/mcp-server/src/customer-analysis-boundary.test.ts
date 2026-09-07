@@ -70,8 +70,13 @@ test('customer uploads default to asynchronous acceptance and local-path reanaly
 
 test('hosted deployment reserves CPU for the control plane and admits one analysis at a time', () => {
   const compose = fs.readFileSync(path.resolve(sourceRoot, '../../../infrastructure/vps/docker-compose.yml'), 'utf8');
-  const apiService = compose.split('\n  fabric:')[0];
-  assert.match(compose, /cpus:\s*["']4\.0["']/);
+  const apiService = compose.split('\n  analysis-worker:')[0];
+  const workerService = compose.split('\n  analysis-worker:')[1]?.split('\n  fabric:')[0] ?? '';
+  const apiCpus = Number(apiService.match(/cpus:\s*["']([\d.]+)["']/)?.[1]);
+  const workerCpus = Number(workerService.match(/cpus:\s*["']([\d.]+)["']/)?.[1]);
+  assert.ok(apiCpus >= 1, 'the control plane keeps its own CPU reservation');
+  assert.ok(workerCpus >= apiCpus, 'analysis runs in the isolated worker with at least the control-plane reservation');
+  assert.match(workerService, /KLAURO_ANALYSIS_WORKER_SOCKET:|<<: \*analysis-environment/);
   assert.match(compose, /KLAURO_ANALYSIS_CONCURRENCY:\s*["']1["']/);
   assert.match(apiService, /KLAURO_TS_PARSE_WORKERS:\s*["']2["']/);
   assert.match(apiService, /KLAURO_ANALYSIS_WORKER_IDLE_MS:\s*["']0["']/);

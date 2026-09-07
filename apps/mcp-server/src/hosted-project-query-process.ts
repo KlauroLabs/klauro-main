@@ -53,21 +53,30 @@ const warmingVersions = new Map<string, { version: string; promise: Promise<void
 
 const QUERY_HEAP_CGROUP_FRACTION = 0.6;
 
+const MIN_QUERY_HEAP_MB = 512;
+
+export class HostedQueryCapacityError extends Error {
+  readonly code = 'hosted_query_capacity_unsupported';
+}
+
 export function resolveHostedQueryHeapMb(
   env: NodeJS.ProcessEnv = process.env,
   totalMemBytes?: number,
   capacity: AnalysisMemoryCapacity = readAnalysisMemoryCapacity(),
 ): number {
   const cgroupCapMb = capacity.source === 'cgroup'
-    ? Math.max(512, Math.floor((capacity.limitBytes / (1024 * 1024)) * QUERY_HEAP_CGROUP_FRACTION))
+    ? Math.floor((capacity.limitBytes / (1024 * 1024)) * QUERY_HEAP_CGROUP_FRACTION)
     : Number.POSITIVE_INFINITY;
+  if (cgroupCapMb < MIN_QUERY_HEAP_MB) {
+    throw new HostedQueryCapacityError(`Hosted query capacity is unsupported: ${Math.floor(capacity.limitBytes / (1024 * 1024))} MiB container allows a ${cgroupCapMb} MiB query heap under the ${Math.round(QUERY_HEAP_CGROUP_FRACTION * 100)}% cap, below the ${MIN_QUERY_HEAP_MB} MiB minimum.`);
+  }
   const configured = Number(env.KLAURO_HOSTED_QUERY_HEAP_MB);
-  if (Number.isFinite(configured) && configured >= 512) return Math.min(Math.floor(configured), cgroupCapMb);
+  if (Number.isFinite(configured) && configured >= MIN_QUERY_HEAP_MB) return Math.min(Math.floor(configured), cgroupCapMb);
   const analysisHeap = resolveAnalysisHeapMb(env, totalMemBytes);
   if (env.KLAURO_ANALYSIS_HEAP_MB !== undefined) {
     return Math.min(analysisHeap.heapMb, DEFAULT_QUERY_HEAP_MB, cgroupCapMb);
   }
-  return Math.max(512, Math.min(DEFAULT_QUERY_HEAP_MB, Math.floor(analysisHeap.totalRamMb * 0.5), cgroupCapMb));
+  return Math.max(MIN_QUERY_HEAP_MB, Math.min(DEFAULT_QUERY_HEAP_MB, Math.floor(analysisHeap.totalRamMb * 0.5), cgroupCapMb));
 }
 
 function resolveWorkerEntryPath(kind: 'full' | 'search', env: NodeJS.ProcessEnv = process.env): string {

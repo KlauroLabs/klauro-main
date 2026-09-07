@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { beginHostedProjectQueryWarm, runHostedProjectQueryWorker, resolveHostedQueryHeapMb } from './hosted-project-query-process';
+import { beginHostedProjectQueryWarm, HostedQueryCapacityError, runHostedProjectQueryWorker, resolveHostedQueryHeapMb } from './hosted-project-query-process';
 import { withHostedBackgroundPermit } from './hosted-background-queue';
 
 test('hosted query heap is independently bounded with an explicit override', () => {
@@ -19,7 +19,9 @@ test('hosted query heap is independently bounded with an explicit override', () 
   assert.equal(resolveHostedQueryHeapMb({ KLAURO_HOSTED_QUERY_HEAP_MB: '4096' }, eightGiB, threeGiBCgroup), 1843);
   assert.equal(resolveHostedQueryHeapMb({ KLAURO_HOSTED_QUERY_HEAP_MB: '1024' }, eightGiB, threeGiBCgroup), 1024);
   const tinyCgroup = { limitBytes: 512 * 1024 * 1024, availableBytes: 256 * 1024 * 1024, source: 'cgroup' as const };
-  assert.equal(resolveHostedQueryHeapMb({ KLAURO_HOSTED_QUERY_HEAP_MB: '4096' }, eightGiB, tinyCgroup), 512);
+  assert.throws(() => resolveHostedQueryHeapMb({ KLAURO_HOSTED_QUERY_HEAP_MB: '4096' }, eightGiB, tinyCgroup), (error: unknown) => error instanceof HostedQueryCapacityError && /unsupported/.test(error.message));
+  const smallestSupported = { limitBytes: 854 * 1024 * 1024, availableBytes: 512 * 1024 * 1024, source: 'cgroup' as const };
+  assert.equal(resolveHostedQueryHeapMb({ KLAURO_HOSTED_QUERY_HEAP_MB: '4096' }, eightGiB, smallestSupported), 512);
 });
 
 test('hosted queries reuse one worker until background analysis requests memory', async () => {

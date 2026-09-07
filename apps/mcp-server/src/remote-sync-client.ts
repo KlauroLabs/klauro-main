@@ -7,7 +7,7 @@ import { gzipSync } from 'node:zlib';
 import pLimit from 'p-limit';
 import { saveAnalysis } from './storage';
 import type { RemoteAnalyzeAcceptedResponse, RemoteAnalyzeResponse, RemoteAnalyzerResponse, RemoteProjectRevisionsResponse } from './remote-analyzer-protocol';
-import { buildBranchDiffContext, buildStreamingSourceSnapshot, buildStreamingWorkingTreeChanges } from './remote-source';
+import { buildBranchDiffContext, buildStreamingSourceSnapshot, buildStreamingWorkingTreeChanges, type StreamingWorkingTreePlan } from './remote-source';
 import { createAnalyzeUploadRequest, createIncrementalUploadRequest, isStreamingJsonRequest } from './streaming-source-upload';
 import {
   assertRemoteAnalyzerAllowed,
@@ -607,6 +607,10 @@ function stampAnalyzedCommit<T>(cas: T, baseCommit: string | undefined): T {
   return cas;
 }
 
+export function workingTreeSyncRequired(changes: Pick<StreamingWorkingTreePlan, 'changed_files' | 'manifest'>): boolean {
+  return changes.changed_files.length > 0 || (changes.manifest.excluded_oversize_files?.length ?? 0) > 0;
+}
+
 export async function syncWorkingTreeRemotely(options: RemoteSyncOptions): Promise<AnalyzeRemotelyResult> {
   const projectPath = path.resolve(options.projectPath);
   const loaded = await loadKlauroConfig(projectPath);
@@ -617,7 +621,7 @@ export async function syncWorkingTreeRemotely(options: RemoteSyncOptions): Promi
   await assertUploadTargetIsReachable(loaded, serverUrl, options);
   const changes = await buildStreamingWorkingTreeChanges(projectPath);
   const analysisId = resolveAnalysisId(loaded, defaultAnalysisId(projectPath), options.analysisId);
-  if (changes.changed_files.length === 0) {
+  if (!workingTreeSyncRequired(changes)) {
     return {
       status: 'success',
       analysis_id: analysisId,

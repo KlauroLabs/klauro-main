@@ -27,7 +27,8 @@ test('deployment verifies live server and client artifacts against the selected 
   const source = script('deploy.sh');
   assert.match(source, /LIVE_SHA=.*build\?\.git_sha/);
   assert.match(source, /\[ "\$LIVE_SHA" != "\$GIT_SHA" \]/);
-  assert.match(source, /\[ "\$DIST_SHA" != "\$GIT_SHA" \]/);
+  assert.match(source, /DIST_SHA_SHORT="\$\{DIST_SHA:0:12\}"/);
+  assert.match(source, /\[ "\$DIST_SHA_SHORT" != "\$GIT_SHA" \]/);
 });
 
 test('deployment stages and validates the exact commit without local build workloads', () => {
