@@ -3311,3 +3311,33 @@ test('an empty catalog with uncovered product-outcome obligations is rejected; t
   assert.equal(quality(obligations, []), undefined);
   assert.equal(quality([], []), undefined);
 });
+
+test('delivery action evidence does not confuse command subjects with actions', () => {
+  const cases = [
+    { name: 'Work alongside other people and agents on one codebase without duplicating or colliding', command: 'fab_claim_work' },
+    { name: 'Report incidents to responders', command: 'export_incident_report' },
+    { name: 'Monitor manufacturing equipment', command: 'configure_equipment_monitor' },
+  ];
+  for (const { name, command } of cases) {
+    const broad = catalogCapability({
+      id: 'surface', name: 'Product operations', structural_label: 'Product operations', evidence_kind: 'behavior-surface',
+      operations: [command, 'get_account', 'create_project', 'list_events'].map((path, index) => ({
+        action: 'Handle', path_or_command: path, entry_point_id: String(index), entry_point_type: 'message' as const,
+      })),
+    });
+    const signal = { productDocSummary: name };
+    assert.notDeepEqual(capabilityOutcomeScopeFailure(name, [broad], signal, true), ['delivery-action-evidence-too-broad'], name);
+  }
+});
+
+test('actual delivery actions still require focused operation evidence across command namespaces', () => {
+  for (const command of ['preview_codebase_iteration', 'workspace_preview_codebase_iteration']) {
+    const broad = catalogCapability({
+      id: 'surface', name: 'Product operations', structural_label: 'Product operations', evidence_kind: 'behavior-surface',
+      operations: [command, 'get_account', 'create_project', 'list_events'].map((path, index) => ({
+        action: 'Handle', path_or_command: path, entry_point_id: String(index), entry_point_type: 'message' as const,
+      })),
+    });
+    assert.deepEqual(capabilityOutcomeScopeFailure('Preview codebase iterations', [broad], undefined, true), ['delivery-action-evidence-too-broad']);
+  }
+});
