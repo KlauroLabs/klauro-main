@@ -5,7 +5,7 @@ import * as path from 'node:path';
 import test from 'node:test';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { saveAnalysis, loadCompactAnalysisGraph } from './storage';
-import { computeScopedQueryScope, loadScopedGraphSection, planScopedQuery, resolveCompactTarget, scopedQueryTarget } from './hosted-query-scoped-graph';
+import { acquirePinnedAnalysis, computeScopedQueryScope, loadScopedGraphSection, planScopedQuery, resolveCompactTarget, scopedQueryTarget } from './hosted-query-scoped-graph';
 import { hostedProjectQuerySections } from './hosted-project-query';
 import { resolveHostedQueryHeapMb } from './hosted-project-query-process';
 
@@ -63,17 +63,24 @@ test('scoped query loads only the target neighborhood from the stored graph sect
     assert.equal(scope.calleeCount, 1);
     for (const id of ['node-0', 'node-1', 'node-2', 'node-3', 'node-6', 'node-4']) assert.ok(scope.keepIds.has(id), `${id} kept`);
     assert.ok(!scope.keepIds.has('node-20'), 'unrelated component is not kept');
-    const section = await loadScopedGraphSection(project, scope.keepIds);
-    assert.ok(section);
-    assert.equal(section!.scanned.nodes, 40);
-    assert.equal(section!.scanned.edges, 6);
-    assert.deepEqual(section!.nodes.map(node => node.id).sort(), [...scope.keepIds].sort());
-    assert.deepEqual(section!.edges.map(edge => edge.id).sort(), ['e-1', 'e-2', 'e-3', 'e-4']);
-    const plan = await planScopedQuery(project, 'get_coding_context', { target: 'src/target.ts:targetFn', caller_limit: 2 });
-    assert.ok(plan && 'scope' in plan && plan.scope.targetId === 'node-0');
-    const missing = await planScopedQuery(project, 'get_coding_context', { target: 'noSuchFunction' });
-    assert.deepEqual(missing, { targetNotFound: 'noSuchFunction' });
-    assert.equal(await planScopedQuery(project, 'get_product_map', {}), null);
+    const pinned = (await acquirePinnedAnalysis(project))!;
+    assert.ok(pinned, 'a read lease pins the current generation');
+    try {
+      const section = await loadScopedGraphSection(pinned, scope.keepIds);
+      assert.ok(section);
+      assert.equal(section!.scanned.nodes, 40);
+      assert.equal(section!.scanned.edges, 6);
+      assert.equal(section!.edgesTruncated, false);
+      assert.deepEqual(section!.nodes.map(node => node.id).sort(), [...scope.keepIds].sort());
+      assert.deepEqual(section!.edges.map(edge => edge.id).sort(), ['e-1', 'e-2', 'e-3', 'e-4']);
+      const plan = await planScopedQuery(pinned, 'get_coding_context', { target: 'src/target.ts:targetFn', caller_limit: 2 });
+      assert.ok(plan && 'scope' in plan && plan.scope.targetId === 'node-0' && plan.graphNodeCount === 40);
+      const missing = await planScopedQuery(pinned, 'get_coding_context', { target: 'noSuchFunction' });
+      assert.deepEqual(missing, { targetNotFound: 'noSuchFunction' });
+      assert.equal(await planScopedQuery(pinned, 'get_product_map', {}), null);
+    } finally {
+      await pinned.release();
+    }
   });
 });
 
@@ -137,6 +144,40 @@ test('compact target resolution follows the coding-target contract for paths, st
     assert.equal(resolveCompactTarget(graph, 'billing-service.test.ts')?.id, 'svc-test-fn');
     assert.equal(resolveCompactTarget(graph, 'dupName')?.id, 'dup-real');
     assert.equal(resolveCompactTarget(graph, 'dup-7')?.id, 'dup-7');
-    assert.equal(await planScopedQuery(project, 'assess_change_risk', { node_id: 'svc-run' }), null);
+    const pinned = (await acquirePinnedAnalysis(project))!;
+    try {
+      assert.equal(await planScopedQuery(pinned, 'assess_change_risk', { node_id: 'svc-run' }), null);
+    } finally {
+      await pinned.release();
+    }
+  });
+});
+
+test('a pinned generation keeps serving its own records when a same-sized replacement lands', async () => {
+  await withStorage(async project => {
+    await saveAnalysis(project, fixture(), 'main', { canonicalSegmented: true });
+    const pinned = (await acquirePinnedAnalysis(project))!;
+    try {
+      const replacement = fixture();
+      replacement.analysis_timestamp = '2026-09-07T00:00:01.000Z';
+      replacement.nodes = replacement.nodes.map(node => ({ ...node, id: node.id.replace('node-', 'other-') }));
+      replacement.edges = replacement.edges.map(edge => ({ ...edge, source: edge.source.replace('node-', 'other-'), target: edge.target.replace('node-', 'other-') }));
+      await saveAnalysis(project, replacement, 'main', { canonicalSegmented: true });
+      const fresh = (await acquirePinnedAnalysis(project))!;
+      try {
+        assert.notEqual(fresh.segmented.directory, pinned.segmented.directory, 'replacement is a new generation');
+        const oldPlan = await planScopedQuery(pinned, 'get_coding_context', { target: 'targetFn' });
+        assert.ok(oldPlan && 'scope' in oldPlan && oldPlan.scope.targetId === 'node-0');
+        const oldSection = await loadScopedGraphSection(pinned, oldPlan.scope.keepIds);
+        assert.ok(oldSection && oldSection.nodes.every(node => node.id.startsWith('node-')), 'pinned load reads the pinned generation only');
+        assert.equal(oldSection!.scanned.nodes, 40);
+        const newPlan = await planScopedQuery(fresh, 'get_coding_context', { target: 'targetFn' });
+        assert.ok(newPlan && 'scope' in newPlan && newPlan.scope.targetId === 'other-0');
+      } finally {
+        await fresh.release();
+      }
+    } finally {
+      await pinned.release();
+    }
   });
 });

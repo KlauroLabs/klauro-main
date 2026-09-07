@@ -584,10 +584,16 @@ export async function buildWorkingTreeChangeContext(projectPath: string): Promis
   }
   const changes = listGitChanges(root);
   const changedFiles: RemoteFileChange[] = [];
+  const oversize: Array<{ path: string; bytes: number }> = [];
 
   for (const change of changes) {
     const absolutePath = safeJoin(root, change.path);
-    if (!absolutePath || !(await shouldIncludeRelativePath(root, change.path, loaded))) continue;
+    if (!absolutePath) continue;
+    const verdict = await shouldIncludeRelativePathVerbose(root, change.path, loaded);
+    if (!verdict.included) {
+      if (verdict.reason === OVERSIZE_REASON) oversize.push({ path: normalizeRelativePath(change.path), bytes: (await fs.stat(absolutePath).catch(() => null))?.size ?? 0 });
+      continue;
+    }
 
     if (change.status === 'deleted') {
       if (!loaded.config.upload.sendDeletedPaths) continue;
@@ -605,7 +611,7 @@ export async function buildWorkingTreeChangeContext(projectPath: string): Promis
     base_commit: readGitHead(root),
     git_diff: loaded.config.upload.sendGitDiff ? readGitDiff(root) : undefined,
     changed_files: changedFiles.sort((left, right) => left.path.localeCompare(right.path)),
-    manifest: buildManifest(root, loaded, changedFiles.filter((file): file is RemoteChangedFile => file.status !== 'deleted'), 'dirty-tree'),
+    manifest: buildManifest(root, loaded, changedFiles.filter((file): file is RemoteChangedFile => file.status !== 'deleted'), 'dirty-tree', oversize),
   };
 }
 
@@ -616,10 +622,16 @@ export async function buildStreamingWorkingTreeChanges(projectPath: string): Pro
     throw new Error('Dirty-tree sync is disabled by .klaurorc upload.allowDirtyTreeSync=false');
   }
   const changedFiles: Array<StreamingSourceFile | RemoteDeletedFile> = [];
+  const oversize: Array<{ path: string; bytes: number }> = [];
   for (const change of listGitChanges(root)) {
     const normalized = normalizeRelativePath(change.path);
     const absolutePath = safeJoin(root, normalized);
-    if (!absolutePath || !await shouldIncludeRelativePath(root, normalized, loaded)) continue;
+    if (!absolutePath) continue;
+    const verdict = await shouldIncludeRelativePathVerbose(root, normalized, loaded);
+    if (!verdict.included) {
+      if (verdict.reason === OVERSIZE_REASON) oversize.push({ path: normalized, bytes: (await fs.stat(absolutePath).catch(() => null))?.size ?? 0 });
+      continue;
+    }
     if (change.status === 'deleted') {
       if (loaded.config.upload.sendDeletedPaths) changedFiles.push({ path: normalized, status: 'deleted' });
       continue;
@@ -641,7 +653,7 @@ export async function buildStreamingWorkingTreeChanges(projectPath: string): Pro
     base_commit: readGitHead(root),
     readGitDiff: loaded.config.upload.sendGitDiff ? async () => readGitDiff(root) : undefined,
     changed_files: changedFiles,
-    manifest: buildManifestFromStats(root, loaded, sourceFiles, 'dirty-tree'),
+    manifest: buildManifestFromStats(root, loaded, sourceFiles, 'dirty-tree', oversize),
   };
 }
 

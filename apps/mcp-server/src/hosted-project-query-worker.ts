@@ -3,7 +3,8 @@ import * as path from 'node:path';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { unavailableComprehensionResponse } from './analysis-response-readiness';
 import type { HostedProjectQueryWorkerRequest } from './hosted-project-query-process';
-import { getAnalysisFileFingerprint, loadAnalysisProjection } from './storage';
+import { getAnalysisFileFingerprint, loadAnalysisProjection, loadAnalysisSections } from './storage';
+import { acquirePinnedAnalysis, SCOPED_QUERY_TOOLS, scopedQueryTarget } from './hosted-query-scoped-graph';
 import type { CasSectionName } from './cas-sections';
 import { attachCasProjection, casProjection } from './cas-projection';
 import type { SubCasNodeIndex } from './deployable-analysis';
@@ -69,48 +70,51 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
       const requiredSections: CasSectionName[] = request.type === 'query'
         ? [...queryModule!.hostedProjectQuerySections(request.tool, request.args as any)]
         : [...WARM_SECTIONS];
-      const scopedPlan = request.type === 'query'
-        ? await planScopedQuery(request.workspace, request.tool, request.args as Record<string, unknown> | undefined)
-        : null;
+      const scopedEligible = request.type === 'query' && SCOPED_QUERY_TOOLS.has(request.tool)
+        && Boolean(scopedQueryTarget(request.tool, request.args as Record<string, unknown> | undefined));
+      const pinned = scopedEligible ? await acquirePinnedAnalysis(request.workspace) : null;
       let scopedCas: CASOutput | undefined;
       let scopedContext: Record<string, unknown> | undefined;
-      if (scopedPlan) {
+      try {
+      const scopedPlan = pinned
+        ? await planScopedQuery(pinned, request.tool, request.args as Record<string, unknown> | undefined)
+        : null;
+      if (scopedPlan && pinned) {
         const loadStartedAt = Date.now();
         const smallSections = requiredSections.filter(section => section !== 'graph' && section !== 'calls');
-        const loaded = await loadAnalysisProjection(request.workspace, smallSections);
-        if (!loaded) throw new Error(`No analysis found for: ${request.workspace}. Run analyze_codebase first.`);
+        const loadedSections = await loadAnalysisSections(request.workspace, smallSections, { pinned: { filePath: pinned.filePath, segmented: pinned.segmented } });
+        if (!loadedSections) throw new Error(`No analysis found for: ${request.workspace}. Run analyze_codebase first.`);
         const graphSection = 'scope' in scopedPlan
-          ? await loadScopedGraphSection(request.workspace, scopedPlan.scope.keepIds)
+          ? await loadScopedGraphSection(pinned, scopedPlan.scope.keepIds)
           : null;
         if ('scope' in scopedPlan) {
           if (!graphSection) throw new Error(`Canonical graph section is unavailable for: ${request.workspace}. Re-run analyze_codebase.`);
-          const inventoryNodes = loaded.inventory?.node_count;
-          if (inventoryNodes !== undefined && inventoryNodes !== scopedPlan.graphNodeCount) {
-            throw new Error(`Analysis generation changed while planning the query (${scopedPlan.graphNodeCount} vs ${inventoryNodes} nodes). Retry.`);
-          }
           if (graphSection.scanned.nodes !== scopedPlan.graphNodeCount) {
-            throw new Error(`Graph section and compact index disagree (${graphSection.scanned.nodes} vs ${scopedPlan.graphNodeCount} nodes). Retry.`);
+            throw new Error(`Graph section and compact index of generation ${path.basename(pinned.segmented.directory)} disagree (${graphSection.scanned.nodes} vs ${scopedPlan.graphNodeCount} nodes).`);
           }
         }
+        const totalNodes = 'scope' in scopedPlan ? scopedPlan.graphNodeCount : graphSection?.scanned.nodes;
+        const totalEdges = graphSection?.scanned.edges;
         scopedCas = attachCasProjection({
           analyzer_contributions: [],
-          ...loaded.cas,
+          ...loadedSections,
           nodes: graphSection?.nodes ?? [],
           edges: graphSection?.edges ?? [],
           index: undefined,
         } as CASOutput, {
           loaded_sections: ['identity', ...smallSections, 'graph'],
-          node_count: loaded.inventory?.node_count,
-          edge_count: loaded.inventory?.edge_count,
+          node_count: totalNodes,
+          edge_count: totalEdges,
         });
         scopedContext = 'scope' in scopedPlan
           ? {
               mode: 'scoped',
+              generation: path.basename(pinned.segmented.directory),
               target_id: scopedPlan.scope.targetId,
               loaded_nodes: graphSection?.nodes.length ?? 0,
               loaded_edges: graphSection?.edges.length ?? 0,
-              total_nodes: loaded.inventory?.node_count ?? graphSection?.scanned.nodes,
-              total_edges: loaded.inventory?.edge_count ?? graphSection?.scanned.edges,
+              total_nodes: totalNodes,
+              total_edges: totalEdges,
               callers_total: scopedPlan.scope.callerCount,
               callees_total: scopedPlan.scope.calleeCount,
               truncated: scopedPlan.scope.truncated || Boolean(graphSection?.edgesTruncated),
@@ -239,6 +243,9 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
       });
       if (Date.now() - startedAt >= 1_000) {
         process.stderr.write(`${JSON.stringify({ event: 'hosted_query_slow', tool: request.tool, duration_ms: Date.now() - startedAt })}\n`);
+      }
+      } finally {
+        if (pinned) await pinned.release().catch(() => undefined);
       }
     } catch (error) {
       process.send!({ type: 'error', id: request.id, error: error instanceof Error ? error.message : String(error) });

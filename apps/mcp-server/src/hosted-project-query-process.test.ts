@@ -8,11 +8,18 @@ import { withHostedBackgroundPermit } from './hosted-background-queue';
 
 test('hosted query heap is independently bounded with an explicit override', () => {
   const eightGiB = 8 * 1024 * 1024 * 1024;
-  assert.equal(resolveHostedQueryHeapMb({ KLAURO_ANALYSIS_HEAP_MB: '4096' }, eightGiB), 3072);
-  assert.equal(resolveHostedQueryHeapMb({ KLAURO_ANALYSIS_HEAP_MB: '1024' }, eightGiB), 1024);
-  assert.equal(resolveHostedQueryHeapMb({ KLAURO_HOSTED_QUERY_HEAP_MB: '2048' }, eightGiB), 2048);
-  assert.equal(resolveHostedQueryHeapMb({ KLAURO_HOSTED_QUERY_HEAP_MB: '128' }, eightGiB), 3072);
-  assert.equal(resolveHostedQueryHeapMb({}, 2 * 1024 * 1024 * 1024), 1024);
+  const host = { limitBytes: eightGiB, availableBytes: eightGiB / 2, source: 'host' as const };
+  assert.equal(resolveHostedQueryHeapMb({ KLAURO_ANALYSIS_HEAP_MB: '4096' }, eightGiB, host), 3072);
+  assert.equal(resolveHostedQueryHeapMb({ KLAURO_ANALYSIS_HEAP_MB: '1024' }, eightGiB, host), 1024);
+  assert.equal(resolveHostedQueryHeapMb({ KLAURO_HOSTED_QUERY_HEAP_MB: '2048' }, eightGiB, host), 2048);
+  assert.equal(resolveHostedQueryHeapMb({ KLAURO_HOSTED_QUERY_HEAP_MB: '128' }, eightGiB, host), 3072);
+  assert.equal(resolveHostedQueryHeapMb({}, 2 * 1024 * 1024 * 1024, host), 1024);
+  const threeGiBCgroup = { limitBytes: 3 * 1024 * 1024 * 1024, availableBytes: 1024 * 1024 * 1024, source: 'cgroup' as const };
+  assert.equal(resolveHostedQueryHeapMb({ KLAURO_ANALYSIS_HEAP_MB: '4096' }, eightGiB, threeGiBCgroup), 1843);
+  assert.equal(resolveHostedQueryHeapMb({ KLAURO_HOSTED_QUERY_HEAP_MB: '4096' }, eightGiB, threeGiBCgroup), 1843);
+  assert.equal(resolveHostedQueryHeapMb({ KLAURO_HOSTED_QUERY_HEAP_MB: '1024' }, eightGiB, threeGiBCgroup), 1024);
+  const tinyCgroup = { limitBytes: 512 * 1024 * 1024, availableBytes: 256 * 1024 * 1024, source: 'cgroup' as const };
+  assert.equal(resolveHostedQueryHeapMb({ KLAURO_HOSTED_QUERY_HEAP_MB: '4096' }, eightGiB, tinyCgroup), 512);
 });
 
 test('hosted queries reuse one worker until background analysis requests memory', async () => {

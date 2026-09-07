@@ -2,8 +2,26 @@ import * as fs from 'node:fs';
 import * as zlib from 'node:zlib';
 import type { CASEdge, CASNode } from '../../../packages/analyzer-core/src/types/cas.types';
 import type { CompactCASGraph, CompactNodeView } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-graph';
-import { loadCompactAnalysisGraph, loadCompactAnalysisSearch, resolveAnalysisSectionExportArtifact } from './storage';
+import * as path from 'node:path';
+import { acquireCurrentSegmentedAnalysisLease, resolveAnalysisForLoad, type AnalysisEntry } from './storage';
+import type { AnalysisTrack } from './track';
+import type { ResolvedSegmentedAnalysis } from './segmented-analysis-storage';
+import { loadCompactCASGraph, loadCompactCASSearch } from './segmented-analysis-storage';
+import { compressionCodecForPath } from './json-storage-writer';
 import { searchCompactCAS } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-search';
+
+export interface PinnedAnalysisGeneration {
+  filePath: string;
+  segmented: ResolvedSegmentedAnalysis;
+  entry: AnalysisEntry;
+  release: () => Promise<void>;
+}
+
+export async function acquirePinnedAnalysis(projectPath: string, options?: { track?: AnalysisTrack }): Promise<PinnedAnalysisGeneration | null> {
+  const resolved = await resolveAnalysisForLoad(projectPath, options?.track);
+  const lease = resolved ? await acquireCurrentSegmentedAnalysisLease(resolved) : null;
+  return resolved && lease ? { filePath: resolved.filePath, segmented: lease.segmented, entry: resolved.entry, release: lease.release } : null;
+}
 
 export const SCOPED_QUERY_TOOLS = new Set(['get_coding_context']);
 const DEFAULT_NEIGHBOR_LIMIT = 10;
@@ -170,8 +188,15 @@ function isEdgeRecord(record: Record<string, unknown>): record is CASEdge & Reco
   return typeof record.source === 'string' && typeof record.target === 'string' && !('name' in record);
 }
 
-export async function loadScopedGraphSection(projectPath: string, keepIds: ReadonlySet<string>): Promise<ScopedGraphSection | null> {
-  const artifact = await resolveAnalysisSectionExportArtifact(projectPath, 'graph');
+function pinnedGraphArtifact(pinned: PinnedAnalysisGeneration): { filePath: string; codec: 'none' | 'brotli' | 'zstd' } | null {
+  const descriptor = pinned.segmented.manifest.sections.find(item => item.name === 'graph');
+  if (!descriptor?.file || path.basename(descriptor.file) !== descriptor.file) return null;
+  const filePath = path.join(pinned.segmented.directory, descriptor.file);
+  return { filePath, codec: compressionCodecForPath(filePath) };
+}
+
+export async function loadScopedGraphSection(pinned: PinnedAnalysisGeneration, keepIds: ReadonlySet<string>): Promise<ScopedGraphSection | null> {
+  const artifact = pinnedGraphArtifact(pinned);
   if (!artifact) return null;
   const [{ parser }, { pick }, { streamArray }, { chain }] = await Promise.all(
     STREAM_MODULES.map(specifier => import(specifier) as Promise<any>),
@@ -202,9 +227,9 @@ export async function loadScopedGraphSection(projectPath: string, keepIds: Reado
   return { nodes, edges, scanned, edgesTruncated };
 }
 
-async function searchCandidateIds(projectPath: string, target: string): Promise<string[]> {
+async function searchCandidateIds(pinned: PinnedAnalysisGeneration, target: string): Promise<string[]> {
   try {
-    const search = await loadCompactAnalysisSearch(projectPath);
+    const search = await loadCompactCASSearch(pinned.filePath, pinned.segmented);
     if (!search) return [];
     const hits = await searchCompactCAS(search.graph, search.index, target, search.readPostings, search.readSearchText, { limit: 50 });
     return hits.map(hit => hit.id);
@@ -214,15 +239,15 @@ async function searchCandidateIds(projectPath: string, target: string): Promise<
 }
 
 export async function planScopedQuery(
-  projectPath: string,
+  pinned: PinnedAnalysisGeneration,
   tool: string,
   args: Record<string, unknown> | undefined,
 ): Promise<{ scope: ScopedQueryScope; target: CompactNodeView; graphNodeCount: number } | { targetNotFound: string } | null> {
   const target = scopedQueryTarget(tool, args);
   if (!target || !SCOPED_QUERY_TOOLS.has(tool)) return null;
-  const graph = await loadCompactAnalysisGraph(projectPath);
+  const graph = await loadCompactCASGraph(pinned.filePath, pinned.segmented);
   if (!graph) return null;
-  const resolved = resolveCompactTarget(graph, target, await searchCandidateIds(projectPath, target));
+  const resolved = resolveCompactTarget(graph, target, await searchCandidateIds(pinned, target));
   if (!resolved) return { targetNotFound: target };
   const scope = computeScopedQueryScope(graph, resolved, {
     callerLimit: args?.caller_limit,

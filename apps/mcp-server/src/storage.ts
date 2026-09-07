@@ -776,12 +776,12 @@ export async function saveAnalysis(
   return entry;
 }
 
-interface ResolvedAnalysisForLoad {
+export interface ResolvedAnalysisForLoad {
   entry: AnalysisEntry;
   filePath: string;
 }
 
-async function resolveAnalysisForLoad(
+export async function resolveAnalysisForLoad(
   projectPath: string,
   requestedTrack?: AnalysisTrack
 ): Promise<ResolvedAnalysisForLoad | null> {
@@ -827,7 +827,7 @@ async function resolveCurrentSegmentedAnalysis(
   return segmented;
 }
 
-async function acquireCurrentSegmentedAnalysisLease(
+export async function acquireCurrentSegmentedAnalysisLease(
   resolved: ResolvedAnalysisForLoad,
 ): Promise<{ segmented: ResolvedSegmentedAnalysis; release: () => Promise<void> } | null> {
   let lease: Awaited<ReturnType<typeof acquireSegmentedAnalysisLease>>;
