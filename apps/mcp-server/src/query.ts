@@ -4016,12 +4016,10 @@ export function getInterfaceSignature(
 
 
   const ownExitPoints = (cas.exit_points || []).filter(ep => ep.source_node === targetNode!.id);
-  const lineageEntries = cas.data_lineage || [];
-  const relatedLineage = lineageEntries.filter(entry =>
-    entry.writers.some(w => w.node_id === targetNode!.id) || entry.readers.some(r => r.node_id === targetNode!.id)
-  );
-  const externalRecipients = [...new Set(relatedLineage.flatMap(entry => entry.external_recipients.map(r => r.service)))];
-  const boundariesCrossed = relatedLineage.flatMap(entry => entry.boundaries_crossed);
+  const contract = targetNode.contract;
+  const stateChanges = contract?.side_effects.state_changes || [];
+  const externalRecipients = contract?.side_effects.external_integrations || [];
+  const unresolvedExitPointIds = contract?.side_effects.unresolved_exit_point_ids || [];
 
 
 
@@ -4048,8 +4046,8 @@ export function getInterfaceSignature(
   }
 
   const gaps: string[] = [];
-  if (!cas.data_lineage || cas.data_lineage.length === 0) {
-    gaps.push('No data_lineage on this analysis scope — side_effects.external_recipients may be incomplete; re-run analyze_codebase or widen scope if this node touches shared entities.');
+  if (!contract) {
+    gaps.push('No canonical node contract on this analysis scope — direct exit points remain visible, but state changes, integrations and constraints are not inferred from shared entity lineage. Re-run analyze_codebase or load the complete node record.');
   }
   if (!purpose) {
     gaps.push('No terminal-signal match for this target — purpose omitted rather than fabricated.');
@@ -4066,10 +4064,12 @@ export function getInterfaceSignature(
       ...(returnType ? [{ kind: 'return_type', type: returnType }] : []),
       ...ownExitEventNames.map(name => ({ kind: 'event', name })),
     ],
+    contract: contract || null,
     side_effects: [
       ...ownExitPoints.map(ep => ({ kind: 'exit_point', id: ep.id, type: ep.type, name: ep.name, target: ep.target })),
+      ...stateChanges.map(change => ({ kind: 'state_change', change })),
       ...externalRecipients.map(service => ({ kind: 'external_recipient', service })),
-      ...boundariesCrossed.map(b => ({ kind: 'boundary', boundary: b.boundary, guarded: b.guarded, guard_kinds: b.guard_kinds })),
+      ...unresolvedExitPointIds.map(id => ({ kind: 'unresolved_exit_point', id })),
     ],
     logic: {
       callers_total: callersTotal,
