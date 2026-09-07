@@ -207,3 +207,28 @@ test('field-wise compressed writer emits exactly the native JSON bytes and measu
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('field-wise writer bounds every array slice it serializes when early items are skewed large', { skip: !hasZstd }, async () => {
+  const { writeCompressedJsonFieldsAtomic } = await import('./json-storage-writer');
+  const { execFileSync } = await import('node:child_process');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'json-fields-skew-'));
+  try {
+    const big = 'x'.repeat(200_000);
+    const items = Array.from({ length: 6_000 }, (_, index) => (index < 100 ? { index, payload: big } : { index }));
+    const value = { identity: { name: 'skew' }, items };
+    const expected = JSON.stringify(value);
+    let largestInput = 0;
+    const measuring: (input: unknown) => string | undefined = input => {
+      const text = JSON.stringify(input);
+      if (Array.isArray(input) && input !== items) largestInput = Math.max(largestInput, text.length);
+      return text;
+    };
+    const target = path.join(dir, 'skew.json.zst');
+    const bytes = await writeCompressedJsonFieldsAtomic(target, value, measuring);
+    assert.equal(execFileSync('zstd', ['-dqc', target], { maxBuffer: 64 * 1024 * 1024 }).toString('utf8'), `${expected}\n`);
+    assert.equal(bytes.items, Buffer.byteLength(JSON.stringify(items), 'utf8'));
+    assert.ok(largestInput <= 64 * (big.length + 32), `first slice must stay bounded by the start item count, saw ${largestInput}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

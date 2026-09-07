@@ -85,6 +85,8 @@ export async function writeCompressedChunksAtomic(
 class JsonFieldTooLarge extends Error {}
 
 const JSON_FIELD_CHUNK_ITEMS = 2_048;
+const JSON_FIELD_CHUNK_START_ITEMS = 64;
+const JSON_FIELD_CHUNK_GROWTH = 4;
 const JSON_FIELD_CHUNK_TARGET_BYTES = 8 * 1024 * 1024;
 
 type JsonStringify = (value: unknown) => string | undefined;
@@ -136,14 +138,14 @@ async function* streamJsonValue(value: unknown): AsyncGenerator<string> {
 function nextChunkItems(current: number, emittedBytes: number): number {
   if (emittedBytes <= 0) return current;
   const scaled = Math.floor(current * (JSON_FIELD_CHUNK_TARGET_BYTES / emittedBytes));
-  return Math.max(64, Math.min(JSON_FIELD_CHUNK_ITEMS, scaled));
+  return Math.max(JSON_FIELD_CHUNK_START_ITEMS, Math.min(JSON_FIELD_CHUNK_ITEMS, current * JSON_FIELD_CHUNK_GROWTH, scaled));
 }
 
 async function* serializeJsonValueChunked(value: unknown, key: string, stringify: JsonStringify, count: (bytes: number) => void): AsyncGenerator<string> {
   const emit = (text: string): string => { count(Buffer.byteLength(text, 'utf8')); return text; };
   if (chunkableArray(value)) {
     yield emit('[');
-    let items = JSON_FIELD_CHUNK_ITEMS;
+    let items = JSON_FIELD_CHUNK_START_ITEMS;
     for (let offset = 0; offset < value.length;) {
       const slice = value.slice(offset, offset + items);
       let serialized: string | undefined;
