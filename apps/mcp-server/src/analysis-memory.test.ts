@@ -50,10 +50,11 @@ test('credits only clean inactive file cache without changing raw cgroup usage o
 });
 
 test('active, dirty, shared and anonymous pages do not turn into reclaimable capacity', () => {
-  for (const overrides of [
+  const pageCounters: Array<Record<string, number>> = [
     { inactive_file: 0 }, { file_dirty: 1536 * MIB }, { file_writeback: 1536 * MIB },
     { shmem: 1536 * MIB }, { anon: 2 * GIB },
-  ]) {
+  ];
+  for (const overrides of pageCounters) {
     assert.equal(cachedContainer(cacheStats(overrides))?.reclaimableFileBytes, undefined);
   }
   assert.equal(cachedContainer(cacheStats({ file: 128 * MIB }))?.reclaimableFileBytes, undefined);
