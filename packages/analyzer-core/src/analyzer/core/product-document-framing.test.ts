@@ -7,6 +7,26 @@ import { buildFirstPartyProductEvidence, firstPartyProductEvidenceRefreshDecisio
 import type { SystemCapability } from '../../types/cas.types';
 import { deriveCapabilityCatalogOutcomeRequirements } from './capability-catalog-outcome-coverage';
 
+test('structured outcome declarations retain individual boundaries including short and unfamiliar actions', () => {
+  const outcomes = ['Know what will break before changing something', 'Pay bills', 'Hail a ride'];
+  const signal = {
+    productDocSummary: 'The product builds a relationship graph.',
+    productDocStatements: outcomes.map(value => ({ role: 'feature' as const, value })),
+  };
+  const candidates = ['assess_change_risk', 'bill_payment', 'ride_hailing'].map(id => ({
+    id, name: id, description: '', category: 'core', criticality: 'medium', criticality_factors: [],
+    related_entities: [], related_domains: [],
+    operations: [{ entry_point_id: id, entry_point_type: 'api', action: id }],
+  } as SystemCapability));
+  const requirements = deriveCapabilityCatalogOutcomeRequirements(signal, candidates);
+  assert.deepEqual(requirements.map(requirement => requirement.statement), outcomes);
+  assert.deepEqual(requirements.map(requirement => requirement.firstPartyOutcomeText), outcomes);
+  assert.deepEqual(requirements.map(requirement => requirement.candidateIds), candidates.map(candidate => [candidate.id]));
+  assert.equal(new Set(requirements.map(requirement => requirement.id)).size, outcomes.length);
+  const evidence = buildFirstPartyProductEvidence({ ...signal, productDocSource: 'README.md' });
+  assert.deepEqual(evidence?.statements?.map(statement => statement.value), outcomes);
+});
+
 test('retains document roles and unknown feature language without claiming implementation', () => {
   const framing = extractProductDocumentFraming([
     '# Demand planning',
@@ -55,6 +75,11 @@ test('explicit product declarations do not turn overview mechanisms into extra r
     category: 'core', criticality: 'medium', criticality_factors: [],
     related_entities: [], related_domains: [],
     operations: [{ entry_point_id: 'coordination', entry_point_type: 'message', action: 'coordinate_overlapping_work' }],
+  } as SystemCapability, {
+    id: 'risk', name: 'Change risk assessment', description: 'Assess connected change risk.',
+    category: 'core', criticality: 'medium', criticality_factors: [],
+    related_entities: [], related_domains: [],
+    operations: [{ entry_point_id: 'risk', entry_point_type: 'api', action: 'assess_change_risk' }],
   } as SystemCapability]);
   assert.deepEqual(requirements.map(requirement => requirement.statement),
     declared.map(statement => statement.value.replace(/[.!?]+$/, '')));

@@ -152,7 +152,11 @@ function splitCoordinatedClause(value: string): string[] {
 
 function productClauses(signal?: CapabilityCatalogProjectSignal): string[] {
   const declared = signal?.productDocStatements?.filter(statement => statement.role === 'feature') || [];
-  const source = declared.length > 0 ? declared.map(statement => `Feature: ${statement.value}`).join(' ') : signal?.productDocSummary || signal?.manifestDescription;
+  if (declared.length > 0) {
+    return declared.map(statement => statement.value.trim().replace(/[.!?]+$/, ''))
+      .filter(Boolean).map(value => `Feature: ${value}`);
+  }
+  const source = signal?.productDocSummary || signal?.manifestDescription;
   const sentences = [source]
     .filter((value): value is string => Boolean(value))
     .flatMap(value => value.split(/(?<=[.!?;])\s+/i))
