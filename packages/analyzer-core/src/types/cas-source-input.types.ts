@@ -16,3 +16,15 @@ export interface CASAnalyzerSourceInputs {
   files: CASSourceInputIdentity[];
   outside_root_reads: number;
 }
+
+export interface CASAnalyzerSourceInputReferences extends Omit<CASAnalyzerSourceInputs, 'version' | 'files'> {
+  version: 2;
+  identity_indices: number[];
+}
+
+export type CASAnalyzerSourceInputEvidence = CASAnalyzerSourceInputs | CASAnalyzerSourceInputReferences;
+
+export interface CASSourceInputCatalog {
+  source_input_identities?: CASSourceInputIdentity[];
+  source_input_root?: string;
+}

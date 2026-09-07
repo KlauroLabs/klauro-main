@@ -34,6 +34,8 @@ export const CAS_CHILD_FIELD_POLICY = {
   dependencies: { mode: 'inherit' },
   disclosure: { mode: 'inherit' },
   analyzer_contributions: { mode: 'inherit' },
+  source_input_identities: { mode: 'inherit' },
+  source_input_root: { mode: 'inherit' },
   method_calls: { mode: 'scope' },
   call_chains: { mode: 'scope' },
   decorators: { mode: 'inherit' },
@@ -165,6 +167,9 @@ export function projectCasChild(
         ? parent[field]
         : projected[field as ProjectedKey];
     if (value !== undefined) (output as Record<string, unknown>)[field] = value;
+  }
+  if (parent.analyzer_contributions.some(contribution => contribution.source_inputs)) {
+    output.source_input_root = parent.source_input_root ?? parent.system.root_path;
   }
   return output as CASOutput;
 }

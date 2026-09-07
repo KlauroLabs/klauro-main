@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { verifyAgentSourceInputs } from './agent-source-input-verification';
+import { compactCasSourceInputIdentities } from '../../../packages/analyzer-core/src/analyzer/core/cas-source-input-identities';
 
 function fixture(t: TestContext, content: string | Buffer = 'export const value = 1;\n') {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-input-identity-'));
@@ -23,6 +24,43 @@ function contribution(content: string | Buffer, file = 'target.ts') {
     },
   };
 }
+
+test('referenced identities preserve raw comparison results without expanding every observation', t => {
+  const root = fixture(t, 'current');
+  const catalog = { analyzer_contributions: [contribution('current'), contribution('current')] } as unknown as Parameters<typeof compactCasSourceInputIdentities>[0];
+  const raw = verifyAgentSourceInputs(root, ['target.ts'], catalog.analyzer_contributions);
+  compactCasSourceInputIdentities(catalog);
+  const referenced = verifyAgentSourceInputs(root, ['target.ts'], catalog.analyzer_contributions, {}, catalog.source_input_identities);
+  assert.deepEqual(referenced.results, raw.results);
+  assert.equal(referenced.summary.scan.bytes_read, raw.summary.scan.bytes_read);
+  assert.equal(referenced.summary.scan.input_records_scanned, 2);
+  fs.writeFileSync(path.join(root, 'target.ts'), 'changed');
+  assert.equal(verifyAgentSourceInputs(root, ['target.ts'], catalog.analyzer_contributions, {}, catalog.source_input_identities).results[0].status, 'mismatched');
+});
+
+test('absent or invalid reference tables cannot look matched', t => {
+  const root = fixture(t, 'current');
+  const catalog = { analyzer_contributions: [contribution('current')] } as unknown as Parameters<typeof compactCasSourceInputIdentities>[0];
+  compactCasSourceInputIdentities(catalog);
+  assert.equal(verifyAgentSourceInputs(root, ['target.ts'], catalog.analyzer_contributions).results[0].reason, 'source-input-table-unavailable');
+  const inputs = catalog.analyzer_contributions[0].source_inputs;
+  assert.ok(inputs?.version === 2);
+  for (const index of [-1, 100, 0.5, '0']) {
+    inputs.identity_indices = [index as number];
+    const result = verifyAgentSourceInputs(root, ['target.ts'], catalog.analyzer_contributions, {}, catalog.source_input_identities);
+    assert.equal(result.results[0].reason, 'invalid-input-reference');
+    assert.equal(result.summary.scan.bytes_read, 0);
+  }
+});
+
+test('referenced input observations remain subject to the same scan budget', t => {
+  const root = fixture(t, 'current');
+  const catalog = { analyzer_contributions: [contribution('current'), contribution('current')] } as unknown as Parameters<typeof compactCasSourceInputIdentities>[0];
+  compactCasSourceInputIdentities(catalog);
+  const result = verifyAgentSourceInputs(root, ['target.ts'], catalog.analyzer_contributions, { max_input_records: 1 }, catalog.source_input_identities);
+  assert.equal(result.results[0].reason, 'input-record-budget');
+  assert.equal(result.summary.scan.bytes_read, 0);
+});
 
 test('valid observed identities match without claiming complete analysis coverage', t => {
   const root = fixture(t);

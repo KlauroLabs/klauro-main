@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
+import { sourceInputIdentityAt } from '../../../packages/analyzer-core/src/analyzer/core/cas-source-input-identities';
 
 type Identity = { representation: 'bytes' | 'utf8-text'; sha256: string; bytes: number };
 type IndexedInput = { identities: Map<string, Identity>; reason?: string };
@@ -34,6 +35,8 @@ export function verifyAgentSourceInputs(
   files: string[],
   contributions: unknown[] = [],
   limits: VerificationLimits = {},
+  identityTable?: unknown,
+  identityPathPrefix = '',
 ) {
   const startedAt = performance.now();
   const maxBytes = Math.max(0, limits.max_bytes ?? 8 * 1024 * 1024);
@@ -42,29 +45,34 @@ export function verifyAgentSourceInputs(
   const root = path.resolve(projectPath);
   const citations = [...new Set(files)].slice(0, 20);
   const index = new Map<string, IndexedInput>();
-  const keys = new Map(citations.map(file => [file, path.relative(root, path.resolve(root, file)).split(path.sep).join('/')]));
+  const keys = new Map(citations.map(file => [file, path.posix.join(identityPathPrefix, path.relative(root, path.resolve(root, file)).split(path.sep).join('/'))]));
   const selected = new Set(keys.values());
   let recordsScanned = 0;
-  let indexGap: string | undefined;
+  let indexGap: string | undefined = identityPathPrefix && !validRelative(identityPathPrefix) ? 'source-input-scope-unavailable' : undefined;
   let bytesRead = 0;
   let filesCompared = 0;
   const expired = () => performance.now() - startedAt >= maxDuration;
 
   for (const contribution of contributions) {
+    if (indexGap) break;
     if (expired()) { indexGap = 'verification-time-budget'; break; }
     const inputs = (contribution as any)?.source_inputs;
     if (!inputs || inputs.coverage === 'unavailable') continue;
-    if (inputs.version !== 1 || inputs.digest_algorithm !== 'sha256'
-      || inputs.coverage !== 'observed-reads' || !Array.isArray(inputs.files)) {
+    const rows = inputs.version === 2 ? inputs.identity_indices : inputs.files;
+    if (![1, 2].includes(inputs.version) || inputs.digest_algorithm !== 'sha256'
+      || inputs.coverage !== 'observed-reads' || !Array.isArray(rows)) {
       indexGap = 'unsupported-input-metadata';
       break;
     }
-    for (const input of inputs.files) {
+    if (inputs.version === 2 && !Array.isArray(identityTable)) { indexGap = 'source-input-table-unavailable'; break; }
+    for (const row of rows) {
       recordsScanned++;
       if (recordsScanned > maxRecords || expired()) {
         indexGap = recordsScanned > maxRecords ? 'input-record-budget' : 'verification-time-budget';
         break;
       }
+      const input = inputs.version === 2 ? sourceInputIdentityAt(identityTable, row) : row;
+      if (inputs.version === 2 && !input) { indexGap = 'invalid-input-reference'; break; }
       if (!validRelative(input?.path)) {
         indexGap = 'invalid-input-path';
         break;

@@ -272,6 +272,7 @@ import { AnalysisRunLog } from './run-log';
 import { withAnalyzerFileReadCache, getDebugCacheStats } from './analyzer-file-read-cache';
 import { analyzeWithCompleteScope } from './analyzer-analysis-scope';
 import { buildAnalyzerContributionSummary, invalidateIncrementalSourceInputs } from './analyzer-contribution-summary';
+import { compactCasSourceInputIdentities } from './cas-source-input-identities';
 import { applyCapabilityCatalogStatus } from './capability-catalog-status';
 import { captureAnalysisMemorySample } from './analysis-memory-profile';
 import { semanticPackIdentityForProject } from '../packs/pack-loader';
@@ -2038,6 +2039,7 @@ export class AnalyzerOrchestrator {
       errors: analysisErrors.filter(issue => issue.severity === 'error').length,
       warnings: analysisErrors.filter(issue => issue.severity === 'warning').length,
     });
+    compactCasSourceInputIdentities(output);
     refreshAnalyzerDetectionEvidence(path.resolve(projectPath), this.analyzerRegistryFingerprint(this.analyzers.values()), Date.now() + 60_000);
     return output;
   }

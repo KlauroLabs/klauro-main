@@ -1,13 +1,13 @@
 import { createHash } from 'crypto';
 import type { CASCoverageGap } from './cas-coverage.types';
-import type { CASAnalyzerSourceInputs } from './cas-source-input.types';
-export type { CASAnalyzerSourceInputs, CASSourceInputIdentity } from './cas-source-input.types';
+import type { CASAnalyzerSourceInputEvidence, CASSourceInputCatalog } from './cas-source-input.types';
+export type { CASAnalyzerSourceInputs, CASAnalyzerSourceInputEvidence, CASAnalyzerSourceInputReferences, CASSourceInputCatalog, CASSourceInputIdentity } from './cas-source-input.types';
 export type { CASCoverageGap, CASCoverageGapKind } from './cas-coverage.types';
 import type { CASComposedClaimProvenance, CASTerminalityProvenance } from './cas-composition.types';
 export type { CASComposedClaimProvenance, CASTerminalityEdge, CASTerminalityProvenance, CASTerminalityRelationEvidence } from './cas-composition.types';
 import type { CASFirstPartyProductEvidence } from './cas-product-evidence.types';
 export type { CASFirstPartyProductEvidence, CASFirstPartyProductEvidenceValue, CASFirstPartyProductStatement } from './cas-product-evidence.types';
-export interface CASOutput {
+export interface CASOutput extends CASSourceInputCatalog {
   id?: string;
   parent_id?: string | null;
   label?: string;
@@ -1768,7 +1768,7 @@ export interface CASDeclaredDependency {
 }
 
 export interface CASAnalyzerContribution {
-  source_inputs?: CASAnalyzerSourceInputs;
+  source_inputs?: CASAnalyzerSourceInputEvidence;
   analyzer_id: string;
   analyzer_name: string;
   analyzer_version?: string;

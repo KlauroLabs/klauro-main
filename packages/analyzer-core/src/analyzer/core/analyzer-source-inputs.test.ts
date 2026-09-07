@@ -194,7 +194,9 @@ test('scope capture survives contribution caching and canonical metadata project
   assert.deepEqual(restored.contribution?.analyzer_metadata.source_inputs, contribution.analyzer_metadata.source_inputs);
   const summary = buildAnalyzerContributionSummary({ registration, result: restored.contribution!, executionTime: 1, filesCreated: 1, cacheStatus: 'hit' });
   assert.deepEqual(summary.source_inputs, contribution.analyzer_metadata.source_inputs);
-  assert.equal(summary.source_inputs?.files[0].sha256, digest('export const value = 1;\n'));
+  assert.equal(summary.source_inputs?.version, 1);
+  assert.ok(summary.source_inputs?.version === 1);
+  assert.equal(summary.source_inputs.files[0].sha256, digest('export const value = 1;\n'));
   assert.equal(summary.nodes_created, 1);
   assert.equal(summary.cache_status, 'hit');
 });
@@ -219,6 +221,7 @@ test('incremental rebuilds cannot reuse previous full-analysis input proofs', ()
   assert.equal(contribution.source_inputs.files[0].status, 'captured');
   assert.equal(updated[0].source_inputs?.coverage, 'unavailable');
   assert.equal(updated[0].source_inputs?.reason, 'incremental-input-identities-not-refreshed');
-  assert.deepEqual(updated[0].source_inputs?.files, []);
+  assert.ok(updated[0].source_inputs?.version === 1);
+  assert.deepEqual(updated[0].source_inputs.files, []);
   assert.equal(updated[0].analyzer_id, 'language');
 });

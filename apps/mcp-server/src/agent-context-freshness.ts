@@ -32,6 +32,7 @@ export function buildAgentContextFreshness(
   files: string[],
   targetFile?: string,
   contributions: unknown[] = [],
+  identityContext?: { table?: unknown; root_path?: string; current_root?: string },
 ) {
   const startedAt = performance.now();
   const analyzedAtMs = Date.parse(analyzedAt || '');
@@ -79,7 +80,10 @@ export function buildAgentContextFreshness(
     }
   }
 
-  const sourceInputs = verifyAgentSourceInputs(projectPath, citations.slice(0, CITATION_CHECK_LIMIT), contributions);
+  const identityPrefix = identityContext?.root_path && identityContext.current_root
+    ? path.relative(path.resolve(identityContext.root_path), path.resolve(identityContext.root_path, identityContext.current_root)).split(path.sep).join('/')
+    : '';
+  const sourceInputs = verifyAgentSourceInputs(projectPath, citations.slice(0, CITATION_CHECK_LIMIT), contributions, {}, identityContext?.table, identityPrefix);
   const mismatched = sourceInputs.results.filter(item => item.status === 'mismatched');
   for (const item of unverified) {
     if (item.reason !== 'analyzed-content-identity-unavailable') continue;

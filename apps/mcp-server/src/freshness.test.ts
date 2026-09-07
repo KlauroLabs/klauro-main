@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { compactCasSourceInputIdentities } from '../../../packages/analyzer-core/src/analyzer/core/cas-source-input-identities';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -351,6 +352,8 @@ test('agent response profiles compare captured inputs and preserve mismatch acti
           sha256: createHash('sha256').update(content).digest('hex'), bytes: Buffer.byteLength(content) };
       }),
     };
+    compactCasSourceInputIdentities(cas);
+    assert.equal(cas.analyzer_contributions[0].source_inputs?.version, 2);
     const before = await getAgentContext(cas, root, { task_type: 'modify', target: 'UsersService' }) as Record<string, any>;
     assert.ok(before.analysis_freshness.source_input_comparison.matched.count > 0);
     assert.equal(before.agent_context_ready, false);
