@@ -1,4 +1,5 @@
 import * as crypto from 'node:crypto';
+import { readChangeRiskRankColumns, writeChangeRiskRankColumns, type CasChangeRiskRankDescriptor, type CasChangeRiskRanking } from './cas-change-risk-rank';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as zlib from 'node:zlib';
@@ -606,6 +607,7 @@ export interface CasSemanticStoreDescriptor {
     reachability_index?: CasRawColumnDescriptor & { decoded_bytes: number };
     source_inputs?: CasSourceInputsDescriptor;
     source_inputs_skipped?: string;
+    change_risk_rank?: CasChangeRiskRankDescriptor;
   };
 }
 
@@ -797,6 +799,16 @@ export async function writeCasSemanticStore(
       };
     }
     let extras: CasSemanticStoreDescriptor['extras'];
+    const writeRaw = async (file: string, bytes: Buffer): Promise<CasRawColumnDescriptor> => {
+      const handle = await fs.promises.open(path.join(directory, file), 'w');
+      try { await writeFully(handle, bytes); await handle.sync(); } finally { await handle.close(); }
+      written.push(file);
+      return { file, encoding: 'uint8', length: bytes.byteLength, bytes: bytes.byteLength, sha256: sha256(bytes) };
+    };
+    const changeRisks = (output as unknown as { change_risks?: unknown }).change_risks;
+    if (tables.change_risks && Array.isArray(changeRisks)) {
+      extras = { change_risk_rank: await writeChangeRiskRankColumns('semantic.change_risks', changeRisks, graph, writeRaw) };
+    }
     const reachability = (output as unknown as { reachability_index?: unknown }).reachability_index;
     if (reachability && typeof reachability === 'object') {
       const measured = measuredBytes.reachability_index;
@@ -809,7 +821,7 @@ export async function writeCasSemanticStore(
       const handle = await fs.promises.open(path.join(directory, file), 'w');
       try { await writeFully(handle, compressed); await handle.sync(); } finally { await handle.close(); }
       written.push(file);
-      extras = { reachability_index: { file, encoding: 'uint8', length: compressed.byteLength, bytes: compressed.byteLength, sha256: sha256(compressed), decoded_bytes: decoded.byteLength } };
+      extras = { ...(extras ?? {}), reachability_index: { file, encoding: 'uint8', length: compressed.byteLength, bytes: compressed.byteLength, sha256: sha256(compressed), decoded_bytes: decoded.byteLength } };
     }
     const sourceInputs = collectSourceInputs(output);
     if (sourceInputs && 'skipped' in sourceInputs) {
@@ -825,12 +837,6 @@ export async function writeCasSemanticStore(
         for (const row of sourceInputs.rows) await writer.push(row);
         const rows = await writer.finish();
         written.push(rows.columns.blocks.file, ...Object.values(rows.columns).map(column => column.file));
-        const writeRaw = async (file: string, bytes: Buffer): Promise<CasRawColumnDescriptor> => {
-          const handle = await fs.promises.open(path.join(directory, file), 'w');
-          try { await writeFully(handle, bytes); await handle.sync(); } finally { await handle.close(); }
-          written.push(file);
-          return { file, encoding: 'uint8', length: bytes.byteLength, bytes: bytes.byteLength, sha256: sha256(bytes) };
-        };
         const compressedIndex = zlib.brotliCompressSync(indexBytes, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5, [zlib.constants.BROTLI_PARAM_SIZE_HINT]: indexBytes.byteLength } });
         const index = { ...(await writeRaw(`${prefix}.index.json.br`, compressedIndex)), decoded_bytes: indexBytes.byteLength };
         const offsetBytes = uint32ToBuffer(sourceInputs.offsets);
@@ -859,6 +865,8 @@ export interface CasSemanticStore {
   readByNodes<T>(table: CasSemanticTableName, denseIds: readonly number[]): Promise<CasSemanticTableRead<T>>;
   readReachabilityIndex(): Promise<unknown | undefined>;
   readSourceInputsByPaths(paths: readonly string[]): Promise<CasSourceInputsRead | { gap: string } | undefined>;
+  readChangeRiskRanking(): Promise<CasChangeRiskRanking | undefined>;
+  readByOrdinals<T>(table: CasSemanticTableName, ordinals: readonly number[]): Promise<CasSemanticTableRead<T>>;
   stats(): CasRecordStoreReadStats;
 }
 
@@ -903,6 +911,20 @@ export async function openCasSemanticStore(
         for (let position = entry.offsets[denseId]; position < entry.offsets[denseId + 1]; position += 1) ordinals.add(entry.postings[position]);
       }
       const sorted = [...ordinals].sort((left, right) => left - right);
+      const records = await entry.table.read(sorted) as T[];
+      return { records, total: entry.table.count, matched: sorted.length, read: records.length };
+    },
+    async readChangeRiskRanking(): Promise<CasChangeRiskRanking | undefined> {
+      const extra = descriptor.extras?.change_risk_rank;
+      const entry = opened.get('change_risks');
+      if (!extra || !entry) return undefined;
+      return readChangeRiskRankColumns((name, column, bytes) => readVerifiedColumn(directory, name, column, bytes), 'semantic.change_risks', extra, { tableCount: entry.table.count, nodeCount: expected.nodeCount }, ledger);
+    },
+    async readByOrdinals<T>(name: CasSemanticTableName, ordinals: readonly number[]): Promise<CasSemanticTableRead<T>> {
+      const entry = opened.get(name);
+      if (!entry) throw new Error(`CAS semantic store has no ${name} table`);
+      for (const ordinal of ordinals) if (!Number.isInteger(ordinal) || ordinal < 0 || ordinal >= entry.table.count) throw new Error(`CAS semantic store ${name} ordinal ${ordinal} is out of range`);
+      const sorted = [...new Set(ordinals)].sort((left, right) => left - right);
       const records = await entry.table.read(sorted) as T[];
       return { records, total: entry.table.count, matched: sorted.length, read: records.length };
     },

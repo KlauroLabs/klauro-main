@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import test from 'node:test';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { saveAnalysis, loadCompactAnalysisGraph } from './storage';
+import { loadRankedChangeRisks } from './hosted-query-scoped-graph';
 import { acquirePinnedAnalysis, computeAgentContextScope, loadAgentContextProjection, loadScopedSemanticCollections, loadScopedSourceInputs, scopedSourceInputsFromRows, markNotComputedOnProjection, selectedNodeIdOf, computeChangeRiskScope, computeScopedQueryScope, computeTestLookupScope, loadScopedGraphSection, planScopedQuery, resolveCompactTarget, scopedQueryCapacityOutcome, scopedQueryTarget, scopedSmallSections } from './hosted-query-scoped-graph';
 import { assessChangeRisk, findTests, getErrorContracts } from './query';
 import { loadCompleteAnalysisFromSections } from './storage';
@@ -620,6 +621,38 @@ test('a malformed path on a current source input reference skips the table expli
     try {
       const loaded = await loadScopedSourceInputs(pinned, graph, [{ id: 'node-0', source: { file: 'src/target.ts' } }] as any);
       assert.ok(loaded && 'gap' in loaded && /malformed path/.test(loaded.gap));
+    } finally {
+      await pinned.release();
+    }
+  });
+});
+
+test('the ranked change-risk column serves the complete repo ranking with lazy record fetch outside a scope', async () => {
+  await withStorage(async project => {
+    const cas = fixture();
+    (cas as any).change_risks = [
+      { node_id: 'node-30', risk_level: 'low', risk_factors: [], test_protection: { has_direct_tests: false } },
+      { node_id: 'node-0', risk_level: 'high', risk_factors: [{ factor: 'fan-in', severity: 'high', details: 'two callers' }], test_protection: { has_direct_tests: true } },
+      { node_id: 'node-20', risk_level: 'medium', risk_factors: [{ factor: 'complexity', severity: 'low', details: 'branching' }], test_protection: { has_direct_tests: false } },
+      { node_id: 'ghost-node', risk_level: 'critical', risk_factors: [], test_protection: { has_direct_tests: true } },
+    ];
+    await saveAnalysis(project, cas, 'main', { canonicalSegmented: true });
+    const manifest = (await loadAnalysisSectionManifest(project))!;
+    const extra = manifest.semantic_store!.extras!.change_risk_rank!;
+    assert.equal(extra.count, 4);
+    assert.equal(extra.high_or_critical, 2);
+    const graph = (await loadCompactAnalysisGraph(project))!;
+    const pinned = (await acquirePinnedAnalysis(project))!;
+    try {
+      const ranked = (await loadRankedChangeRisks(pinned, graph, new Set(['node-0']), 2))!;
+      assert.deepEqual(ranked.order, ['', 'node-0', 'node-20', 'node-30'], 'complete ranking: critical ghost, high, medium+low factor+untested, low+untested');
+      assert.deepEqual(ranked.ranks, [400, 310, 217, 115]);
+      assert.equal(ranked.total, 4);
+      assert.equal(ranked.high_or_critical, 2);
+      assert.equal(ranked.unresolved_nodes, 1, 'a risk whose node is absent from the graph stays in the ranking without an id');
+      assert.deepEqual((ranked.records as any[]).map(risk => risk.node_id), ['node-20', 'node-30'], 'prefetch skips the excluded scope and the unresolved node, in rank order');
+      const all = (await loadRankedChangeRisks(pinned, graph, new Set(), 10))!;
+      assert.deepEqual((all.records as any[]).map(risk => risk.node_id), ['node-0', 'node-20', 'node-30']);
     } finally {
       await pinned.release();
     }

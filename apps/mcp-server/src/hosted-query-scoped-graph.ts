@@ -8,6 +8,7 @@ import type { AnalysisTrack } from './track';
 import type { ResolvedSegmentedAnalysis } from './segmented-analysis-storage';
 import { loadCompactCASGraph, loadCompactCASSearch } from './segmented-analysis-storage';
 import { compressionCodecForPath } from './json-storage-writer';
+import { CHANGE_RISK_RANK_NO_NODE } from './cas-change-risk-rank';
 import { CAS_SEMANTIC_TABLES, edgeRecordKey, isSupportedCasRecordStoreDescriptor, isSupportedCasSemanticStoreDescriptor, openCasRecordStore, openCasSemanticStore, type CasRecordStoreReadStats, type CasSemanticTableName, type CasSourceInputRow } from './cas-record-store';
 import type { CasSectionName } from './cas-sections';
 import { searchCompactCAS } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-search';
@@ -725,6 +726,55 @@ export async function loadScopedSemanticCollections(
     projected[table] = { total: result.total, matched: result.matched, read: result.read };
   }
   return { collections, projected, stats: store.stats() };
+}
+
+export interface RankedChangeRisks {
+  total: number;
+  high_or_critical: number;
+  order: string[];
+  ranks: number[];
+  unresolved_nodes: number;
+  prefetch: number;
+  records: unknown[];
+  stats: CasRecordStoreReadStats;
+}
+
+export async function loadRankedChangeRisks(
+  pinned: PinnedAnalysisGeneration,
+  graph: CompactCASGraph,
+  excludeIds: ReadonlySet<string>,
+  prefetch = 32,
+): Promise<RankedChangeRisks | null> {
+  const descriptor = pinned.segmented.manifest.semantic_store;
+  if (!isSupportedCasSemanticStoreDescriptor(descriptor)) return null;
+  const store = await openCasSemanticStore(pinned.segmented.directory, descriptor, { nodeCount: graph.nodeCount });
+  const ranking = await store.readChangeRiskRanking();
+  if (!ranking) return null;
+  const order: string[] = [];
+  const ranks: number[] = [];
+  const wanted: number[] = [];
+  let unresolved = 0;
+  for (let position = 0; position < ranking.count; position += 1) {
+    const dense = ranking.denseIds[position];
+    const id = dense === CHANGE_RISK_RANK_NO_NODE ? '' : graph.nodeAt(dense).id;
+    if (!id) unresolved += 1;
+    order.push(id);
+    ranks.push(ranking.ranks[position]);
+    if (id && !excludeIds.has(id) && wanted.length < prefetch) wanted.push(ranking.ordinals[position]);
+  }
+  const read = await store.readByOrdinals<unknown>('change_risks', wanted);
+  const sorted = [...wanted].sort((left, right) => left - right);
+  const byOrdinal = new Map(sorted.map((ordinal, index) => [ordinal, read.records[index]]));
+  return {
+    total: ranking.count,
+    high_or_critical: ranking.high_or_critical,
+    order,
+    ranks,
+    unresolved_nodes: unresolved,
+    prefetch,
+    records: wanted.map(ordinal => byOrdinal.get(ordinal)),
+    stats: store.stats(),
+  };
 }
 
 export const SOURCE_INPUT_PATH_LIMIT = 1_000;
