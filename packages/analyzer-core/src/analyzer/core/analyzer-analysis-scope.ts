@@ -88,6 +88,10 @@ export async function analyzeWithCompleteScope(
 
   const tracked = await withAnalyzerFileReadTracking(run);
   const contribution = tracked.result;
+  contribution.analyzer_metadata.source_inputs = tracked.sourceInputs.snapshot(
+    context.analysisRootPath || root,
+    contributionFiles(root, contribution).map(file => path.resolve(root, file)),
+  );
   const omitted = omittedPaths(contribution.analyzer_metadata, root);
   const suppliedScope = contribution.analyzer_metadata?.analysis_scope;
   if (suppliedScope) {

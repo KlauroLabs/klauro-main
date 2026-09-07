@@ -12,6 +12,7 @@
 
 const fsExtra: { readFile: (path: string, options?: unknown) => Promise<string | Buffer> } = require('fs-extra');
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { AnalyzerSourceInputCapture, sourceInputObservation, type SourceInputObservation } from './analyzer-source-inputs';
 import * as path from 'node:path';
 
 
@@ -56,13 +57,14 @@ import { AnalyzerSourceCorpus, captureSourceCorpusFile, withSourceCorpus, type S
 interface ReadCacheRun {
   cache: Map<string, Promise<string | Buffer>>;
   corpus: AnalyzerSourceCorpus;
+  inputDigests: Map<string, SourceInputObservation>;
   hits: number;
   misses: number;
   lastHitYieldAt: number;
 }
 
 const readCacheStorage = new AsyncLocalStorage<ReadCacheRun>();
-const analyzerReadScopeStorage = new AsyncLocalStorage<Set<string>>();
+const analyzerReadScopeStorage = new AsyncLocalStorage<AnalyzerSourceInputCapture>();
 let patchDepth = 0;
 let originalReadFile: typeof fsExtra.readFile | null = null;
 let lastDebugStats = { hits: 0, misses: 0 };
@@ -111,7 +113,8 @@ function installPatch(): void {
         return original.call(fsExtra, filePath, options);
       }
       analyzerReadScopeStorage.getStore()?.add(path.resolve(filePath));
-      const key = cacheKey(filePath, normalizeEncoding(options));
+      const encoding = normalizeEncoding(options);
+      const key = cacheKey(filePath, encoding);
       const cached = run.cache.get(key);
       if (cached) {
         run.hits++;
@@ -126,12 +129,12 @@ function installPatch(): void {
 
         if (Date.now() - run.lastHitYieldAt >= ANALYSIS_YIELD_BUDGET_MS) {
           run.lastHitYieldAt = Date.now();
-          return cached.then(async value => {
+          return observeInputRead(run, filePath, key, encoding, cached).then(async value => {
             await yieldToEventLoop();
             return value;
           });
         }
-        return cached;
+        return observeInputRead(run, filePath, key, encoding, cached);
       }
       run.misses++;
       const promise = original.call(fsExtra, filePath, options).then(value => {
@@ -149,10 +152,29 @@ function installPatch(): void {
         if (cache.get(key) === promise) cache.delete(key);
       });
       cache.set(key, promise);
-      return promise;
+      return observeInputRead(run, filePath, key, encoding, promise);
     };
   }
   patchDepth++;
+}
+
+function observeInputRead(
+  run: ReadCacheRun, file: string, key: string, encoding: string, pending: Promise<string | Buffer>
+): Promise<string | Buffer> {
+  const capture = analyzerReadScopeStorage.getStore();
+  if (!capture) return pending;
+  return pending.then(value => {
+    let identity = run.inputDigests.get(key);
+    if (!identity || Buffer.isBuffer(value)) {
+      identity = sourceInputObservation(value, encoding);
+      run.inputDigests.set(key, identity);
+    }
+    capture.observe(file, identity);
+    return value;
+  }, (error: NodeJS.ErrnoException) => {
+    capture.observe(file, { status: 'unavailable', reason: 'source-read-failed', error_code: error.code });
+    throw error;
+  });
 }
 
 function uninstallPatch(): void {
@@ -173,10 +195,10 @@ function uninstallPatch(): void {
 
 
 
-export async function withAnalyzerFileReadTracking<T>(fn: () => Promise<T>): Promise<{ result: T; files: string[] }> {
-  const files = new Set<string>();
-  const result = await analyzerReadScopeStorage.run(files, fn);
-  return { result, files: [...files].sort() };
+export async function withAnalyzerFileReadTracking<T>(fn: () => Promise<T>): Promise<{ result: T; files: string[]; sourceInputs: AnalyzerSourceInputCapture }> {
+  const capture = new AnalyzerSourceInputCapture(analyzerReadScopeStorage.getStore());
+  const result = await analyzerReadScopeStorage.run(capture, fn);
+  return { result, files: capture.paths(), sourceInputs: capture };
 }
 
 export async function withAnalyzerFileReadCache<T>(fn: () => Promise<T>): Promise<T> {
@@ -184,6 +206,7 @@ export async function withAnalyzerFileReadCache<T>(fn: () => Promise<T>): Promis
   const run: ReadCacheRun = {
     cache: new Map(),
     corpus: new AnalyzerSourceCorpus(),
+    inputDigests: new Map(),
     hits: 0,
     misses: 0,
     lastHitYieldAt: 0,
@@ -195,6 +218,7 @@ export async function withAnalyzerFileReadCache<T>(fn: () => Promise<T>): Promis
     lastDebugStats = { hits: run.hits, misses: run.misses };
     lastSourceCorpusStats = run.corpus.stats();
     run.cache.clear();
+    run.inputDigests.clear();
     run.corpus.clear();
     uninstallPatch();
   }

@@ -1765,7 +1765,26 @@ export interface CASDeclaredDependency {
   declared_in: string[];
 }
 
+export interface CASSourceInputIdentity {
+  path: string;
+  status: 'captured' | 'conflicting' | 'unavailable';
+  representation?: 'utf8-text' | 'bytes';
+  sha256?: string;
+  bytes?: number;
+  reason?: string;
+  error_code?: string;
+}
+
+export interface CASAnalyzerSourceInputs {
+  version: 1;
+  coverage: 'observed-reads';
+  digest_algorithm: 'sha256';
+  files: CASSourceInputIdentity[];
+  outside_root_reads: number;
+}
+
 export interface CASAnalyzerContribution {
+  source_inputs?: CASAnalyzerSourceInputs;
   analyzer_id: string;
   analyzer_name: string;
   analyzer_version?: string;
