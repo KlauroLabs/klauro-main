@@ -259,7 +259,7 @@ function requirementId(audience: string | undefined, subjectTokens: readonly str
 
 function clauseVisibleActionTerms(clause: string, statement: string): string[] {
   const words = String(clause || '').match(/[A-Za-z][A-Za-z'-]*/g) || [];
-  const actionIndex = purposeVerbIndex(words);
+  const actionIndex = purposeVerbIndex(words) === 0 ? 0 : -1;
   const action = actionIndex >= 0 &&
     !(canonicalToken(words[actionIndex]) === 'support' && /^(?:staff|team|teams|engineers?|operators?|agents?)$/i.test(words[actionIndex + 1] || ''))
     ? canonicalToken(words[actionIndex])

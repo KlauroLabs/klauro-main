@@ -10431,7 +10431,7 @@ export class AnalyzerOrchestrator {
     const publishableReconciled = compactedCoverageFailure ? publishableBeforeCompaction : compactedPublishable;
     const normalizedOperationEvidence = normalizeCapabilityOperationObligationEvidence(publishableReconciled, operationCoverageContext.obligationScopes || operationObligationViews.scopes, authoritativeOperationCandidates);
     const normalizedOutcomeRequirements = requiredOutcomes.map(requirement => ({ ...requirement, candidateIds: [...new Set(requirement.candidateIds.map(candidateId => (operationCoverageContext.obligationScopes || aggregateOperationObligationViews.scopes).get(candidateId)?.parentCandidateId || candidateId))] })); const normalizedGroundableOutcomes = normalizedOutcomeRequirements.filter(requirement => requirement.candidateIds.length > 0);
-    const publishedCapabilities = normalizePublishedCapabilityIds(recoverGroundedAuthoredOutcomeCapabilities(normalizedOperationEvidence.capabilities, normalizedGroundableOutcomes, evidenceCandidates, operationCoverageContext.obligationScopes || aggregateOperationObligationViews.scopes, reconciled));
+    const publishedCapabilities = normalizePublishedCapabilityIds(recoverGroundedAuthoredOutcomeCapabilities(normalizedOperationEvidence.capabilities, normalizedGroundableOutcomes, evidenceCandidates, operationCoverageContext.obligationScopes || aggregateOperationObligationViews.scopes, reconciled)).filter(capability => this.isPublishableCapability(capability) && !this.catalogQualityFailure([capability], 0));
     const finalPublishedCandidateIds = new Set(publishedCapabilities.flatMap(capability =>
       (capability.criticality_factors || [])
         .filter(factor => factor.startsWith('catalog-candidate:'))
