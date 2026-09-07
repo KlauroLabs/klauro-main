@@ -2391,6 +2391,7 @@ function compactTinyFreshness(freshness: any) {
     staleness: freshness.staleness,
     ...(freshness.citation_verification ? { citation_verification: freshness.citation_verification } : {}),
     ...(freshness.files_missing_now ? { missing_files: freshness.files_missing_now.count } : {}),
+    ...(freshness.source_input_comparison ? { source_input_comparison: freshness.source_input_comparison } : {}),
     ...(freshness.unverified_files ? { unverified_files: freshness.unverified_files.count } : {}),
     ...(freshness.unchecked_files ? { unchecked_files: freshness.unchecked_files.count } : {}),
     ...(typeof changedCount === 'number' ? { changed_files: changedCount } : {}),

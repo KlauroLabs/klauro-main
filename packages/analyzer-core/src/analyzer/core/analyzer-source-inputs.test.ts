@@ -109,6 +109,33 @@ test('read failures and unobserved output sources remain explicit', async t => {
   ]);
 });
 
+test('mixed successful and unavailable reads preserve the consumed digest as conflicting evidence', async t => {
+  const root = await workspace(t);
+  const file = path.join(root, 'source.ts');
+  const captured = sourceInputObservation('consumed', 'utf8');
+  const unavailable = { status: 'unavailable' as const, reason: 'source-read-failed', error_code: 'EACCES' };
+  for (const [first, second, reason] of [
+    [captured, unavailable, 'captured-then-unavailable'],
+    [unavailable, captured, 'unavailable-then-captured'],
+  ] as const) {
+    const capture = new AnalyzerSourceInputCapture();
+    capture.observe(file, first);
+    capture.observe(file, second);
+    capture.observe(file, captured);
+    const record = capture.snapshot(root).files[0];
+    assert.equal(record.status, 'conflicting');
+    assert.equal(record.sha256, captured.sha256);
+    assert.equal(record.reason, reason);
+    assert.equal(record.error_code, 'EACCES');
+  }
+});
+
+test('outside-root represented files do not inflate the observed read count', async t => {
+  const root = await workspace(t);
+  const capture = new AnalyzerSourceInputCapture();
+  assert.equal(capture.snapshot(root, [path.join(root, '..', 'not-read.ts')]).outside_root_reads, 0);
+});
+
 test('raw bytes and decoded text have explicit representations', async t => {
   const root = await workspace(t);
   const bytes = Buffer.from([0xff, 0x61]);

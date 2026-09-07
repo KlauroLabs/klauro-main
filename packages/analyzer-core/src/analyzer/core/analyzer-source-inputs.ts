@@ -38,6 +38,10 @@ export class AnalyzerSourceInputCapture {
       if (previous.sha256 !== observation.sha256 || previous.representation !== observation.representation) {
         this.observations.set(absolute, { status: 'conflicting', reason: 'multiple-input-identities' });
       }
+    } else if (previous.status === 'captured' && observation.status === 'unavailable') {
+      this.observations.set(absolute, { ...previous, status: 'conflicting', reason: 'captured-then-unavailable', error_code: observation.error_code });
+    } else if (previous.status === 'unavailable' && observation.status === 'captured') {
+      this.observations.set(absolute, { ...observation, status: 'conflicting', reason: 'unavailable-then-captured', error_code: previous.error_code });
     } else if (previous.status !== 'conflicting' && observation.status !== 'captured') {
       this.observations.set(absolute, observation);
     }
@@ -56,7 +60,7 @@ export class AnalyzerSourceInputCapture {
     for (const absolute of allFiles) {
       const relative = path.relative(root, absolute).replace(/\\/g, '/');
       if (!relative || relative === '..' || relative.startsWith('../') || path.isAbsolute(relative)) {
-        outsideRootReads++;
+        if (this.files.has(absolute)) outsideRootReads++;
         continue;
       }
       files.push({

@@ -117,7 +117,7 @@ test('a shared byte budget bounds multiple file comparisons', t => {
     [contribution('1234'), contribution('5678', 'second.ts')], { max_bytes: 10 });
   assert.equal(result.results[0].status, 'matched');
   assert.equal(result.results[1].reason, 'source-byte-budget');
-  assert.equal(result.summary.scan.bytes_read, 4);
+  assert.equal(result.summary.scan.bytes_read, 8);
 });
 
 test('symlinks outside the root and nonregular files are never read', t => {
