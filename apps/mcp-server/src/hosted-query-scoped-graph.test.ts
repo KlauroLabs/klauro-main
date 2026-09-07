@@ -6,6 +6,7 @@ import test from 'node:test';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { saveAnalysis, loadCompactAnalysisGraph } from './storage';
 import { loadRankedChangeRisks } from './hosted-query-scoped-graph';
+import { createRankedRiskSource } from './hosted-query-risk-source';
 import { acquirePinnedAnalysis, computeAgentContextScope, loadAgentContextProjection, loadScopedSemanticCollections, loadScopedSourceInputs, scopedSourceInputsFromRows, markNotComputedOnProjection, selectedNodeIdOf, computeChangeRiskScope, computeScopedQueryScope, computeTestLookupScope, loadScopedGraphSection, planScopedQuery, resolveCompactTarget, scopedQueryCapacityOutcome, scopedQueryTarget, scopedSmallSections } from './hosted-query-scoped-graph';
 import { assessChangeRisk, findTests, getErrorContracts } from './query';
 import { loadCompleteAnalysisFromSections } from './storage';
@@ -651,9 +652,21 @@ test('the ranked change-risk column serves the complete repo ranking with lazy r
       assert.equal(ranked.total, 4);
       assert.equal(ranked.high_or_critical, 2);
       assert.equal(ranked.unresolved_nodes, 1, 'a risk whose node is absent from the graph stays in the ranking without an id');
-      assert.deepEqual((ranked.records as any[]).map(risk => risk.node_id), ['node-20', 'node-30'], 'prefetch skips the excluded scope and the unresolved node, in rank order');
+      assert.deepEqual((ranked.records as any[]).map(risk => risk.node_id), ['ghost-node', 'node-20'], 'prefetch skips only the excluded scope; a risk whose node left the graph is kept with its own node_id, in rank order');
       const all = (await loadRankedChangeRisks(pinned, graph, new Set(), 10))!;
-      assert.deepEqual((all.records as any[]).map(risk => risk.node_id), ['node-0', 'node-20', 'node-30']);
+      assert.deepEqual((all.records as any[]).map(risk => risk.node_id), ['ghost-node', 'node-0', 'node-20', 'node-30']);
+      const source = (await createRankedRiskSource(pinned, graph))!;
+      const index = await source.getIndex();
+      assert.deepEqual(index, { total: 4, highOrCritical: 2, records: [
+        { ordinal: 3, node_id: 'ghost-node', rank: 400 }, { ordinal: 1, node_id: 'node-0', rank: 310 }, { ordinal: 2, node_id: 'node-20', rank: 217 }, { ordinal: 0, node_id: 'node-30', rank: 115 },
+      ] }, 'the provider index is complete with a real node_id for every ordinal, sentinel records resolved through the store');
+      assert.equal(await source.getIndex(), index, 'the index is built once per query');
+      const read = await source.read([2, 0, 2]);
+      assert.deepEqual([...read.keys()], [0, 2]);
+      assert.equal((read.get(0) as any).node_id, 'node-30');
+      assert.equal((read.get(2) as any).node_id, 'node-20');
+      await assert.rejects(source.read([9]), /out of range/);
+      assert.equal(await createRankedRiskSource(pinned, graph).then(value => value && 'getIndex' in value), true);
     } finally {
       await pinned.release();
     }

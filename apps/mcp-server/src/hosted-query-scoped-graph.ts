@@ -760,7 +760,7 @@ export async function loadRankedChangeRisks(
     if (!id) unresolved += 1;
     order.push(id);
     ranks.push(ranking.ranks[position]);
-    if (id && !excludeIds.has(id) && wanted.length < prefetch) wanted.push(ranking.ordinals[position]);
+    if (!excludeIds.has(id) && wanted.length < prefetch) wanted.push(ranking.ordinals[position]);
   }
   const read = await store.readByOrdinals<unknown>('change_risks', wanted);
   const sorted = [...wanted].sort((left, right) => left - right);
