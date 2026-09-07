@@ -18,6 +18,7 @@ x-analysis-environment: &analysis-environment
   KLAURO_ANALYSIS_WORKER_SOCKET: /run/klauro/analysis-worker.sock
   KLAURO_ANALYSIS_HEAP_MB: "2240"
   KLAURO_HOSTED_QUERY_HEAP_MB: "1280"
+  KLAURO_WORKSPACE_ANALYSIS_HEAP_MB: "512"
   REDIS_HOST: redis
 
 services:

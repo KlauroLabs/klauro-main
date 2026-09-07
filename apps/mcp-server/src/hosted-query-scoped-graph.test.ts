@@ -101,3 +101,42 @@ test('hosted query heap never exceeds a fraction of the container cgroup', () =>
   const onHost = { limitBytes: 8 * gib, availableBytes: 4 * gib, source: 'host' as const };
   assert.equal(resolveHostedQueryHeapMb({ KLAURO_HOSTED_QUERY_HEAP_MB: '4096' }, 8 * gib, onHost), 4096);
 });
+
+function parityFixture(): CASOutput {
+  const nodes: Array<Record<string, unknown>> = [
+    { id: 'svc-class', name: 'BillingService', type: 'class', level: 1, source: { file: 'src/billing/billing-service.ts', line: 3 } },
+    { id: 'svc-run', name: 'run', type: 'method', level: 1, source: { file: 'src/billing/billing-service.ts', line: 10 } },
+    { id: 'svc-test-fn', name: 'run', type: 'function', level: 1, source: { file: 'src/billing/__tests__/billing-service.test.ts', line: 5 } },
+    { id: 'file-node', name: 'billing-service.ts', type: 'file', level: 0, source: { file: 'src/billing/billing-service.ts', line: 1 } },
+  ];
+  for (let index = 0; index < 40; index += 1) {
+    nodes.push({ id: `dup-${index}`, name: 'dupName', type: 'function', level: 1, source: { file: `src/dups/mock${index}.test.ts`, line: 1 } });
+  }
+  nodes.push({ id: 'dup-real', name: 'dupName', type: 'function', level: 1, source: { file: 'src/dups/real.ts', line: 1 } });
+  const edges = [
+    { id: 'e-a', source: 'svc-run', target: 'dup-real', type: 'calls' },
+    { id: 'e-b', source: 'dup-0', target: 'dup-real', type: 'calls' },
+  ];
+  return {
+    cas_version: '1.11.0', analysis_id: 'parity', analysis_timestamp: '2026-09-07T00:00:00.000Z',
+    system: { name: 'parity', type: 'service' },
+    nodes, edges, method_calls: [], analysis_facts: [], analyzer_contributions: [], progressive_levels: [],
+    layers_ready: {
+      complete: true, generated_at: '2026-09-07T00:00:00.000Z',
+      layers: ['L0', 'L1', 'L2', 'L3', 'L4', 'L5'].map(layer => ({ layer, name: layer, status: 'ready', fields: [] })),
+    },
+  } as unknown as CASOutput;
+}
+
+test('compact target resolution follows the coding-target contract for paths, stems, tests, and duplicate names', async () => {
+  await withStorage(async project => {
+    await saveAnalysis(project, parityFixture(), 'main', { canonicalSegmented: true });
+    const graph = (await loadCompactAnalysisGraph(project))!;
+    assert.equal(resolveCompactTarget(graph, 'src/billing/billing-service.ts')?.id, 'svc-class');
+    assert.equal(resolveCompactTarget(graph, 'billing-service')?.id, 'svc-class');
+    assert.equal(resolveCompactTarget(graph, 'billing-service.test.ts')?.id, 'svc-test-fn');
+    assert.equal(resolveCompactTarget(graph, 'dupName')?.id, 'dup-real');
+    assert.equal(resolveCompactTarget(graph, 'dup-7')?.id, 'dup-7');
+    assert.equal(await planScopedQuery(project, 'assess_change_risk', { node_id: 'svc-run' }), null);
+  });
+});

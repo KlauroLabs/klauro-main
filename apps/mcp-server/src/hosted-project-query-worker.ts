@@ -82,6 +82,16 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
         const graphSection = 'scope' in scopedPlan
           ? await loadScopedGraphSection(request.workspace, scopedPlan.scope.keepIds)
           : null;
+        if ('scope' in scopedPlan) {
+          if (!graphSection) throw new Error(`Canonical graph section is unavailable for: ${request.workspace}. Re-run analyze_codebase.`);
+          const inventoryNodes = loaded.inventory?.node_count;
+          if (inventoryNodes !== undefined && inventoryNodes !== scopedPlan.graphNodeCount) {
+            throw new Error(`Analysis generation changed while planning the query (${scopedPlan.graphNodeCount} vs ${inventoryNodes} nodes). Retry.`);
+          }
+          if (graphSection.scanned.nodes !== scopedPlan.graphNodeCount) {
+            throw new Error(`Graph section and compact index disagree (${graphSection.scanned.nodes} vs ${scopedPlan.graphNodeCount} nodes). Retry.`);
+          }
+        }
         scopedCas = attachCasProjection({
           analyzer_contributions: [],
           ...loaded.cas,
@@ -103,7 +113,8 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
               total_edges: loaded.inventory?.edge_count ?? graphSection?.scanned.edges,
               callers_total: scopedPlan.scope.callerCount,
               callees_total: scopedPlan.scope.calleeCount,
-              truncated: scopedPlan.scope.truncated,
+              truncated: scopedPlan.scope.truncated || Boolean(graphSection?.edgesTruncated),
+              edges_truncated: Boolean(graphSection?.edgesTruncated),
             }
           : { mode: 'scoped', target_not_found: scopedPlan.targetNotFound, loaded_nodes: 0, loaded_edges: 0 };
         process.stderr.write(`${JSON.stringify({

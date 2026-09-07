@@ -5,12 +5,13 @@ import type { CompactCASGraph, CompactNodeView } from '../../../packages/analyze
 import { loadCompactAnalysisGraph, loadCompactAnalysisSearch, resolveAnalysisSectionExportArtifact } from './storage';
 import { searchCompactCAS } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-search';
 
-export const SCOPED_QUERY_TOOLS = new Set(['get_coding_context', 'assess_change_risk', 'find_tests']);
+export const SCOPED_QUERY_TOOLS = new Set(['get_coding_context']);
 const DEFAULT_NEIGHBOR_LIMIT = 10;
 const MAX_NEIGHBOR_LIMIT = 500;
 const MAX_SCOPED_NODES = 4000;
 const MAX_SCOPED_EDGES = 20000;
 const TARGET_SEARCH_LIMIT = 200;
+const MAX_FILE_TARGET_MATCHES = 500;
 const TEST_PATH = /(^|[\\/])(__tests__|__mocks__|tests?|specs?|fixtures?)([\\/]|$)|\.(test|spec)\.[a-z]+$/i;
 const STREAM_MODULES = ['stream-json/parser.js', 'stream-json/filters/pick.js', 'stream-json/streamers/stream-array.js', 'stream-chain'];
 
@@ -26,6 +27,7 @@ export interface ScopedGraphSection {
   nodes: CASNode[];
   edges: CASEdge[];
   scanned: { nodes: number; edges: number };
+  edgesTruncated: boolean;
 }
 
 function boundedLimit(value: unknown): number {
@@ -40,21 +42,67 @@ export function scopedQueryTarget(tool: string, args: Record<string, unknown> | 
   return undefined;
 }
 
-function lastSegment(value: string): string {
-  const trimmed = value.replace(/[()]/g, '').trim();
-  const parts = trimmed.split(/[.:#/\\]/).filter(Boolean);
-  return parts.length > 0 ? parts[parts.length - 1] : trimmed;
+function normalizeCodingTarget(value: string): string {
+  return String(value || '').replace(/\\/g, '/').split('/').pop()!.replace(/\.[a-z0-9]+$/i, '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function nodeIsTest(node: CompactNodeView): boolean {
+  return node.isTest || node.category === 'test' || node.type === 'test' || TEST_PATH.test(node.sourceFile || '');
+}
+
+function targetScore(node: CompactNodeView, wantsTest: boolean): number {
+  const ownerTypes = ['class', 'service', 'controller', 'handler', 'gateway', 'resolver', 'repository', 'entity', 'model'];
+  let score = ownerTypes.includes(node.type) ? 90 : node.type === 'module' ? 80 : node.type === 'file' ? 70 : node.type === 'function' ? 55 : node.type === 'method' ? 45 : 10;
+  score += nodeIsTest(node) === wantsTest ? 200 : -300;
+  if (['import', 'property', 'variable', 'mock'].includes(node.type)) score -= 150;
+  return score;
+}
+
+function rankTargets(graph: CompactCASGraph, nodes: CompactNodeView[], wantsTest: boolean): CompactNodeView[] {
+  const degree = new Map<number, number>();
+  const degreeOf = (node: CompactNodeView): number => {
+    let value = degree.get(node.denseId);
+    if (value === undefined) {
+      value = graph.incomingEdges(node.denseId, { limit: 1 }).total + graph.outgoingEdges(node.denseId, { limit: 1 }).total;
+      degree.set(node.denseId, value);
+    }
+    return value;
+  };
+  return [...nodes].sort((left, right) =>
+    targetScore(right, wantsTest) - targetScore(left, wantsTest)
+    || degreeOf(right) - degreeOf(left)
+    || (left.sourceLine ?? Number.MAX_SAFE_INTEGER) - (right.sourceLine ?? Number.MAX_SAFE_INTEGER)
+    || left.denseId - right.denseId);
+}
+
+function fileTargetMatches(graph: CompactCASGraph, target: string): CompactNodeView[] {
+  const normalizedTarget = normalizeCodingTarget(target);
+  const pathTarget = target.replace(/\\/g, '/');
+  const looksLikePath = /[\/]/.test(pathTarget) || /\.[a-z0-9]+$/i.test(pathTarget);
+  if (!looksLikePath && !normalizedTarget) return [];
+  const matches: CompactNodeView[] = [];
+  for (let denseId = 0; denseId < graph.nodeCount && matches.length < MAX_FILE_TARGET_MATCHES; denseId += 1) {
+    const file = graph.decodeString(graph.nodes.sourceFile[denseId]);
+    if (!file) continue;
+    const normalizedFile = file.replace(/\\/g, '/');
+    const basename = normalizedFile.split('/').pop() || normalizedFile;
+    const stem = basename.replace(/\.[^.]+$/, '');
+    if ((looksLikePath && normalizedFile.endsWith(pathTarget)) || normalizeCodingTarget(stem) === normalizedTarget) matches.push(graph.nodeAt(denseId));
+  }
+  return matches;
 }
 
 export function resolveCompactTarget(graph: CompactCASGraph, target: string, extraCandidateIds: readonly string[] = []): CompactNodeView | undefined {
   const exact = graph.nodeById(target);
   if (exact) return exact;
-  const name = lastSegment(target);
-  if (!name) return undefined;
-  const page = graph.findNodes({ name, limit: TARGET_SEARCH_LIMIT });
+  const wantsTest = /(^|[^a-z])(tests?|specs?|e2e)([^a-z]|$)/i.test(target);
+  const fileMatch = rankTargets(graph, fileTargetMatches(graph, target), wantsTest)[0];
+  if (fileMatch) return fileMatch;
+  const name = target.replace(/[()]/g, '').trim().split(/[.:#/\\]/).filter(Boolean).pop() || '';
   const seen = new Set<string>();
   const candidates: CompactNodeView[] = [];
-  for (const node of [...Array.from(page.denseIds, denseId => graph.nodeAt(denseId)), ...extraCandidateIds.map(id => graph.nodeById(id))]) {
+  const nameMatches = name ? Array.from(graph.findNodes({ name, limit: TARGET_SEARCH_LIMIT }).denseIds, denseId => graph.nodeAt(denseId)) : [];
+  for (const node of [...nameMatches, ...extraCandidateIds.map(id => graph.nodeById(id))]) {
     if (!node || seen.has(node.id)) continue;
     seen.add(node.id);
     candidates.push(node);
@@ -65,11 +113,7 @@ export function resolveCompactTarget(graph: CompactCASGraph, target: string, ext
     || candidates.find(node => (node.qualifiedName || '').toLowerCase().endsWith(lowered))
     || candidates.find(node => node.id.toLowerCase() === lowered);
   if (qualified) return qualified;
-  const production = candidates.filter(node => !node.isTest && !node.isGenerated && !TEST_PATH.test(node.sourceFile || ''));
-  const pool = production.length > 0 ? production : candidates;
-  const degree = (node: CompactNodeView): number =>
-    graph.incomingEdges(node.denseId, { limit: 1 }).total + graph.outgoingEdges(node.denseId, { limit: 1 }).total;
-  return pool.slice().sort((left, right) => degree(right) - degree(left) || left.denseId - right.denseId)[0];
+  return rankTargets(graph, candidates, wantsTest)[0];
 }
 
 export function computeScopedQueryScope(
@@ -135,6 +179,7 @@ export async function loadScopedGraphSection(projectPath: string, keepIds: Reado
   const scanned = { nodes: 0, edges: 0 };
   const nodes: CASNode[] = [];
   const edges: CASEdge[] = [];
+  let edgesTruncated = false;
   const pipeline = chain([decompressStream(artifact.filePath, artifact.codec), parser(), pick({ filter: /^(nodes|edges)$/ }), streamArray()]);
   await new Promise<void>((resolve, reject) => {
     pipeline.on('data', (item: { value: Record<string, unknown> }) => {
@@ -142,7 +187,9 @@ export async function loadScopedGraphSection(projectPath: string, keepIds: Reado
       if (!record || typeof record !== 'object') return;
       if (isEdgeRecord(record)) {
         scanned.edges += 1;
-        if (keepIds.has(record.source) && keepIds.has(record.target)) edges.push(record as unknown as CASEdge);
+        if (!keepIds.has(record.source) || !keepIds.has(record.target)) return;
+        if (edges.length >= MAX_SCOPED_EDGES) { edgesTruncated = true; return; }
+        edges.push(record as unknown as CASEdge);
         return;
       }
       scanned.nodes += 1;
@@ -152,7 +199,7 @@ export async function loadScopedGraphSection(projectPath: string, keepIds: Reado
     pipeline.on('end', resolve);
     pipeline.on('error', reject);
   });
-  return { nodes, edges, scanned };
+  return { nodes, edges, scanned, edgesTruncated };
 }
 
 async function searchCandidateIds(projectPath: string, target: string): Promise<string[]> {
@@ -170,7 +217,7 @@ export async function planScopedQuery(
   projectPath: string,
   tool: string,
   args: Record<string, unknown> | undefined,
-): Promise<{ scope: ScopedQueryScope; target: CompactNodeView } | { targetNotFound: string } | null> {
+): Promise<{ scope: ScopedQueryScope; target: CompactNodeView; graphNodeCount: number } | { targetNotFound: string } | null> {
   const target = scopedQueryTarget(tool, args);
   if (!target || !SCOPED_QUERY_TOOLS.has(tool)) return null;
   const graph = await loadCompactAnalysisGraph(projectPath);
@@ -181,5 +228,5 @@ export async function planScopedQuery(
     callerLimit: args?.caller_limit,
     calleeLimit: args?.callee_limit,
   });
-  return { scope, target: resolved };
+  return { scope, target: resolved, graphNodeCount: graph.nodeCount };
 }
