@@ -31,7 +31,8 @@ import { semanticSearch } from './semantic-search';
 import type { TestDiscoveryEvidence } from './test-discovery';
 import { assessBehavioralInvariantImpact } from './invariant-validation';
 import { buildIdiomContextForAgent } from './idiom-query';
-import { summarizeAnalysisFreshness, type AnalysisFreshnessSummary } from './freshness';
+import { summarizeAnalysisFreshness } from './freshness';
+import { buildAgentContextFreshness } from './agent-context-freshness';
 import { journeyHeadline } from './journey-presentation';
 import {
   classifyAnalysisProfile,
@@ -393,12 +394,16 @@ async function buildAgentContextForTask(cas: CASOutput, path: string, taskInput:
   ];
 
   const sensitiveDataExposure = buildSensitiveExposureDigest(cas);
-  const analysisFreshness = buildAgentContextFreshness(cas, path, selectedNode || undefined, fileReadPlan);
-  if (analysisFreshness?.invalid_citations) {
-    gaps.push('analysis-freshness: files cited by this context changed or were deleted after analysis; re-run analyze_codebase before trusting citations');
+  const analysisFreshness = buildAgentContextFreshness(
+    cas.analysis_timestamp, path,
+    fileReadPlan.map(item => normalizeSourceFile(item.file, cas.system?.root_path)),
+    pillarTargetFile || undefined,
+  );
+  if (analysisFreshness.requires_verification) {
+    gaps.push(`analysis-freshness: ${analysisFreshness.summary.warning}`);
   }
   const riskWithFreshness = analysisFreshness?.target_file_note && riskForAgent
-    ? { ...riskForAgent, target_file_changed_since_analysis: analysisFreshness.target_file_note }
+    ? { ...riskForAgent, citation_verification_note: analysisFreshness.target_file_note }
     : riskForAgent;
 
   const context = {
@@ -406,7 +411,7 @@ async function buildAgentContextForTask(cas: CASOutput, path: string, taskInput:
     generated_at: new Date().toISOString(),
     task,
     status: gaps.length === 0 ? 'ready' : 'needs-review',
-    agent_context_ready: readiness.agent_context_ready,
+    agent_context_ready: readiness.agent_context_ready && !analysisFreshness.requires_verification,
     ...(sensitiveDataExposure ? { sensitive_data_exposure: sensitiveDataExposure } : {}),
     ...(analysisFreshness ? { analysis_freshness: analysisFreshness.summary } : {}),
     readiness: {
@@ -1178,111 +1183,6 @@ function arrayOfStrings(value: unknown): string[] {
   return Array.isArray(value)
     ? value.map(item => String(item || '').trim()).filter(Boolean)
     : [];
-}
-
-const AGENT_CONTEXT_CITATION_CHECK_LIMIT = 20;
-
-interface AgentContextFreshness {
-  summary: AnalysisFreshnessSummary & {
-    cited_files_changed_since_analysis?: string[];
-    cited_files_deleted_since_analysis?: string[];
-    warning?: string;
-  };
-  invalid_citations: boolean;
-  target_file_note?: string;
-}
-
-function buildAgentContextFreshness(
-  cas: CASOutput,
-  projectPath: string,
-  selectedNode: CASNode | undefined,
-  fileReadPlan: FileReadPlanItem[],
-): AgentContextFreshness | null {
-  const analyzedAt = cas.analysis_timestamp;
-  const analyzedAtMs = Date.parse(analyzedAt || '');
-  if (!analyzedAt || !Number.isFinite(analyzedAtMs)) return null;
-  const rootPath = cas.system?.root_path;
-  const targetFile = selectedNode?.source?.file
-    ? normalizeSourceFile(selectedNode.source.file, rootPath)
-    : null;
-  const citedFiles = uniqueStrings([
-    ...(targetFile ? [targetFile] : []),
-    ...fileReadPlan.map(item => item.file),
-  ]).slice(0, AGENT_CONTEXT_CITATION_CHECK_LIMIT);
-
-  const changedCited: string[] = [];
-  const deletedCited: string[] = [];
-  for (const file of citedFiles) {
-    const absolute = nodePath.isAbsolute(file) ? file : nodePath.join(projectPath, file);
-    try {
-      const stat = fs.statSync(absolute);
-      if (stat.mtimeMs > analyzedAtMs) changedCited.push(file);
-    } catch {
-      deletedCited.push(file);
-    }
-  }
-
-  const base = citationScopedFreshness(
-    analyzedAt,
-    analyzedAtMs,
-    changedCited,
-    deletedCited,
-    fs.existsSync(nodePath.join(projectPath, '.git')) ? 'git' : 'walk',
-  );
-  if (!base) return null;
-
-  const invalidCitations = changedCited.length > 0 || deletedCited.length > 0;
-  if (!invalidCitations) return { summary: base, invalid_citations: false };
-
-  let targetFileNote: string | undefined;
-  if (targetFile && deletedCited.includes(targetFile)) {
-    targetFileNote = `${targetFile} was deleted after this analysis was generated; this node no longer exists at the cited location and its risk assessment describes stale code.`;
-  } else if (targetFile && changedCited.includes(targetFile)) {
-    targetFileNote = `${targetFile} was modified after this analysis was generated; this node's line numbers, structure, and risk assessment may no longer match the source.`;
-  }
-
-  return {
-    summary: {
-      ...base,
-      staleness: 'stale',
-      cited_files_changed_since_analysis: changedCited.slice(0, 5),
-      cited_files_deleted_since_analysis: deletedCited.slice(0, 5),
-      warning: `STALE ANALYSIS: ${changedCited.length} file(s) cited by this context changed and ${deletedCited.length} were deleted after the analysis was generated. Specific file/line citations in this context may be invalid. Re-run analyze_codebase for ${projectPath} (incremental) before relying on them.`,
-    },
-    invalid_citations: true,
-    target_file_note: targetFileNote,
-  };
-}
-
-function citationScopedFreshness(
-  analyzedAt: string,
-  analyzedAtMs: number,
-  changed: string[],
-  deleted: string[],
-  method: 'git' | 'walk',
-): AnalysisFreshnessSummary {
-  const ageMinutes = Math.max(0, Math.floor((Date.now() - analyzedAtMs) / 60_000));
-  const days = Math.floor(ageMinutes / 1440);
-  const hours = Math.floor((ageMinutes % 1440) / 60);
-  const minutes = ageMinutes % 60;
-  const age = days > 0 ? `${days}d ${hours}h` : hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
-  const staleness = deleted.length > 0 ? 'stale' : changed.length > 0 ? 'aging' : 'fresh';
-  return {
-    analyzed_at: analyzedAt,
-    age,
-    files_changed_since_analysis: { count: changed.length, examples: changed.slice(0, 5) },
-    files_deleted_since_analysis: { count: deleted.length, examples: deleted.slice(0, 5) },
-    staleness,
-    recommendation: staleness === 'fresh'
-      ? 'Cited files are current; CAS file and line citations are trustworthy.'
-      : 'One or more cited files changed after analysis; re-run incremental analysis before trusting those citations.',
-    scan: {
-      method,
-      bounded: true,
-      duration_ms: 0,
-      note: 'Targeted agent context checked only files cited by this response.',
-    },
-  };
 }
 
 function buildProductOrientationLine(cas: CASOutput): string | null {
@@ -2120,10 +2020,11 @@ function compactCapsuleOnlyAgentContext<T extends Record<string, any>>(context: 
     readiness: compactContext.readiness,
     target_resolution: compactContext.target_resolution,
     execution_capsule: executionCapsule,
+    ...(compactContext.analysis_freshness ? { analysis_freshness: compactContext.analysis_freshness } : {}),
     estimated_tokens: Math.ceil(`${contextCapsule.capsule}\n${executionCapsule}`.length / 4),
     selected: compactContext.selected,
     files: compactContext.files,
-    rule: compactContext.target_resolution ? 'Resolve target uncertainty before choosing an edit scope; request exact candidate node context.' : 'Read K15 context, execute K5, then expand only if blocked by source evidence or validation.',
+    rule: compactContext.analysis_freshness?.warning ? compactContext.rule : compactContext.target_resolution ? 'Resolve target uncertainty before choosing an edit scope; request exact candidate node context.' : 'Read K15 context, execute K5, then expand only if blocked by source evidence or validation.',
   };
   return payload as unknown as T;
 }
@@ -2142,9 +2043,20 @@ function buildFirstTurnCompactContext<T extends Record<string, any>>(context: T)
   ]);
   const capabilityMemory = compactFirstTurnCapabilityMemory(workContext.capability_memory);
   const freshness = compactTinyFreshness(context.analysis_freshness || workContext.analysis_freshness);
-  const staleWarning = freshness && typeof freshness === 'object' && (freshness as any).warning
-    ? 'STALE: re-run analyze_codebase before trusting this capsule; cited file/line targets may be invalid.'
+  const freshnessWarning = freshness?.warning
+    ? freshness.citation_verification === 'unverified'
+      ? 'UNVERIFIED: inspect cited source before editing; analyzed-content identity is unavailable.'
+      : 'INVALID CITATION: inspect the current workspace; cited files are missing.'
     : null;
+  const targetUncertaintyRule = context.target_resolution?.gaps?.length
+    ? 'Resolve target uncertainty before choosing an edit scope; request exact candidate node context.'
+    : null;
+  const freshnessPrefix = freshnessWarning
+    ? freshness.citation_verification === 'unverified' ? 'UNVERIFIED:' : 'INVALID CITATION:'
+    : null;
+  const rule = targetUncertaintyRule
+    ? [freshnessPrefix, targetUncertaintyRule, freshnessWarning ? 'Inspect cited source before editing.' : null].filter(Boolean).join(' ')
+    : freshnessWarning || 'Read files in order. Preserve idioms. Expand only if blocked.';
   return {
     context_profile: 'first-turn',
     readiness: compactSmallRepoReadiness(context.readiness),
@@ -2160,7 +2072,7 @@ function buildFirstTurnCompactContext<T extends Record<string, any>>(context: T)
     risks: risks.slice(0, 2),
     reuse: capabilityMemory,
     execution: compactFirstTurnExecution(context.execution_brief),
-    rule: staleWarning || (context.target_resolution?.gaps?.length ? 'Resolve target uncertainty before choosing an edit scope; request exact candidate node context.' : 'Read files in order. Preserve idioms. Expand only if blocked.'),
+    rule,
   };
 }
 
@@ -2442,8 +2354,8 @@ function compactTinyAgentContext<T extends Record<string, any>>(context: T): T {
 function compactTinyRisk(risk: any) {
   if (!risk || typeof risk !== 'object') return risk || null;
   const compact: Record<string, unknown> = {};
-  if (risk.target_file_changed_since_analysis) {
-    compact.target_file_changed_since_analysis = risk.target_file_changed_since_analysis;
+  if (risk.citation_verification_note) {
+    compact.citation_verification_note = risk.citation_verification_note;
   }
   const riskLevel = risk.risk?.risk_level || risk.risk_level;
   if (riskLevel) compact.risk_level = riskLevel;
@@ -2476,6 +2388,10 @@ function compactTinyFreshness(freshness: any) {
   const hasWarning = Boolean(freshness.warning);
   return {
     staleness: freshness.staleness,
+    ...(freshness.citation_verification ? { citation_verification: freshness.citation_verification } : {}),
+    ...(freshness.files_missing_now ? { missing_files: freshness.files_missing_now.count } : {}),
+    ...(freshness.unverified_files ? { unverified_files: freshness.unverified_files.count } : {}),
+    ...(freshness.unchecked_files ? { unchecked_files: freshness.unchecked_files.count } : {}),
     ...(typeof changedCount === 'number' ? { changed_files: changedCount } : {}),
     ...(typeof deletedCount === 'number' ? { deleted_files: deletedCount } : {}),
     ...(Array.isArray(freshness.cited_files_changed_since_analysis) ? { cited_files_changed_since_analysis: freshness.cited_files_changed_since_analysis.slice(0, 3) } : {}),
@@ -2750,7 +2666,7 @@ function agentContextScaleProfile(cas: CASOutput, context?: Record<string, any>)
 function compactMinimalRisk(risk: any) {
   if (!risk || typeof risk !== 'object') return risk || null;
   return {
-    ...(risk.target_file_changed_since_analysis ? { target_file_changed_since_analysis: risk.target_file_changed_since_analysis } : {}),
+    ...(risk.citation_verification_note ? { citation_verification_note: risk.citation_verification_note } : {}),
     risk_level: risk.risk?.risk_level || risk.risk_level || null,
     factors: Array.isArray(risk.risk?.risk_factors) ? risk.risk.risk_factors.slice(0, 2) : [],
     recommendations: Array.isArray(risk.risk?.recommendations) ? risk.risk.recommendations.slice(0, 2) : [],
@@ -3133,7 +3049,7 @@ function compactRiskForMicroRepo(risk: any) {
 
   const context = risk.change_risk_context;
   return {
-    ...(risk.target_file_changed_since_analysis ? { target_file_changed_since_analysis: risk.target_file_changed_since_analysis } : {}),
+    ...(risk.citation_verification_note ? { citation_verification_note: risk.citation_verification_note } : {}),
     risk: risk.risk ? {
       risk_level: risk.risk.risk_level,
       risk_factors: Array.isArray(risk.risk.risk_factors) ? risk.risk.risk_factors.slice(0, 3) : risk.risk.risk_factors,

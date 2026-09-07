@@ -213,7 +213,7 @@ test('agent start context leads with the analysis freshness summary', () => {
   });
 });
 
-test('agent context escalates when a cited file was deleted after analysis', async () => {
+test('agent context reports a missing citation without inventing deletion timing', async () => {
   await withTempDir('klauro-freshness-context-', async root => {
     const files = writeSourceFixture(root);
     initGitRepo(root);
@@ -230,17 +230,18 @@ test('agent context escalates when a cited file was deleted after analysis', asy
     const freshness = context.analysis_freshness;
     assert.ok(freshness, 'agent context must carry analysis_freshness');
     assert.equal(freshness.staleness, 'stale');
-    assert.ok(freshness.cited_files_deleted_since_analysis.includes('src/users/users.service.ts'));
-    assert.match(freshness.warning, /citations in this context may be invalid/i);
-    assert.match(freshness.warning, /analyze_codebase/);
+    assert.equal(freshness.missing_files, 1);
+    assert.equal(freshness.deleted_files, undefined);
+    assert.match(freshness.warning, /missing/i);
+    assert.equal(context.agent_context_ready, false);
 
     const risk = context.work_context?.risk;
-    assert.ok(risk?.target_file_changed_since_analysis, 'risk section must flag the changed analysis target');
-    assert.match(risk.target_file_changed_since_analysis, /deleted after this analysis/i);
+    assert.match(risk?.citation_verification_note, /missing.*deletion timing is unknown/i);
+    assert.equal(risk?.target_file_changed_since_analysis, undefined);
   });
 });
 
-test('agent context flags a modified analysis target in the risk section', async () => {
+test('agent context treats a newer target timestamp as a hint, not a content comparison', async () => {
   await withTempDir('klauro-freshness-target-', async root => {
     const files = writeSourceFixture(root);
     initGitRepo(root);
@@ -254,13 +255,15 @@ test('agent context flags a modified analysis target in the risk section', async
       target: 'UsersService',
     }) as Record<string, any>;
 
-    assert.equal(context.analysis_freshness.staleness, 'stale');
-    assert.ok(context.analysis_freshness.cited_files_changed_since_analysis.includes('src/users/users.service.ts'));
-    assert.match(context.work_context.risk.target_file_changed_since_analysis, /modified after this analysis/i);
+    assert.equal(context.analysis_freshness.staleness, 'unknown');
+    assert.equal(context.analysis_freshness.changed_files, undefined);
+    assert.match(context.work_context.risk.citation_verification_note, /identity.*unavailable/i);
+    assert.equal(context.work_context.risk.target_file_changed_since_analysis, undefined);
+    assert.equal(context.agent_context_ready, false);
   });
 });
 
-test('first-turn agent context preserves stale-analysis warning', async () => {
+test('first-turn agent context preserves unverified freshness without a reanalysis loop', async () => {
   await withTempDir('klauro-freshness-first-turn-', async root => {
     const files = writeSourceFixture(root);
     initGitRepo(root);
@@ -276,13 +279,14 @@ test('first-turn agent context preserves stale-analysis warning', async () => {
     }) as Record<string, any>;
 
     assert.equal(context.context_profile, 'first-turn');
-    assert.equal(context.analysis_freshness.staleness, 'stale');
-    assert.ok(context.analysis_freshness.cited_files_changed_since_analysis.includes('src/users/users.service.ts'));
-    assert.match(context.rule, /STALE: re-run analyze_codebase/i);
+    assert.equal(context.analysis_freshness.staleness, 'unknown');
+    assert.equal(context.analysis_freshness.citation_verification, 'unverified');
+    assert.match(context.rule, /UNVERIFIED.*inspect cited source/i);
+    assert.doesNotMatch(context.rule, /STALE: re-run analyze_codebase/i);
   });
 });
 
-test('agent context stays fresh with no warning when nothing changed', async () => {
+test('agent context does not prove unchanged content from old timestamps', async () => {
   await withTempDir('klauro-freshness-clean-context-', async root => {
     const files = writeSourceFixture(root);
     initGitRepo(root);
@@ -295,11 +299,70 @@ test('agent context stays fresh with no warning when nothing changed', async () 
       target: 'UsersService',
     }) as Record<string, any>;
 
-    assert.equal(context.analysis_freshness.staleness, 'fresh');
-    assert.equal(context.analysis_freshness.warning, undefined);
+    assert.equal(context.analysis_freshness.staleness, 'unknown');
+    assert.equal(context.analysis_freshness.citation_verification, 'unverified');
+    assert.equal(context.analysis_freshness.changed_files, undefined);
+    assert.match(context.analysis_freshness.warning, /identity.*unavailable/i);
     assert.equal(context.work_context.risk?.target_file_changed_since_analysis, undefined);
+    assert.equal(context.agent_context_ready, false);
   });
 });
+
+
+test('every compact response profile retains citation uncertainty and its action', async () => {
+  await withTempDir('klauro-freshness-profiles-', async root => {
+    writeSourceFixture(root);
+    const cas = freshnessFixtureCas(root, analyzedTime());
+    for (const response_profile of ['minimal', 'first-turn', 'capsule-only'] as const) {
+      const context = await getAgentContext(cas, root, {
+        task_type: 'modify', target: 'UsersService', response_profile,
+      }) as Record<string, any>;
+      assert.equal(context.analysis_freshness.citation_verification, 'unverified', response_profile);
+      assert.equal(context.analysis_freshness.staleness, 'unknown', response_profile);
+      assert.match(context.analysis_freshness.warning, /identity.*unavailable/i, response_profile);
+      if (response_profile !== 'minimal') assert.match(context.rule, /UNVERIFIED.*inspect cited source/i);
+    }
+  });
+});
+
+test('capsule-only response preserves missing citations without claiming deletion timing', async () => {
+  await withTempDir('klauro-freshness-missing-capsule-', async root => {
+    const files = writeSourceFixture(root);
+    fs.unlinkSync(files[1]);
+    const context = await getAgentContext(freshnessFixtureCas(root, analyzedTime()), root, {
+      task_type: 'modify', target: 'UsersService', response_profile: 'capsule-only',
+    }) as Record<string, any>;
+    assert.equal(context.analysis_freshness.citation_verification, 'invalid');
+    assert.match(context.rule, /INVALID CITATION.*inspect the current workspace/i);
+    assert.match(context.analysis_freshness.warning, /deletion timing is unknown/i);
+  });
+});
+
+test('compact target uncertainty guidance survives an unverified freshness warning', async () => {
+  await withTempDir('klauro-freshness-ambiguous-', async root => {
+    writeSourceFixture(root);
+    const cas = freshnessFixtureCas(root, analyzedTime());
+    for (const name of ['javascript-parser', 'python-parser']) {
+      const file = `src/${name}.ts`;
+      fs.writeFileSync(path.join(root, file), 'export function extractDocumentation() {}\n');
+      cas.nodes.push({ id: name, name: 'extractDocumentation', type: 'method', source: { file, line: 1 } });
+    }
+    for (const response_profile of ['first-turn', 'capsule-only'] as const) {
+      const context = await getAgentContext(cas, root, {
+        task_type: 'debug', target: 'extractDocumentation', response_profile,
+      }) as Record<string, any>;
+      assert.ok(context.target_resolution.gaps.length > 0);
+      assert.match(context.rule, /UNVERIFIED/);
+      assert.match(context.rule, /Resolve target uncertainty before choosing an edit scope/);
+      assert.match(context.rule, /[Ii]nspect cited source before editing/);
+      assert.equal(context.analysis_freshness.citation_verification, 'unverified');
+    }
+  });
+});
+
+function analyzedTime(): string {
+  return new Date(Date.now() - HOUR_MS).toISOString();
+}
 
 test('resolve_agent_analysis refreshes stale customer analysis through hosted in-flight sync', async () => {
   const previousStorage = process.env.KLAURO_STORAGE_PATH;
