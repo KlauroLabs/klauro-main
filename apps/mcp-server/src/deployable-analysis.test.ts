@@ -11,6 +11,8 @@ import {
 } from './deployable-analysis';
 import type { CASNode, CASEdge, CASEntryPoint, CASOutput, DeployableEvidence } from '../../../packages/analyzer-core/src/types/cas.types';
 import { buildReachabilityIndexFromCas, buildReachabilityIndex, callEdgePairs } from '../../../packages/analyzer-core/src/analyzer/core/reachability-index';
+import { materializeNodeUnderstandingContracts } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';
+import { validateUnderstandingContractIntegrity } from '../../../packages/analyzer-core/src/analyzer/core/understanding-contract-integrity';
 
 function node(id: string, file: string): CASNode {
   return { id, name: id, type: 'function', source: { file, line: 1 } } as CASNode;
@@ -163,6 +165,57 @@ test('shouldPromote: single-deployable CAS never promotes, and says so in number
   const empty = buildDeployableAnalyses(noEvidence);
   assert.equal(empty.sub_cas_nodes.qualified_unit_count, 0);
   assert.match(empty.sub_cas_nodes.reason, /No tier-qualified ship unit found/);
+});
+
+test('file-expanded child nodes retain transitive behavioral evidence without importing unrelated code', () => {
+  const cas = buildFixtureCas();
+  cas.nodes.push(
+    node('S2', 'libs/shared/util.ts'),
+    node('C1', 'libs/client/client.ts'),
+    node('C2', 'libs/client/client.ts'),
+    node('D1', 'libs/decoder/decode.ts'),
+  );
+  cas.edges.push(callEdge('S2', 'C1'), callEdge('C2', 'D1'), callEdge('D1', 'S2'));
+  materializeNodeUnderstandingContracts(cas);
+  assert.deepEqual(validateUnderstandingContractIntegrity(cas), []);
+  const original = JSON.stringify(cas);
+  for (const persisted of [false, true]) {
+    const input = persisted ? { ...cas, reachability_index: buildReachabilityIndexFromCas(cas) } : cas;
+    const child = sliceDeployableAnalysis(input, cas.deployable_evidence![0]).slice;
+    assert.deepEqual(child.nodes.map(n => n.id).sort(), ['A1', 'A2', 'C1', 'C2', 'D1', 'S1', 'S2']);
+    assert.deepEqual(child.edges, cas.edges.filter(e => !['W1'].includes(e.source)));
+    assert.deepEqual(validateUnderstandingContractIntegrity(child), []);
+    for (const n of child.nodes) assert.deepEqual(n.contract, cas.nodes.find(parent => parent.id === n.id)!.contract);
+  }
+  assert.equal(JSON.stringify(cas), original);
+});
+
+test('child closure retains call evidence targeting exit records outside the node collection', () => {
+  const cas = buildFixtureCas();
+  cas.nodes.push(node('S2', 'libs/shared/util.ts'));
+  cas.exit_points = [{ id: 'exit-S2', source_node: 'S2', type: 'sdk', name: 'invoke', target: { sdk: 'dependency' } }];
+  cas.edges.push(callEdge('S2', 'exit-S2'));
+  materializeNodeUnderstandingContracts(cas);
+  const child = sliceDeployableAnalysis(cas, cas.deployable_evidence![0]).slice;
+  assert.ok(!cas.nodes.some(n => n.id === 'exit-S2'));
+  assert.ok(child.edges.some(e => e.target === 'exit-S2'));
+  assert.deepEqual(child.exit_points, cas.exit_points);
+  assert.deepEqual(child.nodes.find(n => n.id === 'S2')!.contract, cas.nodes.find(n => n.id === 'S2')!.contract);
+  assert.deepEqual(validateUnderstandingContractIntegrity(child), []);
+});
+
+test('child closure preserves every behavioral edge kind used by node contracts', () => {
+  for (const type of ['delegates_to', 'branches_to', 'continues_to'] as const) {
+    const cas = buildFixtureCas();
+    cas.nodes.push(node('TARGET', 'libs/behavior/target.ts'));
+    cas.edges.push({ ...callEdge('S1', 'TARGET'), type });
+    materializeNodeUnderstandingContracts(cas);
+    cas.reachability_index = buildReachabilityIndexFromCas(cas);
+    const child = sliceDeployableAnalysis(cas, cas.deployable_evidence![0]).slice;
+    assert.ok(child.nodes.some(n => n.id === 'TARGET'), type);
+    assert.deepEqual(validateUnderstandingContractIntegrity(child), [], type);
+    assert.ok(!child.nodes.some(n => n.id === 'W1'));
+  }
 });
 
 test('slices carry their reachability closure, shared code is tagged and counted honestly', () => {
