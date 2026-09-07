@@ -5,7 +5,7 @@ import * as path from 'node:path';
 import test from 'node:test';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { saveAnalysis, loadCompactAnalysisGraph } from './storage';
-import { acquirePinnedAnalysis, computeAgentContextScope, loadAgentContextProjection, loadScopedSemanticCollections, computeChangeRiskScope, computeScopedQueryScope, computeTestLookupScope, loadScopedGraphSection, planScopedQuery, resolveCompactTarget, scopedQueryCapacityOutcome, scopedQueryTarget, scopedSmallSections } from './hosted-query-scoped-graph';
+import { acquirePinnedAnalysis, computeAgentContextScope, loadAgentContextProjection, loadScopedSemanticCollections, markNotComputedOnProjection, computeChangeRiskScope, computeScopedQueryScope, computeTestLookupScope, loadScopedGraphSection, planScopedQuery, resolveCompactTarget, scopedQueryCapacityOutcome, scopedQueryTarget, scopedSmallSections } from './hosted-query-scoped-graph';
 import { assessChangeRisk, findTests, getErrorContracts } from './query';
 import { loadCompleteAnalysisFromSections } from './storage';
 import { executeHostedProjectQuery, hostedProjectQuerySections } from './hosted-project-query';
@@ -311,6 +311,9 @@ test('get_agent_context on the light-plus-scoped projection matches the whole-gr
       assert.equal(scoped.selected_node?.id, 'node-0');
       assert.deepEqual(scoped, whole, 'agent context is identical on the projection');
       assert.deepEqual(unboundedScoped, unboundedWhole, 'the complete pre-bound context is identical too');
+      const marked = JSON.parse(JSON.stringify(scoped));
+      assert.deepEqual(markNotComputedOnProjection(marked), ['work_context.coding_context.conventions'], 'heavy-field global scans are marked explicitly on projections');
+      assert.equal(marked.work_context.coding_context.conventions.not_computed, 'bounded-projection');
       assert.ok(JSON.stringify(unboundedWhole).length >= JSON.stringify(whole).length, 'the unbounded dump is the pre-budget value');
       const second = computeAgentContextScope(graph, ['far-1'], []);
       assert.ok(second.keepIds.has('far-1') && second.keepIds.has('node-30'));

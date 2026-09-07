@@ -318,7 +318,7 @@ async function writeSegmentedAnalysisUnlocked(
     if ('descriptor' in recordStore) manifest.record_store = recordStore.descriptor;
     else process.stderr.write(`${JSON.stringify({ event: 'cas_record_store_skipped', reason: recordStore.skipped })}\n`);
     if ('descriptor' in recordStore) {
-      const semanticStore = await writeCasSemanticStore(tmpDir, output, compactGraph);
+      const semanticStore = await writeCasSemanticStore(tmpDir, output, compactGraph, manifest.collection_bytes ?? {});
       if ('descriptor' in semanticStore) manifest.semantic_store = semanticStore.descriptor;
       else process.stderr.write(`${JSON.stringify({ event: 'cas_semantic_store_skipped', reason: semanticStore.skipped })}\n`);
     }

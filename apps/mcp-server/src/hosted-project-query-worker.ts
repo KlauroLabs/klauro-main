@@ -12,7 +12,7 @@ import type { SubCasNodeIndex } from './deployable-analysis';
 import { loadTelemetryObservations } from './telemetry-ingestion';
 import { buildNodeRuntimeMetrics } from './product';
 import { CasRecordStoreCapacityError } from './cas-record-store';
-import { agentContextProjectionGaps, computeAgentContextScope, loadAgentContextProjection, loadScopedGraphSection, loadScopedSemanticCollections, planScopedQuery, scopedQueryCapacityOutcome, type AgentContextProjection } from './hosted-query-scoped-graph';
+import { agentContextProjectionGaps, computeAgentContextScope, markNotComputedOnProjection, loadAgentContextProjection, loadScopedGraphSection, loadScopedSemanticCollections, planScopedQuery, scopedQueryCapacityOutcome, type AgentContextProjection } from './hosted-query-scoped-graph';
 
 if (!process.send) {
   process.stderr.write('hosted-project-query-worker must be started through child_process.fork.\n');
@@ -152,7 +152,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
               truncated: scopedPlan.scope.truncated || Boolean(graphSection?.edgesTruncated),
               edges_truncated: Boolean(graphSection?.edgesTruncated),
               ...(scopedPlan.scope.incomplete ? { incomplete: scopedPlan.scope.incomplete } : {}),
-              ...(semanticEligible ? { projected_collections: semanticEligible.projected, semantic_source: 'semantic-store' } : {}),
+              ...(semanticEligible ? { projected_collections: semanticEligible.projected, semantic_source: 'semantic-store', read_budget: { graph: (graphSection as { stats?: unknown } | null)?.stats ?? null, semantic: semanticEligible.stats, note: 'graph and semantic stores each hold one ledger and one cache; retained payload bound per store = decoded records + largest block + cache limit + index residency' } } : {}),
               ...(agentProjection ? { mode: 'agent-context', full_nodes: agentProjection.keepIds.size, light_nodes: agentProjection.lightNodes, light_edges: agentProjection.lightEdges, full_edges_truncated: agentProjection.fullEdgesTruncated, edge_order: agentProjection.edgeOrder, target_resolution: 'compact-index', passes: 1 } : {}),
             }
           : { mode: 'scoped', target_not_found: scopedPlan.targetNotFound, loaded_nodes: 0, loaded_edges: 0 };
@@ -298,7 +298,11 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
       debugMemory('result');
       if (scopedContext && result && typeof result === 'object' && !Array.isArray(result)) {
         (result as Record<string, unknown>).scoped_context = scopedContext;
-        if (agentProjection) (result as Record<string, unknown>).projection_gaps = agentContextProjectionGaps(agentProjection);
+        if (agentProjection) {
+          const notComputed = markNotComputedOnProjection(result);
+          (result as Record<string, unknown>).projection_gaps = agentContextProjectionGaps(agentProjection, notComputed);
+          (scopedContext as Record<string, unknown>).read_budget = { graph: agentProjection.stats ?? null, cache_limit_bytes_per_store: agentProjection.stats?.cacheLimitBytes ?? null, note: 'graph and semantic stores each hold one ledger and one cache; retained payload bound = decoded records + largest block + cache limit + index residency per store' };
+        }
       }
       process.send!({
         type: 'result',

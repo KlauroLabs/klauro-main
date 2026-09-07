@@ -55,6 +55,8 @@ export interface CasRecordStoreReadStats {
   compressedBytesRead: number;
   decodedBytes: number;
   decodeWorkBytes: number;
+  cacheLimitBytes: number;
+  retainedPayloadBudgetBytes: number;
 }
 
 export const DEFAULT_RECORD_STORE_READ_BUDGET: CasRecordStoreReadBudget = {
@@ -85,9 +87,9 @@ function sha256(bytes: Uint8Array): string {
   return crypto.createHash('sha256').update(bytes).digest('hex');
 }
 
-function uint32ToBuffer(values: readonly number[]): Buffer {
+function uint32ToBuffer(values: ArrayLike<number>): Buffer {
   const buffer = Buffer.alloc(values.length * UINT32_BYTES);
-  values.forEach((value, index) => buffer.writeUInt32LE(value, index * UINT32_BYTES));
+  for (let index = 0; index < values.length; index += 1) buffer.writeUInt32LE(values[index], index * UINT32_BYTES);
   return buffer;
 }
 
@@ -360,9 +362,11 @@ class SharedBlockCache {
 }
 
 class ReadLedger {
-  readonly stats: CasRecordStoreReadStats = { indexBytes: 0, records: 0, blocksPlanned: 0, blockReads: 0, cacheHits: 0, compressedBytesPlanned: 0, compressedBytesRead: 0, decodedBytes: 0, decodeWorkBytes: 0 };
+  readonly stats: CasRecordStoreReadStats;
 
-  constructor(private readonly budget: CasRecordStoreReadBudget) {}
+  constructor(private readonly budget: CasRecordStoreReadBudget) {
+    this.stats = { indexBytes: 0, records: 0, blocksPlanned: 0, blockReads: 0, cacheHits: 0, compressedBytesPlanned: 0, compressedBytesRead: 0, decodedBytes: 0, decodeWorkBytes: 0, cacheLimitBytes: budget.cacheBytes, retainedPayloadBudgetBytes: budget.maxDecodedBytes + budget.cacheBytes + budget.maxIndexBytes };
+  }
 
   chargeIndex(bytes: number): void {
     if (this.stats.indexBytes + bytes > this.budget.maxIndexBytes) throw new CasRecordStoreCapacityError(`CAS record store index needs ${this.stats.indexBytes + bytes} bytes, above ${this.budget.maxIndexBytes}`);
@@ -621,6 +625,7 @@ export async function writeCasSemanticStore(
   directory: string,
   output: CASOutput,
   graph: CompactCASGraph,
+  measuredBytes: Readonly<Record<string, number>> = {},
 ): Promise<{ descriptor: CasSemanticStoreDescriptor } | { skipped: string }> {
   const tables: Partial<Record<CasSemanticTableName, CasSemanticTableDescriptor>> = {};
   const writers: StreamingTableWriter[] = [];
@@ -664,7 +669,7 @@ export async function writeCasSemanticStore(
       written.push(base.columns.blocks.file, ...Object.values(base.columns).map(column => column.file));
       const writeColumn = async (name: string, values: Uint32Array): Promise<CasRawColumnDescriptor> => {
         const file = `${prefix}.byNode.${name}.bin`;
-        const bytes = uint32ToBuffer(Array.from(values));
+        const bytes = uint32ToBuffer(values);
         const handle = await fs.promises.open(path.join(directory, file), 'w');
         try { await writeFully(handle, bytes); await handle.sync(); } finally { await handle.close(); }
         written.push(file);
@@ -679,6 +684,9 @@ export async function writeCasSemanticStore(
     let extras: CasSemanticStoreDescriptor['extras'];
     const reachability = (output as unknown as { reachability_index?: unknown }).reachability_index;
     if (reachability && typeof reachability === 'object') {
+      const measured = measuredBytes.reachability_index;
+      if (typeof measured === 'number' && measured > MAX_SEMANTIC_EXTRA_BYTES) throw new CasRecordStoreCapacityError(`CAS semantic store reachability index measures ${measured} bytes, above ${MAX_SEMANTIC_EXTRA_BYTES}`);
+      if (typeof measured !== 'number') throw new CasRecordStoreCapacityError('CAS semantic store cannot bound the reachability index without a measured size');
       const decoded = Buffer.from(JSON.stringify(reachability), 'utf8');
       if (decoded.byteLength > MAX_SEMANTIC_EXTRA_BYTES) throw new CasRecordStoreCapacityError(`CAS semantic store reachability index is ${decoded.byteLength} bytes, above ${MAX_SEMANTIC_EXTRA_BYTES}`);
       const compressed = zlib.brotliCompressSync(decoded, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5, [zlib.constants.BROTLI_PARAM_SIZE_HINT]: decoded.byteLength } });

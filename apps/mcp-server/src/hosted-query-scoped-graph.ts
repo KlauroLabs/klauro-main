@@ -413,8 +413,32 @@ export async function loadAgentContextProjection(
   };
 }
 
-export function agentContextProjectionGaps(projection: AgentContextProjection): Record<string, unknown> {
+export const AGENT_CONTEXT_HEAVY_FIELD_SCANS: ReadonlyArray<{ path: readonly string[]; reason: string }> = [
+  { path: ['work_context', 'coding_context', 'conventions'], reason: 'derived from signature.return_type across all functions and edge metadata; light records carry neither' },
+];
+
+export function markNotComputedOnProjection(body: unknown): string[] {
+  if (!body || typeof body !== 'object') return [];
+  const marked: string[] = [];
+  for (const scan of AGENT_CONTEXT_HEAVY_FIELD_SCANS) {
+    let parent: Record<string, unknown> | undefined = body as Record<string, unknown>;
+    for (const key of scan.path.slice(0, -1)) {
+      const next: unknown = parent ? parent[key] : undefined;
+      parent = next && typeof next === 'object' && !Array.isArray(next) ? next as Record<string, unknown> : undefined;
+      if (!parent) break;
+    }
+    const last = scan.path[scan.path.length - 1];
+    if (parent && last in parent) {
+      parent[last] = { not_computed: 'bounded-projection', reason: scan.reason };
+      marked.push(scan.path.join('.'));
+    }
+  }
+  return marked;
+}
+
+export function agentContextProjectionGaps(projection: AgentContextProjection, notComputed: readonly string[] = []): Record<string, unknown> {
   return {
+    ...(notComputed.length > 0 ? { not_computed: notComputed } : {}),
     mode: 'bounded-projection',
     full_record_nodes: projection.keepIds.size,
     light_nodes: projection.lightNodes,
