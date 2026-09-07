@@ -1,3 +1,43 @@
+
+test('bound outcome recovery preserves authored clauses instead of verbalizing normalized search tokens', () => {
+  for (const name of [
+    'Know what will break before changing something',
+    'Understand what a codebase actually built',
+    'Avoid outages when deploying services',
+    'Decide whether to approve an application',
+    'Compare eligible plans without sharing private records',
+  ]) {
+    const candidate = { ...capability('evidence', []), name, operations: [
+      { entry_point_id: 'observed', entry_point_type: 'event' as const, action: 'read' },
+    ] };
+    const identity = { ...capability('outcome', [
+      'catalog-candidate:evidence', 'catalog-outcome-requirement:authored',
+    ]), name };
+    const recovered = deterministicCapabilityDescriptionFallback({
+      identity, evidenceCandidates: [candidate], audience: 'People', firstPartyTexts: [],
+      validate: () => true,
+    });
+    assert.equal(recovered?.description, `People can ${name[0].toLowerCase()}${name.slice(1)}.`);
+    assert.equal(recovered?.name, name);
+    assert.equal(recovered?.description_source, 'deterministic');
+    assert.deepEqual(recovered?.criticality_factors, identity.criticality_factors);
+  }
+});
+
+test('bound outcome recovery never invents temporal behavior to pad a short description', () => {
+  const candidate = { ...capability('jobs', []), name: 'Job applications', operations: [
+    { entry_point_id: 'categorize', entry_point_type: 'event' as const, action: 'update' },
+  ] };
+  const identity = { ...capability('outcome', [
+    'catalog-candidate:jobs', 'catalog-outcome-requirement:authored',
+  ]), name: 'Categorize job applications' };
+  assert.equal(deterministicCapabilityDescriptionFallback({
+    identity, evidenceCandidates: [candidate], audience: 'Users', firstPartyTexts: [],
+    validate: () => true,
+  }), undefined);
+  assert.equal(identity.name, 'Categorize job applications');
+  assert.equal(candidate.operations.length, 1);
+});
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SystemCapability } from '../../types/cas.types';
