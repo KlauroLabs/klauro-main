@@ -144,7 +144,11 @@ if ! git -C "$APP_DIR" show "$DEPLOY_SHA_FULL:infrastructure/vps/docker-compose.
   const reserveMib = 972;
   const services = {};
   let current = null;
+  let section = null;
   for (const line of text.split("\n")) {
+    const top = line.match(/^([a-z][a-z0-9_-]*):/);
+    if (top) { section = top[1]; current = null; continue; }
+    if (section !== "services") continue;
     const service = line.match(/^  ([a-z][a-z0-9-]*):\s*$/);
     if (service) { current = service[1]; services[current] = { limit: 0, heaps: [] }; continue; }
     if (!current) continue;
@@ -158,7 +162,8 @@ if ! git -C "$APP_DIR" show "$DEPLOY_SHA_FULL:infrastructure/vps/docker-compose.
   for (const [name, spec] of Object.entries(services)) {
     if (!spec.limit) failures.push(`${name}: no mem_limit`);
     sum += spec.limit;
-    for (const heap of spec.heaps) if (heap > spec.limit - 512) failures.push(`${name}: heap ${heap} MiB leaves under 512 MiB of its ${spec.limit} MiB limit`);
+    const headroom = Math.max(256, Math.floor(spec.limit / 4));
+    for (const heap of spec.heaps) if (heap > spec.limit - headroom) failures.push(`${name}: heap ${heap} MiB leaves under ${headroom} MiB of its ${spec.limit} MiB limit`);
   }
   if (hostMib && sum + reserveMib > hostMib) failures.push(`limits ${sum} MiB + reserve ${reserveMib} MiB exceed host ${hostMib} MiB`);
   console.log(`    compose limits: ${sum} MiB across ${Object.keys(services).length} services; host ${hostMib || "unknown"} MiB; reserve ${reserveMib} MiB`);
