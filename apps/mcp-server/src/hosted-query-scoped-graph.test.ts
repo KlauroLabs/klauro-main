@@ -314,6 +314,10 @@ test('get_agent_context on the light-plus-scoped projection matches the whole-gr
       const marked = JSON.parse(JSON.stringify(scoped));
       assert.deepEqual(markNotComputedOnProjection(marked), ['work_context.coding_context.conventions'], 'heavy-field global scans are marked explicitly on projections');
       assert.equal(marked.work_context.coding_context.conventions.not_computed, 'bounded-projection');
+      let preBound: unknown;
+      const transformed = strip(await executeHostedProjectQuery({ cas: scopedCas, tool: 'get_agent_context', args, projectPath: project, transformUnbounded: (_tool, value) => { markNotComputedOnProjection(value); return value; }, observeUnbounded: (_tool, value) => { preBound = strip(value); } }));
+      assert.equal(transformed.work_context.coding_context.conventions.not_computed, 'bounded-projection', 'the marker is applied before bounding so it survives the response envelope');
+      assert.equal((preBound as any).work_context.coding_context.conventions.not_computed, 'bounded-projection');
       assert.ok(JSON.stringify(unboundedWhole).length >= JSON.stringify(whole).length, 'the unbounded dump is the pre-budget value');
       const second = computeAgentContextScope(graph, ['far-1'], []);
       assert.ok(second.keepIds.has('far-1') && second.keepIds.has('node-30'));

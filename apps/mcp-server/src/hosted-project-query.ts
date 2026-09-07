@@ -196,6 +196,7 @@ export async function executeHostedProjectQuery(input: {
   projectPath: string;
   runtimeMetrics?: RuntimeMetricLike[];
   observeUnbounded?: (tool: string, result: unknown) => void;
+  transformUnbounded?: (tool: string, result: unknown) => unknown;
 }): Promise<unknown> {
   if (!Object.prototype.hasOwnProperty.call(HOSTED_PROJECT_QUERY_SCHEMAS, input.tool)) {
     throw new Error(`Unsupported hosted query tool '${input.tool}'`);
@@ -319,6 +320,7 @@ export async function executeHostedProjectQuery(input: {
       break;
   }
 
+  if (input.transformUnbounded) result = input.transformUnbounded(tool, result);
   if (input.observeUnbounded) {
     try {
       input.observeUnbounded(tool, result);

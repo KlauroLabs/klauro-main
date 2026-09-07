@@ -265,6 +265,10 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
             fs.writeFileSync(target, JSON.stringify(value ?? null), { mode: 0o600, flag: 'w' });
           }
         : undefined;
+      let notComputedOnProjection: string[] = [];
+      const transformUnbounded = agentProjection
+        ? (_tool: string, value: unknown): unknown => { notComputedOnProjection = markNotComputedOnProjection(value); return value; }
+        : undefined;
       let result = unavailable
         ? undefined
         : scopedCapacityOutcome ?? await queryModule!.executeHostedProjectQuery({
@@ -274,6 +278,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
             projectPath: request.workspace,
             runtimeMetrics,
             ...(observeUnbounded ? { observeUnbounded } : {}),
+            ...(transformUnbounded ? { transformUnbounded } : {}),
           });
       const selectedId = agentProjection && result && typeof result === 'object'
         ? (result as { selected_node?: { id?: unknown } }).selected_node?.id
@@ -291,7 +296,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
             edges: secondProjection.edges,
             index: undefined,
           } as unknown as CASOutput, { loaded_sections: ['identity', ...Object.keys(agentSmallSections ?? {}), 'graph'] as CasSectionName[], node_count: agentPlan.graph.nodeCount, edge_count: secondProjection.edges.length, ...(collectionTotals ? { collection_totals: collectionTotals } : {}) });
-          result = await queryModule!.executeHostedProjectQuery({ cas: activeCas, tool: request.tool, args: request.args, projectPath: request.workspace, runtimeMetrics, ...(observeUnbounded ? { observeUnbounded } : {}) });
+          result = await queryModule!.executeHostedProjectQuery({ cas: activeCas, tool: request.tool, args: request.args, projectPath: request.workspace, runtimeMetrics, ...(observeUnbounded ? { observeUnbounded } : {}), ...(transformUnbounded ? { transformUnbounded } : {}) });
           if (scopedContext) Object.assign(scopedContext, { passes: 2, second_pass_target: selectedId, full_nodes: secondProjection.keepIds.size, light_nodes: secondProjection.lightNodes, light_edges: secondProjection.lightEdges, source: secondProjection.source, ...(secondScope.incomplete ? { incomplete: secondScope.incomplete } : {}) });
         }
       }
@@ -299,7 +304,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
       if (scopedContext && result && typeof result === 'object' && !Array.isArray(result)) {
         (result as Record<string, unknown>).scoped_context = scopedContext;
         if (agentProjection) {
-          const notComputed = markNotComputedOnProjection(result);
+          const notComputed = notComputedOnProjection.length > 0 ? notComputedOnProjection : markNotComputedOnProjection(result);
           (result as Record<string, unknown>).projection_gaps = agentContextProjectionGaps(agentProjection, notComputed);
           (scopedContext as Record<string, unknown>).read_budget = { graph: agentProjection.stats ?? null, cache_limit_bytes_per_store: agentProjection.stats?.cacheLimitBytes ?? null, note: 'graph and semantic stores each hold one ledger and one cache; retained payload bound = decoded records + largest block + cache limit + index residency per store' };
         }
