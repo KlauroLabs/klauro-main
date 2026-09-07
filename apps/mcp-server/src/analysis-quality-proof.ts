@@ -296,13 +296,14 @@ function renderMarkdown(report: AnalysisQualityProofReport): string {
 }
 
 function describeIndex(cas: CASOutput): RepoProofResult['index'] {
-  const files = (cas as { l0_index?: { total_files?: number } }).l0_index?.total_files;
+  const indexed = (cas as { l0_index?: { total_files?: number } }).l0_index?.total_files;
+  const sourceFiles = new Set((cas.nodes || []).map(node => node.source?.file).filter((file): file is string => Boolean(file)));
   return {
     nodes: (cas.nodes || []).length,
     edges: (cas.edges || []).length,
     entry_points: (cas.entry_points || []).length,
     entities: (cas.entities || []).length,
-    files: typeof files === 'number' ? files : null,
+    files: typeof indexed === 'number' ? indexed : sourceFiles.size || null,
     languages: (cas.system?.technologies?.languages || []).length,
   };
 }
