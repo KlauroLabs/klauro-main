@@ -29,6 +29,7 @@ import {
 import { iterateDeployableChildCas, materializeDeployableCasTree, prepareDeployableCasProjection } from './deployable-analysis';
 import { readZstdJson } from './zstd-json';
 import { describeAnalysisVersion, hasFailedStructuralAnalysisLayer, type AnalysisVersionInfo } from './analysis-version';
+import { segmentedReadFailureFallback } from './segmented-storage-access';
 import {
   acquireSegmentedAnalysisLease,
   loadCompactCASGraph,
@@ -814,8 +815,7 @@ async function resolveCurrentSegmentedAnalysis(
   try {
     segmented = await resolveSegmentedAnalysis(resolved.filePath);
   } catch (error) {
-    if (resolved.entry.storage_format === 'segmented-v2') throw error;
-    return null;
+    return segmentedReadFailureFallback(resolved.entry, resolved.filePath, error);
   }
   if (!segmented && resolved.entry.storage_format === 'segmented-v2') throw new Error(`Current segmented analysis for ${resolved.entry.path} is unavailable.`);
   if (!segmented) return null;
@@ -834,8 +834,7 @@ export async function acquireCurrentSegmentedAnalysisLease(
   try {
     lease = await acquireSegmentedAnalysisLease(resolved.filePath);
   } catch (error) {
-    if (resolved.entry.storage_format === 'segmented-v2') throw error;
-    return null;
+    return segmentedReadFailureFallback(resolved.entry, resolved.filePath, error);
   }
   if (!lease && resolved.entry.storage_format === 'segmented-v2') throw new Error(`Current segmented analysis for ${resolved.entry.path} is unavailable.`);
   if (!lease) return null;

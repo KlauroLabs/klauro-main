@@ -25,6 +25,7 @@ import {
   waitForPendingSegmentedWrites,
   writeJsonAtomic,
 } from './storage';
+import { segmentedStorageAccessError, SegmentedStorageAccessError } from './segmented-storage-access';
 import { getCachedDeployableAnalyses, materializeDeployableCasTree } from './deployable-analysis';
 import { compactCASPostingShard, searchCompactCAS } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-search';
 import { writeSegmentedLegacyExport } from './segmented-analysis-storage';
@@ -859,5 +860,45 @@ test('legacy export stays on one immutable generation across concurrent pointer 
     assert.equal(exported.nodes[0].id, 'pinned-first-node');
     const root = `${wholePath}.sections`;
     assert.ok((await fs.readdir(root)).filter(name => name.startsWith('gen-')).length >= 2);
+  });
+});
+
+test('storage access failures are classified explicitly and never read as a missing segmented index', () => {
+  for (const code of ['EROFS', 'EACCES', 'EPERM']) {
+    const classified = segmentedStorageAccessError('/tmp/project', Object.assign(new Error(code), { code }));
+    assert.ok(classified instanceof SegmentedStorageAccessError);
+    assert.equal(classified?.code, code);
+    assert.match(classified?.message || '', /not accessible/);
+  }
+  assert.equal(segmentedStorageAccessError('/tmp/project', Object.assign(new Error('missing'), { code: 'ENOENT' })), null);
+  assert.equal(segmentedStorageAccessError('/tmp/project', new Error('plain')), null);
+});
+
+test('a read-only segmented index fails explicitly instead of falling back to the whole-CAS path, even for a legacy index entry without storage_format', { skip: typeof process.getuid === 'function' && process.getuid() === 0 ? 'permission bits do not bind root' : false }, async () => {
+  await withStoragePath(async storagePath => {
+    const project = '/tmp/read-only-segmented-project';
+    const cas = casFixture('read-only-segmented');
+    (cas as unknown as { capabilities?: unknown }).capabilities = undefined;
+    const entry = await saveAnalysis(project, cas, 'main', { canonicalSegmented: true });
+    await waitForPendingSegmentedWrites();
+    const sectionsRoot = `${path.join(storagePath, entry.file)}.sections`;
+    const indexPath = path.join(storagePath, 'index.json');
+    const index = await fs.readJson(indexPath);
+    let downgraded = 0;
+    for (const item of Object.values(index.analyses || {}) as Array<Record<string, unknown>>) {
+      if (item && typeof item === 'object' && item.file === entry.file) {
+        delete item.storage_format;
+        downgraded += 1;
+      }
+    }
+    assert.equal(downgraded, 1);
+    await fs.writeJson(indexPath, index);
+    await fs.chmod(sectionsRoot, 0o555);
+    try {
+      clearLoadedAnalysisCache();
+      await assert.rejects(loadAnalysis(project), (error: unknown) => error instanceof SegmentedStorageAccessError && /EACCES|EPERM|EROFS/.test(String((error as SegmentedStorageAccessError).code)));
+    } finally {
+      await fs.chmod(sectionsRoot, 0o755);
+    }
   });
 });
