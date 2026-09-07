@@ -1,6 +1,7 @@
 export const RESPONSE_BUDGET_BYTES = 20_000;
 
 const ENVELOPE_RESERVE_BYTES = 3_072;
+const MIN_RESPONSE_BUDGET_BYTES = 1_024;
 const MAX_REPORTED_TRUNCATED_PATHS = 20;
 const MIN_STRING_KEEP_CHARS = 256;
 const STRING_TRUNCATION_SUFFIX = '...[truncated]';
@@ -29,6 +30,7 @@ export interface BoundedEnvelope {
   truncated_paths: TruncatedPath[];
   continuation: string[];
   data: unknown;
+  payload_omitted?: true;
 }
 
 function byteLength(text: string): number {
@@ -89,6 +91,7 @@ interface ShrinkCandidate {
 }
 
 function collectCandidates(value: unknown, path: string, container: Record<string, unknown> | unknown[] | null, key: string | number, out: ShrinkCandidate[]): void {
+  if (/(?:^|\.)(?:gaps|run_policy|projection_gaps|manual_checks)(?:\.|\[|$)|(?:^|\.)execution_brief\.preserve(?:\.|\[|$)/.test(path)) return;
   if (typeof value === 'string') {
     const executable = /(?:^|\.)(?:commands?|validate|(?:execution_|context_)?capsule)$|(?:^|\.)(?:commands?|validate)\[\d+\]$/.test(path);
     if (container && value.length > MIN_STRING_KEEP_CHARS && !executable) {
@@ -123,7 +126,7 @@ interface TrimRecord {
 function shrinkToBudget(root: { data: unknown }, targetBytes: number): Map<string, TrimRecord> {
   const trims = new Map<string, TrimRecord>();
   for (let pass = 0; pass < MAX_SHRINK_PASSES; pass++) {
-    const serialized = JSON.stringify(root.data);
+    const serialized = serializeToolResponse(root.data);
     let remainingExcess = byteLength(serialized) - targetBytes;
     if (remainingExcess <= 0) break;
 
@@ -207,10 +210,14 @@ export function buildContinuation(options: BoundOptions, truncatedPaths: Truncat
 
 export function boundToolPayload(data: unknown, options: BoundOptions): unknown {
   const budget = options.budgetBytes ?? RESPONSE_BUDGET_BYTES;
-  const fullSize = byteLength(JSON.stringify(data));
+  if (!Number.isSafeInteger(budget) || budget < MIN_RESPONSE_BUDGET_BYTES) {
+    throw new RangeError(`Response budget must be an integer of at least ${MIN_RESPONSE_BUDGET_BYTES} bytes.`);
+  }
+  const serialized = serializeToolResponse(data);
+  const fullSize = byteLength(serialized);
   if (fullSize <= budget) return data;
 
-  const root = { data: structuredClone(data) };
+  const root = { data: JSON.parse(serialized) };
   const trims = shrinkToBudget(root, Math.max(budget - ENVELOPE_RESERVE_BYTES, 1024));
   const allTruncatedPaths: TruncatedPath[] = [...trims.entries()].map(([path, record]) => ({
     path: path || '(root)',
@@ -242,10 +249,15 @@ export function boundToolPayload(data: unknown, options: BoundOptions): unknown 
     data: root.data,
   };
 
-  if (byteLength(JSON.stringify(envelope)) > budget) {
+  if (byteLength(serializeToolResponse(envelope)) > budget) {
+    envelope.payload_omitted = true;
     envelope.data = {
       note: 'Payload omitted: response could not be structurally truncated under the budget. Re-run with narrower parameters.',
     };
+    if (byteLength(serializeToolResponse(envelope)) > budget) {
+      envelope.truncated_paths = [];
+      envelope.continuation = ['Payload and detailed truncation metadata omitted to stay within the response budget. Re-run with narrower parameters.'];
+    }
   }
   return envelope;
 }

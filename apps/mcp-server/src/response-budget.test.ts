@@ -15,7 +15,7 @@ import { getTestSummary } from './query';
 import { createServer } from './server';
 import { listAnalyses } from './storage';
 
-const SIZE_SLACK_BYTES = 1024;
+const SIZE_SLACK_BYTES = 0;
 
 function byteLength(text: string): number {
   return Buffer.byteLength(text, 'utf8');
@@ -52,6 +52,90 @@ test('bounded agent responses preserve fitting executable instructions while tri
   assert.equal(returned.execution_brief.validate[0], command);
   assert.equal(returned.execution_brief.capsule, capsule);
   assert.equal(payload.report.length, 96000);
+});
+
+test('response budgets include the bytes added by the wire serializer', () => {
+  const payload: Record<string, string> = Object.fromEntries(Array.from({ length: 500 }, (_, index) => [`field-${index}`, 'value']));
+  payload.report = 'x'.repeat(RESPONSE_BUDGET_BYTES - Buffer.byteLength(JSON.stringify(payload)) - 100);
+  assert.ok(Buffer.byteLength(JSON.stringify(payload)) < RESPONSE_BUDGET_BYTES);
+  assert.ok(Buffer.byteLength(serializeToolResponse(payload)) > RESPONSE_BUDGET_BYTES);
+  const bounded = boundToolPayload(payload, { tool: 'get_agent_context' }) as BoundedEnvelope;
+  assert.equal(bounded.truncated, true);
+  assert.ok(Buffer.byteLength(serializeToolResponse(bounded)) <= RESPONSE_BUDGET_BYTES);
+});
+
+test('irreducible response metadata cannot exceed the budget or expose partial commands', () => {
+  const command = 'npm test -- ' + 'selected-file '.repeat(1000);
+  const bounded = boundToolPayload({ validation_plan: { commands: [{ command }] } }, {
+    tool: 'get_agent_context',
+    budgetBytes: 4000,
+    parameterNames: Array.from({ length: 100 }, (_, index) => `filter_${index}_${'x'.repeat(100)}`),
+  }) as BoundedEnvelope;
+  assert.ok(Buffer.byteLength(serializeToolResponse(bounded)) <= 4000);
+  assert.equal((bounded.data as any).validation_plan, undefined);
+  assert.equal(bounded.truncated, true);
+  assert.equal(bounded.has_more, true);
+});
+
+test('bounded contexts preserve safety evidence or withhold the payload as a whole', () => {
+  const gaps = Array.from({ length: 40 }, (_, index) => `Verification gap ${index}: ${'details '.repeat(20)}`);
+  const payload = {
+    report: 'x'.repeat(12000),
+    validation_plan: { gaps, run_policy: { strategy: 'inspect-before-broad' }, commands: [{ command: 'npm test' }] },
+    projection_gaps: { not_computed: gaps },
+    analysis_freshness: { citation_verification: 'invalid', source_input_comparison: { mismatched: { count: 3, examples: gaps } } },
+  };
+  const bounded = boundToolPayload(payload, { tool: 'get_agent_context' }) as BoundedEnvelope;
+  const returned = bounded.data as typeof payload;
+  if (returned.validation_plan) {
+    assert.deepEqual(returned.validation_plan.gaps, gaps);
+    assert.deepEqual(returned.projection_gaps, payload.projection_gaps);
+    assert.equal(returned.analysis_freshness.citation_verification, 'invalid');
+    assert.equal(returned.analysis_freshness.source_input_comparison.mismatched.count, 3);
+  } else {
+    assert.match((bounded.data as any).note, /Payload omitted/);
+  }
+  assert.ok(Buffer.byteLength(serializeToolResponse(bounded)) <= RESPONSE_BUDGET_BYTES);
+  assert.equal(payload.validation_plan.gaps.length, 40);
+});
+
+test('fitting safety evidence and commands survive prose reduction together', () => {
+  const safety = { gaps: ['No explicit test coverage link.', 'Runner argument forwarding is unverified.'], run_policy: { strategy: 'inspect-before-broad' }, commands: [{ command: 'npm test' }] };
+  const payload = { report: 'context '.repeat(10000), validation_plan: safety, analysis_freshness: { citation_verification: 'invalid' }, projection_gaps: { not_computed: ['conventions'] } };
+  const bounded = boundToolPayload(payload, { tool: 'get_agent_context' }) as BoundedEnvelope;
+  assert.equal(bounded.payload_omitted, undefined);
+  assert.deepEqual((bounded.data as typeof payload).validation_plan, safety);
+  assert.deepEqual((bounded.data as typeof payload).analysis_freshness, payload.analysis_freshness);
+  assert.deepEqual((bounded.data as typeof payload).projection_gaps, payload.projection_gaps);
+  assert.ok(Buffer.byteLength(serializeToolResponse(bounded)) <= RESPONSE_BUDGET_BYTES);
+});
+
+test('trimming repeated examples cannot mutate aliased warnings or post-edit checks', () => {
+  const warnings = Array.from({ length: 30 }, (_, index) => `Preserve behavior ${index} and check its callers.`);
+  const payload = {
+    examples: warnings,
+    report: 'x'.repeat(30000),
+    validation_plan: { gaps: warnings, manual_checks: warnings },
+    execution_brief: { preserve: warnings },
+  };
+  const bounded = boundToolPayload(payload, { tool: 'get_agent_context', budgetBytes: 8000 }) as BoundedEnvelope;
+  assert.equal(bounded.payload_omitted, undefined);
+  const returned = bounded.data as typeof payload;
+  assert.deepEqual(returned.validation_plan.gaps, warnings);
+  assert.deepEqual(returned.validation_plan.manual_checks, warnings);
+  assert.deepEqual(returned.execution_brief.preserve, warnings);
+  assert.ok(returned.examples.length < warnings.length);
+  assert.equal(payload.examples.length, 30);
+  assert.ok(Buffer.byteLength(serializeToolResponse(bounded)) <= 8000);
+});
+
+test('invalid response budgets are refused instead of returning an oversized envelope', () => {
+  for (const budgetBytes of [0, -1, 1023, NaN, Infinity, 4000.5]) {
+    assert.throws(() => boundToolPayload({}, { tool: 'get_agent_context', budgetBytes }), RangeError);
+  }
+  const bounded = boundToolPayload({ command: 'x'.repeat(20000) }, { tool: 'get_agent_context', budgetBytes: 1024 }) as BoundedEnvelope;
+  assert.ok(Buffer.byteLength(serializeToolResponse(bounded)) <= 1024);
+  assert.equal(bounded.payload_omitted, true);
 });
 
 test('serializeToolResponse keeps top-level keys on separate lines and stays parseable', () => {
@@ -368,7 +452,7 @@ function findFirstNodeId(value: unknown): string | undefined {
   return undefined;
 }
 
-test('every core-profile tool response stays within the byte budget on the largest stored analysis', { timeout: 600_000 }, async () => {
+test('every core-profile tool response stays within the byte budget on the largest stored analysis', { timeout: 600_000 }, async context => {
   const storagePath = process.env.KLAURO_STORAGE_PATH || nodePath.join(os.homedir(), '.klauro', 'analyses');
   const analyses = await listAnalyses();
   const usable = analyses
@@ -376,7 +460,7 @@ test('every core-profile tool response stays within the byte budget on the large
     .sort((a, b) => b.node_count - a.node_count);
   const largest = usable[0];
   if (!largest) {
-    console.log('No stored analyses available; skipping response-size invariant test.');
+    context.skip('No stored analysis available for the live core-profile response-size invariant.');
     return;
   }
   console.log(`Response-size invariant target: ${largest.name} (${largest.node_count} nodes) at ${largest.path}`);
