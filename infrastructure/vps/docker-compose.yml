@@ -16,6 +16,7 @@ x-analysis-environment: &analysis-environment
   KLAURO_ANALYSIS_WORKER_IDLE_MS: "0"
   KLAURO_ANALYSIS_STALL_MS: "600000"
   KLAURO_ANALYSIS_WORKER_SOCKET: /run/klauro/analysis-worker.sock
+  KLAURO_ANALYSIS_HEAP_MB: "2432"
   REDIS_HOST: redis
 
 services:
@@ -77,7 +78,7 @@ services:
     environment:
       <<: *analysis-environment
       KLAURO_SELF_TELEMETRY: "0"
-      KLAURO_ANALYSIS_HEAP_MB: "2432"
+      NODE_OPTIONS: --max-old-space-size=512
     volumes:
       - /opt/klauro/data:/data
       - /opt/klauro/downloads:/opt/klauro/downloads:ro
