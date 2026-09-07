@@ -300,10 +300,25 @@ test('get_agent_context on the light-plus-scoped projection matches the whole-gr
       assert.equal(projection.nodes.find(node => node.id === 'node-0')!.description, 'targetFn does work in src/target.ts', 'kept nodes carry full records');
       const scopedCas = { ...full, nodes: projection.nodes, edges: projection.edges } as CASOutput;
       const strip = (value: unknown) => JSON.parse(JSON.stringify(value, (key, inner) => (key === 'generated_at' || key === 'scoped_context' ? undefined : inner)));
-      const scoped = strip(await executeHostedProjectQuery({ cas: scopedCas, tool: 'get_agent_context', args, projectPath: project }));
-      const whole = strip(await executeHostedProjectQuery({ cas: full, tool: 'get_agent_context', args, projectPath: project }));
+      const dumpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-unbounded-'));
+      const previousDump = process.env.KLAURO_HOSTED_QUERY_UNBOUNDED_DUMP;
+      let unboundedScoped: unknown;
+      let unboundedWhole: unknown;
+      try {
+        process.env.KLAURO_HOSTED_QUERY_UNBOUNDED_DUMP = path.join(dumpDir, 'scoped');
+        var scoped = strip(await executeHostedProjectQuery({ cas: scopedCas, tool: 'get_agent_context', args, projectPath: project }));
+        unboundedScoped = strip(JSON.parse(fs.readFileSync(path.join(dumpDir, 'scoped.get_agent_context.json'), 'utf8')));
+        process.env.KLAURO_HOSTED_QUERY_UNBOUNDED_DUMP = path.join(dumpDir, 'whole');
+        var whole = strip(await executeHostedProjectQuery({ cas: full, tool: 'get_agent_context', args, projectPath: project }));
+        unboundedWhole = strip(JSON.parse(fs.readFileSync(path.join(dumpDir, 'whole.get_agent_context.json'), 'utf8')));
+      } finally {
+        if (previousDump === undefined) delete process.env.KLAURO_HOSTED_QUERY_UNBOUNDED_DUMP; else process.env.KLAURO_HOSTED_QUERY_UNBOUNDED_DUMP = previousDump;
+        fs.rmSync(dumpDir, { recursive: true, force: true });
+      }
       assert.equal(scoped.selected_node?.id, 'node-0');
       assert.deepEqual(scoped, whole, 'agent context is identical on the projection');
+      assert.deepEqual(unboundedScoped, unboundedWhole, 'the complete pre-bound context is identical too');
+      assert.ok(JSON.stringify(unboundedWhole).length >= JSON.stringify(whole).length, 'the unbounded dump is the pre-budget value');
       const second = computeAgentContextScope(graph, ['far-1'], []);
       assert.ok(second.keepIds.has('far-1') && second.keepIds.has('node-30'));
       assert.equal(projection.edgeOrder, 'original');

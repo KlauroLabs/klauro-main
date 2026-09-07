@@ -318,6 +318,11 @@ export async function executeHostedProjectQuery(input: {
       break;
   }
 
+  const dumpPath = process.env.KLAURO_HOSTED_QUERY_UNBOUNDED_DUMP;
+  if (dumpPath) {
+    const fsModule = await import('node:fs');
+    fsModule.writeFileSync(`${dumpPath}.${tool}.json`, JSON.stringify(result ?? null));
+  }
   return boundHostedProjectQueryResult(tool, args, result);
 }
 
