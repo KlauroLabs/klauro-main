@@ -154,6 +154,7 @@ let installed = false;
 let localIngestPromise: Promise<void> | undefined;
 let pendingEvents: Array<{ projectPath: string; event: TelemetryEvent }> = [];
 let pendingDrain: { promise: Promise<void>; start: () => void } | undefined;
+let shuttingDown = false;
 
 const DEFAULT_INGEST_COALESCE_MS = 30_000;
 
@@ -225,13 +226,16 @@ export function instrumentHttpHandler(
 
 
 export async function shutdownSelfTelemetry(): Promise<void> {
+  shuttingDown = true;
   try {
+    pendingDrain?.start();
     await klauroTelemetry.shutdown();
     await waitForSelfTelemetryIngest();
   } catch {
 
   }
   installed = false;
+  shuttingDown = false;
 }
 
 export async function waitForSelfTelemetryIngest(): Promise<void> {
@@ -252,7 +256,7 @@ export function enqueueSelfTelemetryEvents(projectPath: string, events: Telemetr
   if (!pendingDrain) {
     let start: () => void = () => undefined;
     const gate = new Promise<void>(resolve => { start = resolve; });
-    const timer = setTimeout(start, selfTelemetryIngestCoalesceMs());
+    const timer = setTimeout(start, shuttingDown ? 0 : selfTelemetryIngestCoalesceMs());
     timer.unref();
     const promise = gate.then(() => {
       clearTimeout(timer);

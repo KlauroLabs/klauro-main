@@ -444,3 +444,48 @@ test('self-telemetry ingests are coalesced into one isolated worker run per wind
     }
   });
 });
+
+test('shutdown drains a coalescing window immediately in a real child process with the default window', async () => {
+  await withTempStorage(async storage => {
+    const { spawnSync } = await import('node:child_process');
+    const probeFile = nodePath.join(storage, 'shutdown-runs.log');
+    const workerEntry = nodePath.join(storage, 'probe-worker.cjs');
+    fs.writeFileSync(workerEntry, [
+      "const fs = require('node:fs');",
+      "process.on('message', request => {",
+      "  fs.appendFileSync(process.env.KLAURO_SELF_TELEMETRY_PROBE_FILE, JSON.stringify(request.batches.map(batch => batch.events.length)) + '\\n');",
+      "  process.send({ type: 'result' });",
+      '});',
+    ].join('\n'));
+    const sourceDir = typeof __dirname === 'string' ? __dirname : nodePath.resolve(process.cwd(), 'src');
+    const script = nodePath.join(storage, 'shutdown-child.mts');
+    fs.writeFileSync(script, [
+      'const started = Date.now();',
+      `const telemetry = await import(${JSON.stringify(nodePath.join(sourceDir, 'self-telemetry.ts'))});`,
+      `const sdk = await import(${JSON.stringify(nodePath.resolve(sourceDir, '../../../packages/klauro-sdk-js/src/index.ts'))});`,
+      "if (!telemetry.initSelfTelemetry()) throw new Error('self telemetry did not initialize');",
+      "sdk.getClient().recordEvent({ type: 'request', event_id: 'shutdown-event', route: '/orders', status_code: 200 });",
+      'await telemetry.shutdownSelfTelemetry();',
+      'process.stdout.write(String(Date.now() - started));',
+    ].join('\n'));
+    const child = spawnSync(process.execPath, [nodePath.resolve(sourceDir, '../../../node_modules/.bin/tsx'), script], {
+      cwd: nodePath.resolve(sourceDir, '..'),
+      encoding: 'utf8',
+      timeout: 60_000,
+      env: {
+        ...process.env,
+        KLAURO_SELF_TELEMETRY: '1',
+        KLAURO_SELF_TELEMETRY_PROJECT: nodePath.join(storage, 'project'),
+        KLAURO_SELF_TELEMETRY_WORKER_ENTRY: workerEntry,
+        KLAURO_SELF_TELEMETRY_PROBE_FILE: probeFile,
+        KLAURO_SELF_TELEMETRY_COALESCE_MS: undefined,
+        KLAURO_SELF_TELEMETRY_ENDPOINT: undefined,
+        KLAURO_SELF_TELEMETRY_CANONICAL_PROJECT: undefined,
+      },
+    });
+    assert.equal(child.status, 0, child.stderr);
+    const elapsedMs = Number(child.stdout.trim());
+    assert.ok(elapsedMs < 15_000, `shutdown waited ${elapsedMs}ms; the coalescing window must not gate shutdown`);
+    assert.deepEqual(fs.readFileSync(probeFile, 'utf8').trim().split('\n'), ['[1]']);
+  });
+});
