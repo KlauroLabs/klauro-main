@@ -563,7 +563,12 @@ export const CAS_SEMANTIC_STORE_FORMAT = 'klauro-cas-semantic-store';
 export const CAS_SEMANTIC_STORE_VERSION = 1;
 export const CAS_SEMANTIC_TABLES = ['method_calls', 'change_risks', 'test_suites', 'mocks', 'fixtures'] as const;
 export type CasSemanticTableName = (typeof CAS_SEMANTIC_TABLES)[number];
-const MAX_POSTINGS_PER_RECORD = 64;
+const MAX_SEMANTIC_POSTINGS = 16_000_000;
+const MAX_SEMANTIC_EXTRA_BYTES = 64 * 1024 * 1024;
+function semanticPostingsBudget(): number {
+  const configured = Number(process.env.KLAURO_CAS_SEMANTIC_MAX_POSTINGS);
+  return Number.isSafeInteger(configured) && configured > 0 ? Math.min(configured, MAX_SEMANTIC_POSTINGS) : MAX_SEMANTIC_POSTINGS;
+}
 
 export interface CasSemanticTableDescriptor extends CasRecordStoreTable {
   postings: number;
@@ -575,7 +580,9 @@ export interface CasSemanticStoreDescriptor {
   version: typeof CAS_SEMANTIC_STORE_VERSION;
   codec: 'brotli';
   node_count: number;
+  postings_budget: number;
   tables: Partial<Record<CasSemanticTableName, CasSemanticTableDescriptor>>;
+  extras?: { reachability_index?: CasRawColumnDescriptor & { decoded_bytes: number } };
 }
 
 function semanticRecordNodeIds(table: CasSemanticTableName, record: Record<string, unknown>): string[] {
@@ -592,7 +599,7 @@ function semanticRecordNodeIds(table: CasSemanticTableName, record: Record<strin
     case 'mocks': push(record.target_node); pushAll(record.used_by); break;
     case 'fixtures': pushAll(record.used_by); pushAll(record.tested_by); break;
   }
-  return [...new Set(ids)].slice(0, MAX_POSTINGS_PER_RECORD);
+  return [...new Set(ids)];
 }
 
 export function isSupportedCasSemanticStoreDescriptor(descriptor: unknown): descriptor is CasSemanticStoreDescriptor {
@@ -610,29 +617,46 @@ export async function writeCasSemanticStore(
   const tables: Partial<Record<CasSemanticTableName, CasSemanticTableDescriptor>> = {};
   const writers: StreamingTableWriter[] = [];
   const written: string[] = [];
+  const budget = semanticPostingsBudget();
+  let postingsUsed = 0;
   try {
     for (const table of CAS_SEMANTIC_TABLES) {
       const records = (output as unknown as Record<string, unknown>)[table];
       if (!Array.isArray(records) || records.length === 0) continue;
       const prefix = `semantic.${table}`;
-      const writer = new StreamingTableWriter(directory, prefix);
-      writers.push(writer);
-      const postingsByNode: number[][] = Array.from({ length: graph.nodeCount }, () => []);
+      const counts = new Uint32Array(graph.nodeCount + 1);
+      let total = 0;
+      for (const record of records) {
+        for (const id of semanticRecordNodeIds(table, (record ?? {}) as Record<string, unknown>)) {
+          const node = graph.nodeById(id);
+          if (!node) continue;
+          counts[node.denseId + 1] += 1;
+          total += 1;
+          if (postingsUsed + total > budget) throw new CasRecordStoreCapacityError(`CAS semantic store needs more than ${budget} postings (${table} exceeds the remaining budget)`);
+        }
+      }
+      const offsets = new Uint32Array(graph.nodeCount + 1);
+      for (let index = 1; index <= graph.nodeCount; index += 1) offsets[index] = offsets[index - 1] + counts[index];
+      const postings = new Uint32Array(total);
+      const cursor = Uint32Array.from(offsets.subarray(0, graph.nodeCount));
       records.forEach((record, ordinal) => {
         for (const id of semanticRecordNodeIds(table, (record ?? {}) as Record<string, unknown>)) {
           const node = graph.nodeById(id);
-          if (node) postingsByNode[node.denseId].push(ordinal);
+          if (!node) continue;
+          postings[cursor[node.denseId]] = ordinal;
+          cursor[node.denseId] += 1;
         }
       });
+      for (let denseId = 0; denseId < graph.nodeCount; denseId += 1) if (cursor[denseId] !== offsets[denseId + 1]) throw new Error(`CAS semantic store ${table} postings for node ${denseId} did not fill exactly`);
+      postingsUsed += total;
+      const writer = new StreamingTableWriter(directory, prefix);
+      writers.push(writer);
       for (const record of records) await writer.push(record);
       const base = await writer.finish();
       written.push(base.columns.blocks.file, ...Object.values(base.columns).map(column => column.file));
-      const offsets: number[] = [0];
-      const postings: number[] = [];
-      for (const list of postingsByNode) { for (const ordinal of list) postings.push(ordinal); offsets.push(postings.length); }
-      const writeColumn = async (name: string, values: readonly number[]): Promise<CasRawColumnDescriptor> => {
+      const writeColumn = async (name: string, values: Uint32Array): Promise<CasRawColumnDescriptor> => {
         const file = `${prefix}.byNode.${name}.bin`;
-        const bytes = uint32ToBuffer(values);
+        const bytes = uint32ToBuffer(Array.from(values));
         const handle = await fs.promises.open(path.join(directory, file), 'w');
         try { await writeFully(handle, bytes); await handle.sync(); } finally { await handle.close(); }
         written.push(file);
@@ -640,11 +664,23 @@ export async function writeCasSemanticStore(
       };
       tables[table] = {
         ...base,
-        postings: postings.length,
+        postings: total,
         by_node: { offsets: await writeColumn('offsets', offsets), postings: await writeColumn('postings', postings) },
       };
     }
-    return { descriptor: { format: CAS_SEMANTIC_STORE_FORMAT, version: CAS_SEMANTIC_STORE_VERSION, codec: 'brotli', node_count: graph.nodeCount, tables } };
+    let extras: CasSemanticStoreDescriptor['extras'];
+    const reachability = (output as unknown as { reachability_index?: unknown }).reachability_index;
+    if (reachability && typeof reachability === 'object') {
+      const decoded = Buffer.from(JSON.stringify(reachability), 'utf8');
+      if (decoded.byteLength > MAX_SEMANTIC_EXTRA_BYTES) throw new CasRecordStoreCapacityError(`CAS semantic store reachability index is ${decoded.byteLength} bytes, above ${MAX_SEMANTIC_EXTRA_BYTES}`);
+      const compressed = zlib.brotliCompressSync(decoded, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5, [zlib.constants.BROTLI_PARAM_SIZE_HINT]: decoded.byteLength } });
+      const file = 'semantic.reachability_index.json.br';
+      const handle = await fs.promises.open(path.join(directory, file), 'w');
+      try { await writeFully(handle, compressed); await handle.sync(); } finally { await handle.close(); }
+      written.push(file);
+      extras = { reachability_index: { file, encoding: 'uint8', length: compressed.byteLength, bytes: compressed.byteLength, sha256: sha256(compressed), decoded_bytes: decoded.byteLength } };
+    }
+    return { descriptor: { format: CAS_SEMANTIC_STORE_FORMAT, version: CAS_SEMANTIC_STORE_VERSION, codec: 'brotli', node_count: graph.nodeCount, postings_budget: budget, tables, ...(extras ? { extras } : {}) } };
   } catch (error) {
     for (const writer of writers) await writer.abort();
     for (const file of written) await fs.promises.rm(path.join(directory, file), { force: true }).catch(() => undefined);
@@ -663,6 +699,7 @@ export interface CasSemanticTableRead<T> {
 export interface CasSemanticStore {
   tables: ReadonlySet<CasSemanticTableName>;
   readByNodes<T>(table: CasSemanticTableName, denseIds: readonly number[]): Promise<CasSemanticTableRead<T>>;
+  readReachabilityIndex(): Promise<unknown | undefined>;
   stats(): CasRecordStoreReadStats;
 }
 
@@ -685,11 +722,11 @@ export async function openCasSemanticStore(
     const expectedTotal = expected.totals?.[name];
     if (typeof expectedTotal === 'number' && expectedTotal !== table.count) throw new Error(`CAS semantic store ${name} count ${table.count} does not match the generation total ${expectedTotal}`);
     const prefix = `semantic.${name}`;
-    const postingsCount = safeCount(table.postings, `${name} postings`, MAX_TABLE_RECORDS * MAX_POSTINGS_PER_RECORD);
+    const postingsCount = safeCount(table.postings, `${name} postings`, MAX_SEMANTIC_POSTINGS);
     ledger.chargeIndex((expected.nodeCount + 1 + postingsCount) * UINT32_BYTES);
     const offsets = readUint32Column(await readVerifiedColumn(directory, `${prefix}.byNode.offsets`, table.by_node?.offsets, (expected.nodeCount + 1) * UINT32_BYTES));
     const postings = readUint32Column(await readVerifiedColumn(directory, `${prefix}.byNode.postings`, table.by_node?.postings, postingsCount * UINT32_BYTES));
-    assertMonotone(offsets, `${prefix}.byNode.offsets`, MAX_POSTINGS_PER_RECORD * MAX_TABLE_RECORDS);
+    assertMonotone(offsets, `${prefix}.byNode.offsets`, MAX_SEMANTIC_POSTINGS);
     if (offsets[0] !== 0 || offsets[expected.nodeCount] !== postingsCount) throw new Error(`CAS semantic store ${name} postings offsets do not cover the postings`);
     for (let index = 0; index < postings.length; index += 1) if (postings[index] >= table.count) throw new Error(`CAS semantic store ${name} posting ${index} is out of range`);
     const records = await CasRecordTable.open<unknown>(directory, prefix, table, cache, ledger);
@@ -708,6 +745,18 @@ export async function openCasSemanticStore(
       const sorted = [...ordinals].sort((left, right) => left - right);
       const records = await entry.table.read(sorted) as T[];
       return { records, total: entry.table.count, matched: sorted.length, read: records.length };
+    },
+    async readReachabilityIndex(): Promise<unknown | undefined> {
+      const extra = descriptor.extras?.reachability_index;
+      if (!extra) return undefined;
+      safeCount(extra.decoded_bytes, 'reachability index decoded bytes', MAX_SEMANTIC_EXTRA_BYTES);
+      ledger.reserve(0, extra.decoded_bytes, extra.bytes, 1);
+      const compressed = await readVerifiedColumn(directory, 'semantic.reachability_index', extra, extra.bytes);
+      ledger.stats.blockReads += 1;
+      ledger.stats.compressedBytesRead += compressed.byteLength;
+      const decoded = zlib.brotliDecompressSync(compressed, { maxOutputLength: extra.decoded_bytes });
+      if (decoded.byteLength !== extra.decoded_bytes) throw new Error(`CAS semantic store reachability index decoded to ${decoded.byteLength} bytes, expected ${extra.decoded_bytes}`);
+      return JSON.parse(decoded.toString('utf8'));
     },
     stats: () => ({ ...ledger.stats }),
   };

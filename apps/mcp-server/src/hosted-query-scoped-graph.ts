@@ -653,7 +653,7 @@ export async function planScopedQuery(
 }
 
 export interface ScopedSemanticCollections {
-  collections: Partial<Record<CasSemanticTableName, unknown[]>>;
+  collections: Partial<Record<CasSemanticTableName, unknown[]>> & { reachability_index?: unknown };
   projected: Record<string, { total: number; matched: number; read: number }>;
   stats: CasRecordStoreReadStats;
 }
@@ -678,8 +678,10 @@ export async function loadScopedSemanticCollections(
     const node = graph.nodeById(id);
     if (node) denseIds.push(node.denseId);
   }
-  const collections: Partial<Record<CasSemanticTableName, unknown[]>> = {};
+  const collections: ScopedSemanticCollections['collections'] = {};
   const projected: Record<string, { total: number; matched: number; read: number }> = {};
+  const reachability = await store.readReachabilityIndex();
+  if (reachability !== undefined) collections.reachability_index = reachability;
   for (const table of tables) {
     if (!store.tables.has(table)) {
       const total = totals?.[table];

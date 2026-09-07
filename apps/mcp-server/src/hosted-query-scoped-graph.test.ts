@@ -403,7 +403,7 @@ test('semantic tables serve method calls, change risks and tests for a scope by 
       assert.deepEqual((semantic.collections.fixtures as any[]).map(fixture => fixture.id), ['fixture-1']);
       assert.equal(semantic.projected.test_suites.total, 2);
       const section = (await loadScopedGraphSection(pinned, keepIds, graph))!;
-      const scopedCas = { ...full, nodes: section.nodes, edges: section.edges, ...semantic.collections, reachability_index: undefined } as unknown as CASOutput;
+      const scopedCas = { ...full, nodes: section.nodes, edges: section.edges, ...semantic.collections } as unknown as CASOutput;
       const strip = (value: unknown) => JSON.parse(JSON.stringify(value));
       assert.deepEqual(strip(assessChangeRisk(scopedCas, 'node-0')), strip(assessChangeRisk(full, 'node-0')), 'precomputed risk parity on the semantic subset');
       assert.deepEqual(strip(findTests(scopedCas, { nodeId: 'node-0' })), strip(findTests(full, { nodeId: 'node-0' })), 'tests parity');
@@ -414,6 +414,46 @@ test('semantic tables serve method calls, change risks and tests for a scope by 
       assert.deepEqual(Object.keys(empty!.collections).sort(), ['change_risks', 'method_calls'], 'only node-keyed collections are applied by default; suites rank by file co-location and fixtures are returned whole');
     } finally {
       await pinned.release();
+    }
+  });
+});
+
+test('semantic postings keep every reference past 64 and refuse the whole store rather than publish a partial one', async () => {
+  await withStorage(async project => {
+    const cas = fixture();
+    const nodes = (cas as any).nodes as any[];
+    for (let index = 40; index < 120; index += 1) nodes.push({ id: `node-${index}`, name: `helper${index}`, type: 'function', level: 1, source: { file: `src/wide${index}.ts`, line: 1 } });
+    const covered = Array.from({ length: 80 }, (_, index) => `node-${40 + index}`);
+    (cas as any).test_suites = [{ id: 'suite-wide', name: 'wide.test', file_path: 'src/wide.test.ts', tests: [{ name: 'covers many', targets: covered }], coverage: { nodes_tested: covered } }];
+    await saveAnalysis(project, cas, 'main', { canonicalSegmented: true });
+    const graph = (await loadCompactAnalysisGraph(project))!;
+    const pinned = (await acquirePinnedAnalysis(project))!;
+    try {
+      const last = await loadScopedSemanticCollections(pinned, graph, new Set(['node-119']), ['test_suites']);
+      assert.deepEqual((last!.collections.test_suites as any[]).map(suite => suite.id), ['suite-wide'], 'the 80th referenced node still finds its suite');
+      assert.deepEqual(last!.projected.test_suites, { total: 1, matched: 1, read: 1 });
+      assert.equal(pinned.segmented.manifest.semantic_store!.tables.test_suites!.postings, 80);
+    } finally {
+      await pinned.release();
+    }
+    const previous = process.env.KLAURO_CAS_SEMANTIC_MAX_POSTINGS;
+    process.env.KLAURO_CAS_SEMANTIC_MAX_POSTINGS = '10';
+    const tiny = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-semantic-tiny-'));
+    try {
+      await saveAnalysis(tiny, cas, 'main', { canonicalSegmented: true });
+      const manifest = (await loadAnalysisSectionManifest(tiny))!;
+      assert.equal(manifest.semantic_store, undefined, 'over budget skips the whole semantic store, no partial descriptor');
+      assert.ok(manifest.record_store, 'the record store and canonical save are unaffected');
+      const tinyPinned = (await acquirePinnedAnalysis(tiny))!;
+      try {
+        assert.ok(!fs.readdirSync(tinyPinned.segmented.directory).some(file => file.startsWith('semantic.')), 'no semantic files are left behind');
+        assert.equal(await loadScopedSemanticCollections(tinyPinned, (await loadCompactAnalysisGraph(tiny))!, new Set(['node-0'])), null, 'consumers fall back to whole sections');
+      } finally {
+        await tinyPinned.release();
+      }
+    } finally {
+      if (previous === undefined) delete process.env.KLAURO_CAS_SEMANTIC_MAX_POSTINGS; else process.env.KLAURO_CAS_SEMANTIC_MAX_POSTINGS = previous;
+      fs.rmSync(tiny, { recursive: true, force: true });
     }
   });
 });
