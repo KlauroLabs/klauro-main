@@ -334,7 +334,7 @@ test('capsule-only response preserves missing citations without claiming deletio
       task_type: 'modify', target: 'UsersService', response_profile: 'capsule-only',
     }) as Record<string, any>;
     assert.equal(context.analysis_freshness.citation_verification, 'invalid');
-    assert.match(context.rule, /INVALID CITATION.*inspect the current workspace/i);
+    assert.match(context.rule, /INVALID CITATION.*missing now.*inspect cited source/i);
     assert.match(context.analysis_freshness.warning, /deletion timing is unknown/i);
   });
 });
