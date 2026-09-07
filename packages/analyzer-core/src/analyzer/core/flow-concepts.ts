@@ -612,6 +612,7 @@ interface ContractFactIndex {
   passiveSeamsByTarget: Map<string, NonNullable<CASOutput['consistency_model']>['passive_seams']>;
   lineageByNode: Map<string, CASEntityLineage[]>;
   lineageOrdinal: Map<CASEntityLineage, number>;
+  exitSourceById: Map<string, string>;
   entryPointNameById: Map<string, string>;
   tryCatchNodeIds: Set<string>;
   callChains: Array<{
@@ -660,6 +661,7 @@ function contractFactIndex(cas: CASOutput): ContractFactIndex {
     passiveSeamsByTarget.set(seam.target, seams);
   }
 
+  const exitSourceById = new Map((cas.exit_points || []).map(exit => [exit.id, exit.source_node]));
   const lineageByNode = new Map<string, CASEntityLineage[]>();
   const lineageOrdinal = new Map<CASEntityLineage, number>();
   for (const [ordinal, lineage] of (cas.data_lineage || []).entries()) {
@@ -667,6 +669,10 @@ function contractFactIndex(cas: CASOutput): ContractFactIndex {
     const nodeIds = new Set([
       ...(lineage.writers || []).map(writer => writer.node_id),
       ...(lineage.readers || []).map(reader => reader.node_id),
+      ...(lineage.external_recipients || []).flatMap(recipient => {
+        const carrier = recipient.via_node ?? exitSourceById.get(recipient.exit_point_id);
+        return carrier ? [carrier] : [];
+      }),
     ]);
     for (const nodeId of nodeIds) {
       const entries = lineageByNode.get(nodeId) || [];
@@ -706,6 +712,7 @@ function contractFactIndex(cas: CASOutput): ContractFactIndex {
     passiveSeamsByTarget,
     lineageByNode,
     lineageOrdinal,
+    exitSourceById,
     entryPointNameById,
     tryCatchNodeIds,
     callChains,
@@ -970,16 +977,13 @@ function buildEvidenceContract(
       recordEvidence('input', `reads ${entry.entity_name}`,
         `data_lineage "${entry.entity_name}" readers include a node in this unit`, readerIds);
     }
-    if (writesHere || readsHere) {
-      for (const rec of entry.external_recipients) {
-        externalIntegrations.add(rec.service);
-        const participantIds = [
-          ...entry.writers.map(writer => writer.node_id),
-          ...entry.readers.map(reader => reader.node_id),
-        ].filter(id => nodeIds.has(id));
-        recordEvidence('external_integration', rec.service,
-          `data_lineage "${entry.entity_name}" external_recipients names ${rec.service}`, participantIds);
-      }
+    for (const recipient of entry.external_recipients) {
+      const carrier = recipient.via_node ?? facts.exitSourceById.get(recipient.exit_point_id);
+      if (!carrier || !nodeIds.has(carrier)) continue;
+      externalIntegrations.add(recipient.service);
+      recordEvidence('external_integration', recipient.service,
+        `data_lineage "${entry.entity_name}" transfer to ${recipient.service} through node ${carrier} at exit ${recipient.exit_point_id}`,
+        [carrier]);
     }
   }
 

@@ -57,7 +57,70 @@ function aggregateLogicFixture(): CASOutput {
   return cas;
 }
 
+function transferFixture(): CASOutput {
+  const cas = aggregateLogicFixture();
+  cas.exit_points!.push({ id: 'exit-transfer', source_node: 'observe', type: 'api', name: 'send' });
+  cas.data_lineage = [{
+    entity_id: 'entity-order', entity_name: 'Order', sensitive_fields: [],
+    writers: [{ node_id: 'persist', via: 'source' }],
+    readers: [{ node_id: 'handler', via: 'source' }],
+    external_recipients: [{ exit_point_id: 'exit-transfer', service: 'delivery-service', via_node: 'observe' }],
+    boundaries_crossed: [], journeys_carrying: [],
+    exposure: { unguarded_paths: 0, external_transfer: true, sensitive: false },
+  }];
+  return cas;
+}
+
 describe('canonical code-unit ICELOT contracts', () => {
+  test('attributes entity transfers only to the carrier while preserving node-to-flow evidence', () => {
+    const cas = transferFixture();
+    const lineageBefore = JSON.stringify(cas.data_lineage);
+    materializeNodeUnderstandingContracts(cas);
+    for (const id of ['handler', 'persist']) {
+      expect(cas.nodes.find(node => node.id === id)?.contract?.side_effects.external_integrations)
+        .not.toContain('delivery-service');
+    }
+    const carrier = cas.nodes.find(node => node.id === 'observe')!.contract!;
+    expect(carrier.side_effects.external_integrations).toContain('delivery-service');
+    expect(carrier.facet_provenance?.find(item => item.facet === 'external_integration' && item.value === 'delivery-service')
+      ?.contributed_by_node_ids).toEqual(['observe']);
+    const flow = cas.flows![0];
+    for (const step of flow.steps.filter(step => step.step_id !== 'step-observe')) {
+      expect(step.contract.side_effects.external_integrations).not.toContain('delivery-service');
+    }
+    expect(flow.steps.find(step => step.step_id === 'step-observe')?.contract.side_effects.external_integrations)
+      .toContain('delivery-service');
+    expect(flow.contract.side_effects.external_integrations).toContain('delivery-service');
+    const provenance = flow.contract.facet_provenance?.filter(item => item.facet === 'external_integration' && item.value === 'delivery-service');
+    expect(provenance?.length).toBeGreaterThan(0);
+    for (const item of provenance || []) {
+      expect(item.contributed_by_node_ids).toEqual(['observe']);
+      expect(item.contributed_by_step_ids).toEqual(['step-observe']);
+    }
+    expect(JSON.stringify(cas.data_lineage)).toBe(lineageBefore);
+    expect(validateUnderstandingContractIntegrity(cas)).toEqual([]);
+  });
+
+  test('resolves a missing lineage carrier through its known exit point without attributing unrelated writers', () => {
+    const cas = transferFixture();
+    delete cas.data_lineage![0].external_recipients[0].via_node;
+    materializeNodeUnderstandingContracts(cas);
+    expect(cas.nodes.find(node => node.id === 'observe')?.contract?.side_effects.external_integrations)
+      .toContain('delivery-service');
+    expect(cas.nodes.find(node => node.id === 'persist')?.contract?.side_effects.external_integrations)
+      .not.toContain('delivery-service');
+    expect(cas.data_lineage![0].external_recipients[0].via_node).toBeUndefined();
+  });
+
+  test('retains unknown transfer evidence on the entity without inventing a responsible function', () => {
+    const cas = transferFixture();
+    cas.data_lineage![0].external_recipients = [{ exit_point_id: 'unresolved-exit', service: 'unresolved-service' }];
+    const lineageBefore = JSON.stringify(cas.data_lineage);
+    materializeNodeUnderstandingContracts(cas);
+    expect(cas.nodes.every(node => !node.contract?.side_effects.external_integrations.includes('unresolved-service'))).toBe(true);
+    expect(cas.nodes.find(node => node.id === 'observe')?.contract?.side_effects.external_integrations).toContain('api:send');
+    expect(JSON.stringify(cas.data_lineage)).toBe(lineageBefore);
+  });
   test('materializes only behavioral code units with evidence-backed facets and explicit abstentions', () => {
     const cas = fixture();
     materializeNodeUnderstandingContracts(cas);
