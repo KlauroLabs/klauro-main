@@ -1017,7 +1017,7 @@ export function formatExecutionCapsule(brief: any): string {
     capsuleList('Q', brief.test || brief.test_evidence, 5, 58),
     capsuleList('N', brief.no || brief.avoid, 6, 58),
     capsuleList('P', brief.preserve, 3, 64),
-    capsuleList('V', brief.validate, 1, 96),
+    arrayOfStrings(brief.validate).map(command => `V|${command}`).join('\n'),
     capsuleBudgetLine(brief.token_policy),
     'S|val-stop',
   ];
@@ -2182,7 +2182,7 @@ function compactFirstTurnExecution(brief: any) {
   return {
     read: Array.isArray(brief.read_first) ? brief.read_first.slice(0, 2) : [],
     edit: Array.isArray(brief.edit_scope) ? brief.edit_scope.slice(0, 2) : [],
-    validate: Array.isArray(brief.validate) ? brief.validate.slice(0, 1).map((item: unknown) => compactFirstTurnText(String(item), 80)) : [],
+    validate: arrayOfStrings(brief.validate),
     stop: 'validate then stop',
   };
 }
@@ -4913,6 +4913,7 @@ function shouldSuggestFocusedRegressionTest(tokens: Set<string>): boolean {
 }
 
 function inferLikelyNewTestPlanItems(plan: FileReadPlanItem[], existing: Set<string>): FileReadPlanItem[] {
+  if (plan.some(item => isTestPath(item.file))) return [];
   return plan
     .filter(item => !isTestPath(item.file) && /\.(ts|tsx|js|jsx|mjs|cjs)$/i.test(item.file))
     .slice(0, 2)
