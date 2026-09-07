@@ -7,16 +7,17 @@ import type { CompactCASGraph } from '../../../packages/analyzer-core/src/analyz
 import type { CasRawColumnDescriptor } from './cas-sections';
 
 export const CAS_RECORD_STORE_FORMAT = 'klauro-cas-record-store';
-export const CAS_RECORD_STORE_VERSION = 2;
+export const CAS_RECORD_STORE_VERSION = 3;
 export const CAS_RECORD_STORE_MAX_BLOCK_RECORDS = 256;
 export const CAS_RECORD_STORE_TARGET_BLOCK_BYTES = 1024 * 1024;
 export const CAS_RECORD_STORE_MAX_BLOCK_BYTES = 16 * 1024 * 1024;
 export const CAS_RECORD_STORE_MAX_RECORD_BYTES = CAS_RECORD_STORE_MAX_BLOCK_BYTES;
+export const CAS_RECORD_STORE_MAX_BLOCK_COMPRESSED_BYTES = CAS_RECORD_STORE_MAX_BLOCK_BYTES + 1024 * 1024;
 const MAX_TABLE_BYTES = 0xffffffff;
 const MAX_TABLE_RECORDS = 8_000_000;
-const MAX_INDEX_COLUMN_BYTES = 64 * 1024 * 1024;
 const SHA256_BYTES = 32;
 const UINT32_BYTES = 4;
+const INDEX_COLUMNS = ['blockOffsets', 'blockRecords', 'recordOffsets', 'blockChecksums'] as const;
 
 export interface CasRecordStoreTable {
   count: number;
@@ -37,12 +38,26 @@ export interface CasRecordStoreDescriptor {
 export interface CasRecordStoreReadBudget {
   maxRecords: number;
   maxDecodedBytes: number;
+  maxCompressedBytes: number;
+  maxIndexBytes: number;
   cacheBytes: number;
+}
+
+export interface CasRecordStoreReadStats {
+  indexBytes: number;
+  records: number;
+  blocksPlanned: number;
+  blockReads: number;
+  cacheHits: number;
+  compressedBytesRead: number;
+  decodedBytes: number;
 }
 
 export const DEFAULT_RECORD_STORE_READ_BUDGET: CasRecordStoreReadBudget = {
   maxRecords: 20_000,
   maxDecodedBytes: 64 * 1024 * 1024,
+  maxCompressedBytes: 64 * 1024 * 1024,
+  maxIndexBytes: 64 * 1024 * 1024,
   cacheBytes: 32 * 1024 * 1024,
 };
 
@@ -62,6 +77,35 @@ function uint32ToBuffer(values: readonly number[]): Buffer {
   const buffer = Buffer.alloc(values.length * UINT32_BYTES);
   values.forEach((value, index) => buffer.writeUInt32LE(value, index * UINT32_BYTES));
   return buffer;
+}
+
+export function indexColumnBytes(name: (typeof INDEX_COLUMNS)[number], count: number, blocks: number): number {
+  switch (name) {
+    case 'blockOffsets':
+    case 'blockRecords':
+      return (blocks + 1) * UINT32_BYTES;
+    case 'recordOffsets':
+      return (count + 1) * UINT32_BYTES;
+    case 'blockChecksums':
+      return blocks * SHA256_BYTES;
+  }
+}
+
+export function tableIndexBytes(table: Pick<CasRecordStoreTable, 'count' | 'blocks'>): number {
+  return INDEX_COLUMNS.reduce((sum, name) => sum + indexColumnBytes(name, table.count, table.blocks), 0);
+}
+
+export interface WritableHandle {
+  write(buffer: Buffer, offset: number, length: number, position: number | null): Promise<{ bytesWritten: number }>;
+}
+
+export async function writeFully(handle: WritableHandle, buffer: Buffer): Promise<void> {
+  let written = 0;
+  while (written < buffer.byteLength) {
+    const { bytesWritten } = await handle.write(buffer, written, buffer.byteLength - written, null);
+    if (!Number.isInteger(bytesWritten) || bytesWritten <= 0) throw new Error(`CAS record store write made no progress at byte ${written} of ${buffer.byteLength}`);
+    written += bytesWritten;
+  }
 }
 
 class StreamingTableWriter {
@@ -103,11 +147,12 @@ class StreamingTableWriter {
     const compressed = zlib.brotliCompressSync(decoded, {
       params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5, [zlib.constants.BROTLI_PARAM_SIZE_HINT]: decoded.byteLength },
     });
+    if (compressed.byteLength > CAS_RECORD_STORE_MAX_BLOCK_COMPRESSED_BYTES) throw new CasRecordStoreCapacityError(`CAS record store ${this.prefix} block compresses to ${compressed.byteLength} bytes, above ${CAS_RECORD_STORE_MAX_BLOCK_COMPRESSED_BYTES}`);
+    if (this.compressedBytes + compressed.byteLength > MAX_TABLE_BYTES) throw new CasRecordStoreCapacityError(`CAS record store ${this.prefix} compressed data exceeds addressing limits`);
     if (!this.handle) this.handle = await fs.promises.open(path.join(this.directory, this.blocksFile), 'w');
-    await this.handle.write(compressed);
+    await writeFully(this.handle, compressed);
     this.blocksHash.update(compressed);
     this.compressedBytes += compressed.byteLength;
-    if (this.compressedBytes > MAX_TABLE_BYTES) throw new CasRecordStoreCapacityError(`CAS record store ${this.prefix} compressed data exceeds addressing limits`);
     this.blockOffsets.push(this.compressedBytes);
     this.blockRecords.push(this.count);
     this.checksums.push(crypto.createHash('sha256').update(compressed).digest());
@@ -118,13 +163,25 @@ class StreamingTableWriter {
   async finish(): Promise<CasRecordStoreTable> {
     await this.flush();
     if (!this.handle) this.handle = await fs.promises.open(path.join(this.directory, this.blocksFile), 'w');
+    await this.handle.sync();
     await this.handle.close();
+    const written = await fs.promises.stat(path.join(this.directory, this.blocksFile));
+    if (written.size !== this.compressedBytes) throw new Error(`CAS record store ${this.prefix} wrote ${written.size} block bytes, expected ${this.compressedBytes}`);
     const columns: Record<string, CasRawColumnDescriptor> = {
       blocks: { file: this.blocksFile, encoding: 'uint8', length: this.compressedBytes, bytes: this.compressedBytes, sha256: this.blocksHash.digest('hex') },
     };
-    const writeIndex = async (name: string, bytes: Buffer, encoding: 'uint8' | 'uint32-le', length: number): Promise<void> => {
+    const writeIndex = async (name: (typeof INDEX_COLUMNS)[number], bytes: Buffer, encoding: 'uint8' | 'uint32-le', length: number): Promise<void> => {
       const file = `${this.prefix}.${name}.bin`;
-      await fs.promises.writeFile(path.join(this.directory, file), bytes);
+      const target = path.join(this.directory, file);
+      const handle = await fs.promises.open(target, 'w');
+      try {
+        await writeFully(handle, bytes);
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      const stat = await fs.promises.stat(target);
+      if (stat.size !== bytes.byteLength || bytes.byteLength !== indexColumnBytes(name, this.count, this.blockOffsets.length - 1)) throw new Error(`CAS record store ${this.prefix} index column ${name} has an unexpected size`);
       columns[name] = { file, encoding, length, bytes: bytes.byteLength, sha256: sha256(bytes) };
     };
     await writeIndex('blockOffsets', uint32ToBuffer(this.blockOffsets), 'uint32-le', this.blockOffsets.length);
@@ -197,7 +254,7 @@ export async function writeCasRecordStore(
   } catch (error) {
     await nodesWriter.abort();
     await edgesWriter.abort();
-    for (const suffix of ['blockOffsets', 'blockRecords', 'recordOffsets', 'blockChecksums']) {
+    for (const suffix of INDEX_COLUMNS) {
       for (const prefix of ['records.nodes', 'records.edges']) await fs.promises.rm(path.join(directory, `${prefix}.${suffix}.bin`), { force: true }).catch(() => undefined);
     }
     if (error instanceof CasRecordStoreCapacityError) return { skipped: error.message };
@@ -210,20 +267,37 @@ function safeCount(value: unknown, name: string, max: number): number {
   return value as number;
 }
 
-async function readVerifiedColumn(directory: string, name: string, column: CasRawColumnDescriptor | undefined): Promise<Buffer> {
+async function readExactFile(filePath: string, expectedBytes: number, name: string): Promise<Buffer> {
+  const handle = await fs.promises.open(filePath, 'r');
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size !== expectedBytes) throw new Error(`CAS record store column ${name} file size ${stat.size} does not match ${expectedBytes}`);
+    const bytes = Buffer.alloc(expectedBytes);
+    let read = 0;
+    while (read < expectedBytes) {
+      const { bytesRead } = await handle.read(bytes, read, expectedBytes - read, read);
+      if (bytesRead <= 0) throw new Error(`CAS record store column ${name} is truncated at ${read} of ${expectedBytes}`);
+      read += bytesRead;
+    }
+    return bytes;
+  } finally {
+    await handle.close();
+  }
+}
+
+async function readVerifiedColumn(directory: string, name: string, column: CasRawColumnDescriptor | undefined, expectedBytes: number): Promise<Buffer> {
   if (!column) throw new Error(`CAS record store column ${name} is missing from the manifest`);
   if (path.basename(column.file) !== column.file) throw new Error(`CAS record store column ${name} has an invalid file path`);
-  safeCount(column.bytes, `${name} bytes`, MAX_INDEX_COLUMN_BYTES);
-  const bytes = await fs.promises.readFile(path.join(directory, column.file));
-  if (bytes.byteLength !== column.bytes) throw new Error(`CAS record store column ${name} byte length ${bytes.byteLength} does not match ${column.bytes}`);
+  if (column.bytes !== expectedBytes) throw new Error(`CAS record store column ${name} declares ${String(column.bytes)} bytes, expected ${expectedBytes}`);
+  if (typeof column.sha256 !== 'string' || column.sha256.length !== 64) throw new Error(`CAS record store column ${name} has an invalid checksum`);
+  const bytes = await readExactFile(path.join(directory, column.file), expectedBytes, name);
   if (sha256(bytes) !== column.sha256) throw new Error(`CAS record store column ${name} checksum mismatch`);
   return bytes;
 }
 
-function readUint32Column(bytes: Buffer, expectedLength: number, name: string): Uint32Array {
-  if (bytes.byteLength !== expectedLength * UINT32_BYTES) throw new Error(`CAS record store column ${name} length does not match its counts`);
-  const values = new Uint32Array(expectedLength);
-  for (let index = 0; index < expectedLength; index += 1) values[index] = bytes.readUInt32LE(index * UINT32_BYTES);
+function readUint32Column(bytes: Buffer): Uint32Array {
+  const values = new Uint32Array(bytes.byteLength / UINT32_BYTES);
+  for (let index = 0; index < values.length; index += 1) values[index] = bytes.readUInt32LE(index * UINT32_BYTES);
   return values;
 }
 
@@ -264,6 +338,27 @@ class SharedBlockCache {
   }
 }
 
+class ReadLedger {
+  readonly stats: CasRecordStoreReadStats = { indexBytes: 0, records: 0, blocksPlanned: 0, blockReads: 0, cacheHits: 0, compressedBytesRead: 0, decodedBytes: 0 };
+
+  constructor(private readonly budget: CasRecordStoreReadBudget) {}
+
+  chargeIndex(bytes: number): void {
+    if (this.stats.indexBytes + bytes > this.budget.maxIndexBytes) throw new CasRecordStoreCapacityError(`CAS record store index needs ${this.stats.indexBytes + bytes} bytes, above ${this.budget.maxIndexBytes}`);
+    this.stats.indexBytes += bytes;
+  }
+
+  reserve(records: number, decodedBytes: number, compressedBytes: number, blocks: number): void {
+    if (this.stats.records + records > this.budget.maxRecords) throw new CasRecordStoreCapacityError(`CAS record store query of ${this.stats.records + records} records exceeds ${this.budget.maxRecords}`);
+    if (this.stats.decodedBytes + decodedBytes > this.budget.maxDecodedBytes) throw new CasRecordStoreCapacityError(`CAS record store query needs ${this.stats.decodedBytes + decodedBytes} decoded bytes, above ${this.budget.maxDecodedBytes}`);
+    if (this.stats.compressedBytesRead + compressedBytes > this.budget.maxCompressedBytes) throw new CasRecordStoreCapacityError(`CAS record store query needs ${this.stats.compressedBytesRead + compressedBytes} compressed bytes, above ${this.budget.maxCompressedBytes}`);
+    this.stats.records += records;
+    this.stats.decodedBytes += decodedBytes;
+    this.stats.compressedBytesRead += compressedBytes;
+    this.stats.blocksPlanned += blocks;
+  }
+}
+
 export class CasRecordTable<T> {
   private constructor(
     private readonly filePath: string,
@@ -275,35 +370,38 @@ export class CasRecordTable<T> {
     private readonly checksums: Buffer,
     readonly count: number,
     private readonly cache: SharedBlockCache,
-    private readonly budget: CasRecordStoreReadBudget,
+    private readonly ledger: ReadLedger,
   ) {}
 
-  static async open<T>(directory: string, prefix: string, table: CasRecordStoreTable, cache: SharedBlockCache, budget: CasRecordStoreReadBudget): Promise<CasRecordTable<T>> {
+  static async open<T>(directory: string, prefix: string, table: CasRecordStoreTable, cache: SharedBlockCache, ledger: ReadLedger): Promise<CasRecordTable<T>> {
     const count = safeCount(table.count, `${prefix} count`, MAX_TABLE_RECORDS);
     const blocks = safeCount(table.blocks, `${prefix} blocks`, MAX_TABLE_RECORDS);
     if (table.max_block_bytes !== CAS_RECORD_STORE_MAX_BLOCK_BYTES || table.max_block_records !== CAS_RECORD_STORE_MAX_BLOCK_RECORDS) throw new Error(`CAS record store ${prefix} block limits are unsupported`);
-    if ((count === 0) !== (blocks === 0)) throw new Error(`CAS record store ${prefix} block count does not match its record count`);
+    if ((count === 0) !== (blocks === 0) || blocks > count) throw new Error(`CAS record store ${prefix} block count does not match its record count`);
+    if (!table.columns || typeof table.columns !== 'object') throw new Error(`CAS record store ${prefix} columns are missing`);
     const blocksColumn = table.columns.blocks;
     if (!blocksColumn || path.basename(blocksColumn.file) !== blocksColumn.file) throw new Error(`CAS record store ${prefix} blocks column is invalid`);
-    safeCount(blocksColumn.bytes, `${prefix} blocks bytes`, MAX_TABLE_BYTES);
+    safeCount(blocksColumn.bytes, `${prefix} blocks bytes`, Math.min(MAX_TABLE_BYTES, blocks * CAS_RECORD_STORE_MAX_BLOCK_COMPRESSED_BYTES));
     const filePath = path.join(directory, blocksColumn.file);
     const stat = await fs.promises.stat(filePath).catch(() => null);
-    if (!stat || stat.size !== blocksColumn.bytes) throw new Error(`CAS record store ${prefix} blocks file size ${stat?.size ?? 'missing'} does not match ${blocksColumn.bytes}`);
-    const blockOffsets = readUint32Column(await readVerifiedColumn(directory, `${prefix}.blockOffsets`, table.columns.blockOffsets), blocks + 1, `${prefix}.blockOffsets`);
-    const blockRecords = readUint32Column(await readVerifiedColumn(directory, `${prefix}.blockRecords`, table.columns.blockRecords), blocks + 1, `${prefix}.blockRecords`);
-    const recordOffsets = readUint32Column(await readVerifiedColumn(directory, `${prefix}.recordOffsets`, table.columns.recordOffsets), count + 1, `${prefix}.recordOffsets`);
-    const checksums = await readVerifiedColumn(directory, `${prefix}.blockChecksums`, table.columns.blockChecksums);
-    if (checksums.byteLength !== blocks * SHA256_BYTES) throw new Error(`CAS record store ${prefix} block checksums do not match its block count`);
-    assertMonotone(blockOffsets, `${prefix}.blockOffsets`, MAX_TABLE_BYTES);
+    if (!stat || !stat.isFile() || stat.size !== blocksColumn.bytes) throw new Error(`CAS record store ${prefix} blocks file size ${stat?.size ?? 'missing'} does not match ${blocksColumn.bytes}`);
+    ledger.chargeIndex(tableIndexBytes({ count, blocks }));
+    const column = (name: (typeof INDEX_COLUMNS)[number]): Promise<Buffer> => readVerifiedColumn(directory, `${prefix}.${name}`, table.columns[name], indexColumnBytes(name, count, blocks));
+    const blockOffsets = readUint32Column(await column('blockOffsets'));
+    const blockRecords = readUint32Column(await column('blockRecords'));
+    const recordOffsets = readUint32Column(await column('recordOffsets'));
+    const checksums = await column('blockChecksums');
+    assertMonotone(blockOffsets, `${prefix}.blockOffsets`, CAS_RECORD_STORE_MAX_BLOCK_COMPRESSED_BYTES);
     assertMonotone(blockRecords, `${prefix}.blockRecords`, CAS_RECORD_STORE_MAX_BLOCK_RECORDS);
     assertMonotone(recordOffsets, `${prefix}.recordOffsets`, CAS_RECORD_STORE_MAX_RECORD_BYTES);
     if (blockOffsets[0] !== 0 || blockOffsets[blocks] !== blocksColumn.bytes) throw new Error(`CAS record store ${prefix} block offsets do not cover the block data`);
     if (blockRecords[0] !== 0 || blockRecords[blocks] !== count) throw new Error(`CAS record store ${prefix} block records do not cover the record count`);
     for (let block = 0; block < blocks; block += 1) {
       if (blockRecords[block + 1] <= blockRecords[block]) throw new Error(`CAS record store ${prefix} block ${block} is empty`);
+      if (blockOffsets[block + 1] <= blockOffsets[block]) throw new Error(`CAS record store ${prefix} block ${block} has no compressed data`);
       if (recordOffsets[blockRecords[block + 1]] - recordOffsets[blockRecords[block]] > CAS_RECORD_STORE_MAX_BLOCK_BYTES) throw new Error(`CAS record store ${prefix} block ${block} exceeds the decoded block limit`);
     }
-    return new CasRecordTable<T>(filePath, `${directory}:${prefix}`, blocksColumn.bytes, blockOffsets, blockRecords, recordOffsets, checksums, count, cache, budget);
+    return new CasRecordTable<T>(filePath, `${directory}:${prefix}`, blocksColumn.bytes, blockOffsets, blockRecords, recordOffsets, checksums, count, cache, ledger);
   }
 
   private blockOf(ordinal: number): number {
@@ -316,37 +414,48 @@ export class CasRecordTable<T> {
     return low;
   }
 
-  plan(ordinals: readonly number[]): { ordinals: number[]; blocks: number[]; decodedBytes: number; blockBytes: number } {
+  private decodedBlockBytes(block: number): number {
+    return this.recordOffsets[this.blockRecords[block + 1]] - this.recordOffsets[this.blockRecords[block]];
+  }
+
+  plan(ordinals: readonly number[]): { ordinals: number[]; blocks: number[]; decodedBytes: number; compressedBytes: number } {
     const unique = [...new Set(ordinals)].sort((left, right) => left - right);
-    if (unique.length > this.budget.maxRecords) throw new CasRecordStoreCapacityError(`CAS record store read of ${unique.length} records exceeds ${this.budget.maxRecords}`);
     const blocks = new Set<number>();
-    let decodedBytes = 0;
     for (const ordinal of unique) {
       if (!Number.isInteger(ordinal) || ordinal < 0 || ordinal >= this.count) throw new Error(`CAS record store ordinal ${ordinal} is out of range`);
-      decodedBytes += this.recordOffsets[ordinal + 1] - this.recordOffsets[ordinal];
       blocks.add(this.blockOf(ordinal));
     }
-    let blockBytes = 0;
-    for (const block of blocks) blockBytes += this.recordOffsets[this.blockRecords[block + 1]] - this.recordOffsets[this.blockRecords[block]];
-    if (decodedBytes > this.budget.maxDecodedBytes || blockBytes > this.budget.maxDecodedBytes) {
-      throw new CasRecordStoreCapacityError(`CAS record store read needs ${blockBytes} decoded bytes for ${unique.length} records, above ${this.budget.maxDecodedBytes}`);
+    let decodedBytes = 0;
+    let compressedBytes = 0;
+    for (const block of blocks) {
+      decodedBytes += this.decodedBlockBytes(block);
+      compressedBytes += this.blockOffsets[block + 1] - this.blockOffsets[block];
     }
-    return { ordinals: unique, blocks: [...blocks].sort((left, right) => left - right), decodedBytes, blockBytes };
+    this.ledger.reserve(unique.length, decodedBytes, compressedBytes, blocks.size);
+    return { ordinals: unique, blocks: [...blocks].sort((left, right) => left - right), decodedBytes, compressedBytes };
   }
 
   private async decodedBlock(handle: fs.promises.FileHandle, block: number): Promise<Buffer> {
     const key = `${this.cacheKey}:${block}`;
     const cached = this.cache.get(key);
-    if (cached) return cached;
+    if (cached) {
+      this.ledger.stats.cacheHits += 1;
+      return cached;
+    }
     const start = this.blockOffsets[block];
     const end = this.blockOffsets[block + 1];
-    if (end > this.blocksBytes) throw new Error(`CAS record store block ${block} is out of bounds`);
+    if (end > this.blocksBytes || end - start > CAS_RECORD_STORE_MAX_BLOCK_COMPRESSED_BYTES) throw new Error(`CAS record store block ${block} is out of bounds`);
     const compressed = Buffer.alloc(end - start);
-    const { bytesRead } = await handle.read(compressed, 0, compressed.byteLength, start);
-    if (bytesRead !== compressed.byteLength) throw new Error(`CAS record store block ${block} is truncated`);
+    let read = 0;
+    while (read < compressed.byteLength) {
+      const { bytesRead } = await handle.read(compressed, read, compressed.byteLength - read, start + read);
+      if (bytesRead <= 0) throw new Error(`CAS record store block ${block} is truncated`);
+      read += bytesRead;
+    }
+    this.ledger.stats.blockReads += 1;
     const expectedChecksum = this.checksums.subarray(block * SHA256_BYTES, (block + 1) * SHA256_BYTES);
     if (!crypto.createHash('sha256').update(compressed).digest().equals(expectedChecksum)) throw new Error(`CAS record store block ${block} checksum mismatch`);
-    const expectedBytes = this.recordOffsets[this.blockRecords[block + 1]] - this.recordOffsets[this.blockRecords[block]];
+    const expectedBytes = this.decodedBlockBytes(block);
     const decoded = zlib.brotliDecompressSync(compressed, { maxOutputLength: expectedBytes });
     if (decoded.byteLength !== expectedBytes) throw new Error(`CAS record store block ${block} decoded to ${decoded.byteLength} bytes, expected ${expectedBytes}`);
     this.cache.put(key, decoded);
@@ -359,12 +468,18 @@ export class CasRecordTable<T> {
     const handle = await fs.promises.open(this.filePath, 'r');
     try {
       const results: T[] = [];
-      for (const ordinal of plan.ordinals) {
-        const block = this.blockOf(ordinal);
+      let cursor = 0;
+      for (const block of plan.blocks) {
         const decoded = await this.decodedBlock(handle, block);
         const base = this.recordOffsets[this.blockRecords[block]];
-        results.push(JSON.parse(decoded.subarray(this.recordOffsets[ordinal] - base, this.recordOffsets[ordinal + 1] - base).toString('utf8')) as T);
+        const last = this.blockRecords[block + 1];
+        while (cursor < plan.ordinals.length && plan.ordinals[cursor] < last) {
+          const ordinal = plan.ordinals[cursor];
+          results.push(JSON.parse(decoded.subarray(this.recordOffsets[ordinal] - base, this.recordOffsets[ordinal + 1] - base).toString('utf8')) as T);
+          cursor += 1;
+        }
       }
+      if (cursor !== plan.ordinals.length) throw new Error('CAS record store read did not cover every planned record');
       return results;
     } finally {
       await handle.close();
@@ -376,6 +491,7 @@ export interface CasRecordStore {
   nodes: CasRecordTable<CASNode>;
   edges: CasRecordTable<CASEdge>;
   cacheBytes(): number;
+  stats(): CasRecordStoreReadStats;
 }
 
 export async function openCasRecordStore(
@@ -384,17 +500,25 @@ export async function openCasRecordStore(
   expected: { nodeCount: number; edgeCount: number },
   budget: Partial<CasRecordStoreReadBudget> = {},
 ): Promise<CasRecordStore> {
-  if (descriptor.format !== CAS_RECORD_STORE_FORMAT || descriptor.version !== CAS_RECORD_STORE_VERSION) throw new Error('CAS record store format or version is unsupported');
+  if (!descriptor || descriptor.format !== CAS_RECORD_STORE_FORMAT || descriptor.version !== CAS_RECORD_STORE_VERSION) throw new Error('CAS record store format or version is unsupported');
   if (descriptor.codec !== 'brotli') throw new Error(`CAS record store codec ${String(descriptor.codec)} is unsupported`);
-  if (descriptor.nodes.count !== expected.nodeCount || descriptor.edges.count !== expected.edgeCount) {
-    throw new Error(`CAS record store counts (${descriptor.nodes.count}/${descriptor.edges.count}) do not match the compact graph (${expected.nodeCount}/${expected.edgeCount})`);
+  if (!descriptor.nodes || !descriptor.edges || descriptor.nodes.count !== expected.nodeCount || descriptor.edges.count !== expected.edgeCount) {
+    throw new Error(`CAS record store counts (${String(descriptor.nodes?.count)}/${String(descriptor.edges?.count)}) do not match the compact graph (${expected.nodeCount}/${expected.edgeCount})`);
   }
   const resolved: CasRecordStoreReadBudget = { ...DEFAULT_RECORD_STORE_READ_BUDGET, ...budget };
   for (const [name, value] of Object.entries(resolved)) safeCount(value, `read budget ${name}`, Number.MAX_SAFE_INTEGER);
+  const ledger = new ReadLedger(resolved);
+  for (const table of [descriptor.nodes, descriptor.edges]) {
+    safeCount(table.count, 'table count', MAX_TABLE_RECORDS);
+    safeCount(table.blocks, 'table blocks', MAX_TABLE_RECORDS);
+  }
+  const indexBytes = tableIndexBytes(descriptor.nodes) + tableIndexBytes(descriptor.edges);
+  if (indexBytes > resolved.maxIndexBytes) throw new CasRecordStoreCapacityError(`CAS record store index needs ${indexBytes} bytes, above ${resolved.maxIndexBytes}`);
   const cache = new SharedBlockCache(resolved.cacheBytes);
   return {
-    nodes: await CasRecordTable.open<CASNode>(directory, 'records.nodes', descriptor.nodes, cache, resolved),
-    edges: await CasRecordTable.open<CASEdge>(directory, 'records.edges', descriptor.edges, cache, resolved),
+    nodes: await CasRecordTable.open<CASNode>(directory, 'records.nodes', descriptor.nodes, cache, ledger),
+    edges: await CasRecordTable.open<CASEdge>(directory, 'records.edges', descriptor.edges, cache, ledger),
     cacheBytes: () => cache.usedBytes,
+    stats: () => ({ ...ledger.stats }),
   };
 }

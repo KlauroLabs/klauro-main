@@ -6,7 +6,7 @@ import test from 'node:test';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { saveAnalysis, loadCompactAnalysisGraph, loadAnalysisSectionManifest } from './storage';
 import { acquirePinnedAnalysis, loadScopedGraphSection } from './hosted-query-scoped-graph';
-import { CAS_RECORD_STORE_MAX_BLOCK_RECORDS, CAS_RECORD_STORE_TARGET_BLOCK_BYTES, CasRecordStoreCapacityError, edgeRecordKey, openCasRecordStore } from './cas-record-store';
+import { CAS_RECORD_STORE_MAX_BLOCK_COMPRESSED_BYTES, CAS_RECORD_STORE_MAX_BLOCK_RECORDS, CAS_RECORD_STORE_TARGET_BLOCK_BYTES, CasRecordStoreCapacityError, edgeRecordKey, openCasRecordStore, tableIndexBytes, writeFully } from './cas-record-store';
 
 function fixture(count: number, payloadBytes = 0): CASOutput {
   const filler = payloadBytes > 0 ? 'x'.repeat(payloadBytes) : undefined;
@@ -90,6 +90,12 @@ test('blocks split by bytes before the count limit and reads stay bounded by the
       assert.ok(small.cacheBytes() <= payload * 3, 'cache never exceeds its budget');
       const tiny = await openCasRecordStore(pinned.segmented.directory, manifest.record_store!, { nodeCount: graph.nodeCount, edgeCount: graph.edgeCount }, { maxRecords: 2 });
       await assert.rejects(tiny.nodes.read([0, 1, 2]), /exceeds 2/);
+      const compressedTiny = await openCasRecordStore(pinned.segmented.directory, manifest.record_store!, { nodeCount: graph.nodeCount, edgeCount: graph.edgeCount }, { maxCompressedBytes: 16 });
+      await assert.rejects(compressedTiny.nodes.read([0]), (error: unknown) => error instanceof CasRecordStoreCapacityError && /compressed bytes/.test(error.message));
+      const combined = await openCasRecordStore(pinned.segmented.directory, manifest.record_store!, { nodeCount: graph.nodeCount, edgeCount: graph.edgeCount }, { maxRecords: 3 });
+      assert.equal((await combined.nodes.read([0, 1])).length, 2);
+      await assert.rejects(combined.edges.read([0, 1]), /query of 4 records exceeds 3/);
+      assert.equal(combined.stats().records, 2, 'a rejected read reserves nothing');
     } finally {
       await pinned.release();
     }
@@ -123,6 +129,23 @@ test('malformed offsets, truncated block data and corrupt blocks are explicit er
       descriptor.nodes.columns.recordOffsets.sha256 = require('node:crypto').createHash('sha256').update(broken).digest('hex');
       fs.writeFileSync(offsetsFile, broken);
       await assert.rejects(openCasRecordStore(directory, descriptor, expected), /monotone/);
+      fs.writeFileSync(offsetsFile, offsets);
+      const sparse = JSON.parse(JSON.stringify(manifest.record_store));
+      fs.truncateSync(offsetsFile, 3 * 1024 * 1024 * 1024);
+      await assert.rejects(openCasRecordStore(directory, sparse, expected), /file size/);
+      fs.writeFileSync(offsetsFile, offsets);
+      sparse.nodes.columns.recordOffsets.bytes = 4;
+      await assert.rejects(openCasRecordStore(directory, sparse, expected), /declares 4 bytes/);
+      const wide = JSON.parse(JSON.stringify(manifest.record_store));
+      const blockOffsetsFile = path.join(directory, wide.nodes.columns.blockOffsets.file);
+      const blockOffsets = fs.readFileSync(blockOffsetsFile);
+      const widened = Buffer.from(blockOffsets);
+      widened.writeUInt32LE(CAS_RECORD_STORE_MAX_BLOCK_COMPRESSED_BYTES + 1, 4);
+      wide.nodes.columns.blockOffsets.sha256 = require('node:crypto').createHash('sha256').update(widened).digest('hex');
+      fs.writeFileSync(blockOffsetsFile, widened);
+      await assert.rejects(openCasRecordStore(directory, wide, expected), /monotone/);
+      fs.writeFileSync(blockOffsetsFile, blockOffsets);
+      await assert.rejects(openCasRecordStore(directory, manifest.record_store!, expected, { maxIndexBytes: tableIndexBytes(manifest.record_store!.nodes) }), (error: unknown) => error instanceof CasRecordStoreCapacityError && /index/.test(error.message));
       fs.writeFileSync(offsetsFile, offsets);
       await assert.rejects(openCasRecordStore(directory, manifest.record_store!, { nodeCount: graph.nodeCount + 1, edgeCount: graph.edgeCount }), /do not match the compact graph/);
     } finally {
@@ -178,4 +201,46 @@ test('a record too large to store skips the record store but keeps the canonical
       await pinned.release();
     }
   });
+});
+
+test('reads decode each planned block once even with no cache, and the stats account index plus selected block bytes', async () => {
+  await withStorage(async project => {
+    const count = CAS_RECORD_STORE_MAX_BLOCK_RECORDS * 3;
+    await saveAnalysis(project, fixture(count), 'main', { canonicalSegmented: true });
+    const manifest = (await loadAnalysisSectionManifest(project))!;
+    const graph = (await loadCompactAnalysisGraph(project))!;
+    const pinned = (await acquirePinnedAnalysis(project))!;
+    try {
+      const expected = { nodeCount: graph.nodeCount, edgeCount: graph.edgeCount };
+      const uncached = await openCasRecordStore(pinned.segmented.directory, manifest.record_store!, expected, { cacheBytes: 0 });
+      const ordinals = Array.from({ length: 40 }, (_, index) => index * 5);
+      const records = await uncached.nodes.read(ordinals);
+      assert.equal(records.length, 40);
+      const stats = uncached.stats();
+      assert.equal(stats.blocksPlanned, 1, 'forty records from one block plan one block');
+      assert.equal(stats.blockReads, 1, 'one disk read and decode for the block');
+      assert.equal(stats.cacheHits, 0);
+      assert.equal(stats.indexBytes, tableIndexBytes(manifest.record_store!.nodes) + tableIndexBytes(manifest.record_store!.edges));
+      assert.ok(stats.compressedBytesRead > 0 && stats.compressedBytesRead < stats.decodedBytes);
+      const dense = (id: string) => graph.nodeById(id)!.denseId;
+      const spread = await uncached.nodes.read([dense('n-0'), dense(`n-${count - 1}`)]);
+      assert.deepEqual(spread.map(node => node.id), ['n-0', `n-${count - 1}`]);
+      assert.equal(uncached.stats().blockReads, uncached.stats().blocksPlanned, 'exactly one read per planned block');
+      assert.equal(uncached.cacheBytes(), 0, 'nothing is cached under a zero budget');
+      const cached = await openCasRecordStore(pinned.segmented.directory, manifest.record_store!, expected);
+      await cached.nodes.read([1]);
+      await cached.nodes.read([2]);
+      assert.deepEqual([cached.stats().blockReads, cached.stats().cacheHits], [1, 1]);
+    } finally {
+      await pinned.release();
+    }
+  });
+});
+
+test('writeFully retries short writes and refuses a handle that makes no progress', async () => {
+  const chunks: number[] = [];
+  const shortHandle = { write: async (_buffer: Buffer, _offset: number, length: number) => { const bytesWritten = Math.min(3, length); chunks.push(bytesWritten); return { bytesWritten }; } };
+  await writeFully(shortHandle, Buffer.alloc(10));
+  assert.deepEqual(chunks, [3, 3, 3, 1]);
+  await assert.rejects(writeFully({ write: async () => ({ bytesWritten: 0 }) }, Buffer.alloc(4)), /no progress/);
 });

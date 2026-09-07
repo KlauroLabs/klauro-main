@@ -8,7 +8,7 @@ import type { AnalysisTrack } from './track';
 import type { ResolvedSegmentedAnalysis } from './segmented-analysis-storage';
 import { loadCompactCASGraph, loadCompactCASSearch } from './segmented-analysis-storage';
 import { compressionCodecForPath } from './json-storage-writer';
-import { openCasRecordStore } from './cas-record-store';
+import { openCasRecordStore, type CasRecordStoreReadStats } from './cas-record-store';
 import { searchCompactCAS } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-search';
 
 export interface PinnedAnalysisGeneration {
@@ -48,6 +48,7 @@ export interface ScopedGraphSection {
   scanned: { nodes: number; edges: number };
   edgesTruncated: boolean;
   source: 'record-store' | 'stream';
+  stats?: CasRecordStoreReadStats;
 }
 
 function boundedLimit(value: unknown): number {
@@ -228,12 +229,15 @@ async function loadScopedRecords(
     if (edgesTruncated) break;
   }
   edgeOrdinals.sort((left, right) => left - right);
+  const nodes = await store.nodes.read(denseIds);
+  const edges = await store.edges.read(edgeOrdinals);
   return {
-    nodes: await store.nodes.read(denseIds),
-    edges: await store.edges.read(edgeOrdinals),
+    nodes,
+    edges,
     scanned: { nodes: graph.nodeCount, edges: graph.edgeCount },
     edgesTruncated,
     source: 'record-store',
+    stats: store.stats(),
   };
 }
 
