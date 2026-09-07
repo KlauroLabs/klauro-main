@@ -25,7 +25,7 @@ import {
   waitForPendingSegmentedWrites,
   writeJsonAtomic,
 } from './storage';
-import { segmentedStorageAccessError, SegmentedStorageAccessError } from './segmented-storage-access';
+import { segmentedReadFailureFallback, segmentedStorageAccessError, SegmentedStorageAccessError } from './segmented-storage-access';
 import { getCachedDeployableAnalyses, materializeDeployableCasTree } from './deployable-analysis';
 import { compactCASPostingShard, searchCompactCAS } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-search';
 import { writeSegmentedLegacyExport } from './segmented-analysis-storage';
@@ -901,4 +901,25 @@ test('a read-only segmented index fails explicitly instead of falling back to th
       await fs.chmod(sectionsRoot, 0o755);
     }
   });
+});
+
+test('an inaccessible segmented index pointer is never read as absent, independent of process privileges', async () => {
+  const errno = (code: string) => Object.assign(new Error(code), { code });
+  const legacyEntry = { path: '/tmp/legacy-project' };
+  const absent = await segmentedReadFailureFallback(legacyEntry, '/tmp/store/legacy.json', errno('EROFS'), async () => { throw errno('ENOENT'); });
+  assert.equal(absent, null);
+  await assert.rejects(
+    segmentedReadFailureFallback(legacyEntry, '/tmp/store/legacy.json', errno('EROFS'), async () => ({ size: 1 })),
+    (error: unknown) => error instanceof SegmentedStorageAccessError && error.code === 'EROFS',
+  );
+  await assert.rejects(
+    segmentedReadFailureFallback(legacyEntry, '/tmp/store/legacy.json', errno('EACCES'), async () => { throw errno('EACCES'); }),
+    (error: unknown) => error instanceof SegmentedStorageAccessError && error.code === 'EACCES',
+  );
+  await assert.rejects(
+    segmentedReadFailureFallback(legacyEntry, '/tmp/store/legacy.json', errno('EROFS'), async () => { throw errno('EIO'); }),
+    (error: unknown) => error instanceof SegmentedStorageAccessError && error.code === 'EROFS',
+  );
+  assert.equal(await segmentedReadFailureFallback(legacyEntry, '/tmp/store/legacy.json', errno('ENOENT'), async () => ({ size: 1 })), null);
+  await assert.rejects(segmentedReadFailureFallback({ path: '/p', storage_format: 'segmented-v2' }, '/tmp/store/x.json', errno('ENOENT'), async () => ({ size: 1 })), /ENOENT/);
 });
