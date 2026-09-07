@@ -1,10 +1,12 @@
-import type { SystemCapability } from '../../types/cas.types';
+import { ENTRY_POINT_TYPES, type SystemCapability } from '../../types/cas.types';
 import { outcomeIdentityTokens } from './capability-evidence-language';
 
 export function retainedCapabilityOperationEvidence(
   capability: Pick<SystemCapability, 'operations' | 'operation_evidence'>,
 ): NonNullable<SystemCapability['operation_evidence']> {
-  const retainedEntryIds = new Set(capability.operations.map(operation => operation.entry_point_id));
+  const retainedEntryIds = new Set(capability.operations
+    .filter(operation => ENTRY_POINT_TYPES.some(type => type === operation.entry_point_type))
+    .map(operation => operation.entry_point_id));
   return [...new Map((capability.operation_evidence || [])
     .filter(evidence => evidence.source_node_id && retainedEntryIds.has(evidence.entry_point_id))
     .map(evidence => [

@@ -33,6 +33,9 @@ it.each([
   ['client-sdk', 'rpc', 'send_response', 'response_node', false],
   ['app', 'api', 'send_response', 'response_node', true],
   ['library', 'page', 'send_response', 'response_node', true],
+  ['library', 'message', 'send_response', 'response_node', true],
+  ['library', 'cli', 'send_response', 'response_node', true],
+  ['library', 'http', 'send_response', 'response_node', true],
   ['library', 'api', 'removed', 'response_node', true],
   ['library', 'api', 'send_response', '', true],
 ] as const)('evaluates public interface language in its actual audience: %s/%s/%s/%s', (artifactType, type, entryId, sourceId, rejected) => {

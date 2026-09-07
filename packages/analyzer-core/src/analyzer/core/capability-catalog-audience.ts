@@ -449,7 +449,10 @@ export function evaluateCapabilityCatalogAudience(
       libraries,
       dataEntities,
       capabilityProductTerms,
-      { artifactType: context.artifactType, publicOperationEvidence: retainedCapabilityOperationEvidence(capability).map(evidence => evidence.text).filter(Boolean) },
+      { artifactType: context.artifactType, publicOperationEvidence: retainedCapabilityOperationEvidence({
+        ...capability,
+        operations: capability.operations.filter(operation => operation.entry_point_type === 'api' || operation.entry_point_type === 'rpc'),
+      }).map(evidence => evidence.text).filter(Boolean) },
     );
     if (/\bmessage handling\b/i.test(capability.description || '') &&
       !/\b(?:message|messaging)\b/i.test(productTerms.join(' '))) {
