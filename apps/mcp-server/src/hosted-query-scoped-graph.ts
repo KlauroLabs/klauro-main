@@ -417,11 +417,25 @@ export const AGENT_CONTEXT_HEAVY_FIELD_SCANS: ReadonlyArray<{ path: readonly str
   { path: ['work_context', 'coding_context', 'conventions'], reason: 'derived from signature.return_type across all functions and edge metadata; light records carry neither' },
 ];
 
+export function selectedNodeIdOf(body: unknown): string | undefined {
+  if (!body || typeof body !== 'object') return undefined;
+  const record = body as Record<string, unknown>;
+  const direct = (record.selected_node as { id?: unknown } | undefined)?.id;
+  if (typeof direct === 'string' && direct) return direct;
+  const wrapped = record.data && typeof record.data === 'object' ? selectedNodeIdOf(record.data) : undefined;
+  if (wrapped) return wrapped;
+  const compact = record.selected_node_id ?? (record.target as { node_id?: unknown } | undefined)?.node_id;
+  return typeof compact === 'string' && compact ? compact : undefined;
+}
+
 export function markNotComputedOnProjection(body: unknown): string[] {
   if (!body || typeof body !== 'object') return [];
   const marked: string[] = [];
   for (const scan of AGENT_CONTEXT_HEAVY_FIELD_SCANS) {
-    let parent: Record<string, unknown> | undefined = body as Record<string, unknown>;
+    const root = (body as Record<string, unknown>).data && typeof (body as Record<string, unknown>).data === 'object' && !('work_context' in (body as Record<string, unknown>))
+      ? (body as Record<string, unknown>).data as Record<string, unknown>
+      : body as Record<string, unknown>;
+    let parent: Record<string, unknown> | undefined = root;
     for (const key of scan.path.slice(0, -1)) {
       const next: unknown = parent ? parent[key] : undefined;
       parent = next && typeof next === 'object' && !Array.isArray(next) ? next as Record<string, unknown> : undefined;

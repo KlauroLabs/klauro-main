@@ -5,7 +5,7 @@ import * as path from 'node:path';
 import test from 'node:test';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { saveAnalysis, loadCompactAnalysisGraph } from './storage';
-import { acquirePinnedAnalysis, computeAgentContextScope, loadAgentContextProjection, loadScopedSemanticCollections, markNotComputedOnProjection, computeChangeRiskScope, computeScopedQueryScope, computeTestLookupScope, loadScopedGraphSection, planScopedQuery, resolveCompactTarget, scopedQueryCapacityOutcome, scopedQueryTarget, scopedSmallSections } from './hosted-query-scoped-graph';
+import { acquirePinnedAnalysis, computeAgentContextScope, loadAgentContextProjection, loadScopedSemanticCollections, markNotComputedOnProjection, selectedNodeIdOf, computeChangeRiskScope, computeScopedQueryScope, computeTestLookupScope, loadScopedGraphSection, planScopedQuery, resolveCompactTarget, scopedQueryCapacityOutcome, scopedQueryTarget, scopedSmallSections } from './hosted-query-scoped-graph';
 import { assessChangeRisk, findTests, getErrorContracts } from './query';
 import { loadCompleteAnalysisFromSections } from './storage';
 import { executeHostedProjectQuery, hostedProjectQuerySections } from './hosted-project-query';
@@ -469,4 +469,19 @@ test('semantic postings keep every reference past 64 and refuse the whole store 
       fs.rmSync(tiny, { recursive: true, force: true });
     }
   });
+});
+
+test('selected node id and not-computed markers resolve through raw, bounded-envelope and compact response shapes', () => {
+  const raw = { selected_node: { id: 'n-raw' }, work_context: { coding_context: { conventions: { async_style: 'async-await' } } } };
+  const enveloped = { truncated: true, has_more: true, data: { selected_node: { id: 'n-env' }, work_context: { coding_context: { conventions: { async_style: 'callbacks' } } } } };
+  const compact = { selected_node_id: 'n-compact' };
+  assert.equal(selectedNodeIdOf(raw), 'n-raw');
+  assert.equal(selectedNodeIdOf(enveloped), 'n-env');
+  assert.equal(selectedNodeIdOf(compact), 'n-compact');
+  assert.equal(selectedNodeIdOf({ target: { node_id: 'n-target' } }), 'n-target');
+  assert.equal(selectedNodeIdOf({}), undefined);
+  assert.deepEqual(markNotComputedOnProjection(raw), ['work_context.coding_context.conventions']);
+  assert.deepEqual(markNotComputedOnProjection(enveloped), ['work_context.coding_context.conventions'], 'the marker finds the path under a bounded data envelope');
+  assert.equal((enveloped.data.work_context.coding_context.conventions as any).not_computed, 'bounded-projection');
+  assert.deepEqual(markNotComputedOnProjection(compact), []);
 });

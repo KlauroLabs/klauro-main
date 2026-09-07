@@ -12,7 +12,7 @@ import type { SubCasNodeIndex } from './deployable-analysis';
 import { loadTelemetryObservations } from './telemetry-ingestion';
 import { buildNodeRuntimeMetrics } from './product';
 import { CasRecordStoreCapacityError } from './cas-record-store';
-import { agentContextProjectionGaps, computeAgentContextScope, markNotComputedOnProjection, loadAgentContextProjection, loadScopedGraphSection, loadScopedSemanticCollections, planScopedQuery, scopedQueryCapacityOutcome, type AgentContextProjection } from './hosted-query-scoped-graph';
+import { agentContextProjectionGaps, computeAgentContextScope, markNotComputedOnProjection, selectedNodeIdOf, loadAgentContextProjection, loadScopedGraphSection, loadScopedSemanticCollections, planScopedQuery, scopedQueryCapacityOutcome, type AgentContextProjection } from './hosted-query-scoped-graph';
 
 if (!process.send) {
   process.stderr.write('hosted-project-query-worker must be started through child_process.fork.\n');
@@ -266,8 +266,9 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
           }
         : undefined;
       let notComputedOnProjection: string[] = [];
+      let unboundedSelectedId: string | undefined;
       const transformUnbounded = agentProjection
-        ? (_tool: string, value: unknown): unknown => { notComputedOnProjection = markNotComputedOnProjection(value); return value; }
+        ? (_tool: string, value: unknown): unknown => { unboundedSelectedId = selectedNodeIdOf(value); notComputedOnProjection = markNotComputedOnProjection(value); return value; }
         : undefined;
       let result = unavailable
         ? undefined
@@ -280,9 +281,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
             ...(observeUnbounded ? { observeUnbounded } : {}),
             ...(transformUnbounded ? { transformUnbounded } : {}),
           });
-      const selectedId = agentProjection && result && typeof result === 'object'
-        ? (result as { selected_node?: { id?: unknown } }).selected_node?.id
-        : undefined;
+      const selectedId = agentProjection ? (unboundedSelectedId ?? selectedNodeIdOf(result)) : undefined;
       if (agentProjection && agentPlan && pinned && typeof selectedId === 'string' && !agentProjection.keepIds.has(selectedId)) {
         const task = ((request.args as { task?: { related_paths?: string[] } } | undefined)?.task) ?? {};
         const secondScope = computeAgentContextScope(agentPlan.graph, [selectedId], (task.related_paths ?? []).filter((file): file is string => typeof file === 'string'));
