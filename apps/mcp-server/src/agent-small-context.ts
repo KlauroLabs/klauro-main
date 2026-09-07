@@ -42,7 +42,8 @@ export function compactSmallRepoValidationPlan(plan: any) {
     commands: Array.isArray(plan.commands) ? plan.commands.slice(0, 2) : plan.commands,
     tests_to_inspect: Array.isArray(plan.tests_to_inspect) ? plan.tests_to_inspect.slice(0, 2) : plan.tests_to_inspect,
     manual_checks: compactManualChecks(plan.manual_checks),
-    gaps: Array.isArray(plan.gaps) ? plan.gaps.slice(0, 1) : plan.gaps,
+    gaps: plan.gaps,
+    run_policy: plan.run_policy,
   };
 }
 

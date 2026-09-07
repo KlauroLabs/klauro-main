@@ -33,6 +33,7 @@ import { assessBehavioralInvariantImpact } from './invariant-validation';
 import { buildIdiomContextForAgent } from './idiom-query';
 import { summarizeAnalysisFreshness } from './freshness';
 import { buildAgentContextFreshness } from './agent-context-freshness';
+import { resolveFileAwareTestScript } from './agent-test-command';
 import { journeyHeadline } from './journey-presentation';
 import {
   classifyAnalysisProfile,
@@ -977,7 +978,8 @@ function buildAgentExecutionBrief(input: {
     ...input.fileReadPlan.map((item: any) => String(item.file || '').trim()).filter(Boolean),
   ]).slice(0, 5);
   const commands = Array.isArray(input.validationPlan?.commands)
-    ? input.validationPlan.commands.map((item: any) => String(item.command || '').trim()).filter(Boolean).slice(0, 2)
+    ? input.validationPlan.commands.filter((item: any) => item.scope !== 'broad-test')
+      .map((item: any) => String(item.command || '').trim()).filter(Boolean).slice(0, 2)
     : [];
   const idiomRules = summarizeExecutionBriefRules(input.idiomContext, 3);
   const reuseRules = summarizeExecutionBriefReuse(input.capabilityMemory, 3);
@@ -2347,6 +2349,8 @@ function compactTinyAgentContext<T extends Record<string, any>>(context: T): T {
     execution_brief: context.execution_brief,
     validation_plan: {
       strategy: context.validation_plan?.strategy,
+      gaps: context.validation_plan?.gaps,
+      run_policy: context.validation_plan?.run_policy,
       commands: Array.isArray(context.validation_plan?.commands) ? context.validation_plan.commands.slice(0, 1) : context.validation_plan?.commands,
       manual_checks: Array.isArray(context.validation_plan?.manual_checks) ? context.validation_plan.manual_checks.slice(0, 2) : context.validation_plan?.manual_checks,
     },
@@ -2869,7 +2873,8 @@ function compactMinimalValidationPlan(plan: any) {
     strategy: plan.strategy,
     commands: Array.isArray(plan.commands) ? plan.commands.slice(0, 1) : [],
     manual_checks: compactManualChecks(plan.manual_checks, 3),
-    gaps: Array.isArray(plan.gaps) ? plan.gaps.slice(0, 2) : [],
+    gaps: Array.isArray(plan.gaps) ? plan.gaps : [],
+    run_policy: plan.run_policy,
   };
 }
 
@@ -3316,7 +3321,8 @@ function compactMicroValidationPlan(plan: any) {
     tests_to_inspect: Array.isArray(plan.tests_to_inspect) ? plan.tests_to_inspect.slice(0, 4) : plan.tests_to_inspect,
     manual_checks: Array.isArray(plan.manual_checks) ? plan.manual_checks.slice(0, 6) : plan.manual_checks,
     environment_rule: plan.environment_rule,
-    gaps: Array.isArray(plan.gaps) ? plan.gaps.slice(0, 3) : plan.gaps,
+    gaps: plan.gaps,
+    run_policy: plan.run_policy,
   };
 }
 
@@ -5097,21 +5103,29 @@ function buildValidationPlan(
   const testFiles = uniqueStrings([...knownTestFiles, ...inferredTestFiles]
     .map(file => normalizeValidationFile(projectPath, file))).slice(0, 8);
   const commands: AgentValidationCommand[] = [];
+  const explicitFiles = new Set(('resolution' in tests ? tests.resolution?.matches || [] : [])
+    .filter(match => match.reason === 'explicit CAS coverage')
+    .map(match => normalizeValidationFile(projectPath, match.file_path)));
+  const coverageVerified = testFiles.length > 0 && testFiles.every(file => explicitFiles.has(file));
+  const validationGaps: string[] = [];
   const scriptContexts = buildScriptContexts(projectPath, fileReadPlan, testFiles);
   for (const context of scriptContexts) {
     const focusedTestCommand = buildFocusedTestCommand(context.root, context.scripts, context.testFiles);
     if (focusedTestCommand) {
       addValidationCommand(commands, {
-        command: commandForContext(projectPath, context.root, focusedTestCommand),
-        purpose: context.testFiles.length > 0 ? 'Run tests that cover or sit next to the selected target.' : `Run the ${context.label} test script because no focused test file was resolved.`,
-        scope: context.testFiles.length > 0 ? 'focused-test' : 'broad-test',
-        files: context.displayTestFiles,
-        confidence: context.testFiles.length > 0 ? 0.9 : context.root === projectPath ? 0.58 : 0.7,
+        command: commandForContext(projectPath, context.root, focusedTestCommand.command),
+        purpose: focusedTestCommand.scope === 'focused-test'
+          ? 'Run the selected test files; confirm that their assertions cover the target change.'
+          : `Repository-wide ${context.label} test script; focused file forwarding is unverified. Inspect the runner before executing a broad suite.`,
+        scope: focusedTestCommand.scope,
+        files: focusedTestCommand.scope === 'focused-test' ? context.displayTestFiles : undefined,
+        confidence: focusedTestCommand.scope === 'focused-test' ? coverageVerified ? 0.9 : 0.65 : 0.58,
       });
     }
 
+    if (focusedTestCommand?.gap) validationGaps.push(focusedTestCommand.gap);
     const typecheckCommand = buildScriptCommand(context.scripts, ['typecheck', 'type-check', 'check', 'tsc']);
-    if (typecheckCommand && typecheckCommand !== focusedTestCommand) {
+    if (typecheckCommand && typecheckCommand !== focusedTestCommand?.command) {
       addValidationCommand(commands, {
         command: commandForContext(projectPath, context.root, typecheckCommand),
         purpose: `Verify ${context.label} type contracts after the edit.`,
@@ -5136,15 +5150,26 @@ function buildValidationPlan(
     const focusedTestCommand = buildFocusedTestCommand(projectPath, rootScripts, testFiles);
     if (focusedTestCommand) {
       commands.push({
-      command: focusedTestCommand,
-      purpose: testFiles.length > 0 ? 'Run tests that cover or sit next to the selected target.' : 'Run the repository test script because no focused test file was resolved.',
-      scope: testFiles.length > 0 ? 'focused-test' : 'broad-test',
-      files: testFiles,
-      confidence: testFiles.length > 0 ? 0.9 : 0.58,
+      command: focusedTestCommand.command,
+      purpose: focusedTestCommand.scope === 'focused-test'
+        ? 'Run the selected test files; confirm that their assertions cover the target change.'
+        : 'Repository-wide test script; inspect the runner before executing a broad suite.',
+      scope: focusedTestCommand.scope,
+      files: focusedTestCommand.scope === 'focused-test' ? testFiles : undefined,
+      confidence: focusedTestCommand.scope === 'focused-test' ? coverageVerified ? 0.9 : 0.65 : 0.58,
       });
+      if (focusedTestCommand.gap) validationGaps.push(focusedTestCommand.gap);
     }
   }
 
+  if (testFiles.length > 0 && !commands.some(command => command.scope === 'focused-test')) {
+    validationGaps.push('No focused test command was verified for the selected files; broad commands do not substitute for targeted validation.');
+  }
+  if (testFiles.length > 0 && !coverageVerified) {
+    validationGaps.push('Coverage of every selected test file is not established by explicit CAS links; inspect the tests before treating them as target coverage.');
+  }
+  const focusedPlan = commands.some(command => command.scope === 'focused-test')
+    && !commands.some(command => command.scope === 'broad-test');
   const manualChecks = [
     selectedNode ? `Confirm the edit preserves the contract of ${selectedNode.name}.` : 'Confirm the edit target was resolved before changing source files.',
     selectedNode ? `After edits, call validate_behavioral_invariants for ${selectedNode.id}.` : 'After edits, call validate_behavioral_invariants with the task target or current working diff.',
@@ -5169,17 +5194,19 @@ function buildValidationPlan(
   }));
 
   return {
-    strategy: testFiles.length > 0
+    strategy: focusedPlan
       ? 'focused-tests-first'
       : commands.length > 0 ? 'repo-script-fallback' : 'manual-validation-required',
     commands: commands.slice(0, 4),
     tests_to_inspect: testsToInspect,
     manual_checks: uniqueStrings(manualChecks).slice(0, 10),
-    run_policy: risk?.risk?.risk_level === 'high' || risk?.risk?.risk_level === 'critical'
+    run_policy: !focusedPlan
+      ? 'A focused test command was not verified. Inspect the declared test runner before executing any broad suite.'
+      : risk?.risk?.risk_level === 'high' || risk?.risk?.risk_level === 'critical'
       ? 'Run the focused validation once after all edits are complete, and rerun only the failing command after each fix. Change risk is elevated, so a final full focused pass is required before finishing.'
       : 'Run the focused validation once after all edits are complete; rerun only the failing command after a fix. Do not re-run passing suites between intermediate edits.',
     environment_rule: 'Do not install dependencies or run broad environment setup unless the task explicitly asks for it. If focused validation cannot run in the existing checkout, report that as an environment blocker.',
-    gaps: commands.length === 0 ? ['no runnable validation command inferred from package scripts or test files'] : [],
+    gaps: uniqueStrings([...validationGaps, ...(commands.length === 0 ? ['no runnable validation command inferred from package scripts or test files'] : [])]),
   };
 }
 
@@ -5324,20 +5351,26 @@ function addValidationCommand(commands: AgentValidationCommand[], command: Agent
   commands.push(command);
 }
 
-function buildFocusedTestCommand(projectPath: string, scripts: Record<string, string>, testFiles: string[]): string | null {
+function buildFocusedTestCommand(projectPath: string, scripts: Record<string, string>, testFiles: string[]): {
+  command: string; scope: 'focused-test' | 'broad-test'; gap?: string;
+} | null {
   if (testFiles.length === 0) {
-    return buildScriptCommand(scripts, ['test']);
+    const command = buildScriptCommand(scripts, ['test']);
+    return command ? { command, scope: 'broad-test' } : null;
   }
   const quotedFiles = testFiles.map(shellQuoteForAgent).join(' ');
+  const focusedScript = resolveFileAwareTestScript(scripts);
+  if (focusedScript) return { command: scriptCommand(focusedScript, true, quotedFiles), scope: 'focused-test' };
   const testScript = pickScript(scripts, ['test:unit', 'unit', 'test']);
-  if (testScript) {
-    return scriptCommand(testScript, true, quotedFiles);
-  }
+  if (testScript) return {
+    command: scriptCommand(testScript, false),
+    scope: 'broad-test',
+    gap: `Package script '${testScript}' has unverified focused-file argument semantics; no file arguments were appended.`,
+  };
   const first = testFiles[0];
-  if (first.endsWith('.py')) return `pytest ${quotedFiles}`;
-  if (first.endsWith('.go')) return `go test ${uniqueGoPackages(projectPath, testFiles).join(' ')}`;
-  if (first.endsWith('.rs')) return 'cargo test';
-  if (first.match(/\.[cm]?[jt]sx?$/)) return `npm test -- ${quotedFiles}`;
+  if (first.endsWith('.py')) return { command: `pytest ${quotedFiles}`, scope: 'focused-test' };
+  if (first.endsWith('.go')) return { command: `go test ${uniqueGoPackages(projectPath, testFiles).join(' ')}`, scope: 'focused-test' };
+  if (first.endsWith('.rs')) return { command: 'cargo test', scope: 'broad-test' };
   return null;
 }
 
@@ -5348,7 +5381,7 @@ function buildScriptCommand(scripts: Record<string, string>, preferred: string[]
 
 function pickScript(scripts: Record<string, string>, preferred: string[]): string | null {
   for (const name of preferred) {
-    if (scripts[name]) return name;
+    if (typeof scripts[name] === 'string' && scripts[name].trim()) return name;
   }
   return null;
 }

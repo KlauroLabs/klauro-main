@@ -2021,6 +2021,79 @@ function pillarFixtureCas(): CASOutput {
   return cas;
 }
 
+test('composite test scripts are broad and never receive fabricated focused arguments', async () => {
+  await withWorkspace(async workspace => {
+    fs.writeFileSync(path.join(workspace, 'package.json'), JSON.stringify({
+      scripts: { test: 'npm run test:jest && npm run test:node', 'test:jest': 'jest', 'test:node': 'node --test "src/**/*.test.ts"' },
+    }));
+    const context = await getAgentContext(fixtureCas(), workspace, { task_type: 'modify', target: 'UsersService' }) as any;
+    assert.equal(context.validation_plan.strategy, 'repo-script-fallback');
+    assert.ok(context.validation_plan.commands.some((command: any) => command.command === 'npm test' && command.scope === 'broad-test'));
+    assert.ok(context.validation_plan.commands.every((command: any) => command.scope !== 'focused-test' && !command.command.includes(' -- ')));
+    assert.ok(context.validation_plan.gaps.some((gap: string) => /unverified focused-file/.test(gap)));
+    assert.match(context.validation_plan.run_policy, /before executing any broad suite/);
+    assert.ok(context.execution_brief.validate.every((command: string) => !command.includes('npm test')));
+    const compact = await getAgentContext(fixtureCas(), workspace, { task_type: 'modify', target: 'UsersService', response_profile: 'first-turn' }) as any;
+    assert.ok(!JSON.stringify(compact.execution?.validate || []).includes('npm test'));
+  });
+});
+
+test('a focused sibling package does not certify a composite target test script', async () => {
+  await withWorkspace(async workspace => {
+    fs.writeFileSync(path.join(workspace, 'package.json'), JSON.stringify({ scripts: { test: 'npm run first && npm run second' } }));
+    const sibling = path.join(workspace, 'packages', 'checks');
+    fs.mkdirSync(sibling, { recursive: true });
+    fs.writeFileSync(path.join(sibling, 'package.json'), JSON.stringify({ scripts: { test: 'jest' } }));
+    fs.writeFileSync(path.join(sibling, 'users.service.spec.ts'), 'describe("UsersService", () => {});');
+    const cas = fixtureCas();
+    const target = cas.nodes.find(node => node.name === 'UsersService')!;
+    cas.test_suites!.push({
+      id: 'sibling-tests', name: 'Sibling checks', file_path: 'packages/checks/users.service.spec.ts',
+      test_type: 'unit', framework: 'jest', tests: [], coverage: { nodes_tested: [target.id] },
+    });
+    const context = await getAgentContext(cas, workspace, { task_type: 'modify', target: 'UsersService' }) as any;
+    assert.notEqual(context.validation_plan.strategy, 'focused-tests-first');
+    assert.match(context.validation_plan.run_policy, /before executing any broad suite/);
+    assert.ok(context.validation_plan.gaps.some((gap: string) => /unverified focused-file/.test(gap)));
+  });
+});
+
+test('unknown JavaScript runners are not invented when no test script exists', async () => {
+  await withWorkspace(async workspace => {
+    fs.writeFileSync(path.join(workspace, 'package.json'), '{}');
+    const context = await getAgentContext(fixtureCas(), workspace, { task_type: 'modify', target: 'UsersService' }) as any;
+    assert.equal(context.validation_plan.strategy, 'manual-validation-required');
+    assert.ok(context.validation_plan.commands.every((command: any) => !command.command.startsWith('npm test')));
+    assert.ok(context.validation_plan.gaps.some((gap: string) => /No focused test command/.test(gap)));
+  });
+});
+
+test('malformed package script values do not crash validation planning', async () => {
+  await withWorkspace(async workspace => {
+    for (const value of [42, {}, null]) {
+      fs.writeFileSync(path.join(workspace, 'package.json'), JSON.stringify({ scripts: { test: value } }));
+      const context = await getAgentContext(fixtureCas(), workspace, { task_type: 'modify', target: 'UsersService' }) as any;
+      assert.equal(context.validation_plan.strategy, 'manual-validation-required');
+      assert.ok(context.validation_plan.gaps.length > 0);
+    }
+  });
+});
+
+test('filename-neighbor tests remain useful without claiming explicit target coverage', async () => {
+  await withWorkspace(async workspace => {
+    const cas = fixtureCas();
+    for (const suite of cas.test_suites || []) {
+      delete suite.coverage;
+      for (const item of suite.tests) delete item.targets;
+    }
+    const context = await getAgentContext(cas, workspace, { task_type: 'modify', target: 'UsersService' }) as any;
+    assert.equal(context.validation_plan.strategy, 'focused-tests-first');
+    assert.ok(context.validation_plan.commands.some((command: any) => command.scope === 'focused-test' && command.confidence < 0.9));
+    assert.ok(context.validation_plan.gaps.some((gap: string) => /explicit CAS links/.test(gap)));
+    assert.ok(context.validation_plan.commands.some((command: any) => command.command.includes('users.service.spec.ts')));
+  });
+});
+
 async function withWorkspace(run: (workspace: string) => void | Promise<void>): Promise<void> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-agent-workflow-test-'));
   try {
