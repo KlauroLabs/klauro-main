@@ -136,6 +136,37 @@ describe('orchestrator: dedupeSystemCapabilitiesByEntitySet — equal-size ident
     expect(result[0].criticality_factors).toContain('catalog-outcome-requirement:all:category-create');
   });
 
+  it('preserves same-id outcome merging even when operation sets are disjoint', () => {
+    const first = capability({ id: 'shared', name: 'Publish reports', operations: [op('publish')],
+      criticality_factors: ['catalog-outcome-requirement:report-delivery'] });
+    const second = capability({ id: 'shared', name: 'Deliver reports', operations: [op('deliver')],
+      criticality_factors: ['catalog-outcome-requirement:report-delivery'] });
+    const result: SystemCapability[] = orch.dedupeSystemCapabilitiesByEntitySet([first, second]);
+    expect(result).toEqual([second]);
+    expect(result[0]).toBe(second);
+    expect(result[0].operations.map(operation => operation.entry_point_id)).toEqual(['deliver', 'publish']);
+  });
+
+  it('does not merge opposite outcomes merely because IDs and operations match', () => {
+    const favorite = capability({ id: 'shared', name: 'Favorite articles', operations: [op('article')] });
+    const unfavorite = capability({ id: 'shared', name: 'Unfavorite articles', operations: [op('article')] });
+    const result: SystemCapability[] = orch.dedupeSystemCapabilitiesByEntitySet([favorite, unfavorite]);
+    expect(result).toEqual([favorite, unfavorite]);
+    expect(result[0]).toBe(favorite);
+    expect(result[1]).toBe(unfavorite);
+  });
+
+  it('retains exact operation obligations when same-id candidates would otherwise merge', () => {
+    const candidates = () => [
+      capability({ id: 'shared', name: 'Publish reports', operations: [op('publish')],
+        criticality_factors: ['catalog-outcome-requirement:report-delivery', 'catalog-operation-obligation:publish'] }),
+      capability({ id: 'shared', name: 'Deliver reports', operations: [op('deliver')],
+        criticality_factors: ['catalog-outcome-requirement:report-delivery', 'catalog-operation-obligation:deliver'] }),
+    ];
+    expect(orch.dedupeSystemCapabilitiesByEntitySet(candidates(), true)).toHaveLength(2);
+    expect(orch.dedupeSystemCapabilitiesByEntitySet(candidates(), false)).toHaveLength(1);
+  });
+
   it('preserves distinct product outcomes when their operation sets overlap', () => {
     const sharedOperations = [op('get_context'), op('inspect_graph')];
     const graph = capability({

@@ -217,19 +217,19 @@
       "reason": "Mutation verbs reject read-only capability claims that contradict observed operations; they cannot create a product claim."
     },
     {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "file": "packages/analyzer-core/src/analyzer/core/capability-deduplication.ts",
       "name": "<inline:7rlh1ubse2f4>",
       "category": "linguistic-normalization",
       "reason": "English action prefixes are stripped only when comparing subjects of already-grounded capability candidates; source operations and entities determine whether candidates can merge."
     },
     {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "file": "packages/analyzer-core/src/analyzer/core/capability-deduplication.ts",
       "name": "<inline:1qku9x41ckn6>",
       "category": "closed-operation-taxonomy",
       "reason": "Mutation verbs classify the action of an already-grounded capability during deduplication and cannot introduce its subject or purpose."
     },
     {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
+      "file": "packages/analyzer-core/src/analyzer/core/capability-deduplication.ts",
       "name": "<inline:1ijjse41qmhb>",
       "category": "closed-operation-taxonomy",
       "reason": "Observation verbs classify the action of an already-grounded capability during deduplication and cannot introduce its subject or purpose."
