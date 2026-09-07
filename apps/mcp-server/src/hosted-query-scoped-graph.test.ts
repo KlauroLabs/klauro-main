@@ -420,8 +420,9 @@ test('semantic tables serve method calls, change risks and tests for a scope by 
       assert.deepEqual(strip(assessChangeRisk(scopedCas, 'node-0')), strip(assessChangeRisk(full, 'node-0')), 'precomputed risk parity on the semantic subset');
       const scopedTests = strip(findTests(scopedCas, { nodeId: 'node-0' }));
       const fullTests = strip(findTests(full, { nodeId: 'node-0' }));
-      assert.deepEqual(scopedTests, fullTests, 'tests parity: the tests section stays whole so an unreferenced fixture and a filename-only co-located suite survive');
-      assert.ok(fullTests.fixtures.some((fixture: any) => fixture.id === 'fixture-unreferenced'), 'the full path returns fixtures that reference no node');
+      assert.deepEqual(scopedTests, fullTests, 'targeted tests and related support retain parity across scoped and full storage');
+      assert.ok(!fullTests.fixtures.some((fixture: any) => fixture.id === 'fixture-unreferenced'), 'unreferenced fixtures do not pollute targeted test context');
+      assert.ok(findTests(full, {}).fixtures.some((fixture: any) => fixture.id === 'fixture-unreferenced'), 'unreferenced fixtures remain available in the complete inventory');
       assert.ok(fullTests.suites.some((suite: any) => suite.id === 'suite-colocated'), 'the full path ranks the co-located suite without explicit coverage');
       assert.equal(semantic.projected.test_suites?.matched, 1, 'the by-node table alone would have missed the co-located suite, which is why it is not applied');
       assert.deepEqual(strip(getErrorContracts(scopedCas, 'node-0', 'both')), strip(getErrorContracts(full, 'node-0', 'both')), 'error contracts parity on scoped method calls');

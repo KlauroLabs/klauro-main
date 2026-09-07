@@ -1,5 +1,6 @@
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { FIND_TESTS_INPUT_SCHEMA } from './test-query-schema';
 import { listAnalysesFiltered, DEFAULT_LIMIT, MAX_LIMIT } from './analysis-listing';
 import { listWorkspaceAnalysesFiltered } from './workspace-listing';
 import { resolveAnalysisScope, type AnalysisScope } from './analysis-scope';
@@ -6808,18 +6809,12 @@ function registerTools(server: McpServer) {
     'find_tests',
     {
       title: 'Find Tests',
-      description: 'Find test suites and test cases covering a specific node or file. Includes assertions, mocks, fixtures, and coverage info. Without node_id or file_path, returns paginated list of all test suites (default 25).',
-      inputSchema: {
-        path: z.string().describe('Project path'),
-        node_id: z.string().optional().describe('Node ID to find tests for'),
-        file_path: z.string().optional().describe('File path to find tests for'),
-        limit: z.number().optional().describe('Max results when listing all (default 25)'),
-        offset: z.number().optional().describe('Skip first N results (default 0)'),
-      } as any,
+      description: 'Find test suites and test cases covering a node or file, with related mocks and fixtures. With suite_id, limit/offset page tests inside that suite. Otherwise they page suites (default 25).',
+      inputSchema: FIND_TESTS_INPUT_SCHEMA,
     } as any,
-    async ({ path, node_id, file_path, limit, offset }: any) => withErrorHandling(async () => {
+    async ({ path, node_id, file_path, suite_id, limit, offset }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
-      return json(query.findTests(cas, { nodeId: node_id, filePath: file_path, limit, offset }));
+      return json(query.findTests(cas, { nodeId: node_id, filePath: file_path, suiteId: suite_id, limit, offset }));
     })
   );
 

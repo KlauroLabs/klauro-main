@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CASOutput, CASNode, CASEdge, CASEntryPoint } from '../../../packages/analyzer-core/src/types/cas.types';
-import { getCodingContext, getFlowConcepts, getCallers, assessChangeRisk, getConfiguration, buildSummary, getFlowGraph, getRuntimeStaticLinks, getDataLineage } from './query';
+import { getCodingContext, getFlowConcepts, getCallers, assessChangeRisk, getConfiguration, buildSummary, getFlowGraph, getRuntimeStaticLinks, getDataLineage, findTests } from './query';
 import { attachCasProjection } from './cas-projection';
 
 // Builds a synthetic CAS with a single high-fanout "hub" node that has more
@@ -69,6 +69,66 @@ function buildHighFanoutCas(opts: { callerCount: number; calleeCount: number }):
     analyzer_contributions: [],
   } as unknown as CASOutput;
 }
+
+function buildTestSupportCas(): CASOutput {
+  const cas = buildHighFanoutCas({ callerCount: 0, calleeCount: 0 });
+  cas.test_suites = [{
+    id: 'suite-hub', name: 'Hub tests', file_path: 'src/hub.test.ts', test_type: 'unit', framework: 'node:test',
+    tests: [0, 1, 2].map(i => ({ id: 'test-' + i, name: 'case ' + i, test_type: 'unit' as const, status: { skipped: false, focused: false, flaky: false } })),
+    coverage: { nodes_tested: ['class_hub_Hub_0'] },
+  }];
+  cas.fixtures = [
+    { id: 'colocated', name: 'colocated', type: 'fixture', file_path: 'src/hub.test.ts' },
+    { id: 'linked', name: 'linked', type: 'factory', file_path: 'test/helpers.ts', used_by: ['test-1'], dependencies: ['dependency'] },
+    { id: 'dependency', name: 'dependency', type: 'fixture', file_path: 'test/base.ts' },
+    { id: 'unrelated', name: 'unrelated', type: 'fixture', file_path: 'src/elsewhere.test.ts', used_by: ['other-test'] },
+  ];
+  cas.mocks = [
+    { id: 'direct', name: 'direct', type: 'mock', framework: 'node:test', target_node: 'class_hub_Hub_0' },
+    { id: 'used', name: 'used', type: 'stub', framework: 'node:test', used_by: ['test-1'] },
+    { id: 'other', name: 'other', type: 'mock', framework: 'node:test', used_by: ['other-test'] },
+  ];
+  return cas;
+}
+
+test('targeted test queries retain related support and dependencies without unrelated inventory', () => {
+  const cas = buildTestSupportCas();
+  const original = JSON.stringify(cas);
+  for (const options of [{ nodeId: 'class_hub_Hub_0' }, { filePath: 'src/hub.ts' }]) {
+    const result = findTests(cas, options);
+    assert.deepEqual(result.fixtures.map(f => f.id), ['colocated', 'linked', 'dependency']);
+    assert.deepEqual(result.mocks.map(m => m.id), ['direct', 'used']);
+    assert.equal(result.suites[0].tests.length, 3);
+  }
+  const all = findTests(cas, { limit: 2, offset: 2 });
+  assert.equal(all.total_fixtures, 4);
+  assert.deepEqual(all.fixtures.map(f => f.id), ['dependency', 'unrelated']);
+  assert.equal(JSON.stringify(cas), original);
+});
+
+test('suite selection pages its test cases and provides exact continuation', () => {
+  const cas = buildTestSupportCas();
+  const first = findTests(cas, { suiteId: 'suite-hub', limit: 2, offset: 0 });
+  assert.ok('total_tests' in first && 'next_page' in first);
+  assert.equal(first.total_tests, 3);
+  assert.deepEqual(first.suites[0].tests.map(t => t.id), ['test-0', 'test-1']);
+  assert.deepEqual(first.next_page, { suite_id: 'suite-hub', limit: 2, offset: 2 });
+  const second = findTests(cas, { suiteId: 'suite-hub', limit: 2, offset: 2 });
+  assert.deepEqual(second.suites[0].tests.map(t => t.id), ['test-2']);
+  assert.ok('next_page' in second);
+  assert.equal(second.next_page, null);
+  assert.equal(cas.test_suites![0].tests.length, 3);
+});
+
+test('unknown suite selection returns absence rather than unrelated test suites', () => {
+  const result = findTests(buildTestSupportCas(), { suiteId: 'missing', limit: 1 });
+  assert.equal(result.total_suites, 0);
+  assert.ok('total_tests' in result);
+  assert.equal(result.total_tests, 0);
+  assert.deepEqual(result.suites, []);
+  assert.deepEqual(result.fixtures, []);
+  assert.deepEqual(result.mocks, []);
+});
 
 test('buildSummary reports canonical inventory for a bounded projection without inventing graph rows', () => {
   const cas = attachCasProjection({
