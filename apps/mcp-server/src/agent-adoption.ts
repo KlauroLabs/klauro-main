@@ -4703,7 +4703,7 @@ function augmentFileReadPlanWithTaskHints(
   const explicitSymbolItems = inferExplicitTaskSymbolPlanItems(cas, rootPath, taskText, existing, includeDiskCandidates);
   for (const item of explicitSymbolItems) existing.add(item.file);
   const likelyFocusedTests = shouldSuggestFocusedRegressionTest(tokens)
-    ? inferLikelyNewTestPlanItems(plan, existing)
+    ? inferFocusedTestPlanItems(cas, plan, existing)
     : [];
   for (const item of likelyFocusedTests) existing.add(item.file);
   const candidates = collectTaskHintCandidateFiles(cas, rootPath, includeDiskCandidates)
@@ -4839,22 +4839,23 @@ function shouldSuggestFocusedRegressionTest(tokens: Set<string>): boolean {
   return hasAny(tokens, ['test', 'tests', 'coverage', 'regression', 'contract', 'assert']);
 }
 
-function inferLikelyNewTestPlanItems(plan: FileReadPlanItem[], existing: Set<string>): FileReadPlanItem[] {
+function inferFocusedTestPlanItems(cas: CASOutput, plan: FileReadPlanItem[], existing: Set<string>): FileReadPlanItem[] {
   if (plan.some(item => isTestPath(item.file))) return [];
+  const knownFiles = new Set(getAgentSourceFiles(cas).map(file => normalizeSourceFile(file, cas.system?.root_path)));
   return plan
     .filter(item => !isTestPath(item.file) && /\.(ts|tsx|js|jsx|mjs|cjs)$/i.test(item.file))
     .slice(0, 2)
     .flatMap(item => focusedTestPathCandidates(item.file))
-    .filter(file => !existing.has(file))
+    .filter(file => knownFiles.has(file) && !existing.has(file))
     .slice(0, 2)
     .map(file => ({
       file,
-      reason: 'likely focused regression test path; create it if missing',
+      reason: 'CAS-observed focused regression test candidate; verify target coverage',
       node_ids: [],
       line_window: {
         start: 1,
         end: 220,
-        instruction: `Create or inspect ${file} for focused regression coverage.`,
+        instruction: `Inspect ${file} for focused regression coverage; its coverage of this target is not established.`,
       },
     }));
 }

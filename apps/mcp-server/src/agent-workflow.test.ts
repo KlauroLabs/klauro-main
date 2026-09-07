@@ -17,6 +17,56 @@ import { ingestTelemetryBatch } from './telemetry-ingestion';
 import { attachCasProjection } from './cas-projection';
 
 
+test('regression guidance does not turn invented test paths into missing source citations', async () => {
+  await withWorkspace(async workspace => {
+    const cas = fixtureCas();
+    fs.writeFileSync(path.join(workspace, 'src', 'recovery.ts'), 'export function recoverDescription() {}\n');
+    cas.nodes = [node('recover', 'recoverDescription', 'function', 'src/recovery.ts', 1)];
+    cas.edges = [];
+    cas.entry_points = [];
+    cas.exit_points = [];
+    cas.test_suites = [];
+    const context = await getAgentContext(cas, workspace, {
+      task_type: 'debug',
+      target: 'recoverDescription',
+      instructions: 'Identify connected callers and regression tests before changing recovery behavior.',
+    }) as any;
+    assert.equal(context.selected_node.id, 'recover');
+    assert.ok(context.file_read_plan.every((item: any) => fs.existsSync(path.join(workspace, item.file))));
+    assert.ok(context.execution_brief.read_first.every((file: string) => fs.existsSync(path.join(workspace, file))));
+    assert.equal(context.analysis_freshness.missing_files, 0);
+    assert.notEqual(context.analysis_freshness.citation_verification, 'invalid');
+    assert.match(context.validation_plan.run_policy, /focused test command was not verified/i);
+    assert.notEqual(context.validation_plan.strategy, 'focused-tests-first');
+  });
+});
+
+test('CAS-observed test candidates remain citations and missing real files remain invalid', async () => {
+  await withWorkspace(async workspace => {
+    const cas = fixtureCas();
+    fs.writeFileSync(path.join(workspace, 'src', 'recovery.ts'), 'export function recoverDescription() {}\n');
+    fs.mkdirSync(path.join(workspace, 'tests'));
+    const testFile = path.join(workspace, 'tests', 'recovery.test.ts');
+    fs.writeFileSync(testFile, 'test("recovers descriptions", () => {});\n');
+    cas.nodes = [
+      node('recover', 'recoverDescription', 'function', 'src/recovery.ts', 1),
+      node('recovery-check', 'checkRecovery', 'function', 'tests/recovery.test.ts', 1),
+    ];
+    cas.edges = [];
+    cas.entry_points = [];
+    cas.exit_points = [];
+    cas.test_suites = [];
+    const task = { task_type: 'debug' as const, target: 'recoverDescription', instructions: 'Find focused regression tests for recovery behavior.' };
+    const before = await getAgentContext(cas, workspace, task) as any;
+    assert.ok(before.file_read_plan.some((item: any) => item.file === 'tests/recovery.test.ts'));
+    assert.equal(before.analysis_freshness.missing_files, 0);
+    fs.unlinkSync(testFile);
+    const after = await getAgentContext(cas, workspace, task) as any;
+    assert.equal(after.analysis_freshness.missing_files, 1);
+    assert.equal(after.analysis_freshness.citation_verification, 'invalid');
+  });
+});
+
 test('agent regression guidance reuses known test coverage instead of proposing duplicate files', async () => {
   await withWorkspace(async workspace => {
     const context = await getAgentContext(fixtureCas(), workspace, {
