@@ -231,7 +231,7 @@ async function listFixtures(spec: DimensionSpec): Promise<string[]> {
   return out;
 }
 
-async function buildDimension(spec: DimensionSpec): Promise<CampCDimension> {
+export async function buildDimension(spec: DimensionSpec): Promise<CampCDimension> {
   const base: CampCDimension = {
     key: spec.key,
     label: spec.label,
@@ -245,7 +245,7 @@ async function buildDimension(spec: DimensionSpec): Promise<CampCDimension> {
     outOfCategory: true,
     campABCannot: spec.campABCannot,
     examples: [],
-    allWin: true,
+    allWin: false,
     emitted: 0,
   };
 
@@ -294,7 +294,12 @@ async function buildDimension(spec: DimensionSpec): Promise<CampCDimension> {
 
   const n = f1s.length;
   if (n === 0) {
-    return { ...base, note: `all ${fixtureDirs.length} fixtures threw or had no klauro detail` };
+    return {
+      ...base,
+      attemptedFixtures: fixtureDirs.length,
+      failedFixtures,
+      note: `all ${fixtureDirs.length} fixtures threw or had no klauro detail${errors.length ? ': ' + errors.join('; ') : ''}`,
+    };
   }
   return {
     ...base,
@@ -508,7 +513,15 @@ export async function buildCampCComprehensionReport(): Promise<CampCComprehensio
 
   const { fixture: emissionFixture, cas } = await analyzeEmissionFixture();
   const emission = buildEmissionDimensions(cas, emissionFixture);
+  cache = summarizeCampCComprehension(headToHead, emission, emissionFixture);
+  return cache;
+}
 
+export function summarizeCampCComprehension(
+  headToHead: readonly CampCDimension[],
+  emission: readonly CampCDimension[],
+  emissionFixture: string,
+): CampCComprehensionReport {
   const dimensions = [...headToHead, ...emission];
 
 
@@ -520,13 +533,15 @@ export async function buildCampCComprehensionReport(): Promise<CampCComprehensio
   const meanTokenSaving = h2h.length
     ? h2h.reduce((a, d) => a + d.meanTokenSaving, 0) / h2h.length
     : 0;
-  const allWin = h2h.length > 0 && h2h.every(d => d.allWin);
+  const allWin = headToHead.length > 0 && headToHead.every(d =>
+    d.fixtures > 0 && d.attemptedFixtures === d.fixtures && d.failedFixtures === 0 && d.allWin,
+  );
 
 
   const emitted = emission.filter(d => d.emitted > 0);
   const totalEmitted = emitted.reduce((a, d) => a + d.emitted, 0);
 
-  cache = {
+  return {
     emissionFixture,
     dimensions,
     aggregate: {
@@ -545,5 +560,4 @@ export async function buildCampCComprehensionReport(): Promise<CampCComprehensio
       allWin,
     },
   };
-  return cache;
 }

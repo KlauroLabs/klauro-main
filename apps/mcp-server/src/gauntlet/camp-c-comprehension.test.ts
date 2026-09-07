@@ -1,7 +1,55 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildCampCComprehensionReport } from './camp-c-comprehension';
+import { buildCampCComprehensionReport, buildDimension, summarizeCampCComprehension } from './camp-c-comprehension';
 
+
+const failingDimensionSpec = {
+  key: 'orm', label: 'ORM evidence', description: 'Fixture execution evidence',
+  campABCannot: 'Relationship evidence', fixtureDir: 'orm-bench',
+  run: async (_dir: string): Promise<never> => { throw new Error('Analysis was not started: capacity exhausted'); },
+};
+
+test('comprehension evidence retains every failed attempt when no fixture completed', async () => {
+  const dimension = await buildDimension(failingDimensionSpec);
+  assert.ok(dimension.attemptedFixtures > 0);
+  assert.equal(dimension.fixtures, 0);
+  assert.equal(dimension.failedFixtures, dimension.attemptedFixtures);
+  assert.equal(dimension.allWin, false);
+  assert.match(dimension.note || '', /capacity exhausted/);
+});
+
+test('comprehension evidence treats missing results and missing fixtures as unproven', async () => {
+  const missingResults = await buildDimension({
+    ...failingDimensionSpec,
+    run: async (dir: string) => ({ fixture: dir, arms: [], verdict: { klauro_wins: true }, detail: [] }),
+  });
+  assert.ok(missingResults.attemptedFixtures > 0);
+  assert.equal(missingResults.failedFixtures, missingResults.attemptedFixtures);
+  assert.equal(missingResults.allWin, false);
+  assert.match(missingResults.note || '', /missing Klauro result/);
+
+  const absent = await buildDimension({ ...failingDimensionSpec, fixtureDir: '__missing_comprehension_fixtures__' });
+  assert.equal(absent.attemptedFixtures, 0);
+  assert.equal(absent.failedFixtures, 0);
+  assert.equal(absent.allWin, false);
+});
+
+test('comprehension evidence cannot hide a failed dimension behind successful dimensions', async () => {
+  const failed = await buildDimension(failingDimensionSpec);
+  const passed = {
+    ...failed, key: 'routes', fixtures: 2, attemptedFixtures: 2, failedFixtures: 0,
+    meanKlauroF1: 1, meanTokenSaving: 0.5, allWin: true, note: undefined,
+  };
+  const partial = summarizeCampCComprehension([passed, failed], [], 'unavailable');
+  assert.equal(partial.aggregate.headToHead.dimensions, 1);
+  assert.equal(partial.aggregate.headToHead.meanKlauroF1, 1);
+  assert.equal(partial.aggregate.headToHead.allWin, false);
+  assert.equal(partial.aggregate.allWin, false);
+  assert.equal(partial.dimensions[1].failedFixtures, failed.attemptedFixtures);
+  assert.equal(summarizeCampCComprehension([], [], 'unavailable').aggregate.allWin, false);
+  assert.equal(summarizeCampCComprehension([passed], [], 'unavailable').aggregate.allWin, true);
+  assert.equal(summarizeCampCComprehension([{ ...passed, attemptedFixtures: 3 }], [], 'unavailable').aggregate.allWin, false);
+});
 test('camp-c-comprehension: full Camp-C surface in two honest modes', async () => {
   const report = await buildCampCComprehensionReport();
 
