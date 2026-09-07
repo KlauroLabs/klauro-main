@@ -1252,3 +1252,18 @@ test('an explicitly single-audience publication does not cover a shared-benefit 
     assert.equal(capabilitySatisfiesCatalogOutcomeRequirement(capability, shared), false);
   }
 });
+
+test('an authored outcome is not replaced by an action from its subordinate clause', () => {
+  const cases = [
+    { name: 'Know what will break before changing something', evidence: candidate('risk', 'Assess change risk', ['assess_change_risk', 'forecast_change_impact']) },
+    { name: 'Avoid outages when deploying services', evidence: candidate('deployment', 'Deployment reliability', ['detect_outages', 'deploy_services']) },
+    { name: 'Decide whether to approve an application', evidence: candidate('applications', 'Application approval', ['evaluate_application', 'approve_application']) },
+  ];
+  for (const item of cases) {
+    const requirements = deriveCapabilityCatalogOutcomeRequirements({ productDocSummary: 'Feature: ' + item.name + '.' }, [item.evidence]);
+    assert.equal(requirements.length, 1, item.name);
+    assert.equal(requirements[0].statement, item.name);
+    assert.deepEqual(requirements[0].visibleActionTerms, [], item.name);
+    assert.equal(capabilityCatalogOutcomeNameFailure(item.name, requirements[0]), undefined, item.name);
+  }
+});

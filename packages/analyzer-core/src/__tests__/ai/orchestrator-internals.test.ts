@@ -15773,7 +15773,7 @@ test("an empty catalog whose granted repair named candidates that were all rejec
   expect(result.map((capability: any) => capability.name)).toEqual(['Register users']);
 });
 
-test('missing required outcomes preserve grounded catalog members and their reconciliation', async () => {
+test.each([false, true])('missing required outcomes preserve grounded catalog members and their reconciliation with pending language: %s', async pendingLanguage => {
   const localOrch = new AnalyzerOrchestrator() as any;
   const candidates = [
     { id: 'articles', name: 'Read subscribed articles', description: 'Readers open the articles from feeds they subscribe to.', subject: 'article', action: 'read' },
@@ -15787,7 +15787,10 @@ test('missing required outcomes preserve grounded catalog members and their reco
   jest.spyOn(localOrch, 'aiExtractCapabilityCatalog').mockResolvedValue([{
     ...candidates[0], name_source: 'ai', description_source: 'ai',
     criticality_factors: ['catalog-candidate:articles'],
-  }]);
+  }, ...(pendingLanguage ? [{
+    ...candidates[1], name_source: 'deterministic', description_source: 'deterministic',
+    criticality_factors: ['catalog-candidate:subscriptions'],
+  }] : [])]);
   jest.spyOn(localOrch, 'reconcileCatalogedCapabilities').mockImplementation((values: any) => values);
   const purpose: any = { primary_domain: 'feed-reading', core_concepts: [] };
   const accepted = jest.fn();
