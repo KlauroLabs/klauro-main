@@ -390,6 +390,10 @@ export function parseAgentContextCapsule(capsule: string): {
           if (match) fileRefs.set(`#${match[1]}`, expanded);
         }
       }
+    } else if (version === 'K15' && line.startsWith('V|[')) {
+      const commands: unknown = JSON.parse(line.slice(2));
+      if (!Array.isArray(commands) || commands.some(command => typeof command !== 'string')) throw new Error('Invalid capsule validation commands');
+      validation.push(...commands);
     } else if (line.startsWith('V ')) {
       validation.push(...line.slice(2).split(';').map(item => expandFileRefs(expandAlias(item, aliases), fileRefs)).filter(Boolean));
     } else if (version === 'K15' && line.startsWith('V')) {
@@ -787,7 +791,7 @@ function encodeK15(context: any): string {
     compactListLineK15('I', context.idioms, 3, 22, compactK12Guidance),
     compactListLineK15('U', context.reuse, 2, 24, compactK12Guidance),
     compactListLineK15('R', context.risks, 2, 24, compactK12Guidance),
-    compactListLineK15('V', compactK12Validation(context.execution?.validate, fileRefs), 2, 28, compactCommandText),
+    arrayOfStrings(context.execution?.validate).length ? `V|${JSON.stringify(arrayOfStrings(context.execution.validate))}` : '',
     context.rule ? `!${compactK12Rule(context.rule, 26)}` : '',
   ];
   return lines.filter(Boolean).join('\n');
