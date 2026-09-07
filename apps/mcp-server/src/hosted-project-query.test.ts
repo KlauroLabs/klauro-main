@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import test from 'node:test';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
-import { executeHostedProjectQuery, hostedProjectQuerySections, HOSTED_PROJECT_QUERY_TOOL_NAMES } from './hosted-project-query';
+import { executeHostedProjectQuery, hostedProjectQuerySections, HOSTED_PROJECT_QUERY_SCHEMAS, HOSTED_PROJECT_QUERY_TOOL_NAMES } from './hosted-project-query';
 import * as analysisMastery from './analysis-mastery';
 import { getProductMap, searchNodes } from './query';
 import { HOSTED_SEARCH_NODES_SCHEMA } from './hosted-project-query-schema';
@@ -272,4 +272,12 @@ test('hosted node search applies the exact repository-relative file filter befor
     description: undefined,
     tags: undefined,
   }]);
+});
+
+test('find_tests accepts an optional suite_id and still rejects unknown keys', () => {
+  const schema = HOSTED_PROJECT_QUERY_SCHEMAS.find_tests;
+  assert.deepEqual(schema.parse({ suite_id: 'suite-1', limit: 5, offset: 2 }), { suite_id: 'suite-1', limit: 5, offset: 2 });
+  assert.deepEqual(schema.parse({}), {});
+  assert.equal(schema.safeParse({ suite_id: 42 }).success, false);
+  assert.equal(schema.safeParse({ suite: 'suite-1' }).success, false);
 });

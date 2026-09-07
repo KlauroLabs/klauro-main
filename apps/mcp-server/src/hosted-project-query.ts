@@ -62,7 +62,7 @@ export const HOSTED_PROJECT_QUERY_SCHEMAS = {
   }).strict(),
   assess_change_risk: z.object({ node_id: z.string().min(1) }).strict(),
   find_tests: z.object({
-    node_id: z.string().optional(), file_path: z.string().optional(),
+    node_id: z.string().optional(), file_path: z.string().optional(), suite_id: z.string().optional(),
     limit: z.number().int().positive().max(200).optional(), offset: z.number().int().nonnegative().optional(),
   }).strict(),
   get_product_map: z.object({}).strict(),
@@ -228,6 +228,7 @@ export async function executeHostedProjectQuery(input: {
     case 'find_tests':
       result = query.findTests(input.cas, {
         nodeId: args.node_id, filePath: args.file_path, limit: args.limit, offset: args.offset,
+        ...(args.suite_id ? { suiteId: args.suite_id } : {}),
       });
       break;
     case 'get_product_map':
