@@ -303,7 +303,7 @@ export function deterministicCapabilityDescriptionFallback(args: {
   if (!exactSentence && resolvedCandidates.length !== 1 && !exactGroupedLifecycle && !firstPartyOutcomeBound) return undefined;
   const description = exactSentence || (() => {
     const normalizedTitle = args.identity.name.trim().replace(/[.!?]+$/, '').replace(/^./, value => value.toLowerCase());
-    const coreOutcomeTitle = normalizedTitle.replace(/ +(?:for|from|through|via|with)(?: +|$).*$/i, "").trim();
+
     const evidenceSubject = exactGroupedLifecycle
       ? args.identity.name.trim().replace(/^[^\s]+\s+(?:and\s+[^\s]+\s+)?/i, '').toLowerCase()
       : groundedTitleSubjects.join(' ');
@@ -355,20 +355,7 @@ export function deterministicCapabilityDescriptionFallback(args: {
     if ((args.identity.criticality_factors || []).includes('catalog-deterministic-route-lineage')) {
       return `${audience} can ${normalizedTitle} as part of their normal workflow whenever needed.`;
     }
-    if (firstPartyOutcomeBound) {
-      if (/^route requests? to handlers?\b/.test(normalizedTitle)) {
-        const qualifier = normalizedTitle.match(/\b(?:for|from|through|via|with)\b.*$/i)?.[0]
-          .replace(/^with\b/i, 'through');
-        return `${audience} direct incoming requests to the handlers that serve them${qualifier ? ` ${qualifier}` : ''}.`;
-      }
-      const generatedObject = normalizedTitle.match(/^generate (.+)$/)?.[1];
-      if (generatedObject) return `${audience} produce ${generatedObject}.`;
-      if (/^declaratively parse requests using extractors\b/.test(normalizedTitle)) {
-        return `${audience} extract incoming request data through declarative extractors.`;
-      }
-      if (coreOutcomeTitle !== normalizedTitle) return audience + " can " + coreOutcomeTitle + ".";
-      return `${audience} can ${normalizedTitle} as those ${subjectPhrase} change over time.`;
-    }
+    if (firstPartyOutcomeBound) return `${audience} can ${normalizedTitle}.`;
     if (actions.length > 1) {
       const continuity = actions.includes('remove')
         ? 'from first use through later changes, including when they no longer need them'

@@ -186,7 +186,7 @@ test('does not treat a normal multiword description as weak at the repair deadli
   assert.equal(validationCalls, 0);
 });
 
-test('repairs a bound authored outcome across multiple evidence families without a pending registry entry', () => {
+test('preserves pending authored evidence when its description would require invented padding', () => {
   const jobs = catalogCapability({
     id: 'jobs', name: 'Job applications', structural_label: 'Job applications',
     evidence_kind: 'behavior-surface', evidence_role: 'product-outcome',
@@ -213,7 +213,7 @@ test('repairs a bound authored outcome across multiple evidence families without
       'catalog-candidate:jobs', 'catalog-candidate:categories',
     ],
   });
-  const expected = 'Users can categorize job applications as those job applications change over time.';
+  const expected = '';
   const [repaired] = resolvePendingCapabilityDescriptionsWithoutProvider({
     capabilities: [identity], pendingEvidenceIdentityByCandidateId: new Map(),
     evidenceCandidates: [jobs, categories], firstPartyTexts: [], audienceFor: () => 'Users',
@@ -221,6 +221,7 @@ test('repairs a bound authored outcome across multiple evidence families without
   });
   assert.equal(repaired.name, identity.name);
   assert.equal(repaired.description, expected);
+  assert.equal(repaired.description_generation?.status, 'ai_rejected');
   assert.deepEqual(
     repaired.criticality_factors?.filter(factor => factor.startsWith('catalog-candidate:')).sort(),
     ['catalog-candidate:categories', 'catalog-candidate:jobs'],

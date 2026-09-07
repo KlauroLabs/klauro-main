@@ -235,7 +235,7 @@ describe('capability catalog repair planning', () => {
       ]), name: 'Keep track of job applications' },
       evidenceCandidates: [managedEvidence], audience: 'Users', firstPartyTexts: [], validate: allow,
     });
-    assert.equal(boundOutcome?.description, 'Users can keep track of job applications as those job applications change over time.');
+    assert.equal(boundOutcome?.description, 'Users can keep track of job applications.');
 
     const routingEvidence = evidence("routing-evidence", "Routing", ["route"]);
     const qualifiedOutcome = deterministicCapabilityDescriptionFallback({
@@ -243,7 +243,7 @@ describe('capability catalog repair planning', () => {
       evidenceCandidates: [routingEvidence], audience: "Developers", firstPartyTexts: [], validate: allow,
     });
     assert.equal(qualifiedOutcome?.name, "Route requests to handlers with a macro free API");
-    assert.equal(qualifiedOutcome?.description, "Developers direct incoming requests to the handlers that serve them through a macro free API.");
+    assert.equal(qualifiedOutcome?.description, "Developers can route requests to handlers with a macro free API.");
 
     const responseEvidence = evidence('response-evidence', 'Into', ['generate']);
     const responseOutcome = deterministicCapabilityDescriptionFallback({
@@ -253,7 +253,7 @@ describe('capability catalog repair planning', () => {
       ]), name: 'Generate responses with minimal boilerplate' },
       evidenceCandidates: [responseEvidence], audience: 'Developers', firstPartyTexts: [], validate: allow,
     });
-    assert.equal(responseOutcome?.description, 'Developers produce responses with minimal boilerplate.');
+    assert.equal(responseOutcome?.description, 'Developers can generate responses with minimal boilerplate.');
 
     const extractorEvidence = evidence('extractor-evidence', 'Axum', ['extract']);
     const extractorOutcome = deterministicCapabilityDescriptionFallback({
@@ -263,7 +263,7 @@ describe('capability catalog repair planning', () => {
       ]), name: 'Declaratively parse requests using extractors' },
       evidenceCandidates: [extractorEvidence], audience: 'Developers', firstPartyTexts: [], validate: allow,
     });
-    assert.equal(extractorOutcome?.description, 'Developers extract incoming request data through declarative extractors.');
+    assert.equal(extractorOutcome?.description, 'Developers can declaratively parse requests using extractors.');
 
     const exactFirstPartyOverride = deterministicCapabilityDescriptionFallback({
       identity: { ...capability('remove-source', ['catalog-candidate:source-evidence']), name: 'Remove tracked requests' },
