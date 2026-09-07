@@ -20,3 +20,21 @@ export function applyLayeredAnalysisMetadata(output: CASOutput, metadata: Layere
     };
   }
 }
+
+export function resolveLayeredEnrichmentPhase(
+  output: Pick<CASOutput, 'ai_enrichment' | 'ai_enrichment_error' | 'layers_ready'>,
+): { status: 'succeeded' | 'failed'; error?: string } {
+  const failures = (output.layers_ready?.layers || [])
+    .filter(layer => (layer.layer === 'L4' || layer.layer === 'L5') && layer.status !== 'ready')
+    .map(layer => `${layer.layer}: ${layer.error || (layer.status === 'pending' ? 'Layer remains pending after enrichment finished.' : 'Layer was rejected.')}`);
+  if (output.ai_enrichment === 'error') {
+    failures.push(output.ai_enrichment_error || 'AI enrichment failed.');
+  } else if (output.ai_enrichment === 'pending') {
+    failures.push('AI enrichment remains pending after the worker finished.');
+  } else if (!output.ai_enrichment && !output.layers_ready?.layers.some(layer => layer.layer === 'L5' && layer.status === 'ready')) {
+    failures.push('AI enrichment has no terminal status.');
+  }
+  return failures.length > 0
+    ? { status: 'failed', error: [...new Set(failures)].join(' ') }
+    : { status: 'succeeded' };
+}
