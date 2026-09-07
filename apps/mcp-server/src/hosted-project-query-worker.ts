@@ -93,7 +93,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
       if (scopedPlan && pinned) {
         const loadStartedAt = Date.now();
         const smallSections = scopedSmallSections(request.tool, requiredSections);
-        const semanticEligible = 'scope' in scopedPlan && (request.tool === 'assess_change_risk' || request.tool === 'find_tests' || request.tool === 'get_coding_context')
+        const semanticEligible = 'scope' in scopedPlan && (request.tool === 'assess_change_risk' || request.tool === 'find_tests' || request.tool === 'get_coding_context' || request.tool === 'get_agent_context')
           ? await loadScopedSemanticCollections(pinned, scopedPlan.graph, scopedPlan.scope.keepIds)
           : null;
         const semanticSections = semanticEligible && 'method_calls' in semanticEligible.collections
