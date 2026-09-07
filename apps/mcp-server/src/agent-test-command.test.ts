@@ -33,13 +33,15 @@ test('verified aliases preserve npm lifecycle hooks and forward only the selecte
   try {
     await fs.writeFile(path.join(root, 'package.json'), JSON.stringify({ scripts }));
     await fs.writeFile(path.join(root, 'prepare.cjs'), 'require("node:fs").writeFileSync("prepared", "yes");');
-    await fs.writeFile(path.join(root, 'selected.test.cjs'), 'require("node:test").test("selected test", () => {});');
+    await fs.writeFile(path.join(root, 'selected.test.cjs'), 'require("node:test").test("selected test", () => { require("node:fs").writeFileSync("executed", "yes"); });');
     await fs.writeFile(path.join(root, 'unselected.test.cjs'), 'throw new Error("unselected test must not run");');
     assert.equal(resolveFileAwareTestScript(scripts), 'test');
-    const { stdout } = await promisify(execFile)('npm', ['test', '--', 'selected.test.cjs'], {
-      cwd: root, timeout: 20_000, env: { ...process.env, npm_config_update_notifier: 'false' },
+    const childEnvironment = { ...process.env, npm_config_update_notifier: 'false' };
+    delete childEnvironment.NODE_TEST_CONTEXT;
+    await promisify(execFile)('npm', ['test', '--', 'selected.test.cjs'], {
+      cwd: root, timeout: 20_000, env: childEnvironment,
     });
-    assert.match(stdout, /selected test/);
+    assert.equal(await fs.readFile(path.join(root, 'executed'), 'utf8'), 'yes');
     assert.equal(await fs.readFile(path.join(root, 'prepared'), 'utf8'), 'yes');
   } finally {
     await fs.rm(root, { recursive: true, force: true });
