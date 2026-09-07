@@ -768,7 +768,7 @@ export class AnalyzerOrchestrator {
   private normalizeConfiguredIgnorePattern(pattern: string): string[] {
     const normalized = pattern.replace(/\\/g, '/').replace(/^\/+/, '').trim();
     if (!normalized) return [];
-    if (normalized.includes('*')) return [normalized];
+    if (normalized.includes('*')) return [normalized.endsWith('/**') ? `${normalized}/*` : normalized];
     const withoutTrailingSlash = normalized.replace(/\/+$/, '');
     return [withoutTrailingSlash, `${withoutTrailingSlash}/**`, `${withoutTrailingSlash}/**/*`];
   }
