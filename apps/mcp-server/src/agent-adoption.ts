@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as nodePath from 'path';
+import { sourceExclusionReadiness } from './source-coverage';
 import type { CASEntryPoint, CASOutput, CASNode, SystemCapability } from '../../../packages/analyzer-core/src/types/cas.types';
 import { projectUserJourneysFromCas } from '../../../packages/analyzer-core/src/analyzer/core/journey-projection';
 import {
@@ -5597,14 +5598,12 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { tes
   const testGate = testReadinessGate(tests.total_suites, opts.testEvidence);
   const invariantGapCount = cas.behavioral_invariant_summary?.gaps?.length || 0;
   const invariantGapSeverity = cas.behavioral_invariant_summary?.by_gap_severity || severityCounts(cas.behavioral_invariant_summary?.gaps || []);
-  const invariantGateStatus: GateStatus = (cas.behavioral_invariants?.length || 0) === 0
-    ? 'warn'
-    : 'pass';
-  const invariantGateScore = (cas.behavioral_invariants?.length || 0) === 0
-    ? 70
-    : 100;
+  const hasInvariants = (cas.behavioral_invariants?.length || 0) > 0;
+  const invariantGateStatus: GateStatus = hasInvariants ? 'pass' : 'warn';
+  const invariantGateScore = hasInvariants ? 100 : 70;
   const comprehension = evaluateComprehensionReadiness(cas);
   const rawGates: AgentReadinessGate[] = [
+    ...sourceExclusionReadiness(cas).gates,
     gate('analysis-errors', analysisErrors === 0 ? 'pass' : 'fail', analysisErrors === 0 ? 100 : 0, `${analysisErrors} analysis errors, ${analysisWarningCount} warnings`),
     gate('nodes', nodeCount > 0 ? 'pass' : 'fail', nodeCount > 0 ? 100 : 0, `${nodeCount} nodes`),
     gate('edges', edgeCount > 0 ? 'pass' : 'fail', edgeCount > 0 ? 100 : 0, `${edgeCount} edges`),
@@ -5691,7 +5690,7 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { tes
     .slice(0, 8)
     .map(result => `${result.id}: ${result.detail}`);
   const agentContextReady = analysisErrors === 0 && rawStatus !== 'fail' && score >= 85;
-  const analysisOnlyUnderstandingReady = agentContextReady && comprehension.ready && answerPackGaps.length === 0;
+  const analysisOnlyUnderstandingReady = agentContextReady && comprehension.ready && answerPackGaps.length === 0 && sourceExclusionReadiness(cas).count === 0;
   const status: GateStatus = rawStatus === 'fail' && agentContextReady ? 'warn' : rawStatus;
 
   return {

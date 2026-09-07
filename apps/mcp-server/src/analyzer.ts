@@ -7,6 +7,7 @@ import type { CASOutput, IncrementalState, ChangeReport, ChangeHistoryEntry } fr
 import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
 import { buildCompletedAnalysisLayersReady } from './layered-analysis';
 import { resolveLayeredEnrichmentPhase } from './layered-analysis-metadata';
+import { saveAnalysisWithSourceCoverage as saveAnalysis } from './source-coverage';
 import { beginForegroundAnalysis } from './foreground-analysis';
 import { registerHostedBackgroundPreflight, withHostedForegroundPermit } from './hosted-background-queue';
 import { architectureLibraryAnalyzerDefinitions } from '../../../packages/analyzer-core/src/analyzer/libraries/architecture';
@@ -35,7 +36,6 @@ import {
 import {
   assertAnalysisVersionSupported,
   getAnalysisVersionInfo,
-  saveAnalysis,
   loadAnalysis,
   loadAnalysisSections,
   loadCompleteAnalysisFromSections,
