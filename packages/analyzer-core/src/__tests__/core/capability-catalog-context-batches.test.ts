@@ -152,3 +152,57 @@ test('does not treat a failed batch as an empty accepted subset', async () => {
   const request = jest.fn().mockResolvedValueOnce('{"capabilities":[]}').mockResolvedValue('{"capabilities":[');
   await expect(requestCapabilityCatalogContexts(contexts, request)).rejects.toThrow('incomplete-json');
 });
+
+test('packs contiguous evidence to the byte limit instead of repeatedly halving fitting groups', () => {
+  const candidates = Array.from({ length: 30 }, (_, index) => candidate(index + 1000));
+  const base = { task: 'Catalog documented behavior.' };
+  const fits = (values: typeof candidates) => {
+    const context = fitCapabilityCatalogContext(base, { candidate_route_areas: values }, env);
+    return context.omittedCandidateIds.length === 0 && context.byteLength <= resolveAIInputByteBudget(env);
+  };
+  let capacity = 0;
+  while (capacity < candidates.length && fits(candidates.slice(0, capacity + 1))) capacity += 1;
+  expect(capacity).toBeGreaterThan(1);
+  const batches = fitCapabilityCatalogContexts(base, { candidate_route_areas: candidates }, env);
+  expect(batches).toHaveLength(Math.ceil(candidates.length / capacity));
+  const delivered = batches.flatMap(batch => batch.context.facts.candidate_route_areas as Array<Record<string, unknown>>);
+  expect(delivered.map(value => value.candidate_id)).toEqual(candidates.map(value => value.candidate_id));
+  expect(delivered.map(value => value.operations)).toEqual(candidates.map(value => value.operations));
+  expect(delivered.map(value => value.declared_contracts)).toEqual(candidates.map(value => value.declared_contracts));
+});
+
+test('retains every authored requirement that fits even when one evidence family supports more than sixteen', () => {
+  const required = Array.from({ length: 20 }, (_, index) => ({
+    requirement_id: 'requirement-' + index,
+    outcome: 'Inspect record ' + index + ' without changing it',
+    candidate_ids: ['candidate-0'],
+  }));
+  const batches = fitCapabilityCatalogContexts({ task: 'Catalog documented behavior.' }, {
+    candidate_route_areas: [candidate(0)], required_outcomes: required,
+  }, env);
+  expect(batches).toHaveLength(1);
+  expect((batches[0].context.facts.required_outcomes as Array<Record<string, unknown>>).map(value => value.requirement_id))
+    .toEqual(required.map(value => value.requirement_id));
+});
+
+test('packing does not trade shared evidence away to fit another candidate', () => {
+  const candidates = Array.from({ length: 30 }, (_, index) => candidate(index + 1000));
+  const facts = {
+    candidate_route_areas: candidates,
+    user_journeys: [{ name: 'Inspect a record without mutation', writes: [], terminal: ['Record:read'] }],
+    entities: [{ name: 'Record', fields: ['status', 'origin'] }],
+    external_services: ['Audit receiver'],
+    top_down_signals: { product_overview: 'Inspection returns records without changing stored data.' },
+  };
+  const shared = fitCapabilityCatalogContext({ task: 'Catalog documented behavior.' }, {
+    ...facts, candidate_route_areas: [],
+  }, env).context.facts;
+  const batches = fitCapabilityCatalogContexts({ task: 'Catalog documented behavior.' }, facts, env);
+  for (const batch of batches) {
+    for (const key of ['user_journeys', 'entities', 'external_services', 'top_down_signals']) {
+      expect(batch.context.facts[key]).toEqual(shared[key]);
+    }
+    expect(batch.byteLength).toBeLessThanOrEqual(resolveAIInputByteBudget(env));
+    expect(batch.omittedCandidateIds).toEqual([]);
+  }
+});
