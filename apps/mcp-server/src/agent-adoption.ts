@@ -43,7 +43,9 @@ import {
   gateExpectation,
   type AnalysisProfile,
 } from './analysis-profile';
-import { casEdgeCount, casNodeCount, casSectionLoaded, projectedLayerEvidence } from './cas-projection';
+import { casCollectionTotal, casEdgeCount, casNodeCount, casSectionLoaded, projectedLayerEvidence } from './cas-projection';
+import { buildRiskContextForAgent } from './agent-risk-context';
+import { normalizeSourceFile, projectPathsMatch } from './agent-source-paths';
 import { formatAgentContextCapsule } from './agent-context-codec';
 import { loadTelemetryObservations } from './telemetry-ingestion';
 import { resolveSectionFilter, type ContextRuntimeMode } from './context-filter';
@@ -361,7 +363,7 @@ async function buildAgentContextForTask(cas: CASOutput, path: string, taskInput:
     files: fileReadPlan.map(item => item.file),
     limit: 8,
   });
-  const riskContext = buildRiskContextForAgent(cas, {
+  const riskContext = await buildRiskContextForAgent(cas, {
     targetNode: selectedNode || undefined,
     target: selectedNode?.id || targetQuery || task.target,
     files: fileReadPlan.map(item => item.file),
@@ -3859,102 +3861,7 @@ function summarizeRiskForAgent(risk: ReturnType<typeof assessChangeRisk> | null)
   };
 }
 
-function buildRiskContextForAgent(
-  cas: CASOutput,
-  options: { targetNode?: CASNode; target?: string; files?: string[]; limit?: number } = {},
-) {
-  const risks = Array.isArray(cas.change_risks) ? cas.change_risks : [];
-  const summary = cas.change_risk_summary as any;
-  const nodeById = new Map((cas.nodes || []).map(node => [node.id, node]));
-  const riskByNode = new Map(risks.map(risk => [risk.node_id, risk]));
-  const targetText = String(options.target || '').toLowerCase();
-  const targetRisk = options.targetNode
-    ? riskByNode.get(options.targetNode.id) || null
-    : risks.find(risk => {
-      const node = nodeById.get(risk.node_id);
-      const haystack = [risk.node_id, node?.name, node?.qualified_name, node?.source?.file].filter(Boolean).join(' ').toLowerCase();
-      return Boolean(targetText && haystack.includes(targetText));
-    }) || null;
-  const files = uniqueStrings((options.files || [])
-    .map(file => normalizeSourceFile(file, cas.system?.root_path))
-    .filter(Boolean));
-  const fileRisks = risks.filter(risk => {
-    const node = nodeById.get(risk.node_id);
-    const file = normalizeSourceFile(node?.source?.file || '', cas.system?.root_path);
-    return Boolean(file && files.some(targetFile => projectPathsMatch(file, targetFile)));
-  });
-  const summaryHighRiskIds = Array.isArray(summary?.high_risk_nodes) ? summary.high_risk_nodes : [];
-  const summaryUntestedIds = Array.isArray(summary?.untested_critical_paths) ? summary.untested_critical_paths : [];
-  const summaryRiskIds = [...summaryHighRiskIds, ...summaryUntestedIds]
-    .map((item: any) => typeof item === 'string' ? item : item?.node_id || item?.id)
-    .filter(Boolean);
-  const scopedRisks = uniqueRisks([
-    ...(targetRisk ? [targetRisk] : []),
-    ...fileRisks,
-  ])
-    .sort((left, right) => changeRiskRank(right) - changeRiskRank(left))
-    .slice(0, options.limit || 6)
-    .map(risk => compactChangeRiskForAgent(risk, nodeById.get(risk.node_id)));
 
-  const scopedNodeIds = new Set(uniqueRisks([
-    ...(targetRisk ? [targetRisk] : []),
-    ...fileRisks,
-  ]).map(risk => risk.node_id));
-  const repoTopRisks = uniqueRisks([
-    ...summaryRiskIds.map((id: string) => riskByNode.get(id)).filter(Boolean),
-    ...risks,
-  ])
-    .filter(risk => !scopedNodeIds.has(risk.node_id))
-    .sort((left, right) => changeRiskRank(right) - changeRiskRank(left))
-    .slice(0, options.limit || 6)
-    .map(risk => compactChangeRiskForAgent(risk, nodeById.get(risk.node_id)));
-
-  const topFactors = riskFactorSummary(scopedRisks.length ? scopedRisks : repoTopRisks);
-  return {
-    status: risks.length > 0 ? 'ready' : 'unavailable',
-    target_risk: targetRisk ? compactChangeRiskForAgent(targetRisk, nodeById.get(targetRisk.node_id)) : null,
-    scope: targetRisk ? 'target' : fileRisks.length > 0 ? 'files' : 'repo',
-    summary: {
-      total_high_risk_nodes: summaryHighRiskIds.length || risks.filter(risk => risk.risk_level === 'critical' || risk.risk_level === 'high').length,
-      total_untested_critical_paths: summaryUntestedIds.length,
-      top_risk_factors: topFactors,
-    },
-    top_risks: scopedRisks,
-    repo_top_risks: repoTopRisks,
-    agent_rules: [
-      scopedRisks.length
-        ? 'Before editing any scoped risk surface, inspect its callers, callees, tests, and behavioral invariants.'
-        : 'No direct risk matched the selected target or first-read files; use repo_top_risks only as background, not as the edit target.',
-      'Use assess_change_risk for the selected node before changes that touch high-risk files or entry points.',
-      'When risk_context names no direct tests, inspect adjacent tests or add focused coverage before finalizing behavior changes.',
-    ],
-  };
-}
-
-function compactChangeRiskForAgent(risk: any, node?: CASNode) {
-  const factors = Array.isArray(risk.risk_factors) ? risk.risk_factors : [];
-  return {
-    node_id: risk.node_id,
-    name: node?.name || risk.node_id,
-    type: node?.type || null,
-    file: node?.source?.file || null,
-    line: node?.source?.line || null,
-    risk_level: risk.risk_level,
-    factors: factors.slice(0, 4).map((factor: any) => ({
-      factor: factor.factor,
-      severity: factor.severity,
-      details: factor.details,
-    })),
-    direct_callers: Array.isArray(risk.downstream_impact?.direct_callers) ? risk.downstream_impact.direct_callers.slice(0, 4) : [],
-    affected_entry_points: Array.isArray(risk.downstream_impact?.affected_entry_points) ? risk.downstream_impact.affected_entry_points.slice(0, 4) : [],
-    test_protection: risk.test_protection ? {
-      has_direct_tests: Boolean(risk.test_protection.has_direct_tests),
-      has_integration_tests: Boolean(risk.test_protection.has_integration_tests),
-      test_ids: Array.isArray(risk.test_protection.test_ids) ? risk.test_protection.test_ids.slice(0, 4) : [],
-    } : null,
-    recommendations: Array.isArray(risk.recommendations) ? risk.recommendations.slice(0, 3) : [],
-  };
-}
 
 function compactMinimalRiskContext(context: any) {
   if (!context || typeof context !== 'object') return context || null;
@@ -4001,42 +3908,7 @@ function compactRiskContextItem(item: any, limit: number) {
   };
 }
 
-function uniqueRisks(risks: any[]): any[] {
-  const seen = new Set<string>();
-  const result = [];
-  for (const risk of risks) {
-    if (!risk?.node_id || seen.has(risk.node_id)) continue;
-    seen.add(risk.node_id);
-    result.push(risk);
-  }
-  return result;
-}
 
-function changeRiskRank(risk: any): number {
-  const level = String(risk?.risk_level || '').toLowerCase();
-  const levelScore = level === 'critical' ? 400 : level === 'high' ? 300 : level === 'medium' ? 200 : level === 'low' ? 100 : 0;
-  const factors = Array.isArray(risk?.risk_factors) ? risk.risk_factors : [];
-  const factorScore = factors.reduce((score: number, factor: any) => {
-    const severity = String(factor?.severity || '').toLowerCase();
-    return score + (severity === 'high' ? 10 : severity === 'medium' ? 5 : severity === 'low' ? 2 : 0);
-  }, 0);
-  const untested = risk?.test_protection?.has_direct_tests === false ? 15 : 0;
-  return levelScore + factorScore + untested;
-}
-
-function riskFactorSummary(risks: any[]): string[] {
-  const counts = new Map<string, number>();
-  for (const risk of risks) {
-    for (const factor of risk.factors || []) {
-      if (!factor?.factor) continue;
-      counts.set(factor.factor, (counts.get(factor.factor) || 0) + 1);
-    }
-  }
-  return [...counts.entries()]
-    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
-    .slice(0, 6)
-    .map(([factor, count]) => `${factor} (${count})`);
-}
 
 function summarizeSystemHealthForAgent(cas: CASOutput) {
   const health = cas.system_health;
@@ -5421,15 +5293,7 @@ function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
 }
 
-function normalizeSourceFile(file: string, rootPath?: string): string {
-  const normalizedFile = file.replace(/\\/g, '/');
-  if (!rootPath) return normalizedFile.replace(/^\.\//, '');
-  const normalizedRoot = rootPath.replace(/\\/g, '/').replace(/\/$/, '');
-  if (normalizedFile.startsWith(`${normalizedRoot}/`)) {
-    return normalizedFile.slice(normalizedRoot.length + 1);
-  }
-  return normalizedFile.replace(/^\.\//, '');
-}
+
 
 function inferRelatedTestSuites(cas: CASOutput, selectedNode?: CASNode): AgentTestSuiteRef[] {
   if (!selectedNode?.source?.file) return [];
@@ -5490,11 +5354,7 @@ function pythonApiTestCandidates(sourceFile: string): string[] {
   ];
 }
 
-function projectPathsMatch(left: string, right: string): boolean {
-  const normalizedLeft = left.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
-  const normalizedRight = right.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
-  return normalizedLeft === normalizedRight || normalizedLeft.endsWith(`/${normalizedRight}`) || normalizedRight.endsWith(`/${normalizedLeft}`);
-}
+
 
 function pathStem(file: string): string {
   const base = file.split('/').pop() || file;
@@ -5534,7 +5394,7 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { tes
   const answerPackGaps = masteryReadinessGaps(cas, profile, summary);
   const callsLoaded = casSectionLoaded(cas, 'calls'), nodeCount = casNodeCount(cas);
   const edgeCount = casEdgeCount(cas);
-  const methodCalls = cas.method_calls?.length || cas.nodes.reduce((total, node) => total + (node.call_graph?.calls?.length || 0), 0);
+  const methodCalls = casCollectionTotal(cas, 'method_calls') || cas.nodes.reduce((total, node) => total + (node.call_graph?.calls?.length || 0), 0);
   const tests = findTests(cas, { limit: 1 });
   const security = getSecurityOverview(cas);
   const securityObserved = security.boundary_count > 0 || security.context_count > 0;
@@ -5545,8 +5405,8 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { tes
   );
   const flowCoverage = storedFlowCoverageSummary(cas);
   const graphIntegrity = cas.validation?.graph_integrity;
-  const runtimeLinks = cas.runtime_static_links?.length || 0;
-  const facts = cas.analysis_facts?.length || 0;
+  const runtimeLinks = casCollectionTotal(cas, 'runtime_static_links') ?? 0;
+  const facts = casCollectionTotal(cas, 'analysis_facts') ?? 0;
   const idioms = cas.codebase_idioms?.length || 0;
   const analysisErrorEntries = cas.analysis_errors || [];
   const analysisErrors = analysisErrorEntries.filter(entry => (entry.severity ?? 'error') === 'error').length;
@@ -5563,8 +5423,8 @@ export function evaluateAgentReadiness(cas: CASOutput, path: string, opts: { tes
     gate('analysis-errors', analysisErrors === 0 ? 'pass' : 'fail', analysisErrors === 0 ? 100 : 0, `${analysisErrors} analysis errors, ${analysisWarningCount} warnings`),
     gate('nodes', nodeCount > 0 ? 'pass' : 'fail', nodeCount > 0 ? 100 : 0, `${nodeCount} nodes`),
     gate('edges', edgeCount > 0 ? 'pass' : 'fail', edgeCount > 0 ? 100 : 0, `${edgeCount} edges`),
-    coverageGate('entry-points', cas.entry_points?.length || 0, minimumEntryPointCount(cas, profile)),
-    callsLoaded ? coverageGate('call-chains', cas.call_chains?.length || 0, minimumCallChainCount(cas, profile)) : { id: 'call-chains', ...projectedLayerEvidence(cas, 'L2', 'Call graph section is not loaded in this bounded projection') },
+    coverageGate('entry-points', casCollectionTotal(cas, 'entry_points') ?? 0, minimumEntryPointCount(cas, profile)),
+    callsLoaded ? coverageGate('call-chains', casCollectionTotal(cas, 'call_chains') ?? 0, minimumCallChainCount(cas, profile)) : { id: 'call-chains', ...projectedLayerEvidence(cas, 'L2', 'Call graph section is not loaded in this bounded projection') },
     callsLoaded ? relationshipDetailGate(cas, methodCalls, profile) : { id: 'relationship-detail', ...projectedLayerEvidence(cas, 'L2', 'Relationship detail is not loaded in this bounded projection') },
     gate('answer-pack', answerPackGaps.length === 0 ? 'pass' : 'warn', answerPackGaps.length === 0 ? 100 : 75, answerPackGaps.length === 0 ? 'Mastery answer pack has no gaps' : answerPackGaps.join('; ')),
     gate('evidence', facts > 0 ? 'pass' : 'warn', facts > 0 ? 100 : 75, `${facts} analysis facts`),
@@ -5885,8 +5745,8 @@ function coverageGate(id: string, actual: number, minimum: number): AgentReadine
 }
 
 function relationshipDetailGate(cas: CASOutput, methodCalls: number, profile: AnalysisProfile): AgentReadinessGate {
-  const callChains = cas.call_chains?.length || 0;
-  const edges = cas.edges.length;
+  const callChains = casCollectionTotal(cas, 'call_chains') ?? 0;
+  const edges = casEdgeCount(cas);
   const minimumMethodCalls = expectedMethodCallCount(profile, cas);
   if (minimumMethodCalls === 0) return gate('relationship-detail', 'pass', 100, 'Not applicable for this project kind');
   if (methodCalls >= minimumMethodCalls) return gate('relationship-detail', 'pass', 100, `${methodCalls} method calls`);

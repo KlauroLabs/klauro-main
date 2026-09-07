@@ -27,7 +27,7 @@ import { buildSystemFitSummary, buildCommunicationSeamSummary } from './context-
 import { getQueryTraversalIndex } from './query-traversal-index';
 import { capabilityRuntimeTelemetryById, observedRuntimeFlowEvidence, observedRuntimeStaticLinks } from './runtime-query-overlays';
 import { resolveCodingContextTarget } from './coding-target-resolution';
-import { casEdgeCount, casNodeCount, casProjectionSummary, casSectionLoaded } from './cas-projection';
+import { casCollectionTotal, casEdgeCount, casNodeCount, casProjectionSummary, casSectionLoaded } from './cas-projection';
 import {
   buildDomainConceptIndex,
   buildEntityRelationIndex,
@@ -408,7 +408,7 @@ export function getSystemOverview(cas: CASOutput, opts: SystemOverviewFilter = {
   const runtimeField = opts.excludeRuntime ? {} : { runtime: cas.runtime || null };
   const runtimeLinksField = opts.excludeRuntime
     ? {}
-    : { runtime_static_links_count: cas.runtime_static_links?.length || 0 };
+    : { runtime_static_links_count: casCollectionTotal(cas, 'runtime_static_links') ?? 0 };
   return {
     name: cas.system?.name,
     type: cas.system?.type,
@@ -476,7 +476,7 @@ export function getSystemOverview(cas: CASOutput, opts: SystemOverviewFilter = {
     ...runtimeField,
     validation: cas.validation || null,
     ...runtimeLinksField,
-    analysis_facts_count: cas.analysis_facts?.length || 0,
+    analysis_facts_count: casCollectionTotal(cas, 'analysis_facts') ?? 0,
     codebase_idioms_count: cas.codebase_idioms?.length || 0,
     idiom_summary: cas.idiom_summary || null,
     levels: cas.progressive_levels?.level_definitions?.map(l => ({
