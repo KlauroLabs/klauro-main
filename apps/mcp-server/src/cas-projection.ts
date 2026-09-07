@@ -6,6 +6,7 @@ export interface CasProjectionMetadata {
   node_count?: number;
   edge_count?: number;
   collection_totals?: Readonly<Record<string, number>>;
+  projected_collections?: Readonly<Record<string, { total: number; matched: number; read: number }>>;
 }
 
 const CAS_PROJECTION = Symbol.for('klauro.cas.projection');

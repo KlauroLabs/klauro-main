@@ -8,7 +8,7 @@ import type { AnalysisTrack } from './track';
 import type { ResolvedSegmentedAnalysis } from './segmented-analysis-storage';
 import { loadCompactCASGraph, loadCompactCASSearch } from './segmented-analysis-storage';
 import { compressionCodecForPath } from './json-storage-writer';
-import { edgeRecordKey, isSupportedCasRecordStoreDescriptor, openCasRecordStore, type CasRecordStoreReadStats } from './cas-record-store';
+import { CAS_SEMANTIC_TABLES, edgeRecordKey, isSupportedCasRecordStoreDescriptor, isSupportedCasSemanticStoreDescriptor, openCasRecordStore, openCasSemanticStore, type CasRecordStoreReadStats, type CasSemanticTableName } from './cas-record-store';
 import type { CasSectionName } from './cas-sections';
 import { searchCompactCAS } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-search';
 
@@ -650,4 +650,43 @@ export async function planScopedQuery(
     calleeLimit: args?.callee_limit,
   });
   return { scope, target: resolved, graphNodeCount: graph.nodeCount, graph };
+}
+
+export interface ScopedSemanticCollections {
+  collections: Partial<Record<CasSemanticTableName, unknown[]>>;
+  projected: Record<string, { total: number; matched: number; read: number }>;
+  stats: CasRecordStoreReadStats;
+}
+
+export async function loadScopedSemanticCollections(
+  pinned: PinnedAnalysisGeneration,
+  graph: CompactCASGraph,
+  keepIds: ReadonlySet<string>,
+  tables: readonly CasSemanticTableName[] = CAS_SEMANTIC_TABLES,
+): Promise<ScopedSemanticCollections | null> {
+  const descriptor = pinned.segmented.manifest.semantic_store;
+  if (!isSupportedCasSemanticStoreDescriptor(descriptor)) return null;
+  const totals = pinned.segmented.manifest.collection_totals;
+  const store = await openCasSemanticStore(pinned.segmented.directory, descriptor, {
+    nodeCount: graph.nodeCount,
+    totals: totals ? Object.fromEntries(CAS_SEMANTIC_TABLES.filter(name => typeof totals[name] === 'number').map(name => [name, totals[name]])) : undefined,
+  });
+  const denseIds: number[] = [];
+  for (const id of keepIds) {
+    const node = graph.nodeById(id);
+    if (node) denseIds.push(node.denseId);
+  }
+  const collections: Partial<Record<CasSemanticTableName, unknown[]>> = {};
+  const projected: Record<string, { total: number; matched: number; read: number }> = {};
+  for (const table of tables) {
+    if (!store.tables.has(table)) {
+      const total = totals?.[table];
+      if (typeof total === 'number' && total === 0) { collections[table] = []; projected[table] = { total: 0, matched: 0, read: 0 }; }
+      continue;
+    }
+    const result = await store.readByNodes(table, denseIds);
+    collections[table] = result.records;
+    projected[table] = { total: result.total, matched: result.matched, read: result.read };
+  }
+  return { collections, projected, stats: store.stats() };
 }

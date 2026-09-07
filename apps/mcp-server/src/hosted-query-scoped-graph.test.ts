@@ -5,8 +5,8 @@ import * as path from 'node:path';
 import test from 'node:test';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { saveAnalysis, loadCompactAnalysisGraph } from './storage';
-import { acquirePinnedAnalysis, computeAgentContextScope, loadAgentContextProjection, computeChangeRiskScope, computeScopedQueryScope, computeTestLookupScope, loadScopedGraphSection, planScopedQuery, resolveCompactTarget, scopedQueryCapacityOutcome, scopedQueryTarget, scopedSmallSections } from './hosted-query-scoped-graph';
-import { assessChangeRisk, findTests } from './query';
+import { acquirePinnedAnalysis, computeAgentContextScope, loadAgentContextProjection, loadScopedSemanticCollections, computeChangeRiskScope, computeScopedQueryScope, computeTestLookupScope, loadScopedGraphSection, planScopedQuery, resolveCompactTarget, scopedQueryCapacityOutcome, scopedQueryTarget, scopedSmallSections } from './hosted-query-scoped-graph';
+import { assessChangeRisk, findTests, getErrorContracts } from './query';
 import { loadCompleteAnalysisFromSections } from './storage';
 import { executeHostedProjectQuery, hostedProjectQuerySections } from './hosted-project-query';
 import { attachCasProjection, casCollectionTotal } from './cas-projection';
@@ -360,6 +360,59 @@ test('get_agent_context on the light-plus-scoped projection matches the whole-gr
       assert.ok(pinnedAgain);
     } finally {
       await pinnedAgain.release();
+    }
+  });
+});
+
+test('semantic tables serve method calls, change risks and tests for a scope by node, in original order, with exact totals', async () => {
+  await withStorage(async project => {
+    const cas = fixture();
+    (cas as any).method_calls = [
+      { id: 'mc-1', caller_node: 'node-1', target_node: 'node-0', call_details: { method_name: 'targetFn', location: { file: 'src/target.ts', line: 2 } } },
+      { id: 'mc-2', caller_node: 'node-0', target_node: 'node-3', call_details: { method_name: 'helper3', location: { file: 'src/target.ts', line: 3 } } },
+      { id: 'mc-3', caller_node: 'node-20', target_node: 'node-21', call_details: { method_name: 'helper21', location: { file: 'src/other20.ts', line: 1 } } },
+      { id: 'mc-4', caller_node: 'node-2', target_node: 'node-0', call_details: { method_name: 'targetFn', location: { file: 'src/target.ts', line: 4 } } },
+    ];
+    (cas as any).change_risks = [
+      { node_id: 'node-30', risk_level: 'low', risk_factors: [], downstream_impact: { direct_callers: [], transitive_callers: [], affected_call_chains: [], affected_entry_points: [] }, test_protection: { has_direct_tests: false, has_integration_tests: false }, stability_context: { recent_churn: false, bug_fix_density: 0 } },
+      { node_id: 'node-0', risk_level: 'high', risk_factors: [{ factor: 'fan-in', severity: 'high', details: 'two callers' }], downstream_impact: { direct_callers: ['node-1', 'node-2'], transitive_callers: [], affected_call_chains: [], affected_entry_points: [] }, test_protection: { has_direct_tests: true, has_integration_tests: false }, stability_context: { recent_churn: false, bug_fix_density: 0 } },
+    ];
+    (cas as any).test_suites = [
+      { id: 'suite-far', name: 'far.test', file_path: 'src/far.test.ts', tests: [{ name: 'far', targets: ['node-30'] }], coverage: { nodes_tested: ['node-30'] } },
+      { id: 'suite-1', name: 'target.test', file_path: 'src/target.test.ts', tests: [{ name: 'covers target', targets: ['node-0'] }], coverage: { nodes_tested: ['node-0'] } },
+    ];
+    (cas as any).mocks = [{ id: 'mock-1', name: 'targetMock', target_node: 'node-0' }, { id: 'mock-far', name: 'farMock', target_node: 'node-30' }];
+    (cas as any).fixtures = [{ id: 'fixture-1', name: 'targetFixture', used_by: ['node-0', 'node-1'] }];
+    await saveAnalysis(project, cas, 'main', { canonicalSegmented: true });
+    const manifest = (await loadAnalysisSectionManifest(project))!;
+    assert.ok(manifest.semantic_store, 'the generation carries a semantic store');
+    assert.deepEqual(Object.keys(manifest.semantic_store!.tables).sort(), ['change_risks', 'fixtures', 'method_calls', 'mocks', 'test_suites']);
+    const graph = (await loadCompactAnalysisGraph(project))!;
+    const full = (await loadCompleteAnalysisFromSections(project))!;
+    const pinned = (await acquirePinnedAnalysis(project))!;
+    try {
+      const plan = await planScopedQuery(pinned, 'assess_change_risk', { node_id: 'node-0' });
+      assert.ok(plan && 'scope' in plan);
+      const keepIds = (plan as { scope: { keepIds: Set<string> } }).scope.keepIds;
+      const semantic = (await loadScopedSemanticCollections(pinned, graph, keepIds))!;
+      assert.deepEqual((semantic.collections.method_calls as any[]).map(call => call.id), ['mc-1', 'mc-2', 'mc-4'], 'calls touching the scope, original order, far call excluded');
+      assert.deepEqual(semantic.projected.method_calls, { total: 4, matched: 3, read: 3 });
+      assert.deepEqual((semantic.collections.change_risks as any[]).map(risk => risk.node_id), ['node-0']);
+      assert.deepEqual((semantic.collections.test_suites as any[]).map(suite => suite.id), ['suite-1']);
+      assert.deepEqual((semantic.collections.mocks as any[]).map(mock => mock.id), ['mock-1']);
+      assert.deepEqual((semantic.collections.fixtures as any[]).map(fixture => fixture.id), ['fixture-1']);
+      assert.equal(semantic.projected.test_suites.total, 2);
+      const section = (await loadScopedGraphSection(pinned, keepIds, graph))!;
+      const scopedCas = { ...full, nodes: section.nodes, edges: section.edges, ...semantic.collections, reachability_index: undefined } as unknown as CASOutput;
+      const strip = (value: unknown) => JSON.parse(JSON.stringify(value));
+      assert.deepEqual(strip(assessChangeRisk(scopedCas, 'node-0')), strip(assessChangeRisk(full, 'node-0')), 'precomputed risk parity on the semantic subset');
+      assert.deepEqual(strip(findTests(scopedCas, { nodeId: 'node-0' })), strip(findTests(full, { nodeId: 'node-0' })), 'tests parity');
+      assert.deepEqual(strip(getErrorContracts(scopedCas, 'node-0', 'both')), strip(getErrorContracts(full, 'node-0', 'both')), 'error contracts parity on scoped method calls');
+      const empty = await loadScopedSemanticCollections(pinned, graph, new Set(['node-20']));
+      assert.deepEqual((empty!.collections.method_calls as any[]).map(call => call.id), ['mc-3']);
+      assert.deepEqual(empty!.collections.change_risks, []);
+    } finally {
+      await pinned.release();
     }
   });
 });

@@ -133,7 +133,7 @@ class StreamingTableWriter {
   private handle: fs.promises.FileHandle | undefined;
   private readonly blocksHash = crypto.createHash('sha256');
 
-  constructor(private readonly directory: string, private readonly prefix: 'records.nodes' | 'records.edges', private readonly recordMap?: readonly number[]) {}
+  constructor(private readonly directory: string, private readonly prefix: string, private readonly recordMap?: readonly number[]) {}
 
   private get blocksFile(): string {
     return `${this.prefix}.blocks.bin`;
@@ -555,6 +555,160 @@ export async function openCasRecordStore(
     nodes: await CasRecordTable.open<CASNode>(directory, 'records.nodes', descriptor.nodes, cache, ledger),
     edges: await CasRecordTable.open<CASEdge>(directory, 'records.edges', descriptor.edges, cache, ledger, true),
     cacheBytes: () => cache.usedBytes,
+    stats: () => ({ ...ledger.stats }),
+  };
+}
+
+export const CAS_SEMANTIC_STORE_FORMAT = 'klauro-cas-semantic-store';
+export const CAS_SEMANTIC_STORE_VERSION = 1;
+export const CAS_SEMANTIC_TABLES = ['method_calls', 'change_risks', 'test_suites', 'mocks', 'fixtures'] as const;
+export type CasSemanticTableName = (typeof CAS_SEMANTIC_TABLES)[number];
+const MAX_POSTINGS_PER_RECORD = 64;
+
+export interface CasSemanticTableDescriptor extends CasRecordStoreTable {
+  postings: number;
+  by_node: { offsets: CasRawColumnDescriptor; postings: CasRawColumnDescriptor };
+}
+
+export interface CasSemanticStoreDescriptor {
+  format: typeof CAS_SEMANTIC_STORE_FORMAT;
+  version: typeof CAS_SEMANTIC_STORE_VERSION;
+  codec: 'brotli';
+  node_count: number;
+  tables: Partial<Record<CasSemanticTableName, CasSemanticTableDescriptor>>;
+}
+
+function semanticRecordNodeIds(table: CasSemanticTableName, record: Record<string, unknown>): string[] {
+  const ids: string[] = [];
+  const push = (value: unknown): void => { if (typeof value === 'string' && value) ids.push(value); };
+  const pushAll = (value: unknown): void => { if (Array.isArray(value)) for (const item of value) push(item); };
+  switch (table) {
+    case 'method_calls': push(record.caller_node); push(record.target_node); break;
+    case 'change_risks': push(record.node_id); break;
+    case 'test_suites':
+      pushAll((record.coverage as { nodes_tested?: unknown } | undefined)?.nodes_tested);
+      for (const test of Array.isArray(record.tests) ? record.tests : []) pushAll((test as { targets?: unknown })?.targets);
+      break;
+    case 'mocks': push(record.target_node); pushAll(record.used_by); break;
+    case 'fixtures': pushAll(record.used_by); pushAll(record.tested_by); break;
+  }
+  return [...new Set(ids)].slice(0, MAX_POSTINGS_PER_RECORD);
+}
+
+export function isSupportedCasSemanticStoreDescriptor(descriptor: unknown): descriptor is CasSemanticStoreDescriptor {
+  return !!descriptor && typeof descriptor === 'object'
+    && (descriptor as CasSemanticStoreDescriptor).format === CAS_SEMANTIC_STORE_FORMAT
+    && (descriptor as CasSemanticStoreDescriptor).version === CAS_SEMANTIC_STORE_VERSION
+    && (descriptor as CasSemanticStoreDescriptor).codec === 'brotli';
+}
+
+export async function writeCasSemanticStore(
+  directory: string,
+  output: CASOutput,
+  graph: CompactCASGraph,
+): Promise<{ descriptor: CasSemanticStoreDescriptor } | { skipped: string }> {
+  const tables: Partial<Record<CasSemanticTableName, CasSemanticTableDescriptor>> = {};
+  const writers: StreamingTableWriter[] = [];
+  const written: string[] = [];
+  try {
+    for (const table of CAS_SEMANTIC_TABLES) {
+      const records = (output as unknown as Record<string, unknown>)[table];
+      if (!Array.isArray(records) || records.length === 0) continue;
+      const prefix = `semantic.${table}`;
+      const writer = new StreamingTableWriter(directory, prefix);
+      writers.push(writer);
+      const postingsByNode: number[][] = Array.from({ length: graph.nodeCount }, () => []);
+      records.forEach((record, ordinal) => {
+        for (const id of semanticRecordNodeIds(table, (record ?? {}) as Record<string, unknown>)) {
+          const node = graph.nodeById(id);
+          if (node) postingsByNode[node.denseId].push(ordinal);
+        }
+      });
+      for (const record of records) await writer.push(record);
+      const base = await writer.finish();
+      written.push(base.columns.blocks.file, ...Object.values(base.columns).map(column => column.file));
+      const offsets: number[] = [0];
+      const postings: number[] = [];
+      for (const list of postingsByNode) { for (const ordinal of list) postings.push(ordinal); offsets.push(postings.length); }
+      const writeColumn = async (name: string, values: readonly number[]): Promise<CasRawColumnDescriptor> => {
+        const file = `${prefix}.byNode.${name}.bin`;
+        const bytes = uint32ToBuffer(values);
+        const handle = await fs.promises.open(path.join(directory, file), 'w');
+        try { await writeFully(handle, bytes); await handle.sync(); } finally { await handle.close(); }
+        written.push(file);
+        return { file, encoding: 'uint32-le', length: values.length, bytes: bytes.byteLength, sha256: sha256(bytes) };
+      };
+      tables[table] = {
+        ...base,
+        postings: postings.length,
+        by_node: { offsets: await writeColumn('offsets', offsets), postings: await writeColumn('postings', postings) },
+      };
+    }
+    return { descriptor: { format: CAS_SEMANTIC_STORE_FORMAT, version: CAS_SEMANTIC_STORE_VERSION, codec: 'brotli', node_count: graph.nodeCount, tables } };
+  } catch (error) {
+    for (const writer of writers) await writer.abort();
+    for (const file of written) await fs.promises.rm(path.join(directory, file), { force: true }).catch(() => undefined);
+    if (error instanceof CasRecordStoreCapacityError) return { skipped: error.message };
+    throw error;
+  }
+}
+
+export interface CasSemanticTableRead<T> {
+  records: T[];
+  total: number;
+  matched: number;
+  read: number;
+}
+
+export interface CasSemanticStore {
+  tables: ReadonlySet<CasSemanticTableName>;
+  readByNodes<T>(table: CasSemanticTableName, denseIds: readonly number[]): Promise<CasSemanticTableRead<T>>;
+  stats(): CasRecordStoreReadStats;
+}
+
+export async function openCasSemanticStore(
+  directory: string,
+  descriptor: CasSemanticStoreDescriptor,
+  expected: { nodeCount: number; totals?: Partial<Record<CasSemanticTableName, number>> },
+  budget: Partial<CasRecordStoreReadBudget> = {},
+): Promise<CasSemanticStore> {
+  if (!isSupportedCasSemanticStoreDescriptor(descriptor)) throw new Error('CAS semantic store format, version or codec is unsupported');
+  if (descriptor.node_count !== expected.nodeCount) throw new Error(`CAS semantic store node count ${String(descriptor.node_count)} does not match the compact graph ${expected.nodeCount}`);
+  const resolved: CasRecordStoreReadBudget = { ...DEFAULT_RECORD_STORE_READ_BUDGET, ...budget };
+  for (const [name, value] of Object.entries(resolved)) safeCount(value, `read budget ${name}`, Number.MAX_SAFE_INTEGER);
+  const ledger = new ReadLedger(resolved);
+  const cache = new SharedBlockCache(resolved.cacheBytes);
+  const opened = new Map<CasSemanticTableName, { table: CasRecordTable<unknown>; offsets: Uint32Array; postings: Uint32Array }>();
+  for (const name of CAS_SEMANTIC_TABLES) {
+    const table = descriptor.tables[name];
+    if (!table) continue;
+    const expectedTotal = expected.totals?.[name];
+    if (typeof expectedTotal === 'number' && expectedTotal !== table.count) throw new Error(`CAS semantic store ${name} count ${table.count} does not match the generation total ${expectedTotal}`);
+    const prefix = `semantic.${name}`;
+    const postingsCount = safeCount(table.postings, `${name} postings`, MAX_TABLE_RECORDS * MAX_POSTINGS_PER_RECORD);
+    ledger.chargeIndex((expected.nodeCount + 1 + postingsCount) * UINT32_BYTES);
+    const offsets = readUint32Column(await readVerifiedColumn(directory, `${prefix}.byNode.offsets`, table.by_node?.offsets, (expected.nodeCount + 1) * UINT32_BYTES));
+    const postings = readUint32Column(await readVerifiedColumn(directory, `${prefix}.byNode.postings`, table.by_node?.postings, postingsCount * UINT32_BYTES));
+    assertMonotone(offsets, `${prefix}.byNode.offsets`, MAX_POSTINGS_PER_RECORD * MAX_TABLE_RECORDS);
+    if (offsets[0] !== 0 || offsets[expected.nodeCount] !== postingsCount) throw new Error(`CAS semantic store ${name} postings offsets do not cover the postings`);
+    for (let index = 0; index < postings.length; index += 1) if (postings[index] >= table.count) throw new Error(`CAS semantic store ${name} posting ${index} is out of range`);
+    const records = await CasRecordTable.open<unknown>(directory, prefix, table, cache, ledger);
+    opened.set(name, { table: records, offsets, postings });
+  }
+  return {
+    tables: new Set(opened.keys()),
+    async readByNodes<T>(name: CasSemanticTableName, denseIds: readonly number[]): Promise<CasSemanticTableRead<T>> {
+      const entry = opened.get(name);
+      if (!entry) throw new Error(`CAS semantic store has no ${name} table`);
+      const ordinals = new Set<number>();
+      for (const denseId of denseIds) {
+        if (!Number.isInteger(denseId) || denseId < 0 || denseId >= expected.nodeCount) throw new Error(`CAS semantic store dense id ${denseId} is out of range`);
+        for (let position = entry.offsets[denseId]; position < entry.offsets[denseId + 1]; position += 1) ordinals.add(entry.postings[position]);
+      }
+      const sorted = [...ordinals].sort((left, right) => left - right);
+      const records = await entry.table.read(sorted) as T[];
+      return { records, total: entry.table.count, matched: sorted.length, read: records.length };
+    },
     stats: () => ({ ...ledger.stats }),
   };
 }

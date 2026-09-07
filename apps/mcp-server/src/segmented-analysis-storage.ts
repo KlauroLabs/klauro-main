@@ -1,4 +1,4 @@
-import { writeCasRecordStore } from './cas-record-store';
+import { writeCasRecordStore, writeCasSemanticStore } from './cas-record-store';
 import * as crypto from 'node:crypto';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -317,6 +317,11 @@ async function writeSegmentedAnalysisUnlocked(
     const recordStore = process.env.KLAURO_CAS_RECORD_STORE === '0' ? { skipped: 'disabled by KLAURO_CAS_RECORD_STORE=0' } : await writeCasRecordStore(tmpDir, output, compactGraph);
     if ('descriptor' in recordStore) manifest.record_store = recordStore.descriptor;
     else process.stderr.write(`${JSON.stringify({ event: 'cas_record_store_skipped', reason: recordStore.skipped })}\n`);
+    if ('descriptor' in recordStore) {
+      const semanticStore = await writeCasSemanticStore(tmpDir, output, compactGraph);
+      if ('descriptor' in semanticStore) manifest.semantic_store = semanticStore.descriptor;
+      else process.stderr.write(`${JSON.stringify({ event: 'cas_semantic_store_skipped', reason: semanticStore.skipped })}\n`);
+    }
     const compactDurationMs = Date.now() - compactStartedAt;
     if (compactDurationMs >= 1_000) {
       process.stderr.write(`${JSON.stringify({

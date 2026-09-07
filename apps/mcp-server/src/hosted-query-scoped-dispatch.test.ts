@@ -69,10 +69,13 @@ test('worker dispatch answers scoped risk from the record store, then from the s
     const store = (await runHostedProjectQueryWorker({ ...request, workspace: withStore })).result as any;
     assert.equal(store.scoped_context?.source, 'record-store');
     assert.equal(store.scoped_context?.truncated, false);
+    assert.equal(store.scoped_context?.semantic_source, 'semantic-store', 'risk reads its collections from the semantic tables');
+    assert.deepEqual(store.scoped_context?.projected_collections?.test_suites, { total: 1, matched: 1, read: 1 });
     assert.equal(store.risk?.node_id, 'node-0');
     assert.ok(JSON.stringify(store.risk).includes('external'), 'the external edge reached the score');
     const stream = (await runHostedProjectQueryWorker({ ...request, workspace: withoutStore })).result as any;
     assert.equal(stream.scoped_context?.source, 'stream');
+    assert.equal(stream.scoped_context?.semantic_source, undefined, 'a generation without a store loads the sections whole');
     const strip = (value: any) => JSON.parse(JSON.stringify({ ...value, scoped_context: undefined }));
     assert.deepEqual(strip(stream), strip(store), 'stream and record-store answers are identical');
     const tests = (await runHostedProjectQueryWorker({ ...request, tool: 'find_tests', workspace: withoutStore })).result as any;

@@ -12,7 +12,7 @@ import type { SubCasNodeIndex } from './deployable-analysis';
 import { loadTelemetryObservations } from './telemetry-ingestion';
 import { buildNodeRuntimeMetrics } from './product';
 import { CasRecordStoreCapacityError } from './cas-record-store';
-import { agentContextProjectionGaps, computeAgentContextScope, loadAgentContextProjection, loadScopedGraphSection, planScopedQuery, scopedQueryCapacityOutcome, type AgentContextProjection } from './hosted-query-scoped-graph';
+import { agentContextProjectionGaps, computeAgentContextScope, loadAgentContextProjection, loadScopedGraphSection, loadScopedSemanticCollections, planScopedQuery, scopedQueryCapacityOutcome, type AgentContextProjection } from './hosted-query-scoped-graph';
 
 if (!process.send) {
   process.stderr.write('hosted-project-query-worker must be started through child_process.fork.\n');
@@ -89,8 +89,15 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
       if (scopedPlan && pinned) {
         const loadStartedAt = Date.now();
         const smallSections = scopedSmallSections(request.tool, requiredSections);
-        const loadedSections = await loadAnalysisSections(request.workspace, smallSections, { pinned: { filePath: pinned.filePath, segmented: pinned.segmented } });
+        const semanticEligible = 'scope' in scopedPlan && (request.tool === 'assess_change_risk' || request.tool === 'find_tests' || request.tool === 'get_coding_context')
+          ? await loadScopedSemanticCollections(pinned, scopedPlan.graph, scopedPlan.scope.keepIds)
+          : null;
+        const semanticSections = semanticEligible && 'method_calls' in semanticEligible.collections
+          ? smallSections.filter(section => section !== 'calls')
+          : smallSections;
+        const loadedSections = await loadAnalysisSections(request.workspace, semanticSections, { pinned: { filePath: pinned.filePath, segmented: pinned.segmented } });
         if (!loadedSections) throw new Error(`Canonical sections are unavailable for: ${request.workspace} (pinned generation could not be read).`);
+        if (semanticEligible) Object.assign(loadedSections, semanticEligible.collections);
         if ('scope' in scopedPlan && request.tool === 'get_agent_context') {
           agentProjection = (await loadAgentContextProjection(pinned, scopedPlan.graph, scopedPlan.scope)) ?? undefined;
           if (!agentProjection) throw new Error(`Canonical graph section is unavailable for: ${request.workspace}. Re-run analyze_codebase.`);
@@ -123,10 +130,11 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
           edges: graphSection?.edges ?? [],
           index: undefined,
         } as CASOutput, {
-          loaded_sections: ['identity', ...smallSections, 'graph'],
+          loaded_sections: ['identity', ...semanticSections, 'graph'],
           node_count: totalNodes,
           edge_count: totalEdges,
           ...(collectionTotals ? { collection_totals: collectionTotals } : {}),
+          ...(semanticEligible ? { projected_collections: semanticEligible.projected } : {}),
         });
         scopedContext = 'scope' in scopedPlan
           ? {
@@ -144,6 +152,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
               truncated: scopedPlan.scope.truncated || Boolean(graphSection?.edgesTruncated),
               edges_truncated: Boolean(graphSection?.edgesTruncated),
               ...(scopedPlan.scope.incomplete ? { incomplete: scopedPlan.scope.incomplete } : {}),
+              ...(semanticEligible ? { projected_collections: semanticEligible.projected, semantic_source: 'semantic-store' } : {}),
               ...(agentProjection ? { mode: 'agent-context', full_nodes: agentProjection.keepIds.size, light_nodes: agentProjection.lightNodes, light_edges: agentProjection.lightEdges, full_edges_truncated: agentProjection.fullEdgesTruncated, edge_order: agentProjection.edgeOrder, target_resolution: 'compact-index', passes: 1 } : {}),
             }
           : { mode: 'scoped', target_not_found: scopedPlan.targetNotFound, loaded_nodes: 0, loaded_edges: 0 };
