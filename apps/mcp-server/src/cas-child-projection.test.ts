@@ -1,5 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { compactCasSourceInputIdentities } from '../../../packages/analyzer-core/src/analyzer/core/cas-source-input-identities';
+import { sourceInputObservation } from '../../../packages/analyzer-core/src/analyzer/core/analyzer-source-inputs';
+import { buildAgentContextFreshness } from './agent-context-freshness';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import {
   CAS_CHILD_FIELD_POLICY,
@@ -93,6 +99,70 @@ test('child projection preserves inherited CAS sections and applies scoped field
   assert.equal(child.analyzer_contributions, parent.analyzer_contributions);
   assert.equal(child.progressive_levels, parent.progressive_levels);
   assert.ok(Object.values(CAS_CHILD_FIELD_POLICY).every(policy => policy.mode.length > 0));
+});
+
+test('child and grandchild references keep their original source namespace', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-source-child-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const childRoot = path.join(root, 'apps', 'child');
+  const grandRoot = path.join(childRoot, 'grand');
+  fs.mkdirSync(grandRoot, { recursive: true });
+  const parent = parentCas();
+  parent.system.root_path = root;
+  const observations = [['shared.ts', 'parent'], ['apps/child/shared.ts', 'child'], ['apps/child/grand/shared.ts', 'grand']];
+  for (const [file, content] of observations) fs.writeFileSync(path.join(root, file), content);
+  parent.analyzer_contributions[0].source_inputs = {
+    version: 1, coverage: 'observed-reads', digest_algorithm: 'sha256', outside_root_reads: 0,
+    files: observations.map(([file, content]) => ({ path: file, ...sourceInputObservation(content, 'utf8') })),
+  };
+  compactCasSourceInputIdentities(parent);
+  const child = projectCasChild(parent, {
+    id: 'child', parent_id: 'root', label: 'child', analysis_id: 'analysis:child',
+    system: { ...parent.system, root_path: 'apps/child' },
+  }, projectedValues());
+  const grandchild = projectCasChild(child, {
+    id: 'grand', parent_id: 'child', label: 'grand', analysis_id: 'analysis:grand',
+    system: { ...child.system, root_path: 'apps/child/grand' },
+  }, projectedValues());
+  for (const [cas, workspace] of [[child, childRoot], [grandchild, grandRoot]] as const) {
+    assert.equal(cas.source_input_identities, parent.source_input_identities);
+    assert.equal(cas.source_input_root, root);
+    const context = { table: cas.source_input_identities, root_path: cas.source_input_root, current_root: cas.system.root_path };
+    const before = buildAgentContextFreshness(parent.analysis_timestamp, workspace, ['shared.ts'], 'shared.ts',
+      cas.analyzer_contributions, context);
+    assert.equal(before.summary.source_input_comparison.matched.count, 1);
+    fs.writeFileSync(path.join(workspace, 'shared.ts'), 'parent');
+    const after = buildAgentContextFreshness(parent.analysis_timestamp, workspace, ['shared.ts'], 'shared.ts',
+      cas.analyzer_contributions, context);
+    assert.equal(after.summary.source_input_comparison.mismatched.count, 1);
+  }
+});
+
+test('a legacy raw child gets an explicit origin without rewriting its parent evidence', () => {
+  const parent = parentCas();
+  parent.analyzer_contributions[0].source_inputs = {
+    version: 1, coverage: 'observed-reads', digest_algorithm: 'sha256', outside_root_reads: 0,
+    files: [{ path: 'apps/child/file.ts', ...sourceInputObservation('child', 'utf8') }],
+  };
+  const child = projectCasChild(parent, {
+    id: 'child', parent_id: 'root', label: 'child', analysis_id: 'analysis:child',
+    system: { ...parent.system, root_path: 'apps/child' },
+  }, projectedValues());
+  assert.equal(child.source_input_root, '.');
+  assert.equal(parent.source_input_root, undefined);
+  assert.equal(child.analyzer_contributions, parent.analyzer_contributions);
+});
+
+test('partial legacy projections without contribution metadata remain queryable', () => {
+  const parent = parentCas();
+  delete (parent as Partial<CASOutput>).analyzer_contributions;
+  const child = projectCasChild(parent, {
+    id: 'child', parent_id: 'root', label: 'child', analysis_id: 'analysis:child',
+    system: { ...parent.system, root_path: 'apps/child' },
+  }, projectedValues());
+  assert.equal(child.source_input_root, undefined);
+  assert.equal(child.analyzer_contributions, undefined);
+  assert.deepEqual(child.nodes, []);
 });
 
 test('child projection rejects runtime fields absent from its exhaustive policy', () => {

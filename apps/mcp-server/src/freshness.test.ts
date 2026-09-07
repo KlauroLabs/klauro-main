@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { compactCasSourceInputIdentities } from '../../../packages/analyzer-core/src/analyzer/core/cas-source-input-identities';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -333,8 +335,42 @@ test('capsule-only response preserves missing citations without claiming deletio
       task_type: 'modify', target: 'UsersService', response_profile: 'capsule-only',
     }) as Record<string, any>;
     assert.equal(context.analysis_freshness.citation_verification, 'invalid');
-    assert.match(context.rule, /INVALID CITATION.*inspect the current workspace/i);
+    assert.match(context.rule, /INVALID CITATION.*missing now.*inspect cited source/i);
     assert.match(context.analysis_freshness.warning, /deletion timing is unknown/i);
+  });
+});
+
+test('agent response profiles compare captured inputs and preserve mismatch actions', async () => {
+  await withTempDir('klauro-freshness-captured-', async root => {
+    const files = writeSourceFixture(root);
+    const cas = freshnessFixtureCas(root, analyzedTime());
+    cas.analyzer_contributions[0].source_inputs = {
+      version: 1, coverage: 'observed-reads', digest_algorithm: 'sha256', outside_root_reads: 0,
+      files: files.map(file => {
+        const content = fs.readFileSync(file, 'utf8');
+        return { path: path.relative(root, file), status: 'captured' as const, representation: 'utf8-text' as const,
+          sha256: createHash('sha256').update(content).digest('hex'), bytes: Buffer.byteLength(content) };
+      }),
+    };
+    compactCasSourceInputIdentities(cas);
+    assert.equal(cas.analyzer_contributions[0].source_inputs?.version, 2);
+    const before = await getAgentContext(cas, root, { task_type: 'modify', target: 'UsersService' }) as Record<string, any>;
+    assert.ok(before.analysis_freshness.source_input_comparison.matched.count > 0);
+    assert.equal(before.agent_context_ready, false);
+    fs.writeFileSync(files[1], 'export class RenamedService {}\n');
+    setMtime(files[1], 1);
+    for (const response_profile of ['standard', 'minimal', 'first-turn', 'capsule-only'] as const) {
+      const context = await getAgentContext(cas, root, {
+        task_type: 'modify', target: 'UsersService', response_profile,
+      }) as Record<string, any>;
+      assert.equal(context.analysis_freshness.citation_verification, 'invalid', response_profile);
+      assert.match(context.analysis_freshness.warning, /differ from captured analysis inputs/, response_profile);
+      assert.equal(context.analysis_freshness.source_input_comparison.mismatched.count, 1, response_profile);
+      assert.equal(context.agent_context_ready, false);
+      if (response_profile === 'first-turn' || response_profile === 'capsule-only') {
+        assert.match(context.rule, /INVALID CITATION.*inspect cited source/i, response_profile);
+      }
+    }
   });
 });
 

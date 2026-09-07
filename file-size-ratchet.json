@@ -27,7 +27,7 @@
     },
     {
       "file": "packages/analyzer-core/src/types/cas.types.ts",
-      "ceiling": 5032
+      "ceiling": 5019
     },
     {
       "file": "packages/analyzer-core/src/analyzer/frameworks/web/django-analyzer.ts",

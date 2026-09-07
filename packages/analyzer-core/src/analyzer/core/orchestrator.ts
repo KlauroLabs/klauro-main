@@ -271,6 +271,8 @@ import { detectCodebaseIdioms } from './idiom-detector';
 import { AnalysisRunLog } from './run-log';
 import { withAnalyzerFileReadCache, getDebugCacheStats } from './analyzer-file-read-cache';
 import { analyzeWithCompleteScope } from './analyzer-analysis-scope';
+import { buildAnalyzerContributionSummary, invalidateIncrementalSourceInputs } from './analyzer-contribution-summary';
+import { compactCasSourceInputIdentities } from './cas-source-input-identities';
 import { applyCapabilityCatalogStatus } from './capability-catalog-status';
 import { captureAnalysisMemorySample } from './analysis-memory-profile';
 import { semanticPackIdentityForProject } from '../packs/pack-loader';
@@ -1238,27 +1240,11 @@ export class AnalyzerOrchestrator {
             this.analyzerRootMap.get(registration.id) || projectPath
           );
           if (zeroYieldError) analysisErrors.push(zeroYieldError);
-          contributions.push({
-            analyzer_id: registration.id,
-            analyzer_name: registration.name,
-            analyzer_version: registration.version,
-            analyzer_type: registration.type,
-            contribution_type: registration.type,
-            execution_time_ms: executionTime,
-            cache_status: this.analyzerContributionCacheEvidence.get(registration.id)?.status,
-            nodes_created: result.nodes?.length || 0,
-            files_created: this.countDistinctSourceFiles(result.nodes, projectPath),
-            edges_created: result.edges?.length || 0,
-            confidence: 1.0,
-            contributed_categories: result.categories ? Object.keys(result.categories).length : 0,
-            provided_perspectives: result.provided_perspectives || [],
-            framework_specific: analyzerMeta.frameworks_detected || analyzerMeta.crates || undefined,
-            application_type: analyzerMeta.application_type,
-            project_name: analyzerMeta.project_name,
-            project_version: analyzerMeta.project_version,
-            analysis_scope: analyzerMeta.analysis_scope,
-            warnings: Array.isArray(analyzerMeta.warnings) && analyzerMeta.warnings.length > 0 ? analyzerMeta.warnings : undefined
-          });
+          contributions.push(buildAnalyzerContributionSummary({
+            registration, result, executionTime,
+            filesCreated: this.countDistinctSourceFiles(result.nodes, projectPath),
+            cacheStatus: this.analyzerContributionCacheEvidence.get(registration.id)?.status,
+          }));
           if (result.libraries) {
             allLibraries.push(...result.libraries);
           }
@@ -2053,6 +2039,7 @@ export class AnalyzerOrchestrator {
       errors: analysisErrors.filter(issue => issue.severity === 'error').length,
       warnings: analysisErrors.filter(issue => issue.severity === 'warning').length,
     });
+    compactCasSourceInputIdentities(output);
     refreshAnalyzerDetectionEvidence(path.resolve(projectPath), this.analyzerRegistryFingerprint(this.analyzers.values()), Date.now() + 60_000);
     return output;
   }
@@ -3147,6 +3134,7 @@ export class AnalyzerOrchestrator {
     });
     const rebuiltOutput: CASOutput = {
       ...previousOutput,
+      analyzer_contributions: invalidateIncrementalSourceInputs(previousOutput.analyzer_contributions),
       analysis_timestamp: new Date().toISOString(),
       analysis_id: analysisId,
       system: enhancedSystemPurpose.inferred_description
@@ -4999,27 +4987,11 @@ export class AnalyzerOrchestrator {
     }
     const zeroYieldError = await this.detectZeroYieldForClaimedFiles(registration, result, matchedRoot);
     if (zeroYieldError) accumulators.analysisErrors.push(zeroYieldError);
-    accumulators.contributions.push({
-      analyzer_id: registration.id,
-      analyzer_name: registration.name,
-      analyzer_version: registration.version,
-      analyzer_type: registration.type,
-      contribution_type: registration.type,
-      execution_time_ms: executionTime,
-      cache_status: this.analyzerContributionCacheEvidence.get(registration.id)?.status,
-      nodes_created: result.nodes?.length || 0,
-      files_created: this.countDistinctSourceFiles(result.nodes, projectPath),
-      edges_created: result.edges?.length || 0,
-      confidence: 1.0,
-      contributed_categories: result.categories ? Object.keys(result.categories).length : 0,
-      provided_perspectives: result.provided_perspectives || [],
-      framework_specific: analyzerMeta.frameworks_detected || analyzerMeta.crates || undefined,
-      application_type: analyzerMeta.application_type,
-      project_name: analyzerMeta.project_name,
-      project_version: analyzerMeta.project_version,
-      analysis_scope: analyzerMeta.analysis_scope,
-      warnings: Array.isArray(analyzerMeta.warnings) && analyzerMeta.warnings.length > 0 ? analyzerMeta.warnings : undefined
-    });
+    accumulators.contributions.push(buildAnalyzerContributionSummary({
+      registration, result, executionTime,
+      filesCreated: this.countDistinctSourceFiles(result.nodes, projectPath),
+      cacheStatus: this.analyzerContributionCacheEvidence.get(registration.id)?.status,
+    }));
 
     if (result.libraries) {
       accumulators.allLibraries.push(...result.libraries);

@@ -398,6 +398,8 @@ async function buildAgentContextForTask(cas: CASOutput, path: string, taskInput:
     cas.analysis_timestamp, path,
     fileReadPlan.map(item => normalizeSourceFile(item.file, cas.system?.root_path)),
     pillarTargetFile || undefined,
+    cas.analyzer_contributions,
+    { table: cas.source_input_identities, root_path: cas.source_input_root, current_root: cas.system?.root_path },
   );
   if (analysisFreshness.requires_verification) {
     gaps.push(`analysis-freshness: ${analysisFreshness.summary.warning}`);
@@ -2016,6 +2018,8 @@ function compactCapsuleOnlyAgentContext<T extends Record<string, any>>(context: 
   const executionCapsule = context.execution_brief?.capsule || formatExecutionCapsule(context.execution_brief);
   const payload = {
     context_profile: 'capsule-only',
+    status: compactContext.status,
+    agent_context_ready: compactContext.agent_context_ready,
     context_capsule: contextCapsule.capsule,
     readiness: compactContext.readiness,
     target_resolution: compactContext.target_resolution,
@@ -2044,9 +2048,7 @@ function buildFirstTurnCompactContext<T extends Record<string, any>>(context: T)
   const capabilityMemory = compactFirstTurnCapabilityMemory(workContext.capability_memory);
   const freshness = compactTinyFreshness(context.analysis_freshness || workContext.analysis_freshness);
   const freshnessWarning = freshness?.warning
-    ? freshness.citation_verification === 'unverified'
-      ? 'UNVERIFIED: inspect cited source before editing; analyzed-content identity is unavailable.'
-      : 'INVALID CITATION: inspect the current workspace; cited files are missing.'
+    ? `${freshness.citation_verification === 'unverified' ? 'UNVERIFIED' : 'INVALID CITATION'}: ${freshness.warning}`
     : null;
   const targetUncertaintyRule = context.target_resolution?.gaps?.length
     ? 'Resolve target uncertainty before choosing an edit scope; request exact candidate node context.'
@@ -2059,6 +2061,8 @@ function buildFirstTurnCompactContext<T extends Record<string, any>>(context: T)
     : freshnessWarning || 'Read files in order. Preserve idioms. Expand only if blocked.';
   return {
     context_profile: 'first-turn',
+    status: context.status,
+    agent_context_ready: context.agent_context_ready,
     readiness: compactSmallRepoReadiness(context.readiness),
     target_resolution: context.target_resolution?.gaps?.length ? compactSmallRepoTargetResolution(context.target_resolution) : undefined,
     task: [context.task?.task_type, compactFirstTurnText(String(context.task?.target || ''), 90)].filter(Boolean).join(': '),
@@ -2390,6 +2394,7 @@ function compactTinyFreshness(freshness: any) {
     staleness: freshness.staleness,
     ...(freshness.citation_verification ? { citation_verification: freshness.citation_verification } : {}),
     ...(freshness.files_missing_now ? { missing_files: freshness.files_missing_now.count } : {}),
+    ...(freshness.source_input_comparison ? { source_input_comparison: freshness.source_input_comparison } : {}),
     ...(freshness.unverified_files ? { unverified_files: freshness.unverified_files.count } : {}),
     ...(freshness.unchecked_files ? { unchecked_files: freshness.unchecked_files.count } : {}),
     ...(typeof changedCount === 'number' ? { changed_files: changedCount } : {}),
