@@ -1,6 +1,7 @@
 import { fork, type ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { workerExecArgvForEntry } from './worker-exec-argv';
 import { readAnalysisMemoryCapacity, type AnalysisMemoryCapacity } from './analysis-memory';
 import { resolveAnalysisHeapMb } from './analysis-heap';
 import { registerHostedBackgroundPreflight, withHostedForegroundPermit } from './hosted-background-queue';
@@ -95,20 +96,6 @@ function resolveWorkerEntryPath(kind: 'full' | 'search', env: NodeJS.ProcessEnv 
   throw new Error(`Hosted query worker entry not found next to ${__dirname}; rebuild the hosted bundle.`);
 }
 
-function workerExecArgv(execArgv: readonly string[]): string[] {
-  const safe: string[] = [];
-  for (let index = 0; index < execArgv.length; index += 1) {
-    const argument = execArgv[index];
-    if (['-e', '--eval', '-p', '--print'].includes(argument)) {
-      index += 1;
-      continue;
-    }
-    if (argument.startsWith('--eval=') || argument.startsWith('--print=') || argument.startsWith('--max-old-space-size=') || argument.startsWith('--max_old_space_size=')) continue;
-    if (argument === '--test' || argument.startsWith('--test-') || argument.startsWith('--test=') || argument.startsWith('--experimental-test')) continue;
-    safe.push(argument);
-  }
-  return safe;
-}
 
 function stopWorker(reason = 'Hosted query worker stopped.', invalidateValidatedVersions = false): void {
   if (idleTimer) clearTimeout(idleTimer);
@@ -161,8 +148,9 @@ function getWorker(kind: 'full' | 'search'): ChildProcess {
     if (pending.size > 0) throw new Error('Hosted query worker profile cannot change while requests are active.');
     stopWorker('Hosted query worker changed its memory profile.');
   }
-  const spawned = fork(resolveWorkerEntryPath(kind), [], {
-    execArgv: [...workerExecArgv(process.execArgv), `--max-old-space-size=${resolveHostedQueryHeapMb()}`],
+  const entry = resolveWorkerEntryPath(kind);
+  const spawned = fork(entry, [], {
+    execArgv: [...workerExecArgvForEntry(process.execArgv, entry), `--max-old-space-size=${resolveHostedQueryHeapMb()}`],
     stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
     env: process.env,
   });
