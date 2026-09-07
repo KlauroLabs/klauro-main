@@ -136,6 +136,38 @@ if ! git -C "$APP_DIR" show "$DEPLOY_SHA_FULL:infrastructure/vps/docker-compose.
   exit 1
 fi
 
+echo "==> Compose memory lint against the VPS host"
+HOST_MEM_MIB="$($SSH "$DEST" "awk '/MemTotal/{print int(\$2/1024)}' /proc/meminfo" 2>/dev/null || echo 0)"
+if ! git -C "$APP_DIR" show "$DEPLOY_SHA_FULL:infrastructure/vps/docker-compose.yml" | HOST_MEM_MIB="$HOST_MEM_MIB" node -e '
+  const text = require("fs").readFileSync(0, "utf8");
+  const hostMib = Number(process.env.HOST_MEM_MIB) || 0;
+  const reserveMib = 972;
+  const services = {};
+  let current = null;
+  for (const line of text.split("\n")) {
+    const service = line.match(/^  ([a-z][a-z0-9-]*):\s*$/);
+    if (service) { current = service[1]; services[current] = { limit: 0, heaps: [] }; continue; }
+    if (!current) continue;
+    const limit = line.match(/^\s+mem_limit:\s*(\d+)m\s*$/);
+    if (limit) services[current].limit = Number(limit[1]);
+    const heap = line.match(/--max-old-space-size=(\d+)/) || line.match(/KLAURO_ANALYSIS_HEAP_MB:\s*"?(\d+)"?/);
+    if (heap) services[current].heaps.push(Number(heap[1]));
+  }
+  const failures = [];
+  let sum = 0;
+  for (const [name, spec] of Object.entries(services)) {
+    if (!spec.limit) failures.push(`${name}: no mem_limit`);
+    sum += spec.limit;
+    for (const heap of spec.heaps) if (heap > spec.limit - 512) failures.push(`${name}: heap ${heap} MiB leaves under 512 MiB of its ${spec.limit} MiB limit`);
+  }
+  if (hostMib && sum + reserveMib > hostMib) failures.push(`limits ${sum} MiB + reserve ${reserveMib} MiB exceed host ${hostMib} MiB`);
+  console.log(`    compose limits: ${sum} MiB across ${Object.keys(services).length} services; host ${hostMib || "unknown"} MiB; reserve ${reserveMib} MiB`);
+  if (failures.length) { for (const f of failures) console.error("    !! " + f); process.exit(1); }
+'; then
+  echo "ERROR: docker-compose.yml memory budget does not fit the host. Aborting." >&2
+  exit 1
+fi
+
 echo "==> Staging exact deployment candidate on the VPS"
 bash "$APP_DIR/infrastructure/vps/sync-gate-candidate.sh" --commit "$DEPLOY_SHA_FULL"
 
@@ -192,6 +224,14 @@ echo "==> Rebuilding + restarting containers on $VPS_HOST"
 $SSH "$DEST" "install -d -m 700 /opt/klauro/data /opt/klauro/redis-data && chmod -R go-rwx /opt/klauro/data /opt/klauro/redis-data"
 $SSH "$DEST" "cd /opt/klauro && KLAURO_GIT_SHA='$GIT_SHA' KLAURO_BUILD_TIME='$BUILD_TIME' docker compose up -d --build --remove-orphans"
 $SSH "$DEST" "docker image rm klauro-gate >/dev/null 2>&1 || true"
+
+echo "==> Waiting for analysis-worker container health"
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  WSTATUS="$($SSH "$DEST" 'docker inspect -f "{{.State.Health.Status}}" klauro-analysis-worker-1 2>/dev/null' || echo "")"
+  if [ "$WSTATUS" = "healthy" ]; then break; fi
+  echo "    (analysis-worker health: ${WSTATUS:-unknown}, retry $i/12)"; sleep 5
+done
+[ "$WSTATUS" = "healthy" ] || echo "    !! analysis-worker never reported healthy; api will not become healthy either." >&2
 
 echo "==> Waiting for api container health, then restarting caddy (defect #24 guard)"
 API_HEALTHY=0
@@ -257,18 +297,29 @@ if [ -z "$WITH_RELEASE" ] && { [ "$DIST_VER" != "$LOCAL_VER" ] || [ "$DIST_SHA_S
   echo "    (DEPLOY_ALLOW_CLIENT_SKEW=1 — continuing with a known client/server version skew)"
 fi
 
-echo "==> Smoke: running one real analysis inside the api container"
+echo "==> Smoke: running one real analysis through the isolated worker service"
 rsync -az -e "$SSH" "$APP_DIR/infrastructure/vps/analysis-smoke.mjs" "$DEST:/opt/klauro/analysis-smoke.mjs"
+RESTARTS_BEFORE="$($SSH "$DEST" 'docker inspect -f "{{.Name}}={{.RestartCount}}" klauro-api-1 klauro-analysis-worker-1 2>/dev/null | tr "\n" " "' || echo "")"
+echo "    restart counts before: $RESTARTS_BEFORE"
 if ! $SSH "$DEST" '
   set -e
+  docker exec klauro-api-1 sh -c "test -S \"\$KLAURO_ANALYSIS_WORKER_SOCKET\"" || { echo "api container cannot see the analysis-worker socket" >&2; exit 1; }
   docker cp /opt/klauro/analysis-smoke.mjs klauro-api-1:/tmp/analysis-smoke.mjs >/dev/null
   docker exec -e KLAURO_AI_INTERPRETATION=false -w /app/apps/mcp-server klauro-api-1 \
     npx tsx /tmp/analysis-smoke.mjs
 '; then
   echo "    !! ANALYSIS SMOKE FAILED — the deployed analyzer cannot complete an analysis." >&2
   echo "    !! /health is green but the product is BROKEN. Do not leave this deployed." >&2
-  echo "    !! Most likely a torn/partial sync (deploy ships the working tree) or a real" >&2
-  echo "    !! runtime bug in the analysis path. Check 'docker logs klauro-api-1'." >&2
+  echo "    !! Most likely a torn/partial sync (deploy ships the working tree), the worker" >&2
+  echo "    !! service socket not shared, or a real runtime bug. Check 'docker logs klauro-api-1'" >&2
+  echo "    !! and 'docker logs klauro-analysis-worker-1'." >&2
+  exit 1
+fi
+RESTARTS_AFTER="$($SSH "$DEST" 'docker inspect -f "{{.Name}}={{.RestartCount}}" klauro-api-1 klauro-analysis-worker-1 2>/dev/null | tr "\n" " "' || echo "")"
+echo "    restart counts after:  $RESTARTS_AFTER"
+if [ "$RESTARTS_BEFORE" != "$RESTARTS_AFTER" ]; then
+  echo "    !! A container restarted during the smoke analysis (memory exhaustion or crash)." >&2
+  echo "    !! The 2026-09-06 OOM class: an analysis must complete or refuse, never restart a service." >&2
   exit 1
 fi
 
