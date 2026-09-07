@@ -4,6 +4,7 @@ import { capabilityEvidenceSubjectTokens } from './capability-catalog-evidence';
 import { outcomeIdentityTokens } from './capability-evidence-language';
 import { CAPABILITY_PURPOSE_VERBS } from './capability-naming';
 import { observedCapabilityLifecycleActions } from './capability-lifecycle-actions';
+import { removeUnsupportedCapabilityAbsenceClaims } from './capability-catalog-audience';
 
 export type CapabilityCatalogRepairBatch =
   | { mode: 'outcome'; candidateIds: string[]; requirements: CapabilityCatalogOutcomeRequirement[] }
@@ -377,7 +378,13 @@ export function deterministicCapabilityDescriptionFallback(args: {
       reason: exactSentence ? 'grounded-first-party-outcome' : 'grounded-cited-lifecycle',
     },
   };
-  return args.validate(fallback) ? fallback : undefined;
+  if (args.validate(fallback)) return fallback;
+  if (!firstPartyOutcomeBound) return undefined;
+  const positiveDescription = removeUnsupportedCapabilityAbsenceClaims(description);
+  const positiveWordCount = descriptionWords(positiveDescription).length;
+  if (positiveDescription === description || positiveWordCount < 6 || positiveWordCount > 28) return undefined;
+  const positiveFallback = { ...fallback, description: positiveDescription };
+  return args.validate(positiveFallback) ? positiveFallback : undefined;
 }
 
 export function deterministicCapabilityActionIdentityFallback(args: {

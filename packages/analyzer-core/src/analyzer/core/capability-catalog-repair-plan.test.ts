@@ -42,13 +42,57 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SystemCapability } from '../../types/cas.types';
 import type { CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
-import { groundedCapabilityAudience } from './capability-catalog-audience';
+import { groundedCapabilityAudience, unsupportedCapabilityAbsenceClaims } from './capability-catalog-audience';
 import { capabilityCatalogFocusedTask, capabilityCatalogPendingRequirementIds, capabilityCatalogRepairNudge, capabilityCatalogRepairPlan, captureCapabilityCatalogPendingRequirements, deterministicCapabilityActionIdentityFallback, deterministicCapabilityDescriptionFallback, establishPendingCapabilityEvidenceIdentity, pendingCapabilityEvidenceObservableActionFailure, preserveCapabilityCatalogDescriptionIdentity, supersedeUnboundPendingOutcomeDuplicates, type PendingCapabilityEvidenceIdentity } from './capability-catalog-repair-plan';
 
 const capability = (id: string, factors: string[], description = '') => ({
   id, name: `Outcome ${id}`, description, category: 'core', criticality: 'high', criticality_factors: factors,
   operations: [], related_entities: [], related_domains: [],
 }) as SystemCapability;
+
+
+test('bound description recovery validates a positive clause without changing qualified outcome evidence', () => {
+  const name = 'Review linked customer records without exporting private data';
+  const candidate = { ...capability('records', []), name: 'Customer records', operations: [
+    { entry_point_id: 'review', entry_point_type: 'event' as const, action: 'read' },
+  ] };
+  const identity = { ...capability('review', [
+    'catalog-candidate:records', 'catalog-outcome-requirement:private-review',
+  ]), name, operations: candidate.operations };
+  const attempted: string[] = [];
+  const recovered = deterministicCapabilityDescriptionFallback({
+    identity, evidenceCandidates: [candidate], audience: 'People', firstPartyTexts: [],
+    validate: value => {
+      attempted.push(value.description);
+      return unsupportedCapabilityAbsenceClaims(value.description).length === 0;
+    },
+  });
+  assert.deepEqual(attempted, [
+    'People can review linked customer records without exporting private data.',
+    'People can review linked customer records.',
+  ]);
+  assert.equal(recovered?.description, attempted[1]);
+  assert.equal(recovered?.name, name);
+  assert.deepEqual(recovered?.operations, identity.operations);
+  assert.deepEqual(recovered?.criticality_factors, identity.criticality_factors);
+  assert.equal(identity.description, '');
+  assert.equal(recovered?.description_source, 'deterministic');
+});
+
+test('positive description recovery stays pending when the unchanged validator rejects it', () => {
+  const candidate = { ...capability('records', []), name: 'Customer records', operations: [
+    { entry_point_id: 'review', entry_point_type: 'event' as const, action: 'read' },
+  ] };
+  const identity = { ...capability('review', [
+    'catalog-candidate:records', 'catalog-outcome-requirement:private-review',
+  ]), name: 'Review linked customer records without exporting private data' };
+  let attempts = 0;
+  assert.equal(deterministicCapabilityDescriptionFallback({
+    identity, evidenceCandidates: [candidate], audience: 'People', firstPartyTexts: [],
+    validate: () => { attempts++; return false; },
+  }), undefined);
+  assert.equal(attempts, 2);
+});
 
 test('reusable libraries use their consumer audience for deterministic comprehension repair', () => {
   assert.equal(groundedCapabilityAudience(
