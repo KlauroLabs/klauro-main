@@ -149,7 +149,7 @@ export function fitCapabilityCatalogContext<T extends Record<string, unknown>>(
     return compactCandidate(value, requiredIds.has(candidateId));
   });
   const topDownSignals = compactTopDownSignals(facts.top_down_signals);
-  const requiredOutcomes = (Array.isArray(facts.required_outcomes) ? facts.required_outcomes : []).slice(0, 16).map(value => {
+  const requiredOutcomes = (Array.isArray(facts.required_outcomes) ? facts.required_outcomes : []).map(value => {
     const requirement = value && typeof value === 'object' ? value as Record<string, unknown> : {};
     return {
       requirement_id: boundedText(requirement.requirement_id, 240),
