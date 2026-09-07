@@ -34,3 +34,17 @@ export function buildAnalyzerContributionSummary(input: ContributionSummaryInput
     warnings: Array.isArray(metadata.warnings) && metadata.warnings.length > 0 ? metadata.warnings : undefined,
   };
 }
+
+export function invalidateIncrementalSourceInputs(contributions: CASAnalyzerContribution[]): CASAnalyzerContribution[] {
+  return contributions.map(contribution => contribution.source_inputs ? {
+    ...contribution,
+    source_inputs: {
+      version: 1,
+      coverage: 'unavailable',
+      digest_algorithm: 'sha256',
+      reason: 'incremental-input-identities-not-refreshed',
+      files: [],
+      outside_root_reads: 0,
+    },
+  } : contribution);
+}

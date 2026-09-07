@@ -271,7 +271,7 @@ import { detectCodebaseIdioms } from './idiom-detector';
 import { AnalysisRunLog } from './run-log';
 import { withAnalyzerFileReadCache, getDebugCacheStats } from './analyzer-file-read-cache';
 import { analyzeWithCompleteScope } from './analyzer-analysis-scope';
-import { buildAnalyzerContributionSummary } from './analyzer-contribution-summary';
+import { buildAnalyzerContributionSummary, invalidateIncrementalSourceInputs } from './analyzer-contribution-summary';
 import { applyCapabilityCatalogStatus } from './capability-catalog-status';
 import { captureAnalysisMemorySample } from './analysis-memory-profile';
 import { semanticPackIdentityForProject } from '../packs/pack-loader';
@@ -3132,6 +3132,7 @@ export class AnalyzerOrchestrator {
     });
     const rebuiltOutput: CASOutput = {
       ...previousOutput,
+      analyzer_contributions: invalidateIncrementalSourceInputs(previousOutput.analyzer_contributions),
       analysis_timestamp: new Date().toISOString(),
       analysis_id: analysisId,
       system: enhancedSystemPurpose.inferred_description

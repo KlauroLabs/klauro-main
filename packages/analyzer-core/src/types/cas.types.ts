@@ -1,5 +1,7 @@
 import { createHash } from 'crypto';
 import type { CASCoverageGap } from './cas-coverage.types';
+import type { CASAnalyzerSourceInputs } from './cas-source-input.types';
+export type { CASAnalyzerSourceInputs, CASSourceInputIdentity } from './cas-source-input.types';
 export type { CASCoverageGap, CASCoverageGapKind } from './cas-coverage.types';
 import type { CASComposedClaimProvenance, CASTerminalityProvenance } from './cas-composition.types';
 export type { CASComposedClaimProvenance, CASTerminalityEdge, CASTerminalityProvenance, CASTerminalityRelationEvidence } from './cas-composition.types';
@@ -1763,24 +1765,6 @@ export interface CASDeclaredDependency {
   scopes: Array<'runtime' | 'dev' | 'peer' | 'optional' | 'build'>;
 
   declared_in: string[];
-}
-
-export interface CASSourceInputIdentity {
-  path: string;
-  status: 'captured' | 'conflicting' | 'unavailable';
-  representation?: 'utf8-text' | 'bytes';
-  sha256?: string;
-  bytes?: number;
-  reason?: string;
-  error_code?: string;
-}
-
-export interface CASAnalyzerSourceInputs {
-  version: 1;
-  coverage: 'observed-reads';
-  digest_algorithm: 'sha256';
-  files: CASSourceInputIdentity[];
-  outside_root_reads: number;
 }
 
 export interface CASAnalyzerContribution {

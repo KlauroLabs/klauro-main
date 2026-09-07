@@ -9,7 +9,7 @@ import type { BaseAnalyzer } from './base-analyzer';
 import { withAnalyzerFileReadCache, withAnalyzerFileReadTracking } from './analyzer-file-read-cache';
 import { AnalyzerSourceInputCapture, sourceInputObservation } from './analyzer-source-inputs';
 import { analyzeWithCompleteScope } from './analyzer-analysis-scope';
-import { buildAnalyzerContributionSummary } from './analyzer-contribution-summary';
+import { buildAnalyzerContributionSummary, invalidateIncrementalSourceInputs } from './analyzer-contribution-summary';
 import { PersistentAnalyzerContributionCache } from './analyzer-contribution-cache';
 
 async function workspace(t: TestContext): Promise<string> {
@@ -179,4 +179,19 @@ test('legacy contribution metadata is never silently assigned a current digest',
     result, executionTime: 0, filesCreated: 0,
   });
   assert.equal(summary.source_inputs, undefined);
+});
+
+test('incremental rebuilds cannot reuse previous full-analysis input proofs', () => {
+  const capture = new AnalyzerSourceInputCapture();
+  capture.observe('/project/source.ts', sourceInputObservation('old content', 'utf8'));
+  const contribution = {
+    analyzer_id: 'language', analyzer_name: 'Language', contribution_type: 'language' as const,
+    source_inputs: capture.snapshot('/project'),
+  };
+  const updated = invalidateIncrementalSourceInputs([contribution]);
+  assert.equal(contribution.source_inputs.files[0].status, 'captured');
+  assert.equal(updated[0].source_inputs?.coverage, 'unavailable');
+  assert.equal(updated[0].source_inputs?.reason, 'incremental-input-identities-not-refreshed');
+  assert.deepEqual(updated[0].source_inputs?.files, []);
+  assert.equal(updated[0].analyzer_id, 'language');
 });
