@@ -93,6 +93,7 @@ import { collectDeployableEvidence } from './deployable-evidence';
 import { attachDeployable } from './entry-point-deployable';
 import { determineSystemType as determineSystemTypeImpl } from './system-type';
 import * as CapabilityText from './capability-description';
+import { selectCapabilityDescription, applyCapabilityDescriptionSelection, type CapabilityDescriptionSelection } from './capability-description-selection';
 import { isIdentifierShapedRepoBasename } from './deployable-evidence/util';
 import { buildDependencyManifest } from './dependency-manifest';
 import { buildChangeExecutionLocality, isolateLocalizedStructuralImportanceNodes, localizedNodeFingerprint, mergeLocalizedIncrementalNode, selectLocalizedIncrementalEnrichmentNodes } from './incremental-locality';
@@ -183,7 +184,7 @@ import {
   catalogRequiredEvidenceCandidates,
   uniquelyMatchingCapabilityEntityIds,
   catalogPromptEntities, catalogRelatedEntityIds,
-  capabilityCatalogAiPhaseStatus,
+  comprehensionAiPhaseStatus,
   capabilityRequiresCatalogCoverage,
   summarizeCapabilityEvidenceRoles,
   synchronizeCapabilityCatalogCoverage,
@@ -11080,10 +11081,11 @@ export class AnalyzerOrchestrator {
       firstDomainCandidate === enhancedSystemPurpose.primary_domain) {
       enhancedSystemPurpose.primary_domain = '';
     }
-    const acceptedElements = new Map<string, string>();
+    const acceptedElements = new Map<string, CapabilityDescriptionSelection>();
     const rejectedElements = new Map<string, string>();
     for (const target of capabilityTargets) {
-      const existingCatalogDescription = systemCapabilities.find(capability => capability.id === target.id)?.description || '';
+      const existingCapability = systemCapabilities.find(capability => capability.id === target.id);
+      const existingCatalogDescription = existingCapability?.description || '';
       const existingCatalogValidation = this.validateElementDescription(existingCatalogDescription, target);
       if (process.env.KLAURO_DEBUG_CATALOG && existingCatalogDescription && !existingCatalogValidation.ok) {
         writeAnalyzerStatus('[catalog-debug] rejected catalog description:', {
@@ -11092,19 +11094,16 @@ export class AnalyzerOrchestrator {
           reason: existingCatalogValidation.reason, relatedEntities: target.relatedEntities, unrelatedEntities: target.unrelatedEntities,
         });
       }
-      const combinedCandidate = combined.elements.get(target.id) || '';
-      const originalCandidate = reauthorCatalogDescriptions
-        ? combinedCandidate || (existingCatalogValidation.ok ? existingCatalogDescription : '')
-        : existingCatalogValidation.ok ? existingCatalogDescription : combinedCandidate;
-      const candidate = this.sanitizeElementDescriptionCandidate(originalCandidate, target) ||
-        (existingCatalogValidation.ok ? this.sanitizeElementDescriptionCandidate(existingCatalogDescription, target) : undefined);
-      const elementValidation = candidate
-        ? this.validateElementDescription(candidate, target)
-        : originalCandidate
-          ? this.validateElementDescription(originalCandidate, target)
-          : { ok: false as const, reason: 'missing-description' };
-      if (elementValidation.ok && candidate) acceptedElements.set(target.id, candidate);
-      else rejectedElements.set(target.id, elementValidation.reason || 'generated-description-failed-quality-gate');
+      const selected = selectCapabilityDescription({
+        existing: existingCapability, generated: combined.elements.get(target.id),
+        preferGenerated: reauthorCatalogDescriptions, budgetMs,
+        sanitize: text => this.sanitizeElementDescriptionCandidate(text, target),
+        validate: text => this.validateElementDescription(text, target),
+      });
+      if (selected) acceptedElements.set(target.id, selected);
+      else rejectedElements.set(target.id, this.validateElementDescription(
+        combined.elements.get(target.id) || existingCatalogDescription, target,
+      ).reason || 'missing-description');
     }
     if (!validation.ok || rejectedElements.size > 0) {
       const elementReasons = [...new Set(rejectedElements.values())].sort().join(',') || 'none';
@@ -11173,9 +11172,13 @@ export class AnalyzerOrchestrator {
         for (const target of capabilityTargets) {
           if (acceptedElements.has(target.id)) continue;
           const repairedCapability = repairCapabilities.find(capability => capability.id === target.id);
-          const candidate = this.sanitizeElementDescriptionCandidate(repairedCapability?.description || '', target);
-          if (candidate && this.validateElementDescription(candidate, target).ok) {
-            acceptedElements.set(target.id, candidate);
+          const selected = selectCapabilityDescription({
+            existing: repairedCapability, preferGenerated: false,
+            sanitize: text => this.sanitizeElementDescriptionCandidate(text, target),
+            validate: text => this.validateElementDescription(text, target),
+          });
+          if (selected) {
+            acceptedElements.set(target.id, selected);
             rejectedElements.delete(target.id);
           }
         }
@@ -11350,7 +11353,7 @@ export class AnalyzerOrchestrator {
     for (const target of capabilityTargets) {
       const accepted = acceptedElements.get(target.id);
       if (accepted) {
-        this.applyElementDescription(target.id, accepted, systemCapabilities, [], 'ai', 'ai_applied', true, undefined, budgetMs);
+        applyCapabilityDescriptionSelection(systemCapabilities, target.id, accepted);
       } else {
         const existing = systemCapabilities.find(capability => capability.id === target.id);
         if (existing && (!existing.description || !this.validateElementDescription(existing.description, target).ok)) {
@@ -11445,7 +11448,7 @@ export class AnalyzerOrchestrator {
       stopped_reason: dataEntities.length > 0 ? 'manual-trigger-only' : undefined,
     };
 
-    enhancedSystemPurpose.ai_phase_status = capabilityCatalogAiPhaseStatus(enhancedSystemPurpose.capability_catalog_coverage);
+    enhancedSystemPurpose.ai_phase_status = comprehensionAiPhaseStatus(enhancedSystemPurpose);
     enhancedSystemPurpose.ai_input_fingerprint = aiInputFingerprint;
 
     this.finalizeSystemCapabilityNames(systemCapabilities, dataEntities, enhancedSystemPurpose);

@@ -1,4 +1,5 @@
-import { CASDataEntity, CASEntryPoint, CASNode, CASUserJourney, EnhancedSystemPurpose, SystemCapability } from '../../types/cas.types';
+import { CASDataEntity, CASEntryPoint, CASNode, CASUserJourney, SystemCapability } from '../../types/cas.types';
+export { comprehensionAiPhaseStatus, synchronizeCapabilityCatalogCoverage } from './comprehension-status';
 import type { ProductDocumentStatement } from './product-document-framing';
 import { capabilityEvidenceSubjectTokens } from './capability-subject-evidence';
 export { capabilityEvidenceSubjectTokens } from './capability-subject-evidence';
@@ -35,27 +36,6 @@ export interface CapabilityCatalogProjectSignal {
   productVocabulary?: string[];
 }
 export { catalogPromptEntities, type CapabilityCatalogEntityFact } from './capability-catalog-prompt-entities';
-export function capabilityCatalogAiPhaseStatus(
-  coverage?: { evidence_families: number; status: 'accepted' | 'partial' | 'rejected' | 'unavailable' },
-): 'complete' | 'degraded' {
-  return coverage && coverage.status !== 'accepted' && (coverage.evidence_families > 0 || coverage.status !== 'unavailable') ? 'degraded' : 'complete';
-}
-export function synchronizeCapabilityCatalogCoverage(
-  purpose: EnhancedSystemPurpose,
-  publishedCapabilities: number,
-  excludedCapabilities: number,
-): void {
-  const coverage = purpose.capability_catalog_coverage;
-  if (!coverage) return;
-  const preserveRejectedCandidates = coverage.status === 'rejected' && coverage.published_capabilities === 0;
-  coverage.actual_publishable_capabilities = preserveRejectedCandidates ? Math.max(coverage.actual_publishable_capabilities || 0, publishedCapabilities) : publishedCapabilities;
-  coverage.published_capabilities = publishedCapabilities;
-  if (excludedCapabilities > 0 && coverage.status === 'accepted') {
-    coverage.status = 'rejected';
-    coverage.reason = `${excludedCapabilities} catalog capability ${excludedCapabilities === 1 ? 'was' : 'were'} excluded during final publishability validation`;
-  }
-  purpose.ai_phase_status = capabilityCatalogAiPhaseStatus(coverage);
-}
 function capabilityOutcomeCorroboratedByProductText(
   name: string,
   citedCandidates: SystemCapability[],

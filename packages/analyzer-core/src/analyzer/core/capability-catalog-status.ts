@@ -1,4 +1,5 @@
 import type { CASOutput } from '../../types/cas.types';
+import { applyComprehensionNarrativeStatus } from './comprehension-status';
 
 const ERROR_CODE = 'CAPABILITY_CATALOG_REJECTED';
 
@@ -12,6 +13,7 @@ function catalogFailure(output: CASOutput): string | undefined {
 }
 
 export function applyCapabilityCatalogStatus(output: CASOutput): void {
+  applyComprehensionNarrativeStatus(output);
   const failure = catalogFailure(output);
   if (!failure) return;
 

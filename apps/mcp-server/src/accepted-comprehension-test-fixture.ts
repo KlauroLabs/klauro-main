@@ -42,6 +42,10 @@ export function acceptedComprehensionFixture(cas: CASOutput): CASOutput {
     enhanced_system_purpose: {
       ...enhanced,
       ai_phase_status: 'complete',
+      inferred_description: enhanced.inferred_description || cas.system.name,
+      description_source: 'ai',
+      description_generation: { status: 'ai_applied', attempted: true },
+      capability_description_degradations: undefined,
       capability_catalog_coverage: {
         evidence_families: Math.max(1, enhanced.capability_catalog_coverage?.evidence_families || 0),
         published_capabilities: canonicalCapabilities.length,

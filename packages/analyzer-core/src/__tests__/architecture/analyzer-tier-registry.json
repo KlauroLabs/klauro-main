@@ -44,6 +44,8 @@
   "core/capability-catalog-status.ts": 3,
   "core/capability-dependency-builder.ts": 3,
   "core/capability-description.ts": 3,
+  "core/capability-description-selection.ts": 3,
+  "core/comprehension-status.ts": 3,
   "core/capability-detector.ts": 3,
   "core/capability-entity-grounding.ts": 3,
   "core/capability-evidence-language.ts": 3,
