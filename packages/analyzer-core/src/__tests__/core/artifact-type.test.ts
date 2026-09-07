@@ -24,6 +24,62 @@ function input(overrides: Partial<ArtifactTypeInput>): ArtifactTypeInput {
 }
 
 describe('classifyArtifactType', () => {
+  test.each([
+    ['express-mongoose-truth', 'Express'],
+    ['express-platform', 'Express'],
+    ['core-express', 'Express'],
+    ['@company/express', 'Express'],
+    ['router-orders', 'Router'],
+    ['my-framework', 'My'],
+  ])('an application named %s is not the %s framework through token overlap', (name, framework) => {
+    const result = classifyArtifactType(input({
+      manifest: { packageJson: { name, isPrivate: false, hasBin: false, hasLibraryEntry: true, dependencyNames: [framework.toLowerCase()] } },
+      frameworks: [framework],
+      entryPointSummary: [{ type: 'http', count: 2 }],
+    }));
+    expect(result.artifactType).toBe('app');
+    expect(result.evidence.join(' ')).not.toMatch(/is the detected framework/);
+  });
+
+  test.each(['express', 'EXPRESS'])('a same-named application consuming %s is not the framework itself', name => {
+    const result = classifyArtifactType(input({
+      manifest: { packageJson: { name, isPrivate: false, hasBin: false, hasLibraryEntry: true, dependencyNames: ['express'] } },
+      frameworks: ['Express'],
+      entryPointSummary: [{ type: 'http', count: 2 }],
+    }));
+    expect(result.artifactType).toBe('app');
+  });
+
+  test('Composer type:project contradicts a framework self-identity even when the package leaf matches', () => {
+    const result = classifyArtifactType(input({
+      manifest: { composer: { name: 'laravel/laravel', type: 'project', requireNames: ['laravel/framework'] } },
+      frameworks: ['Laravel'],
+      entryPointSummary: [{ type: 'http', count: 2 }],
+    }));
+    expect(result.artifactType).toBe('app');
+  });
+
+  test.each([
+    ['express', 'Express', false],
+    ['@publisher/routing', '@publisher/routing', false],
+    ['@publisher/routing', '@publisher/routing', true],
+  ])('full framework identity %s remains a library with HTTP surfaces', (name, framework, isPrivate) => {
+    const result = classifyArtifactType(input({
+      manifest: { packageJson: { name, isPrivate, hasBin: false, hasLibraryEntry: true, dependencyNames: [] } },
+      frameworks: [framework],
+      entryPointSummary: [{ type: 'http', count: 12 }],
+    }));
+    expect(result.artifactType).toBe('library');
+  });
+
+  test('a Composer library with exact framework package identity retains its utility HTTP entries', () => {
+    const result = classifyArtifactType(input({
+      manifest: { composer: { name: 'symfony/symfony', type: 'library', requireNames: ['php'] } },
+      frameworks: ['Symfony'],
+      entryPointSummary: [{ type: 'http', count: 12 }],
+    }));
+    expect(result.artifactType).toBe('library');
+  });
   test('Cargo lib target without binaries is a library (ztray shape)', () => {
     const result = classifyArtifactType(input({
       manifest: {

@@ -86,7 +86,7 @@ const DECLARED_SCAFFOLD_SUBJECT = /^\s*(?:the|a|an)\s+(?:[\w-]+\s+){0,2}?(?:boil
 
 
 
-const ARTIFACT_KIND_TOKENS = /^(?:framework|library|platform|core|js|ts|node)$/;
+
 
 const GENERATED_CLIENT_TEXT = /\b(wsdl2?php|wsdl|openapi-generator|swagger-codegen|autorest|auto-?generated client|generated (api )?client)\b/i;
 
@@ -273,12 +273,8 @@ function detectCliTool(
 
 
 
-function identityTokens(name: string | undefined): string[] {
-  return String(name || '')
-    .replace(/^@[^/]+\//, '')
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter(token => token.length >= 3 && !ARTIFACT_KIND_TOKENS.test(token));
+function packageIdentity(name: string | undefined): string {
+  return String(name || '').trim().toLowerCase();
 }
 
 
@@ -288,13 +284,21 @@ function identityTokens(name: string | undefined): string[] {
 
 function detectSelfNamedFramework(manifest: ArtifactManifestSignal, frameworks: string[]): ArtifactTypeResult | null {
   const selfNames = [
-    manifest.packageJson?.name,
-    manifest.composer?.name?.split('/').pop(),
+    {
+      name: manifest.packageJson?.name,
+      declaredName: manifest.packageJson?.name,
+      dependencies: manifest.packageJson?.dependencyNames || [],
+    },
+    {
+      name: manifest.composer?.type === 'project' ? undefined : manifest.composer?.name?.split('/').pop(),
+      declaredName: manifest.composer?.name,
+      dependencies: manifest.composer?.requireNames || [],
+    },
   ];
-  for (const selfName of selfNames) {
-    const self = new Set(identityTokens(selfName));
-    if (self.size === 0) continue;
-    const framework = frameworks.find(candidate => identityTokens(candidate).some(token => self.has(token)));
+  for (const { name: selfName, declaredName, dependencies } of selfNames) {
+    const self = packageIdentity(selfName);
+    if (!self || dependencies.some(dependency => packageIdentity(dependency) === packageIdentity(declaredName))) continue;
+    const framework = frameworks.find(candidate => packageIdentity(candidate) === self);
     if (framework) {
       return {
         artifactType: 'library',
