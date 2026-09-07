@@ -31,18 +31,15 @@
 
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { glob } from 'glob';
+import { globIterate } from 'glob';
 import type { CASOutput, CASLayersReady, CASLayerStatus } from '../../../packages/analyzer-core/src/types/cas.types';
 import { CAS_VERSION } from '../../../packages/analyzer-core/src/types/cas.types';
 import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
 import { comprehensionNarrativeFailure } from '../../../packages/analyzer-core/src/analyzer/core/comprehension-status';
+import { isRegisteredSourceExtension, languageForSourceFile } from '../../../packages/analyzer-core/src/analyzer/core/language-registry';
 
 
 
-
-const L0_SOURCE_PATTERNS = [
-  '**/*.{js,jsx,ts,tsx,mjs,cjs,py,go,rs,java,kt,cs,php,rb,swift,dart,scala,ex,exs,c,cc,cpp,h,hpp,sol,vue,svelte,sh,tf,yaml,yml}',
-];
 
 const L0_IGNORE_PATTERNS = [
   '**/node_modules/**',
@@ -87,18 +84,20 @@ export interface L0Index {
 
 export async function computeL0Index(projectPath: string): Promise<L0Index> {
   const started = Date.now();
-  const files = await glob(L0_SOURCE_PATTERNS, {
+  let totalFiles = 0;
+  const languageCounts = new Map<string, number>();
+  for await (const file of globIterate('**/*', {
     cwd: projectPath,
     ignore: L0_IGNORE_PATTERNS,
+    dot: true,
     nodir: true,
     absolute: false,
-  });
-
-  const languageCounts = new Map<string, number>();
-  for (const file of files) {
+  })) {
     const ext = path.extname(file).slice(1).toLowerCase();
-    const language = EXTENSION_LANGUAGE[ext];
+    const language = EXTENSION_LANGUAGE[ext] ||
+      (isRegisteredSourceExtension(file) ? languageForSourceFile(file) : undefined);
     if (!language) continue;
+    totalFiles++;
     languageCounts.set(language, (languageCounts.get(language) || 0) + 1);
   }
 
@@ -115,10 +114,10 @@ export async function computeL0Index(projectPath: string): Promise<L0Index> {
 
   const languages = Array.from(languageCounts.entries())
     .map(([name, count]) => ({ name, files: count }))
-    .sort((a, b) => b.files - a.files);
+    .sort((a, b) => b.files - a.files || a.name.localeCompare(b.name));
 
   return {
-    total_files: files.length,
+    total_files: totalFiles,
     languages,
     top_level_dirs: topLevelDirs,
     duration_ms: Date.now() - started,

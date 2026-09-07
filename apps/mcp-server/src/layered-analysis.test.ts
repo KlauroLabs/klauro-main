@@ -1,7 +1,31 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
-import { buildCompletedAnalysisLayersReady } from './layered-analysis';
+import { buildCompletedAnalysisLayersReady, computeL0Index } from './layered-analysis';
+
+import * as fs from 'fs-extra';
+import * as os from 'os';
+import * as path from 'path';
+import { getRegisteredSourceExtensions } from '../../../packages/analyzer-core/src/analyzer/core/language-registry';
+
+test('L0 inventories every registered extension, mixed-case and hidden first-party source', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-l0-registry-'));
+  try {
+    const extensions = getRegisteredSourceExtensions();
+    for (const extension of extensions) await fs.outputFile(path.join(root, 'src', `source.${extension}`), '');
+    for (const file of ['legacy/main.r', '.analysis/main.R', 'src/mixed.TsX',
+      'node_modules/dependency.ts', '.git/internal.py', 'src/ignored.fixture-unknown']) {
+      await fs.outputFile(path.join(root, file), '');
+    }
+    const index = await computeL0Index(root);
+    assert.equal(index.total_files, extensions.length + 3);
+    assert.equal(index.languages.reduce((sum, language) => sum + language.files, 0), index.total_files);
+    assert.equal(index.languages.find(language => language.name === 'R')?.files, 4);
+    assert.equal(index.languages.find(language => language.name === 'TypeScript')?.files, 3);
+  } finally {
+    await fs.remove(root);
+  }
+});
 
 function outputWithCatalog(
   status: 'accepted' | 'partial' | 'rejected' | 'unavailable',

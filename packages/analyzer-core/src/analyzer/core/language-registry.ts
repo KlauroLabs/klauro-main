@@ -329,6 +329,50 @@ export const LANGUAGE_REGISTRY: LanguageRegistryEntry[] = [
   { id: 'pony_ml', extensions: [], manifests: ['corral.json'] }
 ];
 
+const LANGUAGE_NAMES: Record<string, string> = {
+  csharp: 'C#',
+  cpp: 'C++',
+  fsharp: 'F#',
+  javascript: 'JavaScript',
+  objc: 'Objective-C',
+  opencl: 'OpenCL',
+  php: 'PHP',
+  powershell: 'PowerShell',
+  sql: 'SQL',
+  sql_more: 'SQL',
+  typescript: 'TypeScript',
+};
+
+const LANGUAGE_BY_EXTENSION = buildLanguageByExtension();
+
+function buildLanguageByExtension(): Map<string, string> {
+  const languages = new Map<string, string>();
+  for (const entry of LANGUAGE_REGISTRY) {
+    for (const extension of entry.extensions) {
+      const normalized = extension.toLowerCase();
+      if (!languages.has(normalized)) {
+        languages.set(normalized, languageName(entry.id));
+      }
+    }
+  }
+  return languages;
+}
+
+export function languageForSourceFile(file: string): string | undefined {
+  const basename = path.basename(file).toLowerCase();
+  const extension = basename.includes('.') ? basename.slice(basename.lastIndexOf('.') + 1) : basename;
+  return LANGUAGE_BY_EXTENSION.get(extension);
+}
+
+function languageName(id: string): string {
+  const canonical = id.replace(/_(?:more|extra|lang|page)$/, '');
+  return LANGUAGE_NAMES[canonical] || canonical
+    .split(/[_-]/)
+    .filter(Boolean)
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
 const SOURCE_EXTENSIONS = new Set(LANGUAGE_REGISTRY.flatMap(l => l.extensions));
 const MANIFEST_BASENAMES = new Set(LANGUAGE_REGISTRY.flatMap(l => l.manifests));
 const MANIFEST_EXTENSIONS = new Set(LANGUAGE_REGISTRY.flatMap(l => l.manifestExtensions ?? []));
