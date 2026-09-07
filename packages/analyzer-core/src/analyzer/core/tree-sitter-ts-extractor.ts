@@ -1925,14 +1925,17 @@ export class TreeSitterTSExtractor {
   }
 
   private collectByType(node: any, type: string): any[] {
+    if (typeof node?.descendantsOfType === 'function') return node.descendantsOfType(type).filter((current: any) => current.isNamed && current.type === type);
     return [...this.walkNamedNodes(node)].filter(current => current.type === type);
   }
 
   private collectByTypes(node: any, types: Set<string>): any[] {
+    if (typeof node?.descendantsOfType === 'function') return node.descendantsOfType([...types]).filter((current: any) => current.isNamed && types.has(current.type));
     return [...this.walkNamedNodes(node)].filter(current => types.has(current.type));
   }
 
   private findFirst(node: any, type: string): any | null {
+    if (typeof node?.descendantsOfType === 'function') return node.descendantsOfType(type).find((current: any) => current.isNamed && current.type === type) || null;
     for (const current of this.walkNamedNodes(node)) if (current.type === type) return current;
     return null;
   }

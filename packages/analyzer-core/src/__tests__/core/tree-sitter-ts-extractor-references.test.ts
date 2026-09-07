@@ -28,6 +28,48 @@ describe('TreeSitterTSExtractor identifier-reference completeness', () => {
     return calls.filter(c => c.targetType === 'property').map(c => c.target);
   }
 
+  it.each(['typescript', 'tsx', 'javascript'])('preserves named preorder and root matches in %s subtree searches', language => {
+    const Parser = require('tree-sitter');
+    const parser = new Parser();
+    const grammar = language === 'javascript'
+      ? require('tree-sitter-javascript')
+      : require('tree-sitter-typescript')[language];
+    parser.setLanguage(grammar);
+    const source = language === 'javascript'
+      ? 'export function outer(value) { const label = "string"; function inner() {} return () => persist(value, label); }'
+      : 'export function outer(value: string): number { const label = "string"; function inner(): void {} return 1; }';
+    extractor.extractFromSource(source, language === 'javascript' ? 'file.js' : language === 'tsx' ? 'file.tsx' : 'file.ts');
+    const tree = parser.parse(source);
+    expect(tree.rootNode).toBeDefined();
+    const namedPreorder = (root: any): any[] => {
+      const nodes: any[] = [];
+      const pending = [root];
+      while (pending.length) {
+        const node = pending.pop()!;
+        nodes.push(node);
+        for (let index = node.namedChildCount - 1; index >= 0; index--) pending.push(node.namedChild(index));
+      }
+      return nodes;
+    };
+    const searches = extractor as any;
+    const types = ['string', 'identifier', 'type_annotation', 'function_declaration', 'formal_parameters', 'not_present'];
+    for (const root of namedPreorder(tree.rootNode)) {
+      const descendants = namedPreorder(root);
+      for (const type of types) {
+        const expected = descendants.filter(node => node.type === type);
+        expect(searches.collectByType(root, type).map((node: any) => node.id)).toEqual(expected.map(node => node.id));
+        expect(searches.findFirst(root, type)?.id ?? null).toBe(expected[0]?.id ?? null);
+      }
+      const selected = new Set(['string', 'identifier', 'function_declaration']);
+      expect(searches.collectByTypes(root, selected).map((node: any) => node.id)).toEqual(
+        descendants.filter(node => selected.has(node.type)).map(node => node.id),
+      );
+    }
+    expect(searches.collectByType(null, 'identifier')).toEqual([]);
+    expect(searches.collectByTypes(null, new Set(['identifier']))).toEqual([]);
+    expect(searches.findFirst(null, 'identifier')).toBeNull();
+  });
+
   it('resolves an identifier spread inside a decorator call argument', () => {
     const source = `
       import { InternalGet, INTERNAL_GET_ERRORS } from '@zerac-api/decorators';
