@@ -231,7 +231,7 @@ import { invalidateLocalPackageImportContext, localPackageImportsAny } from './l
 import { classifyGuardKind } from './guard-classification';
 import { routeLifecycleAttribution } from './entity-lifecycle-route';
 import { buildRequiredServices } from './configuration-required-services';
-import { externalServiceIdentityForExitPoint } from './external-service-identity';
+import { buildExternalServices } from './external-service-graph';
 import { extractDistinctiveTextVocabulary, isEnglishFunctionWord } from './text-vocabulary';
 import { buildProductMap } from './product-map';
 import { buildReachabilityIndexFromCas } from './reachability-index';
@@ -7580,110 +7580,7 @@ export class AnalyzerOrchestrator {
     exitPoints: CASExitPoint[],
     libraries: any[]
   ): CASExternalService[] {
-    const services: CASExternalService[] = [];
-    const serviceMap = new Map<string, CASExternalService>();
-
-    exitPoints.forEach(ep => {
-      if (ep.type === 'database') {
-        const dbKey = ep.target?.service_id || 'primary_database';
-        if (!serviceMap.has(dbKey)) {
-          const databaseName = this.isMeaningfulExternalServiceName(ep.name) ? ep.name : 'Database';
-          serviceMap.set(dbKey, {
-            id: `ext_${dbKey}`,
-            name: databaseName || 'Database',
-            type: 'database',
-            purpose: 'bidirectional',
-            connected_nodes: [],
-            exit_points: []
-          });
-        }
-        const svc = serviceMap.get(dbKey)!;
-        if (ep.source_node && !svc.connected_nodes?.includes(ep.source_node)) {
-          svc.connected_nodes?.push(ep.source_node);
-        }
-        svc.exit_points?.push(ep.id);
-      } else if (ep.type === 'cache') {
-        const cacheKey = 'redis_cache';
-        if (!serviceMap.has(cacheKey)) {
-          serviceMap.set(cacheKey, {
-            id: `ext_${cacheKey}`,
-            name: 'Redis',
-            type: 'cache',
-            purpose: 'bidirectional',
-            usage_pattern: {
-              operations: []
-            },
-            connected_nodes: [],
-            exit_points: []
-          });
-        }
-        const svc = serviceMap.get(cacheKey)!;
-        if (ep.source_node && !svc.connected_nodes?.includes(ep.source_node)) {
-          svc.connected_nodes?.push(ep.source_node);
-        }
-        svc.exit_points?.push(ep.id);
-      } else if (ep.type === 'api' || ep.type === 'sdk') {
-        const sdkName = externalServiceIdentityForExitPoint(ep);
-
-        if (!sdkName || isLanguageBuiltinName(sdkName) || isLanguageBuiltinExitPoint(ep) || !this.isMeaningfulExternalServiceName(sdkName)) {
-          return;
-        }
-
-        const key = sdkName.toLowerCase().replace(/\s+/g, '_');
-
-        if (!serviceMap.has(key)) {
-          serviceMap.set(key, {
-            id: `ext_${key}`,
-            name: sdkName,
-            type: ep.type === 'sdk' ? 'sdk' : 'api',
-            purpose: 'consumption',
-            connected_nodes: [],
-            exit_points: []
-          });
-        }
-        const svc = serviceMap.get(key)!;
-        if (ep.source_node && !svc.connected_nodes?.includes(ep.source_node)) {
-          svc.connected_nodes?.push(ep.source_node);
-        }
-        svc.exit_points?.push(ep.id);
-      }
-    });
-
-    const aiLibraries = libraries.filter(l =>
-      l.name?.includes('openai') ||
-      l.name?.includes('anthropic') ||
-      l.name?.includes('@anthropic-ai')
-    );
-
-    aiLibraries.forEach(lib => {
-      const key = lib.name?.includes('openai') ? 'openai' : 'anthropic';
-      const providerService = Array.from(serviceMap.values()).find(service =>
-        service.connected_nodes?.some(nodeId => {
-          const node = nodes.find(candidate => candidate.id === nodeId);
-          return node?.analyzers?.some(analyzer => analyzer.toLowerCase().includes(key));
-        })
-      );
-      if (providerService) {
-        providerService.name = key === 'openai' ? 'OpenAI' : 'Anthropic';
-        providerService.type = 'ai_provider';
-        providerService.configuration = { library: lib.name, version: lib.version };
-      } else if (!serviceMap.has(key)) {
-        serviceMap.set(key, {
-          id: `ext_${key}`,
-          name: key === 'openai' ? 'OpenAI' : 'Anthropic',
-          type: 'ai_provider',
-          purpose: 'consumption',
-          configuration: {
-            library: lib.name,
-            version: lib.version
-          }
-        });
-      }
-    });
-
-    serviceMap.forEach(svc => services.push(svc));
-
-    return services;
+    return buildExternalServices(nodes, exitPoints, libraries, name => this.isMeaningfulExternalServiceName(name));
   }
 
   private isMeaningfulExternalServiceName(name: string | undefined): boolean {
