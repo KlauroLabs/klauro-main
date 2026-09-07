@@ -19,6 +19,8 @@ function outputWithCatalog(
     })),
     enhanced_system_purpose: {
       ai_phase_status: aiPhaseStatus,
+      inferred_description: 'Patients schedule appointments with available clinicians.',
+      description_source: 'ai',
       capability_catalog_coverage: {
         evidence_families: 35,
         published_capabilities: publishedCapabilities,
@@ -40,6 +42,23 @@ test('marks L4 and L5 ready only when required capability comprehension is accep
   assert.equal(layer(output, 'L4')?.status, 'ready');
   assert.equal(layer(output, 'L5')?.status, 'ready');
   assert.equal(readiness.complete, true);
+});
+
+test('does not trust complete metadata over a rejected or missing narrative in an accepted catalog', () => {
+  const output = outputWithCatalog('accepted', 6);
+  Object.assign(output.enhanced_system_purpose!, {
+    inferred_description: '',
+    description_generation: { status: 'ai_rejected', attempted: true, reason: 'omits-core-capability' },
+  });
+  assert.equal(layer(output, 'L4')?.status, 'ready');
+  assert.equal(layer(output, 'L5')?.status, 'error');
+  assert.match(layer(output, 'L5')?.error || '', /omits-core-capability/);
+  assert.equal(output.capabilities?.length, 6);
+  assert.equal(buildCompletedAnalysisLayersReady(output).complete, false);
+
+  output.enhanced_system_purpose!.description_generation = { status: 'ai_applied', attempted: true };
+  assert.equal(layer(output, 'L5')?.status, 'error');
+  assert.match(layer(output, 'L5')?.error || '', /missing/i);
 });
 
 test('rejects false L4 and L5 readiness when an AI catalog publishes no capabilities', () => {

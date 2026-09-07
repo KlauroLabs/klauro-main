@@ -291,6 +291,8 @@ function rejectedCapabilityOutput(aiEnrichment: CASOutput['ai_enrichment']): CAS
     ai_enrichment: aiEnrichment,
     enhanced_system_purpose: {
       ai_phase_status: 'degraded',
+      inferred_description: 'Patients schedule appointments with available clinicians.',
+      description_source: 'ai',
       capability_catalog_coverage: {
         evidence_families: 12,
         published_capabilities: 0,

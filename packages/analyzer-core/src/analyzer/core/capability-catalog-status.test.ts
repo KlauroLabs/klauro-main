@@ -9,6 +9,8 @@ function output(status: 'accepted' | 'rejected', capabilities: number): CASOutpu
     capabilities: Array.from({ length: capabilities }, (_, index) => ({ id: `cap-${index}`, name: `Capability ${index}` })),
     enhanced_system_purpose: {
       ai_phase_status: status === 'accepted' ? 'complete' : 'degraded',
+      inferred_description: 'Patients schedule appointments with available clinicians.',
+      description_source: 'ai',
       capability_catalog_coverage: {
         evidence_families: 12,
         published_capabilities: capabilities,

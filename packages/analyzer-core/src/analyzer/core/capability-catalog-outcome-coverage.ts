@@ -151,7 +151,9 @@ function splitCoordinatedClause(value: string): string[] {
 }
 
 function productClauses(signal?: CapabilityCatalogProjectSignal): string[] {
-  const sentences = [signal?.productDocSummary || signal?.manifestDescription]
+  const declared = signal?.productDocStatements?.filter(statement => statement.role === 'feature') || [];
+  const source = declared.length > 0 ? declared.map(statement => `Feature: ${statement.value}`).join(' ') : signal?.productDocSummary || signal?.manifestDescription;
+  const sentences = [source]
     .filter((value): value is string => Boolean(value))
     .flatMap(value => value.split(/(?<=[.!?;])\s+/i))
     .map(value => value.trim())

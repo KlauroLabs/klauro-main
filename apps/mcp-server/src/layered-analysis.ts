@@ -35,6 +35,7 @@ import { glob } from 'glob';
 import type { CASOutput, CASLayersReady, CASLayerStatus } from '../../../packages/analyzer-core/src/types/cas.types';
 import { CAS_VERSION } from '../../../packages/analyzer-core/src/types/cas.types';
 import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
+import { comprehensionNarrativeFailure } from '../../../packages/analyzer-core/src/analyzer/core/comprehension-status';
 
 
 
@@ -255,6 +256,7 @@ export function buildCompletedAnalysisLayersReady(output: CASOutput): CASLayersR
     : catalogError
     ? { status: 'error' as const, completedAt: generatedAt, error: catalogError }
     : ready;
+  const narrativeError = comprehensionNarrativeFailure(output.enhanced_system_purpose);
   const l5 = extractionError
     ? structural
     : output.ai_enrichment === 'pending'
@@ -273,11 +275,11 @@ export function buildCompletedAnalysisLayersReady(output: CASOutput): CASLayersR
             completedAt: generatedAt,
             error: 'AI comprehension is disabled; required product narrative and capability comprehension were not generated',
           }
-        : catalogError || output.enhanced_system_purpose?.ai_phase_status === 'degraded'
+        : catalogError || narrativeError || output.enhanced_system_purpose?.ai_phase_status === 'degraded'
           ? {
               status: 'error' as const,
               completedAt: generatedAt,
-              error: catalogError || 'AI comprehension completed with rejected required output',
+              error: catalogError || narrativeError || 'AI comprehension completed with rejected required output',
             }
           : ready;
 

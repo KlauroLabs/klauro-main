@@ -1,6 +1,8 @@
 import { createHash } from 'crypto';
 import type { CASComposedClaimProvenance, CASTerminalityProvenance } from './cas-composition.types';
 export type { CASComposedClaimProvenance, CASTerminalityEdge, CASTerminalityProvenance, CASTerminalityRelationEvidence } from './cas-composition.types';
+import type { CASFirstPartyProductEvidence } from './cas-product-evidence.types';
+export type { CASFirstPartyProductEvidence, CASFirstPartyProductEvidenceValue, CASFirstPartyProductStatement } from './cas-product-evidence.types';
 export interface CASOutput {
   id?: string;
   parent_id?: string | null;
@@ -3962,16 +3964,6 @@ export interface CASDomainConcept {
 
 export type CASArtifactType = 'app' | 'library' | 'client-sdk' | 'cli-tool' | 'boilerplate' | 'infrastructure';
 
-export interface CASFirstPartyProductEvidenceValue {
-  value: string;
-  source: string;
-}
-
-export interface CASFirstPartyProductEvidence {
-  title?: CASFirstPartyProductEvidenceValue;
-  overview?: CASFirstPartyProductEvidenceValue;
-  manifest_description?: CASFirstPartyProductEvidenceValue;
-}
 
 export interface EnhancedSystemPurpose extends SystemPurpose {
   primary_domain: string;

@@ -1,4 +1,5 @@
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
+import { comprehensionNarrativeFailure } from '../../../packages/analyzer-core/src/analyzer/core/comprehension-status';
 
 export type ComprehensionReadinessStatus = 'ready' | 'partial' | 'pending' | 'unavailable' | 'error';
 
@@ -107,7 +108,8 @@ export function evaluateComprehensionReadiness(cas: CASOutput): ComprehensionRea
   const settled = cas.ai_enrichment === 'ready' || cas.ai_enrichment === 'synchronous' || l5?.status === 'ready';
   const accepted = coverageStatus === 'accepted';
   const integrityFailures = comprehensionIntegrityFailures(cas);
-  const ready = settled && accepted && integrityFailures.length === 0;
+  const narrativeFailure = settled && accepted ? comprehensionNarrativeFailure(cas.enhanced_system_purpose) : undefined;
+  const ready = !failed && !pending && !narrativeFailure && settled && accepted && integrityFailures.length === 0;
 
   if (ready) {
     return {
@@ -119,14 +121,14 @@ export function evaluateComprehensionReadiness(cas: CASOutput): ComprehensionRea
       reason: `${canonicalCapabilities} canonical product capabilities passed catalog coverage`,
     };
   }
-  if (failed) {
+  if (failed || narrativeFailure) {
     return {
       status: 'error',
       ready: false,
       canonical_capabilities: canonicalCapabilities,
       structural_candidates: structuralCandidates,
       catalog_coverage: coverageStatus,
-      reason: cas.ai_enrichment_error || l5?.error || 'AI comprehension failed',
+      reason: cas.ai_enrichment_error || l5?.error || narrativeFailure || 'AI comprehension failed',
     };
   }
   if (integrityFailures.length > 0) {

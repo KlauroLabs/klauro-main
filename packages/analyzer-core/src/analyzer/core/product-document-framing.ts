@@ -1,6 +1,11 @@
+import type { CASFirstPartyProductStatement } from '../../types/cas.types';
+
+export type ProductDocumentStatement = Pick<CASFirstPartyProductStatement, 'role' | 'value'>;
+
 export interface ProductDocumentFraming {
   title?: string;
   summary?: string;
+  statements?: ProductDocumentStatement[];
 }
 
 export function extractProductDocumentFraming(content: string): ProductDocumentFraming {
@@ -47,7 +52,7 @@ export function extractProductDocumentFraming(content: string): ProductDocumentF
   let documentedExampleItemsSeen = false;
   let sectionHasListItems = false;
   let lastListItem: { target: string[]; index: number } | undefined;
-  for (let index = 0; index < lines.length && index < 500 && featureItems.length + exampleItems.length + contextItems.length < 20; index += 1) {
+  for (let index = 0; index < lines.length; index += 1) {
     const rawLine = lines[index];
     const value = rawLine.trim();
     if (/^```/.test(value)) {
@@ -121,7 +126,7 @@ export function extractProductDocumentFraming(content: string): ProductDocumentF
     const target = sectionKind === 'context'
       ? contextItems
       : documentedExamples ? exampleItems : featureItems;
-    if (cleaned.length >= 12 && !target.includes(cleaned)) {
+    if (cleaned.length >= (item ? 1 : 12) && !target.includes(cleaned)) {
       target.push(cleaned);
       lastListItem = item ? { target, index: target.length - 1 } : undefined;
       if (item) sectionHasListItems = true;
@@ -130,21 +135,25 @@ export function extractProductDocumentFraming(content: string): ProductDocumentF
   }
 
   const punctuate = (item: string) => /[.!?]$/.test(item) ? item : `${item}.`;
-  const summaryParts = [
-    paragraph.join(' '),
-    ...contextItems.map(item => `Context: ${punctuate(item)}`),
-    ...featureItems.map(item => `Feature: ${punctuate(item)}`),
-    ...exampleItems.map(item => `Example: ${punctuate(item)}`),
-  ].filter(Boolean);
-  if (summaryParts.length > 0) {
-    summary = summaryParts
-      .join(' ')
+  const statements: ProductDocumentStatement[] = [
+    { role: 'overview' as const, value: paragraph.join(' ') },
+    ...contextItems.map(value => ({ role: 'context' as const, value: punctuate(value) })),
+    ...featureItems.map(value => ({ role: 'feature' as const, value: punctuate(value) })),
+    ...exampleItems.map(value => ({ role: 'example' as const, value: punctuate(value) })),
+  ].map(statement => ({
+    ...statement,
+    value: statement.value
       .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
       .replace(/\[([^\]]+)\](?:\[[^\]]*\])?/g, '$1')
       .replace(/[`*_]/g, '')
       .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, 3000);
+      .trim(),
+  })).filter(statement => statement.value.length > 0);
+  if (statements.length > 0) {
+    summary = statements.map(statement => statement.role === 'overview'
+      ? statement.value
+      : `${statement.role[0].toUpperCase()}${statement.role.slice(1)}: ${statement.value}`)
+      .join(' ').slice(0, 3000);
   }
-  return { title, summary };
+  return { title, summary, statements };
 }

@@ -11392,7 +11392,12 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     }
   });
 
-  it('uses accepted catalog prose when requested reauthoring would regress into implementation mechanics', async () => {
+  it.each([
+    ['ai', { status: 'ai_applied', attempted: true, generated_at: '2026-09-06T00:00:00Z' }],
+    ['deterministic', { status: 'deterministic_kept', attempted: false, reason: 'grounded-first-party-outcome' }],
+    ['manual', undefined],
+    ['reused', { status: 'reused_previous', attempted: false, origin_source: 'ai' }],
+  ])('preserves %s catalog prose provenance when reauthoring regresses into implementation mechanics', async (source, generation) => {
     const envKeys = [
       'OPENAI_API_KEY',
       'KLAURO_AI_INTERPRETATION',
@@ -11425,7 +11430,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
       return [{
         id: 'cap_analyze', name: 'Analyze codebases', name_source: 'ai',
         description: 'Repository analysis builds relationship graphs that expose behavior, tests, risks, and dependencies to engineering agents before they edit code.',
-        description_source: 'ai', category: 'core', operations: [], related_entities: ['entity_repository'],
+        description_source: source, description_generation: generation, category: 'core', operations: [], related_entities: ['entity_repository'],
         related_domains: ['code-analysis'], criticality: 'high', criticality_factors: [],
       }];
     });
@@ -11452,7 +11457,8 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
       );
       expect(catalogStarted).toBe(true);
       expect(narrativeSpy).not.toHaveBeenCalled();
-      expect(capabilities[0].description_source).toBe('ai');
+      expect(capabilities[0].description_source).toBe(source);
+      expect(capabilities[0].description_generation).toEqual(generation);
       expect(capabilities[0].description).toContain('relationship graphs');
     } finally {
       catalogSpy.mockRestore();

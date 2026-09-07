@@ -1,5 +1,5 @@
 import {
-  capabilityCatalogAiPhaseStatus,
+  comprehensionAiPhaseStatus,
   capabilityCanRepairRejectedOutcomeProposal,
   capabilityDescriptionProductLanguageFailure,
   capabilityCitesRequiredEvidence,
@@ -26,8 +26,8 @@ import {
 import type { CASDataEntity, SystemCapability } from '../../types/cas.types';
 import { libraryApiEvidenceFields } from '../../analyzer/core/product-entry-points';
 test('an explicitly rejected or partial catalog never reports a complete AI phase because its family count is zero', () => {
-  expect(capabilityCatalogAiPhaseStatus({ evidence_families: 0, status: 'rejected' })).toBe('degraded');
-  expect(capabilityCatalogAiPhaseStatus({ evidence_families: 0, status: 'partial' })).toBe('degraded');
+  expect(comprehensionAiPhaseStatus({ capability_catalog_coverage: { evidence_families: 0, status: 'rejected' } })).toBe('degraded');
+  expect(comprehensionAiPhaseStatus({ capability_catalog_coverage: { evidence_families: 0, status: 'partial' } })).toBe('degraded');
 });
 
 
@@ -1236,12 +1236,13 @@ describe('capabilityDescriptionProductLanguageFailure', () => {
   });
 });
 
-describe('capabilityCatalogAiPhaseStatus', () => {
+describe('comprehensionAiPhaseStatus', () => {
   test('degrades the AI phase whenever required catalog evidence is not fully accepted', () => {
-    expect(capabilityCatalogAiPhaseStatus({ evidence_families: 35, status: 'rejected' })).toBe('degraded');
-    expect(capabilityCatalogAiPhaseStatus({ evidence_families: 35, status: 'partial' })).toBe('degraded');
-    expect(capabilityCatalogAiPhaseStatus({ evidence_families: 35, status: 'accepted' })).toBe('complete');
-    expect(capabilityCatalogAiPhaseStatus({ evidence_families: 0, status: 'unavailable' })).toBe('complete');
+    const narrative = { inferred_description: 'Patients schedule appointments with available clinicians.', description_source: 'ai' as const };
+    expect(comprehensionAiPhaseStatus({ ...narrative, capability_catalog_coverage: { evidence_families: 35, status: 'rejected' } })).toBe('degraded');
+    expect(comprehensionAiPhaseStatus({ ...narrative, capability_catalog_coverage: { evidence_families: 35, status: 'partial' } })).toBe('degraded');
+    expect(comprehensionAiPhaseStatus({ ...narrative, capability_catalog_coverage: { evidence_families: 35, status: 'accepted' } })).toBe('complete');
+    expect(comprehensionAiPhaseStatus({ ...narrative, capability_catalog_coverage: { evidence_families: 0, status: 'unavailable' } })).toBe('degraded');
   });
 });
 
@@ -1369,6 +1370,22 @@ describe('shell executable evidence roles', () => {
 
 
 describe("catalog coverage synchronization", () => {
+  test.each([
+    ['', { status: 'ai_rejected', attempted: true, reason: 'omits-core-capability' }],
+    ['', { status: 'ai_applied', attempted: true }],
+    ['Earlier description', { status: 'ai_failed', attempted: true, reason: 'provider unavailable' }],
+  ])('does not let an accepted catalog overwrite narrative failure: %s', (text, generation) => {
+    const purpose = {
+      inferred_description: text,
+      description_generation: generation,
+      ai_phase_status: 'degraded',
+      capability_catalog_coverage: { status: 'accepted', evidence_families: 6, published_capabilities: 6 },
+    } as any;
+    synchronizeCapabilityCatalogCoverage(purpose, 6, 0);
+    expect(purpose.ai_phase_status).toBe('degraded');
+    expect(purpose.capability_catalog_coverage.status).toBe('accepted');
+    expect(purpose.inferred_description).toBe(text);
+  });
   test("preserves a provider deadline state without converting a capability quota into rejection", () => {
     const purpose = {
       capability_catalog_coverage: {

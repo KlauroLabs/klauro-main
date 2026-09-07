@@ -14,6 +14,23 @@ import {
 } from './analysis-response-readiness';
 import { evaluateComprehensionReadiness } from './comprehension-readiness';
 
+test('accepted catalog flags cannot override a missing or rejected system narrative', () => {
+  for (const purpose of [
+    { inferred_description: '', description_generation: { status: 'ai_rejected', attempted: true, reason: 'omits-core-capability' } },
+    { inferred_description: '', description_generation: { status: 'ai_applied', attempted: true } },
+  ]) {
+    const output = cas({ capabilities: [{ id: 'cap', name: 'Understand what a codebase actually built' }],
+      ai_enrichment: 'ready', enhanced_system_purpose: {
+        ...purpose, ai_phase_status: 'complete', capability_catalog_coverage: { status: 'accepted', published_capabilities: 1 },
+      } });
+    const readiness = evaluateComprehensionReadiness(output);
+    assert.equal(readiness.ready, false);
+    assert.equal(readiness.status, 'error');
+    assert.match(readiness.reason, /omits-core-capability|missing/);
+    assert.equal(readiness.canonical_capabilities, 1);
+  }
+});
+
 function cas(overrides: Record<string, unknown> = {}): CASOutput {
   return {
     cas_version: '3.0.0',
@@ -213,6 +230,8 @@ test('readiness counts the authoritative capability catalog instead of summing d
     },
     ai_enrichment: 'ready',
     enhanced_system_purpose: {
+      inferred_description: 'Patients schedule appointments with available clinicians.',
+      description_source: 'ai',
       capability_catalog_coverage: { status: 'accepted' },
     },
   }));
@@ -228,6 +247,8 @@ test('accepted zero-capability catalogs are ready when the evidence requires no 
     capabilities: [],
     ai_enrichment: 'synchronous',
     enhanced_system_purpose: {
+      inferred_description: 'Patients schedule appointments with available clinicians.',
+      description_source: 'ai',
       ai_phase_status: 'complete',
       capability_catalog_coverage: {
         evidence_families: 0,
@@ -253,6 +274,8 @@ test('accepted comprehension fails closed when grounded reconciliation reference
     capabilities: [{ id: 'cap-present', name: 'Review change impact' }],
     ai_enrichment: 'ready',
     enhanced_system_purpose: {
+      inferred_description: 'Patients schedule appointments with available clinicians.',
+      description_source: 'ai',
       capability_catalog_coverage: {
         evidence_families: 1,
         published_capabilities: 1,
@@ -286,6 +309,8 @@ test('accepted comprehension fails closed when capability flow references do not
     flows: [{ flow_id: 'flow-present', name: 'Assess change', intent: 'Assess change', entry_point: 'entry-one', entities: [], contract: {}, steps: [] }],
     ai_enrichment: 'ready',
     enhanced_system_purpose: {
+      inferred_description: 'Patients schedule appointments with available clinicians.',
+      description_source: 'ai',
       capability_catalog_coverage: {
         evidence_families: 1,
         published_capabilities: 1,
@@ -309,6 +334,8 @@ test('accepted comprehension rejects relationship roles outside the canonical vo
     flows: [{ flow_id: 'flow-present', name: 'Assess change', intent: 'Assess change', entry_point: 'entry-one', entities: [], contract: {}, steps: [] }],
     ai_enrichment: 'ready',
     enhanced_system_purpose: {
+      inferred_description: 'Patients schedule appointments with available clinicians.',
+      description_source: 'ai',
       capability_catalog_coverage: {
         evidence_families: 1,
         published_capabilities: 1,
@@ -333,6 +360,8 @@ test('node-backed capability operations satisfy reference integrity when the nod
     entry_points: [{ id: 'entry-present', type: 'http', name: 'present', source_node: 'worker' }],
     ai_enrichment: 'ready',
     enhanced_system_purpose: {
+      inferred_description: 'Patients schedule appointments with available clinicians.',
+      description_source: 'ai',
       capability_catalog_coverage: {
         evidence_families: 1,
         published_capabilities: 1,
@@ -349,6 +378,8 @@ test("unavailable comprehension exposes the persisted fail-closed catalog reason
   const readiness = evaluateComprehensionReadiness(cas({
     ai_enrichment: "synchronous",
     enhanced_system_purpose: {
+      inferred_description: 'Patients schedule appointments with available clinicians.',
+      description_source: 'ai',
       ai_phase_status: "degraded",
       capability_catalog_coverage: {
         evidence_families: 7,
