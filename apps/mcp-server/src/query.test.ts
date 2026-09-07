@@ -111,6 +111,7 @@ test('suite selection pages its test cases and provides exact continuation', () 
   const first = findTests(cas, { suiteId: 'suite-hub', limit: 2, offset: 0 });
   assert.ok('total_tests' in first && 'next_page' in first);
   assert.equal(first.total_tests, 3);
+  assert.deepEqual(first.resolution, { strategy: 'suite-id', suite_id: 'suite-hub', found: true });
   assert.deepEqual(first.suites[0].tests.map(t => t.id), ['test-0', 'test-1']);
   assert.deepEqual(first.next_page, { suite_id: 'suite-hub', limit: 2, offset: 2 });
   const second = findTests(cas, { suiteId: 'suite-hub', limit: 2, offset: 2 });
@@ -125,6 +126,13 @@ test('unknown suite selection returns absence rather than unrelated test suites'
   assert.equal(result.total_suites, 0);
   assert.ok('total_tests' in result);
   assert.equal(result.total_tests, 0);
+  assert.deepEqual(result.resolution, { strategy: 'suite-id', suite_id: 'missing', found: false });
+  const cas = buildTestSupportCas();
+  cas.test_suites![0].tests = [];
+  const empty = findTests(cas, { suiteId: 'suite-hub' });
+  assert.ok('total_tests' in empty);
+  assert.equal(empty.total_tests, 0);
+  assert.deepEqual(empty.resolution, { strategy: 'suite-id', suite_id: 'suite-hub', found: true });
   assert.deepEqual(result.suites, []);
   assert.deepEqual(result.fixtures, []);
   assert.deepEqual(result.mocks, []);

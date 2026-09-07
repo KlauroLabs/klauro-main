@@ -42,6 +42,7 @@ export function findTests(cas: CASOutput, opts: { nodeId?: string; filePath?: st
     return {
       total_suites: suite ? 1 : 0,
       total_tests: suite?.tests.length || 0,
+      resolution: { strategy: 'suite-id', suite_id: opts.suiteId, found: Boolean(suite) },
       offset, limit, suites: page,
       ...testSupportForQuery(cas, page),
       next_page: suite && offset + limit < suite.tests.length

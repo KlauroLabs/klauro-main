@@ -6809,7 +6809,7 @@ function registerTools(server: McpServer) {
     'find_tests',
     {
       title: 'Find Tests',
-      description: 'Find test suites and test cases covering a node or file, with related mocks and fixtures. With suite_id, limit/offset page tests inside that suite. Otherwise they page suites (default 25).',
+      description: 'Find test suites and test cases covering a node or file, with mocks and fixtures related to the returned page. With suite_id, limit/offset page tests inside that suite. Otherwise they page suites (default 25).',
       inputSchema: FIND_TESTS_INPUT_SCHEMA,
     } as any,
     async ({ path, node_id, file_path, suite_id, limit, offset }: any) => withErrorHandling(async () => {

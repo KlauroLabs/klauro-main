@@ -520,7 +520,7 @@ export function createServer(): McpServer {
   }, async ({ path, ...args }: any) => json(await hostedProjectQuery(path, 'assess_change_risk', args)));
 
   register('find_tests', {
-    description: 'Find hosted test suites covering a node or file. With suite_id, limit and offset page the tests inside that suite.',
+    description: 'Find hosted test suites covering a node or file, with mocks and fixtures related to the returned page. With suite_id, limit and offset page the tests inside that suite.',
     inputSchema: FIND_TESTS_INPUT_SCHEMA,
   }, async ({ path, ...args }: any) => json(await hostedProjectQuery(path, 'find_tests', args)));
 
