@@ -201,6 +201,7 @@ export abstract class BaseAnalyzer {
   supportsIncrementalAnalysis(): boolean { return false; }
   incrementalContributionScope(): 'file' | 'project' { return 'file'; }
   incrementalSourceInvariantContributionFields(): readonly (keyof CASContribution)[] { return []; }
+  incrementalFileCachePolicy(): 'evidence' | 'recompute' { return 'evidence'; }
 
   protected sourceLineForIndex(content: string, index: number): number {
     return sourceLineForIndex(content, index);

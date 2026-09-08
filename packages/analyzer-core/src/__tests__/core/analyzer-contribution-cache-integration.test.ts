@@ -1,9 +1,14 @@
+jest.unmock('fs');
+jest.unmock('fs-extra');
+jest.unmock('glob');
+
 import * as fs from 'fs-extra';
 import * as os from 'os';
 import * as path from 'path';
 import { AnalyzerOrchestrator, type AnalyzerRegistration } from '../../analyzer/core/orchestrator';
 import type { AnalysisContext } from '../../analyzer/core/base-analyzer';
 import type { CASContribution } from '../../types/cas.types';
+import { ArchitecturalLibraryAnalyzer } from '../../analyzer/libraries/architecture/architectural-library-analyzer';
 
 function result(): CASContribution {
   return {
@@ -39,6 +44,47 @@ describe('orchestrator analyzer contribution cache integration', () => {
   afterEach(async () => {
     await fs.remove(root);
     await fs.remove(cacheRoot);
+  });
+
+
+  it('recomputes cheap architectural file extraction without hashing unused upstream evidence', async () => {
+    const analyzer = new ArchitecturalLibraryAnalyzer();
+    const registration = { id: analyzer.id, name: analyzer.name, version: analyzer.version, type: analyzer.type, detectPatterns: {}, analyzer } as AnalyzerRegistration;
+    await fs.outputJson(path.join(root, 'package.json'), { dependencies: { '@aws-sdk/client-s3': '1.0.0' } });
+    const relativePath = 'src/upload.ts';
+    await fs.outputFile(path.join(root, relativePath), [
+      "import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';",
+      'const client = new S3Client({});',
+      'client.send(new PutObjectCommand({}));',
+    ].join('\n'));
+    const context = {
+      projectPath: root, relativePath, filePath: path.join(root, relativePath), contentHash: 'unchanged',
+      get existingAnalysis(): CASContribution[] { throw new Error('Unused graph evidence was accessed'); },
+    };
+    const orchestrator = new AnalyzerOrchestrator() as any;
+    expect(orchestrator.incrementalFileCacheKey(registration, context)).toBeNull();
+    const first = await analyzer.analyzeFileSingle(context);
+    expect(first.nodes.length).toBeGreaterThan(0);
+    expect(first.exitPoints.length).toBeGreaterThan(0);
+    await fs.outputJson(path.join(root, 'package.json'), { dependencies: {} });
+    expect(orchestrator.incrementalFileCacheKey(registration, context)).toBeNull();
+    const changedDependencies = await analyzer.analyzeFileSingle(context);
+    expect(changedDependencies.nodes).toEqual([]);
+    expect(changedDependencies.exitPoints).toEqual([]);
+    await fs.outputJson(path.join(root, 'package.json'), { dependencies: { '@aws-sdk/client-s3': '1.0.0' } });
+    const restored = await analyzer.analyzeFileSingle(context);
+    expect(restored).toEqual(first);
+  });
+
+  it('keeps upstream evidence in the default incremental file cache policy', () => {
+    const analyzer = { incrementalFileCachePolicy: () => 'evidence' };
+    const registration = { id: 'dependent', version: '1', type: 'framework', analyzer } as unknown as AnalyzerRegistration;
+    const orchestrator = new AnalyzerOrchestrator() as any;
+    const context = { projectPath: root, relativePath: 'orders.ts', contentHash: 'same' };
+    const before = orchestrator.incrementalFileCacheKey(registration, { ...context, existingAnalysis: [result()] });
+    const changed = result();
+    changed.nodes![0].name = 'Changed';
+    expect(orchestrator.incrementalFileCacheKey(registration, { ...context, existingAnalysis: [changed] })).not.toBe(before);
   });
 
   it('reuses exact contributions and invalidates only when declared evidence changes', async () => {

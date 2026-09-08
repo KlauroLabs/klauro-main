@@ -348,6 +348,8 @@ export class ArchitecturalLibraryAnalyzer extends BaseAnalyzer {
     return true;
   }
 
+  incrementalFileCachePolicy(): 'recompute' { return 'recompute'; }
+
   async getRelevantFiles(projectPath: string): Promise<string[]> {
     return this.sourceFiles({ projectPath });
   }

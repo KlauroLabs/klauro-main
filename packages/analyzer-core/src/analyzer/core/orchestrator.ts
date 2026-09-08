@@ -2544,11 +2544,11 @@ export class AnalyzerOrchestrator {
               contentHash,
               existingAnalysis: [registration.analyzer.incrementalContributionScope() === 'project' ? projectScopedSnapshot! : analysisSnapshot.current()]
             };
-            const cacheKey = this.incrementalFileCacheKey(registration, fileContext);
-            let result = options?.loadCache ? await options.loadCache(cacheKey) : null;
+            const cacheKey = options?.loadCache || options?.saveCache ? this.incrementalFileCacheKey(registration, fileContext) : null;
+            let result = cacheKey && options?.loadCache ? await options.loadCache(cacheKey) : null;
             if (!result) {
               result = await registration.analyzer.analyzeFileSingle(fileContext);
-              if (options?.saveCache && result) await options.saveCache(cacheKey, result);
+              if (cacheKey && options?.saveCache && result) await options.saveCache(cacheKey, result);
             }
             if (analyzerRoot !== projectPath) {
               this.normalizeFilePaths({
@@ -4833,7 +4833,6 @@ export class AnalyzerOrchestrator {
   private analyzerContextEvidenceHash(context: AnalysisContext): string {
     const contributions = context.existingAnalysis || [];
     if (contributions.length === 0) return 'none';
-
     const contributionHashes = contributions.map(contribution => {
       const cached = this.analyzerContextEvidenceDigestCache.get(contribution);
       if (cached) return cached;
@@ -4850,7 +4849,8 @@ export class AnalyzerOrchestrator {
   private incrementalFileCacheKey(
     registration: AnalyzerRegistration,
     context: FileAnalysisContext
-  ): string {
+  ): string | null {
+    if (registration.analyzer.incrementalFileCachePolicy?.() === 'recompute') return null;
     const fingerprints = getStageFingerprints();
     return crypto.createHash('sha256').update(stableAnalyzerCacheIdentity({
       analyzer: {
