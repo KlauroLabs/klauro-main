@@ -458,7 +458,7 @@ test('shutdown drains a coalescing window immediately in a real child process wi
       '});',
     ].join('\n'));
     const sourceDir = typeof __dirname === 'string' ? __dirname : nodePath.resolve(process.cwd(), 'src');
-    const script = nodePath.join(storage, 'shutdown-child.mts');
+    const script = nodePath.join(storage, 'shutdown-child.cts');
     fs.writeFileSync(script, [
       'const started = Date.now();',
       `import * as telemetry from ${JSON.stringify(nodePath.join(sourceDir, 'self-telemetry.ts'))};`,
