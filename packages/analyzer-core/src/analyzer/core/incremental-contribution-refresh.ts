@@ -491,7 +491,7 @@ export function stampAnalyzerAttribution(
   }
 }
 
-function mergedAnalyzers(item: CASEntryPoint | CASExitPoint): string[] {
+function mergedAnalyzers(item: CASEdge | CASEntryPoint | CASExitPoint): string[] {
   const metadata = item.metadata as Record<string, unknown> | undefined;
   const merged = metadata?.merged_from_analyzers;
   return Array.isArray(merged)
@@ -502,7 +502,7 @@ function mergedAnalyzers(item: CASEntryPoint | CASExitPoint): string[] {
 export function graphItemAnalyzers(item: CASEdge | CASEntryPoint | CASExitPoint): string[] {
   return [...new Set([
     sourceAnalyzer(item),
-    ...('source_node' in item ? mergedAnalyzers(item) : []),
+    ...mergedAnalyzers(item),
   ].filter((analyzer): analyzer is string => Boolean(analyzer)))];
 }
 
@@ -553,10 +553,10 @@ export function canReplaceAnalyzerContributions(
     ownedNodeIds.add(node.id);
   }
 
-  for (const item of [...graph.entryPoints, ...graph.exitPoints]) {
-    const merged = mergedAnalyzers(item);
-    if (merged.some(candidate => analyzerIds.has(candidate)) &&
-      merged.some(candidate => !analyzerIds.has(candidate))) return false;
+  for (const item of [...graph.edges, ...graph.entryPoints, ...graph.exitPoints]) {
+    const owners = graphItemAnalyzers(item);
+    if (owners.some(candidate => analyzerIds.has(candidate)) &&
+      owners.some(candidate => !analyzerIds.has(candidate))) return false;
   }
 
   const attachedItems = [...graph.edges, ...graph.entryPoints, ...graph.exitPoints]
@@ -702,11 +702,14 @@ export function analyzerOwnershipClosure(
       }
     }
     for (const edge of graph.edges) {
-      if (!ownedNodeIds.has(edge.source) && !ownedNodeIds.has(edge.target)) continue;
-      const analyzer = sourceAnalyzer(edge);
-      if (analyzer && isAvailable(analyzer) && !selected.has(analyzer)) {
-        selected.add(analyzer);
-        changed = true;
+      const owners = graphItemAnalyzers(edge);
+      if (!ownedNodeIds.has(edge.source) && !ownedNodeIds.has(edge.target) &&
+        !owners.some(analyzer => selected.has(analyzer))) continue;
+      for (const analyzer of owners) {
+        if (isAvailable(analyzer) && !selected.has(analyzer)) {
+          selected.add(analyzer);
+          changed = true;
+        }
       }
     }
     for (const item of [...graph.entryPoints, ...graph.exitPoints]) {

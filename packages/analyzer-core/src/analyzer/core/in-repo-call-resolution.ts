@@ -1,6 +1,7 @@
 import type { CASEdge, CASExitPoint, CASNode, CASLibrary } from '../../types/cas.types';
 import { appendAll, replaceArrayContents } from './bulk-array-ops';
 import { TRACEABLE_NODE_TYPES } from './flow-concepts';
+import { graphItemAnalyzers } from './incremental-contribution-refresh';
 
 
 
@@ -353,6 +354,16 @@ function resolveCallee(
 
 
 
+function inheritCallOwnership(edge: CASEdge, owners: readonly string[]): void {
+  const analyzers = [...new Set([...graphItemAnalyzers(edge), ...owners])];
+  if (!analyzers.length) return;
+  edge.metadata = {
+    ...edge.metadata,
+    source_analyzer: analyzers[0],
+    ...(analyzers.length > 1 ? { merged_from_analyzers: analyzers } : {}),
+  } as CASEdge['metadata'];
+}
+
 export function internalizeInRepoCalls(input: InternalizeInput): InternalizeStats {
   const { nodes, edges, exitPoints } = input;
   const stats: InternalizeStats = {
@@ -367,9 +378,9 @@ export function internalizeInRepoCalls(input: InternalizeInput): InternalizeStat
   const nodesById = new Map(nodes.map(n => [n.id, n]));
   const thirdParty = declaredThirdPartyNames(input.libraries);
 
-  const existingCallEdges = new Set<string>();
+  const existingCallEdges = new Map<string, CASEdge>();
   for (const e of edges) {
-    if (e.type === 'calls' || e.type === 'invokes') existingCallEdges.add(`${e.source} ${e.target}`);
+    if (e.type === 'calls' || e.type === 'invokes') existingCallEdges.set(`${e.source} ${e.target}`, e);
   }
 
   const removed = new Set<CASExitPoint>();
@@ -379,6 +390,7 @@ export function internalizeInRepoCalls(input: InternalizeInput): InternalizeStat
   const resolvedTargetByExitId = new Map<string, string>();
   const resolutionTierByExitId = new Map<string, string>();
   const declaredModuleByExitId = new Map<string, string>();
+  const ownersByExitId = new Map<string, string[]>();
 
   for (const ep of exitPoints) {
     if (!SYMBOL_BEARING_EXIT_TYPES.has(ep.type)) continue;
@@ -425,12 +437,17 @@ export function internalizeInRepoCalls(input: InternalizeInput): InternalizeStat
     resolvedTargetByExitId.set(ep.id, resolved.node.id);
     resolutionTierByExitId.set(ep.id, resolved.tier);
     declaredModuleByExitId.set(ep.id, moduleSpec);
+    const owners = graphItemAnalyzers(ep);
+    ownersByExitId.set(ep.id, owners);
 
     const key = `${ep.source_node} ${resolved.node.id}`;
-    if (existingCallEdges.has(key)) continue;
-    existingCallEdges.add(key);
+    const existing = existingCallEdges.get(key);
+    if (existing) {
+      inheritCallOwnership(existing, owners);
+      continue;
+    }
     const line = (ep.metadata as any)?.call_line ?? (ep.metadata as any)?.line;
-    added.push({
+    const edge = {
       id: `calls:internalized:${ep.source_node}:${resolved.node.id}${line !== undefined ? `:${line}` : ''}`,
       source: ep.source_node,
       target: resolved.node.id,
@@ -446,7 +463,10 @@ export function internalizeInRepoCalls(input: InternalizeInput): InternalizeStat
           declared_module: moduleSpec,
         },
       },
-    } as CASEdge);
+    } as CASEdge;
+    inheritCallOwnership(edge, owners);
+    existingCallEdges.set(key, edge);
+    added.push(edge);
     stats.edges_added++;
   }
 
@@ -460,7 +480,7 @@ export function internalizeInRepoCalls(input: InternalizeInput): InternalizeStat
   if (removed.size > 0) {
     reconcileEdgesToRemovedExitPoints(
       edges,
-      { resolvedTargetByExitId, resolutionTierByExitId, declaredModuleByExitId },
+      { resolvedTargetByExitId, resolutionTierByExitId, declaredModuleByExitId, ownersByExitId },
       stats
     );
   }
@@ -488,18 +508,19 @@ function reconcileEdgesToRemovedExitPoints(
     resolvedTargetByExitId: Map<string, string>;
     resolutionTierByExitId: Map<string, string>;
     declaredModuleByExitId: Map<string, string>;
+    ownersByExitId: Map<string, string[]>;
   },
   stats: InternalizeStats
 ): void {
-  const { resolvedTargetByExitId, resolutionTierByExitId, declaredModuleByExitId } = tables;
+  const { resolvedTargetByExitId, resolutionTierByExitId, declaredModuleByExitId, ownersByExitId } = tables;
 
 
 
-  const callPairs = new Set<string>();
+  const callPairs = new Map<string, CASEdge>();
   for (const e of edges) {
     if (e.type !== 'calls' && e.type !== 'invokes') continue;
     if (resolvedTargetByExitId.has(e.target)) continue;
-    callPairs.add(`${e.source} ${e.target}`);
+    callPairs.set(`${e.source} ${e.target}`, e);
   }
 
   const survivors: CASEdge[] = [];
@@ -519,12 +540,16 @@ function reconcileEdgesToRemovedExitPoints(
     const exitId = e.target;
     const newTarget = resolvedTargetByExitId.get(exitId)!;
     const pair = `${e.source} ${newTarget}`;
-    if (newTarget === e.source || callPairs.has(pair)) {
+    const owners = ownersByExitId.get(exitId) || [];
+    const existing = callPairs.get(pair);
+    if (newTarget === e.source || existing) {
+      if (existing) inheritCallOwnership(existing, [...graphItemAnalyzers(e), ...owners]);
       stats.edges_dropped_orphaned++;
       continue;
     }
 
-    callPairs.add(pair);
+    callPairs.set(pair, e);
+    inheritCallOwnership(e, owners);
     e.target = newTarget;
     const metadata = (e.metadata || {}) as Record<string, unknown>;
     const attributes = (metadata.attributes || {}) as Record<string, unknown>;

@@ -1,4 +1,5 @@
 import { internalizeInRepoCalls } from '../../analyzer/core/in-repo-call-resolution';
+import { analyzerOwnershipClosure, canReplaceAnalyzerContributions, graphItemAnalyzers, refreshProjectScopedContributions } from '../../analyzer/core/incremental-contribution-refresh';
 import { computeFlowConcepts } from '../../analyzer/core/flow-concepts';
 import type { CASEdge, CASEntryPoint, CASExitPoint, CASNode, CASOutput } from '../../types/cas.types';
 
@@ -419,6 +420,130 @@ describe('exit-point removal reconciles the edges that referenced it', () => {
       libraries: [],
     };
   }
+
+  function ownedScenario(owners: string[] = ['caller', 'semantic']) {
+    const input = scenario();
+    for (const item of input.nodes) {
+      item.analyzers = [item.id];
+      item.primaryAnalyzer = item.id;
+    }
+    if (owners.length) input.exitPoints[0].metadata = {
+      ...input.exitPoints[0].metadata,
+      source_analyzer: owners[0],
+      merged_from_analyzers: owners,
+    };
+    return input;
+  }
+
+  it('preserves every originating exit owner and refreshes callers before regenerating internal calls', async () => {
+    const original = ownedScenario();
+    const input = structuredClone(original);
+    internalizeInRepoCalls(input);
+    expect(graphItemAnalyzers(input.edges[0])).toEqual(['caller', 'semantic']);
+    const graph = { nodes: input.nodes, edges: input.edges, entryPoints: [], exitPoints: input.exitPoints };
+    const available = new Set(['caller', 'callee', 'semantic']);
+    const selected = analyzerOwnershipClosure(graph, new Set(['callee']), available);
+    expect([...selected].sort()).toEqual(['callee', 'caller', 'semantic']);
+    expect(canReplaceAnalyzerContributions(graph, selected)).toBe(true);
+    const analyzed: string[] = [];
+    const registrations = [...available].map(id => ({
+      id,
+      type: 'language' as const,
+      analyzer: {
+        analyze: async () => {
+          analyzed.push(id);
+          const nodes = structuredClone(original.nodes.filter(item => item.id === id));
+          return {
+            nodes,
+            edges: id === 'caller' ? structuredClone(original.edges) : [],
+            entry_points: [],
+            exit_points: id === 'caller' ? structuredClone(original.exitPoints) : [],
+            analyzer_metadata: {
+              analyzer_id: id, analyzer_name: id, version: '1', contribution_type: 'language' as const,
+              nodes_contributed: nodes.length, edges_contributed: id === 'caller' ? original.edges.length : 0,
+            },
+          };
+        },
+      },
+    }));
+    const refreshed = await refreshProjectScopedContributions({
+      projectPath: '/repo', registrations, analyzerIds: new Set(['callee']),
+      graph, ownershipGraph: graph, analyzerRoot: () => '/repo',
+      analysisFilters: [], scopeFilters: () => [], normalizeContribution: () => {},
+      mergeContribution: async (previous, contribution) => ({
+        nodes: [...previous.nodes, ...(contribution.nodes || [])],
+        edges: [...previous.edges, ...(contribution.edges || [])],
+        entryPoints: [...previous.entryPoints, ...(contribution.entry_points || [])],
+        exitPoints: [...previous.exitPoints, ...(contribution.exit_points || [])],
+      }),
+    });
+    expect(refreshed).not.toBeNull();
+    expect(analyzed.sort()).toEqual(['callee', 'caller', 'semantic']);
+    internalizeInRepoCalls(refreshed!);
+    expect(refreshed).toEqual(graph);
+  });
+
+  it('keeps an unavailable merged owner unsafe instead of blessing the edge as derived', () => {
+    const input = ownedScenario();
+    internalizeInRepoCalls(input);
+    const graph = { nodes: input.nodes, edges: input.edges, entryPoints: [], exitPoints: input.exitPoints };
+    const selected = analyzerOwnershipClosure(graph, new Set(['callee']), new Set(['caller', 'callee']));
+    expect(selected.has('caller')).toBe(true);
+    expect(selected.has('semantic')).toBe(false);
+    expect(canReplaceAnalyzerContributions(graph, selected)).toBe(false);
+  });
+
+  it('does not invent ownership for an unowned exit', () => {
+    const input = ownedScenario([]);
+    internalizeInRepoCalls(input);
+    expect(graphItemAnalyzers(input.edges[0])).toEqual([]);
+    expect(canReplaceAnalyzerContributions({
+      nodes: input.nodes, edges: input.edges, entryPoints: [], exitPoints: input.exitPoints,
+    }, new Set(['caller', 'callee']))).toBe(false);
+  });
+
+  it('unions referring-edge and removed-exit owners when repointing a different caller', () => {
+    const input = ownedScenario();
+    input.nodes.push(node({ id: 'other', name: 'render', type: 'function', analyzers: ['other'], primaryAnalyzer: 'other' }));
+    input.edges.push({
+      id: 'other-to-exit', source: 'other', target: input.exitPoints[0].id, type: 'calls',
+      metadata: { attributes: { source_analyzer: 'other' } },
+    });
+    internalizeInRepoCalls(input);
+    const edge = input.edges.find(item => item.id === 'other-to-exit')!;
+    expect(edge.target).toBe('callee');
+    expect(graphItemAnalyzers(edge)).toEqual(['other', 'caller', 'semantic']);
+  });
+
+  it('preserves all owners when an internal call already exists and the referring edge is deduplicated', () => {
+    const input = ownedScenario();
+    input.edges[0].metadata = { attributes: { source_analyzer: 'reference' } };
+    input.edges.push({
+      id: 'existing-call', source: 'caller', target: 'callee', type: 'calls',
+      metadata: { attributes: { source_analyzer: 'existing' } },
+    });
+    internalizeInRepoCalls(input);
+    expect(input.edges).toHaveLength(1);
+    expect(input.edges[0].id).toBe('existing-call');
+    expect(graphItemAnalyzers(input.edges[0])).toEqual(['existing', 'caller', 'semantic', 'reference']);
+    const graph = { nodes: input.nodes, edges: input.edges, entryPoints: [], exitPoints: [] };
+    const selected = analyzerOwnershipClosure(graph, new Set(['semantic']));
+    expect([...selected].sort()).toEqual(['caller', 'existing', 'reference', 'semantic']);
+    expect(canReplaceAnalyzerContributions(graph, new Set(['semantic']))).toBe(false);
+    expect(canReplaceAnalyzerContributions(graph, selected)).toBe(true);
+  });
+
+  it('preserves owners of multiple exits that resolve to the same new internal call', () => {
+    const input = ownedScenario(['caller']);
+    input.exitPoints.push({
+      ...structuredClone(input.exitPoints[0]), id: 'second-exit',
+      metadata: { ...input.exitPoints[0].metadata, source_analyzer: 'semantic', merged_from_analyzers: ['semantic'] },
+    });
+    internalizeInRepoCalls(input);
+    expect(input.edges).toHaveLength(1);
+    expect(input.exitPoints).toHaveLength(0);
+    expect(graphItemAnalyzers(input.edges[0])).toEqual(['caller', 'semantic']);
+  });
 
   it('leaves no edge referencing the removed exit point', () => {
     const input = scenario();
