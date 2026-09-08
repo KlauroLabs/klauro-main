@@ -25,7 +25,7 @@ import {
   type CasSectionName,
 } from './cas-sections';
 import { iterateDeployableChildCas, materializeDeployableCasTree, prepareDeployableCasProjection } from './deployable-analysis';
-import { jsonStoragePathCandidates, projectTopLevelKeys, readJsonMaybeCompressed, resolveJsonStoragePath } from './json-storage-read';
+import { jsonStoragePathCandidates, projectTopLevelKeys, readJsonMaybeCompressed, resolveJsonStoragePath, sectionParseLimits } from './json-storage-read';
 import { describeAnalysisVersion, hasFailedStructuralAnalysisLayer, type AnalysisVersionInfo } from './analysis-version';
 import { segmentedReadFailureFallback } from './segmented-storage-access';
 import { createAnalysisIndexEntry } from './analysis-index-entry';
@@ -858,11 +858,7 @@ export async function loadAnalysisSections(
   if (options?.cas_id && projection?.format === 'recursive-cas-section-references' && !treeNode) throw new Error(`Unknown CAS id '${options.cas_id}'`);
   const descriptors = treeNode?.sections || segmented.manifest.sections;
   const descriptorByName = new Map(descriptors.map(section => [section.name, section]));
-  const expansion = Math.max(1, Number(process.env.KLAURO_SECTION_PARSE_EXPANSION) || 24);
-  const configuredBudgetMb = Number(process.env.KLAURO_SECTION_PARSE_BUDGET_MB);
-  const parsedSectionBudget = Number.isFinite(configuredBudgetMb) && configuredBudgetMb > 0
-    ? configuredBudgetMb * 1024 * 1024
-    : getHeapStatistics().heap_size_limit / 8;
+  const { expansion, parsedSectionBudget, bufferedSectionLimit } = sectionParseLimits(getHeapStatistics().heap_size_limit);
   const largestEstimatedSection = requested.reduce(
     (maximum, section) => Math.max(maximum, (descriptorByName.get(section)?.bytes || 0) * expansion),
     1,
@@ -889,7 +885,7 @@ export async function loadAnalysisSections(
       }
       const projected = options?.fields && section !== 'identity';
       sectionData = await readJsonMaybeCompressed(sectionPath, {
-        maxBufferedZstdBytes: projected || (descriptor.bytes || 0) * expansion > parsedSectionBudget ? 0 : undefined,
+        maxBufferedZstdBytes: projected || (descriptor.bytes || 0) * expansion > bufferedSectionLimit ? 0 : undefined,
         ...(projected ? { topLevelKeys: options.fields } : {}),
       }) as Partial<CASOutput>;
     } catch (error) {

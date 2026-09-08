@@ -53,3 +53,20 @@ export function jsonStoragePathCandidates(filePath: string): string[] {
   if (filePath.endsWith('.json.br')) return [filePath.replace(/\.br$/, ''), filePath.replace(/\.br$/, '.zst')];
   return [];
 }
+
+export interface SectionParseLimits {
+  expansion: number;
+  parsedSectionBudget: number;
+  bufferedSectionLimit: number;
+}
+
+export function sectionParseLimits(heapSizeLimit: number, env: NodeJS.ProcessEnv = process.env): SectionParseLimits {
+  const expansion = Math.max(1, Number(env.KLAURO_SECTION_PARSE_EXPANSION) || 24);
+  const configuredBudgetMb = Number(env.KLAURO_SECTION_PARSE_BUDGET_MB);
+  const configured = Number.isFinite(configuredBudgetMb) && configuredBudgetMb > 0 ? configuredBudgetMb * 1024 * 1024 : undefined;
+  return {
+    expansion,
+    parsedSectionBudget: configured ?? heapSizeLimit / 8,
+    bufferedSectionLimit: configured ?? heapSizeLimit / 4,
+  };
+}
