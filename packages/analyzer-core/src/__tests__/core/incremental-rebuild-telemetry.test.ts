@@ -34,7 +34,8 @@ describe('incremental rebuild telemetry', () => {
       const rebuild = refresh.rebuildIncrementalAnalysis;
       expect(typeof rebuild).toBe('function');
       const result = await rebuild('/workspace', 'analyzer-registry', 'Analyzer registry changed', async () => {
-        expect(lines.map(line => JSON.parse(line))).toEqual([{
+        expect(lines[0]).toBe('[Klauro] incremental full rebuild (analyzer-registry): Analyzer registry changed\n');
+        expect(lines.filter(line => line.startsWith('{')).map(line => JSON.parse(line))).toEqual([{
           event: 'incremental_full_rebuild', project_path: '/workspace',
           trigger: 'analyzer-registry', reason: 'Analyzer registry changed',
         }]);
@@ -57,8 +58,9 @@ describe('incremental rebuild telemetry', () => {
       const rebuild = refresh.rebuildIncrementalAnalysis;
       expect(typeof rebuild).toBe('function');
       await expect(rebuild('/workspace', 'file-analysis-incomplete', 'One changed file failed', async () => { throw failure; })).rejects.toBe(failure);
-      expect(lines).toHaveLength(1);
-      expect(JSON.parse(lines[0]).reason).toBe('One changed file failed');
+      expect(lines).toHaveLength(2);
+      expect(lines[0]).toBe('[Klauro] incremental full rebuild (file-analysis-incomplete): One changed file failed\n');
+      expect(JSON.parse(lines[1]).reason).toBe('One changed file failed');
     } finally {
       write.mockRestore();
     }
