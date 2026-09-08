@@ -225,6 +225,10 @@ export function instrumentHttpHandler(
 }
 
 
+export function selfTelemetryClient(): ReturnType<typeof klauroTelemetry.getClient> {
+  return klauroTelemetry.getClient();
+}
+
 export async function shutdownSelfTelemetry(): Promise<void> {
   shuttingDown = true;
   try {

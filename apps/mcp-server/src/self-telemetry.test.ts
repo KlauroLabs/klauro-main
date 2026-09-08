@@ -458,14 +458,15 @@ test('shutdown drains a coalescing window immediately in a real child process wi
       '});',
     ].join('\n'));
     const sourceDir = typeof __dirname === 'string' ? __dirname : nodePath.resolve(process.cwd(), 'src');
-    const script = nodePath.join(storage, 'shutdown-child.cts');
+    const script = nodePath.join(storage, 'shutdown-child.mts');
     fs.writeFileSync(script, [
       'const started = Date.now();',
       `import * as telemetry from ${JSON.stringify(nodePath.join(sourceDir, 'self-telemetry.ts'))};`,
-      `import * as sdk from ${JSON.stringify(nodePath.resolve(sourceDir, '../../../packages/klauro-sdk-js/src/index.ts'))};`,
       'async function main() {',
       "  if (!telemetry.initSelfTelemetry()) throw new Error('self telemetry did not initialize');",
-      "  sdk.getClient().recordEvent({ type: 'request', event_id: 'shutdown-event', route: '/orders', status_code: 200 });",
+      "  const client = telemetry.selfTelemetryClient();",
+      "  if (!client) throw new Error('self telemetry client missing');",
+      "  client.recordEvent({ type: 'request', event_id: 'shutdown-event', route: '/orders', status_code: 200 });",
       '  await telemetry.shutdownSelfTelemetry();',
       '  process.stdout.write(String(Date.now() - started));',
       '}',
