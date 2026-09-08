@@ -18,7 +18,7 @@ function atomicTempPath(filePath: string, suffix: string): string {
   return `${filePath}.${process.pid}.${Date.now()}.${crypto.randomBytes(8).toString('hex')}.${suffix}`;
 }
 
-export async function writeJsonAtomic(filePath: string, value: unknown, options: { spaces?: number } = { spaces: 2 }): Promise<void> {
+export async function writeJsonAtomic(filePath: string, value: unknown, options: { spaces?: number; onCommitted?: () => void } = { spaces: 2 }): Promise<void> {
   await fs.ensureDir(path.dirname(filePath));
   const tmpPath = atomicTempPath(filePath, 'tmp');
   try {
@@ -29,7 +29,7 @@ export async function writeJsonAtomic(filePath: string, value: unknown, options:
       if (!isJsonStringTooLargeError(error)) throw error;
       await writeJsonStreamed(tmpPath, value, options.spaces);
     }
-    await replaceFileAtomic(tmpPath, filePath);
+    await replaceFileAtomic(tmpPath, filePath, options.onCommitted);
   } catch (error) {
     await fs.remove(tmpPath).catch(() => undefined);
     throw error;
@@ -258,7 +258,7 @@ export async function writeCompressedJsonFieldsAtomic(
   return measured;
 }
 
-async function replaceFileAtomic(tmpPath: string, filePath: string): Promise<void> {
+async function replaceFileAtomic(tmpPath: string, filePath: string, onCommitted?: () => void): Promise<void> {
   const tmpHandle = await open(tmpPath, 'r');
   try {
     await tmpHandle.sync();
@@ -267,6 +267,7 @@ async function replaceFileAtomic(tmpPath: string, filePath: string): Promise<voi
   }
   try {
     await fs.rename(tmpPath, filePath);
+    onCommitted?.();
     await syncDirectory(path.dirname(filePath));
     return;
   } catch (error) {
@@ -278,6 +279,7 @@ async function replaceFileAtomic(tmpPath: string, filePath: string): Promise<voi
   if (hadDestination) await fs.rename(filePath, backupPath);
   try {
     await fs.rename(tmpPath, filePath);
+    onCommitted?.();
     await syncDirectory(path.dirname(filePath));
     await fs.remove(backupPath).catch(() => undefined);
   } catch (error) {

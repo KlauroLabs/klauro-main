@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'fs-extra';
+import * as fsPromises from 'node:fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import * as crypto from 'node:crypto';
@@ -491,22 +492,39 @@ test('a newer failed canonical save does not suppress the last published index',
   });
 });
 
-for (const afterRename of [false, true]) {
-  test(`canonical index failure ${afterRename ? 'after' : 'before'} rename keeps the matching generation`, async t => {
+for (const afterRename of [false, true]) for (const unreadableIndex of [false, true]) {
+  test(`canonical index failure ${afterRename ? 'after' : 'before'} rename preserves original error and matching generation, unreadable=${unreadableIndex}`, async t => {
     await withStoragePath(async storagePath => {
       const project = '/tmp/canonical-index-failure-project';
       await saveAnalysis(project, casFixture('initial'), 'main', { canonicalSegmented: true });
       const io = (fs as unknown as { default?: typeof fs }).default || fs;
+      const ioPromises = (fsPromises as unknown as { default?: typeof fsPromises }).default || fsPromises;
       const renameFile = io.rename.bind(io);
+      const readJson = io.readJson.bind(io);
+      const openFile = ioPromises.open.bind(ioPromises);
       const indexPath = path.join(storagePath, 'index.json');
+      const failure = new Error('index publication I/O failure');
+      let renamed = false;
+      let failed = false;
       t.mock.method(io, 'rename', async (...args: any[]) => {
-        if (args[1] === indexPath) {
-          if (afterRename) await (renameFile as (...args: any[]) => Promise<void>)(...args);
-          throw new Error('index publication I/O failure');
-        }
-        return (renameFile as (...args: any[]) => Promise<void>)(...args);
+        if (args[1] === indexPath && !afterRename) { failed = true; throw failure; }
+        const result = await (renameFile as (...args: any[]) => Promise<void>)(...args);
+        if (args[1] === indexPath) renamed = true;
+        return result;
       });
-      await assert.rejects(saveAnalysis(project, casFixture('newer'), 'main', { canonicalSegmented: true }), /index publication I\/O failure/);
+      t.mock.method(ioPromises, 'open', async (...args: any[]) => {
+        const handle = await (openFile as (...args: any[]) => ReturnType<typeof fsPromises.open>)(...args);
+        if (renamed && args[0] === storagePath) {
+          t.mock.method(handle, 'sync', async () => { failed = true; throw failure; });
+        }
+        return handle;
+      });
+      t.mock.method(io, 'readJson', async (...args: any[]) => {
+        if (unreadableIndex && failed && args[0] === indexPath) throw new Error('confirmation unavailable');
+        return (readJson as (...args: any[]) => Promise<unknown>)(...args);
+      });
+      await assert.rejects(saveAnalysis(project, casFixture('newer'), 'main', { canonicalSegmented: true }), error => error === failure);
+      failed = false;
       clearLoadedAnalysisCache();
       assert.equal((await loadAnalysis(project))?.analysis_id, afterRename ? 'newer' : 'initial');
     });

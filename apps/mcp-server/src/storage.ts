@@ -470,14 +470,14 @@ async function loadIndex(): Promise<AnalysisIndex> {
   return { analyses: {} };
 }
 
-async function saveIndex(index: AnalysisIndex): Promise<void> {
+async function saveIndex(index: AnalysisIndex, onCommitted?: () => void): Promise<void> {
   const storagePath = await ensureStorageDir();
   const indexPath = path.join(storagePath, 'index.json');
   await writeJsonAtomic(indexPath, {
     ...index,
     version: '2.0.0',
     updated_at: new Date().toISOString(),
-  });
+  }, { spaces: 2, onCommitted });
 }
 
 async function readJsonMaybeCompressed(
@@ -693,17 +693,15 @@ export async function saveAnalysis(
   const entry = createAnalysisIndexEntry(projectPath, fileName, persistedOutput, track, canonicalSegmented ? 'segmented-v2' : 'whole-json');
   const publishIndex = async (restoreGeneration?: () => Promise<void>) => {
     const key = analysisIndexKey(projectPath, track);
+    let committed = false;
     try {
       await withIndexLock(async () => {
         const index = await loadIndex();
         index.analyses[key] = entry;
-        await saveIndex(index);
+        await saveIndex(index, () => { committed = true; });
       });
     } catch (error) {
-      if (restoreGeneration) {
-        const persisted = (await loadIndex()).analyses[key];
-        if (persisted?.analysis_id !== entry.analysis_id || persisted?.analyzed_at !== entry.analyzed_at) await restoreGeneration();
-      }
+      if (restoreGeneration && !committed) await restoreGeneration();
       throw error;
     }
   };
