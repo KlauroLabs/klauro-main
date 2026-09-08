@@ -84,6 +84,61 @@ test('incremental accumulation indexes only graph collections receiving facts', 
   assert.equal(graph.edges.length, 2);
 });
 
+test('incremental accumulator keeps indexes synchronized with file removals across rounds', () => {
+  let retainedReads = 0;
+  const retained = { ...node('retained', ['language']), get id() { retainedReads++; return 'retained'; } };
+  const removed = node('owned', ['language']);
+  const removedEdge = edge('incident-edge', 'owned', 'retained', 'language');
+  const removedEntry = entry('owned', 'language');
+  const removedExit = { id: 'owned-exit', source_node: 'owned', source_analyzer: 'language', type: 'api', name: 'exit' } as CASExitPoint;
+  const graph = { nodes: [retained, removed], edges: [removedEdge], entryPoints: [removedEntry], exitPoints: [removedExit] };
+  const append = createIncrementalGraphAccumulator(graph);
+  append({ ...emptyFileResult(), nodes: [node('seed', ['language'])], edges: [removedEdge], entryPoints: [removedEntry], exitPoints: [removedExit] });
+  const record: FileAnalysisRecord = {
+    filePath: 'owned.ts', contentHash: 'hash', mtimeMs: 1, lastAnalyzed: 'now', analyzerId: 'language',
+    nodeIds: ['owned'], edgeIds: [], entryPointIds: [], exitPointIds: [], importedFiles: [], exportedSymbols: [],
+  };
+  for (let round = 0; round < 2; round++) {
+    assert.equal(append.remove(record, new Set(['language'])), true);
+    assert.deepEqual(graph.nodes.map(item => item.id), ['retained', 'seed']);
+    assert.equal(graph.edges.length, 0);
+    assert.equal(graph.entryPoints.length, 0);
+    assert.equal(graph.exitPoints.length, 0);
+    const fresh = { ...node('owned', ['language']), name: 'fresh-' + round };
+    retainedReads = 0;
+    append({ ...emptyFileResult(), nodes: [fresh], edges: [removedEdge], entryPoints: [removedEntry], exitPoints: [removedExit] });
+    assert.equal(retainedReads, 0);
+    assert.deepEqual(graph.nodes, [retained, graph.nodes[1], fresh]);
+    assert.deepEqual(graph.edges, [removedEdge]);
+    assert.deepEqual(graph.entryPoints, [removedEntry]);
+    assert.deepEqual(graph.exitPoints, [removedExit]);
+  }
+  assert.equal(removed.name, 'owned');
+});
+
+test('incremental accumulator preserves shared ownership after ordered removals and replacements', () => {
+  const shared = node('shared', ['language', 'framework']);
+  const previous = node('auxiliary', ['language']);
+  const graph = { nodes: [node('removed', ['language']), shared, previous], edges: [], entryPoints: [], exitPoints: [] };
+  const append = createIncrementalGraphAccumulator(graph);
+  append({ ...emptyFileResult(), nodes: [node('seed', ['language'])] });
+  const record: FileAnalysisRecord = {
+    filePath: 'source.ts', contentHash: 'hash', mtimeMs: 1, lastAnalyzed: 'now', analyzerId: 'language',
+    nodeIds: ['removed', 'shared'], edgeIds: [], entryPointIds: [], exitPointIds: [], importedFiles: [], exportedSymbols: [],
+  };
+  assert.equal(append.remove(record, new Set(['language'])), false);
+  assert.equal(graph.nodes.length, 4);
+  const deferred: string[][] = [];
+  assert.equal(append.remove(record, new Set(['language']), owners => deferred.push([...owners])), true);
+  assert.deepEqual(deferred, [['language', 'framework']]);
+  const fresh = { ...node('auxiliary', ['language']), name: 'fresh' };
+  append({ ...emptyFileResult(), nodes: [node('shared', ['language']), fresh] });
+  assert.deepEqual(graph.nodes.map(item => item.id), ['shared', 'auxiliary', 'seed']);
+  assert.equal(graph.nodes[0], shared);
+  assert.equal(graph.nodes[1], fresh);
+  assert.equal(previous.name, 'auxiliary');
+});
+
 test('incremental empty overlays preserve prior snapshots and untouched collections', () => {
   const previous = { nodes: [node('old', ['language'])], edges: [edge('old-edge', 'old', 'old', 'language')] };
   const snapshot = createIncrementalAnalysisSnapshot(previous);

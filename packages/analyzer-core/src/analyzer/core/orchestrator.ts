@@ -139,7 +139,7 @@ import {
   rebuildIncrementalAnalysis,
   mergeIncrementalFileAnalysisResult,
   reusedIncrementalFileResult,
-  removeReplaceableFileScopedGraphItems,
+
   projectScopedFileAnalysisSnapshot,
   selectPromotedIncrementalAnalyzers,
   shouldPreferFullRebuildForFanout,
@@ -2388,6 +2388,7 @@ export class AnalyzerOrchestrator {
     const filteredEntryPoints = allEntryPoints.filter(ep => !deletedEntryPointIds.has(ep.id));
     const filteredExitPoints = allExitPoints.filter(ex => !deletedExitPointIds.has(ex.id));
     const filteredGraph = { nodes: filteredNodes, edges: filteredEdges, entryPoints: filteredEntryPoints, exitPoints: filteredExitPoints };
+    const graphAccumulator = createIncrementalGraphAccumulator(filteredGraph);
     debugIncrementalPhase('filter-previous-graph');
     await yieldToEventLoop();
     const fileResults = new Map<string, FileAnalysisResult>();
@@ -2457,8 +2458,7 @@ export class AnalyzerOrchestrator {
             importedFiles: priorResult.imports,
             exportedSymbols: priorResult.exports,
           } : previousRecord;
-          if (replacementRecord && !removeReplaceableFileScopedGraphItems(
-            filteredGraph,
+          if (replacementRecord && !graphAccumulator.remove(
             replacementRecord,
             analyzerIds,
             deferred => {
@@ -2542,7 +2542,7 @@ export class AnalyzerOrchestrator {
             exitPoint => this.isValidExitPoint(exitPoint)
           );
           fileResults.set(relativePath, combinedResult);
-          createIncrementalGraphAccumulator(filteredGraph)(combinedResult);
+          graphAccumulator(combinedResult);
           const surfaceChanged = !incrementalFileSurfacesMatch({
             filePath: relativePath,
             previousState,

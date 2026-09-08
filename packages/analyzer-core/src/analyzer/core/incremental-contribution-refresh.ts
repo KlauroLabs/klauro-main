@@ -230,14 +230,17 @@ export function removeFileScopedGraphItems(
   removeFileScopedGraphItemsBatch(graph, [{ record, analyzerIds }]);
 }
 
+type IncrementalGraphRemovalObserver = (collection: keyof IncrementalGraph, id: string) => void;
+
 export function removeReplaceableFileScopedGraphItems(
   graph: IncrementalGraph,
   record: FileAnalysisRecord,
   analyzerIds: ReadonlySet<string>,
-  onDeferredOwnership?: (analyzerIds: readonly string[]) => void
+  onDeferredOwnership?: (analyzerIds: readonly string[]) => void,
+  onRemoved?: IncrementalGraphRemovalObserver
 ): boolean {
   if (record.nodeIds.length === 0) {
-    removeFileScopedGraphItemsBatch(graph, [{ record, analyzerIds }]);
+    removeFileScopedGraphItemsBatch(graph, [{ record, analyzerIds }], onRemoved);
     return true;
   }
   const ownedNodeIds = new Set(record.nodeIds);
@@ -253,24 +256,29 @@ export function removeReplaceableFileScopedGraphItems(
       continue;
     }
   }
-  removeFileScopedGraphItemsBatch(graph, [{ record, analyzerIds }]);
+  removeFileScopedGraphItemsBatch(graph, [{ record, analyzerIds }], onRemoved);
   const removedNodeIds = new Set(graph.nodes
     .filter(node => !deferredNodeIds.has(node.id) && ownedNodeIds.has(node.id) &&
       nodeAnalyzers(node).some(analyzer => analyzerIds.has(analyzer)))
     .map(node => node.id));
   if (removedNodeIds.size === 0) return true;
-  replaceArrayContents(graph.nodes, graph.nodes.filter(node => !removedNodeIds.has(node.id)));
+  const retain = (collection: keyof IncrementalGraph, id: string, keep: boolean): boolean => {
+    if (!keep) onRemoved?.(collection, id);
+    return keep;
+  };
+  replaceArrayContents(graph.nodes, graph.nodes.filter(node => retain('nodes', node.id, !removedNodeIds.has(node.id))));
   replaceArrayContents(graph.edges, graph.edges.filter(edge =>
-    !removedNodeIds.has(edge.source) && !removedNodeIds.has(edge.target)
+    retain('edges', edge.id, !removedNodeIds.has(edge.source) && !removedNodeIds.has(edge.target))
   ));
-  replaceArrayContents(graph.entryPoints, graph.entryPoints.filter(item => !removedNodeIds.has(item.source_node)));
-  replaceArrayContents(graph.exitPoints, graph.exitPoints.filter(item => !removedNodeIds.has(item.source_node)));
+  replaceArrayContents(graph.entryPoints, graph.entryPoints.filter(item => retain('entryPoints', item.id, !removedNodeIds.has(item.source_node))));
+  replaceArrayContents(graph.exitPoints, graph.exitPoints.filter(item => retain('exitPoints', item.id, !removedNodeIds.has(item.source_node))));
   return true;
 }
 
 export function removeFileScopedGraphItemsBatch(
   graph: IncrementalGraph,
-  removals: Iterable<{ record: FileAnalysisRecord; analyzerIds: ReadonlySet<string> }>
+  removals: Iterable<{ record: FileAnalysisRecord; analyzerIds: ReadonlySet<string> }>,
+  onRemoved?: IncrementalGraphRemovalObserver
 ): void {
   const edgeOwners = new Map<string, Set<string>>();
   const entryPointOwners = new Map<string, Set<string>>();
@@ -293,56 +301,77 @@ export function removeFileScopedGraphItemsBatch(
   }
   const retained = <T extends CASEdge | CASEntryPoint | CASExitPoint>(
     item: T,
-    ownersById: ReadonlyMap<string, ReadonlySet<string>>
+    ownersById: ReadonlyMap<string, ReadonlySet<string>>,
+    collection: keyof IncrementalGraph
   ) => {
     const owners = ownersById.get(item.id);
-    return !owners || !graphItemAnalyzers(item).some(analyzerId => owners.has(analyzerId));
+    const keep = !owners || !graphItemAnalyzers(item).some(analyzerId => owners.has(analyzerId));
+    if (!keep) onRemoved?.(collection, item.id);
+    return keep;
   };
-  if (edgeOwners.size > 0) replaceArrayContents(graph.edges, graph.edges.filter(item => retained(item, edgeOwners)));
-  if (entryPointOwners.size > 0) replaceArrayContents(graph.entryPoints, graph.entryPoints.filter(item => retained(item, entryPointOwners)));
-  if (exitPointOwners.size > 0) replaceArrayContents(graph.exitPoints, graph.exitPoints.filter(item => retained(item, exitPointOwners)));
+  if (edgeOwners.size > 0) replaceArrayContents(graph.edges, graph.edges.filter(item => retained(item, edgeOwners, 'edges')));
+  if (entryPointOwners.size > 0) replaceArrayContents(graph.entryPoints, graph.entryPoints.filter(item => retained(item, entryPointOwners, 'entryPoints')));
+  if (exitPointOwners.size > 0) replaceArrayContents(graph.exitPoints, graph.exitPoints.filter(item => retained(item, exitPointOwners, 'exitPoints')));
 }
 
-export function createIncrementalGraphAccumulator(graph: IncrementalGraph): (result: FileAnalysisResult) => void {
-  let nodePositions: Map<string, number> | undefined;
-  const appendTo = <T extends { id: string }>(target: T[]) => {
-    let ids: Set<string> | undefined;
-    return (source: T[]) => {
-      if (source.length === 0) return;
-      if (!ids) {
-        ids = new Set();
-        for (const item of target) ids.add(item.id);
-      }
-      for (const item of source) {
-        if (ids.has(item.id)) continue;
-        target.push(item);
-        ids.add(item.id);
-      }
-    };
+export interface IncrementalGraphAccumulator {
+  (result: FileAnalysisResult): void;
+  remove(
+    record: FileAnalysisRecord,
+    analyzerIds: ReadonlySet<string>,
+    onDeferredOwnership?: (analyzerIds: readonly string[]) => void
+  ): boolean;
+}
+
+export function createIncrementalGraphAccumulator(graph: IncrementalGraph): IncrementalGraphAccumulator {
+  let nodesById: Map<string, CASNode> | undefined;
+  const membership = new Map<keyof IncrementalGraph, Set<string>>();
+  const appendTo = <T extends { id: string }>(target: T[], collection: keyof IncrementalGraph) => (source: T[]) => {
+    if (source.length === 0) return;
+    let ids = membership.get(collection);
+    if (!ids) {
+      ids = new Set();
+      for (const item of target) ids.add(item.id);
+      membership.set(collection, ids);
+    }
+    for (const item of source) {
+      if (ids.has(item.id)) continue;
+      target.push(item);
+      ids.add(item.id);
+    }
   };
-  const appendEdges = appendTo(graph.edges);
-  const appendEntryPoints = appendTo(graph.entryPoints);
-  const appendExitPoints = appendTo(graph.exitPoints);
-  return result => {
-    if (result.nodes.length > 0 && !nodePositions) {
-      nodePositions = new Map();
-      for (let index = 0; index < graph.nodes.length; index++) nodePositions.set(graph.nodes[index].id, index);
+  const appendEdges = appendTo(graph.edges, 'edges');
+  const appendEntryPoints = appendTo(graph.entryPoints, 'entryPoints');
+  const appendExitPoints = appendTo(graph.exitPoints, 'exitPoints');
+  const append = (result: FileAnalysisResult): void => {
+    if (result.nodes.length > 0 && !nodesById) {
+      nodesById = new Map();
+      for (const node of graph.nodes) nodesById.set(node.id, node);
     }
     for (const node of result.nodes) {
-      const position = nodePositions!.get(node.id);
-      if (position === undefined) {
-        nodePositions!.set(node.id, graph.nodes.length);
+      const existing = nodesById!.get(node.id);
+      if (!existing) {
+        nodesById!.set(node.id, node);
         graph.nodes.push(node);
       } else {
-        const owners = nodeAnalyzers(graph.nodes[position]);
+        const owners = nodeAnalyzers(existing);
         const refreshedOwners = new Set(nodeAnalyzers(node));
-        if (owners.length > 0 && owners.every(owner => refreshedOwners.has(owner))) graph.nodes[position] = node;
+        if (owners.length > 0 && owners.every(owner => refreshedOwners.has(owner))) {
+          graph.nodes[graph.nodes.lastIndexOf(existing)] = node;
+          nodesById!.set(node.id, node);
+        }
       }
     }
     appendEdges(result.edges);
     appendEntryPoints(result.entryPoints);
     appendExitPoints(result.exitPoints);
   };
+  const remove: IncrementalGraphAccumulator['remove'] = (record, analyzerIds, onDeferredOwnership) =>
+    removeReplaceableFileScopedGraphItems(graph, record, analyzerIds, onDeferredOwnership, (collection, id) => {
+      if (collection === 'nodes') nodesById?.delete(id);
+      else membership.get(collection)?.delete(id);
+    });
+  return Object.assign(append, { remove });
 }
 
 export function updatedIncrementalFileRecord(input: {
