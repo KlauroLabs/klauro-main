@@ -116,6 +116,32 @@ test('incremental accumulator keeps indexes synchronized with file removals acro
   assert.equal(removed.name, 'owned');
 });
 
+test('incremental accumulator re-adds batch-removed facts without removing shared ownership', () => {
+  const ownedEdge = edge('owned-edge', 'source', 'target', 'language');
+  const sharedEdge = edge('shared-edge', 'source', 'target', 'framework');
+  const ownedEntry = entry('source', 'language');
+  const ownedExit = { id: 'owned-exit', source_node: 'source', source_analyzer: 'language', type: 'api', name: 'exit' } as CASExitPoint;
+  const graph = { nodes: [node('source', ['language']), node('target', ['language'])], edges: [ownedEdge, sharedEdge], entryPoints: [ownedEntry], exitPoints: [ownedExit] };
+  const append = createIncrementalGraphAccumulator(graph);
+  const result = { ...emptyFileResult(), edges: [ownedEdge, sharedEdge], entryPoints: [ownedEntry], exitPoints: [ownedExit] };
+  append(result);
+  const record: FileAnalysisRecord = {
+    filePath: 'source.ts', contentHash: 'hash', mtimeMs: 1, lastAnalyzed: 'now', analyzerId: 'language',
+    nodeIds: [], edgeIds: ['owned-edge', 'shared-edge'], entryPointIds: [ownedEntry.id], exitPointIds: [ownedExit.id], importedFiles: [], exportedSymbols: [],
+  };
+  for (let round = 0; round < 2; round++) {
+    assert.equal(append.remove(record, new Set(['language'])), true);
+    assert.deepEqual(graph.edges, [sharedEdge]);
+    assert.deepEqual(graph.entryPoints, []);
+    assert.deepEqual(graph.exitPoints, []);
+    assert.equal(graph.nodes.length, 2);
+    append(result);
+    assert.deepEqual(graph.edges, [sharedEdge, ownedEdge]);
+    assert.deepEqual(graph.entryPoints, [ownedEntry]);
+    assert.deepEqual(graph.exitPoints, [ownedExit]);
+  }
+});
+
 test('incremental accumulator preserves shared ownership after ordered removals and replacements', () => {
   const shared = node('shared', ['language', 'framework']);
   const previous = node('auxiliary', ['language']);

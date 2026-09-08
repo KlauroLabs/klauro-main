@@ -2388,7 +2388,6 @@ export class AnalyzerOrchestrator {
     const filteredEntryPoints = allEntryPoints.filter(ep => !deletedEntryPointIds.has(ep.id));
     const filteredExitPoints = allExitPoints.filter(ex => !deletedExitPointIds.has(ex.id));
     const filteredGraph = { nodes: filteredNodes, edges: filteredEdges, entryPoints: filteredEntryPoints, exitPoints: filteredExitPoints };
-    const graphAccumulator = createIncrementalGraphAccumulator(filteredGraph);
     debugIncrementalPhase('filter-previous-graph');
     await yieldToEventLoop();
     const fileResults = new Map<string, FileAnalysisResult>();
@@ -2415,7 +2414,7 @@ export class AnalyzerOrchestrator {
     if (initialPropagationFailure) {
       return rebuildIncrementalAnalysis(projectPath, 'initial-propagation-limit', initialPropagationFailure, () => this.orchestrateAnalysis(projectPath, { displayName: options?.displayName }));
     }
-    while (true) {
+    for (const graphAccumulator = createIncrementalGraphAccumulator(filteredGraph);;) {
       const batch = propagation.takeBatch(BATCH_SIZE).map(item => item.filePath);
       if (batch.length === 0) break;
       propagationRounds++;
