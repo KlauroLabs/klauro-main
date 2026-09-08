@@ -326,7 +326,7 @@ test('a missing/corrupt segmented section file fails loudly, naming the section,
   await withStoragePath(async storagePath => {
     const project = '/tmp/segmented-corrupt-project';
     const cas = casFixture('segmented-corrupt');
-    const entry = await saveAnalysis(project, cas);
+    const entry = await saveAnalysis(project, cas, 'main', { canonicalSegmented: false });
     const manifest = await loadAnalysisSectionManifest(project);
     const graphDescriptor = manifest?.sections.find(section => section.name === 'graph');
     assert.ok(graphDescriptor?.file);
@@ -354,7 +354,7 @@ test('section reads project a valid parsed CAS cache without reopening segmented
   await withStoragePath(async storagePath => {
     const project = '/tmp/segmented-cached-project';
     const cas = casFixture('segmented-cached');
-    const entry = await saveAnalysis(project, cas);
+    const entry = await saveAnalysis(project, cas, 'main', { canonicalSegmented: false });
     const manifest = await loadAnalysisSectionManifest(project);
     const graphDescriptor = manifest?.sections.find(section => section.name === 'graph');
     assert.ok(graphDescriptor?.file);
@@ -394,7 +394,7 @@ test('a deferred segmented write preserves immediate cache reads and durable col
 test('a segmented write failure never invalidates the authoritative analysis', async () => {
   await withStoragePath(async storagePath => {
     const project = '/tmp/segment-failure-project';
-    const first = await saveAnalysis(project, casFixture('before-segment-failure'));
+    const first = await saveAnalysis(project, casFixture('before-segment-failure'), 'main', { canonicalSegmented: false });
     const segmentRoot = path.join(storagePath, `${first.file}.sections`);
     await fs.remove(segmentRoot);
     await fs.writeFile(segmentRoot, 'blocks section directory creation');
@@ -402,7 +402,7 @@ test('a segmented write failure never invalidates the authoritative analysis', a
     const originalWarn = console.warn;
     console.warn = message => warnings.push(String(message));
     try {
-      await saveAnalysis(project, casFixture('after-segment-failure'));
+      await saveAnalysis(project, casFixture('after-segment-failure'), 'main', { canonicalSegmented: false });
     } finally {
       console.warn = originalWarn;
     }
@@ -443,13 +443,13 @@ test('parsed CAS cache evicts by entry budget and refuses an object over the mem
   clearLoadedAnalysisCache();
   try {
     await withStoragePath(async () => {
-      await saveAnalysis('/tmp/cache-a', casFixture('a'));
-      await saveAnalysis('/tmp/cache-b', casFixture('b'));
-      await saveAnalysis('/tmp/cache-c', casFixture('c'));
+      await saveAnalysis('/tmp/cache-a', casFixture('a'), 'main', { canonicalSegmented: false });
+      await saveAnalysis('/tmp/cache-b', casFixture('b'), 'main', { canonicalSegmented: false });
+      await saveAnalysis('/tmp/cache-c', casFixture('c'), 'main', { canonicalSegmented: false });
       assert.equal(getLoadedAnalysisCacheStats().entries, 2);
 
       process.env.KLAURO_PARSED_ANALYSIS_CACHE_MAX_BYTES = '1024';
-      await saveAnalysis('/tmp/cache-too-large', casFixture('too-large'));
+      await saveAnalysis('/tmp/cache-too-large', casFixture('too-large'), 'main', { canonicalSegmented: false });
       assert.equal(getLoadedAnalysisCacheStats().entries, 2, 'oversized object is not retained');
     });
   } finally {

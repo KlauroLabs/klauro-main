@@ -683,7 +683,7 @@ export async function saveAnalysis(
   ));
   const segmentsWorthWriting = structurallyQueryable && options.writeSegmentedAnalysis !== false;
   const canonicalSegmented = segmentsWorthWriting && (options.canonicalSegmented
-    ?? process.env.KLAURO_CANONICAL_SEGMENTED_STORAGE === '1');
+    ?? process.env.KLAURO_CANONICAL_SEGMENTED_STORAGE !== '0');
   const canonicalProjection = prepareDeployableCasProjection(output);
   const canonicalOutput = canonicalProjection.root;
   const persistedOutput = canonicalSegmented
