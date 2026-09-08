@@ -44,6 +44,83 @@ describe('Repository/ORM exit-point routing is gated on receiver evidence, not b
     );
   }
 
+  it.each([
+    ['resolved.identity.nodes', 'resolved'],
+    ['identity', 'identity'],
+    ['state.disconnection.handlers', 'state'],
+    ['prismatic.colors', 'prismatic'],
+  ])('does not infer database access from an identifier substring in %s', async (receiver, parameter) => {
+    const contribution = await analyzeProject({
+      'src/lookup.ts': [
+        `export function lookup(${parameter}: any, selectedId: string) {`,
+        `  return ${receiver}.find((node: any) => node.id === selectedId);`,
+        '}',
+      ].join('\n'),
+    });
+
+    const lookup = (contribution.nodes || []).find(node => node.type === 'function' && node.name === 'lookup');
+    expect(lookup).toBeDefined();
+    expect(dbExitPointsFor(contribution, lookup!.id)).toEqual([]);
+  });
+
+  it.each([
+    ['customerRepository', 'customerRepository'],
+    ['customer_repository', 'customer_repository'],
+    ['entityManager', 'entityManager'],
+    ['prisma.user', 'prisma'],
+    ['db.users', 'db'],
+    ['mongoCollection', 'mongoCollection'],
+  ])('preserves repository receiver evidence in %s', async (receiver, parameter) => {
+    const contribution = await analyzeProject({
+      'src/lookup.ts': [
+        `export async function lookup(${parameter}: any, selectedId: string) {`,
+        `  return ${receiver}.find({ id: selectedId });`,
+        '}',
+      ].join('\n'),
+    });
+
+    const lookup = (contribution.nodes || []).find(node => node.type === 'function' && node.name === 'lookup');
+    expect(lookup).toBeDefined();
+    const dbExits = dbExitPointsFor(contribution, lookup!.id);
+    expect(dbExits).toHaveLength(1);
+    expect(dbExits[0].metadata?.method).toBe('find');
+  });
+
+  it('preserves an imported database effect when the receiver itself has no repository identifier', async () => {
+    const contribution = await analyzeProject({
+      'src/database.ts': [
+        "import { Pool } from 'pg';",
+        'const identity = new Pool();',
+        'export async function runQuery(sql: string) {',
+        '  return identity.query(sql);',
+        '}',
+      ].join('\n'),
+    });
+
+    const runQuery = (contribution.nodes || []).find(node => node.type === 'function' && node.name === 'runQuery');
+    expect(runQuery).toBeDefined();
+    expect(dbExitPointsFor(contribution, runQuery!.id)).toHaveLength(1);
+  });
+
+  it('preserves a repository-typed field without repository naming', async () => {
+    const contribution = await analyzeProject({
+      'src/store.ts': [
+        "import { Repository } from 'typeorm';",
+        'class Item { id: string; }',
+        'export class ItemService {',
+        '  constructor(private readonly store: Repository<Item>) {}',
+        '  async lookup(id: string) {',
+        '    return this.store.find({ id });',
+        '  }',
+        '}',
+      ].join('\n'),
+    });
+
+    const lookup = methodNode(contribution, 'ItemService', 'lookup');
+    expect(lookup).toBeDefined();
+    expect(dbExitPointsFor(contribution, lookup!.id)).toHaveLength(1);
+  });
+
   it('routes a real repository-typed field call to a DB exit point', async () => {
     // TypeORM-style injection: `Repository<Foo>` comes from the `typeorm` package,
     // not a locally-declared class, so DI-field resolution (which needs a real

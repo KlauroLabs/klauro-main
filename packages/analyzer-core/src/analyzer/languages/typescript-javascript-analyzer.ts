@@ -1901,7 +1901,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     const methodName = (parts.pop() || '').toLowerCase();
     const isThisQualified = target.startsWith('this.') || target.startsWith('self.');
     const originalCallerName = parts.join('.').replace('this.', '');
-    const callerName = originalCallerName.toLowerCase();
 
     if (!TypeScriptJavaScriptAnalyzer.PERSISTENCE_OPERATIONS.has(methodName)) return false;
 
@@ -1918,7 +1917,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       if (injectedFieldType) return this.isRepositoryLikeType(injectedFieldType);
     }
 
-    return this.isRepositoryLikeCaller(callerName) || isImportedDatabaseClientReceiver(originalCallerName, this.nodesByName, this.importSourceMap) || this.isModelLikeCaller(originalCallerName);
+    return this.isRepositoryLikeCaller(originalCallerName) || isImportedDatabaseClientReceiver(originalCallerName, this.nodesByName, this.importSourceMap) || this.isModelLikeCaller(originalCallerName);
   }
   private static readonly PERSISTENCE_OPERATIONS = new Set([
 
@@ -1961,19 +1960,22 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
   private isRepositoryLikeCaller(callerName: string): boolean {
 
-    if (/^wrap\(/.test(callerName)) return true;
+    if (/^wrap\(/i.test(callerName)) return true;
 
     const parts = callerName.split('.');
     const exactMatchPatterns = new Set([
       'em', 'db', 'orm', 'repo', 'model', 'knex', 'table', 'schema', 'query'
     ]);
-    const substringPatterns = [
+    const identifierPatterns = new Set([
       'repository', 'entity', 'collection', 'prisma', 'manager',
       'connection', 'sequelize', 'drizzle', 'database'
-    ];
-    for (const part of parts) {
+    ]);
+    for (const identifier of parts) {
+      const part = identifier.toLowerCase();
       if (exactMatchPatterns.has(part)) return true;
-      if (substringPatterns.some(pattern => part.includes(pattern))) return true;
+      const words = identifier.replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/);
+      if (words.some(word => identifierPatterns.has(word))) return true;
 
       if (/repo$/.test(part) && part !== 'repo' && !/forrepo$/.test(part)) return true;
     }
