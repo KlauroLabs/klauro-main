@@ -1,6 +1,8 @@
 import * as path from 'node:path';
 import type { CASMemberReference, CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
-import type { CasSectionName } from './cas-sections';
+import { selectCasSections, validateCasTreeProjection, type CasSectionName } from './cas-sections';
+import { CasMemberResolutionRequiredError, findCasById } from './recursive-cas-storage';
+import { remapCasIdentities } from '../../../packages/analyzer-core/src/analyzer/core/recursive-cas';
 import { loadAnalysisSections, resolveAnalysisForLoad } from './storage';
 import type { ResolvedSegmentedAnalysis } from './segmented-analysis-storage';
 import { acquireSegmentedGenerationLease, SegmentedGenerationMissingError } from './segmented-generation-lease';
@@ -88,4 +90,66 @@ export async function resolveWorkspaceMember(
   } finally {
     await lease.release();
   }
+}
+
+export interface CasMemberReadOptions {
+  sections: readonly CasSectionName[];
+  resolveMember: (
+    reference: CASMemberReference,
+    sections: readonly CasSectionName[],
+    options: { cas_id?: string },
+  ) => Promise<ResolvedWorkspaceMember>;
+}
+
+export async function findWorkspaceCasById(
+  root: CASOutput, casId: string, options: CasMemberReadOptions,
+): Promise<Partial<CASOutput> | null> {
+  try {
+    const selected = findCasById(root, casId);
+    return selected ? selectCasSections(selected, options.sections) : null;
+  } catch (error) {
+    if (!(error instanceof CasMemberResolutionRequiredError)) throw error;
+    return resolveReferencedCas(error.owner, casId, options);
+  }
+}
+
+export function composeMemberIdentityTree(
+  reference: CASMemberReference, identity: WorkspaceMemberIdentityTree, parentId: string | null = null,
+): WorkspaceMemberIdentityTree {
+  const remap = (id: string): string => id === identity.root_id ? reference.composed_id : `${reference.composed_id}:${id}`;
+  return {
+    root_id: reference.composed_id,
+    nodes: identity.nodes.map(node => ({
+      id: remap(node.id),
+      parent_id: node.parent_id === null ? parentId : remap(node.parent_id),
+      child_ids: node.child_ids.map(remap),
+    })),
+  };
+}
+
+async function resolveReferencedCas(
+  owner: CasMemberResolutionRequiredError['owner'], casId: string, options: CasMemberReadOptions,
+): Promise<Partial<CASOutput>> {
+  const reference = owner.member_reference!;
+  if (owner.id !== reference.composed_id) throw new Error('Workspace member reference identity does not match its containing CAS');
+  const originalId = casId === owner.id ? undefined : casId.slice(reference.composed_id.length + 1);
+  const resolved = await options.resolveMember(reference, options.sections, originalId ? { cas_id: originalId } : {});
+  if (resolved.reference.generation !== reference.generation || resolved.reference.project_id !== reference.project_id
+    || resolved.reference.analysis_id !== reference.analysis_id) throw new Error('Resolved member identity does not match the requested generation');
+  validateCasTreeProjection({
+    ...resolved.identity, format: 'recursive-cas-section-references', version: 2,
+    nodes: resolved.identity.nodes.map(node => ({ ...node, logical_fields: [], sections: [] })),
+  });
+  const selectedId = originalId || resolved.identity.root_id;
+  const selected = resolved.identity.nodes.find(node => node.id === selectedId);
+  const memberId = resolved.member.id || (resolved.member.analysis_id ? `cas:${resolved.member.analysis_id}` : undefined);
+  if (!selected || memberId !== selectedId) throw new Error('Resolved member identity does not match the selected CAS');
+  const composed = composeMemberIdentityTree(reference, resolved.identity, owner.parent_id ?? null);
+  const idMap = new Map(resolved.identity.nodes.map((node, index) => [node.id, composed.nodes[index].id]));
+  const member = remapCasIdentities({ ...resolved.member, id: memberId }, idMap);
+  return {
+    ...member,
+    parent_id: selectedId === resolved.identity.root_id ? owner.parent_id ?? null : idMap.get(selected.parent_id!)!,
+    ...(selectedId === resolved.identity.root_id && owner.label !== undefined ? { label: owner.label } : {}),
+  };
 }

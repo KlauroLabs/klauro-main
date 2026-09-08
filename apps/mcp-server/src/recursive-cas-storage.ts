@@ -1,12 +1,11 @@
 import * as crypto from 'node:crypto';
 import * as path from 'node:path';
 import * as fs from 'fs-extra';
-import type { CASMemberReference, CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
+import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { assertValidCasTree } from '../../../packages/analyzer-core/src/types/cas-tree-validation';
 import { materializeDeployableCasTree } from './deployable-analysis';
 import {
   CAS_SECTION_NAMES,
-  validateCasTreeProjection,
   createCasSectionManifest,
   hydrateCasSections,
   selectCasSections,
@@ -17,29 +16,14 @@ import {
 } from './cas-sections';
 import type { ResolvedSegmentedAnalysis } from './segmented-analysis-storage';
 import type { AnalysisTrack } from './track';
-import { remapCasIdentities } from '../../../packages/analyzer-core/src/analyzer/core/recursive-cas';
-import type { ResolvedWorkspaceMember, WorkspaceMemberIdentityTree } from './workspace-member-resolver';
-
-export interface CasMemberReadOptions {
-  sections: readonly CasSectionName[];
-  resolveMember: (
-    reference: CASMemberReference,
-    sections: readonly CasSectionName[],
-    options: { cas_id?: string },
-  ) => Promise<ResolvedWorkspaceMember>;
-}
 
 export class CasMemberResolutionRequiredError extends Error {
-  constructor(readonly casId: string) {
+  constructor(readonly casId: string, readonly owner: Pick<CASOutput, 'id' | 'parent_id' | 'label' | 'member_reference'>) {
     super(`CAS '${casId}' requires authorized, generation-pinned member resolution before use`);
   }
 }
 
-export function findCasById(root: CASOutput, casId: string): CASOutput | null;
-export function findCasById(root: CASOutput, casId: string, options: CasMemberReadOptions): Promise<Partial<CASOutput> | null>;
-export function findCasById(
-  root: CASOutput, casId: string, options?: CasMemberReadOptions,
-): CASOutput | null | Promise<Partial<CASOutput> | null> {
+export function findCasById(root: CASOutput, casId: string): CASOutput | null {
   const stack = [root];
   const visited = new Set<CASOutput>();
   while (stack.length > 0) {
@@ -48,54 +32,14 @@ export function findCasById(
     visited.add(current);
     const reference = current.member_reference;
     if (reference && (current.id === casId || (casId.startsWith(`${reference.composed_id}:`) && casId.length > reference.composed_id.length + 1))) {
-      if (!options) throw new CasMemberResolutionRequiredError(casId);
-      return resolveReferencedCas(current, casId, options);
+      throw new CasMemberResolutionRequiredError(casId, {
+        id: current.id, parent_id: current.parent_id, label: current.label, member_reference: reference,
+      });
     }
-    if (current.id === casId) return options ? Promise.resolve(selectCasSections(current, options.sections)) : current;
+    if (current.id === casId) return current;
     for (let index = (current.children?.length || 0) - 1; index >= 0; index -= 1) stack.push(current.children![index]);
   }
-  return options ? Promise.resolve(null) : null;
-}
-
-export function composeMemberIdentityTree(
-  reference: CASMemberReference, identity: WorkspaceMemberIdentityTree, parentId: string | null = null,
-): WorkspaceMemberIdentityTree {
-  const remap = (id: string): string => id === identity.root_id ? reference.composed_id : `${reference.composed_id}:${id}`;
-  return {
-    root_id: reference.composed_id,
-    nodes: identity.nodes.map(node => ({
-      id: remap(node.id),
-      parent_id: node.parent_id === null ? parentId : remap(node.parent_id),
-      child_ids: node.child_ids.map(remap),
-    })),
-  };
-}
-
-async function resolveReferencedCas(
-  owner: CASOutput, casId: string, options: CasMemberReadOptions,
-): Promise<Partial<CASOutput>> {
-  const reference = owner.member_reference!;
-  if (owner.id !== reference.composed_id) throw new Error('Workspace member reference identity does not match its containing CAS');
-  const originalId = casId === owner.id ? undefined : casId.slice(reference.composed_id.length + 1);
-  const resolved = await options.resolveMember(reference, options.sections, originalId ? { cas_id: originalId } : {});
-  if (resolved.reference.generation !== reference.generation || resolved.reference.project_id !== reference.project_id
-    || resolved.reference.analysis_id !== reference.analysis_id) throw new Error('Resolved member identity does not match the requested generation');
-  validateCasTreeProjection({
-    ...resolved.identity, format: 'recursive-cas-section-references', version: 2,
-    nodes: resolved.identity.nodes.map(node => ({ ...node, logical_fields: [], sections: [] })),
-  });
-  const selectedId = originalId || resolved.identity.root_id;
-  const selected = resolved.identity.nodes.find(node => node.id === selectedId);
-  const memberId = resolved.member.id || (resolved.member.analysis_id ? `cas:${resolved.member.analysis_id}` : undefined);
-  if (!selected || memberId !== selectedId) throw new Error('Resolved member identity does not match the selected CAS');
-  const composed = composeMemberIdentityTree(reference, resolved.identity, owner.parent_id ?? null);
-  const idMap = new Map(resolved.identity.nodes.map((node, index) => [node.id, composed.nodes[index].id]));
-  const member = remapCasIdentities({ ...resolved.member, id: memberId }, idMap);
-  return {
-    ...member,
-    parent_id: selectedId === resolved.identity.root_id ? owner.parent_id ?? null : idMap.get(selected.parent_id!)!,
-    ...(selectedId === resolved.identity.root_id && owner.label !== undefined ? { label: owner.label } : {}),
-  };
+  return null;
 }
 
 export async function loadLegacyProjectedCas(

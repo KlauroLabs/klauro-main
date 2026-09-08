@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CASMemberReference, CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
-import { findCasById } from './recursive-cas-storage';
+import { CasMemberResolutionRequiredError, findCasById } from './recursive-cas-storage';
+import { findWorkspaceCasById } from './workspace-member-resolver';
 import { projectCasChild, type CASChildProjectedValues } from './cas-child-projection';
 
 const reference: CASMemberReference = {
@@ -30,7 +31,15 @@ function fixture() {
 test('synchronous member and descendant reads never return an unresolved reference as complete CAS', () => {
   const { root } = fixture();
   for (const id of [reference.composed_id, reference.composed_id + ':cas:a']) {
-    assert.throws(() => findCasById(root, id), /requires.*member resolution/i);
+    assert.throws(() => findCasById(root, id), error => {
+      assert.ok(error instanceof CasMemberResolutionRequiredError);
+      assert.match(error.message, /requires.*member resolution/i);
+      assert.equal(error.casId, id);
+      assert.equal(error.owner.member_reference, reference);
+      assert.deepEqual(Object.keys(error.owner).sort(), ['id', 'label', 'member_reference', 'parent_id']);
+      assert.equal(error.owner.id, reference.composed_id);
+      return true;
+    });
   }
   assert.equal(findCasById(root, 'not-a-member'), null);
 });
@@ -55,7 +64,7 @@ test('async member lookup loads requested sections and remaps unloaded sibling p
   } as unknown as Partial<CASOutput>;
   const before = structuredClone(member);
   let calls = 0;
-  const result = await findCasById(root, reference.composed_id, {
+  const result = await findWorkspaceCasById(root, reference.composed_id, {
     sections: ['comprehension', 'supplemental'],
     resolveMember: async (requestedReference, sections, options) => {
       calls += 1;
@@ -86,7 +95,7 @@ test('async member lookup loads requested sections and remaps unloaded sibling p
 
 test('async nested lookup sends only the original selected CAS id to the pinned resolver', async () => {
   const { root, identity } = fixture();
-  const result = await findCasById(root, reference.composed_id + ':cas:a', {
+  const result = await findWorkspaceCasById(root, reference.composed_id + ':cas:a', {
     sections: ['graph', 'comprehension'],
     resolveMember: async (_reference, sections, options) => {
       assert.equal(options.cas_id, 'cas:a');
@@ -115,7 +124,7 @@ test('member resolution propagates authorization and pruned-generation errors wi
   const { root } = fixture();
   for (const message of ['not_authorized', 'generation_missing']) {
     const error = new Error(message);
-    await assert.rejects(findCasById(root, reference.composed_id, {
+    await assert.rejects(findWorkspaceCasById(root, reference.composed_id, {
       sections: ['facts'], resolveMember: async () => { throw error; },
     }), candidate => candidate === error);
   }
@@ -127,7 +136,7 @@ test('resolver identity mismatch and invalid identity trees fail instead of mapp
     { identity, member: { id: 'cas:other' } },
     { identity: { ...identity, nodes: identity.nodes.slice(0, 1) }, member: { id: identity.root_id } },
   ]) {
-    await assert.rejects(findCasById(root, reference.composed_id, {
+    await assert.rejects(findWorkspaceCasById(root, reference.composed_id, {
       sections: ['facts'],
       resolveMember: async (_reference, sections) => ({ reference, sections: [...sections], cas_id: null, ...value }),
     }), /identity|missing child/i);
@@ -137,11 +146,11 @@ test('resolver identity mismatch and invalid identity trees fail instead of mapp
 test('complete in-memory CAS lookup keeps its synchronous contract and needs no member resolver', async () => {
   const { root } = fixture();
   assert.equal(findCasById(root, root.id!), root);
-  const result = await findCasById(root, root.id!, {
+  const result = await findWorkspaceCasById(root, root.id!, {
     sections: ['identity'], resolveMember: async () => { throw new Error('unexpected resolver'); },
   });
   assert.equal(result?.id, root.id);
-  assert.equal(await findCasById(root, reference.composed_id + '-different', {
+  assert.equal(await findWorkspaceCasById(root, reference.composed_id + '-different', {
     sections: ['identity'], resolveMember: async () => { throw new Error('prefix collision'); },
   }), null);
 });

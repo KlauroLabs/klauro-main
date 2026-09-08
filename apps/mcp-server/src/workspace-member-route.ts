@@ -2,8 +2,7 @@ import * as path from 'node:path';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { AccountHttpError, type AccountStore } from './account-store';
 import { CAS_SECTION_PROFILES, parseCasSectionNames, type CasSectionName } from './cas-sections';
-import { composeMemberIdentityTree, findCasById } from './recursive-cas-storage';
-import { resolveWorkspaceMember, WorkspaceMemberResolutionError, type ResolvedWorkspaceMember } from './workspace-member-resolver';
+import { composeMemberIdentityTree, findWorkspaceCasById, resolveWorkspaceMember, WorkspaceMemberResolutionError, type ResolvedWorkspaceMember } from './workspace-member-resolver';
 
 export async function resolveWorkspaceMemberResponse(
   accounts: AccountStore,
@@ -18,7 +17,7 @@ export async function resolveWorkspaceMemberResponse(
   const sections: CasSectionName[] = requested ? parseCasSectionNames(requested) : [...CAS_SECTION_PROFILES.summary];
   const resolution: { value?: ResolvedWorkspaceMember } = {};
   try {
-    const member = await findCasById(graph, casId, {
+    const member = await findWorkspaceCasById(graph, casId, {
       sections,
       resolveMember: async (reference, requestedSections, options) => {
         const resolved = await resolveWorkspaceMember(
