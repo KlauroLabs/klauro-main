@@ -139,7 +139,7 @@ import {
   rebuildIncrementalAnalysis,
   mergeIncrementalFileAnalysisResult,
   reusedIncrementalFileResult,
-  removeReplaceableFileScopedGraphItems,
+
   projectScopedFileAnalysisSnapshot,
   selectPromotedIncrementalAnalyzers,
   shouldPreferFullRebuildForFanout,
@@ -2414,7 +2414,7 @@ export class AnalyzerOrchestrator {
     if (initialPropagationFailure) {
       return rebuildIncrementalAnalysis(projectPath, 'initial-propagation-limit', initialPropagationFailure, () => this.orchestrateAnalysis(projectPath, { displayName: options?.displayName }));
     }
-    while (true) {
+    for (const graphAccumulator = createIncrementalGraphAccumulator(filteredGraph);;) {
       const batch = propagation.takeBatch(BATCH_SIZE).map(item => item.filePath);
       if (batch.length === 0) break;
       propagationRounds++;
@@ -2457,8 +2457,7 @@ export class AnalyzerOrchestrator {
             importedFiles: priorResult.imports,
             exportedSymbols: priorResult.exports,
           } : previousRecord;
-          if (replacementRecord && !removeReplaceableFileScopedGraphItems(
-            filteredGraph,
+          if (replacementRecord && !graphAccumulator.remove(
             replacementRecord,
             analyzerIds,
             deferred => {
@@ -2542,7 +2541,7 @@ export class AnalyzerOrchestrator {
             exitPoint => this.isValidExitPoint(exitPoint)
           );
           fileResults.set(relativePath, combinedResult);
-          createIncrementalGraphAccumulator(filteredGraph)(combinedResult);
+          graphAccumulator(combinedResult);
           const surfaceChanged = !incrementalFileSurfacesMatch({
             filePath: relativePath,
             previousState,
