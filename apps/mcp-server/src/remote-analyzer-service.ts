@@ -14,6 +14,7 @@ import { previewCodebaseIteration, previewGreenfieldCodebase } from './proposal-
 import { isDirectCliInvocation } from './cli-invocation';
 import { AccountHttpError, AccountStore, type AccountProject } from './account-store';
 import { AccountWorkspaceAnalysisScheduler } from './account-workspace-analysis';
+import { resolveWorkspaceMemberResponse } from './workspace-member-route';
 import { workspaceContractsHttpResponse } from './workspace-contracts';
 import { getClaimStreams, heartbeatClaimStream, publishClaimStream, releaseClaimStream, type AgentKind, type ConceptualCoordinate, type DeclaredContract } from './coordination';
 import { appendClaim, checkEditLock, describeCursorGap, extendClaim, getActiveClaims, getBoardInfo, getPresence, readClaimLog, releaseAgentWithReason, releaseClaimById, warnIfEphemeralCoordDir, type ClaimLogEntry } from './coordination/local-store';
@@ -2413,6 +2414,11 @@ async function handleAccountApi(
     const record = await workspaceAnalyses.load(workspaceId);
     const pending = workspaceAnalyses.isPending(workspaceId);
     const workspaceFailure = workspaceAnalyses.failureReason(workspaceId);
+    const memberCasId = new URL(request.url || '', 'http://localhost').searchParams.get('cas_id');
+    if (memberCasId) {
+      if (!record) throw new AccountHttpError(404, `Workspace ${workspaceId} has no analysis record`);
+      return resolveWorkspaceMemberResponse(accounts, dataDir, workspaceId, record.graph as unknown as CASOutput, memberCasId, new URL(request.url || '', 'http://localhost').searchParams);
+    }
 
     const workspaceLastAttempt = dataDir
       ? await readAttemptRecord(workspaceAttemptRecordPath(dataDir, workspaceId))
@@ -4424,3 +4430,4 @@ if (isDirectCliInvocation('remote-analyzer-service')) {
     process.stdout.write(`Klauro remote analyzer listening on http://0.0.0.0:${port}\n`);
   });
 }
+

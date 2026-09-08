@@ -1,6 +1,7 @@
 import type { CASLayerStatus, CASMemberReference, CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { reidentifyCasTree } from '../../../packages/analyzer-core/src/analyzer/core/recursive-cas';
 import type { CrossCodebaseInput } from './cross-codebase-analysis';
+import { casSectionForField } from './cas-sections';
 
 export const WORKSPACE_MEMBER_REFERENCE_FIELDS = [
   'id', 'parent_id', 'label', 'composition_mode', 'cas_version', 'analysis_id', 'analysis_timestamp',
@@ -26,10 +27,11 @@ export function workspaceMemberReference(repository: CrossCodebaseInput, codebas
 export function projectLayersReady(cas: Partial<CASOutput>, reference: CASMemberReference): CASOutput['layers_ready'] | undefined {
   const layers = cas.layers_ready;
   if (!layers) return undefined;
-  const omitted = new Set([...reference.omitted_fields, ...reference.omitted_sections]);
+  const omittedFields = new Set(reference.omitted_fields);
+  const omittedSections = new Set(reference.omitted_sections);
   const projected = layers.layers.map((layer): CASLayerStatus => {
     const fields = Array.isArray(layer.fields) ? layer.fields : [];
-    const missing = fields.filter(field => omitted.has(field));
+    const missing = fields.filter(field => omittedFields.has(field) || (!(field in cas) && omittedSections.has(casSectionForField(field))));
     if (layer.status !== 'ready' || missing.length === 0) return layer;
     return { ...layer, status: 'not_loaded', not_loaded_fields: missing };
   });
