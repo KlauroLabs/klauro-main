@@ -299,7 +299,7 @@ export function removeFileScopedGraphItemsBatch(
 }
 
 export function createIncrementalGraphAccumulator(graph: IncrementalGraph): (result: FileAnalysisResult) => void {
-  const nodeIds = new Set(graph.nodes.map(item => item.id));
+  const nodePositions = new Map(graph.nodes.map((item, index) => [item.id, index]));
   const edgeIds = new Set(graph.edges.map(item => item.id));
   const entryPointIds = new Set(graph.entryPoints.map(item => item.id));
   const exitPointIds = new Set(graph.exitPoints.map(item => item.id));
@@ -311,7 +311,17 @@ export function createIncrementalGraphAccumulator(graph: IncrementalGraph): (res
     }
   };
   return result => {
-    append(graph.nodes, result.nodes, nodeIds);
+    for (const node of result.nodes) {
+      const position = nodePositions.get(node.id);
+      if (position === undefined) {
+        nodePositions.set(node.id, graph.nodes.length);
+        graph.nodes.push(node);
+      } else {
+        const owners = nodeAnalyzers(graph.nodes[position]);
+        const refreshedOwners = new Set(nodeAnalyzers(node));
+        if (owners.length > 0 && owners.every(owner => refreshedOwners.has(owner))) graph.nodes[position] = node;
+      }
+    }
     append(graph.edges, result.edges, edgeIds);
     append(graph.entryPoints, result.entryPoints, entryPointIds);
     append(graph.exitPoints, result.exitPoints, exitPointIds);

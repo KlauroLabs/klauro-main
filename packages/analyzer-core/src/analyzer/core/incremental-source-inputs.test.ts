@@ -41,6 +41,34 @@ test('observed input changes select contributors even when their graph contribut
   }
 });
 
+test('affected file analyzers use single-file refresh, while project and unsupported analyzers stay conservative', () => {
+  const cas = fixture(['file', 'project', 'unsupported', 'missing'].map(id => contribution(id, 'src/a.ts')));
+  const refresh = new IncrementalSourceInputRefresh('/project', cas, ['src/a.ts']);
+  const registration = (id: string, scope: 'file' | 'project', supported: boolean) => ({
+    id, analyzer: { incrementalContributionScope: () => scope, supportsIncrementalAnalysis: () => supported,
+      analyzeFileSingle: async () => ({}) },
+  });
+  assert.deepEqual([...refresh.projectAnalyzerIds([
+    registration('file', 'file', true), registration('project', 'project', true),
+    registration('unsupported', 'file', false),
+  ])], ['project', 'unsupported', 'missing']);
+  assert.equal(refresh.affectedAnalyzerIds.has('file'), true);
+});
+
+test('unavailable observations do not promote a supported file analyzer into a project refresh', () => {
+  const cas = fixture([contribution('file', 'src/a.ts')]);
+  cas.analyzer_contributions[0].source_inputs!.coverage = 'unavailable';
+  const refresh = new IncrementalSourceInputRefresh('/project', cas, ['src/b.ts']);
+  assert.equal(refresh.affectedAnalyzerIds.has('file'), true);
+  assert.equal(refresh.projectAnalyzerIds([{ id: 'file', analyzer: {
+    incrementalContributionScope: () => 'file', supportsIncrementalAnalysis: () => true,
+    analyzeFileSingle: async () => ({}),
+  } }]).size, 0);
+  const result = refresh.apply(cas);
+  assert.equal(result.analyzer_contributions[0].source_inputs?.coverage, 'unavailable');
+  assert.deepEqual(result.source_input_identities, []);
+});
+
 test('source identities resolve in their owning root, not just by basename', () => {
   const cas = fixture([contribution('reader', 'src/a.ts')]);
   cas.source_input_root = '/project/member';

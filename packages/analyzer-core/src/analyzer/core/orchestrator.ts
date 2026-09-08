@@ -2294,6 +2294,7 @@ export class AnalyzerOrchestrator {
       ...changeSet.deleted,
       ...(changeSet.affectedFiles || []),
     ])].sort();
+    const sourceInputs = new IncrementalSourceInputRefresh(projectPath, previousOutput, [...changeSet.added, ...changeSet.modified, ...changeSet.deleted]);
     const candidateIncrementalAnalyzers = incrementalAnalyzers.filter(registration =>
       possibleFilesToAnalyze.some(filePath => this.analyzerCanHandleFile(registration.id, filePath))
     );
@@ -2312,7 +2313,7 @@ export class AnalyzerOrchestrator {
         previousState,
         previousNodesById
       );
-      for (const analyzerId of previousAnalyzerIdsByFile.get(relativePath) || []) {
+      for (const analyzerId of [...(previousAnalyzerIdsByFile.get(relativePath) || []), ...sourceInputs.affectedAnalyzerIds]) {
         expectedAnalyzerIds.add(analyzerId);
       }
       const directMatches = expectedAnalyzerIds.size > 0
@@ -2361,8 +2362,7 @@ export class AnalyzerOrchestrator {
       new Map([...matchingAnalyzerPlansByFile].filter(([filePath]) => directFilesToAnalyze.includes(filePath))),
       scannedRelevantFilesByAnalyzer
     );
-    const sourceInputs = new IncrementalSourceInputRefresh(projectPath, previousOutput, [...changeSet.added, ...changeSet.modified, ...changeSet.deleted]);
-    const projectScopedAnalyzerIds = new Set([...promotedProjectAnalyzerIds, ...sourceInputs.affectedAnalyzerIds]);
+    const projectScopedAnalyzerIds = new Set([...promotedProjectAnalyzerIds, ...sourceInputs.projectAnalyzerIds(detectedAnalyzers)]);
     const filesWithWhollyDeferredAnalyzerOwnership = new Set<string>();
     const directlyChangedFiles = new Set([...changeSet.added, ...changeSet.modified]);
     const registeredAnalyzerIds = new Set(detectedAnalyzers.map(registration => registration.id));
@@ -2656,7 +2656,7 @@ export class AnalyzerOrchestrator {
       ? this.getLocalizedIncrementalMergeEligibility(previousOutput, previousState, changeSet, fileResults)
       : { allowed: false, reason: 'added or deleted files require project contribution refresh' };
     if (process.env.KLAURO_DEBUG_INCREMENTAL_PHASES === '1') writeAnalyzerStatus(`[Klauro] incremental localized eligibility: ${localizedEligibility.allowed ? 'allowed' : localizedEligibility.reason}`);
-    const needsProjectContributionRefresh = sourceInputs.affectedAnalyzerIds.size > 0 || filesWithWhollyDeferredAnalyzerOwnership.size > 0 || (filesWithUnsupportedDerivedFacts.length > 0 && !localizedEligibility.allowed);
+    const needsProjectContributionRefresh = sourceInputs.projectAnalyzerIds(detectedAnalyzers).size > 0 || filesWithWhollyDeferredAnalyzerOwnership.size > 0 || (filesWithUnsupportedDerivedFacts.length > 0 && !localizedEligibility.allowed);
     let rebuiltIncrementalState = false;
     if (needsProjectContributionRefresh) {
       let refreshMergeIndexes: AnalysisMergeIndexes | undefined;
@@ -2722,10 +2722,10 @@ export class AnalyzerOrchestrator {
     debugIncrementalPhase('try-localized-output');
     await yieldToEventLoop();
     if (localizedOutput) {
-      return { output: localizedOutput, fileResults, rebuiltIncrementalState, executionStrategy: 'localized-file-merge' };
+      return { output: sourceInputs.apply(localizedOutput), fileResults, rebuiltIncrementalState, executionStrategy: 'localized-file-merge' };
     }
     if (!rebuiltIncrementalState && this.isStructuralNoopIncremental(previousOutput, previousState, changeSet, fileResults)) {
-      return { output: previousOutput, fileResults, rebuiltIncrementalState, executionStrategy: 'structural-noop' };
+      return { output: sourceInputs.apply(previousOutput), fileResults, rebuiltIncrementalState, executionStrategy: 'structural-noop' };
     }
     const rebuiltOutput = await this.rebuildDerivedData(
       projectPath,

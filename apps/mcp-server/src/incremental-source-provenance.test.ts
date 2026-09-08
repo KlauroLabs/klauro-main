@@ -4,6 +4,8 @@ import * as fs from 'fs-extra';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { createOrchestrator } from './analyzer';
+import { sourceInputIdentityAt } from '../../../packages/analyzer-core/src/analyzer/core/cas-source-input-identities';
+import { sourceInputObservation } from '../../../packages/analyzer-core/src/analyzer/core/analyzer-source-inputs';
 import { compareCasGraphs } from './incremental-graph-equivalence';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 
@@ -17,6 +19,52 @@ function sourceInputs(cas: CASOutput) {
     })),
   };
 }
+
+test('file-scoped analyzers discover their first route and preserve it across repeated incremental edits', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-file-scope-inputs-'));
+  try {
+    await fs.outputFile(path.join(root, 'requirements.txt'), 'fastapi\n');
+    const file = path.join(root, 'app.py');
+    const source = 'from fastapi import FastAPI\napp = FastAPI()\n';
+    await fs.outputFile(file, source);
+    const orchestrator = createOrchestrator();
+    const baseline = await orchestrator.orchestrateAnalysis(root);
+    const original = JSON.stringify(sourceInputs(baseline));
+    assert.equal(baseline.entry_points?.some(entry => entry.trigger?.path === '/healthz'), false);
+    let previous = baseline;
+    let state = orchestrator.createIncrementalBaseline(root, baseline);
+    for (const value of ['True', 'False']) {
+      await fs.outputFile(file, source + '@app.get("/healthz")\ndef healthz():\n    return {"ok": ' + value + '}\n');
+      const result = await createOrchestrator().orchestrateIncrementalAnalysis(root, previous, state);
+      const cold = await createOrchestrator().orchestrateAnalysis(root);
+      assert.equal(result.wasFullRebuild, false, result.fullRebuildReason);
+      assert.ok(result.output.entry_points?.some(entry => entry.trigger?.path === '/healthz'));
+      const parity = compareCasGraphs(result.output, cold);
+      assert.equal(parity.graph_equivalent, true, JSON.stringify({ value, parity,
+        actualModule: result.output.nodes.find(node => node.id === 'module_app'),
+        coldModule: cold.nodes.find(node => node.id === 'module_app') }));
+      for (const id of ['python', 'fastapi']) {
+        const inputs = result.output.analyzer_contributions.find(item => item.analyzer_id === id)?.source_inputs;
+        assert.ok(inputs);
+        if (inputs.coverage === 'unavailable') {
+          assert.equal(inputs.reason, 'incremental-input-identities-not-refreshed');
+        } else {
+          assert.equal(inputs.coverage, 'observed-reads');
+          const identities = inputs.version === 1 ? inputs.files : inputs.identity_indices.map(index =>
+            sourceInputIdentityAt(result.output.source_input_identities, index));
+          assert.deepEqual(identities.find(identity => identity?.path === 'app.py'), {
+            path: 'app.py', ...sourceInputObservation(await fs.readFile(file, 'utf8'), 'utf8'),
+          });
+        }
+      }
+      previous = result.output;
+      state = result.state;
+    }
+    assert.equal(JSON.stringify(sourceInputs(baseline)), original);
+  } finally {
+    await fs.remove(root);
+  }
+});
 
 test('incremental refresh preserves fresh observed identities instead of old shared rows', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-source-provenance-'));
