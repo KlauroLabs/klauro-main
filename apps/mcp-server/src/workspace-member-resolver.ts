@@ -1,3 +1,4 @@
+import * as path from 'node:path';
 import type { CASMemberReference, CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import type { CasSectionName } from './cas-sections';
 import { loadAnalysisSections, resolveAnalysisForLoad } from './storage';
@@ -30,12 +31,14 @@ export interface ResolvedWorkspaceMember {
   member: Partial<CASOutput>;
 }
 
-export function pinnedIdentityTree(segmented: ResolvedSegmentedAnalysis, fallbackId: string): WorkspaceMemberIdentityTree {
+export function pinnedIdentityTree(segmented: ResolvedSegmentedAnalysis, identity: Partial<CASOutput> | null): WorkspaceMemberIdentityTree {
   const projection = segmented.manifest.tree_projection;
   if (projection?.format === 'recursive-cas-section-references') {
     return { root_id: projection.root_id, nodes: projection.nodes.map(node => ({ id: node.id, parent_id: node.parent_id, child_ids: [...node.child_ids] })) };
   }
-  return { root_id: fallbackId, nodes: [{ id: fallbackId, parent_id: null, child_ids: [] }] };
+  const rootId = identity?.id ?? (identity?.analysis_id ? `cas:${identity.analysis_id}` : null);
+  if (!rootId) throw new WorkspaceMemberResolutionError('member_missing', `Generation ${path.basename(segmented.directory)} has no readable identity section`);
+  return { root_id: rootId, nodes: [{ id: rootId, parent_id: null, child_ids: [] }] };
 }
 
 export async function resolveWorkspaceMember(
@@ -67,7 +70,8 @@ export async function resolveWorkspaceMember(
     if (manifestAnalysisId && manifestAnalysisId !== reference.analysis_id) {
       throw new WorkspaceMemberResolutionError('generation_mismatch', `Generation ${reference.generation} carries analysis ${manifestAnalysisId}, reference expects ${reference.analysis_id}`);
     }
-    const identity = pinnedIdentityTree(lease.segmented, `cas:${reference.analysis_id}`);
+    const identitySection = await loadAnalysisSections(memberWorkspace, ['identity'], { pinned: { filePath: resolved.filePath, segmented: lease.segmented } });
+    const identity = pinnedIdentityTree(lease.segmented, identitySection);
     const casId = options.cas_id ?? null;
     if (casId && !identity.nodes.some(node => node.id === casId)) {
       throw new WorkspaceMemberResolutionError('cas_missing', `CAS ${casId} is not part of generation ${reference.generation}`);

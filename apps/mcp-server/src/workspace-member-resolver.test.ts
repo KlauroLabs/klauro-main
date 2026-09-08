@@ -83,7 +83,12 @@ test('workspace member projection stamps an honest reference and resolves the pi
     assert.deepEqual(resolved.member.entry_points, memberFixture('first').entry_points);
     assert.deepEqual(resolved.member.source_input_identities, memberFixture('first').source_input_identities);
     assert.equal(resolved.member.nodes, undefined);
-    assert.ok(resolved.identity.root_id);
+    assert.equal(resolved.identity.root_id, 'cas:first');
+    const explicit = path.join(os.tmpdir(), 'klauro-member-resolver-explicit');
+    await saveAnalysis(explicit, memberFixture('explicit', { id: 'cas:custom-root' } as Partial<CASOutput>), 'main', { canonicalSegmented: true });
+    const explicitProjection = await loadWorkspaceMemberProjection(explicit, 'prj_explicit');
+    const explicitResolved = await resolveWorkspaceMember({ listProjectsForWorkspace: async () => [{ id: 'prj_explicit', analysis_id: 'x' }], workspacePathFor: () => explicit }, 'wsp_ok', explicitProjection!.member_reference as CASMemberReference, ['identity']);
+    assert.equal(explicitResolved.identity.root_id, 'cas:custom-root');
     await assert.rejects(resolveWorkspaceMember(context, 'wsp_other', child.member_reference!, ['facts']), (error: unknown) => error instanceof WorkspaceMemberResolutionError && error.code === 'not_authorized');
     await assert.rejects(resolveWorkspaceMember(context, 'wsp_ok', child.member_reference!, ['facts'], { cas_id: 'cas:nope' }), (error: unknown) => error instanceof WorkspaceMemberResolutionError && error.code === 'cas_missing');
 
