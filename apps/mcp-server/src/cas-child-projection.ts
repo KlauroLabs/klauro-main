@@ -154,6 +154,7 @@ export function projectCasChild(
   identity: CASChildIdentity,
   projected: CASChildProjectedValues,
 ): CASOutput {
+  if (parent.member_reference) throw new Error(`CAS '${parent.id}' requires authorized, generation-pinned member resolution before child projection`);
   const knownFields = new Set<string>(Object.keys(CAS_CHILD_FIELD_POLICY));
   const unknownFields = Object.keys(parent).filter(field => !knownFields.has(field));
   if (unknownFields.length > 0) {
