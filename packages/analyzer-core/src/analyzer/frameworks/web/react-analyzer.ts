@@ -129,6 +129,10 @@ export class ReactAnalyzer extends BaseAnalyzer {
     return true;
   }
 
+  incrementalSourceInvariantContributionFields(): readonly (keyof CASContribution)[] {
+    return ['perspectives'];
+  }
+
   private async readTextFileIfExists(filePath: string): Promise<string | null> {
     try {
       return await fs.readFile(filePath, 'utf-8');
@@ -281,7 +285,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
       this.tagNodesWithPerspectives(nodes, edges);
       this.createPerspectives(perspectives);
 
-      return this.createContribution(nodes, edges, entryPoints, exitPoints, {
+      const contribution = this.createContribution(nodes, edges, entryPoints, exitPoints, {
         framework_specific: {
           react_version: await this.detectReactVersion(context.projectPath),
           typescript: application?.typescript || false,
@@ -297,6 +301,9 @@ export class ReactAnalyzer extends BaseAnalyzer {
           utils_detected: utils.length
         }
       });
+      contribution.perspectives = perspectives;
+      contribution.provided_perspectives = perspectives.map(perspective => perspective.id);
+      return contribution;
 
     } catch (error) {
       throw new AnalyzerError(
