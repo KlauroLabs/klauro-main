@@ -347,6 +347,10 @@ export function currentAnalysisSourceStamp(): { analysis_source?: AnalysisSource
   return { analysis_source: lastResolutionStamp };
 }
 
+function sameAnalysis(left: CASOutput, right: CASOutput): boolean {
+  return left === right || (left.analysis_id === right.analysis_id && left.analysis_timestamp === right.analysis_timestamp);
+}
+
 async function loadLocalCandidates(projectPath: string): Promise<{ preferred: CASOutput | null; main: CASOutput | null }> {
 
 
@@ -456,7 +460,7 @@ export async function resolveBoundAnalysis(
     }
   }
 
-  if (main && main !== local && hostedMs !== null) {
+  if (main && local && !sameAnalysis(main, local) && hostedMs !== null) {
     const mainMs = timestampMs(main.analysis_timestamp);
     if (mainMs !== null && mainMs >= hostedMs) {
       return stampResolution(binding, {
