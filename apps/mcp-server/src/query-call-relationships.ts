@@ -3,6 +3,24 @@ import { getQueryTraversalIndex, type QueryTraversalIndex } from './query-traver
 
 type Direction = 'incoming' | 'outgoing';
 
+export interface ScopedReferenceCounts {
+  callers: number;
+  callees: number;
+  containers: number;
+  children: number;
+}
+
+const scopedReferenceCounts = new WeakMap<CASOutput, { targetId: string; counts: ScopedReferenceCounts }>();
+
+export function attachScopedReferenceCounts(cas: CASOutput, targetId: string, counts: ScopedReferenceCounts): void {
+  scopedReferenceCounts.set(cas, { targetId, counts });
+}
+
+function referenceCountsFor(cas: CASOutput, targetId: string): ScopedReferenceCounts | undefined {
+  const scoped = scopedReferenceCounts.get(cas);
+  return scoped?.targetId === targetId ? scoped.counts : undefined;
+}
+
 interface QueryReference {
   node_id: string;
   name: string;
@@ -63,6 +81,8 @@ export function getCallees(cas: CASOutput, nodeId: string, maxDepth = 2, limit =
 }
 
 export function getDirectReferenceCounts(cas: CASOutput, nodeId: string) {
+  const scoped = referenceCountsFor(cas, nodeId);
+  if (scoped) return { callers: scoped.callers, callees: scoped.callees };
   const index = getQueryTraversalIndex(cas);
   const count = (direction: Direction) => {
     const ids = new Set<string>();
@@ -95,9 +115,12 @@ export function getStructuralContext(cas: CASOutput, nodeId: string, containerLi
   };
   const containers = direct('incoming', containerLimit);
   const children = direct('outgoing', childLimit);
+  const scoped = referenceCountsFor(cas, nodeId);
+  const containersTotal = scoped?.containers ?? containers.total;
+  const childrenTotal = scoped?.children ?? children.total;
   return {
     containers: containers.items, children: children.items,
-    containers_total: containers.total, children_total: children.total,
-    truncated: containers.truncated || children.truncated,
+    containers_total: containersTotal, children_total: childrenTotal,
+    truncated: containersTotal > containers.items.length || childrenTotal > children.items.length,
   };
 }

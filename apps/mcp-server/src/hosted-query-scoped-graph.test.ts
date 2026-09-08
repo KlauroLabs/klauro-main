@@ -8,7 +8,8 @@ import { saveAnalysis, loadCompactAnalysisGraph } from './storage';
 import { loadRankedChangeRisks } from './hosted-query-scoped-graph';
 import { createRankedRiskSource } from './hosted-query-risk-source';
 import { acquirePinnedAnalysis, computeAgentContextScope, loadAgentContextProjection, loadScopedSemanticCollections, loadScopedSourceInputs, scopedSourceInputsFromRows, markNotComputedOnProjection, selectedNodeIdOf, computeChangeRiskScope, computeScopedQueryScope, computeTestLookupScope, loadScopedGraphSection, planScopedQuery, resolveCompactTarget, scopedQueryCapacityOutcome, scopedQueryTarget, scopedSmallSections } from './hosted-query-scoped-graph';
-import { assessChangeRisk, findTests, getErrorContracts } from './query';
+import { assessChangeRisk, findTests, getErrorContracts, getCodingContext } from './query';
+import { runHostedProjectQueryWorker } from './hosted-project-query-process';
 import { loadCompleteAnalysisFromSections } from './storage';
 import { executeHostedProjectQuery, hostedProjectQuerySections } from './hosted-project-query';
 import { attachCasProjection, casCollectionTotal } from './cas-projection';
@@ -16,6 +17,7 @@ import { loadAnalysisSectionManifest } from './storage';
 import { resolveHostedQueryHeapMb } from './hosted-project-query-process';
 import { verifyAgentSourceInputs } from './agent-source-input-verification';
 import * as crypto from 'node:crypto';
+import { encodeCompactCASGraph } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-graph';
 
 function fixture(): CASOutput {
   const nodes = Array.from({ length: 40 }, (_, index) => ({
@@ -90,6 +92,102 @@ test('scoped query loads only the target neighborhood from the stored graph sect
       await pinned.release();
     }
   });
+});
+
+for (const direction of ['incoming', 'outgoing'] as const) {
+  test(`coding scope counts distinct ${direction} references and hydrates method-only endpoints before structural neighbors`, async () => {
+    await withStorage(async project => {
+      const cas = fixture();
+      const owners = Array.from({ length: 120 }, (_, index) => `owner-${index}`);
+      cas.nodes = [...owners, 'target', 'reference', 'method-only'].map(id => ({
+        id, name: id, type: 'function', source: { file: id + '.ts', line: 1 },
+      }));
+      const edge = (id: string, neighbor: string, type: string) => ({
+        id, source: direction === 'incoming' ? neighbor : 'target',
+        target: direction === 'incoming' ? 'target' : neighbor, type,
+      });
+      cas.edges = [...owners.map(id => edge(id, id, 'contains')),
+        edge('call', 'reference', 'calls'), edge('duplicate', 'reference', 'references'),
+        edge('self', 'target', 'calls')];
+      cas.method_calls = [{ id: 'method', caller_node: direction === 'incoming' ? 'method-only' : 'target',
+        target_node: direction === 'incoming' ? 'target' : 'method-only', call_details: { method_name: 'invoke' } }] as CASOutput['method_calls'];
+      await saveAnalysis(project, cas, 'main', { canonicalSegmented: true });
+      const pinned = (await acquirePinnedAnalysis(project))!;
+      try {
+        const plan = await planScopedQuery(pinned, 'get_coding_context', { target: 'target', caller_limit: 1, callee_limit: 1 });
+        assert.ok(plan && 'scope' in plan);
+        assert.equal(direction === 'incoming' ? plan.scope.callerCount : plan.scope.calleeCount, 2);
+        assert.ok(plan.scope.keepIds.has('reference'));
+        assert.ok(plan.scope.keepIds.has('method-only'));
+        assert.equal(direction === 'incoming' ? plan.scope.referenceCounts?.containers : plan.scope.referenceCounts?.children, 120);
+        const section = await loadScopedGraphSection(pinned, plan.scope.keepIds, plan.graph);
+        assert.ok(section?.nodes.some(node => node.id === 'method-only'));
+        const previousIdle = process.env.KLAURO_HOSTED_QUERY_IDLE_MS;
+        const previousEntry = process.env.KLAURO_HOSTED_QUERY_WORKER_ENTRY;
+        process.env.KLAURO_HOSTED_QUERY_IDLE_MS = '1';
+        process.env.KLAURO_HOSTED_QUERY_WORKER_ENTRY = path.join(__dirname, 'hosted-project-query-worker.ts');
+        try {
+          const response = await runHostedProjectQueryWorker({ workspace: project, projectId: 'scoped-reference-proof',
+            analysisId: cas.analysis_id, tool: 'get_coding_context',
+            args: { target: 'target', caller_limit: 2, callee_limit: 2 } });
+          assert.ok(!response.unavailable);
+          type ConnectedCode = { callers: Array<{ id: string }>; callees: Array<{ id: string }>; callers_total: number; callees_total: number };
+          const hosted = response.result as { connected_code: ConnectedCode; scoped_context: { callers_total: number; callees_total: number } };
+          const full = getCodingContext(cas, 'target', { caller_limit: 2, callee_limit: 2 }) as { connected_code: ConnectedCode };
+          assert.ok(hosted.connected_code && full.connected_code);
+          assert.deepEqual(hosted.connected_code, full.connected_code);
+          const references = direction === 'incoming' ? hosted.connected_code?.callers : hosted.connected_code?.callees;
+          assert.ok(references?.some(node => node.id === 'method-only'));
+          assert.equal(hosted.scoped_context.callers_total, full.connected_code?.callers_total);
+          assert.equal(hosted.scoped_context.callees_total, full.connected_code?.callees_total);
+        } finally {
+          if (previousIdle === undefined) delete process.env.KLAURO_HOSTED_QUERY_IDLE_MS; else process.env.KLAURO_HOSTED_QUERY_IDLE_MS = previousIdle;
+          if (previousEntry === undefined) delete process.env.KLAURO_HOSTED_QUERY_WORKER_ENTRY; else process.env.KLAURO_HOSTED_QUERY_WORKER_ENTRY = previousEntry;
+        }
+      } finally {
+        await pinned.release();
+      }
+    });
+  });
+}
+
+test('coding scope counts references beyond the hydration window without loading every neighbor', () => {
+  const cas = fixture();
+  cas.nodes = Array.from({ length: 6002 }, (_, index) => ({ id: String(index), name: String(index), type: 'function' }));
+  cas.edges = cas.nodes.slice(1).map(node => ({ id: node.id, source: node.id, target: '0', type: 'calls' }));
+  const graph = encodeCompactCASGraph(cas);
+  const scope = computeScopedQueryScope(graph, graph.nodeById('0')!, { callerLimit: 1, calleeLimit: 1 });
+  assert.equal(scope.callerCount, 6001);
+  assert.ok(scope.keepIds.size < 100);
+  assert.equal(scope.truncated, true);
+});
+
+test('coding scope reports missing method-call storage rather than assuming there were no calls', async () => {
+  await withStorage(async project => {
+    const cas = fixture();
+    cas.method_calls = [{ id: 'method', caller_node: 'node-10', target_node: 'node-0',
+      call_details: { method_name: 'targetFn' } }] as CASOutput['method_calls'];
+    await saveAnalysis(project, cas, 'main', { canonicalSegmented: true });
+    const pinned = (await acquirePinnedAnalysis(project))!;
+    try {
+      pinned.segmented.manifest.semantic_store = undefined;
+      const plan = await planScopedQuery(pinned, 'get_coding_context', { target: 'node-0' });
+      assert.ok(plan && 'scope' in plan);
+      assert.match(plan.scope.incomplete || '', /method-call records are unavailable/);
+      assert.equal(scopedQueryCapacityOutcome('get_coding_context', plan.scope)?.connected_code, null);
+    } finally {
+      await pinned.release();
+    }
+  });
+});
+
+test('coding scope does not publish a complete answer after a declared storage budget gap', () => {
+  const outcome = scopedQueryCapacityOutcome('get_coding_context', {
+    targetId: 'target', keepIds: new Set(['target']), callerCount: 0, calleeCount: 0,
+    truncated: true, incomplete: 'method-call postings exceeded the existing storage budget',
+  });
+  assert.equal(outcome?.incomplete, true);
+  assert.equal(outcome?.connected_code, null);
 });
 
 test('scoped query target extraction follows each tool contract', () => {

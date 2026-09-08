@@ -13,6 +13,7 @@ import { loadTelemetryObservations } from './telemetry-ingestion';
 import { buildNodeRuntimeMetrics } from './product';
 import { CasRecordStoreCapacityError } from './cas-record-store';
 import { attachAgentRiskSource } from './agent-risk-context';
+import { attachScopedReferenceCounts } from './query-call-relationships';
 import { createRankedRiskSource, type AgentRiskSource } from './hosted-query-risk-source';
 import { agentContextProjectionGaps, computeAgentContextScope, markNotComputedOnProjection, selectedNodeIdOf, loadAgentContextProjection, loadScopedGraphSection, loadScopedSemanticCollections, loadScopedSourceInputs, planScopedQuery, scopedQueryCapacityOutcome, type AgentContextProjection, type ScopedSourceInputs } from './hosted-query-scoped-graph';
 
@@ -93,7 +94,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
       if (scopedPlan && pinned) {
         const loadStartedAt = Date.now();
         const smallSections = scopedSmallSections(request.tool, requiredSections);
-        const semanticEligible = 'scope' in scopedPlan && (request.tool === 'assess_change_risk' || request.tool === 'find_tests' || request.tool === 'get_coding_context' || request.tool === 'get_agent_context')
+        const semanticEligible = 'scope' in scopedPlan && !(request.tool === 'get_coding_context' && scopedPlan.scope.incomplete) && (request.tool === 'assess_change_risk' || request.tool === 'find_tests' || request.tool === 'get_coding_context' || request.tool === 'get_agent_context')
           ? await loadScopedSemanticCollections(pinned, scopedPlan.graph, scopedPlan.scope.keepIds)
           : null;
         const semanticSections = semanticEligible && 'method_calls' in semanticEligible.collections
@@ -143,6 +144,7 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
           ...(collectionTotals ? { collection_totals: collectionTotals } : {}),
           ...(semanticEligible ? { projected_collections: semanticEligible.projected } : {}),
         });
+        if ('scope' in scopedPlan && scopedPlan.scope.referenceCounts) attachScopedReferenceCounts(scopedCas, scopedPlan.scope.targetId, scopedPlan.scope.referenceCounts);
         if (agentProjection && agentPlan) {
           riskSource = await createRankedRiskSource(pinned, agentPlan.graph);
           if (riskSource) attachAgentRiskSource(scopedCas, riskSource);
@@ -158,8 +160,9 @@ process.on('message', (request: HostedProjectQueryWorkerRequest) => {
               loaded_edges: graphSection?.edges.length ?? 0,
               total_nodes: totalNodes,
               total_edges: totalEdges,
-              callers_total: scopedPlan.scope.callerCount,
-              callees_total: scopedPlan.scope.calleeCount,
+              callers_total: request.tool === 'get_coding_context' && scopedPlan.scope.incomplete ? null : scopedPlan.scope.callerCount,
+              callees_total: request.tool === 'get_coding_context' && scopedPlan.scope.incomplete ? null : scopedPlan.scope.calleeCount,
+              ...(scopedPlan.scope.referenceCounts ? { structural_counts: { containers: scopedPlan.scope.referenceCounts.containers, children: scopedPlan.scope.referenceCounts.children } } : {}),
               ...('upstreamNodes' in scopedPlan.scope ? { upstream_nodes: (scopedPlan.scope as unknown as { upstreamNodes: number }).upstreamNodes, upstream_truncated: (scopedPlan.scope as unknown as { upstreamTruncated: boolean }).upstreamTruncated } : {}),
               truncated: scopedPlan.scope.truncated || Boolean(graphSection?.edgesTruncated),
               edges_truncated: Boolean(graphSection?.edgesTruncated),

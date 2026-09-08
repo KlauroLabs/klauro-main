@@ -1,5 +1,8 @@
 import * as fs from 'node:fs';
 import * as zlib from 'node:zlib';
+import { isContainmentRelationship, type ScopedReferenceCounts } from './query-call-relationships';
+import { CasRecordStoreCapacityError } from './cas-record-store';
+import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import type { CASEdge, CASNode, CASSourceInputIdentity } from '../../../packages/analyzer-core/src/types/cas.types';
 import type { CompactCASGraph, CompactNodeView } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-graph';
 import * as path from 'node:path';
@@ -57,6 +60,7 @@ export interface ScopedQueryScope {
   calleeCount: number;
   truncated: boolean;
   incomplete?: string;
+  referenceCounts?: ScopedReferenceCounts;
 }
 
 export interface ScopedGraphSection {
@@ -196,16 +200,47 @@ export function computeScopedQueryScope(
   graph: CompactCASGraph,
   target: CompactNodeView,
   limits: { callerLimit?: unknown; calleeLimit?: unknown },
+  methodCalls: NonNullable<CASOutput['method_calls']> = [],
 ): ScopedQueryScope {
   const callerLimit = boundedLimit(limits.callerLimit);
   const calleeLimit = boundedLimit(limits.calleeLimit);
   const keepIds = new Set<string>([target.id]);
-  let truncated = false;
-  const incoming = graph.incomingEdges(target.denseId, { limit: Math.min(MAX_NEIGHBOR_LIMIT, Math.max(callerLimit, DEFAULT_NEIGHBOR_LIMIT) * 2) });
-  for (const edge of incoming.items) keepIds.add(edge.sourceId);
-  const outgoing = graph.outgoingEdges(target.denseId, { limit: Math.min(MAX_NEIGHBOR_LIMIT, Math.max(calleeLimit, DEFAULT_NEIGHBOR_LIMIT) * 2) });
-  for (const edge of outgoing.items) keepIds.add(edge.targetId);
-  truncated = incoming.nextOffset !== undefined || outgoing.nextOffset !== undefined;
+  const collect = (direction: 'incoming' | 'outgoing', limit: number) => {
+    const seen = new Uint8Array(graph.nodeCount);
+    const references: string[] = [];
+    const structural: string[] = [];
+    let referenceCount = 0;
+    let structuralCount = 0;
+    const add = (denseId: number, containment: boolean) => {
+      if (denseId === target.denseId) return;
+      const bit = containment ? 2 : 1;
+      if (seen[denseId] & bit) return;
+      seen[denseId] |= bit;
+      if (containment) structuralCount++; else referenceCount++;
+      const selected = containment ? structural : references;
+      if (selected.length <= limit) selected.push(graph.nodeAt(denseId).id);
+    };
+    let offset: number | undefined = 0;
+    while (offset !== undefined) {
+      const page: ReturnType<CompactCASGraph['incomingEdges']> = direction === 'incoming'
+        ? graph.incomingEdges(target.denseId, { offset, limit: 500 })
+        : graph.outgoingEdges(target.denseId, { offset, limit: 500 });
+      for (const edge of page.items) add(direction === 'incoming' ? edge.source : edge.target, isContainmentRelationship(edge.type));
+      offset = page.nextOffset;
+    }
+    for (const call of methodCalls) {
+      if ((direction === 'incoming' ? call.target_node : call.caller_node) !== target.id) continue;
+      const id = direction === 'incoming' ? call.caller_node : call.target_node;
+      const node = id ? graph.nodeById(id) : undefined;
+      if (node) add(node.denseId, false);
+    }
+    return { references, structural, referenceCount, structuralCount };
+  };
+  const incoming = collect('incoming', callerLimit);
+  const outgoing = collect('outgoing', calleeLimit);
+  for (const id of [...incoming.references, ...outgoing.references, ...incoming.structural, ...outgoing.structural]) keepIds.add(id);
+  let truncated = incoming.referenceCount > incoming.references.length || outgoing.referenceCount > outgoing.references.length
+    || incoming.structuralCount > incoming.structural.length || outgoing.structuralCount > outgoing.structural.length;
   const secondHop = graph.traverse(target.denseId, {
     direction: 'both',
     maxDepth: 2,
@@ -225,8 +260,10 @@ export function computeScopedQueryScope(
   return {
     targetId: target.id,
     keepIds,
-    callerCount: incoming.total,
-    calleeCount: outgoing.total,
+    callerCount: incoming.referenceCount,
+    calleeCount: outgoing.referenceCount,
+    referenceCounts: { callers: incoming.referenceCount, callees: outgoing.referenceCount,
+      containers: incoming.structuralCount, children: outgoing.structuralCount },
     truncated,
   };
 }
@@ -497,10 +534,11 @@ export function agentContextProjectionGaps(projection: AgentContextProjection, n
 }
 
 export function scopedQueryCapacityOutcome(tool: string, scope: ScopedQueryScope, loaderTruncated = false): Record<string, unknown> | undefined {
-  if (!EXACT_ID_SCOPED_TOOLS.has(tool)) return undefined;
+  if (!EXACT_ID_SCOPED_TOOLS.has(tool) && tool !== 'get_coding_context') return undefined;
   if (!scope.incomplete && !loaderTruncated) return undefined;
   if (!scope.incomplete) scope = { ...scope, incomplete: `the induced edge set of the scope exceeds the ${MAX_SCOPED_EDGES}-edge loader bound` };
   const reason = `${tool} could not be answered exactly within the bounded query worker: ${scope.incomplete}. No partial result is returned; nothing was scored.`;
+  if (tool === 'get_coding_context') return { incomplete: true, reason, connected_code: null };
   if (tool === 'assess_change_risk') return { risk: null, incomplete: true, reason, transitive_impact: null, change_risk_context: null };
   return { incomplete: true, reason, suites: null, total_suites: null };
 }
@@ -694,10 +732,26 @@ export async function planScopedQuery(
   }
   const resolved = resolveCompactTarget(graph, target, await searchCandidateIds(pinned, target));
   if (!resolved) return { targetNotFound: target };
+  let methodCalls: NonNullable<CASOutput['method_calls']> = [];
+  let incomplete: string | undefined;
+  try {
+    const store = await openPinnedSemanticStore(pinned, graph);
+    if (store?.tables.has('method_calls')) {
+      const read = await store.readByNodes<NonNullable<CASOutput['method_calls']>[number]>('method_calls', [resolved.denseId]);
+      methodCalls = read.records;
+      if (read.read !== read.matched) incomplete = 'direct method-call records were not completely read';
+    } else if (pinned.segmented.manifest.collection_totals?.method_calls !== 0) {
+      incomplete = 'direct method-call records are unavailable in the pinned semantic store';
+    }
+  } catch (error) {
+    if (!(error instanceof CasRecordStoreCapacityError)) throw error;
+    incomplete = error.message;
+  }
   const scope = computeScopedQueryScope(graph, resolved, {
     callerLimit: args?.caller_limit,
     calleeLimit: args?.callee_limit,
-  });
+  }, methodCalls);
+  if (incomplete) { scope.incomplete = incomplete; scope.truncated = true; }
   return { scope, target: resolved, graphNodeCount: graph.nodeCount, graph };
 }
 
