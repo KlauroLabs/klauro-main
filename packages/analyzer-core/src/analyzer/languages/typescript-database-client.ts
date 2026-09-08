@@ -13,6 +13,30 @@ const FILESYSTEM_WRITE_METHODS = new Set([
   'writeFileSync',
 ]);
 
+export function isRepositoryLikeCaller(callerName: string): boolean {
+
+  if (/^wrap\(/i.test(callerName)) return true;
+
+  const parts = callerName.split('.');
+  const exactMatchPatterns = new Set([
+    'em', 'db', 'orm', 'repo', 'model', 'knex', 'table', 'schema', 'query'
+  ]);
+  const identifierPatterns = new Set([
+    'repository', 'entity', 'collection', 'prisma', 'manager',
+    'connection', 'sequelize', 'drizzle', 'database'
+  ]);
+  for (const identifier of parts) {
+    const part = identifier.toLowerCase();
+    if (exactMatchPatterns.has(part)) return true;
+    const words = identifier.replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/);
+    if (words.some(word => identifierPatterns.has(word))) return true;
+
+    if (/repo$/.test(part) && part !== 'repo' && !/forrepo$/.test(part)) return true;
+  }
+  return false;
+}
+
 export function isImportedDatabaseClientReceiver(
   callerName: string,
   nodesByName: ReadonlyMap<string, readonly CASNode[]>,

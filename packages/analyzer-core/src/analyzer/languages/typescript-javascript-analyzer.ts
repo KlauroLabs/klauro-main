@@ -23,7 +23,7 @@ import {
 import { loadPrismaModelIdentities, selectPrismaModelIdentity, type PrismaModelIdentity } from '../libraries/orm/prisma-model-identity';
 import { appendInMemoryRecordCollectionNodes } from '../core/javascript-in-memory-data';
 import { partialTypeScriptSourceFailure, typeScriptAnalysisScope, typeScriptSourceDiagnostics } from '../core/tree-sitter-ts-recovery';
-import { buildImportedFilesystemWriteEvidence, isImportedDatabaseClientReceiver } from './typescript-database-client';
+import { buildImportedFilesystemWriteEvidence, isImportedDatabaseClientReceiver, isRepositoryLikeCaller } from './typescript-database-client';
 
 interface ParsedAST {
   ast: TSESTree.Program;
@@ -1917,7 +1917,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       if (injectedFieldType) return this.isRepositoryLikeType(injectedFieldType);
     }
 
-    return this.isRepositoryLikeCaller(originalCallerName) || isImportedDatabaseClientReceiver(originalCallerName, this.nodesByName, this.importSourceMap) || this.isModelLikeCaller(originalCallerName);
+    return isRepositoryLikeCaller(originalCallerName) || isImportedDatabaseClientReceiver(originalCallerName, this.nodesByName, this.importSourceMap) || this.isModelLikeCaller(originalCallerName);
   }
   private static readonly PERSISTENCE_OPERATIONS = new Set([
 
@@ -1957,30 +1957,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   private static readonly VALUE_DECLARATION_TYPES = new Set([
     'variable', 'constant', 'property', 'parameter', 'field', 'enum'
   ]);
-
-  private isRepositoryLikeCaller(callerName: string): boolean {
-
-    if (/^wrap\(/i.test(callerName)) return true;
-
-    const parts = callerName.split('.');
-    const exactMatchPatterns = new Set([
-      'em', 'db', 'orm', 'repo', 'model', 'knex', 'table', 'schema', 'query'
-    ]);
-    const identifierPatterns = new Set([
-      'repository', 'entity', 'collection', 'prisma', 'manager',
-      'connection', 'sequelize', 'drizzle', 'database'
-    ]);
-    for (const identifier of parts) {
-      const part = identifier.toLowerCase();
-      if (exactMatchPatterns.has(part)) return true;
-      const words = identifier.replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-        .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/);
-      if (words.some(word => identifierPatterns.has(word))) return true;
-
-      if (/repo$/.test(part) && part !== 'repo' && !/forrepo$/.test(part)) return true;
-    }
-    return false;
-  }
 
   private hasUnresolvedReceiver(target: string): boolean {
     return target.startsWith(`${UNRESOLVED_RECEIVER}.`);
