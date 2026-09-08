@@ -11,6 +11,10 @@ export class NextJSAnalyzer extends BaseAnalyzer {
     super('nextjs', 'Next.js Framework Analyzer', '1.0.0', 'framework');
   }
 
+  incrementalSourceInvariantContributionFields(): readonly (keyof CASContribution)[] {
+    return ['perspectives'];
+  }
+
   async canAnalyze(projectPath: string): Promise<boolean> {
     try {
       const packageJsonPath = path.join(projectPath, 'package.json');
