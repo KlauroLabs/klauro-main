@@ -156,6 +156,22 @@ export function resolveCompactTarget(graph: CompactCASGraph, target: string, ext
   const exact = graph.nodeById(target);
   if (exact) return exact;
   const wantsTest = /(^|[^a-z])(tests?|specs?|e2e)([^a-z]|$)/i.test(target);
+  const symbolTarget = target.replace(/[()]/g, '').trim().toLowerCase();
+  const qualifiedSymbols: CompactNodeView[] = [];
+  const namedSymbols: CompactNodeView[] = [];
+  for (let denseId = 0; denseId < graph.nodeCount; denseId += 1) {
+    const qualifiedName = graph.decodeString(graph.nodes.qualifiedName[denseId]);
+    const nodeName = graph.decodeString(graph.nodes.name[denseId]);
+    const qualifiedMatch = qualifiedName?.toLowerCase() === symbolTarget;
+    const nameMatch = nodeName?.toLowerCase() === symbolTarget;
+    if (!qualifiedMatch && !nameMatch) continue;
+    const node = graph.nodeAt(denseId);
+    if (node.type === 'file' || node.type === 'directory') continue;
+    if (qualifiedMatch) qualifiedSymbols.push(node);
+    if (nameMatch) namedSymbols.push(node);
+  }
+  const exactSymbol = rankTargets(graph, qualifiedSymbols.length ? qualifiedSymbols : namedSymbols, wantsTest)[0];
+  if (exactSymbol) return exactSymbol;
   const fileMatch = rankTargets(graph, fileTargetMatches(graph, target), wantsTest)[0];
   if (fileMatch) return fileMatch;
   const name = target.replace(/[()]/g, '').trim().split(/[.:#/\\]/).filter(Boolean).pop() || '';

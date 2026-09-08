@@ -6,6 +6,12 @@ export function resolveCodingContextTarget(cas: CASOutput, target: string, searc
 
   const normalizedTarget = normalizeCodingTarget(target);
   const wantsTest = /(^|[^a-z])(tests?|specs?|e2e)([^a-z]|$)/i.test(target);
+  const symbolTarget = target.replace(/[()]/g, '').trim().toLowerCase();
+  const symbols = cas.nodes.filter(node => node.type !== 'file' && node.type !== 'directory');
+  const qualified = rankTargets(symbols.filter(node => node.qualified_name?.toLowerCase() === symbolTarget), wantsTest)[0];
+  if (qualified) return qualified;
+  const named = rankTargets(symbols.filter(node => node.name.toLowerCase() === symbolTarget), wantsTest)[0];
+  if (named) return named;
   const fileMatches = cas.nodes.filter(node => {
     const file = node.source?.file;
     if (!file) return false;
