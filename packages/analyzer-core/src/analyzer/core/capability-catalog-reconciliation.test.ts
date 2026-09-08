@@ -93,3 +93,19 @@ test('unverified declaration reporting retains unfamiliar text and qualification
   assert.deepEqual(result.unverified_declarations,
     firstPartyEvidence.statements.slice(1, 4).map(statement => ({ ...statement, reason: 'no-corroborating-candidate' })));
 });
+
+test('normalized candidate evidence corroborates its original source declaration without losing raw citations', () => {
+  const declared = requirement('invoice', 'Settle invoices', ['operation-obligation:billing:write']);
+  const normalized = { ...declared, candidateIds: ['billing'] };
+  const result = buildCapabilityCatalogReconciliation({
+    requiredOutcomes: [declared], normalizedOutcomeRequirements: [normalized],
+    publishedCapabilities: [capability('payments', 'Settle invoices', 'billing')],
+    intentGapRequirements: [], unresolvedRejectedProductOutcomeIds: [],
+    evidenceCandidates: [capability('billing', 'Bill payment', 'billing')],
+    firstPartyEvidence: { statements: [{ role: 'feature', value: 'Settle invoices.', source: 'BILLING.md' }] },
+  });
+  assert.equal(result.proposals[0].disposition, 'grounded');
+  assert.deepEqual(result.proposals[0].capability_ids, ['payments']);
+  assert.deepEqual(result.proposals[0].candidate_ids, declared.candidateIds);
+  assert.deepEqual(result.unverified_declarations, []);
+});

@@ -22,7 +22,7 @@ export function buildCapabilityCatalogReconciliation({
   const declarationText = (value: string): string => value.trim().replace(/[.!?]+$/, '');
   const candidateIds = new Set(evidenceCandidates.map(candidate => candidate.id));
   const corroboratedDeclarations = new Set(requiredOutcomes
-    .filter(requirement => requirement.candidateIds.some(id => candidateIds.has(id)))
+    .filter(requirement => (normalizedOutcomeRequirementById.get(requirement.id) || requirement).candidateIds.some(id => candidateIds.has(id)))
     .map(requirement => declarationText(requirement.firstPartyOutcomeText || requirement.statement)));
   return {
     ...(firstPartyEvidence?.statements ? {
