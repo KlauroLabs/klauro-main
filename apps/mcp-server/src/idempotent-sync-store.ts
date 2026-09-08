@@ -1,5 +1,5 @@
 export interface SyncResponseWithCas<TCas> {
-  cas: TCas;
+  cas?: TCas;
 }
 
 type StoredResponse<TResponse extends SyncResponseWithCas<unknown>> = Omit<TResponse, 'cas'>;
@@ -28,7 +28,7 @@ export class IdempotentSyncStore<TResponse extends SyncResponseWithCas<TCas>, TC
     scope: string,
     requestId: string | undefined,
     execute: () => Promise<TResponse>,
-    hydrateCas: () => Promise<TCas>,
+    hydrateCas: (stored: StoredResponse<TResponse>) => Promise<TCas | undefined>,
   ): Promise<{ value: TResponse; replayed: boolean }> {
     if (!requestId) return { value: await execute(), replayed: false };
     this.removeExpired();
@@ -39,7 +39,7 @@ export class IdempotentSyncStore<TResponse extends SyncResponseWithCas<TCas>, TC
       if (this.latestRequestByScope.get(scope) !== key) {
         throw new Error(`Sync request ${requestId} was superseded by a newer request for ${scope}`);
       }
-      return { value: { ...existing.response, cas: await hydrateCas() } as TResponse, replayed: true };
+      return { value: { ...existing.response, cas: await hydrateCas(existing.response) } as TResponse, replayed: true };
     }
 
     this.latestRequestByScope.set(scope, key);

@@ -132,7 +132,10 @@ export interface RemoteAnalyzeResponse {
   full_rebuild_reason?: string;
   base_commit?: string;
   manifest: SourceManifest;
-  cas: CASOutput;
+  cas?: CASOutput;
+  nodes?: number;
+  edges?: number;
+  cas_omitted_reason?: string;
   change_report?: ChangeReport;
   analysis_focus?: AnalysisFocus;
 }
@@ -219,3 +222,8 @@ export interface RemoteErrorResponse {
 }
 
 export type RemoteAnalyzerResponse = RemoteAnalyzeResponse | RemoteAnalyzeAcceptedResponse | RemoteProjectRevisionsResponse | RemoteErrorResponse;
+
+export function syncResponseCasNodeBound(env: NodeJS.ProcessEnv = process.env): number {
+  const configured = Number(env.KLAURO_SYNC_RESPONSE_MAX_NODES);
+  return Number.isFinite(configured) && configured > 0 ? configured : 25_000;
+}

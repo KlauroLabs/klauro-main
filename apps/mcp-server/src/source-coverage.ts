@@ -1,7 +1,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
-import type { SourceManifest } from './remote-source';
+import type { RepoFacts, SourceManifest } from './remote-source';
 import { getProjectStorageDir, saveAnalysis } from './storage';
 import { writeJsonAtomic } from './json-storage-writer';
 
@@ -118,8 +118,28 @@ export function applySourceExclusions(cas: CASOutput, exclusions: SourceFileExcl
   if (gaps.length || cas.coverage_gaps) cas.coverage_gaps = gaps;
 }
 
+function repoFactsPath(workspace: string): string {
+  return path.join(getProjectStorageDir(workspace), 'repo-facts.json');
+}
+
+export async function writeWorkspaceRepoFacts(workspace: string, repoFacts: RepoFacts): Promise<void> {
+  await fs.mkdir(path.dirname(repoFactsPath(workspace)), { recursive: true });
+  await writeJsonAtomic(repoFactsPath(workspace), repoFacts);
+}
+
+export async function readWorkspaceRepoFacts(workspace: string): Promise<RepoFacts | undefined> {
+  try {
+    return JSON.parse(await fs.readFile(repoFactsPath(workspace), 'utf8')) as RepoFacts;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw error;
+  }
+}
+
 export async function saveAnalysisWithSourceCoverage(...args: Parameters<typeof saveAnalysis>): Promise<void> {
   const [workspace, cas] = args;
+  const repoFacts = await readWorkspaceRepoFacts(workspace);
+  if (repoFacts) cas.system.repo_facts = repoFacts;
   applySourceExclusions(cas, await readWorkspaceSourceExclusions(workspace));
   await saveAnalysis(...args);
 }

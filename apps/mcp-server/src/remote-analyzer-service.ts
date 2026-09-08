@@ -7,7 +7,7 @@ import * as path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { ensurePrivateDataRoot, restrictProcessFileCreation } from './hosted-storage-security';
 import { analyzeProjectIncremental, analyzeProjectDeferred, checkDoomedVersionRebuild, getAnalysis, prewarmAnalysisWorker, runAnalysis, runLayeredAnalysis } from './analyzer';
-import { REMOTE_ANALYSIS_PROTOCOL_VERSION, clientUpgradeRequiredMessage, type AccountActivityEvent, type RemoteAnalyzeDiffRequest, type RemoteAnalyzeRequest, type RemoteAnalyzeResponse, type RemoteGreenfieldPreviewRequest, type RemoteProjectRevision, type RemoteProjectRevisionsResponse, type RemoteProposalPreviewRequest, type RemoteSyncRequest } from './remote-analyzer-protocol';
+import { REMOTE_ANALYSIS_PROTOCOL_VERSION, clientUpgradeRequiredMessage, type AccountActivityEvent, type RemoteAnalyzeDiffRequest, type RemoteAnalyzeRequest, type RemoteAnalyzeResponse, type RemoteGreenfieldPreviewRequest, type RemoteProjectRevision, type RemoteProjectRevisionsResponse, type RemoteProposalPreviewRequest, type RemoteSyncRequest, syncResponseCasNodeBound } from './remote-analyzer-protocol';
 import { buildSourceSnapshot, type BranchDiffContext, type RemoteFileChange, type RepoFacts, type SourceManifest } from './remote-source';
 import type { CapabilityFlowRole, CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { previewCodebaseIteration, previewGreenfieldCodebase } from './proposal-preview';
@@ -88,7 +88,7 @@ import {
 } from './analyzer-identity-reuse';
 import { z } from 'zod';
 import { analysisJobMetadata } from './analysis-job-metadata';
-import { applySourceExclusions, normalizeSourceExclusions, readWorkspaceSourceExclusions, validateSnapshotSourceCoverage } from './source-coverage';
+import { applySourceExclusions, normalizeSourceExclusions, readWorkspaceSourceExclusions, validateSnapshotSourceCoverage, writeWorkspaceRepoFacts } from './source-coverage';
 import { applySnapshotChanges, writeSnapshot } from './hosted-source-snapshot';
 import { IdempotentRequestStore, IdempotentSyncStore } from './idempotent-sync-store';
 import { reserveHostedAnalysis } from './hosted-analysis-admission';
@@ -883,8 +883,8 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           target_branch: body.diff_context?.target_branch,
           files: result.manifest.file_count,
           bytes: result.manifest.total_bytes,
-          nodes: result.cas.nodes.length,
-          edges: result.cas.edges.length,
+          nodes: result.nodes ?? result.cas?.nodes.length ?? 0,
+          edges: result.edges ?? result.cas?.edges.length ?? 0,
         });
         writeJson(response, 200, {
           ...result,
@@ -3853,29 +3853,33 @@ async function prepareSync(dataDir: string, request: RemoteSyncRequest, accountS
   await applySnapshotChanges(workspace, request.changes.changed_files || [], request.changes.manifest);
   const displayName = resolveDisplayName(request.changes.project_name, request.project_path);
   const manifest = request.changes.manifest || buildChangeManifest(workspace, request.changes.changed_files || []);
+  if (manifest.repo_facts) await writeWorkspaceRepoFacts(workspace, manifest.repo_facts);
   return { analysisId, workspace, displayName, manifest };
 }
 async function completeSync(prepared: PreparedSync, request: RemoteSyncRequest): Promise<RemoteAnalyzeResponse> {
-  const result = await runIncrementalAnalysisIsolated(prepared.workspace, prepared.displayName);
-  const { analysisId, workspace, manifest } = prepared;
-  await stampRepoFacts(workspace, result.output, manifest);
+  const { analysisId, workspace, displayName, manifest } = prepared;
+  const summary = await runAnalysis(workspace, { displayName });
+  const bound = syncResponseCasNodeBound();
+  const cas = summary.nodes <= bound ? await getAnalysis(workspace) : undefined;
   return {
     status: 'success',
     analysis_id: analysisId,
     analysis_revision: Date.now(),
-    analysis_type: result.wasFullRebuild ? 'full' : 'incremental',
-    full_rebuild_reason: result.fullRebuildReason,
+    analysis_type: summary.wasFullRebuild ? 'full' : 'incremental',
+    full_rebuild_reason: summary.fullRebuildReason,
     base_commit: request.changes.base_commit,
     manifest,
-    cas: result.output,
-    change_report: result.changeReport,
+    ...(cas ? { cas } : { cas_omitted_reason: `the analysis has ${summary.nodes} nodes, above the ${bound}-node sync response bound; read it through the hosted analysis routes` }),
+    nodes: summary.nodes,
+    edges: summary.edges,
+    change_report: summary.changeReport,
   };
 }
 async function handleSync(dataDir: string, request: RemoteSyncRequest, requests: IdempotentSyncStore<RemoteAnalyzeResponse, CASOutput>, accountSalt?: string): Promise<{ value: RemoteAnalyzeResponse; replayed: boolean }> {
   const analysisId = resolveStorageAnalysisId(request.analysis_id, accountSalt);
   return requests.run(analysisId, request.request_id,
     () => prepareSync(dataDir, request, accountSalt).then(prepared => completeSync(prepared, request)),
-    () => getAnalysis(workspacePath(dataDir, analysisId)));
+    stored => stored.cas_omitted_reason ? Promise.resolve(undefined) : getAnalysis(workspacePath(dataDir, analysisId)));
 }
 async function recordCompletedSync(
   dataDir: string,
@@ -3894,8 +3898,8 @@ async function recordCompletedSync(
     changed_files: result.change_report
       ? result.change_report.summary.filesAdded + result.change_report.summary.filesModified + result.change_report.summary.filesDeleted
       : undefined,
-    nodes: result.cas.nodes.length,
-    edges: result.cas.edges.length,
+    nodes: result.nodes ?? result.cas?.nodes.length ?? 0,
+    edges: result.edges ?? result.cas?.edges.length ?? 0,
   });
 
   if (request.project_id && /^prj_/.test(request.project_id) && (await authorizeProjectWrite(accounts, clientId, request.project_id))) {

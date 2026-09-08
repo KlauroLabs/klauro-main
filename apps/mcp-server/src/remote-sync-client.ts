@@ -1,4 +1,5 @@
 import * as crypto from 'node:crypto';
+import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { constants as bufferConstants } from 'node:buffer';
 import * as path from 'node:path';
 import { Readable } from 'node:stream';
@@ -102,7 +103,7 @@ export interface AnalyzeRemotelyResult extends Omit<RemoteAnalyzeResponse, 'stat
 
 
   reuse_decision?: RemoteAnalyzeAcceptedResponse['reuse_decision'];
-  cas?: RemoteAnalyzeResponse['cas'];
+  cas?: CASOutput;
 
 
   snapshot_source?: 'committed-head' | 'working-tree';
@@ -245,7 +246,7 @@ export async function analyzeCodebaseRemotely(options: RemoteSyncOptions): Promi
     });
   }
   if (response.cas) {
-    await saveAnalysis(projectPath, stampAnalyzedCommit(rewriteCasProjectName(response as RemoteAnalyzeResponse, projectPath).cas, response.base_commit));
+    await saveAnalysis(projectPath, stampAnalyzedCommit(rewriteCasProjectName(response as RemoteAnalyzeResponse, projectPath).cas!, response.base_commit));
   }
   response.snapshot_source = snapshot.snapshot_source;
 
@@ -286,7 +287,7 @@ export async function waitForRemoteAnalysis(
   completionTimeoutMs?: number,
   requestedSections?: readonly CasSectionName[],
   readinessRequirement: 'complete' | 'structural' = 'complete',
-): Promise<RemoteAnalyzeResponse['cas']> {
+): Promise<CASOutput> {
   const token = connectorToken(explicitToken, serverUrl);
   const headers: Record<string, string> = {};
   if (token) headers.authorization = `Bearer ${token}`;
@@ -423,7 +424,7 @@ export async function waitForRemoteAnalysis(
           }
           const codec = exportResponse.headers.get('x-klauro-cas-codec') || 'none';
           if (exportResponse.body) {
-            return decodeCasExportStream<RemoteAnalyzeResponse['cas']>(Readable.fromWeb(exportResponse.body as any), codec);
+            return decodeCasExportStream<CASOutput>(Readable.fromWeb(exportResponse.body as any), codec);
           }
           return fetchUncompressedRemoteCas(serverUrl, analysisId, headers);
         });
@@ -469,7 +470,7 @@ async function fetchSegmentedRemoteCas(
   analysisId: string,
   headers: Record<string, string>,
   requestedSections: readonly CasSectionName[],
-): Promise<RemoteAnalyzeResponse['cas'] | null | undefined> {
+): Promise<CASOutput | null | undefined> {
   const manifestStartedAt = Date.now();
   const manifestResult = await withRemoteReadRetry(async (): Promise<
     { state: 'ready'; manifest: CasSectionManifest } | { state: 'pending' } | { state: 'unavailable' }
@@ -516,7 +517,7 @@ async function fetchSegmentedRemoteCas(
       return parseRemoteCasSection(response, section);
     }))));
   const hydrationStartedAt = Date.now();
-  const cas = hydrateCasSections(parts) as RemoteAnalyzeResponse['cas'];
+  const cas = hydrateCasSections(parts) as CASOutput;
   emitRemoteCasTiming('hydrate', { elapsed_ms: Date.now() - hydrationStartedAt, sections: parts.length });
   return cas;
 }
@@ -524,18 +525,18 @@ async function fetchSegmentedRemoteCas(
 async function parseRemoteCasSection(
   response: Response,
   section: CasSectionName
-): Promise<Partial<RemoteAnalyzeResponse['cas']>> {
+): Promise<Partial<CASOutput>> {
   const startedAt = Date.now();
   const codec = response.headers.get('x-klauro-cas-codec') || 'none';
   const raw = Buffer.from(await response.arrayBuffer());
   const downloadedAt = Date.now();
   const decoded = decodeCasExport(raw, codec);
   if (!decoded) throw new Error(`Remote CAS section could not be decoded with ${codec}`);
-  let parsed: Partial<RemoteAnalyzeResponse['cas']>;
+  let parsed: Partial<CASOutput>;
   if (decoded.length <= bufferConstants.MAX_STRING_LENGTH) {
-    parsed = JSON.parse(decoded.toString('utf8')) as Partial<RemoteAnalyzeResponse['cas']>;
+    parsed = JSON.parse(decoded.toString('utf8')) as Partial<CASOutput>;
   } else {
-    parsed = await decodeCasExportStream<Partial<RemoteAnalyzeResponse['cas']>>(Readable.from([raw]), codec);
+    parsed = await decodeCasExportStream<Partial<CASOutput>>(Readable.from([raw]), codec);
   }
   emitRemoteCasTiming('section', {
     section,
@@ -558,7 +559,7 @@ async function fetchUncompressedRemoteCas(
   serverUrl: string,
   analysisId: string,
   headers: Record<string, string>,
-): Promise<RemoteAnalyzeResponse['cas']> {
+): Promise<CASOutput> {
   const response = await fetchWithTimeout(
     `${serverUrl}/api/projects/${encodeURIComponent(analysisId)}/cas`,
     { headers },
@@ -568,7 +569,7 @@ async function fetchUncompressedRemoteCas(
   const payload = await response.json().catch(() => ({})) as {
     status?: string;
     error?: string;
-    cas?: RemoteAnalyzeResponse['cas'];
+    cas?: CASOutput;
   };
   if (!response.ok || payload.status !== 'ready' || !payload.cas) {
     const detail = payload.error ? `: ${payload.error}` : '';
@@ -674,7 +675,7 @@ export async function analyzeBranchDiffRemotely(options: RemoteBranchDiffOptions
     project_path: projectPath,
     diff_context: diffContext,
   }, serverUrl);
-  await saveAnalysis(projectPath, rewriteCasProjectName(response, projectPath).cas, 'other-branch');
+  await saveAnalysis(projectPath, rewriteCasProjectName(response, projectPath).cas!, 'other-branch');
   return response;
 }
 
@@ -925,6 +926,6 @@ async function postRemote(
 }
 
 function rewriteCasProjectName(response: RemoteAnalyzeResponse, projectPath: string): RemoteAnalyzeResponse {
-  response.cas.system.name = path.basename(projectPath);
+  if (response.cas) response.cas.system.name = path.basename(projectPath);
   return response;
 }

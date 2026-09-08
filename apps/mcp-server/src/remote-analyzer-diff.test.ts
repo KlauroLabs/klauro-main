@@ -104,9 +104,9 @@ test('POST /v1/analyze-diff analyzes the branch diff and saves under the other-b
 
     const response = await analyzeBranchDiffRemotely({ projectPath: repo, serverUrl, targetBranch: 'feature', token });
     assert.equal(response.status, 'success');
-    assert.equal(response.cas.analyzed_track, 'other-branch');
-    assert.equal(response.cas.diff_only, true);
-    assert.ok(response.cas.nodes.length > 0, 'diff CAS should contain nodes');
+    assert.equal(response.cas!.analyzed_track, 'other-branch');
+    assert.equal(response.cas!.diff_only, true);
+    assert.ok(response.cas!.nodes.length > 0, 'diff CAS should contain nodes');
     // The changed branch file must be represented in the analysis.
     const casJson = JSON.stringify(response.cas);
     assert.ok(casJson.includes('feature_module') || casJson.includes('feature_endpoint'),

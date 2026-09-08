@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import { CAS_VERSION, type CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import {
   applySourceExclusions, mergeSourceExclusions, normalizeSourceExclusions,
-  readWorkspaceSourceExclusions, saveAnalysisWithSourceCoverage,
+  readWorkspaceRepoFacts, readWorkspaceSourceExclusions, saveAnalysisWithSourceCoverage, writeWorkspaceRepoFacts,
   sourceExclusionReadiness, validateSnapshotSourceCoverage, writeWorkspaceSourceExclusions,
 } from './source-coverage';
 import { getProjectStorageDir, loadAnalysis, waitForPendingSegmentedWrites } from './storage';
@@ -205,5 +205,17 @@ test('real layered worker retains upload gaps across a forced stored-snapshot re
         else process.env[key] = value;
       }
     }
+  });
+});
+
+test('repo facts written into the workspace are stamped on the analysis when the worker saves it', async () => {
+  await withWorkspace(async workspace => {
+    assert.equal(await readWorkspaceRepoFacts(workspace), undefined);
+    await writeWorkspaceRepoFacts(workspace, { contributor_count: 3, first_commit_at: '2025-01-01T00:00:00.000Z', last_commit_at: '2026-09-01T00:00:00.000Z' });
+    await saveAnalysisWithSourceCoverage(workspace, output(workspace));
+    await waitForPendingSegmentedWrites();
+    const stored = await loadAnalysis(workspace);
+    assert.equal(stored?.system.repo_facts?.contributor_count, 3);
+    assert.equal(stored?.system.repo_facts?.last_commit_at, '2026-09-01T00:00:00.000Z');
   });
 });
