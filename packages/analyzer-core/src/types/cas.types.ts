@@ -272,6 +272,7 @@ export interface CASOutput extends CASSourceInputCatalog {
 
 
   layers_ready?: CASLayersReady;
+  member_reference?: CASMemberReference;
 
 
 
@@ -300,7 +301,7 @@ export interface CASLayerStatus {
 
 
 
-  status: 'pending' | 'ready' | 'error';
+  status: 'pending' | 'ready' | 'error' | 'not_loaded';
 
   completed_at?: string;
   duration_ms?: number;
@@ -311,6 +312,7 @@ export interface CASLayerStatus {
   
   warning?: string;
   fields: string[];
+  not_loaded_fields?: string[];
 }
 
 
@@ -318,6 +320,21 @@ export interface CASLayerStatus {
 
 
 
+
+export interface CASMemberReference {
+  format: 'workspace-member-reference';
+  version: 1;
+  project_id: string;
+  composed_id: string;
+  analysis_id: string;
+  analysis_timestamp: string;
+  generation: string;
+  storage_format: 'segmented-v2';
+  loaded_sections: string[];
+  omitted_sections: string[];
+  loaded_fields: string[];
+  omitted_fields: string[];
+}
 
 export interface CASLayersReady {
   layers: CASLayerStatus[];

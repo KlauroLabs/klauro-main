@@ -1,7 +1,10 @@
 import * as fs from 'fs-extra';
 import * as path from 'node:path';
 import { createHash } from 'node:crypto';
-import { loadAnalysisSections, writeJsonAtomic } from './storage';
+import { acquireCurrentSegmentedAnalysisLease, loadAnalysisSections, resolveAnalysisForLoad, writeJsonAtomic } from './storage';
+import { CAS_SECTION_NAMES } from './cas-sections';
+import type { CASMemberReference } from '../../../packages/analyzer-core/src/types/cas.types';
+import { projectLayersReady } from './workspace-member-reference';
 import { enrichWorkspaceAnalysisNarrative, workspaceAiEnrichmentEnabled, type CrossCodebaseInput, type CrossCodebaseSystemGraph } from './cross-codebase-analysis';
 import { buildIncrementalCrossCodebaseSystemGraph } from './incremental-workspace-analysis';
 import type { AccountStore } from './account-store';
@@ -22,6 +25,50 @@ export const WORKSPACE_MEMBER_FIELDS = [
   'change_risks', 'temporal_stability', 'analyzer_contributions', 'analysis_errors', 'types', 'metadata',
   'id', 'version', 'generated_at', 'analysis_id', 'analysis_timestamp', 'cas_version', 'derived_fingerprint',
   'ai_enrichment', 'layers_ready', 'flows', 'nodes', 'edges',
+] as const;
+
+export async function loadWorkspaceMemberProjection(memberWorkspace: string, projectId: string): Promise<Partial<CASOutput> | null> {
+  const resolved = await resolveAnalysisForLoad(memberWorkspace);
+  if (!resolved) return null;
+  const lease = await acquireCurrentSegmentedAnalysisLease(resolved);
+  if (!lease) return loadAnalysisSections(memberWorkspace, WORKSPACE_MEMBER_SECTIONS, { fields: WORKSPACE_MEMBER_FIELDS });
+  try {
+    const pinned = { filePath: resolved.filePath, segmented: lease.segmented };
+    const cas = await loadAnalysisSections(memberWorkspace, WORKSPACE_MEMBER_SECTIONS, { pinned, fields: WORKSPACE_MEMBER_FIELDS });
+    if (!cas) return null;
+    const loadedSections = ['identity', ...WORKSPACE_MEMBER_SECTIONS];
+    const reference: CASMemberReference = {
+      format: 'workspace-member-reference',
+      version: 1,
+      project_id: projectId,
+      composed_id: '',
+      analysis_id: String(cas.analysis_id || lease.segmented.manifest.analysis_id),
+      analysis_timestamp: String(cas.analysis_timestamp || lease.segmented.manifest.analysis_timestamp),
+      generation: path.basename(lease.segmented.directory),
+      storage_format: 'segmented-v2',
+      loaded_sections: loadedSections,
+      omitted_sections: CAS_SECTION_NAMES.filter(section => !loadedSections.includes(section)),
+      loaded_fields: Object.keys(cas).sort(),
+      omitted_fields: WORKSPACE_MEMBER_OMITTED_FIELDS.filter(field => !(field in cas)),
+    };
+    const projected = { ...cas, member_reference: reference } as Partial<CASOutput>;
+    const layers = projectLayersReady(projected, reference);
+    if (layers) projected.layers_ready = layers;
+    return projected;
+  } finally {
+    await lease.release();
+  }
+}
+
+export const WORKSPACE_MEMBER_OMITTED_FIELDS = [
+  'analysis_facts', 'intents', 'steps', 'structural_capability_candidates', 'behavior_surfaces', 'system_purpose', 'flow_summary',
+  'product_map', 'terminality', 'runtime', 'consistency_model', 'architecture_summary', 'patterns', 'change_risk_summary',
+  'behavioral_invariants', 'behavioral_invariant_summary', 'security_boundaries', 'security_summary', 'stability_summary',
+  'principle_violations', 'module_health', 'implementation_health', 'system_health', 'security_contexts', 'codebase_idioms',
+  'idiom_summary', 'idiom_examples', 'route_table', 'behaviors', 'categories', 'perspectives', 'repository_links',
+  'cross_repository_links', 'libraries', 'dependency_roles', 'progressive_levels', 'data_summary', 'structural_importance_meta',
+  'decorators', 'documentation_summary', 'todos_summary', 'configuration', 'codebase_type', 'codebase_type_confidence',
+  'codebase_types', 'codebase_type_signals', 'embedding_index', 'source_input_root', 'source_input_identities', 'source_input_catalog',
 ] as const;
 
 export function compactWorkspaceMemberCas(cas: Partial<CASOutput>): CASOutput {
@@ -291,7 +338,7 @@ export class AccountWorkspaceAnalysisScheduler {
         const memberWorkspace = this.workspacePathFor(project.analysis_id);
         const attempt = await readAttemptRecord(projectAttemptRecordPath(memberWorkspace));
         if (attempt?.state === 'failed') throw new Error(attempt.reason || 'latest analysis attempt failed');
-        const cas = await loadAnalysisSections(memberWorkspace, WORKSPACE_MEMBER_SECTIONS, { fields: WORKSPACE_MEMBER_FIELDS });
+        const cas = await loadWorkspaceMemberProjection(memberWorkspace, project.id);
         if (!cas) throw new Error('current analysis is unavailable');
         inputs.push({
           path: `account-project:${project.id}`,

@@ -12,6 +12,7 @@ export const CAS_CHILD_FIELD_POLICY = {
   label: { mode: 'identity' },
   children: { mode: 'identity' },
   composition_mode: { mode: 'identity' },
+  member_reference: { mode: 'identity' },
   cas_version: { mode: 'inherit' },
   analyzer_build: { mode: 'inherit' },
   parser_fingerprint: { mode: 'inherit' },

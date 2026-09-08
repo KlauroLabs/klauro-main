@@ -142,6 +142,7 @@ const IDENTITY_FIELDS = new Set([
   'parent_id',
   'label',
   'composition_mode',
+  'member_reference',
   'analysis_id',
   'analysis_timestamp',
   'analyzer_build',

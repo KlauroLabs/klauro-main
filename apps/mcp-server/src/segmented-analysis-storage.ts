@@ -61,7 +61,7 @@ const DEFAULT_SEGMENT_WRITE_LOCK_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_SEGMENT_WRITE_LOCK_STALE_MS = 15 * 60 * 1000;
 const DEFAULT_SEGMENT_GENERATION_GRACE_MS = 15 * 60 * 1000;
 
-function generationGraceMs(): number {
+export function generationGraceMs(): number {
   const configured = Number(process.env.KLAURO_SEGMENT_GENERATION_GRACE_MS);
   return Number.isFinite(configured) && configured >= DEFAULT_SEGMENT_GENERATION_GRACE_MS
     ? configured
