@@ -24,7 +24,8 @@ import { partitionAnalysisDiagnostics } from '../../../packages/analyzer-core/sr
 import { isCASSearchContentWord } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-search';
 import type { CASProductMap } from '../../../packages/analyzer-core/src/types/cas.types';
 import { buildSystemFitSummary, buildCommunicationSeamSummary } from './context-fabric';
-import { getQueryTraversalIndex } from './query-traversal-index';
+import { getCallers, getCallees, getStructuralContext, getDirectReferenceCounts } from './query-call-relationships';
+export { getCallers, getCallees } from './query-call-relationships';
 import { capabilityRuntimeTelemetryById, observedRuntimeFlowEvidence, observedRuntimeStaticLinks } from './runtime-query-overlays';
 import { resolveCodingContextTarget } from './coding-target-resolution';
 import { casCollectionTotal, casEdgeCount, casNodeCount, casProjectionSummary, casSectionLoaded } from './cas-projection';
@@ -1047,114 +1048,6 @@ export function getExternalServices(cas: CASOutput) {
   return cas.external_services || [];
 }
 
-export function getCallers(cas: CASOutput, nodeId: string, maxDepth: number = 2, limit: number = 50) {
-  const visited = new Set<string>();
-
-
-
-
-
-  const pushed = new Set<string>();
-  const callers: Array<{ node_id: string; name: string; type: string; depth: number; via: string }> = [];
-  const { nodesById, incomingEdges, incomingMethodCalls } = getQueryTraversalIndex(cas);
-
-  function traverse(currentId: string, depth: number) {
-    if (depth > maxDepth || visited.has(currentId) || callers.length >= limit) return;
-    visited.add(currentId);
-
-    for (const edge of incomingEdges.get(currentId) || []) {
-      if (callers.length >= limit) break;
-      if (!visited.has(edge.source) && !pushed.has(edge.source)) {
-        const sourceNode = nodesById.get(edge.source);
-        if (sourceNode) {
-          pushed.add(sourceNode.id);
-          callers.push({
-            node_id: sourceNode.id,
-            name: sourceNode.name,
-            type: sourceNode.type,
-            depth,
-            via: `edge:${edge.type}`,
-          });
-          traverse(sourceNode.id, depth + 1);
-        }
-      }
-    }
-
-    for (const mc of incomingMethodCalls.get(currentId) || []) {
-      if (callers.length >= limit) break;
-      if (mc.caller_node && !visited.has(mc.caller_node) && !pushed.has(mc.caller_node)) {
-        const callerNode = nodesById.get(mc.caller_node);
-        if (callerNode) {
-          pushed.add(callerNode.id);
-          callers.push({
-            node_id: callerNode.id,
-            name: callerNode.name,
-            type: callerNode.type,
-            depth,
-            via: `method_call:${mc.call_details.method_name}`,
-          });
-          traverse(callerNode.id, depth + 1);
-        }
-      }
-    }
-  }
-
-  traverse(nodeId, 1);
-  return { total: callers.length, limit, truncated: callers.length >= limit, callers };
-}
-
-export function getCallees(cas: CASOutput, nodeId: string, maxDepth: number = 2, limit: number = 50) {
-  const visited = new Set<string>();
-
-
-  const pushed = new Set<string>();
-  const callees: Array<{ node_id: string; name: string; type: string; depth: number; via: string }> = [];
-  const { nodesById, outgoingEdges, outgoingMethodCalls } = getQueryTraversalIndex(cas);
-
-  function traverse(currentId: string, depth: number) {
-    if (depth > maxDepth || visited.has(currentId) || callees.length >= limit) return;
-    visited.add(currentId);
-
-    for (const edge of outgoingEdges.get(currentId) || []) {
-      if (callees.length >= limit) break;
-      if (!visited.has(edge.target) && !pushed.has(edge.target)) {
-        const targetNode = nodesById.get(edge.target);
-        if (targetNode) {
-          pushed.add(targetNode.id);
-          callees.push({
-            node_id: targetNode.id,
-            name: targetNode.name,
-            type: targetNode.type,
-            depth,
-            via: `edge:${edge.type}`,
-          });
-          traverse(targetNode.id, depth + 1);
-        }
-      }
-    }
-
-    for (const mc of outgoingMethodCalls.get(currentId) || []) {
-      if (callees.length >= limit) break;
-      if (mc.target_node && !visited.has(mc.target_node) && !pushed.has(mc.target_node)) {
-        const targetNode = nodesById.get(mc.target_node);
-        if (targetNode) {
-          pushed.add(targetNode.id);
-          callees.push({
-            node_id: targetNode.id,
-            name: targetNode.name,
-            type: targetNode.type,
-            depth,
-            via: `method_call:${mc.call_details.method_name}`,
-          });
-          traverse(targetNode.id, depth + 1);
-        }
-      }
-    }
-  }
-
-  traverse(nodeId, 1);
-  return { total: callees.length, limit, truncated: callees.length >= limit, callees };
-}
 
 export function getCallChain(cas: CASOutput, opts: { chainId?: string; entryPointId?: string; limit?: number; offset?: number }) {
   const chains = cas.call_chains || [];
@@ -3598,7 +3491,6 @@ export function getCodingContext(
 
 
 
-  const UNCAPPED_COUNT_PROBE = 5000;
 
   const targetNode = resolveCodingContextTarget(
     cas,
@@ -3815,12 +3707,9 @@ export function getCodingContext(
 
 
 
-  const callersTotal = callersResult.truncated
-    ? getCallers(cas, targetNode.id, 1, UNCAPPED_COUNT_PROBE).total
-    : callersResult.total;
-  const calleesTotal = calleesResult.truncated
-    ? getCallees(cas, targetNode.id, 1, UNCAPPED_COUNT_PROBE).total
-    : calleesResult.total;
+  const referenceCounts = getDirectReferenceCounts(cas, targetNode.id);
+  const callersTotal = referenceCounts.callers;
+  const calleesTotal = referenceCounts.callees;
 
   const sharedTypes: Array<{ id: string; name: string; usage_count: number }> = [];
   const outgoingEdges = cas.edges.filter(e => e.source === targetNode!.id && e.type === 'uses_type');
@@ -3839,13 +3728,16 @@ export function getCodingContext(
       id: c.node_id,
       name: c.name,
       type: c.type,
+      via: c.via,
       risk_if_changed: callersTotal > 5 ? 'high' : (callersTotal > 2 ? 'medium' : 'low'),
     })),
     callees: calleesResult.callees.map(c => ({
       id: c.node_id,
       name: c.name,
       type: c.type,
+      via: c.via,
     })),
+    structural_context: getStructuralContext(cas, targetNode.id, callerLimit, calleeLimit),
     shared_types: sharedTypes,
     callers_total: callersTotal,
     callees_total: calleesTotal,
@@ -3915,7 +3807,6 @@ export function getInterfaceSignature(
 ) {
   const callerLimit = opts.caller_limit && opts.caller_limit > 0 ? opts.caller_limit : 10;
   const calleeLimit = opts.callee_limit && opts.callee_limit > 0 ? opts.callee_limit : 10;
-  const UNCAPPED_COUNT_PROBE = 5000;
 
 
 
@@ -4005,7 +3896,8 @@ export function getInterfaceSignature(
   );
   const requiredParams = targetNode.signature?.parameters?.map(p => ({ name: p.name, type: p.type, optional: p.optional })) || [];
   const callersResult = getCallers(cas, targetNode.id, 1, callerLimit);
-  const callersTotal = callersResult.truncated ? getCallers(cas, targetNode.id, 1, UNCAPPED_COUNT_PROBE).total : callersResult.total;
+  const referenceCounts = getDirectReferenceCounts(cas, targetNode.id);
+  const callersTotal = referenceCounts.callers;
 
 
   const returnType = targetNode.signature?.return_type;
@@ -4025,7 +3917,7 @@ export function getInterfaceSignature(
 
 
   const calleesResult = getCallees(cas, targetNode.id, 1, calleeLimit);
-  const calleesTotal = calleesResult.truncated ? getCallees(cas, targetNode.id, 1, UNCAPPED_COUNT_PROBE).total : calleesResult.total;
+  const calleesTotal = referenceCounts.callees;
   const anyTruncated = callersTotal > callersResult.callers.length || calleesTotal > calleesResult.callees.length;
 
 

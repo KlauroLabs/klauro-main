@@ -541,9 +541,9 @@ test('getCallers surfaces a "references" edge to an exported constant, not just 
   };
 
   const result: any = getCallers(cas, 'variable_TIER_RATE_LIMITS', 1, 50);
-  assert.equal(result.total, 2);
+  assert.equal(result.total, 1);
   const via = result.callers.map((c: any) => c.via);
-  assert.ok(via.includes('edge:contains'));
+  assert.ok(!via.includes('edge:contains'));
   assert.ok(via.includes('edge:references'), `expected a references-edge caller, got ${JSON.stringify(result.callers)}`);
   const referenceCaller = result.callers.find((c: any) => c.via === 'edge:references');
   assert.equal(referenceCaller.node_id, 'method_RateLimiter_isRateLimited');
