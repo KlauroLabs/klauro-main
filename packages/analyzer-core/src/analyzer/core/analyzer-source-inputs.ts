@@ -48,6 +48,11 @@ export class AnalyzerSourceInputCapture {
     this.parent?.observe(absolute, observation);
   }
 
+  merge(capture: AnalyzerSourceInputCapture): void {
+    for (const file of capture.files) this.add(file);
+    for (const [file, observation] of capture.observations) this.observe(file, observation);
+  }
+
   paths(): string[] {
     return [...this.files].sort();
   }

@@ -19,6 +19,25 @@ async function workspace(t: TestContext): Promise<string> {
   return root;
 }
 
+test('merged file captures preserve conflicts, isolate analyzers, and count distinct external reads', () => {
+  const capture = new AnalyzerSourceInputCapture();
+  const first = new AnalyzerSourceInputCapture();
+  const second = new AnalyzerSourceInputCapture();
+  first.observe('/project/source.ts', sourceInputObservation('old', 'utf8'));
+  second.observe('/project/source.ts', sourceInputObservation('new', 'utf8'));
+  first.observe('/outside/config.json', sourceInputObservation('shared', 'utf8'));
+  second.observe('/outside/config.json', sourceInputObservation('shared', 'utf8'));
+  capture.merge(first);
+  capture.merge(second);
+  assert.deepEqual(capture.snapshot('/project').files, [
+    { path: 'source.ts', status: 'conflicting', reason: 'multiple-input-identities' },
+  ]);
+  assert.equal(capture.snapshot('/project').outside_root_reads, 1);
+  assert.equal(first.snapshot('/project').files[0].status, 'captured');
+  assert.equal(second.snapshot('/project').files[0].status, 'captured');
+  assert.deepEqual(new AnalyzerSourceInputCapture().snapshot('/project').files, []);
+});
+
 function digest(content: string | Buffer): string {
   return crypto.createHash('sha256').update(content).digest('hex');
 }

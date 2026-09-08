@@ -22,6 +22,162 @@ function fixture(contributors: CASAnalyzerContribution[]): CASOutput {
     analyzer_contributions: contributors } as CASOutput;
 }
 
+
+test('unchanged observed envelopes survive incremental compaction and root relocation', () => {
+  for (const shared of [false, true]) {
+    const previous = fixture([contribution('changed', 'member/src/a.ts'), contribution('untouched', 'shared/config.json')]);
+    previous.system.root_path = '/old/project/member';
+    previous.source_input_root = '/old/project';
+    previous.children = [fixture([contribution('child', 'child.ts')])];
+    if (shared) compactCasSourceInputIdentities(previous);
+    const before = structuredClone(previous);
+    const result = new IncrementalSourceInputRefresh('/new/member', previous, ['src/a.ts']).apply(previous);
+    assert.equal(result.source_input_root, '/new');
+    assert.equal(result.analyzer_contributions[1].source_inputs?.coverage, 'observed-reads');
+    const inputs = result.analyzer_contributions[1].source_inputs;
+    assert.ok(inputs?.version === 2);
+    assert.deepEqual(inputs.identity_indices.map(index => result.source_input_identities![index]),
+      [{ path: 'shared/config.json', ...sourceInputObservation('shared/config.json', 'utf8') }]);
+    assert.equal(result.analyzer_contributions[0].source_inputs?.coverage, 'unavailable');
+    assert.deepEqual(previous, before);
+    assert.equal(result.children, previous.children);
+  }
+});
+
+test('file refresh captures actual reads and retains unchanged inputs across generations', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-file-observations-'));
+  try {
+    const file = path.join(root, 'source.ts');
+    await fs.writeFile(file, 'observed');
+    const previous = fixture([contribution('reader', 'source.ts', 'old')]);
+    previous.system.root_path = root;
+    previous.analyzer_contributions[0].source_inputs = {
+      ...previous.analyzer_contributions[0].source_inputs!,
+      version: 1, files: [
+        { path: 'source.ts', ...sourceInputObservation('old', 'utf8') },
+        { path: 'config.json', ...sourceInputObservation('unchanged', 'utf8') },
+      ],
+    };
+    compactCasSourceInputIdentities(previous);
+    const refresh = new IncrementalSourceInputRefresh(root, previous, ['source.ts']);
+    await withAnalyzerFileReadCache(() => refresh.analyzeFile('reader', file, async () => {
+      assert.equal(await fs.readFile(file, 'utf8'), 'observed');
+      await fs.writeFile(file, 'newer on disk');
+      return true;
+    }));
+    const result = refresh.apply(previous);
+    const inputs = result.analyzer_contributions[0].source_inputs;
+    assert.ok(inputs?.version === 2);
+    assert.equal(inputs.coverage, 'observed-reads');
+    assert.deepEqual(inputs.identity_indices.map(index => result.source_input_identities![index]), [
+      { path: 'config.json', ...sourceInputObservation('unchanged', 'utf8') },
+      { path: 'source.ts', ...sourceInputObservation('observed', 'utf8') },
+    ]);
+    assert.equal(new IncrementalSourceInputRefresh(root, result, ['unrelated.ts']).affectedAnalyzerIds.size, 0);
+  } finally {
+    await fs.remove(root);
+  }
+});
+
+test('unobserved cache results and new inputs require project refresh rather than invented provenance', async () => {
+  const previous = fixture([contribution('reader', 'src/a.ts')]);
+  const registration = { id: 'reader', analyzer: {
+    incrementalContributionScope: () => 'file' as const, supportsIncrementalAnalysis: () => true,
+    analyzeFileSingle: async () => ({}), getRelevantFiles: async () => ['src/a.ts', 'src/new.ts'],
+  } };
+  for (const file of ['src/a.ts', 'src/new.ts']) {
+    const refresh = await new IncrementalSourceInputRefresh('/project', previous, [file]).resolveFileEligibility([registration]);
+    await refresh.analyzeFile('reader', file, async () => ({ cached: true }));
+    const selected = new Set<string>();
+    refresh.finalizeFileAnalysis([registration], selected);
+    assert.deepEqual([...selected], ['reader']);
+    assert.equal(refresh.apply(previous).analyzer_contributions[0].source_inputs?.coverage, 'unavailable');
+  }
+});
+
+test('cache bookkeeping is not attributed as analyzer source evidence', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-input-cache-'));
+  try {
+    await fs.outputFile(path.join(root, 'source.ts'), 'source');
+    await fs.outputFile(path.join(root, 'cache.json'), '{"value":1}');
+    const previous = fixture([contribution('reader', 'source.ts', 'source')]);
+    previous.system.root_path = root;
+    for (const hit of [true, false]) {
+      const refresh = new IncrementalSourceInputRefresh(root, previous, []);
+      await withAnalyzerFileReadCache(() => refresh.analyzeFile('reader', 'source.ts', async () => {
+        await fs.readFile(path.join(root, 'source.ts'), 'utf8');
+        return { value: 1 };
+      }, {
+        key: 'cache',
+        load: async () => { await fs.readFile(path.join(root, 'cache.json'), 'utf8'); return hit ? { value: 1 } : null; },
+        save: async () => { await fs.readFile(path.join(root, 'cache.json'), 'utf8'); },
+      }));
+      const result = refresh.apply(previous);
+      assert.deepEqual(result.source_input_identities, [{ path: 'source.ts', ...sourceInputObservation('source', 'utf8') }]);
+    }
+  } finally {
+    await fs.remove(root);
+  }
+});
+
+test('project observations are rebased into a retained enclosing source root', () => {
+  const previous = fixture([contribution('reader', 'member/source.ts', 'old')]);
+  previous.system.root_path = '/old/member';
+  previous.source_input_root = '/old';
+  const refresh = new IncrementalSourceInputRefresh('/new/member', previous, ['source.ts']);
+  refresh.record(contribution('reader', 'source.ts', 'new'));
+  const result = refresh.apply(previous);
+  assert.equal(result.source_input_root, '/new');
+  assert.deepEqual(result.source_input_identities, [{ path: 'member/source.ts', ...sourceInputObservation('new', 'utf8') }]);
+});
+
+test('conflicting reads across file executions request refresh rather than selecting the last digest', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-input-conflicts-'));
+  try {
+    const file = path.join(root, 'source.ts');
+    const previous = fixture([contribution('reader', 'source.ts', 'old')]);
+    previous.system.root_path = root;
+    const registration = { id: 'reader', analyzer: {
+      incrementalContributionScope: () => 'file' as const, supportsIncrementalAnalysis: () => true,
+      analyzeFileSingle: async () => ({}), getRelevantFiles: async () => [file],
+    } };
+    const refresh = await new IncrementalSourceInputRefresh(root, previous, ['source.ts']).resolveFileEligibility([registration]);
+    for (const value of ['first', 'second']) {
+      await fs.outputFile(file, value);
+      await withAnalyzerFileReadCache(() => refresh.analyzeFile('reader', file, () => fs.readFile(file, 'utf8')));
+    }
+    const selected = new Set<string>();
+    refresh.finalizeFileAnalysis([registration], selected);
+    assert.deepEqual([...selected], ['reader']);
+    assert.equal(refresh.apply(previous).analyzer_contributions[0].source_inputs?.coverage, 'unavailable');
+  } finally {
+    await fs.remove(root);
+  }
+});
+
+test('newly consumed files extend an observed footprint without forcing a project rerun', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-new-input-'));
+  try {
+    const file = path.join(root, 'new.ts');
+    await fs.outputFile(file, 'new');
+    const previous = fixture([contribution('reader', 'old.ts', 'old')]);
+    previous.system.root_path = root;
+    const registration = { id: 'reader', analyzer: {
+      incrementalContributionScope: () => 'file' as const, supportsIncrementalAnalysis: () => true,
+      analyzeFileSingle: async () => ({}), getRelevantFiles: async () => [file],
+    } };
+    const refresh = await new IncrementalSourceInputRefresh(root, previous, ['new.ts']).resolveFileEligibility([registration]);
+    await withAnalyzerFileReadCache(() => refresh.analyzeFile('reader', file, () => fs.readFile(file, 'utf8')));
+    const selected = new Set<string>();
+    refresh.finalizeFileAnalysis([registration], selected);
+    assert.deepEqual([...selected], []);
+    const result = refresh.apply(previous);
+    assert.equal(result.analyzer_contributions[0].source_inputs?.coverage, 'observed-reads');
+    assert.deepEqual(result.source_input_identities?.map(input => input.path).sort(), ['new.ts', 'old.ts']);
+  } finally {
+    await fs.remove(root);
+  }
+});
 test('contribution summaries expose category identifiers and preserve unknown versions', () => {
   const summary = buildAnalyzerContributionSummary({
     registration: { id: 'reader', name: 'Reader', type: 'pattern' }, executionTime: 0, filesCreated: 0,
@@ -67,7 +223,7 @@ test('affected file analyzers follow their own file discovery even without previ
   assert.deepEqual(refresh.matchingAnalyzerIds('src/a.ts'), ['new-framework']);
   assert.deepEqual(refresh.matchingAnalyzerIds('BuildSpec'), ['manifest-reader']);
   assert.deepEqual(refresh.matchingAnalyzerIds('src/unrelated.ts'), []);
-  assert.deepEqual([...refresh.projectAnalyzerIds(registrations)], []);
+  assert.deepEqual([...refresh.projectAnalyzerIds(registrations)], ['manifest-reader']);
   assert.equal(refresh.affectedAnalyzerIds.has('manifest-reader'), true);
 });
 
@@ -111,35 +267,29 @@ test('unknown file eligibility requests a conservative refresh instead of runnin
   assert.deepEqual([...refresh.projectAnalyzerIds([registration])], ['reader']);
 });
 
-test('documents the selection limit for an observed input outside a file analyzer handled extensions', () => {
-  const cas = fixture([contribution('python-reader', 'src/shared.ts', 'previous input')]);
-  cas.nodes = [{ id: 'derived', name: 'previous fact', type: 'function', source: { file: 'src/consumer.py' } }];
-  const refresh = new IncrementalSourceInputRefresh('/project', cas, ['src/shared.ts']);
-  const registration = { id: 'python-reader', analyzer: {
-    incrementalContributionScope: () => 'file' as const,
-    supportsIncrementalAnalysis: () => true,
-    analyzeFileSingle: async () => ({}),
-  } };
-  const handles = (file: string) => file.endsWith('.py');
-  assert.equal(handles('src/shared.ts'), false);
-  assert.equal(refresh.affectedAnalyzerIds.has(registration.id), true);
-  assert.equal(refresh.projectAnalyzerIds([registration]).size, 0);
-  const result = refresh.apply(cas);
-  assert.equal(result.nodes, cas.nodes);
-  assert.equal(result.nodes[0].name, 'previous fact');
-  assert.equal(result.analyzer_contributions[0].source_inputs?.coverage, 'unavailable');
-  assert.equal(result.analyzer_contributions[0].source_inputs?.reason, 'incremental-input-identities-not-refreshed');
+test('changed dependencies outside file eligibility and deleted inputs require project refresh', async () => {
+  for (const relevant of [['src/consumer.py'], []]) {
+    const cas = fixture([contribution('reader', 'src/shared.ts')]);
+    const registration = { id: 'reader', analyzer: {
+      incrementalContributionScope: () => 'file' as const, supportsIncrementalAnalysis: () => true,
+      analyzeFileSingle: async () => ({}), getRelevantFiles: async () => relevant,
+    } };
+    const refresh = await new IncrementalSourceInputRefresh('/project', cas, ['src/shared.ts']).resolveFileEligibility([registration]);
+    assert.deepEqual(refresh.matchingAnalyzerIds('src/shared.ts'), []);
+    assert.deepEqual([...refresh.projectAnalyzerIds([registration])], ['reader']);
+    assert.equal(refresh.apply(cas).analyzer_contributions[0].source_inputs?.coverage, 'unavailable');
+  }
 });
 
-test('unavailable observations do not promote a supported file analyzer into a project refresh', () => {
+test('unavailable observations require project refresh even when single-file execution exists', () => {
   const cas = fixture([contribution('file', 'src/a.ts')]);
   cas.analyzer_contributions[0].source_inputs!.coverage = 'unavailable';
   const refresh = new IncrementalSourceInputRefresh('/project', cas, ['src/b.ts']);
   assert.equal(refresh.affectedAnalyzerIds.has('file'), true);
-  assert.equal(refresh.projectAnalyzerIds([{ id: 'file', analyzer: {
+  assert.deepEqual([...refresh.projectAnalyzerIds([{ id: 'file', analyzer: {
     incrementalContributionScope: () => 'file', supportsIncrementalAnalysis: () => true,
     analyzeFileSingle: async () => ({}),
-  } }]).size, 0);
+  } }])], ['file']);
   const result = refresh.apply(cas);
   assert.equal(result.analyzer_contributions[0].source_inputs?.coverage, 'unavailable');
   assert.deepEqual(result.source_input_identities, []);

@@ -46,16 +46,17 @@ test('file-scoped analyzers discover their first route and preserve it across re
       for (const id of ['python', 'fastapi']) {
         const inputs = result.output.analyzer_contributions.find(item => item.analyzer_id === id)?.source_inputs;
         assert.ok(inputs);
-        if (inputs.coverage === 'unavailable') {
-          assert.equal(inputs.reason, 'incremental-input-identities-not-refreshed');
-        } else {
-          assert.equal(inputs.coverage, 'observed-reads');
-          const identities = inputs.version === 1 ? inputs.files : inputs.identity_indices.map(index =>
-            sourceInputIdentityAt(result.output.source_input_identities, index));
-          assert.deepEqual(identities.find(identity => identity?.path === 'app.py'), {
-            path: 'app.py', ...sourceInputObservation(await fs.readFile(file, 'utf8'), 'utf8'),
-          });
-        }
+        assert.equal(inputs.coverage, 'observed-reads', id);
+        const identities = inputs.version === 1 ? inputs.files : inputs.identity_indices.map(index =>
+          sourceInputIdentityAt(result.output.source_input_identities, index));
+        assert.deepEqual(identities.find(identity => identity?.path === 'app.py'), {
+          path: 'app.py', ...sourceInputObservation(await fs.readFile(file, 'utf8'), 'utf8'),
+        });
+      }
+      for (const contribution of previous.analyzer_contributions) {
+        if (contribution.source_inputs?.coverage !== 'observed-reads') continue;
+        assert.equal(result.output.analyzer_contributions.find(item => item.analyzer_id === contribution.analyzer_id)
+          ?.source_inputs?.coverage, 'observed-reads', contribution.analyzer_id);
       }
       previous = result.output;
       state = result.state;

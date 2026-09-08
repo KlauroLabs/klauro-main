@@ -2515,11 +2515,9 @@ export class AnalyzerOrchestrator {
               existingAnalysis: [registration.analyzer.incrementalContributionScope() === 'project' ? projectScopedSnapshot! : analysisSnapshot.current()]
             };
             const cacheKey = options?.loadCache || options?.saveCache ? this.incrementalFileCacheKey(registration, fileContext) : null;
-            let result = cacheKey && options?.loadCache ? await options.loadCache(cacheKey) : null;
-            if (!result) {
-              result = await registration.analyzer.analyzeFileSingle(fileContext);
-              if (cacheKey && options?.saveCache && result) await options.saveCache(cacheKey, result);
-            }
+            const result = await sourceInputs.analyzeFile(registration.id, fullPath,
+              () => registration.analyzer.analyzeFileSingle!(fileContext),
+              { key: cacheKey, load: options?.loadCache, save: options?.saveCache });
             if (analyzerRoot !== projectPath) {
               this.normalizeFilePaths({
                 nodes: result.nodes,
@@ -2645,6 +2643,7 @@ export class AnalyzerOrchestrator {
       }
       return unsupported;
     });
+    sourceInputs.finalizeFileAnalysis(detectedAnalyzers, projectScopedAnalyzerIds);
     debugIncrementalPhase('unsupported-derived-fact-check');
     await yieldToEventLoop();
     if (shouldPreferFullRebuildForFanout(analyzedFiles.length, trackedFileCount, projectScopedAnalyzerIds.size)) {
