@@ -136,6 +136,7 @@ import {
   indexIncrementalAnalyzersByFile,
   indexIncrementalGraphItemsByFile,
   refreshProjectScopedContributions,
+  rebuildIncrementalAnalysis,
   mergeIncrementalFileAnalysisResult,
   reusedIncrementalFileResult,
   removeReplaceableFileScopedGraphItems,
@@ -2077,9 +2078,8 @@ export class AnalyzerOrchestrator {
       const trigger = /^(Parser-layer fingerprint changed|Derived-layer fingerprint changed|Analyzer build changed)/.test(schemaRebuildReason)
         ? 'analyzer-version'
         : 'persisted-output-schema';
-      writeAnalyzerStatus(`[Klauro] incremental full rebuild (${trigger}): ${schemaRebuildReason}`);
       this.invalidateProjectDiscovery(projectPath);
-      const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName, onProgress: options?.onProgress });
+      const { output } = await rebuildIncrementalAnalysis(projectPath, trigger, schemaRebuildReason, () => this.orchestrateAnalysis(projectPath, { displayName: options?.displayName, onProgress: options?.onProgress }));
       const state = this.buildIncrementalState(projectPath, output, changeDetector);
       const changeReport = this.buildChangeReport(
         previousOutput,
@@ -2102,7 +2102,7 @@ export class AnalyzerOrchestrator {
     }
     if (changeSet.requiresFullRebuild) {
       this.invalidateProjectDiscovery(projectPath);
-      const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName, onProgress: options?.onProgress });
+      const { output } = await rebuildIncrementalAnalysis(projectPath, 'change-detector', changeSet.reason || 'Change detector requested a full rebuild without a specific reason', () => this.orchestrateAnalysis(projectPath, { displayName: options?.displayName, onProgress: options?.onProgress }));
       const state = this.buildIncrementalState(projectPath, output, changeDetector);
       const changeReport = this.buildChangeReport(previousOutput, output, changeSet);
       changeReport.locality = buildChangeExecutionLocality({
@@ -2274,36 +2274,18 @@ export class AnalyzerOrchestrator {
     const previousAnalyzerVersions = previousState.analyzerVersions || {};
     const currentRegistryFingerprint = this.analyzerRegistryFingerprint(this.analyzers.values());
     if (previousState.analyzerRegistryFingerprint !== currentRegistryFingerprint) {
-      const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
-      return {
-        output,
-        fileResults: new Map(),
-        wasFullRebuild: true,
-        fullRebuildReason: 'Analyzer registry changed',
-      };
+      return rebuildIncrementalAnalysis(projectPath, 'analyzer-registry', 'Analyzer registry changed', () => this.orchestrateAnalysis(projectPath, { displayName: options?.displayName }));
     }
     const analyzerSetChanged = stableAnalyzerCacheIdentity(currentAnalyzerVersions) !==
       stableAnalyzerCacheIdentity(previousAnalyzerVersions);
     if (analyzerSetChanged) {
-      const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
-      return {
-        output,
-        fileResults: new Map(),
-        wasFullRebuild: true,
-        fullRebuildReason: 'Detected analyzer set or version changed',
-      };
+      return rebuildIncrementalAnalysis(projectPath, 'analyzer-set', 'Detected analyzer set or version changed', () => this.orchestrateAnalysis(projectPath, { displayName: options?.displayName }));
     }
     const incrementalAnalyzers = detectedAnalyzers.filter(
       r => r.analyzer.supportsIncrementalAnalysis?.() && r.analyzer.analyzeFileSingle
     );
     if (incrementalAnalyzers.length === 0) {
-      const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
-      return {
-        output,
-        fileResults: new Map(),
-        wasFullRebuild: true,
-        fullRebuildReason: 'No detected analyzer supports single-file incremental analysis'
-      };
+      return rebuildIncrementalAnalysis(projectPath, 'incremental-support', 'No detected analyzer supports single-file incremental analysis', () => this.orchestrateAnalysis(projectPath, { displayName: options?.displayName }));
     }
     const directFilesToAnalyze = filesRequiringIncrementalAnalysis(changeSet);
     const possibleFilesToAnalyze = [...new Set([
@@ -2367,13 +2349,7 @@ export class AnalyzerOrchestrator {
     }));
     const unsupportedDirectFiles = directFilesToAnalyze.filter(filePath => unsupportedFiles.has(filePath));
     if (unsupportedDirectFiles.length > 0) {
-      const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
-      return {
-        output,
-        fileResults: new Map(),
-        wasFullRebuild: true,
-        fullRebuildReason: `Changed files are not supported by single-file incremental analyzers: ${unsupportedDirectFiles.slice(0, 5).join(', ')}`
-      };
+      return rebuildIncrementalAnalysis(projectPath, 'unsupported-direct-files', `Changed files are not supported by single-file incremental analyzers: ${unsupportedDirectFiles.slice(0, 5).join(', ')}`, () => this.orchestrateAnalysis(projectPath, { displayName: options?.displayName }));
     }
     const scannedRelevantFilesByAnalyzer = new Map(
       analyzerPlans.map(plan => [plan.registration.id, plan.relevantFiles.size])
@@ -2434,8 +2410,7 @@ export class AnalyzerOrchestrator {
     let propagationRounds = 0;
     const initialPropagationFailure = propagation.fallbackReason();
     if (initialPropagationFailure) {
-      const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
-      return { output, fileResults: new Map(), wasFullRebuild: true, fullRebuildReason: initialPropagationFailure };
+      return rebuildIncrementalAnalysis(projectPath, 'initial-propagation-limit', initialPropagationFailure, () => this.orchestrateAnalysis(projectPath, { displayName: options?.displayName }));
     }
     while (true) {
       const batch = propagation.takeBatch(BATCH_SIZE).map(item => item.filePath);
@@ -2443,13 +2418,7 @@ export class AnalyzerOrchestrator {
       propagationRounds++;
       const unsupportedBatch = batch.filter(filePath => unsupportedFiles.has(filePath));
       if (unsupportedBatch.length > 0) {
-        const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
-        return {
-          output,
-          fileResults: new Map(),
-          wasFullRebuild: true,
-          fullRebuildReason: `Propagated files are not supported by single-file incremental analyzers: ${unsupportedBatch.slice(0, 5).join(', ')}`,
-        };
+        return rebuildIncrementalAnalysis(projectPath, 'unsupported-propagated-files', `Propagated files are not supported by single-file incremental analyzers: ${unsupportedBatch.slice(0, 5).join(', ')}`, () => this.orchestrateAnalysis(projectPath, { displayName: options?.displayName }));
       }
       for (const relativePath of batch) {
         const fullPath = path.join(projectPath, relativePath);
@@ -2598,8 +2567,7 @@ export class AnalyzerOrchestrator {
       if (failedFiles.length > 0) break;
       const propagationFailure = propagation.fallbackReason();
       if (propagationFailure) {
-        const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
-        return { output, fileResults: new Map(), wasFullRebuild: true, fullRebuildReason: propagationFailure };
+        return rebuildIncrementalAnalysis(projectPath, 'propagation-limit', propagationFailure, () => this.orchestrateAnalysis(projectPath, { displayName: options?.displayName }));
       }
     }
     const analyzedFiles = propagation.scheduledFiles();
@@ -2622,14 +2590,8 @@ export class AnalyzerOrchestrator {
     debugIncrementalPhase('analyze-changed-files');
     await yieldToEventLoop();
     if (failedFiles.length > 0 || fileResults.size !== analyzedFiles.length) {
-      const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
       const incompleteFiles = analyzedFiles.filter(file => !fileResults.has(file));
-      return {
-        output,
-        fileResults: new Map(),
-        wasFullRebuild: true,
-        fullRebuildReason: `Single-file incremental analysis failed or was incomplete for: ${[...failedFiles, ...incompleteFiles].slice(0, 5).join(', ')}`
-      };
+      return rebuildIncrementalAnalysis(projectPath, 'file-analysis-incomplete', `Single-file incremental analysis failed or was incomplete for: ${[...failedFiles, ...incompleteFiles].slice(0, 5).join(', ')}`, () => this.orchestrateAnalysis(projectPath, { displayName: options?.displayName }));
     }
     this.retainStableMissingFileFacts(
       projectPath,
@@ -2685,9 +2647,8 @@ export class AnalyzerOrchestrator {
     debugIncrementalPhase('unsupported-derived-fact-check');
     await yieldToEventLoop();
     if (shouldPreferFullRebuildForFanout(analyzedFiles.length, trackedFileCount, projectScopedAnalyzerIds.size)) {
-      const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
       const fullRebuildReason = `Affected dependency closure spans ${analyzedFiles.length} of ${trackedFileCount} tracked files while ${projectScopedAnalyzerIds.size} project-scoped analyzers require refresh`;
-      return { output, fileResults: new Map(), wasFullRebuild: true, fullRebuildReason };
+      return rebuildIncrementalAnalysis(projectPath, 'dependency-fanout', fullRebuildReason, () => this.orchestrateAnalysis(projectPath, { displayName: options?.displayName }));
     }
     const localizedEligibility = changeSet.added.length === 0 && changeSet.deleted.length === 0
       ? this.getLocalizedIncrementalMergeEligibility(previousOutput, previousState, changeSet, fileResults)
@@ -2736,13 +2697,7 @@ export class AnalyzerOrchestrator {
         onFailure: failure => { refreshFailure = failure; },
       });
       if (!refreshed) {
-        const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
-        return {
-          output,
-          fileResults: new Map(),
-          wasFullRebuild: true,
-          fullRebuildReason: `Changed files require a full project contribution rebuild (${refreshFailure?.reason || 'unknown'}): ${[...projectScopedAnalyzerIds].sort().join(', ')}`,
-        };
+        return rebuildIncrementalAnalysis(projectPath, 'project-contribution-refresh', `Changed files require a full project contribution rebuild (${refreshFailure?.reason || 'unknown'}): ${[...projectScopedAnalyzerIds].sort().join(', ')}`, () => this.orchestrateAnalysis(projectPath, { displayName: options?.displayName }));
       }
       replaceArrayContents(filteredNodes, refreshed.nodes);
       replaceArrayContents(filteredEdges, refreshed.edges);

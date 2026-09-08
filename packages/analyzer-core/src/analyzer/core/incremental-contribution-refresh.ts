@@ -78,6 +78,16 @@ export function shouldPromoteIncrementalAnalyzerRefresh(
   return plannedFileCount * plannedFileCount > relevantFileCount;
 }
 
+export async function rebuildIncrementalAnalysis(
+  projectPath: string,
+  trigger: string,
+  fullRebuildReason: string,
+  run: () => Promise<CASOutput>,
+): Promise<{ output: CASOutput; fileResults: Map<string, FileAnalysisResult>; wasFullRebuild: true; fullRebuildReason: string }> {
+  process.stderr.write(`${JSON.stringify({ event: 'incremental_full_rebuild', project_path: projectPath, trigger, reason: fullRebuildReason })}\n`);
+  return { output: await run(), fileResults: new Map(), wasFullRebuild: true, fullRebuildReason };
+}
+
 export function shouldPreferFullRebuildForFanout(
   affectedFileCount: number,
   trackedFileCount: number,
