@@ -55,6 +55,26 @@ test('affected file analyzers use single-file refresh, while project and unsuppo
   assert.equal(refresh.affectedAnalyzerIds.has('file'), true);
 });
 
+test('documents the selection limit for an observed input outside a file analyzer handled extensions', () => {
+  const cas = fixture([contribution('python-reader', 'src/shared.ts', 'previous input')]);
+  cas.nodes = [{ id: 'derived', name: 'previous fact', type: 'function', source: { file: 'src/consumer.py' } }];
+  const refresh = new IncrementalSourceInputRefresh('/project', cas, ['src/shared.ts']);
+  const registration = { id: 'python-reader', analyzer: {
+    incrementalContributionScope: () => 'file' as const,
+    supportsIncrementalAnalysis: () => true,
+    analyzeFileSingle: async () => ({}),
+  } };
+  const handles = (file: string) => file.endsWith('.py');
+  assert.equal(handles('src/shared.ts'), false);
+  assert.equal(refresh.affectedAnalyzerIds.has(registration.id), true);
+  assert.equal(refresh.projectAnalyzerIds([registration]).size, 0);
+  const result = refresh.apply(cas);
+  assert.equal(result.nodes, cas.nodes);
+  assert.equal(result.nodes[0].name, 'previous fact');
+  assert.equal(result.analyzer_contributions[0].source_inputs?.coverage, 'unavailable');
+  assert.equal(result.analyzer_contributions[0].source_inputs?.reason, 'incremental-input-identities-not-refreshed');
+});
+
 test('unavailable observations do not promote a supported file analyzer into a project refresh', () => {
   const cas = fixture([contribution('file', 'src/a.ts')]);
   cas.analyzer_contributions[0].source_inputs!.coverage = 'unavailable';
