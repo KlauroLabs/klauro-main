@@ -2294,7 +2294,7 @@ export class AnalyzerOrchestrator {
       ...changeSet.deleted,
       ...(changeSet.affectedFiles || []),
     ])].sort();
-    const sourceInputs = new IncrementalSourceInputRefresh(projectPath, previousOutput, [...changeSet.added, ...changeSet.modified, ...changeSet.deleted]);
+    const sourceInputs = await new IncrementalSourceInputRefresh(projectPath, previousOutput, [...changeSet.added, ...changeSet.modified, ...changeSet.deleted]).resolveFileEligibility(incrementalAnalyzers, this.analyzerRootMap);
     const candidateIncrementalAnalyzers = incrementalAnalyzers.filter(registration =>
       possibleFilesToAnalyze.some(filePath => this.analyzerCanHandleFile(registration.id, filePath))
     );
@@ -2313,7 +2313,7 @@ export class AnalyzerOrchestrator {
         previousState,
         previousNodesById
       );
-      for (const analyzerId of [...(previousAnalyzerIdsByFile.get(relativePath) || []), ...sourceInputs.affectedAnalyzerIds]) {
+      for (const analyzerId of [...(previousAnalyzerIdsByFile.get(relativePath) || []), ...sourceInputs.matchingAnalyzerIds(relativePath)]) {
         expectedAnalyzerIds.add(analyzerId);
       }
       const directMatches = expectedAnalyzerIds.size > 0

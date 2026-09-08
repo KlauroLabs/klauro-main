@@ -55,6 +55,50 @@ test('affected file analyzers use single-file refresh, while project and unsuppo
   assert.equal(refresh.affectedAnalyzerIds.has('file'), true);
 });
 
+test('affected file analyzers follow their own file discovery even without previous facts', async () => {
+  const cas = fixture([contribution('manifest-reader', 'src/a.ts'), contribution('new-framework', 'src/a.ts')]);
+  const registrations = ['manifest-reader', 'new-framework'].map(id => ({ id, analyzer: {
+    incrementalContributionScope: () => 'file' as const,
+    supportsIncrementalAnalysis: () => true,
+    analyzeFileSingle: async () => ({}),
+    getRelevantFiles: async () => id === 'manifest-reader' ? ['BuildSpec'] : ['src/a.ts'],
+  } }));
+  const refresh = await new IncrementalSourceInputRefresh('/project', cas, ['src/a.ts']).resolveFileEligibility(registrations);
+  assert.deepEqual(refresh.matchingAnalyzerIds('src/a.ts'), ['new-framework']);
+  assert.deepEqual(refresh.matchingAnalyzerIds('BuildSpec'), ['manifest-reader']);
+  assert.deepEqual(refresh.matchingAnalyzerIds('src/unrelated.ts'), []);
+  assert.deepEqual([...refresh.projectAnalyzerIds(registrations)], []);
+  assert.equal(refresh.affectedAnalyzerIds.has('manifest-reader'), true);
+});
+
+test('affected analyzer file discovery resolves paths within its monorepo root', async () => {
+  const cas = fixture([contribution('reader', 'packages/library/src/a.ts')]);
+  const roots: string[] = [];
+  const registration = { id: 'reader', analyzer: {
+    incrementalContributionScope: () => 'file' as const,
+    supportsIncrementalAnalysis: () => true,
+    analyzeFileSingle: async () => ({}),
+    getRelevantFiles: async (root: string) => { roots.push(root); return ['src/a.ts']; },
+  } };
+  const refresh = await new IncrementalSourceInputRefresh('/project', cas, ['packages/library/src/a.ts'])
+    .resolveFileEligibility([registration], new Map([['reader', '/project/packages/library']]));
+  assert.deepEqual(roots, ['/project/packages/library']);
+  assert.deepEqual(refresh.matchingAnalyzerIds('packages/library/src/a.ts'), ['reader']);
+  assert.deepEqual(refresh.matchingAnalyzerIds('src/a.ts'), []);
+});
+
+test('unknown file eligibility requests a conservative refresh instead of running on arbitrary files', async () => {
+  const cas = fixture([contribution('reader', 'src/a.ts')]);
+  const registration = { id: 'reader', analyzer: {
+    incrementalContributionScope: () => 'file' as const,
+    supportsIncrementalAnalysis: () => true,
+    analyzeFileSingle: async () => ({}),
+  } };
+  const refresh = await new IncrementalSourceInputRefresh('/project', cas, ['src/a.ts']).resolveFileEligibility([registration]);
+  assert.deepEqual(refresh.matchingAnalyzerIds('src/a.ts'), []);
+  assert.deepEqual([...refresh.projectAnalyzerIds([registration])], ['reader']);
+});
+
 test('documents the selection limit for an observed input outside a file analyzer handled extensions', () => {
   const cas = fixture([contribution('python-reader', 'src/shared.ts', 'previous input')]);
   cas.nodes = [{ id: 'derived', name: 'previous fact', type: 'function', source: { file: 'src/consumer.py' } }];

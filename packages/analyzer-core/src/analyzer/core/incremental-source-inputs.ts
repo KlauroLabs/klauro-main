@@ -3,9 +3,21 @@ import type { CASAnalyzerContribution, CASOutput } from '../../types/cas.types';
 import { invalidateIncrementalSourceInputs } from './analyzer-contribution-summary';
 import { compactCasSourceInputIdentities, sourceInputIdentityAt } from './cas-source-input-identities';
 
+type SourceInputAnalyzerRegistration = {
+  id: string;
+  analyzer: {
+    incrementalContributionScope(): 'file' | 'project';
+    supportsIncrementalAnalysis(): boolean;
+    analyzeFileSingle?: unknown;
+    getRelevantFiles?: (projectPath: string) => Promise<string[]>;
+  };
+};
+
 export class IncrementalSourceInputRefresh {
   readonly affectedAnalyzerIds = new Set<string>();
   private readonly refreshed = new Map<string, CASAnalyzerContribution>();
+  private readonly relevantFiles = new Map<string, Set<string>>();
+  private readonly unresolvedFileEligibility = new Set<string>();
 
   constructor(private readonly projectPath: string, previous: CASOutput, changedFiles: readonly string[]) {
     const changed = new Set(changedFiles.map(file => path.resolve(projectPath, file)));
@@ -26,13 +38,33 @@ export class IncrementalSourceInputRefresh {
     }
   }
 
-  projectAnalyzerIds(registrations: ReadonlyArray<{ id: string; analyzer: {
-    incrementalContributionScope(): 'file' | 'project';
-    supportsIncrementalAnalysis(): boolean;
-    analyzeFileSingle?: unknown;
-  } }>): Set<string> {
-    const fileScoped = new Set(registrations.filter(({ analyzer }) =>
-      analyzer.incrementalContributionScope() === 'file' &&
+  async resolveFileEligibility(
+    registrations: readonly SourceInputAnalyzerRegistration[],
+    analyzerRoots: ReadonlyMap<string, string> = new Map(),
+  ): Promise<this> {
+    for (const { id, analyzer } of registrations) {
+      if (!this.affectedAnalyzerIds.has(id) || !analyzer.supportsIncrementalAnalysis() || typeof analyzer.analyzeFileSingle !== 'function') continue;
+      if (!analyzer.getRelevantFiles) {
+        this.unresolvedFileEligibility.add(id);
+        continue;
+      }
+      const root = analyzerRoots.get(id) || this.projectPath;
+      const files = await analyzer.getRelevantFiles(root);
+      this.relevantFiles.set(id, new Set(files.map(file => path.resolve(root, file))));
+    }
+    return this;
+  }
+
+  matchingAnalyzerIds(file: string): string[] {
+    const absolute = path.resolve(this.projectPath, file);
+    return [...this.affectedAnalyzerIds].filter(id =>
+      !this.unresolvedFileEligibility.has(id) && (!this.relevantFiles.has(id) || this.relevantFiles.get(id)!.has(absolute))
+    );
+  }
+
+  projectAnalyzerIds(registrations: readonly SourceInputAnalyzerRegistration[]): Set<string> {
+    const fileScoped = new Set(registrations.filter(({ id, analyzer }) =>
+      analyzer.incrementalContributionScope() === 'file' && !this.unresolvedFileEligibility.has(id) &&
       analyzer.supportsIncrementalAnalysis() && typeof analyzer.analyzeFileSingle === 'function'
     ).map(registration => registration.id));
     return new Set([...this.affectedAnalyzerIds].filter(id => !fileScoped.has(id)));
