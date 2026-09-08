@@ -199,7 +199,8 @@ test('a degraded comprehension layer never reports a clean ready status', async 
     // either surface gets the same verdict.
     const listing = JSON.parse((await request(port, 'GET', `/api/projects/${project.id}/analysis-status`, undefined, token)).body);
     assert.equal(listing.status, 'degraded');
-    assert.deepEqual(listing.degraded_layers, ['L5']);
+    assert.ok(Array.isArray(listing.degraded_layers) && listing.degraded_layers.includes('L5'), `L5 must be listed as degraded, got ${JSON.stringify(listing.degraded_layers)}`);
+    assert.ok(listing.degraded_layers.every((layer: string) => ['L4', 'L5'].includes(layer)), 'only comprehension layers may be degraded here (L4 is degraded when no AI provider is configured)');
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));
     if (previousRemoteData === undefined) delete process.env.KLAURO_REMOTE_ANALYZER_DATA;

@@ -258,10 +258,7 @@ export function enqueueSelfTelemetryEvents(projectPath: string, events: Telemetr
     const gate = new Promise<void>(resolve => { start = resolve; });
     let timer: NodeJS.Timeout | undefined;
     if (shuttingDown) start();
-    else {
-      timer = setTimeout(start, selfTelemetryIngestCoalesceMs());
-      timer.unref();
-    }
+    else timer = setTimeout(start, selfTelemetryIngestCoalesceMs());
     const promise = gate.then(() => {
       if (timer) clearTimeout(timer);
       const queued = pendingEvents;
