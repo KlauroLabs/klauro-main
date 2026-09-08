@@ -5,7 +5,7 @@ import { withAnalyzerFileReadTracking } from './analyzer-file-read-cache';
 
 interface ScopeRegistration {
   id: string;
-  analyzer: BaseAnalyzer;
+  analyzer: Pick<BaseAnalyzer, 'getClaimedFiles' | 'getRelevantFiles'>;
 }
 
 function normalizeFile(root: string, file: string): string | undefined {
