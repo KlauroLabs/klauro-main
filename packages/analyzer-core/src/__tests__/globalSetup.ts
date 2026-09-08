@@ -54,7 +54,18 @@
  * returned something.
  * ------------------------------------------------------------------------------
  */
-export default async function globalSetup(): Promise<void> {
+export default async function globalSetup(_globalConfig: unknown, projectConfig: import('@jest/types').Config.ProjectConfig): Promise<void> {
+  const { spawnSync } = require('node:child_process') as typeof import('node:child_process');
+  const typecheck = spawnSync(process.execPath, [require.resolve('../../scripts/check-jest-types.cjs')], {
+    cwd: projectConfig.rootDir,
+    input: JSON.stringify(projectConfig),
+    encoding: 'utf8',
+    stdio: ['pipe', 'inherit', 'inherit'],
+  });
+  if (typecheck.error || typecheck.status !== 0) {
+    throw new Error('Complete Jest typecheck failed before test execution: ' +
+      (typecheck.error?.message || typecheck.signal || typecheck.status));
+  }
   if (process.env.KLAURO_SKIP_NATIVE_ADDON_PRECHECK === '1') return;
 
   const failures = probeNativeAddonInChildProcess();

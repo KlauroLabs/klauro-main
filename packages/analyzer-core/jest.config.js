@@ -21,7 +21,7 @@ module.exports = {
   
   // Transform TypeScript files
   transform: {
-    '^.+\\.ts$': 'ts-jest'
+    '^.+\\.tsx?$': ['ts-jest', { tsconfig: { isolatedModules: true } }]
   },
   
   // Coverage configuration
