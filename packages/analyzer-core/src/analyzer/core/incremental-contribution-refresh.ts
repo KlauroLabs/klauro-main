@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import type {
   CASContribution,
+  CASAnalyzerContribution,
   CASEdge,
   CASEntryPoint,
   CASExitPoint,
@@ -9,14 +10,20 @@ import type {
   FileAnalysisRecord,
 } from '../../types/cas.types';
 import { replaceArrayContents } from './bulk-array-ops';
-import type { AnalysisContext, FileAnalysisResult } from './base-analyzer';
+import type { AnalysisContext, BaseAnalyzer, FileAnalysisResult } from './base-analyzer';
+import { analyzeWithCompleteScope } from './analyzer-analysis-scope';
+import { buildAnalyzerContributionSummary, countDistinctContributionSourceFiles } from './analyzer-contribution-summary';
 import * as path from 'path';
 
 interface RefreshRegistration {
   id: string;
+  name?: string;
+  version?: string;
   type: 'language' | 'framework' | 'library' | 'pattern';
   analyzer: {
     analyze(context: AnalysisContext): Promise<CASContribution>;
+    getClaimedFiles?: BaseAnalyzer['getClaimedFiles'];
+    getRelevantFiles?: BaseAnalyzer['getRelevantFiles'];
     incrementalSourceInvariantContributionFields?(): readonly (keyof CASContribution)[];
   };
 }
@@ -782,6 +789,7 @@ export async function refreshProjectScopedContributions(options: {
     analyzerId: string
   ) => Promise<IncrementalGraph>;
   onFailure?: (failure: ProjectContributionRefreshFailure) => void;
+  onContribution?: (contribution: CASAnalyzerContribution) => void;
 }): Promise<IncrementalGraph | null> {
   const reportFailure = (failure: ProjectContributionRefreshFailure): void => {
     try {
@@ -810,12 +818,13 @@ export async function refreshProjectScopedContributions(options: {
     ): Promise<CASContribution | null> => {
       const startedAt = Date.now();
       const analyzerRoot = options.analyzerRoot(registration.id);
-      const contribution = await registration.analyzer.analyze({
+      const context: AnalysisContext = {
         projectPath: analyzerRoot,
         analysisRootPath: options.projectPath,
         filters: [...options.analysisFilters, ...options.scopeFilters(registration, analyzerRoot)],
         existingAnalysis: [existingAnalysis],
-      });
+      };
+      const contribution = await analyzeWithCompleteScope(registration, context, () => registration.analyzer.analyze(context));
       if (process.env.KLAURO_DEBUG_INCREMENTAL_PHASES === '1') {
         process.stderr.write(`[Klauro] incremental project analyzer ${registration.id}: ${Date.now() - startedAt}ms\n`);
       }
@@ -829,6 +838,16 @@ export async function refreshProjectScopedContributions(options: {
         return null;
       }
       options.normalizeContribution(contribution, analyzerRoot);
+      options.onContribution?.(buildAnalyzerContributionSummary({
+        registration: {
+          ...registration,
+          name: registration.name || contribution.analyzer_metadata.analyzer_name,
+          version: registration.version || contribution.analyzer_metadata.version,
+        },
+        result: contribution,
+        executionTime: Date.now() - startedAt,
+        filesCreated: countDistinctContributionSourceFiles(contribution.nodes, options.projectPath),
+      }));
       return contribution;
     };
 

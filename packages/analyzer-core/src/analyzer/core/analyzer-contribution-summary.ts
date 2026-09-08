@@ -1,14 +1,28 @@
-import type { CASAnalyzerContribution, CASContribution } from '../../types/cas.types';
+import * as path from 'node:path';
+import type { CASAnalyzerContribution, CASContribution, CASNode } from '../../types/cas.types';
+
+export function countDistinctContributionSourceFiles(nodes: CASNode[] | undefined, projectPath?: string): number {
+  const files = new Set<string>();
+  for (const node of nodes || []) {
+    const file = node.source?.file;
+    if (!file) continue;
+    const key = projectPath && path.isAbsolute(file)
+      ? path.relative(projectPath, file).replace(/\\/g, '/')
+      : file.replace(/\\/g, '/');
+    files.add(key);
+  }
+  return files.size;
+}
 
 interface ContributionSummaryInput {
-  registration: { id: string; name: string; version: string; type: CASAnalyzerContribution['contribution_type'] };
+  registration: { id: string; name: string; version?: string; type: CASAnalyzerContribution['contribution_type'] };
   result: CASContribution;
   executionTime: number;
   filesCreated: number;
   cacheStatus?: CASAnalyzerContribution['cache_status'];
 }
 
-export function buildAnalyzerContributionSummary(input: ContributionSummaryInput) {
+export function buildAnalyzerContributionSummary(input: ContributionSummaryInput): CASAnalyzerContribution {
   const { registration, result } = input;
   const metadata = result.analyzer_metadata || {};
   return {
@@ -23,7 +37,7 @@ export function buildAnalyzerContributionSummary(input: ContributionSummaryInput
     files_created: input.filesCreated,
     edges_created: result.edges?.length || 0,
     confidence: 1.0,
-    contributed_categories: result.categories ? Object.keys(result.categories).length : 0,
+    contributed_categories: [...new Set(Object.values(result.categories || {}).flatMap(categories => Object.keys(categories || {})))].sort(),
     provided_perspectives: result.provided_perspectives || [],
     framework_specific: metadata.frameworks_detected || metadata.crates || undefined,
     application_type: metadata.application_type,

@@ -273,7 +273,8 @@ import { detectCodebaseIdioms } from './idiom-detector';
 import { AnalysisRunLog } from './run-log';
 import { withAnalyzerFileReadCache, getDebugCacheStats } from './analyzer-file-read-cache';
 import { analyzeWithCompleteScope } from './analyzer-analysis-scope';
-import { buildAnalyzerContributionSummary, invalidateIncrementalSourceInputs } from './analyzer-contribution-summary';
+import { buildAnalyzerContributionSummary, countDistinctContributionSourceFiles, invalidateIncrementalSourceInputs } from './analyzer-contribution-summary';
+import { IncrementalSourceInputRefresh } from './incremental-source-inputs';
 import { compactCasSourceInputIdentities } from './cas-source-input-identities';
 import { applyCapabilityCatalogStatus } from './capability-catalog-status';
 import { captureAnalysisMemorySample } from './analysis-memory-profile';
@@ -2360,7 +2361,8 @@ export class AnalyzerOrchestrator {
       new Map([...matchingAnalyzerPlansByFile].filter(([filePath]) => directFilesToAnalyze.includes(filePath))),
       scannedRelevantFilesByAnalyzer
     );
-    const projectScopedAnalyzerIds = new Set(promotedProjectAnalyzerIds);
+    const sourceInputs = new IncrementalSourceInputRefresh(projectPath, previousOutput, [...changeSet.added, ...changeSet.modified, ...changeSet.deleted]);
+    const projectScopedAnalyzerIds = new Set([...promotedProjectAnalyzerIds, ...sourceInputs.affectedAnalyzerIds]);
     const filesWithWhollyDeferredAnalyzerOwnership = new Set<string>();
     const directlyChangedFiles = new Set([...changeSet.added, ...changeSet.modified]);
     const registeredAnalyzerIds = new Set(detectedAnalyzers.map(registration => registration.id));
@@ -2654,7 +2656,7 @@ export class AnalyzerOrchestrator {
       ? this.getLocalizedIncrementalMergeEligibility(previousOutput, previousState, changeSet, fileResults)
       : { allowed: false, reason: 'added or deleted files require project contribution refresh' };
     if (process.env.KLAURO_DEBUG_INCREMENTAL_PHASES === '1') writeAnalyzerStatus(`[Klauro] incremental localized eligibility: ${localizedEligibility.allowed ? 'allowed' : localizedEligibility.reason}`);
-    const needsProjectContributionRefresh = filesWithWhollyDeferredAnalyzerOwnership.size > 0 || (filesWithUnsupportedDerivedFacts.length > 0 && !localizedEligibility.allowed);
+    const needsProjectContributionRefresh = sourceInputs.affectedAnalyzerIds.size > 0 || filesWithWhollyDeferredAnalyzerOwnership.size > 0 || (filesWithUnsupportedDerivedFacts.length > 0 && !localizedEligibility.allowed);
     let rebuiltIncrementalState = false;
     if (needsProjectContributionRefresh) {
       let refreshMergeIndexes: AnalysisMergeIndexes | undefined;
@@ -2695,6 +2697,7 @@ export class AnalyzerOrchestrator {
           return graph;
         },
         onFailure: failure => { refreshFailure = failure; },
+        onContribution: contribution => sourceInputs.record(contribution),
       });
       if (!refreshed) {
         return rebuildIncrementalAnalysis(projectPath, 'project-contribution-refresh', `Changed files require a full project contribution rebuild (${refreshFailure?.reason || 'unknown'}): ${[...projectScopedAnalyzerIds].sort().join(', ')}`, () => this.orchestrateAnalysis(projectPath, { displayName: options?.displayName }));
@@ -2736,7 +2739,7 @@ export class AnalyzerOrchestrator {
     if (incrementalMergeWarnings.length > 0) {
       rebuiltOutput.analysis_errors = [...(rebuiltOutput.analysis_errors || []), ...incrementalMergeWarnings];
     }
-    return { output: rebuiltOutput, fileResults, rebuiltIncrementalState,
+    return { output: sourceInputs.apply(rebuiltOutput), fileResults, rebuiltIncrementalState,
       executionStrategy: rebuiltIncrementalState ? 'project-contribution-refresh' : 'derived-layer-rebuild',
       refreshedProjectAnalyzers: rebuiltIncrementalState ? [...projectScopedAnalyzerIds].sort() : undefined };
   }
@@ -5846,17 +5849,7 @@ export class AnalyzerOrchestrator {
   }
 
   private countDistinctSourceFiles(nodes: CASNode[] | undefined, projectPath?: string): number {
-    if (!nodes || nodes.length === 0) return 0;
-    const files = new Set<string>();
-    for (const node of nodes) {
-      const file = node.source?.file;
-      if (!file) continue;
-      const key = projectPath && path.isAbsolute(file)
-        ? path.relative(projectPath, file).replace(/\\/g, '/')
-        : file.replace(/\\/g, '/');
-      files.add(key);
-    }
-    return files.size;
+    return countDistinctContributionSourceFiles(nodes, projectPath);
   }
 
   private extractTechnologies(contributions: any[], libraries: any[], projectPath?: string): any {
