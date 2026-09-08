@@ -1,3 +1,38 @@
+import * as fs from 'fs-extra';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { McpToolRegistrationAnalyzer } from '../libraries/mcp-tool-registration-analyzer';
+
+test('real MCP registration metadata retains its identity across persistence without ignoring changed evidence', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-capability-contract-'));
+  try {
+    await fs.outputFile(path.join(root, 'server.ts'), "server.registerTool('inspect', toolConfig, async () => inspectSystem());\n");
+    const contribution = await new McpToolRegistrationAnalyzer().analyze({ projectPath: root });
+    assert.equal(contribution.entry_points?.length, 1);
+    const raw = contribution.entry_points![0];
+    assert.ok(Object.keys(raw.metadata || {}).some(key => raw.metadata![key] === undefined));
+    const persisted = JSON.parse(JSON.stringify(raw));
+    assert.notDeepEqual(raw, persisted);
+    const previous = capability('understand', 'Understand the behavior implemented by a system', raw.id);
+    previous.operations[0].entry_point_type = raw.type;
+    const orchestrator = new AnalyzerOrchestrator() as any;
+    const context = { previousEntryPoints: [persisted], currentEntryPoints: [raw] };
+    const original = structuredClone(context);
+    const reused = orchestrator.reusePreviousCapabilityCatalog([previous], [], context);
+    assert.equal(reused.length, 1);
+    assert.deepEqual(context, original);
+    for (const metadata of [
+      { ...raw.metadata, descriptionLine: null },
+      { ...raw.metadata, receiver: 'differentServer' },
+    ]) {
+      assert.deepEqual(orchestrator.reusePreviousCapabilityCatalog([previous], [], {
+        ...context, currentEntryPoints: [{ ...raw, metadata }],
+      }), []);
+    }
+  } finally {
+    await fs.remove(root);
+  }
+});
 test('catalog stabilization cannot discard newly authored outcomes merely because they share evidence', () => {
   const orchestrator = new AnalyzerOrchestrator() as any;
   const previous = {

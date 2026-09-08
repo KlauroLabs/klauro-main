@@ -11,7 +11,7 @@ export interface CapabilityReuseEntryContext {
 function entryContract(entry: CASEntryPoint | undefined): unknown {
   if (!entry) return undefined;
   const { capabilities: _capabilities, ...contract } = entry;
-  return contract;
+  return JSON.parse(JSON.stringify(contract));
 }
 
 type Operation = SystemCapability['operations'][number];
