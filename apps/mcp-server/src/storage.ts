@@ -2,8 +2,6 @@ import * as fs from 'fs-extra';
 import * as os from 'os';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import * as zlib from 'zlib';
-import { promisify } from 'util';
 import { getHeapStatistics } from 'v8';
 import pLimit from 'p-limit';
 import type {
@@ -27,7 +25,7 @@ import {
   type CasSectionName,
 } from './cas-sections';
 import { iterateDeployableChildCas, materializeDeployableCasTree, prepareDeployableCasProjection } from './deployable-analysis';
-import { readZstdJson } from './zstd-json';
+import { jsonStoragePathCandidates, projectTopLevelKeys, readJsonMaybeCompressed, resolveJsonStoragePath } from './json-storage-read';
 import { describeAnalysisVersion, hasFailedStructuralAnalysisLayer, type AnalysisVersionInfo } from './analysis-version';
 import { segmentedReadFailureFallback } from './segmented-storage-access';
 import { createAnalysisIndexEntry } from './analysis-index-entry';
@@ -57,7 +55,6 @@ import {
 export { writeJsonAtomic } from './json-storage-writer';
 export { MINIMUM_COMPATIBLE_CAS_VERSION, parseCasVersion, compareCasVersions, describeAnalysisVersion } from './analysis-version';
 export type { AnalysisVersionInfo, AnalysisVersionStatus } from './analysis-version';
-const brotliDecompressAsync = promisify(zlib.brotliDecompress);
 const DEFAULT_STORAGE_PATH = path.join(
   process.env.HOME || process.env.USERPROFILE || '~',
   '.klauro',
@@ -480,44 +477,6 @@ async function saveIndex(index: AnalysisIndex, onCommitted?: () => void): Promis
   }, { spaces: 2, onCommitted });
 }
 
-async function readJsonMaybeCompressed(
-  filePath: string,
-  options: { maxBufferedZstdBytes?: number } = {},
-): Promise<any> {
-  const resolved = await resolveJsonStoragePath(filePath);
-  if (!resolved) {
-    throw new Error(`JSON file not found: ${filePath}`);
-  }
-
-  if (resolved.endsWith('.json.zst')) {
-    return readZstdJson(resolved, { maxBufferedCompressedBytes: options.maxBufferedZstdBytes });
-  }
-
-  if (resolved.endsWith('.json.br')) {
-    const compressed = await fs.readFile(resolved);
-    const json = await brotliDecompressAsync(compressed);
-    return JSON.parse(json.toString('utf8'));
-  }
-
-  return fs.readJson(resolved);
-}
-
-async function resolveJsonStoragePath(filePath: string): Promise<string | null> {
-  if (await fs.pathExists(filePath)) return filePath;
-  const candidates = jsonStoragePathCandidates(filePath);
-  for (const candidate of candidates) {
-    if (await fs.pathExists(candidate)) return candidate;
-  }
-  return null;
-}
-
-function jsonStoragePathCandidates(filePath: string): string[] {
-  if (filePath.endsWith('.json')) return [`${filePath}.zst`, `${filePath}.br`];
-  if (filePath.endsWith('.json.zst')) return [filePath.replace(/\.zst$/, ''), filePath.replace(/\.zst$/, '.br')];
-  if (filePath.endsWith('.json.br')) return [filePath.replace(/\.br$/, ''), filePath.replace(/\.br$/, '.zst')];
-  return [];
-}
-
 interface LoadedAnalysisCacheEntry {
   filePath: string;
   mtimeMs: number;
@@ -855,7 +814,7 @@ export async function loadAnalysisSectionManifest(
 export async function loadAnalysisSections(
   projectPath: string,
   sections: readonly CasSectionName[],
-  options?: { track?: AnalysisTrack; cas_id?: string; pinned?: { filePath: string; segmented: ResolvedSegmentedAnalysis } },
+  options?: { track?: AnalysisTrack; cas_id?: string; pinned?: { filePath: string; segmented: ResolvedSegmentedAnalysis }; fields?: readonly string[] },
 ): Promise<Partial<CASOutput> | null> {
   const current = options?.pinned ? null : await resolveAnalysisForLoad(projectPath, options?.track);
   const resolved = options?.pinned?.filePath || current?.filePath;
@@ -865,7 +824,7 @@ export async function loadAnalysisSections(
   if (cached) {
     const selected = options?.cas_id ? findCasById(cached, options.cas_id) : cached;
     if (!selected) throw new Error(`Unknown CAS id '${options!.cas_id}'`);
-    return selectCasSections(selected, requested);
+    return projectTopLevelKeys(selectCasSections(selected, requested), options?.fields);
   }
   if (!options?.pinned && current) {
     const leased = await acquireCurrentSegmentedAnalysisLease(current);
@@ -886,7 +845,7 @@ export async function loadAnalysisSections(
     const selected = options?.cas_id ? findCasById(legacy, options.cas_id) : legacy;
     if (!selected) throw new Error(`Unknown CAS id '${options!.cas_id}'`);
     const parts = requested.map(section => selectExactCasSection(selected, section));
-    return hydrateCasSections(parts);
+    return projectTopLevelKeys(hydrateCasSections(parts), options?.fields);
   }
   const projection = segmented.manifest.tree_projection;
   if (options?.cas_id && projection?.format === 'derived-deployable-references') {
@@ -928,8 +887,10 @@ export async function loadAnalysisSections(
         for await (const chunk of fs.createReadStream(sectionPath)) hash.update(chunk as Buffer);
         if (hash.digest('hex') !== descriptor.sha256) throw new Error('checksum mismatch');
       }
+      const projected = options?.fields && section !== 'identity';
       sectionData = await readJsonMaybeCompressed(sectionPath, {
-        maxBufferedZstdBytes: (descriptor.bytes || 0) * expansion > parsedSectionBudget ? 0 : undefined,
+        maxBufferedZstdBytes: projected || (descriptor.bytes || 0) * expansion > parsedSectionBudget ? 0 : undefined,
+        ...(projected ? { topLevelKeys: options.fields } : {}),
       }) as Partial<CASOutput>;
     } catch (error) {
       throw new Error(`Segmented CAS section '${section}' (${sectionPath}) could not be read: ${error instanceof Error ? error.message : String(error)}`);

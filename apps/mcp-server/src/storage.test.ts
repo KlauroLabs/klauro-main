@@ -164,6 +164,15 @@ test('segmented storage hydrates exact CAS and targeted reads omit unrequested d
     assert.equal(graph?.method_calls, undefined);
     assert.equal(graph?.analysis_facts, undefined);
 
+    clearLoadedAnalysisCache();
+    const projected = await loadAnalysisSections(project, ['graph', 'facts', 'calls'], { fields: ['analysis_facts'] });
+    assert.deepEqual(projected?.analysis_facts, cas.analysis_facts);
+    assert.equal(projected?.analysis_id, cas.analysis_id);
+    assert.ok(projected?.layers_ready);
+    assert.equal(projected?.nodes, undefined);
+    assert.equal(projected?.edges, undefined);
+    assert.equal(projected?.method_calls, undefined);
+
     const artifact = await resolveAnalysisExportArtifact(project);
     assert.ok(artifact);
     assert.ok(artifact!.bytes > 0);

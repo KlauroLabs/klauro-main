@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process';
 import { createRemoteAnalyzerHttpServer } from './remote-analyzer-service';
 import { analyzeCodebaseRemotely, syncWorkingTreeRemotely } from './remote-sync-client';
 import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
-import { AccountWorkspaceAnalysisScheduler, compactWorkspaceMemberCas, isCasComprehensionSettled, WORKSPACE_MEMBER_SECTIONS, workspaceInputSignature } from './account-workspace-analysis';
+import { AccountWorkspaceAnalysisScheduler, compactWorkspaceMemberCas, isCasComprehensionSettled, WORKSPACE_MEMBER_FIELDS, WORKSPACE_MEMBER_SECTIONS, workspaceInputSignature } from './account-workspace-analysis';
 import { beginForegroundAnalysis } from './foreground-analysis';
 import { WorkspaceAnalysisPreemptedError } from './account-workspace-analysis-process';
 
@@ -16,6 +16,12 @@ process.env.KLAURO_WORKSPACE_ANALYSIS_IN_PROCESS = '1';
 
 test('workspace composition loads contracts and comprehension without member graph arrays', () => {
   assert.deepEqual(WORKSPACE_MEMBER_SECTIONS, ['facts', 'comprehension', 'runtime', 'quality', 'supplemental']);
+  for (const field of ['system', 'entities', 'capabilities', 'flows', 'entry_points', 'exit_points', 'deployable_evidence', 'change_risks', 'runtime_static_links', 'analysis_id', 'derived_fingerprint', 'layers_ready']) {
+    assert.ok((WORKSPACE_MEMBER_FIELDS as readonly string[]).includes(field), `workspace members must retain ${field}`);
+  }
+  for (const field of ['intents', 'steps', 'structural_capability_candidates', 'patterns', 'module_health', 'codebase_idioms', 'analysis_facts', 'terminality']) {
+    assert.ok(!(WORKSPACE_MEMBER_FIELDS as readonly string[]).includes(field), `workspace members must not retain ${field}`);
+  }
   const compact = compactWorkspaceMemberCas({
     cas_version: '1.11.0', analysis_id: 'member-analysis', analysis_timestamp: '2026-01-01T00:00:00.000Z',
     system: { id: 'member', name: 'Member', type: 'service', root_path: '/tmp/member' },

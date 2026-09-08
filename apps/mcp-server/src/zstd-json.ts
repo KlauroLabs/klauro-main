@@ -1,14 +1,16 @@
 import { spawn } from 'child_process';
 import { stat } from 'node:fs/promises';
 import { parserStream } from 'stream-json';
+import { ignore } from 'stream-json/filters/ignore.js';
 import Assembler from 'stream-json/assembler.js';
 
 const DEFAULT_BUFFERED_COMPRESSED_BYTES = 32 * 1024 * 1024;
 
 export async function readZstdJson(
   filePath: string,
-  options: { maxBufferedCompressedBytes?: number } = {}
+  options: { maxBufferedCompressedBytes?: number; topLevelKeys?: readonly string[] } = {}
 ): Promise<any> {
+  if (options.topLevelKeys) return readZstdJsonStreaming(filePath, options.topLevelKeys);
   const maxBufferedCompressedBytes = options.maxBufferedCompressedBytes ?? DEFAULT_BUFFERED_COMPRESSED_BYTES;
   const fileSize = (await stat(filePath)).size;
   return fileSize <= maxBufferedCompressedBytes
@@ -39,9 +41,12 @@ async function readZstdJsonBuffered(filePath: string): Promise<any> {
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }
 
-async function readZstdJsonStreaming(filePath: string): Promise<any> {
+async function readZstdJsonStreaming(filePath: string, topLevelKeys?: readonly string[]): Promise<any> {
   const child = spawn('zstd', ['-q', '-d', '-c', filePath], { stdio: ['ignore', 'pipe', 'pipe'] });
-  const tokens = child.stdout.pipe(parserStream({ streamValues: false, packValues: true }));
+  const keep = topLevelKeys ? new Set(topLevelKeys) : null;
+  const tokens = keep
+    ? child.stdout.pipe(ignore.withParserAsStream({ streamValues: false, packValues: true, filter: (stack: ReadonlyArray<string | number | null>) => stack.length >= 1 && !keep.has(String(stack[0])) }))
+    : child.stdout.pipe(parserStream({ streamValues: false, packValues: true }));
   const assembler = new Assembler<any>();
   let stderr = '';
   child.stderr.on('data', chunk => {

@@ -15,6 +15,15 @@ export const WORKSPACE_MEMBER_SECTIONS = [
   'facts', 'comprehension', 'runtime', 'quality', 'supplemental',
 ] as const satisfies readonly CasSectionName[];
 
+export const WORKSPACE_MEMBER_FIELDS = [
+  'system', 'entities', 'capabilities', 'enhanced_system_purpose', 'flow_graph', 'domain_concepts',
+  'entry_points', 'exit_points', 'deployable_evidence', 'distribution_units', 'dependencies', 'dependency_manifest',
+  'external_services', 'route_table', 'runtime_static_links', 'communication_seams', 'database_schema', 'data_lineage',
+  'change_risks', 'temporal_stability', 'analyzer_contributions', 'analysis_errors', 'types', 'metadata',
+  'id', 'version', 'generated_at', 'analysis_id', 'analysis_timestamp', 'cas_version', 'derived_fingerprint',
+  'ai_enrichment', 'layers_ready', 'flows', 'nodes', 'edges',
+] as const;
+
 export function compactWorkspaceMemberCas(cas: Partial<CASOutput>): CASOutput {
   return { ...cas, nodes: [], edges: [], analyzer_contributions: cas.analyzer_contributions || [] } as CASOutput;
 }
@@ -282,7 +291,7 @@ export class AccountWorkspaceAnalysisScheduler {
         const memberWorkspace = this.workspacePathFor(project.analysis_id);
         const attempt = await readAttemptRecord(projectAttemptRecordPath(memberWorkspace));
         if (attempt?.state === 'failed') throw new Error(attempt.reason || 'latest analysis attempt failed');
-        const cas = await loadAnalysisSections(memberWorkspace, WORKSPACE_MEMBER_SECTIONS);
+        const cas = await loadAnalysisSections(memberWorkspace, WORKSPACE_MEMBER_SECTIONS, { fields: WORKSPACE_MEMBER_FIELDS });
         if (!cas) throw new Error('current analysis is unavailable');
         inputs.push({
           path: `account-project:${project.id}`,

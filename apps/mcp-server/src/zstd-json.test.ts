@@ -75,6 +75,46 @@ test('streaming JSON rejects incomplete packed values', async t => {
   }
 });
 
+test('topLevelKeys projection streams only the requested top-level subtrees', async t => {
+  if (!(await zstdAvailable())) return t.skip('zstd is unavailable');
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-zstd-project-'));
+  const source = path.join(root, 'source.json');
+  const compressed = path.join(root, 'source.json.zst');
+  const value = {
+    zeta: { entities: [{ id: 'nested-entities-inside-dropped-key' }], rows: Array.from({ length: 5_000 }, (_, index) => index) },
+    entities: [{ id: 'entity', nested: { intents: ['kept-nested-key-inside-kept-subtree'] } }],
+    intents: Array.from({ length: 5_000 }, (_, index) => ({ index })),
+    alpha: 'first-declared-after-projection',
+    system: { name: 'member', flows: [{ id: 'flow-inside-system' }] },
+    empty: {},
+  };
+  try {
+    await fs.writeJson(source, value);
+    await execFileAsync('zstd', ['-q', '-f', source, '-o', compressed]);
+    const projected = await readZstdJson(compressed, { topLevelKeys: ['entities', 'system', 'alpha', 'absent'] });
+    assert.deepEqual(Object.keys(projected), ['entities', 'alpha', 'system']);
+    assert.deepEqual(projected.entities, value.entities);
+    assert.deepEqual(projected.system, value.system);
+    assert.equal(projected.alpha, value.alpha);
+    assert.equal('zeta' in projected, false);
+    assert.equal('intents' in projected, false);
+    assert.equal('absent' in projected, false);
+    assert.deepEqual(await readZstdJson(compressed, { topLevelKeys: [] }), {});
+    assert.deepEqual(await readZstdJson(compressed), value);
+    assert.deepEqual(await readZstdJson(compressed, { maxBufferedCompressedBytes: 0 }), value);
+    await fs.writeJson(source, [1, 2, 3]);
+    await execFileAsync('zstd', ['-q', '-f', source, '-o', compressed]);
+    assert.deepEqual(await readZstdJson(compressed, { topLevelKeys: ['entities'] }), []);
+    for (const truncated of ['{"entities":[{"id":"x"}],"intents":[1,2', '{"entities":[{"id":"x"', '{"entities":}']) {
+      await fs.writeFile(source, truncated);
+      await execFileAsync('zstd', ['-q', '-f', source, '-o', compressed]);
+      await assert.rejects(readZstdJson(compressed, { topLevelKeys: ['entities'] }));
+    }
+  } finally {
+    await fs.remove(root);
+  }
+});
+
 async function zstdAvailable(): Promise<boolean> {
   return execFileAsync('zstd', ['--version']).then(() => true, () => false);
 }
