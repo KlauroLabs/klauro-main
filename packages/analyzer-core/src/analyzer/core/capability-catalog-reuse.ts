@@ -1,9 +1,11 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { CASEntryPoint, SystemCapability } from '../../types/cas.types';
+import { attachFlowContract, type EntryPointLike, type FlowLike } from './entry-point-enrichment';
 
 export interface CapabilityReuseEntryContext {
   previousEntryPoints: readonly CASEntryPoint[];
   currentEntryPoints: readonly CASEntryPoint[];
+  currentFlows?: readonly FlowLike[];
 }
 
 function entryContract(entry: CASEntryPoint | undefined): unknown {
@@ -33,7 +35,11 @@ export function reuseCapabilityCatalog(
   },
 ): SystemCapability[] {
   const previousEntries = new Map(options.entryContext?.previousEntryPoints.map(entry => [entry.id, entry]));
-  const currentEntries = new Map(options.entryContext?.currentEntryPoints.map(entry => [entry.id, entry]));
+  const currentEntryPoints = options.entryContext?.currentEntryPoints || [];
+  const currentContracts = options.entryContext?.currentFlows
+    ? attachFlowContract([...currentEntryPoints] as unknown as EntryPointLike[], [...options.entryContext.currentFlows]) as unknown as CASEntryPoint[]
+    : currentEntryPoints;
+  const currentEntries = new Map(currentContracts.map(entry => [entry.id, entry]));
   const unchangedEntries = new Set([...previousEntries].filter(([id, entry]) =>
     currentEntries.has(id) && isDeepStrictEqual(entryContract(entry), entryContract(currentEntries.get(id)))).map(([id]) => id));
   const byEntryPoint = new Map<string, Set<SystemCapability>>();

@@ -1,3 +1,43 @@
+test('catalog stabilization cannot discard newly authored outcomes merely because they share evidence', () => {
+  const orchestrator = new AnalyzerOrchestrator() as any;
+  const previous = {
+    ...capability('review', 'Review enterprise orders', 'shared'),
+    description: 'Review enterprise orders presents EnterpriseOrder details for operator review.',
+  };
+  const refreshed = [
+    { ...previous },
+    { ...previous, id: 'compare', name: 'Compare enterprise orders',
+      description: 'Compare enterprise orders identifies differences between EnterpriseOrder records.' },
+  ];
+  const stabilized = orchestrator.stabilizeRefreshedCapabilityCatalog([previous], candidates(previous.operations), refreshed);
+  assert.deepEqual(stabilized.map((item: SystemCapability) => item.id), ['review', 'compare']);
+});
+import { attachFlowContract } from './entry-point-enrichment';
+
+test('incremental reuse compares flow-enriched contracts at the same stage without discarding input or output evidence', () => {
+  const orchestrator = new AnalyzerOrchestrator() as any;
+  const previous = capability('old', 'Understand the behavior implemented by a system', 'inspect');
+  const entry = { id: 'inspect', type: 'api', name: 'inspect', source_node: 'handler', trigger: { method: 'GET', path: '/inspect' } };
+  const flow = { flow_id: 'inspect-flow', entry_point: 'inspect', contract: { input: ['repo: string'], output: ['Report'] } };
+  const enriched = attachFlowContract([entry], [flow]);
+  assert.notDeepEqual(enriched, [entry]);
+  const before = structuredClone({ previous, entry, flow, enriched });
+  const reused = orchestrator.reusePreviousCapabilityCatalog([previous], [], {
+    previousEntryPoints: enriched, currentEntryPoints: [entry], currentFlows: [flow],
+  });
+  orchestrator.finalizeSystemCapabilityNames(reused);
+  assert.equal(reused.length, 1);
+  assert.deepEqual(reused[0].operations, previous.operations);
+  assert.deepEqual({ previous, entry, flow, enriched }, before);
+  for (const contract of [
+    { input: ['repo: number'], output: ['Report'] },
+    { input: ['repo: string'], output: ['Secret'] },
+  ]) {
+    assert.deepEqual(orchestrator.reusePreviousCapabilityCatalog([previous], [], {
+      previousEntryPoints: enriched, currentEntryPoints: [entry], currentFlows: [{ ...flow, contract }],
+    }), []);
+  }
+});
 
 test('unchanged canonical entry contracts retain authored outcomes absent from candidate projections', () => {
   const orchestrator = new AnalyzerOrchestrator() as any;

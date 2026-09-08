@@ -1,6 +1,6 @@
 import { BaseAnalyzer, CASNode, CASEdge, AnalysisContext, FileAnalysisContext } from './base-analyzer';
 import * as incrementalScope from './incremental-scope';
-import { reuseCapabilityCatalog } from './capability-catalog-reuse';
+import { reuseCapabilityCatalog, type CapabilityReuseEntryContext } from './capability-catalog-reuse';
 import { SCAFFOLD_DIR_NAMES, SCAFFOLD_GLOBS, isScaffoldDirName, isScaffoldOrTestPath, isTestFileName } from './scaffold-paths';
 import { BUILD_ARTIFACT_GLOBS, THIRD_PARTY_SOURCE_GLOBS, isBuildArtifactDirectoryName } from './build-artifact-paths';
 import {
@@ -2952,7 +2952,7 @@ export class AnalyzerOrchestrator {
       dataEntities,
     );
     const skipSemanticRefresh = shouldReuseComprehensionForInertPrivateAddition(comprehensionInertAddition, incrementalAIRefreshDecision.reason);
-    const reusableCapabilities = this.reusePreviousCapabilityCatalog(previousOutput.capabilities || [], systemCapabilities, { previousEntryPoints: previousOutput.entry_points || [], currentEntryPoints: entryPoints });
+    const reusableCapabilities = this.reusePreviousCapabilityCatalog(previousOutput.capabilities || [], systemCapabilities, { previousEntryPoints: previousOutput.entry_points || [], currentEntryPoints: entryPoints, currentFlows: flowsForJourneys });
     const refreshCapabilityGrounding = reusableCapabilities.length < (previousOutput.capabilities || []).length;
     const refreshAIInterpretation = (incrementalAIRefreshRequested && !skipSemanticRefresh) || refreshCapabilityGrounding;
     writeAnalyzerStatus(`[Klauro] AI interpretation refresh=${refreshAIInterpretation} reason=${refreshCapabilityGrounding ? 'previous-capability-grounding-changed' : skipSemanticRefresh ? 'comprehension-inert-private-addition' : incrementalAIRefreshDecision.reason}`);
@@ -19619,7 +19619,7 @@ export class AnalyzerOrchestrator {
   private reusePreviousCapabilityCatalog(
     previousCapabilities: SystemCapability[],
     currentCandidates: SystemCapability[],
-    entryContext?: { previousEntryPoints: CASEntryPoint[]; currentEntryPoints: CASEntryPoint[] },
+    entryContext?: CapabilityReuseEntryContext,
   ): SystemCapability[] {
     return reuseCapabilityCatalog(previousCapabilities, currentCandidates, {
       entryContext,
@@ -19683,13 +19683,9 @@ export class AnalyzerOrchestrator {
       };
     });
 
-    const overlapsGrounded = (candidate: SystemCapability): boolean => groundedPrevious.some(previous => {
-      if (candidate.id === previous.id || this.capabilityReuseSubjectsMatch(previous, candidate)) return true;
-      const previousEntities = new Set(previous.related_entities || []);
-      if ((candidate.related_entities || []).some(entity => previousEntities.has(entity))) return true;
-      const previousOperations = new Set((previous.operations || []).map(operation => operation.entry_point_id));
-      return (candidate.operations || []).some(operation => previousOperations.has(operation.entry_point_id));
-    });
+    const overlapsGrounded = (candidate: SystemCapability): boolean => groundedPrevious.some(previous =>
+      candidate.id === previous.id || this.capabilityReuseSubjectsMatch(previous, candidate)
+    );
     return [
       ...groundedPrevious,
       ...refreshedCapabilities.filter(capability => !overlapsGrounded(capability)),
