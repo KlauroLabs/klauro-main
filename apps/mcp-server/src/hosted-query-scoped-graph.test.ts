@@ -108,7 +108,11 @@ for (const direction of ['incoming', 'outgoing'] as const) {
       });
       cas.edges = [...owners.map(id => edge(id, id, 'contains')),
         edge('call', 'reference', 'calls'), edge('duplicate', 'reference', 'references'),
-        edge('self', 'target', 'calls')];
+        edge('self', 'target', 'calls'), edge('entry-boundary', '00-external', 'calls'),
+        edge('exit-boundary', 'zz-external', 'calls'),
+        { id: 'external-boundary', source: '00-external', target: 'zz-external', type: 'calls' }];
+      cas.entry_points = [{ id: '00-external', name: 'entry', type: 'http', source_node: 'reference' }];
+      cas.exit_points = [{ id: 'zz-external', name: 'exit', type: 'api', source_node: 'reference' }];
       cas.method_calls = [{ id: 'method', caller_node: direction === 'incoming' ? 'method-only' : 'target',
         target_node: direction === 'incoming' ? 'target' : 'method-only', call_details: { method_name: 'invoke' } }] as CASOutput['method_calls'];
       await saveAnalysis(project, cas, 'main', { canonicalSegmented: true });

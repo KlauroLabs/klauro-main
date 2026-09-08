@@ -225,7 +225,11 @@ export function computeScopedQueryScope(
       const page: ReturnType<CompactCASGraph['incomingEdges']> = direction === 'incoming'
         ? graph.incomingEdges(target.denseId, { offset, limit: 500 })
         : graph.outgoingEdges(target.denseId, { offset, limit: 500 });
-      for (const edge of page.items) add(direction === 'incoming' ? edge.source : edge.target, isContainmentRelationship(edge.type));
+      for (const edge of page.items) {
+        const vertex = direction === 'incoming' ? edge.source : edge.target;
+        const denseId = graph.vertices.node[vertex];
+        if (denseId < graph.nodeCount) add(denseId, isContainmentRelationship(edge.type));
+      }
       offset = page.nextOffset;
     }
     for (const call of methodCalls) {
