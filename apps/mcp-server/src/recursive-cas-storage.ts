@@ -18,7 +18,7 @@ import {
 import type { ResolvedSegmentedAnalysis } from './segmented-analysis-storage';
 import type { AnalysisTrack } from './track';
 import { remapCasIdentities } from '../../../packages/analyzer-core/src/analyzer/core/recursive-cas';
-import type { ResolvedWorkspaceMember } from './workspace-member-resolver';
+import type { ResolvedWorkspaceMember, WorkspaceMemberIdentityTree } from './workspace-member-resolver';
 
 export interface CasMemberReadOptions {
   sections: readonly CasSectionName[];
@@ -47,7 +47,7 @@ export function findCasById(
     if (visited.has(current)) continue;
     visited.add(current);
     const reference = current.member_reference;
-    if (reference && (current.id === casId || casId.startsWith(`${reference.composed_id}:`))) {
+    if (reference && (current.id === casId || (casId.startsWith(`${reference.composed_id}:`) && casId.length > reference.composed_id.length + 1))) {
       if (!options) throw new CasMemberResolutionRequiredError(casId);
       return resolveReferencedCas(current, casId, options);
     }
@@ -55,6 +55,20 @@ export function findCasById(
     for (let index = (current.children?.length || 0) - 1; index >= 0; index -= 1) stack.push(current.children![index]);
   }
   return options ? Promise.resolve(null) : null;
+}
+
+export function composeMemberIdentityTree(
+  reference: CASMemberReference, identity: WorkspaceMemberIdentityTree, parentId: string | null = null,
+): WorkspaceMemberIdentityTree {
+  const remap = (id: string): string => id === identity.root_id ? reference.composed_id : `${reference.composed_id}:${id}`;
+  return {
+    root_id: reference.composed_id,
+    nodes: identity.nodes.map(node => ({
+      id: remap(node.id),
+      parent_id: node.parent_id === null ? parentId : remap(node.parent_id),
+      child_ids: node.child_ids.map(remap),
+    })),
+  };
 }
 
 async function resolveReferencedCas(
@@ -72,11 +86,11 @@ async function resolveReferencedCas(
   });
   const selectedId = originalId || resolved.identity.root_id;
   const selected = resolved.identity.nodes.find(node => node.id === selectedId);
-  if (!selected || resolved.member.id !== selectedId) throw new Error('Resolved member identity does not match the selected CAS');
-  const idMap = new Map(resolved.identity.nodes.map(node => [
-    node.id, node.id === resolved.identity.root_id ? reference.composed_id : `${reference.composed_id}:${node.id}`,
-  ]));
-  const member = remapCasIdentities(resolved.member, idMap);
+  const memberId = resolved.member.id || (resolved.member.analysis_id ? `cas:${resolved.member.analysis_id}` : undefined);
+  if (!selected || memberId !== selectedId) throw new Error('Resolved member identity does not match the selected CAS');
+  const composed = composeMemberIdentityTree(reference, resolved.identity, owner.parent_id ?? null);
+  const idMap = new Map(resolved.identity.nodes.map((node, index) => [node.id, composed.nodes[index].id]));
+  const member = remapCasIdentities({ ...resolved.member, id: memberId }, idMap);
   return {
     ...member,
     parent_id: selectedId === resolved.identity.root_id ? owner.parent_id ?? null : idMap.get(selected.parent_id!)!,

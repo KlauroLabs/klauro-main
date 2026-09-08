@@ -2,8 +2,8 @@ import * as path from 'node:path';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { AccountHttpError, type AccountStore } from './account-store';
 import { CAS_SECTION_PROFILES, parseCasSectionNames, type CasSectionName } from './cas-sections';
-import { findCasById } from './recursive-cas-storage';
-import { resolveWorkspaceMember, WorkspaceMemberResolutionError } from './workspace-member-resolver';
+import { composeMemberIdentityTree, findCasById } from './recursive-cas-storage';
+import { resolveWorkspaceMember, WorkspaceMemberResolutionError, type ResolvedWorkspaceMember } from './workspace-member-resolver';
 
 export async function resolveWorkspaceMemberResponse(
   accounts: AccountStore,
@@ -14,25 +14,28 @@ export async function resolveWorkspaceMemberResponse(
   params: URLSearchParams,
 ): Promise<{ statusCode: number; body: unknown }> {
   if (!dataDir) throw new AccountHttpError(500, 'Analysis storage unavailable');
-  const child = findCasById(graph, casId) ?? [...(graph.children || [])].map(candidate => findCasById(candidate, casId)).find(Boolean) ?? null;
-  const owner = child ?? (graph.children || []).find(candidate => Boolean(candidate.id) && casId.startsWith(`${candidate.id}:`)) ?? null;
-  const ownerId = owner?.id;
-  if (!owner || !ownerId) throw new AccountHttpError(404, `CAS ${casId} is not part of workspace ${workspaceId}`);
-  const reference = owner.member_reference;
-  if (!reference) return { statusCode: 200, body: { status: 'ready', workspace_id: workspaceId, cas_id: casId, member: child, reference: null } };
   const requested = params.get('sections');
   const sections: CasSectionName[] = requested ? parseCasSectionNames(requested) : [...CAS_SECTION_PROFILES.summary];
-  const originalCasId = casId === ownerId ? undefined : casId.startsWith(`${ownerId}:`) ? casId.slice(ownerId.length + 1) : undefined;
-  if (casId !== ownerId && originalCasId === undefined) throw new AccountHttpError(404, `CAS ${casId} is not addressable under ${ownerId}`);
+  const resolution: { value?: ResolvedWorkspaceMember } = {};
   try {
-    const resolved = await resolveWorkspaceMember(
-      { listProjectsForWorkspace: id => accounts.listProjectsForWorkspace(id), workspacePathFor: analysisId => workspaceMemberPath(dataDir, analysisId) },
-      workspaceId,
-      reference,
+    const member = await findCasById(graph, casId, {
       sections,
-      originalCasId ? { cas_id: originalCasId } : {},
-    );
-    return { statusCode: 200, body: { status: 'ready', workspace_id: workspaceId, cas_id: casId, reference: resolved.reference, sections: resolved.sections, identity: resolved.identity, member: resolved.member } };
+      resolveMember: async (reference, requestedSections, options) => {
+        const resolved = await resolveWorkspaceMember(
+          { listProjectsForWorkspace: id => accounts.listProjectsForWorkspace(id), workspacePathFor: analysisId => workspaceMemberPath(dataDir, analysisId) },
+          workspaceId, reference, requestedSections, options,
+        );
+        resolution.value = resolved;
+        return resolved;
+      },
+    });
+    if (!member) throw new AccountHttpError(404, `CAS ${casId} is not part of workspace ${workspaceId}`);
+    const resolved = resolution.value;
+    const identity = resolved ? composeMemberIdentityTree(resolved.reference, resolved.identity) : undefined;
+    return { statusCode: 200, body: {
+      status: 'ready', workspace_id: workspaceId, cas_id: casId,
+      reference: resolved?.reference ?? null, sections, identity, member,
+    } };
   } catch (error) {
     if (error instanceof WorkspaceMemberResolutionError) {
       const status = error.code === 'not_authorized' ? 403 : error.code === 'member_missing' || error.code === 'cas_missing' ? 404 : 409;
