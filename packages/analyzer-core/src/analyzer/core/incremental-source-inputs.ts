@@ -58,7 +58,7 @@ export class IncrementalSourceInputRefresh {
   matchingAnalyzerIds(file: string): string[] {
     const absolute = path.resolve(this.projectPath, file);
     return [...this.affectedAnalyzerIds].filter(id =>
-      !this.unresolvedFileEligibility.has(id) && (!this.relevantFiles.has(id) || this.relevantFiles.get(id)!.has(absolute))
+      this.relevantFiles.has(id) && this.relevantFiles.get(id)!.has(absolute)
     );
   }
 

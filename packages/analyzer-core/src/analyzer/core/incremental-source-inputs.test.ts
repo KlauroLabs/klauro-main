@@ -87,6 +87,18 @@ test('affected analyzer file discovery resolves paths within its monorepo root',
   assert.deepEqual(refresh.matchingAnalyzerIds('src/a.ts'), []);
 });
 
+test('affected analyzers without single-file execution are never matched onto source files', async () => {
+  const cas = fixture([contribution('reader', 'src/a.ts')]);
+  const registration = { id: 'reader', analyzer: {
+    incrementalContributionScope: () => 'file' as const,
+    supportsIncrementalAnalysis: () => true,
+    getRelevantFiles: async () => ['src/a.ts'],
+  } };
+  const refresh = await new IncrementalSourceInputRefresh('/project', cas, ['src/a.ts']).resolveFileEligibility([registration]);
+  assert.deepEqual(refresh.matchingAnalyzerIds('src/a.ts'), []);
+  assert.deepEqual([...refresh.projectAnalyzerIds([registration])], ['reader']);
+});
+
 test('unknown file eligibility requests a conservative refresh instead of running on arbitrary files', async () => {
   const cas = fixture([contribution('reader', 'src/a.ts')]);
   const registration = { id: 'reader', analyzer: {
