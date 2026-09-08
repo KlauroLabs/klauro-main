@@ -26,6 +26,18 @@ export class IncrementalSourceInputRefresh {
     }
   }
 
+  projectAnalyzerIds(registrations: ReadonlyArray<{ id: string; analyzer: {
+    incrementalContributionScope(): 'file' | 'project';
+    supportsIncrementalAnalysis(): boolean;
+    analyzeFileSingle?: unknown;
+  } }>): Set<string> {
+    const fileScoped = new Set(registrations.filter(({ analyzer }) =>
+      analyzer.incrementalContributionScope() === 'file' &&
+      analyzer.supportsIncrementalAnalysis() && typeof analyzer.analyzeFileSingle === 'function'
+    ).map(registration => registration.id));
+    return new Set([...this.affectedAnalyzerIds].filter(id => !fileScoped.has(id)));
+  }
+
   record(contribution: CASAnalyzerContribution): void {
     this.refreshed.set(contribution.analyzer_id, contribution);
   }

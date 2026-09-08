@@ -175,9 +175,10 @@ export class PythonAnalyzer extends BaseAnalyzer {
       retainedNodes,
       callIndex,
     );
+    this.buildModuleHierarchy(modules, nodes, edges);
     this.detectFrameworkPatterns(nodes, edges, entryPoints);
-    const projectNodes = [...retainedNodes, ...nodes];
     const currentNodeIds = new Set(nodes.map(node => node.id));
+    const projectNodes = [...retainedNodes.filter(node => !currentNodeIds.has(node.id)), ...nodes];
     const projectEdges = [...edges];
     const projectEntryPoints = [...entryPoints];
     const projectExitPoints = [...exitPoints];

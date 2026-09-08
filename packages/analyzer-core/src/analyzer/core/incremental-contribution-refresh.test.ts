@@ -345,7 +345,8 @@ test('project refresh fails closed when non-graph facts lack an explicit retenti
     registrations: [{
       id: 'framework', type: 'framework', analyzer: { analyze: async () => {
         analyzeCalls += 1;
-        return { nodes: [], edges: [], entry_points: [], exit_points: [], categories: { '1': {} } };
+        return { nodes: [], edges: [], entry_points: [], exit_points: [], categories: { '1': {} },
+          analyzer_metadata: { analyzer_id: 'framework', analyzer_name: 'Framework', contribution_type: 'framework' } };
       } },
     }],
     analyzerIds: new Set(['framework']), graph, ownershipGraph: graph,
@@ -369,6 +370,7 @@ test('project refresh accepts declared retained facts only when they match persi
         analyze: async () => ({
           nodes: [node('replacement', ['framework'])], edges: [], entry_points: [], exit_points: [],
           categories: { '1': { modules: { name: 'Modules', types: ['file'], description } } },
+          analyzer_metadata: { analyzer_id: 'framework', analyzer_name: 'Framework', contribution_type: 'framework' },
         }),
       },
     }],
@@ -466,7 +468,8 @@ test('project refresh is sequential, canonical, and transactional on analyzer fa
         calls.push(id);
         active--;
         if (id === 'zeta') throw new Error('failed');
-        return { nodes: [], edges: [], entry_points: [], exit_points: [] };
+        return { nodes: [], edges: [], entry_points: [], exit_points: [],
+          analyzer_metadata: { analyzer_id: id, analyzer_name: id, contribution_type: 'framework' as const } };
       },
     },
   }));
@@ -488,7 +491,8 @@ test('project refresh returns the untouched graph boundary when merge fails', as
     projectPath: '/workspace',
     registrations: [{
       id: 'framework', type: 'framework', analyzer: {
-        analyze: async () => ({ nodes: [node('replacement', ['framework'])], edges: [] }),
+        analyze: async () => ({ nodes: [node('replacement', ['framework'])], edges: [],
+          analyzer_metadata: { analyzer_id: 'framework', analyzer_name: 'Framework', contribution_type: 'framework' } }),
       },
     }],
     analyzerIds: new Set(['framework']), graph, ownershipGraph: graph,
@@ -499,6 +503,23 @@ test('project refresh returns the untouched graph boundary when merge fails', as
 
   assert.equal(refreshed, null);
   assert.deepEqual(graph.nodes.map(item => item.id), ['owned']);
+});
+
+test('incremental accumulation replaces fresh auxiliary nodes only with complete analyzer ownership', () => {
+  const stale = node('module', ['python']);
+  stale.perspectives = { obsolete: { hierarchy: ['data'], level: 1, priority: 1 } };
+  const shared = node('shared', ['python', 'framework']);
+  const graph = { nodes: [stale, shared], edges: [], entryPoints: [], exitPoints: [] };
+  const fresh = node('module', ['python']);
+  const partial = node('shared', ['python']);
+  createIncrementalGraphAccumulator(graph)({
+    filePath: 'app.py', contentHash: 'new', mtimeMs: 1,
+    nodes: [fresh, partial], edges: [], entryPoints: [], exitPoints: [], imports: [], exports: [],
+  });
+  assert.deepEqual(graph.nodes, [fresh, shared]);
+  assert.notEqual(graph.nodes[0], stale);
+  assert.equal(graph.nodes[1], shared);
+  assert.ok(stale.perspectives?.obsolete);
 });
 
 test('incremental snapshots replace same-id facts for subsequent analyzers', () => {

@@ -19,6 +19,19 @@ describe('PythonAnalyzer incremental call graph', () => {
     await fs.remove(projectPath);
   });
 
+  it('rebuilds the same module containment in full and single-file analysis', async () => {
+    const filePath = path.join(projectPath, 'app.py');
+    await fs.writeFile(filePath, 'def healthz():\n    return True\n', 'utf8');
+    const full = await new PythonAnalyzer().analyze({ projectPath });
+    const result = await new PythonAnalyzer().analyzeFileSingle({
+      projectPath, filePath, relativePath: 'app.py', existingAnalysis: [full],
+    });
+    expect(result.nodes.filter(node => node.type === 'module')).toEqual(full.nodes?.filter(node => node.type === 'module'));
+    expect(result.edges.filter(edge => edge.source === 'module_app')).toEqual(full.edges?.filter(edge => edge.source === 'module_app'));
+    expect(result.edges.some(edge => edge.source === 'module_app' && edge.target === 'file_app_py' && edge.type === 'contains')).toBe(true);
+    expect(new Set(result.nodes.map(node => node.id)).size).toBe(result.nodes.length);
+  });
+
   it('rebuilds calls from the analyzed file to retained project nodes', async () => {
     const targetPath = path.join(projectPath, 'domain.py');
     const callerPath = path.join(projectPath, 'test_domain.py');
