@@ -83,10 +83,27 @@ export function readContainerMemory(
   return null;
 }
 
+export function readHostAvailableMemory(
+  read: (file: string) => string = file => fs.readFileSync(file, 'utf8'),
+  totalBytes: number = os.totalmem(),
+  fallbackBytes: number = os.freemem(),
+): number {
+  try {
+    const lines = read('/proc/meminfo').split('\n').filter(line => /^MemAvailable:/.test(line));
+    if (lines.length !== 1) return fallbackBytes;
+    const match = /^MemAvailable:\s+(\d+)\s+kB\s*$/.exec(lines[0]);
+    if (!match) return fallbackBytes;
+    const bytes = Number(match[1]) * 1024;
+    return Number.isSafeInteger(bytes) && bytes >= 0 && bytes <= totalBytes ? bytes : fallbackBytes;
+  } catch {
+    return fallbackBytes;
+  }
+}
+
 export function readAnalysisMemoryCapacity(
   container: ContainerMemory | null = readContainerMemory(),
   totalBytes: number = os.totalmem(),
-  freeBytes: number = os.freemem(),
+  freeBytes: number = readHostAvailableMemory(undefined, totalBytes),
 ): AnalysisMemoryCapacity {
   if (container) {
     const cache = container.reclaimableFileBytes ?? 0;

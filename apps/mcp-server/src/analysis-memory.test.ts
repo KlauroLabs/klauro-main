@@ -5,6 +5,7 @@ import {
   analysisWorkerMemoryRequiredBytes,
   assertAnalysisWorkerMemoryAvailable,
   readAnalysisMemoryCapacity,
+  readHostAvailableMemory,
   readContainerMemory,
   type ContainerMemory,
 } from './analysis-memory';
@@ -26,6 +27,45 @@ function cacheStats(overrides: Record<string, number> = {}): string {
     file_writeback: 32 * MIB, shmem: 128 * MIB, anon: 128 * MIB, ...overrides,
   }).map(([key, value]) => `${key} ${value}`).join('\n');
 }
+
+test('Linux host headroom uses kernel available memory while preserving the tighter container budget', () => {
+  const available = readHostAvailableMemory(files({
+    '/proc/meminfo': 'MemTotal: 8388608 kB\nMemFree: 524288 kB\nMemAvailable: 6291456 kB\n',
+  }), 8 * GIB, 512 * MIB);
+  assert.equal(available, 6 * GIB);
+  const container = cachedContainer()!;
+  const capacity = readAnalysisMemoryCapacity(container, 8 * GIB, available);
+  assert.equal(capacity.availableBytes, 2080 * MIB);
+  assert.throws(() => assertAnalysisWorkerMemoryAvailable(1024, undefined,
+    readAnalysisMemoryCapacity(container, 8 * GIB, 512 * MIB)), AnalysisMemoryCapacityError);
+  assert.doesNotThrow(() => assertAnalysisWorkerMemoryAvailable(1024, undefined, capacity));
+  assert.equal(analysisWorkerMemoryRequiredBytes(1024), 1536 * MIB);
+});
+
+test('unavailable or invalid host memory estimates fall back to unused RAM', () => {
+  const fallback = 512 * MIB;
+  assert.equal(readHostAvailableMemory(files({}), 8 * GIB, fallback), fallback);
+  for (const info of [
+    '', 'MemFree: 524288 kB', 'MemAvailable: -1 kB', 'MemAvailable: Infinity kB',
+    'MemAvailable: 1.5 kB', 'MemAvailable: 6291456 MB', 'MemAvailable: 9437184 kB',
+    'MemAvailable: 9007199254740991 kB', 'MemAvailable: 1 kB\nMemAvailable: 2 kB',
+    'MemAvailable: unknown',
+  ]) {
+    assert.equal(readHostAvailableMemory(files({ '/proc/meminfo': info }), 8 * GIB, fallback), fallback);
+  }
+});
+
+test('host memory pressure still refuses workers even with reclaimable container cache', () => {
+  for (const availableBytes of [0, 128 * MIB, 1535 * MIB]) {
+    const host = readHostAvailableMemory(files({
+      '/proc/meminfo': `MemAvailable: ${availableBytes / 1024} kB`,
+    }), 8 * GIB, 2 * GIB);
+    assert.equal(host, availableBytes);
+    const capacity = readAnalysisMemoryCapacity(cachedContainer(), 8 * GIB, host);
+    assert.equal(capacity.availableBytes, availableBytes);
+    assert.throws(() => assertAnalysisWorkerMemoryAvailable(1024, undefined, capacity), AnalysisMemoryCapacityError);
+  }
+});
 
 function cachedContainer(stat = cacheStats()): ContainerMemory | null {
   return readContainerMemory(files({
