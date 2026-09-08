@@ -1,5 +1,6 @@
 import { BaseAnalyzer, CASNode, CASEdge, AnalysisContext, FileAnalysisContext } from './base-analyzer';
 import * as incrementalScope from './incremental-scope';
+import { reuseCapabilityCatalog } from './capability-catalog-reuse';
 import { SCAFFOLD_DIR_NAMES, SCAFFOLD_GLOBS, isScaffoldDirName, isScaffoldOrTestPath, isTestFileName } from './scaffold-paths';
 import { BUILD_ARTIFACT_GLOBS, THIRD_PARTY_SOURCE_GLOBS, isBuildArtifactDirectoryName } from './build-artifact-paths';
 import {
@@ -2951,8 +2952,10 @@ export class AnalyzerOrchestrator {
       dataEntities,
     );
     const skipSemanticRefresh = shouldReuseComprehensionForInertPrivateAddition(comprehensionInertAddition, incrementalAIRefreshDecision.reason);
-    const refreshAIInterpretation = incrementalAIRefreshRequested && !skipSemanticRefresh;
-    writeAnalyzerStatus(`[Klauro] AI interpretation refresh=${refreshAIInterpretation} reason=${skipSemanticRefresh ? 'comprehension-inert-private-addition' : incrementalAIRefreshDecision.reason}`);
+    const reusableCapabilities = this.reusePreviousCapabilityCatalog(previousOutput.capabilities || [], systemCapabilities, { previousEntryPoints: previousOutput.entry_points || [], currentEntryPoints: entryPoints });
+    const refreshCapabilityGrounding = reusableCapabilities.length < (previousOutput.capabilities || []).length;
+    const refreshAIInterpretation = (incrementalAIRefreshRequested && !skipSemanticRefresh) || refreshCapabilityGrounding;
+    writeAnalyzerStatus(`[Klauro] AI interpretation refresh=${refreshAIInterpretation} reason=${refreshCapabilityGrounding ? 'previous-capability-grounding-changed' : skipSemanticRefresh ? 'comprehension-inert-private-addition' : incrementalAIRefreshDecision.reason}`);
     if (refreshAIInterpretation) {
       await this.applyAIInterpretation(
         enhancedSystemPurpose,
@@ -3010,11 +3013,7 @@ export class AnalyzerOrchestrator {
         enhancedSystemPurpose.primary_domain = previousPurpose.primary_domain;
         enhancedSystemPurpose.domain_source = 'reused';
       }
-      const reusedCapabilities = this.reusePreviousCapabilityCatalog(
-        previousOutput.capabilities || [],
-        systemCapabilities,
-      );
-      systemCapabilities.splice(0, systemCapabilities.length, ...reusedCapabilities);
+      systemCapabilities.splice(0, systemCapabilities.length, ...reusableCapabilities);
     }
     const analysisFacts = await this.buildAnalysisFacts(
       nodes,
@@ -10349,7 +10348,7 @@ export class AnalyzerOrchestrator {
   ): void {
     const authored = systemCapabilities.filter(capability => this.isPublishableCapability(capability));
     const excluded = systemCapabilities.filter(capability => !authored.includes(capability));
-    const deduped = this.dedupeSystemCapabilitiesByName(authored, false);
+    const deduped = this.dedupeSystemCapabilitiesByName(authored, true);
     systemCapabilities.splice(0, systemCapabilities.length, ...deduped);
     if (purpose) {
       purpose.capability_naming_coverage = {
@@ -19620,44 +19619,13 @@ export class AnalyzerOrchestrator {
   private reusePreviousCapabilityCatalog(
     previousCapabilities: SystemCapability[],
     currentCandidates: SystemCapability[],
+    entryContext?: { previousEntryPoints: CASEntryPoint[]; currentEntryPoints: CASEntryPoint[] },
   ): SystemCapability[] {
-    const unused = new Set(currentCandidates.map((_, index) => index));
-    const reused: SystemCapability[] = [];
-    for (const previous of previousCapabilities) {
-      if (!previous.description || !['ai', 'manual', 'reused'].includes(String(previous.description_source || ''))) continue;
-      const previousEntities = new Set(previous.related_entities || []);
-      const matching = [...unused].filter(index => {
-        const current = currentCandidates[index];
-        if (current.id === previous.id || this.capabilityReuseSubjectsMatch(previous, current)) return true;
-        return (current.related_entities || []).some(entity => previousEntities.has(entity));
-      });
-      if (matching.length === 0) continue;
-      const candidates = matching.map(index => currentCandidates[index]);
-      for (const index of matching) unused.delete(index);
-      reused.push({
-        ...candidates[0],
-        id: previous.id,
-        name: previous.name,
-        description: previous.description,
-        description_source: 'reused',
-        description_generation: {
-          status: 'reused_previous',
-          attempted: false,
-          reason: previous.description_generation?.status,
-          generated_at: new Date().toISOString(),
-          origin_source: previous.description_generation?.origin_source
-            || (previous.description_source === 'ai' ? 'ai'
-              : previous.description_source === 'manual' ? 'manual'
-                : previous.description_source === 'deterministic' ? 'deterministic'
-                  : previous.description_generation?.reason === 'ai_applied' ? 'ai'
-                    : undefined),
-        },
-        related_domains: Array.from(new Set(candidates.flatMap(capability => capability.related_domains || []))),
-        related_entities: Array.from(new Set(candidates.flatMap(capability => capability.related_entities || []))),
-        operations: candidates.flatMap(capability => capability.operations || []),
-      });
-    }
-    return reused;
+    return reuseCapabilityCatalog(previousCapabilities, currentCandidates, {
+      entryContext,
+      subjectsMatch: (previous, current) => this.capabilityReuseSubjectsMatch(previous, current),
+      isPublishable: capability => this.isPublishableCapability(capability),
+    });
   }
 
   private stabilizeRefreshedCapabilityCatalog(

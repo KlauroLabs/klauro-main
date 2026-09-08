@@ -14064,7 +14064,7 @@ describe('enterprise AI semantic guards', () => {
 
   it('reattaches an AI catalog to fresh operations through entity evidence', () => {
     const previous = [{
-      id: 'ai-orders', name: 'View Enterprise Order Details', category: 'core',
+      id: 'ai-orders', name: 'View Enterprise Order Details', name_source: 'ai', category: 'core',
       description: 'View Enterprise Order Details returns the selected EnterpriseOrder record.',
       description_source: 'ai', related_domains: [], related_entities: ['order'], operations: [],
     }];

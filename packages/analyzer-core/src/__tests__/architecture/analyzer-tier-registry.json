@@ -43,6 +43,7 @@
   "core/capability-catalog-repair-context.ts": 3,
   "core/capability-catalog-repair-plan.ts": 3,
   "core/capability-catalog-response.ts": 3,
+  "core/capability-catalog-reuse.ts": 3,
   "core/capability-catalog-scheduling.ts": 3,
   "core/capability-catalog-status.ts": 3,
   "core/capability-deduplication.ts": 3,
