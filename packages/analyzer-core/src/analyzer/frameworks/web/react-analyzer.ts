@@ -129,10 +129,6 @@ export class ReactAnalyzer extends BaseAnalyzer {
     return true;
   }
 
-  incrementalFileCachePolicy(): 'recompute' {
-    return 'recompute';
-  }
-
   private async readTextFileIfExists(filePath: string): Promise<string | null> {
     try {
       return await fs.readFile(filePath, 'utf-8');

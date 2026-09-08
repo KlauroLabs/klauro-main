@@ -9,6 +9,8 @@ import { AnalyzerOrchestrator, type AnalyzerRegistration } from '../../analyzer/
 import type { AnalysisContext } from '../../analyzer/core/base-analyzer';
 import type { CASContribution } from '../../types/cas.types';
 import { ArchitecturalLibraryAnalyzer } from '../../analyzer/libraries/architecture/architectural-library-analyzer';
+import { AIStackAnalyzer } from '../../analyzer/libraries/ai-stack-analyzer';
+import { TypeScriptJavaScriptAnalyzer } from '../../analyzer/languages/typescript-javascript-analyzer';
 
 function result(): CASContribution {
   return {
@@ -76,7 +78,49 @@ describe('orchestrator analyzer contribution cache integration', () => {
     expect(restored).toEqual(first);
   });
 
-  it('keeps upstream evidence in the default incremental file cache policy', () => {
+  it('defaults file-scoped extraction to recompute without reading irrelevant graph evidence', async () => {
+    const analyzer = new AIStackAnalyzer();
+    const registration = { id: analyzer.id, name: analyzer.name, version: analyzer.version, type: analyzer.type, detectPatterns: {}, analyzer } as AnalyzerRegistration;
+    const relativePath = 'src/mcp.ts';
+    await fs.outputFile(path.join(root, relativePath), [
+      "import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';",
+      "const server = new McpServer({ name: 'search-server', version: '1.0.0' });",
+      "server.registerTool('search', { description: 'Search the index' }, async () => ({ content: [] }));",
+    ].join('\n'));
+    const context = {
+      projectPath: root, relativePath, filePath: path.join(root, relativePath),
+      get existingAnalysis(): CASContribution[] { throw new Error('Unused graph evidence was accessed'); },
+    };
+    const orchestrator = new AnalyzerOrchestrator() as any;
+    expect(analyzer.incrementalContributionScope()).toBe('file');
+    expect(analyzer.incrementalFileCachePolicy()).toBe('recompute');
+    expect(orchestrator.incrementalFileCacheKey(registration, context)).toBeNull();
+    const extracted = await analyzer.analyzeFileSingle(context);
+    expect(extracted.nodes.length).toBeGreaterThan(0);
+    expect(await analyzer.analyzeFileSingle(context)).toEqual(extracted);
+  });
+
+  it('retains evidence caching for project-scoped extraction and explicit file-scoped opt-in', () => {
+    class CachedAIStackAnalyzer extends AIStackAnalyzer {
+      incrementalFileCachePolicy(): 'evidence' { return 'evidence'; }
+    }
+    const projectAnalyzer = new TypeScriptJavaScriptAnalyzer();
+    expect(projectAnalyzer.incrementalContributionScope()).toBe('project');
+    for (const analyzer of [projectAnalyzer, new CachedAIStackAnalyzer()]) {
+      expect(analyzer.incrementalFileCachePolicy()).toBe('evidence');
+      const registration: AnalyzerRegistration = { id: analyzer.id, name: analyzer.name, version: analyzer.version, type: analyzer.type, detectPatterns: {}, analyzer };
+      const orchestrator = new AnalyzerOrchestrator() as any;
+      const context = { projectPath: root, relativePath: 'orders.ts', contentHash: 'same' };
+      const before = orchestrator.incrementalFileCacheKey(registration, { ...context, existingAnalysis: [result()] });
+      const changed = result();
+      changed.nodes![0].name = 'Changed';
+      const after = orchestrator.incrementalFileCacheKey(registration, { ...context, existingAnalysis: [changed] });
+      expect(before).not.toBeNull();
+      expect(after).not.toBe(before);
+    }
+  });
+
+  it('keeps upstream evidence in the opted-in incremental file cache policy', () => {
     const analyzer = { incrementalFileCachePolicy: () => 'evidence' };
     const registration = { id: 'dependent', version: '1', type: 'framework', analyzer } as unknown as AnalyzerRegistration;
     const orchestrator = new AnalyzerOrchestrator() as any;
