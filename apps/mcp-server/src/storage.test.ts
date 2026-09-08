@@ -24,6 +24,7 @@ import {
   saveCrossCodebaseSystemGraph,
   waitForPendingSegmentedWrites,
   writeJsonAtomic,
+  withIndexLock,
 } from './storage';
 import { segmentedReadFailureFallback, segmentedStorageAccessError, SegmentedStorageAccessError } from './segmented-storage-access';
 import { getCachedDeployableAnalyses, materializeDeployableCasTree } from './deployable-analysis';
@@ -409,6 +410,147 @@ test('a segmented write failure never invalidates the authoritative analysis', a
     clearLoadedAnalysisCache();
     assert.equal((await loadAnalysis(project))?.analysis_id, 'after-segment-failure');
     assert.ok(warnings.some(message => message.includes('segmented analysis write failed')));
+  });
+});
+
+test('superseded canonical saves do not overwrite the published analysis index', async t => {
+  await withStoragePath(async storagePath => {
+    const project = '/tmp/superseded-canonical-project';
+    const entry = await saveAnalysis(project, casFixture('initial'), 'main', { canonicalSegmented: true });
+    const filePath = path.join(storagePath, entry.file);
+    const io = (fs as unknown as { default?: typeof fs }).default || fs;
+    const remove = io.remove.bind(io);
+    let reached!: () => void;
+    let resume!: () => void;
+    const paused = new Promise<void>(resolve => { reached = resolve; });
+    const resumed = new Promise<void>(resolve => { resume = resolve; });
+    let intercepted = false;
+    t.mock.method(io, 'remove', async (...args: any[]) => {
+      if (!intercepted && args[0] === filePath) {
+        intercepted = true;
+        reached();
+        await resumed;
+      }
+      return (remove as (...args: any[]) => Promise<void>)(...args);
+    });
+    const older = saveAnalysis(project, casFixture('older'), 'main', { canonicalSegmented: true });
+    try {
+      await paused;
+      await saveAnalysis(project, casFixture('newer'), 'main', { canonicalSegmented: true });
+    } finally {
+      resume();
+      await older;
+    }
+    clearLoadedAnalysisCache();
+    const index = await fs.readJson(path.join(storagePath, 'index.json'));
+    assert.equal(index.analyses[project].analysis_id, 'newer');
+    assert.equal((await loadAnalysis(project))?.analysis_id, 'newer');
+  });
+});
+
+test('a newer failed canonical save does not suppress the last published index', async t => {
+  await withStoragePath(async storagePath => {
+    const project = '/tmp/failed-newer-canonical-project';
+    const entry = await saveAnalysis(project, casFixture('initial'), 'main', { canonicalSegmented: true });
+    const filePath = path.join(storagePath, entry.file);
+    const io = (fs as unknown as { default?: typeof fs }).default || fs;
+    const remove = io.remove.bind(io);
+    const writeFile = io.writeFile.bind(io);
+    let reached!: () => void;
+    let resume!: () => void;
+    const paused = new Promise<void>(resolve => { reached = resolve; });
+    const resumed = new Promise<void>(resolve => { resume = resolve; });
+    let intercepted = false;
+    let failNewer = false;
+    t.mock.method(io, 'remove', async (...args: any[]) => {
+      if (!intercepted && args[0] === filePath) {
+        intercepted = true;
+        reached();
+        await resumed;
+      }
+      return (remove as (...args: any[]) => Promise<void>)(...args);
+    });
+    t.mock.method(io, 'writeFile', async (...args: any[]) => {
+      if (failNewer && String(args[0]).endsWith('graph.dictionary.bytes.bin')) throw new Error('newer generation write failed');
+      return (writeFile as (...args: any[]) => Promise<void>)(...args);
+    });
+    const older = saveAnalysis(project, casFixture('older'), 'main', { canonicalSegmented: true });
+    try {
+      await paused;
+      failNewer = true;
+      await assert.rejects(saveAnalysis(project, casFixture('newer'), 'main', { canonicalSegmented: true }), /newer generation write failed/);
+    } finally {
+      failNewer = false;
+      resume();
+      await older;
+    }
+    clearLoadedAnalysisCache();
+    const index = await fs.readJson(path.join(storagePath, 'index.json'));
+    assert.equal(index.analyses[project].analysis_id, 'older');
+    assert.equal((await loadAnalysis(project))?.analysis_id, 'older');
+  });
+});
+
+for (const afterRename of [false, true]) {
+  test(`canonical index failure ${afterRename ? 'after' : 'before'} rename keeps the matching generation`, async t => {
+    await withStoragePath(async storagePath => {
+      const project = '/tmp/canonical-index-failure-project';
+      await saveAnalysis(project, casFixture('initial'), 'main', { canonicalSegmented: true });
+      const io = (fs as unknown as { default?: typeof fs }).default || fs;
+      const renameFile = io.rename.bind(io);
+      const indexPath = path.join(storagePath, 'index.json');
+      t.mock.method(io, 'rename', async (...args: any[]) => {
+        if (args[1] === indexPath) {
+          if (afterRename) await (renameFile as (...args: any[]) => Promise<void>)(...args);
+          throw new Error('index publication I/O failure');
+        }
+        return (renameFile as (...args: any[]) => Promise<void>)(...args);
+      });
+      await assert.rejects(saveAnalysis(project, casFixture('newer'), 'main', { canonicalSegmented: true }), /index publication I\/O failure/);
+      clearLoadedAnalysisCache();
+      assert.equal((await loadAnalysis(project))?.analysis_id, afterRename ? 'newer' : 'initial');
+    });
+  });
+}
+
+test('canonical first-save index failure removes its unpublished pointer', async t => {
+  await withStoragePath(async storagePath => {
+    const io = (fs as unknown as { default?: typeof fs }).default || fs;
+    const renameFile = io.rename.bind(io);
+    t.mock.method(io, 'rename', async (...args: any[]) => {
+      if (args[1] === path.join(storagePath, 'index.json')) throw new Error('index unavailable');
+      return (renameFile as (...args: any[]) => Promise<void>)(...args);
+    });
+    await assert.rejects(saveAnalysis('/tmp/first-index-failure', casFixture('first'), 'main', { canonicalSegmented: true }), /index unavailable/);
+    const roots = (await fs.readdir(storagePath)).filter(file => file.endsWith('.sections'));
+    assert.equal(roots.length, 1);
+    assert.equal(await fs.pathExists(path.join(storagePath, roots[0], 'current.json')), false);
+    assert.equal(await loadAnalysis('/tmp/first-index-failure'), null);
+  });
+});
+
+test('canonical index lock timeout restores the last published generation', async () => {
+  await withStoragePath(async () => {
+    const project = '/tmp/canonical-index-lock-project';
+    await saveAnalysis(project, casFixture('initial'), 'main', { canonicalSegmented: true });
+    const previousWait = process.env.KLAURO_INDEX_LOCK_WAIT_MS;
+    process.env.KLAURO_INDEX_LOCK_WAIT_MS = '50';
+    let reached!: () => void;
+    let resume!: () => void;
+    const paused = new Promise<void>(resolve => { reached = resolve; });
+    const resumed = new Promise<void>(resolve => { resume = resolve; });
+    const holder = withIndexLock(async () => { reached(); await resumed; });
+    try {
+      await paused;
+      await assert.rejects(saveAnalysis(project, casFixture('newer'), 'main', { canonicalSegmented: true }), /Analysis index update is already in progress/);
+    } finally {
+      resume();
+      await holder;
+      if (previousWait === undefined) delete process.env.KLAURO_INDEX_LOCK_WAIT_MS;
+      else process.env.KLAURO_INDEX_LOCK_WAIT_MS = previousWait;
+    }
+    clearLoadedAnalysisCache();
+    assert.equal((await loadAnalysis(project))?.analysis_id, 'initial');
   });
 });
 

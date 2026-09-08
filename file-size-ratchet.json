@@ -87,7 +87,7 @@
     },
     {
       "file": "apps/mcp-server/src/storage.ts",
-      "ceiling": 2316
+      "ceiling": 2305
     },
     {
       "file": "packages/analyzer-core/src/analyzer/languages/java-analyzer.ts",

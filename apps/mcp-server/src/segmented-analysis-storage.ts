@@ -79,7 +79,7 @@ export async function writeSegmentedAnalysis(
   writeCompressedJson: JsonWriter,
   writeJson: JsonWriter,
   isCurrent: () => boolean = () => true,
-  options: { rootOnlyTree?: boolean; childProjections?: Iterable<CASOutput>; subCasNodes?: SubCasNodeIndex } = {},
+  options: { rootOnlyTree?: boolean; childProjections?: Iterable<CASOutput>; subCasNodes?: SubCasNodeIndex; onPublished?: (restoreGeneration: () => Promise<void>) => Promise<void> } = {},
 ): Promise<void> {
   const root = segmentedAnalysisRoot(filePath);
   const previous = segmentedWriteLocks.get(root) || Promise.resolve();
@@ -160,7 +160,7 @@ async function writeSegmentedAnalysisUnlocked(
   writeCompressedJson: JsonWriter,
   writeJson: JsonWriter,
   isCurrent: () => boolean,
-  options: { rootOnlyTree?: boolean; childProjections?: Iterable<CASOutput>; subCasNodes?: SubCasNodeIndex },
+  options: { rootOnlyTree?: boolean; childProjections?: Iterable<CASOutput>; subCasNodes?: SubCasNodeIndex; onPublished?: (restoreGeneration: () => Promise<void>) => Promise<void> },
 ): Promise<void> {
   if (!isCurrent()) return;
   const root = segmentedAnalysisRoot(filePath);
@@ -379,6 +379,11 @@ async function writeSegmentedAnalysisUnlocked(
       }
       return;
     }
+    await options.onPublished?.(async () => {
+      const currentPath = path.join(root, 'current.json');
+      if (prior) await writeJson(currentPath, prior, { spaces: 2 });
+      else await fs.remove(currentPath);
+    });
     const retained = new Set([generation, previous].filter((value): value is string => Boolean(value)));
     const graceMs = generationGraceMs();
     const reclaimBefore = Date.now() - graceMs;

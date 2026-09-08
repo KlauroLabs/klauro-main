@@ -30,6 +30,7 @@ import { iterateDeployableChildCas, materializeDeployableCasTree, prepareDeploya
 import { readZstdJson } from './zstd-json';
 import { describeAnalysisVersion, hasFailedStructuralAnalysisLayer, type AnalysisVersionInfo } from './analysis-version';
 import { segmentedReadFailureFallback } from './segmented-storage-access';
+import { createAnalysisIndexEntry } from './analysis-index-entry';
 import {
   acquireSegmentedAnalysisLease,
   loadCompactCASGraph,
@@ -689,6 +690,23 @@ export async function saveAnalysis(
   const persistedOutput = canonicalSegmented
     ? canonicalOutput
     : completedOutput ? materializeDeployableCasTree(output) : output;
+  const entry = createAnalysisIndexEntry(projectPath, fileName, persistedOutput, track, canonicalSegmented ? 'segmented-v2' : 'whole-json');
+  const publishIndex = async (restoreGeneration?: () => Promise<void>) => {
+    const key = analysisIndexKey(projectPath, track);
+    try {
+      await withIndexLock(async () => {
+        const index = await loadIndex();
+        index.analyses[key] = entry;
+        await saveIndex(index);
+      });
+    } catch (error) {
+      if (restoreGeneration) {
+        const persisted = (await loadIndex()).analyses[key];
+        if (persisted?.analysis_id !== entry.analysis_id || persisted?.analyzed_at !== entry.analyzed_at) await restoreGeneration();
+      }
+      throw error;
+    }
+  };
   const segmentedGeneration = beginSegmentedWriteGeneration(filePath);
   const wholeStartedAt = Date.now();
   if (!canonicalSegmented) await writeCompressedJsonAtomic(filePath, persistedOutput, { spaces: 0 });
@@ -704,7 +722,7 @@ export async function saveAnalysis(
         writeCompressedJsonAtomic,
         writeJsonAtomic,
         () => isSegmentedWriteCurrent(filePath, segmentedGeneration),
-        { rootOnlyTree: true, childProjections: iterateDeployableChildCas(output, canonicalProjection), subCasNodes: canonicalProjection.analysis.sub_cas_nodes },
+        { rootOnlyTree: true, childProjections: iterateDeployableChildCas(output, canonicalProjection), subCasNodes: canonicalProjection.analysis.sub_cas_nodes, onPublished: publishIndex },
       );
       await fs.remove(filePath);
     } else {
@@ -739,31 +757,7 @@ export async function saveAnalysis(
     if (!canonicalSegmented) await rememberLoadedAnalysis(projectPath, filePath, persistedOutput);
   }
 
-  const frameworks = persistedOutput.system.technologies?.frameworks?.map(f => f.name) || [];
-
-  const entry: AnalysisEntry = {
-    name: persistedOutput.system.name,
-    path: projectPath,
-    file: fileName,
-    analysis_id: persistedOutput.analysis_id,
-    analyzed_at: persistedOutput.analysis_timestamp,
-    system_type: persistedOutput.system.type,
-    frameworks,
-    node_count: persistedOutput.nodes.length,
-    edge_count: persistedOutput.edges.length,
-    cas_version: persistedOutput.cas_version,
-    ...(persistedOutput.layers_ready ? { layers_ready: persistedOutput.layers_ready } : {}),
-    storage_format: canonicalSegmented ? 'segmented-v2' : 'whole-json',
-    track,
-    ...(persistedOutput.base_commit ? { base_commit: persistedOutput.base_commit } : {}),
-    ...(persistedOutput.branch ? { branch: persistedOutput.branch } : {}),
-  };
-
-  await withIndexLock(async () => {
-    const index = await loadIndex();
-    index.analyses[analysisIndexKey(projectPath, track)] = entry;
-    await saveIndex(index);
-  });
+  if (!canonicalSegmented) await publishIndex();
 
   if (segmentsWorthWriting && options.deferSegmentedWrite && !canonicalSegmented) {
     scheduleSegmentedAnalysisWrite(
