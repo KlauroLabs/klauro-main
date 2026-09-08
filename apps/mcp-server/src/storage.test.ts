@@ -28,7 +28,7 @@ import {
 import { segmentedReadFailureFallback, segmentedStorageAccessError, SegmentedStorageAccessError } from './segmented-storage-access';
 import { getCachedDeployableAnalyses, materializeDeployableCasTree } from './deployable-analysis';
 import { compactCASPostingShard, searchCompactCAS } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-search';
-import { writeSegmentedLegacyExport } from './segmented-analysis-storage';
+import { acquireSegmentedAnalysisLease, writeSegmentedAnalysis, writeSegmentedLegacyExport } from './segmented-analysis-storage';
 import { writeCompressedJsonAtomic } from './json-storage-writer';
 
 function casFixture(id: string): CASOutput {
@@ -811,6 +811,231 @@ test('a newer valid whole analysis wins over an older corrupt canonical pointer'
     assert.match((await resolveAnalysisExportArtifact(project))?.filePath || '', /\.json(?:\.zst|\.br)?$/);
     assert.equal(await loadCompactAnalysisGraph(project), null);
     assert.equal(await loadCompactAnalysisSearch(project), null);
+  });
+});
+
+
+test('canonical readers use the last published generation behind an abandoned writer lock', async () => {
+  await withStoragePath(async storagePath => {
+    const project = '/tmp/abandoned-writer-project';
+    const entry = await saveAnalysis(project, casFixture('published'), 'main', { canonicalSegmented: true });
+    const wholePath = path.join(storagePath, entry.file);
+    const lock = wholePath + '.sections/.write-lock';
+    await fs.ensureDir(lock);
+    await fs.writeFile(path.join(lock, 'owner'), 'cancelled-worker');
+    const timeout = process.env.KLAURO_SEGMENT_WRITE_LOCK_TIMEOUT_MS;
+    process.env.KLAURO_SEGMENT_WRITE_LOCK_TIMEOUT_MS = '50';
+    try {
+      const leased = await acquireSegmentedAnalysisLease(wholePath);
+      assert.equal(leased?.segmented.manifest.analysis_id, 'published');
+      await leased?.release();
+      assert.equal(await fs.readFile(path.join(lock, 'owner'), 'utf8'), 'cancelled-worker');
+      assert.deepEqual(await fs.readdir(wholePath + '.sections/.read-leases'), []);
+    } finally {
+      if (timeout === undefined) delete process.env.KLAURO_SEGMENT_WRITE_LOCK_TIMEOUT_MS;
+      else process.env.KLAURO_SEGMENT_WRITE_LOCK_TIMEOUT_MS = timeout;
+    }
+  });
+});
+
+test('canonical readers remain available while the next generation is being written', async () => {
+  await withStoragePath(async storagePath => {
+    const project = '/tmp/live-writer-project';
+    const entry = await saveAnalysis(project, casFixture('visible'), 'main', { canonicalSegmented: true });
+    const wholePath = path.join(storagePath, entry.file);
+    let signalStarted!: () => void;
+    let finishWrite!: () => void;
+    const started = new Promise<void>(resolve => { signalStarted = resolve; });
+    const paused = new Promise<void>(resolve => { finishWrite = resolve; });
+    const writing = writeSegmentedAnalysis(wholePath, casFixture('pending'), '.json', writeCompressedJsonAtomic,
+      async (file, value, options) => {
+        if (path.basename(file) === 'manifest.json') {
+          signalStarted();
+          await paused;
+        }
+        await writeJsonAtomic(file, value, options);
+      });
+    await started;
+    const timeout = process.env.KLAURO_SEGMENT_WRITE_LOCK_TIMEOUT_MS;
+    process.env.KLAURO_SEGMENT_WRITE_LOCK_TIMEOUT_MS = '50';
+    try {
+      const leased = await acquireSegmentedAnalysisLease(wholePath);
+      assert.equal(leased?.segmented.manifest.analysis_id, 'visible');
+      await leased?.release();
+    } finally {
+      finishWrite();
+      await writing;
+      if (timeout === undefined) delete process.env.KLAURO_SEGMENT_WRITE_LOCK_TIMEOUT_MS;
+      else process.env.KLAURO_SEGMENT_WRITE_LOCK_TIMEOUT_MS = timeout;
+    }
+    const current = await acquireSegmentedAnalysisLease(wholePath);
+    assert.equal(current?.segmented.manifest.analysis_id, 'pending');
+    await current?.release();
+  });
+});
+
+
+test('canonical readers retry when a generation is retired before lease registration', async t => {
+  await withStoragePath(async storagePath => {
+    const entry = await saveAnalysis('/tmp/lease-retired-project', casFixture('retired-first'), 'main', { canonicalSegmented: true });
+    const wholePath = path.join(storagePath, entry.file), root = wholePath + '.sections';
+    const firstPointer = await fs.readJson(path.join(root, 'current.json'));
+    await fs.utimes(path.join(root, firstPointer.current), new Date(0), new Date(0));
+    const io = (fs as unknown as { default?: typeof fs }).default || fs;
+    const readJson = io.readJson.bind(io);
+    let published = false;
+    t.mock.method(io, 'readJson', async (...args: any[]) => {
+      const result = await (readJson as any)(...args);
+      if (String(args[0]) === path.join(root, 'current.json') && !published) {
+        published = true;
+        for (const id of ['retired-second', 'retired-third']) {
+          await writeSegmentedAnalysis(wholePath, casFixture(id), '.json', writeCompressedJsonAtomic, writeJsonAtomic);
+        }
+      }
+      return result;
+    });
+    const leased = await acquireSegmentedAnalysisLease(wholePath);
+    assert.equal(leased?.segmented.manifest.analysis_id, 'retired-third');
+    assert.equal(await fs.pathExists(path.join(root, firstPointer.current)), false);
+    await leased?.release();
+    assert.deepEqual(await fs.readdir(path.join(root, '.read-leases')), []);
+  });
+});
+
+test('canonical readers confirm again after publication during lease registration', async t => {
+  await withStoragePath(async storagePath => {
+    const entry = await saveAnalysis('/tmp/lease-publication-project', casFixture('lease-first'), 'main', { canonicalSegmented: true });
+    const wholePath = path.join(storagePath, entry.file), root = wholePath + '.sections';
+    const io = (fs as unknown as { default?: typeof fs }).default || fs;
+    const writeFile = io.writeFile.bind(io);
+    let published = false;
+    t.mock.method(io, 'writeFile', async (...args: any[]) => {
+      const result = await (writeFile as any)(...args);
+      if (String(args[0]).includes(path.join(root, '.read-leases') + path.sep) && !published) {
+        published = true;
+        await writeSegmentedAnalysis(wholePath, casFixture('lease-second'), '.json', writeCompressedJsonAtomic, writeJsonAtomic);
+      }
+      return result;
+    });
+    const leased = await acquireSegmentedAnalysisLease(wholePath);
+    assert.equal(leased?.segmented.manifest.analysis_id, 'lease-second');
+    assert.deepEqual(await fs.readdir(path.join(root, '.read-leases')), [path.basename(leased!.segmented.directory)]);
+    await leased?.release();
+    assert.deepEqual(await fs.readdir(path.join(root, '.read-leases')), []);
+  });
+});
+
+test('canonical readers bound publication retries and remove every abandoned lease', async t => {
+  await withStoragePath(async storagePath => {
+    const entry = await saveAnalysis('/tmp/lease-retry-project', casFixture('retry-first'), 'main', { canonicalSegmented: true });
+    const wholePath = path.join(storagePath, entry.file), root = wholePath + '.sections';
+    const io = (fs as unknown as { default?: typeof fs }).default || fs;
+    const writeFile = io.writeFile.bind(io);
+    let publications = 0;
+    t.mock.method(io, 'writeFile', async (...args: any[]) => {
+      const result = await (writeFile as any)(...args);
+      if (String(args[0]).includes(path.join(root, '.read-leases') + path.sep)) {
+        await writeSegmentedAnalysis(wholePath, casFixture('retry-' + ++publications), '.json', writeCompressedJsonAtomic, writeJsonAtomic);
+      }
+      return result;
+    });
+    await assert.rejects(acquireSegmentedAnalysisLease(wholePath), /no checksum-valid generation after 3 read-lease attempts/);
+    assert.equal(publications, 3);
+    assert.deepEqual(await fs.readdir(path.join(root, '.read-leases')), []);
+  });
+});
+
+test('canonical readers keep a previous generation alive across publication and collection', async () => {
+  await withStoragePath(async storagePath => {
+    const entry = await saveAnalysis('/tmp/lease-collection-project', casFixture('pinned'), 'main', { canonicalSegmented: true });
+    const wholePath = path.join(storagePath, entry.file), root = wholePath + '.sections';
+    const leased = await acquireSegmentedAnalysisLease(wholePath);
+    assert.ok(leased);
+    await fs.utimes(leased.segmented.directory, new Date(0), new Date(0));
+    for (const id of ['publication-two', 'publication-three']) {
+      await writeSegmentedAnalysis(wholePath, casFixture(id), '.json', writeCompressedJsonAtomic, writeJsonAtomic);
+    }
+    assert.equal((await fs.readJson(path.join(leased.segmented.directory, 'manifest.json'))).analysis_id, 'pinned');
+    await leased.release();
+    await writeSegmentedAnalysis(wholePath, casFixture('publication-four'), '.json', writeCompressedJsonAtomic, writeJsonAtomic);
+    assert.equal(await fs.pathExists(leased.segmented.directory), false);
+    assert.deepEqual(await fs.readdir(path.join(root, '.read-leases')), []);
+  });
+});
+
+
+test('canonical readers retry when collection removes an empty registration directory', async t => {
+  await withStoragePath(async storagePath => {
+    const entry = await saveAnalysis('/tmp/lease-registration-project', casFixture('registration'), 'main', { canonicalSegmented: true });
+    const wholePath = path.join(storagePath, entry.file), root = wholePath + '.sections';
+    const io = (fs as unknown as { default?: typeof fs }).default || fs;
+    const writeFile = io.writeFile.bind(io);
+    let removed = false;
+    t.mock.method(io, 'writeFile', async (...args: any[]) => {
+      if (String(args[0]).includes(path.join(root, '.read-leases') + path.sep) && !removed) {
+        removed = true;
+        await fs.remove(path.dirname(String(args[0])));
+      }
+      return (writeFile as any)(...args);
+    });
+    const leased = await acquireSegmentedAnalysisLease(wholePath);
+    assert.equal(leased?.segmented.manifest.analysis_id, 'registration');
+    await leased?.release();
+    assert.deepEqual(await fs.readdir(path.join(root, '.read-leases')), []);
+  });
+});
+
+test('canonical readers release registrations when confirmation detects corrupt data', async t => {
+  await withStoragePath(async storagePath => {
+    const entry = await saveAnalysis('/tmp/lease-corruption-project', casFixture('corrupt-after-pin'), 'main', { canonicalSegmented: true });
+    const wholePath = path.join(storagePath, entry.file), root = wholePath + '.sections';
+    const pointer = await fs.readJson(path.join(root, 'current.json'));
+    const io = (fs as unknown as { default?: typeof fs }).default || fs;
+    const writeFile = io.writeFile.bind(io);
+    t.mock.method(io, 'writeFile', async (...args: any[]) => {
+      const result = await (writeFile as any)(...args);
+      if (String(args[0]).includes(path.join(root, '.read-leases') + path.sep)) {
+        await writeFile(path.join(root, pointer.current, 'manifest.json'), '{}');
+      }
+      return result;
+    });
+    await assert.rejects(acquireSegmentedAnalysisLease(wholePath), /no checksum-valid generation.*checksum mismatch/);
+    assert.deepEqual(await fs.readdir(path.join(root, '.read-leases')), []);
+  });
+});
+
+test('canonical readers confirm legacy revision pointers without a writer lock', async () => {
+  await withStoragePath(async storagePath => {
+    const entry = await saveAnalysis('/tmp/lease-legacy-project', casFixture('legacy-revision'), 'main', { canonicalSegmented: true });
+    const wholePath = path.join(storagePath, entry.file), root = wholePath + '.sections';
+    const pointer = await fs.readJson(path.join(root, 'current.json'));
+    await fs.rename(path.join(root, pointer.current), path.join(root, 'rev-legacy'));
+    await writeJsonAtomic(path.join(root, 'current.json'), { manifest_version: 1, revision: 'rev-legacy' });
+    await fs.ensureDir(path.join(root, '.write-lock'));
+    const leased = await acquireSegmentedAnalysisLease(wholePath);
+    assert.equal(leased?.segmented.manifest.analysis_id, 'legacy-revision');
+    assert.equal(path.basename(leased!.segmented.directory), 'rev-legacy');
+    await leased?.release();
+    assert.deepEqual(await fs.readdir(path.join(root, '.read-leases')), []);
+  });
+});
+
+
+test('canonical readers clean partial registrations on I/O failure', async t => {
+  await withStoragePath(async storagePath => {
+    const entry = await saveAnalysis('/tmp/lease-io-project', casFixture('registration-io'), 'main', { canonicalSegmented: true });
+    const wholePath = path.join(storagePath, entry.file), root = wholePath + '.sections';
+    const io = (fs as unknown as { default?: typeof fs }).default || fs;
+    const writeFile = io.writeFile.bind(io);
+    t.mock.method(io, 'writeFile', async (...args: any[]) => {
+      const result = await (writeFile as any)(...args);
+      if (String(args[0]).includes(path.join(root, '.read-leases') + path.sep)) {
+        throw Object.assign(new Error('registration I/O failure'), { code: 'EIO' });
+      }
+      return result;
+    });
+    await assert.rejects(acquireSegmentedAnalysisLease(wholePath), { code: 'EIO' });
+    assert.deepEqual(await fs.readdir(path.join(root, '.read-leases')), []);
   });
 });
 

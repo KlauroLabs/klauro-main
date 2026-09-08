@@ -927,29 +927,48 @@ export async function acquireSegmentedAnalysisLease(
   filePath: string,
 ): Promise<{ segmented: ResolvedSegmentedAnalysis; release: () => Promise<void> } | null> {
   const root = segmentedAnalysisRoot(filePath);
-  const releaseWriterLock = await acquireSegmentedWriteLock(root);
-  try {
-    const segmented = await resolveSegmentedAnalysis(filePath);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let segmented: ResolvedSegmentedAnalysis | null;
+    try {
+      segmented = await resolveSegmentedAnalysis(filePath);
+    } catch (error) {
+      if (attempt < 2 && error instanceof Error && error.message.startsWith('Segmented analysis pointer has no checksum-valid generation')) continue;
+      throw error;
+    }
     if (!segmented) return null;
     const generation = path.basename(segmented.directory);
     const leaseDirectory = path.join(root, '.read-leases', generation);
     const leasePath = path.join(leaseDirectory, `${process.pid}-${Date.now()}-${crypto.randomBytes(8).toString('hex')}`);
     await fs.ensureDir(leaseDirectory);
-    await fs.writeFile(leasePath, '');
+    try {
+      await fs.writeFile(leasePath, '');
+    } catch (error) {
+      await fs.remove(leasePath).catch(() => undefined);
+      await fs.rmdir(leaseDirectory).catch(() => undefined);
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw error;
+    }
     const heartbeat = setInterval(() => {
       const now = new Date();
       void fs.utimes(leasePath, now, now).catch(() => undefined);
     }, Math.max(1_000, Math.min(30_000, Math.floor(generationGraceMs() / 3))));
     heartbeat.unref();
-    return {
-      segmented,
-      release: async () => {
-        clearInterval(heartbeat);
-        await fs.remove(leasePath).catch(() => undefined);
-        await fs.rmdir(leaseDirectory).catch(() => undefined);
-      },
+    const release = async () => {
+      clearInterval(heartbeat);
+      await fs.remove(leasePath).catch(() => undefined);
+      await fs.rmdir(leaseDirectory).catch(() => undefined);
     };
-  } finally {
-    await releaseWriterLock();
+    let confirmed = false;
+    try {
+      const current = await resolveSegmentedAnalysis(filePath);
+      confirmed = Boolean(current && path.basename(current.directory) === generation);
+      if (confirmed) return { segmented, release };
+    } catch (error) {
+      if (attempt < 2 && error instanceof Error && error.message.startsWith('Segmented analysis pointer has no checksum-valid generation')) continue;
+      throw error;
+    } finally {
+      if (!confirmed) await release();
+    }
   }
+  throw new Error('Segmented analysis pointer has no checksum-valid generation after 3 read-lease attempts');
 }
