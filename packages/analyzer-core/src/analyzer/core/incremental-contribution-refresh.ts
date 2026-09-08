@@ -236,6 +236,10 @@ export function removeReplaceableFileScopedGraphItems(
   analyzerIds: ReadonlySet<string>,
   onDeferredOwnership?: (analyzerIds: readonly string[]) => void
 ): boolean {
+  if (record.nodeIds.length === 0) {
+    removeFileScopedGraphItemsBatch(graph, [{ record, analyzerIds }]);
+    return true;
+  }
   const ownedNodeIds = new Set(record.nodeIds);
   const deferredNodeIds = new Set<string>();
   for (const node of graph.nodes) {
@@ -254,6 +258,7 @@ export function removeReplaceableFileScopedGraphItems(
     .filter(node => !deferredNodeIds.has(node.id) && ownedNodeIds.has(node.id) &&
       nodeAnalyzers(node).some(analyzer => analyzerIds.has(analyzer)))
     .map(node => node.id));
+  if (removedNodeIds.size === 0) return true;
   replaceArrayContents(graph.nodes, graph.nodes.filter(node => !removedNodeIds.has(node.id)));
   replaceArrayContents(graph.edges, graph.edges.filter(edge =>
     !removedNodeIds.has(edge.source) && !removedNodeIds.has(edge.target)
@@ -293,28 +298,40 @@ export function removeFileScopedGraphItemsBatch(
     const owners = ownersById.get(item.id);
     return !owners || !graphItemAnalyzers(item).some(analyzerId => owners.has(analyzerId));
   };
-  replaceArrayContents(graph.edges, graph.edges.filter(item => retained(item, edgeOwners)));
-  replaceArrayContents(graph.entryPoints, graph.entryPoints.filter(item => retained(item, entryPointOwners)));
-  replaceArrayContents(graph.exitPoints, graph.exitPoints.filter(item => retained(item, exitPointOwners)));
+  if (edgeOwners.size > 0) replaceArrayContents(graph.edges, graph.edges.filter(item => retained(item, edgeOwners)));
+  if (entryPointOwners.size > 0) replaceArrayContents(graph.entryPoints, graph.entryPoints.filter(item => retained(item, entryPointOwners)));
+  if (exitPointOwners.size > 0) replaceArrayContents(graph.exitPoints, graph.exitPoints.filter(item => retained(item, exitPointOwners)));
 }
 
 export function createIncrementalGraphAccumulator(graph: IncrementalGraph): (result: FileAnalysisResult) => void {
-  const nodePositions = new Map(graph.nodes.map((item, index) => [item.id, index]));
-  const edgeIds = new Set(graph.edges.map(item => item.id));
-  const entryPointIds = new Set(graph.entryPoints.map(item => item.id));
-  const exitPointIds = new Set(graph.exitPoints.map(item => item.id));
-  const append = <T extends { id: string }>(target: T[], source: T[], ids: Set<string>) => {
-    for (const item of source) {
-      if (ids.has(item.id)) continue;
-      target.push(item);
-      ids.add(item.id);
-    }
+  let nodePositions: Map<string, number> | undefined;
+  const appendTo = <T extends { id: string }>(target: T[]) => {
+    let ids: Set<string> | undefined;
+    return (source: T[]) => {
+      if (source.length === 0) return;
+      if (!ids) {
+        ids = new Set();
+        for (const item of target) ids.add(item.id);
+      }
+      for (const item of source) {
+        if (ids.has(item.id)) continue;
+        target.push(item);
+        ids.add(item.id);
+      }
+    };
   };
+  const appendEdges = appendTo(graph.edges);
+  const appendEntryPoints = appendTo(graph.entryPoints);
+  const appendExitPoints = appendTo(graph.exitPoints);
   return result => {
+    if (result.nodes.length > 0 && !nodePositions) {
+      nodePositions = new Map();
+      for (let index = 0; index < graph.nodes.length; index++) nodePositions.set(graph.nodes[index].id, index);
+    }
     for (const node of result.nodes) {
-      const position = nodePositions.get(node.id);
+      const position = nodePositions!.get(node.id);
       if (position === undefined) {
-        nodePositions.set(node.id, graph.nodes.length);
+        nodePositions!.set(node.id, graph.nodes.length);
         graph.nodes.push(node);
       } else {
         const owners = nodeAnalyzers(graph.nodes[position]);
@@ -322,9 +339,9 @@ export function createIncrementalGraphAccumulator(graph: IncrementalGraph): (res
         if (owners.length > 0 && owners.every(owner => refreshedOwners.has(owner))) graph.nodes[position] = node;
       }
     }
-    append(graph.edges, result.edges, edgeIds);
-    append(graph.entryPoints, result.entryPoints, entryPointIds);
-    append(graph.exitPoints, result.exitPoints, exitPointIds);
+    appendEdges(result.edges);
+    appendEntryPoints(result.entryPoints);
+    appendExitPoints(result.exitPoints);
   };
 }
 
@@ -417,11 +434,13 @@ export function createIncrementalAnalysisSnapshot(previous: CASContribution): {
   return {
     current: () => current,
     append: result => {
+      if (result.nodes.length === 0 && result.edges.length === 0 && result.entryPoints.length === 0 && result.exitPoints.length === 0) return;
       if (current === previous) {
         current = overlayIncrementalSnapshot(previous, result);
         return;
       }
       const append = <T extends { id: string }>(existing: T[] | undefined, added: T[]): T[] => {
+        if (added.length === 0) return existing || [];
         const addedById = new Map(added.map(item => [item.id, item]));
         const existingIds = new Set((existing || []).map(item => item.id));
         return [

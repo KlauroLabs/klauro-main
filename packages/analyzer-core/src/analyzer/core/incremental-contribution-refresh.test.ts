@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { CASEdge, CASEntryPoint, CASNode, CASOutput, FileAnalysisRecord, FileAnalysisResult } from '../../types/cas.types';
+import type { CASEdge, CASEntryPoint, CASExitPoint, CASNode, CASOutput, FileAnalysisRecord, FileAnalysisResult } from '../../types/cas.types';
 import {
   analyzerOwnershipClosure,
   canReplaceAnalyzerContributions,
@@ -51,6 +51,67 @@ function entry(source: string, analyzer: string, merged: string[] = []): CASEntr
     metadata: { merged_from_analyzers: merged },
   } as CASEntryPoint;
 }
+
+function emptyFileResult(): FileAnalysisResult {
+  return {
+    filePath: 'source.ts', contentHash: 'hash', mtimeMs: 1,
+    nodes: [], edges: [], entryPoints: [], exitPoints: [], imports: [], exports: [],
+  };
+}
+
+test('incremental accumulation indexes only graph collections receiving facts', () => {
+  const reads = { nodes: 0, edges: 0, entryPoints: 0, exitPoints: 0 };
+  const observed = <T extends { id: string }>(item: T, collection: keyof typeof reads): T => {
+    const id = item.id;
+    return { ...item, get id() { reads[collection]++; return id; } };
+  };
+  const graph = {
+    nodes: [observed(node('retained', ['language']), 'nodes')],
+    edges: [observed(edge('retained-edge', 'retained', 'retained', 'language'), 'edges')],
+    entryPoints: [observed(entry('retained', 'language'), 'entryPoints')],
+    exitPoints: [observed({ id: 'retained-exit', source_node: 'retained', type: 'api', name: 'exit' } as CASExitPoint, 'exitPoints')],
+  };
+  const append = createIncrementalGraphAccumulator(graph);
+  append(emptyFileResult());
+  assert.deepEqual(reads, { nodes: 0, edges: 0, entryPoints: 0, exitPoints: 0 });
+  append({ ...emptyFileResult(), nodes: [node('added', ['language'])] });
+  assert.deepEqual(reads, { nodes: 1, edges: 0, entryPoints: 0, exitPoints: 0 });
+  append({ ...emptyFileResult(), nodes: [node('added-again', ['language'])] });
+  assert.equal(reads.nodes, 1);
+  append({ ...emptyFileResult(), edges: [edge('added-edge', 'retained', 'added', 'language')] });
+  assert.deepEqual(reads, { nodes: 1, edges: 1, entryPoints: 0, exitPoints: 0 });
+  append({ ...emptyFileResult(), edges: [edge('added-edge', 'retained', 'added', 'language')] });
+  assert.equal(graph.edges.length, 2);
+});
+
+test('incremental empty overlays preserve prior snapshots and untouched collections', () => {
+  const previous = { nodes: [node('old', ['language'])], edges: [edge('old-edge', 'old', 'old', 'language')] };
+  const snapshot = createIncrementalAnalysisSnapshot(previous);
+  snapshot.append({ ...emptyFileResult(), nodes: [node('first', ['language'])] });
+  const first = snapshot.current();
+  snapshot.append(emptyFileResult());
+  assert.equal(snapshot.current(), first);
+  snapshot.append({ ...emptyFileResult(), nodes: [node('second', ['language'])] });
+  assert.equal(snapshot.current().edges, first.edges);
+  assert.deepEqual(first.nodes?.map(item => item.id), ['first', 'old']);
+  assert.deepEqual(snapshot.current().nodes?.map(item => item.id), ['first', 'old', 'second']);
+  assert.deepEqual(previous.nodes.map(item => item.id), ['old']);
+});
+
+test('incremental empty removals do not scan the retained graph', () => {
+  let reads = 0;
+  const retained = { ...node('retained', ['language']), get id() { reads++; return 'retained'; } };
+  const retainedEdge = { ...edge('retained-edge', 'retained', 'retained', 'language'), get id() { reads++; return 'retained-edge'; } };
+  const graph = { nodes: [retained], edges: [retainedEdge], entryPoints: [], exitPoints: [] };
+  const record: FileAnalysisRecord = {
+    filePath: 'empty.ts', contentHash: 'hash', mtimeMs: 1, lastAnalyzed: 'now', analyzerId: 'language',
+    nodeIds: [], edgeIds: [], entryPointIds: [], exitPointIds: [], importedFiles: [], exportedSymbols: [],
+  };
+  assert.equal(removeReplaceableFileScopedGraphItems(graph, record, new Set(['language'])), true);
+  assert.equal(reads, 0);
+  assert.equal(graph.nodes[0], retained);
+  assert.equal(graph.edges[0], retainedEdge);
+});
 
 test('incremental file index owns edges through source and target file identities', () => {
   const fileNode = { ...node('file', ['language']), type: 'file', source: { file: 'src/file.ts', line: 1 } } as CASNode;
