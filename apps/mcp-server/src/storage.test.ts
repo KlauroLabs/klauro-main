@@ -942,3 +942,32 @@ test('canonical segmented saves record collection bytes measured from the sectio
     assert.equal(manifest.collection_totals!.nodes, cas.nodes.length);
   });
 });
+
+test('canonical segmented storage is the default save path; the env opt-out and the explicit option decide otherwise', async () => {
+  await withStoragePath(async storagePath => {
+    const previous = process.env.KLAURO_CANONICAL_SEGMENTED_STORAGE;
+    const restore = () => { if (previous === undefined) delete process.env.KLAURO_CANONICAL_SEGMENTED_STORAGE; else process.env.KLAURO_CANONICAL_SEGMENTED_STORAGE = previous; };
+    try {
+      delete process.env.KLAURO_CANONICAL_SEGMENTED_STORAGE;
+      const unset = await saveAnalysis('/tmp/default-canonical-unset', casFixture('default-unset'));
+      assert.equal(unset.storage_format, 'segmented-v2');
+      assert.equal(await fs.pathExists(path.join(storagePath, unset.file)), false, 'no whole-CAS file when the variable is unset');
+      assert.equal(await fs.pathExists(path.join(storagePath, `${unset.file}.sections`, 'current.json')), true);
+
+      process.env.KLAURO_CANONICAL_SEGMENTED_STORAGE = '0';
+      const optedOut = await saveAnalysis('/tmp/default-canonical-opt-out', casFixture('default-opt-out'));
+      assert.notEqual(optedOut.storage_format, 'segmented-v2');
+      assert.equal(await fs.pathExists(path.join(storagePath, optedOut.file)), true, 'the legacy opt-out still writes the whole-CAS file');
+
+      const explicit = await saveAnalysis('/tmp/default-canonical-explicit', casFixture('default-explicit'), 'main', { canonicalSegmented: true });
+      assert.equal(explicit.storage_format, 'segmented-v2', 'the explicit option wins over the env opt-out');
+      assert.equal(await fs.pathExists(path.join(storagePath, explicit.file)), false);
+
+      process.env.KLAURO_CANONICAL_SEGMENTED_STORAGE = '1';
+      const legacyByOption = await saveAnalysis('/tmp/default-canonical-legacy-option', casFixture('default-legacy-option'), 'main', { canonicalSegmented: false });
+      assert.notEqual(legacyByOption.storage_format, 'segmented-v2', 'the explicit option wins over the env opt-in');
+    } finally {
+      restore();
+    }
+  });
+});
