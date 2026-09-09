@@ -101,38 +101,45 @@ export function buildImportedFilesystemWriteEvidence(
   };
 }
 
+export function indexTypeScriptDeclarationNames(index: Map<string, CASNode[]>, node: CASNode): void {
+  const names = [node.name];
+  if (node.source?.file && node.metadata?.attributes?.is_default_export === true) names.push(`default:${node.source.file}`);
+  for (const name of names) {
+    const entries = index.get(name);
+    if (entries) entries.push(node);
+    else index.set(name, [node]);
+  }
+}
+
+export interface TypeScriptImportBinding {
+  module: string;
+  imported: string;
+}
+
 export function isDeclaredDatabaseModelReceiver(
   callerName: string,
   sourceFile: string | undefined,
   nodesByName: ReadonlyMap<string, readonly CASNode[]>,
-  importsByFile: ReadonlyMap<string, ReadonlyMap<string, string>>,
-  aliases: ReadonlyMap<string, string>,
+  importsByFile: ReadonlyMap<string, ReadonlyMap<string, TypeScriptImportBinding>>,
 ): boolean {
   if (!sourceFile) return false;
   const visited = new Set<string>();
   const declarations = (name: string, file: string): readonly CASNode[] => {
     const parts = name.split('.');
     const receiver = parts[parts.length - 1];
-    const names = new Set([receiver, aliases.get(receiver) || receiver]);
-    const candidates = [...names].flatMap(key => [...(nodesByName.get(key) || [])]);
-    const local = candidates.filter(node => node.source?.file === file);
+    const local = (nodesByName.get(receiver) || []).filter(node => node.source?.file === file);
     if (parts.length === 1 && local.length) return local;
-    const importedFile = importsByFile.get(file)?.get(parts[0]);
-    return importedFile ? candidates.filter(node => node.source?.file === importedFile) : [];
+    const imported = importsByFile.get(file)?.get(parts[0]);
+    if (!imported) return [];
+    const member = parts.length > 1 ? receiver : imported.imported;
+    if (member === 'default') return nodesByName.get(`default:${imported.module}`) || [];
+    if (member === '*') return [];
+    return (nodesByName.get(member) || []).filter(node => node.source?.file === imported.module);
   };
   const importedMember = (expression: string, file: string): { library: string; member: string } | undefined => {
     const parts = expression.split('.');
-    const library = importsByFile.get(file)?.get(parts[0]);
-    if (!library) return undefined;
-    if (parts.length > 1) return { library, member: parts[parts.length - 1] };
-    const imports = nodesByName.get(`import ${library}`) || [];
-    for (const node of imports) {
-      if (node.source?.file !== file) continue;
-      const specifiers = (node.metadata as { specifiers?: Array<{ name?: string; imported?: string }> })?.specifiers;
-      const specifier = specifiers?.find(spec => spec.name === expression);
-      if (specifier) return { library, member: specifier.imported || expression };
-    }
-    return undefined;
+    const imported = importsByFile.get(file)?.get(parts[0]);
+    return imported ? { library: imported.module, member: parts.length > 1 ? parts[parts.length - 1] : imported.imported } : undefined;
   };
   const isModel = (node: CASNode): boolean => {
     if (visited.has(node.id) || !node.source?.file) return false;

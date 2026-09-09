@@ -1637,7 +1637,7 @@ export class TreeSitterTSExtractor {
     const exportNodes = preCollected ?? this.collectByType(root, 'export_statement');
 
     for (const exp of exportNodes) {
-      const isDefault = exp.text.includes('export default');
+      const isDefault = exp.children.some((child: any) => child.type === 'default');
 
       const exportClause = this.findFirst(exp, 'export_clause');
       if (exportClause) {
@@ -1650,7 +1650,7 @@ export class TreeSitterTSExtractor {
             exports.push({
               name,
               exportedName: alias,
-              isDefault: false,
+              isDefault: alias === 'default',
               isReExport: !!this.findFirst(exp, 'string'),
               source: this.findFirst(exp, 'string')?.text?.replace(/['"]/g, ''),
               line: exp.startPosition.row + 1
@@ -1658,7 +1658,7 @@ export class TreeSitterTSExtractor {
           }
         }
       } else {
-        const declaration = exp.namedChild(exp.text.includes('export default') ? 1 : 0);
+        const declaration = exp.childForFieldName('declaration') || exp.childForFieldName('value') || exp.namedChild(0);
         if (declaration) {
           let name: string | undefined;
 

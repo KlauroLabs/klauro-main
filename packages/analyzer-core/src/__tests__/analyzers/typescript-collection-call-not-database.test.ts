@@ -261,3 +261,33 @@ test('an explicitly imported ORM model can shadow a global without contaminating
   });
   expect(exits.filter(exit => exit.type === 'database').map(exit => exit.name)).toEqual(['Object.save']);
 });
+
+test('does not let a different file overwrite a model import alias', async () => {
+  const exits = await analyzeSources({
+    'src/a-person.ts': "import { BaseEntity } from 'typeorm'; export class Person extends BaseEntity {}",
+    'src/b-query.ts': "import { Person as Record } from './a-person'; export function lookup() { return Record.find(); }",
+    'src/y-ui.ts': 'export class Dialog {}',
+    'src/z-view.ts': "import { Dialog as Record } from './y-ui'; export function open() { return Record.create(); }",
+  });
+  expect(exits.filter(exit => exit.type === 'database').map(exit => exit.name)).toEqual(['Record.find']);
+});
+
+test.each([
+  ["import { BaseEntity } from 'typeorm'; export default class Person extends BaseEntity {}", 'find'],
+  ["import { BaseEntity } from 'typeorm'; class Person extends BaseEntity {} export { Person as default };", 'find'],
+  ["import { model, Schema } from 'mongoose'; const Person = model('Person', new Schema({})); export default Person;", 'findOne'],
+])('preserves the declared default model independently of its import name: %s', async (definition, method) => {
+  const exits = await analyzeSources({
+    'src/person.ts': definition,
+    'src/query.ts': `import Account from './person'; export function lookup() { return Account.${method}(); }`,
+  });
+  expect(exits.filter(exit => exit.type === 'database').map(exit => exit.name)).toEqual([`Account.${method}`]);
+});
+
+test('does not substitute a named model for a different default export', async () => {
+  const exits = await analyzeSources({
+    'src/person.ts': "import { BaseEntity } from 'typeorm'; export class Person extends BaseEntity { static label = 'export default'; } export default class View {}",
+    'src/query.ts': "import Person from './person'; export function lookup() { return Person.find(); }",
+  });
+  expect(exits.filter(exit => exit.type === 'database')).toEqual([]);
+});

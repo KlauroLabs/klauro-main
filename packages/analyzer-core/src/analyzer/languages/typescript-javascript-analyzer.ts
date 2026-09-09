@@ -23,7 +23,7 @@ import {
 import { loadPrismaModelIdentities, selectPrismaModelIdentity, type PrismaModelIdentity } from '../libraries/orm/prisma-model-identity';
 import { appendInMemoryRecordCollectionNodes } from '../core/javascript-in-memory-data';
 import { partialTypeScriptSourceFailure, typeScriptAnalysisScope, typeScriptSourceDiagnostics } from '../core/tree-sitter-ts-recovery';
-import { buildImportedFilesystemWriteEvidence, isDeclaredDatabaseModelReceiver, isImportedDatabaseClientReceiver, isRepositoryLikeCaller } from './typescript-database-client';
+import { buildImportedFilesystemWriteEvidence, indexTypeScriptDeclarationNames, isDeclaredDatabaseModelReceiver, isImportedDatabaseClientReceiver, isRepositoryLikeCaller, type TypeScriptImportBinding } from './typescript-database-client';
 
 interface ParsedAST {
   ast: TSESTree.Program;
@@ -40,7 +40,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   private tsExtractor = new TreeSitterTSExtractor();
   private importSourceMap = new Map<string, string>();
   private importAliasMap = new Map<string, string>();
-  private importsByConsumerFile = new Map<string, Map<string, string>>();
+  private importsByConsumerFile = new Map<string, Map<string, TypeScriptImportBinding>>();
   private currentProjectPath = '';
   private classFieldTypes = new Map<string, { typeName: string; library?: string; source?: 'ctor' | 'field'; isCollection?: boolean }>();
   private repositoryPropertyTypes = new Map<string, string>();
@@ -705,7 +705,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
       const specifiers = imp.specifiers.map(s => ({
         name: s.name,
-        imported: s.imported || s.name
+        imported: s.isDefault ? 'default' : s.isNamespace ? '*' : s.imported || s.name
       }));
 
       specifiers.forEach(spec => {
@@ -786,7 +786,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
       const specifiers = imp.specifiers.map(s => ({
         name: s.name,
-        imported: s.imported || s.name
+        imported: s.isDefault ? 'default' : s.isNamespace ? '*' : s.imported || s.name
       }));
 
       specifiers.forEach(spec => {
@@ -963,6 +963,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
           is_abstract: cls.isAbstract,
           attributes: {
             extends: cls.extends,
+            is_default_export: extraction.exports.some(exp => exp.isDefault && exp.name === cls.name) || undefined,
             implements: cls.implements,
             methodCount: cls.methods.length,
             propertyCount: cls.properties.length,
@@ -1081,7 +1082,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
           kind: variable.kind,
 
           is_exported: variable.isExported,
-          value: variable.value?.substring(0, 100)
+          value: variable.value?.substring(0, 100),
+          ...(extraction.exports.some(exp => exp.isDefault && exp.name === variable.name) ? { attributes: { is_default_export: true } } : {}),
         }
       ));
 
@@ -1157,10 +1159,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     for (const node of nodes) {
       this.nodeById.set(node.id, node);
 
-      if (!this.nodesByName.has(node.name)) {
-        this.nodesByName.set(node.name, []);
-      }
-      this.nodesByName.get(node.name)!.push(node);
+      indexTypeScriptDeclarationNames(this.nodesByName, node);
 
       if (node.parent && (node.type === 'method' || node.type === 'function')) {
         if (!this.methodsByParent.has(node.parent)) {
@@ -1178,7 +1177,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   private indexImportNode(node: CASNode): void {
     const consumerFile = node.source?.file;
     if (!consumerFile) return;
-    const meta = node.metadata as { source?: string; specifiers?: Array<{ name?: string }> } | undefined;
+    const meta = node.metadata as { source?: string; specifiers?: Array<{ name?: string; imported?: string }> } | undefined;
     const importSource = meta?.source;
     const specifiers = meta?.specifiers;
     if (!importSource || !Array.isArray(specifiers) || specifiers.length === 0) return;
@@ -1194,11 +1193,11 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
     let fileMap = this.importsByConsumerFile.get(consumerFile);
     if (!fileMap) {
-      fileMap = new Map<string, string>();
+      fileMap = new Map<string, TypeScriptImportBinding>();
       this.importsByConsumerFile.set(consumerFile, fileMap);
     }
     for (const spec of specifiers) {
-      if (spec?.name) fileMap.set(spec.name, resolvedModule);
+      if (spec?.name) fileMap.set(spec.name, { module: resolvedModule, imported: spec.imported || spec.name });
     }
   }
 
@@ -1212,7 +1211,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     if (sourceFile) {
       const inSourceFile = candidates.filter(node => node.source?.file === sourceFile).sort(this.compareNodesStable);
       if (inSourceFile.length > 0) return inSourceFile[0];
-      const resolvedModule = this.importsByConsumerFile.get(sourceFile)?.get(targetName);
+      const resolvedModule = this.importsByConsumerFile.get(sourceFile)?.get(targetName)?.module;
       if (resolvedModule) {
         const inModule = candidates
           .filter(n => n.source?.file === resolvedModule)
@@ -1458,7 +1457,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     if (candidateClassNodes.length === 0) return undefined;
 
     if (candidateClassNodes.length > 1 && fieldInfo.source === 'field') {
-      const resolvedModule = sourceFile ? this.importsByConsumerFile.get(sourceFile)?.get(m[1]) : undefined;
+      const resolvedModule = sourceFile ? this.importsByConsumerFile.get(sourceFile)?.get(m[1])?.module : undefined;
       if (!resolvedModule) return undefined;
       const narrowed = candidateClassNodes.filter(n => n.source?.file === resolvedModule);
       if (narrowed.length !== 1) return undefined;
@@ -1942,7 +1941,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   ]);
 
   private isModelLikeCaller(callerName: string, sourceFile?: string): boolean {
-    return isDeclaredDatabaseModelReceiver(callerName, sourceFile, this.nodesByName, this.importsByConsumerFile, this.importAliasMap);
+    return isDeclaredDatabaseModelReceiver(callerName, sourceFile, this.nodesByName, this.importsByConsumerFile);
   }
 
   private hasUnresolvedReceiver(target: string): boolean {
