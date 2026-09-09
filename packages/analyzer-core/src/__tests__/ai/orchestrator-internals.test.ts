@@ -165,6 +165,7 @@ test('catalog provider receives the full observed tool surface and distinct evid
     const context = provider.mock.calls[0][0].additionalContext! as any;
     const fact = context.facts.candidate_route_areas.find((value: any) => value.candidate_id === candidate.id);
     expect(fact.operations).toEqual(entries.map((_, index) => 'Inspect record ' + index));
+    expect(fact.observed_operations).toEqual(entries.map(entry => [entry.id, entry.type, entry.name, 'Handle', null]));
     expect(fact.evidence_role).toBe('supporting-mechanism');
     expect(context.evidence_contract).toContain('requirement_id only from required_outcomes[].requirement_id');
     expect(context.evidence_contract).toContain('candidate_ids only from candidate_route_areas[].candidate_id');
@@ -9608,7 +9609,7 @@ describe('top-down capability evidence (C2)', () => {
       capabilities: [{
         name: 'Analyze codebase',
         description: 'Agents use grounded codebase context to understand software behavior and prepare safe changes.',
-        category: 'core', candidate_ids: ['agent-surface'],
+        category: 'core', candidate_ids: ['agent-surface'], entry_point_ids: ['agent-context', 'agent-readiness'],
       }],
     }); };
     try {
@@ -10252,22 +10253,22 @@ describe('top-down capability evidence (C2)', () => {
         {
           name: 'Understand software behavior',
           description: 'Software exploration reveals connected behavior, risks, and change paths to human reviewers.',
-          category: 'core', entities: [], journeys: [], candidate_ids: ['exploration'],
+          category: 'core', entities: [], journeys: [], candidate_ids: ['exploration'], entry_point_ids: ['explore_connected_software_behavior', 'inspect_software_behavior'],
         },
         {
           name: 'Ground software agents in code context',
           description: 'Agent context connects requested changes to relevant behavior, risks, tests, and relationships.',
-          category: 'core', entities: [], journeys: [], candidate_ids: ['agent'],
+          category: 'core', entities: [], journeys: [], candidate_ids: ['agent'], entry_point_ids: ['get_agent_context', 'assess_change_risk'],
         },
         {
           name: 'Builds a trustworthy CAS relationship graph',
           description: 'Klauro constructs a comprehensive and accurate graph of software relationships.',
-          category: 'core', entities: [], journeys: [], candidate_ids: ['cas'],
+          category: 'core', entities: [], journeys: [], candidate_ids: ['cas'], entry_point_ids: ['get_cas_graph', 'query_cas_relationships', 'inspect_cas_nodes'],
         },
         {
           name: 'Coordinates concurrent work through Fabric',
           description: 'Prevents overlapping changes while collaborators work on shared software concepts.',
-          category: 'core', entities: [], journeys: [], candidate_ids: ['fabric'],
+          category: 'core', entities: [], journeys: [], candidate_ids: ['fabric'], entry_point_ids: ['fab_claim_work', 'fab_check_collision', 'fab_extend', 'fab_release_work'],
         },
       ],
     });
@@ -10660,9 +10661,9 @@ describe('top-down capability evidence (C2)', () => {
     const original = (aiService as any).generateComponentDescription;
     (aiService as any).generateComponentDescription = async () => JSON.stringify({
       capabilities: [
-        { name: 'Exposes codebase analysis', candidate_ids: ['analysis'], description: 'Analyzes source repositories and produces structural analysis output for agent consumption.', category: 'core', entities: ['Analysis'], journeys: [] },
-        { name: 'Tracks codebase changes', candidate_ids: ['change'], description: 'Tracks change reports across repository revisions so agents can diff behavior over time.', category: 'supporting', entities: ['ChangeReport'], journeys: [] },
-        { name: 'Secures codebase access', candidate_ids: ['security'], description: 'Maintains security contexts governing which accounts may read a given analysis.', category: 'supporting', entities: ['SecurityContext'], journeys: [] },
+        { name: 'Exposes codebase analysis', candidate_ids: ['analysis'], entry_point_ids: ['node:analysis_0', 'node:analysis_1', 'node:analysis_2', 'node:analysis_3'], description: 'Analyzes source repositories and produces structural analysis output for agent consumption.', category: 'core', entities: ['Analysis'], journeys: [] },
+        { name: 'Tracks codebase changes', candidate_ids: ['change'], entry_point_ids: ['node:change_0', 'node:change_1', 'node:change_2'], description: 'Tracks change reports across repository revisions so agents can diff behavior over time.', category: 'supporting', entities: ['ChangeReport'], journeys: [] },
+        { name: 'Secures codebase access', candidate_ids: ['security'], entry_point_ids: ['node:security_0', 'node:security_1'], description: 'Maintains security contexts governing which accounts may read a given analysis.', category: 'supporting', entities: ['SecurityContext'], journeys: [] },
       ],
     });
     try {
@@ -11089,7 +11090,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     const original = (aiService as any).generateComponentDescription;
     (aiService as any).generateComponentDescription = async () => JSON.stringify({
       capabilities: [
-        { name: 'Keep user profiles current', candidate_ids: ['profiles'], description: 'User profiles retain current email and name details as people create and update them.', category: 'core', entities: ['User'] },
+        { name: 'Keep user profiles current', candidate_ids: ['profiles'], entry_point_ids: ['entry_route_get_0', 'entry_route_post_1'], description: 'User profiles retain current email and name details as people create and update them.', category: 'core', entities: ['User'] },
       ],
     });
     try {
@@ -11197,7 +11198,7 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     const original = (aiService as any).generateComponentDescription;
     (aiService as any).generateComponentDescription = async () => JSON.stringify({
       capabilities: [
-        { name: 'Automate release packaging', candidate_ids: ['release'], description: 'Packages and publishes versioned release artifacts so operators can ship builds.', category: 'core', entities: ['ReleaseConfig'], journeys: [] },
+        { name: 'Automate release packaging', candidate_ids: ['release'], entry_point_ids: ['release-package', 'release-publish'], description: 'Packages and publishes versioned release artifacts so operators can ship builds.', category: 'core', entities: ['ReleaseConfig'], journeys: [] },
       ],
     });
     try {
@@ -12899,7 +12900,7 @@ describe('catalog completeness (live truckspy: fuel/safety/ELD rich evidence, 9-
       // Supporting evidence remains available to ground the catalog but does
       // not create mandatory product outcomes.
       const bigPool = Array.from({ length: 180 }, (_, i) => ({
-        name: `Area ${i}`, category: 'supporting', related_entities: [], related_domains: [`area-${i}`],
+        id: `area-${i}`, name: `Area ${i}`, category: 'supporting', related_entities: [], related_domains: [`area-${i}`],
         operations: [{ entry_point_id: `ep_${i}`, entry_point_type: 'http', action: 'Handle', path_or_command: `/a/${i}` }],
       }));
       await orch.aiExtractCapabilityCatalog({
@@ -12910,9 +12911,15 @@ describe('catalog completeness (live truckspy: fuel/safety/ELD rich evidence, 9-
         externalServices: [], flowGraph: { capability_candidates: [] } as any,
         projectTextSignal: { concepts: [], evidence: [] } as any, budgetMs: 30000,
       });
-      const bigCtx = captured[captured.length - 1].additionalContext;
-      expect(bigCtx.facts.candidate_route_areas.length).toBe(30); // ceil(180/6)
-      expect(bigCtx.task).not.toMatch(/Return \d+ to \d+ capabilities/);
+      const bigContexts = captured.map(call => call.additionalContext);
+      const bigFacts = bigContexts.flatMap(context => context.facts.candidate_route_areas);
+      expect(new Set(bigFacts.map(fact => fact.candidate_id)).size).toBe(30);
+      for (const fact of bigFacts) {
+        const selected = bigPool.find(candidate => candidate.id === fact.candidate_id)!;
+        expect(fact.observed_operations.map((row: unknown[]) => row[0]))
+          .toEqual(selected.operations.map(operation => operation.entry_point_id));
+      }
+      expect(bigContexts.every(context => !/Return \d+ to \d+ capabilities/.test(context.task))).toBe(true);
 
       const smallPool = bigPool.slice(0, 10);
       await orch.aiExtractCapabilityCatalog({
