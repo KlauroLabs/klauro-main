@@ -1,7 +1,64 @@
 import type { SystemCapability } from '../../types/cas.types';
 import { canonicalCapabilityLifecycleAction } from './capability-lifecycle-actions';
+import { retainedCapabilityOperationEvidence } from './capability-subject-evidence';
+
+export function resolveCapabilityOperationCitations(
+  entryPointIds: unknown,
+  candidates: readonly SystemCapability[],
+): { ok: true; candidates: SystemCapability[]; explicit: boolean } | { ok: false; reason: string } {
+  if (entryPointIds === undefined) {
+    return candidates.some(candidate => new Set(candidate.operations.map(operation => operation.entry_point_id)).size > 1)
+      ? { ok: false, reason: 'missing-operation-citation' }
+      : { ok: true, candidates: [...candidates], explicit: false };
+  }
+  if (!Array.isArray(entryPointIds) || entryPointIds.some(id => typeof id !== 'string' || !id)) {
+    return { ok: false, reason: 'invalid-operation-citation' };
+  }
+  const selected = new Set<string>(entryPointIds);
+  const available = new Set(candidates.flatMap(candidate => candidate.operations.map(operation => operation.entry_point_id)));
+  if ([...selected].some(id => !available.has(id))) return { ok: false, reason: 'unknown-operation-citation' };
+  if (candidates.some(candidate => candidate.operations.length > 0 &&
+      !candidate.operations.some(operation => selected.has(operation.entry_point_id)))) {
+    return { ok: false, reason: 'candidate-operation-citation-missing' };
+  }
+  return {
+    ok: true, explicit: true,
+    candidates: candidates.map(candidate => {
+      const operations = candidate.operations.filter(operation => selected.has(operation.entry_point_id));
+      return {
+        ...candidate, operations,
+        ...(candidate.operation_evidence !== undefined
+          ? { operation_evidence: retainedCapabilityOperationEvidence({ operations, operation_evidence: candidate.operation_evidence }) }
+          : {}),
+      };
+    }),
+  };
+}
 
 type CapabilityOperation = SystemCapability['operations'][number];
+
+export function capabilityOperationCitationIds(factors: readonly string[]): Set<string> {
+  return new Set(factors.filter(factor => factor.startsWith('catalog-operation-entry:'))
+    .map(factor => factor.slice('catalog-operation-entry:'.length)));
+}
+
+export function hasExactCapabilityOperationCitations(capability: SystemCapability): boolean {
+  const selected = capabilityOperationCitationIds(capability.criticality_factors || []);
+  const observed = new Set(capability.operations.map(operation => operation.entry_point_id));
+  return selected.size > 0 && selected.size === observed.size && [...selected].every(id => observed.has(id));
+}
+
+export function preserveCapabilityOperationCitations(capability: SystemCapability): SystemCapability {
+  const selected = capabilityOperationCitationIds(capability.criticality_factors || []);
+  if (selected.size === 0) return capability;
+  const operations = capability.operations.filter(operation => selected.has(operation.entry_point_id));
+  return {
+    ...capability, operations,
+    ...(capability.operation_evidence !== undefined
+      ? { operation_evidence: retainedCapabilityOperationEvidence({ operations, operation_evidence: capability.operation_evidence }) }
+      : {}),
+  };
+}
 
 export function isReadOnlyCapabilityOutcomeName(name: string): boolean {
   return /^(?:browse|get|list|read|retrieve|show|view)\b/i.test(String(name || '').trim());
@@ -65,8 +122,9 @@ export function projectReversibleCapabilityEvidence(
   operations: readonly CapabilityOperation[],
   criticalityFactors: readonly string[],
 ): { operations: CapabilityOperation[]; criticalityFactors: string[] } {
+  const selected = capabilityOperationCitationIds(criticalityFactors);
   return {
-    operations: isReversibleCapabilityOutcomeName(name)
+    operations: selected.size > 0 ? operations.filter(operation => selected.has(operation.entry_point_id)) : isReversibleCapabilityOutcomeName(name)
       ? scopeCapabilityOperationsToOutcomeName(name, operations)
       : [...operations],
     criticalityFactors: scopeCapabilityObligationFactors(name, criticalityFactors),

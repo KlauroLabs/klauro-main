@@ -3,7 +3,7 @@ import { behaviorSurfaceEntryCount } from './capability-catalog-evidence';
 import { catalogCandidateEntityFacts } from './capability-catalog-metrics';
 import { capabilityCatalogStructuralApiLabels, projectCapabilityCatalogPromptEvidence } from './capability-catalog-prompt-evidence';
 
-export const capabilityCatalogEvidenceContract = 'Copy requirement_id only from required_outcomes[].requirement_id when proposing that documented outcome; omit it for an independently discovered outcome. Copy candidate_ids only from candidate_route_areas[].candidate_id. These are distinct namespaces: a candidate ID is never a requirement ID. Operation names identify observed entry points, not proof of the outcome their names suggest. Use behavior, contracts, relationships and qualifications to ground claims; do not invent behavior for unresolved_entry_point_ids. evidence_window gives zero-based offsets and total item counts for partial operation/contract collections. These are evidence subsets of the same candidate, not separate complete capabilities. Do not infer absence from an item missing in a window, or claim behavior outside the supplied evidence. Relationships and contracts retain their own scope; sharing a candidate does not make every contract govern every operation.';
+export const capabilityCatalogEvidenceContract = 'Copy requirement_id only from required_outcomes[].requirement_id when proposing that documented outcome; omit it for an independently discovered outcome. Copy candidate_ids only from candidate_route_areas[].candidate_id. These are distinct namespaces: a candidate ID is never a requirement ID. For each capability, return entry_point_ids copied from observed_operations[].entry_point_id of its cited candidates. Select only the operations that substantiate the complete outcome; citing a candidate does not cite all its operations. An entry-point ID from another candidate or an invented ID is invalid. Preserve qualifications such as without or before when judging the full outcome; shared words alone do not establish support. Operation names identify observed entry points, not proof of the outcome their names suggest. Use behavior, contracts, relationships and qualifications to ground claims; do not invent behavior for unresolved_entry_point_ids. evidence_window gives zero-based offsets and total item counts for partial operation/contract collections. These are evidence subsets of the same candidate, not separate complete capabilities. Do not infer absence from an item missing in a window, or claim behavior outside the supplied evidence. Relationships and contracts retain their own scope; sharing a candidate does not make every contract govern every operation.';
 
 export function projectCapabilityCatalogPromptFacts(
   candidates: readonly SystemCapability[],
@@ -22,6 +22,13 @@ export function projectCapabilityCatalogPromptFacts(
       family: structuralApiLabels.has(capability.name) ? undefined : capability.name,
       structural_group_label: capability.structural_label,
       operations: evidence.operations,
+      observed_operations: capability.operations.map(operation => ({
+        entry_point_id: operation.entry_point_id,
+        entry_point_type: operation.entry_point_type,
+        name: entryById.get(operation.entry_point_id)?.name,
+        action: operation.action,
+        surface: operation.path_or_command,
+      })),
       relationships: evidence.relationships,
       declared_contracts: evidence.declared_contracts,
       unresolved_entry_point_ids: evidence.unresolved_entry_point_ids,

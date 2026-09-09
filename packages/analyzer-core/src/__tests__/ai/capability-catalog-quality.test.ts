@@ -1,4 +1,91 @@
 import { AnalyzerOrchestrator } from '../../analyzer/core/orchestrator';
+import { mergeCapabilityCatalogRepairResults, mergeUniquelyMatchedBehaviorEvidence } from '../../analyzer/core/capability-catalog-scheduling';
+import { normalizePublishedCapabilityIds } from '../../analyzer/core/capability-catalog-publication';
+
+describe('catalog operation citation scope', () => {
+  const candidate = () => ({
+    id: 'article-evidence', name: 'Article management', description: '',
+    category: 'core', related_entities: ['article'], related_domains: ['publishing'],
+    criticality: 'high', criticality_factors: [],
+    operations: [
+      { entry_point_id: 'read-articles', entry_point_type: 'message', action: 'Read', path_or_command: 'read_articles' },
+      { entry_point_id: 'delete-articles', entry_point_type: 'message', action: 'Delete', path_or_command: 'delete_articles' },
+    ],
+    operation_evidence: [
+      { entry_point_id: 'read-articles', source_node_id: 'reader', text: 'Browse articles by topic and publication date.' },
+      { entry_point_id: 'delete-articles', source_node_id: 'deleter', text: 'Delete articles from the publication.' },
+    ],
+  });
+  const extract = async (ids: unknown, evidence = candidate()) => {
+    const local = new AnalyzerOrchestrator() as any;
+    return local.aiExtractCapabilityCatalog({
+      systemName: 'Article Publisher',
+      enhancedSystemPurpose: { primary_domain: 'publishing', core_concepts: [] },
+      frameworks: [], userJourneys: [], externalServices: [], budgetMs: 30000,
+      dataEntities: [{ id: 'article', name: 'Article', kind: 'persisted-entity', fields: [] }],
+      candidateCapabilities: [evidence], behaviorSurfaces: [],
+      projectTextSignal: { concepts: [], evidence: [], productDocSummary: 'Organize articles by topic and publication date.' },
+      flowGraph: { nodes: [], edges: [], entry_points: [], exit_points: [] },
+      catalogOverride: [{
+        name: 'Organize articles',
+        description: 'Articles retain topics and publication dates for readers to browse.',
+        category: 'core', candidate_ids: [evidence.id],
+        ...(ids === undefined ? {} : { entry_point_ids: ids }),
+      }],
+    });
+  };
+
+  it('attaches only explicitly cited operations and their source evidence', async () => {
+    const evidence = candidate();
+    const before = JSON.stringify(evidence);
+    const result = await extract(['read-articles'], evidence);
+    expect(result).toHaveLength(1);
+    expect(result[0].operations.map((operation: any) => operation.entry_point_id)).toEqual(['read-articles']);
+    expect(result[0].operation_evidence).toEqual([evidence.operation_evidence[0]]);
+    expect(JSON.stringify(evidence)).toBe(before);
+  });
+
+  it.each([undefined, [], ['invented-entry'], ['read-articles', 'invented-entry'], 'read-articles'])(
+    'does not replace missing or invalid operation citations with the whole candidate: %s',
+    async ids => { expect(await extract(ids)).toEqual([]); },
+  );
+
+  it('does not let a later vocabulary match attach an uncited sibling operation', async () => {
+    const [scoped] = await extract(['read-articles']);
+    const sibling = { ...candidate(), id: 'article-surface', evidence_kind: 'behavior-surface' };
+    const result = mergeUniquelyMatchedBehaviorEvidence([scoped], [sibling as SystemCapability], [sibling.id]);
+    expect(result[0].operations.map(operation => operation.entry_point_id)).toEqual(['read-articles']);
+    expect(result[0].criticality_factors).not.toContain('catalog-candidate:article-surface');
+  });
+
+  it('keeps operation citations authoritative when publication merges an older broad identity', async () => {
+    const [scoped] = await extract(['read-articles']);
+    const broad = { ...candidate(), id: scoped.id, name: scoped.name, name_source: 'deterministic' };
+    const [result] = normalizePublishedCapabilityIds([scoped, broad as SystemCapability]);
+    expect(result.operations.map(operation => operation.entry_point_id)).toEqual(['read-articles']);
+    expect(result.operation_evidence).toEqual([candidate().operation_evidence[0]]);
+  });
+
+  it('does not rebuild grouped evidence repairs from every operation in their cited candidates', async () => {
+    const [scoped] = await extract(['read-articles']);
+    const related = { ...candidate(), id: 'related-article-evidence' } as SystemCapability;
+    const replacement = { ...scoped, criticality_factors: [
+      ...scoped.criticality_factors, 'catalog-candidate:' + related.id,
+    ] };
+    const result = mergeCapabilityCatalogRepairResults([], [replacement],
+      new Set([candidate().id, related.id]), [candidate() as SystemCapability, related]);
+    expect(result).toHaveLength(1);
+    expect(result[0].operations.map(operation => operation.entry_point_id)).toEqual(['read-articles']);
+    expect(result[0].criticality_factors).toContain('catalog-candidate:' + candidate().id);
+    expect(result[0].criticality_factors).toContain('catalog-candidate:' + related.id);
+  });
+
+  it('retains every explicitly cited operation when the outcome uses the whole candidate', async () => {
+    const result = await extract(['read-articles', 'delete-articles']);
+    expect(result).toHaveLength(1);
+    expect(result[0].operations).toHaveLength(2);
+  });
+});
 import { evaluateCapabilityCatalogAudience } from '../../analyzer/core/capability-catalog-audience';
 import { capabilityCatalogOutcomeCoverageFailure, deriveCapabilityCatalogOutcomeRequirements } from '../../analyzer/core/capability-catalog-outcome-coverage';
 import type { SystemCapability } from '../../types/cas.types';

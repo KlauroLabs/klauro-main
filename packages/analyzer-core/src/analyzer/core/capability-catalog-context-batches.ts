@@ -53,7 +53,7 @@ export function fitCapabilityCatalogContexts<T extends Record<string, unknown>>(
       pendingFit = single;
       return;
     }
-    const splitKeys = ['operations', 'declared_contracts'].filter(key =>
+    const splitKeys = ['operations', 'observed_operations', 'declared_contracts'].filter(key =>
       Array.isArray(candidate?.[key]) && (candidate[key] as unknown[]).length > 1);
     if (splitKeys.length > 0) {
       const halves = [{ ...candidate }, { ...candidate }];

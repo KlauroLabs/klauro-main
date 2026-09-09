@@ -55,11 +55,13 @@ function compactCandidate(value: unknown, required: boolean): Record<string, unk
     ...repairFact,
     evidence_window: candidate.evidence_window,
     ...(Array.isArray(candidate.declared_contracts) ? { declared_contracts: candidate.declared_contracts } : {}),
+    ...(Array.isArray(candidate.observed_operations) ? { observed_operations: candidate.observed_operations } : {}),
   };
   return {
     candidate_id: boundedText(candidate.candidate_id, 180),
     family: boundedText(candidate.family, required ? 120 : 180),
     operations: Array.isArray(candidate.operations) ? candidate.operations : [],
+    observed_operations: Array.isArray(candidate.observed_operations) ? candidate.observed_operations : [],
     relationships: Array.isArray(candidate.relationships) ? candidate.relationships : [],
     evidence_role: candidate.evidence_role,
     evidence_role_reasons: candidate.evidence_role_reasons,

@@ -2,7 +2,7 @@ import type { SystemCapability } from '../../types/cas.types';
 import { capabilityEvidenceSubjectTokens } from './capability-catalog-evidence';
 import type { CapabilityCatalogOutcomeRequirement } from './capability-catalog-outcome-coverage';
 import { capabilityCatalogRepairLifecycleKey } from './capability-catalog-repair-plan';
-import { scopeCapabilityObligationFactors, scopeCapabilityOperationsToOutcomeName } from './capability-operation-attribution';
+import { capabilityOperationCitationIds, scopeCapabilityObligationFactors, scopeCapabilityOperationsToOutcomeName } from './capability-operation-attribution';
 
 export type CapabilityCatalogOutcome =
   | { status: 'fulfilled'; value: SystemCapability[] }
@@ -267,6 +267,7 @@ function mergeCapabilityEvidence(
   evidence: SystemCapability,
   preserveCompleteLifecycle = false,
 ): SystemCapability {
+  if (capabilityOperationCitationIds(outcome.criticality_factors || []).size > 0) return outcome;
   const operationKey = (operation: SystemCapability['operations'][number]) => [
     operation.entry_point_id,
     operation.entry_point_type,
@@ -685,7 +686,7 @@ export function mergeCapabilityCatalogRepairResults(
           evidence_examples: [],
           criticality_factors: (replacement.criticality_factors || []).filter(factor => !factor.startsWith('catalog-candidate:')),
         };
-        const grounded = (groupedEvidence as SystemCapability[]).reduce(
+        const grounded = capabilityOperationCitationIds(replacement.criticality_factors || []).size > 0 ? replacement : (groupedEvidence as SystemCapability[]).reduce(
           (capability, evidence) => mergeCapabilityEvidence(capability, evidence),
           groundedSeed,
         );

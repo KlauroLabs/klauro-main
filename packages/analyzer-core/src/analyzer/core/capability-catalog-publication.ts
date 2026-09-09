@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { SystemCapability } from '../../types/cas.types';
+import { preserveCapabilityOperationCitations } from './capability-operation-attribution';
 
 function uniqueCapabilityOperations(...operationGroups: ReadonlyArray<SystemCapability['operations']>): SystemCapability['operations'] {
   const seen = new Set<string>();
@@ -112,5 +113,5 @@ export function normalizePublishedCapabilityIds(capabilities: SystemCapability[]
       category: group.some(capability => capability.category === 'core') ? 'core' : preferred.category,
     });
   }
-  return published;
+  return published.map(preserveCapabilityOperationCitations);
 }

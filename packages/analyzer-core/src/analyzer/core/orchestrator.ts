@@ -1,6 +1,6 @@
 import { BaseAnalyzer, CASNode, CASEdge, AnalysisContext, FileAnalysisContext } from './base-analyzer';
 import * as incrementalScope from './incremental-scope';
-import { reuseCapabilityCatalog, type CapabilityReuseEntryContext } from './capability-catalog-reuse';
+import { reuseCapabilityCatalog, stabilizeCapabilityCatalog, type CapabilityReuseEntryContext } from './capability-catalog-reuse';
 import { selectEntryPointSubjectField } from './entry-point-subject';
 import { SCAFFOLD_DIR_NAMES, SCAFFOLD_GLOBS, isScaffoldDirName, isScaffoldOrTestPath, isTestFileName } from './scaffold-paths';
 import { BUILD_ARTIFACT_GLOBS, THIRD_PARTY_SOURCE_GLOBS, isBuildArtifactDirectoryName } from './build-artifact-paths';
@@ -212,7 +212,7 @@ import { capabilitySubjectTokens } from './capability-audience-test';
 import { capabilityAudienceRepairFeedback, capabilityPublishabilityRepairFeedback, capabilityCatalogProductTerms, evaluateCapabilityCatalogAudience, groundedCapabilityAudience, removeUnsupportedCapabilityAbsenceClaims, schemaGroundedEntityNames, unsupportedCapabilityOperationalClaims, rejectionsAreVocabularyCollisionsOnly } from './capability-catalog-audience';
 import { capabilityGroundedEntityIds } from './capability-entity-grounding';
 import { canonicalCapabilityLifecycleAction } from './capability-lifecycle-actions';
-import { isReadOnlyCapabilityOutcomeName, projectReversibleCapabilityEvidence, scopeCapabilityOperationsToOutcomeName } from './capability-operation-attribution';
+import { isReadOnlyCapabilityOutcomeName, projectReversibleCapabilityEvidence, resolveCapabilityOperationCitations } from './capability-operation-attribution';
 import { applyPreferredAiCapabilityDescription } from './capability-merge';
 import { stripProjectDocumentMedia } from './project-document-framing';
 import { systemNarrativeGroundingFailure } from './system-narrative-grounding';
@@ -8635,12 +8635,12 @@ export class AnalyzerOrchestrator {
     }
     const catalogDescriptionContract = 'Each description must be one sentence of 6-28 words and at least 30 characters. Start with a concrete PM-readable product or operational subject, then state its evidence-specific behavior or outcome. Do not start with actor scaffolding such as "Lets users", "Allows users", "Enables users", "Gives users", or "Provides users". The description must add concrete information beyond the capability name. The attached operations preserve every observed lifecycle action. Describe the durable audience outcome instead of enumerating those actions; mention a destructive or reversal effect only when it materially defines that outcome. State the observed result directly; never explain it with generic implementation scaffolding such as "by reading", "by processing", "by coordinating", "supports tasks", or "coordinates operations". Use PM-readable product nouns from cited operations, journeys, or first-party product text; do not replace them with generic "data" or "information". entity_names that look like source types are grounding labels only and must not appear in the prose. Translate internal inventory terms such as entities, nodes, entry points, capability maps, and analysis results into the concrete software behavior, risk, relationship, or change context visible to the user. Do not invent value claims such as accurate, up-to-date, efficient, effective, smooth, experience, insights, comprehensive, seamless, robust, decision-making, collaboration, metrics, or performance unless that exact claim appears in the cited evidence. Do not invent operating claims such as locking, exclusivity, blocking, enforcing access, identity verification, or security guarantees unless that exact claim appears in the cited evidence. Never claim that authentication, authorization, permissions, security, dependencies, records, or workflows are absent, unnecessary, unchanged, unaffected, or bypassed. Do not mention forms, buttons, screens, slugs, identifiers, request or response payloads, HTTP methods, endpoints, routes, tools, or other delivery mechanisms as if they were the product outcome. Do not claim immediate, instant, permanent, or real-time effects unless first_party_outcomes explicitly states that guarantee. Do not name source-code types, interfaces, classes, UI widgets, graph-rendering structures, or other implementation artifacts, and never use "capability" or "lifecycle" as prose scaffolding.';
     const requiresCompleteTargetedCitations = input.repairMode === 'evidence' && (input.targetedRepairFacts?.length || 0) > 1;
-    const focusedCatalogTask = capabilityCatalogFocusedTask(input.repairMode || (input.requiredOutcomeRequirements?.length ? 'outcome' : undefined), input.repairIdentityName, Boolean(input.acceptedOutcomeNames?.length)); const catalogTaskBase = input.exactCapabilityLimit ? `You are naming ${input.exactCapabilityLimit === 1 ? 'one evidence-grounded PRODUCT OUTCOME' : `${input.exactCapabilityLimit} distinct evidence-grounded PRODUCT OUTCOMES`} for one focused evidence family. Return ONLY valid JSON: {"capabilities":[{"requirement_id":"...","name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. ${focusedCatalogTask} ${requiresCompleteTargetedCitations ? 'Include every supplied candidate_id.' : 'Include at least one exact candidate_id.'}${input.repairMode === 'description' && input.repairIdentityName ? '' : ' When exactly one required_visible_action exists, begin the name with one of its allowed product-language anchors. When several facts expose different lifecycle actions for one subject, use one broader evidence-grounded purpose verb in the name and state every action in the description. When a required_subject_term is itself an action verb, begin the name with that exact base verb; never substitute a generic transport verb such as Create, Get, or Process. Across the name and description, include the literal required_audience_label and at least minimum_subject_matches required_subject_terms, or canonical validator forms of those terms.'} Individual operation names are examples of delivery mechanics, not title templates. Do not discuss another product ability, write a system description, invent a broader claim, or return alternatives.`
+    const focusedCatalogTask = capabilityCatalogFocusedTask(input.repairMode || (input.requiredOutcomeRequirements?.length ? 'outcome' : undefined), input.repairIdentityName, Boolean(input.acceptedOutcomeNames?.length)); const catalogTaskBase = input.exactCapabilityLimit ? `You are naming ${input.exactCapabilityLimit === 1 ? 'one evidence-grounded PRODUCT OUTCOME' : `${input.exactCapabilityLimit} distinct evidence-grounded PRODUCT OUTCOMES`} for one focused evidence family. Return ONLY valid JSON: {"capabilities":[{"requirement_id":"...","name":"...","description":"...","category":"core|supporting","candidate_ids":["..."],"entry_point_ids":["..."]}]}. ${focusedCatalogTask} ${requiresCompleteTargetedCitations ? 'Include every supplied candidate_id.' : 'Include at least one exact candidate_id.'}${input.repairMode === 'description' && input.repairIdentityName ? '' : ' When exactly one required_visible_action exists, begin the name with one of its allowed product-language anchors. When several facts expose different lifecycle actions for one subject, use one broader evidence-grounded purpose verb in the name and state every action in the description. When a required_subject_term is itself an action verb, begin the name with that exact base verb; never substitute a generic transport verb such as Create, Get, or Process. Across the name and description, include the literal required_audience_label and at least minimum_subject_matches required_subject_terms, or canonical validator forms of those terms.'} Individual operation names are examples of delivery mechanics, not title templates. Do not discuss another product ability, write a system description, invent a broader claim, or return alternatives.`
       : artifactType === 'infrastructure'
-      ? `You are cataloging the OPERATIONAL RESPONSIBILITIES of an infrastructure codebase. Return ONLY valid JSON: {"system_description":"...","domain":"...","capabilities":[{"requirement_id":"...","name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Name what operators accomplish with the declared infrastructure in product-neutral operational language. Every name must be a verb-headed operator outcome grounded in the supplied declarations. Never infer that a resource handles, processes, or manages a business concept merely because that concept appears in its resource name. Never name a script, file, command, handler, route, framework, or registration surface as the capability. Merge related deployment/configuration candidates. candidate_ids must be copied from supplied facts. Return only distinct evidence-backed audience outcomes; an empty capabilities list is valid when no supplied evidence proves one. Order grounded outcomes most central first.`
+      ? `You are cataloging the OPERATIONAL RESPONSIBILITIES of an infrastructure codebase. Return ONLY valid JSON: {"system_description":"...","domain":"...","capabilities":[{"requirement_id":"...","name":"...","description":"...","category":"core|supporting","candidate_ids":["..."],"entry_point_ids":["..."]}]}. Name what operators accomplish with the declared infrastructure in product-neutral operational language. Every name must be a verb-headed operator outcome grounded in the supplied declarations. Never infer that a resource handles, processes, or manages a business concept merely because that concept appears in its resource name. Never name a script, file, command, handler, route, framework, or registration surface as the capability. Merge related deployment/configuration candidates. candidate_ids must be copied from supplied facts. Return only distinct evidence-backed audience outcomes; an empty capabilities list is valid when no supplied evidence proves one. Order grounded outcomes most central first.`
       : artifactType === 'library' || artifactType === 'client-sdk'
-        ? `You are cataloging the CONSUMER-FACING ABILITIES of a reusable library or client SDK. Return ONLY valid JSON: {"system_description":"...","domain":"...","capabilities":[{"requirement_id":"...","name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Name what library consumers can accomplish through its public contracts, not files, packages, private implementation identifiers, or incidental framework mechanics. Public contract vocabulary such as requests, responses, routes, or handlers is valid when the supplied first-party evidence establishes that vocabulary as what the library offers. candidate_ids must be copied from supplied facts. Return only distinct evidence-backed audience outcomes; an empty capabilities list is valid when no supplied evidence proves one. Order grounded outcomes most central first.`
-        : `You are cataloging the BUSINESS VALUE of a codebase. You are given BOTTOM-UP facts (user journeys, data entities, candidate route areas, external services) AND, when available, a top_down_signals block - the product's OWN words about what it is (README title/overview, manifest self-description, product terminology). Return ONLY valid JSON: {"system_description":"...","domain":"...","capabilities":[{"requirement_id":"...","name":"...","description":"...","category":"core|supporting","candidate_ids":["..."]}]}. Rules: (1) THE PURPOSE TEST - every capability you name must be a product/user/operational ability that would appear in a product description, a user objective, a business offering, or an operational responsibility. If it would not, it is NOT a capability; drop it. Name capabilities as verb-headed outcomes describing what the product lets its USERS or OPERATORS DO in plain product language, never as a mechanism or supporting noun. Do not lead a name with Handle or Process. Use Manage only when management itself is the audience outcome in this system's scope, not as a wrapper around generic CRUD; Coordinate is valid only when operations or first-party product text establishes collaboration as the outcome. (2) INTENT RECONCILIATION - evaluate each required_outcome independently. Emit it only when cited bottom-up behavior proves it, preserve its requirement_id, and omit it when the implementation evidence does not ground it; omission is an intent gap, not permission to invent evidence. You may also emit an undocumented capability when bottom-up behavior proves a real audience outcome not named in required_outcomes. (3) THE SCOPE-RELATIVE TEST - a behavior that is prerequisite substrate in one product can be the flagship outcome in another. Decide from the supplied audience, system boundary, first-party purpose, dependency direction, terminality, journeys, entities, operations, and contradictory evidence. Never decide from a domain-word blacklist. A shared prerequisite with later product behavior is normally supporting; the same behavior can be core when it is terminal and is what the audience came to obtain. (4) MERGE related candidate areas into real capabilities only when they express the same product outcome. Keep distinct user surfaces and distinct terminal outcomes separate even when they share data or implementation vocabulary. A capability spanning several evidence families must use the broader product outcome as its subject, never one entity label that narrows the whole aggregate. Never return two capabilities whose descriptions assert the same result. (5) category="core" only for the capabilities that ARE the product's value proposition (those corroborated by top_down_signals rank first); "supporting" for necessary-but-not-the-value. (6) candidate_ids must be copied from the supplied facts. Structural families, routes, entities, and operation groups are evidence, not publication quotas: never create a capability merely to cover them. (7) Every subject noun in a capability name and description must come from cited operations, a supplied journey, or top_down_signals. entity_names may be source-level type identifiers: use them only to connect evidence, never repeat a type, class, interface, schema, or graph-model identifier in customer-facing prose. Inflection is allowed; substituting an unsupported product noun is not. Return only distinct evidence-backed audience outcomes; an empty capabilities list is valid when no supplied evidence proves one. Order grounded outcomes most central first.`;
+        ? `You are cataloging the CONSUMER-FACING ABILITIES of a reusable library or client SDK. Return ONLY valid JSON: {"system_description":"...","domain":"...","capabilities":[{"requirement_id":"...","name":"...","description":"...","category":"core|supporting","candidate_ids":["..."],"entry_point_ids":["..."]}]}. Name what library consumers can accomplish through its public contracts, not files, packages, private implementation identifiers, or incidental framework mechanics. Public contract vocabulary such as requests, responses, routes, or handlers is valid when the supplied first-party evidence establishes that vocabulary as what the library offers. candidate_ids must be copied from supplied facts. Return only distinct evidence-backed audience outcomes; an empty capabilities list is valid when no supplied evidence proves one. Order grounded outcomes most central first.`
+        : `You are cataloging the BUSINESS VALUE of a codebase. You are given BOTTOM-UP facts (user journeys, data entities, candidate route areas, external services) AND, when available, a top_down_signals block - the product's OWN words about what it is (README title/overview, manifest self-description, product terminology). Return ONLY valid JSON: {"system_description":"...","domain":"...","capabilities":[{"requirement_id":"...","name":"...","description":"...","category":"core|supporting","candidate_ids":["..."],"entry_point_ids":["..."]}]}. Rules: (1) THE PURPOSE TEST - every capability you name must be a product/user/operational ability that would appear in a product description, a user objective, a business offering, or an operational responsibility. If it would not, it is NOT a capability; drop it. Name capabilities as verb-headed outcomes describing what the product lets its USERS or OPERATORS DO in plain product language, never as a mechanism or supporting noun. Do not lead a name with Handle or Process. Use Manage only when management itself is the audience outcome in this system's scope, not as a wrapper around generic CRUD; Coordinate is valid only when operations or first-party product text establishes collaboration as the outcome. (2) INTENT RECONCILIATION - evaluate each required_outcome independently. Emit it only when cited bottom-up behavior proves it, preserve its requirement_id, and omit it when the implementation evidence does not ground it; omission is an intent gap, not permission to invent evidence. You may also emit an undocumented capability when bottom-up behavior proves a real audience outcome not named in required_outcomes. (3) THE SCOPE-RELATIVE TEST - a behavior that is prerequisite substrate in one product can be the flagship outcome in another. Decide from the supplied audience, system boundary, first-party purpose, dependency direction, terminality, journeys, entities, operations, and contradictory evidence. Never decide from a domain-word blacklist. A shared prerequisite with later product behavior is normally supporting; the same behavior can be core when it is terminal and is what the audience came to obtain. (4) MERGE related candidate areas into real capabilities only when they express the same product outcome. Keep distinct user surfaces and distinct terminal outcomes separate even when they share data or implementation vocabulary. A capability spanning several evidence families must use the broader product outcome as its subject, never one entity label that narrows the whole aggregate. Never return two capabilities whose descriptions assert the same result. (5) category="core" only for the capabilities that ARE the product's value proposition (those corroborated by top_down_signals rank first); "supporting" for necessary-but-not-the-value. (6) candidate_ids must be copied from the supplied facts. Structural families, routes, entities, and operation groups are evidence, not publication quotas: never create a capability merely to cover them. (7) Every subject noun in a capability name and description must come from cited operations, a supplied journey, or top_down_signals. entity_names may be source-level type identifiers: use them only to connect evidence, never repeat a type, class, interface, schema, or graph-model identifier in customer-facing prose. Inflection is allowed; substituting an unsupported product noun is not. Return only distinct evidence-backed audience outcomes; an empty capabilities list is valid when no supplied evidence proves one. Order grounded outcomes most central first.`;
     const catalogNarrativeContract = 'The system_description must be exactly 4 concise, grammatical sentences for a non-technical reader: what the product or operational system is, what users or operators can do, one concrete action and result, and another evidenced behavior or operating property. Use concrete nouns from supplied evidence. Do not mention source files, private implementation identifiers, frameworks, libraries, tools, programming languages, prompt keys, or graph evidence. Routes, handlers, requests, and responses are valid only when they are first-party public product vocabulary for a reusable developer library. Never use marketing or generalized value claims such as seamless, robust, comprehensive, various, efficient, productivity, performance, compliant, compliance, advanced, modern, streamline, insights, metrics, decision-making, collaboration, scalable, user experience, business value, or best practices. domain must be a lowercase kebab-case label of 2 to 4 evidence-backed product nouns.';
     const hypothesisContract = 'inferred_behavior_hypothesis is analysis-derived and non-authoritative. Use it only to propose groupings that cited bottom-up behavior independently proves. It is never first-party intent and never creates a required outcome.';
     const focusedOutcomeNamingContract = input.exactCapabilityLimit ? 'FOCUSED OUTCOME NAME: Never copy a heading beginning with Manage, Handle, or Process. Translate its cited behavior into the concrete audience result, such as tracking progress, organizing items, or updating status. Keep state values and step details in the description, never the title. The attached operations preserve every cited lifecycle action; do not enumerate them in the description.' : '';
@@ -8685,7 +8685,7 @@ export class AnalyzerOrchestrator {
       };
       const budgetedContexts = fitCapabilityCatalogContexts(additionalContextWithoutFacts, {
         user_journeys: journeys, entities,
-        candidate_route_areas: input.targetedRepairFacts?.map(fact => ({ ...fact, declared_contracts: candidateAreaFacts.find(candidate => candidate.candidate_id === input.targetedRepairCandidateMap?.[fact.candidate_id])?.declared_contracts })) || candidateAreaFacts,
+        candidate_route_areas: input.targetedRepairFacts?.map(fact => ({ ...fact, declared_contracts: candidateAreaFacts.find(candidate => candidate.candidate_id === input.targetedRepairCandidateMap?.[fact.candidate_id])?.declared_contracts, observed_operations: candidateAreaFacts.find(candidate => candidate.candidate_id === input.targetedRepairCandidateMap?.[fact.candidate_id])?.observed_operations })) || candidateAreaFacts,
         required_behavior_candidate_ids: targetedRepair ? [] : requiredBehaviorCandidateAreas.map(candidate => candidate.id), accepted_outcome_names: targetedRepair ? [] : input.acceptedOutcomeNames, required_outcomes: input.requiredOutcomeRequirements?.map(requirement => ({ requirement_id: requirement.id, audience: requirement.audience, required_audience_label: requirement.audienceLabel || requirement.audience, required_subject_terms: requirement.requiredSubjectTerms || requirement.subjectTokens, required_visible_actions: requirement.visibleActionTerms || [], minimum_subject_matches: requirement.minimumSubjectMatches ?? Math.min(2, requirement.subjectTokens.length), outcome: requirement.statement, first_party_outcome_text: targetedRepair ? capabilityCatalogTargetedOutcomeText(requirement) : requirement.firstPartyOutcomeText, candidate_ids: targetedRepair ? Object.entries(input.targetedRepairCandidateMap || {}).filter(([, rawId]) => requirement.candidateIds.includes(rawId)).map(([opaqueId]) => opaqueId) : requirement.candidateIds })),
         required_entity_candidate_groups: targetedRepair ? [] : requiredEntityCandidateGroups,
         external_services: targetedRepair ? [] : services,
@@ -8777,7 +8777,7 @@ export class AnalyzerOrchestrator {
       recordSemanticDecision({
         ts: Date.now(),
         decision_type: 'capability_catalog',
-        prompt_version: 'capability_catalog.v2',
+        prompt_version: 'capability_catalog.v3',
         input_evidence_digest: catalogEvidenceDigest,
         raw_output_excerpt: raw,
         parse_ok: responseAccepted,
@@ -8858,7 +8858,7 @@ export class AnalyzerOrchestrator {
       category: SystemCapability['category'];
       relatedEntities: string[];
       journeys: unknown;
-      candidateIds: string[]; requirementId?: string; deterministicSource: boolean;
+      candidateIds: string[]; candidates: SystemCapability[]; requirementId?: string; deterministicSource: boolean;
     };
     const staged: StagedCatalogItem[] = []; let activeRequirementId: string | undefined; let bareNounRejected = 0; const catalogRejectionFeedback: CapabilityCatalogRejection[] = [];
     const catalogRejectionReasons = new Map<string, number>();
@@ -9054,10 +9054,10 @@ export class AnalyzerOrchestrator {
         debugCatalogRejection(name, 'targeted-evidence-citations-incomplete', candidateIds);
         continue;
       }
-      const citedCandidatePool = validationCandidates.filter(candidate => candidateIds.includes(candidate.id));
-      const citedCandidates = targetedRepair && requiresCompleteTargetedCitations
-        ? citedCandidatePool
-        : narrowCapabilityEvidenceCandidates(name, citedCandidatePool);
+      const operationCitations = resolveCapabilityOperationCitations(item.entry_point_ids, validationCandidates.filter(candidate => candidateIds.includes(candidate.id)));
+      if (!operationCitations.ok) { debugCatalogRejection(name, operationCitations.reason, candidateIds); continue; }
+      const citedCandidates = operationCitations.explicit || (targetedRepair && requiresCompleteTargetedCitations)
+        ? operationCitations.candidates : narrowCapabilityEvidenceCandidates(name, operationCitations.candidates);
       const dataEntityByName = new Map(input.dataEntities.map(entity => [entity.name.toLowerCase(), entity]));
       const citedScopeCandidates = citedCandidates.map(candidate => {
         const entityEvidence = (candidate.related_entities || []).flatMap(entityId => {
@@ -9209,17 +9209,16 @@ export class AnalyzerOrchestrator {
         category,
         relatedEntities,
         journeys: item.journeys,
-        candidateIds: narrowedCandidateIds, requirementId: boundRequirementId, deterministicSource: evidenceGroundedDeterministicRecovery,
+        candidateIds: narrowedCandidateIds, candidates: citedCandidates, requirementId: boundRequirementId, deterministicSource: evidenceGroundedDeterministicRecovery,
       });
     }
     const opsByItemIndex = new Map<number, SystemCapability['operations']>();
     const entityIdsByItemIndex = new Map<number, Set<string>>();
     const candidateIdsByItemIndex = new Map<number, Set<string>>();
-    for (const candidate of candidatePoolForRanking) {
-      for (let index = 0; index < staged.length; index++) {
-        if (!staged[index].candidateIds.includes(candidate.id)) continue;
+    for (let index = 0; index < staged.length; index++) {
+      for (const candidate of staged[index].candidates) {
         if (!opsByItemIndex.has(index)) opsByItemIndex.set(index, []);
-        opsByItemIndex.get(index)!.push(...scopeCapabilityOperationsToOutcomeName(staged[index].name, candidate.operations));
+        opsByItemIndex.get(index)!.push(...candidate.operations);
         if (!entityIdsByItemIndex.has(index)) entityIdsByItemIndex.set(index, new Set());
         for (const id of candidate.related_entities || []) entityIdsByItemIndex.get(index)!.add(id);
         if (!candidateIdsByItemIndex.has(index)) candidateIdsByItemIndex.set(index, new Set());
@@ -9304,6 +9303,7 @@ export class AnalyzerOrchestrator {
           deterministicSource ? 'deterministic-evidence-family-recovery' : 'ai-extracted-from-journeys-and-entities',
           ...(requirementId ? [`catalog-outcome-requirement:${requirementId}`] : []),
           ...[...anchoredCandidateIds].map(candidateId => `catalog-candidate:${candidateId}`),
+          ...dedupedOps.map(operation => `catalog-operation-entry:${operation.entry_point_id}`),
           ...obligationFactors,
           ...(descriptionContradictsOperations ? ['catalog-description-rejected'] : []),
         ])),
@@ -9312,7 +9312,7 @@ export class AnalyzerOrchestrator {
     recordSemanticDecision({
       ts: Date.now(),
       decision_type: 'capability_catalog',
-      prompt_version: 'capability_catalog.v2',
+      prompt_version: 'capability_catalog.v3',
       input_evidence_digest: {
         ...catalogEvidenceDigest,
         parsed: catalog.length,
@@ -19594,63 +19594,11 @@ export class AnalyzerOrchestrator {
     currentCandidates: SystemCapability[],
     refreshedCapabilities: SystemCapability[],
   ): SystemCapability[] {
-    const currentOperationIds = new Set(currentCandidates
-      .flatMap(capability => capability.operations || [])
-      .map(operation => operation.entry_point_id)
-      .filter(Boolean));
-    const currentEntityIds = new Set(currentCandidates.flatMap(capability => capability.related_entities || []));
-    const groundedPrevious = previousCapabilities.filter(previous => {
-      if (!previous.description || !['ai', 'manual', 'reused'].includes(String(previous.description_source || ''))) return false;
-      if (!this.validateElementDescription(previous.description, this.capabilityDescriptionTarget(previous)).ok) return false;
-      const operations = previous.operations || [];
-      if (operations.length > 0) {
-        return operations.some(operation => currentOperationIds.has(operation.entry_point_id));
-      }
-      if ((previous.related_entities || []).some(entity => currentEntityIds.has(entity))) return true;
-      return currentCandidates.some(candidate => this.capabilityReuseSubjectsMatch(previous, candidate));
-    }).map(previous => {
-      const matchingCandidates = currentCandidates.filter(candidate => {
-        if (candidate.id === previous.id || this.capabilityReuseSubjectsMatch(previous, candidate)) return true;
-        const previousEntities = new Set(previous.related_entities || []);
-        return (candidate.related_entities || []).some(entity => previousEntities.has(entity));
-      });
-      const survivingOperations = (previous.operations || []).filter(operation => currentOperationIds.has(operation.entry_point_id));
-      return {
-        ...previous,
-        description_source: 'reused' as const,
-        description_generation: {
-          status: 'reused_previous' as const,
-          attempted: false,
-          reason: previous.description_generation?.status,
-          generated_at: new Date().toISOString(),
-          origin_source: previous.description_generation?.origin_source
-            || (previous.description_source === 'ai' ? 'ai'
-              : previous.description_source === 'manual' ? 'manual'
-                : previous.description_generation?.reason === 'ai_applied' ? 'ai'
-                  : undefined),
-        },
-        related_domains: Array.from(new Set([
-          ...(previous.related_domains || []),
-          ...matchingCandidates.flatMap(capability => capability.related_domains || []),
-        ])),
-        related_entities: Array.from(new Set([
-          ...(previous.related_entities || []).filter(entity => currentEntityIds.has(entity)),
-          ...matchingCandidates.flatMap(capability => capability.related_entities || []),
-        ])),
-        operations: Array.from(new Map([
-          ...survivingOperations,
-          ...matchingCandidates.flatMap(capability => capability.operations || []),
-        ].map(operation => [operation.entry_point_id, operation])).values()),
-      };
+    return stabilizeCapabilityCatalog(previousCapabilities, currentCandidates, refreshedCapabilities, {
+      subjectsMatch: (previous, current) => this.capabilityReuseSubjectsMatch(previous, current),
+      isPublishable: previous => Boolean(previous.description) &&
+        this.validateElementDescription(previous.description!, this.capabilityDescriptionTarget(previous)).ok,
     });
-
-    const overlapsGrounded = (candidate: SystemCapability): boolean => groundedPrevious.some(previous =>
-      candidate.id === previous.id || this.capabilityReuseSubjectsMatch(previous, candidate)
-    );
-    return [
-      ...groundedPrevious,
-      ...refreshedCapabilities.filter(capability => !overlapsGrounded(capability)),
-    ];
   }
 
   private normalizeCapabilityReuseSubject(value: unknown): string {

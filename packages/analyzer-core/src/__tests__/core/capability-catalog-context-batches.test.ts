@@ -1,4 +1,28 @@
 import { fitCapabilityCatalogContext, resolveAIInputByteBudget } from '../../analyzer/core/ai-context-budget';
+
+test.each([false, true])('retains every canonical operation citation through bounded windows, repair=%s', repair => {
+  const observed = Array.from({ length: 90 }, (_, index) => ({
+    entry_point_id: 'observed-' + index,
+    action: 'Inspect a record without changing it. ' + 'Qualified source behavior. '.repeat(20),
+  }));
+  const before = JSON.stringify(observed);
+  const batches = fitCapabilityCatalogContexts({ task: 'Catalog only supported outcomes.' }, {
+    candidate_route_areas: [{
+      candidate_id: 'surface', observed_operations: observed,
+      ...(repair ? { first_party_outcomes: ['Inspect records without changing them'] } : {}),
+    }],
+  }, { AI_MAX_CONTEXT_LENGTH: '4096' } as NodeJS.ProcessEnv);
+  const delivered = batches.flatMap(batch => batch.context.facts.candidate_route_areas as Array<Record<string, unknown>>);
+  expect(delivered.flatMap(value => value.observed_operations)).toEqual(observed);
+  expect(batches.length).toBeGreaterThan(1);
+  expect(batches.every(batch => batch.byteLength <= resolveAIInputByteBudget({ AI_MAX_CONTEXT_LENGTH: '4096' }))).toBe(true);
+  let offset = 0;
+  for (const value of delivered) {
+    expect((value.evidence_window as any).observed_operations).toEqual({ offset, total: observed.length });
+    offset += (value.observed_operations as unknown[]).length;
+  }
+  expect(JSON.stringify(observed)).toBe(before);
+});
 import { fitCapabilityCatalogContexts, requestCapabilityCatalogContexts } from '../../analyzer/core/capability-catalog-context-batches';
 
 const env = { AI_MAX_CONTEXT_LENGTH: '4096' } as NodeJS.ProcessEnv;

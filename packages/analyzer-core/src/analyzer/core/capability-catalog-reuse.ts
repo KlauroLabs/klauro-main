@@ -1,11 +1,29 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { CASEntryPoint, SystemCapability } from '../../types/cas.types';
 import { attachFlowContract, type EntryPointLike, type FlowLike } from './entry-point-enrichment';
+import { capabilityOperationCitationIds, hasExactCapabilityOperationCitations } from './capability-operation-attribution';
 
 export interface CapabilityReuseEntryContext {
   previousEntryPoints: readonly CASEntryPoint[];
   currentEntryPoints: readonly CASEntryPoint[];
   currentFlows?: readonly FlowLike[];
+}
+
+export function stabilizeCapabilityCatalog(
+  previous: readonly SystemCapability[],
+  currentCandidates: readonly SystemCapability[],
+  refreshed: readonly SystemCapability[],
+  options: Parameters<typeof reuseCapabilityCatalog>[2],
+): SystemCapability[] {
+  const sameIdentity = (left: SystemCapability, right: SystemCapability): boolean =>
+    left.id === right.id || left.name.trim().toLowerCase() === right.name.trim().toLowerCase();
+  const reusable = reuseCapabilityCatalog(previous, currentCandidates, options)
+    .filter(prior => !refreshed.some(current =>
+      hasExactCapabilityOperationCitations(current) && sameIdentity(prior, current)));
+  return [
+    ...reusable,
+    ...refreshed.filter(current => !reusable.some(prior => sameIdentity(prior, current))),
+  ];
 }
 
 function entryContract(entry: CASEntryPoint | undefined): unknown {
@@ -63,6 +81,9 @@ export function reuseCapabilityCatalog(
     if (!options.isPublishable(previous) || !previous.description ||
       !['ai', 'manual', 'deterministic', 'reused'].includes(String(previous.description_source || ''))) continue;
     const previousOperations = previous.operations || [];
+    const hasCitations = capabilityOperationCitationIds(previous.criticality_factors || []).size > 0;
+    const requiresCitations = previousOperations.length > 1 && !['manual', 'deterministic'].includes(String(previous.name_source));
+    if ((hasCitations || requiresCitations) && !hasExactCapabilityOperationCitations(previous)) continue;
     const matching = new Set<SystemCapability>();
     const canonicalEvidence = Boolean(options.entryContext && previousOperations.length > 0);
     if (previousOperations.length > 0) {

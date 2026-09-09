@@ -1,4 +1,40 @@
 import * as fs from 'fs-extra';
+
+test('incremental reuse refuses an older multi-operation AI outcome without exact citations', () => {
+  const orchestrator = new AnalyzerOrchestrator() as any;
+  const previous = capability('review', 'Review enterprise orders', 'inspect');
+  previous.operations.push({ ...previous.operations[0], entry_point_id: 'unrelated' });
+  const current = candidates(previous.operations);
+  assert.deepEqual(orchestrator.reusePreviousCapabilityCatalog([previous], current), []);
+  const explicit = { ...previous, criticality_factors: [
+    ...previous.criticality_factors,
+    ...previous.operations.map(operation => 'catalog-operation-entry:' + operation.entry_point_id),
+  ] };
+  const reused = orchestrator.reusePreviousCapabilityCatalog([explicit], current);
+  assert.equal(reused.length, 1);
+  assert.deepEqual(reused[0].operations, explicit.operations);
+});
+
+test('stabilization keeps a freshly cited outcome instead of expanding the old identity through shared entities', () => {
+  const orchestrator = new AnalyzerOrchestrator() as any;
+  const previous = { ...capability('review', 'Review enterprise orders', 'inspect'),
+    description: 'Review enterprise orders presents EnterpriseOrder details for operator review.' };
+  const current = candidates([
+    ...previous.operations,
+    { ...previous.operations[0], entry_point_id: 'unrelated' },
+  ]);
+  const fresh = { ...previous,
+    description: 'Enterprise orders expose review details from their recorded history.',
+    criticality_factors: [...previous.criticality_factors, 'catalog-operation-entry:inspect'],
+  };
+  const before = structuredClone({ previous, current, fresh });
+  const result = orchestrator.stabilizeRefreshedCapabilityCatalog([previous], current, [fresh]);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].description_source, 'ai');
+  assert.equal(result[0].description, fresh.description);
+  assert.deepEqual(result[0].operations, fresh.operations);
+  assert.deepEqual({ previous, current, fresh }, before);
+});
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { McpToolRegistrationAnalyzer } from '../libraries/mcp-tool-registration-analyzer';
