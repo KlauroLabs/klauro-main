@@ -259,3 +259,78 @@ test('packing does not trade shared evidence away to fit another candidate', () 
     expect(batch.omittedCandidateIds).toEqual([]);
   }
 });
+
+test.each([false, true])('keeps sparse reordered contracts with their cited operation, object rows=%s', objectRows => {
+  const observed = Array.from({ length: 16 }, (_, index) => objectRows
+    ? { entry_point_id: 'entry-' + index, action: 'Inspect record ' + index }
+    : ['entry-' + index, 'rpc', 'inspect_' + index, 'read', null]);
+  const contracts = [15, 1, 11, 5, 9, 3].map(index => contract(index));
+  const original = { candidate_id: 'surface', observed_operations: observed, declared_contracts: contracts };
+  const before = JSON.stringify(original);
+  const batches = fitCapabilityCatalogContexts({ task: 'Catalog documented behavior.' }, {
+    candidate_route_areas: [original],
+  }, env);
+  expect(batches.length).toBeGreaterThan(1);
+  const delivered = batches.flatMap(batch => batch.context.facts.candidate_route_areas as any[]);
+  const entryId = (row: any): string => Array.isArray(row) ? row[0] : row.entry_point_id;
+  for (const part of delivered) {
+    for (const row of part.observed_operations) {
+      expect(part.declared_contracts.filter((value: any) => value.entry_point_id === entryId(row)))
+        .toEqual(contracts.filter(value => value.entry_point_id === entryId(row)));
+    }
+    for (const value of part.declared_contracts) {
+      expect(part.observed_operations.some((row: any) => entryId(row) === value.entry_point_id)).toBe(true);
+    }
+    for (const key of ['observed_operations', 'declared_contracts'] as const) {
+      const window = part.evidence_window[key];
+      const indexes: number[] = window.indices || part[key].map((_: unknown, index: number) => window.offset + index);
+      expect(window.total).toBe(original[key].length);
+      expect(indexes.map(index => original[key][index])).toEqual(part[key]);
+    }
+  }
+  expect(delivered.flatMap(part => part.observed_operations)).toEqual(observed);
+  expect(delivered.flatMap(part => part.declared_contracts).map(value => value.entry_point_id).sort())
+    .toEqual(contracts.map(value => value.entry_point_id).sort());
+  expect(batches.every(batch => batch.byteLength <= resolveAIInputByteBudget(env))).toBe(true);
+  expect(JSON.stringify(original)).toBe(before);
+});
+
+test('does not split one operation from any of its qualifications to fit a prompt', () => {
+  const observed = Array.from({ length: 8 }, (_, index) => ['entry-' + index, 'rpc', 'read_' + index, 'read', null]);
+  const contracts = Array.from({ length: 12 }, (_, index) => ({ ...contract(index), entry_point_id: 'entry-0' }));
+  expect(() => fitCapabilityCatalogContexts({ task: 'Catalog documented behavior.' }, {
+    candidate_route_areas: [{ candidate_id: 'surface', observed_operations: observed, declared_contracts: contracts }],
+  }, env)).toThrow('source-contract-exceeds-context-budget');
+});
+
+test.each([false, true])('preserves duplicate operation identities and original indexes through nested windows, repair=%s', repair => {
+  const observed = [0, 1, 0, 2, 3, 4, 5, 6].map(index => ['entry-' + index, 'rpc', 'read_' + index, 'read', null]);
+  const contracts = [6, 5, 4, 3, 2, 1, 0].map(index => ({ ...contract(index), text: contract(index).text.repeat(3) }));
+  const original = { candidate_id: 'surface', observed_operations: observed, declared_contracts: contracts,
+    ...(repair ? { first_party_outcomes: ['Inspect records without changing them'] } : {}) };
+  const batches = fitCapabilityCatalogContexts({ task: 'Catalog documented behavior.' }, {
+    candidate_route_areas: [original],
+  }, env);
+  expect(batches.length).toBeGreaterThan(2);
+  const delivered = batches.flatMap(batch => batch.context.facts.candidate_route_areas as any[]);
+  for (const part of delivered) {
+    for (const row of part.observed_operations) {
+      expect(part.declared_contracts.filter((value: any) => value.entry_point_id === row[0]))
+        .toEqual(contracts.filter(value => value.entry_point_id === row[0]));
+    }
+  }
+  for (const key of ['observed_operations', 'declared_contracts'] as const) {
+    const restored = new Map<number, unknown>();
+    for (const part of delivered) {
+      const window = part.evidence_window[key];
+      const indexes: number[] = window.indices || part[key].map((_: unknown, index: number) => window.offset + index);
+      expect(window.total).toBe(original[key].length);
+      expect(indexes.map(index => original[key][index])).toEqual(part[key]);
+      indexes.forEach((index, position) => {
+        expect(restored.has(index)).toBe(false);
+        restored.set(index, part[key][position]);
+      });
+    }
+    expect([...restored].sort(([left], [right]) => left - right).map(([, value]) => value)).toEqual(original[key]);
+  }
+});

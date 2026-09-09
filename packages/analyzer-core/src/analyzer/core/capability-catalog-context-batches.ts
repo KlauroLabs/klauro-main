@@ -1,6 +1,72 @@
 import { fitCapabilityCatalogContext, resolveAIInputByteBudget, type ContextBudgetResult } from './ai-context-budget';
 import { CapabilityCatalogResponseError, parseCapabilityCatalogResponse } from './capability-catalog-response';
 
+type EvidenceWindow = { offset?: number; indices?: number[]; total: number };
+
+function evidenceEntryId(value: unknown): string | undefined {
+  const id = Array.isArray(value) ? value[0]
+    : value && typeof value === 'object' ? (value as Record<string, unknown>).entry_point_id : undefined;
+  return typeof id === 'string' && id.length > 0 ? id : undefined;
+}
+
+function selectEvidenceWindow(candidate: Record<string, unknown>, selections: Record<string, number[]>): Record<string, unknown> {
+  const previous = candidate.evidence_window as Record<string, EvidenceWindow> | undefined;
+  const result: Record<string, unknown> & { evidence_window: Record<string, EvidenceWindow> } = { ...candidate, evidence_window: { ...previous } };
+  for (const [key, indexes] of Object.entries(selections)) {
+    const values = candidate[key] as unknown[];
+    const window = previous?.[key];
+    const originalIndexes = indexes.map(index => window?.indices?.[index] ?? (window?.offset || 0) + index);
+    result[key] = indexes.map(index => values[index]);
+    result.evidence_window[key] = {
+      ...(originalIndexes.every((value, index) => value === originalIndexes[0] + index)
+        ? { offset: originalIndexes[0] ?? window?.offset ?? 0 }
+        : { indices: originalIndexes }),
+      total: window?.total ?? values.length,
+    };
+  }
+  return result;
+}
+
+function splitJoinedEvidence(candidate: Record<string, unknown>): Record<string, unknown>[] | undefined {
+  const observed = Array.isArray(candidate.observed_operations) ? candidate.observed_operations : [];
+  const contracts = Array.isArray(candidate.declared_contracts) ? candidate.declared_contracts : [];
+  const entryIds = new Set(observed.map(evidenceEntryId).filter(Boolean));
+  if (!contracts.some(contract => entryIds.has(evidenceEntryId(contract)))) return undefined;
+  const groups: Array<{ observed: number[]; contracts: number[] }> = [];
+  const byEntry = new Map<string, number>();
+  observed.forEach((value, index) => {
+    const id = evidenceEntryId(value);
+    const existing = id ? byEntry.get(id) : undefined;
+    if (existing !== undefined) groups[existing].observed.push(index);
+    else {
+      if (id) byEntry.set(id, groups.length);
+      groups.push({ observed: [index], contracts: [] });
+    }
+  });
+  contracts.forEach((value, index) => {
+    const id = evidenceEntryId(value);
+    const existing = id ? byEntry.get(id) : undefined;
+    if (existing !== undefined) groups[existing].contracts.push(index);
+    else groups.push({ observed: [], contracts: [index] });
+  });
+  const operations = Array.isArray(candidate.operations) ? candidate.operations : [];
+  if (groups.length === 1 && operations.length <= 1) return [];
+  const middle = Math.ceil(groups.length / 2);
+  const portions = groups.length === 1 ? [groups, groups] : [groups.slice(0, middle), groups.slice(middle)];
+  return portions.map((portion, index) => {
+    const selections: Record<string, number[]> = {
+      observed_operations: portion.flatMap(group => group.observed).sort((left, right) => left - right),
+      declared_contracts: portion.flatMap(group => group.contracts).sort((left, right) => left - right),
+    };
+    if (operations.length > 1) {
+      const start = index === 0 ? 0 : Math.ceil(operations.length / 2);
+      const end = index === 0 ? Math.ceil(operations.length / 2) : operations.length;
+      selections.operations = Array.from({ length: end - start }, (_, offset) => start + offset);
+    }
+    return selectEvidenceWindow(candidate, selections);
+  });
+}
+
 export function fitCapabilityCatalogContexts<T extends Record<string, unknown>>(
   base: T,
   facts: Record<string, unknown>,
@@ -53,22 +119,23 @@ export function fitCapabilityCatalogContexts<T extends Record<string, unknown>>(
       pendingFit = single;
       return;
     }
+    const joined = splitJoinedEvidence(candidate);
+    if (joined) {
+      if (joined.length === 0) throw new CapabilityCatalogResponseError('source-contract-exceeds-context-budget');
+      joined.forEach(visit);
+      return;
+    }
     const splitKeys = ['operations', 'observed_operations', 'declared_contracts'].filter(key =>
       Array.isArray(candidate?.[key]) && (candidate[key] as unknown[]).length > 1);
     if (splitKeys.length > 0) {
-      const halves = [{ ...candidate }, { ...candidate }];
-      const previousWindow = candidate.evidence_window as Record<string, { offset: number; total: number }> | undefined;
-      for (const half of halves) half.evidence_window = { ...previousWindow };
+      const selections: [Record<string, number[]>, Record<string, number[]>] = [{}, {}];
       for (const key of splitKeys) {
         const values = candidate[key] as unknown[];
         const middle = Math.ceil(values.length / 2);
-        const offset = previousWindow?.[key]?.offset || 0;
-        const total = previousWindow?.[key]?.total || values.length;
-        halves[0][key] = values.slice(0, middle);
-        halves[1][key] = values.slice(middle);
-        (halves[0].evidence_window as Record<string, unknown>)[key] = { offset, total };
-        (halves[1].evidence_window as Record<string, unknown>)[key] = { offset: offset + middle, total };
+        selections[0][key] = Array.from({ length: middle }, (_, index) => index);
+        selections[1][key] = Array.from({ length: values.length - middle }, (_, index) => middle + index);
       }
+      const halves = selections.map(selection => selectEvidenceWindow(candidate, selection));
       visit(halves[0]);
       visit(halves[1]);
       return;
