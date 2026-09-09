@@ -1,4 +1,6 @@
 import { BaseAnalyzer, CASNode, CASEdge, AnalysisContext, FileAnalysisContext } from './base-analyzer';
+import { RISKABLE_NODE_TYPES, hasStructuralSecurityEvidence } from './change-risk-evidence';
+export { RISKABLE_NODE_TYPES, hasStructuralSecurityEvidence } from './change-risk-evidence';
 import * as incrementalScope from './incremental-scope';
 import { reuseCapabilityCatalog, stabilizeCapabilityCatalog, type CapabilityReuseEntryContext } from './capability-catalog-reuse';
 import { selectEntryPointSubjectField } from './entry-point-subject';
@@ -406,13 +408,6 @@ export interface IncrementalAnalysisOptions {
   saveCache?: (contentHash: string, result: FileAnalysisResult) => Promise<void>;
   displayName?: string;
   onProgress?: (event: AnalysisProgressEvent) => void;
-}
-export const RISKABLE_NODE_TYPES: readonly string[] = [
-  'function', 'method', 'service', 'controller', 'serializer',
-  'entity', 'model', 'route', 'handler', 'resolver', 'mutation', 'repository'
-];
-export function hasStructuralSecurityEvidence(node: Pick<CASNode, 'security'>): boolean {
-  return !!(node.security?.authentication_required || node.security?.authorization_roles);
 }
 interface SourceFileInventory {
   expiresAt: number;

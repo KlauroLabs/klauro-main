@@ -68,6 +68,7 @@
   "core/cas-composition.ts": 3,
   "core/cas-source-input-identities.ts": 1,
   "core/change-detector.ts": 1,
+  "core/change-risk-evidence.ts": 2,
   "core/co-change-index.ts": 1,
   "core/codebase-type.ts": 2,
   "core/commonjs-exports.ts": 1,

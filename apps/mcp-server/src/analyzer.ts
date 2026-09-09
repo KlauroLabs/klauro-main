@@ -1,4 +1,5 @@
 import { AnalyzerOrchestrator, type AnalysisProgressEvent } from '../../../packages/analyzer-core/src/analyzer/core/orchestrator';
+export { getAnalysis } from './analysis-access';
 import type { BaseAnalyzer } from '../../../packages/analyzer-core/src/analyzer/core/base-analyzer';
 import { breadthLanguageExtensions } from '../../../packages/analyzer-core/src/analyzer/core/language-analyzer-catalog';
 import { linkStructuralOwnership } from '../../../packages/analyzer-core/src/analyzer/core/structural-ownership';
@@ -35,11 +36,9 @@ import {
   type HostedAnalysisTicket,
 } from './hosted-analysis-admission';
 import {
-  assertAnalysisVersionSupported,
   getAnalysisVersionInfo,
   loadAnalysis,
   loadAnalysisSections,
-  loadCompleteAnalysisFromSections,
   saveIncrementalState,
   loadIncrementalState,
   saveChangeHistoryEntry,
@@ -1299,40 +1298,6 @@ export async function analyzeProjectLayered(
 
 
 
-export async function getAnalysis(
-  projectPath: string,
-  options?: { track?: import('./track').AnalysisTrack; sections?: readonly CasSectionName[]; cas_id?: string }
-): Promise<CASOutput> {
-  if (options?.cas_id && !options.sections) {
-    const subtree = await loadCompleteAnalysisFromSections(projectPath, { track: options.track, cas_id: options.cas_id });
-    if (!subtree) throw new Error(`No analysis found for: ${projectPath}. Run analyze_codebase first.`);
-    assertAnalysisVersionSupported(subtree, projectPath);
-    return applyStoredElementDescriptions(projectPath, subtree);
-  }
-  if (options?.cas_id || options?.sections?.length && options.sections.length < CAS_SECTION_NAMES.length) {
-
-
-
-    const partial = await loadAnalysisSections(
-      projectPath,
-      options.sections || CAS_SECTION_NAMES,
-      {
-        ...(options.track ? { track: options.track } : {}),
-        ...(options.cas_id ? { cas_id: options.cas_id } : {}),
-      },
-    );
-    if (!partial) throw new Error(`No analysis found for: ${projectPath}. Run analyze_codebase first.`);
-    assertAnalysisVersionSupported(partial as CASOutput, projectPath);
-    return partial as CASOutput;
-  }
-
-  const cached = await loadAnalysis(projectPath, { preferCache: true, ...(options?.track ? { track: options.track } : {}) });
-  if (cached) {
-    assertAnalysisVersionSupported(cached, projectPath);
-    return applyStoredElementDescriptions(projectPath, cached);
-  }
-  throw new Error(`No analysis found for: ${projectPath}. Run analyze_codebase first.`);
-}
 
 export interface IncrementalAnalysisResult {
   output: CASOutput;

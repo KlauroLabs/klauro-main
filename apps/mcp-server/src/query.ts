@@ -13,7 +13,7 @@ import { detectCommunities } from '../../../packages/analyzer-core/src/analyzer/
 import { findNearClones } from '../../../packages/analyzer-core/src/analyzer/core/minhash-clone-detection';
 import { isAuthenticationGuardName } from '../../../packages/analyzer-core/src/analyzer/core/guard-classification';
 import { buildProductMap } from '../../../packages/analyzer-core/src/analyzer/core/product-map';
-import { RISKABLE_NODE_TYPES, hasStructuralSecurityEvidence } from '../../../packages/analyzer-core/src/analyzer/core/orchestrator';
+import { RISKABLE_NODE_TYPES, hasStructuralSecurityEvidence } from '../../../packages/analyzer-core/src/analyzer/core/change-risk-evidence';
 import { buildTerminalSignal } from '../../../packages/analyzer-core/src/analyzer/core/terminal-signal';
 import { selectProductFrameworkNames, analyzerTypeMap } from '../../../packages/analyzer-core/src/analyzer/core/framework-comprehension';
 import { computeFlowConcepts, rankMaterializedFlows, attachTelemetryToFlows, telemetryForNode, overlayRuntimeTelemetry, computeCapabilityTelemetry, unexercisedFlows, applyFlowRoleToCapabilityRelationships, type ComputeFlowConceptsOptions, type RuntimeMetricLike } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';

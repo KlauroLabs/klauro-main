@@ -3,7 +3,7 @@ import type { EmbeddingProvider, VectorStore, ScoredNodeId } from '../../../pack
 import { createEmbeddingProvider } from '../../../packages/analyzer-core/src/analyzer/embedding/embedding-provider-factory';
 import { createVectorStore } from '../../../packages/analyzer-core/src/analyzer/embedding/vector-store-factory';
 import { EmbeddingCache } from '../../../packages/analyzer-core/src/analyzer/embedding/embedding-cache';
-import { getAnalysis } from './analyzer';
+import { getAnalysis } from './analysis-access';
 import { getProjectStorageDir } from './storage';
 import { loadKlauroConfig } from './klauro-config';
 import { searchNodes } from './query';
