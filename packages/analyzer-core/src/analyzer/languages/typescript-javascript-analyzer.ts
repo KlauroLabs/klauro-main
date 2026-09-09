@@ -23,7 +23,7 @@ import {
 import { loadPrismaModelIdentities, selectPrismaModelIdentity, type PrismaModelIdentity } from '../libraries/orm/prisma-model-identity';
 import { appendInMemoryRecordCollectionNodes } from '../core/javascript-in-memory-data';
 import { partialTypeScriptSourceFailure, typeScriptAnalysisScope, typeScriptSourceDiagnostics } from '../core/tree-sitter-ts-recovery';
-import { buildImportedFilesystemWriteEvidence, isImportedDatabaseClientReceiver, isRepositoryLikeCaller } from './typescript-database-client';
+import { buildImportedFilesystemWriteEvidence, isDeclaredDatabaseModelReceiver, isImportedDatabaseClientReceiver, isRepositoryLikeCaller } from './typescript-database-client';
 
 interface ParsedAST {
   ast: TSESTree.Program;
@@ -1275,7 +1275,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
     const isThisCall = targetName.startsWith('this.') || targetName.startsWith('self.');
     const isAmbiguousBareName = !isThisCall && (this.nodesByName.get(targetName)?.length ?? 0) > 1;
-    const cacheKey = (isThisCall || isAmbiguousBareName)
+    const cacheKey = (isThisCall || isAmbiguousBareName || targetName.includes('.'))
       ? `${sourceFile}::${sourceClassName}::${targetName}`
       : targetName;
     if (this.callTargetResolutionCache.has(cacheKey)) {
@@ -1308,7 +1308,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       }
       return undefined;
     }
-    if (this.isRepositoryCall(targetName, sourceClassName)) {
+    if (this.isRepositoryCall(targetName, sourceClassName, sourceFile)) {
       const parts = targetName.split('.');
       if (parts.length >= 3 && parts[0] === 'this') {
         const repositoryProperty = parts[1];
@@ -1641,7 +1641,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
                 }
               });
             }
-          } else if (sourceNodeId && !targetNodeId && this.isRepositoryCall(call.target, func.className)) {
+          } else if (sourceNodeId && !targetNodeId && this.isRepositoryCall(call.target, func.className, filePath)) {
             const repoInfo = this.parseRepositoryCall(call.target);
             if (repoInfo) {
               const library = this.getLibraryForType('EntityRepository')
@@ -1893,7 +1893,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     return found?.id;
   }
 
-  private isRepositoryCall(target: string, className?: string): boolean {
+  private isRepositoryCall(target: string, className?: string, sourceFile?: string): boolean {
     if (!target.includes('.')) return false;
 
     if (this.hasUnresolvedReceiver(target)) return false;
@@ -1917,7 +1917,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       if (injectedFieldType) return this.isRepositoryLikeType(injectedFieldType);
     }
 
-    return isRepositoryLikeCaller(originalCallerName) || isImportedDatabaseClientReceiver(originalCallerName, this.nodesByName, this.importSourceMap) || this.isModelLikeCaller(originalCallerName);
+    return isRepositoryLikeCaller(originalCallerName) || isImportedDatabaseClientReceiver(originalCallerName, this.nodesByName, this.importSourceMap) || this.isModelLikeCaller(originalCallerName, sourceFile);
   }
   private static readonly PERSISTENCE_OPERATIONS = new Set([
 
@@ -1941,22 +1941,9 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
   ]);
 
-  private isModelLikeCaller(callerName: string): boolean {
-    const lastPart = callerName.split('.').pop() || '';
-    if (!/^[A-Z][A-Za-z0-9_]*$/.test(lastPart)) return false;
-    if (/^[A-Z0-9_]+$/.test(lastPart)) return false;
-
-    const declarations = this.nodesByName.get(lastPart) || [];
-    if (declarations.length > 0 &&
-        declarations.every(node => TypeScriptJavaScriptAnalyzer.VALUE_DECLARATION_TYPES.has(node.type))) {
-      return false;
-    }
-    return true;
+  private isModelLikeCaller(callerName: string, sourceFile?: string): boolean {
+    return isDeclaredDatabaseModelReceiver(callerName, sourceFile, this.nodesByName, this.importsByConsumerFile, this.importAliasMap);
   }
-
-  private static readonly VALUE_DECLARATION_TYPES = new Set([
-    'variable', 'constant', 'property', 'parameter', 'field', 'enum'
-  ]);
 
   private hasUnresolvedReceiver(target: string): boolean {
     return target.startsWith(`${UNRESOLVED_RECEIVER}.`);
@@ -2258,7 +2245,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     const hasPersistingCall = calls.some(call => {
       const target = String(call.target || '');
       const method = target.split('.').pop() || '';
-      return this.classifyEntityAccess(method) === 'creates' && this.isRepositoryCall(target, func?.className);
+      return this.classifyEntityAccess(method) === 'creates' && this.isRepositoryCall(target, func?.className, this.nodeById.get(sourceNodeId)?.source?.file);
     });
     if (!hasPersistingCall) return;
 

@@ -47,7 +47,7 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/languages/typescript-javascript-analyzer.ts",
-      "ceiling": 2809
+      "ceiling": 2796
     },
     {
       "file": "apps/mcp-server/src/analyzer.ts",

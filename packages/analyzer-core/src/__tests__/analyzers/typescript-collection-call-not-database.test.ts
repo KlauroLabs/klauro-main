@@ -27,7 +27,7 @@ import type { CASExitPoint } from '../../types/cas.types';
  * receiver. A genuine ORM call still classifies; anything unproven is not a
  * store.
  */
-async function analyzeSources(files: Record<string, string>): Promise<CASExitPoint[]> {
+async function analyzeSources(files: Record<string, string>, observe?: (contribution: any) => void): Promise<CASExitPoint[]> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-collection-exit-'));
   try {
     await fs.writeJson(path.join(dir, 'package.json'), {
@@ -41,6 +41,7 @@ async function analyzeSources(files: Record<string, string>): Promise<CASExitPoi
       await fs.writeFile(target, content);
     }
     const contribution = await new TypeScriptJavaScriptAnalyzer().analyze({ projectPath: dir } as any);
+    observe?.(contribution);
     return (contribution.exit_points || []) as CASExitPoint[];
   } finally {
     await fs.remove(dir);
@@ -165,4 +166,98 @@ describe('collection calls are not database exits', () => {
     const names = exits.filter(exit => exit.type === 'database').map(exit => exit.name);
     expect(names).toEqual(expect.arrayContaining([expect.stringContaining('exec'), expect.stringContaining('prepare')]));
   });
+});
+
+describe('database model receivers require declaration evidence', () => {
+  test.each(['Object.assign(response, { status: "success" })', 'Object.create(response)', 'globalThis.Object.assign(response, { status: "success" })'])('does not classify %s as persistence', async expression => {
+    const exits = await analyzeSources({ 'src/response.ts': `export function complete(response: object) { return ${expression}; }` });
+    expect(exits.filter(exit => exit.type === 'database')).toEqual([]);
+  });
+
+  test('resolves an ordinary capitalized class method as a call, not a database exit', async () => {
+    let contribution: any;
+    const exits = await analyzeSources({ 'src/registry.ts': [
+      'export class Registry { static find(key: string) { return key; } }',
+      'export function lookup(key: string) { return Registry.find(key); }',
+    ].join('\n') }, result => { contribution = result; });
+    expect(exits.filter(exit => exit.type === 'database')).toEqual([]);
+    const caller = contribution.nodes.find((node: any) => node.name === 'lookup');
+    const callee = contribution.nodes.find((node: any) => node.name === 'find' && node.type === 'method');
+    expect(contribution.edges.some((edge: any) => edge.type === 'calls' && edge.source === caller.id && edge.target === callee.id)).toBe(true);
+  });
+
+  test('does not borrow an ORM declaration for a global receiver in another file', async () => {
+    const exits = await analyzeSources({
+      'src/model.ts': "import { BaseEntity } from 'typeorm'; export class Object extends BaseEntity {}",
+      'src/response.ts': 'export function complete(response: object) { return Object.assign(response, { status: "success" }); }',
+    });
+    expect(exits.filter(exit => exit.type === 'database')).toEqual([]);
+  });
+
+  test('preserves imported Active Record model operations', async () => {
+    const exits = await analyzeSources({
+      'src/person.ts': "import { BaseEntity as RecordBase } from 'typeorm'; export class Person extends RecordBase {}",
+      'src/query.ts': "import { Person } from './person'; export function lookup() { return Person.find(); }",
+    });
+    expect(exits.filter(exit => exit.type === 'database').map(exit => exit.name)).toContain('Person.find');
+  });
+
+  test('preserves Sequelize model inheritance', async () => {
+    const exits = await analyzeSources({ 'src/person.ts': [
+      "import { Model } from 'sequelize';",
+      'export class Person extends Model {}',
+      'export function lookup() { return Person.findAll(); }',
+    ].join('\n') });
+    expect(exits.filter(exit => exit.type === 'database').map(exit => exit.name)).toContain('Person.findAll');
+  });
+
+  test('preserves Mongoose model factories including imported aliases', async () => {
+    const exits = await analyzeSources({ 'src/person.ts': [
+      "import { model as defineDocument, Schema } from 'mongoose';",
+      "const Person = defineDocument('Person', new Schema({ name: String }));",
+      'export function lookup() { return Person.findOne({ name: "Ada" }); }',
+    ].join('\n') });
+    expect(exits.filter(exit => exit.type === 'database').map(exit => exit.name)).toContain('Person.findOne');
+  });
+
+  test('a non-database Model base is not persistence evidence', async () => {
+    const exits = await analyzeSources({
+      'src/ui.ts': 'export class Model {}',
+      'src/dialog.ts': "import { Model } from './ui'; export class Dialog extends Model {} export function open() { return Dialog.create(); }",
+    });
+    expect(exits.filter(exit => exit.type === 'database')).toEqual([]);
+  });
+});
+
+test('keeps call-target caching scoped when an ORM and an ordinary class share a name', async () => {
+  let contribution: any;
+  const exits = await analyzeSources({
+    'src/a-person.ts': "import { BaseEntity } from 'typeorm'; export class Person extends BaseEntity {}",
+    'src/b-query.ts': "import { Person } from './a-person'; export function query() { return Person.find(); }",
+    'src/z-local.ts': 'export class Person { static find() { return "local"; } } export function local() { return Person.find(); }',
+  }, result => { contribution = result; });
+  expect(exits.filter(exit => exit.type === 'database').map(exit => exit.name)).toEqual(['Person.find']);
+  const caller = contribution.nodes.find((node: any) => node.name === 'local');
+  const callee = contribution.nodes.find((node: any) => node.name === 'find' && node.source?.file === 'src/z-local.ts');
+  expect(contribution.edges.some((edge: any) => edge.type === 'calls' && edge.source === caller.id && edge.target === callee.id)).toBe(true);
+});
+
+test.each([
+  ["import mongoose from 'mongoose';", "const Person = mongoose.model('Person', new mongoose.Schema({ name: String }));"],
+  ["import { Sequelize } from 'sequelize';", "const database = new Sequelize('sqlite::memory:'); const Person = database.define('Person', {});"],
+  ["import { getModelForClass } from '@typegoose/typegoose';", "class PersonDocument { name!: string; } const Person = getModelForClass(PersonDocument);"],
+])('retains database model factory evidence from %s', async (imports, definition) => {
+  const exits = await analyzeSources({ 'src/person.ts': [
+    imports, definition, 'export function lookup() { return Person.findOne({ name: "Ada" }); }',
+  ].join('\n') });
+  expect(exits.filter(exit => exit.type === 'database').map(exit => exit.name)).toContain('Person.findOne');
+});
+
+test('an explicitly imported ORM model can shadow a global without contaminating other files', async () => {
+  const exits = await analyzeSources({
+    'src/a-model.ts': "import { BaseEntity } from 'typeorm'; export class Object extends BaseEntity {}",
+    'src/b-store.ts': "import { Object } from './a-model'; export function persist() { return Object.save({}); }",
+    'src/z-response.ts': 'export function complete(response: object) { return Object.assign(response, { status: "success" }); }',
+  });
+  expect(exits.filter(exit => exit.type === 'database').map(exit => exit.name)).toEqual(['Object.save']);
 });
