@@ -13,10 +13,11 @@ export interface AgentRiskSource {
   read(ordinals: readonly number[]): Promise<ReadonlyMap<number, CASChangeRisk>>;
 }
 
-const agentRiskSources = new WeakMap<CASOutput, AgentRiskSource>();
+const AGENT_RISK_SOURCE = Symbol.for('klauro.cas.agent-risk-source');
+type RiskSourcedCas = CASOutput & { [AGENT_RISK_SOURCE]?: AgentRiskSource };
 
 export function attachAgentRiskSource(cas: CASOutput, source: AgentRiskSource): void {
-  agentRiskSources.set(cas, source);
+  Object.defineProperty(cas, AGENT_RISK_SOURCE, { configurable: true, enumerable: false, value: source });
 }
 
 function validateRiskIndex(index: AgentRiskIndex): void {
@@ -39,7 +40,7 @@ export async function buildRiskContextForAgent(
   options: { targetNode?: CASNode; target?: string; files?: string[]; limit?: number } = {},
 ) {
   const risks = Array.isArray(cas.change_risks) ? cas.change_risks : [];
-  const source = agentRiskSources.get(cas);
+  const source = (cas as RiskSourcedCas)[AGENT_RISK_SOURCE];
   const index: AgentRiskIndex = source ? await source.getIndex() : {
     total: risks.length,
     highOrCritical: risks.filter(risk => risk.risk_level === 'critical' || risk.risk_level === 'high').length,

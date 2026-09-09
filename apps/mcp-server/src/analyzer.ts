@@ -51,7 +51,7 @@ import {
   withProjectAnalysisLockIfAvailable,
   writeJsonAtomic
 } from './storage';
-import { CAS_SECTION_NAMES, type CasSectionName } from './cas-sections';
+import { CAS_SECTION_NAMES } from './cas-sections';
 import { loadKlauroConfig, validateEmbeddingConfig, validateConventions, type KlauroConventions } from './klauro-config';
 import { clearFreshnessSummaryCache } from './freshness';
 import { describeAnalysisVersion } from './analysis-version';

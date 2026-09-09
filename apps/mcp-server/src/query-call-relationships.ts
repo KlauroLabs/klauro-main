@@ -10,14 +10,15 @@ export interface ScopedReferenceCounts {
   children: number;
 }
 
-const scopedReferenceCounts = new WeakMap<CASOutput, { targetId: string; counts: ScopedReferenceCounts }>();
+const SCOPED_REFERENCE_COUNTS = Symbol.for('klauro.cas.scoped-reference-counts');
+type ReferenceCountedCas = CASOutput & { [SCOPED_REFERENCE_COUNTS]?: { targetId: string; counts: ScopedReferenceCounts } };
 
 export function attachScopedReferenceCounts(cas: CASOutput, targetId: string, counts: ScopedReferenceCounts): void {
-  scopedReferenceCounts.set(cas, { targetId, counts });
+  Object.defineProperty(cas, SCOPED_REFERENCE_COUNTS, { configurable: true, enumerable: false, value: { targetId, counts } });
 }
 
 function referenceCountsFor(cas: CASOutput, targetId: string): ScopedReferenceCounts | undefined {
-  const scoped = scopedReferenceCounts.get(cas);
+  const scoped = (cas as ReferenceCountedCas)[SCOPED_REFERENCE_COUNTS];
   return scoped?.targetId === targetId ? scoped.counts : undefined;
 }
 
