@@ -1,3 +1,61 @@
+
+for (const response_profile of ['standard', 'minimal', 'first-turn', 'capsule-only'] as const) {
+  test(`missing explicit symbols remain suggestions, not unrelated edit targets: ${response_profile}`, async () => {
+    await withWorkspace(async workspace => {
+      const cas = fixtureCas();
+      cas.system = { ...cas.system, root_path: workspace } as any;
+      cas.nodes.push(node('extract-data', 'extractData', 'method', 'src/vue-analyzer.ts', 35));
+      fs.writeFileSync(path.join(workspace, 'src/vue-analyzer.ts'), 'export function extractData() {}\n');
+      const context = await getAgentContext(cas, workspace, {
+        task_type: 'debug', target: 'extractDatabaseCalls', response_profile,
+      }) as any;
+      assert.equal(context.target_resolution.selected_node_id, null);
+      assert.match(context.target_resolution.gaps.join(' '), /no CAS node resolved/);
+      assert.ok(context.target_resolution.candidates.some((candidate: any) => candidate.id === 'extract-data'));
+      assert.equal(context.agent_context_ready, false);
+      if (response_profile === 'standard' || response_profile === 'minimal') {
+        assert.deepEqual(context.execution_brief.edit_scope, []);
+        assert.deepEqual(context.execution_brief.validate, []);
+        assert.equal(context.work_context.coding_context, null);
+        assert.match(context.execution_brief.stop_rule, /resolve|confirm/i);
+      } else {
+        const capsule = context.execution_capsule || context.capsule;
+        assert.match(context.rule, /resolve|confirm/i);
+        assert.match(capsule, /S\|resolve-target/);
+        assert.doesNotMatch(capsule, /\nF\|[^\n]*[*!]:/);
+        assert.doesNotMatch(capsule, /\nV\|/);
+      }
+    });
+  });
+}
+
+test('qualified call syntax resolves the exact implementation, not its similar neighbor', async () => {
+  await withWorkspace(async workspace => {
+    const cas = fixtureCas();
+    cas.system = { ...cas.system, root_path: workspace } as any;
+    cas.nodes.push(
+      { ...node('exact-call', 'extract', 'method', 'src/parser.ts', 5), qualified_name: 'Parser.extract' },
+      { ...node('longer-call', 'extractData', 'method', 'src/ui.ts', 10), qualified_name: 'Parser.extractData' },
+    );
+    for (const target of ['Parser.extract', 'Parser.extract()', 'PARSER.EXTRACT()']) {
+      const context = await getAgentContext(cas, workspace, { task_type: 'debug', target }) as any;
+      assert.equal(context.target_resolution.selected_node_id, 'exact-call');
+      assert.equal(context.target_resolution.gaps.length, 0);
+    }
+  });
+});
+
+test('natural language target discovery still finds behavior beyond exact identifiers', async () => {
+  await withWorkspace(async workspace => {
+    const cas = fixtureCas();
+    cas.nodes.push({ ...node('invite-member', 'inviteMember', 'function', 'src/invitations.ts', 5), description: 'Send an invitation to a new workspace member.' });
+    const context = await getAgentContext(cas, workspace, {
+      task_type: 'debug', target: 'send an invitation to a workspace member',
+    }) as any;
+    assert.equal(context.target_resolution.selected_node_id, 'invite-member');
+  });
+});
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';

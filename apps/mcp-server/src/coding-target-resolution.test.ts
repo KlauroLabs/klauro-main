@@ -22,7 +22,7 @@ function fixture(): CASOutput {
 for (const kind of ['whole', 'compact'] as const) {
   const resolve = (cas: CASOutput, target: string) => kind === 'whole'
     ? resolveCodingContextTarget(cas, target, cas.nodes.map(node => node.id))?.id
-    : resolveCompactTarget(encodeCompactCASGraph(cas), target)?.id;
+    : resolveCompactTarget(encodeCompactCASGraph(cas), target, cas.nodes.map(node => node.id))?.id;
 
   test(`${kind}: exact symbol outranks a file stem and unrelated owner in that file`, () => {
     assert.equal(resolve(fixture(), 'workspaceMemberReference'), 'symbol');
@@ -41,6 +41,12 @@ for (const kind of ['whole', 'compact'] as const) {
     assert.equal(resolve(fixture(), 'workspace-member-reference.test.ts'), 'test-symbol');
     assert.equal(resolve(fixture(), 'file'), 'file');
     assert.equal(resolve(fixture(), 'test-symbol'), 'test-symbol');
+  });
+
+  test(`${kind}: missing explicit symbols cannot resolve to fuzzy candidates`, () => {
+    assert.equal(resolve(fixture(), 'workspaceMemberReferenc'), undefined);
+    assert.equal(resolve(fixture(), 'ReferenceStore.remove()'), undefined);
+    assert.equal(resolve(fixture(), 'workspaceMemberReference.remove'), undefined);
   });
 
   test(`${kind}: exact symbols are not displaced by a window of fuzzy name matches`, () => {

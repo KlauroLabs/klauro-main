@@ -1,4 +1,5 @@
 import * as fs from 'node:fs';
+import { isExplicitCodingSymbolTarget } from './coding-target-resolution';
 import * as zlib from 'node:zlib';
 import { isContainmentRelationship, type ScopedReferenceCounts } from './query-call-relationships';
 import { CasRecordStoreCapacityError } from './cas-record-store';
@@ -151,7 +152,7 @@ function fileTargetMatches(graph: CompactCASGraph, target: string): CompactNodeV
     const normalizedFile = file.replace(/\\/g, '/');
     const basename = normalizedFile.split('/').pop() || normalizedFile;
     const stem = basename.replace(/\.[^.]+$/, '');
-    if ((looksLikePath && normalizedFile.endsWith(pathTarget)) || normalizeCodingTarget(stem) === normalizedTarget) matches.push(graph.nodeAt(denseId));
+    if ((looksLikePath && normalizedFile.endsWith(pathTarget)) || (!/[./\\:#()]/.test(target) && normalizeCodingTarget(stem) === normalizedTarget)) matches.push(graph.nodeAt(denseId));
   }
   return matches;
 }
@@ -178,6 +179,7 @@ export function resolveCompactTarget(graph: CompactCASGraph, target: string, ext
   if (exactSymbol) return exactSymbol;
   const fileMatch = rankTargets(graph, fileTargetMatches(graph, target), wantsTest)[0];
   if (fileMatch) return fileMatch;
+  if (isExplicitCodingSymbolTarget(target)) return undefined;
   const name = target.replace(/[()]/g, '').trim().split(/[.:#/\\]/).filter(Boolean).pop() || '';
   const seen = new Set<string>();
   const candidates: CompactNodeView[] = [];

@@ -28,6 +28,7 @@ import {
   type CommunicationSeamSummary,
 } from './context-fabric';
 import { semanticSearch } from './semantic-search';
+import { exactCodingSymbolTargets, isExplicitCodingSymbolTarget } from './coding-target-resolution';
 import type { TestDiscoveryEvidence } from './test-discovery';
 import { assessBehavioralInvariantImpact } from './invariant-validation';
 import { buildIdiomContextForAgent } from './idiom-query';
@@ -298,6 +299,7 @@ async function buildAgentContextForTask(cas: CASOutput, path: string, taskInput:
     targetResolution = await resolveTaskTarget(cas, path, baseTargetQuery);
   }
   const selectedNode = targetResolution.selected_node;
+  const unresolvedTarget = Boolean(targetQuery && !selectedNode && targetResolution.gaps.length);
   const tests = selectedNode
     ? findTests(cas, { nodeId: selectedNode.id, limit: 10 })
     : findTests(cas, { limit: 10 });
@@ -305,7 +307,7 @@ async function buildAgentContextForTask(cas: CASOutput, path: string, taskInput:
   const callees = selectedNode ? getCallees(cas, selectedNode.id, 2, 25) : null;
   const risk = selectedNode ? assessChangeRisk(cas, selectedNode.id) : null;
   const riskForAgent = summarizeRiskForAgent(risk);
-  const codingContext = selectedNode || targetQuery || task.target
+  const codingContext = !unresolvedTarget && (selectedNode || targetQuery || task.target)
     ? getCodingContext(cas, selectedNode?.id || targetQuery || task.target || '', { task_type: agentContextTaskType(task.task_type) })
     : null;
   const errorContracts = selectedNode && task.task_type === 'debug'
@@ -319,7 +321,10 @@ async function buildAgentContextForTask(cas: CASOutput, path: string, taskInput:
   const explicitRelatedPathItems = buildExplicitRelatedPathReadPlan(cas, path, task.related_paths || []);
   let fileReadPlan = uniqueByFile([
     ...explicitRelatedPathItems,
-    ...buildFileReadPlan(cas, selectedNode || undefined, callers, callees, tests, entryContext),
+    ...(unresolvedTarget
+      ? buildExplicitRelatedPathReadPlan(cas, path, targetResolution.candidates.map(candidate => candidate.file).filter((file): file is string => Boolean(file)))
+        .map(item => ({ ...item, reason: 'Unconfirmed target candidate; verify identity before editing' }))
+      : buildFileReadPlan(cas, selectedNode || undefined, callers, callees, tests, entryContext)),
   ]);
   const requestedTargetFile = targetQuery ? normalizeTargetFileForAgent(path, cas.system?.root_path, targetQuery) : null;
   if (requestedTargetFile && !fileReadPlan.some(item => item.file === requestedTargetFile)) {
@@ -379,6 +384,10 @@ async function buildAgentContextForTask(cas: CASOutput, path: string, taskInput:
   const lineageContext = buildLineageContextForAgent(cas, { nodeId: selectedNode?.id, file: pillarTargetFile || undefined, entityName: pillarEntityName });
   const conformanceContext = buildConformanceContextForAgent(cas, { file: pillarTargetFile || undefined });
   const validationPlan = buildValidationPlan(path, cas, task, selectedNode || undefined, tests, fileReadPlan, risk, behavioralInvariants);
+  if (unresolvedTarget) {
+    validationPlan.commands = [];
+    validationPlan.gaps.unshift('Resolve the requested target before choosing edits or target-specific validation.');
+  }
   const executionBrief = buildAgentExecutionBrief({
     task,
     fileReadPlan,
@@ -386,6 +395,7 @@ async function buildAgentContextForTask(cas: CASOutput, path: string, taskInput:
     idiomContext,
     capabilityMemory,
     riskContext,
+    unresolvedTarget,
   });
   const descriptionContext = buildDescriptionContextForAgent(cas, path, task, selectedNode || undefined);
   const nextMcpCalls = augmentToolPlanWithDescriptionContext(plan.steps, descriptionContext, path);
@@ -416,7 +426,7 @@ async function buildAgentContextForTask(cas: CASOutput, path: string, taskInput:
     generated_at: new Date().toISOString(),
     task,
     status: gaps.length === 0 ? 'ready' : 'needs-review',
-    agent_context_ready: readiness.agent_context_ready && !analysisFreshness.requires_verification,
+    agent_context_ready: readiness.agent_context_ready && !analysisFreshness.requires_verification && targetResolution.gaps.length === 0,
     ...(sensitiveDataExposure ? { sensitive_data_exposure: sensitiveDataExposure } : {}),
     ...(analysisFreshness ? { analysis_freshness: analysisFreshness.summary } : {}),
     readiness: {
@@ -963,6 +973,7 @@ function buildAgentExecutionBrief(input: {
   idiomContext: any;
   capabilityMemory: any;
   riskContext: any;
+  unresolvedTarget?: boolean;
 }) {
   const orientationBrief = buildOrientationExecutionBrief(input.task, input.fileReadPlan);
   if (orientationBrief) return orientationBrief;
@@ -987,11 +998,11 @@ function buildAgentExecutionBrief(input: {
   const reuseRules = summarizeExecutionBriefReuse(input.capabilityMemory, 3);
   const riskRules = summarizeExecutionBriefRisks(input.riskContext, 3);
   const brief = {
-    mode: 'minimal-execution',
+    mode: input.unresolvedTarget ? 'target-discovery' : 'minimal-execution',
     task_type: input.task.task_type || 'modify',
     target: compactFirstTurnText(String(input.task.target || inferTargetQueryFromTask(input.task) || ''), 120),
     read_first: readFirst,
-    edit_scope: editFiles.length ? editFiles : readFirst.slice(0, 3),
+    edit_scope: input.unresolvedTarget ? [] : editFiles.length ? editFiles : readFirst.slice(0, 3),
     validate: commands,
     preserve: uniqueStrings([...idiomRules, ...reuseRules, ...riskRules]).slice(0, 8),
     token_policy: {
@@ -999,7 +1010,7 @@ function buildAgentExecutionBrief(input: {
       final_response_words: 80,
       fallback: 'Expand beyond read_first only when the listed files or validation output prove a concrete gap.',
     },
-    stop_rule: 'After the focused edit and validation, stop. Do not re-survey the repo or print diffs/logs in the final answer.',
+    stop_rule: input.unresolvedTarget ? 'Resolve and confirm the requested target before editing; listed candidates are suggestions only.' : 'After the focused edit and validation, stop. Do not re-survey the repo or print diffs/logs in the final answer.',
   };
   return {
     ...brief,
@@ -1030,7 +1041,7 @@ export function formatExecutionCapsule(brief: any): string {
     capsuleList('P', brief.preserve, 3, 64),
     arrayOfStrings(brief.validate).map(command => `V|${command}`).join('\n'),
     capsuleBudgetLine(brief.token_policy),
-    'S|val-stop',
+    brief.mode === 'target-discovery' ? 'S|resolve-target' : 'S|val-stop',
   ];
   return lines.filter(Boolean).join('\n');
 }
@@ -3538,6 +3549,19 @@ async function resolveTaskTarget(cas: CASOutput, projectPath: string, target?: s
         gaps,
       };
     }
+    const exactSymbols = exactCodingSymbolTargets(cas, target)
+      .map(node => ({ node, score: scoreNodeForTarget(node, target) }))
+      .sort((left, right) => right.score - left.score || left.node.id.localeCompare(right.node.id));
+    if (exactSymbols.length) {
+      const selected = exactSymbols[0].node;
+      if (exactSymbols.slice(1).some(candidate => !sameImplementationTarget(selected, candidate.node) && isAmbiguousTargetAlternative(candidate.node))) {
+        gaps.push(`target: "${target}" is ambiguous; review candidate nodes before editing`);
+      }
+      return {
+        query: target, selected_node_id: selected.id, selected_node: selected,
+        candidates: exactSymbols.map(({ node, score }) => ({ ...summarizeNodeForAgent(node), score })), gaps,
+      };
+    }
     const targetFile = normalizeTargetFileForAgent(projectPath, cas.system?.root_path, target);
     const pathLikeTarget = Boolean(targetFile);
 
@@ -3561,7 +3585,8 @@ async function resolveTaskTarget(cas: CASOutput, projectPath: string, target?: s
       };
     }
 
-    const semanticMatches = pathLikeTarget ? [] : await resolveSemanticTargetCandidates(cas, projectPath, target);
+    const explicitSymbol = !pathLikeTarget && isExplicitCodingSymbolTarget(target);
+    const semanticMatches = pathLikeTarget || explicitSymbol ? [] : await resolveSemanticTargetCandidates(cas, projectPath, target);
     for (const node of semanticMatches) {
       candidateNodes.set(node.id, node);
     }
@@ -3617,7 +3642,8 @@ async function resolveTaskTarget(cas: CASOutput, projectPath: string, target?: s
         : preferredBehaviorNode || scoredCandidates[0]?.node;
     }
 
-    if (!selectedNode) gaps.push(`target: no CAS node resolved for "${target}"`);
+    if (explicitSymbol) selectedNode = undefined;
+    if (!selectedNode) gaps.push(`target: no CAS node resolved for "${target}"; candidates are suggestions, not confirmed edit targets`);
     const topCandidate = scoredCandidates[0];
     const ambiguousAlternatives = topCandidate
       ? scoredCandidates.slice(1).filter(candidate =>
@@ -4106,7 +4132,7 @@ function inferTargetQueryFromTask(task: AgentTask): string | undefined {
 
 function enrichTargetQueryWithCapabilityEvidence(cas: CASOutput, target?: string): string | undefined {
   if (!target) return target;
-  if (looksLikeFileTarget(target)) return target;
+  if (looksLikeFileTarget(target) || isExplicitCodingSymbolTarget(target)) return target;
   const targetTokens = meaningfulTokens(target);
   if (targetTokens.length === 0) return target;
   const matchingCapability = (cas.capabilities || [])
