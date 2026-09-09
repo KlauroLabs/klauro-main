@@ -33,8 +33,8 @@ test.each([false, true])('clears stale capability and surface flow links when no
   const cas = { nodes: [], edges: [], entry_points: [], exit_points: [], capabilities: [capability], behavior_surfaces: [surface], entities: [] };
   const flows = empty ? [] : [{ flow_id: 'flow_old', entry_point: 'ep', contract: { input: [], output: [] }, steps: [] }];
   orchestrator.deriveEntryPointContractAndCapability([], cas, undefined, flows);
-  expect(capability.related_flows).toEqual([]);
-  expect(surface.related_flows).toEqual([]);
+  expect(capability.related_flows).toBeUndefined();
+  expect(surface.related_flows).toBeUndefined();
 });
 
 

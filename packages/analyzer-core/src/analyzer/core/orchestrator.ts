@@ -1041,7 +1041,7 @@ export class AnalyzerOrchestrator {
       }
       const capabilities: CapabilityLike[] = Array.from(capsById.values());
       for (const cap of [...(cas.capabilities || []), ...(cas.behavior_surfaces || [])]) {
-        cap.related_flows = (capsById.get(cap.id)?.related_flows || []).map(rf => ({
+        cap.related_flows = capsById.get(cap.id)?.related_flows.map(rf => ({
           flow_id: rf.flow_id,
           role: rf.role || 'supporting',
           rationale: rf.rationale || 'linked via capability_id back-compat (no capability_relationships derived for this flow)',
