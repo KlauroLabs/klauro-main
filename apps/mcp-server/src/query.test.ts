@@ -458,7 +458,7 @@ test('getFlowConcepts does not apply the default browse-cap when target narrows 
 // through getFlowConcepts, including rule (c): an entity-overlap edge on a
 // flow the semantic-role classifier grounds as infrastructure (script entry)
 // is 'operational', not 'supporting'.
-test('getFlowConcepts serializes capability_relationships and upgrades infrastructure entity-overlap edges to operational', () => {
+test('getFlowConcepts serializes primary links and requires directed lineage for operational dependencies', () => {
   const cas = {
     cas_version: '1.11.0',
     analysis_timestamp: new Date().toISOString(),
@@ -505,15 +505,24 @@ test('getFlowConcepts serializes capability_relationships and upgrades infrastru
   assert.ok(createFlow.capability_relationships[0].rationale.includes('ep_create'));
   assert.equal(createFlow.capability_id, 'cap_orders'); // back-compat primary link
 
-  // Rule (c): deploy.sh-rooted flow is classifier-grounded infrastructure, so
-  // its entity-overlap edge to cap_orders is 'operational' (not 'supporting').
   assert.ok(deployFlow, 'deploy flow must exist');
   assert.equal(deployFlow.role, 'infrastructure');
-  assert.equal(deployFlow.capability_relationships.length, 1);
-  assert.equal(deployFlow.capability_relationships[0].capability_id, 'cap_orders');
-  assert.equal(deployFlow.capability_relationships[0].role, 'operational');
-  assert.ok(deployFlow.capability_relationships[0].rationale.includes('semantic-role classifier'));
-  assert.equal(deployFlow.capability_id, undefined); // no operation ref → no primary
+  assert.equal(deployFlow.capability_relationships?.length || 0, 0);
+  assert.equal(deployFlow.capability_id, undefined);
+
+  const supported = getFlowConcepts({
+    ...cas,
+    data_lineage: cas.data_lineage!.map(lineage => ({
+      ...lineage, writers: [{ node_id: 'n_create', via: 'database-write' }], readers: [{ node_id: 'n_deploy', via: 'database-read' }],
+    })),
+  }, {}) as any;
+  const supportedDeploy = supported.flows.find((flow: any) => flow.entry_point === 'ep_deploy');
+  assert.equal(supported.flows.length, result.flows.length);
+  assert.equal(supportedDeploy.capability_relationships.length, 1);
+  assert.equal(supportedDeploy.capability_relationships[0].capability_id, 'cap_orders');
+  assert.equal(supportedDeploy.capability_relationships[0].role, 'operational');
+  assert.ok(supportedDeploy.capability_relationships[0].rationale.includes('semantic-role classifier'));
+  assert.equal(supportedDeploy.capability_id, undefined);
 });
 
 // --- 2026-07-04 impact benchmark fixes ------------------------------------
