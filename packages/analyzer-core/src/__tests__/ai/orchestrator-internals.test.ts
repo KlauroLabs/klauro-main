@@ -15829,3 +15829,37 @@ test.each([false, true, 'shared'])('missing required outcomes preserve grounded 
   ]));
   expect(accepted).not.toHaveBeenCalled();
 });
+
+test.each(['app', 'library', 'client-sdk', 'infrastructure'])('catalog instructions reserve evidence capacity for %s without changing literal contracts', async artifactType => {
+  const localOrch = new AnalyzerOrchestrator() as any;
+  const text = 'Returns the supplied record without verifying it. The caller must decide whether to accept it.';
+  const candidate = {
+    id: 'record-surface', name: 'Record API', category: 'core', evidence_role: 'product-outcome',
+    operations: [{ entry_point_id: 'read-record', entry_point_type: 'api', action: 'Read records' }],
+    related_entities: [], related_domains: ['records'], criticality: 'medium', criticality_factors: [],
+  };
+  const provider = jest.spyOn(aiService, 'generateComponentDescription').mockResolvedValue('{"capabilities":[]}');
+  try {
+    await localOrch.aiExtractCapabilityCatalog({
+      systemName: 'Record inspection', enhancedSystemPurpose: { artifact_type: artifactType },
+      frameworks: [], userJourneys: [], dataEntities: [], candidateCapabilities: [candidate],
+      externalServices: [], flowGraph: emptyFlowGraph(), budgetMs: 30000,
+      entryPoints: [{ id: 'read-record', name: 'Read records', type: 'api', source_node: 'reader' }],
+      nodes: [{ id: 'reader', name: 'readRecord', type: 'function', documentation: { raw: text } }],
+    });
+    expect(provider).toHaveBeenCalledTimes(1);
+    const context = provider.mock.calls[0][0].additionalContext as any;
+    const instructions = { task: context.task, style: context.style, evidence_contract: context.evidence_contract };
+    expect(Buffer.byteLength(JSON.stringify(instructions))).toBeLessThanOrEqual(22000 / 3);
+    const facts = context.facts.candidate_route_areas;
+    expect(facts).toHaveLength(1);
+    expect(facts[0].declared_contracts).toEqual([{
+      entry_point_id: 'read-record', source_node_id: 'reader', text, example_blocks_omitted: 0,
+    }]);
+    expect(facts[0].observed_operations).toEqual([['read-record', 'api', 'Read records', 'Read records', null]]);
+    expect(context.evidence_contract).toContain('Preserve qualifications and negations');
+    expect(context.evidence_contract).toContain('shared words alone do not establish support');
+  } finally {
+    provider.mockRestore();
+  }
+});
