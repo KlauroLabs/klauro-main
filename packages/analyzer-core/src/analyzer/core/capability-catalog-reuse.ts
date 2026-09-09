@@ -112,7 +112,7 @@ export function reuseCapabilityCatalog(
       operation_evidence: (canonicalEvidence ? previous.operation_evidence || [] : candidates.flatMap(candidate => candidate.operation_evidence || []))
         .filter(evidence => operationIds.has(evidence.entry_point_id)),
       related_flows: canonicalEvidence ? [...(previous.related_flows || [])] : candidates.flatMap(candidate => candidate.related_flows || []),
-      criticality_factors: [
+      criticality_factors: canonicalEvidence ? [...(previous.criticality_factors || [])] : [
         ...(previous.criticality_factors || []).filter(factor => !factor.startsWith('catalog-candidate:')),
         ...candidates.map(candidate => 'catalog-candidate:' + candidate.id),
       ],

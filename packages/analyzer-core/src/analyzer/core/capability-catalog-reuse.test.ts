@@ -206,3 +206,45 @@ test('reused operation identities must still represent the same behavior', () =>
   const current = candidates([{ ...previous.operations[0], action: 'Delete' }]);
   assert.deepEqual(orchestrator.reusePreviousCapabilityCatalog([previous], current), []);
 });
+
+test('canonical reuse retains original citations instead of substituting overlapping projections', () => {
+  const orchestrator = new AnalyzerOrchestrator() as any;
+  const previous = capability('understand', 'Understand the behavior implemented by a system', 'inspect');
+  previous.criticality_factors = ['ai-extracted-from-journeys-and-entities', 'catalog-outcome-requirement:understand', 'catalog-candidate:original-surface'];
+  const entry = { id: 'inspect', type: 'api', source_node: 'handler', trigger: { method: 'GET', path: '/inspect' } };
+  for (const current of [[], candidates(previous.operations), [
+    ...candidates(previous.operations),
+    { ...candidates(previous.operations)[0], id: 'incidental-storage' },
+  ]]) {
+    const before = structuredClone({ previous, current, entry });
+    const reused = orchestrator.reusePreviousCapabilityCatalog([previous], current, {
+      previousEntryPoints: [entry], currentEntryPoints: [entry],
+    });
+    assert.equal(reused.length, 1);
+    assert.deepEqual(reused[0].criticality_factors, previous.criticality_factors);
+    assert.notEqual(reused[0].criticality_factors, previous.criticality_factors);
+    assert.deepEqual(reused[0].operations, previous.operations);
+    assert.deepEqual({ previous, current, entry }, before);
+  }
+});
+
+test('canonical reuse does not manufacture citations absent from the authored evidence', () => {
+  const orchestrator = new AnalyzerOrchestrator() as any;
+  const previous = capability('understand', 'Understand the behavior implemented by a system', 'inspect');
+  previous.criticality_factors = ['catalog-outcome-requirement:understand'];
+  const entry = { id: 'inspect', type: 'api', source_node: 'handler' };
+  const reused = orchestrator.reusePreviousCapabilityCatalog([previous], candidates(previous.operations), {
+    previousEntryPoints: [entry], currentEntryPoints: [entry],
+  });
+  assert.equal(reused.length, 1);
+  assert.deepEqual(reused[0].criticality_factors, previous.criticality_factors);
+});
+
+test('legacy reuse without canonical contracts still derives citations from current matching evidence', () => {
+  const orchestrator = new AnalyzerOrchestrator() as any;
+  const previous = capability('understand', 'Understand the behavior implemented by a system', 'inspect');
+  previous.criticality_factors = ['catalog-outcome-requirement:understand', 'catalog-candidate:old-projection'];
+  const reused = orchestrator.reusePreviousCapabilityCatalog([previous], candidates(previous.operations));
+  assert.equal(reused.length, 1);
+  assert.deepEqual(reused[0].criticality_factors, ['catalog-outcome-requirement:understand', 'catalog-candidate:shared-surface']);
+});
