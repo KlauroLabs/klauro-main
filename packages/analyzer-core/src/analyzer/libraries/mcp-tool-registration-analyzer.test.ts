@@ -5,6 +5,86 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { McpToolRegistrationAnalyzer } from './mcp-tool-registration-analyzer';
 
+const transparentContractWrappers: Array<[string, (value: string) => string]> = [
+  ['parentheses', value => '(' + value + ')'],
+  ['as assertion', value => value + ' as any'],
+  ['type assertion', value => '<unknown>' + value],
+  ['satisfies', value => value + ' satisfies unknown'],
+  ['non-null assertion', value => '(' + value + ')!'],
+  ['nested wrappers', value => '((' + value + ' as const) satisfies unknown)!'],
+];
+
+for (const [label, wrap] of transparentContractWrappers) {
+  for (const registration of ['registerTool', 'tool'] as const) {
+    test('retains authored ' + registration + ' contracts through ' + label, async () => {
+      const dir = await makeProject();
+      const description = 'Lists records from the selected repository. It does not change or validate those records.';
+      const literal = JSON.stringify(description);
+      const argument = registration === 'registerTool'
+        ? wrap('{ description: ' + wrap(literal) + ' }')
+        : wrap(literal);
+      const source = "server." + registration + "('wrapped',\n  " + argument + ",\n  async () => inspectRecords());\n";
+      try {
+        await fs.writeFile(path.join(dir, 'src', 'wrapped.ts'), source);
+        const result = await new McpToolRegistrationAnalyzer().analyze({ projectPath: dir });
+        const node = result.nodes.find(item => item.name === 'wrapped');
+        const entry = result.entry_points.find(item => item.name === 'wrapped');
+        assert.ok(node);
+        assert.ok(entry);
+        assert.equal(result.entry_points.length, 4);
+        assert.equal(node.description, description);
+        assert.equal(entry.description, description);
+        assert.equal(node.documentation?.raw, description);
+        assert.equal(node.documentation?.location.start_line, 2);
+        assert.equal(node.documentation?.location.end_line, 2);
+        assert.equal(entry.metadata?.descriptionSource, 'string-literal');
+        assert.equal(entry.source_node, node.id);
+      } finally {
+        await fs.remove(dir);
+      }
+    });
+  }
+}
+
+test('transparent wrappers do not resolve dynamic contracts or erase overwrite uncertainty', async () => {
+  const dir = await makeProject();
+  const declarations = [
+    "server.registerTool('dynamic_config', (config as any), handler);",
+    "server.registerTool('dynamic_value', ({ description: (getDescription() as string) } as any), handler);",
+    "server.registerTool('spread_after_wrapped', ({ description: 'Original', ...config } as const), handler);",
+    "server.registerTool('computed_after_wrapped', ({ description: 'Original', [key as string]: value } satisfies unknown), handler);",
+    "server.registerTool('spread_before_wrapped', ({ ...config, description: ('Final' as const) } as const), handler);",
+    "server.registerTool('computed_literal_wrapped', ({ [('description' as const)]: ('Final' as const) } as any), handler);",
+    "server.registerTool('absent_wrapped', ({ inputSchema: {} } as any), handler);",
+    "server.tool('schema_wrapped', ({ argument: z.string() } as const), handler);",
+    "server.tool('dynamic_positional_wrapped', (getDescription() as string), handler);",
+  ];
+  try {
+    await fs.writeFile(path.join(dir, 'src', 'wrapped.ts'), declarations.join('\n'));
+    const result = await new McpToolRegistrationAnalyzer().analyze({ projectPath: dir });
+    assert.equal(result.entry_points.length, declarations.length + 3);
+    for (const name of ['dynamic_config', 'dynamic_value', 'spread_after_wrapped', 'computed_after_wrapped', 'dynamic_positional_wrapped']) {
+      const entry = result.entry_points.find(item => item.name === name);
+      assert.ok(entry);
+      assert.equal(entry.metadata?.descriptionSource, 'dynamic', name);
+      assert.equal(entry.description, undefined, name);
+      assert.equal(result.nodes.find(node => node.id === entry.source_node)?.documentation, undefined, name);
+    }
+    for (const name of ['spread_before_wrapped', 'computed_literal_wrapped']) {
+      const entry = result.entry_points.find(item => item.name === name);
+      assert.equal(entry?.description, 'Final', name);
+      assert.equal(entry?.metadata?.descriptionSource, 'string-literal', name);
+    }
+    for (const name of ['absent_wrapped', 'schema_wrapped']) {
+      const entry = result.entry_points.find(item => item.name === name);
+      assert.equal(entry?.metadata?.descriptionSource, 'absent', name);
+      assert.equal(entry?.description, undefined, name);
+    }
+  } finally {
+    await fs.remove(dir);
+  }
+});
+
 async function makeProject(): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'mcp-tool-registration-analyzer-test-'));
   await fs.writeJson(path.join(dir, 'package.json'), {

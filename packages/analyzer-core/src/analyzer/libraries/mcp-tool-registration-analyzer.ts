@@ -408,6 +408,14 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
     visit(source);
   }
 
+  private unwrapExpression(expression: ts.Expression | undefined): ts.Expression | undefined {
+    while (expression && (ts.isParenthesizedExpression(expression) || ts.isAsExpression(expression) ||
+        ts.isTypeAssertionExpression(expression) || ts.isNonNullExpression(expression) || ts.isSatisfiesExpression(expression))) {
+      expression = expression.expression;
+    }
+    return expression;
+  }
+
   private isPlainStringLiteral(node: ts.Node): node is ts.StringLiteral | ts.NoSubstitutionTemplateLiteral {
     return ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node);
   }
@@ -422,12 +430,14 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
   }
 
   private describePositional(arg: ts.Expression | undefined, source: ts.SourceFile): McpDescriptionVerdict {
+    arg = this.unwrapExpression(arg);
     if (!arg || ts.isObjectLiteralExpression(arg)) return { descriptionSource: 'absent' };
     if (this.isPlainStringLiteral(arg)) return this.literalVerdict(arg, source);
     return { descriptionSource: 'dynamic' };
   }
 
   private describeConfigObject(arg: ts.Expression | undefined, source: ts.SourceFile): McpDescriptionVerdict {
+    arg = this.unwrapExpression(arg);
     if (!arg) return { descriptionSource: 'absent' };
     if (!ts.isObjectLiteralExpression(arg)) return { descriptionSource: 'dynamic' };
     let verdict: McpDescriptionVerdict = { descriptionSource: 'absent' };
@@ -441,8 +451,9 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
       const name = property.name;
       if (!name) continue;
       let key: string | undefined;
+      const computedName = ts.isComputedPropertyName(name) ? this.unwrapExpression(name.expression) : undefined;
       if (ts.isIdentifier(name) || ts.isPrivateIdentifier(name) || this.isPlainStringLiteral(name) || ts.isNumericLiteral(name)) key = name.text;
-      else if (ts.isComputedPropertyName(name) && this.isPlainStringLiteral(name.expression)) key = name.expression.text;
+      else if (computedName && this.isPlainStringLiteral(computedName)) key = computedName.text;
       else {
         uncertain = true;
         if (verdict.descriptionSource !== 'absent') verdict = { descriptionSource: 'dynamic' };
@@ -450,8 +461,9 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
       }
       if (key !== 'description') continue;
       uncertain = false;
-      verdict = ts.isPropertyAssignment(property) && this.isPlainStringLiteral(property.initializer)
-        ? this.literalVerdict(property.initializer, source)
+      const value = ts.isPropertyAssignment(property) ? this.unwrapExpression(property.initializer) : undefined;
+      verdict = value && this.isPlainStringLiteral(value)
+        ? this.literalVerdict(value, source)
         : { descriptionSource: 'dynamic' };
     }
     return verdict.descriptionSource === 'absent' && uncertain ? { descriptionSource: 'dynamic' } : verdict;

@@ -6,6 +6,49 @@ import * as path from 'node:path';
 import { AnalyzerOrchestrator } from '../core/orchestrator';
 import { TypeScriptJavaScriptAnalyzer } from '../languages/typescript-javascript-analyzer';
 import { McpToolRegistrationAnalyzer } from './mcp-tool-registration-analyzer';
+import type { SystemCapability } from '../../types/cas.types';
+import { projectCapabilityCatalogPromptEvidence } from '../core/capability-catalog-prompt-evidence';
+
+test('through-product: asserted MCP config preserves the authored contract for catalog grounding', async () => {
+  const fixtureDir = await writeFixture();
+  const description = 'Upload a filtered source snapshot for hosted Klauro analysis. The installed MCP server never parses or builds CAS locally.';
+  try {
+    await fs.writeFile(path.join(fixtureDir, 'src', 'index.ts'), [
+      "import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';",
+      "const server = new McpServer({ name: 'fixture-server', version: '1.0.0' });",
+      "server.registerTool(",
+      "  'analyze_codebase',",
+      "  {",
+      "    title: 'Analyze Codebase',",
+      "    description: " + JSON.stringify(description) + ",",
+      "    inputSchema: { path: { description: 'An input path, not the tool contract' } } as any,",
+      "  } as any,",
+      "  async ({ path }: any) => uploadSnapshot(path),",
+      ");",
+    ].join('\n'));
+    const output = await createPipelineOrchestrator().orchestrateAnalysis(fixtureDir);
+    const node = output.nodes.find(item => item.type === 'mcp_tool' && item.name === 'analyze_codebase');
+    const entry = output.entry_points?.find(item => item.name === 'analyze_codebase' && item.source_node === node?.id);
+    assert.ok(node);
+    assert.ok(entry);
+    assert.equal(node.documentation?.raw, description);
+    assert.equal(node.documentation?.location.start_line, 7);
+    assert.equal(node.documentation?.location.end_line, 7);
+    const candidate: SystemCapability = {
+      id: 'analysis-surface', name: 'Analysis surface', description: '', category: 'supporting',
+      criticality: 'medium', criticality_factors: [], related_entities: [], related_domains: [],
+      operations: [{ entry_point_id: entry.id, entry_point_type: entry.type, action: entry.name }],
+    };
+    const nodes = new Map(output.nodes.map(item => [item.id, item]));
+    const entries = new Map((output.entry_points || []).map(item => [item.id, item]));
+    const evidence = projectCapabilityCatalogPromptEvidence(candidate, nodes, entries);
+    assert.deepEqual(evidence.declared_contracts, [{
+      entry_point_id: entry.id, source_node_id: node.id, text: description, example_blocks_omitted: 0,
+    }]);
+  } finally {
+    await fs.remove(fixtureDir);
+  }
+});
 
 /**
  * THROUGH-PRODUCT verification: this does not call McpToolRegistrationAnalyzer
