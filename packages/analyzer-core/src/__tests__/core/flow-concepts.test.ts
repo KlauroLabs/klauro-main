@@ -769,6 +769,7 @@ function buildRelationshipFixtureCas(): CASOutput {
     node({ id: 'n_save', name: 'saveOrder', type: 'function', category: 'data' }),
     node({ id: 'n_handleTrack', name: 'handleTrackEvent', type: 'controller', category: 'entry' }),
     node({ id: 'n_emit', name: 'emitOrderMetric', type: 'function', category: 'business' }),
+    node({ id: 'n_ship', name: 'shipOrder', type: 'function', category: 'business' }),
   ];
   const edges: CASEdge[] = [
     { id: 're1', source: 'n_handleCreate', target: 'n_save', type: 'calls' },
@@ -785,6 +786,11 @@ function buildRelationshipFixtureCas(): CASOutput {
       trigger: { method: 'POST', path: '/track' },
       handler: { node_id: 'n_handleTrack', method_name: 'handleTrackEvent' },
     },
+    {
+      id: 'ep_ship', source_node: 'n_ship', type: 'http', name: 'shipOrder',
+      trigger: { method: 'POST', path: '/orders/ship' },
+      handler: { node_id: 'n_ship', method_name: 'shipOrder' },
+    },
   ];
   const exit_points: CASExitPoint[] = [
     { id: 'rxp_save', source_node: 'n_save', type: 'database', name: 'saveOrder', target: { resource: 'orders' } } as CASExitPoint,
@@ -793,8 +799,8 @@ function buildRelationshipFixtureCas(): CASOutput {
   const data_lineage: CASEntityLineage[] = [
     {
       entity_id: 'entity_order', entity_name: 'Order', sensitive_fields: [],
-      writers: [{ node_id: 'n_save' } as any],
-      readers: [{ node_id: 'n_emit' } as any],
+      writers: [{ node_id: 'n_save' } as any, { node_id: 'n_ship' } as any],
+      readers: [{ node_id: 'n_emit' } as any, { node_id: 'n_ship' } as any],
       external_recipients: [], boundaries_crossed: [], journeys_carrying: [],
       exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
     },
@@ -822,6 +828,37 @@ function buildRelationshipFixtureCas(): CASOutput {
     analyzer_contributions: [],
   } as unknown as CASOutput;
 }
+describe('capability relationships require directed evidence', () => {
+  test('shared reads alone do not attribute an unrelated flow to a capability', () => {
+    const cas = buildRelationshipFixtureCas();
+    cas.data_lineage![0].writers = [];
+    cas.data_lineage![0].readers = [{ node_id: 'n_save' }, { node_id: 'n_emit' }] as any;
+    const flows = computeFlowConcepts(cas);
+    const unrelated = flows.find(flow => flow.entry_point === 'ep_track')!;
+    expect(unrelated.capability_relationships).toBeUndefined();
+    expect(unrelated.entities).toContain('Order');
+    expect(unrelated.steps.flatMap(step => step.functions.map(fn => fn.function_id))).toContain('n_emit');
+    expect(flows.find(flow => flow.entry_point === 'ep_create')!.capability_id).toBe('cap_orders');
+  });
+
+  test('an unresolved operation cannot gain a relationship from its entity label', () => {
+    const cas = buildRelationshipFixtureCas();
+    cas.capabilities![1].operations[0].entry_point_id = 'ep_missing';
+    for (const flow of computeFlowConcepts(cas)) {
+      expect(flow.capability_relationships?.some(rel => rel.capability_id === 'cap_fulfillment')).not.toBe(true);
+    }
+  });
+
+  test('two writes are not a producer-consumer dependency', () => {
+    const cas = buildRelationshipFixtureCas();
+    cas.capabilities = [cas.capabilities![0]];
+    cas.data_lineage![0].writers = [{ node_id: 'n_save' }, { node_id: 'n_emit' }] as any;
+    cas.data_lineage![0].readers = [];
+    const unrelated = computeFlowConcepts(cas).find(flow => flow.entry_point === 'ep_track')!;
+    expect(unrelated.capability_relationships).toBeUndefined();
+  });
+});
+
 
 describe('capability_relationships — M:N with relational roles', () => {
   const cas = buildRelationshipFixtureCas();
@@ -932,6 +969,7 @@ function buildCronFixtureCas(includeCronJobNode = true): CASOutput {
   const nodes: CASNode[] = [
     node({ id: 'n_cronHandler', name: 'runReportNotifications', type: 'function', category: 'business' }),
     node({ id: 'n_writeInvoice', name: 'writeInvoiceSummary', type: 'function', category: 'data' }),
+    node({ id: 'n_readInvoice', name: 'readInvoiceSummary', type: 'function', category: 'data' }),
   ];
   const edges: CASEdge[] = [
     { id: 'ce1', source: 'n_cronHandler', target: 'n_writeInvoice', type: 'calls' },
@@ -956,13 +994,18 @@ function buildCronFixtureCas(includeCronJobNode = true): CASOutput {
       handler: { node_id: 'n_cronHandler', method_name: 'execute' },
       metadata: { commandName: 'app:reportsystem:run-notifications' } as any,
     },
+    {
+      id: 'ep_other', source_node: 'n_readInvoice', type: 'http', name: 'readInvoiceSummary',
+      trigger: { method: 'GET', path: '/invoices' },
+      handler: { node_id: 'n_readInvoice', method_name: 'readInvoiceSummary' },
+    },
   ];
   const exit_points: CASExitPoint[] = [];
   const data_lineage: CASEntityLineage[] = [
     {
       entity_id: 'entity_invoice', entity_name: 'Invoice', sensitive_fields: [],
       writers: [{ node_id: 'n_writeInvoice' } as any],
-      readers: [], external_recipients: [], boundaries_crossed: [], journeys_carrying: [],
+      readers: [{ node_id: 'n_readInvoice' } as any], external_recipients: [], boundaries_crossed: [], journeys_carrying: [],
       exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
     },
   ];

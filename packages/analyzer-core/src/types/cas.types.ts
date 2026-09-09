@@ -4343,7 +4343,7 @@ export interface CapabilityFlowRelationship {
   capability_id: string;
   role: CapabilityFlowRole;
   rationale: string;
-  evidence?: 'operation' | 'interior-step' | 'route' | 'entity-overlap' | 'surface-membership';
+  evidence?: 'operation' | 'interior-step' | 'route' | 'entity-overlap' | 'entity-lineage' | 'surface-membership';
 }
 
 export type FlowEdgeKind = 'sequence' | 'branch' | 'error' | 'compensation';

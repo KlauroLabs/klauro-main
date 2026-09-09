@@ -26,6 +26,17 @@ import {
 } from '../../analyzer/core/analysis-comprehension-surface';
 
 // These exercise internal heuristics of the orchestrator. They are private by
+test.each([false, true])('clears stale capability and surface flow links when no relationship survives (empty=%s)', empty => {
+  const orchestrator = new AnalyzerOrchestrator() as any;
+  const capability = { id: 'cap', name: 'Deliver orders', related_flows: [{ flow_id: 'flow_old', role: 'supporting' }] };
+  const surface = { id: 'surface', name: 'HTTP surface', related_flows: [{ flow_id: 'flow_old', role: 'supporting' }] };
+  const cas = { nodes: [], edges: [], entry_points: [], exit_points: [], capabilities: [capability], behavior_surfaces: [surface], entities: [] };
+  const flows = empty ? [] : [{ flow_id: 'flow_old', entry_point: 'ep', contract: { input: [], output: [] }, steps: [] }];
+  orchestrator.deriveEntryPointContractAndCapability([], cas, undefined, flows);
+  expect(capability.related_flows).toEqual([]);
+  expect(surface.related_flows).toEqual([]);
+});
+
 
 test.each([
   [[], 'missing-candidate-citation', false],

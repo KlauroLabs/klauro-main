@@ -1014,7 +1014,6 @@ export class AnalyzerOrchestrator {
       const flows = materializedFlows || computeFlowConcepts(cas as CASOutput, {});
       this.stampFlowCriticality(flows, cas.call_chains || []);
       persistFlows?.(flows);
-      if (flows.length === 0) return entryPoints;
       const flowLikes: FlowLike[] = flows.map((flow) => ({
         flow_id: flow.flow_id,
         entry_point: flow.entry_point,
@@ -1041,25 +1040,12 @@ export class AnalyzerOrchestrator {
         }
       }
       const capabilities: CapabilityLike[] = Array.from(capsById.values());
-      for (const cap of cas.capabilities || []) {
-        const derived = capsById.get(cap.id);
-        if (derived && derived.related_flows.length > 0) {
-          cap.related_flows = derived.related_flows.map(rf => ({
-            flow_id: rf.flow_id,
-            role: rf.role || 'supporting',
-            rationale: rf.rationale || 'linked via capability_id back-compat (no capability_relationships derived for this flow)',
-          }));
-        }
-      }
-      for (const surf of cas.behavior_surfaces || []) {
-        const derived = capsById.get(surf.id);
-        if (derived && derived.related_flows.length > 0) {
-          surf.related_flows = derived.related_flows.map(rf => ({
-            flow_id: rf.flow_id,
-            role: rf.role || 'supporting',
-            rationale: rf.rationale || 'linked via capability_id back-compat (no capability_relationships derived for this flow)',
-          }));
-        }
+      for (const cap of [...(cas.capabilities || []), ...(cas.behavior_surfaces || [])]) {
+        cap.related_flows = (capsById.get(cap.id)?.related_flows || []).map(rf => ({
+          flow_id: rf.flow_id,
+          role: rf.role || 'supporting',
+          rationale: rf.rationale || 'linked via capability_id back-compat (no capability_relationships derived for this flow)',
+        }));
       }
       this.rollupSystemCapabilityDependencies(flows, cas.capabilities || [], cas.entities || []);
       const withContract = attachFlowContract(entryPoints as unknown as EntryPointLike[], flowLikes);

@@ -122,6 +122,7 @@
   "core/external-service-identity.ts": 1,
   "core/file-node-resolution.ts": 1,
   "core/first-party-product-evidence.ts": 3,
+  "core/capability-flow-evidence.ts": 3,
   "core/flow-concepts.ts": 3,
   "core/flow-entry-naming.ts": 3,
   "core/flow-graph-builder.ts": 3,

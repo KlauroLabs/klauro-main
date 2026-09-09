@@ -160,11 +160,11 @@ describe('computeFlowConcepts — CLI one-hop entity association', () => {
     expect(flow!.entities).toContain('FMCSADataTransfer');
   });
 
-  test('the recovered entity is real evidence, not a guess: it flows through to capability_relationships via entity overlap', () => {
+  test('retains the recovered entity without inventing a relationship to an operation-free capability', () => {
     const flow = flows.find(f => f.entry_point === 'ep_cli_dead_end')!;
     const rel = flow.capability_relationships?.find(r => r.capability_id === 'cap_eld');
-    expect(rel).toBeDefined();
-    expect(rel!.role).toBe('supporting');
-    expect(rel!.rationale).toContain('FMCSADataTransfer');
+    expect(rel).toBeUndefined();
+    expect(flow.entities).toContain('FMCSADataTransfer');
+    expect(flow.gaps?.some(gap => gap.includes('Shared entities'))).toBe(true);
   });
 });

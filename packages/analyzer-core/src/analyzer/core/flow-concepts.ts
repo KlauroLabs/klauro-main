@@ -31,6 +31,7 @@ import { cleanRawFallbackName, dedupeAdjacentWords, flowNameForEntryPoint, title
 export { dedupeAdjacentWords } from './flow-entry-naming';
 import { guardConstraintKind } from './guard-classification';
 import { httpRoutePathsMatch } from './http-route-path';
+import { groundCapabilityFlowRelationships } from './capability-flow-evidence';
 import {
   aggregateFlowContract,
   buildLifecycleEvidenceByNode,
@@ -2145,7 +2146,7 @@ function finalizeFlows(cas: CASOutput, input: FlowConcept[], opts: ComputeFlowCo
   }
   const finalized = disambiguateFlowNames(
     cas,
-    pruneBlanketCapabilityRelationships(stitchContinuations(flows, cas)).map(collapseDuplicateFunctionSteps)
+    groundCapabilityFlowRelationships(stitchContinuations(flows, cas), cas).map(collapseDuplicateFunctionSteps)
   );
   return finalized;
 }
@@ -2262,41 +2263,6 @@ function disambiguateFlowNames(cas: CASOutput, flows: FlowConcept[]): FlowConcep
       if (new Set(values).size < 2) continue;
       group.forEach((f, i) => { f.name = dedupeAdjacentWords(`${name} (${discriminatorLabel(values[i])})`); });
       break;
-    }
-  }
-  return flows;
-}
-
-const BLANKET_LINKAGE_MIN_FLOWS = 12;
-const BLANKET_LINKAGE_FRACTION = 0.8;
-
-export function pruneBlanketCapabilityRelationships(flows: FlowConcept[]): FlowConcept[] {
-  const totalFlows = flows.length;
-  if (totalFlows < BLANKET_LINKAGE_MIN_FLOWS) return flows;
-  const overlapFlowCountByCap = new Map<string, number>();
-  for (const flow of flows) {
-    for (const rel of flow.capability_relationships || []) {
-      if (rel.evidence !== 'entity-overlap') continue;
-      overlapFlowCountByCap.set(rel.capability_id, (overlapFlowCountByCap.get(rel.capability_id) || 0) + 1);
-    }
-  }
-  const blanketCapIds = new Set(
-    [...overlapFlowCountByCap.entries()]
-      .filter(([, count]) => count >= totalFlows * BLANKET_LINKAGE_FRACTION)
-      .map(([capId]) => capId)
-  );
-  if (blanketCapIds.size === 0) return flows;
-  for (const flow of flows) {
-    const rels = flow.capability_relationships;
-    if (!rels || rels.length === 0) continue;
-    const kept = rels.filter(rel => !(rel.evidence === 'entity-overlap' && blanketCapIds.has(rel.capability_id)));
-    if (kept.length === rels.length) continue;
-    flow.capability_relationships = kept.length > 0 ? kept : undefined;
-    if (kept.length === 0) {
-      flow.gaps = [
-        ...(flow.gaps || []),
-        'Entity-overlap capability links pruned as blanket linkage — the capability related to nearly every flow via entity overlap alone (non-discriminative anchors), which is not evidence of a specific relationship.',
-      ];
     }
   }
   return flows;
