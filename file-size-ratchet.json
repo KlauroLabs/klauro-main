@@ -223,7 +223,7 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/idiom-detector.ts",
-      "ceiling": 1239
+      "ceiling": 1233
     },
     {
       "file": "packages/analyzer-core/src/analyzer/languages/container-topology-analyzer.ts",

@@ -29,6 +29,79 @@ function baseInput(overrides: Partial<IdiomDetectionInput> = {}): IdiomDetection
 }
 
 describe('detectCodebaseIdioms repo-derived statistics', () => {
+  it('describes JSON file stores without inventing repository mediation', async () => {
+    const nodes = Array.from({ length: 3 }, (_, index) => node({
+      id: `store-${index}`, name: `State${index}`, type: 'model',
+      source: { file: `src/state/state-${index}.ts`, line: 4 },
+      metadata: { framework: 'json-file-store', ...{ persistence: 'json-file', schema_surface: 'json-file-store', is_persisted: true } },
+    }));
+    const input = baseInput({ nodes });
+    const before = JSON.stringify(input);
+    const result = await detectCodebaseIdioms(input);
+    const dataAccess = result.idioms.find(idiom => idiom.category === 'data-access');
+    expect(dataAccess).toBeDefined();
+    expect(dataAccess!.name).toContain('JSON file stores');
+    expect(dataAccess!.description).not.toContain('mediated by');
+    expect(dataAccess!.agent_guidance.do.join(' ')).toMatch(/JSON.*serialization/);
+    expect(dataAccess!.agent_guidance.do.join(' ')).not.toContain('repository/ORM/entity');
+    expect(dataAccess!.positive_examples.map(example => example.node_id)).toEqual(nodes.map(item => item.id));
+    expect(JSON.stringify(input)).toBe(before);
+  });
+
+  it('retains mixed JSON and ORM evidence without imposing one persistence mechanism', async () => {
+    const nodes = [
+      node({ id: 'state', name: 'State', type: 'model', metadata: { framework: 'json-file-store', ...{ persistence: 'json-file' } } }),
+      node({ id: 'repo', name: 'UserRepository', type: 'repository' }),
+      node({ id: 'model', name: 'UserModel', type: 'model' }),
+    ];
+    const libraries = [{ name: 'prisma', version: '5.0.0' } as CASLibrary];
+    const result = await detectCodebaseIdioms(baseInput({ nodes, libraries }));
+    const dataAccess = result.idioms.find(idiom => idiom.category === 'data-access')!;
+    expect(dataAccess.name).toContain('JSON file stores');
+    expect(dataAccess.name).toContain('prisma');
+    expect(dataAccess.positive_examples.map(example => example.node_id)).toEqual(['state', 'repo', 'model']);
+    expect(dataAccess.agent_guidance.do.join(' ')).toMatch(/scope/);
+    expect(dataAccess.description).not.toContain('mediated by');
+  });
+
+  it('retains source-linked database effects without fabricating repository declarations', async () => {
+    const nodes = [node({ id: 'run', name: 'runQuery', type: 'function', source: { file: 'src/query.ts', line: 12 } })];
+    const exitPoints = Array.from({ length: 3 }, (_, index) => ({
+      id: `db-${index}`, source_node: 'run', name: `client.query-${index}`, type: 'database',
+    })) as any;
+    const result = await detectCodebaseIdioms(baseInput({ nodes, exitPoints }));
+    const dataAccess = result.idioms.find(idiom => idiom.category === 'data-access');
+    expect(dataAccess).toBeDefined();
+    expect(dataAccess!.name).toContain('database calls');
+    expect(dataAccess!.name).not.toContain('repository');
+    expect(dataAccess!.evidence.some(item => item.node_id === 'run' && item.file === 'src/query.ts')).toBe(true);
+    expect(dataAccess!.affected_scopes.files).toContain('src/query.ts');
+    expect(dataAccess!.provenance!.matching).toBe(3);
+  });
+
+  it('distinguishes model declarations from a proven persistence architecture', async () => {
+    const nodes = Array.from({ length: 3 }, (_, index) =>
+      node({ id: `model-${index}`, name: `Record${index}`, type: 'model' }));
+    const result = await detectCodebaseIdioms(baseInput({ nodes }));
+    const dataAccess = result.idioms.find(idiom => idiom.category === 'data-access')!;
+    expect(dataAccess.name).toContain('model/schema declarations');
+    expect(dataAccess.name).not.toContain('classes');
+    expect(dataAccess.description).not.toContain('mediated by');
+    expect(dataAccess.agent_guidance.do.join(' ')).not.toContain('repository/ORM/entity');
+  });
+
+  it('distinguishes process-local record collections from durable persistence', async () => {
+    const nodes = Array.from({ length: 3 }, (_, index) => node({
+      id: `memory-${index}`, name: `Record${index}`, type: 'model',
+      metadata: { attributes: { storage_scope: 'process', record_sequence: `records${index}` } },
+    }));
+    const result = await detectCodebaseIdioms(baseInput({ nodes }));
+    const dataAccess = result.idioms.find(idiom => idiom.category === 'data-access')!;
+    expect(dataAccess.name).toContain('process-local record collections');
+    expect(dataAccess.agent_guidance.do.join(' ')).toMatch(/process.*lifetime/);
+    expect(dataAccess.description).not.toContain('persistence is mediated');
+  });
+
   it('attaches provenance with evidence file counts to every idiom', async () => {
     const nodes = Array.from({ length: 6 }, (_, i) =>
       node({ id: `svc${i}`, name: `Billing${i}Service`, type: 'service', source: { file: `src/billing/billing${i}.service.ts`, line: 1 } }));

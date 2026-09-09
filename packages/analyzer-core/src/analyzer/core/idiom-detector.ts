@@ -1,6 +1,7 @@
 import { globSync } from 'glob';
 import * as nodePath from 'path';
 import { yieldToEventLoop } from './event-loop-yield';
+import { describeDataAccessMechanisms } from './idiom-data-access';
 import { THIRD_PARTY_SOURCE_GLOBS } from './build-artifact-paths';
 import type {
   CASAnalysisFact,
@@ -483,14 +484,12 @@ function detectDataAccessIdioms(input: IdiomDetectionInput, files: FileInventory
   const schemaFiles = files.schema.filter(file =>
     isDataAccessSchemaFile(file) && !isConfigPath(file) && !isMigrationPath(file) && !isTestPath(file)
   );
-  const ormLabel = dataLibraries.length > 0
-    ? dataLibraries.map(library => library.name).slice(0, 2).join('/')
-    : 'repository/entity classes';
+  const access = describeDataAccessMechanisms(dataNodes, dataLibraries, exitPoints, input.nodes);
   const idiomId = 'data-access-through-repositories-or-orm';
   return [{
     category: 'data-access',
-    name: `Data access goes through ${ormLabel}`,
-    description: `${dataNodes.length} data-access node(s), ${exitPoints.length} database exit point(s), and ${dataLibraries.length} ORM library(ies) show persistence is mediated by ${ormLabel}.`,
+    name: `Data access includes ${access.label}`,
+    description: `${dataNodes.length} data-access node(s), ${exitPoints.length} database exit point(s), and ${dataLibraries.length} data library(ies) are observed: ${access.label}. These observations do not establish one uniform persistence boundary.`,
     confidence: confidenceFromPrevalence(Math.min(1, (dataNodes.length + exitPoints.length) / 20), dataNodes.length + dataLibraries.length + exitPoints.length),
     prevalence: Math.min(1, (dataNodes.length + exitPoints.length) / Math.max(1, input.nodes.length + input.exitPoints.length)),
     stats: {
@@ -500,19 +499,16 @@ function detectDataAccessIdioms(input: IdiomDetectionInput, files: FileInventory
     },
     evidence: [
       ...dataNodes.slice(0, 6).map(nodeEvidence('Data access node identified')),
+      ...access.exitEvidence,
       ...dataLibraries.slice(0, 3).map(library => ({ kind: 'analysis-fact' as const, claim: `Data library detected: ${library.name}.`, confidence: 0.78 })),
       ...schemaFiles.slice(0, 3).map(fileEvidence('Schema/model file participates in data access')),
     ],
     positive_examples: [
-      ...dataNodes.slice(0, 5).map((node, index) => nodeExample(idiomId, node, index, 'Uses the local data access boundary.')),
-      ...schemaFiles.slice(0, Math.max(0, 5 - dataNodes.length)).map((file, index) => fileExample(idiomId, file, dataNodes.length + index, 'Defines the local persistence schema or model surface.')),
+      ...dataNodes.slice(0, 5).map((node, index) => nodeExample(idiomId, node, index, 'Shows an observed data-access declaration or data shape.')),
+      ...schemaFiles.slice(0, Math.max(0, 5 - dataNodes.length)).map((file, index) => fileExample(idiomId, file, dataNodes.length + index, 'Defines a local schema or model surface; storage behavior needs implementation evidence.')),
     ],
-    affected_scopes: { files: unique([...dataNodes.map(node => node.source?.file).filter(Boolean) as string[], ...schemaFiles]).slice(0, 25), file_globs: ['**/*{repository,model,entity,schema,prisma}*'] },
-    agent_guidance: {
-      do: ['Route persistence changes through existing repository/ORM/entity patterns.'],
-      avoid: ['Do not add direct database calls from unrelated controller/component layers when a repository/ORM boundary exists.'],
-      validation: ['Check data edits for matching schema/entity/repository updates and focused tests.'],
-    },
+    affected_scopes: { files: unique([...dataNodes.map(node => node.source?.file).filter(Boolean) as string[], ...schemaFiles, ...access.exitFiles]).slice(0, 25) },
+    agent_guidance: access.guidance,
   }];
 }
 

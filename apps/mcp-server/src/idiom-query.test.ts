@@ -23,6 +23,56 @@ const repoRoot = path.resolve(__dirname, '..');
 const fixturesRoot = path.join(repoRoot, 'fixtures', 'idioms');
 const fixtureNames = ['nestjs-api', 'react-app', 'python-api', 'rust-service', 'mixed-monorepo'];
 
+async function jsonStoreCas(): Promise<CASOutput> {
+  const nodes: CASNode[] = Array.from({ length: 3 }, (_, index) => ({
+    id: `store-${index}`, name: `State${index}`, type: 'model',
+    source: { file: `src/state/state-${index}.ts`, line: 4 },
+    metadata: { framework: 'json-file-store', ...{ persistence: 'json-file', is_persisted: true } },
+  }));
+  const input: IdiomDetectionInput = {
+    projectPath: '/nonexistent/idiom-json-store-test', nodes, edges: [], entryPoints: [], exitPoints: [],
+    testSuites: [], behavioralInvariants: [], decorators: [], patterns: [], libraries: [], analysisFacts: [],
+  };
+  return casFromDetection('json-store', input, await detectCodebaseIdioms(input));
+}
+
+test('agent context preserves JSON-store guidance without adding a repository architecture', async () => {
+  const cas = await jsonStoreCas();
+  const result = getCodebaseIdioms(cas, { category: 'data-access', target: 'src/state/state-0.ts', limit: 5 });
+  assert.equal(result.idioms.length, 1);
+  assert.match(result.idioms[0].name, /JSON file stores/);
+  const context = buildIdiomContextForAgent(cas, { files: ['src/state/state-0.ts'], limit: 6 });
+  const dataAccess = context.selected_idioms.find(idiom => idiom.category === 'data-access')!;
+  assert.ok(dataAccess);
+  assert.ok(dataAccess.do.some(item => /JSON.*serialization/.test(item)));
+  assert.doesNotMatch(dataAccess.do.join(' '), /Use the local data-access boundary/);
+  assert.doesNotMatch(dataAccess.validation.join(' '), /repository\/ORM usage/);
+  assert.deepEqual(cas.nodes.map(node => node.id), ['store-0', 'store-1', 'store-2']);
+});
+
+test('idiom context fills only missing guidance fields and keeps explicit fields authoritative', async () => {
+  const cas = await jsonStoreCas();
+  const idiom = cas.codebase_idioms!.find(item => item.category === 'data-access')!;
+  idiom.agent_guidance = { do: ['  Preserve encoded schema.  '], avoid: ['  '], validation: ['Run round-trip tests.'] };
+  const context = buildIdiomContextForAgent(cas, { files: ['src/state/state-0.ts'], limit: 6 });
+  const dataAccess = context.selected_idioms.find(item => item.id === idiom.id)!;
+  assert.deepEqual(dataAccess.do, ['Preserve encoded schema.']);
+  assert.deepEqual(dataAccess.validation, ['Run round-trip tests.']);
+  assert.equal(dataAccess.avoid.length, 1);
+  assert.match(dataAccess.avoid[0], /without evidence/);
+});
+
+test('legacy data-access idioms with empty guidance do not invent an ORM requirement', async () => {
+  const cas = await jsonStoreCas();
+  const idiom = cas.codebase_idioms!.find(item => item.category === 'data-access')!;
+  idiom.agent_guidance = { do: [], avoid: [], validation: [] };
+  const context = buildIdiomContextForAgent(cas, { files: ['src/state/state-0.ts'], limit: 6 });
+  const dataAccess = context.selected_idioms.find(item => item.id === idiom.id)!;
+  assert.ok(dataAccess.do.length > 0);
+  assert.match(dataAccess.do.join(' '), /Inspect.*implementation/);
+  assert.doesNotMatch(dataAccess.validation.join(' '), /repository\/ORM usage/);
+});
+
 test('detectCodebaseIdioms extracts local conventions across representative fixture repos', async () => {
   const aggregateCategories = new Set<string>();
   const results = new Map<string, Awaited<ReturnType<typeof detectCodebaseIdioms>>>();

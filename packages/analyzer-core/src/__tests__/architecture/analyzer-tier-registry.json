@@ -137,6 +137,7 @@
   "core/guard-relationships.ts": 2,
   "core/http-route-path.ts": 1,
   "core/http-test-coverage.ts": 1,
+  "core/idiom-data-access.ts": 2,
   "core/idiom-detector.ts": 2,
   "core/imported-handler-resolver.ts": 1,
   "core/in-repo-call-resolution.ts": 3,

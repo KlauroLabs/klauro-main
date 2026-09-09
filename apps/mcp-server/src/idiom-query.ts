@@ -135,10 +135,15 @@ function guidanceForIdiom(idiom: CASCodebaseIdiom): { do: string[]; avoid: strin
     : '';
   const fallback = fallbackGuidanceForCategory(idiom.category, idiom.name, exampleHint);
   return {
-    do: unique([...(idiom.agent_guidance?.do || []), fallback.do]).filter(Boolean),
-    avoid: unique([...(idiom.agent_guidance?.avoid || []), fallback.avoid]).filter(Boolean),
-    validation: unique([...(idiom.agent_guidance?.validation || []), fallback.validation]).filter(Boolean),
+    do: guidanceWithFallback(idiom.agent_guidance?.do, fallback.do),
+    avoid: guidanceWithFallback(idiom.agent_guidance?.avoid, fallback.avoid),
+    validation: guidanceWithFallback(idiom.agent_guidance?.validation, fallback.validation),
   };
+}
+
+function guidanceWithFallback(values: readonly string[] | undefined, fallback: string): string[] {
+  const explicit = unique((values || []).map(value => value.trim()).filter(Boolean));
+  return explicit.length > 0 ? explicit : [fallback].filter(Boolean);
 }
 
 function compactPathTail(file: string): string {
@@ -182,9 +187,9 @@ function fallbackGuidanceForCategory(
       };
     case 'data-access':
       return {
-        do: `Use the local data-access boundary for persistence changes.${exampleHint}`,
-        avoid: 'Do not add direct database calls from unrelated presentation or controller layers.',
-        validation: 'Check repository/ORM usage and related tests.',
+        do: `Inspect the cited data-access implementation before changing reads, writes, or data shapes.${exampleHint}`,
+        avoid: 'Do not introduce a persistence layer or assume a repository boundary without evidence in the affected scope.',
+        validation: 'Check affected data formats, callers, and tests against the observed implementation.',
       };
     case 'error-handling':
       return {
