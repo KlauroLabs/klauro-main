@@ -326,7 +326,7 @@ async function buildAgentContextForTask(cas: CASOutput, path: string, taskInput:
         .map(item => ({ ...item, reason: 'Unconfirmed target candidate; verify identity before editing' }))
       : buildFileReadPlan(cas, selectedNode || undefined, callers, callees, tests, entryContext)),
   ]);
-  const requestedTargetFile = targetQuery ? normalizeTargetFileForAgent(path, cas.system?.root_path, targetQuery) : null;
+  const requestedTargetFile = targetQuery ? normalizeTargetFileForAgent(path, cas, targetQuery) : null;
   if (requestedTargetFile && !fileReadPlan.some(item => item.file === requestedTargetFile)) {
     fileReadPlan = [targetFileReadPlanItem(requestedTargetFile), ...fileReadPlan].slice(0, 12);
   }
@@ -3562,7 +3562,7 @@ async function resolveTaskTarget(cas: CASOutput, projectPath: string, target?: s
         candidates: exactSymbols.map(({ node, score }) => ({ ...summarizeNodeForAgent(node), score })), gaps,
       };
     }
-    const targetFile = normalizeTargetFileForAgent(projectPath, cas.system?.root_path, target);
+    const targetFile = normalizeTargetFileForAgent(projectPath, cas, target);
     const pathLikeTarget = Boolean(targetFile);
 
     const fileMatches = targetFile
@@ -3699,9 +3699,11 @@ function summarizeTargetResolutionForAgent(resolution: Awaited<ReturnType<typeof
   };
 }
 
-function normalizeTargetFileForAgent(projectPath: string, rootPath: string | undefined, target: string): string | null {
+function normalizeTargetFileForAgent(projectPath: string, cas: CASOutput, target: string): string | null {
   const normalizedTarget = String(target || '').replace(/\\/g, '/').trim();
-  const root = (rootPath || projectPath).replace(/\\/g, '/').replace(/\/$/, '');
+  const root = (cas.system?.root_path || projectPath).replace(/\\/g, '/').replace(/\/$/, '');
+  const observedTarget = normalizeSourceFile(normalizedTarget, root);
+  if (getAgentSourceFiles(cas).some(file => normalizeSourceFile(file, root) === observedTarget)) return observedTarget;
   if (!isPathLikeAgentTarget(normalizedTarget)) {
     return discoverExactFileTarget(root, normalizedTarget);
   }
@@ -4563,7 +4565,7 @@ function buildExplicitRelatedPathReadPlan(
 ): FileReadPlanItem[] {
   const rootPath = cas.system?.root_path || projectPath;
   return uniqueStrings(relatedPaths)
-    .map(candidate => normalizeTargetFileForAgent(projectPath, rootPath, candidate))
+    .map(candidate => normalizeTargetFileForAgent(projectPath, cas, candidate))
     .filter((file): file is string => typeof file === 'string' && file !== '.' && !file.startsWith('../'))
     .map(file => {
       const nodes = cas.nodes.filter(node => nodeMatchesTargetFile(node, file, rootPath)).slice(0, 8);

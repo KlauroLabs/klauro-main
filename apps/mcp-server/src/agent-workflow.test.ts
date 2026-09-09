@@ -57,6 +57,24 @@ test('natural language target discovery still finds behavior beyond exact identi
 });
 
 import test from 'node:test';
+
+for (const file of ['math.h', 'greeter.proto', 'main.cpp', 'module.ixx', 'scene.custom', 'Makefile']) {
+  test(`observed source file targets do not depend on an extension whitelist: ${file}`, async () => {
+    await withWorkspace(async workspace => {
+      const cas = fixtureCas();
+      cas.system = { ...cas.system, root_path: workspace } as any;
+      cas.nodes = [node('observed-target', 'observedBehavior', 'function', file, 1)];
+      cas.edges = [];
+      cas.entry_points = [];
+      cas.exit_points = [];
+      fs.writeFileSync(path.join(workspace, file), 'observed source\n');
+      const context = await getAgentContext(cas, workspace, { task_type: 'modify', target: file }) as any;
+      assert.equal(context.target_resolution.selected_node_id, 'observed-target');
+      assert.equal(context.file_read_plan[0].file, file);
+      assert.deepEqual(context.target_resolution.gaps, []);
+    });
+  });
+}
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
