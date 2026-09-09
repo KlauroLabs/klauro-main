@@ -112,6 +112,7 @@
   "core/entry-point-deployable.ts": 2,
   "core/entry-point-enrichment.ts": 2,
   "core/entry-point-product-role.ts": 1,
+  "core/entry-point-subject.ts": 3,
   "core/entry-point-security.ts": 2,
   "core/errors.ts": 1,
   "core/estree-parse-cache.ts": 1,

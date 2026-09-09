@@ -8,6 +8,7 @@ import {
   CASCapability,
   CASOperation
 } from '../../types/cas.types';
+import { selectEntryPointSubjectField, type EntryPointSubjectField } from './entry-point-subject';
 import {
   humanizeCapabilityLabel,
   isBareNounCapabilityLabel,
@@ -81,9 +82,18 @@ export class CapabilityDetector {
 
   private groupEntryPointsSemantically(entryPoints: CASEntryPoint[]): Map<string, CASEntryPoint[]> {
     const groups = new Map<string, CASEntryPoint[]>();
+    const entriesByEvent = new Map<string, CASEntryPoint[]>();
+    for (const entry of entryPoints) {
+      if ((entry.type !== 'event' && entry.type !== 'message') || !entry.trigger?.event) continue;
+      const entries = entriesByEvent.get(entry.trigger.event) || [];
+      entries.push(entry);
+      entriesByEvent.set(entry.trigger.event, entries);
+    }
+    const subjectFields = new Map([...entriesByEvent].map(([event, entries]) =>
+      [event, selectEntryPointSubjectField(entries, ['event', 'pattern', 'path'])]));
 
     for (const ep of entryPoints) {
-      const key = this.extractSemanticKey(ep);
+      const key = this.extractSemanticKey(ep, subjectFields.get(ep.trigger?.event || ''));
 
       if (!groups.has(key)) {
         groups.set(key, []);
@@ -94,7 +104,7 @@ export class CapabilityDetector {
     return this.mergeRelatedGroups(groups);
   }
 
-  private extractSemanticKey(ep: CASEntryPoint): string {
+  private extractSemanticKey(ep: CASEntryPoint, subjectField: EntryPointSubjectField = 'event'): string {
     let key: string;
     switch (ep.type) {
       case 'http':
@@ -105,7 +115,7 @@ export class CapabilityDetector {
         break;
       case 'event':
       case 'message':
-        key = this.extractEventSemanticKey(ep);
+        key = this.extractEventSemanticKey(ep, subjectField);
         break;
       case 'schedule':
         key = this.extractScheduleSemanticKey(ep);
@@ -235,7 +245,7 @@ export class CapabilityDetector {
     return parts[0].toLowerCase();
   }
 
-  private extractEventSemanticKey(ep: CASEntryPoint): string {
+  private extractEventSemanticKey(ep: CASEntryPoint, subjectField: EntryPointSubjectField): string {
     const metadata = ep.metadata || {};
     const eventName = ep.trigger?.event || ep.name || '';
 
@@ -243,7 +253,8 @@ export class CapabilityDetector {
       return this.extractCeleryTaskSemanticKey(ep);
     }
 
-    const normalized = eventName
+    const subjectText = subjectField === 'name' ? ep.name : ep.trigger?.[subjectField];
+    const normalized = (subjectText || eventName)
       .replace(/([a-z])([A-Z])/g, '$1_$2')
       .toLowerCase()
       .split(/[.\-_:]+/)

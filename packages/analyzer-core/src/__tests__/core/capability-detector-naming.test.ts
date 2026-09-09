@@ -1,3 +1,59 @@
+
+describe('CapabilityDetector distinguishes dispatch selectors from shared transport events', () => {
+  for (const selector of ['pattern', 'path'] as const) {
+    it(`uses distinct trigger ${selector} values without treating the shared event marker as an outcome family`, () => {
+      const entries = [
+        entryPoint({ id: 'invoice', name: 'inspect_invoice', type: 'message', trigger: { event: 'transport.invoke', [selector]: 'invoice.inspect' } }),
+        entryPoint({ id: 'receipt', name: 'inspect_receipt', type: 'message', trigger: { event: 'transport.invoke', [selector]: 'receipt.inspect' } }),
+        entryPoint({ id: 'refund', name: 'inspect_refund', type: 'message', trigger: { event: 'transport.invoke', [selector]: 'refund.inspect' } }),
+      ];
+      const before = structuredClone(entries);
+      const capabilities = detect(entries);
+      expect(capabilities).toHaveLength(3);
+      expect(capabilities.map(capability => capability.id).sort()).toEqual(['capability_invoice', 'capability_receipt', 'capability_refund']);
+      expect(capabilities.flatMap(capability => capability.entry_points).sort()).toEqual(entries.map(entry => entry.id).sort());
+      expect(entries).toEqual(before);
+      expect(detect([...entries].reverse()).map(capability => ({ id: capability.id, entries: [...capability.entry_points].sort() })).sort((a, b) => a.id.localeCompare(b.id)))
+        .toEqual(capabilities.map(capability => ({ id: capability.id, entries: [...capability.entry_points].sort() })).sort((a, b) => a.id.localeCompare(b.id)));
+    });
+  }
+
+  it('preserves a genuine shared event when only subscriber names differ', () => {
+    const entries = [
+      entryPoint({ id: 'email', name: 'send_receipt', type: 'event', trigger: { event: 'order.completed' } }),
+      entryPoint({ id: 'audit', name: 'record_audit', type: 'event', trigger: { event: 'order.completed' } }),
+    ];
+    const capabilities = detect(entries);
+    expect(capabilities).toHaveLength(1);
+    expect(capabilities[0].id).toBe('capability_order');
+    expect(capabilities[0].entry_points).toEqual(['email', 'audit']);
+  });
+
+  it('selects a distinguishing field within each event rather than across unrelated event families', () => {
+    const entries = [
+      entryPoint({ id: 'invoice', name: 'invoice', type: 'message', trigger: { event: 'dispatch', pattern: 'invoice.read' } }),
+      entryPoint({ id: 'refund', name: 'refund', type: 'message', trigger: { event: 'dispatch', pattern: 'refund.read' } }),
+      entryPoint({ id: 'stock', name: 'record_stock', type: 'event', trigger: { event: 'inventory.changed' } }),
+      entryPoint({ id: 'audit', name: 'audit_stock', type: 'event', trigger: { event: 'inventory.changed' } }),
+    ];
+    const capabilities = detect(entries);
+    expect(capabilities.map(capability => capability.id).sort()).toEqual(['capability_inventory', 'capability_invoice', 'capability_refund']);
+    expect(capabilities.find(capability => capability.id === 'capability_inventory')?.entry_points).toEqual(['stock', 'audit']);
+    expect(capabilities.flatMap(capability => capability.entry_points).sort()).toEqual(entries.map(entry => entry.id).sort());
+  });
+
+  it('retains entries whose distinguishing selector is unresolved', () => {
+    const entries = [
+      entryPoint({ id: 'invoice', name: 'invoice', type: 'message', trigger: { event: 'dispatch', pattern: 'invoice.read' } }),
+      entryPoint({ id: 'refund', name: 'refund', type: 'message', trigger: { event: 'dispatch', pattern: 'refund.read' } }),
+      entryPoint({ id: 'dynamic', name: 'runtime_operation', type: 'message', trigger: { event: 'dispatch' } }),
+    ];
+    const capabilities = detect(entries);
+    expect(capabilities.flatMap(capability => capability.entry_points).sort()).toEqual(entries.map(entry => entry.id).sort());
+    expect(capabilities.find(capability => capability.id === 'capability_dispatch')?.entry_points).toEqual(['dynamic']);
+  });
+});
+
 import { CapabilityDetector } from '../../analyzer/core/capability-detector';
 import {
   isBareNounCapabilityLabel,

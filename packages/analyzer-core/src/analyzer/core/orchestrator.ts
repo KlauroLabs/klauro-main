@@ -1,6 +1,7 @@
 import { BaseAnalyzer, CASNode, CASEdge, AnalysisContext, FileAnalysisContext } from './base-analyzer';
 import * as incrementalScope from './incremental-scope';
 import { reuseCapabilityCatalog, type CapabilityReuseEntryContext } from './capability-catalog-reuse';
+import { selectEntryPointSubjectField } from './entry-point-subject';
 import { SCAFFOLD_DIR_NAMES, SCAFFOLD_GLOBS, isScaffoldDirName, isScaffoldOrTestPath, isTestFileName } from './scaffold-paths';
 import { BUILD_ARTIFACT_GLOBS, THIRD_PARTY_SOURCE_GLOBS, isBuildArtifactDirectoryName } from './build-artifact-paths';
 import {
@@ -18788,20 +18789,9 @@ export class AnalyzerOrchestrator {
       else rawSurfaces.set(kind, { kindEvidence: registrationKind ? 'registration' : 'entry-type', eps: [ep] });
     }
 
-    const chooseSubjectField = (eps: CASEntryPoint[]): 'event' | 'pattern' | 'name' => {
-      const distinctCount = (values: Array<string | undefined>): number =>
-        new Set(values.filter((value): value is string => Boolean(value))).size;
-      const eventCount = distinctCount(eps.map(ep => ep.trigger?.event));
-      const patternCount = distinctCount(eps.map(ep => ep.trigger?.pattern));
-      const nameCount = distinctCount(eps.map(ep => ep.name));
-      if (eventCount >= patternCount && eventCount >= nameCount) return 'event';
-      if (patternCount >= nameCount) return 'pattern';
-      return 'name';
-    };
-
     const surfaces = new Map<string, BehaviorSurface>();
     for (const [kind, { kindEvidence, eps }] of rawSurfaces.entries()) {
-      const subjectField = chooseSubjectField(eps);
+      const subjectField = selectEntryPointSubjectField(eps);
       const entries: BehaviorEntry[] = eps.map(ep => {
         const rawSubject = String(
           (subjectField === 'event' ? ep.trigger?.event : undefined) ||
