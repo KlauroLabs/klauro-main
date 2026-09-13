@@ -111,6 +111,44 @@ confident-looking label with no reasoning behind it and no way to be wrong out l
 The split is therefore: deterministic layers establish what is there, the model says what it means,
 and every claim it makes traces back to a trait.
 
+## The measured state of the index
+
+Working from endpoints through the index is the right frame, and it cannot run today. Measured on
+the same 5,315-file repository:
+
+| | |
+|---|---|
+| Nodes | 134,921 |
+| Edges | 195,813, of which 1,196 dangle |
+| Call edges that cross a file boundary | 20,820 of 36,443, 57% |
+| Entry points | 471 |
+| Entry points that appear anywhere in the call graph | 322 |
+| Components those 322 are spread across | 83 |
+| Entry points reaching the main body of the code | 14 |
+
+The call graph is not the problem. Edges resolve, and most calls cross a file boundary, so
+cross-module resolution works. The problem is that **entry points are not attached to it.**
+
+149 of the 471 entry points appear nowhere in the call graph, including 72 under `scripts`, all 22
+commands and all 17 pipelines. Of the 322 that do appear, 308 sit in 82 islands of between three and
+twenty-four nodes. One component holds 17,241 nodes, the main body of the system, and exactly 14
+entry points reach it, all of them HTTP. Every one of the 359 command-line entry points, the largest
+category by far, is stranded in an island.
+
+So nothing can walk from an endpoint to what it does. That single fact explains the rest of the
+output: terminality finds four signals because there are no chains to sit at the end of, flows are
+shallow, entities number 42 for 5,315 files, and system purpose falls back to scoring keywords
+because there is no structure to reason from.
+
+On top of that the published `reachability_index` is degenerate in its own right: 20,327 components
+over 20,455 nodes, roughly one component per node, while the edges it should have been built from
+support a 17,241-node component. That is a second defect and it is not the cause of the first.
+
+The work is therefore: attach entry points to the code they run, for every entry point kind and not
+just HTTP, and rebuild reachability from the edges that already exist. Deployable detection,
+subsystem detection and terminality all become derivable once an endpoint can reach its own
+implementation. Until then they are being computed from a graph that cannot answer the question.
+
 ## What the index must carry
 
 The index is early and everything descends from it, so its contract is defined by what the layers
