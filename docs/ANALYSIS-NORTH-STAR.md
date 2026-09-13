@@ -242,6 +242,56 @@ just HTTP, and rebuild reachability from the edges that already exist. Deployabl
 subsystem detection and terminality all become derivable once an endpoint can reach its own
 implementation. Until then they are being computed from a graph that cannot answer the question.
 
+## Terminality, and why it does not yet produce outcomes
+
+Terminality was being computed over every node and every edge type. 110,937 of 136,928 nodes came
+back terminal, led by class properties with over a thousand incoming edges each. Scoping it to
+executable code joined by invocation edges brings it to 28,009 members, and the things at the end of
+chains are functions rather than fields. Deriving flow chains from the call graph takes flows from
+939 terminal and none proximal to 798 and 141.
+
+Both are improvements and neither produces outcomes. Here is what comes out on top:
+
+| Rank by | Result |
+|---|---|
+| Terminal executable nodes, most callers | `loadConfig`, `logVerbose`, `danger`, `errorShape` |
+| Terminal flows, most callers | `Login`, `Add`, `Get`, `Clear` |
+
+Those are shared utilities. Ranking by out-degree over a call graph finds the bottom of the graph,
+and the bottom of a call graph is where the helpers live. `Login` coming out on top is the exact
+inversion the north star warns about, arrived at honestly.
+
+The reason is that a call graph encodes *uses*, not *then*. "A calls B" does not mean B happens
+after A in the sense that matters; it means A depends on B. A chain of flows in the product sense is
+a sequence of things the system does, and its end is an effect on the outside world.
+
+That effect is already recorded. 590 of 939 flows carry a `terminus` naming the exit point they end
+at, and the kinds are exactly the vocabulary of outcomes:
+
+| Terminus kind | Flows |
+|---|---|
+| sdk | 389 |
+| file | 78 |
+| database | 71 |
+| api | 52 |
+
+## Flows are entry points crossed with exit points
+
+The blocking defect sits above terminality. A flow is currently one path from an entry point to one
+exit point, so a single command becomes as many flows as it has reachable effects.
+
+On the measured repository, `Call (voice call)` appears five times, identical except for the
+terminus: `runNgrokCommand`, `runTailscaleCommand`, `startNgrokTunnel`, `startTailscaleTunnel`,
+`stopTailscaleTunnel`. `Search (database)` appears 48 times, `Run (cli)` 30, `Status (cli)` 29. In
+total 939 flows carry only 512 distinct names, and 124 of those names are duplicated.
+
+That is why 471 entry points produce 939 flows, and it undermines every layer above. Terminality
+ranks duplicates against each other, capability naming sees the same behaviour repeatedly, and a
+reader is shown one command five times.
+
+A flow should be a coherent unit of behaviour with one entry and possibly several effects, rather
+than the cross product of the two. Fixing that comes before outcomes are worth computing.
+
 ## What the index must carry
 
 The index is early and everything descends from it, so its contract is defined by what the layers
