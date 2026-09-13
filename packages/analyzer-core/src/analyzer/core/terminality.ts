@@ -1,3 +1,5 @@
+import { executableCallGraph } from './terminality-scope';
+import { callDerivedFlowEdges } from './flow-chain-edges';
 import type {
   CASOutput,
   CASTerminality,
@@ -212,6 +214,7 @@ function flowEdges(cas: CASOutput): CASTerminalityEdge[] {
     }
   }
   edges.push(...structuralGuardFlowEdges(cas, flows));
+  edges.push(...callDerivedFlowEdges({ flows, entryPoints: cas.entry_points || [], edges: cas.edges || [] }));
 
   const primaryFlowsByCapability = new Map<string, string[]>();
   for (const flow of flows) {
@@ -259,6 +262,7 @@ function entityEdges(flows: FlowConcept[]): CASTerminalityEdge[] {
 
 export function buildCasTerminality(cas: CASOutput): CASTerminality {
   const flows = cas.flows || [];
+  const executableGraph = executableCallGraph(cas.nodes, cas.edges);
   const capabilityEdges: CASTerminalityEdge[] = [];
   for (const capability of cas.capabilities || []) {
     for (const dependency of capability.depends_on || []) {
@@ -266,10 +270,7 @@ export function buildCasTerminality(cas: CASOutput): CASTerminality {
     }
   }
   return {
-    nodes: analyzeTerminality(
-      cas.nodes.map(node => node.id),
-      cas.edges.map(edge => ({ source: edge.source, target: edge.target })),
-    ),
+    nodes: analyzeTerminality(executableGraph.ids, executableGraph.edges),
     entities: analyzeTerminality(
       (cas.entities || []).map(entity => entity.id),
       entityEdges(flows),
