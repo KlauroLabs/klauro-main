@@ -297,6 +297,7 @@ import { containsGenericImplementationMechanicFiller, implementationNamesOtherTh
 export type { CASOutput } from '../../types/cas.types';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob, cachedGlobSync, beginGlobRun, endGlobRun } from './glob-cache';
+import { pathsReferToSameFile } from './project-relative-path';
 import { yieldToEventLoop, createYieldBudget } from './event-loop-yield';
 import { extractEntityRelations, cardinalityForRelationType, parseRelationDeclaration } from './entity-relations';
 import { globSync } from 'glob';
@@ -6732,10 +6733,10 @@ export class AnalyzerOrchestrator {
   private isPrimaryProductPathForProject(filePath: string, projectPath: string): boolean {
     const normalized = filePath.replace(/\\/g, '/');
     if (!normalized) return true;
-    const resolvedProject = path.resolve(projectPath);
-    const cacheKey = `${resolvedProject}\0${normalized}`;
+    const cacheKey = `${projectPath}\0${normalized}`;
     const cached = this.primaryProductPathCache.get(cacheKey);
     if (cached !== undefined) return cached;
+    const resolvedProject = path.resolve(projectPath);
 
     let result: boolean;
     if (this.isBundledFrontendPath(normalized, resolvedProject)) {
@@ -22251,7 +22252,7 @@ export class AnalyzerOrchestrator {
 
     for (const testFile of testFiles) {
       if (testSuites.some(suite =>
-        this.pathsReferToSameFile(projectPath, suite.file_path, testFile.source?.file || '')
+        pathsReferToSameFile(projectPath, suite.file_path, testFile.source?.file || '')
       )) continue;
       const fileId = `suite_file_${testFile.id}`;
       if (addedSuiteIds.has(fileId)) continue;
@@ -22299,7 +22300,7 @@ export class AnalyzerOrchestrator {
 
     for (const sourceFile of this.discoverSourceTestFiles(projectPath)) {
       const existingSuiteForFile = testSuites.some(suite =>
-        this.pathsReferToSameFile(projectPath, suite.file_path, sourceFile)
+        pathsReferToSameFile(projectPath, suite.file_path, sourceFile)
       );
       if (existingSuiteForFile) continue;
 
@@ -22410,21 +22411,6 @@ export class AnalyzerOrchestrator {
       source: { file, line: 1 }
     } as CASNode;
     return this.extractTestCasesFromFile(projectPath, fileNode).length > 0;
-  }
-
-  private pathsReferToSameFile(projectPath: string, left?: string, right?: string): boolean {
-    if (!left || !right) return false;
-    const normalize = (file: string) => {
-      const normalized = file.replace(/\\/g, '/');
-      if (path.isAbsolute(file)) {
-        const relative = path.relative(projectPath, file).replace(/\\/g, '/');
-        return relative && !relative.startsWith('..') ? relative : normalized;
-      }
-      return normalized.replace(/^\.\//, '');
-    };
-    const a = normalize(left);
-    const b = normalize(right);
-    return a === b || a.endsWith(`/${b}`) || b.endsWith(`/${a}`);
   }
 
   private sanitizeNodeId(value: string): string {

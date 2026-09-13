@@ -3,7 +3,7 @@
   "files": [
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "ceiling": 24942
+      "ceiling": 24924
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",

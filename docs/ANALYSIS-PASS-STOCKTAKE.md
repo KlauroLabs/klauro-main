@@ -106,13 +106,29 @@ of millions of path normalisations. It now groups nodes by normalised path in a 
 entry point. With 471 entry points that is roughly 63 million comparisons. It now builds an
 identifier map once.
 
+A third, in test-suite matching: comparing a test file against every existing suite normalised both
+paths on every comparison, which means `path.relative` and two regular expressions per pair. The
+normalisation is a pure function of the project root and the file, so it is now memoised, and the
+comparison moved out of the orchestrator into a module of its own.
+
 | Pass | Before | After |
 |---|---|---|
-| `pp_nodeRoles` | 1,135 ms | 504 ms |
+| `pp_nodeRoles` | 1,135 ms | 517 ms |
+| `pp_flowCoverage` | 2,756 ms | 1,170 ms |
+| `pp_securityBoundaries` | 252 ms | 159 ms |
 
-Both are behaviour-preserving. `structural-ownership.ts` had no tests; it has five now, and they
-pass against the previous implementation as well as the new one, so they pin the behaviour rather
-than describing the rewrite.
+All three are behaviour-preserving. `structural-ownership.ts` had no tests; it has five now, and
+they pass against the previous implementation as well as the new one, so they pin the behaviour
+rather than describing the rewrite. `project-relative-path.ts` carries eight, including the loose
+suffix rule that test-suite deduplication depends on.
+
+Running total on the same repository, all output byte-identical throughout:
+
+| | Start | Now |
+|---|---|---|
+| Whole analysis | 52,813 ms | 39,205 ms |
+| Wall clock | 58.2 s | 44.1 s |
+| User CPU | 74.2 s | 61.3 s |
 
 ## The CPU profile
 
