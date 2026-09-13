@@ -296,7 +296,7 @@ import { buildGroundedDomainVocabulary, recoverAIDomainLabel } from './ai-domain
 import { containsGenericImplementationMechanicFiller, implementationNamesOtherThanSelf, isNarrativePhrasingFailure, mentionsDeclaredImplementationName, stripApplicationImplementationFillerSentences } from './ai-product-narrative';
 export type { CASOutput } from '../../types/cas.types';
 import * as fs from 'fs-extra';
-import { cachedGlob as glob, beginGlobRun, endGlobRun } from './glob-cache';
+import { cachedGlob as glob, cachedGlobSync, beginGlobRun, endGlobRun } from './glob-cache';
 import { yieldToEventLoop, createYieldBudget } from './event-loop-yield';
 import { extractEntityRelations, cardinalityForRelationType, parseRelationDeclaration } from './entity-relations';
 import { globSync } from 'glob';
@@ -14543,9 +14543,7 @@ export class AnalyzerOrchestrator {
 
   private safeGlobSync(pattern: string | string[], options: Record<string, any>): string[] {
     try {
-      const globModule = require('glob');
-      const sync = globSync || globModule.globSync || globModule.sync;
-      return typeof sync === 'function' ? sync(pattern as any, options as any) : [];
+      return cachedGlobSync(pattern, options as never);
     } catch {
       return [];
     }

@@ -1,4 +1,4 @@
-import { globSync } from 'glob';
+import { cachedGlobSync } from './glob-cache';
 import * as nodePath from 'path';
 import { yieldToEventLoop } from './event-loop-yield';
 import { describeDataAccessMechanisms } from './idiom-data-access';
@@ -890,7 +890,7 @@ function buildFileInventory(input: IdiomDetectionInput): FileInventory {
 
 function safeGlob(projectPath: string): string[] {
   try {
-    return globSync('**/*', {
+    return cachedGlobSync('**/*', {
       cwd: projectPath,
       nodir: true,
       ignore: [

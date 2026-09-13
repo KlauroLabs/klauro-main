@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { glob as realGlob } from 'glob';
-import { cachedGlob, beginGlobRun, endGlobRun } from './glob-cache';
+import { glob as realGlob, globSync as realGlobSync } from 'glob';
+import { cachedGlob, cachedGlobSync, beginGlobRun, endGlobRun } from './glob-cache';
 
 // Locks the shared-ignore enhancement in glob-cache.ts: within a run, cache
 // MISSES are served by a real glob walk that receives a run-shared, memoized
@@ -321,6 +321,55 @@ test('KLAURO_GLOB_FAST_IGNORE=off falls back to the pattern engine with identica
   } finally {
     if (prior === undefined) delete process.env.KLAURO_GLOB_FAST_IGNORE;
     else process.env.KLAURO_GLOB_FAST_IGNORE = prior;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The synchronous call sites (deployable evidence, idiom detection, several
+// orchestrator scans) bypassed the run cache entirely and so paid the pattern
+// engine on every path. cachedGlobSync gives them the same run-shared compiled
+// Ignore. It deliberately does NOT sort: these callers see glob's own order
+// today and some of them take the first match, so this stays a pure change of
+// cost, not of result.
+
+test('cachedGlobSync returns exactly what globSync returns, order included', async () => {
+  const root = makeSegmentTree();
+  try {
+    const variants: Array<Record<string, unknown>> = [
+      { cwd: root, ignore: FAST_IGNORE_PATTERNS, nodir: true },
+      { cwd: root, ignore: FAST_IGNORE_PATTERNS, nodir: true, dot: true },
+      { cwd: root, ignore: FAST_IGNORE_PATTERNS, nodir: true, absolute: true },
+      { cwd: root, nodir: true }
+    ];
+    for (const pattern of ['**/*', '**/*.js', 'src/**/*']) {
+      for (const opts of variants) {
+        const direct = realGlobSync(pattern, opts as never) as string[];
+        const token = beginGlobRun();
+        let first: string[];
+        let second: string[];
+        try {
+          first = cachedGlobSync(pattern, opts as never);
+          second = cachedGlobSync(pattern, opts as never);
+        } finally {
+          endGlobRun(token);
+        }
+        const label = `pattern=${pattern} opts=${JSON.stringify(Object.keys(opts))}`;
+        assert.deepEqual([...first].sort(), [...direct].sort(), `same set: ${label}`);
+        assert.deepEqual(first, direct, `same order: ${label}`);
+        assert.deepEqual(second, first, `cache hit replays the miss: ${label}`);
+      }
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('outside a run, cachedGlobSync is a pass-through', async () => {
+  const root = makeSegmentTree();
+  try {
+    const opts = { cwd: root, ignore: FAST_IGNORE_PATTERNS, nodir: true };
+    assert.deepEqual(cachedGlobSync('**/*', opts as never), realGlobSync('**/*', opts as never) as string[]);
+  } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

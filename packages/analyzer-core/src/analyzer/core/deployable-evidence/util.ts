@@ -1,4 +1,4 @@
-import { globSync as importedGlobSync } from 'glob';
+import { cachedGlobSync } from '../glob-cache';
 import * as fs from 'fs';
 import * as path from 'path';
 import { SCAFFOLD_GLOBS } from '../scaffold-paths';
@@ -11,14 +11,7 @@ import { SCAFFOLD_GLOBS } from '../scaffold-paths';
 
 export function safeGlobSync(pattern: string | string[], options: Record<string, any>): string[] {
   try {
-    if (typeof importedGlobSync === 'function') return importedGlobSync(pattern as any, options as any);
-  } catch {
-
-  }
-  try {
-    const globModule = require('glob');
-    const sync = globModule.globSync || globModule.sync;
-    return typeof sync === 'function' ? sync(pattern as any, options as any) : [];
+    return cachedGlobSync(pattern, options as never);
   } catch {
     return [];
   }

@@ -39,7 +39,7 @@
 
 
 
-import { glob as realGlob, Glob, Ignore } from 'glob';
+import { glob as realGlob, globSync as realGlobSync, Glob, Ignore } from 'glob';
 
 type GlobOptions = Record<string, unknown> & { cwd?: string };
 
@@ -373,6 +373,28 @@ export async function cachedGlob(pattern: string | string[], options?: GlobOptio
 
 
 
+
+export function cachedGlobSync(pattern: string | string[], options?: GlobOptions): string[] {
+  const token = activeToken;
+  if (token === null || typeof realGlobSync !== 'function') {
+    return realGlobSync(pattern as string, options as never) as string[];
+  }
+  const key = keyFor(pattern, options);
+  if (key === null) return realGlobSync(pattern as string, options as never) as string[];
+  const state = runCaches.get(token)!;
+  const existing = state.results.get(`sync\u0003${key}`);
+  if (existing) { hits += 1; return existing.slice(); }
+  misses += 1;
+  const enhanced = enhanceOptions(state, options);
+  let result: string[];
+  try {
+    result = realGlobSync(pattern as string, (enhanced ?? options) as never) as string[];
+  } catch {
+    result = realGlobSync(pattern as string, options as never) as string[];
+  }
+  state.results.set(`sync\u0003${key}`, result);
+  return result.slice();
+}
 
 export function getGlobCacheStats(): { hits: number; misses: number; active: boolean } {
   return { hits, misses, active: activeToken !== null };

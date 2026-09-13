@@ -156,8 +156,30 @@ Measured on the same repository, output byte-identical on three repositories:
 
 `KLAURO_GLOB_FAST_IGNORE=off` restores the old path.
 
+The synchronous call sites were then routed through the same run-shared compiled ignore. Deployable
+evidence, idiom detection and several orchestrator scans used `globSync` directly, so they bypassed
+the run cache entirely and paid the pattern engine on every path. `cachedGlobSync` deliberately does
+not sort, because some of those callers take the first match and their order is part of today's
+behaviour.
+
+Cumulative effect of the two changes on the same repository:
+
+| | Before | Compiled ignore | Plus sync callers |
+|---|---|---|---|
+| Analyzer detection | 4,123 ms | 2,185 ms | 2,076 ms |
+| Framework analyzers | 6,085 ms | 4,432 ms | 4,358 ms |
+| `pp_traceability` | 2,423 ms | 2,399 ms | 1,236 ms |
+| `pp_enhancedPurpose` | 1,419 ms | 1,443 ms | 522 ms |
+| Whole analysis | 52,813 ms | 47,423 ms | 43,338 ms |
+| Wall clock | 58.2 s | 52.9 s | 48.3 s |
+| User CPU | 74.2 s | 67.7 s | 64.5 s |
+
+Output stayed byte-identical across all three repositories at every step.
+
 This is a floor, not a ceiling. It makes each of the 510 traversals cheaper. It does not remove
-them, and removing them is what the index is for.
+them, and removing them is what the index is for. The profile after both changes shows the next
+targets: 10.8 s of idle time waiting on file I/O that a worker pool would hide, and roughly 3 s of
+path-string work in node role assignment and structural ownership.
 
 ## What the existing Rust does
 
