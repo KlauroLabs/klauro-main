@@ -24,6 +24,51 @@ An analysis turns one codebase into a complete, navigable understanding of the s
 
 8. **Overlay runtime telemetry last.** When the SDK is installed in a codebase, its runtime observations attach to the finished analysis as a real-time overlay. They enrich the output; they never gate it.
 
+## What scopes to what
+
+This is the rule the implementation keeps losing, so it is written out rather than implied by
+step 2.
+
+**Everything from step 3 onward is a property of a deployable, not of the repository.** What kind of
+thing this is, what it is for, what it can do, who reaches it, what data it owns: those belong to a
+deployable. A repository is a container for deployables and has no purpose of its own.
+
+For a repository with one deployable the two coincide, and the distinction costs nothing. For a
+repository with several, the only honest repository-level answer is the list: this is a monorepo of
+N deployables, and here is what each one is. An average across them is not a weaker answer, it is a
+wrong one.
+
+The measured failure, on a real 5,315-file repository: the analysis correctly set `system.type` to
+`monorepo` and found 69 deployables (43 packages, 10 containers, 9 server entries, 7 binaries, 1
+installer), then produced a single analysis with one `codebase_type` of `cli` at 0.41 confidence and
+one `system_purpose` of `web-application` at 0.1. Both are defensible for some of the 69 and right
+for none of the whole. Low confidence everywhere is the signature of this mistake: the layers are
+being asked a question at the wrong scope.
+
+## Deterministic traits, interpreted purpose
+
+The deterministic layers produce **traits**: ship and run artifacts, entry and exit points, symbols,
+calls, imports, manifests, languages, what is reachable from what, which flows sit at the end of a
+chain. Traits are facts about the code and are not negotiable.
+
+**What something is for is an interpretation, not a trait.** It is the model's job, over the traits,
+per deployable. Scoring keywords to pick a `system_purpose` is answering an interpretive question
+with a deterministic mechanism, which is the same mistake as hardcoding a categoriser: it produces a
+confident-looking label with no reasoning behind it and no way to be wrong out loud.
+
+The split is therefore: deterministic layers establish what is there, the model says what it means,
+and every claim it makes traces back to a trait.
+
+## What the index must carry
+
+The index is early and everything descends from it, so its contract is defined by what the layers
+above need, not by what is convenient to extract.
+
+Each downstream layer declares what it requires from the index. When a layer needs something the
+index does not hold, the index gains it. A layer going back to the source is a defect in the index,
+not a shortcut in the layer. The test of the index is that the entire chain from deployables to the
+comprehension layer can run with the source files deleted.
+
 ## What the output contains
 
 Everything the analysis determines about the codebase. A finding stays in the output whether or not a product surface displays it today; the absence of a page is not evidence that a fact is worthless.
