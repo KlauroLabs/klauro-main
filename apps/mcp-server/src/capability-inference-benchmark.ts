@@ -38,7 +38,7 @@ export async function runCapabilityInferenceBenchmark(options: { outputPath?: st
     const cas = await analyzeForBench(root);
     const inferredCapabilities = cas.capabilities?.length
       ? cas.capabilities
-      : cas.structural_capability_candidates || [];
+      : cas.behavior_surfaces || [];
     const capabilities = inferredCapabilities.map(capability => ({
       name: capability.name,
       domains: capability.related_domains || [],

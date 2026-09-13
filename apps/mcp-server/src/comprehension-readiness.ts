@@ -96,10 +96,7 @@ function comprehensionIntegrityFailures(cas: CASOutput): string[] {
 
 export function evaluateComprehensionReadiness(cas: CASOutput): ComprehensionReadiness {
   const canonicalCapabilities = canonicalCapabilityCount(cas);
-  const structuralCandidates = Math.max(
-    cas.structural_capability_candidates?.length || 0,
-    cas.flow_graph?.capability_candidates?.length || 0,
-  );
+  const structuralCandidates = cas.flow_graph?.capability_candidates?.length || 0;
   const coverage = cas.enhanced_system_purpose?.capability_catalog_coverage;
   const coverageStatus = coverage?.status || 'unreported';
   const l5 = cas.layers_ready?.layers?.find(layer => layer.layer === 'L5');

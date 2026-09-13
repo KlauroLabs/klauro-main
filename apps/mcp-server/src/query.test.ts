@@ -939,7 +939,6 @@ test('buildSummary top_capabilities is never led by supporting/admin plumbing', 
 test('buildSummary never presents structural candidates as canonical capabilities', () => {
   const cas = buildTwoSourceCas();
   cas.capabilities = [];
-  cas.structural_capability_candidates = [{ id: 'candidate', name: 'Analyze Create', operations: [] } as any];
   cas.flow_graph = {
     ...(cas.flow_graph || {} as any),
     capability_candidates: [{ id: 'flow-candidate', name: 'HTTP Request Handler', signals: { total_score: 100 } } as any],

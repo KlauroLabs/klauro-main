@@ -114,12 +114,6 @@ export function buildAnalysisTruthReview(cas: CASOutput, projectPath: string) {
       category: capability.category,
       depends_on: capability.depends_on || [],
     })),
-    structural_candidates: (cas.structural_capability_candidates || []).slice(0, 12).map(capability => ({
-      id: capability.id,
-      label: capability.name,
-      category: capability.category,
-      operations: capability.operations.length,
-    })),
     terminality: {
       terminal_flows: terminalFlows,
       proximal_flows: proximalFlows,

@@ -75,7 +75,6 @@ export interface CASOutput extends CASSourceInputCatalog {
   temporal_stability?: CASTemporalStability[];
   stability_summary?: CASStabilitySummary;
   capabilities?: SystemCapability[];
-  structural_capability_candidates?: SystemCapability[];
   flows?: FlowConcept[];
   steps?: FlowStep[];
   terminality?: CASTerminality;

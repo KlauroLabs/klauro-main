@@ -75,7 +75,6 @@ export const CAS_CHILD_FIELD_POLICY = {
   temporal_stability: { mode: 'scope' },
   stability_summary: { mode: 'scope' },
   capabilities: { mode: 'scope' },
-  structural_capability_candidates: { mode: 'inherit' },
   flows: { mode: 'scope' },
   steps: { mode: 'scope' },
   terminality: { mode: 'recompute' },

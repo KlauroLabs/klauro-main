@@ -290,10 +290,7 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
         ? cas.database_schema.entities.map(e => e.name)
         : entityKindNodeNames(cas.nodes)) || [],
     capabilities: cas.capabilities?.length || 0,
-    structural_capability_candidates: Math.max(
-      cas.structural_capability_candidates?.length || 0,
-      cas.flow_graph?.capability_candidates?.length || 0,
-    ),
+    structural_capability_candidates: cas.flow_graph?.capability_candidates?.length || 0,
     top_capabilities: cas.capabilities?.length
       ? [...cas.capabilities]
         .filter(c => c.category !== 'internal')

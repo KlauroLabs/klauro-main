@@ -70,7 +70,7 @@ test('spot-read quality fails published API group names despite authored descrip
     operations: [{ entry_point_id: `api-${index}`, entry_point_type: 'api', action: 'read' }],
   }));
   const cas = baseCas({
-    structural_capability_candidates: groups,
+    behavior_surfaces: groups,
     capabilities: groups.map(group => ({ ...group, name_source: 'ai', description_source: 'ai' })),
   });
   const result = evaluateSpotReadCas(cas, '/tmp/api-groups.json');
@@ -82,7 +82,7 @@ test('spot-read quality fails published API group names despite authored descrip
     capabilities: [{ ...cas.capabilities[0], name: 'Negotiate response formats through an API' }],
   }, '/tmp/api-outcomes.json');
   assert.equal(translated.gates.find(gate => gate.id === 'capability-quality')?.status, 'pass');
-  assert.deepEqual(cas.structural_capability_candidates, groups);
+  assert.deepEqual(cas.behavior_surfaces, groups);
 });
 
 for (const status of ['partial', 'rejected', 'unavailable'] as const) {

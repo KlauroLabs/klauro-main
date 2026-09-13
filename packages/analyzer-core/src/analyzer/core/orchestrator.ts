@@ -1412,7 +1412,6 @@ export class AnalyzerOrchestrator {
     await yieldToEventLoop();
     phaseStart = startPhase();
     const { capabilities: systemCapabilities, behaviorSurfaces } = await this.buildSystemCapabilities(allEntryPoints, dataEntities, allNodes, allEdges, projectPath, allExitPoints);
-    const structuralCapabilityCandidates = structuredClone(systemCapabilities);
     await yieldToEventLoop();
     const systemPurpose = await this.inferSystemPurpose(allEntryPoints, dataEntities, systemCapabilities, allNodes);
     logTiming('pp_capabilities', phaseStart);
@@ -1821,7 +1820,6 @@ export class AnalyzerOrchestrator {
       temporal_stability: temporalStability.length > 0 ? temporalStability : undefined,
       stability_summary: stabilitySummary,
       capabilities: canonicalSystemCapabilities.length > 0 ? canonicalSystemCapabilities : undefined,
-      structural_capability_candidates: structuralCapabilityCandidates,
       flows: comprehensionFlows.length > 0 ? comprehensionFlows : undefined,
       steps: comprehensionFlows.length > 0 ? comprehensionFlows.flatMap(flow => flow.steps) : undefined,
       behavior_surfaces: behaviorSurfaces.length > 0 ? behaviorSurfaces : undefined,
@@ -3117,7 +3115,6 @@ export class AnalyzerOrchestrator {
       temporal_stability: temporalStability.length > 0 ? temporalStability : undefined,
       stability_summary: stabilitySummary,
       capabilities: systemCapabilities.length > 0 ? systemCapabilities : undefined,
-      structural_capability_candidates: incrementalCapabilityCandidates,
       flows: comprehensionFlows.length > 0 ? comprehensionFlows : undefined,
       steps: comprehensionFlows.length > 0 ? comprehensionFlows.flatMap(flow => flow.steps) : undefined,
       behavior_surfaces: behaviorSurfaces.length > 0 ? behaviorSurfaces : undefined,

@@ -4,7 +4,7 @@ Every field the analysis currently produces, what it is, and why it exists. The 
 
 Findings stay, whether or not a page shows them today. Pipeline talk moves to internal state stored beside the analysis, where the incremental engine and the caches can still use it.
 
-Status: proposed. Rows marked DECIDE need the product owner's call.
+Status: decided 2026-09-13.
 
 ---
 
@@ -72,7 +72,7 @@ Status: proposed. Rows marked DECIDE need the product owner's call.
 **Our intermediate steps**
 | Field | What it actually is |
 |---|---|
-| `structural_capability_candidates` | Pre-approval capability guesses. 852 of them in the last run. See the capability section below |
+| `structural_capability_candidates` | DELETED 2026-09-13. A `structuredClone` of the capability array taken before the model named it, then shipped. Not a separate computation and not evidence of anything |
 | `flow_graph.capability_candidates` | The same concept, nested one level down |
 | `analysis_facts` | Working notes the passes leave for each other |
 | `validation` | Our own self-check results |
@@ -117,6 +117,8 @@ The current pipeline generates structural candidates, then runs up to eight sequ
 The intended shape is simpler: take the terminal and proximal-terminal flows, entities and outcomes, submit them to the model as one batched request, and get capabilities back. Validate lightly — that names are authored, that claims trace to evidence — and accept. Deterministic validation of an interpretive result buys very little.
 
 Consequences:
-- `structural_capability_candidates` and `flow_graph.capability_candidates` are deleted, not hidden.
+- `structural_capability_candidates` is deleted from the output and from `CASOutput` (done 2026-09-13). `flow_graph.capability_candidates` remains for now: it is load-bearing inside the catalog machinery and goes with that machinery.
+
+Removing it exposed something the field was hiding. The capability-inference benchmark graded those candidates whenever the published capability set was empty, and on its own fixture the published set **is** empty: it scored 89 on scaffolding while shipping zero capabilities. It now scores 44 and says so. The benchmark was already failing before the change; it is now failing honestly. Its structural comparison needs a real home in internal state beside the analysis, not in the customer's output.
 - The cycle, repair and approval machinery is removed.
 - The AI layer becomes one batched request per layer, with a single retry pass for items that fail grounding.

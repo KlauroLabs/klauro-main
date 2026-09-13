@@ -3,9 +3,7 @@ import { buildCompletedAnalysisLayersReady } from './layered-analysis';
 
 export function acceptedComprehensionFixture(cas: CASOutput): CASOutput {
   const existingCapabilities = cas.capabilities || [];
-  const analyzerCandidates = (cas.structural_capability_candidates || []).length > 0
-    ? cas.structural_capability_candidates || []
-    : cas.behavior_surfaces || [];
+  const analyzerCandidates = cas.behavior_surfaces || [];
   const entryPoint = cas.entry_points?.[0];
   const canonicalCapabilities = existingCapabilities.length > 0
     ? existingCapabilities

@@ -108,12 +108,6 @@ async function run(options: SelfDogfoodOptions) {
       files: agentContext.files || agentContext.file_read_plan || [],
     },
     top_capabilities: summary.top_capabilities,
-    structural_capabilities: (cas.structural_capability_candidates || []).slice(0, 12).map(capability => ({
-      name: capability.name,
-      description: capability.description,
-      category: capability.category,
-      operations: capability.operations.length,
-    })),
   };
 
   if (options.output) {

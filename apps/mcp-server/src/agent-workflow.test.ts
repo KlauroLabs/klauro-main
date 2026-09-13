@@ -1688,7 +1688,10 @@ test('readiness refuses agent context when canonical comprehension is unavailabl
     const cas = fixtureCas();
     cas.ai_enrichment = 'disabled';
     cas.capabilities = [];
-    cas.structural_capability_candidates = [{ id: 'candidate', name: 'Route inventory', operations: [] } as any];
+    cas.flow_graph = {
+      ...(cas.flow_graph || {} as any),
+      capability_candidates: [{ id: 'candidate', name: 'Route inventory', operations: [] } as any],
+    } as any;
     if (cas.product_map) cas.product_map.capabilities = [];
 
     const readiness = evaluateAgentReadiness(cas, workspace);
