@@ -93,6 +93,44 @@ scanning the repository themselves. Two measured attempts to make that scanning 
 glob layer failed (see below). The cost is structural: detection asks 211 analyzers a question
 that an index would answer in microseconds, and it asks before the index exists.
 
+## The CPU profile
+
+A sampled CPU profile of the same analysis, 60.6 s wall, 77.0 s user CPU and 6.7 s system CPU.
+More CPU than wall time means the work is compute-bound and already spread across threads, not
+waiting on disk. Peak resident memory was 5.1 GB.
+
+Self time by area:
+
+| Area | s | What it is |
+|---|---|---|
+| Glob and path matching | 10.5 | `minimatch` plus `node:path`, of which 5.7 s is evaluating ignore patterns |
+| Garbage collector | 2.1 | Allocation pressure |
+| `node-roles.ts` | 2.8 | Assigning a role to every node |
+| `orchestrator.ts` | 6.2 | Spread across the whole file |
+| Reading and writing files | 2.1 | `readdir`, `readFileUtf8`, `writeFileUtf8` |
+
+The largest single identifiable cost in the analysis is not parsing, not the graph algorithms and
+not the model. It is deciding whether a path is ignored. One analysis performs 510 glob traversals
+under 121 distinct ignore policies, and each traversal tests every path it reaches against roughly
+twenty patterns. Canonicalising the policies does not help: sorting and deduplicating them reduces
+121 to 117, because they are genuinely different. They are different because each analyzer brings
+its own, which is what having no shared index forces.
+
+Reading the directory tree itself is cheap. `readdir` is 0.85 s. The expense is entirely in the
+repeated filtering that follows.
+
+## What the existing Rust does
+
+`packages/analyzer-core/native/klauro-parse` is 85 lines. It takes one file's source on stdin,
+parses it with tree-sitter, serialises the entire concrete syntax tree to JSON, prints it, and
+exits. One operating-system process per file, and the JSON tree is then parsed again on the
+JavaScript side.
+
+This is the least favourable possible arrangement. Rust does the cheap part, parsing, and hands
+back the expensive part, a large tree to allocate and deserialise. Any move toward Rust should
+start by fixing this shape: one long-lived process or an in-process binding, and a compact symbol
+record rather than a full syntax tree.
+
 ## Reproducibility defect
 
 Two analyses of the same commit, on the same code, with AI off, do not produce the same output.
