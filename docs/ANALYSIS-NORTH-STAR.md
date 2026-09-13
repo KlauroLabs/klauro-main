@@ -154,8 +154,30 @@ says the index carries configuration and manifests, and later layers need them.
 42,241 of those are library usage records. That is not inaccuracy, but it inflates the graph and
 makes structure harder to see.
 
-So the index is accurate and incomplete in a narrow, fixable way, and it is not connected. The build
-is linkage on top of sound extraction, not a rewrite of extraction.
+**Inline callbacks in production code are not extracted at all.** This is the refinement that
+matters, and it changes the plan. Top-level declarations are captured faithfully. Functions passed
+inline as arguments are not, outside of test files.
+
+A worked example. `extensions/voice-call/src/cli.ts` registers nine commands, each in the shape
+`root.command("continue").description(...).requiredOption(...).action(async (options) => { ... })`.
+The index holds 61 nodes for that file. Four are code: two helpers, a type, and
+`registerVoiceCallCli`, a single node spanning lines 44 to 276 that absorbs all nine command
+handlers. Nine are imports. The remaining forty-odd are library usage observations, one per line,
+outnumbering the real code ten to one. None of the nine `.action` closures is a node.
+
+Across the repository, 3,339 function nodes carry positional names, and every one of them comes from
+the test analyzer as a `describe` or `it` callback. Production callbacks get none. Of the 1,161
+function nodes spanning more than a hundred lines, the largest is a single node covering 2,413 lines
+of a test file.
+
+So the handler of a command-line entry point is not a node, and cannot be linked to, because it does
+not exist in the index. All nine entry points in that file also record line 1, so nothing positional
+can recover it either.
+
+The earlier statement that extraction is sound and only linkage is missing was too generous.
+Extraction is sound for declarations and absent for inline handlers, which is precisely where
+command-line and modern route handlers live. Linking entry points to implementations therefore
+requires extracting those implementations first.
 
 ## The measured state of the index
 
