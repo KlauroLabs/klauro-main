@@ -68,6 +68,35 @@ mechanism exists. It does not distinguish a container that ships from a containe
 a test, and a false positive here is not one wrong row. Because step 2 sets the scope for everything
 after it, each phantom product becomes a full analysis of something that does not exist.
 
+## What counts as a deployable
+
+A deployable is a unit of distinct behaviour that somebody runs. It is not a build artifact, and it
+is not every thing with a manifest. Three tests, in order.
+
+**Does it have its own entry points and flows?** This is the one that matters, because the whole
+point of the split is that each deployable gets its own analysis. A command-line tool built for
+macOS, Windows and Linux from one source tree has one set of entry points and one set of flows: it
+is one deployable with three build targets, and analysing it three times would produce the same
+answer three times. An iOS app and an Android app have separate source trees, separate lifecycles
+and separate entry points, so they are separate deployables even though they are the same product to
+a customer. The rule is one deployable per distinct behaviour, not per artifact.
+
+**Does anyone outside get it?** If the product builds and runs the thing itself, it is a component,
+not a deployable. Image inheritance is evidence of this and is currently ignored: on the measured
+repository, `Dockerfile.sandbox-common` begins `ARG BASE_IMAGE=openclaw-sandbox` and derives from
+the sandbox image, and both were still reported as independent ship units. A container that another
+container in the same repository is built `FROM` rolls up into it.
+
+**Does it have its own identity?** Its own licence, changelog, version and dependency set, and its
+own release path. A vendored sibling project inside a monorepo passes this test and is a separate
+deployable even though it shares the repository.
+
+Applied to the measured repository, the fourteen reported units resolve to about four: the gateway
+and its command line, the macOS application, the Android application, and one vendored Swift package
+that carries its own licence, changelog and dependencies. The sandbox images are components the
+gateway builds and runs, the smoke and end-to-end containers are test rigs, and the markdown runbook
+is not a unit at all.
+
 ## Deterministic traits, interpreted purpose
 
 The deterministic layers produce **traits**: ship and run artifacts, entry and exit points, symbols,
