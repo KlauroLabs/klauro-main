@@ -1,0 +1,123 @@
+# Analysis output stocktake
+
+Every field the analysis currently produces, what it is, and why it exists. The test applied to each one: **is this a finding about the customer's code, or is this the pipeline talking about itself?**
+
+Findings stay, whether or not a page shows them today. Pipeline talk moves to internal state stored beside the analysis, where the incremental engine and the caches can still use it.
+
+Status: proposed. Rows marked DECIDE need the product owner's call.
+
+---
+
+## Findings about the code — keep
+
+**What the system is**
+`system`, `system_purpose`, `enhanced_system_purpose`, `architecture_summary`, `codebase_type`, `codebase_type_confidence`, `patterns`, `paradigm_conformance`, `perspectives`, `categories`, `tags`
+
+**How it is reached and where it goes**
+`entry_points`, `exit_points`, `route_table`, `external_services`, `communication_seams`, `security_contexts`, `security_boundaries`, `security_summary`
+
+**The graph**
+`nodes`, `edges`, `method_calls`, `call_chains`, `decorators`, `reachability_index`
+
+**Data**
+`entities`, `data_summary`, `data_lineage`, `database_schema`, `domain_concepts`
+
+**What it accomplishes**
+`capabilities`, `flows`, `steps`, `behavior_surfaces`, `user_journeys`, `intents`, `flow_summary`, `flow_coverage`, `behaviors`, `product_map`
+
+**What ships**
+`distribution_units`, `deployable_evidence`, `dependencies`, `dependency_manifest`, `dependency_roles`, `libraries`, `configuration`, `runtime`
+
+**Quality and risk**
+`change_risks`, `change_risk_summary`, `test_coverage`, `test_suites`, `test_summary`, `test_gaps`, `mocks`, `fixtures`, `behavioral_invariants`, `behavioral_invariant_summary`, `temporal_stability`, `stability_summary`, `module_health`, `implementation_health`, `system_health`, `documentation_summary`, `todos_summary`, `architectural_conflicts`, `principle_violations`
+
+**Conventions the codebase follows**
+`codebase_idioms`, `idiom_summary`, `idiom_violations`, `idiom_examples`
+
+`idiom_examples` is the supporting evidence for an idiom — the actual places the convention appears. It is a finding, not scaffolding. It belongs attached to its idiom rather than as a parallel top-level array.
+
+**Cross-repository**
+`repository_links`, `cross_repository_links`, `runtime_static_links`
+
+**Identity and honesty**
+`cas_version`, `analysis_id`, `analysis_timestamp`, `base_commit`, `branch`, `analyzed_track`, `diff_only`, `analysis_errors`, `layers_ready`, `ai_enrichment`, `ai_enrichment_error`, `total_files`, `languages`, `top_level_dirs`
+
+**Composition (workspace analyses)**
+`id`, `label`, `children`, `member_reference`
+
+---
+
+## Pipeline talking about itself — move to internal state
+
+**Our own performance**
+| Field | What it actually is |
+|---|---|
+| `analysis_phases` | Our pipeline's stage list |
+| `timings` | How long our stages took |
+| `duration_ms` | Same |
+
+**Our cache keys**
+| Field | What it actually is |
+|---|---|
+| `analyzer_build` | Which build of our analyzer ran |
+| `parser_fingerprint` | Hash used to decide if we can reuse a parse |
+| `derived_fingerprint` | Hash used to decide if we can skip recomputation |
+| `ai_cache_reuse` | `{hits, misses, bypassed}` — our AI cache hit rate |
+
+**Our algorithm's tuning knobs**
+| Field | What it actually is |
+|---|---|
+| `structural_importance_meta` | `{algorithm: 'seeded-random-walk-power-iteration', damping, epsilon, max_iterations, iterations, converged, seed_count}` — the convergence parameters of our ranking algorithm |
+
+**Our intermediate steps**
+| Field | What it actually is |
+|---|---|
+| `structural_capability_candidates` | Pre-approval capability guesses. 852 of them in the last run. See the capability section below |
+| `flow_graph.capability_candidates` | The same concept, nested one level down |
+| `analysis_facts` | Working notes the passes leave for each other |
+| `validation` | Our own self-check results |
+| `coverage_gaps` | What our analyzers could not reach |
+| `conventions_applied` | Which of our convention rules matched |
+| `index` | Our internal lookup table |
+| `embedding_index` | Our vector index for search |
+| `analyzer_contributions` | Per-analyzer ledger of which files each analyzer read. Load-bearing for incremental analysis, so it must persist — just not in the customer's output |
+
+**Graph algorithm output with no meaning attached**
+| Field | What it actually is |
+|---|---|
+| `communities` | `{id: 7, member_ids: [...], size: 43, internal_edges: 112}` — numbered clusters from a graph partitioning algorithm. Nothing names them or says what they mean |
+
+**Presentation decisions baked into the analysis**
+| Field | What it actually is |
+|---|---|
+| `disclosure` | `{default_perspective, important_nodes, suggested_paths, summaries}` — hints telling a UI what to show first |
+| `progressive_levels` | An onboarding ladder including `time_to_understand` estimates |
+
+These are the analysis telling a product surface how to present itself. The surface should decide that from the findings.
+
+**Composition bookkeeping**
+`parent_id`, `composition_mode` — how a child analysis was attached during composition.
+
+---
+
+## DECIDE
+
+| Field | The question |
+|---|---|
+| `terminality` | This is the real signal that identifies outcomes: which flows, entities and nodes sit at the end of a chain. It is the input to capability generation. Keep it in the output as the explanation of *why* a capability was chosen, or treat it as the intermediate step it is? |
+| `codebase_types` / `codebase_type_signals` | The ranked alternatives and the evidence behind the type call, alongside the single `codebase_type` we already publish |
+| `consistency_model` | Whether the codebase is internally consistent. Real finding, currently unsurfaced |
+| `communities` | If these clusters were named and explained ("these thirty files form the billing module"), they would be a finding. As numbered sets they are not. Invest or remove? |
+
+---
+
+## Capability generation
+
+The current pipeline generates structural candidates, then runs up to eight sequential AI cycles that reject, repair, re-judge and approve them. The candidates leak into the output. The repair machinery is the most expensive part of the analysis.
+
+The intended shape is simpler: take the terminal and proximal-terminal flows, entities and outcomes, submit them to the model as one batched request, and get capabilities back. Validate lightly — that names are authored, that claims trace to evidence — and accept. Deterministic validation of an interpretive result buys very little.
+
+Consequences:
+- `structural_capability_candidates` and `flow_graph.capability_candidates` are deleted, not hidden.
+- The cycle, repair and approval machinery is removed.
+- The AI layer becomes one batched request per layer, with a single retry pass for items that fail grounding.

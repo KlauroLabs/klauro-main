@@ -16,7 +16,7 @@ An analysis turns one codebase into a complete, navigable understanding of the s
 
 4. **Identify frameworks and libraries and run the framework layer.** This names the framework-specific elements (controllers, services, components, handlers, models) and, together with the patterns layer, exposes pattern deviation and framework sprawl. Those findings inform the analysis; they are not necessarily part of the output.
 
-5. **Identify outcomes through terminality.** The flows at the end of a chain, or near the end, are the reasons the codebase exists. Executing a trade matters more than logging in. Terminal and proximal-terminal flows generate the candidate outcomes; the structural layers corroborate them.
+5. **Identify outcomes through terminality.** The flows at the end of a chain, or near the end, are the reasons the codebase exists. Executing a trade matters more than logging in. Terminal and proximal-terminal flows generate the outcomes; the structural layers corroborate them.
 
 6. **Establish the comprehension layer.** Capabilities, flows, steps, and entities, grounded in the layers above. This is where AI descriptions come in: one batched request per layer with the full evidence bundle, and a second pass only for items the first pass could not ground. AI interprets evidence; it never invents structure.
 
@@ -26,22 +26,15 @@ An analysis turns one codebase into a complete, navigable understanding of the s
 
 ## What the output contains
 
-Only what the product means to say:
+Everything the analysis determines about the codebase. A finding stays in the output whether or not a product surface displays it today; the absence of a page is not evidence that a fact is worthless.
 
-- Identity: what was analyzed, when, and at what version.
-- The system: purpose, domain, languages, frameworks, deployables.
-- Entry points and exit points, categorized.
-- The graph: code elements and the connections between them.
-- Entities, their fields, relationships, and lifecycles.
-- Capabilities, flows, and steps, with descriptions.
-- Tests and what they cover.
-- Change risk.
-- Runtime observations when present.
-- Honest degradation: which layers are ready, which are not, and why.
+What the output never contains is the pipeline talking about itself: intermediate steps, candidate lists awaiting approval, scoring scaffolding, algorithm tuning parameters, cache keys and hit rates, our own stage timings, per-analyzer ledgers, and indexes built for our own use. Those live in internal state stored beside the analysis, where the incremental engine and caches still read them. A build gate fails when one appears in the output.
 
-## What the output never contains
+The field-by-field stocktake, with the reason each field exists and its verdict, is in `ANALYSIS-OUTPUT-STOCKTAKE.md`. That document and the output type together are the contract. Adding a field requires a line in the stocktake saying what it tells a customer about their code.
 
-Internal decision-making, intermediate results, candidate lists, scoring scaffolding, fingerprints, phase timings, per-analyzer ledgers, caches, indexes built for the pipeline's own use, or any field whose only reader is another stage of the pipeline. Those live in internal state beside the analysis, and a build gate fails when one appears in the output.
+## Capabilities
+
+Capabilities come from terminality. The terminal and proximal-terminal flows, entities and outcomes are submitted to the model as one batched request, and the capabilities come back. Validation is light: names must be authored, claims must trace to evidence. There is no candidate stage, no approval cycle, and no repair loop, and no intermediate capability artifact reaches the output. Deterministic validation of an interpretive result buys very little and costs a great deal.
 
 ## Speed
 
@@ -51,5 +44,5 @@ The analysis must be fast. Speed comes from the shape of the flow, not from tuni
 
 - Support any codebase. Degrade honestly on what is not understood; never fabricate.
 - Every fact is evidence-grounded. AI is a flavoring over deterministic structure.
-- The spec of the output is this document plus the output type. Adding a field to the output requires a reader on a product surface and a line in this document.
+- The spec of the output is this document, the stocktake, and the output type. A new field must state what it tells a customer about their code.
 - No client, benchmark, or corpus names anywhere in product source or specs.
