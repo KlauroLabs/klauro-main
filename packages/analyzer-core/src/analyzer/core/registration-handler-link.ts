@@ -4,17 +4,22 @@ const MAX_LINE_DRIFT = 2;
 
 export const ROUTE_LINKABLE_ENTRY_TYPES = new Set(['http', 'websocket', 'message', 'event', 'cli']);
 
-function registrationLine(entryPoint: CASEntryPoint): number | undefined {
+const UNLINKED_HANDLER_TYPES = new Set(['file', 'route', 'application', 'component']);
+
+function registrationLine(entryPoint: CASEntryPoint, current: CASNode): number | undefined {
   const attributes = (entryPoint.metadata || {}) as Record<string, unknown>;
-  const line = attributes.line;
-  return typeof line === 'number' && line > 0 ? line : undefined;
+  for (const candidate of [attributes.line, entryPoint.handler?.line, current.source?.line]) {
+    if (typeof candidate === 'number' && candidate > 0) return candidate;
+  }
+  return undefined;
 }
 
-function handlerFile(entryPoint: CASEntryPoint): string | undefined {
+function handlerFile(entryPoint: CASEntryPoint, current: CASNode): string | undefined {
   const file = entryPoint.handler?.file;
   if (typeof file === 'string' && file.length > 0) return file;
   const attributes = (entryPoint.metadata || {}) as Record<string, unknown>;
-  return typeof attributes.file === 'string' ? attributes.file : undefined;
+  if (typeof attributes.file === 'string' && attributes.file.length > 0) return attributes.file;
+  return current.source?.file;
 }
 
 export function resolveRegistrationHandlerByLine(
@@ -25,10 +30,10 @@ export function resolveRegistrationHandlerByLine(
   existingEdgeIds: Set<string>
 ): boolean {
   const current = entryPoint.handler?.node_id ? nodeById.get(entryPoint.handler.node_id) : undefined;
-  if (!current || current.type !== 'file') return false;
+  if (!current || !UNLINKED_HANDLER_TYPES.has(current.type)) return false;
 
-  const line = registrationLine(entryPoint);
-  const file = handlerFile(entryPoint);
+  const line = registrationLine(entryPoint, current);
+  const file = handlerFile(entryPoint, current);
   if (line === undefined || !file) return false;
 
   const candidates: CASNode[] = [];
