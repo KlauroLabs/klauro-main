@@ -82,11 +82,6 @@ Status: proposed. Rows marked DECIDE need the product owner's call.
 | `embedding_index` | Our vector index for search |
 | `analyzer_contributions` | Per-analyzer ledger of which files each analyzer read. Load-bearing for incremental analysis, so it must persist — just not in the customer's output |
 
-**Graph algorithm output with no meaning attached**
-| Field | What it actually is |
-|---|---|
-| `communities` | `{id: 7, member_ids: [...], size: 43, internal_edges: 112}` — numbered clusters from a graph partitioning algorithm. Nothing names them or says what they mean |
-
 **Presentation decisions baked into the analysis**
 | Field | What it actually is |
 |---|---|
@@ -100,14 +95,18 @@ These are the analysis telling a product surface how to present itself. The surf
 
 ---
 
-## DECIDE
+## Decided — keep
 
-| Field | The question |
+| Field | Why it stays |
 |---|---|
-| `terminality` | This is the real signal that identifies outcomes: which flows, entities and nodes sit at the end of a chain. It is the input to capability generation. Keep it in the output as the explanation of *why* a capability was chosen, or treat it as the intermediate step it is? |
-| `codebase_types` / `codebase_type_signals` | The ranked alternatives and the evidence behind the type call, alongside the single `codebase_type` we already publish |
-| `consistency_model` | Whether the codebase is internally consistent. Real finding, currently unsurfaced |
-| `communities` | If these clusters were named and explained ("these thirty files form the billing module"), they would be a finding. As numbered sets they are not. Invest or remove? |
+| `terminality` | The signal that identifies outcomes: which flows, entities and nodes sit at the end of a chain. Published as the explanation of why a capability exists |
+| `codebase_types`, `codebase_type_signals` | The ranked alternatives and the evidence behind the type call, alongside the single `codebase_type` |
+| `consistency_model` | Whether the codebase is internally consistent |
+| `subsystems` (was `communities`) | Groups of code more connected to each other than to the rest. Renamed from `communities`; a graph term became a product term |
+
+### Subsystems need names
+
+Renaming the field is half the work. Today each entry is `{id: 7, member_ids: [...], size, internal_edges}` — a numbered set. "Subsystem 7" tells a reader nothing. Each subsystem takes a name derived from what its members already say: their dominant directory, the domain concept most of them touch, or the capability they serve. An unnamed subsystem is not shipped.
 
 ---
 
