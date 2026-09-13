@@ -124,6 +124,31 @@ confident-looking label with no reasoning behind it and no way to be wrong out l
 The split is therefore: deterministic layers establish what is there, the model says what it means,
 and every claim it makes traces back to a trait.
 
+## Units fall out of the index
+
+Once entry points attach to the code they run, grouping them by what they reach produces the units
+without any artifact scanning. Measured on the same repository:
+
+| Nodes reached | Entry points | Kinds | Where the code lives |
+|---|---|---|---|
+| 115,527 | 314 | 292 command line, 22 HTTP | `src`, the extensions, `openclaw.mjs` |
+| 5,507 | 6 | command line, lifecycle, event | `apps/macos`, `apps/ios`, the vendored Swift package |
+| 987 | 4 | page, event, lifecycle | `apps/android` |
+| 294 and below | 1 to 2 each | command line, pipeline | `scripts`, `.github`, `skills` |
+
+The shape is right. One large unit that is the gateway and its command line, an Apple platform unit,
+an Android unit, and a tail of small islands that are build and CI tooling rather than products.
+
+Three things to note. The Apple unit includes `apps/ios`, which artifact scanning missed entirely
+because its Xcode project is generated rather than committed. The vendored Swift package groups with
+the Apple applications rather than standing alone, which is evidence that it is reached by them and
+may be a component rather than a separate unit; its own licence and changelog argue the other way,
+and the question is now answerable from evidence instead of from a rule. And the noise separates
+itself: build tooling lands in islands of tens of nodes with one entry point each, next to a unit of
+115,527 nodes with 314, so size and entry point count discriminate without a path heuristic.
+
+This is the frame working. Nothing here consulted a Dockerfile.
+
 ## Is the index accurate
 
 Measured against the source on the same repository. The short answer is that extraction is sound and
