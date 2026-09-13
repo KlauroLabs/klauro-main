@@ -201,12 +201,15 @@ function assignFromGuardEvidence(nodes: CASNode[], entryPoints: CASEntryPoint[])
     list.push(n);
     byName.set(n.name, list);
   }
+  const nodeById = new Map<string, CASNode>();
+  for (const n of nodes) {
+    if (!nodeById.has(n.id)) nodeById.set(n.id, n);
+  }
   const handlerFile = new Map<string, string | undefined>();
   for (const ep of entryPoints) {
     const nodeId = resolveHandlerNodeId(ep);
     if (!nodeId) continue;
-    const node = nodes.find(n => n.id === nodeId);
-    handlerFile.set(ep.id, node?.source?.file);
+    handlerFile.set(ep.id, nodeById.get(nodeId)?.source?.file);
   }
 
   for (const ep of entryPoints) {

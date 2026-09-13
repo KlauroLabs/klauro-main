@@ -93,6 +93,27 @@ scanning the repository themselves. Two measured attempts to make that scanning 
 glob layer failed (see below). The cost is structural: detection asks 211 analyzers a question
 that an index would answer in microseconds, and it asks before the index exists.
 
+## Two quadratic scans
+
+The profile after the ignore work exposed two loops that scan every node for each item they
+process. Both are on the hot path of a large repository and both were invisible at small scale.
+
+`structural-ownership.ts` gave every unreached file node an owner by filtering the whole node array
+and re-normalising every path, once per file node. On a repository with 134,921 nodes that is tens
+of millions of path normalisations. It now groups nodes by normalised path in a single pass.
+
+`node-roles.ts` resolved each entry point's handler with a linear search of the node array, once per
+entry point. With 471 entry points that is roughly 63 million comparisons. It now builds an
+identifier map once.
+
+| Pass | Before | After |
+|---|---|---|
+| `pp_nodeRoles` | 1,135 ms | 504 ms |
+
+Both are behaviour-preserving. `structural-ownership.ts` had no tests; it has five now, and they
+pass against the previous implementation as well as the new one, so they pin the behaviour rather
+than describing the rewrite.
+
 ## The CPU profile
 
 A sampled CPU profile of the same analysis, 60.6 s wall, 77.0 s user CPU and 6.7 s system CPU.
