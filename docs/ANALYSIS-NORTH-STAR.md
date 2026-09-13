@@ -91,11 +91,24 @@ container in the same repository is built `FROM` rolls up into it.
 own release path. A vendored sibling project inside a monorepo passes this test and is a separate
 deployable even though it shares the repository.
 
-Applied to the measured repository, the fourteen reported units resolve to about four: the gateway
-and its command line, the macOS application, the Android application, and one vendored Swift package
-that carries its own licence, changelog and dependencies. The sandbox images are components the
-gateway builds and runs, the smoke and end-to-end containers are test rigs, and the markdown runbook
-is not a unit at all.
+Applied to the measured repository, the fourteen reported units are not units of behaviour at all.
+They are one packaging of the main system, two runtime environments it builds and runs, one build
+layer whose Dockerfile is a single `FROM` line, six test harnesses, one documentation file, and
+three applications. Every one of them was identified by a file pattern rather than by anything it
+does.
+
+The decisive evidence that the frame is wrong is not the false positives but the false negative.
+`apps/ios` is a real iOS application with sources, tests, a fastlane configuration and an XcodeGen
+`project.yml`. Artifact scanning found nothing there, because the Xcode project is generated rather
+than committed and there is no `Package.swift`. Grouping by entry point finds it immediately: two
+entry points, a lifecycle and an event. Scanning for ship files invented six test rigs, promoted a
+markdown runbook, split one product into four container entries, and missed an entire application.
+
+Grouping the 471 entry points by where they live recovers the real shape: 329 in `src` for the
+gateway and its command line, then `apps/android`, `apps/macos`, `apps/ios`, a vendored Swift
+package, and a set of extensions each with their own way in. It also shows why artifact scanning
+drowned: `scripts` holds 74 entry points and `.github` holds 18 pipelines, so those directories are
+full of genuinely executable things that are simply not the product.
 
 ## Deterministic traits, interpreted purpose
 
