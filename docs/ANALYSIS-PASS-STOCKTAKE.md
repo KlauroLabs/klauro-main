@@ -248,6 +248,60 @@ them, and removing them is what the index is for. The profile after both changes
 targets: 10.8 s of idle time waiting on file I/O that a worker pool would hide, and roughly 3 s of
 path-string work in node role assignment and structural ownership.
 
+## What a compiled reference indexer does differently
+
+A single-binary C indexer with vendored tree-sitter grammars was run on the same repository, as a
+control. It stops at the knowledge graph and does not build a comprehension layer, so only the
+indexing half is comparable, but the graphs are the same order: it produced 59,237 nodes and 204,060
+edges against our 134,921 nodes and 195,813 edges.
+
+| | Reference | Klauro, before this work | Klauro, now |
+|---|---|---|---|
+| Wall clock | 6.4 s | 58.2 s | 36.7 s |
+| CPU | 26.7 s | 74.2 s | 63.0 s |
+| Peak memory | 2.0 GB | 5.1 GB | 5.4 GB |
+
+Its pipeline is seven steps, and they line up with the north star almost exactly: discover files,
+build structure, bulk load sources, extract definitions, resolve imports and calls, post-passes,
+dump. The differences that matter are not the language.
+
+- **It discovers once, in 40 ms**, filtering with a fixed list of directory names and suffix checks
+  during a single walk. No pattern engine.
+- **It loads every source once into RAM, compressed**, and later passes read from there. Nothing
+  goes back to disk.
+- **It fuses work that shares a parse.** Extraction writes nodes and builds the symbol registry in
+  the same visit. Cross-file resolution happens inside the per-file worker rather than as a pass of
+  its own. A comment in its source records that the separate sequential pass it replaced cost about
+  520 seconds on a large repository, which is the same shape as our own re-reading.
+- **It sizes workers from a memory budget divided by worker count**, not a fixed allowance each.
+  That is the design now used for our parse pool.
+- **It interns strings** so repeated paths and names share one allocation and compare by identity.
+
+## Duplication in the graph
+
+Counting what the 134,921 nodes actually hold:
+
+| Field | Distinct values | Nodes carrying it |
+|---|---|---|
+| `analyzers` | 31 | 134,921 |
+| `level_name` | 32 | 134,921 |
+| `primaryAnalyzer` | 26 | 134,914 |
+| `tags` | 45 | 100,333 |
+| `source.file` | 4,442 | 134,907 |
+
+Every node allocates its own copy. Thirty-one distinct `analyzers` arrays exist as 134,921 separate
+arrays.
+
+Three findings are worth acting on independently of memory:
+
+- **`agent_guidance` is seven distinct paragraphs repeated across 42,270 nodes**, 5.5 MB of
+  identical prose in a single analysis output. The guidance describes a library, so it belongs on
+  the library, not stamped onto every usage site.
+- **Library usage nodes are 23% of the graph**: 31,748 service-SDK, 5,994 AI-SDK and 4,037 queue
+  usage nodes, 53 MB between them, more numerous than functions.
+- **5,361 nodes repeat `source.file` inside `metadata.attributes.file`**, and 1,393 of the 5,447
+  `qualified_name` values are exactly `source.file` and `name` joined with a colon.
+
 ## What the existing Rust does
 
 `packages/analyzer-core/native/klauro-parse` is 85 lines. It takes one file's source on stdin,
