@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { CASEdge, CASEntryPoint, CASNode } from '../../types/cas.types';
-import { resolveRegistrationHandlerByLine } from './registration-handler-link';
+import { resolveRegistrationHandlerByLine, markEntryPointNodes } from './registration-handler-link';
 
 // An entry point is only useful if it reaches the code it runs. Analyzers that
 // see a registration but not its body point the handler at something that
@@ -127,4 +127,37 @@ test('a Dockerfile or installer handler is not dragged into the call graph', () 
   ];
   const ep = entry('lifecycle', { node_id: 'img', file: 'Dockerfile' }, { line: 1 });
   assert.equal(run(ep, nodes).linked, false, 'artifact kinds need their own linkage, not this one');
+});
+
+// Entry point membership lived only in a separate array pointing at nodes by
+// id, so any traversal of the graph had to join back to that array to know a
+// function was a way into the system. That join is what broke: 149 of 471 entry
+// points pointed at nodes that were not in the graph at all and nobody noticed.
+// Marking the node itself makes the fact travel with the graph.
+
+test('a handler node is marked with the kinds of entry point that reach it', () => {
+  const nodes = [fn('handler', 'startServer', 'src/a.ts', 10, 20), fn('other', 'helper', 'src/a.ts', 30, 40)];
+  const entryPoints = [
+    entry('http', { node_id: 'handler' }),
+    entry('cli', { node_id: 'handler' })
+  ];
+  const marked = markEntryPointNodes(nodes, entryPoints);
+  assert.equal(marked, 1);
+  const attributes = (nodes[0].metadata as Record<string, Record<string, unknown>>).attributes;
+  assert.equal(attributes.is_entry_point, true);
+  assert.deepEqual(attributes.entry_point_kinds, ['cli', 'http'], 'kinds are sorted and deduped');
+  assert.equal(nodes[1].metadata, undefined, 'nodes nothing enters are left untouched');
+});
+
+test('marking falls back to the source node when no handler is linked', () => {
+  const nodes = [fn('registration', 'cli.ts', 'src/cli.ts', 1, 200)];
+  const entryPoints = [
+    { id: 'ep', name: 'ep', type: 'cli', source_node: 'registration' } as unknown as CASEntryPoint
+  ];
+  assert.equal(markEntryPointNodes(nodes, entryPoints), 1);
+});
+
+test('an entry point pointing at a node that does not exist marks nothing', () => {
+  const nodes = [fn('present', 'present', 'src/a.ts', 1, 2)];
+  assert.equal(markEntryPointNodes(nodes, [entry('cli', { node_id: 'absent' })]), 0);
 });

@@ -298,7 +298,7 @@ export type { CASOutput } from '../../types/cas.types';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob, cachedGlobSync, beginGlobRun, endGlobRun } from './glob-cache';
 import { pathsReferToSameFile } from './project-relative-path';
-import { resolveRegistrationHandlerByLine, ROUTE_LINKABLE_ENTRY_TYPES } from './registration-handler-link';
+import { resolveRegistrationHandlerByLine, ROUTE_LINKABLE_ENTRY_TYPES, markEntryPointNodes } from './registration-handler-link';
 import { yieldToEventLoop, createYieldBudget } from './event-loop-yield';
 import { extractEntityRelations, cardinalityForRelationType, parseRelationDeclaration } from './entity-relations';
 import { globSync } from 'glob';
@@ -1289,10 +1289,10 @@ export class AnalyzerOrchestrator {
     }
     this.addDiscoveredEntryPoints(projectPath, allNodes, allEntryPoints, allEdges);
     removeTestEntryPoints(allNodes, allEdges, allEntryPoints, node => this.isTestFileNode(node));
-    this.dedupeHttpEntryPoints(allEntryPoints, projectPath, allEdges);
-    this.dedupeEntryPointTwins(allEntryPoints, projectPath, allEdges);
+    this.dedupeHttpEntryPoints(allEntryPoints, projectPath, allEdges); this.dedupeEntryPointTwins(allEntryPoints, projectPath, allEdges);
     linkHttpTestCoverage(allNodes, allEdges, allEntryPoints);
     this.normalizeNodeMetrics(allNodes);
+    markEntryPointNodes(allNodes, allEntryPoints);
     this.applyCanonicalOrdering(allNodes, allEdges, allEntryPoints, allExitPoints, allLibraries);
     logTiming('pp_linkRouteHandlers', phaseStart);
     await yieldToEventLoop();

@@ -86,3 +86,25 @@ export function resolveRegistrationHandlerByLine(
   }
   return true;
 }
+export function markEntryPointNodes(nodes: readonly CASNode[], entryPoints: readonly CASEntryPoint[]): number {
+  const kindsByNode = new Map<string, Set<string>>();
+  for (const entryPoint of entryPoints) {
+    const nodeId = entryPoint.handler?.node_id || entryPoint.source_node;
+    if (!nodeId) continue;
+    const kinds = kindsByNode.get(nodeId);
+    if (kinds) kinds.add(entryPoint.type);
+    else kindsByNode.set(nodeId, new Set([entryPoint.type]));
+  }
+
+  let marked = 0;
+  for (const node of nodes) {
+    const kinds = kindsByNode.get(node.id);
+    if (!kinds) continue;
+    const metadata = (node.metadata || (node.metadata = {})) as Record<string, unknown>;
+    const attributes = (metadata.attributes || (metadata.attributes = {})) as Record<string, unknown>;
+    attributes.is_entry_point = true;
+    attributes.entry_point_kinds = [...kinds].sort();
+    marked += 1;
+  }
+  return marked;
+}
