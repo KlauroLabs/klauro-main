@@ -1,4 +1,4 @@
-import { isHandlerShapedCallback, calleeNameForArguments } from './callback-node-identity';
+import { isHandlerShapedCallback, calleeNameForArguments, registrationLabelForArguments } from './callback-node-identity';
 import * as fs from 'fs';
 import { calculateComplexity } from './ts-extractor-metrics';
 import { collectCommonJsExports, isCommonJsExportObject, type TSCommonJsExports } from './commonjs-exports';
@@ -159,7 +159,7 @@ export interface TSExtractedFunction {
   documentation?: string;
   throws?: string[];
   isAnonymousCallback?: boolean;
-  callbackOf?: string;
+  callbackOf?: string; registrationLabel?: string;
 }
 
 export interface TSExtractedProperty {
@@ -584,7 +584,7 @@ export class TreeSitterTSExtractor {
       funcType = 'function';
     }
 
-    let isAnonymousCallback = false; let callbackOf: string | undefined;
+    let isAnonymousCallback = false; let callbackOf: string | undefined; let registrationLabel: string | undefined;
     const inlineArgument = !funcName && parent?.type === 'arguments' &&
       (func.type === 'arrow_function' || func.type === 'function_expression');
     const calleeName = inlineArgument ? calleeNameForArguments(parent) : undefined;
@@ -593,7 +593,7 @@ export class TreeSitterTSExtractor {
          isHandlerShapedCallback(func, calleeName))) {
       funcName = 'anonymous';
       isAnonymousCallback = true;
-      callbackOf = calleeName;
+      callbackOf = calleeName; registrationLabel = registrationLabelForArguments(parent);
     }
 
     if (!funcName) return null;
@@ -658,7 +658,7 @@ export class TreeSitterTSExtractor {
       documentation,
       throws,
       isAnonymousCallback,
-      callbackOf
+      callbackOf, registrationLabel
     };
   }
 

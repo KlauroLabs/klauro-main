@@ -840,7 +840,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       if (!func.isAnonymousCallback) return func;
       return {
         ...func,
-        name: callbackNodeName(func.callbackOf, func.lineStart, func.columnStart, testSource),
+        name: callbackNodeName(func.callbackOf, func.lineStart, func.columnStart, testSource, func.registrationLabel),
         isAnonymousCallback: false,
       };
     });
