@@ -39,11 +39,17 @@ N deployables, and here is what each one is. An average across them is not a wea
 wrong one.
 
 The measured failure, on a real 5,315-file repository: the analysis correctly set `system.type` to
-`monorepo` and found 69 deployables (43 packages, 10 containers, 9 server entries, 7 binaries, 1
-installer), then produced a single analysis with one `codebase_type` of `cli` at 0.41 confidence and
-one `system_purpose` of `web-application` at 0.1. Both are defensible for some of the 69 and right
-for none of the whole. Low confidence everywhere is the signature of this mistake: the layers are
-being asked a question at the wrong scope.
+`monorepo` and identified 14 top-level ship units, then produced a single analysis with one
+`codebase_type` of `cli` at 0.41 confidence and one `system_purpose` of `web-application` at 0.1.
+Both are defensible for some of the 14 and right for none of the whole. Low confidence everywhere is
+the signature of this mistake: the layers are being asked a question at the wrong scope.
+
+The 14 is itself too many, which is a second finding and a separate defect. Six of them are test
+infrastructure: four containers under `scripts/docker/` named after install and cleanup smoke tests,
+and two under `scripts/e2e`. One is a markdown file, `docs/platforms/mac/release.md`, classified as
+an installer. The real count is closer to four or five. Deployable tiering already demotes internal
+packages correctly, 43 of them to tier 3, so the mechanism exists; it just does not distinguish a
+container that ships from a container that exists to run a test.
 
 ## Deterministic traits, interpreted purpose
 
