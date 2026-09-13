@@ -44,12 +44,29 @@ The measured failure, on a real 5,315-file repository: the analysis correctly se
 Both are defensible for some of the 14 and right for none of the whole. Low confidence everywhere is
 the signature of this mistake: the layers are being asked a question at the wrong scope.
 
-The 14 is itself too many, which is a second finding and a separate defect. Six of them are test
-infrastructure: four containers under `scripts/docker/` named after install and cleanup smoke tests,
-and two under `scripts/e2e`. One is a markdown file, `docs/platforms/mac/release.md`, classified as
-an installer. The real count is closer to four or five. Deployable tiering already demotes internal
-packages correctly, 43 of them to tier 3, so the mechanism exists; it just does not distinguish a
-container that ships from a container that exists to run a test.
+The 14 is itself too many, which is a second finding and a separate defect. Eight of the fourteen
+are not products:
+
+| Unit | Evidence | Verdict |
+|---|---|---|
+| `cleanup-smoke`, `install-sh-smoke`, `install-sh-e2e`, `install-sh-nonroot` | Dockerfiles under `scripts/docker/`, entrypoints named `openclaw-*-smoke` and `openclaw-install-*` | Test rigs |
+| `e2e`, `qr-import` | Dockerfiles under `scripts/e2e/`, one with entrypoint `["bash"]` | Test rigs |
+| `sandbox-common` | `Dockerfile.sandbox-common`, only `FROM ${BASE_IMAGE}`, no entrypoint | Base image fragment |
+| `release.md` | `docs/platforms/mac/release.md`, classified as an installer | A markdown runbook |
+
+The `release.md` case is the worst of them. It is a release procedure written in prose, read as an
+installer, and its extracted binary list is English words lifted from the sentences: `Cutting`,
+`validating`, `Updating`, `assets`, `now`, `must`, `to`, `private`, `check`, `We`, `your`, `keep`,
+`also`, `when`, `verify`, `raw`, `an`, `attached`. That reaches the customer's output.
+
+The discriminators are present in the evidence already and are not being used: a `scripts/` path, a
+name carrying `smoke`, `e2e` or `test`, an entrypoint of `["bash"]` or `["sleep", "infinity"]`, a
+Dockerfile with no entrypoint at all, and a `.md` extension on something claiming to be an installer.
+
+Deployable tiering already demotes internal packages correctly, 43 of them to tier 3, so the
+mechanism exists. It does not distinguish a container that ships from a container that exists to run
+a test, and a false positive here is not one wrong row. Because step 2 sets the scope for everything
+after it, each phantom product becomes a full analysis of something that does not exist.
 
 ## Deterministic traits, interpreted purpose
 
