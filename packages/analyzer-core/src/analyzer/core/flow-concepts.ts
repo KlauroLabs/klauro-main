@@ -1,5 +1,5 @@
-import type {
-  CASOutput,
+import { mergeFlowsByEntryPoint } from './flow-merge-by-entry';
+import type { CASOutput,
   CASNode,
   CASEdge,
   CASEntryPoint,
@@ -2006,7 +2006,7 @@ function buildTerminalFlows(
     if (opts.maxFlows && opts.maxFlows > 0 && flows.length >= opts.maxFlows) break;
   }
 
-  return flows;
+  return mergeFlowsByEntryPoint(flows);
 }
 
 const FLOW_RANK_WEIGHTS = {

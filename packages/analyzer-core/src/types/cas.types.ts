@@ -4358,6 +4358,13 @@ export interface FlowStepGraph {
   edges: FlowStepEdge[];
 }
 
+export interface FlowEffect {
+  exit_point_id: string;
+  kind: string;
+  produces: string;
+  node_id: string;
+}
+
 export interface FlowConcept {
   flow_id: string;
   name: string;
@@ -4370,12 +4377,8 @@ export interface FlowConcept {
   entities: string[];
   contract: FlowICELOTContract;
   steps: FlowStep[];
-  terminus?: {
-    exit_point_id: string;
-    kind: string;
-    produces: string;
-    node_id: string;
-  };
+  terminus?: FlowEffect;
+  effects?: FlowEffect[];
   criticality?: 'critical' | 'high' | 'medium' | 'low';
   step_graph?: FlowStepGraph;
   continuations?: string[];

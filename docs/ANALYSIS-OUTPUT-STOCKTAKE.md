@@ -25,6 +25,13 @@ Status: decided 2026-09-13.
 **What it accomplishes**
 `capabilities`, `flows`, `steps`, `behavior_surfaces`, `user_journeys`, `intents`, `flow_summary`, `flow_coverage`, `behaviors`, `product_map`
 
+`flows[].effects` is new. A flow used to be one path from an entry point to one exit point, so a
+command became as many flows as it had reachable effects: one voice-call command appeared five
+times, differing only in which tunnel command it ended at, and a database search appeared 48 times.
+A flow is now one behaviour, and `effects` lists everything it reaches. It tells a customer what a
+single action actually does to the outside world, which is the question `terminus` could only answer
+one path at a time.
+
 **What ships**
 `distribution_units`, `deployable_evidence`, `dependencies`, `dependency_manifest`, `dependency_roles`, `libraries`, `configuration`, `runtime`
 
