@@ -124,6 +124,39 @@ confident-looking label with no reasoning behind it and no way to be wrong out l
 The split is therefore: deterministic layers establish what is there, the model says what it means,
 and every claim it makes traces back to a trait.
 
+## Is the index accurate
+
+Measured against the source on the same repository. The short answer is that extraction is sound and
+linkage is not, which means the starting point is good.
+
+**Code coverage is essentially complete.**
+
+| Extension | On disk | Not indexed |
+|---|---|---|
+| `.ts` | 3,743 | 4 |
+| `.swift` | 486 | 0 |
+| `.kt` | 77 | 0 |
+| `.sh` | 51 | 0 |
+| `.go` | 14 | 0 |
+| `.py` | 6 | 0 |
+
+**Symbols match the source.** Spot-checking a 361-line test file against its 45 indexed nodes: all
+five top-level constants at the right lines, all functions including three nested helpers, all three
+imports, and 26 tests with their real names. Two blemishes, both in the same family: the callbacks
+passed to `describe` are named by position, `test_callback_45_34`, so one block's name is lost, and
+one node is attributed to line 1 instead of line 45.
+
+**Configuration and documentation are not indexed.** 91 JSON files, 782 markdown files and 26 YAML
+files produce no nodes. Skipping lock files is right. Skipping configuration is not, because step 1
+says the index carries configuration and manifests, and later layers need them.
+
+**Half of the index is not code.** 49% of nodes are analyzer observations rather than symbols, and
+42,241 of those are library usage records. That is not inaccuracy, but it inflates the graph and
+makes structure harder to see.
+
+So the index is accurate and incomplete in a narrow, fixable way, and it is not connected. The build
+is linkage on top of sound extraction, not a rewrite of extraction.
+
 ## The measured state of the index
 
 Working from endpoints through the index is the right frame, and it cannot run today. Measured on
