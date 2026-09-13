@@ -302,6 +302,32 @@ Three findings are worth acting on independently of memory:
 - **5,361 nodes repeat `source.file` inside `metadata.attributes.file`**, and 1,393 of the 5,447
   `qualified_name` values are exactly `source.file` and `name` joined with a colon.
 
+## The reference indexer does not materialise flows
+
+Its graph schema has no flow, capability, entity or step. The node labels are code: function,
+method, class, struct, interface, type, variable, module, file, folder, route, channel, package,
+decorator. Paths are a query, answered on demand between two named functions, rather than an
+artifact stored at index time.
+
+So the cross product cannot arise there. A command with five reachable effects is one function with
+five outgoing paths, not five stored flows. That is not a model we can simply adopt, because the
+comprehension layer is the product and a query is not a deliverable, but the lesson holds: a flow
+should be materialised once per behaviour with its effects as attributes, not once per path.
+
+Two other differences worth recording.
+
+**Entry point is a property of a node there, not a separate list.** `is_entry_point` sits on the
+function alongside its complexity and signature, so entry points are attached to the graph by
+construction and the linkage defect we spent this session fixing cannot occur. The trade is meaning:
+it flags 5,773 functions, which is every root of the call graph, against 471 curated entry points
+across eight categories here. Cheap and structural against meaningful and needing linkage.
+
+**More call edges, some of them wrong.** It records 61,815 calls where we resolve 36,443. Tracing a
+command registration there returns callees including `description` resolved to a Swift file in the
+macOS app, `action` resolved to an Android manifest, and `toString` resolved to an unrelated error
+class. Those are bare-name collisions resolved across language boundaries. The larger number is not
+uniformly better, and the resolution strategy is not the part to copy.
+
 ## What the existing Rust does
 
 `packages/analyzer-core/native/klauro-parse` is 85 lines. It takes one file's source on stdin,
