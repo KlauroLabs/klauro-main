@@ -265,12 +265,26 @@ function assignMigrationFromPathConvention(nodes: CASNode[]): void {
 const ROUTE_ENTRY_TYPES = new Set(['http', 'route', 'api', 'rpc']);
 const MIN_HANDLERS_FOR_CONTROLLER = 2;
 
-function ownerOf(nodeId: string, nodesById: Map<string, CASNode>, edges: CASEdge[]): string | undefined {
+function containmentSourcesByTarget(edges: CASEdge[]): Map<string, string[]> {
+  const byTarget = new Map<string, string[]>();
+  for (const edge of edges) {
+    if (!CONTAINMENT_EDGE_TYPES.has(edge.type)) continue;
+    const bucket = byTarget.get(edge.target);
+    if (bucket) bucket.push(edge.source);
+    else byTarget.set(edge.target, [edge.source]);
+  }
+  return byTarget;
+}
+
+function ownerOf(
+  nodeId: string,
+  nodesById: Map<string, CASNode>,
+  containmentSources: Map<string, string[]>
+): string | undefined {
   const node = nodesById.get(nodeId);
   if (node?.parent) return node.parent;
-  const candidates = edges
-    .filter(edge => CONTAINMENT_EDGE_TYPES.has(edge.type) && edge.target === nodeId)
-    .map(edge => nodesById.get(edge.source))
+  const candidates = (containmentSources.get(nodeId) || [])
+    .map(sourceId => nodesById.get(sourceId))
     .filter((owner): owner is CASNode => Boolean(owner))
     .sort((left, right) => {
       const fileRank = Number(left.type === 'file') - Number(right.type === 'file');
@@ -283,12 +297,13 @@ function ownerOf(nodeId: string, nodesById: Map<string, CASNode>, edges: CASEdge
 
 function assignControllerFromGrouping(nodes: CASNode[], edges: CASEdge[], entryPoints: CASEntryPoint[]): void {
   const nodesById = new Map(nodes.map(n => [n.id, n] as const));
+  const containmentSources = containmentSourcesByTarget(edges);
   const byOwner = new Map<string, Set<string>>();
   for (const ep of entryPoints) {
     if (!ROUTE_ENTRY_TYPES.has(ep.type)) continue;
     const handlerId = resolveHandlerNodeId(ep);
     if (!handlerId) continue;
-    const owner = ownerOf(handlerId, nodesById, edges);
+    const owner = ownerOf(handlerId, nodesById, containmentSources);
     if (!owner || owner === handlerId) continue;
     const set = byOwner.get(owner) || new Set<string>();
     set.add(ep.id);

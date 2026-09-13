@@ -104,7 +104,8 @@ of millions of path normalisations. It now groups nodes by normalised path in a 
 
 `node-roles.ts` resolved each entry point's handler with a linear search of the node array, once per
 entry point. With 471 entry points that is roughly 63 million comparisons. It now builds an
-identifier map once.
+identifier map once. The same file also found a node's owner by filtering all 195,813 edges on every
+call, again once per route entry point; containment edges are now indexed by target in one pass.
 
 A third, in test-suite matching: comparing a test file against every existing suite normalised both
 paths on every comparison, which means `path.relative` and two regular expressions per pair. The
@@ -113,9 +114,11 @@ comparison moved out of the orchestrator into a module of its own.
 
 | Pass | Before | After |
 |---|---|---|
-| `pp_nodeRoles` | 1,135 ms | 517 ms |
-| `pp_flowCoverage` | 2,756 ms | 1,170 ms |
-| `pp_securityBoundaries` | 252 ms | 159 ms |
+| `pp_nodeRoles` | 1,262 ms | 146 ms |
+| `pp_flowCoverage` | 2,890 ms | 1,183 ms |
+| `pp_securityBoundaries` | 274 ms | 154 ms |
+| `pp_enhancedPurpose` | 1,494 ms | 420 ms |
+| `pp_traceability` | 2,478 ms | 1,250 ms |
 
 All three are behaviour-preserving. `structural-ownership.ts` had no tests; it has five now, and
 they pass against the previous implementation as well as the new one, so they pin the behaviour
@@ -126,9 +129,13 @@ Running total on the same repository, all output byte-identical throughout:
 
 | | Start | Now |
 |---|---|---|
-| Whole analysis | 52,813 ms | 39,205 ms |
-| Wall clock | 58.2 s | 44.1 s |
-| User CPU | 74.2 s | 61.3 s |
+| Whole analysis | 52,813 ms | 38,407 ms |
+| Wall clock | 58.2 s | 43.2 s |
+| User CPU | 74.2 s | 60.4 s |
+
+The profile is flat now. Nothing first-party costs more than half a second, and the largest single
+entry is 9.3 s of idle time waiting on file reads. That is not a function to optimise; it is the
+absence of a worker pool.
 
 ## The CPU profile
 
