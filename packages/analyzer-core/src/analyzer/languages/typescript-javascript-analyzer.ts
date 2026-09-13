@@ -13,7 +13,7 @@ import { TSESTree } from '@typescript-eslint/typescript-estree';
 import { cachedGlob as glob } from '../core/glob-cache';
 import { yieldToEventLoop, createYieldBudget } from '../core/event-loop-yield';
 import { dropEdgesReferencingRemovedEndpoints } from '../core/graph-referential-integrity';
-import { availableParallelism } from 'node:os';
+import { parseWorkerCount, MIN_FILES_FOR_WORKERS } from '../core/parse-worker-pool-size';
 import { Worker } from 'node:worker_threads';
 import { resolveTreeSitterWorkerPath, treeSitterWorkerExecArgv, treeSitterWorkerResourceLimits } from '../core/tree-sitter-worker-runtime';
 import {
@@ -470,14 +470,12 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   private async extractTreeSitterFilesInWorkers(
     files: Array<{ fullPath: string; content: string }>
   ): Promise<Array<TSFileExtraction | Error>> {
-    const configured = Number(process.env.KLAURO_TS_PARSE_WORKERS || '');
-    const workerCount = Math.max(1, Math.min(
-      files.length,
-      Number.isFinite(configured) && configured > 0
-        ? Math.floor(configured)
-        : Math.min(2, Math.max(1, availableParallelism() - 1))
-    ));
-    if (workerCount === 1 || files.length < 40 || process.env.JEST_WORKER_ID) {
+    const workerCount = parseWorkerCount({
+      fileCount: files.length,
+      configured: process.env.KLAURO_TS_PARSE_WORKERS,
+      workerHeapMb: treeSitterWorkerResourceLimits().maxOldGenerationSizeMb
+    });
+    if (workerCount === 1 || files.length < MIN_FILES_FOR_WORKERS || process.env.JEST_WORKER_ID) {
       return this.extractTreeSitterFilesSequentially(files);
     }
 

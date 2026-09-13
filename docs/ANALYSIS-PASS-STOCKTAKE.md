@@ -93,6 +93,29 @@ scanning the repository themselves. Two measured attempts to make that scanning 
 glob layer failed (see below). The cost is structural: detection asks 211 analyzers a question
 that an index would answer in microseconds, and it asks before the index exists.
 
+## The parse pool was capped at two
+
+The TypeScript analyzer already extracts files in a worker pool. The pool size was
+`Math.min(2, cores - 1)`: at most two workers no matter what the machine has. On a ten-core host
+that ran the parse phase at roughly a fifth of the available speed.
+
+The cap was there for memory. Each worker is allowed a 768 MB heap, so six workers looked like 4.6 GB
+of exposure in a container with a fixed budget. Measured, that exposure does not appear: peak
+resident memory for the whole analysis was 5,503 MB with two workers and 5,282 MB with six. The
+workers are not what holds the memory. The parent process is.
+
+| Workers | TypeScript | Language analyzers | Whole analysis | Wall | User CPU |
+|---|---|---|---|---|---|
+| 2 | 11,472 ms | 14,235 ms | 39,142 ms | 44.3 s | 60.5 s |
+| 4 | 7,072 ms | 9,732 ms | 34,020 ms | 39.7 s | 61.0 s |
+| 8 | 5,522 ms | 8,267 ms | 32,919 ms | 37.8 s | 67.6 s |
+
+Returns flatten after six while CPU keeps climbing, so six is the cap. The size is now bounded by
+three things at once, in `parse-worker-pool-size.ts`: the file count, one less than the core count,
+and how much memory the pool would be allowed to claim. The memory bound is what makes raising the
+core bound safe in a container, and it is the same shape the reference indexer uses, a total budget
+divided by the number of workers rather than a fixed allowance each.
+
 ## Two quadratic scans
 
 The profile after the ignore work exposed two loops that scan every node for each item they
