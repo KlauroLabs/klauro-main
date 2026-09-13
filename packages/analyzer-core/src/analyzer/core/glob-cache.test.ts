@@ -194,3 +194,133 @@ test('outside a run, cachedGlob is a pass-through to direct glob', async () => {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// The run-shared Ignore compiles directory-subtree patterns ("**/name/**") into
+// a segment test instead of handing them to the pattern engine. 132 of the 181
+// distinct ignore patterns a real analysis uses have that shape. These tests
+// pin the semantics the compilation has to preserve exactly:
+//   - "**/name/**" ignores the directory itself as well as its contents,
+//     because glob probes the path with a trailing slash
+//   - "**/name/**/*" does NOT ignore the directory itself, only descendants
+//   - "name/**" applies at the root only
+//   - matching is on the path RELATIVE to cwd, so a cwd that itself contains a
+//     segment called "build" must not ignore the entire repository
+
+const FAST_IGNORE_PATTERNS = [
+  '**/node_modules/**', 'node_modules/**',
+  '**/build/**', 'build/**',
+  '**/.venv*/**', '.venv*/**',
+  '**/env[0-9]*/**', 'env[0-9]*/**',
+  '**/dist-*/**',
+  '**/coverage/**/*',
+  '**/lib/jquery/**',
+  '**/*.min.js'
+];
+
+function makeSegmentTree(): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'glob-cache-segments-'));
+  const f = (rel: string) => write(path.join(root, rel));
+  f('src/a.ts');
+  f('src/a.min.js');
+  f('node_modules/pkg/index.js');
+  f('deep/node_modules/pkg/index.js');
+  f('build/out.js');
+  f('src/build/out.js');
+  f('.venv-x/h.py');
+  f('env2/i.py');
+  f('env/keep.py');
+  f('dist-esm/x.js');
+  f('dist/x.js');
+  f('coverage/report.json');
+  f('lib/jquery/jquery.js');
+  f('lib/keep/keep.js');
+  return root;
+}
+
+test('compiled directory-subtree ignores match the pattern engine exactly', async () => {
+  const root = makeSegmentTree();
+  try {
+    const variants: Array<Record<string, unknown>> = [
+      { cwd: root, ignore: FAST_IGNORE_PATTERNS, nodir: true },
+      { cwd: root, ignore: FAST_IGNORE_PATTERNS, nodir: true, dot: true },
+      { cwd: root, ignore: FAST_IGNORE_PATTERNS },
+      { cwd: root, ignore: FAST_IGNORE_PATTERNS, absolute: true, nodir: true }
+    ];
+    for (const pattern of ['**/*', '**/*.js', '**/*.py', 'src/**/*']) {
+      for (const opts of variants) {
+        const direct = ((await realGlob(pattern, opts as never)) as string[]).sort();
+        const token = beginGlobRun();
+        let cached: string[];
+        try {
+          cached = await cachedGlob(pattern, opts as never);
+        } finally {
+          endGlobRun(token);
+        }
+        assert.deepEqual(cached, direct, `pattern=${pattern} opts=${JSON.stringify(Object.keys(opts))}`);
+      }
+    }
+    const token = beginGlobRun();
+    try {
+      const all = await cachedGlob('**/*', { cwd: root, ignore: FAST_IGNORE_PATTERNS, nodir: true, dot: true } as never);
+      assert.ok(!all.some(f => f.includes('node_modules')), 'nested and root node_modules both pruned');
+      assert.ok(!all.some(f => f.startsWith('build/') || f.includes('/build/')), 'build pruned at any depth');
+      assert.ok(!all.some(f => f.startsWith('.venv-x/')), 'wildcard directory name pruned');
+      assert.ok(!all.some(f => f.startsWith('env2/')), 'character-class directory name pruned');
+      assert.ok(!all.some(f => f.startsWith('dist-esm/')), 'dist-* pruned');
+      assert.ok(!all.includes('lib/jquery/jquery.js'), 'path-shaped residue still applied');
+      assert.ok(!all.includes('src/a.min.js'), 'suffix residue still applied');
+      assert.ok(all.includes('env/keep.py'), 'env without a digit is not env[0-9]*');
+      assert.ok(all.includes('dist/x.js'), 'dist is not dist-*');
+      assert.ok(all.includes('lib/keep/keep.js'), 'only the named lib subtree is excluded');
+      assert.ok(all.includes('src/a.ts'), 'ordinary sources survive');
+    } finally {
+      endGlobRun(token);
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('ignores match on the path relative to cwd, not the absolute path', async () => {
+  // A repository that itself lives under a directory called "build" must not
+  // have every one of its files ignored by "**/build/**".
+  const outer = fs.mkdtempSync(path.join(os.tmpdir(), 'glob-cache-outer-'));
+  try {
+    const root = path.join(outer, 'build', 'node_modules', 'repo');
+    write(path.join(root, 'src/a.ts'));
+    write(path.join(root, 'src/b.ts'));
+    const opts = { cwd: root, ignore: FAST_IGNORE_PATTERNS, nodir: true };
+    const direct = ((await realGlob('**/*', opts as never)) as string[]).sort();
+    const token = beginGlobRun();
+    let cached: string[];
+    try {
+      cached = await cachedGlob('**/*', opts as never);
+    } finally {
+      endGlobRun(token);
+    }
+    assert.deepEqual(cached, direct);
+    assert.deepEqual(cached, ['src/a.ts', 'src/b.ts'], 'cwd segments must not be treated as repository paths');
+  } finally {
+    fs.rmSync(outer, { recursive: true, force: true });
+  }
+});
+
+test('KLAURO_GLOB_FAST_IGNORE=off falls back to the pattern engine with identical results', async () => {
+  const root = makeSegmentTree();
+  const prior = process.env.KLAURO_GLOB_FAST_IGNORE;
+  try {
+    const opts = { cwd: root, ignore: FAST_IGNORE_PATTERNS, nodir: true, dot: true };
+    const direct = ((await realGlob('**/*', opts as never)) as string[]).sort();
+    process.env.KLAURO_GLOB_FAST_IGNORE = 'off';
+    const token = beginGlobRun();
+    try {
+      assert.deepEqual(await cachedGlob('**/*', opts as never), direct, 'escape hatch must not change results');
+    } finally {
+      endGlobRun(token);
+    }
+  } finally {
+    if (prior === undefined) delete process.env.KLAURO_GLOB_FAST_IGNORE;
+    else process.env.KLAURO_GLOB_FAST_IGNORE = prior;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

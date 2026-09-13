@@ -119,6 +119,46 @@ its own, which is what having no shared index forces.
 Reading the directory tree itself is cheap. `readdir` is 0.85 s. The expense is entirely in the
 repeated filtering that follows.
 
+## The ignore census, and the first fix
+
+Counting what the 510 traversals actually ask, across one analysis:
+
+| Shape | Distinct patterns | Instances passed to the engine |
+|---|---|---|
+| Directory name, `**/name/**` | 132 | 35,620 |
+| File suffix, `**/*.min.js` | 8 | 1,164 |
+| Everything else | 41 | 12,908 |
+| **Total** | **181** | **49,692** |
+
+Nearly three quarters are a plain directory name, and most of the remainder are a directory name
+with a wildcard in it (`dist-*`, `.venv*`, `env[0-9]*`, `*.egg-info`). Only about fifteen are
+genuinely path-shaped. All of that was being handed to a glob pattern engine and evaluated against
+every path the walk reached.
+
+The run-shared `Ignore` now compiles those patterns once into a segment test: a set of directory
+names, one regular expression for the wildcard names, and a residue that still goes to the engine.
+The semantics it has to preserve are narrow and now pinned by tests. `**/name/**` ignores the
+directory itself as well as its contents, because glob probes each path a second time with a
+trailing slash appended. `**/name/**/*` does not ignore the directory itself. `name/**` applies at
+the root only. Matching is on the path relative to the walk root, so a repository that lives under
+a directory called `build` is not entirely ignored.
+
+Measured on the same repository, output byte-identical on three repositories:
+
+| | Pattern engine | Compiled |
+|---|---|---|
+| Analyzer detection | 4,123 ms | 2,185 ms |
+| Language analyzers | 16,119 ms | 13,570 ms |
+| Framework analyzers | 6,085 ms | 4,432 ms |
+| Whole analysis | 52,813 ms | 47,423 ms |
+| Wall clock | 58.2 s | 52.9 s |
+| User CPU | 74.2 s | 67.7 s |
+
+`KLAURO_GLOB_FAST_IGNORE=off` restores the old path.
+
+This is a floor, not a ceiling. It makes each of the 510 traversals cheaper. It does not remove
+them, and removing them is what the index is for.
+
 ## What the existing Rust does
 
 `packages/analyzer-core/native/klauro-parse` is 85 lines. It takes one file's source on stdin,

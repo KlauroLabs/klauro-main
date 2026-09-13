@@ -93,23 +93,113 @@ type GlobOptions = Record<string, unknown> & { cwd?: string };
 
 
 
+const DIRECTORY_SUBTREE_ANYWHERE = /^\*\*\/([^/]+)\/\*\*$/;
+const DIRECTORY_SUBTREE_ROOTED = /^([^/]+)\/\*\*$/;
+const GLOB_METACHARACTERS = /[*?[\]{}!+@()|]/;
+const REGEXP_LITERALS = /[.+^${}()|\\]/g;
+
+function nameGlobToRegexSource(name: string): string | null {
+  let source = '';
+  for (let index = 0; index < name.length; index += 1) {
+    const character = name[index];
+    if (character === '*') { source += '[^/]*'; continue; }
+    if (character === '?') { source += '[^/]'; continue; }
+    if (character === '[') {
+      const close = name.indexOf(']', index + 1);
+      if (close === -1) return null;
+      source += name.slice(index, close + 1);
+      index = close;
+      continue;
+    }
+    if (/[{}!+@()|]/.test(character)) return null;
+    source += character.replace(REGEXP_LITERALS, '\\$&');
+  }
+  return source;
+}
+
+interface CompiledSubtreeIgnore {
+  names: Set<string>;
+  namePattern: RegExp | null;
+  residue: string[];
+}
+
+function compileSubtreeIgnores(list: readonly string[], nocase: boolean): CompiledSubtreeIgnore {
+  const anywhere = new Set<string>();
+  for (const entry of list) {
+    const match = DIRECTORY_SUBTREE_ANYWHERE.exec(entry);
+    if (match) anywhere.add(match[1]);
+  }
+  const names = new Set<string>();
+  const sources: string[] = [];
+  const residue: string[] = [];
+  for (const entry of list) {
+    const anywhereMatch = DIRECTORY_SUBTREE_ANYWHERE.exec(entry);
+    if (anywhereMatch) {
+      const name = anywhereMatch[1];
+      if (!GLOB_METACHARACTERS.test(name)) {
+        names.add(nocase ? name.toLowerCase() : name);
+        continue;
+      }
+      const source = nameGlobToRegexSource(name);
+      if (source !== null) { sources.push(source); continue; }
+      residue.push(entry);
+      continue;
+    }
+    const rootedMatch = DIRECTORY_SUBTREE_ROOTED.exec(entry);
+    if (rootedMatch && anywhere.has(rootedMatch[1])) continue;
+    residue.push(entry);
+  }
+  const namePattern = sources.length
+    ? new RegExp(`^(?:${sources.join('|')})$`, nocase ? 'i' : '')
+    : null;
+  return { names, namePattern, residue };
+}
+
 class MemoizedIgnore {
   private readonly ignoredMemo = new Map<string, boolean>();
   private readonly childrenMemo = new Map<string, boolean>();
-  constructor(private readonly inner: Ignore) {}
+  constructor(
+    private readonly inner: Ignore | null,
+    private readonly compiled: CompiledSubtreeIgnore,
+    private readonly nocase: boolean
+  ) {}
+
+  private segmentsOf(p: { relativePosix?: () => string; relative?: () => string }): string[] {
+    const raw = typeof p.relativePosix === 'function'
+      ? p.relativePosix()
+      : (typeof p.relative === 'function' ? p.relative().replace(/\\/g, '/') : '');
+    return raw.length === 0 ? [] : raw.split('/');
+  }
+
+  private segmentIgnored(segment: string): boolean {
+    if (this.compiled.names.has(this.nocase ? segment.toLowerCase() : segment)) return true;
+    return this.compiled.namePattern !== null && this.compiled.namePattern.test(segment);
+  }
+
+  private anyAncestorIgnored(segments: readonly string[], includeLast: boolean): boolean {
+    const limit = includeLast ? segments.length : segments.length - 1;
+    for (let index = 0; index < limit; index += 1) {
+      if (this.segmentIgnored(segments[index])) return true;
+    }
+    return false;
+  }
+
   ignored(p: Parameters<Ignore['ignored']>[0]): boolean {
     const key = p.fullpath();
     const hit = this.ignoredMemo.get(key);
     if (hit !== undefined) return hit;
-    const verdict = this.inner.ignored(p);
+    const verdict = this.anyAncestorIgnored(this.segmentsOf(p), true)
+      || (this.inner !== null && this.inner.ignored(p));
     this.ignoredMemo.set(key, verdict);
     return verdict;
   }
+
   childrenIgnored(p: Parameters<Ignore['childrenIgnored']>[0]): boolean {
     const key = p.fullpath();
     const hit = this.childrenMemo.get(key);
     if (hit !== undefined) return hit;
-    const verdict = this.inner.childrenIgnored(p);
+    const verdict = this.anyAncestorIgnored(this.segmentsOf(p), true)
+      || (this.inner !== null && this.inner.childrenIgnored(p));
     this.childrenMemo.set(key, verdict);
     return verdict;
   }
@@ -179,9 +269,13 @@ function enhanceOptions(state: RunState, options: GlobOptions | undefined): Glob
 
 
 
-    memo = new MemoizedIgnore(
-      new Ignore(ignoreList, { nocase, platform: process.platform } as ConstructorParameters<typeof Ignore>[1])
-    );
+    const compiled = process.env.KLAURO_GLOB_FAST_IGNORE === 'off'
+      ? { names: new Set<string>(), namePattern: null, residue: [...ignoreList] }
+      : compileSubtreeIgnores(ignoreList, nocase);
+    const inner = compiled.residue.length > 0
+      ? new Ignore(compiled.residue, { nocase, platform: process.platform } as ConstructorParameters<typeof Ignore>[1])
+      : null;
+    memo = new MemoizedIgnore(inner, compiled, nocase);
     state.ignores.set(ignoreKey, memo);
   }
   return { ...opts, ignore: memo };
