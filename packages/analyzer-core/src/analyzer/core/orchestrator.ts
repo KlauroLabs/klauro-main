@@ -298,6 +298,7 @@ export type { CASOutput } from '../../types/cas.types';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob, cachedGlobSync, beginGlobRun, endGlobRun } from './glob-cache';
 import { pathsReferToSameFile } from './project-relative-path';
+import { resolveRegistrationHandlerByLine, ROUTE_LINKABLE_ENTRY_TYPES } from './registration-handler-link';
 import { yieldToEventLoop, createYieldBudget } from './event-loop-yield';
 import { extractEntityRelations, cardinalityForRelationType, parseRelationDeclaration } from './entity-relations';
 import { globSync } from 'glob';
@@ -21111,8 +21112,8 @@ export class AnalyzerOrchestrator {
     };
 
     for (const ep of entryPoints) {
-      const supportedTypes = ['http', 'websocket', 'message', 'event', 'cli'];
-      if (!supportedTypes.includes(ep.type)) continue;
+      if (!ROUTE_LINKABLE_ENTRY_TYPES.has(ep.type)) continue;
+      if (resolveRegistrationHandlerByLine(ep, nodeById, functionNodesByFile, edges, existingEdgeIds)) continue;
 
       if (!ep.handler?.method_name) {
         if (ep.type !== 'cli') continue;

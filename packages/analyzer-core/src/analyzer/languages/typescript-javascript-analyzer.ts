@@ -1,3 +1,4 @@
+import { callbackNodeName } from '../core/callback-node-identity';
 import { BaseAnalyzer, AnalysisContext, FileAnalysisContext } from '../core/base-analyzer';
 import {
   CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint,
@@ -491,7 +492,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       'tree-sitter-ts-worker.js'
     );
     const sourceWorkerPath = path.join(__dirname, '..', 'core', 'tree-sitter-ts-worker.ts');
-    const workerPath = resolveTreeSitterWorkerPath(bundledWorkerPath, compiledWorkerPath, sourceWorkerPath);
+    const workerPath = resolveTreeSitterWorkerPath(bundledWorkerPath, compiledWorkerPath, sourceWorkerPath,
+      [path.join(__dirname, '..', 'core', 'tree-sitter-ts-extractor.ts')]);
     const results = new Array<TSFileExtraction | Error>(files.length);
     let nextTask = 0;
 
@@ -835,10 +837,10 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   ): TSExtractedFunction[] {
     const testSource = this.isTestSourcePath(filePath);
     const standaloneFunctions = extraction.functions.map(func => {
-      if (!testSource || !func.isAnonymousCallback) return func;
+      if (!func.isAnonymousCallback) return func;
       return {
         ...func,
-        name: `test_callback_${func.lineStart}_${func.columnStart}`,
+        name: callbackNodeName(func.callbackOf, func.lineStart, func.columnStart, testSource),
         isAnonymousCallback: false,
       };
     });
