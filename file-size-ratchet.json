@@ -27,7 +27,7 @@
     },
     {
       "file": "packages/analyzer-core/src/types/cas.types.ts",
-      "ceiling": 5026
+      "ceiling": 5028
     },
     {
       "file": "packages/analyzer-core/src/analyzer/frameworks/web/django-analyzer.ts",
@@ -67,7 +67,7 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/flow-concepts.ts",
-      "ceiling": 2692
+      "ceiling": 2695
     },
     {
       "file": "packages/analyzer-core/src/analyzer/languages/go-analyzer.ts",

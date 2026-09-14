@@ -1916,7 +1916,10 @@ function buildTerminalFlows(
       const produces = resolvedTarget
         || (exit.type === 'sdk' && !hasResolvedDestination ? exit.type : exit.name)
         || exit.type;
-      terminus = { exit_point_id: exit.id, kind: exit.type, produces, node_id: terminusNodeId };
+      const found = chainNodes.findIndex(entry => entry.node.id === terminusNodeId);
+      const reach = found >= 0 ? found : chainNodes.length - 1;
+      terminus = { exit_point_id: exit.id, kind: exit.type, produces, node_id: terminusNodeId, hops: reach,
+        via_shared_helper: chainNodes.slice(1, reach).some(entry => sharedHelpers.has(entry.node.id)) };
       const terminusStep = [...steps].reverse().find(s => s.functions.some(f => f.function_id === terminusNodeId)) || steps[steps.length - 1];
       const terminusEvidence = `terminal chain ${chain.id} resolves exit point ${exit.id} (${exit.type} → ${produces})`;
       const stampTerminus = (facet: ProvenanceFacet, value: string) => {

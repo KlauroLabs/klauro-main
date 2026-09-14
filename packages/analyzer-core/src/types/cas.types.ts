@@ -4364,6 +4364,8 @@ export interface FlowEffect {
   kind: string;
   produces: string;
   node_id: string;
+  hops?: number;
+  via_shared_helper?: boolean;
 }
 
 export interface FlowConcept {

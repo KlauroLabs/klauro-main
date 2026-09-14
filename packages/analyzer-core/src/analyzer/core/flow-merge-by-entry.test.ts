@@ -112,3 +112,40 @@ test('ties on step count resolve deterministically', () => {
   assert.equal(first[0].flow_id, 'a');
   assert.equal(second[0].flow_id, 'a');
 });
+
+// An effect reached only through shared setup is weaker evidence about a flow
+// than one the flow reaches directly. Asked what a voice-call command does, the
+// analysis answered with five tunnel spawns belonging to a different command,
+// all of them four to seven hops away through a shared runtime helper. The
+// effects are still recorded, because they are reachable and that is a fact,
+// but the primary effect is now the nearest one the flow reaches on its own.
+
+function reached(id: string, hops: number, viaShared: boolean, kind = 'sdk') {
+  return { exit_point_id: id, kind, produces: id, node_id: `node_${id}`, hops, via_shared_helper: viaShared };
+}
+
+test('an effect the flow reaches directly outranks one inherited through shared code', () => {
+  const merged = mergeFlowsByEntryPoint([
+    flow('a', 'ep', 2, reached('tunnel', 5, true)),
+    flow('b', 'ep', 1, reached('ownWrite', 2, false, 'file'))
+  ]);
+  assert.equal(merged[0].terminus?.exit_point_id, 'ownWrite');
+  assert.deepEqual(merged[0].effects?.map(e => e.exit_point_id), ['ownWrite', 'tunnel'], 'both kept, own first');
+});
+
+test('among effects of equal standing the nearer one comes first', () => {
+  const merged = mergeFlowsByEntryPoint([
+    flow('a', 'ep', 1, reached('far', 7, true)),
+    flow('b', 'ep', 1, reached('near', 3, true))
+  ]);
+  assert.deepEqual(merged[0].effects?.map(e => e.exit_point_id), ['near', 'far']);
+  assert.equal(merged[0].terminus?.exit_point_id, 'near', 'when everything is inherited, the nearest still leads');
+});
+
+test('effects with no reach recorded sort last rather than first', () => {
+  const merged = mergeFlowsByEntryPoint([
+    flow('a', 'ep', 1, effect('unknown')),
+    flow('b', 'ep', 1, reached('measured', 4, true))
+  ]);
+  assert.deepEqual(merged[0].effects?.map(e => e.exit_point_id), ['measured', 'unknown']);
+});

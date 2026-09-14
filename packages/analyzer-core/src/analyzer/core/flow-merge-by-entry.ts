@@ -33,7 +33,21 @@ function effectsOf(flows: readonly FlowConcept[]): FlowEffect[] {
       effects.push(effect);
     }
   }
-  return effects.sort((left, right) => effectKey(left).localeCompare(effectKey(right)));
+  return effects.sort(evidenceOrder);
+}
+
+function evidenceTier(effect: FlowEffect): number {
+  if (effect.hops === undefined) return 2;
+  return effect.via_shared_helper ? 1 : 0;
+}
+
+function evidenceOrder(left: FlowEffect, right: FlowEffect): number {
+  const tiers = evidenceTier(left) - evidenceTier(right);
+  if (tiers !== 0) return tiers;
+  const leftHops = left.hops ?? Number.MAX_SAFE_INTEGER;
+  const rightHops = right.hops ?? Number.MAX_SAFE_INTEGER;
+  if (leftHops !== rightHops) return leftHops - rightHops;
+  return effectKey(left).localeCompare(effectKey(right));
 }
 
 export function mergeFlowsByEntryPoint(flows: readonly FlowConcept[]): FlowConcept[] {
@@ -62,7 +76,7 @@ export function mergeFlowsByEntryPoint(flows: readonly FlowConcept[]): FlowConce
 
     merged.push({
       ...representative,
-      terminus: representative.terminus || effects[0],
+      terminus: effects[0] || representative.terminus,
       entities: unique(group.flatMap(flow => flow.entities || [])),
       effects: effects.length > 0 ? effects : undefined,
       triggers: (() => {

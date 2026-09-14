@@ -32,6 +32,14 @@ A flow is now one behaviour, and `effects` lists everything it reaches. It tells
 single action actually does to the outside world, which is the question `terminus` could only answer
 one path at a time.
 
+Each effect carries `hops`, the distance from the entry point to where the effect happens, and
+`via_shared_helper`, whether the path crossed code that three or more other callers also use. Both
+are evidence about how firmly the effect belongs to that flow, not judgements. They exist because a
+command was being reported as spawning network tunnels that belong to a different command, reached
+four to seven hops away through shared runtime setup. The effects are still listed, because they are
+genuinely reachable, but a reader can now see which ones the flow reaches on its own. On the
+measured repository 102 of 158 flows have a primary effect they reach directly and 56 inherit one.
+
 **What ships**
 
 `units` is new. It is the answer to step 2 of the flow: the units this repository ships, derived
