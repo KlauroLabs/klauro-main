@@ -302,6 +302,33 @@ Three findings are worth acting on independently of memory:
 - **5,361 nodes repeat `source.file` inside `metadata.attributes.file`**, and 1,393 of the 5,447
   `qualified_name` values are exactly `source.file` and `name` joined with a colon.
 
+## The speed gap is two things, and the larger one is parallelism
+
+Same repository, same machine, comparable graphs:
+
+| | This analysis | The reference indexer |
+|---|---|---|
+| Wall clock | 43.4 s | 5.7 s |
+| User CPU | 70.9 s | 26.0 s |
+| Parallelism, CPU over wall | 1.64x | 4.58x |
+| Peak memory | 3.20 GB | 2.01 GB |
+| Edges produced | 209,010 | 203,988 |
+
+The 7.6x gap decomposes. We spend 2.7x the CPU to produce a graph of the same size, and we use a
+third of the machine while doing it. Running our existing CPU at their parallelism would be 15.5 s
+without making a single computation cheaper.
+
+That is the bigger half and it is structural. File extraction is partly pooled already; the 87
+framework analyzers are independent of each other and run one after another; and the post-processing
+passes, which are the largest block, run strictly in sequence on one thread. The reference tool
+extracts across ten workers, orders the work longest-file-first, and fuses its cross-file resolution
+into the per-file worker rather than running it as a sequential pass afterwards.
+
+Reaching single digits needs all three: pool the framework analyzers, run the independent passes
+concurrently, and cut the CPU. Tuning individual passes cannot close a gap this shape, and the
+speed work earlier in this document, which took the analysis from 52.8 s to 31 s by removing
+quadratic scans, is close to the end of what that approach yields.
+
 ## The reference indexer does not materialise flows
 
 Its graph schema has no flow, capability, entity or step. The node labels are code: function,
