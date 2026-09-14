@@ -22,8 +22,21 @@ function unique(values: readonly string[] | undefined): string[] {
   return values && values.length > 0 ? [...new Set(values)].sort() : [];
 }
 
+function effectsOf(flows: readonly FlowConcept[]): FlowEffect[] {
+  const seen = new Set<string>();
+  const effects: FlowEffect[] = [];
+  for (const flow of flows) {
+    for (const effect of flow.effects || (flow.terminus ? [flow.terminus] : [])) {
+      const key = effectKey(effect);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      effects.push(effect);
+    }
+  }
+  return effects.sort((left, right) => effectKey(left).localeCompare(effectKey(right)));
+}
+
 export function mergeFlowsByEntryPoint(flows: readonly FlowConcept[]): FlowConcept[] {
-  if (flows.length < 2) return [...flows];
 
   const order: string[] = [];
   const groups = new Map<string, FlowConcept[]>();
@@ -40,30 +53,16 @@ export function mergeFlowsByEntryPoint(flows: readonly FlowConcept[]): FlowConce
   const merged: FlowConcept[] = [];
   for (const key of order) {
     const group = groups.get(key)!;
-    if (group.length === 1) {
-      merged.push(group[0]);
-      continue;
-    }
-
     let representative = group[0];
     for (const candidate of group) {
       if (isMoreComplete(candidate, representative)) representative = candidate;
     }
 
-    const effects: FlowEffect[] = [];
-    const seenEffects = new Set<string>();
-    for (const flow of group) {
-      for (const effect of flow.effects || (flow.terminus ? [flow.terminus] : [])) {
-        const key2 = effectKey(effect);
-        if (seenEffects.has(key2)) continue;
-        seenEffects.add(key2);
-        effects.push(effect);
-      }
-    }
-    effects.sort((left, right) => effectKey(left).localeCompare(effectKey(right)));
+    const effects = effectsOf(group);
 
     merged.push({
       ...representative,
+      terminus: representative.terminus || effects[0],
       entities: unique(group.flatMap(flow => flow.entities || [])),
       effects: effects.length > 0 ? effects : undefined,
       triggers: (() => {

@@ -35,7 +35,7 @@ before a model is asked to describe any of it.
 | 2 | Units, from the index | Built. `units` is derived from entry points grouped by the code they reach |
 | 3 | Entry and exit points, flows, entities, domains | Built. Entry points attach to handlers; a flow is one behaviour with several effects |
 | 4 | Frameworks and the framework layer | Runs, not re-examined this pass |
-| 5 | Outcomes through terminality | Diagnosed, not fixed. Ranks shared utilities rather than destinations |
+| 5 | Outcomes through terminality | Diagnosed, not fixed. Terminality ranks shared utilities; `effects` is the signal, and it covers 158 of 507 flows |
 | 6 | Comprehension layer and AI descriptions | Last. Deliberately untouched |
 | 7 | Workspace level | Not started |
 | 8 | Telemetry overlay | Not started |
@@ -269,6 +269,28 @@ subsystem detection and terminality all become derivable once an endpoint can re
 implementation. Until then they are being computed from a graph that cannot answer the question.
 
 ## Terminality, and why it does not yet produce outcomes
+
+The outcome signal is `flows[].effects`, and it is now populated consistently: every flow that has a
+terminus records it as an effect, not only flows that happened to be merged. On the measured
+repository that is 158 of 507 flows:
+
+| Effect kinds | Flows |
+|---|---|
+| none recorded | 349 |
+| sdk | 88 |
+| file | 23 |
+| api | 23 |
+| file and sdk | 16 |
+| database and sdk | 4 |
+| other combinations | 4 |
+
+**349 flows record no effect at all, and that is the gap in step 5.** A flow is built from a call
+chain that runs from an entry point to an exit point, so every flow ought to end somewhere. Two
+thirds of them do not say where. Until that is closed, ranking flows by what they affect can only
+speak for a third of them, and no ranking rule will rescue the rest.
+
+So the order for step 5 is: find why two thirds of flows lose their exit, then rank by effect. Not
+the other way round.
 
 Terminality was being computed over every node and every edge type. 110,937 of 136,928 nodes came
 back terminal, led by class properties with over a thousand incoming edges each. Scoping it to

@@ -82,11 +82,20 @@ test('a flow with no terminus contributes no effect and is not lost', () => {
   assert.deepEqual(merged[0].effects?.map(e => e.exit_point_id), ['x']);
 });
 
-test('a single flow is returned untouched, without an effects array', () => {
-  const only = flow('a', 'ep', 2, effect('x'));
-  const merged = mergeFlowsByEntryPoint([only]);
+test('a flow that was never merged still records its effect', () => {
+  // effects is the trait that says what a behaviour does to the outside world,
+  // so it has to be present on every flow that has one, not only on flows that
+  // happened to be merged. Populating it only on merges left two thirds of
+  // flows carrying a terminus that nothing downstream could read uniformly.
+  const merged = mergeFlowsByEntryPoint([flow('a', 'ep', 2, effect('x'))]);
   assert.equal(merged.length, 1);
-  assert.equal(merged[0].effects, undefined, 'nothing was merged, so nothing is claimed');
+  assert.deepEqual(merged[0].effects?.map(e => e.exit_point_id), ['x']);
+});
+
+test('a flow with no effect at all claims none', () => {
+  const merged = mergeFlowsByEntryPoint([flow('a', 'ep', 2, undefined)]);
+  assert.equal(merged[0].effects, undefined);
+  assert.equal(merged[0].terminus, undefined);
 });
 
 test('flows with no entry point are kept apart rather than collapsed together', () => {
