@@ -24,6 +24,32 @@ An analysis turns one codebase into a complete, navigable understanding of the s
 
 8. **Overlay runtime telemetry last.** When the SDK is installed in a codebase, its runtime observations attach to the finished analysis as a real-time overlay. They enrich the output; they never gate it.
 
+## Layer order, and what is built
+
+The comprehension layer is last. Everything below it is deterministic and must stand on its own
+before a model is asked to describe any of it.
+
+| Step | Layer | State |
+|---|---|---|
+| 1 | Index the codebase once | Built. Extraction complete for code; configuration not indexed |
+| 2 | Units, from the index | Built. `units` is derived from entry points grouped by the code they reach |
+| 3 | Entry and exit points, flows, entities, domains | Built. Entry points attach to handlers; a flow is one behaviour with several effects |
+| 4 | Frameworks and the framework layer | Runs, not re-examined this pass |
+| 5 | Outcomes through terminality | Diagnosed, not fixed. Ranks shared utilities rather than destinations |
+| 6 | Comprehension layer and AI descriptions | Last. Deliberately untouched |
+| 7 | Workspace level | Not started |
+| 8 | Telemetry overlay | Not started |
+
+Step 2 is now answered from the index rather than by scanning for ship artifacts. `units` groups
+entry points by the body of code they reach, so a unit is a set of ways in that land on the same
+system. On the measured repository that produces a unit of 64,659 nodes with 342 entry points for
+the gateway and its command line, an Apple unit of 5,479 holding macOS and iOS, an Android unit of
+986, and a tail of single-entry islands that are build tooling. It finds the iOS application that
+artifact scanning missed, and it needs no Dockerfile.
+
+`deployable_evidence` stays, because ship and run artifacts are real evidence about how a unit is
+delivered. It is no longer what defines a unit.
+
 ## What scopes to what
 
 This is the rule the implementation keeps losing, so it is written out rather than implied by

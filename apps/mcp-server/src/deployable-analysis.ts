@@ -1374,6 +1374,7 @@ export function sliceDeployableAnalysis(cas: CASOutput, deployable: DeployableEv
     ),
     deployable_evidence: [deployable, ...bundledMembersOf(deployable, allEvidence)],
     terminality: undefined,
+      units: undefined,
   };
   const scopedSlice = projectCasChild(cas, {
     id: unitId,

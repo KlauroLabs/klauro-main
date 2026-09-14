@@ -104,6 +104,7 @@ export interface CASOutput extends CASSourceInputCatalog {
   runtime_static_links?: CASRuntimeStaticLink[];
   analysis_facts?: CASAnalysisFact[];
   distribution_units?: CASDistributionUnit[];
+  units?: CASIndexUnit[];
   deployable_evidence?: DeployableEvidence[];
 
 
@@ -4984,6 +4985,15 @@ export interface AnalysisLockStatus {
 
 
 
+
+export interface CASIndexUnit {
+  id: string;
+  name: string;
+  reached_nodes: number;
+  entry_point_ids: string[];
+  entry_point_kinds: Record<string, number>;
+  root_paths: string[];
+}
 
 export interface DeployableEvidence {
   root_path: string;

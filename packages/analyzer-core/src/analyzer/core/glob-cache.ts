@@ -396,6 +396,14 @@ export function cachedGlobSync(pattern: string | string[], options?: GlobOptions
   return result.slice();
 }
 
+export function safeGlobSync(pattern: string | string[], options?: GlobOptions): string[] {
+  try {
+    return cachedGlobSync(pattern, options);
+  } catch {
+    return [];
+  }
+}
+
 export function getGlobCacheStats(): { hits: number; misses: number; active: boolean } {
   return { hits, misses, active: activeToken !== null };
 }

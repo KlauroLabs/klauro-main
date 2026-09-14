@@ -296,9 +296,10 @@ import { buildGroundedDomainVocabulary, recoverAIDomainLabel } from './ai-domain
 import { containsGenericImplementationMechanicFiller, implementationNamesOtherThanSelf, isNarrativePhrasingFailure, mentionsDeclaredImplementationName, stripApplicationImplementationFillerSentences } from './ai-product-narrative';
 export type { CASOutput } from '../../types/cas.types';
 import * as fs from 'fs-extra';
-import { cachedGlob as glob, cachedGlobSync, beginGlobRun, endGlobRun } from './glob-cache';
+import { cachedGlob as glob, safeGlobSync, beginGlobRun, endGlobRun } from './glob-cache';
 import { pathsReferToSameFile } from './project-relative-path';
 import { resolveRegistrationHandlerByLine, ROUTE_LINKABLE_ENTRY_TYPES, markEntryPointNodes } from './registration-handler-link';
+import { deriveIndexUnits } from './index-derived-units';
 import { yieldToEventLoop, createYieldBudget } from './event-loop-yield';
 import { extractEntityRelations, cardinalityForRelationType, parseRelationDeclaration } from './entity-relations';
 import { globSync } from 'glob';
@@ -1857,6 +1858,7 @@ export class AnalyzerOrchestrator {
       analysis_facts: analysisFacts.length > 0 ? analysisFacts : undefined,
       distribution_units: distributionUnits.length > 0 ? distributionUnits : undefined,
       deployable_evidence: deployableEvidence.length > 0 ? deployableEvidence : undefined,
+      units: deriveIndexUnits(allNodes, allEdges, allEntryPoints, projectPath),
       codebase_idioms: idiomDetection.idioms.length > 0 ? idiomDetection.idioms : undefined,
       idiom_summary: idiomDetection.idioms.length > 0 ? idiomDetection.summary : undefined,
       idiom_examples: idiomDetection.examples.length > 0 ? idiomDetection.examples : undefined,
@@ -14426,7 +14428,7 @@ export class AnalyzerOrchestrator {
     }
 
     let sourceTextFound = false;
-    const globbedSourceFiles = this.safeGlobSync('**/*.{ts,tsx,js,jsx,mjs,cjs,py,rs,go,java,cs,php,dart}', {
+    const globbedSourceFiles = safeGlobSync('**/*.{ts,tsx,js,jsx,mjs,cjs,py,rs,go,java,cs,php,dart}', {
       cwd: projectPath,
       nodir: true,
       ignore: this.getProjectTextSourceIgnorePatterns(),
@@ -14540,14 +14542,6 @@ export class AnalyzerOrchestrator {
         file: deniedPath,
         recoverable: true
       });
-    }
-  }
-
-  private safeGlobSync(pattern: string | string[], options: Record<string, any>): string[] {
-    try {
-      return cachedGlobSync(pattern, options as never);
-    } catch {
-      return [];
     }
   }
 

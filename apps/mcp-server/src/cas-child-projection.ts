@@ -90,6 +90,7 @@ export const CAS_CHILD_FIELD_POLICY = {
   analysis_facts: { mode: 'scope' },
   distribution_units: { mode: 'inherit' },
   deployable_evidence: { mode: 'scope' },
+  units: { mode: 'scope' },
   codebase_idioms: { mode: 'inherit' },
   idiom_summary: { mode: 'inherit' },
   idiom_examples: { mode: 'inherit' },

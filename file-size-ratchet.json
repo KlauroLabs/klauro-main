@@ -3,7 +3,7 @@
   "files": [
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "ceiling": 24924
+      "ceiling": 24919
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
@@ -27,7 +27,7 @@
     },
     {
       "file": "packages/analyzer-core/src/types/cas.types.ts",
-      "ceiling": 5019
+      "ceiling": 5026
     },
     {
       "file": "packages/analyzer-core/src/analyzer/frameworks/web/django-analyzer.ts",

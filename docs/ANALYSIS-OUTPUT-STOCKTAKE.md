@@ -33,6 +33,13 @@ single action actually does to the outside world, which is the question `terminu
 one path at a time.
 
 **What ships**
+
+`units` is new. It is the answer to step 2 of the flow: the units this repository ships, derived
+from the index by grouping entry points by the code they reach. Each carries its name, how much code
+it reaches, which entry points belong to it and of what kinds, and its root paths. It tells a
+customer what separate things live in their repository, which for a monorepo is the only honest
+answer at the repository level. It replaces artifact scanning as the definition of a unit;
+`deployable_evidence` remains as evidence of how a unit is delivered.
 `distribution_units`, `deployable_evidence`, `dependencies`, `dependency_manifest`, `dependency_roles`, `libraries`, `configuration`, `runtime`
 
 **Quality and risk**
