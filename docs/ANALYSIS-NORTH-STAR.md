@@ -327,6 +327,30 @@ This is receiver type resolution, and it is the last structural gap before outco
 designed piece of work rather than a fix: resolving a call through a value requires knowing the type
 of that value.
 
+## The missing edges do not only lose information, they misattribute it
+
+Asked what the `continue` command does, the analysis answers: spawn, four more spawns, and a step
+called "Get Tailscale Dns Name". The command actually continues a voice call. The tunnel spawning
+belongs to a different command in the same file.
+
+This follows from the same missing edge. The call that does the work is unresolved, so the only path
+the chain builder can follow out of the handler runs through shared runtime setup, and whatever that
+setup eventually reaches gets attributed to the command. Nine commands in that file are given the
+same five effects, none of which are theirs.
+
+Across the repository, 65 of the 158 flows that carry effects have effects identical to another
+flow. Some of that is legitimate, two commands that both persist the same file genuinely share an
+effect. Much of it is this.
+
+So the honest count is not "158 flows describe their behaviour and 349 are silent". It is closer to
+93 flows describing their own behaviour, 65 describing somebody else's, and 349 saying nothing. A
+flow that says nothing is a gap. A flow that confidently reports the wrong effect is a defect, and
+it is the more expensive of the two because a reader cannot tell which they are looking at.
+
+This raises the priority of receiver resolution from "completes the outcome layer" to "stops the
+output being wrong", and it argues for a second rule: an effect reached only through shared setup,
+with no resolved call of the flow's own in between, is not evidence about that flow.
+
 One caution found while tracing. A helper in one extension resolved its call to a function of the
 same name in an unrelated extension. Bare-name matching across module boundaries produces edges that
 are confidently wrong, which is the failure mode of resolving more calls carelessly. Whatever closes
