@@ -327,6 +327,31 @@ This is receiver type resolution, and it is the last structural gap before outco
 designed piece of work rather than a fix: resolving a call through a value requires knowing the type
 of that value.
 
+## Every measurement on one repository is a measurement of that repository
+
+The numbers in this document were taken from one 5,315-file repository, worked on for a day. Checked
+against three others they do not hold:
+
+| Repository | Flows | Carrying an effect | | Entities | Units |
+|---|---|---|---|---|---|
+| The one tuned against | 518 | 341 | 66% | 42 | 47 |
+| A C codebase | 85 | 40 | 47% | 1 | 48 |
+| A TypeScript monorepo | 243 | 65 | 27% | 56 | 5 |
+| A Go service | 157 | 2 | 1% | 25 | 12 |
+
+The Go service has 157 flows and two of them can say what they do. The type-aware call resolution
+that took the tuned repository from 31% to 66% covers TypeScript and JavaScript only, so it does
+nothing here. The C codebase reports 48 units for what is one product, which means unit derivation
+fragments on a codebase whose call graph is shaped differently. It also reports a single entity for
+6,091 nodes.
+
+So the honest reading of the day's work is: one language family improved markedly, and the layers
+above the index remain thin or wrong everywhere else. A measurement taken on the repository being
+worked on is a measurement of that work, not of the analysis.
+
+Every future change to these layers is measured on at least four repositories across at least three
+language families before it is called an improvement, and the spread is recorded, not the best case.
+
 ## Receiver resolution: measured, built behind a flag, not enabled
 
 The unresolved calls are not evenly distributed. Across 3,034 files and 193,888 extracted calls:
