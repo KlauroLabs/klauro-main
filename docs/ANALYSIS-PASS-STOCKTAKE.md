@@ -329,6 +329,31 @@ concurrently, and cut the CPU. Tuning individual passes cannot close a gap this 
 speed work earlier in this document, which took the analysis from 52.8 s to 31 s by removing
 quadratic scans, is close to the end of what that approach yields.
 
+### Asynchronous concurrency is not parallelism here, measured
+
+The obvious first move is to stop running the 87 framework analyzers one after another. Tried, with
+analysis running concurrently and merging kept in canonical order so the output stays deterministic:
+
+| Analyzers in flight | Framework phase | Wall clock | Peak memory |
+|---|---|---|---|
+| 1 | 4,288 ms | 42.4 s | 3.04 GB |
+| 4 | 4,238 ms | 41.4 s | 3.84 GB |
+| 8 | 4,370 ms | 42.5 s | 3.78 GB |
+
+No time saved at any width, and 800 MB more memory. The analyzers are compute-bound, not waiting on
+the filesystem, so overlapping their promises in a single-threaded runtime overlaps nothing. Reverted.
+
+The measurement matters more than the change. Every remaining parallelism idea of this shape is
+already answered: only real threads move this. That means worker threads, and the obstacle is that
+an analyzer is a class instance with methods and cannot be handed to one. A worker would have to
+load the analyzer registry itself, be given an analyzer id and a project path, and return a plain
+contribution. The contributions are already plain data and the merge is already deterministic and
+ordered, so the boundary is workable; the analyzers simply have to become addressable by id rather
+than passed as objects.
+
+That is the shape of the work. It is a redesign of how analyzers are invoked, not a concurrency
+setting, and nothing cheaper will move the 1.64x.
+
 ## The reference indexer does not materialise flows
 
 Its graph schema has no flow, capability, entity or step. The node labels are code: function,
