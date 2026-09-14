@@ -327,6 +327,51 @@ This is receiver type resolution, and it is the last structural gap before outco
 designed piece of work rather than a fix: resolving a call through a value requires knowing the type
 of that value.
 
+## Receiver resolution: measured, built behind a flag, not enabled
+
+The unresolved calls are not evenly distributed. Across 3,034 files and 193,888 extracted calls:
+
+| Call shape | Count |
+|---|---|
+| Bare name, resolves today | 106,229 |
+| Member call on a value | 57,715 |
+| Receiver could not be named at all | 29,937 |
+
+Of the member calls at depth two, most are not ours to resolve: 13,561 have an external import as the
+base and 8,537 a language built-in. Only 2,735 base on an in-repo import. So the pool is far smaller
+than the headline suggests, and volume is the wrong way to judge it.
+
+Significance is the right way. In the worked file, every command handler makes exactly four calls:
+an imported helper, a built-in log, a built-in serialise, and one method on a value. The last is the
+only one that does anything, and it is the only one that fails.
+
+The TypeScript compiler resolves those exactly. `rt.manager.continueCall` resolves to
+`manager.ts:116`, with no name matching involved. Measured over the repository:
+
+| | |
+|---|---|
+| Build the program | 2.1 s |
+| Type checker | 0.7 s |
+| Resolve 85,559 member calls | 2.5 s |
+| Peak memory | 1.2 GB |
+| Calls resolved to in-repo declarations | 6,920 |
+
+It is implemented and tested, behind `KLAURO_TS_TYPE_RESOLUTION`, and it is **off**. Two reasons.
+
+First, it is not yet reliable. Run over the whole repository it resolves 8,416 in-repo calls; run
+over one subtree, 7,420; run inside the analysis over the node inventory, 1,891. The same code with
+different file sets gives different answers, because module resolution is being synthesised rather
+than read from the project's own `tsconfig.json`. Until it reads the real configuration the results
+cannot be trusted, and inconsistent edges are worse than missing ones.
+
+Second, the cost lands where it hurts. Inside the analysis it added 11.6 s to a 31 s run and pushed
+resident memory to 3.0 GB, against a production environment that has been killed by memory before.
+Only 362 of the 1,891 resolutions became edges, because the rest could not be mapped back to a node.
+
+So the finding is that this approach works and is worth finishing, and that finishing it means
+reading each project's own TypeScript configuration, not that the idea is wrong. It is also
+TypeScript only, which makes it an enrichment for one language family rather than a fix to the index.
+
 ## The missing edges do not only lose information, they misattribute it
 
 Asked what the `continue` command does, the analysis answers: spawn, four more spawns, and a step

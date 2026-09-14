@@ -300,6 +300,7 @@ import { cachedGlob as glob, safeGlobSync, beginGlobRun, endGlobRun } from './gl
 import { pathsReferToSameFile } from './project-relative-path';
 import { resolveRegistrationHandlerByLine, ROUTE_LINKABLE_ENTRY_TYPES, markEntryPointNodes } from './registration-handler-link';
 import { deriveIndexUnits } from './index-derived-units';
+import { applyTypeScriptCallEdges } from './typescript-call-edges';
 import { yieldToEventLoop, createYieldBudget } from './event-loop-yield';
 import { extractEntityRelations, cardinalityForRelationType, parseRelationDeclaration } from './entity-relations';
 import { globSync } from 'glob';
@@ -1293,7 +1294,7 @@ export class AnalyzerOrchestrator {
     this.dedupeHttpEntryPoints(allEntryPoints, projectPath, allEdges); this.dedupeEntryPointTwins(allEntryPoints, projectPath, allEdges);
     linkHttpTestCoverage(allNodes, allEdges, allEntryPoints);
     this.normalizeNodeMetrics(allNodes);
-    markEntryPointNodes(allNodes, allEntryPoints);
+    applyTypeScriptCallEdges(allNodes, allEdges, writeAnalyzerStatus); markEntryPointNodes(allNodes, allEntryPoints);
     this.applyCanonicalOrdering(allNodes, allEdges, allEntryPoints, allExitPoints, allLibraries);
     logTiming('pp_linkRouteHandlers', phaseStart);
     await yieldToEventLoop();
