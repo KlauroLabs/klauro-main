@@ -24,7 +24,7 @@ const EMPTY: TypeScriptResolutionResult = {
 };
 
 export function typeScriptResolutionEnabled(): boolean {
-  return process.env.KLAURO_TS_TYPE_RESOLUTION === 'on';
+  return process.env.KLAURO_TS_TYPE_RESOLUTION !== 'off';
 }
 
 function isExternalDeclaration(fileName: string): boolean {
@@ -66,9 +66,15 @@ export function resolveTypeScriptMemberCalls(
     const source = program.getSourceFile(file);
     if (!source) continue;
     const visit = (node: ts.Node): void => {
-      if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+      const callee = ts.isCallExpression(node)
+        ? (ts.isPropertyAccessExpression(node.expression) ? node.expression.name
+          : (ts.isIdentifier(node.expression) ? node.expression : undefined))
+        : undefined;
+      if (callee) {
         memberCallsSeen += 1;
-        const declaration = checker.getSymbolAtLocation(node.expression.name)?.declarations?.[0];
+        let symbol = checker.getSymbolAtLocation(callee);
+        if (symbol && symbol.flags & ts.SymbolFlags.Alias) symbol = checker.getAliasedSymbol(symbol);
+        const declaration = symbol?.declarations?.[0];
         if (!declaration) {
           unresolved += 1;
         } else {
@@ -81,7 +87,7 @@ export function resolveTypeScriptMemberCalls(
               fromLine: source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1,
               toFile: declarationFile.fileName,
               toLine: declarationFile.getLineAndCharacterOfPosition(declaration.getStart()).line + 1,
-              name: node.expression.name.getText()
+              name: callee.getText()
             });
           }
         }

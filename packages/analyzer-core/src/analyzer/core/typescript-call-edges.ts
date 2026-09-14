@@ -54,7 +54,7 @@ function startingAt(spans: readonly Span[] | undefined, line: number): string | 
 
 export function buildTypeScriptCallEdges(
   nodes: readonly CASNode[],
-  existingEdgeIds: Set<string>,
+  existingCallPairs: Set<string>,
   resolved: readonly ResolvedMemberCall[]
 ): CASEdge[] {
   const byFile = spansByFile(nodes);
@@ -75,11 +75,11 @@ export function buildTypeScriptCallEdges(
     const target = startingAt(spansFor(call.toFile), call.toLine)
       || tightestContaining(spansFor(call.toFile), call.toLine);
     if (!target || target === source) continue;
-    const id = `ts_type_calls_${source}_${target}`;
-    if (seen.has(id) || existingEdgeIds.has(id)) continue;
-    seen.add(id);
+    const pair = `${source}\u0000${target}`;
+    if (seen.has(pair) || existingCallPairs.has(pair)) continue;
+    seen.add(pair);
     edges.push({
-      id,
+      id: `ts_type_calls_${source}_${target}`,
       source,
       target,
       type: 'calls',
@@ -105,7 +105,11 @@ export function applyTypeScriptCallEdges(
   if (!typeScriptResolutionEnabled()) return;
   const files = [...new Set(nodes.map(node => node.source?.file).filter((file): file is string => Boolean(file)))];
   const resolution = resolveTypeScriptMemberCalls(files, projectPath);
-  const added = buildTypeScriptCallEdges(nodes, new Set(edges.map(edge => edge.id)), resolution.calls);
+  const existingCallPairs = new Set<string>();
+  for (const edge of edges) {
+    if (edge.type === 'calls') existingCallPairs.add(`${edge.source}\u0000${edge.target}`);
+  }
+  const added = buildTypeScriptCallEdges(nodes, existingCallPairs, resolution.calls);
   edges.push(...added);
   report('[Klauro] typescript type resolution:', {
     files: resolution.filesConsidered,

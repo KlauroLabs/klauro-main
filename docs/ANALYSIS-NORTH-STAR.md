@@ -384,8 +384,33 @@ So the gap has moved one level down rather than closed. It is no longer "the han
 nothing". It is "the handler reaches its work, and the work reaches no recorded effect". That is the
 next thing to measure, and it is a better question than the one before it.
 
-It remains off, because it is TypeScript only, costs five seconds, and does not yet change an answer
-a customer sees.
+Two further fixes finished it. Resolution was only being asked about member calls, so an aliased
+import, `import { continueCall as continueCallWithContext }`, produced no edge at all; identifiers
+now go through the checker too, which also corrects any bare call the name-based resolver got wrong.
+And edges were being deduplicated by identifier rather than by the pair they connect, which added
+23,060 duplicates of calls the graph already had.
+
+Measured, on by default, with `KLAURO_TS_TYPE_RESOLUTION=off` as the escape hatch:
+
+| | Off | On |
+|---|---|---|
+| Call edges | 36,443 | 46,833 |
+| Duplicate call pairs | 0 | 0 |
+| Entry-to-exit chains | 590 | 1,675 |
+| Entry points with a chain | 158 | 341 |
+| Flows carrying an effect | 158 of 507 | 341 of 518 |
+| Wall clock | 35.3 s | 46.0 s |
+
+Flows that can say what they do went from 31% to 66%. That is the step 5 gap more than halved, and
+it is the reason this is on: the index must carry what the layers above need, and 10,390 of these
+edges cannot be obtained any other way without guessing.
+
+On whether TypeScript is the right tool for it: nothing else knows TypeScript's types. Reimplementing
+that inference would mean reimplementing the language's type system, and the alternative that avoids
+it, matching on bare names, is how a same-named function in an unrelated extension becomes a call.
+The ten seconds is the price of edges that are correct rather than plausible. It is also why this
+covers one language family only; every other language needs its own toolchain to answer the same
+question.
 
 ## The missing edges do not only lose information, they misattribute it
 

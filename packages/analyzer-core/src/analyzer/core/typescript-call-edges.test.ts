@@ -84,7 +84,7 @@ test('a method calling itself is not an edge', () => {
   assert.deepEqual(edges, []);
 });
 
-test('the same resolution seen twice yields one edge, and existing edges are not duplicated', () => {
+test('the same resolution seen twice yields one edge, and a call already in the graph is not repeated', () => {
   const nodes = [
     node('handler', 'function', CLI, 116, 124),
     node('method', 'method', MANAGER, 116, 130)
@@ -94,8 +94,8 @@ test('the same resolution seen twice yields one edge, and existing edges are not
     { fromFile: CLI, fromLine: 121, toFile: MANAGER, toLine: 116, name: 'continueCall' }
   ];
   assert.equal(buildTypeScriptCallEdges(nodes, new Set(), twice).length, 1);
-  const already = new Set(['ts_type_calls_handler_method']);
-  assert.equal(buildTypeScriptCallEdges(nodes, already, twice).length, 0);
+  const already = new Set(['handler\u0000method']);
+  assert.equal(buildTypeScriptCallEdges(nodes, already, twice).length, 0, 'an edge already in the graph is not repeated');
 });
 
 test('data and file nodes are not treated as callers or targets', () => {
