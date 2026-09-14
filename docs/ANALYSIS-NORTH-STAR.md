@@ -292,6 +292,47 @@ speak for a third of them, and no ranking rule will rescue the rest.
 So the order for step 5 is: find why two thirds of flows lose their exit, then rank by effect. Not
 the other way round.
 
+## Why two thirds of flows have no exit
+
+Traced. It is not the flow layer and not the chain builder, both of which do the right thing. Chain
+building starts from the linked handler, traverses call edges with no depth limit, and every one of
+the 3,827 exit points resolves to a real node.
+
+| | |
+|---|---|
+| Entry handlers | 420 |
+| With any outgoing call edge | 259 |
+| That reach an exit point | 75 |
+| Distinct exit source nodes reached | 101 of 2,374 |
+
+The calls that would carry a handler to its effect are not resolved. Worked example, a command
+handler whose body is four lines:
+
+```
+.action(async (options) => {
+  const rt = await ensureRuntime();
+  const result = await rt.manager.continueCall(options.callId, options.message);
+```
+
+The edge to `ensureRuntime` exists, because it is imported directly and resolves by name. The edge
+to `continueCall` does not, because reaching it means knowing what `ensureRuntime` returns, then
+what `.manager` is on that, then finding the method on that type. `continueCall` is where the
+behaviour actually happens, and it is invisible.
+
+Every command in that file shows the same shape: one outgoing edge, to the imported helper, and
+nothing to the work. So the chain runs one hop and dead-ends, which is why 384 chains are dead ends
+and 313 entry points produce no entry-to-exit chain at all.
+
+This is receiver type resolution, and it is the last structural gap before outcomes. It is a
+designed piece of work rather than a fix: resolving a call through a value requires knowing the type
+of that value.
+
+One caution found while tracing. A helper in one extension resolved its call to a function of the
+same name in an unrelated extension. Bare-name matching across module boundaries produces edges that
+are confidently wrong, which is the failure mode of resolving more calls carelessly. Whatever closes
+this gap has to be type-aware rather than name-aware, and the existing cross-module edges deserve
+their own audit.
+
 Terminality was being computed over every node and every edge type. 110,937 of 136,928 nodes came
 back terminal, led by class properties with over a thousand incoming edges each. Scoping it to
 executable code joined by invocation edges brings it to 28,009 members, and the things at the end of
