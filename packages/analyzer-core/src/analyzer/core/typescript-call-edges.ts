@@ -99,15 +99,17 @@ export function buildTypeScriptCallEdges(
 export function applyTypeScriptCallEdges(
   nodes: readonly CASNode[],
   edges: CASEdge[],
-  report: (label: string, detail: Record<string, number>) => void
+  report: (label: string, detail: Record<string, number>) => void,
+  projectPath?: string
 ): void {
   if (!typeScriptResolutionEnabled()) return;
   const files = [...new Set(nodes.map(node => node.source?.file).filter((file): file is string => Boolean(file)))];
-  const resolution = resolveTypeScriptMemberCalls(files);
+  const resolution = resolveTypeScriptMemberCalls(files, projectPath);
   const added = buildTypeScriptCallEdges(nodes, new Set(edges.map(edge => edge.id)), resolution.calls);
   edges.push(...added);
   report('[Klauro] typescript type resolution:', {
     files: resolution.filesConsidered,
+    filesMissing: resolution.filesMissing,
     memberCalls: resolution.memberCallsSeen,
     inRepo: resolution.calls.length,
     external: resolution.resolvedExternal,

@@ -356,21 +356,36 @@ The TypeScript compiler resolves those exactly. `rt.manager.continueCall` resolv
 | Peak memory | 1.2 GB |
 | Calls resolved to in-repo declarations | 6,920 |
 
-It is implemented and tested, behind `KLAURO_TS_TYPE_RESOLUTION`, and it is **off**. Two reasons.
+It is implemented and tested, behind `KLAURO_TS_TYPE_RESOLUTION`, and it is off by default.
 
-First, it is not yet reliable. Run over the whole repository it resolves 8,416 in-repo calls; run
-over one subtree, 7,420; run inside the analysis over the node inventory, 1,891. The same code with
-different file sets gives different answers, because module resolution is being synthesised rather
-than read from the project's own `tsconfig.json`. Until it reads the real configuration the results
-cannot be trusted, and inconsistent edges are worse than missing ones.
+The first attempt looked far worse than it was. Node source paths are relative by the time they are
+read, and `createProgram` resolves a relative path against the working directory, finds nothing, and
+says nothing. It silently analysed a fraction of the repository. Resolving paths against the project
+root and counting files that do not exist fixed it:
 
-Second, the cost lands where it hurts. Inside the analysis it added 11.6 s to a 31 s run and pushed
-resident memory to 3.0 GB, against a production environment that has been killed by memory before.
-Only 362 of the 1,891 resolutions became edges, because the rest could not be mapped back to a node.
+| | Before the path fix | After |
+|---|---|---|
+| Member calls seen | 46,237 | 148,863 |
+| Resolved to in-repo declarations | 1,891 | 10,085 |
+| Edges added | 362 | 1,258 |
+| Added wall time | 11.6 s | 5.4 s |
+| Peak resident memory | 3.0 GB | 1.87 GB, against 1.85 GB with it off |
 
-So the finding is that this approach works and is worth finishing, and that finishing it means
-reading each project's own TypeScript configuration, not that the idea is wrong. It is also
-TypeScript only, which makes it an enrichment for one language family rather than a fix to the index.
+The edges are the right ones. Every command handler in the worked file now reaches the method that
+does its work: `continue` to `continueCall`, `speak` to `speak`, `end` to `endCall`, `status` to
+`getCall`. Those edges did not exist in any previous run.
+
+**And the flow layer is unchanged by it.** 507 flows, 158 with effects, 349 without, and the command
+still reports the tunnel spawns. Entry-to-exit chains went from 590 to 597. The reason is that the
+newly reached methods do not themselves reach a recorded exit point, so no chain forms through them
+and the flow keeps the only chain it had.
+
+So the gap has moved one level down rather than closed. It is no longer "the handler reaches
+nothing". It is "the handler reaches its work, and the work reaches no recorded effect". That is the
+next thing to measure, and it is a better question than the one before it.
+
+It remains off, because it is TypeScript only, costs five seconds, and does not yet change an answer
+a customer sees.
 
 ## The missing edges do not only lose information, they misattribute it
 

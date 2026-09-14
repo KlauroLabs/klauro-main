@@ -1,4 +1,6 @@
 import * as ts from 'typescript';
+import * as path from 'node:path';
+import { existsSync } from 'node:fs';
 
 export interface ResolvedMemberCall {
   fromFile: string;
@@ -11,13 +13,14 @@ export interface ResolvedMemberCall {
 export interface TypeScriptResolutionResult {
   calls: ResolvedMemberCall[];
   filesConsidered: number;
+  filesMissing: number;
   memberCallsSeen: number;
   resolvedExternal: number;
   unresolved: number;
 }
 
 const EMPTY: TypeScriptResolutionResult = {
-  calls: [], filesConsidered: 0, memberCallsSeen: 0, resolvedExternal: 0, unresolved: 0
+  calls: [], filesConsidered: 0, filesMissing: 0, memberCallsSeen: 0, resolvedExternal: 0, unresolved: 0
 };
 
 export function typeScriptResolutionEnabled(): boolean {
@@ -28,9 +31,16 @@ function isExternalDeclaration(fileName: string): boolean {
   return fileName.includes('node_modules') || fileName.endsWith('.d.ts');
 }
 
-export function resolveTypeScriptMemberCalls(files: readonly string[]): TypeScriptResolutionResult {
-  const sources = files.filter(file => /\.(ts|tsx|mts|cts)$/.test(file) && !file.endsWith('.d.ts'));
-  if (sources.length === 0) return EMPTY;
+export function resolveTypeScriptMemberCalls(
+  files: readonly string[],
+  projectPath?: string
+): TypeScriptResolutionResult {
+  const candidates = files
+    .filter(file => /\.(ts|tsx|mts|cts)$/.test(file) && !file.endsWith('.d.ts'))
+    .map(file => (path.isAbsolute(file) || !projectPath ? file : path.resolve(projectPath, file)));
+  const sources = candidates.filter(file => existsSync(file));
+  const missing = candidates.length - sources.length;
+  if (sources.length === 0) return { ...EMPTY, filesMissing: missing };
 
   let program: ts.Program;
   try {
@@ -43,7 +53,7 @@ export function resolveTypeScriptMemberCalls(files: readonly string[]): TypeScri
       target: ts.ScriptTarget.ES2022
     });
   } catch {
-    return EMPTY;
+    return { ...EMPTY, filesMissing: missing };
   }
 
   const checker = program.getTypeChecker();
@@ -81,5 +91,5 @@ export function resolveTypeScriptMemberCalls(files: readonly string[]): TypeScri
     visit(source);
   }
 
-  return { calls, filesConsidered: sources.length, memberCallsSeen, resolvedExternal, unresolved };
+  return { calls, filesConsidered: sources.length, filesMissing: missing, memberCallsSeen, resolvedExternal, unresolved };
 }

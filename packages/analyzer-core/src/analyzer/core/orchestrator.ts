@@ -1294,7 +1294,7 @@ export class AnalyzerOrchestrator {
     this.dedupeHttpEntryPoints(allEntryPoints, projectPath, allEdges); this.dedupeEntryPointTwins(allEntryPoints, projectPath, allEdges);
     linkHttpTestCoverage(allNodes, allEdges, allEntryPoints);
     this.normalizeNodeMetrics(allNodes);
-    applyTypeScriptCallEdges(allNodes, allEdges, writeAnalyzerStatus); markEntryPointNodes(allNodes, allEntryPoints);
+    applyTypeScriptCallEdges(allNodes, allEdges, writeAnalyzerStatus, projectPath); markEntryPointNodes(allNodes, allEntryPoints);
     this.applyCanonicalOrdering(allNodes, allEdges, allEntryPoints, allExitPoints, allLibraries);
     logTiming('pp_linkRouteHandlers', phaseStart);
     await yieldToEventLoop();
