@@ -37,6 +37,8 @@ static HTTP_METHODS: &[&str] = &[
     "all", "delete", "get", "head", "options", "patch", "post", "put",
 ];
 
+static PATH_REGISTRARS: &[&str] = &["handle", "handlefunc", "handler", "handlerfunc", "route"];
+
 static EVENT_REGISTRARS: &[&str] = &["addEventListener", "on", "once", "prependListener"];
 static TEST_REGISTRARS: &[&str] = &["bench", "describe", "it", "suite", "test"];
 static SCHEDULE_REGISTRARS: &[&str] = &["cron", "schedule", "setInterval", "setTimeout"];
@@ -55,8 +57,26 @@ fn looks_like_path(label: &str) -> bool {
     label.starts_with('/') || label.starts_with("./") || label.contains("/:")
 }
 
+fn split_label(label: &str) -> (Option<String>, String) {
+    let trimmed = label.trim();
+    if let Some((head, rest)) = trimmed.split_once(char::is_whitespace) {
+        let verb = head.to_ascii_lowercase();
+        if HTTP_METHODS.binary_search(&verb.as_str()).is_ok() {
+            return (Some(head.to_ascii_uppercase()), rest.trim().to_string());
+        }
+    }
+    (None, trimmed.to_string())
+}
+
 fn classify_registration(registrar: &str, label: Option<&str>) -> Option<&'static str> {
     let verb = tail(registrar);
+    let lowered = verb.to_ascii_lowercase();
+    if PATH_REGISTRARS.binary_search(&lowered.as_str()).is_ok() {
+        return match label {
+            Some(label) if looks_like_path(&split_label(label).1) => Some("http"),
+            _ => None,
+        };
+    }
     if HTTP_METHODS.binary_search(&verb).is_ok() {
         return match label {
             Some(label) if looks_like_path(label) => Some("http"),
@@ -87,25 +107,46 @@ fn classify_registration(registrar: &str, label: Option<&str>) -> Option<&'stati
     None
 }
 
+fn normalize_annotation(name: &str) -> String {
+    let name = name.rsplit('.').next().unwrap_or(name);
+    let mut lowered = name.to_ascii_lowercase();
+    for suffix in ["mapping", "attribute", "async"] {
+        if let Some(stripped) = lowered.strip_suffix(suffix)
+            && !stripped.is_empty()
+        {
+            lowered = stripped.to_string();
+        }
+    }
+    if let Some(stripped) = lowered.strip_prefix("http")
+        && !stripped.is_empty()
+    {
+        lowered = stripped.to_string();
+    }
+    lowered
+}
+
 fn decorator_entry(decorator: &Decorator) -> Option<(&'static str, String, Option<String>)> {
-    let name = decorator.name.rsplit('.').next().unwrap_or(&decorator.name);
-    let lowered = name.to_ascii_lowercase();
+    let lowered = normalize_annotation(&decorator.name);
+    let path = decorator
+        .arguments
+        .iter()
+        .find(|argument| argument.literal && looks_like_path(&argument.value))
+        .map(|argument| argument.value.clone());
+    if matches!(lowered.as_str(), "request" | "route") {
+        return Some(("http", "ANY".to_string(), path));
+    }
     if HTTP_METHODS.binary_search(&lowered.as_str()).is_ok() {
-        let path = decorator
-            .arguments
-            .iter()
-            .find(|argument| argument.literal)
-            .map(|argument| argument.value.clone());
         return Some(("http", lowered.to_ascii_uppercase(), path));
     }
     match lowered.as_str() {
-        "eventpattern" | "onevent" | "subscribe" => Some(("event", lowered, None)),
-        "messagepattern" => Some(("message", lowered, None)),
-        "cron" | "interval" | "timeout" => Some(("schedule", lowered, None)),
-        "query" | "mutation" | "subscription" | "resolvefield" => {
-            Some(("graphql", lowered, None))
-        }
-        "grpcmethod" | "grpcstreammethod" => Some(("rpc", lowered, None)),
+        "eventpattern" | "onevent" | "subscribe" | "eventlistener" | "kafkalistener"
+        | "rabbitlistener" | "streamlistener" => Some(("event", lowered, None)),
+        "messagepattern" | "jmslistener" | "sqslistener" => Some(("message", lowered, None)),
+        "cron" | "interval" | "timeout" | "scheduled" => Some(("schedule", lowered, None)),
+        "resolvefield" | "schemamapping" | "querymapping" | "mutationmapping"
+        | "subscriptionmapping" => Some(("graphql", lowered, None)),
+        "grpcmethod" | "grpcstreammethod" | "grpcservice" => Some(("rpc", lowered, None)),
+        "command" | "consolecommand" => Some(("cli", lowered, None)),
         _ => None,
     }
 }
@@ -153,6 +194,15 @@ fn classify_exit(binding: &str, origin: &str, member: &str) -> Option<&'static s
     None
 }
 
+fn join_paths(base: &str, path: &str) -> String {
+    let base = base.trim_end_matches('/');
+    let path = path.trim_start_matches('/');
+    if path.is_empty() {
+        return base.to_string();
+    }
+    format!("{base}/{path}")
+}
+
 fn root_binding(receiver: &str) -> &str {
     let end = receiver.find(['.', '[', '(', ' ']).unwrap_or(receiver.len());
     &receiver[..end]
@@ -185,8 +235,23 @@ pub fn derive(
     calls: &[CallFact],
     files: &[String],
     modules: &HashMap<(u32, String), String>,
+    registrations: &[RegistrationFact],
+    local: &HashMap<(u32, String), String>,
+    unique_units: &HashMap<String, String>,
 ) -> Derived {
     let mut entry_points = Vec::new();
+    let mut base_paths: HashMap<&str, String> = HashMap::new();
+    for node in nodes {
+        if !matches!(node.kind, NodeKind::Class | NodeKind::Interface) {
+            continue;
+        }
+        for decorator in &node.decorators {
+            if let Some(("http", _, Some(path))) = decorator_entry(decorator) {
+                base_paths.insert(node.id.as_str(), path);
+                break;
+            }
+        }
+    }
 
     for node in nodes {
         if let Some(registrar) = &node.callback_of {
@@ -216,6 +281,15 @@ pub fn derive(
         }
         for decorator in &node.decorators {
             if let Some((kind, method, path)) = decorator_entry(decorator) {
+                let base = node
+                    .parent
+                    .as_deref()
+                    .and_then(|parent| base_paths.get(parent));
+                let path = match (base, path) {
+                    (Some(base), Some(path)) => Some(join_paths(base, &path)),
+                    (Some(base), None) => Some(base.clone()),
+                    (None, path) => path,
+                };
                 entry_points.push(EntryPoint {
                     id: format!("entry:{}:{}", node.id, decorator.name),
                     kind,
@@ -229,6 +303,42 @@ pub fn derive(
                 });
             }
         }
+    }
+
+    for registration in registrations {
+        let Some(kind) = classify_registration(&registration.registrar, Some(&registration.label))
+        else {
+            continue;
+        };
+        let leaf = registration
+            .handler
+            .rsplit('.')
+            .next()
+            .unwrap_or(&registration.handler);
+        let Some(handler) = local
+            .get(&(registration.file, registration.handler.clone()))
+            .or_else(|| local.get(&(registration.file, leaf.to_string())))
+            .or_else(|| unique_units.get(leaf))
+        else {
+            continue;
+        };
+        let verb = tail(&registration.registrar);
+        let (label_method, path) = split_label(&registration.label);
+        entry_points.push(EntryPoint {
+            id: format!("entry:{handler}:{}", registration.label),
+            kind,
+            name: registration.label.clone(),
+            method: if kind == "http" {
+                Some(label_method.unwrap_or_else(|| verb.to_ascii_uppercase()))
+            } else {
+                None
+            },
+            path: if kind == "http" { Some(path) } else { None },
+            handler: handler.clone(),
+            file: registration.file,
+            line: registration.line,
+            registrar: registration.registrar.clone(),
+        });
     }
 
     let mut exit_points = Vec::new();
@@ -277,6 +387,7 @@ pub fn derive(
     }
 
     entry_points.sort_by(|left, right| left.id.cmp(&right.id));
+    entry_points.dedup_by(|left, right| left.id == right.id);
     exit_points.sort_by(|left, right| left.id.cmp(&right.id));
     Derived { entry_points, exit_points }
 }
