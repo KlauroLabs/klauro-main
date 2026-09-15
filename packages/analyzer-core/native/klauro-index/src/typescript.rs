@@ -7,6 +7,7 @@ pub struct Extractor<'a> {
     file: u32,
     module_id: String,
     facts: FileFacts,
+    metrics: std::collections::HashMap<String, UnitMetrics>,
 }
 
 struct Scope {
@@ -71,7 +72,13 @@ impl<'a> Extractor<'a> {
             file,
             module_id,
             facts: FileFacts::default(),
+            metrics: std::collections::HashMap::new(),
         }
+    }
+
+    fn unit(&mut self, scope: &Scope) -> Option<&mut UnitMetrics> {
+        let callable = scope.enclosing_callable.clone()?;
+        Some(self.metrics.entry(callable).or_default())
     }
 
     fn text(&self, node: Node) -> &'a str {
@@ -115,6 +122,20 @@ impl<'a> Extractor<'a> {
         });
         let scope = Scope::root(&self.module_id.clone());
         self.walk_children(root, &scope);
+        let mut metrics: Vec<UnitMetricsEntry> = std::mem::take(&mut self.metrics)
+            .into_iter()
+            .map(|(unit, mut metrics)| {
+                metrics.reads.sort();
+                metrics.reads.dedup();
+                metrics.writes.sort();
+                metrics.writes.dedup();
+                metrics.throws.sort();
+                metrics.throws.dedup();
+                UnitMetricsEntry { unit, metrics }
+            })
+            .collect();
+        metrics.sort_by(|left, right| left.unit.cmp(&right.unit));
+        self.facts.metrics = metrics;
         self.facts
     }
 
@@ -147,19 +168,76 @@ impl<'a> Extractor<'a> {
             "lexical_declaration" | "variable_declaration" => self.variable_declaration(node, scope),
             "call_expression" | "new_expression" => self.call_expression(node, scope),
             "try_statement" => self.try_statement(node, scope),
+            "throw_statement" => {
+                let thrown = node
+                    .named_child(0)
+                    .map(|value| throw_name(self.text(value)))
+                    .unwrap_or_default();
+                if let Some(unit) = self.unit(scope) {
+                    unit.throws.push(thrown);
+                }
+                self.walk_children(node, scope);
+            }
+            "return_statement" => {
+                if let Some(unit) = self.unit(scope) {
+                    unit.returns += 1;
+                }
+                self.walk_children(node, scope);
+            }
+            "binary_expression" => {
+                let operator = node
+                    .child_by_field_name("operator")
+                    .map(|operator| self.text_owned(operator))
+                    .unwrap_or_default();
+                if matches!(operator.as_str(), "&&" | "||" | "??")
+                    && let Some(unit) = self.unit(scope)
+                {
+                    unit.branches += 1;
+                }
+                self.walk_children(node, scope);
+            }
+            "assignment_expression" | "augmented_assignment_expression" => {
+                if let Some(left) = node.child_by_field_name("left") {
+                    let target = self.text_owned(left);
+                    if let Some(member) = member_of_this(&target)
+                        && let Some(unit) = self.unit(scope)
+                    {
+                        unit.writes.push(member);
+                    }
+                }
+                self.walk_children(node, scope);
+            }
+            "member_expression" => {
+                let target = self.text_owned(node);
+                if let Some(member) = member_of_this(&target)
+                    && let Some(unit) = self.unit(scope)
+                {
+                    unit.reads.push(member);
+                }
+                self.walk_children(node, scope);
+            }
             "if_statement" | "ternary_expression" | "switch_statement" => {
+                if let Some(unit) = self.unit(scope) {
+                    unit.branches += 1;
+                }
                 let mut inner = scope.child(None, None);
                 inner.context.conditional_depth = scope.context.conditional_depth + 1;
                 inner.enclosing_callable = scope.enclosing_callable.clone();
                 self.walk_children(node, &inner);
             }
             "for_statement" | "for_in_statement" | "while_statement" | "do_statement" => {
+                if let Some(unit) = self.unit(scope) {
+                    unit.loops += 1;
+                }
                 let mut inner = scope.child(None, None);
                 inner.context.loop_depth = scope.context.loop_depth + 1;
                 inner.enclosing_callable = scope.enclosing_callable.clone();
                 self.walk_children(node, &inner);
             }
             "await_expression" => {
+                if let Some(unit) = self.unit(scope) {
+                    unit.awaits += 1;
+                }
                 let mut inner = scope.child(None, None);
                 inner.context.awaited = true;
                 inner.enclosing_callable = scope.enclosing_callable.clone();
@@ -890,6 +968,26 @@ impl<'a> Extractor<'a> {
         else {
             return;
         };
+        let mut function = function;
+        let mut awaited_callee = false;
+        loop {
+            match function.kind() {
+                "await_expression" => {
+                    awaited_callee = true;
+                    match function.named_child(0) {
+                        Some(inner) => function = inner,
+                        None => break,
+                    }
+                }
+                "parenthesized_expression" | "non_null_expression" | "as_expression" => {
+                    match function.named_child(0) {
+                        Some(inner) => function = inner,
+                        None => break,
+                    }
+                }
+                _ => break,
+            }
+        }
         let arguments = node.child_by_field_name("arguments");
         let argument_count = arguments
             .map(|arguments| {
@@ -918,7 +1016,11 @@ impl<'a> Extractor<'a> {
                 .any(|child| child.kind() == "?.");
 
         if let Some(arguments) = arguments {
-            self.callback_arguments(arguments, scope, &callee);
+            let registrar = match receiver.as_deref() {
+                Some(receiver) => format!("{receiver}.{callee}"),
+                None => callee.clone(),
+            };
+            self.callback_arguments(arguments, scope, &registrar);
             let mut cursor = arguments.walk();
             for argument in arguments.named_children(&mut cursor) {
                 if !matches!(argument.kind(), "arrow_function" | "function_expression" | "function") {
@@ -943,7 +1045,7 @@ impl<'a> Extractor<'a> {
                 in_try: scope.context.in_try,
                 in_catch: scope.context.in_catch,
                 in_finally: scope.context.in_finally,
-                awaited: scope.context.awaited,
+                awaited: scope.context.awaited || awaited_callee,
                 optional_chained,
                 conditional_depth: scope.context.conditional_depth,
                 loop_depth: scope.context.loop_depth,
@@ -1016,6 +1118,19 @@ impl<'a> Extractor<'a> {
         }
         None
     }
+}
+
+fn member_of_this(target: &str) -> Option<String> {
+    let rest = target.strip_prefix("this.")?;
+    let end = rest.find(['.', '[', '(', ' ']).unwrap_or(rest.len());
+    let member = &rest[..end];
+    if member.is_empty() { None } else { Some(member.to_string()) }
+}
+
+fn throw_name(text: &str) -> String {
+    let text = text.trim().strip_prefix("new ").unwrap_or(text.trim());
+    let end = text.find(['(', ' ', ';']).unwrap_or(text.len());
+    text[..end].trim().to_string()
 }
 
 fn type_parameters_of(node: Node) -> Option<Node> {

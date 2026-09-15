@@ -221,6 +221,24 @@ pub struct TypeReferenceFact {
 }
 
 #[derive(Debug, Default, Serialize)]
+pub struct UnitMetrics {
+    pub branches: u16,
+    pub loops: u16,
+    pub returns: u16,
+    pub awaits: u16,
+    pub throws: Vec<String>,
+    pub reads: Vec<String>,
+    pub writes: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UnitMetricsEntry {
+    pub unit: String,
+    #[serde(flatten)]
+    pub metrics: UnitMetrics,
+}
+
+#[derive(Debug, Default, Serialize)]
 pub struct FileFacts {
     pub nodes: Vec<IndexNode>,
     pub edges: Vec<IndexEdge>,
@@ -228,6 +246,7 @@ pub struct FileFacts {
     pub exports: Vec<ExportFact>,
     pub calls: Vec<CallFact>,
     pub type_references: Vec<TypeReferenceFact>,
+    pub metrics: Vec<UnitMetricsEntry>,
     pub lines: u32,
     pub parse_errors: u32,
 }

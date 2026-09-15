@@ -141,7 +141,7 @@ fn a_callback_is_a_function_carrying_its_registration() {
         .iter()
         .find(|node| node["registration_label"] == "/health")
         .expect("the route label reaches the handler");
-    assert_eq!(registered["callback_of"], "get");
+    assert_eq!(registered["callback_of"], "server.get");
 }
 
 #[test]
@@ -199,4 +199,116 @@ fn the_same_tree_indexes_identically_twice() {
     let first = index("typescript");
     let second = index("typescript");
     assert_eq!(first, second, "the index is deterministic");
+}
+
+#[test]
+fn a_route_registration_is_an_http_entry_point_attached_to_its_handler() {
+    let index = index("typescript");
+    let entries = index["entry_points"].as_array().unwrap();
+    let health = entries
+        .iter()
+        .find(|entry| entry["path"] == "/health")
+        .expect("the route is an entry point");
+    assert_eq!(health["kind"], "http");
+    assert_eq!(health["method"], "GET");
+    assert_eq!(health["registrar"], "server.get");
+    let handler = health["handler"].as_str().unwrap();
+    assert!(
+        index["nodes"].as_array().unwrap().iter().any(|node| node["id"] == handler),
+        "the handler is a node in the graph"
+    );
+
+    let created = entries
+        .iter()
+        .find(|entry| entry["path"] == "/calls/:id")
+        .expect("a parameterised path is a path");
+    assert_eq!(created["method"], "POST");
+}
+
+#[test]
+fn only_calls_that_leave_the_process_are_exit_points() {
+    let index = index("typescript");
+    let exits = index["exit_points"].as_array().unwrap();
+    let kinds: Vec<&str> = exits.iter().map(|exit| exit["kind"].as_str().unwrap()).collect();
+    assert!(kinds.contains(&"file"), "the filesystem write is an exit");
+    assert!(kinds.contains(&"api"), "the network call is an exit");
+
+    let file = exits.iter().find(|exit| exit["kind"] == "file").unwrap();
+    assert_eq!(file["target"], "node:fs/promises");
+    assert!(file["source"].as_str().unwrap().contains("persist"));
+
+    assert!(
+        !exits.iter().any(|exit| exit["operation"] == "join"),
+        "a pure path computation does not leave the process"
+    );
+}
+
+#[test]
+fn icelot_states_what_a_unit_takes_guards_does_and_returns() {
+    let index = index("typescript");
+    let persist = index["icelot"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|unit| unit["unit"].as_str().unwrap().contains("persist"))
+        .expect("the unit has icelot");
+
+    assert_eq!(persist["input"]["parameters"], 1);
+    assert_eq!(persist["input"]["types"][0], "string");
+    assert_eq!(persist["constraints"]["throws"][0], "ValidationError");
+    assert_eq!(persist["constraints"]["guards"], 1);
+    assert_eq!(persist["logic"]["awaits"], 2);
+    assert_eq!(persist["output"]["return_type"], "Promise<void>");
+    assert_eq!(persist["effects"]["exits"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn a_logging_call_is_telemetry_and_a_path_call_is_not() {
+    let index = index("typescript");
+    let handler = index["icelot"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|unit| {
+            !unit["telemetry"].as_array().map(|sites| sites.is_empty()).unwrap_or(true)
+        })
+        .expect("a unit carries telemetry");
+    let sites = handler["telemetry"].as_array().unwrap();
+    assert_eq!(sites[0]["kind"], "log");
+    assert_eq!(sites[0]["callee"], "logger.info");
+}
+
+#[test]
+fn an_entry_point_reaches_the_units_it_runs() {
+    let index = index("typescript");
+    let entries = index["entry_points"].as_array().unwrap();
+    let created = entries.iter().find(|entry| entry["path"] == "/calls/:id").unwrap();
+    let reach = index["graph"]["entry_reach"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|reach| reach["entry_point"] == created["id"])
+        .expect("the entry point has reach");
+    assert!(reach["units"].as_u64().unwrap() >= 1, "it reaches the handler it calls");
+    assert!(reach["exits"].as_u64().unwrap() >= 2, "and the exits underneath it");
+}
+
+#[test]
+fn structural_importance_counts_the_entry_points_above_a_unit() {
+    let index = index("typescript");
+    let persist = index["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["name"] == "persist")
+        .unwrap();
+    let reach = index["graph"]["reach"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|reach| reach["node"] == persist["id"])
+        .expect("a called unit is in the reach table");
+    assert!(reach["fan_in"].as_u64().unwrap() >= 1);
+    assert!(reach["entry_points"].as_u64().unwrap() >= 1);
+    assert!(reach["depth"].as_u64().is_some(), "it is reachable from an entry point");
 }
