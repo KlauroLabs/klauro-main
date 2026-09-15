@@ -178,6 +178,8 @@ pub fn resolve(index: &Index) -> Resolution {
         }
     }
 
+    let units = unique_units(index.nodes);
+    let unique_members = unique_members(index.nodes);
     let mut unresolved_calls = 0;
     let mut package_calls = 0;
     let mut runtime_calls = 0;
@@ -250,11 +252,23 @@ pub fn resolve(index: &Index) -> Resolution {
                         .get(&(fact.file, receiver.to_string()))
                         .and_then(|owner| symbols.members.get(&(owner.clone(), fact.callee.clone())))
                         .cloned()
+                })
+                .or_else(|| {
+                    if modules.contains_key(&(fact.file, root_binding(receiver).to_string())) {
+                        return None;
+                    }
+                    unique_members.get(&fact.callee).cloned()
                 }),
             None => imported
                 .get(&(fact.file, fact.callee.clone()))
                 .cloned()
-                .or_else(|| symbols.local.get(&(fact.file, fact.callee.clone())).cloned()),
+                .or_else(|| symbols.local.get(&(fact.file, fact.callee.clone())).cloned())
+                .or_else(|| {
+                    if modules.contains_key(&(fact.file, fact.callee.clone())) {
+                        return None;
+                    }
+                    units.get(&fact.callee).cloned()
+                }),
         };
         match target {
             Some(target) => edges.push(IndexEdge {
@@ -315,7 +329,7 @@ pub fn resolve(index: &Index) -> Resolution {
 
     Resolution {
         edges,
-        unique_units: unique_units(index.nodes),
+        unique_units: units,
         local: symbols.local,
         modules,
         external_nodes,
@@ -361,6 +375,24 @@ fn external_node(id: &str, name: &str, origin: &str) -> IndexNode {
         callback_of: None,
         registration_label: None,
     }
+}
+
+fn unique_members(nodes: &[IndexNode]) -> HashMap<String, String> {
+    let mut counts: HashMap<&str, (u32, &str)> = HashMap::new();
+    for node in nodes {
+        if !matches!(node.kind, NodeKind::Method | NodeKind::Getter | NodeKind::Setter) {
+            continue;
+        }
+        let entry = counts
+            .entry(node.name.as_str())
+            .or_insert((0, node.id.as_str()));
+        entry.0 += 1;
+    }
+    counts
+        .into_iter()
+        .filter(|(_, (count, _))| *count == 1)
+        .map(|(name, (_, id))| (name.to_string(), id.to_string()))
+        .collect()
 }
 
 fn unique_units(nodes: &[IndexNode]) -> HashMap<String, String> {
