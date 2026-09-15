@@ -5,6 +5,8 @@ use crate::model::*;
 
 pub struct Resolution {
     pub edges: Vec<IndexEdge>,
+    pub dynamic_calls: u32,
+    pub indirect_calls: u32,
     pub modules: HashMap<(u32, String), String>,
     pub local: HashMap<(u32, String), String>,
     pub unique_units: HashMap<String, String>,
@@ -58,6 +60,7 @@ fn directory_of(path: &str) -> &str {
 }
 
 pub struct Index<'a> {
+    pub locals: &'a [LocalBinding],
     pub files: &'a [String],
     pub nodes: &'a [IndexNode],
     pub imports: &'a [ImportFact],
@@ -188,6 +191,46 @@ pub fn resolve(index: &Index) -> Resolution {
         }
     }
 
+    let mut local_types: HashMap<(String, String), String> = HashMap::new();
+    let mut local_runtime: HashMap<(String, String), String> = HashMap::new();
+    let return_types: HashMap<&str, &str> = index
+        .nodes
+        .iter()
+        .filter_map(|node| {
+            node.signature
+                .as_ref()
+                .and_then(|signature| signature.return_type.as_deref())
+                .map(|annotation| (node.name.as_str(), annotation))
+        })
+        .collect();
+    for binding in index.locals {
+        let annotation = binding
+            .annotation
+            .clone()
+            .or_else(|| binding.constructed.clone())
+            .or_else(|| {
+                binding
+                    .from_call
+                    .as_deref()
+                    .and_then(|callee| return_types.get(callee))
+                    .map(|annotation| (*annotation).to_string())
+            });
+        let Some(annotation) = annotation else { continue };
+        let scope_key = if binding.unit.is_empty() {
+            format!("file:{}", binding.file)
+        } else {
+            binding.unit.clone()
+        };
+        if let Some(owner) = resolve_type(&symbols, &imported, binding.file, &annotation) {
+            local_types.insert((scope_key, binding.name.clone()), owner);
+            continue;
+        }
+        let name = base_type_name(&annotation);
+        if runtime.binary_search(&name).is_ok() {
+            local_runtime.insert((scope_key, binding.name.clone()), name.to_string());
+        }
+    }
+
     let units = unique_units(index.nodes);
     let unique_members = unique_members(index.nodes);
     let mut method_owners: HashMap<String, String> = HashMap::new();
@@ -231,6 +274,8 @@ pub fn resolve(index: &Index) -> Resolution {
     let mut unresolved_calls = 0;
     let mut package_calls = 0;
     let mut runtime_calls = 0;
+    let mut dynamic_calls = 0;
+    let mut indirect_calls = 0;
     let mut no_caller = 0;
     let mut external_nodes: HashMap<String, IndexNode> = HashMap::new();
     let mut unresolved_names: HashMap<String, u32> = HashMap::new();
@@ -290,7 +335,34 @@ pub fn resolve(index: &Index) -> Resolution {
             no_caller += 1;
             continue;
         };
+        let self_builtin = match fact.receiver.as_deref() {
+            Some(receiver) if receiver.starts_with("this.") || receiver.starts_with("self.") => {
+                let field = receiver
+                    .split_once('.')
+                    .map(|(_, rest)| root_binding(rest).to_string())
+                    .unwrap_or_default();
+                owning_type(&symbols, index.nodes, &method_owners, caller)
+                    .and_then(|owner| symbols.member_types.get(&(owner, field)).cloned())
+                    .map(|annotation| base_type_name(&annotation).to_string())
+                    .filter(|name| runtime.binary_search(&name.as_str()).is_ok())
+            }
+            _ => None,
+        };
         let target = match fact.receiver.as_deref() {
+            None if fact.callee == "super" => owning_type(
+                &symbols,
+                index.nodes,
+                &method_owners,
+                caller,
+            )
+            .and_then(|owner| parent_type(&edges, &owner))
+            .and_then(|parent| {
+                symbols
+                    .members
+                    .get(&(parent.clone(), "constructor".to_string()))
+                    .cloned()
+                    .or(Some(parent))
+            }),
             Some(receiver) if receiver == "this" || receiver == "self" => {
                 owning_type(&symbols, index.nodes, &method_owners, caller)
                     .and_then(|owner| symbols.members.get(&(owner, fact.callee.clone())).cloned())
@@ -321,6 +393,14 @@ pub fn resolve(index: &Index) -> Resolution {
                     .and_then(|owner| symbols.members.get(&(owner, fact.callee.clone())).cloned())
             }
             Some(receiver)
+                if scoped_type(&local_types, caller, fact.file, root_binding(receiver))
+                    .and_then(|owner| symbols.members.get(&(owner, fact.callee.clone())))
+                    .is_some() =>
+            {
+                scoped_type(&local_types, caller, fact.file, root_binding(receiver))
+                    .and_then(|owner| symbols.members.get(&(owner, fact.callee.clone())).cloned())
+            }
+            Some(receiver)
                 if parameter_type(&symbols, index.nodes, caller, root_binding(receiver))
                     .and_then(|annotation| {
                         resolve_type(&symbols, &imported, fact.file, &annotation)
@@ -332,6 +412,14 @@ pub fn resolve(index: &Index) -> Resolution {
                     .and_then(|annotation| {
                         resolve_type(&symbols, &imported, fact.file, &annotation)
                     })
+                    .and_then(|owner| symbols.members.get(&(owner, fact.callee.clone())).cloned())
+            }
+            Some(receiver)
+                if binding_type(&symbols, index.nodes, &imported, fact.file, root_binding(receiver))
+                    .and_then(|owner| symbols.members.get(&(owner, fact.callee.clone())))
+                    .is_some() =>
+            {
+                binding_type(&symbols, index.nodes, &imported, fact.file, root_binding(receiver))
                     .and_then(|owner| symbols.members.get(&(owner, fact.callee.clone())).cloned())
             }
             Some(receiver) => imported
@@ -373,11 +461,41 @@ pub fn resolve(index: &Index) -> Resolution {
                 },
             }),
             None => {
+                if fact.receiver.is_none() && fact.callee == "import" {
+                    dynamic_calls += 1;
+                    continue;
+                }
                 let root = fact
                     .receiver
                     .as_deref()
                     .map(root_binding)
                     .unwrap_or(fact.callee.as_str());
+                if let Some(builtin) = self_builtin
+                    .as_ref()
+                    .or_else(|| local_runtime.get(&(caller.clone(), root.to_string())))
+                    .or_else(|| {
+                        local_runtime.get(&(format!("file:{}", fact.file), root.to_string()))
+                    })
+                    .cloned()
+                {
+                    let builtin = builtin.as_str();
+                    let member = format!("{builtin}.{}", fact.callee);
+                    let id = external_id("runtime", builtin, &member);
+                    external_nodes
+                        .entry(id.clone())
+                        .or_insert_with(|| external_node(&id, &member, builtin));
+                    edges.push(IndexEdge {
+                        source: caller.clone(),
+                        target: id,
+                        kind: EdgeKind::Calls,
+                    });
+                    runtime_calls += 1;
+                    continue;
+                }
+                if is_parameter_of(&symbols, index.nodes, caller, root) {
+                    indirect_calls += 1;
+                    continue;
+                }
                 let member = match fact.receiver.as_deref() {
                     Some(receiver) => member_path(receiver, &fact.callee),
                     None => fact.callee.clone(),
@@ -421,6 +539,8 @@ pub fn resolve(index: &Index) -> Resolution {
 
     Resolution {
         edges,
+        dynamic_calls,
+        indirect_calls,
         call_origins,
         method_owners: method_owners.clone(),
         unique_units: units,
@@ -484,7 +604,22 @@ fn base_type_name(annotation: &str) -> &str {
     let end = annotation
         .find(['<', '[', '(', ' ', '|', '?', ';'])
         .unwrap_or(annotation.len());
-    annotation[..end].trim().trim_end_matches('.')
+    let name = annotation[..end].trim().trim_end_matches('.');
+    if name.is_empty() {
+        return name;
+    }
+    if annotation[end..].starts_with('[') {
+        return "Array";
+    }
+    match name {
+        "string" => "String",
+        "number" => "Number",
+        "boolean" => "Boolean",
+        "symbol" => "Symbol",
+        "bigint" => "BigInt",
+        "object" => "Object",
+        other => other,
+    }
 }
 
 fn resolve_type(
@@ -507,6 +642,60 @@ fn resolve_type(
                 .get(name)
                 .filter(|found| found.len() == 1)
                 .map(|found| found[0].clone())
+        })
+}
+
+fn parent_type(edges: &[IndexEdge], owner: &str) -> Option<String> {
+    edges
+        .iter()
+        .find(|edge| edge.kind == EdgeKind::Extends && edge.source == owner)
+        .map(|edge| edge.target.clone())
+}
+
+fn binding_type(
+    symbols: &Symbols,
+    nodes: &[IndexNode],
+    imported: &HashMap<(u32, String), String>,
+    file: u32,
+    binding: &str,
+) -> Option<String> {
+    let id = imported
+        .get(&(file, binding.to_string()))
+        .or_else(|| symbols.local.get(&(file, binding.to_string())))?;
+    let position = *symbols.by_id.get(id)?;
+    let annotation = nodes[position].type_annotation.as_deref()?;
+    resolve_type(symbols, imported, nodes[position].file, annotation)
+}
+
+fn scoped_type(
+    types: &HashMap<(String, String), String>,
+    caller: &str,
+    file: u32,
+    binding: &str,
+) -> Option<String> {
+    types
+        .get(&(caller.to_string(), binding.to_string()))
+        .or_else(|| types.get(&(format!("file:{file}"), binding.to_string())))
+        .cloned()
+}
+
+fn is_parameter_of(
+    symbols: &Symbols,
+    nodes: &[IndexNode],
+    caller: &str,
+    binding: &str,
+) -> bool {
+    let Some(position) = symbols.by_id.get(caller) else {
+        return false;
+    };
+    nodes[*position]
+        .signature
+        .as_ref()
+        .is_some_and(|signature| {
+            signature
+                .parameters
+                .iter()
+                .any(|parameter| parameter.name == binding)
         })
 }
 

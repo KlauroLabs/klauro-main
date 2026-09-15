@@ -881,9 +881,16 @@ impl<'a> Extractor<'a> {
             }
         };
         let callee = base_name(&callee).to_string();
-        if callee.is_empty() {
+        if callee.is_empty() || STATEMENT_KEYWORDS.binary_search(&callee.as_str()).is_ok() {
             return;
         }
+        let (receiver, callee) = match (&receiver, callee.rfind('.')) {
+            (None, Some(at)) if at > 0 && at + 1 < callee.len() => (
+                Some(callee[..at].to_string()),
+                callee[at + 1..].to_string(),
+            ),
+            _ => (receiver, callee),
+        };
         let receiver = match (&receiver, &scope.self_binding) {
             (Some(receiver), Some(binding)) if root_binding(receiver) == binding => {
                 Some(format!("this{}", &receiver[binding.len()..]))
@@ -1000,6 +1007,11 @@ fn throw_name(text: &str) -> String {
 fn literals_count(text: &str) -> usize {
     string_literals(text).len()
 }
+
+static STATEMENT_KEYWORDS: &[&str] = &[
+    "await", "defer", "do", "else", "go", "if", "return", "spawn", "switch", "throw", "try",
+    "unsafe", "while", "yield",
+];
 
 fn root_binding(receiver: &str) -> &str {
     let end = receiver.find(['.', '[', '(', ' ', '-']).unwrap_or(receiver.len());

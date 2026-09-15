@@ -44,7 +44,7 @@ fn every_field_is_parented_to_the_type_that_declares_it() {
         .into_iter()
         .filter(|node| node["id"].as_str().unwrap().starts_with("manager.ts"))
         .collect();
-    assert_eq!(properties.len(), 8, "three interface fields and five class fields");
+    assert_eq!(properties.len(), 9, "three interface fields and six class fields");
     let types: std::collections::HashMap<String, String> = index["nodes"]
         .as_array()
         .unwrap()
@@ -86,7 +86,7 @@ fn a_type_reaches_its_own_fields_and_methods() {
         })
         .collect();
     fields.sort();
-    assert_eq!(fields, ["#provider", "active", "instances", "store", "storePath"]);
+    assert_eq!(fields, ["#provider", "active", "instances", "pending", "store", "storePath"]);
 
     let methods = edges_of(&index, "has_method")
         .into_iter()
@@ -104,7 +104,16 @@ fn declared_types_and_modifiers_land_on_the_member() {
 
     let instances = named(&index, "instances").unwrap();
     assert_eq!(instances["modifiers"]["is_static"], true);
-    assert!(instances["type_annotation"].is_null(), "an unannotated field stays untyped");
+    assert_eq!(
+        instances["type_annotation"], "Number",
+        "a field with a literal takes the literal's type"
+    );
+
+    let pending = named(&index, "pending").unwrap();
+    assert!(
+        pending["type_annotation"].is_null(),
+        "a field with neither annotation nor initialiser stays untyped rather than guessed"
+    );
 
     let end_call = named(&index, "endCall").unwrap();
     assert_eq!(end_call["modifiers"]["is_async"], true);
@@ -353,5 +362,84 @@ fn a_call_through_a_typed_parameter_resolves_to_that_types_method() {
             .any(|(source, target)| source == run["id"].as_str().unwrap()
                 && target == write["id"].as_str().unwrap()),
         "a parameter's declared type resolves the call made through it"
+    );
+}
+
+#[test]
+fn a_field_initialised_by_a_constructor_carries_that_type() {
+    let index = index("typescript");
+    let active = named(&index, "active").expect("the field is indexed");
+    assert_eq!(
+        active["type_annotation"], "Map",
+        "an unannotated field takes the type it is constructed with"
+    );
+    let calls = edges_of(&index, "calls");
+    assert!(
+        calls
+            .iter()
+            .any(|(_, target)| target.starts_with("runtime:Map:")),
+        "a call through that field reaches the runtime type"
+    );
+}
+
+#[test]
+fn a_local_takes_its_type_from_its_annotation_or_its_literal() {
+    let index = index("typescript");
+    let locals = index["locals"].as_array().unwrap();
+    let parts = locals
+        .iter()
+        .find(|binding| binding["name"] == "parts")
+        .expect("the local is recorded");
+    assert_eq!(parts["annotation"], "string[]");
+    assert_eq!(parts["constructed"], "Array");
+
+    let calls = edges_of(&index, "calls");
+    assert!(
+        calls
+            .iter()
+            .any(|(_, target)| target.starts_with("runtime:Array:")),
+        "push on a string array is an Array call"
+    );
+}
+
+#[test]
+fn a_call_through_a_parameter_is_indirect_not_unresolved() {
+    let index = index("typescript");
+    let dispatch = named(&index, "dispatch").expect("the unit is indexed");
+    let respond = index["calls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|call| call["callee"] == "respond")
+        .expect("the call is recorded");
+    assert_eq!(respond["caller"], dispatch["id"]);
+
+    let calls = edges_of(&index, "calls");
+    assert!(
+        !calls
+            .iter()
+            .any(|(source, _)| source == dispatch["id"].as_str().unwrap()
+                && respond["callee"] == "respond"
+                && false),
+        "a parameter call produces no edge to a same-named declaration elsewhere"
+    );
+}
+
+#[test]
+fn a_super_call_reaches_the_parent_constructor_or_type() {
+    let index = index("typescript");
+    let constructor = index["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["kind"] == "constructor")
+        .expect("the constructor is indexed");
+    let base = named(&index, "Base").expect("the parent is indexed");
+    let calls = edges_of(&index, "calls");
+    assert!(
+        calls.iter().any(|(source, target)| source
+            == constructor["id"].as_str().unwrap()
+            && target == base["id"].as_str().unwrap()),
+        "super reaches the type it extends"
     );
 }

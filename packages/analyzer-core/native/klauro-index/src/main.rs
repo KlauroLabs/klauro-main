@@ -44,6 +44,7 @@ struct Index {
     type_references: Vec<model::TypeReferenceFact>,
     metrics: Vec<model::UnitMetricsEntry>,
     registrations: Vec<model::RegistrationFact>,
+    locals: Vec<model::LocalBinding>,
     entry_points: Vec<entry_exit::EntryPoint>,
     exit_points: Vec<entry_exit::ExitPoint>,
     icelot: Vec<icelot::Icelot>,
@@ -152,6 +153,7 @@ fn main() {
         type_references: Vec::new(),
         metrics: Vec::new(),
         registrations: Vec::new(),
+        locals: Vec::new(),
         entry_points: Vec::new(),
         exit_points: Vec::new(),
         icelot: Vec::new(),
@@ -175,6 +177,7 @@ fn main() {
         index.type_references.extend(file.type_references);
         index.metrics.extend(file.metrics);
         index.registrations.extend(file.registrations);
+        index.locals.extend(file.locals);
         parse_errors += file.parse_errors;
     }
 
@@ -209,6 +212,7 @@ fn main() {
         imports: &index.imports,
         calls: &index.calls,
         type_references: &index.type_references,
+        locals: &index.locals,
     });
     let resolved = resolve_started.elapsed();
     let resolved_edges = resolution.edges.len();
@@ -262,8 +266,15 @@ fn main() {
     index.graph = Some(graph);
 
     eprintln!(
-        "resolve {:?} | resolved edges {} | package calls {} | runtime calls {} | unresolved {} | no caller {}",
-        resolved, resolved_edges, resolution.package_calls, resolution.runtime_calls, resolution.unresolved_calls, resolution.no_caller
+        "resolve {:?} | edges {} | package {} | runtime {} | indirect {} | dynamic {} | unresolved {} | no caller {}",
+        resolved,
+        resolved_edges,
+        resolution.package_calls,
+        resolution.runtime_calls,
+        resolution.indirect_calls,
+        resolution.dynamic_calls,
+        resolution.unresolved_calls,
+        resolution.no_caller
     );
     if std::env::var("KLAURO_REPORT_UNRESOLVED").is_ok() {
         let mut ranked: Vec<(String, u32)> = resolution.unresolved_names.into_iter().collect();
