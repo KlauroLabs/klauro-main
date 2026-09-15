@@ -28,3 +28,9 @@ const widened = await load<typeof import("./manager.js")>();
 export function afterTheLimitation(): number {
   return registry.size;
 }
+
+export const dispatch = (respond: (ok: boolean) => void, id: string): void => {
+  respond(true);
+  const parts: string[] = [];
+  parts.push(id);
+};

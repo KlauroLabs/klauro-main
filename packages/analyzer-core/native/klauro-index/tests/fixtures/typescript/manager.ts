@@ -24,6 +24,7 @@ export class CallManager extends Base implements Session {
   #provider: VoiceProvider;
   readonly storePath: string;
   static instances = 0;
+  private pending;
   private active = new Map<string, Session>();
 
   constructor(provider: VoiceProvider) {

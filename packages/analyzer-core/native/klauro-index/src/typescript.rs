@@ -645,7 +645,14 @@ impl<'a> Extractor<'a> {
         let annotation = node
             .child_by_field_name("type")
             .and_then(|annotation| annotation.named_child(0))
-            .map(|annotation| self.text_owned(annotation));
+            .map(|annotation| self.text_owned(annotation))
+            .or_else(|| {
+                let value = unwrap_value(node.child_by_field_name("value")?);
+                value
+                    .child_by_field_name("constructor")
+                    .map(|found| self.text_owned(found))
+                    .or_else(|| literal_type(value.kind()))
+            });
 
         self.facts.nodes.push(IndexNode {
             id: id.clone(),
@@ -892,11 +899,49 @@ impl<'a> Extractor<'a> {
                 matches!(value.kind(), "arrow_function" | "function_expression" | "function")
             });
 
-            if callable.is_none() && scope.inside_callable {
-                if let Some(value) = value {
-                    self.visit(value, scope);
+            if callable.is_none() {
+                let unit = scope.enclosing_callable.clone().unwrap_or_default();
+                {
+                    let annotation = declarator
+                        .child_by_field_name("type")
+                        .and_then(|annotation| annotation.named_child(0))
+                        .map(|annotation| self.text_owned(annotation));
+                    let initializer = value.map(|value| unwrap_value(value));
+                    let constructed = initializer
+                        .filter(|value| value.kind() == "new_expression")
+                        .and_then(|value| value.child_by_field_name("constructor"))
+                        .map(|found| self.text_owned(found))
+                        .or_else(|| initializer.and_then(|value| literal_type(value.kind())))
+                        .or_else(|| {
+                            initializer
+                                .filter(|value| value.kind() == "call_expression")
+                                .and_then(|value| value.child_by_field_name("function"))
+                                .filter(|function| function.kind() == "member_expression")
+                                .and_then(|function| function.child_by_field_name("property"))
+                                .and_then(|property| builtin_return(self.text(property)))
+                        });
+                    let from_call = initializer
+                        .filter(|value| value.kind() == "call_expression")
+                        .and_then(|value| value.child_by_field_name("function"))
+                        .filter(|function| function.kind() == "identifier")
+                        .map(|found| self.text_owned(found));
+                    if annotation.is_some() || constructed.is_some() || from_call.is_some() {
+                        self.facts.locals.push(LocalBinding {
+                            file: self.file,
+                            unit,
+                            name: name.clone(),
+                            annotation,
+                            constructed,
+                            from_call,
+                        });
+                    }
                 }
-                continue;
+                if scope.inside_callable {
+                    if let Some(value) = value {
+                        self.visit(value, scope);
+                    }
+                    continue;
+                }
             }
             let kind = if callable.is_some() {
                 NodeKind::Function
@@ -1133,6 +1178,50 @@ impl<'a> Extractor<'a> {
         }
         None
     }
+}
+
+fn literal_type(kind: &str) -> Option<String> {
+    Some(
+        match kind {
+            "array" => "Array",
+            "object" => "Object",
+            "string" | "template_string" => "String",
+            "number" => "Number",
+            "true" | "false" => "Boolean",
+            "regex" => "RegExp",
+            _ => return None,
+        }
+        .to_string(),
+    )
+}
+
+fn builtin_return(member: &str) -> Option<String> {
+    Some(
+        match member {
+            "trim" | "trimStart" | "trimEnd" | "toString" | "toLowerCase" | "toUpperCase"
+            | "slice" | "substring" | "replace" | "replaceAll" | "padStart" | "padEnd"
+            | "join" | "concat" | "repeat" | "normalize" => "String",
+            "split" | "map" | "filter" | "flatMap" | "sort" | "reverse" | "flat" => "Array",
+            "keys" | "values" | "entries" => "Array",
+            _ => return None,
+        }
+        .to_string(),
+    )
+}
+
+fn unwrap_value(value: Node) -> Node {
+    let mut current = value;
+    for _ in 0..4 {
+        match current.kind() {
+            "await_expression" | "parenthesized_expression" | "non_null_expression"
+            | "as_expression" => match current.named_child(0) {
+                Some(inner) => current = inner,
+                None => return current,
+            },
+            _ => return current,
+        }
+    }
+    current
 }
 
 fn member_of_this(target: &str) -> Option<String> {

@@ -221,6 +221,19 @@ pub struct TypeReferenceFact {
 }
 
 #[derive(Debug, Serialize)]
+pub struct LocalBinding {
+    pub file: u32,
+    pub unit: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub annotation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub constructed: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from_call: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
 pub struct RegistrationFact {
     pub file: u32,
     pub registrar: String,
@@ -257,6 +270,7 @@ pub struct FileFacts {
     pub type_references: Vec<TypeReferenceFact>,
     pub metrics: Vec<UnitMetricsEntry>,
     pub registrations: Vec<RegistrationFact>,
+    pub locals: Vec<LocalBinding>,
     pub lines: u32,
     pub parse_errors: u32,
 }
