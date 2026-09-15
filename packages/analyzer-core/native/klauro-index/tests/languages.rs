@@ -329,3 +329,38 @@ fn a_call_through_a_receiver_field_is_an_exit_point_for_its_package() {
         "a method declared in another file still belongs to its type"
     );
 }
+
+#[test]
+fn every_breadth_fixture_yields_a_named_declaration() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/breadth");
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_klauro-index"));
+    let output = Command::new(binary).arg(&root).output().expect("index runs");
+    let index: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+
+    let files = index["files"].as_array().unwrap();
+    let mut declared: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    for node in index["nodes"].as_array().unwrap() {
+        if node["kind"] == "module" || node["kind"] == "external" {
+            continue;
+        }
+        let Some(position) = node["file"].as_u64() else { continue };
+        *declared.entry(position as usize).or_insert(0) += 1;
+    }
+
+    let mut silent = Vec::new();
+    let mut covered = 0;
+    for (position, file) in files.iter().enumerate() {
+        if file["kind"] != "source" {
+            continue;
+        }
+        covered += 1;
+        if !declared.contains_key(&position) {
+            silent.push(file["path"].as_str().unwrap().to_string());
+        }
+    }
+    assert!(covered >= 25, "the breadth fixture covers the languages, saw {covered}");
+    assert!(
+        silent.is_empty(),
+        "every language declares something, these did not: {silent:?}"
+    );
+}
