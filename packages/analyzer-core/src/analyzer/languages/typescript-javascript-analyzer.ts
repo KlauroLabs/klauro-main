@@ -1,3 +1,4 @@
+import { emitClassFields } from '../core/class-field-nodes';
 import { callbackNodeName } from '../core/callback-node-identity';
 import { BaseAnalyzer, AnalysisContext, FileAnalysisContext } from '../core/base-analyzer';
 import {
@@ -1033,28 +1034,16 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         ));
       });
 
-      cls.properties.forEach((prop, propIndex) => {
-        const propId = `property_${classId}_${prop.name}_${propIndex}`;
-
-        nodes.push(this.createNode(
-          propId,
-          prop.name,
-          'property',
-          3,
-          filePath,
-          prop.lineStart,
-          prop.lineEnd,
-          {
-            type: prop.type,
-            isStatic: prop.isStatic,
-            isPrivate: prop.isPrivate,
-            isReadonly: prop.isReadonly,
-            isOptional: prop.isOptional,
-            defaultValue: prop.defaultValue,
-            decorators: prop.decorators.length > 0 ? prop.decorators : undefined,
-            decoratorArgs: this.decoratorArgsAttribute(prop.decoratorArgs)
-          }
-        ));
+      emitClassFields({
+        properties: cls.properties,
+        ownerName: cls.name,
+        classId,
+        filePath,
+        nodes,
+        edges,
+        buildNode: (id, name) => this.createNodeBuilder(id, name, 'property'),
+        buildEdge: (id, from, to) => this.createEdge(id, from, to, 'has_field'),
+        decoratorArgsAttribute: args => this.decoratorArgsAttribute(args as never),
       });
     });
   }
