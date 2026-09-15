@@ -1061,6 +1061,21 @@ impl<'a> Extractor<'a> {
             .find(|argument| argument.kind() == "string")
             .map(|argument| trim_quotes(self.text(*argument)).to_string());
 
+        if let Some(label) = label.as_deref() {
+            for argument in children.iter() {
+                if !matches!(argument.kind(), "identifier" | "member_expression") {
+                    continue;
+                }
+                self.facts.registrations.push(RegistrationFact {
+                    file: self.file,
+                    registrar: callee.to_string(),
+                    label: label.to_string(),
+                    handler: self.text_owned(*argument),
+                    line: line_of(*argument),
+                });
+            }
+        }
+
         for (position, argument) in children.iter().enumerate() {
             if !matches!(argument.kind(), "arrow_function" | "function_expression" | "function") {
                 continue;
@@ -1204,7 +1219,7 @@ pub fn first_error(root: Node) -> Option<(u32, String)> {
     }
 }
 
-fn count_errors(root: Node) -> u32 {
+pub fn count_errors(root: Node) -> u32 {
     if !root.has_error() {
         return 0;
     }

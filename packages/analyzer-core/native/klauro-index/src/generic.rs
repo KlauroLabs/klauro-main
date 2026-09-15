@@ -1,0 +1,821 @@
+use std::collections::HashMap;
+
+use tree_sitter::{Node, Tree};
+
+use crate::language::LanguageSpec;
+use crate::model::*;
+
+pub struct Extractor<'a> {
+    source: &'a [u8],
+    file: u32,
+    module_id: String,
+    spec: &'static LanguageSpec,
+    facts: FileFacts,
+    metrics: HashMap<String, UnitMetrics>,
+    types_by_name: HashMap<String, String>,
+}
+
+#[derive(Clone)]
+struct Scope {
+    owner: Option<String>,
+    callable: Option<String>,
+    type_owner: Option<String>,
+    in_try: bool,
+    conditional_depth: u16,
+    loop_depth: u16,
+    awaited: bool,
+}
+
+fn span_of(node: Node) -> Span {
+    Span {
+        line: node.start_position().row as u32 + 1,
+        column: node.start_position().column as u32,
+        end_line: node.end_position().row as u32 + 1,
+        end_column: node.end_position().column as u32,
+    }
+}
+
+impl<'a> Extractor<'a> {
+    pub fn new(source: &'a [u8], file: u32, path: &str, spec: &'static LanguageSpec) -> Self {
+        Extractor {
+            source,
+            file,
+            module_id: path.to_string(),
+            spec,
+            facts: FileFacts::default(),
+            metrics: HashMap::new(),
+            types_by_name: HashMap::new(),
+        }
+    }
+
+    fn collect_types(&mut self, node: Node) {
+        let mut cursor = node.walk();
+        let mut descend = true;
+        loop {
+            let current = cursor.node();
+            if self
+                .spec
+                .type_kinds
+                .iter()
+                .any(|(kind, _)| *kind == current.kind())
+                && (!self.spec.type_requires_body
+                    || self
+                        .spec
+                        .body_fields
+                        .iter()
+                        .any(|field| current.child_by_field_name(field).is_some()))
+                && let Some(name) = self.name_of(current)
+            {
+                let id = self.id("type", &name, current);
+                self.types_by_name.entry(name).or_insert(id);
+            }
+            if descend && cursor.goto_first_child() {
+                continue;
+            }
+            descend = true;
+            while !cursor.goto_next_sibling() {
+                if !cursor.goto_parent() {
+                    return;
+                }
+            }
+        }
+    }
+
+    fn owner_for_type_name(&self, name: &str) -> Option<String> {
+        self.types_by_name.get(base_name(name)).cloned()
+    }
+
+    fn text(&self, node: Node) -> &'a str {
+        std::str::from_utf8(&self.source[node.byte_range()]).unwrap_or("")
+    }
+
+    fn id(&self, kind: &str, name: &str, node: Node) -> String {
+        format!(
+            "{}:{kind}:{name}:{}",
+            self.module_id,
+            node.start_position().row + 1
+        )
+    }
+
+    fn unit(&mut self, scope: &Scope) -> Option<&mut UnitMetrics> {
+        let callable = scope.callable.clone()?;
+        Some(self.metrics.entry(callable).or_default())
+    }
+
+    fn name_of(&self, node: Node) -> Option<String> {
+        for field in self.spec.name_fields {
+            if let Some(found) = node.child_by_field_name(field)
+                && let Some(name) = self.leaf_name(found)
+            {
+                return Some(name);
+            }
+        }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if self.spec.name_descend.contains(&child.kind())
+                && let Some(name) = self.leaf_name(child)
+            {
+                return Some(name);
+            }
+        }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if self.spec.name_leaf_kinds.contains(&child.kind()) {
+                return Some(self.text(child).to_string());
+            }
+        }
+        None
+    }
+
+    fn leaf_name(&self, node: Node) -> Option<String> {
+        if self.spec.name_leaf_kinds.contains(&node.kind()) {
+            return Some(self.text(node).to_string());
+        }
+        if !self.spec.name_descend.contains(&node.kind()) {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                if self.spec.name_leaf_kinds.contains(&child.kind()) {
+                    return Some(self.text(child).to_string());
+                }
+            }
+            return None;
+        }
+        for field in ["declarator", "name"] {
+            if let Some(found) = node.child_by_field_name(field)
+                && let Some(name) = self.leaf_name(found)
+            {
+                return Some(name);
+            }
+        }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if let Some(name) = self.leaf_name(child) {
+                return Some(name);
+            }
+        }
+        None
+    }
+
+    fn parameter_list<'t>(&self, node: Node<'t>) -> Option<Node<'t>> {
+        for field in self.spec.parameter_fields {
+            if let Some(found) = node.child_by_field_name(field) {
+                return Some(found);
+            }
+        }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if self.spec.parameter_fields.contains(&child.kind()) {
+                return Some(child);
+            }
+        }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if self.spec.name_descend.contains(&child.kind())
+                && let Some(found) = self.parameter_list(child)
+            {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    fn parameters_in(&self, list: Node) -> Vec<Parameter> {
+        let mut parameters = Vec::new();
+        let mut cursor = list.walk();
+        for parameter in list.named_children(&mut cursor) {
+            if !self.spec.parameter_kinds.contains(&parameter.kind()) {
+                continue;
+            }
+            let name = self
+                .name_of(parameter)
+                .unwrap_or_else(|| self.text(parameter).to_string());
+            let type_annotation = parameter
+                .child_by_field_name("type")
+                .map(|annotation| self.text(annotation).to_string())
+                .or_else(|| self.trailing_type(parameter));
+            parameters.push(Parameter {
+                name,
+                type_annotation,
+                optional: false,
+                default_value: parameter
+                    .child_by_field_name("value")
+                    .or_else(|| parameter.child_by_field_name("default_value"))
+                    .map(|value| self.text(value).to_string()),
+            });
+        }
+        parameters
+    }
+
+    fn trailing_type(&self, parameter: Node) -> Option<String> {
+        let mut cursor = parameter.walk();
+        let children: Vec<Node> = parameter.named_children(&mut cursor).collect();
+        children
+            .iter()
+            .rev()
+            .find(|child| self.spec.return_child_kinds.contains(&child.kind()))
+            .map(|child| self.text(*child).trim().to_string())
+    }
+
+    fn signature_of(&self, node: Node) -> Signature {
+        let parameters = match self.parameter_list(node) {
+            Some(list) => self.parameters_in(list),
+            None => self.parameters_in(node),
+        };
+        let return_type = self
+            .spec
+            .return_fields
+            .iter()
+            .find_map(|field| node.child_by_field_name(field))
+            .map(|found| self.text(found).trim().to_string())
+            .filter(|found| !found.is_empty())
+            .or_else(|| self.trailing_return(node));
+        Signature {
+            parameters,
+            return_type,
+            type_parameters: Vec::new(),
+        }
+    }
+
+    fn trailing_return(&self, node: Node) -> Option<String> {
+        if self.spec.return_child_kinds.is_empty() {
+            return None;
+        }
+        let mut cursor = node.walk();
+        let children: Vec<Node> = node.named_children(&mut cursor).collect();
+        children
+            .iter()
+            .rev()
+            .find(|child| self.spec.return_child_kinds.contains(&child.kind()))
+            .map(|child| self.text(*child).trim().to_string())
+    }
+
+    pub fn run(mut self, tree: &Tree, path: &str, line_count: u32) -> FileFacts {
+        let root = tree.root_node();
+        self.facts.lines = line_count;
+        self.facts.parse_errors = crate::typescript::count_errors(root);
+        self.facts.nodes.push(IndexNode {
+            id: self.module_id.clone(),
+            name: path.to_string(),
+            kind: NodeKind::Module,
+            file: self.file,
+            span: span_of(root),
+            parent: None,
+            signature: None,
+            modifiers: Modifiers::default(),
+            decorators: Vec::new(),
+            type_annotation: None,
+            documentation: None,
+            callback_of: None,
+            registration_label: None,
+        });
+        self.collect_types(root);
+        let scope = Scope {
+            owner: Some(self.module_id.clone()),
+            callable: None,
+            type_owner: None,
+            in_try: false,
+            conditional_depth: 0,
+            loop_depth: 0,
+            awaited: false,
+        };
+        self.walk(root, &scope);
+
+        let mut metrics: Vec<UnitMetricsEntry> = std::mem::take(&mut self.metrics)
+            .into_iter()
+            .map(|(unit, mut metrics)| {
+                metrics.reads.sort();
+                metrics.reads.dedup();
+                metrics.writes.sort();
+                metrics.writes.dedup();
+                metrics.throws.sort();
+                metrics.throws.dedup();
+                UnitMetricsEntry { unit, metrics }
+            })
+            .collect();
+        metrics.sort_by(|left, right| left.unit.cmp(&right.unit));
+        self.facts.metrics = metrics;
+        self.facts
+    }
+
+    fn walk(&mut self, node: Node, scope: &Scope) {
+        let mut cursor = node.walk();
+        if !cursor.goto_first_child() {
+            return;
+        }
+        loop {
+            self.visit(cursor.node(), scope);
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+    }
+
+    fn visit(&mut self, node: Node, scope: &Scope) {
+        let kind = node.kind();
+
+        if let Some((_, node_kind)) = self.spec.type_kinds.iter().find(|(name, _)| *name == kind) {
+            let declared = !self.spec.type_requires_body
+                || self
+                    .spec
+                    .body_fields
+                    .iter()
+                    .any(|field| node.child_by_field_name(field).is_some());
+            if declared {
+                self.declare_type(node, scope, *node_kind);
+            } else {
+                self.walk(node, scope);
+            }
+            return;
+        }
+        if let Some((_, node_kind)) = self
+            .spec
+            .function_kinds
+            .iter()
+            .find(|(name, _)| *name == kind)
+        {
+            self.declare_function(node, scope, *node_kind);
+            return;
+        }
+        if self.spec.impl_kinds.contains(&kind) {
+            let owner = node
+                .child_by_field_name(self.spec.impl_type_field)
+                .map(|found| self.text(found).to_string())
+                .and_then(|name| self.owner_for_type_name(&name));
+            let mut inner = scope.clone();
+            if owner.is_some() {
+                inner.owner = owner.clone();
+                inner.type_owner = owner;
+            }
+            self.walk(node, &inner);
+            return;
+        }
+        if self.spec.field_kinds.contains(&kind) && scope.type_owner.is_some() {
+            self.declare_field(node, scope);
+            return;
+        }
+        if self.spec.import_kinds.contains(&kind) {
+            self.declare_import(node);
+            return;
+        }
+        if self.spec.call_kinds.contains(&kind) {
+            self.record_call(node, scope);
+            self.walk(node, scope);
+            return;
+        }
+        if self.spec.branch_kinds.contains(&kind) {
+            if let Some(unit) = self.unit(scope) {
+                unit.branches += 1;
+            }
+            let mut inner = scope.clone();
+            inner.conditional_depth += 1;
+            self.walk(node, &inner);
+            return;
+        }
+        if self.spec.loop_kinds.contains(&kind) {
+            if let Some(unit) = self.unit(scope) {
+                unit.loops += 1;
+            }
+            let mut inner = scope.clone();
+            inner.loop_depth += 1;
+            self.walk(node, &inner);
+            return;
+        }
+        if self.spec.return_kinds.contains(&kind) {
+            if let Some(unit) = self.unit(scope) {
+                unit.returns += 1;
+            }
+            self.walk(node, scope);
+            return;
+        }
+        if self.spec.throw_kinds.contains(&kind) {
+            let thrown = node
+                .named_child(0)
+                .map(|value| throw_name(self.text(value)))
+                .unwrap_or_default();
+            if let Some(unit) = self.unit(scope) {
+                unit.throws.push(thrown);
+            }
+            self.walk(node, scope);
+            return;
+        }
+        if self.spec.await_kinds.contains(&kind) {
+            if let Some(unit) = self.unit(scope) {
+                unit.awaits += 1;
+            }
+            let mut inner = scope.clone();
+            inner.awaited = true;
+            self.walk(node, &inner);
+            return;
+        }
+        self.walk(node, scope);
+    }
+
+    fn decorators_of(&self, node: Node) -> Vec<Decorator> {
+        if self.spec.decorator_kinds.is_empty() {
+            return Vec::new();
+        }
+        let mut found = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if self.spec.decorator_kinds.contains(&child.kind()) {
+                found.push(self.decorator(child));
+            } else if self.spec.decorator_container_kinds.contains(&child.kind()) {
+                let mut inner = child.walk();
+                for entry in child.named_children(&mut inner) {
+                    if self.spec.decorator_kinds.contains(&entry.kind()) {
+                        found.push(self.decorator(entry));
+                    }
+                }
+            }
+        }
+        if let Some(parent) = node.parent()
+            && self.spec.decorator_container_kinds.contains(&parent.kind())
+        {
+            let mut cursor = parent.walk();
+            for entry in parent.named_children(&mut cursor) {
+                if self.spec.decorator_kinds.contains(&entry.kind()) {
+                    found.push(self.decorator(entry));
+                }
+            }
+        }
+        found
+    }
+
+    fn decorator(&self, node: Node) -> Decorator {
+        let text = self.text(node);
+        let name = text
+            .trim()
+            .trim_start_matches(['@', '#', '['])
+            .trim_start();
+        let name_end = name.find(['(', ' ', '\n', ']']).unwrap_or(name.len());
+        let mut arguments = Vec::new();
+        for literal in string_literals(text) {
+            arguments.push(DecoratorArgument { value: literal, literal: true });
+        }
+        Decorator {
+            name: name[..name_end].trim().to_string(),
+            arguments,
+        }
+    }
+
+    fn declare_type(&mut self, node: Node, scope: &Scope, kind: NodeKind) {
+        let Some(name) = self.name_of(node) else {
+            self.walk(node, scope);
+            return;
+        };
+        let id = self.id("type", &name, node);
+        let owner = scope.owner.clone();
+        self.facts.nodes.push(IndexNode {
+            id: id.clone(),
+            name,
+            kind,
+            file: self.file,
+            span: span_of(node),
+            parent: owner.clone(),
+            signature: None,
+            modifiers: Modifiers::default(),
+            decorators: self.decorators_of(node),
+            type_annotation: None,
+            documentation: None,
+            callback_of: None,
+            registration_label: None,
+        });
+        if let Some(owner) = owner.as_deref() {
+            self.facts.edges.push(IndexEdge {
+                source: owner.to_string(),
+                target: id.clone(),
+                kind: EdgeKind::Contains,
+            });
+        }
+        self.record_heritage(node, &id);
+
+        let mut inner = scope.clone();
+        inner.owner = Some(id.clone());
+        inner.type_owner = Some(id);
+        self.walk(node, &inner);
+    }
+
+    fn record_heritage(&mut self, node: Node, owner: &str) {
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if !self.spec.heritage_kinds.contains(&child.kind()) {
+                continue;
+            }
+            let mut names = child.walk();
+            let mut found = false;
+            for entry in child.named_children(&mut names) {
+                let name = base_name(self.text(entry));
+                if name.is_empty() {
+                    continue;
+                }
+                found = true;
+                self.facts.type_references.push(TypeReferenceFact {
+                    file: self.file,
+                    source: owner.to_string(),
+                    name: name.to_string(),
+                    kind: EdgeKind::Extends,
+                });
+            }
+            if !found {
+                let name = base_name(self.text(child));
+                if !name.is_empty() {
+                    self.facts.type_references.push(TypeReferenceFact {
+                        file: self.file,
+                        source: owner.to_string(),
+                        name: name.to_string(),
+                        kind: EdgeKind::Extends,
+                    });
+                }
+            }
+        }
+    }
+
+    fn declare_function(&mut self, node: Node, scope: &Scope, kind: NodeKind) {
+        let Some(name) = self.name_of(node) else {
+            self.walk(node, scope);
+            return;
+        };
+        let receiver_owner = if self.spec.receiver_type_field.is_empty() {
+            None
+        } else {
+            node.child_by_field_name(self.spec.receiver_type_field)
+                .and_then(|receiver| self.receiver_type_name(receiver))
+                .and_then(|name| self.owner_for_type_name(&name))
+        };
+        let scope = &match receiver_owner {
+            Some(owner) => {
+                let mut inner = scope.clone();
+                inner.type_owner = Some(owner);
+                inner
+            }
+            None => scope.clone(),
+        };
+        let kind = if self.spec.constructor_kinds.contains(&name.as_str()) {
+            NodeKind::Constructor
+        } else if scope.type_owner.is_some() && kind == NodeKind::Function {
+            NodeKind::Method
+        } else {
+            kind
+        };
+        let id = self.id("function", &name, node);
+        let owner = scope.type_owner.clone().or_else(|| scope.owner.clone());
+        self.facts.nodes.push(IndexNode {
+            id: id.clone(),
+            name,
+            kind,
+            file: self.file,
+            span: span_of(node),
+            parent: owner.clone(),
+            signature: Some(self.signature_of(node)),
+            modifiers: Modifiers::default(),
+            decorators: self.decorators_of(node),
+            type_annotation: None,
+            documentation: None,
+            callback_of: None,
+            registration_label: None,
+        });
+        if let Some(owner) = owner.as_deref() {
+            self.facts.edges.push(IndexEdge {
+                source: owner.to_string(),
+                target: id.clone(),
+                kind: if scope.type_owner.is_some() {
+                    EdgeKind::HasMethod
+                } else {
+                    EdgeKind::Contains
+                },
+            });
+        }
+
+        let mut inner = scope.clone();
+        inner.owner = Some(id.clone());
+        inner.callable = Some(id);
+        inner.type_owner = None;
+        self.walk(node, &inner);
+    }
+
+    fn receiver_type_name(&self, receiver: Node) -> Option<String> {
+        let mut cursor = receiver.walk();
+        let mut descend = true;
+        loop {
+            let current = cursor.node();
+            if current.kind() == "type_identifier" {
+                return Some(self.text(current).to_string());
+            }
+            if descend && cursor.goto_first_child() {
+                continue;
+            }
+            descend = true;
+            while !cursor.goto_next_sibling() {
+                if !cursor.goto_parent() {
+                    return None;
+                }
+            }
+        }
+    }
+
+    fn declare_field(&mut self, node: Node, scope: &Scope) {
+        let Some(owner) = scope.type_owner.clone() else { return };
+        let Some(name) = self.name_of(node) else { return };
+        let id = self.id("field", &name, node);
+        let type_annotation = node
+            .child_by_field_name("type")
+            .map(|annotation| self.text(annotation).trim().to_string());
+        self.facts.nodes.push(IndexNode {
+            id: id.clone(),
+            name,
+            kind: NodeKind::Property,
+            file: self.file,
+            span: span_of(node),
+            parent: Some(owner.clone()),
+            signature: None,
+            modifiers: Modifiers::default(),
+            decorators: Vec::new(),
+            type_annotation,
+            documentation: None,
+            callback_of: None,
+            registration_label: None,
+        });
+        self.facts.edges.push(IndexEdge {
+            source: owner,
+            target: id,
+            kind: EdgeKind::HasField,
+        });
+    }
+
+    fn declare_import(&mut self, node: Node) {
+        let text = self.text(node);
+        let specifier = import_specifier(text);
+        if specifier.is_empty() {
+            return;
+        }
+        self.facts.imports.push(ImportFact {
+            file: self.file,
+            specifier,
+            line: node.start_position().row as u32 + 1,
+            type_only: false,
+            names: Vec::new(),
+        });
+    }
+
+    fn record_call(&mut self, node: Node, scope: &Scope) {
+        let function = node
+            .child_by_field_name("function")
+            .or_else(|| node.child_by_field_name("name"))
+            .or_else(|| node.child_by_field_name("method"))
+            .or_else(|| node.child_by_field_name("constructor"))
+            .or_else(|| node.child_by_field_name("type"));
+        let (receiver, callee) = match function {
+            Some(function) => {
+                let receiver = function
+                    .child_by_field_name(self.spec.receiver_field)
+                    .map(|found| self.text(found).to_string());
+                let callee = match receiver.is_some() {
+                    true => function
+                        .child_by_field_name("field")
+                        .or_else(|| function.child_by_field_name("name"))
+                        .or_else(|| function.child_by_field_name("property"))
+                        .map(|found| self.text(found).to_string())
+                        .unwrap_or_else(|| self.text(function).to_string()),
+                    false => self.text(function).to_string(),
+                };
+                (receiver, callee)
+            }
+            None => {
+                let receiver = node
+                    .child_by_field_name(self.spec.receiver_field)
+                    .map(|found| self.text(found).to_string());
+                match node.named_child(0) {
+                    Some(first) => (receiver, self.text(first).to_string()),
+                    None => return,
+                }
+            }
+        };
+        let callee = base_name(&callee).to_string();
+        if callee.is_empty() {
+            return;
+        }
+        if let Some(arguments) = node.child_by_field_name("arguments") {
+            let mut cursor = arguments.walk();
+            let children: Vec<Node> = arguments.named_children(&mut cursor).collect();
+            let label = children
+                .iter()
+                .find(|argument| argument.kind().contains("string"))
+                .map(|argument| trim_quotes(self.text(*argument)).to_string());
+            if let Some(label) = label {
+                for argument in children.iter() {
+                    if !self.spec.name_leaf_kinds.contains(&argument.kind())
+                        && !argument.kind().contains("selector")
+                    {
+                        continue;
+                    }
+                    let registrar = match &receiver {
+                        Some(receiver) => format!("{receiver}.{callee}"),
+                        None => callee.clone(),
+                    };
+                    self.facts.registrations.push(RegistrationFact {
+                        file: self.file,
+                        registrar,
+                        label: label.clone(),
+                        handler: self.text(*argument).to_string(),
+                        line: argument.start_position().row as u32 + 1,
+                    });
+                }
+            }
+        }
+        let argument_count = node
+            .child_by_field_name("arguments")
+            .map(|arguments| {
+                let mut cursor = arguments.walk();
+                arguments.named_children(&mut cursor).count() as u16
+            })
+            .unwrap_or(0);
+
+        self.facts.calls.push(CallFact {
+            file: self.file,
+            caller: scope.callable.clone(),
+            callee,
+            receiver,
+            line: node.start_position().row as u32 + 1,
+            column: node.start_position().column as u32,
+            argument_count,
+            constructs: node.kind().contains("new") || node.kind().contains("creation"),
+            context: CallContext {
+                in_try: scope.in_try,
+                in_catch: false,
+                in_finally: false,
+                awaited: scope.awaited,
+                optional_chained: false,
+                conditional_depth: scope.conditional_depth,
+                loop_depth: scope.loop_depth,
+            },
+        });
+    }
+}
+
+fn trim_quotes(text: &str) -> &str {
+    let trimmed = text.trim();
+    let bytes = trimmed.as_bytes();
+    if bytes.len() >= 2
+        && matches!(bytes[0], b'"' | b'\'' | b'`')
+        && bytes[bytes.len() - 1] == bytes[0]
+    {
+        return &trimmed[1..trimmed.len() - 1];
+    }
+    trimmed
+}
+
+fn string_literals(text: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let bytes = text.as_bytes();
+    let mut position = 0;
+    while position < bytes.len() {
+        let quote = bytes[position];
+        if quote == b'"' || quote == b'\'' {
+            let start = position + 1;
+            let mut end = start;
+            while end < bytes.len() && bytes[end] != quote {
+                end += 1;
+            }
+            if end < bytes.len()
+                && let Ok(literal) = std::str::from_utf8(&bytes[start..end])
+            {
+                found.push(literal.to_string());
+            }
+            position = end + 1;
+            continue;
+        }
+        position += 1;
+    }
+    found
+}
+
+fn base_name(text: &str) -> &str {
+    let text = text.trim();
+    let end = text.find(['<', '(', '{', '\n', ' ']).unwrap_or(text.len());
+    text[..end].trim()
+}
+
+fn throw_name(text: &str) -> String {
+    let text = text.trim().strip_prefix("new ").unwrap_or(text.trim());
+    let end = text.find(['(', ' ', ';', '\n']).unwrap_or(text.len());
+    text[..end].trim().to_string()
+}
+
+fn import_specifier(text: &str) -> String {
+    let text = text.trim();
+    if let Some(start) = text.find(['"', '<']) {
+        let closing = if text.as_bytes()[start] == b'<' { '>' } else { '"' };
+        if let Some(end) = text[start + 1..].find(closing) {
+            return text[start + 1..start + 1 + end].to_string();
+        }
+    }
+    let cleaned = text
+        .trim_start_matches("import")
+        .trim_start_matches("using")
+        .trim_start_matches("use")
+        .trim_start_matches("#include")
+        .trim_start_matches("from")
+        .trim();
+    let end = cleaned.find([' ', ';', '\n']).unwrap_or(cleaned.len());
+    cleaned[..end].trim().to_string()
+}

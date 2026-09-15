@@ -401,7 +401,10 @@ pub static SKIPPED_DIRECTORIES: &[&str] = &[
     "storybook-static",
     "target",
     "testdata",
+    "third-party",
+    "third_party",
     "vendor",
+    "vendored",
     "vendors",
     "venv",
 ];

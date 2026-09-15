@@ -174,9 +174,9 @@ function nestedTree(): string {
   };
   write('.git/HEAD', 'ref: refs/heads/main');
   write('src/app.ts', 'export const a = 1;');
-  write('vendored/other/.git/HEAD', 'ref: refs/heads/main');
-  write('vendored/other/src/lib.ts', 'export const b = 2;');
-  write('vendored/other/package.json', '{}');
+  write('packages/other/.git/HEAD', 'ref: refs/heads/main');
+  write('packages/other/src/lib.ts', 'export const b = 2;');
+  write('packages/other/package.json', '{}');
   return root;
 }
 
@@ -184,10 +184,10 @@ test('a nested repository is found on the same walk and its files are excluded',
   const root = nestedTree();
   try {
     const result = discoverFiles(root);
-    assert.deepEqual(result.nestedRepositories, ['vendored/other']);
+    assert.deepEqual(result.nestedRepositories, ['packages/other']);
     const paths = result.files.map(f => f.path);
     assert.ok(paths.includes('src/app.ts'));
-    assert.ok(!paths.some(p => p.startsWith('vendored/other/')), 'a vendored repository is not this repository');
+    assert.ok(!paths.some(p => p.startsWith('packages/other/')), 'a nested repository is not this repository');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

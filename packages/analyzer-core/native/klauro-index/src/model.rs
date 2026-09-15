@@ -220,6 +220,15 @@ pub struct TypeReferenceFact {
     pub kind: EdgeKind,
 }
 
+#[derive(Debug, Serialize)]
+pub struct RegistrationFact {
+    pub file: u32,
+    pub registrar: String,
+    pub label: String,
+    pub handler: String,
+    pub line: u32,
+}
+
 #[derive(Debug, Default, Serialize)]
 pub struct UnitMetrics {
     pub branches: u16,
@@ -247,6 +256,7 @@ pub struct FileFacts {
     pub calls: Vec<CallFact>,
     pub type_references: Vec<TypeReferenceFact>,
     pub metrics: Vec<UnitMetricsEntry>,
+    pub registrations: Vec<RegistrationFact>,
     pub lines: u32,
     pub parse_errors: u32,
 }

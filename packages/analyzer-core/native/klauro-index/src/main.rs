@@ -1,8 +1,11 @@
 mod discovery;
 mod language_tables;
 mod entry_exit;
+mod generated;
+mod generic;
 mod externals;
 mod graph;
+mod language;
 mod icelot;
 mod model;
 mod resolve;
@@ -29,6 +32,7 @@ struct Index {
     calls: Vec<model::CallFact>,
     type_references: Vec<model::TypeReferenceFact>,
     metrics: Vec<model::UnitMetricsEntry>,
+    registrations: Vec<model::RegistrationFact>,
     entry_points: Vec<entry_exit::EntryPoint>,
     exit_points: Vec<entry_exit::ExitPoint>,
     icelot: Vec<icelot::Icelot>,
@@ -37,20 +41,43 @@ struct Index {
     nested_repositories: Vec<String>,
 }
 
-fn extract(path: &str, absolute: &std::path::Path, file: u32) -> Option<FileFacts> {
-    let mut parser = typescript::parser_for(path)?;
-    let mut source = std::fs::read(absolute).ok()?;
-    source_rewrite::grammar_limitations(&mut source);
+fn extract(
+    path: &str,
+    absolute: &std::path::Path,
+    file: u32,
+    language_id: Option<&str>,
+) -> Option<FileFacts> {
+    if let Some(mut parser) = typescript::parser_for(path) {
+        let mut source = std::fs::read(absolute).ok()?;
+        if generated::is_generated(&source) {
+            return None;
+        }
+        source_rewrite::grammar_limitations(&mut source);
+        let tree = parser.parse(&source, None)?;
+        report_first_error(path, &source, &tree);
+        let lines = source.iter().filter(|byte| **byte == b'\n').count() as u32 + 1;
+        return Some(typescript::Extractor::new(&source, file, path).run(&tree, path, lines));
+    }
+    let (language, spec) = language::language_for(language_id?)?;
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&language).ok()?;
+    let source = std::fs::read(absolute).ok()?;
+    if generated::is_generated(&source) {
+        return None;
+    }
     let tree = parser.parse(&source, None)?;
+    let lines = source.iter().filter(|byte| **byte == b'\n').count() as u32 + 1;
+    Some(generic::Extractor::new(&source, file, path, spec).run(&tree, path, lines))
+}
+
+fn report_first_error(path: &str, source: &[u8], tree: &tree_sitter::Tree) {
     if std::env::var("KLAURO_REPORT_PARSE_ERRORS").is_ok()
         && let Some((line, kind)) = typescript::first_error(tree.root_node())
     {
-        let text = String::from_utf8_lossy(&source);
+        let text = String::from_utf8_lossy(source);
         let snippet = text.lines().nth(line as usize - 1).unwrap_or("").trim();
         eprintln!("{path}:{line} [{kind}] {}", &snippet[..snippet.len().min(90)]);
     }
-    let lines = source.iter().filter(|byte| **byte == b'\n').count() as u32 + 1;
-    Some(typescript::Extractor::new(&source, file, path).run(&tree, path, lines))
 }
 
 fn main() {
@@ -64,7 +91,7 @@ fn main() {
         .files
         .par_iter()
         .enumerate()
-        .filter_map(|(file, entry)| extract(&entry.path, &entry.absolute, file as u32))
+        .filter_map(|(file, entry)| extract(&entry.path, &entry.absolute, file as u32, entry.language))
         .collect();
     let parsed = parse_started.elapsed();
 
@@ -78,6 +105,7 @@ fn main() {
         calls: Vec::new(),
         type_references: Vec::new(),
         metrics: Vec::new(),
+        registrations: Vec::new(),
         entry_points: Vec::new(),
         exit_points: Vec::new(),
         icelot: Vec::new(),
@@ -98,6 +126,7 @@ fn main() {
         index.calls.extend(file.calls);
         index.type_references.extend(file.type_references);
         index.metrics.extend(file.metrics);
+        index.registrations.extend(file.registrations);
         parse_errors += file.parse_errors;
     }
 
@@ -115,7 +144,7 @@ fn main() {
     index.nodes.extend(resolution.external_nodes);
 
     let derive_started = Instant::now();
-    let derived = entry_exit::derive(&index.nodes, &index.calls, &index.files, &resolution.modules);
+    let derived = entry_exit::derive(&index.nodes, &index.calls, &index.files, &resolution.modules, &index.registrations, &resolution.local, &resolution.unique_units);
     let derived_elapsed = derive_started.elapsed();
     eprintln!(
         "entry and exit {:?} | entry points {} | exit points {}",

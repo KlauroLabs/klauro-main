@@ -1,0 +1,292 @@
+use std::path::PathBuf;
+use std::process::Command;
+use std::sync::OnceLock;
+
+fn languages() -> &'static serde_json::Value {
+    static INDEX: OnceLock<serde_json::Value> = OnceLock::new();
+    INDEX.get_or_init(|| {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/languages");
+        let binary = PathBuf::from(env!("CARGO_BIN_EXE_klauro-index"));
+        let output = Command::new(binary).arg(&root).output().expect("index runs");
+        serde_json::from_slice(&output.stdout).expect("index emits json")
+    })
+}
+
+fn file_of(node: &serde_json::Value) -> String {
+    let files = languages()["files"].as_array().unwrap();
+    let position = node["file"].as_u64().unwrap() as usize;
+    files
+        .get(position)
+        .and_then(|file| file.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+fn nodes_in(file: &str) -> Vec<serde_json::Value> {
+    languages()["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|node| file_of(node) == file)
+        .cloned()
+        .collect()
+}
+
+fn unit_in(file: &str, name: &str) -> serde_json::Value {
+    nodes_in(file)
+        .into_iter()
+        .find(|node| node["name"] == name)
+        .unwrap_or_else(|| panic!("{file} declares {name}"))
+}
+
+fn edge_targets(source: &str, kind: &str) -> Vec<String> {
+    let nodes = languages()["nodes"].as_array().unwrap();
+    let mut names: Vec<String> = languages()["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|edge| edge["kind"] == kind && edge["source"] == source)
+        .filter_map(|edge| {
+            nodes
+                .iter()
+                .find(|node| node["id"] == edge["target"])
+                .map(|node| node["name"].as_str().unwrap().to_string())
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+const FILES: &[(&str, &str, &str, &str)] = &[
+    ("go", "store.go", "Session", "Close"),
+    ("python", "store.py", "Session", "close"),
+    ("java", "Store.java", "Session", "close"),
+    ("csharp", "Store.cs", "Session", "Close"),
+    ("rust", "store.rs", "Session", "close"),
+    ("ruby", "store.rb", "Session", "close"),
+    ("php", "store.php", "Session", "close"),
+    ("swift", "store.swift", "Session", "close"),
+    ("kotlin", "Store.kt", "Session", "close"),
+];
+
+#[test]
+fn every_language_declares_its_type_and_attaches_its_method() {
+    for (language, file, type_name, method) in FILES {
+        let declared = unit_in(file, type_name);
+        assert!(
+            ["class", "interface"].contains(&declared["kind"].as_str().unwrap()),
+            "{language}: {type_name} is a type"
+        );
+        let methods = edge_targets(declared["id"].as_str().unwrap(), "has_method");
+        assert!(
+            methods.iter().any(|name| name == method),
+            "{language}: {type_name} reaches {method}, saw {methods:?}"
+        );
+    }
+}
+
+#[test]
+fn a_declared_field_is_parented_to_its_type() {
+    for (language, file, type_name) in [
+        ("go", "store.go", "Session"),
+        ("java", "Store.java", "Session"),
+        ("csharp", "Store.cs", "Session"),
+        ("rust", "store.rs", "Session"),
+        ("php", "store.php", "Session"),
+        ("swift", "store.swift", "Session"),
+        ("kotlin", "Store.kt", "Session"),
+        ("c", "store.c", "Session"),
+    ] {
+        let declared = unit_in(file, type_name);
+        let fields = edge_targets(declared["id"].as_str().unwrap(), "has_field");
+        assert_eq!(fields.len(), 2, "{language}: two fields, saw {fields:?}");
+        for field in &fields {
+            let node = unit_in(file, field);
+            assert_eq!(node["kind"], "property", "{language}: {field} is a field");
+            assert_eq!(
+                node["parent"], declared["id"],
+                "{language}: {field} is parented to its type"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_typed_language_carries_parameter_and_return_types() {
+    for (language, file, method, parameter, parameter_type, return_type) in [
+        ("go", "store.go", "Close", "force", "bool", "error"),
+        ("java", "Store.java", "close", "force", "boolean", "boolean"),
+        ("csharp", "Store.cs", "Close", "force", "bool", "bool"),
+        ("php", "store.php", "close", "force", "bool", "bool"),
+        ("swift", "store.swift", "close", "force", "Bool", "Bool"),
+        ("kotlin", "Store.kt", "close", "force", "Boolean", "Boolean"),
+        ("python", "store.py", "close", "force", "bool", "bool"),
+    ] {
+        let unit = unit_in(file, method);
+        let signature = &unit["signature"];
+        let found = signature["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|found| found["name"] == parameter)
+            .unwrap_or_else(|| panic!("{language}: {method} takes {parameter}"));
+        assert_eq!(
+            found["type_annotation"], parameter_type,
+            "{language}: {parameter} is typed"
+        );
+        assert_eq!(
+            signature["return_type"], return_type,
+            "{language}: {method} returns"
+        );
+    }
+}
+
+#[test]
+fn an_untyped_language_still_carries_its_parameters() {
+    let close = unit_in("store.rb", "close");
+    let parameters = close["signature"]["parameters"].as_array().unwrap();
+    assert_eq!(parameters[0]["name"], "force");
+    assert!(
+        parameters[0]["type_annotation"].is_null(),
+        "ruby declares no types, so none are invented"
+    );
+}
+
+#[test]
+fn a_call_is_attributed_to_the_unit_that_makes_it() {
+    for (language, file, caller, callee) in [
+        ("go", "store.go", "Close", "persist"),
+        ("java", "Store.java", "close", "persist"),
+        ("csharp", "Store.cs", "Close", "Persist"),
+        ("rust", "store.rs", "close", "persist"),
+        ("php", "store.php", "close", "persist"),
+        ("python", "store.py", "close", "persist"),
+        ("c", "store.c", "session_close", "persist"),
+    ] {
+        let unit = unit_in(file, caller);
+        let found = languages()["calls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|call| call["caller"] == unit["id"] && call["callee"] == callee);
+        assert!(found, "{language}: {caller} calls {callee}");
+    }
+}
+
+#[test]
+fn branches_and_throws_reach_icelot_in_every_language() {
+    for (language, file, method, throws) in [
+        ("java", "Store.java", "close", Some("IllegalStateException")),
+        ("csharp", "Store.cs", "Close", Some("InvalidOperationException")),
+        ("php", "store.php", "close", Some("RuntimeException")),
+        ("python", "store.py", "close", Some("ValueError")),
+        ("go", "store.go", "Close", None),
+        ("rust", "store.rs", "close", None),
+    ] {
+        let unit = unit_in(file, method);
+        let icelot = languages()["icelot"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["unit"] == unit["id"])
+            .unwrap_or_else(|| panic!("{language}: {method} has icelot"));
+        assert!(
+            icelot["logic"]["branches"].as_u64().unwrap() >= 1,
+            "{language}: the guard is a branch"
+        );
+        if let Some(thrown) = throws {
+            assert_eq!(
+                icelot["constraints"]["throws"][0], thrown,
+                "{language}: the thrown type is recorded"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_type_reference_across_languages_becomes_a_heritage_edge() {
+    let java = unit_in("Store.java", "Session");
+    let references = languages()["type_references"].as_array().unwrap();
+    assert!(
+        references
+            .iter()
+            .any(|reference| reference["source"] == java["id"] && reference["name"] == "Base"),
+        "java records what it extends"
+    );
+    let php = unit_in("store.php", "Session");
+    assert!(
+        references
+            .iter()
+            .any(|reference| reference["source"] == php["id"] && reference["name"] == "Base"),
+        "php records what it extends"
+    );
+}
+
+#[test]
+fn generated_code_is_not_indexed() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/generated");
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_klauro-index"));
+    let output = Command::new(binary).arg(&root).output().expect("index runs");
+    let index: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let names: Vec<&str> = index["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|node| node["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"authored"), "authored code is indexed");
+    assert!(
+        !names.contains(&"machineWritten"),
+        "a file marked generated is not"
+    );
+}
+
+#[test]
+fn a_named_handler_registration_is_an_entry_point() {
+    let entries = languages()["entry_points"].as_array().unwrap();
+    let shown = entries
+        .iter()
+        .find(|entry| entry["path"] == "/sessions/{id}")
+        .expect("the go route is an entry point");
+    assert_eq!(shown["kind"], "http");
+    assert_eq!(
+        shown["method"], "GET",
+        "the verb inside the label is the method"
+    );
+    let handler = languages()["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["id"] == shown["handler"])
+        .expect("the handler is a node");
+    assert_eq!(
+        handler["name"], "showSession",
+        "the entry point points at the function it names, not at the registration"
+    );
+}
+
+#[test]
+fn an_annotation_route_composes_the_class_path() {
+    let entries = languages()["entry_points"].as_array().unwrap();
+    let found = entries
+        .iter()
+        .find(|entry| entry["path"] == "/owners/{ownerId}")
+        .expect("the method path is joined to the class path");
+    assert_eq!(found["kind"], "http");
+    assert_eq!(found["method"], "GET");
+
+    let created = entries
+        .iter()
+        .find(|entry| entry["method"] == "POST" && entry["path"] == "/owners")
+        .expect("an annotation with no path inherits the class path");
+    assert_eq!(created["kind"], "http");
+}
+
+#[test]
+fn a_repository_query_annotation_is_not_a_graphql_entry_point() {
+    let entries = languages()["entry_points"].as_array().unwrap();
+    assert!(
+        !entries.iter().any(|entry| entry["kind"] == "graphql"),
+        "a bare Query annotation is too ambiguous to be a graphql operation"
+    );
+}

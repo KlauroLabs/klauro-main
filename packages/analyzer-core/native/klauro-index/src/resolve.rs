@@ -6,6 +6,8 @@ use crate::model::*;
 pub struct Resolution {
     pub edges: Vec<IndexEdge>,
     pub modules: HashMap<(u32, String), String>,
+    pub local: HashMap<(u32, String), String>,
+    pub unique_units: HashMap<String, String>,
     pub external_nodes: Vec<IndexNode>,
     pub package_calls: u32,
     pub runtime_calls: u32,
@@ -313,6 +315,8 @@ pub fn resolve(index: &Index) -> Resolution {
 
     Resolution {
         edges,
+        unique_units: unique_units(index.nodes),
+        local: symbols.local,
         modules,
         external_nodes,
         package_calls,
@@ -357,6 +361,25 @@ fn external_node(id: &str, name: &str, origin: &str) -> IndexNode {
         callback_of: None,
         registration_label: None,
     }
+}
+
+fn unique_units(nodes: &[IndexNode]) -> HashMap<String, String> {
+    let mut counts: HashMap<&str, (u32, &str)> = HashMap::new();
+    for node in nodes {
+        if !matches!(
+            node.kind,
+            NodeKind::Function | NodeKind::Method | NodeKind::Constructor
+        ) {
+            continue;
+        }
+        let entry = counts.entry(node.name.as_str()).or_insert((0, node.id.as_str()));
+        entry.0 += 1;
+    }
+    counts
+        .into_iter()
+        .filter(|(_, (count, _))| *count == 1)
+        .map(|(name, (_, id))| (name.to_string(), id.to_string()))
+        .collect()
 }
 
 fn owning_type(symbols: &Symbols, nodes: &[IndexNode], caller: &str) -> Option<String> {
