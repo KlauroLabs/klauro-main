@@ -104,12 +104,21 @@ impl<'a> Extractor<'a> {
     }
 
     fn name_of(&self, node: Node) -> Option<String> {
+        if self.spec.name_whole_kinds.contains(&node.kind()) {
+            return Some(self.text(node).trim().to_string());
+        }
         for field in self.spec.name_fields {
-            if let Some(found) = node.child_by_field_name(field)
-                && let Some(name) = self.leaf_name(found)
-            {
-                return Some(name);
+            if let Some(found) = node.child_by_field_name(field) {
+                if self.spec.name_whole_kinds.contains(&found.kind()) {
+                    return Some(self.text(found).trim().to_string());
+                }
+                if let Some(name) = self.leaf_name(found) {
+                    return Some(name);
+                }
             }
+        }
+        if self.spec.require_name_field {
+            return None;
         }
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
@@ -142,11 +151,17 @@ impl<'a> Extractor<'a> {
             return None;
         }
         for field in ["declarator", "name"] {
-            if let Some(found) = node.child_by_field_name(field)
-                && let Some(name) = self.leaf_name(found)
-            {
-                return Some(name);
+            if let Some(found) = node.child_by_field_name(field) {
+                if self.spec.name_whole_kinds.contains(&found.kind()) {
+                    return Some(self.text(found).trim().to_string());
+                }
+                if let Some(name) = self.leaf_name(found) {
+                    return Some(name);
+                }
             }
+        }
+        if self.spec.require_name_field {
+            return None;
         }
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
@@ -359,6 +374,20 @@ impl<'a> Extractor<'a> {
             self.declare_import(node);
             return;
         }
+        if !self.spec.keyword_kind.is_empty() && kind == self.spec.keyword_kind {
+            let keyword = node
+                .child_by_field_name(self.spec.keyword_target_field)
+                .map(|target| self.text(target).trim().to_string())
+                .unwrap_or_default();
+            if self.spec.keyword_types.contains(&keyword.as_str()) {
+                self.keyword_declaration(node, scope, NodeKind::Class);
+                return;
+            }
+            if self.spec.keyword_functions.contains(&keyword.as_str()) {
+                self.keyword_declaration(node, scope, NodeKind::Function);
+                return;
+            }
+        }
         if self.spec.call_kinds.contains(&kind) {
             self.record_call(node, scope);
             self.walk(node, scope);
@@ -458,6 +487,95 @@ impl<'a> Extractor<'a> {
             name: name[..name_end].trim().to_string(),
             arguments,
         }
+    }
+
+    fn arguments_of<'t>(&self, node: Node<'t>) -> Option<Node<'t>> {
+        if let Some(found) = node.child_by_field_name("arguments") {
+            return Some(found);
+        }
+        let mut cursor = node.walk();
+        node.named_children(&mut cursor)
+            .find(|child| child.kind() == "arguments")
+    }
+
+    fn keyword_name(&self, node: Node) -> Option<String> {
+        let arguments = self.arguments_of(node)?;
+        let first = arguments.named_child(0)?;
+        if first.kind() == self.spec.keyword_kind {
+            return first
+                .child_by_field_name(self.spec.keyword_target_field)
+                .map(|target| self.text(target).trim().to_string());
+        }
+        Some(self.text(first).trim().to_string())
+    }
+
+    fn keyword_declaration(&mut self, node: Node, scope: &Scope, kind: NodeKind) {
+        let Some(name) = self.keyword_name(node) else {
+            self.walk(node, scope);
+            return;
+        };
+        let id = self.id(
+            if kind == NodeKind::Class { "type" } else { "function" },
+            &name,
+            node,
+        );
+        let owner = if kind == NodeKind::Class {
+            scope.owner.clone()
+        } else {
+            scope.type_owner.clone().or_else(|| scope.owner.clone())
+        };
+        let member = kind == NodeKind::Function && scope.type_owner.is_some();
+        self.facts.nodes.push(IndexNode {
+            id: id.clone(),
+            name,
+            kind: if member { NodeKind::Method } else { kind },
+            file: self.file,
+            span: span_of(node),
+            parent: owner.clone(),
+            signature: Some(self.keyword_signature(node)),
+            modifiers: Modifiers::default(),
+            decorators: Vec::new(),
+            type_annotation: None,
+            documentation: None,
+            callback_of: None,
+            registration_label: None,
+        });
+        if let Some(owner) = owner.as_deref() {
+            self.facts.edges.push(IndexEdge {
+                source: owner.to_string(),
+                target: id.clone(),
+                kind: if member { EdgeKind::HasMethod } else { EdgeKind::Contains },
+            });
+        }
+        let mut inner = scope.clone();
+        inner.owner = Some(id.clone());
+        if kind == NodeKind::Class {
+            inner.type_owner = Some(id);
+        } else {
+            inner.callable = Some(id);
+            inner.type_owner = None;
+        }
+        self.walk(node, &inner);
+    }
+
+    fn keyword_signature(&self, node: Node) -> Signature {
+        let mut parameters = Vec::new();
+        if let Some(arguments) = self.arguments_of(node)
+            && let Some(first) = arguments.named_child(0)
+            && first.kind() == self.spec.keyword_kind
+            && let Some(inner) = self.arguments_of(first)
+        {
+            let mut cursor = inner.walk();
+            for parameter in inner.named_children(&mut cursor) {
+                parameters.push(Parameter {
+                    name: self.text(parameter).trim().to_string(),
+                    type_annotation: None,
+                    optional: false,
+                    default_value: None,
+                });
+            }
+        }
+        Signature { parameters, return_type: None, type_parameters: Vec::new() }
     }
 
     fn declare_type(&mut self, node: Node, scope: &Scope, kind: NodeKind) {

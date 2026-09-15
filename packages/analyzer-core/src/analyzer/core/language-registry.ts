@@ -254,7 +254,7 @@ export const LANGUAGE_REGISTRY: LanguageRegistryEntry[] = [
   { id: 'tlaplus', extensions: ['tla'], manifests: [] },
   { id: 'supercollider', extensions: ['scd'], manifests: [] },
 
-  { id: 'glsl', extensions: ['glsl', 'vert', 'frag', 'geom', 'comp', 'tesc', 'tese', 'vs', 'fs'], manifests: [] },
+  { id: 'glsl', extensions: ['glsl', 'vert', 'frag', 'geom', 'comp', 'tesc', 'tese'], manifests: [] },
   { id: 'hlsl', extensions: ['hlsl', 'fx', 'fxh', 'hlsli'], manifests: [] },
   { id: 'wgsl', extensions: ['wgsl'], manifests: [] },
   { id: 'wat', extensions: ['wat', 'wast'], manifests: [] },

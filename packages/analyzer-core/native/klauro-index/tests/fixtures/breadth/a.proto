@@ -1,0 +1,2 @@
+message User { string name = 1; }
+service S { rpc Get(User) returns (User); }
