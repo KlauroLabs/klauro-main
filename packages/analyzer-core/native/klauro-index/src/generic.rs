@@ -20,6 +20,7 @@ struct Scope {
     owner: Option<String>,
     callable: Option<String>,
     type_owner: Option<String>,
+    self_binding: Option<String>,
     in_try: bool,
     conditional_depth: u16,
     loop_depth: u16,
@@ -273,6 +274,7 @@ impl<'a> Extractor<'a> {
             owner: Some(self.module_id.clone()),
             callable: None,
             type_owner: None,
+            self_binding: None,
             in_try: false,
             conditional_depth: 0,
             loop_depth: 0,
@@ -535,20 +537,25 @@ impl<'a> Extractor<'a> {
             self.walk(node, scope);
             return;
         };
-        let receiver_owner = if self.spec.receiver_type_field.is_empty() {
+        let receiver_node = if self.spec.receiver_type_field.is_empty() {
             None
         } else {
             node.child_by_field_name(self.spec.receiver_type_field)
-                .and_then(|receiver| self.receiver_type_name(receiver))
-                .and_then(|name| self.owner_for_type_name(&name))
         };
-        let scope = &match receiver_owner {
-            Some(owner) => {
-                let mut inner = scope.clone();
+        let receiver_type = receiver_node.and_then(|receiver| self.receiver_type_name(receiver));
+        let receiver_owner = receiver_type
+            .as_deref()
+            .and_then(|name| self.owner_for_type_name(name));
+        let self_binding = receiver_node.and_then(|receiver| self.receiver_binding(receiver));
+        let scope = &{
+            let mut inner = scope.clone();
+            if let Some(owner) = receiver_owner.clone() {
                 inner.type_owner = Some(owner);
-                inner
             }
-            None => scope.clone(),
+            if self_binding.is_some() {
+                inner.self_binding = self_binding;
+            }
+            inner
         };
         let kind = if self.spec.constructor_kinds.contains(&name.as_str()) {
             NodeKind::Constructor
@@ -585,12 +592,44 @@ impl<'a> Extractor<'a> {
                 },
             });
         }
+        if receiver_owner.is_none()
+            && let Some(name) = receiver_type
+        {
+            self.facts.type_references.push(TypeReferenceFact {
+                file: self.file,
+                source: id.clone(),
+                name,
+                kind: EdgeKind::HasMethod,
+            });
+        }
 
         let mut inner = scope.clone();
         inner.owner = Some(id.clone());
         inner.callable = Some(id);
         inner.type_owner = None;
         self.walk(node, &inner);
+    }
+
+    fn receiver_binding(&self, receiver: Node) -> Option<String> {
+        let mut cursor = receiver.walk();
+        let mut descend = true;
+        loop {
+            let current = cursor.node();
+            if let Some(name) = current.child_by_field_name("name")
+                && self.spec.name_leaf_kinds.contains(&name.kind())
+            {
+                return Some(self.text(name).to_string());
+            }
+            if descend && cursor.goto_first_child() {
+                continue;
+            }
+            descend = true;
+            while !cursor.goto_next_sibling() {
+                if !cursor.goto_parent() {
+                    return None;
+                }
+            }
+        }
     }
 
     fn receiver_type_name(&self, receiver: Node) -> Option<String> {
@@ -644,16 +683,49 @@ impl<'a> Extractor<'a> {
 
     fn declare_import(&mut self, node: Node) {
         let text = self.text(node);
+        let literals = string_literals(text);
+        if literals.len() > 1 {
+            for literal in literals {
+                self.record_import(&literal, node);
+            }
+            return;
+        }
         let specifier = import_specifier(text);
+        self.record_import(&specifier, node);
+    }
+
+    fn record_import(&mut self, specifier: &str, node: Node) {
+        let specifier = specifier.trim().to_string();
         if specifier.is_empty() {
             return;
+        }
+        let text = self.text(node);
+        let mut names = Vec::new();
+        if literals_count(text) == 1
+            && let Some(alias) = import_alias(text)
+        {
+            names.push(ImportSpecifier {
+                local: alias,
+                imported: None,
+                namespace: true,
+                default_import: false,
+            });
+        }
+        let bound = binding_of(&specifier);
+        if !bound.is_empty() && !names.iter().any(|name| name.local == bound) {
+            names.push(ImportSpecifier {
+                local: bound,
+                imported: None,
+                namespace: true,
+                default_import: false,
+            });
         }
         self.facts.imports.push(ImportFact {
             file: self.file,
             specifier,
             line: node.start_position().row as u32 + 1,
             type_only: false,
-            names: Vec::new(),
+            names,
         });
     }
 
@@ -694,6 +766,12 @@ impl<'a> Extractor<'a> {
         if callee.is_empty() {
             return;
         }
+        let receiver = match (&receiver, &scope.self_binding) {
+            (Some(receiver), Some(binding)) if root_binding(receiver) == binding => {
+                Some(format!("this{}", &receiver[binding.len()..]))
+            }
+            _ => receiver.clone(),
+        };
         if let Some(arguments) = node.child_by_field_name("arguments") {
             let mut cursor = arguments.walk();
             let children: Vec<Node> = arguments.named_children(&mut cursor).collect();
@@ -799,6 +877,46 @@ fn throw_name(text: &str) -> String {
     let text = text.trim().strip_prefix("new ").unwrap_or(text.trim());
     let end = text.find(['(', ' ', ';', '\n']).unwrap_or(text.len());
     text[..end].trim().to_string()
+}
+
+fn literals_count(text: &str) -> usize {
+    string_literals(text).len()
+}
+
+fn root_binding(receiver: &str) -> &str {
+    let end = receiver.find(['.', '[', '(', ' ', '-']).unwrap_or(receiver.len());
+    &receiver[..end]
+}
+
+fn binding_of(specifier: &str) -> String {
+    let trimmed = specifier.trim_end_matches(['/', '.', ';', '"', '>']);
+    let last = trimmed
+        .rsplit(['/', '.', ':', '\\'])
+        .find(|part| !part.is_empty())
+        .unwrap_or("");
+    let cleaned: String = last
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
+    if cleaned == "h" || cleaned == "hpp" || cleaned == "*" {
+        return String::new();
+    }
+    cleaned
+}
+
+fn import_alias(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    let rest = trimmed.strip_prefix("import ")?;
+    let mut parts = rest.split_whitespace();
+    let first = parts.next()?;
+    if first.starts_with('"') || first.starts_with('\'') {
+        return None;
+    }
+    let alias = parts.next()?;
+    if alias.starts_with('"') || alias.starts_with('\'') {
+        return Some(first.trim_matches(|c: char| !c.is_alphanumeric() && c != '_').to_string());
+    }
+    None
 }
 
 fn import_specifier(text: &str) -> String {

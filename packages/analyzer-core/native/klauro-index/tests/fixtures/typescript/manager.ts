@@ -10,7 +10,17 @@ export abstract class Base implements Disposable {
 
 export class AppError extends Error {}
 
+export class Store {
+  write(id: string): void {}
+  purge(): void {}
+}
+
+export function run(store: Store, id: string): void {
+  store.write(id);
+}
+
 export class CallManager extends Base implements Session {
+  private store: Store = new Store();
   #provider: VoiceProvider;
   readonly storePath: string;
   static instances = 0;
@@ -32,6 +42,10 @@ export class CallManager extends Base implements Session {
     }
     const scratch = this.active.size;
     return this.active.delete(id) && scratch > 0;
+  }
+
+  save(id: string): void {
+    this.store.write(id);
   }
 
   dispose(): void {}

@@ -10,6 +10,7 @@ mod icelot;
 mod model;
 mod resolve;
 mod source_rewrite;
+mod structured;
 mod typescript;
 
 use std::io::Write;
@@ -22,9 +23,19 @@ use serde::Serialize;
 use model::FileFacts;
 
 #[derive(Serialize)]
+struct IndexedFile {
+    path: String,
+    kind: discovery::FileKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    language: Option<&'static str>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    extracted: bool,
+}
+
+#[derive(Serialize)]
 struct Index {
     root: String,
-    files: Vec<String>,
+    files: Vec<IndexedFile>,
     nodes: Vec<model::IndexNode>,
     edges: Vec<model::IndexEdge>,
     imports: Vec<model::ImportFact>,
@@ -58,6 +69,18 @@ fn extract(
         let lines = source.iter().filter(|byte| **byte == b'\n').count() as u32 + 1;
         return Some(typescript::Extractor::new(&source, file, path).run(&tree, path, lines));
     }
+    let structured_id = language_id.or_else(|| structured_language_of(path));
+    if let Some(id) = structured_id
+        && let Some((mut parser, spec)) = structured::parser_for(id)
+    {
+        let source = std::fs::read(absolute).ok()?;
+        if generated::is_generated(&source) {
+            return None;
+        }
+        let tree = parser.parse(&source, None)?;
+        let lines = source.iter().filter(|byte| **byte == b'\n').count() as u32 + 1;
+        return Some(structured::Extractor::new(&source, file, path, spec).run(&tree, path, lines));
+    }
     let (language, spec) = language::language_for(language_id?)?;
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).ok()?;
@@ -68,6 +91,20 @@ fn extract(
     let tree = parser.parse(&source, None)?;
     let lines = source.iter().filter(|byte| **byte == b'\n').count() as u32 + 1;
     Some(generic::Extractor::new(&source, file, path, spec).run(&tree, path, lines))
+}
+
+fn structured_language_of(path: &str) -> Option<&'static str> {
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".json") || lower.ends_with(".jsonc") || lower.ends_with(".json5") {
+        return Some("json");
+    }
+    if lower.ends_with(".toml") {
+        return Some("toml");
+    }
+    if lower.ends_with(".yaml") || lower.ends_with(".yml") {
+        return Some("yaml");
+    }
+    None
 }
 
 fn report_first_error(path: &str, source: &[u8], tree: &tree_sitter::Tree) {
@@ -97,7 +134,16 @@ fn main() {
 
     let mut index = Index {
         root: root.to_string_lossy().to_string(),
-        files: found.files.iter().map(|file| file.path.clone()).collect(),
+        files: found
+            .files
+            .iter()
+            .map(|file| IndexedFile {
+                path: file.path.clone(),
+                kind: file.kind,
+                language: file.language,
+                extracted: false,
+            })
+            .collect(),
         nodes: Vec::new(),
         edges: Vec::new(),
         imports: Vec::new(),
@@ -114,11 +160,13 @@ fn main() {
         nested_repositories: found.nested_repositories,
     };
     let mut parse_errors = 0;
+    let mut extracted_files = std::collections::HashSet::new();
     let report_errors = std::env::var("KLAURO_REPORT_PARSE_ERRORS").is_ok();
     for file in facts {
         if report_errors && file.parse_errors > 0 {
-            eprintln!("parse errors {} in {}", file.parse_errors, index.files[file.nodes[0].file as usize]);
+            eprintln!("parse errors {} in {}", file.parse_errors, index.files[file.nodes[0].file as usize].path);
         }
+        extracted_files.insert(file.nodes[0].file);
         index.nodes.extend(file.nodes);
         index.edges.extend(file.edges);
         index.imports.extend(file.imports);
@@ -130,9 +178,33 @@ fn main() {
         parse_errors += file.parse_errors;
     }
 
+    for (position, file) in index.files.iter_mut().enumerate() {
+        file.extracted = extracted_files.contains(&(position as u32));
+    }
+    if std::env::var("KLAURO_REPORT_COVERAGE").is_ok() {
+        let mut by_language: std::collections::BTreeMap<&str, (u32, u32)> =
+            std::collections::BTreeMap::new();
+        for file in &index.files {
+            if file.kind != discovery::FileKind::Source {
+                continue;
+            }
+            let entry = by_language.entry(file.language.unwrap_or("unknown")).or_insert((0, 0));
+            entry.0 += 1;
+            if file.extracted {
+                entry.1 += 1;
+            }
+        }
+        let mut ranked: Vec<(&str, (u32, u32))> = by_language.into_iter().collect();
+        ranked.sort_by(|left, right| right.1.0.cmp(&left.1.0));
+        for (language, (total, extracted)) in ranked {
+            eprintln!("  coverage {language:<16} {extracted:>6} of {total:>6}");
+        }
+    }
+
     let resolve_started = Instant::now();
+    let paths: Vec<String> = index.files.iter().map(|file| file.path.clone()).collect();
     let resolution = resolve::resolve(&resolve::Index {
-        files: &index.files,
+        files: &paths,
         nodes: &index.nodes,
         imports: &index.imports,
         calls: &index.calls,
@@ -142,9 +214,14 @@ fn main() {
     let resolved_edges = resolution.edges.len();
     index.edges.extend(resolution.edges);
     index.nodes.extend(resolution.external_nodes);
+    for node in index.nodes.iter_mut() {
+        if let Some(owner) = resolution.method_owners.get(&node.id) {
+            node.parent = Some(owner.clone());
+        }
+    }
 
     let derive_started = Instant::now();
-    let derived = entry_exit::derive(&index.nodes, &index.calls, &index.files, &resolution.modules, &index.registrations, &resolution.local, &resolution.unique_units);
+    let derived = entry_exit::derive(&index.nodes, &index.calls, &paths, &resolution.modules, &index.registrations, &resolution.local, &resolution.unique_units, &resolution.call_origins);
     let derived_elapsed = derive_started.elapsed();
     eprintln!(
         "entry and exit {:?} | entry points {} | exit points {}",

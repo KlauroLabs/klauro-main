@@ -17,7 +17,7 @@ fn file_of(node: &serde_json::Value) -> String {
     let position = node["file"].as_u64().unwrap() as usize;
     files
         .get(position)
-        .and_then(|file| file.as_str())
+        .and_then(|file| file["path"].as_str())
         .unwrap_or("")
         .to_string()
 }
@@ -288,5 +288,44 @@ fn a_repository_query_annotation_is_not_a_graphql_entry_point() {
     assert!(
         !entries.iter().any(|entry| entry["kind"] == "graphql"),
         "a bare Query annotation is too ambiguous to be a graphql operation"
+    );
+}
+
+#[test]
+fn a_call_through_a_receiver_field_is_an_exit_point_for_its_package() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/receiver");
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_klauro-index"));
+    let output = Command::new(binary).arg(&root).output().expect("index runs");
+    let index: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+
+    let exits = index["exit_points"].as_array().unwrap();
+    let database = exits
+        .iter()
+        .find(|exit| exit["kind"] == "database")
+        .expect("a query through the receiver field is a database exit");
+    assert_eq!(database["target"], "database/sql");
+    assert_eq!(database["operation"], "QueryRow");
+
+    assert!(
+        !exits.iter().any(|exit| exit["kind"] == "file"),
+        "opening a database connection is not a file exit"
+    );
+
+    let store = index["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["name"] == "Store" && node["kind"] == "class")
+        .expect("the struct is indexed");
+    let owned: Vec<&serde_json::Value> = index["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|edge| edge["kind"] == "has_method" && edge["source"] == store["id"])
+        .collect();
+    assert_eq!(
+        owned.len(),
+        1,
+        "a method declared in another file still belongs to its type"
     );
 }
