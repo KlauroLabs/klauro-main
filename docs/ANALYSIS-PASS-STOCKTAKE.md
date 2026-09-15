@@ -353,18 +353,30 @@ File content shows the same shape: 51,890 read requests for 8,289 distinct files
 of 6.3. The cache absorbs the disk cost, so this is not an I/O problem, but every one of those
 requests is followed by work over the same content.
 
-**This is the better way, and it removes work rather than parallelising it.** One index object built
-once after extraction, carrying node-by-id, edges-by-source, edges-by-target, nodes-by-file and
-nodes-by-type, handed to every pass and every analyzer. It is step 1 of the flow taken literally:
-everything branches from the index, and nothing rebuilds it.
+One index built once and shared is the right shape, and it is step 1 of the flow taken literally.
+It is also the prerequisite for threads: a worker cannot be handed a class instance, but it can be
+handed an index slice and an analyzer id.
 
-It is also the prerequisite for threads rather than an alternative to them. A worker cannot be
-handed a class instance, but it can be handed an index slice and an analyzer id. Doing this first
-makes the parallel work possible; doing threads first would parallelise three hundred redundant
-traversals.
+**But it is not where the time is, and the estimate above was wrong.** Measured on the real graph:
 
-The saving is not yet proven, only the redundancy. That measurement comes from building the shared
-index and removing the first dozen rebuilds, not from arguing about it.
+| Operation | Cost |
+|---|---|
+| One shared index build | 96.6 ms |
+| One node-id map, done in 64 places | 21.6 ms |
+| One walk of the node array, done in 147 places | 5.0 ms |
+| One edge index, done in 126 places | 13.7 ms |
+| All the redundancy together | about 3.8 s |
+
+So the three hundred traversals are roughly 3.8 s of a 43 s analysis, not the 2.7x they were
+presented as. Worth removing, and nowhere near the answer.
+
+That leaves the first-party CPU genuinely distributed: 19.75 s spread across 33 passes and 114
+analyzers, of which traversals are 3.8 s and regular expressions 3.1 s. The remaining twelve or so
+seconds is ordinary computation, spread thin, each piece earning its keep individually.
+
+A cost shaped like that does not yield to a clever fix. It yields to doing less, or to real threads,
+and doing less is the one the flow already argues for: the output stocktake found roughly 25 of 115
+fields to be the pipeline talking about itself, and every one of those has a pass behind it.
 
 ### Asynchronous concurrency is not parallelism here, measured
 
