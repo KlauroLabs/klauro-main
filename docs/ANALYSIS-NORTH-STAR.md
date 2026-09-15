@@ -515,6 +515,45 @@ reader is shown one command five times.
 A flow should be a coherent unit of behaviour with one entry and possibly several effects, rather
 than the cross product of the two. Fixing that comes before outcomes are worth computing.
 
+## The index records the shape of the code, not the shape of the data
+
+This is the gap under every comprehension failure, and it is one gap rather than several.
+
+The comprehension layer is capabilities, flows, steps and entities. Three of those four are about
+data: an entity is a named thing with fields, a step's contract is what it takes and returns, and an
+outcome is data landing somewhere outside the system. The index holds almost none of it.
+
+| | |
+|---|---|
+| Property nodes | 19,474 |
+| Classes and interfaces | 1,034 |
+| Classes or interfaces that reach their own properties | **0** |
+| `has_field` edges in the whole graph | 49 |
+| `data_lineage` records | 42 |
+
+Properties are attached to the file that contains them, 17,339 by a `contains` edge from a file
+node. So the index can answer "this file declares a field called `text`" and cannot answer "`HookJob`
+has a field `text`". The type and its fields are both present and unconnected.
+
+Type annotations exist as strings on function signatures, 23,635 of 27,931 code nodes, but they are
+TypeScript's alone: 9,232 return types of 23,551 TypeScript nodes against 0 of 3,501 Swift and 0 of
+586 Kotlin.
+
+Everything downstream follows from this:
+
+- **Entities cannot be derived from the index**, so extraction falls back to regular expressions over
+  declarations that happen to carry an explicit field list. That is why all 42 entities on a
+  5,315-file repository are third-party wire formats and the system's own nouns are absent.
+- **A step has no real contract**, because what a flow takes and returns is not in the graph.
+- **An outcome cannot be recognised by what data it moves**, leaving out-degree over a call graph,
+  which finds helpers.
+- **What a system is for falls back to scoring keywords**, because there is no domain model to reason
+  from, and the confidence number is what that guess looks like when written down.
+
+The requirement was stated at the outset: the index must contain everything later stages need. It
+contains what the code is made of. It does not contain what the system's data is made of, and the
+comprehension layer is mostly a statement about data.
+
 ## What the index must carry
 
 The index is early and everything descends from it, so its contract is defined by what the layers
