@@ -1,103 +1,91 @@
 # The analysis MVP
 
-Derived from the stated purpose: **the whole point of the analysis is to build the index and the
-comprehension layer.** Everything here is either one of those two or a link in the chain between
-them. Measured state as of 2026-09-15.
+The specification already exists: `docs/cas/SPECIFICATION.md`, `docs/COMPREHENSION-LAYER.md`,
+`docs/COMPREHENSION-FRAMEWORK.md`. This is not a new design. It is the list of places the
+implementation does not do what those documents already say, and the order to close them in.
 
-## The chain, and where it breaks
+MVP is: **Tier 1 and Tier 2 complete enough that Tier 3 is true, for one deployable, fast.**
 
-The flow is seven steps and each one feeds the next. An honest reading of where each stands:
+## Step 1 — Establish ground truth by hand, first
 
-| Step | State |
-|---|---|
-| 1. Index the codebase once | Works for code. Configuration and manifests are not indexed |
-| 2. Deployables, then everything per deployable | Deployables detected, the split is **not implemented** |
-| 3. Entry and exit points, flows, flow chains, entities, domains, patterns | Entry and exit points work. **Entities are wrong. Flow chains do not exist** |
-| 4. Frameworks and the framework layer | Runs, never examined |
-| 5. Outcomes through terminality | **Produces helpers, not outcomes** |
-| 6. Comprehension layer | Cannot be judged until 3 and 5 are real |
-| 7. Workspace level | Not started |
+Nothing below can be judged without a target. Take three codebases of different shapes and languages
+and produce the Tier 3 output manually: the capabilities, the flows, the steps, the entities. Record
+how long it took, how many files were opened, and what was needed to be confident.
 
-The MVP is steps 1 through 6 producing something true. Not a subset of them shipped early with the
-rest labelled partial. Reporting coverage honestly is worth doing, but it describes the hole rather
-than filling it, and on its own it is a way of shipping without fixing anything.
+That gives three things the project does not have: a correct answer to compare against, a cost
+baseline the automated analysis has to beat, and a concrete sense of which facts a human actually
+used to reach the answer, which tells us what Tier 1 must carry.
 
-## What has to be done
+The audience and universality tests in `COMPREHENSION-LAYER.md` are the acceptance criteria. They
+are already written and already sharp.
 
-### 1. Entities are the wrong things entirely
+## Step 2 — Audit Tier 1 against the specification, not against intuition
 
-42 entities on a 5,315-file repository, and every one is a wire format from a third-party
-integration: `FeishuMessageEvent`, `TwitchChatMessage`, `ZaloMessage`, `TelnyxEvent`,
-`MattermostPost`, `BlueBubblesAttachment`. The system's own nouns, session, agent, conversation,
-call, skill, channel, are absent. Another repository reports a single entity for 6,091 nodes.
+Tier 1 is defined as nodes, edges, entry and exit points, and the six ICELOT facets. Known gaps:
 
-The material is in the graph: 574 DTOs, 2,380 types, 909 classes, 125 interfaces, and 730 domain
-concepts that are much closer to the real nouns. Selection is picking payload shapes because they
-carry explicit field lists, which is a proxy for being easy to extract rather than for mattering.
+- **The data model is absent.** 19,474 property nodes, 1,034 classes and interfaces, and zero types
+  that reach their own fields. `has_field` is 49 edges in the whole graph. Entities are a Tier 3
+  member and their substrate is not there.
+- **Type information is one language deep.** 9,232 return types across 23,551 TypeScript nodes, and
+  zero across 3,501 Swift and 586 Kotlin nodes.
+- **Configuration and manifests are not indexed.** 91 JSON, 26 YAML, every manifest.
+- **ICELOT** needs checking facet by facet. Input, Constraints, Effects, Logic, Output and Telemetry
+  are specified at code-unit, step and flow granularity; what is actually produced is unmeasured.
 
-Entities are one of the four things the comprehension layer is made of. Nothing above this is
-trustworthy until it is fixed, and no amount of interpretation repairs a wrong noun list.
+The rule to test against is the spec's own: a tier may consume any tier below it and must not read
+source after Tier 1. The test is that Tiers 2 and 3 run with the source files deleted.
 
-### 2. Flows have no chains, so there are no outcomes
+## Step 3 — Derive Tier 3 per deployable
 
-Terminality over flows reports every flow as terminal and none as proximal, because there are no
-flow-to-flow edges at all. The four things that could produce them all depend on capabilities, which
-do not exist without the model, so the deterministic path produces nothing.
+The flow says a monorepo runs the analysis per deployable, and it does not. A capability belongs to
+a product, not to a repository. This is the precondition for Tier 3 meaning anything on any
+repository that ships more than one thing, and it is also why confidence numbers appear: an answer
+averaged over fourteen products cannot be stated plainly, so it gets a probability attached instead.
 
-Terminality over nodes, which does have edges, ranks `loadConfig` and `Login` as the reasons a
-codebase exists, because ranking by out-degree over a call graph finds the bottom of the graph where
-the helpers live. A call graph encodes uses, not then.
+## Step 4 — Capabilities by derivation, with the model authoring language only
 
-Step 5 is where outcomes come from and step 5 currently cannot work. This needs the flow-chain
-relation designed, not tuned.
+Terminality and proximal terminality identify which flows are the reason the codebase exists. That
+is a derivation over facts, not a guess, and it is the step that currently does not work: flows have
+no flow-to-flow edges at all, so every flow reads as terminal, and node-level terminality ranks
+helpers because out-degree over a call graph finds the bottom of the graph.
 
-### 3. Delete the keyword scorers, do not rescope them
+Fix the flow-chain relation first. Then the model names and describes what the derivation selected,
+per the four-member model and the naming rules already specified. No confidence scores, no
+candidates, no approval cycle: the derivation decides what is a capability, the model says it in
+product language.
 
-`codebase_type` is `cli` at 0.41 confidence while `system_purpose` is `web-application` at 0.1, in
-the same output, on a repository whose own `system.type` is `monorepo`. These are not fields that
-need per-deployable scoping. They are a keyword scorer standing in for the comprehension layer,
-answering an interpretive question with a deterministic mechanism, which is the mistake the doctrine
-already forbids.
+## Step 5 — Entities from the domain model
 
-The deterministic layers produce traits. What a system is and what it is for comes from the
-comprehension layer, over those traits, per deployable. The confidence number is the tell: a real
-answer cites evidence, it does not carry a probability.
+Currently 42, all third-party wire formats, because selection falls back to whatever declarations
+carry a parseable field list. With Step 2 done the domain model is in the index and entities become
+a derivation over it rather than a regular expression over source.
 
-### 4. Everything after step 2 is per deployable
+## Step 6 — Speed parity on Tiers 1 and 2
 
-Not for its own sake, but because the comprehension layer cannot describe fourteen things at once.
-A capability belongs to a deployable. So does an entity, a flow, and a purpose. The split is the
-precondition for step 6 saying anything true, which is why it is here rather than in a later phase.
+43 seconds against 5.7 for a comparable indexer on the same repository. Tiers 1 and 2 are
+deterministic and should match that class of tool; AI enrichment is the only stage allowed to cost
+real time. Dead ends already measured, so they are not re-tried: regular expressions are 3.1 s,
+redundant traversals 3.8 s, and asynchronous concurrency saves nothing because the analyzers are
+compute-bound. What is left is doing less and real threads.
 
-### 5. The index carries what the layers need
+Measured after Steps 2 through 5, because three of them change what runs.
 
-91 JSON files, 26 YAML files and every manifest are absent from the index, so layers that need
-configuration go back to the filesystem for it, which is the thing the first step exists to prevent.
-The test is that the whole chain from deployables to comprehension can run with the source files
-deleted.
+## Deliberately not in the MVP
 
-### 6. Then the comprehension layer, and only then
+Patterns, idioms, test coverage, security boundaries, module health, change risk and the telemetry
+overlay. All of them belong in the product and all of them are additive once Tier 3 is solid.
 
-Capabilities, flows, steps and entities, batched per layer with the full evidence bundle, one retry
-for anything that cannot be grounded. It comes last in the order and it is the point of the
-exercise, not an optional upper tier. It is also the only thing that can answer what a system is
-for, which is why item 3 deletes the stand-in rather than repairing it.
+Workspace level. The spec's derivation gradient makes it cheap once a leaf is correct, and
+worthless before that.
 
-## Not in the MVP
+## What the product is
 
-Workspace analysis and the telemetry overlay. Both repeat or enrich a shape that has to be right for
-one repository first.
-
-## Speed
-
-43 s against a comparable tool's 5.7 s on the same repository. Three explanations are already dead:
-regular expressions are 3.1 s, redundant traversals 3.8 s, and asynchronous concurrency saves
-nothing because the analyzers are compute-bound. What is left is doing less and real threads.
-
-Items 1, 2 and 3 all delete work rather than adding it, so the speed number is taken again after
-them, not before. A budget set now would be measuring a pipeline that is about to change shape.
+The whole thing, with filterable access: the graph, the semantic layer, and the comprehension layer,
+queryable in sections through the existing APIs and MCP endpoints. Fabric depends on all of it. The
+MVP narrows what has to be *correct* first, not what ships.
 
 ## How it is measured
 
-At least four repositories across at least three language families, spread recorded rather than best
-case. Every figure taken from a single repository this week was wrong about the others.
+Against the hand-built ground truth from Step 1, on at least four repositories across at least three
+language families, with the spread recorded rather than the best case. Every number taken from a
+single repository this week was wrong about the others.
