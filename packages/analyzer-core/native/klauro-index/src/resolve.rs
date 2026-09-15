@@ -5,6 +5,7 @@ use crate::model::*;
 
 pub struct Resolution {
     pub edges: Vec<IndexEdge>,
+    pub modules: HashMap<(u32, String), String>,
     pub external_nodes: Vec<IndexNode>,
     pub package_calls: u32,
     pub runtime_calls: u32,
@@ -312,6 +313,7 @@ pub fn resolve(index: &Index) -> Resolution {
 
     Resolution {
         edges,
+        modules,
         external_nodes,
         package_calls,
         runtime_calls,

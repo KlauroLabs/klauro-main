@@ -1,6 +1,9 @@
 mod discovery;
 mod language_tables;
+mod entry_exit;
 mod externals;
+mod graph;
+mod icelot;
 mod model;
 mod resolve;
 mod source_rewrite;
@@ -25,6 +28,11 @@ struct Index {
     exports: Vec<model::ExportFact>,
     calls: Vec<model::CallFact>,
     type_references: Vec<model::TypeReferenceFact>,
+    metrics: Vec<model::UnitMetricsEntry>,
+    entry_points: Vec<entry_exit::EntryPoint>,
+    exit_points: Vec<entry_exit::ExitPoint>,
+    icelot: Vec<icelot::Icelot>,
+    graph: Option<graph::GraphFacts>,
     skipped_directories: Vec<String>,
     nested_repositories: Vec<String>,
 }
@@ -69,6 +77,11 @@ fn main() {
         exports: Vec::new(),
         calls: Vec::new(),
         type_references: Vec::new(),
+        metrics: Vec::new(),
+        entry_points: Vec::new(),
+        exit_points: Vec::new(),
+        icelot: Vec::new(),
+        graph: None,
         skipped_directories: found.skipped_directories,
         nested_repositories: found.nested_repositories,
     };
@@ -84,6 +97,7 @@ fn main() {
         index.exports.extend(file.exports);
         index.calls.extend(file.calls);
         index.type_references.extend(file.type_references);
+        index.metrics.extend(file.metrics);
         parse_errors += file.parse_errors;
     }
 
@@ -99,6 +113,47 @@ fn main() {
     let resolved_edges = resolution.edges.len();
     index.edges.extend(resolution.edges);
     index.nodes.extend(resolution.external_nodes);
+
+    let derive_started = Instant::now();
+    let derived = entry_exit::derive(&index.nodes, &index.calls, &index.files, &resolution.modules);
+    let derived_elapsed = derive_started.elapsed();
+    eprintln!(
+        "entry and exit {:?} | entry points {} | exit points {}",
+        derived_elapsed,
+        derived.entry_points.len(),
+        derived.exit_points.len()
+    );
+    index.entry_points = derived.entry_points;
+    index.exit_points = derived.exit_points;
+
+    let icelot_started = Instant::now();
+    let external: std::collections::HashMap<String, ()> = resolution
+        .modules
+        .iter()
+        .map(|((_, name), _)| (name.clone(), ()))
+        .collect();
+    index.icelot = icelot::derive(
+        &index.nodes,
+        &index.metrics,
+        &index.calls,
+        &index.exit_points,
+        &external,
+    );
+    eprintln!("icelot {:?} | units {}", icelot_started.elapsed(), index.icelot.len());
+
+    let graph_started = Instant::now();
+    let mut exits_by_unit: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    for exit in &index.exit_points {
+        *exits_by_unit.entry(exit.source.clone()).or_insert(0) += 1;
+    }
+    let graph = graph::derive(&index.nodes, &index.edges, &index.entry_points, &exits_by_unit);
+    eprintln!(
+        "graph {:?} | reachable units {} | unreachable units {}",
+        graph_started.elapsed(),
+        graph.reachable_units,
+        graph.unreachable_units
+    );
+    index.graph = Some(graph);
 
     eprintln!(
         "resolve {:?} | resolved edges {} | package calls {} | runtime calls {} | unresolved {} | no caller {}",
