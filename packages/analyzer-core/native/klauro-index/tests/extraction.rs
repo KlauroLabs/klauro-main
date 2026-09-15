@@ -40,8 +40,11 @@ fn edges_of(index: &serde_json::Value, kind: &str) -> Vec<(String, String)> {
 #[test]
 fn every_field_is_parented_to_the_type_that_declares_it() {
     let index = index("typescript");
-    let properties = nodes_of(&index, "property");
-    assert_eq!(properties.len(), 7, "three interface fields and four class fields");
+    let properties: Vec<serde_json::Value> = nodes_of(&index, "property")
+        .into_iter()
+        .filter(|node| node["id"].as_str().unwrap().starts_with("manager.ts"))
+        .collect();
+    assert_eq!(properties.len(), 8, "three interface fields and five class fields");
     let types: std::collections::HashMap<String, String> = index["nodes"]
         .as_array()
         .unwrap()
@@ -83,13 +86,13 @@ fn a_type_reaches_its_own_fields_and_methods() {
         })
         .collect();
     fields.sort();
-    assert_eq!(fields, ["#provider", "active", "instances", "storePath"]);
+    assert_eq!(fields, ["#provider", "active", "instances", "store", "storePath"]);
 
     let methods = edges_of(&index, "has_method")
         .into_iter()
         .filter(|(source, _)| source == id)
         .count();
-    assert_eq!(methods, 3, "constructor, endCall and dispose");
+    assert_eq!(methods, 4, "constructor, endCall, save and dispose");
 }
 
 #[test]
@@ -311,4 +314,44 @@ fn structural_importance_counts_the_entry_points_above_a_unit() {
     assert!(reach["fan_in"].as_u64().unwrap() >= 1);
     assert!(reach["entry_points"].as_u64().unwrap() >= 1);
     assert!(reach["depth"].as_u64().is_some(), "it is reachable from an entry point");
+}
+
+#[test]
+fn a_call_through_a_typed_field_resolves_to_that_types_method() {
+    let index = index("typescript");
+    let save = named(&index, "save").expect("the caller is indexed");
+    let write = index["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["name"] == "write")
+        .expect("the callee is indexed");
+    let calls = edges_of(&index, "calls");
+    assert!(
+        calls
+            .iter()
+            .any(|(source, target)| source == save["id"].as_str().unwrap()
+                && target == write["id"].as_str().unwrap()),
+        "this.store.write reaches Store.write, not a method named write on CallManager"
+    );
+}
+
+#[test]
+fn a_call_through_a_typed_parameter_resolves_to_that_types_method() {
+    let index = index("typescript");
+    let run = named(&index, "run").expect("the caller is indexed");
+    let write = index["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["name"] == "write")
+        .unwrap();
+    let calls = edges_of(&index, "calls");
+    assert!(
+        calls
+            .iter()
+            .any(|(source, target)| source == run["id"].as_str().unwrap()
+                && target == write["id"].as_str().unwrap()),
+        "a parameter's declared type resolves the call made through it"
+    );
 }

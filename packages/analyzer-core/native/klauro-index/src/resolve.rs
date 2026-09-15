@@ -8,6 +8,8 @@ pub struct Resolution {
     pub modules: HashMap<(u32, String), String>,
     pub local: HashMap<(u32, String), String>,
     pub unique_units: HashMap<String, String>,
+    pub call_origins: HashMap<(String, String), String>,
+    pub method_owners: HashMap<String, String>,
     pub external_nodes: Vec<IndexNode>,
     pub package_calls: u32,
     pub runtime_calls: u32,
@@ -20,6 +22,7 @@ struct Symbols {
     exported: HashMap<(u32, String), String>,
     local: HashMap<(u32, String), String>,
     members: HashMap<(String, String), String>,
+    member_types: HashMap<(String, String), String>,
     types: HashMap<String, Vec<String>>,
     by_id: HashMap<String, usize>,
 }
@@ -67,6 +70,7 @@ fn build_symbols(index: &Index) -> Symbols {
         exported: HashMap::new(),
         local: HashMap::new(),
         members: HashMap::new(),
+        member_types: HashMap::new(),
         types: HashMap::new(),
         by_id: HashMap::new(),
     };
@@ -84,6 +88,12 @@ fn build_symbols(index: &Index) -> Symbols {
                         .members
                         .entry((parent.clone(), node.name.clone()))
                         .or_insert_with(|| node.id.clone());
+                    if let Some(annotation) = &node.type_annotation {
+                        symbols
+                            .member_types
+                            .entry((parent.clone(), node.name.clone()))
+                            .or_insert_with(|| annotation.clone());
+                    }
                 }
                 continue;
             }
@@ -180,6 +190,44 @@ pub fn resolve(index: &Index) -> Resolution {
 
     let units = unique_units(index.nodes);
     let unique_members = unique_members(index.nodes);
+    let mut method_owners: HashMap<String, String> = HashMap::new();
+    for fact in index.type_references {
+        if fact.kind != EdgeKind::HasMethod {
+            continue;
+        }
+        let root = root_binding(&fact.name);
+        if let Some(owner) = symbols
+            .local
+            .get(&(fact.file, root.to_string()))
+            .cloned()
+            .or_else(|| {
+                symbols
+                    .types
+                    .get(root)
+                    .filter(|found| found.len() == 1)
+                    .map(|found| found[0].clone())
+            })
+        {
+            method_owners.insert(fact.source.clone(), owner);
+        }
+    }
+
+    let mut field_origins: HashMap<(String, String), String> = HashMap::new();
+    for node in index.nodes {
+        if node.kind != NodeKind::Property {
+            continue;
+        }
+        let (Some(annotation), Some(parent)) = (&node.type_annotation, &node.parent) else {
+            continue;
+        };
+        let qualified = base_qualified_name(annotation);
+        let Some((qualifier, _)) = qualified.split_once('.') else { continue };
+        if let Some(specifier) = modules.get(&(node.file, qualifier.to_string())).cloned() {
+            field_origins.insert((parent.clone(), node.name.clone()), specifier);
+        }
+    }
+    let mut call_origins: HashMap<(String, String), String> = HashMap::new();
+
     let mut unresolved_calls = 0;
     let mut package_calls = 0;
     let mut runtime_calls = 0;
@@ -219,6 +267,11 @@ pub fn resolve(index: &Index) -> Resolution {
                 })
             });
         match target {
+            Some(target) if fact.kind == EdgeKind::HasMethod => edges.push(IndexEdge {
+                source: target,
+                target: fact.source.clone(),
+                kind: EdgeKind::HasMethod,
+            }),
             Some(target) => edges.push(IndexEdge {
                 source: fact.source.clone(),
                 target,
@@ -238,8 +291,47 @@ pub fn resolve(index: &Index) -> Resolution {
             continue;
         };
         let target = match fact.receiver.as_deref() {
-            Some(receiver) if receiver == "this" || receiver.starts_with("this.") => {
-                owning_type(&symbols, index.nodes, caller)
+            Some(receiver) if receiver == "this" || receiver == "self" => {
+                owning_type(&symbols, index.nodes, &method_owners, caller)
+                    .and_then(|owner| symbols.members.get(&(owner, fact.callee.clone())).cloned())
+            }
+            Some(receiver) if receiver.starts_with("this.") || receiver.starts_with("self.") => {
+                let field = receiver
+                    .split_once('.')
+                    .map(|(_, rest)| root_binding(rest).to_string())
+                    .unwrap_or_default();
+                if let Some(owner) = owning_type(&symbols, index.nodes, &method_owners, caller)
+                    && let Some(specifier) = field_origins.get(&(owner, field.clone()))
+                {
+                    call_origins
+                        .insert((caller.clone(), receiver.to_string()), specifier.clone());
+                }
+                owning_type(&symbols, index.nodes, &method_owners, caller)
+                    .and_then(|owner| symbols.member_types.get(&(owner.clone(), field.clone())).cloned()
+                        .or_else(|| {
+                            symbols
+                                .members
+                                .get(&(owner, field.clone()))
+                                .and_then(|id| symbols.by_id.get(id))
+                                .and_then(|position| index.nodes[*position].type_annotation.clone())
+                        }))
+                    .and_then(|annotation| {
+                        resolve_type(&symbols, &imported, fact.file, &annotation)
+                    })
+                    .and_then(|owner| symbols.members.get(&(owner, fact.callee.clone())).cloned())
+            }
+            Some(receiver)
+                if parameter_type(&symbols, index.nodes, caller, root_binding(receiver))
+                    .and_then(|annotation| {
+                        resolve_type(&symbols, &imported, fact.file, &annotation)
+                    })
+                    .and_then(|owner| symbols.members.get(&(owner, fact.callee.clone())))
+                    .is_some() =>
+            {
+                parameter_type(&symbols, index.nodes, caller, root_binding(receiver))
+                    .and_then(|annotation| {
+                        resolve_type(&symbols, &imported, fact.file, &annotation)
+                    })
                     .and_then(|owner| symbols.members.get(&(owner, fact.callee.clone())).cloned())
             }
             Some(receiver) => imported
@@ -329,6 +421,8 @@ pub fn resolve(index: &Index) -> Resolution {
 
     Resolution {
         edges,
+        call_origins,
+        method_owners: method_owners.clone(),
         unique_units: units,
         local: symbols.local,
         modules,
@@ -377,6 +471,61 @@ fn external_node(id: &str, name: &str, origin: &str) -> IndexNode {
     }
 }
 
+fn base_qualified_name(annotation: &str) -> &str {
+    let annotation = annotation.trim().trim_start_matches(['&', '*']);
+    let end = annotation
+        .find(['<', '[', '(', ' ', '|', '?', ';'])
+        .unwrap_or(annotation.len());
+    annotation[..end].trim()
+}
+
+fn base_type_name(annotation: &str) -> &str {
+    let annotation = annotation.trim().trim_start_matches(['&', '*']);
+    let end = annotation
+        .find(['<', '[', '(', ' ', '|', '?', ';'])
+        .unwrap_or(annotation.len());
+    annotation[..end].trim().trim_end_matches('.')
+}
+
+fn resolve_type(
+    symbols: &Symbols,
+    imported: &HashMap<(u32, String), String>,
+    file: u32,
+    annotation: &str,
+) -> Option<String> {
+    let name = base_type_name(annotation);
+    if name.is_empty() {
+        return None;
+    }
+    imported
+        .get(&(file, name.to_string()))
+        .cloned()
+        .or_else(|| symbols.local.get(&(file, name.to_string())).cloned())
+        .or_else(|| {
+            symbols
+                .types
+                .get(name)
+                .filter(|found| found.len() == 1)
+                .map(|found| found[0].clone())
+        })
+}
+
+fn parameter_type(
+    symbols: &Symbols,
+    nodes: &[IndexNode],
+    caller: &str,
+    binding: &str,
+) -> Option<String> {
+    let position = *symbols.by_id.get(caller)?;
+    nodes[position]
+        .signature
+        .as_ref()?
+        .parameters
+        .iter()
+        .find(|parameter| parameter.name == binding)
+        .and_then(|parameter| parameter.type_annotation.clone())
+}
+
 fn unique_members(nodes: &[IndexNode]) -> HashMap<String, String> {
     let mut counts: HashMap<&str, (u32, &str)> = HashMap::new();
     for node in nodes {
@@ -414,9 +563,17 @@ fn unique_units(nodes: &[IndexNode]) -> HashMap<String, String> {
         .collect()
 }
 
-fn owning_type(symbols: &Symbols, nodes: &[IndexNode], caller: &str) -> Option<String> {
+fn owning_type(
+    symbols: &Symbols,
+    nodes: &[IndexNode],
+    owners: &HashMap<String, String>,
+    caller: &str,
+) -> Option<String> {
     let mut current = caller.to_string();
     for _ in 0..16 {
+        if let Some(owner) = owners.get(&current) {
+            return Some(owner.clone());
+        }
         let position = *symbols.by_id.get(&current)?;
         let node = &nodes[position];
         if matches!(node.kind, NodeKind::Class | NodeKind::Interface) {

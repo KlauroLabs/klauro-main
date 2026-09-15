@@ -154,28 +154,35 @@ fn decorator_entry(decorator: &Decorator) -> Option<(&'static str, String, Optio
 }
 
 static FILE_OPERATIONS: &[&str] = &[
-    "appendFile", "copyFile", "createReadStream", "createWriteStream", "mkdir", "open",
-    "readFile", "readdir", "rename", "rm", "rmdir", "stat", "unlink", "writeFile",
+    "appendfile", "copyfile", "create", "createreadstream", "createwritestream", "mkdir",
+    "mkdirall", "open", "openfile", "readall", "readdir", "readfile", "remove", "removeall",
+    "rename", "rm", "rmdir", "stat", "unlink", "writefile",
 ];
 static NETWORK_OPERATIONS: &[&str] = &[
-    "connect", "delete", "fetch", "get", "head", "patch", "post", "put", "request", "send",
+    "connect", "delete", "do", "fetch", "get", "head", "newrequest", "patch", "post",
+    "postform", "put", "request", "send",
 ];
 static DATABASE_OPERATIONS: &[&str] = &[
-    "aggregate", "deleteMany", "deleteOne", "execute", "findMany", "findOne", "insertMany",
-    "insertOne", "query", "transaction", "updateMany", "updateOne", "upsert",
+    "aggregate", "begin", "begintx", "deletemany", "deleteone", "exec", "execcontext",
+    "execute", "findmany", "findone", "insertmany", "insertone", "prepare", "preparecontext",
+    "query", "querycontext", "queryrow", "queryrowcontext", "transaction", "updatemany",
+    "updateone", "upsert",
 ];
-static MESSAGE_OPERATIONS: &[&str] = &["broadcast", "emit", "produce", "publish", "sendMessage"];
+static MESSAGE_OPERATIONS: &[&str] = &[
+    "broadcast", "emit", "produce", "publish", "sendmessage",
+];
 static CACHE_OPERATIONS: &[&str] = &["del", "expire", "getex", "hget", "hset", "setex", "ttl"];
 
 static CLIENT_STORAGE_GLOBALS: &[&str] = &["localStorage", "sessionStorage"];
 static IO_GLOBALS: &[&str] = &["fetch", "localStorage", "process", "sessionStorage"];
 
 fn classify_exit(binding: &str, origin: &str, member: &str) -> Option<&'static str> {
-    let operation = tail(member);
+    let operation = tail(member).to_ascii_lowercase();
+    let operation = operation.as_str();
     if CLIENT_STORAGE_GLOBALS.binary_search(&binding).is_ok() {
         return Some("client_storage");
     }
-    if origin.contains("fs") && FILE_OPERATIONS.binary_search(&operation).is_ok() {
+    if is_file_origin(origin) && FILE_OPERATIONS.binary_search(&operation).is_ok() {
         return Some("file");
     }
     if is_network_origin(origin) && NETWORK_OPERATIONS.binary_search(&operation).is_ok() {
@@ -189,9 +196,6 @@ fn classify_exit(binding: &str, origin: &str, member: &str) -> Option<&'static s
     }
     if CACHE_OPERATIONS.binary_search(&operation).is_ok() {
         return Some("cache");
-    }
-    if FILE_OPERATIONS.binary_search(&operation).is_ok() {
-        return Some("file");
     }
     None
 }
@@ -208,6 +212,10 @@ fn join_paths(base: &str, path: &str) -> String {
 fn root_binding(receiver: &str) -> &str {
     let end = receiver.find(['.', '[', '(', ' ']).unwrap_or(receiver.len());
     &receiver[..end]
+}
+
+fn is_file_origin(origin: &str) -> bool {
+    origin.contains("fs") || origin.ends_with("/os") || origin == "os" || origin.contains("path/filepath")
 }
 
 fn is_network_origin(origin: &str) -> bool {
@@ -240,6 +248,7 @@ pub fn derive(
     registrations: &[RegistrationFact],
     local: &HashMap<(u32, String), String>,
     unique_units: &HashMap<String, String>,
+    call_origins: &HashMap<(String, String), String>,
 ) -> Derived {
     let mut entry_points = Vec::new();
     let mut base_paths: HashMap<&str, String> = HashMap::new();
@@ -386,7 +395,11 @@ pub fn derive(
             continue;
         };
         let binding = root_binding(receiver);
-        let origin = match modules.get(&(call.file, binding.to_string())) {
+        let origin = match call_origins
+            .get(&(source.clone(), receiver.to_string()))
+            .or_else(|| modules.get(&(call.file, receiver.to_string())))
+            .or_else(|| modules.get(&(call.file, binding.to_string())))
+        {
             Some(specifier) => specifier.as_str(),
             None if IO_GLOBALS.binary_search(&binding).is_ok() => binding,
             None => continue,
