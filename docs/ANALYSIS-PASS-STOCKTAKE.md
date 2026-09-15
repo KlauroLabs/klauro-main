@@ -329,6 +329,43 @@ concurrently, and cut the CPU. Tuning individual passes cannot close a gap this 
 speed work earlier in this document, which took the analysis from 52.8 s to 31 s by removing
 quadratic scans, is close to the end of what that approach yields.
 
+### Why the CPU is 2.7x: the graph is traversed hundreds of times
+
+The profile is flat. The largest first-party function is 1.68 s and the largest file 5.31 s spread
+over 24,920 lines. Regular expressions are 3.14 s, less than expected. 19.75 s sits in our own code
+with nothing dominant, which is the signature of a great deal of separate work, none of it
+individually wasteful.
+
+The waste is in how often the same structure is rebuilt:
+
+| Pattern | Occurrences |
+|---|---|
+| Builds a node-id lookup from scratch | 64 |
+| Loops building an edge index | 126 |
+| Full walks over the node array | 147 |
+| Uses the one shared lookup helper | 23 |
+
+Against 136,928 nodes and 209,010 edges that is roughly 20 million node visits and 26 million edge
+visits before any analysis happens, plus 8.8 million map insertions rebuilding lookups that are
+identical every time. Each is cheap. Together they are the 2.7x.
+
+File content shows the same shape: 51,890 read requests for 8,289 distinct files, a re-read factor
+of 6.3. The cache absorbs the disk cost, so this is not an I/O problem, but every one of those
+requests is followed by work over the same content.
+
+**This is the better way, and it removes work rather than parallelising it.** One index object built
+once after extraction, carrying node-by-id, edges-by-source, edges-by-target, nodes-by-file and
+nodes-by-type, handed to every pass and every analyzer. It is step 1 of the flow taken literally:
+everything branches from the index, and nothing rebuilds it.
+
+It is also the prerequisite for threads rather than an alternative to them. A worker cannot be
+handed a class instance, but it can be handed an index slice and an analyzer id. Doing this first
+makes the parallel work possible; doing threads first would parallelise three hundred redundant
+traversals.
+
+The saving is not yet proven, only the redundancy. That measurement comes from building the shared
+index and removing the first dozen rebuilds, not from arguing about it.
+
 ### Asynchronous concurrency is not parallelism here, measured
 
 The obvious first move is to stop running the 87 framework analyzers one after another. Tried, with
