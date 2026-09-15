@@ -1,85 +1,103 @@
 # The analysis MVP
 
-What has to be true before this is worth putting in front of someone. Measured state as of
-2026-09-15; every number here was taken this week and is reproduced in `ANALYSIS-NORTH-STAR.md` and
-`ANALYSIS-PASS-STOCKTAKE.md`.
+Derived from the stated purpose: **the whole point of the analysis is to build the index and the
+comprehension layer.** Everything here is either one of those two or a link in the chain between
+them. Measured state as of 2026-09-15.
 
-## The bar
+## The chain, and where it breaks
 
-An agent or a person, pointed at a repository they do not know, can find the right code and
-understand how to reach it, faster and more reliably than by reading the repository. That is the
-product. Everything else is an upsell on top of it.
+The flow is seven steps and each one feeds the next. An honest reading of where each stands:
 
-## What already clears the bar
+| Step | State |
+|---|---|
+| 1. Index the codebase once | Works for code. Configuration and manifests are not indexed |
+| 2. Deployables, then everything per deployable | Deployables detected, the split is **not implemented** |
+| 3. Entry and exit points, flows, flow chains, entities, domains, patterns | Entry and exit points work. **Entities are wrong. Flow chains do not exist** |
+| 4. Frameworks and the framework layer | Runs, never examined |
+| 5. Outcomes through terminality | **Produces helpers, not outcomes** |
+| 6. Comprehension layer | Cannot be judged until 3 and 5 are real |
+| 7. Workspace level | Not started |
 
-**Navigation.** The index is accurate: four TypeScript files missed of 3,743, none missed for Swift,
-Kotlin, Go, Python or shell, and symbols matching the source line for line. Entry points attach to
-the code they run, 438 of 471, and 343 reach the body of the system where 14 did before. Ask how to
-get into a feature and the answer is nine commands with their handlers and file positions.
-
-**Units.** Grouping entry points by what they reach recovers the real shape of a repository without
-scanning for ship artifacts. It found an iOS application that artifact scanning missed entirely.
+The MVP is steps 1 through 6 producing something true. Not a subset of them shipped early with the
+rest labelled partial. Reporting coverage honestly is worth doing, but it describes the hole rather
+than filling it, and on its own it is a way of shipping without fixing anything.
 
 ## What has to be done
 
-**1. Scope every layer to a deployable.** Step 2 of the flow says a monorepo runs the rest of the
-flow per deployable. It does not. A repository whose own `system.type` is `monorepo` still emits one
-`codebase_type` of `cli` at 0.41 confidence and one `system_purpose` of `web-application` at 0.1,
-which are the right answers to the wrong question averaged over fourteen things. Until this lands,
-every field above it is answering at the wrong scope, and low confidence everywhere is the symptom.
-This is the largest correctness item and nothing else should go first.
+### 1. Entities are the wrong things entirely
 
-**2. Take the pipeline's internal state out of the output.** Roughly 25 of 115 fields are the
-analysis talking about itself: stage timings, cache keys and hit rates, algorithm tuning parameters,
-per-analyzer ledgers, and indexes built for our own use. They move to internal state stored beside
-the analysis, where the incremental engine still reads them, and a build gate fails when one
-reappears. Cheap, and it also removes the passes that exist only to produce them.
+42 entities on a 5,315-file repository, and every one is a wire format from a third-party
+integration: `FeishuMessageEvent`, `TwitchChatMessage`, `ZaloMessage`, `TelnyxEvent`,
+`MattermostPost`, `BlueBubblesAttachment`. The system's own nouns, session, agent, conversation,
+call, skill, channel, are absent. Another repository reports a single entity for 6,091 nodes.
 
-**3. Degrade out loud instead of silently.** Flows that can say what they do: 66% on a TypeScript
-repository, 47% on a C one, 27% on another TypeScript one, and 1% on a Go service, which has 157
-flows and two with an effect. Today those outputs look identical in shape. A consumer cannot tell a
-well-understood repository from a barely-understood one. Every layer reports its own coverage, and a
-layer below a threshold says so in the output rather than presenting thin results as complete.
+The material is in the graph: 574 DTOs, 2,380 types, 909 classes, 125 interfaces, and 730 domain
+concepts that are much closer to the real nouns. Selection is picking payload shapes because they
+carry explicit field lists, which is a proxy for being easy to extract rather than for mattering.
 
-**4. Mark effects that are not the flow's own.** 65 of 158 flows carrying effects have effects
-identical to another flow, because an unresolved call leaves shared setup as the only path out of a
-handler and whatever that setup reaches gets attributed to the command. The evidence to tell them
-apart is already recorded, hop distance and whether the path crossed a shared helper. Use it: an
-effect reached only through shared setup is reported as inherited, not as the flow's behaviour.
+Entities are one of the four things the comprehension layer is made of. Nothing above this is
+trustworthy until it is fixed, and no amount of interpretation repairs a wrong noun list.
 
-**5. A speed budget that is a release gate.** 43 s against a comparable tool's 5.7 s on the same
-repository, with 70.9 s of CPU against 26.0 s and 1.64x parallelism against 4.58x. Three hypotheses
-are already dead: regular expressions are 3.1 s, redundant traversals 3.8 s, and asynchronous
-concurrency saves nothing because the analyzers are compute-bound. What remains is doing less, which
-item 2 starts, and real threads, which the shared graph index now makes possible. Pick a number,
-gate it, and let it force the choice.
+### 2. Flows have no chains, so there are no outcomes
 
-## What is deliberately not in the MVP
+Terminality over flows reports every flow as terminal and none as proximal, because there are no
+flow-to-flow edges at all. The four things that could produce them all depend on capabilities, which
+do not exist without the model, so the deterministic path produces nothing.
 
-**Outcomes from terminality.** It does not work and it is not a tuning problem. Ranking by
-out-degree over a call graph finds the bottom of the graph, where the helpers live, so it reports
-`loadConfig` and `Login` as the reasons a codebase exists. A call graph encodes uses, not then. This
-needs a design, and the signal it should use is `effects`, which now exists.
+Terminality over nodes, which does have edges, ranks `loadConfig` and `Login` as the reasons a
+codebase exists, because ranking by out-degree over a call graph finds the bottom of the graph where
+the helpers live. A call graph encodes uses, not then.
 
-**The comprehension layer.** Capabilities and AI descriptions come last, by instruction, and they
-should: they interpret the layers below, and those layers are not yet worth interpreting.
+Step 5 is where outcomes come from and step 5 currently cannot work. This needs the flow-chain
+relation designed, not tuned.
 
-**Workspace analysis and the telemetry overlay.** Both repeat or enrich a shape that is not yet
-right for one repository.
+### 3. Delete the keyword scorers, do not rescope them
 
-**Type-aware call resolution as a default.** It doubled flows carrying an effect on TypeScript, 158
-to 341, and costs about ten seconds. On a Go service it is pure cost. Make it conditional on the
-repository being TypeScript-dominant before it ships on by default.
+`codebase_type` is `cli` at 0.41 confidence while `system_purpose` is `web-application` at 0.1, in
+the same output, on a repository whose own `system.type` is `monorepo`. These are not fields that
+need per-deployable scoping. They are a keyword scorer standing in for the comprehension layer,
+answering an interpretive question with a deterministic mechanism, which is the mistake the doctrine
+already forbids.
 
-## The order
+The deterministic layers produce traits. What a system is and what it is for comes from the
+comprehension layer, over those traits, per deployable. The confidence number is the tell: a real
+answer cites evidence, it does not carry a probability.
 
-Items 1 and 2 are correctness and purity and go first, in that order. Item 4 is small and stops the
-output being confidently wrong. Item 3 makes the remaining gaps legible instead of hidden, which is
-what allows shipping before items outside the MVP are solved. Item 5 is gated last, because item 2
-changes the number it measures.
+### 4. Everything after step 2 is per deployable
+
+Not for its own sake, but because the comprehension layer cannot describe fourteen things at once.
+A capability belongs to a deployable. So does an entity, a flow, and a purpose. The split is the
+precondition for step 6 saying anything true, which is why it is here rather than in a later phase.
+
+### 5. The index carries what the layers need
+
+91 JSON files, 26 YAML files and every manifest are absent from the index, so layers that need
+configuration go back to the filesystem for it, which is the thing the first step exists to prevent.
+The test is that the whole chain from deployables to comprehension can run with the source files
+deleted.
+
+### 6. Then the comprehension layer, and only then
+
+Capabilities, flows, steps and entities, batched per layer with the full evidence bundle, one retry
+for anything that cannot be grounded. It comes last in the order and it is the point of the
+exercise, not an optional upper tier. It is also the only thing that can answer what a system is
+for, which is why item 3 deletes the stand-in rather than repairing it.
+
+## Not in the MVP
+
+Workspace analysis and the telemetry overlay. Both repeat or enrich a shape that has to be right for
+one repository first.
+
+## Speed
+
+43 s against a comparable tool's 5.7 s on the same repository. Three explanations are already dead:
+regular expressions are 3.1 s, redundant traversals 3.8 s, and asynchronous concurrency saves
+nothing because the analyzers are compute-bound. What is left is doing less and real threads.
+
+Items 1, 2 and 3 all delete work rather than adding it, so the speed number is taken again after
+them, not before. A budget set now would be measuring a pipeline that is about to change shape.
 
 ## How it is measured
 
-On at least four repositories across at least three language families, with the spread recorded
-rather than the best case. Every figure in this document that was taken from one repository was
-wrong about the others, which is why this rule exists.
+At least four repositories across at least three language families, spread recorded rather than best
+case. Every figure taken from a single repository this week was wrong about the others.
