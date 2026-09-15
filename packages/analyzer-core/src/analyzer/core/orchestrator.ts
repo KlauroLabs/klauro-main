@@ -4,7 +4,7 @@ export { RISKABLE_NODE_TYPES, hasStructuralSecurityEvidence } from './change-ris
 import * as incrementalScope from './incremental-scope';
 import { reuseCapabilityCatalog, stabilizeCapabilityCatalog, type CapabilityReuseEntryContext } from './capability-catalog-reuse';
 import { selectEntryPointSubjectField } from './entry-point-subject';
-import { SCAFFOLD_DIR_NAMES, SCAFFOLD_GLOBS, isScaffoldDirName, isScaffoldOrTestPath, isTestFileName } from './scaffold-paths';
+import { SCAFFOLD_GLOBS, isScaffoldDirName, isScaffoldOrTestPath, isTestFileName } from './scaffold-paths';
 import { BUILD_ARTIFACT_GLOBS, THIRD_PARTY_SOURCE_GLOBS, isBuildArtifactDirectoryName } from './build-artifact-paths';
 import {
   CASOutput,
@@ -299,6 +299,7 @@ import * as fs from 'fs-extra';
 import { cachedGlob as glob, safeGlobSync, beginGlobRun, endGlobRun } from './glob-cache';
 import { pathsReferToSameFile } from './project-relative-path';
 import { resolveRegistrationHandlerByLine, ROUTE_LINKABLE_ENTRY_TYPES, markEntryPointNodes } from './registration-handler-link';
+import { discoverFiles, isSkippedDirectoryName, type DiscoveredKind } from './source-discovery';
 import { deriveIndexUnits } from './index-derived-units';
 import { applyTypeScriptCallEdges } from './typescript-call-edges';
 import { yieldToEventLoop, createYieldBudget } from './event-loop-yield';
@@ -416,6 +417,7 @@ export interface IncrementalAnalysisOptions {
 interface SourceFileInventory {
   expiresAt: number;
   files: string[];
+  kinds: Map<string, DiscoveredKind>;
   basenames: Map<string, string[]>;
   extensions: Map<string, string[]>;
 }
@@ -627,11 +629,11 @@ export class AnalyzerOrchestrator {
     const cacheKey = path.resolve(projectPath);
     const cached = this.sourceFileInventoryCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) return cached;
-    const nestedRepoIgnores = await this.getNestedRepoIgnorePatterns(projectPath);
-    const nestedIgnoredDirectories = new Set(nestedRepoIgnores
-      .map(pattern => pattern.replace(/\/\*\*$/, ''))
-      .filter(Boolean));
-    const normalized = this.collectSourceInventoryFiles(projectPath, nestedIgnoredDirectories);
+    const discovered = discoverFiles(projectPath, {
+      isIgnoredFile: relativePath => this.isIgnoredInventoryFile(relativePath),
+    });
+    const normalized = discovered.files.map(file => file.path);
+    const kinds = new Map(discovered.files.map(file => [file.path, file.kind] as const));
     const basenames = new Map<string, string[]>();
     const extensions = new Map<string, string[]>();
     for (const file of normalized) {
@@ -649,42 +651,12 @@ export class AnalyzerOrchestrator {
     const inventory = {
       expiresAt: Date.now() + 60_000,
       files: normalized,
+      kinds,
       basenames,
       extensions
     };
     this.sourceFileInventoryCache.set(cacheKey, inventory);
     return inventory;
-  }
-  private collectSourceInventoryFiles(projectPath: string, nestedIgnoredDirectories: Set<string>): string[] {
-    const files: string[] = [];
-    const walk = (absoluteDirectory: string, relativeDirectory: string) => {
-      let entries: fs.Dirent[];
-      try {
-        entries = fs.readdirSync(absoluteDirectory, { withFileTypes: true });
-      } catch {
-        return;
-      }
-      for (const entry of entries) {
-        const relativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
-        const normalizedRelativePath = relativePath.replace(/\\/g, '/');
-        if (entry.isDirectory()) {
-          if (this.isIgnoredInventoryDirectory(entry.name, normalizedRelativePath, nestedIgnoredDirectories, projectPath)) {
-            continue;
-          }
-          walk(path.join(absoluteDirectory, entry.name), normalizedRelativePath);
-          continue;
-        }
-        if (
-          entry.isFile() &&
-          !this.isIgnoredInventoryFile(normalizedRelativePath) &&
-          this.isSourceInventoryCandidate(normalizedRelativePath)
-        ) {
-          files.push(normalizedRelativePath);
-        }
-      }
-    };
-    walk(projectPath, '');
-    return Array.from(new Set(files)).sort();
   }
   private isIgnoredInventoryDirectory(
     directoryName: string,
@@ -694,47 +666,7 @@ export class AnalyzerOrchestrator {
   ): boolean {
     if (nestedIgnoredDirectories.has(relativePath)) return true;
     if (isBuildArtifactDirectoryName(directoryName)) return true;
-    return new Set([
-      'node_modules',
-      ...SCAFFOLD_DIR_NAMES,
-      'dist',
-      'build',
-      '.git',
-      '.claude',
-      '.codex',
-      '.scannerwork',
-      'target',
-      'vendor',
-      'vendors',
-      'site-packages',
-      '__pycache__',
-      '.venv',
-      'venv',
-      'env',
-      '.tox',
-      '.terraform',
-      '.pytest_cache',
-      '.mypy_cache',
-      '.ruff_cache',
-      '.dart_tool',
-      '.gradle',
-      'Pods',
-      'obj',
-      '.next',
-      '.turbo',
-      '.cache',
-      '.vite',
-      '.sourcemaps',
-      'out',
-      'build-out',
-      'build_out',
-      'cmake-build-debug',
-      'cmake-build-release',
-      'storybook-static',
-      'storybook-build',
-      'Generated',
-      'generated'
-    ]).has(directoryName) || directoryName.startsWith('.klauro');
+    return isSkippedDirectoryName(directoryName);
   }
   private async getAnalysisContextFilters(projectPath: string): Promise<string[]> {
     const filters = [
@@ -794,37 +726,6 @@ export class AnalyzerOrchestrator {
       '/static/assets/',
       '/downloads/'
     ].some(fragment => `/${normalized}`.includes(fragment));
-  }
-  private isSourceInventoryCandidate(filePath: string): boolean {
-    const basename = path.basename(filePath).toLowerCase();
-    if (this.isManifestFile(filePath)) return true;
-    if ([
-      'artisan',
-      'manage.py',
-      'console',
-      'angular.json',
-      'cypress.json'
-    ].includes(basename)) return true;
-    if (/^(next|jest|cypress)\.config\.(js|ts|mjs|cjs)$/.test(basename)) return true;
-    if (filePath.toLowerCase().endsWith('prisma/schema.prisma')) return true;
-    if (this.isCiPipelineConfigFile(filePath)) return true;
-    if (basename.endsWith('.ipynb')) return true;
-    return isRegisteredSourceExtension(filePath);
-  }
-  private isCiPipelineConfigFile(filePath: string): boolean {
-    const normalized = filePath.replace(/\\/g, '/').toLowerCase();
-    const basename = path.basename(normalized);
-    if (basename === '.gitlab-ci.yml') return true;
-    if (basename === 'jenkinsfile') return true;
-    if (basename === 'azure-pipelines.yml' || basename === 'azure-pipelines.yaml') return true;
-    if (basename === '.travis.yml') return true;
-    if (basename === '.drone.yml' || basename === '.drone.yaml') return true;
-    if (basename === 'bitbucket-pipelines.yml' || basename === 'bitbucket-pipelines.yaml') return true;
-    return normalized.startsWith('.github/workflows/') ||
-      normalized === '.circleci/config.yml' ||
-      normalized === '.buildkite/pipeline.yml' ||
-      normalized === '.buildkite/pipeline.yaml' ||
-      normalized.startsWith('.teamcity/');
   }
   private isManifestFile(filePath: string): boolean {
     return isRegisteredManifest(filePath);
