@@ -392,16 +392,27 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     }
 
     if (misses.length > 0) {
-      let extractedMisses: Array<TSFileExtraction | Error>;
-      if (misses.some(miss => Buffer.byteLength(miss.content, 'utf8') > MAX_WORKER_SOURCE_FILE_BYTES)) {
-        extractedMisses = await this.extractTreeSitterFilesSequentially(misses);
-      } else {
+      const extractedMisses = new Array<TSFileExtraction | Error>(misses.length);
+      const oversized: number[] = [];
+      const poolable: number[] = [];
+      for (let index = 0; index < misses.length; index++) {
+        const tooBig = Buffer.byteLength(misses[index].content, 'utf8') > MAX_WORKER_SOURCE_FILE_BYTES;
+        (tooBig ? oversized : poolable).push(index);
+      }
+      if (poolable.length > 0) {
+        const batch = poolable.map(index => misses[index]);
+        let results: Array<TSFileExtraction | Error>;
         try {
-          extractedMisses = await this.extractTreeSitterFilesInWorkers(misses);
+          results = await this.extractTreeSitterFilesInWorkers(batch);
         } catch (error) {
           console.warn(`Tree-sitter worker pool unavailable; using sequential extraction: ${(error as Error).message}`);
-          extractedMisses = await this.extractTreeSitterFilesSequentially(misses);
+          results = await this.extractTreeSitterFilesSequentially(batch);
         }
+        poolable.forEach((index, position) => { extractedMisses[index] = results[position]; });
+      }
+      if (oversized.length > 0) {
+        const results = await this.extractTreeSitterFilesSequentially(oversized.map(index => misses[index]));
+        oversized.forEach((index, position) => { extractedMisses[index] = results[position]; });
       }
       await Promise.all(extractedMisses.map(async (extraction, missIndex) => {
         const miss = misses[missIndex];

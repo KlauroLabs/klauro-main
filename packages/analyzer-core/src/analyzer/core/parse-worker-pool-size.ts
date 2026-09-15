@@ -1,6 +1,6 @@
 import { availableParallelism, freemem } from 'node:os';
 
-export const MAX_PARSE_WORKERS = 6;
+export const MAX_PARSE_WORKERS = 12;
 export const MIN_FILES_FOR_WORKERS = 40;
 
 export interface ParseWorkerPoolInputs {

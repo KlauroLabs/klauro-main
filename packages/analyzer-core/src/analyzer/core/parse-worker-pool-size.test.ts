@@ -13,8 +13,12 @@ import { parseWorkerCount, MAX_PARSE_WORKERS } from './parse-worker-pool-size';
 const HEAP = 768;
 const ROOMY = 32_768;
 
-test('a ten-core host with room runs the full pool', () => {
-  assert.equal(parseWorkerCount({ fileCount: 5000, cores: 10, workerHeapMb: HEAP, memoryCeilingMb: ROOMY }), MAX_PARSE_WORKERS);
+test('a ten-core host with room uses every core but one', () => {
+  assert.equal(parseWorkerCount({ fileCount: 5000, cores: 10, workerHeapMb: HEAP, memoryCeilingMb: ROOMY }), 9);
+});
+
+test('the cap still bounds a very large host', () => {
+  assert.equal(parseWorkerCount({ fileCount: 5000, cores: 64, workerHeapMb: HEAP, memoryCeilingMb: ROOMY }), MAX_PARSE_WORKERS);
 });
 
 test('small hosts leave one core for the main thread', () => {
@@ -53,13 +57,13 @@ test('a meaningless setting falls back to the computed bounds', () => {
   for (const configured of ['', '0', '-4', 'many', undefined]) {
     assert.equal(
       parseWorkerCount({ fileCount: 5000, configured, cores: 10, workerHeapMb: HEAP, memoryCeilingMb: ROOMY }),
-      MAX_PARSE_WORKERS,
+      9,
       `configured=${String(configured)}`
     );
   }
 });
 
 test('unknown memory or heap does not collapse the pool to one', () => {
-  assert.equal(parseWorkerCount({ fileCount: 5000, cores: 10, workerHeapMb: 0, memoryCeilingMb: ROOMY }), MAX_PARSE_WORKERS);
-  assert.equal(parseWorkerCount({ fileCount: 5000, cores: 10, workerHeapMb: HEAP, memoryCeilingMb: 0 }), MAX_PARSE_WORKERS);
+  assert.equal(parseWorkerCount({ fileCount: 5000, cores: 10, workerHeapMb: 0, memoryCeilingMb: ROOMY }), 9);
+  assert.equal(parseWorkerCount({ fileCount: 5000, cores: 10, workerHeapMb: HEAP, memoryCeilingMb: 0 }), 9);
 });
