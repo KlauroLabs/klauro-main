@@ -34,7 +34,7 @@ one path at a time.
 
 Each effect carries `hops`, the distance from the entry point to where the effect happens, and
 `via_shared_helper`, whether the path crossed code that three or more other callers also use. Both
-are evidence about how firmly the effect belongs to that flow, not judgements. They exist because a
+are facts about how the effect was reached, not judgements. They exist because a
 command was being reported as spawning network tunnels that belong to a different command, reached
 four to seven hops away through shared runtime setup. The effects are still listed, because they are
 genuinely reachable, but a reader can now see which ones the flow reaches on its own. On the
@@ -56,7 +56,7 @@ answer at the repository level. It replaces artifact scanning as the definition 
 **Conventions the codebase follows**
 `codebase_idioms`, `idiom_summary`, `idiom_violations`, `idiom_examples`
 
-`idiom_examples` is the supporting evidence for an idiom — the actual places the convention appears. It is a finding, not scaffolding. It belongs attached to its idiom rather than as a parallel top-level array.
+`idiom_examples` is the set of places an idiom actually appears. It is a finding, not scaffolding. It belongs attached to its idiom rather than as a parallel top-level array.
 
 **Cross-repository**
 `repository_links`, `cross_repository_links`, `runtime_static_links`
@@ -122,7 +122,7 @@ These are the analysis telling a product surface how to present itself. The surf
 | Field | Why it stays |
 |---|---|
 | `terminality` | The signal that identifies outcomes: which flows, entities and nodes sit at the end of a chain. Published as the explanation of why a capability exists |
-| `codebase_types`, `codebase_type_signals` | The ranked alternatives and the evidence behind the type call, alongside the single `codebase_type` |
+| `codebase_types`, `codebase_type_signals` | The ranked alternatives and the signals behind the type call, alongside the single `codebase_type` |
 | `consistency_model` | Whether the codebase is internally consistent |
 | `subsystems` (was `communities`) | Groups of code more connected to each other than to the rest. Renamed from `communities`; a graph term became a product term |
 
@@ -136,7 +136,7 @@ Renaming the field is half the work. Today each entry is `{id: 7, member_ids: [.
 
 The current pipeline generates structural candidates, then runs up to eight sequential AI cycles that reject, repair, re-judge and approve them. The candidates leak into the output. The repair machinery is the most expensive part of the analysis.
 
-The intended shape is simpler: take the terminal and proximal-terminal flows, entities and outcomes, submit them to the model as one batched request, and get capabilities back. Validate lightly — that names are authored, that claims trace to evidence — and accept. Deterministic validation of an interpretive result buys very little.
+The intended shape is simpler: take the terminal and proximal-terminal flows, entities and outcomes, submit them to the model as one batched request, and get capabilities back. Accept them. There is nothing to validate, because a capability is not a claim that could be wrong: it is the model stating in product language what the facts below it already are.
 
 Consequences:
 - `structural_capability_candidates` is deleted from the output and from `CASOutput` (done 2026-09-13). `flow_graph.capability_candidates` remains for now: it is load-bearing inside the catalog machinery and goes with that machinery.

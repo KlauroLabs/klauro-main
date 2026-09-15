@@ -18,7 +18,7 @@ An analysis turns one codebase into a complete, navigable understanding of the s
 
 5. **Identify outcomes through terminality.** The flows at the end of a chain, or near the end, are the reasons the codebase exists. Executing a trade matters more than logging in. Terminal and proximal-terminal flows generate the outcomes; the structural layers corroborate them.
 
-6. **Establish the comprehension layer.** Capabilities, flows, steps, and entities, grounded in the layers above. This is where AI descriptions come in: one batched request per layer with the full evidence bundle, and a second pass only for items the first pass could not ground. AI interprets evidence; it never invents structure.
+6. **Establish the comprehension layer.** Capabilities, flows, steps, and entities. This is the last stage and it is authored by the model, in one batched request per layer, over the facts the layers below produced. The model states what those facts mean in human, product and business language. It does not invent structure, and it is not asked to justify anything, because the facts are read from the source rather than argued from.
 
 7. **At the workspace level, repeat the same shape over the member analyses** to produce the cross-repository picture.
 
@@ -73,7 +73,7 @@ the signature of this mistake: the layers are being asked a question at the wron
 The 14 is itself too many, which is a second finding and a separate defect. Eight of the fourteen
 are not products:
 
-| Unit | Evidence | Verdict |
+| Unit | What it is | Verdict |
 |---|---|---|
 | `cleanup-smoke`, `install-sh-smoke`, `install-sh-e2e`, `install-sh-nonroot` | Dockerfiles under `scripts/docker/`, entrypoints named `openclaw-*-smoke` and `openclaw-install-*` | Test rigs |
 | `e2e`, `qr-import` | Dockerfiles under `scripts/e2e/`, one with entrypoint `["bash"]` | Test rigs |
@@ -85,7 +85,7 @@ installer, and its extracted binary list is English words lifted from the senten
 `validating`, `Updating`, `assets`, `now`, `must`, `to`, `private`, `check`, `We`, `your`, `keep`,
 `also`, `when`, `verify`, `raw`, `an`, `attached`. That reaches the customer's output.
 
-The discriminators are present in the evidence already and are not being used: a `scripts/` path, a
+The discriminators are already present and are not being used: a `scripts/` path, a
 name carrying `smoke`, `e2e` or `test`, an entrypoint of `["bash"]` or `["sleep", "infinity"]`, a
 Dockerfile with no entrypoint at all, and a `.md` extension on something claiming to be an installer.
 
@@ -108,7 +108,7 @@ and separate entry points, so they are separate deployables even though they are
 a customer. The rule is one deployable per distinct behaviour, not per artifact.
 
 **Does anyone outside get it?** If the product builds and runs the thing itself, it is a component,
-not a deployable. Image inheritance is evidence of this and is currently ignored: on the measured
+not a deployable. Image inheritance shows this and is currently ignored: on the measured
 repository, `Dockerfile.sandbox-common` begins `ARG BASE_IMAGE=openclaw-sandbox` and derives from
 the sandbox image, and both were still reported as independent ship units. A container that another
 container in the same repository is built `FROM` rolls up into it.
@@ -123,7 +123,7 @@ layer whose Dockerfile is a single `FROM` line, six test harnesses, one document
 three applications. Every one of them was identified by a file pattern rather than by anything it
 does.
 
-The decisive evidence that the frame is wrong is not the false positives but the false negative.
+What shows the frame is wrong is not the false positives but the false negative.
 `apps/ios` is a real iOS application with sources, tests, a fastlane configuration and an XcodeGen
 `project.yml`. Artifact scanning found nothing there, because the Xcode project is generated rather
 than committed and there is no `Package.swift`. Grouping by entry point finds it immediately: two
@@ -135,6 +135,26 @@ gateway and its command line, then `apps/android`, `apps/macos`, `apps/ios`, a v
 package, and a set of extensions each with their own way in. It also shows why artifact scanning
 drowned: `scripts` holds 74 entry points and `.github` holds 18 pipelines, so those directories are
 full of genuinely executable things that are simply not the product.
+
+## The vocabulary, because it kept producing the wrong machinery
+
+We do not deal in evidence, claims, candidates, validation, arguments, confidence scores, approval
+cycles or grounding checks. None of those words describe what this is.
+
+Every one of them belongs to a world where something might be wrong and has to be justified. That is
+not this world. The code is read, not argued with. A function calls another function; a flow ends
+where it ends; a type has the fields it has. These are facts taken from the source, fully known, and
+there is nothing to weigh them against because the thing we would check them against is the same
+source we already read.
+
+The machinery follows the vocabulary. Believe you are making claims from evidence and you will build
+candidate lists, approval cycles, repair loops, grounding checks and a confidence number on every
+answer, because claims need all of that. Every one of those has been built here and every one has had
+to be removed.
+
+So: the lower layers produce facts. The comprehension layer, which is the last stage, states what
+those facts mean in human, product and business language. It is not inference under uncertainty, and
+a capability cannot be false any more than a call edge can be.
 
 ## Deterministic traits, interpreted purpose
 
@@ -148,7 +168,7 @@ with a deterministic mechanism, which is the same mistake as hardcoding a catego
 confident-looking label with no reasoning behind it and no way to be wrong out loud.
 
 The split is therefore: deterministic layers establish what is there, the model says what it means,
-and every claim it makes traces back to a trait.
+and everything it says traces back to a trait.
 
 ## Units fall out of the index
 
@@ -167,9 +187,9 @@ an Android unit, and a tail of small islands that are build and CI tooling rathe
 
 Three things to note. The Apple unit includes `apps/ios`, which artifact scanning missed entirely
 because its Xcode project is generated rather than committed. The vendored Swift package groups with
-the Apple applications rather than standing alone, which is evidence that it is reached by them and
+the Apple applications rather than standing alone, which shows it is reached by them and
 may be a component rather than a separate unit; its own licence and changelog argue the other way,
-and the question is now answerable from evidence instead of from a rule. And the noise separates
+and the question is now answerable from the facts instead of from a rule. And the noise separates
 itself: build tooling lands in islands of tens of nodes with one entry point each, next to a unit of
 115,527 nodes with 314, so size and entry point count discriminate without a path heuristic.
 
@@ -459,7 +479,7 @@ it is the more expensive of the two because a reader cannot tell which they are 
 
 This raises the priority of receiver resolution from "completes the outcome layer" to "stops the
 output being wrong", and it argues for a second rule: an effect reached only through shared setup,
-with no resolved call of the flow's own in between, is not evidence about that flow.
+with no resolved call of the flow's own in between, is not a fact about that flow.
 
 One caution found while tracing. A helper in one extension resolved its call to a function of the
 same name in an unrelated extension. Bare-name matching across module boundaries produces edges that
@@ -566,7 +586,7 @@ comprehension layer can run with the source files deleted.
 
 ## What the output contains
 
-Everything the analysis determines about the codebase. A finding stays in the output whether or not a product surface displays it today; the absence of a page is not evidence that a fact is worthless.
+Everything the analysis determines about the codebase. A finding stays in the output whether or not a product surface displays it today; the absence of a page does not make a fact worthless.
 
 What the output never contains is the pipeline talking about itself: intermediate steps, candidate lists awaiting approval, scoring scaffolding, algorithm tuning parameters, cache keys and hit rates, our own stage timings, per-analyzer ledgers, and indexes built for our own use. Those live in internal state stored beside the analysis, where the incremental engine and caches still read them. A build gate fails when one appears in the output.
 
@@ -574,7 +594,9 @@ The field-by-field stocktake, with the reason each field exists and its verdict,
 
 ## Capabilities
 
-Capabilities come from terminality. The terminal and proximal-terminal flows, entities and outcomes are submitted to the model as one batched request, and the capabilities come back. Validation is light: names must be authored, claims must trace to evidence. There is no candidate stage, no approval cycle, and no repair loop, and no intermediate capability artifact reaches the output. Deterministic validation of an interpretive result buys very little and costs a great deal.
+Capabilities come from terminality. The terminal and proximal-terminal flows, entities and outcomes are submitted to the model as one batched request, and the capabilities come back.
+
+There is no candidate stage, no approval cycle, no repair loop, no confidence score and no validation pass, and no intermediate capability artifact reaches the output. Those mechanisms all presuppose that a capability is a claim that might be wrong. It is not. The code is read, not argued with, so what the model produces is an expression of what is there rather than a conclusion drawn from support for it.
 
 ## Speed
 
@@ -583,6 +605,6 @@ The analysis must be fast. Speed comes from the shape of the flow, not from tuni
 ## Working rules
 
 - Support any codebase. Degrade honestly on what is not understood; never fabricate.
-- Every fact is evidence-grounded. AI is a flavoring over deterministic structure.
+- The lower layers produce facts read from the source. The comprehension layer is the last stage and states what those facts mean. It is not a flavouring on top of the real work; it is the layer the rest exists to make possible, and every layer is surfaced in the output.
 - The spec of the output is this document, the stocktake, and the output type. A new field must state what it tells a customer about their code.
 - No client, benchmark, or corpus names anywhere in product source or specs.
