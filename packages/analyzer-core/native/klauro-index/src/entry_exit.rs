@@ -37,6 +37,8 @@ static HTTP_METHODS: &[&str] = &[
     "all", "delete", "get", "head", "options", "patch", "post", "put",
 ];
 
+static LIFECYCLE_NAMES: &[&str] = &["Main", "main", "wmain"];
+
 static PATH_REGISTRARS: &[&str] = &["handle", "handlefunc", "handler", "handlerfunc", "route"];
 
 static EVENT_REGISTRARS: &[&str] = &["addEventListener", "on", "once", "prependListener"];
@@ -338,6 +340,26 @@ pub fn derive(
             file: registration.file,
             line: registration.line,
             registrar: registration.registrar.clone(),
+        });
+    }
+
+    for node in nodes {
+        if !matches!(node.kind, NodeKind::Function | NodeKind::Method) {
+            continue;
+        }
+        if !LIFECYCLE_NAMES.binary_search(&node.name.as_str()).is_ok() {
+            continue;
+        }
+        entry_points.push(EntryPoint {
+            id: format!("entry:{}:lifecycle", node.id),
+            kind: "lifecycle",
+            name: node.name.clone(),
+            method: None,
+            path: None,
+            handler: node.id.clone(),
+            file: node.file,
+            line: node.span.line,
+            registrar: node.name.clone(),
         });
     }
 
