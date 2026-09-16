@@ -32,6 +32,8 @@ pub struct SubCasNodes {
     pub promoted: bool,
     pub reason: &'static str,
     pub qualified: u32,
+    pub composition: &'static str,
+    pub crossing_imports: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -59,6 +61,7 @@ static WORKSPACE_KEYS: &[(&str, &str)] = &[
     ("package.json", "workspaces"),
     ("cargo.toml", "members"),
     ("go.work", "use"),
+    ("pom.xml", "modules"),
 ];
 
 static MODULE_MANIFESTS: &[&str] = &[
@@ -114,6 +117,17 @@ fn workspace_patterns<'a>(
             .or_else(|| {
                 document
                     .iter()
+                    .filter(|node| node.name == "project")
+                    .find_map(|project| {
+                        children
+                            .get(project.id.as_str())?
+                            .iter()
+                            .find(|node| node.name == *key)
+                    })
+            })
+            .or_else(|| {
+                document
+                    .iter()
                     .filter(|node| node.name == "workspace")
                     .find_map(|workspace| {
                         children
@@ -125,7 +139,11 @@ fn workspace_patterns<'a>(
         let Some(holder) = holder else { continue };
         let Some(entries) = children.get(holder.id.as_str()) else { continue };
         for entry in entries {
-            patterns.push((path.clone(), entry.name.clone()));
+            let value = entry
+                .type_annotation
+                .clone()
+                .unwrap_or_else(|| entry.name.clone());
+            patterns.push((path.clone(), value));
         }
     }
     patterns
@@ -509,14 +527,25 @@ fn partition(
 
     sub_projects.sort_by(|left, right| left.id.cmp(&right.id));
     let qualified = sub_projects.len() as u32;
+    let promoted = sub_projects.len() >= PROMOTION_THRESHOLD;
+    let crossing: u32 = sub_projects.iter().map(|project| project.imports_crossing).sum();
+    let bound_together = sub_projects
+        .iter()
+        .any(|project| project.declared_by == "workspace-member");
     let sub_cas_nodes = SubCasNodes {
-        promoted: sub_projects.len() >= PROMOTION_THRESHOLD,
+        promoted,
         reason: match sub_projects.len() {
             0 => "no-declared-project",
             1 => "one-project-below-threshold",
             _ => "declared-projects-at-threshold",
         },
         qualified,
+        composition: match (promoted, bound_together || crossing > 0) {
+            (false, _) => "single",
+            (true, true) => "monorepo",
+            (true, false) => "container",
+        },
+        crossing_imports: crossing,
     };
     Partition {
         assignment,

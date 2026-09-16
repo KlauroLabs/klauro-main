@@ -633,3 +633,23 @@ fn an_xml_element_carries_its_text_and_names_the_project() {
     );
     assert_eq!(project["runnable"], true, "a main beside the manifest starts it");
 }
+
+#[test]
+fn unrelated_projects_sharing_a_path_are_a_container_not_a_monorepo() {
+    let container = partition_of("container");
+    assert_eq!(container["sub_cas_nodes"]["promoted"], true);
+    assert_eq!(
+        container["sub_cas_nodes"]["composition"], "container",
+        "nothing declares them together and nothing imports across"
+    );
+    assert_eq!(container["sub_cas_nodes"]["crossing_imports"], 0);
+
+    let monorepo = partition_of("scope");
+    assert_eq!(
+        monorepo["sub_cas_nodes"]["composition"], "monorepo",
+        "a declared workspace binds its members into one product"
+    );
+
+    let single = partition_of("data");
+    assert_eq!(single["sub_cas_nodes"]["composition"], "single");
+}
