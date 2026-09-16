@@ -59,7 +59,9 @@ fn extract(
     file: u32,
     language_id: Option<&str>,
 ) -> Option<FileFacts> {
-    if let Some(mut parser) = typescript::parser_for(path) {
+    if let Some(mut parser) = typescript::parser_for(path)
+        .or_else(|| typescript::parser_for_language(language_id?))
+    {
         let mut source = std::fs::read(absolute).ok()?;
         if generated::is_generated(&source) {
             return None;
@@ -82,7 +84,8 @@ fn extract(
         let lines = source.iter().filter(|byte| **byte == b'\n').count() as u32 + 1;
         return Some(structured::Extractor::new(&source, file, path, spec).run(&tree, path, lines));
     }
-    let (language, spec) = language::language_for(language_id?)?;
+    let generic_id = language_id.or_else(|| keyed_language_of(path));
+    let (language, spec) = language::language_for(generic_id?)?;
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).ok()?;
     let source = std::fs::read(absolute).ok()?;
@@ -104,6 +107,20 @@ fn structured_language_of(path: &str) -> Option<&'static str> {
     }
     if lower.ends_with(".yaml") || lower.ends_with(".yml") {
         return Some("yaml");
+    }
+    None
+}
+
+fn keyed_language_of(path: &str) -> Option<&'static str> {
+    let lower = path.to_ascii_lowercase();
+    let basename = lower.rsplit('/').next().unwrap_or(&lower);
+    if basename.ends_with(".env")
+        || basename.starts_with(".env")
+        || basename.ends_with(".properties")
+        || basename.ends_with(".ini")
+        || basename.ends_with(".editorconfig")
+    {
+        return Some("ini");
     }
     None
 }

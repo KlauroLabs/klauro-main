@@ -175,6 +175,32 @@ pub fn classify(basename: &str, absolute: &Path) -> Option<FileKind> {
     None
 }
 
+pub fn interpreter_of(path: &Path) -> Option<&'static str> {
+    let mut buffer = [0u8; 128];
+    let read = File::open(path)
+        .and_then(|mut file| file.read(&mut buffer))
+        .ok()?;
+    let line = std::str::from_utf8(&buffer[..read]).ok()?.lines().next()?;
+    if !line.starts_with("#!") {
+        return None;
+    }
+    let interpreter = line
+        .rsplit(['/', ' '])
+        .find(|part| !part.is_empty() && *part != "-S")?;
+    Some(match interpreter {
+        "sh" | "bash" | "zsh" | "ksh" | "dash" => "shell",
+        "python" | "python2" | "python3" => "python",
+        "node" | "nodejs" | "bun" | "deno" => "javascript",
+        "ruby" => "ruby",
+        "perl" => "perl",
+        "php" => "php",
+        "lua" => "lua",
+        "Rscript" => "r",
+        "pwsh" | "powershell" => "powershell",
+        _ => return None,
+    })
+}
+
 pub fn language_of(basename: &str) -> Option<&'static str> {
     let lower = basename.to_ascii_lowercase();
     let extension = extension_of(&lower);
@@ -232,7 +258,10 @@ fn read_directory(absolute: &Path, relative: &str) -> Level {
             level.files.push(DiscoveredFile {
                 path: child_relative,
                 kind: file_kind,
-                language: if file_kind == FileKind::Source { language_of(name) } else { None },
+                language: match file_kind {
+                    FileKind::Script => interpreter_of(&path),
+                    _ => language_of(name),
+                },
                 absolute: path,
             });
         }
