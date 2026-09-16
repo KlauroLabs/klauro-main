@@ -206,6 +206,8 @@ pub struct CallFact {
     pub line: u32,
     pub column: u32,
     pub argument_count: u16,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub literals: Vec<String>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub constructs: bool,
     pub context: CallContext,

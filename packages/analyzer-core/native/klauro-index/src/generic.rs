@@ -732,6 +732,17 @@ impl<'a> Extractor<'a> {
         self.walk(node, &inner);
     }
 
+    fn literals_of<'t>(&self, arguments: impl Iterator<Item = Node<'t>>) -> Vec<String> {
+        arguments
+            .take(8)
+            .map(|argument| trim_quotes(self.text(argument)).trim().to_string())
+            .filter(|value| {
+                !value.is_empty() && value.len() <= 200 && !value.contains(char::is_whitespace)
+            })
+            .take(4)
+            .collect()
+    }
+
     fn receiver_binding(&self, receiver: Node) -> Option<String> {
         let mut cursor = receiver.walk();
         let mut descend = true;
@@ -930,13 +941,31 @@ impl<'a> Extractor<'a> {
                 }
             }
         }
-        let argument_count = node
-            .child_by_field_name("arguments")
+        let arguments = node.child_by_field_name("arguments").or_else(|| {
+            let mut cursor = node.walk();
+            node.named_children(&mut cursor)
+                .find(|child| child.kind() == "arguments" || child.kind() == "argument_list")
+        });
+        let argument_count = arguments
             .map(|arguments| {
                 let mut cursor = arguments.walk();
                 arguments.named_children(&mut cursor).count() as u16
             })
             .unwrap_or(0);
+        let literals = match arguments {
+            Some(arguments) => {
+                let mut cursor = arguments.walk();
+                self.literals_of(arguments.named_children(&mut cursor))
+            }
+            None => {
+                let mut cursor = node.walk();
+                let direct: Vec<Node> = node
+                    .named_children(&mut cursor)
+                    .filter(|child| Some(child.id()) != function.map(|found| found.id()))
+                    .collect();
+                self.literals_of(direct.into_iter())
+            }
+        };
 
         self.facts.calls.push(CallFact {
             file: self.file,
@@ -946,6 +975,7 @@ impl<'a> Extractor<'a> {
             line: node.start_position().row as u32 + 1,
             column: node.start_position().column as u32,
             argument_count,
+            literals,
             constructs: node.kind().contains("new") || node.kind().contains("creation"),
             context: CallContext {
                 in_try: scope.in_try,
