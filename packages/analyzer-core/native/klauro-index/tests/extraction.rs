@@ -524,6 +524,13 @@ fn a_bare_route_dsl_call_declares_a_route() {
 }
 
 #[test]
+fn a_route_needs_a_handler_that_names_code_in_the_repository() {
+    let index = index("routes");
+    let found = routes(&index);
+    assert!(!found.iter().any(|(_, path)| path == "session/token"), "{found:?}");
+}
+
+#[test]
 fn a_call_through_a_client_is_not_a_route() {
     let index = index("routes");
     let found = routes(&index);

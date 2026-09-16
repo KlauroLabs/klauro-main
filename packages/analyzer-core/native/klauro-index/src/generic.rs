@@ -5,6 +5,24 @@ use tree_sitter::{Node, Tree};
 use crate::language::LanguageSpec;
 use crate::model::*;
 
+fn names_code(text: &str) -> bool {
+    let mut characters = text.chars();
+    characters.next().is_some_and(|first| first.is_alphabetic() || first == '_' || first == ':')
+        && text.chars().all(|character| {
+            character.is_alphanumeric() || matches!(character, '_' | '.' | ':' | '\\')
+        })
+}
+
+const REFERENCE_DEPTH: u8 = 3;
+const REFERENCE_WIDTH: usize = 4;
+
+fn unwrapped(node: Node) -> Node {
+    match node.kind() == "argument" && node.named_child_count() == 1 {
+        true => node.named_child(0).unwrap_or(node),
+        false => node,
+    }
+}
+
 pub struct Extractor<'a> {
     source: &'a [u8],
     file: u32,
@@ -84,6 +102,34 @@ impl<'a> Extractor<'a> {
 
     fn owner_for_type_name(&self, name: &str) -> Option<String> {
         self.types_by_name.get(base_name(name)).cloned()
+    }
+
+    fn referenced_names(&self, node: Node, depth: u8) -> Vec<String> {
+        if self.spec.name_leaf_kinds.contains(&node.kind()) || node.kind().contains("selector") {
+            return vec![self.text(node).to_string()];
+        }
+        if node.kind().contains("string") {
+            let text = trim_quotes(self.text(node));
+            return match text.contains('#') || text.contains('@') {
+                true => vec![text.to_string()],
+                false => Vec::new(),
+            };
+        }
+        if node.named_child_count() == 0 {
+            let text = self.text(node);
+            return match names_code(text) {
+                true => vec![text.to_string()],
+                false => Vec::new(),
+            };
+        }
+        if depth >= REFERENCE_DEPTH {
+            return Vec::new();
+        }
+        let mut cursor = node.walk();
+        node.named_children(&mut cursor)
+            .flat_map(|child| self.referenced_names(child, depth + 1))
+            .take(REFERENCE_WIDTH)
+            .collect()
     }
 
     fn text(&self, node: Node) -> &'a str {
@@ -932,39 +978,39 @@ impl<'a> Extractor<'a> {
             }
             _ => receiver.clone(),
         };
-        if let Some(arguments) = node.child_by_field_name("arguments") {
-            let mut cursor = arguments.walk();
-            let children: Vec<Node> = arguments.named_children(&mut cursor).collect();
-            let label = children
-                .iter()
-                .find(|argument| argument.kind().contains("string"))
-                .map(|argument| trim_quotes(self.text(*argument)).to_string());
-            if let Some(label) = label {
-                for argument in children.iter() {
-                    if !self.spec.name_leaf_kinds.contains(&argument.kind())
-                        && !argument.kind().contains("selector")
-                    {
-                        continue;
-                    }
-                    let registrar = match &receiver {
-                        Some(receiver) => format!("{receiver}.{callee}"),
-                        None => callee.clone(),
-                    };
-                    self.facts.registrations.push(RegistrationFact {
-                        file: self.file,
-                        registrar,
-                        label: label.clone(),
-                        handler: self.text(*argument).to_string(),
-                        line: argument.start_position().row as u32 + 1,
-                    });
-                }
-            }
-        }
         let arguments = node.child_by_field_name("arguments").or_else(|| {
             let mut cursor = node.walk();
             node.named_children(&mut cursor)
                 .find(|child| child.kind() == "arguments" || child.kind() == "argument_list")
         });
+        if let Some(arguments) = arguments {
+            let mut cursor = arguments.walk();
+            let children: Vec<Node> = arguments.named_children(&mut cursor).map(unwrapped).collect();
+            let label = children
+                .iter()
+                .find(|argument| argument.kind().contains("string"))
+                .map(|argument| trim_quotes(self.text(*argument)).to_string());
+            if let Some(label) = label {
+                let registrar = match &receiver {
+                    Some(receiver) => format!("{receiver}.{callee}"),
+                    None => callee.clone(),
+                };
+                for argument in children.iter() {
+                    if argument.kind().contains("string") {
+                        continue;
+                    }
+                    for handler in self.referenced_names(*argument, 0) {
+                        self.facts.registrations.push(RegistrationFact {
+                            file: self.file,
+                            registrar: registrar.clone(),
+                            label: label.clone(),
+                            handler,
+                            line: argument.start_position().row as u32 + 1,
+                        });
+                    }
+                }
+            }
+        }
         let argument_count = arguments
             .map(|arguments| {
                 let mut cursor = arguments.walk();

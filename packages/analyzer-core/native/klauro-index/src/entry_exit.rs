@@ -74,15 +74,11 @@ fn split_label(label: &str) -> (Option<String>, String) {
 fn classify_registration(registrar: &str, label: Option<&str>) -> Option<&'static str> {
     let verb = tail(registrar);
     let lowered = verb.to_ascii_lowercase();
-    if PATH_REGISTRARS.binary_search(&lowered.as_str()).is_ok() {
+    if PATH_REGISTRARS.binary_search(&lowered.as_str()).is_ok()
+        || HTTP_METHODS.binary_search(&verb).is_ok()
+    {
         return match label {
-            Some(label) if looks_like_path(&split_label(label).1) => Some("http"),
-            _ => None,
-        };
-    }
-    if HTTP_METHODS.binary_search(&verb).is_ok() {
-        return match label {
-            Some(label) if looks_like_path(label) => Some("http"),
+            Some(label) if looks_like_route(&split_label(label).1) => Some("http"),
             _ => None,
         };
     }
@@ -340,6 +336,12 @@ pub fn derive(
         }
     }
 
+    let declared: HashSet<&str> = nodes
+        .iter()
+        .filter(|node| node.kind.is_type() || matches!(node.kind, NodeKind::Function | NodeKind::Method))
+        .flat_map(|node| [node.name.as_str(), node.name.rsplit('.').next().unwrap_or(&node.name)])
+        .collect();
+    let mut registered: HashSet<(u32, u32)> = HashSet::new();
     for registration in registrations {
         let Some(kind) = classify_registration(&registration.registrar, Some(&registration.label))
         else {
@@ -354,9 +356,19 @@ pub fn derive(
             .get(&(registration.file, registration.handler.clone()))
             .or_else(|| local.get(&(registration.file, leaf.to_string())))
             .or_else(|| unique_units.get(leaf))
+            .cloned()
+            .or_else(|| {
+                declared.contains(leaf).then(|| files[registration.file as usize].clone())
+            })
         else {
             continue;
         };
+        if kind == "http" && is_test(&files[registration.file as usize]) {
+            continue;
+        }
+        if !registered.insert((registration.file, registration.line)) {
+            continue;
+        }
         let verb = tail(&registration.registrar);
         let (label_method, path) = split_label(&registration.label);
         entry_points.push(EntryPoint {
@@ -369,45 +381,10 @@ pub fn derive(
                 None
             },
             path: if kind == "http" { Some(path) } else { None },
-            handler: handler.clone(),
+            handler,
             file: registration.file,
             line: registration.line,
             registrar: registration.registrar.clone(),
-        });
-    }
-
-    let registered: HashSet<(u32, u32)> =
-        entry_points.iter().map(|entry| (entry.file, entry.line)).collect();
-    for call in calls {
-        if call.argument_count < 2
-            || registered.contains(&(call.file, call.line))
-            || is_test(&files[call.file as usize])
-        {
-            continue;
-        }
-        if call.receiver.as_ref().is_some_and(|receiver| receiver != &call.callee) {
-            continue;
-        }
-        let Some(label) = call.literals.first() else { continue };
-        if classify_registration(&call.callee, Some(label)) != Some("http") {
-            continue;
-        }
-        let verb = call.callee.to_ascii_uppercase();
-        let (label_method, path) = split_label(label);
-        let handler = call
-            .caller
-            .clone()
-            .unwrap_or_else(|| files[call.file as usize].clone());
-        entry_points.push(EntryPoint {
-            id: format!("entry:{handler}:{label}"),
-            kind: "http",
-            name: label.clone(),
-            method: Some(label_method.unwrap_or(verb)),
-            path: Some(path),
-            handler,
-            file: call.file,
-            line: call.line,
-            registrar: call.callee.clone(),
         });
     }
 
