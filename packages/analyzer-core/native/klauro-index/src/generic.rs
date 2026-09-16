@@ -597,7 +597,7 @@ impl<'a> Extractor<'a> {
             signature: None,
             modifiers: Modifiers::default(),
             decorators: self.decorators_of(node),
-            type_annotation: None,
+            type_annotation: self.text_content(node),
             documentation: None,
             project: None,
         callback_of: None,
@@ -616,6 +616,25 @@ impl<'a> Extractor<'a> {
         inner.owner = Some(id.clone());
         inner.type_owner = Some(id);
         self.walk(node, &inner);
+    }
+
+    fn text_content(&self, node: Node) -> Option<String> {
+        if self.spec.text_kinds.is_empty() {
+            return None;
+        }
+        let mut cursor = node.walk();
+        let holder = node
+            .named_children(&mut cursor)
+            .find(|child| self.spec.text_kinds.contains(&child.kind()))?;
+        let mut inner = holder.walk();
+        if holder
+            .named_children(&mut inner)
+            .any(|child| self.spec.type_kinds.iter().any(|(kind, _)| *kind == child.kind()))
+        {
+            return None;
+        }
+        let text = self.text(holder).trim();
+        (!text.is_empty() && text.len() <= 200).then(|| text.to_string())
     }
 
     fn record_heritage(&mut self, node: Node, owner: &str) {

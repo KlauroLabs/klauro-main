@@ -37,6 +37,7 @@ pub struct LanguageSpec {
     pub keyword_target_field: &'static str,
     pub keyword_types: &'static [&'static str],
     pub keyword_functions: &'static [&'static str],
+    pub text_kinds: &'static [&'static str],
 }
 
 const BASH_NAME_LEAVES: &[&str] = &["word", "command_name", "variable_name"];
@@ -183,6 +184,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &["defmodule", "defprotocol", "defimpl", "defstruct"],
         keyword_functions: &["def", "defp", "defmacro", "defmacrop", "defdelegate"],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "fsharp",
@@ -219,6 +221,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "crystal",
@@ -255,6 +258,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "nim",
@@ -291,6 +295,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "v",
@@ -327,6 +332,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "d",
@@ -363,6 +369,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "pascal",
@@ -399,6 +406,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "ada",
@@ -435,6 +443,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "matlab",
@@ -471,6 +480,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "glsl",
@@ -507,6 +517,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "hlsl",
@@ -543,6 +554,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "odin",
@@ -579,6 +591,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "jsonnet",
@@ -615,6 +628,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "ini",
@@ -651,6 +665,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "svelte",
@@ -687,6 +702,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "erb",
@@ -723,6 +739,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "racket",
@@ -759,6 +776,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "scheme",
@@ -795,6 +813,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "commonlisp",
@@ -831,6 +850,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
 
     LanguageSpec {
@@ -868,6 +888,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
 
     LanguageSpec {
@@ -905,6 +926,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "gdscript",
@@ -941,6 +963,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "sql",
@@ -977,6 +1000,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "css",
@@ -1013,6 +1037,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "solidity",
@@ -1049,6 +1074,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "lua",
@@ -1085,6 +1111,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "dart",
@@ -1121,6 +1148,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "scala",
@@ -1157,6 +1185,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "haskell",
@@ -1193,6 +1222,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "zig",
@@ -1229,6 +1259,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "perl",
@@ -1265,6 +1296,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "groovy",
@@ -1301,6 +1333,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "proto",
@@ -1337,6 +1370,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "graphql",
@@ -1373,6 +1407,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "cmake",
@@ -1409,6 +1444,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "make",
@@ -1445,6 +1481,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "powershell",
@@ -1481,6 +1518,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "elm",
@@ -1517,6 +1555,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "erlang",
@@ -1553,6 +1592,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "ocaml",
@@ -1589,6 +1629,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "julia",
@@ -1625,6 +1666,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "starlark",
@@ -1661,6 +1703,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "nix",
@@ -1697,6 +1740,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "r",
@@ -1733,6 +1777,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "objc",
@@ -1769,6 +1814,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "fortran",
@@ -1805,6 +1851,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "verilog",
@@ -1841,6 +1888,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "vhdl",
@@ -1877,6 +1925,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "gleam",
@@ -1913,6 +1962,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "markdown",
@@ -1949,6 +1999,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "xml",
@@ -1985,6 +2036,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &["content"],
     },
     LanguageSpec {
         id: "hcl",
@@ -2021,6 +2073,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
 
     LanguageSpec {
@@ -2058,6 +2111,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "go",
@@ -2097,6 +2151,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "java",
@@ -2141,6 +2196,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "csharp",
@@ -2187,6 +2243,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "rust",
@@ -2229,6 +2286,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "ruby",
@@ -2265,6 +2323,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "php",
@@ -2309,6 +2368,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "c",
@@ -2352,6 +2412,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "cpp",
@@ -2396,6 +2457,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "swift",
@@ -2439,6 +2501,7 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
     LanguageSpec {
         id: "kotlin",
@@ -2478,5 +2541,6 @@ static SPECS: &[LanguageSpec] = &[
         keyword_target_field: "target",
         keyword_types: &[],
         keyword_functions: &[],
+        text_kinds: &[],
     },
 ];

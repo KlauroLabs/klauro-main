@@ -617,3 +617,19 @@ fn a_declaration_outranks_cohesion() {
         );
     }
 }
+
+#[test]
+fn an_xml_element_carries_its_text_and_names_the_project() {
+    let partition = partition_of("maven");
+    let project = partition["sub_projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|project| project["root"] == "service")
+        .expect("the module is a project");
+    assert_eq!(
+        project["name"], "billing-service",
+        "the name comes from the manifest, not the directory"
+    );
+    assert_eq!(project["runnable"], true, "a main beside the manifest starts it");
+}
