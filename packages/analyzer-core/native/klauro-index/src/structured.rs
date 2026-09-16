@@ -47,6 +47,8 @@ pub fn language_for(id: &str) -> Option<(Language, &'static StructuredSpec)> {
     }
 }
 
+const COLLECTION_LIMIT: usize = 64;
+
 pub struct Extractor<'a> {
     source: &'a [u8],
     file: u32,
@@ -126,6 +128,20 @@ impl<'a> Extractor<'a> {
         self.facts
     }
 
+    fn entries(&self, node: Node) -> usize {
+        let mut cursor = node.walk();
+        let direct = node.named_children(&mut cursor).count();
+        if direct > 1 {
+            return direct;
+        }
+        node.named_child(0)
+            .map(|only| {
+                let mut cursor = only.walk();
+                only.named_children(&mut cursor).count()
+            })
+            .unwrap_or(direct)
+    }
+
     fn walk(&mut self, node: Node, owner: &str, depth: u16) {
         if depth > 12 {
             return;
@@ -162,9 +178,15 @@ impl<'a> Extractor<'a> {
         let section = value.is_some_and(|value| self.is_section(value));
         if section {
             let id = self.declare(&name, node, owner, NodeKind::Class, EdgeKind::Contains);
-            if let Some(value) = value {
-                self.walk(value, &id, depth + 1);
+            let Some(value) = value else { return };
+            let entries = self.entries(value);
+            if entries > COLLECTION_LIMIT {
+                if let Some(found) = self.facts.nodes.iter_mut().find(|found| found.id == id) {
+                    found.type_annotation = Some(format!("{entries} entries"));
+                }
+                return;
             }
+            self.walk(value, &id, depth + 1);
             return;
         }
         let id = self.declare(&name, node, owner, NodeKind::Property, EdgeKind::HasField);

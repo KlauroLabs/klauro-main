@@ -453,3 +453,28 @@ fn code_shared_by_two_units_belongs_to_both() {
         );
     }
 }
+
+#[test]
+fn a_collection_is_counted_rather_than_enumerated() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/data");
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_klauro-index"));
+    let output = Command::new(binary).arg(&root).output().expect("index runs");
+    let index: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let nodes = index["nodes"].as_array().unwrap();
+
+    assert!(
+        nodes.len() < 40,
+        "a file of records is not a file of declarations, saw {} nodes",
+        nodes.len()
+    );
+    let records = nodes
+        .iter()
+        .find(|node| node["name"] == "records")
+        .expect("the collection is named");
+    assert_eq!(records["type_annotation"], "200 entries");
+
+    assert!(
+        nodes.iter().any(|node| node["name"] == "version"),
+        "configuration beside the collection is still read"
+    );
+}
