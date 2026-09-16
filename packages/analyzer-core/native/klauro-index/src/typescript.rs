@@ -1333,6 +1333,17 @@ pub fn count_errors(root: Node) -> u32 {
     }
 }
 
+pub fn parser_for_language(id: &str) -> Option<Parser> {
+    let language: tree_sitter::Language = match id {
+        "typescript" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+        "javascript" => tree_sitter_javascript::LANGUAGE.into(),
+        _ => return None,
+    };
+    let mut parser = Parser::new();
+    parser.set_language(&language).ok()?;
+    Some(parser)
+}
+
 pub fn parser_for(path: &str) -> Option<Parser> {
     let language = if path.ends_with(".tsx") {
         tree_sitter_typescript::LANGUAGE_TSX.into()
