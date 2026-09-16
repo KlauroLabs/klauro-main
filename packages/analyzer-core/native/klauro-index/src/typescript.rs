@@ -2,6 +2,8 @@ use tree_sitter::{Node, Parser, Tree};
 
 use crate::model::*;
 
+const LITERAL_LIMIT: usize = 4;
+
 pub struct Extractor<'a> {
     source: &'a [u8],
     file: u32,
@@ -1046,6 +1048,9 @@ impl<'a> Extractor<'a> {
                 arguments.named_children(&mut cursor).count() as u16
             })
             .unwrap_or(0);
+        let literals = arguments
+            .map(|arguments| self.literal_arguments(arguments))
+            .unwrap_or_default();
 
         let (receiver, callee) = match function.kind() {
             "member_expression" => {
@@ -1091,6 +1096,7 @@ impl<'a> Extractor<'a> {
             line: line_of(node),
             column: node.start_position().column as u32,
             argument_count,
+            literals,
             constructs,
             context: CallContext {
                 in_try: scope.context.in_try,
@@ -1166,6 +1172,19 @@ impl<'a> Extractor<'a> {
                 self.parameter_initializers(parameters, &inner);
             }
         }
+    }
+
+    fn literal_arguments(&self, arguments: Node) -> Vec<String> {
+        let mut cursor = arguments.walk();
+        arguments
+            .named_children(&mut cursor)
+            .filter(|argument| {
+                matches!(argument.kind(), "string" | "template_string" | "number")
+            })
+            .take(LITERAL_LIMIT)
+            .map(|argument| trim_quotes(self.text(argument)).to_string())
+            .filter(|value| !value.is_empty() && value.len() <= 200)
+            .collect()
     }
 
     fn documentation_of(&self, node: Node) -> Option<String> {

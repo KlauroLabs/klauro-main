@@ -419,25 +419,30 @@ fn every_node_carries_the_unit_that_ships_it() {
 }
 
 #[test]
-fn runnable_siblings_with_no_ship_declaration_are_never_merged() {
+fn an_installer_makes_one_ship_unit_of_what_it_names() {
     let scope = scope_of("bundle");
-    assert!(
-        shipped(&scope).is_empty(),
-        "a package that only declares a binary has not been shipped"
-    );
+    let units = shipped(&scope);
+    assert_eq!(units.len(), 1, "the installer is the ship unit");
 
-    let mut names: Vec<&str> = scope["deployables"]
+    let mut members: Vec<&str> = units[0]["members"]
         .as_array()
         .unwrap()
         .iter()
-        .filter(|unit| unit["bundled_into"].is_null())
+        .map(|id| id.as_str().unwrap())
+        .collect();
+    members.sort();
+    assert_eq!(members, ["deployable:client", "deployable:service"]);
+
+    let unbundled: Vec<&str> = scope["deployables"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|unit| unit["bundled_into"].is_null() && unit["shipped"] == false)
         .map(|unit| unit["name"].as_str().unwrap())
         .collect();
-    names.sort();
     assert_eq!(
-        names,
-        ["client", "service", "tool"],
-        "absence of a ship declaration never justifies a merge"
+        unbundled, ["tool"],
+        "a runnable the installer does not name is never merged into it"
     );
 }
 
@@ -499,11 +504,15 @@ fn a_declared_module_is_a_sub_project_whether_or_not_it_ships() {
     assert_eq!(
         names,
         ["client", "service", "tool"],
-        "three manifests, three projects, and none of them ships"
+        "three manifests, three projects"
     );
-    assert!(
-        shipped(&scope_of("bundle")).is_empty(),
-        "shipping is a separate question from what the projects are"
+    let projects_that_ship = projects
+        .iter()
+        .filter(|project| project["ship_backed"] == true)
+        .count();
+    assert_eq!(
+        projects_that_ship, 2,
+        "the installer names two of the three, which is a separate question from what they are"
     );
     assert_eq!(partition["sub_cas_nodes"]["promoted"], true);
 }
@@ -575,4 +584,36 @@ fn a_node_carries_the_project_it_belongs_to() {
         .find(|node| node["name"] == "shared" && node["kind"] == "function")
         .unwrap();
     assert_eq!(shared["project"], "subproject:libs/shared");
+}
+
+#[test]
+fn a_repository_that_declares_nothing_splits_on_import_cohesion() {
+    let partition = partition_of("cohesion");
+    let projects = partition["sub_projects"].as_array().unwrap();
+    let mut names: Vec<&str> = projects
+        .iter()
+        .map(|project| project["name"].as_str().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["alpha", "beta"]);
+
+    for project in projects {
+        assert_eq!(project["declared_by"], "import-cohesion");
+        assert_eq!(
+            project["imports_crossing"], 0,
+            "a tree that imports only itself is its own project"
+        );
+    }
+    assert_eq!(partition["sub_cas_nodes"]["promoted"], true);
+}
+
+#[test]
+fn a_declaration_outranks_cohesion() {
+    let partition = partition_of("scope");
+    for project in partition["sub_projects"].as_array().unwrap() {
+        assert_ne!(
+            project["declared_by"], "import-cohesion",
+            "cohesion is only consulted when the repository declares nothing"
+        );
+    }
 }

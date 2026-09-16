@@ -304,6 +304,7 @@ fn main() {
         &index.nodes,
         &index.edges,
         &index.entry_points,
+        &index.calls,
     );
     eprintln!(
         "scope {:?} | deployables {} | shipped {} | assigned {} shared {} unscoped {}",

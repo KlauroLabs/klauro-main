@@ -213,6 +213,9 @@ pub fn derive(
     }
 
     if declared.is_empty() {
+        declared = cohesive_roots(files, edges);
+    }
+    if declared.is_empty() {
         declared.push(Declared {
             name: "root".to_string(),
             root: String::new(),
@@ -241,6 +244,62 @@ fn declares_workspace(children: &HashMap<&str, Vec<&IndexNode>>, manifest: &str)
                     .get(workspace.id.as_str())
                     .is_some_and(|nested| nested.iter().any(|node| node.name == *key))
             })
+}
+
+const COHESION_FLOOR: f32 = 0.8;
+const COHESION_MINIMUM_FILES: usize = 3;
+
+fn cohesive_roots(files: &[String], edges: &[IndexEdge]) -> Vec<Declared> {
+    let mut candidates: HashMap<&str, usize> = HashMap::new();
+    for path in files {
+        let directory = directory_of(path);
+        if directory.is_empty() {
+            continue;
+        }
+        let top = directory.split('/').next().unwrap_or(directory);
+        *candidates.entry(top).or_insert(0) += 1;
+    }
+    candidates.retain(|_, count| *count >= COHESION_MINIMUM_FILES);
+    if candidates.len() < 2 {
+        return Vec::new();
+    }
+
+    let mut within: HashMap<&str, u32> = HashMap::new();
+    let mut crossing: HashMap<&str, u32> = HashMap::new();
+    let top_of = |path: &str| -> Option<&str> {
+        let top = path.split('/').next()?;
+        candidates.get_key_value(top).map(|(key, _)| *key)
+    };
+    for edge in edges {
+        if edge.kind != EdgeKind::Imports {
+            continue;
+        }
+        match (top_of(&edge.source), top_of(&edge.target)) {
+            (Some(from), Some(to)) if from == to => *within.entry(from).or_insert(0) += 1,
+            (Some(from), _) => *crossing.entry(from).or_insert(0) += 1,
+            _ => {}
+        }
+    }
+
+    let mut cohesive: Vec<Declared> = candidates
+        .keys()
+        .filter(|top| {
+            let inside = within.get(*top).copied().unwrap_or(0) as f32;
+            let across = crossing.get(*top).copied().unwrap_or(0) as f32;
+            inside + across > 0.0 && inside / (inside + across) >= COHESION_FLOOR
+        })
+        .map(|top| Declared {
+            name: (*top).to_string(),
+            root: (*top).to_string(),
+            declared_by: "import-cohesion",
+            at: (*top).to_string(),
+        })
+        .collect();
+    if cohesive.len() < 2 {
+        return Vec::new();
+    }
+    cohesive.sort_by(|left, right| left.root.cmp(&right.root));
+    cohesive
 }
 
 fn manifest_name(children: &HashMap<&str, Vec<&IndexNode>>, manifest: &str) -> Option<String> {
@@ -307,6 +366,15 @@ fn partition(
     code: &[bool],
     deployables: &[Deployable],
 ) -> Partition {
+    let residue = declared.len();
+    let mut declared = declared;
+    declared.push(Declared {
+        name: "repository".to_string(),
+        root: String::new(),
+        declared_by: "repository-residue",
+        at: String::new(),
+    });
+
     let mut order: Vec<usize> = (0..declared.len()).collect();
     order.sort_by_key(|at| std::cmp::Reverse(declared[*at].root.len()));
 
@@ -316,6 +384,7 @@ fn partition(
             .copied()
             .find(|at| contains(&declared[*at].root, path))
     };
+    let _ = residue;
 
     let mut sub_projects: Vec<SubProject> = declared
         .iter()
@@ -427,7 +496,10 @@ fn partition(
                     }
                     shared += 1;
                 }
-                _ => unpartitioned += 1,
+                _ => {
+                    sub_projects[residue].declarations += 1;
+                    unpartitioned += 1;
+                }
             },
         }
     }
@@ -446,7 +518,7 @@ fn partition(
                 || unit
                     .ships
                     .iter()
-                    .any(|path| !path.is_empty() && contains(path, &project.root));
+                    .any(|path| !project.root.is_empty() && contains(&project.root, path));
             if unit.shipped && covered {
                 project.ship_backed = true;
                 if !project.ships_in.contains(&unit.id) {
@@ -460,10 +532,15 @@ fn partition(
         project.ships_in.sort();
     }
 
-    let assignment: Vec<(String, String)> = assignment
+    let mut assignment: Vec<(String, String)> = assignment
         .into_iter()
         .map(|(path, at)| (path, sub_projects[at].id.clone()))
         .collect();
+
+    if sub_projects[residue].declarations == 0 {
+        let empty = sub_projects.remove(residue).id;
+        assignment.retain(|(_, id)| *id != empty);
+    }
 
     sub_projects.sort_by(|left, right| left.id.cmp(&right.id));
     let qualified = sub_projects.len() as u32;

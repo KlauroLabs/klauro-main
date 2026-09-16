@@ -408,7 +408,13 @@ fn cargo_manifest(files: &Files, path: &str) -> Option<Candidate> {
 
 static INSTALLER_SUFFIXES: &[&str] = &[".bat", ".cmd", ".iss", ".nsi", ".ps1", ".sh"];
 
-fn installer(files: &Files, path: &str, sources: &HashSet<&str>) -> Option<Candidate> {
+fn installer(
+    files: &Files,
+    path: &str,
+    sources: &HashSet<&str>,
+    calls: &[CallFact],
+    file: u32,
+) -> Option<Candidate> {
     let basename = path.rsplit('/').next()?.to_ascii_lowercase();
     if !basename.starts_with("install") {
         return None;
@@ -420,12 +426,16 @@ fn installer(files: &Files, path: &str, sources: &HashSet<&str>) -> Option<Candi
         return None;
     }
     let root = directory_of(path).to_string();
-    let ships: Vec<String> = files
-        .of(path)?
+    let mut ships: Vec<String> = calls
         .iter()
-        .filter(|node| node.kind == NodeKind::Function)
-        .filter_map(|node| sources.get(node.name.as_str()).map(|found| (*found).to_string()))
+        .filter(|call| call.file == file)
+        .flat_map(|call| call.literals.iter())
+        .map(|literal| normalize(&root, literal))
+        .filter(|candidate| files.holds(candidate) && !candidate.is_empty())
         .collect();
+    ships.sort();
+    ships.dedup();
+    let _ = sources;
     Some(Candidate {
         name: display_name(&root),
         root,
@@ -501,6 +511,7 @@ pub fn derive(
     nodes: &[IndexNode],
     edges: &[IndexEdge],
     entry_points: &[EntryPoint],
+    calls: &[CallFact],
 ) -> Scope {
     let index = Files::build(files, nodes);
     let sources: HashSet<&str> = files.iter().map(String::as_str).collect();
@@ -536,7 +547,7 @@ pub fn derive(
             candidates.extend(cargo_manifest(&index, path));
             continue;
         }
-        if let Some(found) = installer(&index, path, &sources) {
+        if let Some(found) = installer(&index, path, &sources, calls, at as u32) {
             candidates.push(found);
             continue;
         }
@@ -587,7 +598,14 @@ fn consolidate(
         }
         by_root.insert(candidate.root.clone(), deployables.len());
         deployables.push(Deployable {
-            id: format!("deployable:{}", candidate.root),
+            id: format!(
+                "deployable:{}",
+                if candidate.root.is_empty() {
+                    candidate.name.as_str()
+                } else {
+                    candidate.root.as_str()
+                }
+            ),
             name: candidate.name,
             root: candidate.root,
             shipped,
@@ -623,7 +641,10 @@ fn consolidate(
         }
         let root = deployables[at].root.clone();
         let bundle = shipped.iter().find(|(other, ships)| {
-            *other != at && ships.iter().any(|path| contains(path, &root))
+            *other != at
+                && ships
+                    .iter()
+                    .any(|path| !root.is_empty() && contains(&root, path))
         });
         if let Some((owner, _)) = bundle {
             let owner_id = deployables[*owner].id.clone();
