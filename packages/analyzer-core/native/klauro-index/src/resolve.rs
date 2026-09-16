@@ -1,32 +1,399 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::externals;
 use crate::model::*;
 
+pub struct Index<'a> {
+    pub files: &'a [String],
+    pub nodes: &'a [IndexNode],
+    pub imports: &'a [ImportFact],
+    pub calls: &'a [CallFact],
+    pub type_references: &'a [TypeReferenceFact],
+    pub locals: &'a [LocalBinding],
+}
+
 pub struct Resolution {
     pub edges: Vec<IndexEdge>,
-    pub dynamic_calls: u32,
-    pub indirect_calls: u32,
+    pub external_nodes: Vec<IndexNode>,
     pub modules: HashMap<(u32, String), String>,
     pub local: HashMap<(u32, String), String>,
     pub unique_units: HashMap<String, String>,
     pub call_origins: HashMap<(String, String), String>,
     pub method_owners: HashMap<String, String>,
-    pub external_nodes: Vec<IndexNode>,
     pub package_calls: u32,
     pub runtime_calls: u32,
+    pub indirect_calls: u32,
+    pub dynamic_calls: u32,
     pub unresolved_calls: u32,
     pub no_caller: u32,
     pub unresolved_names: HashMap<String, u32>,
 }
 
-struct Symbols {
-    exported: HashMap<(u32, String), String>,
-    local: HashMap<(u32, String), String>,
-    members: HashMap<(String, String), String>,
-    member_types: HashMap<(String, String), String>,
-    types: HashMap<String, Vec<String>>,
-    by_id: HashMap<String, usize>,
+#[derive(Clone, Copy)]
+enum Origin<'a> {
+    Declared(u32),
+    Runtime(&'a str),
+    Package(&'a str),
+    Indirect,
+    Unknown,
+}
+
+struct Symbols<'a> {
+    nodes: &'a [IndexNode],
+    position: HashMap<&'a str, u32>,
+    file_scope: HashMap<(u32, &'a str), u32>,
+    exported: HashMap<(u32, &'a str), u32>,
+    members: HashMap<(u32, &'a str), u32>,
+    unique_type: HashMap<&'a str, u32>,
+    unique_unit: HashMap<&'a str, u32>,
+    unique_member: HashMap<&'a str, u32>,
+    declared_members: HashSet<&'a str>,
+    owner: Vec<Option<u32>>,
+}
+
+struct Bindings<'a> {
+    imported: HashMap<(u32, &'a str), u32>,
+    modules: HashMap<(u32, &'a str), &'a str>,
+    locals: HashMap<(&'a str, &'a str), &'a str>,
+    file_locals: HashMap<(u32, &'a str), &'a str>,
+}
+
+fn is_unit(kind: NodeKind) -> bool {
+    matches!(
+        kind,
+        NodeKind::Function
+            | NodeKind::Method
+            | NodeKind::Constructor
+            | NodeKind::Getter
+            | NodeKind::Setter
+    )
+}
+
+fn is_type(kind: NodeKind) -> bool {
+    matches!(
+        kind,
+        NodeKind::Class | NodeKind::Interface | NodeKind::TypeAlias | NodeKind::Enum
+    )
+}
+
+fn unique<'a>(counts: HashMap<&'a str, (u32, u32)>) -> HashMap<&'a str, u32> {
+    counts
+        .into_iter()
+        .filter(|(_, (count, _))| *count == 1)
+        .map(|(name, (_, position))| (name, position))
+        .collect()
+}
+
+impl<'a> Symbols<'a> {
+    fn build(nodes: &'a [IndexNode]) -> Self {
+        let mut symbols = Symbols {
+            nodes,
+            position: HashMap::with_capacity(nodes.len()),
+            file_scope: HashMap::new(),
+            exported: HashMap::new(),
+            members: HashMap::new(),
+            unique_type: HashMap::new(),
+            unique_unit: HashMap::new(),
+            unique_member: HashMap::new(),
+            declared_members: HashSet::new(),
+            owner: vec![None; nodes.len()],
+        };
+        for (at, node) in nodes.iter().enumerate() {
+            symbols.position.insert(node.id.as_str(), at as u32);
+        }
+
+        let mut types: HashMap<&str, (u32, u32)> = HashMap::new();
+        let mut units: HashMap<&str, (u32, u32)> = HashMap::new();
+        let mut member_names: HashMap<&str, (u32, u32)> = HashMap::new();
+
+        for (at, node) in nodes.iter().enumerate() {
+            let at = at as u32;
+            if node.kind == NodeKind::Module {
+                continue;
+            }
+            if let Some(parent) = node.parent.as_deref()
+                && let Some(owner) = symbols.position.get(parent).copied()
+                && is_type(nodes[owner as usize].kind)
+            {
+                symbols.members.entry((owner, node.name.as_str())).or_insert(at);
+                symbols.declared_members.insert(node.name.as_str());
+                let entry = member_names.entry(node.name.as_str()).or_insert((0, at));
+                entry.0 += 1;
+                if is_unit(node.kind) {
+                    let entry = units.entry(node.name.as_str()).or_insert((0, at));
+                    entry.0 += 1;
+                }
+                continue;
+            }
+            symbols.file_scope.entry((node.file, node.name.as_str())).or_insert(at);
+            if node.modifiers.exported {
+                symbols.exported.entry((node.file, node.name.as_str())).or_insert(at);
+            }
+            if is_type(node.kind) {
+                let entry = types.entry(node.name.as_str()).or_insert((0, at));
+                entry.0 += 1;
+            }
+            if is_unit(node.kind) {
+                let entry = units.entry(node.name.as_str()).or_insert((0, at));
+                entry.0 += 1;
+            }
+        }
+
+        symbols.unique_type = unique(types);
+        symbols.unique_unit = unique(units);
+        symbols.unique_member = unique(member_names);
+        symbols
+    }
+
+    fn owning_type(&self, unit: u32) -> Option<u32> {
+        if let Some(owner) = self.owner[unit as usize] {
+            return Some(owner);
+        }
+        let mut current = unit;
+        for _ in 0..16 {
+            let node = &self.nodes[current as usize];
+            if is_type(node.kind) {
+                return Some(current);
+            }
+            if let Some(owner) = self.owner[current as usize] {
+                return Some(owner);
+            }
+            current = *self.position.get(node.parent.as_deref()?)?;
+        }
+        None
+    }
+
+    fn member(&self, owner: u32, name: &str) -> Option<u32> {
+        self.members.get(&(owner, name)).copied()
+    }
+
+    fn member_type(&self, owner: u32, name: &str) -> Option<&'a str> {
+        let member = self.member(owner, name)?;
+        self.nodes[member as usize].type_annotation.as_deref()
+    }
+}
+
+struct RuntimeMember {
+    name: &'static str,
+    owner: &'static str,
+    returns: &'static str,
+}
+
+const fn member(name: &'static str, owner: &'static str, returns: &'static str) -> RuntimeMember {
+    RuntimeMember { name, owner, returns }
+}
+
+static RUNTIME_MEMBERS: &[RuntimeMember] = &[
+    member("charAt", "String", "String"),
+    member("charCodeAt", "String", "Number"),
+    member("codePointAt", "String", "Number"),
+    member("concat", "Array", "Array"),
+    member("copyWithin", "Array", "Array"),
+    member("endsWith", "String", "Boolean"),
+    member("fill", "Array", "Array"),
+    member("filter", "Array", "Array"),
+    member("findLast", "Array", ""),
+    member("findLastIndex", "Array", "Number"),
+    member("flat", "Array", "Array"),
+    member("flatMap", "Array", "Array"),
+    member("lastIndexOf", "Array", "Number"),
+    member("localeCompare", "String", "Number"),
+    member("map", "Array", "Array"),
+    member("matchAll", "String", "Array"),
+    member("normalize", "String", "String"),
+    member("padEnd", "String", "String"),
+    member("padStart", "String", "String"),
+    member("pop", "Array", ""),
+    member("push", "Array", "Number"),
+    member("repeat", "String", "String"),
+    member("replaceAll", "String", "String"),
+    member("reverse", "Array", "Array"),
+    member("shift", "Array", ""),
+    member("slice", "", ""),
+    member("sort", "Array", "Array"),
+    member("splice", "Array", "Array"),
+    member("split", "String", "Array"),
+    member("startsWith", "String", "Boolean"),
+    member("substr", "String", "String"),
+    member("substring", "String", "String"),
+    member("toLocaleLowerCase", "String", "String"),
+    member("toLocaleUpperCase", "String", "String"),
+    member("toLowerCase", "String", "String"),
+    member("toUpperCase", "String", "String"),
+    member("trim", "String", "String"),
+    member("trimEnd", "String", "String"),
+    member("trimStart", "String", "String"),
+    member("unshift", "Array", "Number"),
+];
+
+fn runtime_member(name: &str) -> Option<&'static RuntimeMember> {
+    RUNTIME_MEMBERS
+        .binary_search_by(|entry| entry.name.cmp(name))
+        .ok()
+        .map(|at| &RUNTIME_MEMBERS[at])
+}
+
+fn base_type_name(annotation: &str) -> &str {
+    let annotation = annotation.trim().trim_start_matches(['&', '*']);
+    let end = annotation
+        .find(['<', '[', '(', ' ', '|', '?', ';'])
+        .unwrap_or(annotation.len());
+    let name = annotation[..end].trim().trim_end_matches('.');
+    if annotation[end..].starts_with('[') {
+        return "Array";
+    }
+    match name {
+        "string" => "String",
+        "number" => "Number",
+        "boolean" => "Boolean",
+        "symbol" => "Symbol",
+        "bigint" => "BigInt",
+        "object" => "Object",
+        other => other,
+    }
+}
+
+fn qualifier_of(annotation: &str) -> Option<&str> {
+    let trimmed = annotation.trim().trim_start_matches(['&', '*']);
+    let end = trimmed
+        .find(['<', '[', '(', ' ', '|', '?', ';'])
+        .unwrap_or(trimmed.len());
+    trimmed[..end].split_once('.').map(|(head, _)| head)
+}
+
+fn segments(path: &str) -> impl Iterator<Item = &str> {
+    path.split('.').map(|segment| {
+        let end = segment.find(['[', '(', '!', '?']).unwrap_or(segment.len());
+        &segment[..end]
+    })
+}
+
+impl<'a> Bindings<'a> {
+    fn annotation(&self, unit: &str, file: u32, name: &'a str) -> Option<&'a str> {
+        self.locals
+            .get(&(unit, name))
+            .or_else(|| self.file_locals.get(&(file, name)))
+            .copied()
+    }
+}
+
+struct Resolver<'a> {
+    symbols: Symbols<'a>,
+    bindings: Bindings<'a>,
+    runtime: Vec<&'static str>,
+}
+
+impl<'a> Resolver<'a> {
+    fn named_type(&self, file: u32, annotation: &str) -> Option<u32> {
+        let name = base_type_name(annotation);
+        if name.is_empty() {
+            return None;
+        }
+        self.bindings
+            .imported
+            .get(&(file, name))
+            .or_else(|| self.symbols.file_scope.get(&(file, name)))
+            .copied()
+            .or_else(|| self.symbols.unique_type.get(name).copied())
+            .filter(|found| is_type(self.symbols.nodes[*found as usize].kind))
+    }
+
+    fn annotated(&self, file: u32, annotation: &'a str) -> Origin<'a> {
+        if let Some(found) = self.named_type(file, annotation) {
+            return Origin::Declared(found);
+        }
+        let name = base_type_name(annotation);
+        if self.runtime.binary_search(&name).is_ok() {
+            return Origin::Runtime(name);
+        }
+        if let Some(qualifier) = qualifier_of(annotation)
+            && let Some(specifier) = self.bindings.modules.get(&(file, qualifier))
+        {
+            return Origin::Package(specifier);
+        }
+        Origin::Unknown
+    }
+
+    fn root(&self, unit: u32, file: u32, name: &'a str) -> Origin<'a> {
+        if name == "this" || name == "self" {
+            return match self.symbols.owning_type(unit) {
+                Some(owner) => Origin::Declared(owner),
+                None => Origin::Unknown,
+            };
+        }
+        let holder = &self.symbols.nodes[unit as usize];
+        if let Some(signature) = holder.signature.as_ref()
+            && let Some(parameter) = signature.parameters.iter().find(|p| p.name == name)
+        {
+            return match parameter.type_annotation.as_deref() {
+                Some(annotation) => match self.annotated(file, annotation) {
+                    Origin::Unknown => Origin::Indirect,
+                    known => known,
+                },
+                None => Origin::Indirect,
+            };
+        }
+        if let Some(annotation) = self.bindings.annotation(&holder.id, file, name) {
+            return self.annotated(file, annotation);
+        }
+        if let Some(owner) = self.symbols.owning_type(unit)
+            && let Some(member) = self.symbols.member(owner, name)
+        {
+            return Origin::Declared(member);
+        }
+        if let Some(found) = self
+            .bindings
+            .imported
+            .get(&(file, name))
+            .or_else(|| self.symbols.file_scope.get(&(file, name)))
+            .copied()
+        {
+            let node = &self.symbols.nodes[found as usize];
+            if is_type(node.kind) || is_unit(node.kind) {
+                return Origin::Declared(found);
+            }
+            if let Some(annotation) = node.type_annotation.as_deref() {
+                return self.annotated(node.file, annotation);
+            }
+        }
+        if let Some(specifier) = self.bindings.modules.get(&(file, name)) {
+            return Origin::Package(specifier);
+        }
+        if self.runtime.binary_search(&name).is_ok() {
+            return Origin::Runtime(name);
+        }
+        Origin::Unknown
+    }
+
+    fn returned(&self, member: &str) -> Origin<'a> {
+        match runtime_member(member) {
+            Some(entry) if !entry.returns.is_empty() => Origin::Runtime(entry.returns),
+            _ => Origin::Unknown,
+        }
+    }
+
+    fn origin(&self, unit: u32, file: u32, path: &'a str) -> Origin<'a> {
+        let mut parts = segments(path);
+        let Some(first) = parts.next() else {
+            return Origin::Unknown;
+        };
+        let mut origin = self.root(unit, file, first);
+        for part in parts {
+            origin = match origin {
+                Origin::Declared(owner) if is_type(self.symbols.nodes[owner as usize].kind) => {
+                    match self.symbols.member_type(owner, part) {
+                        Some(annotation) => {
+                            self.annotated(self.symbols.nodes[owner as usize].file, annotation)
+                        }
+                        None => Origin::Unknown,
+                    }
+                }
+                Origin::Package(specifier) => Origin::Package(specifier),
+                _ => self.returned(part),
+            };
+        }
+        origin
+    }
 }
 
 fn strip_extension(specifier: &str) -> &str {
@@ -59,74 +426,7 @@ fn directory_of(path: &str) -> &str {
     }
 }
 
-pub struct Index<'a> {
-    pub locals: &'a [LocalBinding],
-    pub files: &'a [String],
-    pub nodes: &'a [IndexNode],
-    pub imports: &'a [ImportFact],
-    pub calls: &'a [CallFact],
-    pub type_references: &'a [TypeReferenceFact],
-}
-
-fn build_symbols(index: &Index) -> Symbols {
-    let mut symbols = Symbols {
-        exported: HashMap::new(),
-        local: HashMap::new(),
-        members: HashMap::new(),
-        member_types: HashMap::new(),
-        types: HashMap::new(),
-        by_id: HashMap::new(),
-    };
-    for (position, node) in index.nodes.iter().enumerate() {
-        symbols.by_id.insert(node.id.clone(), position);
-        match node.kind {
-            NodeKind::Module => continue,
-            NodeKind::Method
-            | NodeKind::Constructor
-            | NodeKind::Getter
-            | NodeKind::Setter
-            | NodeKind::Property => {
-                if let Some(parent) = &node.parent {
-                    symbols
-                        .members
-                        .entry((parent.clone(), node.name.clone()))
-                        .or_insert_with(|| node.id.clone());
-                    if let Some(annotation) = &node.type_annotation {
-                        symbols
-                            .member_types
-                            .entry((parent.clone(), node.name.clone()))
-                            .or_insert_with(|| annotation.clone());
-                    }
-                }
-                continue;
-            }
-            _ => {}
-        }
-        symbols
-            .local
-            .entry((node.file, node.name.clone()))
-            .or_insert_with(|| node.id.clone());
-        if node.modifiers.exported {
-            symbols
-                .exported
-                .entry((node.file, node.name.clone()))
-                .or_insert_with(|| node.id.clone());
-        }
-        if matches!(
-            node.kind,
-            NodeKind::Class | NodeKind::Interface | NodeKind::TypeAlias | NodeKind::Enum
-        ) {
-            symbols
-                .types
-                .entry(node.name.clone())
-                .or_default()
-                .push(node.id.clone());
-        }
-    }
-    symbols
-}
-
-fn file_index(files: &HashMap<String, u32>, from: &str, specifier: &str) -> Option<u32> {
+fn file_index(files: &HashMap<&str, u32>, from: &str, specifier: &str) -> Option<u32> {
     if !specifier.starts_with('.') {
         return None;
     }
@@ -145,432 +445,24 @@ fn file_index(files: &HashMap<String, u32>, from: &str, specifier: &str) -> Opti
         format!("{base}/index.tsx"),
         format!("{base}/index.js"),
     ] {
-        if let Some(found) = files.get(&candidate) {
+        if let Some(found) = files.get(candidate.as_str()) {
             return Some(*found);
         }
     }
     None
 }
 
-pub fn resolve(index: &Index) -> Resolution {
-    let symbols = build_symbols(index);
-    let by_path: HashMap<String, u32> = index
-        .files
-        .iter()
-        .enumerate()
-        .map(|(position, path)| (path.clone(), position as u32))
-        .collect();
-
-    let mut edges = Vec::new();
-    let mut imported: HashMap<(u32, String), String> = HashMap::new();
-    let mut modules: HashMap<(u32, String), String> = HashMap::new();
-    let runtime = externals::sorted_runtime_globals();
-
-    for fact in index.imports {
-        let from = &index.files[fact.file as usize];
-        let Some(target_file) = file_index(&by_path, from, &fact.specifier) else {
-            for name in &fact.names {
-                modules.insert((fact.file, name.local.clone()), fact.specifier.clone());
-            }
-            continue;
-        };
-        edges.push(IndexEdge {
-            source: from.clone(),
-            target: index.files[target_file as usize].clone(),
-            kind: EdgeKind::Imports,
-        });
-        for name in &fact.names {
-            let wanted = name.imported.clone().unwrap_or_else(|| name.local.clone());
-            if let Some(target) = symbols
-                .exported
-                .get(&(target_file, wanted.clone()))
-                .or_else(|| symbols.local.get(&(target_file, wanted)))
-            {
-                imported.insert((fact.file, name.local.clone()), target.clone());
-            }
-        }
-    }
-
-    let mut local_types: HashMap<(String, String), String> = HashMap::new();
-    let mut local_runtime: HashMap<(String, String), String> = HashMap::new();
-    let return_types: HashMap<&str, &str> = index
-        .nodes
-        .iter()
-        .filter_map(|node| {
-            node.signature
-                .as_ref()
-                .and_then(|signature| signature.return_type.as_deref())
-                .map(|annotation| (node.name.as_str(), annotation))
-        })
-        .collect();
-    for binding in index.locals {
-        let annotation = binding
-            .annotation
-            .clone()
-            .or_else(|| binding.constructed.clone())
-            .or_else(|| {
-                binding
-                    .from_call
-                    .as_deref()
-                    .and_then(|callee| return_types.get(callee))
-                    .map(|annotation| (*annotation).to_string())
-            });
-        let Some(annotation) = annotation else { continue };
-        let scope_key = if binding.unit.is_empty() {
-            format!("file:{}", binding.file)
-        } else {
-            binding.unit.clone()
-        };
-        if let Some(owner) = resolve_type(&symbols, &imported, binding.file, &annotation) {
-            local_types.insert((scope_key, binding.name.clone()), owner);
-            continue;
-        }
-        let name = base_type_name(&annotation);
-        if runtime.binary_search(&name).is_ok() {
-            local_runtime.insert((scope_key, binding.name.clone()), name.to_string());
-        }
-    }
-
-    let units = unique_units(index.nodes);
-    let unique_members = unique_members(index.nodes);
-    let mut method_owners: HashMap<String, String> = HashMap::new();
-    for fact in index.type_references {
-        if fact.kind != EdgeKind::HasMethod {
-            continue;
-        }
-        let root = root_binding(&fact.name);
-        if let Some(owner) = symbols
-            .local
-            .get(&(fact.file, root.to_string()))
-            .cloned()
-            .or_else(|| {
-                symbols
-                    .types
-                    .get(root)
-                    .filter(|found| found.len() == 1)
-                    .map(|found| found[0].clone())
-            })
-        {
-            method_owners.insert(fact.source.clone(), owner);
-        }
-    }
-
-    let mut field_origins: HashMap<(String, String), String> = HashMap::new();
-    for node in index.nodes {
-        if node.kind != NodeKind::Property {
-            continue;
-        }
-        let (Some(annotation), Some(parent)) = (&node.type_annotation, &node.parent) else {
-            continue;
-        };
-        let qualified = base_qualified_name(annotation);
-        let Some((qualifier, _)) = qualified.split_once('.') else { continue };
-        if let Some(specifier) = modules.get(&(node.file, qualifier.to_string())).cloned() {
-            field_origins.insert((parent.clone(), node.name.clone()), specifier);
-        }
-    }
-    let mut call_origins: HashMap<(String, String), String> = HashMap::new();
-
-    let mut unresolved_calls = 0;
-    let mut package_calls = 0;
-    let mut runtime_calls = 0;
-    let mut dynamic_calls = 0;
-    let mut indirect_calls = 0;
-    let mut no_caller = 0;
-    let mut external_nodes: HashMap<String, IndexNode> = HashMap::new();
-    let mut unresolved_names: HashMap<String, u32> = HashMap::new();
-
-    for fact in index.type_references {
-        let root = root_binding(&fact.name);
-        let target = imported
-            .get(&(fact.file, root.to_string()))
-            .cloned()
-            .or_else(|| symbols.local.get(&(fact.file, root.to_string())).cloned())
-            .or_else(|| {
-                symbols
-                    .types
-                    .get(root)
-                    .filter(|found| found.len() == 1)
-                    .map(|found| found[0].clone())
-            })
-            .or_else(|| {
-                modules.get(&(fact.file, root.to_string())).map(|specifier| {
-                    let id = external_id("package", specifier, &fact.name);
-                    external_nodes
-                        .entry(id.clone())
-                        .or_insert_with(|| external_node(&id, &fact.name, specifier));
-                    id
-                })
-            })
-            .or_else(|| {
-                runtime.binary_search(&root).ok().map(|_| {
-                    let id = external_id("runtime", root, &fact.name);
-                    external_nodes
-                        .entry(id.clone())
-                        .or_insert_with(|| external_node(&id, &fact.name, root));
-                    id
-                })
-            });
-        match target {
-            Some(target) if fact.kind == EdgeKind::HasMethod => edges.push(IndexEdge {
-                source: target,
-                target: fact.source.clone(),
-                kind: EdgeKind::HasMethod,
-            }),
-            Some(target) => edges.push(IndexEdge {
-                source: fact.source.clone(),
-                target,
-                kind: fact.kind,
-            }),
-            None => {
-                *unresolved_names
-                    .entry(format!("<type> {}", fact.name))
-                    .or_insert(0) += 1;
-            }
-        }
-    }
-
-    for fact in index.calls {
-        let Some(caller) = &fact.caller else {
-            no_caller += 1;
-            continue;
-        };
-        let self_builtin = match fact.receiver.as_deref() {
-            Some(receiver) if receiver.starts_with("this.") || receiver.starts_with("self.") => {
-                let field = receiver
-                    .split_once('.')
-                    .map(|(_, rest)| root_binding(rest).to_string())
-                    .unwrap_or_default();
-                owning_type(&symbols, index.nodes, &method_owners, caller)
-                    .and_then(|owner| symbols.member_types.get(&(owner, field)).cloned())
-                    .map(|annotation| base_type_name(&annotation).to_string())
-                    .filter(|name| runtime.binary_search(&name.as_str()).is_ok())
-            }
-            _ => None,
-        };
-        let target = match fact.receiver.as_deref() {
-            None if fact.callee == "super" => owning_type(
-                &symbols,
-                index.nodes,
-                &method_owners,
-                caller,
-            )
-            .and_then(|owner| parent_type(&edges, &owner))
-            .and_then(|parent| {
-                symbols
-                    .members
-                    .get(&(parent.clone(), "constructor".to_string()))
-                    .cloned()
-                    .or(Some(parent))
-            }),
-            Some(receiver) if receiver == "this" || receiver == "self" => {
-                owning_type(&symbols, index.nodes, &method_owners, caller)
-                    .and_then(|owner| symbols.members.get(&(owner, fact.callee.clone())).cloned())
-            }
-            Some(receiver) if receiver.starts_with("this.") || receiver.starts_with("self.") => {
-                let field = receiver
-                    .split_once('.')
-                    .map(|(_, rest)| root_binding(rest).to_string())
-                    .unwrap_or_default();
-                if let Some(owner) = owning_type(&symbols, index.nodes, &method_owners, caller)
-                    && let Some(specifier) = field_origins.get(&(owner, field.clone()))
-                {
-                    call_origins
-                        .insert((caller.clone(), receiver.to_string()), specifier.clone());
-                }
-                owning_type(&symbols, index.nodes, &method_owners, caller)
-                    .and_then(|owner| symbols.member_types.get(&(owner.clone(), field.clone())).cloned()
-                        .or_else(|| {
-                            symbols
-                                .members
-                                .get(&(owner, field.clone()))
-                                .and_then(|id| symbols.by_id.get(id))
-                                .and_then(|position| index.nodes[*position].type_annotation.clone())
-                        }))
-                    .and_then(|annotation| {
-                        resolve_type(&symbols, &imported, fact.file, &annotation)
-                    })
-                    .and_then(|owner| symbols.members.get(&(owner, fact.callee.clone())).cloned())
-            }
-            Some(receiver)
-                if scoped_type(&local_types, caller, fact.file, root_binding(receiver))
-                    .and_then(|owner| symbols.members.get(&(owner, fact.callee.clone())))
-                    .is_some() =>
-            {
-                scoped_type(&local_types, caller, fact.file, root_binding(receiver))
-                    .and_then(|owner| symbols.members.get(&(owner, fact.callee.clone())).cloned())
-            }
-            Some(receiver)
-                if parameter_type(&symbols, index.nodes, caller, root_binding(receiver))
-                    .and_then(|annotation| {
-                        resolve_type(&symbols, &imported, fact.file, &annotation)
-                    })
-                    .and_then(|owner| symbols.members.get(&(owner, fact.callee.clone())))
-                    .is_some() =>
-            {
-                parameter_type(&symbols, index.nodes, caller, root_binding(receiver))
-                    .and_then(|annotation| {
-                        resolve_type(&symbols, &imported, fact.file, &annotation)
-                    })
-                    .and_then(|owner| symbols.members.get(&(owner, fact.callee.clone())).cloned())
-            }
-            Some(receiver)
-                if binding_type(&symbols, index.nodes, &imported, fact.file, root_binding(receiver))
-                    .and_then(|owner| symbols.members.get(&(owner, fact.callee.clone())))
-                    .is_some() =>
-            {
-                binding_type(&symbols, index.nodes, &imported, fact.file, root_binding(receiver))
-                    .and_then(|owner| symbols.members.get(&(owner, fact.callee.clone())).cloned())
-            }
-            Some(receiver) => imported
-                .get(&(fact.file, receiver.to_string()))
-                .and_then(|module| symbols.members.get(&(module.clone(), fact.callee.clone())))
-                .cloned()
-                .or_else(|| {
-                    symbols
-                        .local
-                        .get(&(fact.file, receiver.to_string()))
-                        .and_then(|owner| symbols.members.get(&(owner.clone(), fact.callee.clone())))
-                        .cloned()
-                })
-                .or_else(|| {
-                    if modules.contains_key(&(fact.file, root_binding(receiver).to_string())) {
-                        return None;
-                    }
-                    unique_members.get(&fact.callee).cloned()
-                }),
-            None => imported
-                .get(&(fact.file, fact.callee.clone()))
-                .cloned()
-                .or_else(|| symbols.local.get(&(fact.file, fact.callee.clone())).cloned())
-                .or_else(|| {
-                    if modules.contains_key(&(fact.file, fact.callee.clone())) {
-                        return None;
-                    }
-                    units.get(&fact.callee).cloned()
-                }),
-        };
-        match target {
-            Some(target) => edges.push(IndexEdge {
-                source: caller.clone(),
-                target,
-                kind: if fact.constructs {
-                    EdgeKind::Instantiates
-                } else {
-                    EdgeKind::Calls
-                },
-            }),
-            None => {
-                if fact.receiver.is_none() && fact.callee == "import" {
-                    dynamic_calls += 1;
-                    continue;
-                }
-                let root = fact
-                    .receiver
-                    .as_deref()
-                    .map(root_binding)
-                    .unwrap_or(fact.callee.as_str());
-                if let Some(builtin) = self_builtin
-                    .as_ref()
-                    .or_else(|| local_runtime.get(&(caller.clone(), root.to_string())))
-                    .or_else(|| {
-                        local_runtime.get(&(format!("file:{}", fact.file), root.to_string()))
-                    })
-                    .cloned()
-                {
-                    let builtin = builtin.as_str();
-                    let member = format!("{builtin}.{}", fact.callee);
-                    let id = external_id("runtime", builtin, &member);
-                    external_nodes
-                        .entry(id.clone())
-                        .or_insert_with(|| external_node(&id, &member, builtin));
-                    edges.push(IndexEdge {
-                        source: caller.clone(),
-                        target: id,
-                        kind: EdgeKind::Calls,
-                    });
-                    runtime_calls += 1;
-                    continue;
-                }
-                if is_parameter_of(&symbols, index.nodes, caller, root) {
-                    indirect_calls += 1;
-                    continue;
-                }
-                let member = match fact.receiver.as_deref() {
-                    Some(receiver) => member_path(receiver, &fact.callee),
-                    None => fact.callee.clone(),
-                };
-                if let Some(specifier) = modules.get(&(fact.file, root.to_string())) {
-                    let id = external_id("package", specifier, &member);
-                    external_nodes
-                        .entry(id.clone())
-                        .or_insert_with(|| external_node(&id, &member, specifier));
-                    edges.push(IndexEdge {
-                        source: caller.clone(),
-                        target: id,
-                        kind: if fact.constructs { EdgeKind::Instantiates } else { EdgeKind::Calls },
-                    });
-                    package_calls += 1;
-                } else if runtime.binary_search(&root).is_ok() {
-                    let id = external_id("runtime", root, &member);
-                    external_nodes
-                        .entry(id.clone())
-                        .or_insert_with(|| external_node(&id, &member, root));
-                    edges.push(IndexEdge {
-                        source: caller.clone(),
-                        target: id,
-                        kind: if fact.constructs { EdgeKind::Instantiates } else { EdgeKind::Calls },
-                    });
-                    runtime_calls += 1;
-                } else {
-                    let label = match fact.receiver.as_deref() {
-                        Some(receiver) => format!("{receiver}.{}", fact.callee),
-                        None => fact.callee.clone(),
-                    };
-                    *unresolved_names.entry(label).or_insert(0) += 1;
-                    unresolved_calls += 1;
-                }
-            }
-        }
-    }
-
-    let mut external_nodes: Vec<IndexNode> = external_nodes.into_values().collect();
-    external_nodes.sort_by(|left, right| left.id.cmp(&right.id));
-
-    Resolution {
-        edges,
-        dynamic_calls,
-        indirect_calls,
-        call_origins,
-        method_owners: method_owners.clone(),
-        unique_units: units,
-        local: symbols.local,
-        modules,
-        external_nodes,
-        package_calls,
-        runtime_calls,
-        unresolved_calls,
-        no_caller,
-        unresolved_names,
-    }
-}
-
-fn root_binding(receiver: &str) -> &str {
-    let end = receiver.find(['.', '[', '(']).unwrap_or(receiver.len());
-    &receiver[..end]
-}
-
-fn member_path(receiver: &str, callee: &str) -> String {
-    let root = root_binding(receiver);
-    if root == receiver {
-        format!("{receiver}.{callee}")
-    } else {
-        format!("{root}.{callee}")
-    }
-}
-
-fn external_id(space: &str, origin: &str, member: &str) -> String {
-    format!("{space}:{origin}:{member}")
+fn declare_external(
+    known: &mut HashMap<String, IndexNode>,
+    space: &str,
+    origin: &str,
+    name: &str,
+) -> String {
+    let id = format!("{space}:{origin}:{name}");
+    known
+        .entry(id.clone())
+        .or_insert_with(|| external_node(&id, name, origin));
+    id
 }
 
 fn external_node(id: &str, name: &str, origin: &str) -> IndexNode {
@@ -591,184 +483,335 @@ fn external_node(id: &str, name: &str, origin: &str) -> IndexNode {
     }
 }
 
-fn base_qualified_name(annotation: &str) -> &str {
-    let annotation = annotation.trim().trim_start_matches(['&', '*']);
-    let end = annotation
-        .find(['<', '[', '(', ' ', '|', '?', ';'])
-        .unwrap_or(annotation.len());
-    annotation[..end].trim()
-}
+pub fn resolve(index: &Index) -> Resolution {
+    let mut symbols = Symbols::build(index.nodes);
+    let by_path: HashMap<&str, u32> = index
+        .files
+        .iter()
+        .enumerate()
+        .map(|(at, path)| (path.as_str(), at as u32))
+        .collect();
 
-fn base_type_name(annotation: &str) -> &str {
-    let annotation = annotation.trim().trim_start_matches(['&', '*']);
-    let end = annotation
-        .find(['<', '[', '(', ' ', '|', '?', ';'])
-        .unwrap_or(annotation.len());
-    let name = annotation[..end].trim().trim_end_matches('.');
-    if name.is_empty() {
-        return name;
-    }
-    if annotation[end..].starts_with('[') {
-        return "Array";
-    }
-    match name {
-        "string" => "String",
-        "number" => "Number",
-        "boolean" => "Boolean",
-        "symbol" => "Symbol",
-        "bigint" => "BigInt",
-        "object" => "Object",
-        other => other,
-    }
-}
+    let mut edges = Vec::new();
+    let mut bindings = Bindings {
+        imported: HashMap::new(),
+        modules: HashMap::new(),
+        locals: HashMap::new(),
+        file_locals: HashMap::new(),
+    };
 
-fn resolve_type(
-    symbols: &Symbols,
-    imported: &HashMap<(u32, String), String>,
-    file: u32,
-    annotation: &str,
-) -> Option<String> {
-    let name = base_type_name(annotation);
-    if name.is_empty() {
-        return None;
+    for fact in index.imports {
+        let from = index.files[fact.file as usize].as_str();
+        let Some(target) = file_index(&by_path, from, &fact.specifier) else {
+            for name in &fact.names {
+                bindings
+                    .modules
+                    .insert((fact.file, name.local.as_str()), fact.specifier.as_str());
+            }
+            continue;
+        };
+        edges.push(IndexEdge {
+            source: from.to_string(),
+            target: index.files[target as usize].clone(),
+            kind: EdgeKind::Imports,
+        });
+        for name in &fact.names {
+            let wanted = name.imported.as_deref().unwrap_or(name.local.as_str());
+            if let Some(found) = symbols
+                .exported
+                .get(&(target, wanted))
+                .or_else(|| symbols.file_scope.get(&(target, wanted)))
+                .copied()
+            {
+                bindings.imported.insert((fact.file, name.local.as_str()), found);
+            }
+        }
     }
-    imported
-        .get(&(file, name.to_string()))
-        .cloned()
-        .or_else(|| symbols.local.get(&(file, name.to_string())).cloned())
-        .or_else(|| {
+
+    let mut owners: HashMap<String, String> = HashMap::new();
+    for fact in index.type_references {
+        if fact.kind != EdgeKind::HasMethod {
+            continue;
+        }
+        let name = base_type_name(&fact.name);
+        let Some(owner) = symbols
+            .file_scope
+            .get(&(fact.file, name))
+            .copied()
+            .or_else(|| symbols.unique_type.get(name).copied())
+        else {
+            continue;
+        };
+        if let Some(method) = symbols.position.get(fact.source.as_str()).copied() {
+            symbols.owner[method as usize] = Some(owner);
             symbols
-                .types
-                .get(name)
-                .filter(|found| found.len() == 1)
-                .map(|found| found[0].clone())
-        })
+                .members
+                .entry((owner, index.nodes[method as usize].name.as_str()))
+                .or_insert(method);
+            let owner = index.nodes[owner as usize].id.clone();
+            edges.push(IndexEdge {
+                source: owner.clone(),
+                target: fact.source.clone(),
+                kind: EdgeKind::HasMethod,
+            });
+            owners.insert(fact.source.clone(), owner);
+        }
+    }
+
+    for binding in index.locals {
+        let annotation = binding
+            .annotation
+            .as_deref()
+            .or(binding.constructed.as_deref())
+            .or_else(|| {
+                let callee = binding.from_call.as_deref()?;
+                match symbols.unique_unit.get(callee) {
+                    Some(unit) => index.nodes[*unit as usize]
+                        .signature
+                        .as_ref()?
+                        .return_type
+                        .as_deref(),
+                    None => runtime_member(callee)
+                        .map(|entry| entry.returns)
+                        .filter(|returns| !returns.is_empty()),
+                }
+            });
+        let Some(annotation) = annotation else { continue };
+        if binding.unit.is_empty() {
+            bindings
+                .file_locals
+                .insert((binding.file, binding.name.as_str()), annotation);
+        } else {
+            bindings
+                .locals
+                .insert((binding.unit.as_str(), binding.name.as_str()), annotation);
+        }
+    }
+
+    let resolver = Resolver {
+        symbols,
+        bindings,
+        runtime: externals::sorted_runtime_globals(),
+    };
+    let symbols = &resolver.symbols;
+
+    let mut external_nodes: HashMap<String, IndexNode> = HashMap::new();
+
+    for fact in index.type_references {
+        if fact.kind == EdgeKind::HasMethod {
+            continue;
+        }
+        let target = match resolver.annotated(fact.file, &fact.name) {
+            Origin::Declared(found) => Some(symbols.nodes[found as usize].id.clone()),
+            Origin::Runtime(owner) => Some(declare_external(
+                &mut external_nodes,
+                "runtime",
+                owner,
+                &fact.name,
+            )),
+            Origin::Package(specifier) => Some(declare_external(
+                &mut external_nodes,
+                "package",
+                specifier,
+                &fact.name,
+            )),
+            _ => None,
+        };
+        if let Some(target) = target {
+            edges.push(IndexEdge {
+                source: fact.source.clone(),
+                target,
+                kind: fact.kind,
+            });
+        }
+    }
+
+    let mut unresolved_names: HashMap<String, u32> = HashMap::new();
+    let mut call_origins: HashMap<(String, String), String> = HashMap::new();
+    let mut package_calls = 0;
+    let mut runtime_calls = 0;
+    let mut indirect_calls = 0;
+    let mut dynamic_calls = 0;
+    let mut unresolved_calls = 0;
+    let mut no_caller = 0;
+
+    for fact in index.calls {
+        let Some(caller) = fact.caller.as_deref() else {
+            no_caller += 1;
+            continue;
+        };
+        let Some(unit) = symbols.position.get(caller).copied() else {
+            no_caller += 1;
+            continue;
+        };
+        let kind = if fact.constructs {
+            EdgeKind::Instantiates
+        } else {
+            EdgeKind::Calls
+        };
+
+        if fact.receiver.is_none() && fact.callee == "import" {
+            dynamic_calls += 1;
+            continue;
+        }
+        if fact.receiver.is_none() && fact.callee == "super" {
+            if let Some(parent) = symbols
+                .owning_type(unit)
+                .and_then(|owner| parent_of(&edges, &symbols.nodes[owner as usize].id))
+                .and_then(|parent| symbols.position.get(parent.as_str()).copied())
+            {
+                let target = symbols
+                    .member(parent, "constructor")
+                    .unwrap_or(parent);
+                edges.push(IndexEdge {
+                    source: caller.to_string(),
+                    target: symbols.nodes[target as usize].id.clone(),
+                    kind,
+                });
+                continue;
+            }
+        }
+
+        let origin = match fact.receiver.as_deref() {
+            Some(receiver) => resolver.origin(unit, fact.file, receiver),
+            None => resolver.root(unit, fact.file, &fact.callee),
+        };
+
+        let mut emit = |target: String| {
+            edges.push(IndexEdge {
+                source: caller.to_string(),
+                target,
+                kind,
+            })
+        };
+
+        match (origin, fact.receiver.as_deref()) {
+            (Origin::Declared(found), Some(_)) => {
+                let node = &symbols.nodes[found as usize];
+                match symbols.member(found, &fact.callee) {
+                    Some(member) => {
+                        emit(symbols.nodes[member as usize].id.clone());
+                        continue;
+                    }
+                    None if is_unit(node.kind) => {
+                        emit(node.id.clone());
+                        continue;
+                    }
+                    None => {}
+                }
+            }
+            (Origin::Declared(found), None) => {
+                emit(symbols.nodes[found as usize].id.clone());
+                continue;
+            }
+            (Origin::Indirect, None) => {
+                indirect_calls += 1;
+                continue;
+            }
+            _ => {}
+        }
+
+        let member = match fact.receiver.as_deref() {
+            Some(receiver) => format!("{}.{}", last_segment(receiver), fact.callee),
+            None => fact.callee.clone(),
+        };
+
+        let external = match origin {
+            Origin::Package(specifier) => Some(("package", specifier.to_string(), member.clone())),
+            Origin::Runtime(name) => Some((
+                "runtime",
+                name.to_string(),
+                format!("{name}.{}", fact.callee),
+            )),
+            _ => runtime_member(&fact.callee)
+                .filter(|entry| {
+                    !entry.owner.is_empty()
+                        && !symbols.declared_members.contains(fact.callee.as_str())
+                })
+                .map(|entry| {
+                    (
+                        "runtime",
+                        entry.owner.to_string(),
+                        format!("{}.{}", entry.owner, fact.callee),
+                    )
+                }),
+        };
+
+        if let Some((space, owner, member)) = external {
+            if space == "package"
+                && let Some(receiver) = fact.receiver.as_deref()
+            {
+                call_origins.insert((caller.to_string(), receiver.to_string()), owner.clone());
+            }
+            emit(declare_external(&mut external_nodes, space, &owner, &member));
+            if space == "package" {
+                package_calls += 1;
+            } else {
+                runtime_calls += 1;
+            }
+            continue;
+        }
+
+        if fact.receiver.is_none()
+            && let Some(found) = symbols.unique_unit.get(fact.callee.as_str()).copied()
+        {
+            emit(symbols.nodes[found as usize].id.clone());
+            continue;
+        }
+        if fact.receiver.is_some()
+            && let Some(found) = symbols.unique_member.get(fact.callee.as_str()).copied()
+        {
+            emit(symbols.nodes[found as usize].id.clone());
+            continue;
+        }
+
+        *unresolved_names.entry(member).or_insert(0) += 1;
+        unresolved_calls += 1;
+    }
+
+    let mut external_nodes: Vec<IndexNode> = external_nodes.into_values().collect();
+    external_nodes.sort_by(|left, right| left.id.cmp(&right.id));
+
+    Resolution {
+        edges,
+        external_nodes,
+        modules: resolver
+            .bindings
+            .modules
+            .iter()
+            .map(|((file, name), specifier)| ((*file, (*name).to_string()), (*specifier).to_string()))
+            .collect(),
+        local: symbols
+            .file_scope
+            .iter()
+            .map(|((file, name), at)| {
+                ((*file, (*name).to_string()), symbols.nodes[*at as usize].id.clone())
+            })
+            .collect(),
+        unique_units: symbols
+            .unique_unit
+            .iter()
+            .map(|(name, at)| ((*name).to_string(), symbols.nodes[*at as usize].id.clone()))
+            .collect(),
+        call_origins,
+        method_owners: owners,
+        package_calls,
+        runtime_calls,
+        indirect_calls,
+        dynamic_calls,
+        unresolved_calls,
+        no_caller,
+        unresolved_names,
+    }
 }
 
-fn parent_type(edges: &[IndexEdge], owner: &str) -> Option<String> {
+fn last_segment(receiver: &str) -> &str {
+    segments(receiver).last().unwrap_or(receiver)
+}
+
+fn parent_of(edges: &[IndexEdge], owner: &str) -> Option<String> {
     edges
         .iter()
         .find(|edge| edge.kind == EdgeKind::Extends && edge.source == owner)
         .map(|edge| edge.target.clone())
-}
-
-fn binding_type(
-    symbols: &Symbols,
-    nodes: &[IndexNode],
-    imported: &HashMap<(u32, String), String>,
-    file: u32,
-    binding: &str,
-) -> Option<String> {
-    let id = imported
-        .get(&(file, binding.to_string()))
-        .or_else(|| symbols.local.get(&(file, binding.to_string())))?;
-    let position = *symbols.by_id.get(id)?;
-    let annotation = nodes[position].type_annotation.as_deref()?;
-    resolve_type(symbols, imported, nodes[position].file, annotation)
-}
-
-fn scoped_type(
-    types: &HashMap<(String, String), String>,
-    caller: &str,
-    file: u32,
-    binding: &str,
-) -> Option<String> {
-    types
-        .get(&(caller.to_string(), binding.to_string()))
-        .or_else(|| types.get(&(format!("file:{file}"), binding.to_string())))
-        .cloned()
-}
-
-fn is_parameter_of(
-    symbols: &Symbols,
-    nodes: &[IndexNode],
-    caller: &str,
-    binding: &str,
-) -> bool {
-    let Some(position) = symbols.by_id.get(caller) else {
-        return false;
-    };
-    nodes[*position]
-        .signature
-        .as_ref()
-        .is_some_and(|signature| {
-            signature
-                .parameters
-                .iter()
-                .any(|parameter| parameter.name == binding)
-        })
-}
-
-fn parameter_type(
-    symbols: &Symbols,
-    nodes: &[IndexNode],
-    caller: &str,
-    binding: &str,
-) -> Option<String> {
-    let position = *symbols.by_id.get(caller)?;
-    nodes[position]
-        .signature
-        .as_ref()?
-        .parameters
-        .iter()
-        .find(|parameter| parameter.name == binding)
-        .and_then(|parameter| parameter.type_annotation.clone())
-}
-
-fn unique_members(nodes: &[IndexNode]) -> HashMap<String, String> {
-    let mut counts: HashMap<&str, (u32, &str)> = HashMap::new();
-    for node in nodes {
-        if !matches!(node.kind, NodeKind::Method | NodeKind::Getter | NodeKind::Setter) {
-            continue;
-        }
-        let entry = counts
-            .entry(node.name.as_str())
-            .or_insert((0, node.id.as_str()));
-        entry.0 += 1;
-    }
-    counts
-        .into_iter()
-        .filter(|(_, (count, _))| *count == 1)
-        .map(|(name, (_, id))| (name.to_string(), id.to_string()))
-        .collect()
-}
-
-fn unique_units(nodes: &[IndexNode]) -> HashMap<String, String> {
-    let mut counts: HashMap<&str, (u32, &str)> = HashMap::new();
-    for node in nodes {
-        if !matches!(
-            node.kind,
-            NodeKind::Function | NodeKind::Method | NodeKind::Constructor
-        ) {
-            continue;
-        }
-        let entry = counts.entry(node.name.as_str()).or_insert((0, node.id.as_str()));
-        entry.0 += 1;
-    }
-    counts
-        .into_iter()
-        .filter(|(_, (count, _))| *count == 1)
-        .map(|(name, (_, id))| (name.to_string(), id.to_string()))
-        .collect()
-}
-
-fn owning_type(
-    symbols: &Symbols,
-    nodes: &[IndexNode],
-    owners: &HashMap<String, String>,
-    caller: &str,
-) -> Option<String> {
-    let mut current = caller.to_string();
-    for _ in 0..16 {
-        if let Some(owner) = owners.get(&current) {
-            return Some(owner.clone());
-        }
-        let position = *symbols.by_id.get(&current)?;
-        let node = &nodes[position];
-        if matches!(node.kind, NodeKind::Class | NodeKind::Interface) {
-            return Some(node.id.clone());
-        }
-        current = node.parent.clone()?;
-    }
-    None
 }

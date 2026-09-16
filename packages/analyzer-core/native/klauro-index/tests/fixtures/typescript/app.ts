@@ -29,6 +29,11 @@ export function afterTheLimitation(): number {
   return registry.size;
 }
 
+export function summarise(raw: string, store: Store): string[] {
+  store.purge();
+  return raw.split(',').map((entry) => entry.trim());
+}
+
 export const dispatch = (respond: (ok: boolean) => void, id: string): void => {
   respond(true);
   const parts: string[] = [];

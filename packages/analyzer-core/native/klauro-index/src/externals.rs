@@ -39,10 +39,6 @@ pub static RUNTIME_GLOBALS: &[&str] = &[
     "history", "alert", "confirm", "prompt", "requestAnimationFrame", "cancelAnimationFrame",
 ];
 
-pub fn is_runtime_global(name: &str) -> bool {
-    RUNTIME_GLOBALS.binary_search(&name).is_ok()
-}
-
 pub fn sorted_runtime_globals() -> Vec<&'static str> {
     let mut sorted = RUNTIME_GLOBALS.to_vec();
     sorted.sort_unstable();

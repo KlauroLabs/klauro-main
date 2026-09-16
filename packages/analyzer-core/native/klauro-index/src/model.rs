@@ -15,7 +15,6 @@ pub enum NodeKind {
     Setter,
     Property,
     Variable,
-    Parameter,
     External,
 }
 
@@ -29,9 +28,7 @@ pub enum EdgeKind {
     Implements,
     Calls,
     Imports,
-    Exports,
     Instantiates,
-    References,
 }
 
 #[derive(Debug, Default, Serialize)]

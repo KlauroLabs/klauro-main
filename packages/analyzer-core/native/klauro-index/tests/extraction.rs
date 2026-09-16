@@ -443,3 +443,40 @@ fn a_super_call_reaches_the_parent_constructor_or_type() {
         "super reaches the type it extends"
     );
 }
+
+#[test]
+fn a_chained_builtin_is_typed_by_what_it_returns() {
+    let index = index("typescript");
+    let calls = edges_of(&index, "calls");
+    assert!(
+        calls
+            .iter()
+            .any(|(_, target)| target == "runtime:Array:Array.map"),
+        "map on the result of split is an Array call"
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|(_, target)| target == "runtime:String:String.trim"),
+        "trim on an untyped value is a String call"
+    );
+}
+
+#[test]
+fn a_member_a_repository_type_declares_is_never_taken_for_a_builtin() {
+    let index = index("typescript");
+    let store = named(&index, "Store").expect("the type is indexed");
+    let purge = index["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["name"] == "purge" && node["parent"] == store["id"])
+        .expect("the member is indexed");
+    let calls = edges_of(&index, "calls");
+    assert!(
+        calls
+            .iter()
+            .any(|(_, target)| target == purge["id"].as_str().unwrap()),
+        "a call through a typed field reaches the declared member"
+    );
+}
