@@ -78,9 +78,14 @@ rayon = "1.11"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+rmp-serde = "1.3.1"
+rustc-hash = "2.1.3"
 
 [profile.release]
 opt-level = 3
 lto = true
 codegen-units = 1
 panic = "abort"
+
+[dev-dependencies]
+rmpv = "1.3.1"

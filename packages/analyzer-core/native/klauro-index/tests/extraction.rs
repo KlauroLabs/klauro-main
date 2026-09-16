@@ -1,11 +1,8 @@
-use std::path::PathBuf;
-use std::process::Command;
+mod common;
+
 
 fn index(fixture: &str) -> serde_json::Value {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(fixture);
-    let binary = PathBuf::from(env!("CARGO_BIN_EXE_klauro-index"));
-    let output = Command::new(binary).arg(&root).output().expect("index runs");
-    serde_json::from_slice(&output.stdout).expect("index emits json")
+    common::read(fixture)
 }
 
 fn nodes_of(index: &serde_json::Value, kind: &str) -> Vec<serde_json::Value> {

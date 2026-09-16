@@ -20,6 +20,7 @@ mod source_rewrite;
 mod structured;
 mod subproject;
 mod typescript;
+mod wire;
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -468,7 +469,10 @@ fn main() {
     }
 
     let emit_started = Instant::now();
-    let serialized = serde_json::to_vec(&index).unwrap();
+    let strings = std::cell::RefCell::new(wire::Strings::default());
+    let body = rmp_serde::to_vec(&wire::Interned::new(&index, &strings)).unwrap();
+    let mut serialized = rmp_serde::to_vec(&strings.into_inner().into_values()).unwrap();
+    serialized.extend_from_slice(&body);
     std::io::stdout().write_all(&serialized).unwrap();
     eprintln!("emit {:?} | {} bytes", emit_started.elapsed(), serialized.len());
 }

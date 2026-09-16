@@ -1,15 +1,10 @@
-use std::path::PathBuf;
-use std::process::Command;
+mod common;
+
 use std::sync::OnceLock;
 
 fn languages() -> &'static serde_json::Value {
     static INDEX: OnceLock<serde_json::Value> = OnceLock::new();
-    INDEX.get_or_init(|| {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/languages");
-        let binary = PathBuf::from(env!("CARGO_BIN_EXE_klauro-index"));
-        let output = Command::new(binary).arg(&root).output().expect("index runs");
-        serde_json::from_slice(&output.stdout).expect("index emits json")
-    })
+    INDEX.get_or_init(|| common::read("languages"))
 }
 
 fn file_of(node: &serde_json::Value) -> String {
@@ -224,10 +219,7 @@ fn a_type_reference_across_languages_becomes_a_heritage_edge() {
 
 #[test]
 fn generated_code_is_not_indexed() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/generated");
-    let binary = PathBuf::from(env!("CARGO_BIN_EXE_klauro-index"));
-    let output = Command::new(binary).arg(&root).output().expect("index runs");
-    let index: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let index = common::read("generated");
     let names: Vec<&str> = index["nodes"]
         .as_array()
         .unwrap()
@@ -301,10 +293,7 @@ fn a_repository_query_annotation_is_not_a_graphql_entry_point() {
 
 #[test]
 fn a_call_through_a_receiver_field_is_an_exit_point_for_its_package() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/receiver");
-    let binary = PathBuf::from(env!("CARGO_BIN_EXE_klauro-index"));
-    let output = Command::new(binary).arg(&root).output().expect("index runs");
-    let index: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let index = common::read("receiver");
 
     let exits = index["exit_points"].as_array().unwrap();
     let database = exits
@@ -340,10 +329,7 @@ fn a_call_through_a_receiver_field_is_an_exit_point_for_its_package() {
 
 #[test]
 fn every_breadth_fixture_yields_a_named_declaration() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/breadth");
-    let binary = PathBuf::from(env!("CARGO_BIN_EXE_klauro-index"));
-    let output = Command::new(binary).arg(&root).output().expect("index runs");
-    let index: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let index = common::read("breadth");
 
     let files = index["files"].as_array().unwrap();
     let mut declared: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
@@ -374,10 +360,7 @@ fn every_breadth_fixture_yields_a_named_declaration() {
 }
 
 fn scope_of(fixture: &str) -> serde_json::Value {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(fixture);
-    let binary = PathBuf::from(env!("CARGO_BIN_EXE_klauro-index"));
-    let output = Command::new(binary).arg(&root).output().expect("index runs");
-    let index: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json");
+    let index = common::read(fixture);
     index["scope"].clone()
 }
 
@@ -461,10 +444,7 @@ fn code_shared_by_two_units_belongs_to_both() {
 
 #[test]
 fn a_collection_is_counted_rather_than_enumerated() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/data");
-    let binary = PathBuf::from(env!("CARGO_BIN_EXE_klauro-index"));
-    let output = Command::new(binary).arg(&root).output().expect("index runs");
-    let index: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let index = common::read("data");
     let nodes = index["nodes"].as_array().unwrap();
 
     assert!(
@@ -485,10 +465,7 @@ fn a_collection_is_counted_rather_than_enumerated() {
 }
 
 fn partition_of(fixture: &str) -> serde_json::Value {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(fixture);
-    let binary = PathBuf::from(env!("CARGO_BIN_EXE_klauro-index"));
-    let output = Command::new(binary).arg(&root).output().expect("index runs");
-    let index: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json");
+    let index = common::read(fixture);
     index["partition"].clone()
 }
 
@@ -561,10 +538,7 @@ fn what_a_project_is_reads_from_facts_rather_than_a_stored_label() {
 
 #[test]
 fn a_node_carries_the_project_it_belongs_to() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/scope");
-    let binary = PathBuf::from(env!("CARGO_BIN_EXE_klauro-index"));
-    let output = Command::new(binary).arg(&root).output().expect("index runs");
-    let index: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let index = common::read("scope");
 
     let serve = index["nodes"]
         .as_array()
@@ -656,10 +630,7 @@ fn unrelated_projects_sharing_a_path_are_a_container_not_a_monorepo() {
 
 #[test]
 fn a_dependency_is_derived_and_only_its_role_comes_from_the_catalog() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/maven");
-    let binary = PathBuf::from(env!("CARGO_BIN_EXE_klauro-index"));
-    let output = Command::new(binary).arg(&root).output().expect("index runs");
-    let index: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let index = common::read("maven");
     let found = &index["dependencies"];
     assert!(
         found["dependencies"].as_array().unwrap().is_empty()
@@ -671,10 +642,7 @@ fn a_dependency_is_derived_and_only_its_role_comes_from_the_catalog() {
 
 #[test]
 fn a_longer_catalog_entry_wins_and_a_prefix_needs_a_boundary() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/deps");
-    let binary = PathBuf::from(env!("CARGO_BIN_EXE_klauro-index"));
-    let output = Command::new(binary).arg(&root).output().expect("index runs");
-    let index: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let index = common::read("deps");
     let found = index["dependencies"]["dependencies"].as_array().unwrap();
 
     let named = |name: &str| -> serde_json::Value {
@@ -696,10 +664,7 @@ fn a_longer_catalog_entry_wins_and_a_prefix_needs_a_boundary() {
 }
 
 fn indexed(fixture: &str) -> serde_json::Value {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(fixture);
-    let binary = PathBuf::from(env!("CARGO_BIN_EXE_klauro-index"));
-    let output = Command::new(binary).arg(&root).output().expect("index runs");
-    serde_json::from_slice(&output.stdout).expect("json")
+    common::read(fixture)
 }
 
 #[test]
