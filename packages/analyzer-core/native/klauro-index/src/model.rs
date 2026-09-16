@@ -18,6 +18,30 @@ pub enum NodeKind {
     External,
 }
 
+impl NodeKind {
+    pub fn is_type(self) -> bool {
+        matches!(
+            self,
+            NodeKind::Class | NodeKind::Interface | NodeKind::TypeAlias | NodeKind::Enum
+        )
+    }
+
+    pub fn is_unit(self) -> bool {
+        matches!(
+            self,
+            NodeKind::Function
+                | NodeKind::Method
+                | NodeKind::Constructor
+                | NodeKind::Getter
+                | NodeKind::Setter
+        )
+    }
+
+    pub fn is_declaration(self) -> bool {
+        self.is_type() || self.is_unit()
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EdgeKind {

@@ -6,7 +6,7 @@ pub fn grammar_limitations(source: &mut Vec<u8>) -> u32 {
 }
 
 fn qualified_type_imports(source: &mut Vec<u8>) -> u32 {
-    if !contains(source, QUALIFIER_MARKER) {
+    if find_from(source, QUALIFIER_MARKER, 0).is_none() {
         return 0;
     }
     let mut rewritten = 0;
@@ -42,7 +42,7 @@ fn is_identifier_byte(byte: u8) -> bool {
 }
 
 fn type_argument_imports(source: &mut Vec<u8>) -> u32 {
-    if !contains(source, TYPE_ARGUMENT_MARKER) {
+    if find_from(source, TYPE_ARGUMENT_MARKER, 0).is_none() {
         return 0;
     }
     let mut rewritten = 0;
@@ -63,10 +63,6 @@ fn type_argument_imports(source: &mut Vec<u8>) -> u32 {
         rewritten += 1;
     }
     rewritten
-}
-
-fn contains(haystack: &[u8], needle: &[u8]) -> bool {
-    find_from(haystack, needle, 0).is_some()
 }
 
 fn find_from(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {

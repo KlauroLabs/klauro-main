@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::externals;
 use crate::model::*;
+use crate::paths::{directory_of, normalize};
 
 pub struct Index<'a> {
     pub files: &'a [String],
@@ -58,23 +59,7 @@ struct Bindings<'a> {
     file_locals: HashMap<(u32, &'a str), &'a str>,
 }
 
-fn is_unit(kind: NodeKind) -> bool {
-    matches!(
-        kind,
-        NodeKind::Function
-            | NodeKind::Method
-            | NodeKind::Constructor
-            | NodeKind::Getter
-            | NodeKind::Setter
-    )
-}
 
-fn is_type(kind: NodeKind) -> bool {
-    matches!(
-        kind,
-        NodeKind::Class | NodeKind::Interface | NodeKind::TypeAlias | NodeKind::Enum
-    )
-}
 
 fn unique<'a>(counts: HashMap<&'a str, (u32, u32)>) -> HashMap<&'a str, u32> {
     counts
@@ -113,13 +98,13 @@ impl<'a> Symbols<'a> {
             }
             if let Some(parent) = node.parent.as_deref()
                 && let Some(owner) = symbols.position.get(parent).copied()
-                && is_type(nodes[owner as usize].kind)
+                && nodes[owner as usize].kind.is_type()
             {
                 symbols.members.entry((owner, node.name.as_str())).or_insert(at);
                 symbols.declared_members.insert(node.name.as_str());
                 let entry = member_names.entry(node.name.as_str()).or_insert((0, at));
                 entry.0 += 1;
-                if is_unit(node.kind) {
+                if node.kind.is_unit() {
                     let entry = units.entry(node.name.as_str()).or_insert((0, at));
                     entry.0 += 1;
                 }
@@ -129,11 +114,11 @@ impl<'a> Symbols<'a> {
             if node.modifiers.exported {
                 symbols.exported.entry((node.file, node.name.as_str())).or_insert(at);
             }
-            if is_type(node.kind) {
+            if node.kind.is_type() {
                 let entry = types.entry(node.name.as_str()).or_insert((0, at));
                 entry.0 += 1;
             }
-            if is_unit(node.kind) {
+            if node.kind.is_unit() {
                 let entry = units.entry(node.name.as_str()).or_insert((0, at));
                 entry.0 += 1;
             }
@@ -152,7 +137,7 @@ impl<'a> Symbols<'a> {
         let mut current = unit;
         for _ in 0..16 {
             let node = &self.nodes[current as usize];
-            if is_type(node.kind) {
+            if node.kind.is_type() {
                 return Some(current);
             }
             if let Some(owner) = self.owner[current as usize] {
@@ -295,7 +280,7 @@ impl<'a> Resolver<'a> {
             .or_else(|| self.symbols.file_scope.get(&(file, name)))
             .copied()
             .or_else(|| self.symbols.unique_type.get(name).copied())
-            .filter(|found| is_type(self.symbols.nodes[*found as usize].kind))
+            .filter(|found| self.symbols.nodes[*found as usize].kind.is_type())
     }
 
     fn annotated(&self, file: u32, annotation: &'a str) -> Origin<'a> {
@@ -349,7 +334,7 @@ impl<'a> Resolver<'a> {
             .copied()
         {
             let node = &self.symbols.nodes[found as usize];
-            if is_type(node.kind) || is_unit(node.kind) {
+            if node.kind.is_type() || node.kind.is_unit() {
                 return Origin::Declared(found);
             }
             if let Some(annotation) = node.type_annotation.as_deref() {
@@ -380,7 +365,7 @@ impl<'a> Resolver<'a> {
         let mut origin = self.root(unit, file, first);
         for part in parts {
             origin = match origin {
-                Origin::Declared(owner) if is_type(self.symbols.nodes[owner as usize].kind) => {
+                Origin::Declared(owner) if self.symbols.nodes[owner as usize].kind.is_type() => {
                     match self.symbols.member_type(owner, part) {
                         Some(annotation) => {
                             self.annotated(self.symbols.nodes[owner as usize].file, annotation)
@@ -405,26 +390,7 @@ fn strip_extension(specifier: &str) -> &str {
     specifier
 }
 
-fn normalize(path: &str) -> String {
-    let mut parts: Vec<&str> = Vec::new();
-    for part in path.split('/') {
-        match part {
-            "." | "" => {}
-            ".." => {
-                parts.pop();
-            }
-            other => parts.push(other),
-        }
-    }
-    parts.join("/")
-}
 
-fn directory_of(path: &str) -> &str {
-    match path.rfind('/') {
-        Some(at) => &path[..at],
-        None => "",
-    }
-}
 
 fn file_index(files: &HashMap<&str, u32>, from: &str, specifier: &str) -> Option<u32> {
     if !specifier.starts_with('.') {
@@ -694,7 +660,7 @@ pub fn resolve(index: &Index) -> Resolution {
                         emit(symbols.nodes[member as usize].id.clone());
                         continue;
                     }
-                    None if is_unit(node.kind) => {
+                    None if node.kind.is_unit() => {
                         emit(node.id.clone());
                         continue;
                     }
