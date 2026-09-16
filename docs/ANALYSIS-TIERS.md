@@ -43,9 +43,16 @@ specification places ICELOT at code-unit, step and flow granularity within this 
 *for* is T6. ICELOT's Telemetry facet is statically declared capacity — log sites, metric
 registrations, span creation — which is not the same thing as O1.
 
-**Measured today: ~16 s.** The budget is set against a commodity indexer whose discover, parse,
-registry and resolve stages total 3.08 s on this repository across ten workers; 4 s allows about 30%
-for resolving types more deeply than it does.
+**Measured today: 1.2 s** — discover 23 ms, parse 533 ms, resolve 266 ms, entry and exit 76 ms,
+ICELOT 51 ms, graph 234 ms — in `native/klauro-index`, against a budget of 4 s.
+
+A file is routed to an extractor before it is read, from its size and whether its language declares
+anything. Code that declares gets 8 MiB, so a large generated module still indexes; markup and data
+get 64 KiB, because a document that declares rather than records is small. A saved web page cost
+77 seconds on its own before this, and one file that slow is a floor no amount of parallelism lifts.
+
+A structured document contributes its schema. One that overflows the schema budget is records rather
+than declarations, and yields a single node carrying its size.
 
 ---
 
@@ -69,7 +76,7 @@ members at 98% import cohesion ships as one container: 35 projects, one deployab
 sharing one parameterised container are eight projects and eight deployables. The partition follows
 what the repository declares about itself; shipping is recorded beside it, never as its gate.
 
-**Measured today: 37 ms.** Ship and run detection, roll-up and assignment run over T1 in
+**Measured today: 73 ms.** Ship and run detection, roll-up and assignment run over T1 in
 `native/klauro-index/src/scope.rs`. A container's root is its build context rather than the
 directory holding its Dockerfile, so packaging variants of one product are one unit; a compose
 service that pulls an image ships none of this repository's code. Every node carries its unit by
@@ -96,7 +103,7 @@ From T1, scoped by T2. Deterministic.
 | 3.3 Architecture | Route table, architectural paradigm, dependency roles | 0.2 s |
 | | **Tier total** | **1 s** |
 
-**Measured today: 23 ms** — dependencies 4 ms, roles 17 ms, architecture 2 ms — in
+**Measured today: 26 ms** — dependencies 5 ms, roles 19 ms, architecture 2 ms — in
 `native/klauro-index`, per sub-project. Querying T1 is the whole difference: the analyzers re-read
 files, and none of this does.
 
@@ -199,8 +206,13 @@ infrastructure that makes every tier reachable. Naming them tiers would put plum
 | Overlays | 0.5 s |
 | **Whole analysis** | **~28 s** |
 
-Against 43 s today with no comprehension layer at all, and against a commodity indexer at 5.7 s for
-its own T1 equivalent plus history and serialisation.
+T1 through T3 measure 1.3 s together today, against a commodity indexer at 5.7 s for its own T1
+equivalent plus history and serialisation.
+
+The index is emitted as one string table followed by the index that references it. Every string in
+the index — values, and the field names of flattened records alike — is written once and referred to
+by position, which is a third of the bytes the same facts took as JSON and is the same facts: the
+plain form round-trips from the emitted one exactly.
 
 **The rule:** every tier below T6 is held to commodity-indexer speed, and T6 is the only stage
 permitted to cost real time. A deterministic tier over budget is cut or redesigned rather than
