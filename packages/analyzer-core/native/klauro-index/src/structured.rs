@@ -3,6 +3,7 @@ use tree_sitter::{Language, Node, Parser, Tree};
 use crate::model::*;
 
 pub struct StructuredSpec {
+    pub item_kinds: &'static [&'static str],
     pub pair_kinds: &'static [&'static str],
     pub key_field: &'static str,
     pub value_field: &'static str,
@@ -12,6 +13,7 @@ pub struct StructuredSpec {
 }
 
 static YAML: StructuredSpec = StructuredSpec {
+    item_kinds: &["block_sequence_item"],
     pair_kinds: &["block_mapping_pair", "flow_pair"],
     key_field: "key",
     value_field: "value",
@@ -21,6 +23,7 @@ static YAML: StructuredSpec = StructuredSpec {
 };
 
 static JSON: StructuredSpec = StructuredSpec {
+    item_kinds: &["string", "number", "true", "false"],
     pair_kinds: &["pair"],
     key_field: "key",
     value_field: "value",
@@ -30,6 +33,7 @@ static JSON: StructuredSpec = StructuredSpec {
 };
 
 static TOML: StructuredSpec = StructuredSpec {
+    item_kinds: &["string", "integer", "boolean"],
     pair_kinds: &["pair"],
     key_field: "",
     value_field: "",
@@ -79,6 +83,14 @@ impl<'a> Extractor<'a> {
 
     fn text(&self, node: Node) -> &'a str {
         std::str::from_utf8(&self.source[node.byte_range()]).unwrap_or("")
+    }
+
+    fn scalar(&self, node: Node) -> Option<String> {
+        let text = self.text(node).trim();
+        if text.is_empty() || text.len() > 200 || text.contains('\n') {
+            return None;
+        }
+        Some(text.trim_matches(['"', '\'', '-', ' ']).to_string()).filter(|found| !found.is_empty())
     }
 
     fn key_name(&self, node: Node) -> Option<String> {
@@ -156,6 +168,12 @@ impl<'a> Extractor<'a> {
             }
             if self.spec.pair_kinds.contains(&child.kind()) {
                 self.pair(child, owner, depth);
+                continue;
+            }
+            if self.spec.item_kinds.contains(&child.kind())
+                && let Some(value) = self.scalar(child)
+            {
+                self.declare(&value, child, owner, NodeKind::Property, EdgeKind::HasField);
                 continue;
             }
             self.walk(child, owner, depth + 1);

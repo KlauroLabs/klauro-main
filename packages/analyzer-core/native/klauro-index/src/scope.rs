@@ -42,94 +42,11 @@ pub struct Deployable {
 }
 
 #[derive(Debug, Serialize)]
-pub struct SubCasUnit {
-    pub id: String,
-    pub label: &'static str,
-    pub name: String,
-    pub root: String,
-    pub qualifies: &'static str,
-    pub units: u32,
-    pub entry_points: u32,
-}
-
-#[derive(Debug, Serialize)]
-pub struct SubCasNodes {
-    pub promoted: bool,
-    pub reason: &'static str,
-    pub qualified: u32,
-    pub units: Vec<SubCasUnit>,
-}
-
-#[derive(Debug, Serialize)]
 pub struct Scope {
     pub deployables: Vec<Deployable>,
-    pub sub_cas_nodes: SubCasNodes,
     pub assigned_nodes: u32,
     pub shared_nodes: u32,
     pub unassigned_nodes: u32,
-}
-
-const PROMOTION_THRESHOLD: usize = 2;
-
-static BUILD_TARGET_KINDS: &[&str] = &["cargo-bin", "package-bin"];
-
-fn qualifies(unit: &Deployable) -> Option<&'static str> {
-    if unit.bundled_into.is_some() {
-        return None;
-    }
-    let ship = unit
-        .declarations
-        .iter()
-        .find(|declaration| declaration.declares == Declares::Ship);
-    if let Some(declaration) = ship {
-        return Some(declaration.kind);
-    }
-    unit.declarations
-        .iter()
-        .find(|declaration| BUILD_TARGET_KINDS.contains(&declaration.kind))
-        .map(|declaration| declaration.kind)
-}
-
-fn promote(deployables: &[Deployable], nested: &[String]) -> SubCasNodes {
-    let mut units: Vec<SubCasUnit> = deployables
-        .iter()
-        .filter_map(|unit| {
-            qualifies(unit).map(|qualifies| SubCasUnit {
-                id: unit.id.clone(),
-                label: "Deployable",
-                name: unit.name.clone(),
-                root: unit.root.clone(),
-                qualifies,
-                units: unit.units,
-                entry_points: unit.entry_points,
-            })
-        })
-        .collect();
-    units.extend(nested.iter().map(|root| SubCasUnit {
-        id: format!("repository:{root}"),
-        label: "Repository",
-        name: display_name(root),
-        root: root.clone(),
-        qualifies: "connected-repository",
-        units: 0,
-        entry_points: 0,
-    }));
-    units.sort_by(|left, right| left.id.cmp(&right.id));
-    units.dedup_by(|left, right| left.root == right.root && left.label == right.label);
-
-    let qualified = units.len() as u32;
-    let promoted = units.len() >= PROMOTION_THRESHOLD;
-    let reason = match units.len() {
-        0 => "no-qualified-units",
-        1 => "one-unit-below-threshold",
-        _ => "qualified-units-at-threshold",
-    };
-    SubCasNodes {
-        promoted,
-        reason,
-        qualified,
-        units: if promoted { units } else { Vec::new() },
-    }
 }
 
 struct Candidate {
@@ -584,7 +501,6 @@ pub fn derive(
     nodes: &[IndexNode],
     edges: &[IndexEdge],
     entry_points: &[EntryPoint],
-    nested: &[String],
 ) -> Scope {
     let index = Files::build(files, nodes);
     let sources: HashSet<&str> = files.iter().map(String::as_str).collect();
@@ -629,7 +545,7 @@ pub fn derive(
         }
     }
 
-    consolidate(candidates, nodes, edges, entry_points, code, nested)
+    consolidate(candidates, nodes, edges, entry_points, code)
 }
 
 fn consolidate(
@@ -638,7 +554,6 @@ fn consolidate(
     edges: &[IndexEdge],
     entry_points: &[EntryPoint],
     code: &[bool],
-    nested: &[String],
 ) -> Scope {
     candidates.sort_by(|left, right| {
         right
@@ -797,10 +712,8 @@ fn consolidate(
     }
 
     deployables.sort_by(|left, right| left.id.cmp(&right.id));
-    let sub_cas_nodes = promote(&deployables, nested);
     Scope {
         deployables,
-        sub_cas_nodes,
         assigned_nodes: assigned,
         shared_nodes: shared,
         unassigned_nodes: unassigned,

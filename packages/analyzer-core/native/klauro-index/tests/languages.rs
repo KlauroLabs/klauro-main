@@ -479,35 +479,49 @@ fn a_collection_is_counted_rather_than_enumerated() {
     );
 }
 
-#[test]
-fn a_repository_that_ships_one_thing_never_promotes() {
-    let scope = scope_of("scope");
-    let promotion = &scope["sub_cas_nodes"];
-    assert_eq!(promotion["promoted"], true, "two services qualify");
-    assert_eq!(promotion["qualified"], 2);
+fn partition_of(fixture: &str) -> serde_json::Value {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(fixture);
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_klauro-index"));
+    let output = Command::new(binary).arg(&root).output().expect("index runs");
+    let index: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json");
+    index["partition"].clone()
+}
 
-    let single = scope_of("data");
-    assert_eq!(single["sub_cas_nodes"]["promoted"], false);
+#[test]
+fn a_declared_module_is_a_sub_project_whether_or_not_it_ships() {
+    let partition = partition_of("bundle");
+    let projects = partition["sub_projects"].as_array().unwrap();
+    let mut names: Vec<&str> = projects
+        .iter()
+        .map(|project| project["name"].as_str().unwrap())
+        .collect();
+    names.sort();
     assert_eq!(
-        single["sub_cas_nodes"]["reason"], "no-qualified-units",
-        "a package identity alone never qualifies"
+        names,
+        ["client", "service", "tool"],
+        "three manifests, three projects, and none of them ships"
     );
     assert!(
-        single["sub_cas_nodes"]["units"].as_array().unwrap().is_empty(),
-        "an unpromoted repository lists no children"
+        shipped(&scope_of("bundle")).is_empty(),
+        "shipping is a separate question from what the projects are"
+    );
+    assert_eq!(partition["sub_cas_nodes"]["promoted"], true);
+}
+
+#[test]
+fn a_single_module_repository_is_one_project() {
+    let partition = partition_of("data");
+    assert_eq!(partition["sub_projects"].as_array().unwrap().len(), 1);
+    assert_eq!(partition["sub_cas_nodes"]["promoted"], false);
+    assert_eq!(
+        partition["sub_cas_nodes"]["reason"], "one-project-below-threshold"
     );
 }
 
 #[test]
-fn a_runnable_module_manifest_qualifies_but_a_library_one_does_not() {
-    let scope = scope_of("bundle");
-    assert_eq!(
-        scope["sub_cas_nodes"]["qualified"], 3,
-        "each package declares a binary"
-    );
-    assert_eq!(scope["sub_cas_nodes"]["promoted"], true);
-    for unit in scope["sub_cas_nodes"]["units"].as_array().unwrap() {
-        assert_eq!(unit["qualifies"], "package-bin");
-        assert_eq!(unit["label"], "Deployable");
-    }
+fn every_declaration_belongs_to_a_project() {
+    let partition = partition_of("scope");
+    assert_eq!(partition["unpartitioned_declarations"], 0);
+    let projects = partition["sub_projects"].as_array().unwrap();
+    assert!(!projects.is_empty(), "the repository declares at least one");
 }
