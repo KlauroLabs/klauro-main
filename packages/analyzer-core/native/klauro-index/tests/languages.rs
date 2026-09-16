@@ -372,3 +372,84 @@ fn every_breadth_fixture_yields_a_named_declaration() {
         "every language declares something, these did not: {silent:?}"
     );
 }
+
+fn scope_of(fixture: &str) -> serde_json::Value {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(fixture);
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_klauro-index"));
+    let output = Command::new(binary).arg(&root).output().expect("index runs");
+    let index: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json");
+    index["scope"].clone()
+}
+
+fn shipped(scope: &serde_json::Value) -> Vec<serde_json::Value> {
+    scope["deployables"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|unit| unit["shipped"] == true)
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn a_compose_service_that_builds_our_code_is_a_deployable_and_one_that_pulls_an_image_is_not() {
+    let scope = scope_of("scope");
+    let units = shipped(&scope);
+    let mut names: Vec<&str> = units
+        .iter()
+        .map(|unit| unit["name"].as_str().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["api", "worker"], "a pulled image ships none of our code");
+
+    let api = units.iter().find(|unit| unit["name"] == "api").unwrap();
+    assert_eq!(api["root"], "services/api");
+}
+
+#[test]
+fn every_node_carries_the_unit_that_ships_it() {
+    let scope = scope_of("scope");
+    assert_eq!(
+        scope["unassigned_nodes"], 0,
+        "a node outside every ship unit would have no scope"
+    );
+    let units = shipped(&scope);
+    let api = units.iter().find(|unit| unit["name"] == "api").unwrap();
+    assert!(api["units"].as_u64().unwrap() >= 2, "the service owns its own code");
+}
+
+#[test]
+fn runnable_siblings_with_no_ship_declaration_are_never_merged() {
+    let scope = scope_of("bundle");
+    assert!(
+        shipped(&scope).is_empty(),
+        "a package that only declares a binary has not been shipped"
+    );
+
+    let mut names: Vec<&str> = scope["deployables"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|unit| unit["bundled_into"].is_null())
+        .map(|unit| unit["name"].as_str().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        ["client", "service", "tool"],
+        "absence of a ship declaration never justifies a merge"
+    );
+}
+
+#[test]
+fn code_shared_by_two_units_belongs_to_both() {
+    let scope = scope_of("scope");
+    assert_eq!(scope["shared_nodes"], 2, "the library both services import");
+    for unit in shipped(&scope) {
+        assert_eq!(
+            unit["units"], 4,
+            "{} counts its own code and what it imports",
+            unit["name"]
+        );
+    }
+}
