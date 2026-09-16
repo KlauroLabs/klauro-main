@@ -4,6 +4,7 @@ use serde::Serialize;
 
 use crate::entry_exit::EntryPoint;
 use crate::model::*;
+use crate::paths::{basename, contains, directory_of, display_name, file_of};
 use crate::scope::Deployable;
 
 #[derive(Debug, Serialize)]
@@ -72,23 +73,8 @@ static MODULE_MANIFESTS: &[&str] = &[
     "setup.py",
 ];
 
-fn basename(path: &str) -> &str {
-    path.rsplit('/').next().unwrap_or(path)
-}
 
-fn directory_of(path: &str) -> &str {
-    match path.rfind('/') {
-        Some(at) => &path[..at],
-        None => "",
-    }
-}
 
-fn display_name(root: &str) -> String {
-    match root.rsplit('/').next() {
-        Some(name) if !name.is_empty() => name.to_string(),
-        _ => "root".to_string(),
-    }
-}
 
 fn is_module_manifest(path: &str) -> bool {
     let name = basename(path).to_ascii_lowercase();
@@ -112,7 +98,6 @@ fn matches_pattern(pattern: &str, root: &str) -> bool {
 }
 
 fn workspace_patterns<'a>(
-    nodes: &'a [IndexNode],
     files: &[String],
     children: &HashMap<&'a str, Vec<&'a IndexNode>>,
 ) -> Vec<(String, String)> {
@@ -143,7 +128,6 @@ fn workspace_patterns<'a>(
             patterns.push((path.clone(), entry.name.clone()));
         }
     }
-    let _ = nodes;
     patterns
 }
 
@@ -169,7 +153,7 @@ pub fn derive(
         .map(|path| (directory_of(path).to_string(), path.clone()))
         .collect();
 
-    let patterns = workspace_patterns(nodes, files, &children);
+    let patterns = workspace_patterns(files, &children);
     let mut declared: Vec<Declared> = Vec::new();
     let mut claimed: HashSet<String> = HashSet::new();
 
@@ -325,37 +309,8 @@ fn manifest_name(children: &HashMap<&str, Vec<&IndexNode>>, manifest: &str) -> O
         .filter(|value| !value.is_empty())
 }
 
-fn contains(root: &str, path: &str) -> bool {
-    if root.is_empty() {
-        return true;
-    }
-    path == root
-        || (path.len() > root.len()
-            && path.as_bytes()[root.len()] == b'/'
-            && path.starts_with(root))
-}
 
-fn file_of(id: &str) -> &str {
-    match id.find(':') {
-        Some(at) => &id[..at],
-        None => id,
-    }
-}
 
-fn is_declaration(kind: NodeKind) -> bool {
-    matches!(
-        kind,
-        NodeKind::Function
-            | NodeKind::Method
-            | NodeKind::Constructor
-            | NodeKind::Getter
-            | NodeKind::Setter
-            | NodeKind::Class
-            | NodeKind::Interface
-            | NodeKind::Enum
-            | NodeKind::TypeAlias
-    )
-}
 
 fn partition(
     declared: Vec<Declared>,
@@ -384,7 +339,6 @@ fn partition(
             .copied()
             .find(|at| contains(&declared[*at].root, path))
     };
-    let _ = residue;
 
     let mut sub_projects: Vec<SubProject> = declared
         .iter()
@@ -476,7 +430,7 @@ fn partition(
     let mut shared = 0;
     let mut unpartitioned = 0;
     for node in nodes {
-        if !code.get(node.file as usize).copied().unwrap_or(false) || !is_declaration(node.kind) {
+        if !code.get(node.file as usize).copied().unwrap_or(false) || !node.kind.is_declaration() {
             continue;
         }
         let path = file_of(&node.id);

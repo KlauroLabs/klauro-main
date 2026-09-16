@@ -9,6 +9,7 @@ mod graph;
 mod language;
 mod icelot;
 mod model;
+mod paths;
 mod resolve;
 mod scope;
 mod source_rewrite;

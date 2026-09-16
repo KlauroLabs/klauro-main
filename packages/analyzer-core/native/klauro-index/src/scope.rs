@@ -4,6 +4,7 @@ use serde::Serialize;
 
 use crate::entry_exit::EntryPoint;
 use crate::model::*;
+use crate::paths::{contains, directory_of, display_name, file_of, join};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -67,46 +68,8 @@ impl Candidate {
     }
 }
 
-fn is_declaration(kind: NodeKind) -> bool {
-    matches!(
-        kind,
-        NodeKind::Function
-            | NodeKind::Method
-            | NodeKind::Constructor
-            | NodeKind::Getter
-            | NodeKind::Setter
-            | NodeKind::Class
-            | NodeKind::Interface
-            | NodeKind::Enum
-            | NodeKind::TypeAlias
-    )
-}
 
-fn directory_of(path: &str) -> &str {
-    match path.rfind('/') {
-        Some(at) => &path[..at],
-        None => "",
-    }
-}
 
-fn normalize(root: &str, relative: &str) -> String {
-    let joined = if relative.starts_with('/') || root.is_empty() {
-        relative.trim_start_matches('/').to_string()
-    } else {
-        format!("{root}/{relative}")
-    };
-    let mut parts: Vec<&str> = Vec::new();
-    for part in joined.split('/') {
-        match part {
-            "." | "" => {}
-            ".." => {
-                parts.pop();
-            }
-            other => parts.push(other),
-        }
-    }
-    parts.join("/")
-}
 
 fn unquote(value: &str) -> &str {
     value.trim().trim_matches(['"', '\''])
@@ -132,12 +95,6 @@ fn common_ancestor(paths: &[String]) -> String {
     shared.join("/")
 }
 
-fn display_name(root: &str) -> String {
-    match root.rsplit('/').next() {
-        Some(name) if !name.is_empty() => name.to_string(),
-        _ => "root".to_string(),
-    }
-}
 
 struct Files<'a> {
     paths: Vec<&'a str>,
@@ -199,7 +156,7 @@ fn container(files: &Files, path: &str, context: &str) -> Option<Candidate> {
             if member.type_annotation.as_deref() == Some("COPY")
                 || member.type_annotation.as_deref() == Some("ADD")
             {
-                let shipped = normalize(&root, &member.name);
+                let shipped = join(&root, &member.name);
                 if files.holds(&shipped) {
                     ships.push(shipped);
                 }
@@ -244,7 +201,7 @@ fn compose(files: &Files, path: &str) -> Vec<Candidate> {
                         .clone()
                         .or_else(|| files.child(&node.id, "context")?.type_annotation.clone())
                 })
-                .map(|context| normalize(&root, unquote(&context)))?;
+                .map(|context| join(&root, unquote(&context)))?;
             Some(Candidate {
                 name: service.name.clone(),
                 root: context.clone(),
@@ -411,7 +368,6 @@ static INSTALLER_SUFFIXES: &[&str] = &[".bat", ".cmd", ".iss", ".nsi", ".ps1", "
 fn installer(
     files: &Files,
     path: &str,
-    sources: &HashSet<&str>,
     calls: &[CallFact],
     file: u32,
 ) -> Option<Candidate> {
@@ -430,12 +386,11 @@ fn installer(
         .iter()
         .filter(|call| call.file == file)
         .flat_map(|call| call.literals.iter())
-        .map(|literal| normalize(&root, literal))
+        .map(|literal| join(&root, literal))
         .filter(|candidate| files.holds(candidate) && !candidate.is_empty())
         .collect();
     ships.sort();
     ships.dedup();
-    let _ = sources;
     Some(Candidate {
         name: display_name(&root),
         root,
@@ -471,7 +426,7 @@ fn runnable_roots<'a>(files: &'a [String], entry_points: &[EntryPoint]) -> HashS
     let lifecycle: HashSet<&str> = entry_points
         .iter()
         .filter(|entry| entry.kind == "lifecycle" || entry.kind == "http")
-        .map(|entry| file_of_id(&entry.handler))
+        .map(|entry| file_of(&entry.handler))
         .collect();
     let mut roots = HashSet::new();
     for path in files {
@@ -514,7 +469,6 @@ pub fn derive(
     calls: &[CallFact],
 ) -> Scope {
     let index = Files::build(files, nodes);
-    let sources: HashSet<&str> = files.iter().map(String::as_str).collect();
     let runnable = runnable_roots(files, entry_points);
     let mut candidates: Vec<Candidate> = Vec::new();
 
@@ -547,7 +501,7 @@ pub fn derive(
             candidates.extend(cargo_manifest(&index, path));
             continue;
         }
-        if let Some(found) = installer(&index, path, &sources, calls, at as u32) {
+        if let Some(found) = installer(&index, path, calls, at as u32) {
             candidates.push(found);
             continue;
         }
@@ -702,10 +656,10 @@ fn consolidate(
     let mut shared = 0;
     let mut unassigned = 0;
     for node in nodes {
-        if !code.get(node.file as usize).copied().unwrap_or(false) || !is_declaration(node.kind) {
+        if !code.get(node.file as usize).copied().unwrap_or(false) || !node.kind.is_declaration() {
             continue;
         }
-        let path = file_of(node);
+        let path = file_of(&node.id);
         match territory.owner(path) {
             Some(at) => {
                 deployables[at].units += 1;
@@ -727,7 +681,7 @@ fn consolidate(
         }
     }
     for entry in entry_points {
-        if let Some(at) = territory.owner(file_of_id(&entry.handler)) {
+        if let Some(at) = territory.owner(file_of(&entry.handler)) {
             deployables[at].entry_points += 1;
         }
     }
@@ -741,26 +695,8 @@ fn consolidate(
     }
 }
 
-fn file_of(node: &IndexNode) -> &str {
-    file_of_id(&node.id)
-}
 
-fn file_of_id(id: &str) -> &str {
-    match id.find(':') {
-        Some(at) => &id[..at],
-        None => id,
-    }
-}
 
-fn contains(root: &str, path: &str) -> bool {
-    if root.is_empty() {
-        return true;
-    }
-    path.len() > root.len()
-        && path.as_bytes()[root.len()] == b'/'
-        && path.starts_with(root)
-        || path == root
-}
 
 struct Territory {
     roots: Vec<(String, usize)>,
