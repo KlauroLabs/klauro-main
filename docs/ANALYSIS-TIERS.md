@@ -63,8 +63,19 @@ From T1. Deterministic. Partitions every tier above it.
 One unit means one analysis. Several means the tiers above run once per unit. This is what makes a
 capability belong to a product rather than to a repository.
 
-**Not implemented today**, which is unlikely to be unrelated to it never having had a place in the
-model.
+**Measured today: 37 ms.** Ship and run detection, roll-up and assignment run over T1 in
+`native/klauro-index/src/scope.rs`. A container's root is its build context rather than the
+directory holding its Dockerfile, so packaging variants of one product are one unit; a compose
+service that pulls an image ships none of this repository's code. Every node carries its unit by
+containment, and otherwise by the units whose imports reach it, so shared code belongs to each.
+
+A separate TypeScript implementation of ship and run detection predates this one
+(`analyzer-core/src/analyzer/core/deployable-evidence/`, 14 providers, and `resolveDeployables` in
+the MCP server). It reads the old CAS rather than T1 and is the thing this replaces.
+
+Not yet read: JVM and .NET project manifests, so a repository whose services ship through a shared
+parameterised Dockerfile plus `pom.xml` resolves to its containers rather than its services. An
+installer's bundled paths are not read either, since call arguments are not carried in T1.
 
 ---
 
