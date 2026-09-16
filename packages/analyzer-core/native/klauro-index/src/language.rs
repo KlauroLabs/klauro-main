@@ -2339,7 +2339,7 @@ static SPECS: &[LanguageSpec] = &[
         ],
         field_kinds: &["property_declaration"],
         import_kinds: &["namespace_use_declaration"],
-        call_kinds: &["function_call_expression", "member_call_expression", "object_creation_expression"],
+        call_kinds: &["function_call_expression", "member_call_expression", "nullsafe_member_call_expression", "scoped_call_expression", "object_creation_expression"],
         constructor_kinds: &["__construct"],
         name_fields: &["name"],
         parameter_fields: &["parameters"],
