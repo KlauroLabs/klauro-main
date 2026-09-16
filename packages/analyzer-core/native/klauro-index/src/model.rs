@@ -215,8 +215,26 @@ pub struct CallContext {
     pub awaited: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub optional_chained: bool,
+    #[serde(skip_serializing_if = "is_zero")]
     pub conditional_depth: u16,
+    #[serde(skip_serializing_if = "is_zero")]
     pub loop_depth: u16,
+}
+
+fn is_zero(value: &u16) -> bool {
+    *value == 0
+}
+
+impl CallContext {
+    fn is_empty(&self) -> bool {
+        !self.in_try
+            && !self.in_catch
+            && !self.in_finally
+            && !self.awaited
+            && !self.optional_chained
+            && self.conditional_depth == 0
+            && self.loop_depth == 0
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -229,11 +247,13 @@ pub struct CallFact {
     pub receiver: Option<String>,
     pub line: u32,
     pub column: u32,
+    #[serde(skip_serializing_if = "is_zero")]
     pub argument_count: u16,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub literals: Vec<String>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub constructs: bool,
+    #[serde(skip_serializing_if = "CallContext::is_empty")]
     pub context: CallContext,
 }
 
