@@ -694,3 +694,67 @@ fn a_longer_catalog_entry_wins_and_a_prefix_needs_a_boundary() {
         "a package is not its own prefix"
     );
 }
+
+fn indexed(fixture: &str) -> serde_json::Value {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(fixture);
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_klauro-index"));
+    let output = Command::new(binary).arg(&root).output().expect("index runs");
+    serde_json::from_slice(&output.stdout).expect("json")
+}
+
+#[test]
+fn a_role_says_what_made_it_one() {
+    let index = indexed("maven");
+    let roles = index["roles"]["roles"].as_array().unwrap();
+
+    let controller = roles
+        .iter()
+        .find(|role| role["role"] == "controller")
+        .expect("an annotated class has a role");
+    assert_eq!(controller["from"], "annotation:RestController");
+    assert!(
+        controller["project"].is_string(),
+        "a role belongs to the project that holds it"
+    );
+
+    let repository = roles
+        .iter()
+        .find(|role| role["role"] == "repository")
+        .expect("a named interface has a role");
+    assert_eq!(repository["from"], "name:OwnerRepository");
+
+    assert!(
+        roles.iter().any(|role| role["role"] == "handler"),
+        "a route's handler is a handler"
+    );
+}
+
+#[test]
+fn a_route_table_is_derived_per_project() {
+    let index = indexed("maven");
+    let architecture = &index["architecture"];
+    assert_eq!(architecture["routes"], 1);
+    assert_eq!(architecture["serving_projects"], 1);
+    assert_eq!(architecture["shape"], "single served surface");
+
+    let serving = architecture["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|project| project["serves"] == true)
+        .expect("the project that serves");
+    assert_eq!(serving["name"], "billing-service");
+    assert_eq!(serving["routes"][0]["path"], "/owners/{id}");
+    assert_eq!(serving["routes"][0]["method"], "GET");
+    assert!(
+        serving["categories"].as_array().unwrap().iter().any(|c| c == "web"),
+        "the framework it depends on is recorded beside the routes"
+    );
+}
+
+#[test]
+fn a_container_has_no_shape_of_its_own() {
+    let index = indexed("container");
+    assert_eq!(index["architecture"]["shape"], "unrelated systems");
+    assert_eq!(index["architecture"]["serving_projects"], 0);
+}

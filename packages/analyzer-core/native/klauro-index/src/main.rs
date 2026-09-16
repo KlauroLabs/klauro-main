@@ -1,3 +1,4 @@
+mod architecture;
 mod dependencies;
 mod discovery;
 mod dockerfile;
@@ -12,6 +13,7 @@ mod icelot;
 mod model;
 mod paths;
 mod resolve;
+mod roles;
 mod scope;
 mod source_rewrite;
 mod structured;
@@ -55,6 +57,8 @@ struct Index {
     icelot: Vec<icelot::Icelot>,
     graph: Option<graph::GraphFacts>,
     dependencies: Option<dependencies::Dependencies>,
+    roles: Option<roles::Roles>,
+    architecture: Option<architecture::Architecture>,
     scope: Option<scope::Scope>,
     partition: Option<subproject::Partition>,
     skipped_directories: Vec<String>,
@@ -182,6 +186,8 @@ fn main() {
         icelot: Vec::new(),
         graph: None,
         dependencies: None,
+        roles: None,
+        architecture: None,
         scope: None,
         partition: None,
         skipped_directories: found.skipped_directories,
@@ -374,6 +380,40 @@ fn main() {
         found.unclassified
     );
     index.dependencies = Some(found);
+
+    let roles_started = Instant::now();
+    let found = roles::derive(&index.nodes, &index.edges, &index.entry_points);
+    eprintln!(
+        "roles {:?} | {} across {} kinds",
+        roles_started.elapsed(),
+        found.roles.len(),
+        found.by_role.len()
+    );
+    index.roles = Some(found);
+
+    let architecture_started = Instant::now();
+    if let (Some(partition), Some(roles), Some(dependencies)) = (
+        index.partition.as_ref(),
+        index.roles.as_ref(),
+        index.dependencies.as_ref(),
+    ) {
+        let shaped = architecture::derive(
+            partition,
+            &index.entry_points,
+            roles,
+            dependencies,
+            &paths,
+            &dependencies::file_project(&partition.assignment),
+        );
+        eprintln!(
+            "architecture {:?} | {} | serving {} | routes {}",
+            architecture_started.elapsed(),
+            shaped.shape,
+            shaped.serving_projects,
+            shaped.routes
+        );
+        index.architecture = Some(shaped);
+    }
 
     let graph_started = Instant::now();
     let mut exits_by_unit: std::collections::HashMap<String, u32> = std::collections::HashMap::new();

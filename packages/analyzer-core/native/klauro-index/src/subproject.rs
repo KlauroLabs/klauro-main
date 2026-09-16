@@ -372,7 +372,14 @@ fn partition(
     let mut sub_projects: Vec<SubProject> = declared
         .iter()
         .map(|found| SubProject {
-            id: format!("subproject:{}", found.root),
+            id: format!(
+                "subproject:{}",
+                if found.root.is_empty() {
+                    found.name.as_str()
+                } else {
+                    found.root.as_str()
+                }
+            ),
             name: found.name.clone(),
             root: found.root.clone(),
             declared_by: found.declared_by,
