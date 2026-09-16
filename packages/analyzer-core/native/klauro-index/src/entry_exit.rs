@@ -1,8 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::Serialize;
 
 use crate::model::*;
+use crate::paths::is_test;
 
 #[derive(Debug, Serialize)]
 pub struct EntryPoint {
@@ -372,6 +373,41 @@ pub fn derive(
             file: registration.file,
             line: registration.line,
             registrar: registration.registrar.clone(),
+        });
+    }
+
+    let registered: HashSet<(u32, u32)> =
+        entry_points.iter().map(|entry| (entry.file, entry.line)).collect();
+    for call in calls {
+        if call.argument_count < 2
+            || registered.contains(&(call.file, call.line))
+            || is_test(&files[call.file as usize])
+        {
+            continue;
+        }
+        if call.receiver.as_ref().is_some_and(|receiver| receiver != &call.callee) {
+            continue;
+        }
+        let Some(label) = call.literals.first() else { continue };
+        if classify_registration(&call.callee, Some(label)) != Some("http") {
+            continue;
+        }
+        let verb = call.callee.to_ascii_uppercase();
+        let (label_method, path) = split_label(label);
+        let handler = call
+            .caller
+            .clone()
+            .unwrap_or_else(|| files[call.file as usize].clone());
+        entry_points.push(EntryPoint {
+            id: format!("entry:{handler}:{label}"),
+            kind: "http",
+            name: label.clone(),
+            method: Some(label_method.unwrap_or(verb)),
+            path: Some(path),
+            handler,
+            file: call.file,
+            line: call.line,
+            registrar: call.callee.clone(),
         });
     }
 

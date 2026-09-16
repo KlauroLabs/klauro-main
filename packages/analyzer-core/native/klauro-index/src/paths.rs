@@ -54,3 +54,16 @@ pub fn join(root: &str, relative: &str) -> String {
         normalize(&format!("{root}/{relative}"))
     }
 }
+
+pub fn is_test(path: &str) -> bool {
+    let name = basename(path);
+    let stem = name.split('.').next().unwrap_or(name);
+    path.contains("test/")
+        || path.contains("tests/")
+        || path.contains("spec/")
+        || stem.starts_with("test_")
+        || stem.ends_with("_test")
+        || stem.ends_with("_spec")
+        || name.contains(".test.")
+        || name.contains(".spec.")
+}

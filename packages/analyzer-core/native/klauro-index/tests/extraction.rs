@@ -517,3 +517,18 @@ fn a_mocked_target_is_not_an_http_route() {
     let found = routes(&index);
     assert!(!found.iter().any(|(method, _)| method == "PATCH"), "{found:?}");
 }
+
+#[test]
+fn a_bare_route_dsl_call_declares_a_route() {
+    let index = index("routes");
+    let found = routes(&index);
+    assert!(found.contains(&("GET".to_string(), "/about".to_string())), "{found:?}");
+    assert!(found.contains(&("POST".to_string(), "/users".to_string())), "{found:?}");
+}
+
+#[test]
+fn a_call_through_a_client_is_not_a_route() {
+    let index = index("routes");
+    let found = routes(&index);
+    assert!(!found.iter().any(|(_, path)| path == "/api/v1/accounts"), "{found:?}");
+}
