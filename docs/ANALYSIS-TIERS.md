@@ -96,7 +96,18 @@ From T1, scoped by T2. Deterministic.
 | 3.3 Architecture | Route table, architectural paradigm, dependency roles | 0.2 s |
 | | **Tier total** | **1 s** |
 
-**Measured today: 4.3 s**, because 87 analyzers re-read files. Querying T1 is the whole difference.
+**Measured today: 23 ms** — dependencies 4 ms, roles 17 ms, architecture 2 ms — in
+`native/klauro-index`, per sub-project. Querying T1 is the whole difference: the analyzers re-read
+files, and none of this does.
+
+Detection is derived rather than catalogued: every non-relative import already resolves to a
+package, so the dependency set is complete and a catalog only supplies the role and category.
+A package the catalog does not know is reported with its usage rather than dropped.
+
+Roles come from a declarative table over annotations, inheritance and registration, and each role
+records what made it one. The 267 analyzer files under `analyzer/frameworks` and
+`analyzer/libraries` (103,412 lines) hold per-framework depth — React props, hooks and event
+handlers — that this does not reproduce and does not attempt to.
 
 ---
 
