@@ -281,7 +281,8 @@ impl<'a> Extractor<'a> {
             decorators: Vec::new(),
             type_annotation: None,
             documentation: None,
-            callback_of: None,
+            project: None,
+        callback_of: None,
             registration_label: None,
         });
         self.collect_types(root);
@@ -537,7 +538,8 @@ impl<'a> Extractor<'a> {
             decorators: Vec::new(),
             type_annotation: None,
             documentation: None,
-            callback_of: None,
+            project: None,
+        callback_of: None,
             registration_label: None,
         });
         if let Some(owner) = owner.as_deref() {
@@ -597,7 +599,8 @@ impl<'a> Extractor<'a> {
             decorators: self.decorators_of(node),
             type_annotation: None,
             documentation: None,
-            callback_of: None,
+            project: None,
+        callback_of: None,
             registration_label: None,
         });
         if let Some(owner) = owner.as_deref() {
@@ -696,7 +699,8 @@ impl<'a> Extractor<'a> {
             decorators: self.decorators_of(node),
             type_annotation: None,
             documentation: None,
-            callback_of: None,
+            project: None,
+        callback_of: None,
             registration_label: None,
         });
         if let Some(owner) = owner.as_deref() {
@@ -789,7 +793,8 @@ impl<'a> Extractor<'a> {
             decorators: Vec::new(),
             type_annotation,
             documentation: None,
-            callback_of: None,
+            project: None,
+        callback_of: None,
             registration_label: None,
         });
         self.facts.edges.push(IndexEdge {

@@ -525,3 +525,54 @@ fn every_declaration_belongs_to_a_project() {
     let projects = partition["sub_projects"].as_array().unwrap();
     assert!(!projects.is_empty(), "the repository declares at least one");
 }
+
+#[test]
+fn what_a_project_is_reads_from_facts_rather_than_a_stored_label() {
+    let partition = partition_of("scope");
+    let projects = partition["sub_projects"].as_array().unwrap();
+
+    let api = projects
+        .iter()
+        .find(|project| project["name"] == "api")
+        .expect("the workspace member is a project");
+    assert_eq!(api["declared_by"], "workspace-member");
+    assert_eq!(api["ship_backed"], true, "a compose service builds it");
+
+    let shared = projects
+        .iter()
+        .find(|project| project["name"] == "shared")
+        .expect("the library is a project too");
+    assert_eq!(shared["ship_backed"], false, "nothing ships it on its own");
+    assert_eq!(
+        shared["consumed_by"].as_array().unwrap().len(),
+        2,
+        "both services import it, which is what makes it a library"
+    );
+}
+
+#[test]
+fn a_node_carries_the_project_it_belongs_to() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/scope");
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_klauro-index"));
+    let output = Command::new(binary).arg(&root).output().expect("index runs");
+    let index: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+
+    let serve = index["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["name"] == "serve")
+        .expect("the declaration is indexed");
+    assert_eq!(
+        serve["project"], "subproject:services/api",
+        "a tier above can read the index one project at a time"
+    );
+
+    let shared = index["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["name"] == "shared" && node["kind"] == "function")
+        .unwrap();
+    assert_eq!(shared["project"], "subproject:libs/shared");
+}

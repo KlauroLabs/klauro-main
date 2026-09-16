@@ -324,7 +324,19 @@ fn main() {
         &index.entry_points,
         &index.nested_repositories,
         &code,
+        &index.scope.as_ref().map(|scope| scope.deployables.as_slice()).unwrap_or(&[]),
     );
+    let project_of: std::collections::HashMap<&str, &str> = partition
+        .assignment
+        .iter()
+        .map(|(path, id)| (path.as_str(), id.as_str()))
+        .collect();
+    for node in index.nodes.iter_mut() {
+        let path = node.id.split(':').next().unwrap_or("");
+        if let Some(project) = project_of.get(path) {
+            node.project = Some((*project).to_string());
+        }
+    }
     eprintln!(
         "partition {:?} | sub-projects {} | promoted {} | assigned {} shared {} unpartitioned {}",
         partition_started.elapsed(),

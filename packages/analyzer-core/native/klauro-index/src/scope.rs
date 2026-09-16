@@ -637,7 +637,7 @@ fn consolidate(
         deployables
             .iter()
             .enumerate()
-            .filter(|(_, unit)| unit.bundled_into.is_none())
+            .filter(|(_, unit)| unit.bundled_into.is_none() && unit.shipped)
             .map(|(at, unit)| (unit.root.clone(), at))
             .collect(),
     );
@@ -669,7 +669,7 @@ fn consolidate(
 
     let mut reach: HashMap<&str, Vec<usize>> = HashMap::new();
     for (at, unit) in deployables.iter().enumerate() {
-        if unit.bundled_into.is_some() {
+        if unit.bundled_into.is_some() || !unit.shipped {
             continue;
         }
         for path in &owned[at] {

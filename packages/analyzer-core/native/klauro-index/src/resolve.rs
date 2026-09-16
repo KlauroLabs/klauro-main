@@ -478,6 +478,7 @@ fn external_node(id: &str, name: &str, origin: &str) -> IndexNode {
         decorators: Vec::new(),
         type_annotation: Some(origin.to_string()),
         documentation: None,
+        project: None,
         callback_of: None,
         registration_label: None,
     }
