@@ -52,6 +52,7 @@ pub fn language_for(id: &str) -> Option<(Language, &'static StructuredSpec)> {
 }
 
 const COLLECTION_LIMIT: usize = 64;
+const SCHEMA_BUDGET: usize = 512;
 
 pub struct Extractor<'a> {
     source: &'a [u8],
@@ -138,6 +139,11 @@ impl<'a> Extractor<'a> {
         });
         let module = self.module_id.clone();
         self.walk(root, &module, 0);
+        if self.facts.nodes.len() > SCHEMA_BUDGET {
+            self.facts.nodes.truncate(1);
+            self.facts.edges.clear();
+            self.facts.nodes[0].type_annotation = Some(format!("{} bytes", self.source.len()));
+        }
         self.facts
     }
 
@@ -156,7 +162,7 @@ impl<'a> Extractor<'a> {
     }
 
     fn walk(&mut self, node: Node, owner: &str, depth: u16) {
-        if depth > 12 {
+        if depth > 12 || self.facts.nodes.len() > SCHEMA_BUDGET {
             return;
         }
         let mut cursor = node.walk();

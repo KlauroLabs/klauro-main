@@ -29,6 +29,8 @@ pub struct DiscoveredFile {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<&'static str>,
     #[serde(skip)]
+    pub bytes: u64,
+    #[serde(skip)]
     pub absolute: PathBuf,
 }
 
@@ -262,6 +264,7 @@ fn read_directory(absolute: &Path, relative: &str) -> Level {
                     FileKind::Script => interpreter_of(&path),
                     _ => language_of(name),
                 },
+                bytes: entry.metadata().map(|meta| meta.len()).unwrap_or_default(),
                 absolute: path,
             });
         }

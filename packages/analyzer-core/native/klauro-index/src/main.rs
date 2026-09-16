@@ -14,6 +14,7 @@ mod model;
 mod paths;
 mod resolve;
 mod roles;
+mod route;
 mod scope;
 mod source_rewrite;
 mod structured;
@@ -37,6 +38,8 @@ struct IndexedFile {
     language: Option<&'static str>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     extracted: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    oversize: bool,
 }
 
 #[derive(Serialize)]
@@ -156,6 +159,7 @@ fn main() {
         .files
         .par_iter()
         .enumerate()
+        .filter(|(_, entry)| route::readable(entry))
         .filter_map(|(file, entry)| extract(&entry.path, &entry.absolute, file as u32, entry.language))
         .collect();
     let parsed = parse_started.elapsed();
@@ -170,6 +174,7 @@ fn main() {
                 kind: file.kind,
                 language: file.language,
                 extracted: false,
+                oversize: !route::readable(file),
             })
             .collect(),
         nodes: Vec::new(),
@@ -236,6 +241,19 @@ fn main() {
         }
     }
 
+    eprintln!(
+        "discover {:?} ({} files) | parse {:?} | nodes {} edges {} calls {} imports {} type refs {} | parse errors {}",
+        discovered,
+        index.files.len(),
+        parsed,
+        index.nodes.len(),
+        index.edges.len(),
+        index.calls.len(),
+        index.imports.len(),
+        index.type_references.len(),
+        parse_errors
+    );
+
     let resolve_started = Instant::now();
     let paths: Vec<String> = index.files.iter().map(|file| file.path.clone()).collect();
     let resolution = resolve::resolve(&resolve::Index {
@@ -255,6 +273,18 @@ fn main() {
             node.parent = Some(owner.clone());
         }
     }
+
+    eprintln!(
+        "resolve {:?} | edges {} | package {} | runtime {} | indirect {} | dynamic {} | unresolved {} | no caller {}",
+        resolved,
+        resolved_edges,
+        resolution.package_calls,
+        resolution.runtime_calls,
+        resolution.indirect_calls,
+        resolution.dynamic_calls,
+        resolution.unresolved_calls,
+        resolution.no_caller
+    );
 
     let derive_started = Instant::now();
     let derived = entry_exit::derive(&index.nodes, &index.calls, &paths, &resolution.modules, &index.registrations, &resolution.local, &resolution.unique_units, &resolution.call_origins);
@@ -429,17 +459,6 @@ fn main() {
     );
     index.graph = Some(graph);
 
-    eprintln!(
-        "resolve {:?} | edges {} | package {} | runtime {} | indirect {} | dynamic {} | unresolved {} | no caller {}",
-        resolved,
-        resolved_edges,
-        resolution.package_calls,
-        resolution.runtime_calls,
-        resolution.indirect_calls,
-        resolution.dynamic_calls,
-        resolution.unresolved_calls,
-        resolution.no_caller
-    );
     if std::env::var("KLAURO_REPORT_UNRESOLVED").is_ok() {
         let mut ranked: Vec<(String, u32)> = resolution.unresolved_names.into_iter().collect();
         ranked.sort_by(|left, right| right.1.cmp(&left.1));
@@ -447,19 +466,9 @@ fn main() {
             eprintln!("  unresolved {count:6} {name}");
         }
     }
-    eprintln!(
-        "discover {:?} ({} files) | parse {:?} | nodes {} edges {} calls {} imports {} type refs {} | parse errors {}",
-        discovered,
-        index.files.len(),
-        parsed,
-        index.nodes.len(),
-        index.edges.len(),
-        index.calls.len(),
-        index.imports.len(),
-        index.type_references.len(),
-        parse_errors
-    );
 
+    let emit_started = Instant::now();
     let serialized = serde_json::to_vec(&index).unwrap();
     std::io::stdout().write_all(&serialized).unwrap();
+    eprintln!("emit {:?} | {} bytes", emit_started.elapsed(), serialized.len());
 }
