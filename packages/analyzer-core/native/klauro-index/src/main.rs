@@ -13,6 +13,7 @@ mod resolve;
 mod scope;
 mod source_rewrite;
 mod structured;
+mod subproject;
 mod typescript;
 
 use std::io::Write;
@@ -52,6 +53,7 @@ struct Index {
     icelot: Vec<icelot::Icelot>,
     graph: Option<graph::GraphFacts>,
     scope: Option<scope::Scope>,
+    partition: Option<subproject::Partition>,
     skipped_directories: Vec<String>,
     nested_repositories: Vec<String>,
 }
@@ -177,6 +179,7 @@ fn main() {
         icelot: Vec::new(),
         graph: None,
         scope: None,
+        partition: None,
         skipped_directories: found.skipped_directories,
         nested_repositories: found.nested_repositories,
     };
@@ -301,20 +304,37 @@ fn main() {
         &index.nodes,
         &index.edges,
         &index.entry_points,
-        &index.nested_repositories,
     );
     eprintln!(
-        "scope {:?} | deployables {} | shipped {} | promoted {} ({} qualified) | assigned {} shared {} unscoped {}",
+        "scope {:?} | deployables {} | shipped {} | assigned {} shared {} unscoped {}",
         scope_started.elapsed(),
         scope.deployables.len(),
         scope.deployables.iter().filter(|unit| unit.shipped).count(),
-        scope.sub_cas_nodes.promoted,
-        scope.sub_cas_nodes.qualified,
         scope.assigned_nodes,
         scope.shared_nodes,
         scope.unassigned_nodes
     );
     index.scope = Some(scope);
+
+    let partition_started = Instant::now();
+    let partition = subproject::derive(
+        &paths,
+        &index.nodes,
+        &index.edges,
+        &index.entry_points,
+        &index.nested_repositories,
+        &code,
+    );
+    eprintln!(
+        "partition {:?} | sub-projects {} | promoted {} | assigned {} shared {} unpartitioned {}",
+        partition_started.elapsed(),
+        partition.sub_projects.len(),
+        partition.sub_cas_nodes.promoted,
+        partition.assigned_declarations,
+        partition.shared_declarations,
+        partition.unpartitioned_declarations
+    );
+    index.partition = Some(partition);
 
     let graph_started = Instant::now();
     let mut exits_by_unit: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
