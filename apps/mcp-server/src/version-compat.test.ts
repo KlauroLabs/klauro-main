@@ -33,7 +33,7 @@ import {
   getWorkflows,
   searchNodes,
 } from './query';
-import { evaluateVersionSkewChecks } from './nightly-eval';
+import { evaluateVersionSkewChecks } from './version-skew';
 
 function restoreEnv(name: string, previous: string | undefined): void {
   if (previous === undefined) delete process.env[name];

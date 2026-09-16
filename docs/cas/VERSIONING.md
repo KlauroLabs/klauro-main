@@ -2,7 +2,7 @@
 
 This document defines how `cas_version` works, which stored analyses the MCP server accepts, and what customers should expect when they upgrade Klauro while holding analyses produced by an older version.
 
-Status: implemented. Everything described under "The policy" and "Upgrade semantics" is enforced in code (`apps/mcp-server/src/storage.ts`, `query.ts`, `server.ts`, `analyzer.ts`) and verified by `apps/mcp-server/src/version-compat.test.ts` and the `version-skew` suite in the nightly eval.
+Status: implemented. Everything described under "The policy" and "Upgrade semantics" is enforced in code (`apps/mcp-server/src/storage.ts`, `query.ts`, `server.ts`, `analyzer.ts`) and verified by `apps/mcp-server/src/version-compat.test.ts`, which runs the version-skew checks in `apps/mcp-server/src/version-skew.ts`.
 
 ## The policy
 
@@ -72,4 +72,4 @@ The per-field rule going forward: adding a field to `CASOutput` without bumping 
 ## Verification
 
 - `npm --prefix apps/mcp-server test` includes `version-compat.test.ts`: a synthesized pre-pillar (1.9.0) analysis run through core and pillar tools, floor rejection, index/version tagging, and the pre-pillar `diff_behavior` baseline notice.
-- `npm --prefix apps/mcp-server run nightly-eval` includes the `version-skew` suite so a regression in any of these behaviors fails the nightly scorecard.
+- `apps/mcp-server/src/version-compat.test.ts` runs the version-skew checks, so a regression in any of these behaviors fails the suite.

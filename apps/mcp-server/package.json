@@ -132,7 +132,6 @@
     "analysis-scale-benchmark": "tsx src/analysis-scale-benchmark.ts",
     "scale-survivability-gate": "bash scripts/scale-survivability-gate.sh",
     "analysis-gauntlet": "tsx src/analysis-gauntlet.ts",
-    "nightly-eval": "tsx src/nightly-eval.ts",
     "contract-gauntlet": "tsx src/contract-gauntlet.ts",
     "vision-gauntlet": "tsx src/vision-gauntlet.ts",
     "robustness-battery": "tsx src/robustness-battery.ts",
