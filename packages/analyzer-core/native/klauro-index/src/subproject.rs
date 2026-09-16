@@ -294,6 +294,17 @@ fn manifest_name(children: &HashMap<&str, Vec<&IndexNode>>, manifest: &str) -> O
         .or_else(|| {
             document
                 .iter()
+                .filter(|node| node.name == "project")
+                .find_map(|project| {
+                    children
+                        .get(project.id.as_str())?
+                        .iter()
+                        .find(|node| node.name == "artifactId")
+                })
+        })
+        .or_else(|| {
+            document
+                .iter()
                 .filter(|node| node.name == "package")
                 .find_map(|package| {
                     children
