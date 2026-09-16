@@ -415,7 +415,7 @@ impl<'a> Extractor<'a> {
                 if let Some(decorator) = self.decorator(current) {
                     found.push(decorator);
                 }
-            } else if !current.is_extra() {
+            } else if !current.is_extra() && !matches!(current.kind(), "export" | "default") {
                 break;
             }
             sibling = current.prev_sibling();

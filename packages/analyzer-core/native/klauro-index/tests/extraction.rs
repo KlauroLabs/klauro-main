@@ -480,3 +480,40 @@ fn a_member_a_repository_type_declares_is_never_taken_for_a_builtin() {
         "a call through a typed field reaches the declared member"
     );
 }
+
+fn routes(index: &serde_json::Value) -> Vec<(String, String)> {
+    index["architecture"]["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|project| project["routes"].as_array().unwrap())
+        .map(|route| {
+            (
+                route["method"].as_str().unwrap().to_string(),
+                route["path"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_route_path_is_composed_from_the_prefix_its_type_declares() {
+    let index = index("routes");
+    let found = routes(&index);
+    assert!(found.contains(&("GET".to_string(), "users".to_string())), "{found:?}");
+    assert!(found.contains(&("DELETE".to_string(), "users/:id".to_string())), "{found:?}");
+    assert!(found.contains(&("GET".to_string(), "Items/Entries".to_string())), "{found:?}");
+}
+
+#[test]
+fn a_type_prefix_is_not_itself_an_endpoint() {
+    let index = index("routes");
+    assert!(!routes(&index).iter().any(|(method, _)| method == "ANY"));
+}
+
+#[test]
+fn a_mocked_target_is_not_an_http_route() {
+    let index = index("routes");
+    let found = routes(&index);
+    assert!(!found.iter().any(|(method, _)| method == "PATCH"), "{found:?}");
+}

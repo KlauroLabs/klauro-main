@@ -127,17 +127,34 @@ fn normalize_annotation(name: &str) -> String {
     lowered
 }
 
+fn looks_like_route(value: &str) -> bool {
+    !value.is_empty() && !value.contains(' ') && (value.contains('/') || !value.contains('.'))
+}
+
+fn owner_path(path: &str, owner: &str) -> String {
+    path.replace("[controller]", owner.strip_suffix("Controller").unwrap_or(owner))
+}
+
 fn decorator_entry(decorator: &Decorator) -> Option<(&'static str, String, Option<String>)> {
+    let verb = decorator.name.rsplit('.').next().unwrap_or(&decorator.name);
+    let qualified = verb.len() != decorator.name.len();
     let lowered = normalize_annotation(&decorator.name);
     let path = decorator
         .arguments
         .iter()
-        .find(|argument| argument.literal && looks_like_path(&argument.value))
+        .find(|argument| {
+            argument.literal
+                && looks_like_route(&argument.value)
+                && (!qualified || argument.value.contains('/'))
+        })
         .map(|argument| argument.value.clone());
-    if matches!(lowered.as_str(), "request" | "route") {
+    if matches!(lowered.as_str(), "controller" | "request" | "route") {
         return Some(("http", "ANY".to_string(), path));
     }
     if HTTP_METHODS.binary_search(&lowered.as_str()).is_ok() {
+        if !qualified && verb.starts_with(char::is_lowercase) {
+            return None;
+        }
         return Some(("http", lowered.to_ascii_uppercase(), path));
     }
     match lowered.as_str() {
@@ -258,7 +275,7 @@ pub fn derive(
         }
         for decorator in &node.decorators {
             if let Some(("http", _, Some(path))) = decorator_entry(decorator) {
-                base_paths.insert(node.id.as_str(), path);
+                base_paths.insert(node.id.as_str(), owner_path(&path, &node.name));
                 break;
             }
         }
@@ -292,6 +309,9 @@ pub fn derive(
         }
         for decorator in &node.decorators {
             if let Some((kind, method, path)) = decorator_entry(decorator) {
+                if method == "ANY" && matches!(node.kind, NodeKind::Class | NodeKind::Interface) {
+                    continue;
+                }
                 let base = node
                     .parent
                     .as_deref()
@@ -301,6 +321,9 @@ pub fn derive(
                     (Some(base), None) => Some(base.clone()),
                     (None, path) => path,
                 };
+                if kind == "http" && path.is_none() {
+                    continue;
+                }
                 entry_points.push(EntryPoint {
                     id: format!("entry:{}:{}", node.id, decorator.name),
                     kind,
