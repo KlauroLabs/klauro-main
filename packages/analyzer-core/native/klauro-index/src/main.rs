@@ -72,8 +72,8 @@ fn extract(
         let lines = source.iter().filter(|byte| **byte == b'\n').count() as u32 + 1;
         return Some(typescript::Extractor::new(&source, file, path).run(&tree, path, lines));
     }
-    let structured_id = language_id.or_else(|| structured_language_of(path));
-    if let Some(id) = structured_id
+    let declared = language_id.or_else(|| language_of(path));
+    if let Some(id) = declared
         && let Some((mut parser, spec)) = structured::parser_for(id)
     {
         let source = std::fs::read(absolute).ok()?;
@@ -84,8 +84,7 @@ fn extract(
         let lines = source.iter().filter(|byte| **byte == b'\n').count() as u32 + 1;
         return Some(structured::Extractor::new(&source, file, path, spec).run(&tree, path, lines));
     }
-    let generic_id = language_id.or_else(|| keyed_language_of(path));
-    let (language, spec) = language::language_for(generic_id?)?;
+    let (language, spec) = language::language_for(declared?)?;
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).ok()?;
     let source = std::fs::read(absolute).ok()?;
@@ -97,32 +96,27 @@ fn extract(
     Some(generic::Extractor::new(&source, file, path, spec).run(&tree, path, lines))
 }
 
-fn structured_language_of(path: &str) -> Option<&'static str> {
-    let lower = path.to_ascii_lowercase();
-    if lower.ends_with(".json") || lower.ends_with(".jsonc") || lower.ends_with(".json5") {
-        return Some("json");
-    }
-    if lower.ends_with(".toml") {
-        return Some("toml");
-    }
-    if lower.ends_with(".yaml") || lower.ends_with(".yml") {
-        return Some("yaml");
-    }
-    None
-}
-
-fn keyed_language_of(path: &str) -> Option<&'static str> {
+fn language_of(path: &str) -> Option<&'static str> {
     let lower = path.to_ascii_lowercase();
     let basename = lower.rsplit('/').next().unwrap_or(&lower);
-    if basename.ends_with(".env")
-        || basename.starts_with(".env")
-        || basename.ends_with(".properties")
-        || basename.ends_with(".ini")
-        || basename.ends_with(".editorconfig")
+    let by_extension = [
+        (".json", "json"),
+        (".jsonc", "json"),
+        (".json5", "json"),
+        (".toml", "toml"),
+        (".yaml", "yaml"),
+        (".yml", "yaml"),
+        (".ini", "ini"),
+        (".properties", "ini"),
+        (".editorconfig", "ini"),
+    ];
+    if let Some((_, id)) = by_extension
+        .iter()
+        .find(|(extension, _)| basename.ends_with(extension))
     {
-        return Some("ini");
+        return Some(id);
     }
-    None
+    basename.starts_with(".env").then_some("ini")
 }
 
 fn report_first_error(path: &str, source: &[u8], tree: &tree_sitter::Tree) {

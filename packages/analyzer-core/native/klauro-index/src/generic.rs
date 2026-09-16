@@ -819,7 +819,7 @@ impl<'a> Extractor<'a> {
         }
         let text = self.text(node);
         let mut names = Vec::new();
-        if literals_count(text) == 1
+        if string_literals(text).len() == 1
             && let Some(alias) = import_alias(text)
         {
             names.push(ImportSpecifier {
@@ -1002,10 +1002,6 @@ fn throw_name(text: &str) -> String {
     let text = text.trim().strip_prefix("new ").unwrap_or(text.trim());
     let end = text.find(['(', ' ', ';', '\n']).unwrap_or(text.len());
     text[..end].trim().to_string()
-}
-
-fn literals_count(text: &str) -> usize {
-    string_literals(text).len()
 }
 
 static STATEMENT_KEYWORDS: &[&str] = &[

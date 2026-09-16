@@ -121,7 +121,7 @@ impl<'a> Extractor<'a> {
             registration_label: None,
         });
         let scope = Scope::root(&self.module_id.clone());
-        self.walk_children(root, &scope);
+        self.walk(root, &scope);
         let mut metrics: Vec<UnitMetricsEntry> = std::mem::take(&mut self.metrics)
             .into_iter()
             .map(|(unit, mut metrics)| {
@@ -139,7 +139,7 @@ impl<'a> Extractor<'a> {
         self.facts
     }
 
-    fn walk_children(&mut self, node: Node, scope: &Scope) {
+    fn walk(&mut self, node: Node, scope: &Scope) {
         let mut cursor = node.walk();
         if !cursor.goto_first_child() {
             return;
@@ -176,13 +176,13 @@ impl<'a> Extractor<'a> {
                 if let Some(unit) = self.unit(scope) {
                     unit.throws.push(thrown);
                 }
-                self.walk_children(node, scope);
+                self.walk(node, scope);
             }
             "return_statement" => {
                 if let Some(unit) = self.unit(scope) {
                     unit.returns += 1;
                 }
-                self.walk_children(node, scope);
+                self.walk(node, scope);
             }
             "binary_expression" => {
                 let operator = node
@@ -194,7 +194,7 @@ impl<'a> Extractor<'a> {
                 {
                     unit.branches += 1;
                 }
-                self.walk_children(node, scope);
+                self.walk(node, scope);
             }
             "assignment_expression" | "augmented_assignment_expression" => {
                 if let Some(left) = node.child_by_field_name("left") {
@@ -205,7 +205,7 @@ impl<'a> Extractor<'a> {
                         unit.writes.push(member);
                     }
                 }
-                self.walk_children(node, scope);
+                self.walk(node, scope);
             }
             "member_expression" => {
                 let target = self.text_owned(node);
@@ -214,7 +214,7 @@ impl<'a> Extractor<'a> {
                 {
                     unit.reads.push(member);
                 }
-                self.walk_children(node, scope);
+                self.walk(node, scope);
             }
             "if_statement" | "ternary_expression" | "switch_statement" => {
                 if let Some(unit) = self.unit(scope) {
@@ -223,7 +223,7 @@ impl<'a> Extractor<'a> {
                 let mut inner = scope.child(None, None);
                 inner.context.conditional_depth = scope.context.conditional_depth + 1;
                 inner.enclosing_callable = scope.enclosing_callable.clone();
-                self.walk_children(node, &inner);
+                self.walk(node, &inner);
             }
             "for_statement" | "for_in_statement" | "while_statement" | "do_statement" => {
                 if let Some(unit) = self.unit(scope) {
@@ -232,7 +232,7 @@ impl<'a> Extractor<'a> {
                 let mut inner = scope.child(None, None);
                 inner.context.loop_depth = scope.context.loop_depth + 1;
                 inner.enclosing_callable = scope.enclosing_callable.clone();
-                self.walk_children(node, &inner);
+                self.walk(node, &inner);
             }
             "await_expression" => {
                 if let Some(unit) = self.unit(scope) {
@@ -241,9 +241,9 @@ impl<'a> Extractor<'a> {
                 let mut inner = scope.child(None, None);
                 inner.context.awaited = true;
                 inner.enclosing_callable = scope.enclosing_callable.clone();
-                self.walk_children(node, &inner);
+                self.walk(node, &inner);
             }
-            _ => self.walk_children(node, scope),
+            _ => self.walk(node, scope),
         }
     }
 
@@ -387,7 +387,7 @@ impl<'a> Extractor<'a> {
             });
         }
         if !recorded {
-            self.walk_children(node, scope);
+            self.walk(node, scope);
         }
     }
 
@@ -452,7 +452,7 @@ impl<'a> Extractor<'a> {
 
     fn class_like(&mut self, node: Node, scope: &Scope, kind: NodeKind) {
         let Some(name_node) = node.child_by_field_name("name") else {
-            self.walk_children(node, scope);
+            self.walk(node, scope);
             return;
         };
         let name = self.text_owned(name_node);
@@ -625,7 +625,7 @@ impl<'a> Extractor<'a> {
         let mut inner = scope.child(Some(id.clone()), Some(id));
         inner.class_name = scope.class_name.clone();
         if let Some(body) = node.child_by_field_name("body") {
-            self.walk_children(body, &inner);
+            self.walk(body, &inner);
         }
         if let Some(parameters) = node.child_by_field_name("parameters") {
             self.parameter_initializers(parameters, &inner);
@@ -846,7 +846,7 @@ impl<'a> Extractor<'a> {
 
     fn function_declaration(&mut self, node: Node, scope: &Scope) {
         let Some(name_node) = node.child_by_field_name("name") else {
-            self.walk_children(node, scope);
+            self.walk(node, scope);
             return;
         };
         let name = self.text_owned(name_node);
@@ -877,7 +877,7 @@ impl<'a> Extractor<'a> {
 
         let inner = scope.child(Some(id.clone()), Some(id));
         if let Some(body) = node.child_by_field_name("body") {
-            self.walk_children(body, &inner);
+            self.walk(body, &inner);
         }
         if let Some(parameters) = node.child_by_field_name("parameters") {
             self.parameter_initializers(parameters, &inner);
@@ -912,18 +912,15 @@ impl<'a> Extractor<'a> {
                         .and_then(|value| value.child_by_field_name("constructor"))
                         .map(|found| self.text_owned(found))
                         .or_else(|| initializer.and_then(|value| literal_type(value.kind())))
-                        .or_else(|| {
-                            initializer
-                                .filter(|value| value.kind() == "call_expression")
-                                .and_then(|value| value.child_by_field_name("function"))
-                                .filter(|function| function.kind() == "member_expression")
-                                .and_then(|function| function.child_by_field_name("property"))
-                                .and_then(|property| builtin_return(self.text(property)))
-                        });
+                        ;
                     let from_call = initializer
                         .filter(|value| value.kind() == "call_expression")
                         .and_then(|value| value.child_by_field_name("function"))
-                        .filter(|function| function.kind() == "identifier")
+                        .and_then(|function| match function.kind() {
+                            "identifier" => Some(function),
+                            "member_expression" => function.child_by_field_name("property"),
+                            _ => None,
+                        })
                         .map(|found| self.text_owned(found));
                     if annotation.is_some() || constructed.is_some() || from_call.is_some() {
                         self.facts.locals.push(LocalBinding {
@@ -1189,20 +1186,6 @@ fn literal_type(kind: &str) -> Option<String> {
             "number" => "Number",
             "true" | "false" => "Boolean",
             "regex" => "RegExp",
-            _ => return None,
-        }
-        .to_string(),
-    )
-}
-
-fn builtin_return(member: &str) -> Option<String> {
-    Some(
-        match member {
-            "trim" | "trimStart" | "trimEnd" | "toString" | "toLowerCase" | "toUpperCase"
-            | "slice" | "substring" | "replace" | "replaceAll" | "padStart" | "padEnd"
-            | "join" | "concat" | "repeat" | "normalize" => "String",
-            "split" | "map" | "filter" | "flatMap" | "sort" | "reverse" | "flat" => "Array",
-            "keys" | "values" | "entries" => "Array",
             _ => return None,
         }
         .to_string(),
