@@ -281,7 +281,17 @@ fn main() {
         .iter()
         .map(|file| {
             file.kind == discovery::FileKind::Source
-                && !matches!(file.language, Some("configuration") | Some("json") | Some("toml"))
+                && !matches!(
+                    file.language,
+                    Some("configuration")
+                        | Some("json")
+                        | Some("toml")
+                        | Some("ini")
+                        | Some("css")
+                        | Some("html")
+                        | Some("xml")
+                        | Some("markdown")
+                )
         })
         .collect();
     let scope = scope::derive(
@@ -291,12 +301,15 @@ fn main() {
         &index.nodes,
         &index.edges,
         &index.entry_points,
+        &index.nested_repositories,
     );
     eprintln!(
-        "scope {:?} | deployables {} | shipped {} | assigned {} shared {} unscoped {}",
+        "scope {:?} | deployables {} | shipped {} | promoted {} ({} qualified) | assigned {} shared {} unscoped {}",
         scope_started.elapsed(),
         scope.deployables.len(),
         scope.deployables.iter().filter(|unit| unit.shipped).count(),
+        scope.sub_cas_nodes.promoted,
+        scope.sub_cas_nodes.qualified,
         scope.assigned_nodes,
         scope.shared_nodes,
         scope.unassigned_nodes

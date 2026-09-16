@@ -42,11 +42,94 @@ pub struct Deployable {
 }
 
 #[derive(Debug, Serialize)]
+pub struct SubCasUnit {
+    pub id: String,
+    pub label: &'static str,
+    pub name: String,
+    pub root: String,
+    pub qualifies: &'static str,
+    pub units: u32,
+    pub entry_points: u32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SubCasNodes {
+    pub promoted: bool,
+    pub reason: &'static str,
+    pub qualified: u32,
+    pub units: Vec<SubCasUnit>,
+}
+
+#[derive(Debug, Serialize)]
 pub struct Scope {
     pub deployables: Vec<Deployable>,
+    pub sub_cas_nodes: SubCasNodes,
     pub assigned_nodes: u32,
     pub shared_nodes: u32,
     pub unassigned_nodes: u32,
+}
+
+const PROMOTION_THRESHOLD: usize = 2;
+
+static BUILD_TARGET_KINDS: &[&str] = &["cargo-bin", "package-bin"];
+
+fn qualifies(unit: &Deployable) -> Option<&'static str> {
+    if unit.bundled_into.is_some() {
+        return None;
+    }
+    let ship = unit
+        .declarations
+        .iter()
+        .find(|declaration| declaration.declares == Declares::Ship);
+    if let Some(declaration) = ship {
+        return Some(declaration.kind);
+    }
+    unit.declarations
+        .iter()
+        .find(|declaration| BUILD_TARGET_KINDS.contains(&declaration.kind))
+        .map(|declaration| declaration.kind)
+}
+
+fn promote(deployables: &[Deployable], nested: &[String]) -> SubCasNodes {
+    let mut units: Vec<SubCasUnit> = deployables
+        .iter()
+        .filter_map(|unit| {
+            qualifies(unit).map(|qualifies| SubCasUnit {
+                id: unit.id.clone(),
+                label: "Deployable",
+                name: unit.name.clone(),
+                root: unit.root.clone(),
+                qualifies,
+                units: unit.units,
+                entry_points: unit.entry_points,
+            })
+        })
+        .collect();
+    units.extend(nested.iter().map(|root| SubCasUnit {
+        id: format!("repository:{root}"),
+        label: "Repository",
+        name: display_name(root),
+        root: root.clone(),
+        qualifies: "connected-repository",
+        units: 0,
+        entry_points: 0,
+    }));
+    units.sort_by(|left, right| left.id.cmp(&right.id));
+    units.dedup_by(|left, right| left.root == right.root && left.label == right.label);
+
+    let qualified = units.len() as u32;
+    let promoted = units.len() >= PROMOTION_THRESHOLD;
+    let reason = match units.len() {
+        0 => "no-qualified-units",
+        1 => "one-unit-below-threshold",
+        _ => "qualified-units-at-threshold",
+    };
+    SubCasNodes {
+        promoted,
+        reason,
+        qualified,
+        units: if promoted { units } else { Vec::new() },
+    }
 }
 
 struct Candidate {
@@ -65,6 +148,21 @@ impl Candidate {
             .max()
             .unwrap_or(Declares::Identity)
     }
+}
+
+fn is_declaration(kind: NodeKind) -> bool {
+    matches!(
+        kind,
+        NodeKind::Function
+            | NodeKind::Method
+            | NodeKind::Constructor
+            | NodeKind::Getter
+            | NodeKind::Setter
+            | NodeKind::Class
+            | NodeKind::Interface
+            | NodeKind::Enum
+            | NodeKind::TypeAlias
+    )
 }
 
 fn directory_of(path: &str) -> &str {
@@ -247,6 +345,45 @@ fn compose(files: &Files, path: &str) -> Vec<Candidate> {
         .collect()
 }
 
+static MODULE_MANIFESTS: &[&str] = &[
+    "build.gradle",
+    "build.gradle.kts",
+    "build.sbt",
+    "pom.xml",
+    "pyproject.toml",
+    "setup.py",
+];
+
+fn module_manifest(path: &str, runnable: &HashSet<&str>) -> Option<Candidate> {
+    let basename = path.rsplit('/').next()?.to_ascii_lowercase();
+    let known = MODULE_MANIFESTS.binary_search(&basename.as_str()).is_ok()
+        || basename.ends_with(".csproj")
+        || basename.ends_with(".fsproj");
+    if !known {
+        return None;
+    }
+    let root = directory_of(path).to_string();
+    let mut declarations = vec![Declaration {
+        declares: Declares::Identity,
+        kind: "package-identity",
+        at: path.to_string(),
+    }];
+    if runnable.contains(root.as_str()) {
+        declarations.push(Declaration {
+            declares: Declares::Run,
+            kind: "package-bin",
+            at: path.to_string(),
+        });
+    }
+    Some(Candidate {
+        name: display_name(&root),
+        root,
+        declarations,
+        ships: Vec::new(),
+        runs: None,
+    })
+}
+
 static DEPLOY_MANIFESTS: &[(&str, &str)] = &[
     ("fly.toml", "fly"),
     ("vercel.json", "vercel"),
@@ -403,6 +540,26 @@ fn is_workspace_container(files: &Files, path: &str) -> bool {
     })
 }
 
+fn runnable_roots<'a>(files: &'a [String], entry_points: &[EntryPoint]) -> HashSet<&'a str> {
+    let lifecycle: HashSet<&str> = entry_points
+        .iter()
+        .filter(|entry| entry.kind == "lifecycle" || entry.kind == "http")
+        .map(|entry| file_of_id(&entry.handler))
+        .collect();
+    let mut roots = HashSet::new();
+    for path in files {
+        if !lifecycle.contains(path.as_str()) {
+            continue;
+        }
+        let mut directory = path.as_str();
+        while let Some(at) = directory.rfind('/') {
+            directory = &directory[..at];
+            roots.insert(directory);
+        }
+    }
+    roots
+}
+
 fn reached_files<'a>(
     owned: impl Iterator<Item = &'a str>,
     imports: &HashMap<&'a str, Vec<&'a str>>,
@@ -427,9 +584,11 @@ pub fn derive(
     nodes: &[IndexNode],
     edges: &[IndexEdge],
     entry_points: &[EntryPoint],
+    nested: &[String],
 ) -> Scope {
     let index = Files::build(files, nodes);
     let sources: HashSet<&str> = files.iter().map(String::as_str).collect();
+    let runnable = runnable_roots(files, entry_points);
     let mut candidates: Vec<Candidate> = Vec::new();
 
     for (at, path) in index.paths.iter().enumerate() {
@@ -463,10 +622,14 @@ pub fn derive(
         }
         if let Some(found) = installer(&index, path, &sources) {
             candidates.push(found);
+            continue;
+        }
+        if let Some(found) = module_manifest(path, &runnable) {
+            candidates.push(found);
         }
     }
 
-    consolidate(candidates, nodes, edges, entry_points, code)
+    consolidate(candidates, nodes, edges, entry_points, code, nested)
 }
 
 fn consolidate(
@@ -475,6 +638,7 @@ fn consolidate(
     edges: &[IndexEdge],
     entry_points: &[EntryPoint],
     code: &[bool],
+    nested: &[String],
 ) -> Scope {
     candidates.sort_by(|left, right| {
         right
@@ -602,7 +766,7 @@ fn consolidate(
     let mut shared = 0;
     let mut unassigned = 0;
     for node in nodes {
-        if !code.get(node.file as usize).copied().unwrap_or(false) {
+        if !code.get(node.file as usize).copied().unwrap_or(false) || !is_declaration(node.kind) {
             continue;
         }
         let path = file_of(node);
@@ -633,8 +797,10 @@ fn consolidate(
     }
 
     deployables.sort_by(|left, right| left.id.cmp(&right.id));
+    let sub_cas_nodes = promote(&deployables, nested);
     Scope {
         deployables,
+        sub_cas_nodes,
         assigned_nodes: assigned,
         shared_nodes: shared,
         unassigned_nodes: unassigned,

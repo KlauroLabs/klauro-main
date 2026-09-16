@@ -415,7 +415,7 @@ fn every_node_carries_the_unit_that_ships_it() {
     );
     let units = shipped(&scope);
     let api = units.iter().find(|unit| unit["name"] == "api").unwrap();
-    assert!(api["units"].as_u64().unwrap() >= 2, "the service owns its own code");
+    assert!(api["units"].as_u64().unwrap() >= 1, "the service owns its own code");
 }
 
 #[test]
@@ -444,11 +444,11 @@ fn runnable_siblings_with_no_ship_declaration_are_never_merged() {
 #[test]
 fn code_shared_by_two_units_belongs_to_both() {
     let scope = scope_of("scope");
-    assert_eq!(scope["shared_nodes"], 2, "the library both services import");
+    assert_eq!(scope["shared_nodes"], 1, "the library both services import");
     for unit in shipped(&scope) {
         assert_eq!(
-            unit["units"], 4,
-            "{} counts its own code and what it imports",
+            unit["units"], 2,
+            "{} counts its own declaration and the one it imports",
             unit["name"]
         );
     }
@@ -477,4 +477,37 @@ fn a_collection_is_counted_rather_than_enumerated() {
         nodes.iter().any(|node| node["name"] == "version"),
         "configuration beside the collection is still read"
     );
+}
+
+#[test]
+fn a_repository_that_ships_one_thing_never_promotes() {
+    let scope = scope_of("scope");
+    let promotion = &scope["sub_cas_nodes"];
+    assert_eq!(promotion["promoted"], true, "two services qualify");
+    assert_eq!(promotion["qualified"], 2);
+
+    let single = scope_of("data");
+    assert_eq!(single["sub_cas_nodes"]["promoted"], false);
+    assert_eq!(
+        single["sub_cas_nodes"]["reason"], "no-qualified-units",
+        "a package identity alone never qualifies"
+    );
+    assert!(
+        single["sub_cas_nodes"]["units"].as_array().unwrap().is_empty(),
+        "an unpromoted repository lists no children"
+    );
+}
+
+#[test]
+fn a_runnable_module_manifest_qualifies_but_a_library_one_does_not() {
+    let scope = scope_of("bundle");
+    assert_eq!(
+        scope["sub_cas_nodes"]["qualified"], 3,
+        "each package declares a binary"
+    );
+    assert_eq!(scope["sub_cas_nodes"]["promoted"], true);
+    for unit in scope["sub_cas_nodes"]["units"].as_array().unwrap() {
+        assert_eq!(unit["qualifies"], "package-bin");
+        assert_eq!(unit["label"], "Deployable");
+    }
 }
