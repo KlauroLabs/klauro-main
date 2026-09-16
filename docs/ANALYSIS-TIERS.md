@@ -55,13 +55,19 @@ From T1. Deterministic. Partitions every tier above it.
 
 | Pass | Does | Budget |
 |---|---|---|
-| 2.1 Ship and run detection | Deployables from manifests, containers, binaries, installers, entry commands | 0.15 s |
-| 2.2 Roll-up | Units bundled into another unit merge into it. Image inheritance counts | 0.05 s |
-| 2.3 Assignment | Every node, entry point and flow path carries its unit | 0.1 s |
+| 2.1 Partition | Sub-projects from workspace membership, module manifests, nested repositories | 0.1 s |
+| 2.2 Ship and run detection | Deployables from containers, compose, installers, build targets, entry commands | 0.15 s |
+| 2.3 Assignment | Every node, entry point and flow path carries its project and its ship unit | 0.05 s |
 | | **Tier total** | **0.3 s** |
 
-One unit means one analysis. Several means the tiers above run once per unit. This is what makes a
-capability belong to a product rather than to a repository.
+One project means one analysis. Several means the tiers above run once per project, and the
+repository level runs afterwards over its children. This is what makes a capability belong to a
+product rather than to a repository.
+
+What a repository is made of and how it ships are different questions. A monorepo of 35 workspace
+members at 98% import cohesion ships as one container: 35 projects, one deployable. Eight services
+sharing one parameterised container are eight projects and eight deployables. The partition follows
+what the repository declares about itself; shipping is recorded beside it, never as its gate.
 
 **Measured today: 37 ms.** Ship and run detection, roll-up and assignment run over T1 in
 `native/klauro-index/src/scope.rs`. A container's root is its build context rather than the

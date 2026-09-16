@@ -140,16 +140,27 @@ A **system map** exists for a CAS whenever `has_children` is true — it shows h
 
 ## 0.4 Promotion — when a CAS gains sub-CAS nodes
 
-A single connected repo can itself contain more than one independently deployable unit. `docs/SPEC-DEPLOYABLE-DETECTION.md` produces evidence-gated `DeployableEvidence` rows for exactly this reason: a repo is not always one product surface.
+A single connected repo can itself contain more than one project. What a repository is made of and how it ships are two different questions, and promotion answers the first.
 
-A CAS promotes to a parent with deployable-level sub-CAS nodes only when its own evidence says so, never when its folder layout merely looks segmented. A CAS promotes when it resolves **two or more tier-qualified ship units** after the evidence-gated bundling/dedup pass in `docs/SPEC-DEPLOYABLE-DETECTION.md` §3-§4 completes. A "tier-qualified ship unit" is a surviving `DeployableEvidence` row that is not `bundled_into` another unit, and whose own evidence declares a ship-or-build artifact: a Tier-1 ship declaration (`container`, `compose-service`, `k8s`, `serverless`, `installer`, `ci-deploy`), or a Tier-2 build-target declaration (a `bin`-kind row — cargo `[[bin]]`, a package manifest `bin` field, a go `package main`, a `src/bin/*` entry). Cardinality is not part of the predicate: a `server-entry` row (a route-handler entry point INTO a deployable, not a build target of its own) and a bare `package` identity never qualify, regardless of how many other runnable rows exist alongside them.
+**A sub-project is a declared, cohesive unit of code.** A CAS promotes to a parent with sub-CAS nodes when it resolves **two or more declared projects**. A project is declared, strongest first, by:
+
+- **Workspace membership.** The repository states its own partition: `pnpm-workspace.yaml` packages, a `package.json` `workspaces` field, Cargo `[workspace] members`, `go.work` use. This is the repository telling you what it is made of; nothing outranks it.
+- **A module manifest.** A `package.json`, `Cargo.toml` `[package]`, `go.mod`, `pyproject.toml`, `pom.xml`, `*.csproj` or Gradle build naming an addressable unit.
+- **A connected repository.** A nested git repo, or a declared workspace member one level up.
+- **Import cohesion.** For a repository that declares nothing, a directory whose imports are dense inside it and sparse across it.
+
+A repository that declares no boundary at all is one project: itself.
 
 ```
 PROMOTION_THRESHOLD = 2
-shouldPromote(cas) := tierQualifiedShipUnits(cas.tier2.deployable_evidence).length >= 2
+shouldPromote(cas) := declaredProjects(cas).length >= 2
 ```
 
-A build-target row that declares the SAME binary through two conventions at once MUST be deduplicated to one surviving row before the threshold check, so a single shipped artifact is never counted twice. A repo that resolves to exactly one ship unit — the overwhelming common case — MUST NOT promote, regardless of its size, folder count, or internal module boundaries. Promotion is a gate driven by ship evidence, not a preference driven by repo size, and it applies identically at every level of the recursion: an organization "promotes" child repos into sub-CAS nodes the same way a repo promotes deployables, driven by the same kind of evidence (a connected git repo, a declared workspace member) rather than folder layout.
+**Shipping is a separate axis and MUST NOT gate promotion.** Ship and run artifacts — containers, compose services, installers, build targets — answer what deploys, which is orthogonal to what the repository is made of. A monorepo commonly has many projects and one deployable: a measured case has 35 workspace members at 98% import cohesion (`extensions/matrix` imports 148 times inside itself and 0 times across) shipping inside a single container. Gating promotion on ship artifacts collapses those 35 projects into one analysis and yields one mush of a comprehension layer instead of thirty-five coherent ones. The converse also occurs: eight services that ship through one parameterised container are eight projects.
+
+Deployables remain a first-class Tier-2 fact, related to projects by what each bundles, and `docs/SPEC-DEPLOYABLE-DETECTION.md` continues to govern their detection. They do not decide the analysis partition.
+
+**Tiers 3 and above run per sub-project.** The parent runs afterwards over its children: its own comprehension is built exclusively from theirs, plus the repository-level residue only the parent can see (see §0.7).
 
 ### `sub_cas_nodes` — discovery projection, not recursive truth
 
