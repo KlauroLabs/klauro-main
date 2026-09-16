@@ -653,3 +653,44 @@ fn unrelated_projects_sharing_a_path_are_a_container_not_a_monorepo() {
     let single = partition_of("data");
     assert_eq!(single["sub_cas_nodes"]["composition"], "single");
 }
+
+#[test]
+fn a_dependency_is_derived_and_only_its_role_comes_from_the_catalog() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/maven");
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_klauro-index"));
+    let output = Command::new(binary).arg(&root).output().expect("index runs");
+    let index: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let found = &index["dependencies"];
+    assert!(
+        found["dependencies"].as_array().unwrap().is_empty()
+            || found["unclassified"].as_u64().unwrap() > 0
+            || found["classified"].as_u64().unwrap() > 0,
+        "every import is reported whether or not the catalog knows it"
+    );
+}
+
+#[test]
+fn a_longer_catalog_entry_wins_and_a_prefix_needs_a_boundary() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/deps");
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_klauro-index"));
+    let output = Command::new(binary).arg(&root).output().expect("index runs");
+    let index: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let found = index["dependencies"]["dependencies"].as_array().unwrap();
+
+    let named = |name: &str| -> serde_json::Value {
+        found
+            .iter()
+            .find(|entry| entry["name"] == name)
+            .unwrap_or_else(|| panic!("{name} is reported"))
+            .clone()
+    };
+    assert_eq!(
+        named("vitest")["category"], "test",
+        "vitest is not vite with a suffix"
+    );
+    assert_eq!(named("vite")["category"], "build");
+    assert_eq!(
+        named("react-dom")["name"], "react-dom",
+        "a package is not its own prefix"
+    );
+}

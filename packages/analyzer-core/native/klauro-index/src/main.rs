@@ -1,3 +1,4 @@
+mod dependencies;
 mod discovery;
 mod dockerfile;
 mod language_tables;
@@ -53,6 +54,7 @@ struct Index {
     exit_points: Vec<entry_exit::ExitPoint>,
     icelot: Vec<icelot::Icelot>,
     graph: Option<graph::GraphFacts>,
+    dependencies: Option<dependencies::Dependencies>,
     scope: Option<scope::Scope>,
     partition: Option<subproject::Partition>,
     skipped_directories: Vec<String>,
@@ -179,6 +181,7 @@ fn main() {
         exit_points: Vec::new(),
         icelot: Vec::new(),
         graph: None,
+        dependencies: None,
         scope: None,
         partition: None,
         skipped_directories: found.skipped_directories,
@@ -349,6 +352,28 @@ fn main() {
         partition.unpartitioned_declarations
     );
     index.partition = Some(partition);
+
+    let dependencies_started = Instant::now();
+    let assignment = index
+        .partition
+        .as_ref()
+        .map(|partition| partition.assignment.as_slice())
+        .unwrap_or(&[]);
+    let found = dependencies::derive(
+        &index.imports,
+        &paths,
+        &index.entry_points,
+        &index.exit_points,
+        &dependencies::file_project(assignment),
+    );
+    eprintln!(
+        "dependencies {:?} | packages {} | classified {} unclassified {}",
+        dependencies_started.elapsed(),
+        found.dependencies.len(),
+        found.classified,
+        found.unclassified
+    );
+    index.dependencies = Some(found);
 
     let graph_started = Instant::now();
     let mut exits_by_unit: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
