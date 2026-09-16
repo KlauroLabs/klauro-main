@@ -132,6 +132,8 @@ pub struct IndexNode {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub documentation: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub callback_of: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub registration_label: Option<String>,

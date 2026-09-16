@@ -117,7 +117,8 @@ impl<'a> Extractor<'a> {
             decorators: Vec::new(),
             type_annotation: None,
             documentation: None,
-            callback_of: None,
+            project: None,
+        callback_of: None,
             registration_label: None,
         });
         let scope = Scope::root(&self.module_id.clone());
@@ -486,7 +487,8 @@ impl<'a> Extractor<'a> {
             decorators: self.decorators_of(node),
             type_annotation: None,
             documentation: self.documentation_of(node),
-            callback_of: None,
+            project: None,
+        callback_of: None,
             registration_label: None,
         });
         if let Some(owner) = owner.as_deref() {
@@ -617,7 +619,8 @@ impl<'a> Extractor<'a> {
             decorators: self.decorators_of(node),
             type_annotation: None,
             documentation: self.documentation_of(node),
-            callback_of: None,
+            project: None,
+        callback_of: None,
             registration_label: None,
         });
         self.push_edge(owner, &id, EdgeKind::HasMethod);
@@ -666,7 +669,8 @@ impl<'a> Extractor<'a> {
             decorators: self.decorators_of(node),
             type_annotation: annotation,
             documentation: self.documentation_of(node),
-            callback_of: None,
+            project: None,
+        callback_of: None,
             registration_label: None,
         });
         self.push_edge(owner, &id, EdgeKind::HasField);
@@ -758,7 +762,8 @@ impl<'a> Extractor<'a> {
                 .child_by_field_name("value")
                 .map(|value| self.text_owned(value)),
             documentation: self.documentation_of(node),
-            callback_of: None,
+            project: None,
+        callback_of: None,
             registration_label: None,
         });
         if let Some(owner) = owner.as_deref() {
@@ -805,7 +810,8 @@ impl<'a> Extractor<'a> {
             decorators: Vec::new(),
             type_annotation: None,
             documentation: self.documentation_of(node),
-            callback_of: None,
+            project: None,
+        callback_of: None,
             registration_label: None,
         });
         if let Some(owner) = owner.as_deref() {
@@ -837,7 +843,8 @@ impl<'a> Extractor<'a> {
                 decorators: Vec::new(),
                 type_annotation: None,
                 documentation: None,
-                callback_of: None,
+                project: None,
+        callback_of: None,
                 registration_label: None,
             });
             self.push_edge(&id, &member_id, EdgeKind::HasField);
@@ -868,7 +875,8 @@ impl<'a> Extractor<'a> {
             decorators: self.decorators_of(node),
             type_annotation: None,
             documentation: self.documentation_of(node),
-            callback_of: None,
+            project: None,
+        callback_of: None,
             registration_label: None,
         });
         if let Some(owner) = owner.as_deref() {
@@ -976,7 +984,8 @@ impl<'a> Extractor<'a> {
                     .and_then(|annotation| annotation.named_child(0))
                     .map(|annotation| self.text_owned(annotation)),
                 documentation: self.documentation_of(node),
-                callback_of: None,
+                project: None,
+        callback_of: None,
                 registration_label: None,
             });
             if let Some(owner) = owner.as_deref() {
@@ -1141,7 +1150,8 @@ impl<'a> Extractor<'a> {
                 decorators: Vec::new(),
                 type_annotation: None,
                 documentation: None,
-                callback_of: Some(callee.to_string()),
+                project: None,
+            callback_of: Some(callee.to_string()),
                 registration_label: label.clone(),
             });
             if let Some(owner) = scope.enclosing_callable.clone().or_else(|| scope.owner.clone()) {

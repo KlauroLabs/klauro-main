@@ -130,7 +130,11 @@ None of the following properties are stored. Each is computed at read time from 
 | `has_children` | true iff `children` is present and non-empty | whether a system map is renderable for this CAS |
 | is a leaf | `has_children === false` | whether an architecture map is renderable for this CAS |
 | source-backed | this CAS has its own file set (`tier1.nodes` etc. computed from source, not composed) | whether Tier 1-3 are computed from source (§0.6) or composed from children |
-| ship-backed | `tier2.deployable_evidence` (Field Catalog §4.16) contains at least one tier-qualified row for this CAS, per the promotion predicate in `docs/SPEC-DEPLOYABLE-DETECTION.md` | whether this leaf is presented as "ships as a unit" |
+| ship-backed | a ship unit's root is this project's root, or a ship unit names this project among the paths it bundles. An ancestor container that copies the whole repository does NOT make its every project ship-backed | whether this project is presented as "ships as a unit" |
+| runnable | this project owns an entry point that starts it: a lifecycle, cli, http, rpc or graphql entry | whether this project can be started on its own |
+| consumed | another project imports across the boundary into this one | whether this project exists to be used by others |
+
+A **deployable** is a project that is ship-backed. An **executable** is runnable and not ship-backed — it starts, but nothing declares how it ships; eight services behind one parameterised container read this way. A **library** is consumed and neither. A project that is none of these is a module: declared, owned, and not yet reached by any of the three. None of these words is a stored field; each is the same read-time derivation over the same facts.
 
 A "deployable" under this specification is not a type: it is a leaf CAS that is also ship-backed. An "organization" is not a type: it is a CAS with children and no source of its own. Both distinctions were previously expressed as a discriminant (CAS's implicit "this is a single-project analysis", WAS's `analysis_kind: 'workspace'`, DAS's promotion boolean); under this specification they are read-time facts over the same envelope.
 

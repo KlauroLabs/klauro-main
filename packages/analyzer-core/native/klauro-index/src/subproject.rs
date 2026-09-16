@@ -4,6 +4,7 @@ use serde::Serialize;
 
 use crate::entry_exit::EntryPoint;
 use crate::model::*;
+use crate::scope::Deployable;
 
 #[derive(Debug, Serialize)]
 pub struct SubProject {
@@ -17,6 +18,12 @@ pub struct SubProject {
     pub entry_points: u32,
     pub imports_within: u32,
     pub imports_crossing: u32,
+    pub ship_backed: bool,
+    pub runnable: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub ships_in: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub consumed_by: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -29,6 +36,8 @@ pub struct SubCasNodes {
 #[derive(Debug, Serialize)]
 pub struct Partition {
     pub sub_projects: Vec<SubProject>,
+    #[serde(skip)]
+    pub assignment: Vec<(String, String)>,
     pub sub_cas_nodes: SubCasNodes,
     pub assigned_declarations: u32,
     pub shared_declarations: u32,
@@ -145,6 +154,7 @@ pub fn derive(
     entry_points: &[EntryPoint],
     nested: &[String],
     code: &[bool],
+    deployables: &[Deployable],
 ) -> Partition {
     let mut children: HashMap<&str, Vec<&IndexNode>> = HashMap::new();
     for node in nodes {
@@ -190,7 +200,7 @@ pub fn derive(
     }
 
     for (root, manifest) in &manifests {
-        if claimed.contains(root) {
+        if claimed.contains(root) || declares_workspace(&children, manifest) {
             continue;
         }
         claimed.insert(root.clone());
@@ -211,7 +221,26 @@ pub fn derive(
         });
     }
 
-    partition(declared, files, nodes, edges, entry_points, code)
+    partition(declared, files, nodes, edges, entry_points, code, deployables)
+}
+
+fn declares_workspace(children: &HashMap<&str, Vec<&IndexNode>>, manifest: &str) -> bool {
+    let name = basename(manifest).to_ascii_lowercase();
+    let Some((_, key)) = WORKSPACE_KEYS.iter().find(|(file, _)| *file == name) else {
+        return false;
+    };
+    let Some(document) = children.get(manifest) else {
+        return false;
+    };
+    document.iter().any(|node| node.name == *key)
+        || document
+            .iter()
+            .filter(|node| node.name == "workspace")
+            .any(|workspace| {
+                children
+                    .get(workspace.id.as_str())
+                    .is_some_and(|nested| nested.iter().any(|node| node.name == *key))
+            })
 }
 
 fn manifest_name(children: &HashMap<&str, Vec<&IndexNode>>, manifest: &str) -> Option<String> {
@@ -276,6 +305,7 @@ fn partition(
     edges: &[IndexEdge],
     entry_points: &[EntryPoint],
     code: &[bool],
+    deployables: &[Deployable],
 ) -> Partition {
     let mut order: Vec<usize> = (0..declared.len()).collect();
     order.sort_by_key(|at| std::cmp::Reverse(declared[*at].root.len()));
@@ -300,6 +330,10 @@ fn partition(
             entry_points: 0,
             imports_within: 0,
             imports_crossing: 0,
+            ship_backed: false,
+            runnable: false,
+            ships_in: Vec::new(),
+            consumed_by: Vec::new(),
         })
         .collect();
 
@@ -320,7 +354,16 @@ fn partition(
             .push(edge.target.as_str());
         match (owner(&edge.source), owner(&edge.target)) {
             (Some(from), Some(to)) if from == to => sub_projects[from].imports_within += 1,
-            (Some(from), _) => sub_projects[from].imports_crossing += 1,
+            (Some(from), to) => {
+                sub_projects[from].imports_crossing += 1;
+                if let Some(to) = to {
+                    let consumer = sub_projects[from].id.clone();
+                    let consumed = &mut sub_projects[to].consumed_by;
+                    if !consumed.contains(&consumer) {
+                        consumed.push(consumer);
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -348,6 +391,17 @@ fn partition(
         }
         found
     };
+
+    let mut assignment: Vec<(String, usize)> = Vec::new();
+    for path in files {
+        if let Some(at) = owner(path) {
+            assignment.push((path.clone(), at));
+            continue;
+        }
+        if let Some([only]) = reach.get(path.as_str()).map(Vec::as_slice) {
+            assignment.push((path.clone(), *only));
+        }
+    }
 
     let mut assigned = 0;
     let mut shared = 0;
@@ -380,8 +434,36 @@ fn partition(
     for entry in entry_points {
         if let Some(at) = owner(file_of(&entry.handler)) {
             sub_projects[at].entry_points += 1;
+            if matches!(entry.kind, "lifecycle" | "cli" | "http" | "rpc" | "graphql") {
+                sub_projects[at].runnable = true;
+            }
         }
     }
+
+    for unit in deployables {
+        for project in sub_projects.iter_mut() {
+            let covered = unit.root == project.root
+                || unit
+                    .ships
+                    .iter()
+                    .any(|path| !path.is_empty() && contains(path, &project.root));
+            if unit.shipped && covered {
+                project.ship_backed = true;
+                if !project.ships_in.contains(&unit.id) {
+                    project.ships_in.push(unit.id.clone());
+                }
+            }
+        }
+    }
+    for project in sub_projects.iter_mut() {
+        project.consumed_by.sort();
+        project.ships_in.sort();
+    }
+
+    let assignment: Vec<(String, String)> = assignment
+        .into_iter()
+        .map(|(path, at)| (path, sub_projects[at].id.clone()))
+        .collect();
 
     sub_projects.sort_by(|left, right| left.id.cmp(&right.id));
     let qualified = sub_projects.len() as u32;
@@ -395,6 +477,7 @@ fn partition(
         qualified,
     };
     Partition {
+        assignment,
         sub_projects,
         sub_cas_nodes,
         assigned_declarations: assigned,

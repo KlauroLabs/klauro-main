@@ -132,7 +132,8 @@ impl<'a> Extractor<'a> {
             decorators: Vec::new(),
             type_annotation: None,
             documentation: None,
-            callback_of: None,
+            project: None,
+        callback_of: None,
             registration_label: None,
         });
         let module = self.module_id.clone();
@@ -254,7 +255,8 @@ impl<'a> Extractor<'a> {
             decorators: Vec::new(),
             type_annotation: None,
             documentation: None,
-            callback_of: None,
+            project: None,
+        callback_of: None,
             registration_label: None,
         });
         self.facts.edges.push(IndexEdge {

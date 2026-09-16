@@ -97,6 +97,7 @@ pub fn extract(source: &str, file: u32, path: &str) -> FileFacts {
         decorators: Vec::new(),
         type_annotation: None,
         documentation: None,
+        project: None,
         callback_of: None,
         registration_label: None,
     });
@@ -195,6 +196,7 @@ fn declaration(
         decorators: Vec::new(),
         type_annotation: annotation,
         documentation: None,
+        project: None,
         callback_of: None,
         registration_label: None,
     }
