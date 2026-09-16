@@ -29,6 +29,7 @@ export const SKIPPED_DIRECTORY_NAMES: ReadonlySet<string> = new Set<string>([
   'site-packages', '__pycache__', '.venv', 'venv',
   'env', '.tox', '.terraform', '.pytest_cache', '.mypy_cache', '.ruff_cache',
   '.dart_tool', '.gradle', 'Pods', 'obj', '.next', '.turbo', '.cache', '.vite',
+  '.godot', '.gradle-cache', '.parcel-cache', '.nuxt', '.svelte-kit', '.angular',
   '.sourcemaps', 'out', 'build-out', 'build_out', 'cmake-build-debug',
   'cmake-build-release', 'storybook-static', 'storybook-build', 'Generated',
   'generated',
