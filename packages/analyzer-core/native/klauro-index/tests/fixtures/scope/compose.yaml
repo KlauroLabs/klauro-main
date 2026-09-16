@@ -1,0 +1,10 @@
+services:
+  api:
+    build:
+      context: ./services/api
+    command: node server.js
+  worker:
+    build: ./services/worker
+    command: node worker.js
+  cache:
+    image: redis:7

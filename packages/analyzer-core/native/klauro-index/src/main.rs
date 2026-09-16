@@ -1,4 +1,5 @@
 mod discovery;
+mod dockerfile;
 mod language_tables;
 mod entry_exit;
 mod generated;
@@ -9,6 +10,7 @@ mod language;
 mod icelot;
 mod model;
 mod resolve;
+mod scope;
 mod source_rewrite;
 mod structured;
 mod typescript;
@@ -49,6 +51,7 @@ struct Index {
     exit_points: Vec<entry_exit::ExitPoint>,
     icelot: Vec<icelot::Icelot>,
     graph: Option<graph::GraphFacts>,
+    scope: Option<scope::Scope>,
     skipped_directories: Vec<String>,
     nested_repositories: Vec<String>,
 }
@@ -71,6 +74,10 @@ fn extract(
         report_first_error(path, &source, &tree);
         let lines = source.iter().filter(|byte| **byte == b'\n').count() as u32 + 1;
         return Some(typescript::Extractor::new(&source, file, path).run(&tree, path, lines));
+    }
+    if dockerfile::is_dockerfile(path) {
+        let source = std::fs::read_to_string(absolute).ok()?;
+        return Some(dockerfile::extract(&source, file, path));
     }
     let declared = language_id.or_else(|| language_of(path));
     if let Some(id) = declared
@@ -169,6 +176,7 @@ fn main() {
         exit_points: Vec::new(),
         icelot: Vec::new(),
         graph: None,
+        scope: None,
         skipped_directories: found.skipped_directories,
         nested_repositories: found.nested_repositories,
     };
@@ -261,6 +269,39 @@ fn main() {
         &external,
     );
     eprintln!("icelot {:?} | units {}", icelot_started.elapsed(), index.icelot.len());
+
+    let scope_started = Instant::now();
+    let manifests: Vec<bool> = index
+        .files
+        .iter()
+        .map(|file| file.kind != discovery::FileKind::Source || file.language.is_some())
+        .collect();
+    let code: Vec<bool> = index
+        .files
+        .iter()
+        .map(|file| {
+            file.kind == discovery::FileKind::Source
+                && !matches!(file.language, Some("configuration") | Some("json") | Some("toml"))
+        })
+        .collect();
+    let scope = scope::derive(
+        &paths,
+        &manifests,
+        &code,
+        &index.nodes,
+        &index.edges,
+        &index.entry_points,
+    );
+    eprintln!(
+        "scope {:?} | deployables {} | shipped {} | assigned {} shared {} unscoped {}",
+        scope_started.elapsed(),
+        scope.deployables.len(),
+        scope.deployables.iter().filter(|unit| unit.shipped).count(),
+        scope.assigned_nodes,
+        scope.shared_nodes,
+        scope.unassigned_nodes
+    );
+    index.scope = Some(scope);
 
     let graph_started = Instant::now();
     let mut exits_by_unit: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
