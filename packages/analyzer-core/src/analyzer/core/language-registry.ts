@@ -304,6 +304,7 @@ export const LANGUAGE_REGISTRY: LanguageRegistryEntry[] = [
   { id: 'bazel', extensions: ['bzl', 'star'], manifests: ['build', 'build.bazel', 'workspace', 'workspace.bazel'] },
   { id: 'dockerfile', extensions: ['dockerfile'], manifests: ['dockerfile', 'containerfile'] },
   { id: 'hcl', extensions: ['hcl', 'nomad'], manifests: [] },
+  { id: 'markdown', extensions: ['md', 'markdown', 'mdx'], manifests: [] },
   { id: 'bicep', extensions: ['bicep', 'bicepparam'], manifests: [] },
   { id: 'nix', extensions: ['nix'], manifests: ['flake.nix', 'default.nix', 'shell.nix'] },
   { id: 'puppet', extensions: ['pp'], manifests: [] },

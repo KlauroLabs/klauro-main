@@ -338,10 +338,16 @@ fn every_breadth_fixture_yields_a_named_declaration() {
     let files = index["files"].as_array().unwrap();
     let mut declared: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
     for node in index["nodes"].as_array().unwrap() {
-        if node["kind"] == "module" || node["kind"] == "external" {
+        if node["kind"] == "external" {
             continue;
         }
         let Some(position) = node["file"].as_u64() else { continue };
+        let names_the_file = files
+            .get(position as usize)
+            .is_some_and(|file| file["path"] == node["name"]);
+        if names_the_file {
+            continue;
+        }
         *declared.entry(position as usize).or_insert(0) += 1;
     }
 
