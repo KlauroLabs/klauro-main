@@ -16,6 +16,17 @@ fn names_code(text: &str) -> bool {
 const REFERENCE_DEPTH: u8 = 3;
 const REFERENCE_WIDTH: usize = 4;
 
+fn settled(receiver: &str) -> Option<String> {
+    let path: Vec<&str> = receiver
+        .split('.')
+        .filter(|segment| !segment.trim().is_empty() && segment.trim() != "await")
+        .collect();
+    match path.is_empty() {
+        true => None,
+        false => Some(path.join(".")),
+    }
+}
+
 fn unwrapped(node: Node) -> Node {
     match node.kind() == "argument" && node.named_child_count() == 1 {
         true => node.named_child(0).unwrap_or(node),
@@ -973,6 +984,7 @@ impl<'a> Extractor<'a> {
             ),
             _ => (receiver, callee),
         };
+        let receiver = receiver.as_deref().and_then(settled);
         let receiver = match (&receiver, &scope.self_binding) {
             (Some(receiver), Some(binding)) if root_binding(receiver) == binding => {
                 Some(format!("this{}", &receiver[binding.len()..]))
