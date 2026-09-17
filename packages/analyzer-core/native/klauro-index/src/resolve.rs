@@ -391,6 +391,14 @@ impl<'a> Resolver<'a> {
     }
 }
 
+fn declares_it(specifier: &str, path: &str) -> bool {
+    let Some((qualifier, _)) = specifier.rsplit_once('.') else {
+        return false;
+    };
+    let folder = qualifier.replace('.', "/");
+    !folder.is_empty() && path.contains(&folder)
+}
+
 fn strip_extension(specifier: &str) -> &str {
     for extension in [".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".mts", ".cts"] {
         if let Some(stripped) = specifier.strip_suffix(extension) {
@@ -481,6 +489,19 @@ pub fn resolve(index: &Index) -> Resolution {
         let from = index.files[fact.file as usize].as_str();
         let Some(target) = file_index(&by_path, from, &fact.specifier) else {
             for name in &fact.names {
+                let wanted = name.imported.as_deref().unwrap_or(name.local.as_str());
+                if let Some(found) = symbols
+                    .unique_unit
+                    .get(wanted)
+                    .or_else(|| symbols.unique_type.get(wanted))
+                    .copied()
+                    .filter(|found| {
+                        declares_it(&fact.specifier, &index.files[symbols.nodes[*found as usize].file as usize])
+                    })
+                {
+                    bindings.imported.insert((fact.file, name.local.as_str()), found);
+                    continue;
+                }
                 bindings
                     .modules
                     .insert((fact.file, name.local.as_str()), fact.specifier.as_str());
