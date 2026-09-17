@@ -1270,8 +1270,18 @@ fn root_binding(receiver: &str) -> &str {
     &receiver[..end]
 }
 
+static SOURCE_SUFFIXES: &[&str] = &[
+    ".c", ".cc", ".cpp", ".cs", ".dart", ".ex", ".exs", ".go", ".h", ".hpp", ".java", ".js",
+    ".jsx", ".kt", ".mjs", ".php", ".py", ".rb", ".rs", ".scala", ".sol", ".svelte", ".swift",
+    ".ts", ".tsx", ".vue",
+];
+
 fn binding_of(specifier: &str) -> String {
     let trimmed = specifier.trim_end_matches(['/', '.', ';', '"', '>']);
+    let trimmed = SOURCE_SUFFIXES
+        .iter()
+        .find_map(|suffix| trimmed.strip_suffix(suffix))
+        .unwrap_or(trimmed);
     let last = trimmed
         .rsplit(['/', '.', ':', '\\'])
         .find(|part| !part.is_empty())
@@ -1303,8 +1313,12 @@ fn import_alias(text: &str) -> Option<String> {
 
 fn import_specifier(text: &str) -> String {
     let text = text.trim();
-    if let Some(start) = text.find(['"', '<']) {
-        let closing = if text.as_bytes()[start] == b'<' { '>' } else { '"' };
+    if let Some(start) = text.find(['"', '\'', '<']) {
+        let closing = match text.as_bytes()[start] {
+            b'<' => '>',
+            b'\'' => '\'',
+            _ => '"',
+        };
         if let Some(end) = text[start + 1..].find(closing) {
             return text[start + 1..start + 1 + end].to_string();
         }
