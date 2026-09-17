@@ -26,6 +26,20 @@ for (const entry of registry) {
   }
 }
 languageByExtension.sort((a, b) => a[0].localeCompare(b[0]));
+const DATA_FORMATS = new Set(['json', 'jsonc', 'json5', 'yaml', 'yml', 'toml', 'xml', 'ini', 'cfg', 'conf', 'properties', 'lock']);
+const claimants = new Map();
+for (const entry of registry) {
+  for (const manifest of entry.manifests) {
+    const name = manifest.toLowerCase();
+    if (!claimants.has(name)) claimants.set(name, []);
+    claimants.get(name).push(entry.id);
+  }
+}
+const languageByManifest = [...claimants]
+  .filter(([name]) => !DATA_FORMATS.has(name.split('.').pop()))
+  .map(([name, ids]) => [name, ids.filter(id => name.startsWith(id)).sort((a, b) => b.length - a.length)[0] ?? (ids.length === 1 ? ids[0] : undefined)])
+  .filter(([, id]) => id !== undefined)
+  .sort((a, b) => a[0].localeCompare(b[0]));
 const skipped = unique([...discovery.SKIPPED_DIRECTORY_NAMES, ...scaffold]);
 
 const generated = `pub static SOURCE_EXTENSIONS: &[&str] = &[
@@ -46,6 +60,10 @@ ${literal(manifestPatterns)}
 
 pub static SKIPPED_DIRECTORIES: &[&str] = &[
 ${literal(skipped)}
+];
+
+pub static LANGUAGE_BY_MANIFEST: &[(&str, &str)] = &[
+${languageByManifest.map(([name, id]) => `    (${JSON.stringify(name)}, ${JSON.stringify(id)}),`).join('\n')}
 ];
 
 pub static LANGUAGE_BY_EXTENSION: &[(&str, &str)] = &[

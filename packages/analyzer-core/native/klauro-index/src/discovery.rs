@@ -9,7 +9,7 @@ use regex::RegexSet;
 use serde::Serialize;
 
 use crate::language_tables::{
-    LANGUAGE_BY_EXTENSION, MANIFEST_EXTENSIONS, MANIFEST_NAMES, MANIFEST_PATTERNS,
+    LANGUAGE_BY_EXTENSION, LANGUAGE_BY_MANIFEST, MANIFEST_EXTENSIONS, MANIFEST_NAMES, MANIFEST_PATTERNS,
     SKIPPED_DIRECTORIES, SOURCE_EXTENSIONS,
 };
 
@@ -205,6 +205,9 @@ pub fn interpreter_of(path: &Path) -> Option<&'static str> {
 
 pub fn language_of(basename: &str) -> Option<&'static str> {
     let lower = basename.to_ascii_lowercase();
+    if let Some((_, language)) = LANGUAGE_BY_MANIFEST.iter().find(|(name, _)| *name == lower) {
+        return Some(language);
+    }
     let extension = extension_of(&lower);
     if extension.is_empty() {
         return None;
