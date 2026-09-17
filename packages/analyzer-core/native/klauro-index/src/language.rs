@@ -115,7 +115,7 @@ pub fn language_for(id: &str) -> Option<(Language, &'static LanguageSpec)> {
         "gleam" => tree_sitter_gleam::LANGUAGE.into(),
         "markdown" => tree_sitter_md::LANGUAGE.into(),
         "xml" => tree_sitter_xml::LANGUAGE_XML.into(),
-        "hcl" => tree_sitter_hcl::LANGUAGE.into(),
+        "hcl" | "terraform" => tree_sitter_hcl::LANGUAGE.into(),
         "elixir" => tree_sitter_elixir::LANGUAGE.into(),
         "fsharp" => tree_sitter_fsharp::LANGUAGE_FSHARP.into(),
         "crystal" => tree_sitter_crystal::LANGUAGE.into(),
@@ -143,6 +143,7 @@ pub fn language_for(id: &str) -> Option<(Language, &'static LanguageSpec)> {
 pub fn spec_for(id: &str) -> Option<&'static LanguageSpec> {
     let id = match id {
         "shell" | "fish" => "bash",
+        "terraform" => "hcl",
         other => other,
     };
     SPECS.iter().find(|spec| spec.id == id)

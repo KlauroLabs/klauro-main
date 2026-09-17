@@ -118,3 +118,25 @@ fn inside_type_arguments(source: &[u8], at: usize) -> bool {
     }
     false
 }
+
+const SCRIPT_OPEN: &[u8] = b"<script";
+const SCRIPT_CLOSE: &[u8] = b"</script";
+
+pub fn component_script(source: &mut Vec<u8>) {
+    let mut keep = vec![false; source.len()];
+    let mut at = 0;
+    while let Some(open) = find_from(source, SCRIPT_OPEN, at) {
+        let Some(body) = source[open..].iter().position(|byte| *byte == b'>').map(|end| open + end + 1)
+        else {
+            break;
+        };
+        let end = find_from(source, SCRIPT_CLOSE, body).unwrap_or(source.len());
+        keep[body..end].fill(true);
+        at = end + SCRIPT_CLOSE.len();
+    }
+    for (position, byte) in source.iter_mut().enumerate() {
+        if !keep[position] && *byte != b'\n' && *byte != b'\r' {
+            *byte = b' ';
+        }
+    }
+}

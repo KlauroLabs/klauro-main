@@ -82,6 +82,9 @@ fn extract(
         if generated::is_generated(&source) {
             return None;
         }
+        if language_id.is_some_and(typescript::wraps_script) {
+            source_rewrite::component_script(&mut source);
+        }
         source_rewrite::grammar_limitations(&mut source);
         let tree = parser.parse(&source, None)?;
         report_first_error(path, &source, &tree);
