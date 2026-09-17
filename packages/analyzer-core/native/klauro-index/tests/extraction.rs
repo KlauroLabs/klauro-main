@@ -536,3 +536,24 @@ fn a_call_through_a_client_is_not_a_route() {
     let found = routes(&index);
     assert!(!found.iter().any(|(_, path)| path == "/api/v1/accounts"), "{found:?}");
 }
+
+#[test]
+fn a_url_pattern_django_declares_is_a_route() {
+    let index = index("routes");
+    let found = routes(&index);
+    assert!(found.iter().any(|(_, path)| path == "about/"), "{found:?}");
+}
+
+#[test]
+fn a_value_read_from_an_object_is_not_a_route() {
+    let index = index("routes");
+    let found = routes(&index);
+    assert!(!found.iter().any(|(_, path)| path == "amount"), "{found:?}");
+}
+
+#[test]
+fn a_route_mocked_in_an_end_to_end_test_is_not_a_route() {
+    let index = index("routes");
+    let found = routes(&index);
+    assert!(!found.iter().any(|(_, path)| path.contains("api/users/me")), "{found:?}");
+}
