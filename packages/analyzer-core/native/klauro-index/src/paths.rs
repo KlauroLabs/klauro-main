@@ -61,6 +61,7 @@ pub fn is_test(path: &str) -> bool {
     path.contains("test/")
         || path.contains("tests/")
         || path.contains("spec/")
+        || path.contains("e2e/")
         || stem.starts_with("test_")
         || stem.ends_with("_test")
         || stem.ends_with("_spec")

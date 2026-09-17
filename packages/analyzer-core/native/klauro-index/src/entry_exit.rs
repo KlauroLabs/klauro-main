@@ -78,9 +78,12 @@ fn classify_registration(registrar: &str, label: Option<&str>) -> Option<&'stati
     if PATH_REGISTRARS.binary_search(&lowered.as_str()).is_ok()
         || HTTP_METHODS.binary_search(&verb).is_ok()
     {
+        let through_receiver = verb.len() != registrar.len();
         return match label {
-            Some(label) if looks_like_route(&split_label(label).1) => Some("http"),
-            _ => None,
+            Some(label) if !looks_like_route(&split_label(label).1) => None,
+            Some(label) if through_receiver && !label.contains('/') => None,
+            Some(_) => Some("http"),
+            None => None,
         };
     }
     if verb == "use" && label.is_some_and(looks_like_path) {
@@ -372,9 +375,6 @@ pub fn derive(
         else {
             continue;
         };
-        if kind == "http" && is_test(&files[registration.file as usize]) {
-            continue;
-        }
         if !registered.insert((registration.file, registration.line)) {
             continue;
         }
@@ -494,5 +494,6 @@ pub fn derive(
     entry_points.sort_by(|left, right| left.id.cmp(&right.id));
     entry_points.dedup_by(|left, right| left.id == right.id);
     exit_points.sort_by(|left, right| left.id.cmp(&right.id));
+    entry_points.retain(|entry| entry.kind != "http" || !is_test(&files[entry.file as usize]));
     Derived { entry_points, exit_points }
 }

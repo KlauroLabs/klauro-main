@@ -403,6 +403,7 @@ pub static SKIPPED_DIRECTORIES: &[&str] = &[
     "cmake-build-release",
     "dist",
     "env",
+    "external-crates",
     "fixtures",
     "generated",
     "node_modules",

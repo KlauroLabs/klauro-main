@@ -25,7 +25,7 @@ export interface DiscoveryOptions {
 
 export const SKIPPED_DIRECTORY_NAMES: ReadonlySet<string> = new Set<string>([
   'node_modules', 'dist', 'build', '.git', '.claude', '.codex', '.scannerwork',
-  'target', 'vendor', 'vendors', 'vendored', 'third_party', 'third-party',
+  'target', 'vendor', 'vendors', 'vendored', 'third_party', 'third-party', 'external-crates',
   'site-packages', '__pycache__', '.venv', 'venv',
   'env', '.tox', '.terraform', '.pytest_cache', '.mypy_cache', '.ruff_cache',
   '.dart_tool', '.gradle', 'Pods', 'obj', '.next', '.turbo', '.cache', '.vite',
