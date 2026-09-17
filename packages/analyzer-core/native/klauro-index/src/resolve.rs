@@ -772,6 +772,16 @@ pub fn resolve(index: &Index) -> Resolution {
         }
 
         let language = index.languages.get(fact.file as usize).copied().unwrap_or("");
+        if fact.receiver.is_none() && crate::builtins::is_builtin(language, &fact.callee) {
+            emit(declare_external(
+                &mut external_nodes,
+                "runtime",
+                language,
+                &format!("{language}.{}", fact.callee),
+            ));
+            runtime_calls += 1;
+            continue;
+        }
         if !crate::builtins::is_builtin(language, &fact.callee)
             && !declared_anywhere.contains(fact.callee.as_str())
             && let Some(specifier) = sole_package.get(&fact.file).copied()
