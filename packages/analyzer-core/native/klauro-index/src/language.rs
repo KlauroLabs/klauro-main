@@ -44,6 +44,9 @@ pub struct LanguageSpec {
     pub binding_type_field: &'static str,
     pub binding_value_field: &'static str,
     pub name_skip_words: &'static [&'static str],
+    pub extension_receiver_kinds: &'static [&'static str],
+    pub constructor_parameter_path: &'static [&'static str],
+    pub parameter_type_kinds: &'static [&'static str],
 }
 
 const BASH_NAME_LEAVES: &[&str] = &["word", "command_name", "variable_name"];
@@ -207,6 +210,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "fsharp",
@@ -250,6 +256,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "crystal",
@@ -293,6 +302,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "nim",
@@ -336,6 +348,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "v",
@@ -379,6 +394,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "d",
@@ -422,6 +440,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "pascal",
@@ -465,6 +486,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "ada",
@@ -508,6 +532,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "matlab",
@@ -551,6 +578,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "glsl",
@@ -594,6 +624,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "hlsl",
@@ -637,6 +670,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "odin",
@@ -680,6 +716,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "jsonnet",
@@ -723,6 +762,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "ini",
@@ -766,6 +808,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "svelte",
@@ -809,6 +854,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "erb",
@@ -852,6 +900,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "racket",
@@ -895,6 +946,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "scheme",
@@ -938,6 +992,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "commonlisp",
@@ -981,6 +1038,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
 
     LanguageSpec {
@@ -1025,6 +1085,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
 
     LanguageSpec {
@@ -1069,6 +1132,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "gdscript",
@@ -1112,6 +1178,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "sql",
@@ -1155,6 +1224,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "css",
@@ -1198,6 +1270,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "solidity",
@@ -1241,6 +1316,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "lua",
@@ -1284,6 +1362,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "dart",
@@ -1332,6 +1413,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "scala",
@@ -1375,6 +1459,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "haskell",
@@ -1418,6 +1505,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "zig",
@@ -1461,6 +1551,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "perl",
@@ -1504,6 +1597,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "groovy",
@@ -1547,6 +1643,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "proto",
@@ -1590,6 +1689,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "graphql",
@@ -1633,6 +1735,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "vim",
@@ -1679,6 +1784,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "clojure",
@@ -1722,6 +1830,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "tcl",
@@ -1765,6 +1876,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: TCL_NAMESPACE_WORDS,
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "cmake",
@@ -1808,6 +1922,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "markdown",
@@ -1851,6 +1968,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "make",
@@ -1894,6 +2014,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "powershell",
@@ -1937,6 +2060,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "elm",
@@ -1980,6 +2106,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "erlang",
@@ -2023,6 +2152,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "ocaml",
@@ -2066,6 +2198,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "julia",
@@ -2109,6 +2244,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "starlark",
@@ -2152,6 +2290,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "nix",
@@ -2195,6 +2336,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "r",
@@ -2238,6 +2382,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "rhs",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "objc",
@@ -2281,6 +2428,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "fortran",
@@ -2324,6 +2474,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "verilog",
@@ -2367,6 +2520,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "vhdl",
@@ -2410,6 +2566,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "gleam",
@@ -2453,6 +2612,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "markdown",
@@ -2496,6 +2658,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "xml",
@@ -2539,6 +2704,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "hcl",
@@ -2582,6 +2750,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
 
     LanguageSpec {
@@ -2626,6 +2797,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "right",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "go",
@@ -2672,6 +2846,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "right",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "java",
@@ -2723,6 +2900,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "csharp",
@@ -2776,6 +2956,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "rust",
@@ -2825,6 +3008,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "ruby",
@@ -2868,6 +3054,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "right",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "php",
@@ -2919,6 +3108,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "right",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "c",
@@ -2969,6 +3161,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "cpp",
@@ -3020,6 +3215,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "swift",
@@ -3070,6 +3268,9 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &[],
+        constructor_parameter_path: &[],
+        parameter_type_kinds: &[],
     },
     LanguageSpec {
         id: "kotlin",
@@ -3086,7 +3287,7 @@ static SPECS: &[LanguageSpec] = &[
         parameter_fields: &["function_value_parameters", "parameters"],
         return_fields: &["return_type"],
         body_fields: &["body"],
-        parameter_kinds: &["parameter"],
+        parameter_kinds: &["parameter", "class_parameter"],
         name_descend: &["variable_declaration"],
         name_leaf_kinds: COMMON_NAME_LEAVES,
         heritage_kinds: &["delegation_specifier", "constructor_invocation"],
@@ -3116,5 +3317,8 @@ static SPECS: &[LanguageSpec] = &[
         binding_type_field: "type",
         binding_value_field: "value",
         name_skip_words: &[],
+        extension_receiver_kinds: &["type", "user_type"],
+        constructor_parameter_path: &["primary_constructor", "class_parameters"],
+        parameter_type_kinds: &["type", "user_type", "nullable_type"],
     },
 ];

@@ -74,6 +74,8 @@ pub struct Signature {
     pub return_type: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub type_parameters: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub receiver: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize)]

@@ -288,7 +288,8 @@ impl<'a> Extractor<'a> {
             let type_annotation = parameter
                 .child_by_field_name("type")
                 .map(|annotation| self.text(annotation).to_string())
-                .or_else(|| self.trailing_type(parameter));
+                .or_else(|| self.trailing_type(parameter))
+                .or_else(|| self.declared_type(parameter));
             parameters.push(Parameter {
                 name,
                 type_annotation,
@@ -300,6 +301,34 @@ impl<'a> Extractor<'a> {
             });
         }
         parameters
+    }
+
+    fn declared_type(&self, parameter: Node) -> Option<String> {
+        if self.spec.parameter_type_kinds.is_empty() {
+            return None;
+        }
+        let mut cursor = parameter.walk();
+        parameter
+            .named_children(&mut cursor)
+            .find(|child| self.spec.parameter_type_kinds.contains(&child.kind()))
+            .map(|found| self.text(found).trim().to_string())
+            .filter(|found| !found.is_empty())
+    }
+
+    fn constructor_parameters(&self, node: Node) -> Vec<Parameter> {
+        let mut at = node;
+        for step in self.spec.constructor_parameter_path {
+            let mut cursor = at.walk();
+            let Some(found) = at.named_children(&mut cursor).find(|child| child.kind() == *step)
+            else {
+                return Vec::new();
+            };
+            at = found;
+        }
+        if std::ptr::eq(&at, &node) {
+            return Vec::new();
+        }
+        self.parameters_in(at)
     }
 
     fn trailing_type(&self, parameter: Node) -> Option<String> {
@@ -329,7 +358,25 @@ impl<'a> Extractor<'a> {
             parameters,
             return_type,
             type_parameters: Vec::new(),
+            receiver: self.extension_receiver(node),
         }
+    }
+
+    fn extension_receiver(&self, node: Node) -> Option<String> {
+        if self.spec.extension_receiver_kinds.is_empty() {
+            return None;
+        }
+        let name = self
+            .spec
+            .name_fields
+            .iter()
+            .find_map(|field| node.child_by_field_name(field))?;
+        let mut cursor = node.walk();
+        node.named_children(&mut cursor)
+            .take_while(|child| child.start_byte() < name.start_byte())
+            .find(|child| self.spec.extension_receiver_kinds.contains(&child.kind()))
+            .map(|found| self.text(found).trim().to_string())
+            .filter(|found| !found.is_empty())
     }
 
     fn trailing_return(&self, node: Node) -> Option<String> {
@@ -673,7 +720,7 @@ impl<'a> Extractor<'a> {
                 });
             }
         }
-        Signature { parameters, return_type: None, type_parameters: Vec::new() }
+        Signature { parameters, return_type: None, type_parameters: Vec::new(), receiver: None }
     }
 
     fn declare_type(&mut self, node: Node, scope: &Scope, kind: NodeKind) {
@@ -690,7 +737,15 @@ impl<'a> Extractor<'a> {
             file: self.file,
             span: span_of(node),
             parent: owner.clone(),
-            signature: None,
+            signature: match self.constructor_parameters(node) {
+                parameters if parameters.is_empty() => None,
+                parameters => Some(Signature {
+                    parameters,
+                    return_type: None,
+                    type_parameters: Vec::new(),
+                    receiver: None,
+                }),
+            },
             modifiers: Modifiers::default(),
             decorators: self.decorators_of(node),
             type_annotation: self.text_content(node),

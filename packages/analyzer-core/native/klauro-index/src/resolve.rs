@@ -49,6 +49,8 @@ struct Symbols<'a> {
     unique_type: HashMap<&'a str, u32>,
     unique_unit: HashMap<&'a str, u32>,
     unique_member: HashMap<&'a str, u32>,
+    unique_extension: HashMap<&'a str, u32>,
+    extension: HashMap<(&'a str, &'a str), u32>,
     declared_members: HashSet<&'a str>,
     owner: Vec<Option<u32>>,
 }
@@ -81,6 +83,8 @@ impl<'a> Symbols<'a> {
             unique_type: HashMap::new(),
             unique_unit: HashMap::new(),
             unique_member: HashMap::new(),
+            unique_extension: HashMap::new(),
+            extension: HashMap::new(),
             declared_members: HashSet::new(),
             owner: vec![None; nodes.len()],
         };
@@ -91,6 +95,7 @@ impl<'a> Symbols<'a> {
         let mut types: HashMap<&str, (u32, u32)> = HashMap::new();
         let mut units: HashMap<&str, (u32, u32)> = HashMap::new();
         let mut member_names: HashMap<&str, (u32, u32)> = HashMap::new();
+        let mut extension_names: HashMap<&str, (u32, u32)> = HashMap::new();
 
         for (at, node) in nodes.iter().enumerate() {
             let at = at as u32;
@@ -125,9 +130,28 @@ impl<'a> Symbols<'a> {
             }
         }
 
+        for (at, node) in nodes.iter().enumerate() {
+            let Some(receiver) = node
+                .signature
+                .as_ref()
+                .and_then(|signature| signature.receiver.as_deref())
+            else {
+                continue;
+            };
+            let at = at as u32;
+            let owner = base_type_name(receiver);
+            symbols.extension.entry((owner, node.name.as_str())).or_insert(at);
+            if types.contains_key(owner) {
+                continue;
+            }
+            let entry = extension_names.entry(node.name.as_str()).or_insert((0, at));
+            entry.0 += 1;
+        }
+
         symbols.unique_type = unique(types);
         symbols.unique_unit = unique(units);
         symbols.unique_member = unique(member_names);
+        symbols.unique_extension = unique(extension_names);
         symbols
     }
 
@@ -323,6 +347,16 @@ impl<'a> Resolver<'a> {
         }
         if let Some(annotation) = self.bindings.annotation(&holder.id, file, name) {
             return self.annotated(file, annotation);
+        }
+        if let Some(owner) = self.symbols.owning_type(unit)
+            && let Some(signature) = self.symbols.nodes[owner as usize].signature.as_ref()
+            && let Some(parameter) = signature.parameters.iter().find(|p| p.name == name)
+            && let Some(annotation) = parameter.type_annotation.as_deref()
+        {
+            return match self.annotated(file, annotation) {
+                Origin::Unknown => Origin::Indirect,
+                known => known,
+            };
         }
         if let Some(owner) = self.symbols.owning_type(unit)
             && let Some(member) = self.symbols.member(owner, name)
@@ -814,6 +848,46 @@ pub fn resolve(index: &Index) -> Resolution {
         {
             emit(symbols.nodes[found as usize].id.clone());
             continue;
+        }
+        if let Some(receiver) = fact.receiver.as_deref() {
+            let extended = match origin {
+                Origin::Declared(found) if symbols.nodes[found as usize].kind.is_type() => {
+                    Some(symbols.nodes[found as usize].name.as_str())
+                }
+                _ => resolver.bindings.annotation(caller, fact.file, last_segment(receiver)),
+            };
+            let typed = extended.and_then(|owner| {
+                symbols
+                    .extension
+                    .get(&(last_segment(owner), fact.callee.as_str()))
+                    .copied()
+            });
+            let language = index.languages.get(fact.file as usize).copied().unwrap_or("");
+            let imported = resolver
+                .bindings
+                .modules
+                .get(&(fact.file, fact.callee.as_str()))
+                .copied();
+            let found = typed.or_else(|| {
+                if imported.is_some() || crate::builtins::is_builtin(language, &fact.callee) {
+                    return None;
+                }
+                symbols.unique_extension.get(fact.callee.as_str()).copied()
+            });
+            if let Some(found) = found {
+                emit(symbols.nodes[found as usize].id.clone());
+                continue;
+            }
+            if let Some(specifier) = imported {
+                emit(declare_external(
+                    &mut external_nodes,
+                    "package",
+                    specifier,
+                    &format!("{specifier}.{}", fact.callee),
+                ));
+                package_calls += 1;
+                continue;
+            }
         }
 
         let language = index.languages.get(fact.file as usize).copied().unwrap_or("");

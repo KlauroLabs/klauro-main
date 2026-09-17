@@ -484,6 +484,7 @@ impl<'a> Extractor<'a> {
                 parameters: Vec::new(),
                 return_type: None,
                 type_parameters: self.type_parameter_names(parameters),
+                receiver: None,
             }),
             modifiers,
             decorators: self.decorators_of(node),
@@ -700,6 +701,7 @@ impl<'a> Extractor<'a> {
             parameters,
             return_type,
             type_parameters,
+            receiver: None,
         }
     }
 
