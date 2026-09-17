@@ -80,12 +80,17 @@ enum Read {
     Unreadable,
 }
 
-/// A file carrying NUL bytes is not text, whatever its extension claims. Extensions collide
+/// A file dense with NUL bytes is not text, whatever its extension claims. Extensions collide
 /// across ecosystems — `.res` is ReScript source and a Godot binary resource — and a grammar
-/// handed a binary blob can take minutes on a few megabytes.
+/// handed a binary blob can take minutes on a few megabytes. Density rather than presence:
+/// real source occasionally carries a stray NUL and is still source.
 fn is_binary(source: &[u8]) -> bool {
     let window = source.len().min(8000);
-    source[..window].contains(&0)
+    if window == 0 {
+        return false;
+    }
+    let nuls = source[..window].iter().filter(|byte| **byte == 0).count();
+    nuls * 100 > window
 }
 
 fn extract(
