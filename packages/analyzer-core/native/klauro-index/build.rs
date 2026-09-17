@@ -1,6 +1,6 @@
 use std::path::Path;
 
-static VENDORED: &[&str] = &["clojure", "tcl"];
+static VENDORED: &[&str] = &["clojure", "gdshader", "glimmer", "rescript", "tcl", "twig"];
 
 fn main() {
     for grammar in VENDORED {

@@ -76,7 +76,16 @@ struct Index {
 enum Read {
     Facts(Box<FileFacts>),
     Generated,
+    Binary,
     Unreadable,
+}
+
+/// A file carrying NUL bytes is not text, whatever its extension claims. Extensions collide
+/// across ecosystems — `.res` is ReScript source and a Godot binary resource — and a grammar
+/// handed a binary blob can take minutes on a few megabytes.
+fn is_binary(source: &[u8]) -> bool {
+    let window = source.len().min(8000);
+    source[..window].contains(&0)
 }
 
 fn extract(
@@ -88,6 +97,9 @@ fn extract(
     let Ok(mut source) = std::fs::read(absolute) else {
         return Read::Unreadable;
     };
+    if is_binary(&source) {
+        return Read::Binary;
+    }
     if generated::is_generated(&source) {
         return Read::Generated;
     }
@@ -187,7 +199,7 @@ fn main() {
     for (file, read) in reads {
         match read {
             Read::Facts(found) => facts.push(*found),
-            Read::Generated => {
+            Read::Generated | Read::Binary => {
                 generated_files.insert(file);
             }
             Read::Unreadable => {}

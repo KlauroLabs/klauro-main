@@ -10,10 +10,6 @@ const MILLISECONDS_PER_FILE = 0.8;
 const MINIMUM_FILES = 15;
 
 const WITHOUT_A_GRAMMAR = new Map([
-  ['rescript', 'no crate at this tree-sitter'],
-  ['twig', 'no crate'],
-  ['glimmer', 'no crate'],
-  ['gdshader', 'no crate'],
   ['installer_scripts', 'batch and installer scripts have no grammar']
 ]);
 
