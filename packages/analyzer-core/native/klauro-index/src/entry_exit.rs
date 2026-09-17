@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use serde::Serialize;
 
 use crate::model::*;
+use crate::resolve::Resolution;
 use crate::paths::is_test;
 
 #[derive(Debug, Serialize)]
@@ -268,12 +269,10 @@ pub fn derive(
     nodes: &[IndexNode],
     calls: &[CallFact],
     files: &[String],
-    modules: &HashMap<(u32, String), String>,
     registrations: &[RegistrationFact],
-    local: &HashMap<(u32, String), String>,
-    unique_units: &HashMap<String, String>,
-    call_origins: &HashMap<(String, String), String>,
+    resolution: &Resolution,
 ) -> Derived {
+    let Resolution { modules, local, unique_units, call_origins, .. } = resolution;
     let mut entry_points = Vec::new();
     let mut base_paths: HashMap<&str, String> = HashMap::new();
     for node in nodes {
@@ -427,7 +426,7 @@ pub fn derive(
         if !matches!(node.kind, NodeKind::Function | NodeKind::Method) {
             continue;
         }
-        if !LIFECYCLE_NAMES.binary_search(&node.name.as_str()).is_ok() {
+        if LIFECYCLE_NAMES.binary_search(&node.name.as_str()).is_err() {
             continue;
         }
         entry_points.push(EntryPoint {

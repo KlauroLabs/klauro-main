@@ -1,11 +1,11 @@
 const TYPE_ARGUMENT_MARKER: &[u8] = b"typeof import(";
 const QUALIFIER_MARKER: &[u8] = b"import(";
 
-pub fn grammar_limitations(source: &mut Vec<u8>) -> u32 {
+pub fn grammar_limitations(source: &mut [u8]) -> u32 {
     type_argument_imports(source) + qualified_type_imports(source)
 }
 
-fn qualified_type_imports(source: &mut Vec<u8>) -> u32 {
+fn qualified_type_imports(source: &mut [u8]) -> u32 {
     if find_from(source, QUALIFIER_MARKER, 0).is_none() {
         return 0;
     }
@@ -41,7 +41,7 @@ fn is_identifier_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$'
 }
 
-fn type_argument_imports(source: &mut Vec<u8>) -> u32 {
+fn type_argument_imports(source: &mut [u8]) -> u32 {
     if find_from(source, TYPE_ARGUMENT_MARKER, 0).is_none() {
         return 0;
     }
@@ -122,7 +122,7 @@ fn inside_type_arguments(source: &[u8], at: usize) -> bool {
 const SCRIPT_OPEN: &[u8] = b"<script";
 const SCRIPT_CLOSE: &[u8] = b"</script";
 
-pub fn component_script(source: &mut Vec<u8>) {
+pub fn component_script(source: &mut [u8]) {
     let mut keep = vec![false; source.len()];
     let mut at = 0;
     while let Some(open) = find_from(source, SCRIPT_OPEN, at) {

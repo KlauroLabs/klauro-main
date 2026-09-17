@@ -68,7 +68,7 @@ fn span_of(node: Node) -> Span {
 
 impl<'a> Extractor<'a> {
     pub fn new(source: &'a [u8], file: u32, path: &str) -> Self {
-        let module_id = format!("{path}");
+        let module_id = path.to_string();
         Extractor {
             source,
             file,
@@ -1139,10 +1139,12 @@ impl<'a> Extractor<'a> {
             }
             let name = format!("{callee}#{position}");
             let id = self.id("callback", &name, *argument);
-            let mut modifiers = Modifiers::default();
-            modifiers.is_async = argument
-                .children(&mut argument.walk())
-                .any(|child| child.kind() == "async");
+            let modifiers = Modifiers {
+                is_async: argument
+                    .children(&mut argument.walk())
+                    .any(|child| child.kind() == "async"),
+                ..Modifiers::default()
+            };
 
             self.facts.nodes.push(IndexNode {
                 id: id.clone(),

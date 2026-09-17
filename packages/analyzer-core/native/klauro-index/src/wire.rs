@@ -191,12 +191,11 @@ impl<'a, S: Serializer> Serializer for Interning<'a, S> {
 
     fn serialize_unit_variant(
         self,
-        name: &'static str,
-        index: u32,
+        _name: &'static str,
+        _index: u32,
         variant: &'static str,
     ) -> Result<S::Ok, S::Error> {
         let symbol = self.strings.borrow_mut().symbol(variant);
-        let _ = (name, index);
         self.inner.serialize_u32(symbol)
     }
 
@@ -261,21 +260,19 @@ impl<'a, S: Serializer> Serializer for Interning<'a, S> {
 
     fn serialize_struct(
         self,
-        name: &'static str,
+        _name: &'static str,
         length: usize,
     ) -> Result<Self::SerializeStruct, S::Error> {
-        let _ = name;
         Ok(Compound { inner: self.inner.serialize_map(Some(length))?, strings: self.strings })
     }
 
     fn serialize_struct_variant(
         self,
-        name: &'static str,
-        index: u32,
-        variant: &'static str,
+        _name: &'static str,
+        _index: u32,
+        _variant: &'static str,
         length: usize,
     ) -> Result<Self::SerializeStructVariant, S::Error> {
-        let _ = (name, index, variant);
         Ok(Compound { inner: self.inner.serialize_map(Some(length))?, strings: self.strings })
     }
 }

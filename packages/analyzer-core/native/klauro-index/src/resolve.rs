@@ -61,7 +61,7 @@ struct Bindings<'a> {
 
 
 
-fn unique<'a>(counts: HashMap<&'a str, (u32, u32)>) -> HashMap<&'a str, u32> {
+fn unique(counts: HashMap<&str, (u32, u32)>) -> HashMap<&str, u32> {
     counts
         .into_iter()
         .filter(|(_, (count, _))| *count == 1)
@@ -621,8 +621,8 @@ pub fn resolve(index: &Index) -> Resolution {
             dynamic_calls += 1;
             continue;
         }
-        if fact.receiver.is_none() && fact.callee == "super" {
-            if let Some(parent) = symbols
+        if fact.receiver.is_none() && fact.callee == "super"
+            && let Some(parent) = symbols
                 .owning_type(unit)
                 .and_then(|owner| parent_of(&edges, &symbols.nodes[owner as usize].id))
                 .and_then(|parent| symbols.position.get(parent.as_str()).copied())
@@ -637,7 +637,6 @@ pub fn resolve(index: &Index) -> Resolution {
                 });
                 continue;
             }
-        }
 
         let origin = match fact.receiver.as_deref() {
             Some(receiver) => resolver.origin(unit, fact.file, receiver),

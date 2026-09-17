@@ -217,11 +217,10 @@ impl<'a> Extractor<'a> {
         let id = self.declare(&name, node, owner, NodeKind::Property, EdgeKind::HasField);
         if let Some(value) = value {
             let literal = self.text(value).trim();
-            if !literal.is_empty() && literal.len() <= 200 {
-                if let Some(found) = self.facts.nodes.iter_mut().find(|found| found.id == id) {
+            if !literal.is_empty() && literal.len() <= 200
+                && let Some(found) = self.facts.nodes.iter_mut().find(|found| found.id == id) {
                     found.type_annotation = Some(literal.to_string());
                 }
-            }
         }
     }
 

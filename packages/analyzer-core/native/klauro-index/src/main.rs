@@ -72,7 +72,7 @@ struct Index {
 }
 
 enum Read {
-    Facts(FileFacts),
+    Facts(Box<FileFacts>),
     Generated,
     Unreadable,
 }
@@ -90,7 +90,7 @@ fn extract(
         return Read::Generated;
     }
     match read(path, &mut source, file, language_id) {
-        Some(facts) => Read::Facts(facts),
+        Some(facts) => Read::Facts(Box::new(facts)),
         None => Read::Unreadable,
     }
 }
@@ -184,7 +184,7 @@ fn main() {
     let mut facts = Vec::with_capacity(reads.len());
     for (file, read) in reads {
         match read {
-            Read::Facts(found) => facts.push(found),
+            Read::Facts(found) => facts.push(*found),
             Read::Generated => {
                 generated_files.insert(file);
             }
@@ -287,7 +287,7 @@ fn main() {
 
     let resolve_started = Instant::now();
     let paths: Vec<String> = index.files.iter().map(|file| file.path.clone()).collect();
-    let resolution = resolve::resolve(&resolve::Index {
+    let mut resolution = resolve::resolve(&resolve::Index {
         files: &paths,
         nodes: &index.nodes,
         imports: &index.imports,
@@ -297,8 +297,8 @@ fn main() {
     });
     let resolved = resolve_started.elapsed();
     let resolved_edges = resolution.edges.len();
-    index.edges.extend(resolution.edges);
-    index.nodes.extend(resolution.external_nodes);
+    index.edges.extend(std::mem::take(&mut resolution.edges));
+    index.nodes.extend(std::mem::take(&mut resolution.external_nodes));
     for node in index.nodes.iter_mut() {
         if let Some(owner) = resolution.method_owners.get(&node.id) {
             node.parent = Some(owner.clone());
@@ -318,7 +318,13 @@ fn main() {
     );
 
     let derive_started = Instant::now();
-    let derived = entry_exit::derive(&index.nodes, &index.calls, &paths, &resolution.modules, &index.registrations, &resolution.local, &resolution.unique_units, &resolution.call_origins);
+    let derived = entry_exit::derive(
+        &index.nodes,
+        &index.calls,
+        &paths,
+        &index.registrations,
+        &resolution,
+    );
     let derived_elapsed = derive_started.elapsed();
     eprintln!(
         "entry and exit {:?} | entry points {} | exit points {}",
@@ -396,7 +402,7 @@ fn main() {
         &index.entry_points,
         &index.nested_repositories,
         &code,
-        &index.scope.as_ref().map(|scope| scope.deployables.as_slice()).unwrap_or(&[]),
+        index.scope.as_ref().map(|scope| scope.deployables.as_slice()).unwrap_or(&[]),
     );
     let project_of: std::collections::HashMap<&str, &str> = partition
         .assignment

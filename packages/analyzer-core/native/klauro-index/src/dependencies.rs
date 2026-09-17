@@ -264,7 +264,7 @@ pub fn derive(
     Dependencies { dependencies, classified, unclassified }
 }
 
-pub fn file_project<'a>(assignment: &'a [(String, String)]) -> HashMap<&'a str, &'a str> {
+pub fn file_project(assignment: &[(String, String)]) -> HashMap<&str, &str> {
     assignment
         .iter()
         .map(|(path, project)| (path.as_str(), project.as_str()))
