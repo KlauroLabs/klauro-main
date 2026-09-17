@@ -205,21 +205,26 @@ impl<'a> Extractor<'a> {
         }
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
-            if self.spec.name_leaf_kinds.contains(&child.kind()) {
+            if self.spec.name_leaf_kinds.contains(&child.kind()) && !self.skipped_word(child) {
                 return Some(self.text(child).to_string());
             }
         }
         None
     }
 
+    fn skipped_word(&self, node: Node) -> bool {
+        !self.spec.name_skip_words.is_empty()
+            && self.spec.name_skip_words.contains(&self.text(node).trim())
+    }
+
     fn leaf_name(&self, node: Node) -> Option<String> {
-        if self.spec.name_leaf_kinds.contains(&node.kind()) {
+        if self.spec.name_leaf_kinds.contains(&node.kind()) && !self.skipped_word(node) {
             return Some(self.text(node).to_string());
         }
         if !self.spec.name_descend.contains(&node.kind()) {
             let mut cursor = node.walk();
             for child in node.named_children(&mut cursor) {
-                if self.spec.name_leaf_kinds.contains(&child.kind()) {
+                if self.spec.name_leaf_kinds.contains(&child.kind()) && !self.skipped_word(child) {
                     return Some(self.text(child).to_string());
                 }
             }

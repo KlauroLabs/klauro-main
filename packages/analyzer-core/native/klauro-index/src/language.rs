@@ -43,6 +43,7 @@ pub struct LanguageSpec {
     pub binding_name_field: &'static str,
     pub binding_type_field: &'static str,
     pub binding_value_field: &'static str,
+    pub name_skip_words: &'static [&'static str],
 }
 
 const BASH_NAME_LEAVES: &[&str] = &["word", "command_name", "variable_name"];
@@ -60,6 +61,11 @@ const OCAML_NAME_LEAVES: &[&str] = &["value_name", "type_constructor", "module_n
 const NIX_NAME_LEAVES: &[&str] = &["identifier"];
 const FORTRAN_NAME_LEAVES: &[&str] = &["identifier", "name"];
 const MARKDOWN_NAME_LEAVES: &[&str] = &["inline", "heading_content"];
+const TCL_NAMESPACE_WORDS: &[&str] = &[
+    "eval", "import", "export", "delete", "current", "which", "origin", "parent", "children",
+    "qualifiers", "tail", "code", "inscope", "ensemble", "exists", "path", "upvar", "unknown",
+];
+const TCL_NAME_LEAVES: &[&str] = &["simple_word", "id"];
 const XML_NAME_LEAVES: &[&str] = &["Name"];
 const HCL_NAME_LEAVES: &[&str] = &["identifier", "template_literal"];
 
@@ -122,9 +128,9 @@ pub fn language_for(id: &str) -> Option<(Language, &'static LanguageSpec)> {
         "gleam" => tree_sitter_gleam::LANGUAGE.into(),
         "markdown" => tree_sitter_md::LANGUAGE.into(),
         "clojure" => crate::vendored::CLOJURE.into(),
+        "tcl" => crate::vendored::TCL.into(),
         "xml" => tree_sitter_xml::LANGUAGE_XML.into(),
         "hcl" | "terraform" => tree_sitter_hcl::LANGUAGE.into(),
-        "markdown" => tree_sitter_md::LANGUAGE.into(),
         "elixir" => tree_sitter_elixir::LANGUAGE.into(),
         "fsharp" => tree_sitter_fsharp::LANGUAGE_FSHARP.into(),
         "crystal" => tree_sitter_crystal::LANGUAGE.into(),
@@ -200,6 +206,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "fsharp",
@@ -242,6 +249,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "crystal",
@@ -284,6 +292,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "nim",
@@ -326,6 +335,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "v",
@@ -368,6 +378,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "d",
@@ -410,6 +421,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "pascal",
@@ -452,6 +464,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "ada",
@@ -494,6 +507,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "matlab",
@@ -536,6 +550,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "glsl",
@@ -578,6 +593,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "hlsl",
@@ -620,6 +636,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "odin",
@@ -662,6 +679,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "jsonnet",
@@ -704,6 +722,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "ini",
@@ -746,6 +765,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "svelte",
@@ -788,6 +808,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "erb",
@@ -830,6 +851,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "racket",
@@ -872,6 +894,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "scheme",
@@ -914,6 +937,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "commonlisp",
@@ -956,6 +980,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
 
     LanguageSpec {
@@ -999,6 +1024,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
 
     LanguageSpec {
@@ -1042,6 +1068,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "gdscript",
@@ -1084,6 +1111,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "sql",
@@ -1126,6 +1154,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "css",
@@ -1168,6 +1197,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "solidity",
@@ -1210,6 +1240,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "lua",
@@ -1252,6 +1283,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "dart",
@@ -1299,6 +1331,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "scala",
@@ -1341,6 +1374,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "haskell",
@@ -1383,6 +1417,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "zig",
@@ -1425,6 +1460,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "perl",
@@ -1467,6 +1503,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "groovy",
@@ -1509,6 +1546,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "proto",
@@ -1551,6 +1589,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "graphql",
@@ -1593,6 +1632,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "vim",
@@ -1638,6 +1678,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "clojure",
@@ -1680,6 +1721,50 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
+    },
+    LanguageSpec {
+        id: "tcl",
+        type_kinds: &[("namespace", NodeKind::Module)],
+        function_kinds: &[("procedure", NodeKind::Function)],
+        field_kinds: &[],
+        import_kinds: &[],
+        call_kinds: &["command"],
+        constructor_kinds: &[],
+        name_fields: &["name"],
+        parameter_fields: &["arguments"],
+        return_fields: &[],
+        body_fields: &["body"],
+        parameter_kinds: &["argument"],
+        name_descend: &["word_list", "arguments"],
+        name_leaf_kinds: TCL_NAME_LEAVES,
+        heritage_kinds: &[],
+        branch_kinds: &["if", "elseif", "else"],
+        loop_kinds: &["foreach", "while"],
+        return_kinds: &[],
+        throw_kinds: &[],
+        await_kinds: &[],
+        receiver_field: "object",
+        impl_kinds: &[],
+        impl_type_field: "type",
+        receiver_type_field: "",
+        return_child_kinds: &[],
+        type_requires_body: false,
+        decorator_kinds: &[],
+        decorator_container_kinds: &[],
+        name_whole_kinds: &[],
+        require_name_field: false,
+        keyword_kind: "",
+        keyword_target_field: "",
+        keyword_types: &[],
+        keyword_functions: &[],
+        text_kinds: &[],
+        lambda_kinds: &[],
+        binding_kinds: &[],
+        binding_name_field: "name",
+        binding_type_field: "type",
+        binding_value_field: "value",
+        name_skip_words: TCL_NAMESPACE_WORDS,
     },
     LanguageSpec {
         id: "cmake",
@@ -1722,6 +1807,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "markdown",
@@ -1764,6 +1850,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "make",
@@ -1806,6 +1893,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "powershell",
@@ -1848,6 +1936,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "elm",
@@ -1890,6 +1979,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "erlang",
@@ -1932,6 +2022,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "ocaml",
@@ -1974,6 +2065,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "julia",
@@ -2016,6 +2108,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "starlark",
@@ -2058,6 +2151,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "nix",
@@ -2100,6 +2194,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "r",
@@ -2142,6 +2237,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "lhs",
         binding_type_field: "type",
         binding_value_field: "rhs",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "objc",
@@ -2184,6 +2280,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "fortran",
@@ -2226,6 +2323,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "verilog",
@@ -2268,6 +2366,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "vhdl",
@@ -2310,6 +2409,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "gleam",
@@ -2352,6 +2452,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "markdown",
@@ -2394,6 +2495,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "xml",
@@ -2436,6 +2538,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "hcl",
@@ -2478,6 +2581,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
 
     LanguageSpec {
@@ -2521,6 +2625,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "left",
         binding_type_field: "type",
         binding_value_field: "right",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "go",
@@ -2566,6 +2671,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "left",
         binding_type_field: "type",
         binding_value_field: "right",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "java",
@@ -2616,6 +2722,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "declarator",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "csharp",
@@ -2668,6 +2775,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "declarator",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "rust",
@@ -2716,6 +2824,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "pattern",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "ruby",
@@ -2758,6 +2867,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "left",
         binding_type_field: "type",
         binding_value_field: "right",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "php",
@@ -2808,6 +2918,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "left",
         binding_type_field: "type",
         binding_value_field: "right",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "c",
@@ -2857,6 +2968,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "declarator",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "cpp",
@@ -2907,6 +3019,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "declarator",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "swift",
@@ -2956,6 +3069,7 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "name",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
     LanguageSpec {
         id: "kotlin",
@@ -3001,5 +3115,6 @@ static SPECS: &[LanguageSpec] = &[
         binding_name_field: "declarator",
         binding_type_field: "type",
         binding_value_field: "value",
+        name_skip_words: &[],
     },
 ];
