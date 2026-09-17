@@ -1312,7 +1312,7 @@ fn string_literals(text: &str) -> Vec<String> {
 
 fn base_name(text: &str) -> &str {
     let text = text.trim();
-    let end = text.find(['<', '(', '{', '\n', ' ']).unwrap_or(text.len());
+    let end = text.find(['<', '(', '[', '{', '\n', ' ']).unwrap_or(text.len());
     text[..end].trim()
 }
 

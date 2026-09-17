@@ -653,6 +653,38 @@ pub fn resolve(index: &Index) -> Resolution {
 
     let mut external_nodes: HashMap<String, IndexNode> = HashMap::new();
 
+    let mut supertypes: HashMap<u32, Vec<u32>> = HashMap::new();
+    for fact in index.type_references {
+        if !matches!(fact.kind, EdgeKind::Extends | EdgeKind::Implements) {
+            continue;
+        }
+        let Some(source) = symbols.position.get(fact.source.as_str()).copied() else {
+            continue;
+        };
+        if let Origin::Declared(found) = resolver.annotated(fact.file, &fact.name)
+            && found != source
+        {
+            supertypes.entry(source).or_default().push(found);
+        }
+    }
+
+    let inherited = |owner: u32, name: &str| -> Option<u32> {
+        let mut seen = HashSet::new();
+        let mut pending = vec![owner];
+        while let Some(at) = pending.pop() {
+            if !seen.insert(at) {
+                continue;
+            }
+            if let Some(found) = symbols.member(at, name) {
+                return Some(found);
+            }
+            if let Some(above) = supertypes.get(&at) {
+                pending.extend(above.iter().copied());
+            }
+        }
+        None
+    };
+
     for fact in index.type_references {
         if fact.kind == EdgeKind::HasMethod {
             continue;
@@ -762,7 +794,7 @@ pub fn resolve(index: &Index) -> Resolution {
         match (origin, fact.receiver.as_deref()) {
             (Origin::Declared(found), Some(_)) => {
                 let node = &symbols.nodes[found as usize];
-                match symbols.member(found, &fact.callee) {
+                match inherited(found, &fact.callee) {
                     Some(member) => {
                         emit(symbols.nodes[member as usize].id.clone());
                         continue;

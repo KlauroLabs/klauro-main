@@ -3290,7 +3290,7 @@ static SPECS: &[LanguageSpec] = &[
         parameter_kinds: &["parameter", "class_parameter"],
         name_descend: &["variable_declaration"],
         name_leaf_kinds: COMMON_NAME_LEAVES,
-        heritage_kinds: &["delegation_specifier", "constructor_invocation"],
+        heritage_kinds: &["delegation_specifiers", "delegation_specifier", "constructor_invocation"],
         branch_kinds: &["if_expression", "when_expression"],
         loop_kinds: &["for_statement", "while_statement", "do_while_statement"],
         return_kinds: &["return_expression", "jump_expression"],

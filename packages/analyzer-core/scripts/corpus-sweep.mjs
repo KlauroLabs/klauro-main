@@ -17,6 +17,20 @@ const WITHOUT_A_GRAMMAR = new Map([
   ['installer_scripts', 'batch and installer scripts have no grammar']
 ]);
 
+// A repo with a known served surface, and the floor its surface must hold. Pass 1.6 measures
+// reachability from entry points, so a surface that silently drops reports working code as
+// unreachable. Test entries are excluded: saleor declares 12,817 of them and 1,156 real ones.
+const SERVED_SURFACE = new Map([
+  ['cal.com', { served: 300, exits: 570 }],
+  ['immich', { served: 720, exits: 250 }],
+  ['jellyfin', { served: 395, exits: 1 }],
+  ['mastodon', { served: 230, exits: 250 }],
+  ['monica', { served: 215, exits: 4 }],
+  ['saleor', { served: 1150, exits: 9500 }],
+  ['superset', { served: 290, exits: 300 }],
+  ['traefik', { served: 25, exits: 820 }]
+]);
+
 function index(root, repeat) {
   const run = spawnSync(INDEXER, [root], {
     env: { ...process.env, KLAURO_REPORT_COVERAGE: '1' },
@@ -40,6 +54,8 @@ function index(root, repeat) {
     again,
     digest: createHash('sha1').update(run.stdout).digest('hex').slice(0, 12),
     files: number(/\((\d+) files\)/),
+    served: number(/\| served (\d+)/),
+    exits: number(/exit points (\d+)/),
     errors: number(/parse errors (\d+)/),
     milliseconds: seconds(report, /parse ([\d.]+)(m?s)/) + seconds(report, /discover ([\d.]+)(m?s)/) +
       seconds(report, /resolve ([\d.]+)(m?s)/) + seconds(report, /graph ([\d.]+)(m?s)/),
@@ -59,7 +75,10 @@ const repos = readdirSync(CORPUS)
 
 const totals = new Map();
 const failures = [];
-console.log('repo'.padEnd(30) + 'files'.padStart(7) + 'errors'.padStart(8) + 't1 ms'.padStart(8) + '  digest');
+console.log(
+  'repo'.padEnd(30) + 'files'.padStart(7) + 'errors'.padStart(8) + 't1 ms'.padStart(8) +
+    'served'.padStart(8) + 'exits'.padStart(8) + '  digest'
+);
 for (const repo of repos) {
   const measured = index(path.join(CORPUS, repo), process.argv.includes('--twice'));
   if (measured.failed) {
@@ -76,6 +95,19 @@ for (const repo of repos) {
   if (measured.again && measured.again !== measured.digest) {
     failures.push(`${repo} indexed differently on a second run`);
   }
+  const surface = SERVED_SURFACE.get(repo);
+  if (surface) {
+    if (measured.served < surface.served) {
+      failures.push(
+        `${repo} found ${measured.served} served entry points, below its floor of ${surface.served}`
+      );
+    }
+    if (measured.exits < surface.exits) {
+      failures.push(
+        `${repo} found ${measured.exits} exit points, below its floor of ${surface.exits}`
+      );
+    }
+  }
   const allowance = Math.max(200, measured.files * MILLISECONDS_PER_FILE);
   if (measured.milliseconds > allowance) {
     failures.push(
@@ -87,6 +119,8 @@ for (const repo of repos) {
       String(measured.files).padStart(7) +
       String(measured.errors).padStart(8) +
       String(Math.round(measured.milliseconds)).padStart(8) +
+      String(measured.served).padStart(8) +
+      String(measured.exits).padStart(8) +
       '  ' + measured.digest
   );
 }

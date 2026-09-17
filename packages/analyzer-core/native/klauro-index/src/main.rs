@@ -326,13 +326,16 @@ fn main() {
         &index.calls,
         &paths,
         &index.registrations,
+        &index.type_references,
         &resolution,
     );
     let derived_elapsed = derive_started.elapsed();
+    let served = derived.entry_points.iter().filter(|entry| entry.kind != "test").count();
     eprintln!(
-        "entry and exit {:?} | entry points {} | exit points {}",
+        "entry and exit {:?} | entry points {} | served {} | exit points {}",
         derived_elapsed,
         derived.entry_points.len(),
+        served,
         derived.exit_points.len()
     );
     index.entry_points = derived.entry_points;

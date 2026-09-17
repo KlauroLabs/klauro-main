@@ -182,6 +182,46 @@ fn decorator_entry(decorator: &Decorator) -> Option<(&'static str, String, Optio
     }
 }
 
+struct EntryBase {
+    base: &'static str,
+    kind: &'static str,
+    members: &'static [&'static str],
+}
+
+const fn base(base: &'static str, kind: &'static str, members: &'static [&'static str]) -> EntryBase {
+    EntryBase { base, kind, members }
+}
+
+static GRAPHQL_MEMBERS: &[&str] = &["resolve_*", "mutate", "mutate_and_get_payload", "perform_mutation"];
+static COMMAND_MEMBERS: &[&str] = &["execute", "handle"];
+
+static ENTRY_BASES: &[EntryBase] = &[
+    base("Activity", "lifecycle", &[]),
+    base("AppCompatActivity", "lifecycle", &[]),
+    base("Application", "lifecycle", &[]),
+    base("BaseCommand", "cli", COMMAND_MEMBERS),
+    base("BroadcastReceiver", "lifecycle", &[]),
+    base("ComponentActivity", "lifecycle", &[]),
+    base("Fragment", "lifecycle", &[]),
+    base("Mutation", "graphql", GRAPHQL_MEMBERS),
+    base("ObjectType", "graphql", GRAPHQL_MEMBERS),
+    base("Service", "lifecycle", &[]),
+    base("Subscription", "graphql", GRAPHQL_MEMBERS),
+    base("Worker", "lifecycle", &[]),
+];
+
+fn matches_member(pattern: &str, name: &str) -> bool {
+    match pattern.strip_suffix('*') {
+        Some(prefix) => name.starts_with(prefix) && name.len() > prefix.len(),
+        None => pattern == name,
+    }
+}
+
+fn entry_base(name: &str) -> Option<&'static EntryBase> {
+    let leaf = name.rsplit('.').next().unwrap_or(name);
+    ENTRY_BASES.iter().find(|entry| entry.base == leaf)
+}
+
 static FILE_OPERATIONS: &[&str] = &[
     "appendfile", "copyfile", "create", "createreadstream", "createwritestream", "mkdir",
     "mkdirall", "open", "openfile", "readall", "readdir", "readfile", "remove", "removeall",
@@ -238,6 +278,25 @@ fn join_paths(base: &str, path: &str) -> String {
     format!("{base}/{path}")
 }
 
+static SESSION_OPERATIONS: &[&str] = &[
+    "add", "add_all", "bulk_save_objects", "commit", "delete", "execute", "flush", "merge",
+    "query", "refresh", "rollback", "scalar", "scalars",
+];
+
+fn manager_exit(receiver: &str, operation: &str) -> Option<&'static str> {
+    let manager = receiver.rsplit('.').next()?.trim();
+    if manager == "objects" {
+        return Some("database");
+    }
+    let operation = operation.to_ascii_lowercase();
+    if (manager == "session" || manager == "db_session")
+        && SESSION_OPERATIONS.binary_search(&operation.as_str()).is_ok()
+    {
+        return Some("database");
+    }
+    None
+}
+
 fn root_binding(receiver: &str) -> &str {
     let end = receiver.find(['.', '[', '(', ' ']).unwrap_or(receiver.len());
     &receiver[..end]
@@ -274,6 +333,7 @@ pub fn derive(
     calls: &[CallFact],
     files: &[String],
     registrations: &[RegistrationFact],
+    type_references: &[TypeReferenceFact],
     resolution: &Resolution,
 ) -> Derived {
     let Resolution { modules, local, unique_units, call_origins, .. } = resolution;
@@ -346,6 +406,84 @@ pub fn derive(
                     registrar: decorator.name.clone(),
                 });
             }
+        }
+    }
+
+    let mut by_name: HashMap<&str, &IndexNode> = HashMap::new();
+    let mut above: HashMap<&str, Vec<&str>> = HashMap::new();
+    for node in nodes {
+        if node.kind.is_type() {
+            by_name.entry(node.name.as_str()).or_insert(node);
+        }
+    }
+    for fact in type_references {
+        if !matches!(fact.kind, EdgeKind::Extends | EdgeKind::Implements) {
+            continue;
+        }
+        above.entry(fact.source.as_str()).or_default().push(fact.name.as_str());
+    }
+    let inherits = |node: &IndexNode| -> Option<&'static EntryBase> {
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut pending: Vec<&str> = vec![node.id.as_str()];
+        while let Some(at) = pending.pop() {
+            if !seen.insert(at) {
+                continue;
+            }
+            for name in above.get(at).into_iter().flatten() {
+                if let Some(found) = entry_base(name) {
+                    return Some(found);
+                }
+                let leaf = name.rsplit('.').next().unwrap_or(name);
+                if let Some(declared) = by_name.get(leaf) {
+                    pending.push(declared.id.as_str());
+                }
+            }
+        }
+        None
+    };
+
+    let mut members: HashMap<&str, Vec<&IndexNode>> = HashMap::new();
+    for node in nodes {
+        if let Some(parent) = node.parent.as_deref()
+            && matches!(node.kind, NodeKind::Method | NodeKind::Function)
+        {
+            members.entry(parent).or_default().push(node);
+        }
+    }
+    for node in nodes {
+        if !node.kind.is_type() {
+            continue;
+        }
+        let Some(found) = inherits(node) else { continue };
+        if found.members.is_empty() {
+            entry_points.push(EntryPoint {
+                id: format!("entry:{}", node.id),
+                kind: found.kind,
+                name: node.name.clone(),
+                method: None,
+                path: None,
+                handler: node.id.clone(),
+                file: node.file,
+                line: node.span.line,
+                registrar: found.base.to_string(),
+            });
+            continue;
+        }
+        for member in members.get(node.id.as_str()).into_iter().flatten() {
+            if !found.members.iter().any(|pattern| matches_member(pattern, &member.name)) {
+                continue;
+            }
+            entry_points.push(EntryPoint {
+                id: format!("entry:{}", member.id),
+                kind: found.kind,
+                name: member.name.clone(),
+                method: None,
+                path: None,
+                handler: member.id.clone(),
+                file: member.file,
+                line: member.span.line,
+                registrar: found.base.to_string(),
+            });
         }
     }
 
@@ -466,6 +604,21 @@ pub fn derive(
             continue;
         };
         let binding = root_binding(receiver);
+        if let Some(kind) = manager_exit(receiver, &call.callee) {
+            let operation = tail(&call.callee);
+            exit_points.push(ExitPoint {
+                id: format!("exit:{}:{}", files[call.file as usize], position),
+                kind,
+                name: format!("{receiver}.{operation}"),
+                source: source.clone(),
+                target: binding.to_string(),
+                operation: operation.to_string(),
+                file: call.file,
+                line: call.line,
+                awaited: call.context.awaited,
+            });
+            continue;
+        }
         let origin = match call_origins
             .get(&(source.clone(), receiver.to_string()))
             .or_else(|| modules.get(&(call.file, receiver.to_string())))
