@@ -733,6 +733,17 @@ pub fn resolve(index: &Index) -> Resolution {
             emit(symbols.nodes[found as usize].id.clone());
             continue;
         }
+        if fact.receiver.is_none()
+            && let Some(found) = symbols.unique_type.get(fact.callee.as_str()).copied()
+        {
+            let built = symbols.member(found, "constructor").unwrap_or(found);
+            edges.push(IndexEdge {
+                source: caller.to_string(),
+                target: symbols.nodes[built as usize].id.clone(),
+                kind: EdgeKind::Instantiates,
+            });
+            continue;
+        }
         if fact.receiver.is_some()
             && let Some(found) = symbols.unique_member.get(fact.callee.as_str()).copied()
         {
