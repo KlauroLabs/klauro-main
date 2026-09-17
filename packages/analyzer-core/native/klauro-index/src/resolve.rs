@@ -326,6 +326,13 @@ impl<'a> Resolver<'a> {
         if let Some(owner) = self.symbols.owning_type(unit)
             && let Some(member) = self.symbols.member(owner, name)
         {
+            let held = &self.symbols.nodes[member as usize];
+            if !held.kind.is_type()
+                && let Some(annotation) = held.type_annotation.as_deref()
+                && let Origin::Declared(found) = self.annotated(held.file, annotation)
+            {
+                return Origin::Declared(found);
+            }
             return Origin::Declared(member);
         }
         if let Some(found) = self

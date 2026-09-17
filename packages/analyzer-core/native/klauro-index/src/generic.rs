@@ -963,17 +963,25 @@ impl<'a> Extractor<'a> {
     }
 
     fn declare_binding(&mut self, node: Node, scope: &Scope) {
-        let Some(name) = node
-            .child_by_field_name(self.spec.binding_name_field)
-            .map(|found| self.text(found).trim().to_string())
-            .filter(|name| !name.is_empty() && !name.contains(char::is_whitespace))
-        else {
-            return;
+        let declarator = node.child_by_field_name(self.spec.binding_name_field);
+        let name = match declarator {
+            Some(declarator) => {
+                let named = declarator.child_by_field_name("name").unwrap_or(declarator);
+                self.text(named).trim().to_string()
+            }
+            None => self.name_of(node).unwrap_or_default(),
         };
+        if name.is_empty() || name.contains(char::is_whitespace) {
+            return;
+        }
         let annotation = node
             .child_by_field_name(self.spec.binding_type_field)
+            .or_else(|| self.typed_child(node))
             .and_then(|found| bare_type(self.text(found)));
-        let value = node.child_by_field_name(self.spec.binding_value_field);
+        let value = node
+            .child_by_field_name(self.spec.binding_value_field)
+            .or_else(|| declarator.and_then(|d| d.child_by_field_name(self.spec.binding_value_field)))
+            .or_else(|| self.assigned_child(node));
         let constructed = value
             .filter(|value| self.spec.constructor_kinds.contains(&value.kind()))
             .and_then(|value| self.name_of(value));
@@ -991,6 +999,20 @@ impl<'a> Extractor<'a> {
             constructed,
             from_call,
         });
+    }
+
+    fn typed_child<'t>(&self, node: Node<'t>) -> Option<Node<'t>> {
+        let mut cursor = node.walk();
+        node.named_children(&mut cursor)
+            .find(|child| child.kind().ends_with("type") || child.kind() == "type_identifier")
+    }
+
+    fn assigned_child<'t>(&self, node: Node<'t>) -> Option<Node<'t>> {
+        let mut cursor = node.walk();
+        node.named_children(&mut cursor).find(|child| {
+            self.spec.call_kinds.contains(&child.kind())
+                || self.spec.constructor_kinds.contains(&child.kind())
+        })
     }
 
     fn called_name(&self, node: Node) -> Option<String> {
