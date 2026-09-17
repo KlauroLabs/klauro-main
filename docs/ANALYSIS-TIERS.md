@@ -54,6 +54,27 @@ get 64 KiB, because a document that declares rather than records is small. A sav
 A structured document contributes its schema. One that overflows the schema budget is records rather
 than declarations, and yields a single node carrying its size.
 
+**T1 is not finished.** Discovery and parse hold across the corpus: every language with a grammar
+reads at or above 95%, and the seven without one are named in
+`analyzer-core/scripts/corpus-sweep.mjs`, which fails on a language below the floor, a repository
+over its time allowance, or an index that differs between two runs.
+
+The three passes that need cross-language semantics do not hold. Measured over 38 repositories:
+
+| Pass | TypeScript | Elsewhere |
+|---|---|---|
+| 1.3 Resolve | 84% of calls | C# 16%, Rust 21%, PHP 29%, Python 43% |
+| 1.4 Exit points | 1,851 | Python 0, Rust 0, C 0, C# 1 |
+| 1.5 ICELOT | all six facets | Input and Output only; Effects and Telemetry follow 1.4 |
+| 1.6 Graph | 75% reachable | PHP 1%, Haskell 2%, Ruby 4% |
+
+On one C# repository, 55,118 calls name a declaration that repository itself makes and about 15,800
+resolve. The resolver's model is not the problem — receiver paths, member lookup and the origin of a
+name are all there. What is missing outside TypeScript are the facts it walks: field and property
+types on declarations, imports that bind a symbol to a package, and a member table per declared
+type. Until the sweep gates resolution and exit points per language the way it gates coverage, this
+can rot back without anything going red.
+
 ---
 
 ## T2 — Scope
