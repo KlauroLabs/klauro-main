@@ -41,6 +41,8 @@ struct IndexedFile {
     extracted: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     oversize: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    generated: bool,
 }
 
 #[derive(Serialize)]
@@ -69,54 +71,64 @@ struct Index {
     nested_repositories: Vec<String>,
 }
 
+enum Read {
+    Facts(FileFacts),
+    Generated,
+    Unreadable,
+}
+
 fn extract(
     path: &str,
     absolute: &std::path::Path,
     file: u32,
     language_id: Option<&str>,
+) -> Read {
+    let Ok(mut source) = std::fs::read(absolute) else {
+        return Read::Unreadable;
+    };
+    if generated::is_generated(&source) {
+        return Read::Generated;
+    }
+    match read(path, &mut source, file, language_id) {
+        Some(facts) => Read::Facts(facts),
+        None => Read::Unreadable,
+    }
+}
+
+fn read(
+    path: &str,
+    source: &mut Vec<u8>,
+    file: u32,
+    language_id: Option<&str>,
 ) -> Option<FileFacts> {
+    let lines = |source: &[u8]| source.iter().filter(|byte| **byte == b'\n').count() as u32 + 1;
     if let Some(mut parser) = typescript::parser_for(path)
         .or_else(|| typescript::parser_for_language(language_id?))
     {
-        let mut source = std::fs::read(absolute).ok()?;
-        if generated::is_generated(&source) {
-            return None;
-        }
         if language_id.is_some_and(typescript::wraps_script) {
-            source_rewrite::component_script(&mut source);
+            source_rewrite::component_script(source);
         }
-        source_rewrite::grammar_limitations(&mut source);
+        source_rewrite::grammar_limitations(source);
         let tree = parser.parse(&source, None)?;
-        report_first_error(path, &source, &tree);
-        let lines = source.iter().filter(|byte| **byte == b'\n').count() as u32 + 1;
-        return Some(typescript::Extractor::new(&source, file, path).run(&tree, path, lines));
+        report_first_error(path, source, &tree);
+        return Some(typescript::Extractor::new(source, file, path).run(&tree, path, lines(source)));
     }
     if dockerfile::is_dockerfile(path) {
-        let source = std::fs::read_to_string(absolute).ok()?;
-        return Some(dockerfile::extract(&source, file, path));
+        let text = std::str::from_utf8(source).ok()?;
+        return Some(dockerfile::extract(text, file, path));
     }
     let declared = language_id.or_else(|| language_of(path));
     if let Some(id) = declared
         && let Some((mut parser, spec)) = structured::parser_for(id)
     {
-        let source = std::fs::read(absolute).ok()?;
-        if generated::is_generated(&source) {
-            return None;
-        }
         let tree = parser.parse(&source, None)?;
-        let lines = source.iter().filter(|byte| **byte == b'\n').count() as u32 + 1;
-        return Some(structured::Extractor::new(&source, file, path, spec).run(&tree, path, lines));
+        return Some(structured::Extractor::new(source, file, path, spec).run(&tree, path, lines(source)));
     }
     let (language, spec) = language::language_for(declared?)?;
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).ok()?;
-    let source = std::fs::read(absolute).ok()?;
-    if generated::is_generated(&source) {
-        return None;
-    }
     let tree = parser.parse(&source, None)?;
-    let lines = source.iter().filter(|byte| **byte == b'\n').count() as u32 + 1;
-    Some(generic::Extractor::new(&source, file, path, spec).run(&tree, path, lines))
+    Some(generic::Extractor::new(source, file, path, spec).run(&tree, path, lines(source)))
 }
 
 fn language_of(path: &str) -> Option<&'static str> {
@@ -159,13 +171,26 @@ fn main() {
     let discovered = started.elapsed();
 
     let parse_started = Instant::now();
-    let facts: Vec<FileFacts> = found
+    let reads: Vec<(u32, Read)> = found
         .files
         .par_iter()
         .enumerate()
         .filter(|(_, entry)| route::readable(entry))
-        .filter_map(|(file, entry)| extract(&entry.path, &entry.absolute, file as u32, entry.language))
+        .map(|(file, entry)| {
+            (file as u32, extract(&entry.path, &entry.absolute, file as u32, entry.language))
+        })
         .collect();
+    let mut generated_files = std::collections::HashSet::new();
+    let mut facts = Vec::with_capacity(reads.len());
+    for (file, read) in reads {
+        match read {
+            Read::Facts(found) => facts.push(found),
+            Read::Generated => {
+                generated_files.insert(file);
+            }
+            Read::Unreadable => {}
+        }
+    }
     let parsed = parse_started.elapsed();
 
     let mut index = Index {
@@ -179,6 +204,7 @@ fn main() {
                 language: file.language,
                 extracted: false,
                 oversize: !route::readable(file),
+                generated: false,
             })
             .collect(),
         nodes: Vec::new(),
@@ -224,12 +250,13 @@ fn main() {
 
     for (position, file) in index.files.iter_mut().enumerate() {
         file.extracted = extracted_files.contains(&(position as u32));
+        file.generated = generated_files.contains(&(position as u32));
     }
     if std::env::var("KLAURO_REPORT_COVERAGE").is_ok() {
         let mut by_language: std::collections::BTreeMap<&str, (u32, u32)> =
             std::collections::BTreeMap::new();
         for file in &index.files {
-            if file.kind != discovery::FileKind::Source {
+            if file.kind != discovery::FileKind::Source || file.generated {
                 continue;
             }
             let entry = by_language.entry(file.language.unwrap_or("unknown")).or_insert((0, 0));
