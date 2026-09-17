@@ -245,6 +245,29 @@ fn runtime_member(name: &str) -> Option<&'static RuntimeMember> {
         .map(|at| &RUNTIME_MEMBERS[at])
 }
 
+/// The single type argument of a holder, or nothing when the annotation names none or several.
+/// `Lazy<Session>` holds a `Session`; `Map<String, Session>` holds neither of them.
+fn sole_type_argument(annotation: &str) -> Option<&str> {
+    let open = annotation.find(['<', '['])?;
+    let close = annotation.rfind(['>', ']'])?;
+    if close <= open + 1 {
+        return None;
+    }
+    let inside = annotation[open + 1..close].trim();
+    let mut depth = 0usize;
+    for (at, byte) in inside.char_indices() {
+        match byte {
+            '<' | '[' | '(' => depth += 1,
+            '>' | ']' | ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => return None,
+            _ => {
+                let _ = at;
+            }
+        }
+    }
+    (!inside.is_empty()).then_some(inside)
+}
+
 fn base_type_name(annotation: &str) -> &str {
     let annotation = annotation.trim().trim_start_matches(['&', '*']);
     let end = annotation
@@ -407,10 +430,12 @@ impl<'a> Resolver<'a> {
             return Origin::Unknown;
         };
         let mut origin = self.root(unit, file, first);
+        let mut held = self.held(unit, file, first);
         for part in parts {
             origin = match origin {
                 Origin::Declared(owner) if self.symbols.nodes[owner as usize].kind.is_type() => {
-                    match self.symbols.member_type(owner, part) {
+                    held = self.symbols.member_type(owner, part);
+                    match held {
                         Some(annotation) => {
                             self.annotated(self.symbols.nodes[owner as usize].file, annotation)
                         }
@@ -418,10 +443,46 @@ impl<'a> Resolver<'a> {
                     }
                 }
                 Origin::Package(specifier) => Origin::Package(specifier),
-                _ => self.returned(part),
+                _ if part == "value" => match held.and_then(sole_type_argument) {
+                    Some(inner) => {
+                        held = Some(inner);
+                        self.annotated(file, inner)
+                    }
+                    None => {
+                        held = None;
+                        self.returned(part)
+                    }
+                },
+                _ => {
+                    held = None;
+                    self.returned(part)
+                }
             };
         }
         origin
+    }
+
+    /// The annotation a name carries where it is declared, so a holder can be unwrapped when
+    /// the holder type itself is not declared here.
+    fn held(&self, unit: u32, file: u32, name: &'a str) -> Option<&'a str> {
+        let holder = &self.symbols.nodes[unit as usize];
+        if let Some(signature) = holder.signature.as_ref()
+            && let Some(parameter) = signature.parameters.iter().find(|p| p.name == name)
+            && let Some(annotation) = parameter.type_annotation.as_deref()
+        {
+            return Some(annotation);
+        }
+        if let Some(annotation) = self.bindings.annotation(&holder.id, file, name) {
+            return Some(annotation);
+        }
+        let owner = self.symbols.owning_type(unit)?;
+        if let Some(signature) = self.symbols.nodes[owner as usize].signature.as_ref()
+            && let Some(parameter) = signature.parameters.iter().find(|p| p.name == name)
+            && let Some(annotation) = parameter.type_annotation.as_deref()
+        {
+            return Some(annotation);
+        }
+        self.symbols.member_type(owner, name)
     }
 }
 

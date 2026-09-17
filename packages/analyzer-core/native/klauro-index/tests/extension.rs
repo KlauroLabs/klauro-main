@@ -63,3 +63,12 @@ fn a_unique_extension_still_resolves_without_a_competing_import() {
         "nothing else declares or imports collectAsState here"
     );
 }
+
+#[test]
+fn a_holder_is_unwrapped_to_reach_an_inherited_member() {
+    let index = index();
+    assert!(
+        calls(&index, "function:open:16", "function:start:8"),
+        "Lazy<Job> unwraps to Job, which inherits start from BaseJob"
+    );
+}
