@@ -41,7 +41,8 @@ static HTTP_METHODS: &[&str] = &[
 
 static LIFECYCLE_NAMES: &[&str] = &["Main", "main", "wmain"];
 
-static PATH_REGISTRARS: &[&str] = &["handle", "handlefunc", "handler", "handlerfunc", "route"];
+static PATH_REGISTRARS: &[&str] =
+    &["handle", "handlefunc", "handler", "handlerfunc", "path", "re_path", "route"];
 
 static EVENT_REGISTRARS: &[&str] = &["addEventListener", "on", "once", "prependListener"];
 static TEST_REGISTRARS: &[&str] = &["bench", "describe", "it", "suite", "test"];
