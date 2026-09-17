@@ -236,6 +236,10 @@ fn generated_code_is_not_indexed() {
         "prose about generated code is not a generated-file banner"
     );
     assert!(
+        !names.contains(&"SnapshotModel"),
+        "a tool's auto-generated marker is a banner"
+    );
+    assert!(
         !names.contains(&"BannerModel"),
         "a banner naming its generator is, whatever the language"
     );
