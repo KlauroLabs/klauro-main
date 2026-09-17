@@ -6,6 +6,7 @@ import * as path from 'node:path';
 const CORPUS = process.argv[2] || path.join(process.env.HOME, 'dev', 'corpus');
 const INDEXER = path.resolve('native/klauro-index/target/release/klauro-index');
 const COVERAGE_FLOOR = 95;
+const MILLISECONDS_PER_FILE = 0.5;
 const MINIMUM_FILES = 15;
 
 const WITHOUT_A_GRAMMAR = new Map([
@@ -18,7 +19,7 @@ const WITHOUT_A_GRAMMAR = new Map([
   ['installer_scripts', 'batch and installer scripts have no grammar']
 ]);
 
-function index(root) {
+function index(root, repeat) {
   const run = spawnSync(INDEXER, [root], {
     env: { ...process.env, KLAURO_REPORT_COVERAGE: '1' },
     maxBuffer: 1 << 30
@@ -34,7 +35,11 @@ function index(root) {
   const coverage = [...report.matchAll(/^ {2}coverage (\S+)\s+(\d+) of\s+(\d+)$/gm)].map(
     ([, language, extracted, total]) => ({ language, extracted: Number(extracted), total: Number(total) })
   );
+  const again = repeat
+    ? createHash('sha1').update(spawnSync(INDEXER, [root], { maxBuffer: 1 << 30 }).stdout).digest('hex').slice(0, 12)
+    : undefined;
   return {
+    again,
     digest: createHash('sha1').update(run.stdout).digest('hex').slice(0, 12),
     files: number(/\((\d+) files\)/),
     errors: number(/parse errors (\d+)/),
@@ -58,7 +63,7 @@ const totals = new Map();
 const failures = [];
 console.log('repo'.padEnd(30) + 'files'.padStart(7) + 'errors'.padStart(8) + 't1 ms'.padStart(8) + '  digest');
 for (const repo of repos) {
-  const measured = index(path.join(CORPUS, repo));
+  const measured = index(path.join(CORPUS, repo), process.argv.includes('--twice'));
   if (measured.failed) {
     failures.push(`${repo} did not index: ${measured.failed}`);
     console.log(repo.padEnd(30) + '  FAILED');
@@ -69,6 +74,15 @@ for (const repo of repos) {
     running.extracted += extracted;
     running.total += total;
     totals.set(language, running);
+  }
+  if (measured.again && measured.again !== measured.digest) {
+    failures.push(`${repo} indexed differently on a second run`);
+  }
+  const allowance = Math.max(200, measured.files * MILLISECONDS_PER_FILE);
+  if (measured.milliseconds > allowance) {
+    failures.push(
+      `${repo} spent ${Math.round(measured.milliseconds)} ms on ${measured.files} files, over its ${Math.round(allowance)} ms allowance`
+    );
   }
   console.log(
     repo.padEnd(30) +
