@@ -6,6 +6,7 @@ use crate::paths::{directory_of, normalize};
 
 pub struct Index<'a> {
     pub files: &'a [String],
+    pub languages: &'a [&'a str],
     pub nodes: &'a [IndexNode],
     pub imports: &'a [ImportFact],
     pub calls: &'a [CallFact],
@@ -602,6 +603,25 @@ pub fn resolve(index: &Index) -> Resolution {
         }
     }
 
+    let mut sole_package: HashMap<u32, &str> = HashMap::new();
+    for fact in index.imports {
+        if fact.specifier.starts_with('.') {
+            continue;
+        }
+        match sole_package.entry(fact.file) {
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(fact.specifier.as_str());
+            }
+            std::collections::hash_map::Entry::Occupied(mut slot) => {
+                if *slot.get() != fact.specifier.as_str() {
+                    slot.insert("");
+                }
+            }
+        }
+    }
+    let declared_anywhere: HashSet<&str> =
+        index.nodes.iter().map(|node| node.name.as_str()).collect();
+
     let mut unresolved_names: HashMap<String, u32> = HashMap::new();
     let mut call_origins: HashMap<(String, String), String> = HashMap::new();
     let mut package_calls = 0;
@@ -748,6 +768,17 @@ pub fn resolve(index: &Index) -> Resolution {
             && let Some(found) = symbols.unique_member.get(fact.callee.as_str()).copied()
         {
             emit(symbols.nodes[found as usize].id.clone());
+            continue;
+        }
+
+        let language = index.languages.get(fact.file as usize).copied().unwrap_or("");
+        if !crate::builtins::is_builtin(language, &fact.callee)
+            && !declared_anywhere.contains(fact.callee.as_str())
+            && let Some(specifier) = sole_package.get(&fact.file).copied()
+            && !specifier.is_empty()
+        {
+            emit(declare_external(&mut external_nodes, "package", specifier, &member));
+            package_calls += 1;
             continue;
         }
 

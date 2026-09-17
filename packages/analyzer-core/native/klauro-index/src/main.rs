@@ -1,4 +1,5 @@
 mod architecture;
+mod builtins;
 mod dependencies;
 mod discovery;
 mod dockerfile;
@@ -289,6 +290,7 @@ fn main() {
     let paths: Vec<String> = index.files.iter().map(|file| file.path.clone()).collect();
     let mut resolution = resolve::resolve(&resolve::Index {
         files: &paths,
+        languages: &index.files.iter().map(|file| file.language.unwrap_or("")).collect::<Vec<_>>(),
         nodes: &index.nodes,
         imports: &index.imports,
         calls: &index.calls,
