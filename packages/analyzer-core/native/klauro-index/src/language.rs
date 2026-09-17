@@ -45,6 +45,7 @@ const GDSCRIPT_NAME_LEAVES: &[&str] = &["name", "identifier"];
 const CSS_NAME_LEAVES: &[&str] = &["class_name", "id_name", "tag_name", "identifier", "property_name"];
 const HASKELL_NAME_LEAVES: &[&str] = &["variable", "name", "module_id", "constructor"];
 const GRAPHQL_NAME_LEAVES: &[&str] = &["name"];
+const VIM_NAME_LEAVES: &[&str] = &["identifier", "scoped_identifier", "name", "command_name"];
 const CMAKE_NAME_LEAVES: &[&str] = &["unquoted_argument", "identifier", "argument"];
 const MAKE_NAME_LEAVES: &[&str] = &["word", "targets"];
 const POWERSHELL_NAME_LEAVES: &[&str] = &["function_name", "simple_name", "command_name_expr"];
@@ -99,6 +100,7 @@ pub fn language_for(id: &str) -> Option<(Language, &'static LanguageSpec)> {
         "proto" => tree_sitter_proto::LANGUAGE.into(),
         "graphql" => tree_sitter_graphql::LANGUAGE.into(),
         "cmake" => tree_sitter_cmake::LANGUAGE.into(),
+        "vim" => tree_sitter_vim::language(),
         "make" => tree_sitter_make::LANGUAGE.into(),
         "powershell" => tree_sitter_powershell::LANGUAGE.into(),
         "elm" => tree_sitter_elm::LANGUAGE.into(),
@@ -1393,6 +1395,46 @@ static SPECS: &[LanguageSpec] = &[
         loop_kinds: &[],
         return_kinds: &[],
         throw_kinds: &[],
+        await_kinds: &[],
+        receiver_field: "object",
+        impl_kinds: &[],
+        impl_type_field: "type",
+        receiver_type_field: "",
+        return_child_kinds: &[],
+        type_requires_body: false,
+        decorator_kinds: &[],
+        decorator_container_kinds: &[],
+        name_whole_kinds: &[],
+        require_name_field: false,
+        keyword_kind: "",
+        keyword_target_field: "target",
+        keyword_types: &[],
+        keyword_functions: &[],
+        text_kinds: &[],
+    },
+    LanguageSpec {
+        id: "vim",
+        type_kinds: &[],
+        function_kinds: &[
+            ("function_definition", NodeKind::Function),
+            ("command_statement", NodeKind::Function),
+        ],
+        field_kinds: &[],
+        import_kinds: &["source_statement", "runtime_statement"],
+        call_kinds: &["call_expression", "call_statement"],
+        constructor_kinds: &[],
+        name_fields: &["name"],
+        parameter_fields: &["parameters"],
+        return_fields: &[],
+        body_fields: &["body"],
+        parameter_kinds: &["parameter"],
+        name_descend: &["function_declaration", "user_command"],
+        name_leaf_kinds: VIM_NAME_LEAVES,
+        heritage_kinds: &[],
+        branch_kinds: &["if_statement", "elseif_statement"],
+        loop_kinds: &["for_loop", "while_loop"],
+        return_kinds: &["return_statement"],
+        throw_kinds: &["throw_statement"],
         await_kinds: &[],
         receiver_field: "object",
         impl_kinds: &[],
