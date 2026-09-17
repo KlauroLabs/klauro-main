@@ -589,7 +589,9 @@ impl<'a> Extractor<'a> {
     }
 
     fn keyword_name(&self, node: Node) -> Option<String> {
-        let arguments = self.arguments_of(node)?;
+        let Some(arguments) = self.arguments_of(node) else {
+            return self.name_of(node.named_child(1)?);
+        };
         let first = arguments.named_child(0)?;
         if first.kind() == self.spec.keyword_kind {
             return first

@@ -21,6 +21,7 @@ mod source_rewrite;
 mod structured;
 mod subproject;
 mod typescript;
+mod vendored;
 mod wire;
 
 use std::io::Write;

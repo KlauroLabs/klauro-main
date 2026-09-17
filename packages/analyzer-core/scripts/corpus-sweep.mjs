@@ -10,7 +10,6 @@ const MILLISECONDS_PER_FILE = 0.8;
 const MINIMUM_FILES = 15;
 
 const WITHOUT_A_GRAMMAR = new Map([
-  ['clojure', 'tree-sitter-clojure pins tree-sitter 0.25'],
   ['tcl', 'no crate at this tree-sitter'],
   ['rescript', 'no crate at this tree-sitter'],
   ['twig', 'no crate'],
