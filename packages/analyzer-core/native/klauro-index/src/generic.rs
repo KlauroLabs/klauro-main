@@ -65,6 +65,7 @@ pub struct Extractor<'a> {
 struct Scope {
     owner: Option<String>,
     callable: Option<String>,
+    registrar: Option<String>,
     type_owner: Option<String>,
     self_binding: Option<String>,
     in_try: bool,
@@ -363,6 +364,7 @@ impl<'a> Extractor<'a> {
         let scope = Scope {
             owner: Some(self.module_id.clone()),
             callable: None,
+            registrar: None,
             type_owner: None,
             self_binding: None,
             in_try: false,
@@ -471,8 +473,14 @@ impl<'a> Extractor<'a> {
             return;
         }
         if self.spec.call_kinds.contains(&kind) {
-            self.record_call(node, scope);
-            self.walk(node, scope);
+            let registrar = self.record_call(node, scope);
+            let mut inner = scope.clone();
+            inner.registrar = registrar;
+            self.walk(node, &inner);
+            return;
+        }
+        if self.spec.lambda_kinds.contains(&kind) {
+            self.declare_callback(node, scope);
             return;
         }
         if self.spec.branch_kinds.contains(&kind) {
@@ -966,6 +974,39 @@ impl<'a> Extractor<'a> {
         });
     }
 
+    fn declare_callback(&mut self, node: Node, scope: &Scope) {
+        let registrar = scope.registrar.clone().unwrap_or_else(|| "lambda".to_string());
+        let name = format!("{registrar}#{}", node.start_position().row + 1);
+        let id = self.id("callback", &name, node);
+        self.facts.nodes.push(IndexNode {
+            id: id.clone(),
+            name,
+            kind: NodeKind::Function,
+            file: self.file,
+            span: span_of(node),
+            parent: scope.callable.clone().or_else(|| scope.owner.clone()),
+            signature: None,
+            modifiers: Modifiers::default(),
+            decorators: Vec::new(),
+            type_annotation: None,
+            documentation: None,
+            project: None,
+            callback_of: scope.registrar.clone(),
+            registration_label: None,
+        });
+        if let Some(owner) = scope.callable.clone().or_else(|| scope.owner.clone()) {
+            self.facts.edges.push(IndexEdge {
+                source: owner,
+                target: id.clone(),
+                kind: EdgeKind::Contains,
+            });
+        }
+        let mut inner = scope.clone();
+        inner.callable = Some(id);
+        inner.registrar = None;
+        self.walk(node, &inner);
+    }
+
     fn declare_binding(&mut self, node: Node, scope: &Scope) -> bool {
         let declarator = node.child_by_field_name(self.spec.binding_name_field);
         let name = match declarator {
@@ -1040,7 +1081,7 @@ impl<'a> Extractor<'a> {
         (!leaf.is_empty()).then(|| leaf.to_string())
     }
 
-    fn record_call(&mut self, node: Node, scope: &Scope) {
+    fn record_call(&mut self, node: Node, scope: &Scope) -> Option<String> {
         let function = node
             .child_by_field_name("function")
             .or_else(|| node.child_by_field_name("name"))
@@ -1069,13 +1110,13 @@ impl<'a> Extractor<'a> {
                     .map(|found| self.text(found).to_string());
                 match node.named_child(0) {
                     Some(first) => (receiver, self.text(first).to_string()),
-                    None => return,
+                    None => return None,
                 }
             }
         };
         let callee = base_name(&callee).to_string();
         if callee.is_empty() || STATEMENT_KEYWORDS.binary_search(&callee.as_str()).is_ok() {
-            return;
+            return None;
         }
         let (receiver, callee) = match (&receiver, callee.rfind('.')) {
             (None, Some(at)) if at > 0 && at + 1 < callee.len() => (
@@ -1145,6 +1186,7 @@ impl<'a> Extractor<'a> {
             }
         };
 
+        let registrar = callee.clone();
         self.facts.calls.push(CallFact {
             file: self.file,
             caller: scope.callable.clone(),
@@ -1165,6 +1207,7 @@ impl<'a> Extractor<'a> {
                 loop_depth: scope.loop_depth,
             },
         });
+        Some(registrar)
     }
 }
 
