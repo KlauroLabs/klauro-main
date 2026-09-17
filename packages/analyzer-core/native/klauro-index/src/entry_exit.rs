@@ -124,6 +124,14 @@ fn normalize_annotation(name: &str) -> String {
     lowered
 }
 
+fn names_a_test(name: &str) -> bool {
+    let Some(rest) = name.get(..4).filter(|head| head.eq_ignore_ascii_case("test")).map(|_| &name[4..])
+    else {
+        return false;
+    };
+    rest.is_empty() || rest.starts_with('_') || rest.starts_with(char::is_uppercase)
+}
+
 fn looks_like_route(value: &str) -> bool {
     !value.is_empty() && !value.contains(' ') && (value.contains('/') || !value.contains('.'))
 }
@@ -163,6 +171,8 @@ fn decorator_entry(decorator: &Decorator) -> Option<(&'static str, String, Optio
         | "subscriptionmapping" => Some(("graphql", lowered, None)),
         "grpcmethod" | "grpcstreammethod" | "grpcservice" => Some(("rpc", lowered, None)),
         "command" | "consolecommand" => Some(("cli", lowered, None)),
+        "fact" | "theory" | "test" | "testcase" | "testmethod" | "parameterizedtest"
+        | "benchmark" => Some(("test", lowered, None)),
         _ => None,
     }
 }
@@ -386,6 +396,31 @@ pub fn derive(
             line: registration.line,
             registrar: registration.registrar.clone(),
         });
+    }
+
+    let declared_cases: HashSet<String> = entry_points
+        .iter()
+        .filter(|entry| entry.kind == "test")
+        .map(|entry| entry.handler.clone())
+        .collect();
+    for node in nodes {
+        if matches!(node.kind, NodeKind::Function | NodeKind::Method)
+            && names_a_test(&node.name)
+            && is_test(&files[node.file as usize])
+            && !declared_cases.contains(node.id.as_str())
+        {
+            entry_points.push(EntryPoint {
+                id: format!("entry:{}:test", node.id),
+                kind: "test",
+                name: node.name.clone(),
+                method: None,
+                path: None,
+                handler: node.id.clone(),
+                file: node.file,
+                line: node.span.line,
+                registrar: node.name.clone(),
+            });
+        }
     }
 
     for node in nodes {
