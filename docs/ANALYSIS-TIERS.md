@@ -54,26 +54,29 @@ get 64 KiB, because a document that declares rather than records is small. A sav
 A structured document contributes its schema. One that overflows the schema budget is records rather
 than declarations, and yields a single node carrying its size.
 
-**T1 is not finished.** Discovery and parse hold across the corpus: every language with a grammar
-reads at or above 95%, and the seven without one are named in
-`analyzer-core/scripts/corpus-sweep.mjs`, which fails on a language below the floor, a repository
-over its time allowance, or an index that differs between two runs.
+**Where T1 stands.** Discovery and parse hold across the corpus: every language with a grammar reads
+at or above 95%, and the seven without one are named in `analyzer-core/scripts/corpus-sweep.mjs`,
+which fails on a language below that floor, a repository over its time allowance, or an index that
+differs between two runs.
 
-The three passes that need cross-language semantics do not hold. Measured over 38 repositories:
+The bar for the rest is a commodity indexer measured on the same repositories, not a percentage
+chosen here:
 
-| Pass | TypeScript | Elsewhere |
-|---|---|---|
-| 1.3 Resolve | 84% of calls | C# 16%, Rust 21%, PHP 29%, Python 43% |
-| 1.4 Exit points | 1,851 | Python 0, Rust 0, C 0, C# 1 |
-| 1.5 ICELOT | all six facets | Input and Output only; Effects and Telemetry follow 1.4 |
-| 1.6 Graph | 75% reachable | PHP 1%, Haskell 2%, Ruby 4% |
+| Repository | Language | Its nodes | Ours | Its calls | Ours | Its wall | Ours |
+|---|---|---|---|---|---|---|---|
+| 4,579 files | TypeScript | 59,237 | 85,390 | 61,815 | 198,801 | — | 1.79 s |
+| 2,551 files | C# | 42,992 | 45,129 | 17,034 | 17,624 | 5.76 s | 0.56 s |
+| 806 files | Rust | 18,605 | 19,966 | 24,534 | 14,028 | 2.12 s | 0.38 s |
 
-On one C# repository, 55,118 calls name a declaration that repository itself makes and about 15,800
-resolve. The resolver's model is not the problem — receiver paths, member lookup and the origin of a
-name are all there. What is missing outside TypeScript are the facts it walks: field and property
-types on declarations, imports that bind a symbol to a package, and a member table per declared
-type. Until the sweep gates resolution and exit points per language the way it gates coverage, this
-can rot back without anything going red.
+Five to ten times faster, ahead on declarations everywhere, three times ahead on TypeScript, level on
+C#, behind on Rust. The two gaps are therefore specific: the languages whose call graph it resolves
+more completely than we do, and breadth, where it carries 158 grammars against our 63.
+
+Resolution reads a receiver path, walks it through declared members, and gives a name an origin of
+declared, package, runtime, indirect or unknown. Receiver-heavy, chained call styles — Rust's
+`index.get_task(id).await.succeeded()` — need the return type of each link, and that inference exists
+for TypeScript alone. Bare-call languages score highest without it, because a name declared once
+resolves on its own.
 
 ---
 
