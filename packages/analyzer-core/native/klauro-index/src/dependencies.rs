@@ -150,7 +150,7 @@ fn head(text: &str, separator: char, keep: usize) -> &str {
     &text[..end.min(text.len())]
 }
 
-fn package_of(specifier: &str) -> Option<&str> {
+pub fn package_of(specifier: &str) -> Option<&str> {
     let trimmed = specifier.trim().trim_end_matches(['*', '.', ';']);
     if trimmed.is_empty() || trimmed.starts_with('.') || trimmed.starts_with('/') {
         return None;

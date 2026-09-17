@@ -410,9 +410,33 @@ fn strip_extension(specifier: &str) -> &str {
 
 
 
+fn dotted_module(files: &HashMap<&str, u32>, from: &str, specifier: &str) -> Option<u32> {
+    let depth = specifier.chars().take_while(|character| *character == '.').count();
+    let rest = specifier[depth..].replace('.', "/");
+    let mut folder = directory_of(from);
+    for _ in 1..depth {
+        folder = directory_of(folder);
+    }
+    let base = match rest.is_empty() {
+        true => folder.to_string(),
+        false => format!("{folder}/{rest}"),
+    };
+    for candidate in [format!("{base}.py"), format!("{base}/__init__.py")] {
+        if let Some(found) = files.get(candidate.as_str()) {
+            return Some(*found);
+        }
+    }
+    None
+}
+
 fn file_index(files: &HashMap<&str, u32>, from: &str, specifier: &str) -> Option<u32> {
     if !specifier.starts_with('.') {
         return None;
+    }
+    if !specifier.contains('/')
+        && let Some(found) = dotted_module(files, from, specifier)
+    {
+        return Some(found);
     }
     let joined = normalize(&format!("{}/{}", directory_of(from), specifier));
     let base = strip_extension(&joined);
@@ -626,15 +650,15 @@ pub fn resolve(index: &Index) -> Resolution {
 
     let mut sole_package: HashMap<u32, &str> = HashMap::new();
     for fact in index.imports {
-        if fact.specifier.starts_with('.') {
+        let Some(package) = crate::dependencies::package_of(&fact.specifier) else {
             continue;
-        }
+        };
         match sole_package.entry(fact.file) {
             std::collections::hash_map::Entry::Vacant(slot) => {
-                slot.insert(fact.specifier.as_str());
+                slot.insert(package);
             }
             std::collections::hash_map::Entry::Occupied(mut slot) => {
-                if *slot.get() != fact.specifier.as_str() {
+                if *slot.get() != package {
                     slot.insert("");
                 }
             }
