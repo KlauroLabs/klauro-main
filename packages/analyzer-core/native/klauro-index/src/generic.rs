@@ -465,8 +465,9 @@ impl<'a> Extractor<'a> {
             }
         }
         if self.spec.binding_kinds.contains(&kind) {
-            self.declare_binding(node, scope);
-            self.walk(node, scope);
+            if !self.declare_binding(node, scope) {
+                self.walk(node, scope);
+            }
             return;
         }
         if self.spec.call_kinds.contains(&kind) {
@@ -753,10 +754,13 @@ impl<'a> Extractor<'a> {
     }
 
     fn declare_function(&mut self, node: Node, scope: &Scope, kind: NodeKind) {
-        let Some(name) = self.name_of(node) else {
-            self.walk(node, scope);
-            return;
-        };
+        match self.name_of(node) {
+            Some(name) => self.declare_named_function(node, scope, kind, name),
+            None => self.walk(node, scope),
+        }
+    }
+
+    fn declare_named_function(&mut self, node: Node, scope: &Scope, kind: NodeKind, name: String) {
         let receiver_node = if self.spec.receiver_type_field.is_empty() {
             None
         } else {
@@ -962,7 +966,7 @@ impl<'a> Extractor<'a> {
         });
     }
 
-    fn declare_binding(&mut self, node: Node, scope: &Scope) {
+    fn declare_binding(&mut self, node: Node, scope: &Scope) -> bool {
         let declarator = node.child_by_field_name(self.spec.binding_name_field);
         let name = match declarator {
             Some(declarator) => {
@@ -972,7 +976,7 @@ impl<'a> Extractor<'a> {
             None => self.name_of(node).unwrap_or_default(),
         };
         if name.is_empty() || name.contains(char::is_whitespace) {
-            return;
+            return false;
         }
         let annotation = node
             .child_by_field_name(self.spec.binding_type_field)
@@ -982,6 +986,16 @@ impl<'a> Extractor<'a> {
             .child_by_field_name(self.spec.binding_value_field)
             .or_else(|| declarator.and_then(|d| d.child_by_field_name(self.spec.binding_value_field)))
             .or_else(|| self.assigned_child(node));
+        if let Some(value) = value
+            && let Some((_, kind)) = self
+                .spec
+                .function_kinds
+                .iter()
+                .find(|(declares, _)| *declares == value.kind())
+        {
+            self.declare_named_function(value, scope, *kind, name);
+            return true;
+        }
         let constructed = value
             .filter(|value| self.spec.constructor_kinds.contains(&value.kind()))
             .and_then(|value| self.name_of(value));
@@ -989,7 +1003,7 @@ impl<'a> Extractor<'a> {
             .filter(|value| self.spec.call_kinds.contains(&value.kind()))
             .and_then(|value| self.called_name(value));
         if annotation.is_none() && constructed.is_none() && from_call.is_none() {
-            return;
+            return false;
         }
         self.facts.locals.push(LocalBinding {
             file: self.file,
@@ -999,6 +1013,7 @@ impl<'a> Extractor<'a> {
             constructed,
             from_call,
         });
+        false
     }
 
     fn typed_child<'t>(&self, node: Node<'t>) -> Option<Node<'t>> {
