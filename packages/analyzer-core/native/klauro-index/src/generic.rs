@@ -424,6 +424,7 @@ impl<'a> Extractor<'a> {
         if !self.spec.keyword_kind.is_empty() && kind == self.spec.keyword_kind {
             let keyword = node
                 .child_by_field_name(self.spec.keyword_target_field)
+                .or_else(|| node.named_child(0))
                 .map(|target| self.text(target).trim().to_string())
                 .unwrap_or_default();
             if self.spec.keyword_types.contains(&keyword.as_str()) {
@@ -542,7 +543,7 @@ impl<'a> Extractor<'a> {
         }
         let mut cursor = node.walk();
         node.named_children(&mut cursor)
-            .find(|child| child.kind() == "arguments")
+            .find(|child| child.kind() == "arguments" || child.kind() == "argument_list")
     }
 
     fn keyword_name(&self, node: Node) -> Option<String> {
