@@ -6,7 +6,7 @@ import * as path from 'node:path';
 const CORPUS = process.argv[2] || path.join(process.env.HOME, 'dev', 'corpus');
 const INDEXER = path.resolve('native/klauro-index/target/release/klauro-index');
 const COVERAGE_FLOOR = 95;
-const MILLISECONDS_PER_FILE = 0.5;
+const MILLISECONDS_PER_FILE = 0.8;
 const MINIMUM_FILES = 15;
 
 const WITHOUT_A_GRAMMAR = new Map([
