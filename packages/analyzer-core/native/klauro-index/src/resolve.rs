@@ -153,8 +153,10 @@ impl<'a> Symbols<'a> {
     }
 
     fn member_type(&self, owner: u32, name: &str) -> Option<&'a str> {
-        let member = self.member(owner, name)?;
-        self.nodes[member as usize].type_annotation.as_deref()
+        let member = &self.nodes[self.member(owner, name)? as usize];
+        member.type_annotation.as_deref().or_else(|| {
+            member.signature.as_ref()?.return_type.as_deref().filter(|returns| !returns.is_empty())
+        })
     }
 }
 

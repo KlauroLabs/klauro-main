@@ -16,6 +16,23 @@ fn names_code(text: &str) -> bool {
 const REFERENCE_DEPTH: u8 = 3;
 const REFERENCE_WIDTH: usize = 4;
 
+fn bare_type(annotation: &str) -> Option<String> {
+    let named = annotation
+        .trim_start_matches([':', ' ', '&'])
+        .split(['<', '[', '(', '{', '>', ' ', ',', '&'])
+        .next()
+        .unwrap_or(annotation)
+        .rsplit([':', '.'])
+        .next()
+        .unwrap_or(annotation)
+        .trim();
+    named
+        .chars()
+        .next()
+        .is_some_and(|first| first.is_alphabetic() || first == '_')
+        .then(|| named.to_string())
+}
+
 fn settled(receiver: &str) -> Option<String> {
     let path: Vec<&str> = receiver
         .split('.')
@@ -446,6 +463,11 @@ impl<'a> Extractor<'a> {
                 self.keyword_declaration(node, scope, NodeKind::Function);
                 return;
             }
+        }
+        if self.spec.binding_kinds.contains(&kind) {
+            self.declare_binding(node, scope);
+            self.walk(node, scope);
+            return;
         }
         if self.spec.call_kinds.contains(&kind) {
             self.record_call(node, scope);
@@ -938,6 +960,47 @@ impl<'a> Extractor<'a> {
             type_only: false,
             names,
         });
+    }
+
+    fn declare_binding(&mut self, node: Node, scope: &Scope) {
+        let Some(name) = node
+            .child_by_field_name(self.spec.binding_name_field)
+            .map(|found| self.text(found).trim().to_string())
+            .filter(|name| !name.is_empty() && !name.contains(char::is_whitespace))
+        else {
+            return;
+        };
+        let annotation = node
+            .child_by_field_name(self.spec.binding_type_field)
+            .and_then(|found| bare_type(self.text(found)));
+        let value = node.child_by_field_name(self.spec.binding_value_field);
+        let constructed = value
+            .filter(|value| self.spec.constructor_kinds.contains(&value.kind()))
+            .and_then(|value| self.name_of(value));
+        let from_call = value
+            .filter(|value| self.spec.call_kinds.contains(&value.kind()))
+            .and_then(|value| self.called_name(value));
+        if annotation.is_none() && constructed.is_none() && from_call.is_none() {
+            return;
+        }
+        self.facts.locals.push(LocalBinding {
+            file: self.file,
+            unit: scope.callable.clone().unwrap_or_default(),
+            name,
+            annotation,
+            constructed,
+            from_call,
+        });
+    }
+
+    fn called_name(&self, node: Node) -> Option<String> {
+        let function = node
+            .child_by_field_name("function")
+            .or_else(|| node.child_by_field_name("name"))
+            .or_else(|| node.named_child(0))?;
+        let text = base_name(self.text(function));
+        let leaf = text.rsplit(['.', ':']).next().unwrap_or(text).trim();
+        (!leaf.is_empty()).then(|| leaf.to_string())
     }
 
     fn record_call(&mut self, node: Node, scope: &Scope) {
