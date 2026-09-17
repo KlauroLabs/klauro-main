@@ -1189,7 +1189,7 @@ impl<'a> Extractor<'a> {
         let registrar = callee.clone();
         self.facts.calls.push(CallFact {
             file: self.file,
-            caller: scope.callable.clone(),
+            caller: scope.callable.clone().or_else(|| scope.owner.clone()),
             callee,
             receiver,
             line: node.start_position().row as u32 + 1,
