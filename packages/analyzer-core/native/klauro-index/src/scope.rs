@@ -223,6 +223,8 @@ static MODULE_MANIFESTS: &[&str] = &[
     "build.gradle",
     "build.gradle.kts",
     "build.sbt",
+    "cmakelists.txt",
+    "go.mod",
     "pom.xml",
     "pyproject.toml",
     "setup.py",
@@ -244,8 +246,8 @@ fn module_manifest(path: &str, runnable: &HashSet<&str>) -> Option<Candidate> {
     }];
     if runnable.contains(root.as_str()) {
         declarations.push(Declaration {
-            declares: Declares::Run,
-            kind: "package-bin",
+            declares: Declares::Ship,
+            kind: "runnable-module",
             at: path.to_string(),
         });
     }
@@ -350,7 +352,7 @@ fn cargo_manifest(files: &Files, path: &str) -> Option<Candidate> {
     let mut declarations = Vec::new();
     for binary in document.iter().filter(|node| node.name == "bin") {
         declarations.push(Declaration {
-            declares: Declares::Run,
+            declares: Declares::Ship,
             kind: "cargo-bin",
             at: format!("{path}:{}", binary.span.line),
         });
@@ -361,6 +363,56 @@ fn cargo_manifest(files: &Files, path: &str) -> Option<Candidate> {
         at: path.to_string(),
     });
     Some(Candidate { name: named, root, declarations, ships: Vec::new(), runs: None })
+}
+
+static EXECUTABLE_SDKS: &[&str] = &["Microsoft.NET.Sdk.Web", "Microsoft.NET.Sdk.Worker"];
+static EXECUTABLE_OUTPUTS: &[&str] = &["Exe", "WinExe"];
+static EXECUTABLE_PLUGINS: &[&str] = &["application", "com.android.application"];
+static PACKAGED_ARTIFACTS: &[&str] = &["ear", "war"];
+
+fn build_target(files: &Files, path: &str, calls: &[CallFact], file: u32) -> Option<&'static str> {
+    let basename = path.rsplit('/').next()?.to_ascii_lowercase();
+    if basename.ends_with(".csproj") || basename.ends_with(".fsproj") {
+        let document = files.of(path)?;
+        let sdk = document.iter().any(|node| {
+            node.type_annotation
+                .as_deref()
+                .is_some_and(|text| EXECUTABLE_SDKS.iter().any(|sdk| text.contains(sdk)))
+        });
+        let output = document.iter().any(|node| {
+            node.name == "OutputType"
+                && node
+                    .type_annotation
+                    .as_deref()
+                    .is_some_and(|text| EXECUTABLE_OUTPUTS.iter().any(|kind| text.contains(kind)))
+        });
+        return (sdk || output).then_some("dotnet-executable");
+    }
+    if basename.starts_with("build.gradle") {
+        return calls
+            .iter()
+            .any(|call| {
+                call.file == file
+                    && call.callee == "id"
+                    && call.literals.iter().any(|value| {
+                        EXECUTABLE_PLUGINS.contains(&unquote(value))
+                    })
+            })
+            .then_some("gradle-application");
+    }
+    if basename == "pom.xml" {
+        let document = files.of(path)?;
+        return document
+            .iter()
+            .any(|node| {
+                node.name == "packaging"
+                    && node.type_annotation.as_deref().is_some_and(|text| {
+                        PACKAGED_ARTIFACTS.contains(&text.trim())
+                    })
+            })
+            .then_some("maven-artifact");
+    }
+    None
 }
 
 static INSTALLER_SUFFIXES: &[&str] = &[".bat", ".cmd", ".iss", ".nsi", ".ps1", ".sh"];
@@ -433,7 +485,8 @@ fn runnable_roots<'a>(files: &'a [String], entry_points: &[EntryPoint]) -> HashS
         if !lifecycle.contains(path.as_str()) {
             continue;
         }
-        let mut directory = path.as_str();
+        let mut directory = directory_of(path);
+        roots.insert(directory);
         while let Some(at) = directory.rfind('/') {
             directory = &directory[..at];
             roots.insert(directory);
@@ -505,8 +558,30 @@ pub fn derive(
             candidates.push(found);
             continue;
         }
-        if let Some(found) = module_manifest(path, &runnable) {
+        if let Some(mut found) = module_manifest(path, &runnable) {
+            if let Some(kind) = build_target(&index, path, calls, at as u32) {
+                found.declarations.push(Declaration {
+                    declares: Declares::Ship,
+                    kind,
+                    at: path.to_string(),
+                });
+            }
             candidates.push(found);
+            continue;
+        }
+        if let Some(kind) = build_target(&index, path, calls, at as u32) {
+            let root = directory_of(path).to_string();
+            candidates.push(Candidate {
+                name: display_name(&root),
+                root,
+                declarations: vec![Declaration {
+                    declares: Declares::Ship,
+                    kind,
+                    at: path.to_string(),
+                }],
+                ships: Vec::new(),
+                runs: None,
+            });
         }
     }
 
