@@ -14,7 +14,8 @@ const TEXT: &[&str] = &[
 ];
 
 const TEXT_LISTS: &[&str] = &[
-    "categories", "consumed_by", "exits", "literals", "members", "nested_repositories",
+    "categories", "consumed_by", "exits", "integrations", "literals", "members",
+    "nested_repositories",
     "projects", "reaches", "reads", "ships", "ships_in", "skipped_directories", "throws",
     "type_parameters", "types", "writes",
 ];

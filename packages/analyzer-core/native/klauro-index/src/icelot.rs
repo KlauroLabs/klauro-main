@@ -29,6 +29,10 @@ pub struct Effects {
     pub writes: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub exits: Vec<String>,
+    /// What this unit reaches outside itself, named rather than counted: the packages and
+    /// runtimes its resolved calls land in.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub integrations: Vec<String>,
     pub external_calls: u16,
 }
 
@@ -48,6 +52,18 @@ pub struct Output {
     pub returns: u16,
 }
 
+impl Icelot {
+    /// Whether anything at all was observed of this unit.
+    pub fn observed(&self) -> bool {
+        !self.input.is_silent()
+            || !self.constraints.is_silent()
+            || !self.effects.is_silent()
+            || !self.logic.is_silent()
+            || !self.output.is_silent()
+            || !self.telemetry.is_empty()
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct TelemetrySite {
     pub kind: &'static str,
@@ -55,13 +71,20 @@ pub struct TelemetrySite {
     pub line: u32,
 }
 
+/// A facet describes an observed trait. Artificial completeness is forbidden: a unit that
+/// takes nothing carries no Input, and one that reaches nothing carries no Effects.
 #[derive(Debug, Serialize)]
 pub struct Icelot {
     pub unit: String,
+    #[serde(skip_serializing_if = "Input::is_silent")]
     pub input: Input,
+    #[serde(skip_serializing_if = "Constraints::is_silent")]
     pub constraints: Constraints,
+    #[serde(skip_serializing_if = "Effects::is_silent")]
     pub effects: Effects,
+    #[serde(skip_serializing_if = "Logic::is_silent")]
     pub logic: Logic,
+    #[serde(skip_serializing_if = "Output::is_silent")]
     pub output: Output,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub telemetry: Vec<TelemetrySite>,
@@ -99,9 +122,33 @@ pub fn derive(
     nodes: &[IndexNode],
     metrics: &[UnitMetricsEntry],
     calls: &[CallFact],
+    edges: &[IndexEdge],
     exits: &[ExitPoint],
     external: &HashMap<String, ()>,
 ) -> Vec<Icelot> {
+    // What a unit reaches outside itself, from the graph rather than from a count. An external
+    // node is identified `space:origin:member`, so the integration is its first two segments.
+    let mut integrations: HashMap<&str, Vec<String>> = HashMap::new();
+    for edge in edges {
+        if !matches!(edge.kind, EdgeKind::Calls | EdgeKind::Instantiates) {
+            continue;
+        }
+        let Some(rest) = edge
+            .target
+            .strip_prefix("package:")
+            .map(|rest| ("package", rest))
+            .or_else(|| edge.target.strip_prefix("runtime:").map(|rest| ("runtime", rest)))
+        else {
+            continue;
+        };
+        let (space, rest) = rest;
+        let origin = rest.split(':').next().unwrap_or(rest);
+        let reached = format!("{space}:{origin}");
+        let found = integrations.entry(edge.source.as_str()).or_default();
+        if !found.contains(&reached) {
+            found.push(reached);
+        }
+    }
     let by_unit: HashMap<&str, &UnitMetrics> = metrics
         .iter()
         .map(|entry| (entry.unit.as_str(), &entry.metrics))
@@ -178,6 +225,7 @@ pub fn derive(
             effects: Effects {
                 writes: metrics.map(|m| m.writes.clone()).unwrap_or_default(),
                 exits: exits_by_unit.get(unit).cloned().unwrap_or_default(),
+                integrations: integrations.remove(unit).unwrap_or_default(),
                 external_calls,
             },
             logic: Logic {
@@ -195,4 +243,35 @@ pub fn derive(
         });
     }
     derived
+}
+
+impl Input {
+    fn is_silent(&self) -> bool {
+        self.parameters == 0 && self.types.is_empty() && self.reads.is_empty()
+    }
+}
+
+impl Constraints {
+    fn is_silent(&self) -> bool {
+        self.throws.is_empty() && self.guards == 0 && !self.optional_parameters
+    }
+}
+
+impl Effects {
+    fn is_silent(&self) -> bool {
+        self.writes.is_empty() && self.exits.is_empty() && self.integrations.is_empty()
+            && self.external_calls == 0
+    }
+}
+
+impl Logic {
+    fn is_silent(&self) -> bool {
+        self.branches == 0 && self.loops == 0 && self.awaits == 0 && self.calls == 0
+    }
+}
+
+impl Output {
+    fn is_silent(&self) -> bool {
+        self.return_type.is_none() && self.returns == 0
+    }
 }

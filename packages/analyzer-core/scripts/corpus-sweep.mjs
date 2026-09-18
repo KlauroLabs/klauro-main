@@ -13,24 +13,26 @@ const WITHOUT_A_GRAMMAR = new Map([
   ['installer_scripts', 'batch and installer scripts have no grammar']
 ]);
 
-// A repo with a known served surface, and the floor its surface must hold. Pass 1.6 measures
+// A repo with a known served surface, and the floors its analysis must hold. Pass 1.6 measures
 // reachability from entry points, so a surface that silently drops reports working code as
 // unreachable. Test entries are excluded: saleor declares 12,817 of them and 1,156 real ones.
+// `observed` is pass 1.5: units of which some ICELOT facet was actually seen. A pass with no
+// floor is a pass that rots, which is how entry points and exits both got here.
 const SERVED_SURFACE = new Map([
-  ['cal.com', { served: 300, exits: 615 }],
-  ['immich', { served: 720, exits: 295 }],
-  ['jellyfin', { served: 395, exits: 535 }],
+  ['cal.com', { served: 300, exits: 615, observed: 15500, reachable: 9400 }],
+  ['immich', { served: 720, exits: 295, observed: 17500, reachable: 10200 }],
+  ['jellyfin', { served: 395, exits: 535, observed: 11800, reachable: 4450 }],
   ['jekyll', { served: 20, exits: 20 }],
-  ['mastodon', { served: 230, exits: 250 }],
+  ['mastodon', { served: 230, exits: 250, observed: 40000, reachable: 28000 }],
   ['meilisearch', { served: 14, exits: 170 }],
   ['metabase', { served: 0, exits: 230 }],
-  ['monica', { served: 218, exits: 100 }],
+  ['monica', { served: 218, exits: 100, observed: 6700, reachable: 400 }],
   ['neovim', { served: 25, exits: 470 }],
   ['ripgrep', { served: 6, exits: 40 }],
-  ['saleor', { served: 1150, exits: 9570 }],
-  ['superset', { served: 290, exits: 6300 }],
+  ['saleor', { served: 1150, exits: 9570, observed: 21500, reachable: 16000 }],
+  ['superset', { served: 290, exits: 6300, observed: 55000, reachable: 40000 }],
   ['tivi', { served: 20, exits: 290 }],
-  ['traefik', { served: 25, exits: 750 }]
+  ['traefik', { served: 25, exits: 750, observed: 6500, reachable: 3800 }]
 ]);
 
 // The whole run, not a sum of the passes it reports: a pass left out of that sum is a pass
@@ -78,6 +80,8 @@ function index(root, repeat) {
     digest: createHash('sha1').update(first.stdout).digest('hex').slice(0, 12),
     files,
     served: number(/\| served (\d+)/),
+    observed: number(/\| observed (\d+)/),
+    reachable: number(/reachable units (\d+)/),
     exits: number(/exit points (\d+)/),
     errors: number(/parse errors (\d+)/),
     milliseconds,
@@ -122,6 +126,16 @@ for (const repo of repos) {
     if (measured.exits < surface.exits) {
       failures.push(
         `${repo} found ${measured.exits} exit points, below its floor of ${surface.exits}`
+      );
+    }
+    if (surface.observed && measured.observed < surface.observed) {
+      failures.push(
+        `${repo} observed ICELOT facets on ${measured.observed} units, below its floor of ${surface.observed}`
+      );
+    }
+    if (surface.reachable && measured.reachable < surface.reachable) {
+      failures.push(
+        `${repo} reached ${measured.reachable} units, below its floor of ${surface.reachable}`
       );
     }
   }

@@ -38,6 +38,11 @@ else is derived from.
 | 1.6 Graph | Reachability, call chains, flow paths, structural importance | 0.3 s |
 | | **Tier total** | **4 s** |
 
+Pass 1.5 emits a facet only where something was observed, per the semantic model: a unit that
+takes nothing carries no Input, and one that reaches nothing carries no Effects. Effects names
+the packages and runtimes a unit reaches, from the resolved edges, rather than counting them.
+On immich, 17,751 of 21,081 units carry at least one facet and 6,619 name an integration.
+
 1.2 is the only pass that reads source. Flows appear here as paths, not as meaning: the
 specification places ICELOT at code-unit, step and flow granularity within this tier. What a flow is
 *for* is T6. ICELOT's Telemetry facet is statically declared capacity — log sites, metric

@@ -368,10 +368,17 @@ fn main() {
         &index.nodes,
         &index.metrics,
         &index.calls,
+        &index.edges,
         &index.exit_points,
         &external,
     );
-    eprintln!("icelot {:?} | units {}", icelot_started.elapsed(), index.icelot.len());
+    let observed = index.icelot.iter().filter(|unit| unit.observed()).count();
+    eprintln!(
+        "icelot {:?} | units {} | observed {}",
+        icelot_started.elapsed(),
+        index.icelot.len(),
+        observed
+    );
 
     let scope_started = Instant::now();
     let manifests: Vec<bool> = index
