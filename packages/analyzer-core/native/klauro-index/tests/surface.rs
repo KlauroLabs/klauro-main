@@ -65,3 +65,16 @@ fn a_generated_query_object_is_a_database_exit() {
     let found = exit(&index, "db.showQueries.entriesInPage").expect("the query is an exit");
     assert_eq!(found["kind"], "database");
 }
+
+#[test]
+fn a_chained_query_crosses_the_boundary_once() {
+    let index = index();
+    let queries: Vec<&serde_json::Value> = index["exit_points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|exit| exit["operation"] == "query")
+        .collect();
+    assert_eq!(queries.len(), 2, "one exit per query site, not one per chained link");
+    assert!(queries.iter().all(|exit| exit["name"] == "session.query"));
+}

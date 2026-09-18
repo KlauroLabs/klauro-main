@@ -144,11 +144,21 @@ This removed all 33 header reads in traefik and kept all 9 client fields.
 | immich | 299 | 11 |
 | cal.com | 620 | 8 |
 
-## Known imprecision
+## Rule 6 — a chain crosses the boundary once
 
-A chained query counts once per link: `session.query(Tag).filter_by(...)` is two database
-exits, not one. The same shape was already fixed for Django by keying on the receiver's last
-segment, and wants the same treatment here.
+`session.query(Tag).filter_by(name=name).all()` reaches the database once, through `session`.
+Each link after the first is reached through the previous link's own text, so an exit whose
+receiver extends another exit's receiver at the same place was already counted there and is
+dropped. Where no inner exit exists — `apps.get_model("account", "User").objects.get(...)`,
+whose `apps.get_model` reaches nothing — the outer call is the boundary and is kept.
+
+superset falls from 391 exits to 324, and no site in the corpus now reports more than one.
+
+Two spelling defects surfaced with it. Some extractors record the whole dotted path as the
+callee, so an exit was named `session.session.query` and `Product.objects.Product.objects.filter`;
+the operation is now the callee's last segment everywhere. The same full path was being handed
+to the manager rule as its operation, which is why SQLAlchemy's `session` never matched its own
+vocabulary.
 
 ## What stays out
 

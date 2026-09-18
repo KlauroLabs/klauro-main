@@ -740,6 +740,7 @@ pub fn derive(
     }
 
     let mut exit_points = Vec::new();
+    let mut reached_through: Vec<String> = Vec::new();
     for (position, call) in calls.iter().enumerate() {
         let Some(source) = &call.caller else { continue };
         let Some(receiver) = call.receiver.as_deref() else {
@@ -748,6 +749,7 @@ pub fn derive(
                 .get(&(call.file, call.callee.clone()))
                 .cloned()
                 .unwrap_or_else(|| call.callee.clone());
+            reached_through.push(String::new());
             exit_points.push(ExitPoint {
                 id: format!("exit:{}:{}", files[call.file as usize], position),
                 kind,
@@ -765,8 +767,9 @@ pub fn derive(
         if receiver.contains('.') && reads_a_data_member(receiver) {
             continue;
         }
-        if let Some(kind) = manager_exit(receiver, &call.callee) {
+        if let Some(kind) = manager_exit(receiver, tail(&call.callee)) {
             let operation = tail(&call.callee);
+            reached_through.push(receiver.to_string());
             exit_points.push(ExitPoint {
                 id: format!("exit:{}:{}", files[call.file as usize], position),
                 kind,
@@ -795,13 +798,17 @@ pub fn derive(
             continue;
         };
         let receiver = receiver.to_string();
+        // Some extractors record the whole dotted path as the callee, so the receiver would be
+        // spelled twice: `session` + `session.query`. The operation is its last segment.
+        let operation = tail(&call.callee);
+        reached_through.push(receiver.to_string());
         exit_points.push(ExitPoint {
             id: format!("exit:{}:{}", files[call.file as usize], position),
             kind,
-            name: format!("{receiver}.{}", call.callee),
+            name: format!("{receiver}.{operation}"),
             source: source.clone(),
             target: origin.to_string(),
-            operation: call.callee.clone(),
+            operation: operation.to_string(),
             file: call.file,
             line: call.line,
             awaited: call.context.awaited,
@@ -810,6 +817,27 @@ pub fn derive(
 
     entry_points.sort_by(|left, right| left.id.cmp(&right.id));
     entry_points.dedup_by(|left, right| left.id == right.id);
+    // A chained query crosses the boundary once. `session.query(Tag).filter_by(...)` reaches
+    // the database through `session`, and the link that follows is reached through the first
+    // link's own text — so an exit whose receiver extends another exit's receiver at the same
+    // place was already counted there.
+    let mut counted = Vec::with_capacity(exit_points.len());
+    for (at, exit) in exit_points.iter().enumerate() {
+        let receiver = reached_through[at].as_str();
+        let chained = receiver.contains('(')
+            && exit_points.iter().enumerate().any(|(other, beside)| {
+                other != at
+                    && beside.file == exit.file
+                    && beside.line == exit.line
+                    && !reached_through[other].is_empty()
+                    && reached_through[other].len() < receiver.len()
+                    && receiver.starts_with(reached_through[other].as_str())
+            });
+        counted.push(!chained);
+    }
+    let mut keep = counted.iter();
+    exit_points.retain(|_| *keep.next().unwrap_or(&true));
+
     exit_points.sort_by(|left, right| left.id.cmp(&right.id));
     entry_points.retain(|entry| entry.kind != "http" || !is_test(&files[entry.file as usize]));
     Derived { entry_points, exit_points }
