@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use serde::Serialize;
 
 use crate::model::*;
+use crate::names;
 use crate::resolve::Resolution;
 use crate::paths::is_test;
 
@@ -63,13 +64,6 @@ static MESSAGE_REGISTRARS: &[&str] = &["consume", "process", "subscribe", "worke
 static COMMAND_REGISTRARS: &[&str] = &["action", "command", "handler"];
 static IPC_REGISTRARS: &[&str] = &["handle", "handleOnce", "invoke"];
 
-fn tail(registrar: &str) -> &str {
-    match registrar.rfind('.') {
-        Some(at) => &registrar[at + 1..],
-        None => registrar,
-    }
-}
-
 fn looks_like_path(label: &str) -> bool {
     label.starts_with('/') || label.starts_with("./") || label.contains("/:")
 }
@@ -86,7 +80,7 @@ fn split_label(label: &str) -> (Option<String>, String) {
 }
 
 fn classify_registration(registrar: &str, label: Option<&str>) -> Option<&'static str> {
-    let verb = tail(registrar);
+    let verb = names::leaf(registrar);
     let lowered = verb.to_ascii_lowercase();
     if PATH_REGISTRARS.binary_search(&lowered.as_str()).is_ok()
         || HTTP_METHODS.binary_search(&verb).is_ok()
@@ -124,7 +118,7 @@ fn classify_registration(registrar: &str, label: Option<&str>) -> Option<&'stati
 }
 
 fn normalize_annotation(name: &str) -> String {
-    let name = name.rsplit('.').next().unwrap_or(name);
+    let name = names::leaf(name);
     let mut lowered = name.to_ascii_lowercase();
     for suffix in ["mapping", "attribute", "async"] {
         if let Some(stripped) = lowered.strip_suffix(suffix)
@@ -158,7 +152,7 @@ fn owner_path(path: &str, owner: &str) -> String {
 }
 
 fn decorator_entry(decorator: &Decorator) -> Option<(&'static str, String, Option<String>)> {
-    let verb = decorator.name.rsplit('.').next().unwrap_or(&decorator.name);
+    let verb = names::leaf(&decorator.name);
     let qualified = verb.len() != decorator.name.len();
     let lowered = normalize_annotation(&decorator.name);
     let path = decorator
@@ -207,8 +201,10 @@ const fn base(base: &'static str, kind: &'static str, members: &'static [&'stati
 static GRAPHQL_MEMBERS: &[&str] = &["resolve_*", "mutate", "mutate_and_get_payload", "perform_mutation"];
 static COMMAND_MEMBERS: &[&str] = &["execute", "handle"];
 
+/// A base type names a framework's entry, so it has to be specific enough to mean only that.
+/// Bare `Activity` and `Service` are not: `ActivityPub::Activity` and every Rails service
+/// object end in them.
 static ENTRY_BASES: &[EntryBase] = &[
-    base("Activity", "lifecycle", &[]),
     base("AppCompatActivity", "lifecycle", &[]),
     base("Application", "lifecycle", &[]),
     base("BaseCommand", "cli", COMMAND_MEMBERS),
@@ -217,7 +213,6 @@ static ENTRY_BASES: &[EntryBase] = &[
     base("Fragment", "lifecycle", &[]),
     base("Mutation", "graphql", GRAPHQL_MEMBERS),
     base("ObjectType", "graphql", GRAPHQL_MEMBERS),
-    base("Service", "lifecycle", &[]),
     base("Subscription", "graphql", GRAPHQL_MEMBERS),
     base("Worker", "lifecycle", &[]),
 ];
@@ -230,7 +225,7 @@ fn matches_member(pattern: &str, name: &str) -> bool {
 }
 
 fn entry_base(name: &str) -> Option<&'static EntryBase> {
-    let leaf = name.rsplit('.').next().unwrap_or(name);
+    let leaf = names::leaf(name);
     ENTRY_BASES.iter().find(|entry| entry.base == leaf)
 }
 
@@ -365,7 +360,7 @@ fn module_kind(specifier: &str) -> Option<&'static [&'static str]> {
 }
 
 fn classify_exit(binding: &str, origin: &str, member: &str) -> Option<&'static str> {
-    let operation = tail(member).to_ascii_lowercase();
+    let operation = names::leaf(member).to_ascii_lowercase();
     let operation = operation.as_str();
     if CLIENT_STORAGE_GLOBALS.binary_search(&binding).is_ok() {
         return Some("client_storage");
@@ -416,7 +411,7 @@ static SESSION_OPERATIONS: &[&str] = &[
 ];
 
 fn manager_exit(receiver: &str, operation: &str) -> Option<&'static str> {
-    let manager = receiver.rsplit('.').next()?.trim();
+    let manager = names::leaf(receiver).trim();
     if manager == "objects" {
         return Some("database");
     }
@@ -443,7 +438,7 @@ static DATA_MEMBERS: &[&str] = &[
 ];
 
 fn reads_a_data_member(receiver: &str) -> bool {
-    let member = receiver.rsplit('.').next().unwrap_or(receiver);
+    let member = names::leaf(receiver);
     let member = member.split(['(', '[']).next().unwrap_or(member).trim();
     DATA_MEMBERS.binary_search(&member.to_ascii_lowercase().as_str()).is_ok()
 }
@@ -459,11 +454,6 @@ fn same_language(left: &str, right: &str) -> bool {
     }
     let left = suffix(left);
     !left.is_empty() && left == suffix(right)
-}
-
-fn root_binding(receiver: &str) -> &str {
-    let end = receiver.find(['.', '[', '(', ' ']).unwrap_or(receiver.len());
-    &receiver[..end]
 }
 
 fn is_file_origin(origin: &str) -> bool {
@@ -538,7 +528,7 @@ pub fn derive(
         if let Some(registrar) = &node.callback_of {
             let label = node.registration_label.as_deref();
             if let Some(kind) = classify_registration(registrar, label) {
-                let verb = tail(registrar);
+                let verb = names::leaf(registrar);
                 entry_points.push(EntryPoint {
                     id: format!("entry:{}", node.id),
                     kind,
@@ -622,7 +612,7 @@ pub fn derive(
         reaches: &HashMap<&str, &'static EntryBase>,
     ) -> Option<&'static EntryBase> {
         entry_base(name)
-            .or_else(|| reaches.get(name.rsplit('.').next().unwrap_or(name)).copied())
+            .or_else(|| reaches.get(names::leaf(name)).copied())
     }
     let mut reaches: HashMap<&str, &'static EntryBase> = HashMap::new();
     loop {
@@ -701,7 +691,7 @@ pub fn derive(
     let declared: HashSet<&str> = nodes
         .iter()
         .filter(|node| node.kind.is_type() || matches!(node.kind, NodeKind::Function | NodeKind::Method))
-        .flat_map(|node| [node.name.as_str(), node.name.rsplit('.').next().unwrap_or(&node.name)])
+        .flat_map(|node| [node.name.as_str(), names::leaf(&node.name)])
         .collect();
     let mut registered: HashSet<(u32, u32)> = HashSet::new();
     for registration in registrations {
@@ -742,7 +732,7 @@ pub fn derive(
         if !registered.insert((registration.file, registration.line)) {
             continue;
         }
-        let verb = tail(&registration.registrar);
+        let verb = names::leaf(&registration.registrar);
         let (label_method, path) = split_label(&registration.label);
         entry_points.push(EntryPoint {
             id: format!("entry:{handler}:{}", registration.label),
@@ -830,12 +820,12 @@ pub fn derive(
             });
             continue;
         };
-        let binding = root_binding(receiver);
+        let binding = names::root(receiver);
         if receiver.contains('.') && reads_a_data_member(receiver) {
             continue;
         }
-        if let Some(kind) = manager_exit(receiver, tail(&call.callee)) {
-            let operation = tail(&call.callee);
+        if let Some(kind) = manager_exit(receiver, names::leaf(&call.callee)) {
+            let operation = names::leaf(&call.callee);
             reached_through.push(receiver.to_string());
             exit_points.push(ExitPoint {
                 id: format!("exit:{}:{}", files[call.file as usize], position),
@@ -867,7 +857,7 @@ pub fn derive(
         let receiver = receiver.to_string();
         // Some extractors record the whole dotted path as the callee, so the receiver would be
         // spelled twice: `session` + `session.query`. The operation is its last segment.
-        let operation = tail(&call.callee);
+        let operation = names::leaf(&call.callee);
         reached_through.push(receiver.to_string());
         exit_points.push(ExitPoint {
             id: format!("exit:{}:{}", files[call.file as usize], position),

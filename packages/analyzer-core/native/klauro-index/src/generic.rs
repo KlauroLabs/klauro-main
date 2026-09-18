@@ -1203,7 +1203,7 @@ impl<'a> Extractor<'a> {
         };
         let receiver = receiver.as_deref().and_then(settled);
         let receiver = match (&receiver, &scope.self_binding) {
-            (Some(receiver), Some(binding)) if root_binding(receiver) == binding => {
+            (Some(receiver), Some(binding)) if crate::names::root(receiver) == binding => {
                 Some(format!("this{}", &receiver[binding.len()..]))
             }
             _ => receiver.clone(),
@@ -1340,11 +1340,6 @@ static STATEMENT_KEYWORDS: &[&str] = &[
     "await", "defer", "do", "else", "go", "if", "return", "spawn", "switch", "throw", "try",
     "unsafe", "while", "yield",
 ];
-
-fn root_binding(receiver: &str) -> &str {
-    let end = receiver.find(['.', '[', '(', ' ', '-']).unwrap_or(receiver.len());
-    &receiver[..end]
-}
 
 static SOURCE_SUFFIXES: &[&str] = &[
     ".c", ".cc", ".cpp", ".cs", ".dart", ".ex", ".exs", ".go", ".h", ".hpp", ".java", ".js",

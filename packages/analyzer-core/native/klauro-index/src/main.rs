@@ -12,6 +12,7 @@ mod graph;
 mod language;
 mod icelot;
 mod model;
+mod names;
 mod paths;
 mod resolve;
 mod roles;
