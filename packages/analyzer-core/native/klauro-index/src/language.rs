@@ -110,9 +110,9 @@ pub fn language_for(id: &str) -> Option<(Language, &'static LanguageSpec)> {
         "csharp" => tree_sitter_c_sharp::LANGUAGE.into(),
         "rust" => tree_sitter_rust::LANGUAGE.into(),
         "ruby" => tree_sitter_ruby::LANGUAGE.into(),
-        "php" => tree_sitter_php::LANGUAGE_PHP.into(),
+        "php" | "hack" => tree_sitter_php::LANGUAGE_PHP.into(),
         "c" => tree_sitter_c::LANGUAGE.into(),
-        "cpp" => tree_sitter_cpp::LANGUAGE.into(),
+        "cpp" | "cuda" => tree_sitter_cpp::LANGUAGE.into(),
         "swift" => tree_sitter_swift::LANGUAGE.into(),
         "kotlin" => tree_sitter_kotlin_ng::LANGUAGE.into(),
         "bash" | "shell" | "fish" => tree_sitter_bash::LANGUAGE.into(),
@@ -121,10 +121,10 @@ pub fn language_for(id: &str) -> Option<(Language, &'static LanguageSpec)> {
         "css" => tree_sitter_css::LANGUAGE.into(),
         "html" => tree_sitter_html::LANGUAGE.into(),
         "solidity" => tree_sitter_solidity::LANGUAGE.into(),
-        "lua" => tree_sitter_lua::LANGUAGE.into(),
+        "lua" | "luau" => tree_sitter_lua::LANGUAGE.into(),
         "dart" => tree_sitter_dart::LANGUAGE.into(),
         "scala" => tree_sitter_scala::LANGUAGE.into(),
-        "haskell" => tree_sitter_haskell::LANGUAGE.into(),
+        "haskell" | "purescript" => tree_sitter_haskell::LANGUAGE.into(),
         "zig" => tree_sitter_zig::LANGUAGE.into(),
         "perl" => tree_sitter_perl::LANGUAGE.into(),
         "groovy" => tree_sitter_groovy::LANGUAGE.into(),
@@ -187,9 +187,16 @@ pub fn language_for(id: &str) -> Option<(Language, &'static LanguageSpec)> {
 }
 
 pub fn spec_for(id: &str) -> Option<&'static LanguageSpec> {
+    // A dialect reads through the grammar of the language it extends. Each of these was
+    // checked against a sample first: tree-sitter recovers around `__global__` and `<<<>>>`,
+    // and still names the kernel.
     let id = match id {
         "shell" | "fish" => "bash",
         "terraform" => "hcl",
+        "cuda" => "cpp",
+        "luau" => "lua",
+        "hack" => "php",
+        "purescript" => "haskell",
         other => other,
     };
     SPECS.iter().find(|spec| spec.id == id)
