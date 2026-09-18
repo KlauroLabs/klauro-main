@@ -1475,7 +1475,7 @@ static SPECS: &[LanguageSpec] = &[
     LanguageSpec {
         id: "haskell",
         type_kinds: &[("data_type", NodeKind::Class), ("newtype", NodeKind::Class), ("type_synomym", NodeKind::TypeAlias), ("class", NodeKind::Interface)],
-        function_kinds: &[("function", NodeKind::Function)],
+        function_kinds: &[("function", NodeKind::Function), ("bind", NodeKind::Function)],
         field_kinds: &[],
         import_kinds: &["import"],
         call_kinds: &["apply"],

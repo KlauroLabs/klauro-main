@@ -99,6 +99,17 @@ Exit points per repo, before and after:
 
 traefik falls because verb-only classification was claiming calls that reach nothing.
 
+## Three zeroes, two of them correct
+
+Three repos reported no served entry points at all. Only one was a defect.
+
+- **bumblebee** has no Phoenix router, no Plug, no web file of any kind. It is a library, and
+  zero served entry points is the right answer.
+- **scalatra** is the framework that *defines* the `get("/path")` DSL. Its only uses of it are
+  in tests and in doc comments, so zero is right again.
+- **servant** was the real one: its 50 `main` bindings were invisible because Haskell writes a
+  zero-argument binding as `bind`, not `function`, and only `function` was extracted.
+
 ## Known imprecision
 
 `req.Header.Get` is counted as a network exit in Go: the receiver root resolves to `net/http`
