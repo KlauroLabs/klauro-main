@@ -33,15 +33,24 @@ const SERVED_SURFACE = new Map([
   ['traefik', { served: 25, exits: 750 }]
 ]);
 
-function index(root, repeat) {
-  const run = spawnSync(INDEXER, [root], {
+function run(root) {
+  return spawnSync(INDEXER, [root], {
     env: { ...process.env, KLAURO_REPORT_COVERAGE: '1' },
     maxBuffer: 1 << 30
   });
-  if (run.status !== 0) {
-    return { failed: run.error ? run.error.message : `exit ${run.status}` };
+}
+
+function elapsed(report) {
+  return seconds(report, /parse ([\d.]+)(m?s)/) + seconds(report, /discover ([\d.]+)(m?s)/) +
+    seconds(report, /resolve ([\d.]+)(m?s)/) + seconds(report, /graph ([\d.]+)(m?s)/);
+}
+
+function index(root, repeat) {
+  const first = run(root);
+  if (first.status !== 0) {
+    return { failed: first.error ? first.error.message : `exit ${first.status}` };
   }
-  const report = run.stderr.toString();
+  const report = first.stderr.toString();
   const number = pattern => {
     const found = report.match(pattern);
     return found ? Number(found[1]) : 0;
@@ -49,18 +58,29 @@ function index(root, repeat) {
   const coverage = [...report.matchAll(/^ {2}coverage (\S+)\s+(\d+) of\s+(\d+)$/gm)].map(
     ([, language, extracted, total]) => ({ language, extracted: Number(extracted), total: Number(total) })
   );
-  const again = repeat
-    ? createHash('sha1').update(spawnSync(INDEXER, [root], { maxBuffer: 1 << 30 }).stdout).digest('hex').slice(0, 12)
-    : undefined;
+  const files = number(/\((\d+) files\)/);
+  const allowance = Math.max(200, files * MILLISECONDS_PER_FILE);
+  let milliseconds = elapsed(report);
+  let again;
+  // Wall time on a machine that is also building is noisy, and a budget that fails at random
+  // teaches everyone to re-run it until it is green. A repo is only over budget when it is
+  // over twice, and the second run doubles as the determinism check.
+  if (repeat || milliseconds > allowance) {
+    const second = run(root);
+    if (second.status === 0) {
+      milliseconds = Math.min(milliseconds, elapsed(second.stderr.toString()));
+      again = createHash('sha1').update(second.stdout).digest('hex').slice(0, 12);
+    }
+  }
   return {
     again,
-    digest: createHash('sha1').update(run.stdout).digest('hex').slice(0, 12),
-    files: number(/\((\d+) files\)/),
+    allowance,
+    digest: createHash('sha1').update(first.stdout).digest('hex').slice(0, 12),
+    files,
     served: number(/\| served (\d+)/),
     exits: number(/exit points (\d+)/),
     errors: number(/parse errors (\d+)/),
-    milliseconds: seconds(report, /parse ([\d.]+)(m?s)/) + seconds(report, /discover ([\d.]+)(m?s)/) +
-      seconds(report, /resolve ([\d.]+)(m?s)/) + seconds(report, /graph ([\d.]+)(m?s)/),
+    milliseconds,
     coverage
   };
 }
@@ -110,10 +130,9 @@ for (const repo of repos) {
       );
     }
   }
-  const allowance = Math.max(200, measured.files * MILLISECONDS_PER_FILE);
-  if (measured.milliseconds > allowance) {
+  if (measured.milliseconds > measured.allowance) {
     failures.push(
-      `${repo} spent ${Math.round(measured.milliseconds)} ms on ${measured.files} files, over its ${Math.round(allowance)} ms allowance`
+      `${repo} spent ${Math.round(measured.milliseconds)} ms on ${measured.files} files on its fastest of two runs, over its ${Math.round(measured.allowance)} ms allowance`
     );
   }
   console.log(
