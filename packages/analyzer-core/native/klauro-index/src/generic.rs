@@ -103,13 +103,13 @@ impl<'a> Extractor<'a> {
             let current = cursor.node();
             if self
                 .spec
-                .type_kinds
+                .declares.type_kinds
                 .iter()
                 .any(|(kind, _)| *kind == current.kind())
-                && (!self.spec.type_requires_body
+                && (!self.spec.declares.type_requires_body
                     || self
                         .spec
-                        .body_fields
+                        .signature.body_fields
                         .iter()
                         .any(|field| current.child_by_field_name(field).is_some()))
                 && let Some(name) = self.name_of(current)
@@ -134,7 +134,7 @@ impl<'a> Extractor<'a> {
     }
 
     fn referenced_names(&self, node: Node, depth: u8) -> Vec<String> {
-        if self.spec.name_leaf_kinds.contains(&node.kind()) || node.kind().contains("selector") {
+        if self.spec.names.leaf_kinds.contains(&node.kind()) || node.kind().contains("selector") {
             return vec![self.text(node).to_string()];
         }
         if node.kind().contains("string") {
@@ -179,12 +179,12 @@ impl<'a> Extractor<'a> {
     }
 
     fn name_of(&self, node: Node) -> Option<String> {
-        if self.spec.name_whole_kinds.contains(&node.kind()) {
+        if self.spec.names.whole_kinds.contains(&node.kind()) {
             return Some(self.text(node).trim().to_string());
         }
-        for field in self.spec.name_fields {
+        for field in self.spec.names.fields {
             if let Some(found) = node.child_by_field_name(field) {
-                if self.spec.name_whole_kinds.contains(&found.kind()) {
+                if self.spec.names.whole_kinds.contains(&found.kind()) {
                     return Some(self.text(found).trim().to_string());
                 }
                 if let Some(name) = self.leaf_name(found) {
@@ -192,12 +192,12 @@ impl<'a> Extractor<'a> {
                 }
             }
         }
-        if self.spec.require_name_field {
+        if self.spec.names.require_field {
             return None;
         }
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
-            if self.spec.name_descend.contains(&child.kind())
+            if self.spec.names.descend.contains(&child.kind())
                 && let Some(name) = self.leaf_name(child)
             {
                 return Some(name);
@@ -205,7 +205,7 @@ impl<'a> Extractor<'a> {
         }
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
-            if self.spec.name_leaf_kinds.contains(&child.kind()) && !self.skipped_word(child) {
+            if self.spec.names.leaf_kinds.contains(&child.kind()) && !self.skipped_word(child) {
                 return Some(self.text(child).to_string());
             }
         }
@@ -213,18 +213,18 @@ impl<'a> Extractor<'a> {
     }
 
     fn skipped_word(&self, node: Node) -> bool {
-        !self.spec.name_skip_words.is_empty()
-            && self.spec.name_skip_words.contains(&self.text(node).trim())
+        !self.spec.names.skip_words.is_empty()
+            && self.spec.names.skip_words.contains(&self.text(node).trim())
     }
 
     fn leaf_name(&self, node: Node) -> Option<String> {
-        if self.spec.name_leaf_kinds.contains(&node.kind()) && !self.skipped_word(node) {
+        if self.spec.names.leaf_kinds.contains(&node.kind()) && !self.skipped_word(node) {
             return Some(self.text(node).to_string());
         }
-        if !self.spec.name_descend.contains(&node.kind()) {
+        if !self.spec.names.descend.contains(&node.kind()) {
             let mut cursor = node.walk();
             for child in node.named_children(&mut cursor) {
-                if self.spec.name_leaf_kinds.contains(&child.kind()) && !self.skipped_word(child) {
+                if self.spec.names.leaf_kinds.contains(&child.kind()) && !self.skipped_word(child) {
                     return Some(self.text(child).to_string());
                 }
             }
@@ -232,7 +232,7 @@ impl<'a> Extractor<'a> {
         }
         for field in ["declarator", "name"] {
             if let Some(found) = node.child_by_field_name(field) {
-                if self.spec.name_whole_kinds.contains(&found.kind()) {
+                if self.spec.names.whole_kinds.contains(&found.kind()) {
                     return Some(self.text(found).trim().to_string());
                 }
                 if let Some(name) = self.leaf_name(found) {
@@ -240,7 +240,7 @@ impl<'a> Extractor<'a> {
                 }
             }
         }
-        if self.spec.require_name_field {
+        if self.spec.names.require_field {
             return None;
         }
         let mut cursor = node.walk();
@@ -253,20 +253,20 @@ impl<'a> Extractor<'a> {
     }
 
     fn parameter_list<'t>(&self, node: Node<'t>) -> Option<Node<'t>> {
-        for field in self.spec.parameter_fields {
+        for field in self.spec.signature.parameter_fields {
             if let Some(found) = node.child_by_field_name(field) {
                 return Some(found);
             }
         }
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
-            if self.spec.parameter_fields.contains(&child.kind()) {
+            if self.spec.signature.parameter_fields.contains(&child.kind()) {
                 return Some(child);
             }
         }
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
-            if self.spec.name_descend.contains(&child.kind())
+            if self.spec.names.descend.contains(&child.kind())
                 && let Some(found) = self.parameter_list(child)
             {
                 return Some(found);
@@ -279,7 +279,7 @@ impl<'a> Extractor<'a> {
         let mut parameters = Vec::new();
         let mut cursor = list.walk();
         for parameter in list.named_children(&mut cursor) {
-            if !self.spec.parameter_kinds.contains(&parameter.kind()) {
+            if !self.spec.signature.parameter_kinds.contains(&parameter.kind()) {
                 continue;
             }
             let name = self
@@ -304,20 +304,20 @@ impl<'a> Extractor<'a> {
     }
 
     fn declared_type(&self, parameter: Node) -> Option<String> {
-        if self.spec.parameter_type_kinds.is_empty() {
+        if self.spec.signature.parameter_type_kinds.is_empty() {
             return None;
         }
         let mut cursor = parameter.walk();
         parameter
             .named_children(&mut cursor)
-            .find(|child| self.spec.parameter_type_kinds.contains(&child.kind()))
+            .find(|child| self.spec.signature.parameter_type_kinds.contains(&child.kind()))
             .map(|found| self.text(found).trim().to_string())
             .filter(|found| !found.is_empty())
     }
 
     fn constructor_parameters(&self, node: Node) -> Vec<Parameter> {
         let mut at = node;
-        for step in self.spec.constructor_parameter_path {
+        for step in self.spec.signature.constructor_parameter_path {
             let mut cursor = at.walk();
             let Some(found) = at.named_children(&mut cursor).find(|child| child.kind() == *step)
             else {
@@ -337,7 +337,7 @@ impl<'a> Extractor<'a> {
         children
             .iter()
             .rev()
-            .find(|child| self.spec.return_child_kinds.contains(&child.kind()))
+            .find(|child| self.spec.signature.return_child_kinds.contains(&child.kind()))
             .map(|child| self.text(*child).trim().to_string())
     }
 
@@ -348,7 +348,7 @@ impl<'a> Extractor<'a> {
         };
         let return_type = self
             .spec
-            .return_fields
+            .signature.return_fields
             .iter()
             .find_map(|field| node.child_by_field_name(field))
             .map(|found| self.text(found).trim().to_string())
@@ -363,24 +363,24 @@ impl<'a> Extractor<'a> {
     }
 
     fn extension_receiver(&self, node: Node) -> Option<String> {
-        if self.spec.extension_receiver_kinds.is_empty() {
+        if self.spec.signature.extension_receiver_kinds.is_empty() {
             return None;
         }
         let name = self
             .spec
-            .name_fields
+            .names.fields
             .iter()
             .find_map(|field| node.child_by_field_name(field))?;
         let mut cursor = node.walk();
         node.named_children(&mut cursor)
             .take_while(|child| child.start_byte() < name.start_byte())
-            .find(|child| self.spec.extension_receiver_kinds.contains(&child.kind()))
+            .find(|child| self.spec.signature.extension_receiver_kinds.contains(&child.kind()))
             .map(|found| self.text(found).trim().to_string())
             .filter(|found| !found.is_empty())
     }
 
     fn trailing_return(&self, node: Node) -> Option<String> {
-        if self.spec.return_child_kinds.is_empty() {
+        if self.spec.signature.return_child_kinds.is_empty() {
             return None;
         }
         let mut cursor = node.walk();
@@ -388,7 +388,7 @@ impl<'a> Extractor<'a> {
         children
             .iter()
             .rev()
-            .find(|child| self.spec.return_child_kinds.contains(&child.kind()))
+            .find(|child| self.spec.signature.return_child_kinds.contains(&child.kind()))
             .map(|child| self.text(*child).trim().to_string())
     }
 
@@ -459,11 +459,11 @@ impl<'a> Extractor<'a> {
     fn visit(&mut self, node: Node, scope: &Scope) {
         let kind = node.kind();
 
-        if let Some((_, node_kind)) = self.spec.type_kinds.iter().find(|(name, _)| *name == kind) {
-            let declared = !self.spec.type_requires_body
+        if let Some((_, node_kind)) = self.spec.declares.type_kinds.iter().find(|(name, _)| *name == kind) {
+            let declared = !self.spec.declares.type_requires_body
                 || self
                     .spec
-                    .body_fields
+                    .signature.body_fields
                     .iter()
                     .any(|field| node.child_by_field_name(field).is_some());
             if declared {
@@ -475,16 +475,16 @@ impl<'a> Extractor<'a> {
         }
         if let Some((_, node_kind)) = self
             .spec
-            .function_kinds
+            .declares.function_kinds
             .iter()
             .find(|(name, _)| *name == kind)
         {
             self.declare_function(node, scope, *node_kind);
             return;
         }
-        if self.spec.impl_kinds.contains(&kind) {
+        if self.spec.declares.impl_kinds.contains(&kind) {
             let owner = node
-                .child_by_field_name(self.spec.impl_type_field)
+                .child_by_field_name(self.spec.declares.impl_type_field)
                 .map(|found| self.text(found).to_string())
                 .and_then(|name| self.owner_for_type_name(&name));
             let mut inner = scope.clone();
@@ -495,47 +495,47 @@ impl<'a> Extractor<'a> {
             self.walk(node, &inner);
             return;
         }
-        if self.spec.field_kinds.contains(&kind) && scope.type_owner.is_some() {
+        if self.spec.declares.field_kinds.contains(&kind) && scope.type_owner.is_some() {
             self.declare_field(node, scope);
             return;
         }
-        if self.spec.import_kinds.contains(&kind) {
+        if self.spec.declares.import_kinds.contains(&kind) {
             self.declare_import(node);
             return;
         }
-        if !self.spec.keyword_kind.is_empty() && kind == self.spec.keyword_kind {
+        if !self.spec.keywords.kind.is_empty() && kind == self.spec.keywords.kind {
             let keyword = node
-                .child_by_field_name(self.spec.keyword_target_field)
+                .child_by_field_name(self.spec.keywords.target_field)
                 .or_else(|| node.named_child(0))
                 .map(|target| self.text(target).trim().to_string())
                 .unwrap_or_default();
-            if self.spec.keyword_types.contains(&keyword.as_str()) {
+            if self.spec.keywords.types.contains(&keyword.as_str()) {
                 self.keyword_declaration(node, scope, NodeKind::Class);
                 return;
             }
-            if self.spec.keyword_functions.contains(&keyword.as_str()) {
+            if self.spec.keywords.functions.contains(&keyword.as_str()) {
                 self.keyword_declaration(node, scope, NodeKind::Function);
                 return;
             }
         }
-        if self.spec.binding_kinds.contains(&kind) {
+        if self.spec.declares.binding_kinds.contains(&kind) {
             if !self.declare_binding(node, scope) {
                 self.walk(node, scope);
             }
             return;
         }
-        if self.spec.call_kinds.contains(&kind) {
+        if self.spec.calls.kinds.contains(&kind) {
             let registrar = self.record_call(node, scope);
             let mut inner = scope.clone();
             inner.registrar = registrar;
             self.walk(node, &inner);
             return;
         }
-        if self.spec.lambda_kinds.contains(&kind) {
+        if self.spec.declares.lambda_kinds.contains(&kind) {
             self.declare_callback(node, scope);
             return;
         }
-        if self.spec.branch_kinds.contains(&kind) {
+        if self.spec.flow.branch_kinds.contains(&kind) {
             if let Some(unit) = self.unit(scope) {
                 unit.branches += 1;
             }
@@ -544,7 +544,7 @@ impl<'a> Extractor<'a> {
             self.walk(node, &inner);
             return;
         }
-        if self.spec.loop_kinds.contains(&kind) {
+        if self.spec.flow.loop_kinds.contains(&kind) {
             if let Some(unit) = self.unit(scope) {
                 unit.loops += 1;
             }
@@ -553,14 +553,14 @@ impl<'a> Extractor<'a> {
             self.walk(node, &inner);
             return;
         }
-        if self.spec.return_kinds.contains(&kind) {
+        if self.spec.flow.return_kinds.contains(&kind) {
             if let Some(unit) = self.unit(scope) {
                 unit.returns += 1;
             }
             self.walk(node, scope);
             return;
         }
-        if self.spec.throw_kinds.contains(&kind) {
+        if self.spec.flow.throw_kinds.contains(&kind) {
             let thrown = node
                 .named_child(0)
                 .map(|value| throw_name(self.text(value)))
@@ -571,7 +571,7 @@ impl<'a> Extractor<'a> {
             self.walk(node, scope);
             return;
         }
-        if self.spec.await_kinds.contains(&kind) {
+        if self.spec.flow.await_kinds.contains(&kind) {
             if let Some(unit) = self.unit(scope) {
                 unit.awaits += 1;
             }
@@ -584,29 +584,29 @@ impl<'a> Extractor<'a> {
     }
 
     fn decorators_of(&self, node: Node) -> Vec<Decorator> {
-        if self.spec.decorator_kinds.is_empty() {
+        if self.spec.declares.decorator_kinds.is_empty() {
             return Vec::new();
         }
         let mut found = Vec::new();
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
-            if self.spec.decorator_kinds.contains(&child.kind()) {
+            if self.spec.declares.decorator_kinds.contains(&child.kind()) {
                 found.push(self.decorator(child));
-            } else if self.spec.decorator_container_kinds.contains(&child.kind()) {
+            } else if self.spec.declares.decorator_container_kinds.contains(&child.kind()) {
                 let mut inner = child.walk();
                 for entry in child.named_children(&mut inner) {
-                    if self.spec.decorator_kinds.contains(&entry.kind()) {
+                    if self.spec.declares.decorator_kinds.contains(&entry.kind()) {
                         found.push(self.decorator(entry));
                     }
                 }
             }
         }
         if let Some(parent) = node.parent()
-            && self.spec.decorator_container_kinds.contains(&parent.kind())
+            && self.spec.declares.decorator_container_kinds.contains(&parent.kind())
         {
             let mut cursor = parent.walk();
             for entry in parent.named_children(&mut cursor) {
-                if self.spec.decorator_kinds.contains(&entry.kind()) {
+                if self.spec.declares.decorator_kinds.contains(&entry.kind()) {
                     found.push(self.decorator(entry));
                 }
             }
@@ -645,9 +645,9 @@ impl<'a> Extractor<'a> {
             return self.name_of(node.named_child(1)?);
         };
         let first = arguments.named_child(0)?;
-        if first.kind() == self.spec.keyword_kind {
+        if first.kind() == self.spec.keywords.kind {
             return first
-                .child_by_field_name(self.spec.keyword_target_field)
+                .child_by_field_name(self.spec.keywords.target_field)
                 .map(|target| self.text(target).trim().to_string());
         }
         Some(self.text(first).trim().to_string())
@@ -707,7 +707,7 @@ impl<'a> Extractor<'a> {
         let mut parameters = Vec::new();
         if let Some(arguments) = self.arguments_of(node)
             && let Some(first) = arguments.named_child(0)
-            && first.kind() == self.spec.keyword_kind
+            && first.kind() == self.spec.keywords.kind
             && let Some(inner) = self.arguments_of(first)
         {
             let mut cursor = inner.walk();
@@ -770,17 +770,17 @@ impl<'a> Extractor<'a> {
     }
 
     fn text_content(&self, node: Node) -> Option<String> {
-        if self.spec.text_kinds.is_empty() {
+        if self.spec.declares.text_kinds.is_empty() {
             return None;
         }
         let mut cursor = node.walk();
         let holder = node
             .named_children(&mut cursor)
-            .find(|child| self.spec.text_kinds.contains(&child.kind()))?;
+            .find(|child| self.spec.declares.text_kinds.contains(&child.kind()))?;
         let mut inner = holder.walk();
         if holder
             .named_children(&mut inner)
-            .any(|child| self.spec.type_kinds.iter().any(|(kind, _)| *kind == child.kind()))
+            .any(|child| self.spec.declares.type_kinds.iter().any(|(kind, _)| *kind == child.kind()))
         {
             return None;
         }
@@ -791,7 +791,7 @@ impl<'a> Extractor<'a> {
     fn record_heritage(&mut self, node: Node, owner: &str) {
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
-            if !self.spec.heritage_kinds.contains(&child.kind()) {
+            if !self.spec.declares.heritage_kinds.contains(&child.kind()) {
                 continue;
             }
             let mut names = child.walk();
@@ -831,10 +831,10 @@ impl<'a> Extractor<'a> {
     }
 
     fn declare_named_function(&mut self, node: Node, scope: &Scope, kind: NodeKind, name: String) {
-        let receiver_node = if self.spec.receiver_type_field.is_empty() {
+        let receiver_node = if self.spec.calls.receiver_type_field.is_empty() {
             None
         } else {
-            node.child_by_field_name(self.spec.receiver_type_field)
+            node.child_by_field_name(self.spec.calls.receiver_type_field)
         };
         let receiver_type = receiver_node.and_then(|receiver| self.receiver_type_name(receiver));
         let receiver_owner = receiver_type
@@ -851,7 +851,7 @@ impl<'a> Extractor<'a> {
             }
             inner
         };
-        let kind = if self.spec.constructor_kinds.contains(&name.as_str()) {
+        let kind = if self.spec.declares.constructor_kinds.contains(&name.as_str()) {
             NodeKind::Constructor
         } else if scope.type_owner.is_some() && kind == NodeKind::Function {
             NodeKind::Method
@@ -922,7 +922,7 @@ impl<'a> Extractor<'a> {
         loop {
             let current = cursor.node();
             if let Some(name) = current.child_by_field_name("name")
-                && self.spec.name_leaf_kinds.contains(&name.kind())
+                && self.spec.names.leaf_kinds.contains(&name.kind())
             {
                 return Some(self.text(name).to_string());
             }
@@ -1070,7 +1070,7 @@ impl<'a> Extractor<'a> {
     }
 
     fn declare_binding(&mut self, node: Node, scope: &Scope) -> bool {
-        let declarator = node.child_by_field_name(self.spec.binding_name_field);
+        let declarator = node.child_by_field_name(self.spec.declares.binding_name_field);
         let name = match declarator {
             Some(declarator) => {
                 let named = declarator.child_by_field_name("name").unwrap_or(declarator);
@@ -1082,17 +1082,17 @@ impl<'a> Extractor<'a> {
             return false;
         }
         let annotation = node
-            .child_by_field_name(self.spec.binding_type_field)
+            .child_by_field_name(self.spec.declares.binding_type_field)
             .or_else(|| self.typed_child(node))
             .and_then(|found| bare_type(self.text(found)));
         let value = node
-            .child_by_field_name(self.spec.binding_value_field)
-            .or_else(|| declarator.and_then(|d| d.child_by_field_name(self.spec.binding_value_field)))
+            .child_by_field_name(self.spec.declares.binding_value_field)
+            .or_else(|| declarator.and_then(|d| d.child_by_field_name(self.spec.declares.binding_value_field)))
             .or_else(|| self.assigned_child(node));
         if let Some(value) = value
             && let Some((_, kind)) = self
                 .spec
-                .function_kinds
+                .declares.function_kinds
                 .iter()
                 .find(|(declares, _)| *declares == value.kind())
         {
@@ -1100,10 +1100,10 @@ impl<'a> Extractor<'a> {
             return true;
         }
         let constructed = value
-            .filter(|value| self.spec.constructor_kinds.contains(&value.kind()))
+            .filter(|value| self.spec.declares.constructor_kinds.contains(&value.kind()))
             .and_then(|value| self.name_of(value));
         let from_call = value
-            .filter(|value| self.spec.call_kinds.contains(&value.kind()))
+            .filter(|value| self.spec.calls.kinds.contains(&value.kind()))
             .and_then(|value| self.called_name(value));
         if annotation.is_none() && constructed.is_none() && from_call.is_none() {
             return false;
@@ -1128,8 +1128,8 @@ impl<'a> Extractor<'a> {
     fn assigned_child<'t>(&self, node: Node<'t>) -> Option<Node<'t>> {
         let mut cursor = node.walk();
         node.named_children(&mut cursor).find(|child| {
-            self.spec.call_kinds.contains(&child.kind())
-                || self.spec.constructor_kinds.contains(&child.kind())
+            self.spec.calls.kinds.contains(&child.kind())
+                || self.spec.declares.constructor_kinds.contains(&child.kind())
         })
     }
 
@@ -1156,12 +1156,12 @@ impl<'a> Extractor<'a> {
                 // itself by others, and which is which is stated per language.
                 let receiver = self
                     .spec
-                    .receiver_fields
+                    .calls.receiver_fields
                     .iter()
                     .find_map(|field| function.child_by_field_name(field))
                     .or_else(|| {
                         self.spec
-                            .call_receiver_fields
+                            .calls.call_receiver_fields
                             .iter()
                             .find_map(|field| node.child_by_field_name(field))
                     })
@@ -1180,7 +1180,7 @@ impl<'a> Extractor<'a> {
             None => {
                 let receiver = self
                     .spec
-                    .receiver_fields
+                    .calls.receiver_fields
                     .iter()
                     .find_map(|field| node.child_by_field_name(field))
                     .map(|found| self.text(found).to_string());

@@ -6,7 +6,7 @@ const STRUCTURE_CEILING: u64 = 64 << 10;
 
 fn declares(language: &str) -> bool {
     spec_for(language).is_some_and(|spec| {
-        !spec.type_kinds.is_empty() || !spec.function_kinds.is_empty() || !spec.call_kinds.is_empty()
+        !spec.declares.type_kinds.is_empty() || !spec.declares.function_kinds.is_empty() || !spec.calls.kinds.is_empty()
     })
 }
 
