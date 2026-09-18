@@ -110,12 +110,45 @@ Three repos reported no served entry points at all. Only one was a defect.
 - **servant** was the real one: its 50 `main` bindings were invisible because Haskell writes a
   zero-argument binding as `bind`, not `function`, and only `function` was extracted.
 
+## Rule 4 — a module may reach more than one thing
+
+`os` opens files *and* shells out. A module therefore carries a set of kinds, tried in turn
+against each kind's own operations: `os.readfile` is a file exit, `os.execute` is a process
+exit, and `os.getenv` is neither. `process` is a kind in its own right — shelling out leaves
+the process, and recording it as a database query because "execute" reads as a database verb
+was worse than not recording it at all.
+
+Every vocabulary here is looked up with `binary_search`, which answers "absent" for a table
+that is merely unsorted — a silent failure that simply stops a rule firing. A test asserts all
+nineteen are sorted; `PROCESS_OPERATIONS` was caught by it on the first run.
+
+## Rule 5 — the package a type came from is not the value
+
+`req.Header.Get` read as a network exit because the origin of `req` is `net/http` and
+`Origin::Package` propagates through member access, so `req.Header` looks exactly like
+`http.DefaultClient`. The distinction that holds is what the member *is*: a request's `Header`,
+`Body`, `URL`, `Form` and `Cookies` hold data, while `this.client` and `this.httpClient` hold
+connections. A receiver path ending in a data member is not an exit.
+
+This removed all 33 header reads in traefik and kept all 9 client fields.
+
+## Measured after rules 4 and 5
+
+| Repo | exits | of which process |
+|---|---:|---:|
+| saleor | 9,573 | 0 |
+| traefik | 756 | 1 |
+| jellyfin | 541 | 0 |
+| neovim | 475 | 20 |
+| superset | 391 | 49 |
+| immich | 299 | 11 |
+| cal.com | 620 | 8 |
+
 ## Known imprecision
 
-`req.Header.Get` is counted as a network exit in Go: the receiver root resolves to `net/http`
-and `get` is a network operation, but reading a header leaves nothing. Separating it needs the
-receiver's type, not its root. Shelling out (`os.execute`, `subprocess.run`) is currently no
-exit at all — it wants a `process` kind rather than a wrong one.
+A chained query counts once per link: `session.query(Tag).filter_by(...)` is two database
+exits, not one. The same shape was already fixed for Django by keying on the receiver's last
+segment, and wants the same treatment here.
 
 ## What stays out
 

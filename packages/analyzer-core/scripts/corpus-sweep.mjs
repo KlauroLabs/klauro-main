@@ -17,20 +17,20 @@ const WITHOUT_A_GRAMMAR = new Map([
 // reachability from entry points, so a surface that silently drops reports working code as
 // unreachable. Test entries are excluded: saleor declares 12,817 of them and 1,156 real ones.
 const SERVED_SURFACE = new Map([
-  ['cal.com', { served: 300, exits: 595 }],
-  ['immich', { served: 720, exits: 265 }],
+  ['cal.com', { served: 300, exits: 615 }],
+  ['immich', { served: 720, exits: 295 }],
   ['jellyfin', { served: 395, exits: 535 }],
   ['jekyll', { served: 20, exits: 20 }],
   ['mastodon', { served: 230, exits: 250 }],
   ['meilisearch', { served: 14, exits: 170 }],
   ['metabase', { served: 0, exits: 230 }],
   ['monica', { served: 215, exits: 100 }],
-  ['neovim', { served: 25, exits: 450 }],
+  ['neovim', { served: 25, exits: 470 }],
   ['ripgrep', { served: 6, exits: 40 }],
   ['saleor', { served: 1150, exits: 9570 }],
-  ['superset', { served: 290, exits: 350 }],
+  ['superset', { served: 290, exits: 385 }],
   ['tivi', { served: 20, exits: 290 }],
-  ['traefik', { served: 25, exits: 785 }]
+  ['traefik', { served: 25, exits: 750 }]
 ]);
 
 function index(root, repeat) {

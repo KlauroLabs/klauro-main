@@ -248,6 +248,11 @@ static DATABASE_OPERATIONS: &[&str] = &[
 static MESSAGE_OPERATIONS: &[&str] = &[
     "broadcast", "emit", "produce", "publish", "sendmessage",
 ];
+static PROCESS_OPERATIONS: &[&str] = &[
+    "check_call", "check_output", "command", "communicate", "exec", "execfile", "execsync",
+    "execute", "fork", "popen", "run", "spawn", "spawnsync", "start", "system", "waitpid",
+];
+
 static CACHE_OPERATIONS: &[&str] = &[
     "del", "expire", "getex", "hget", "hset", "setex", "ttl",
 ];
@@ -260,64 +265,78 @@ static IO_GLOBALS: &[&str] = &["fetch", "localStorage", "process", "sessionStora
 /// belong here: `std::path` manipulates strings and is not an exit.
 struct IoModule {
     specifier: &'static str,
-    kind: &'static str,
+    kinds: &'static [&'static str],
 }
 
-const fn io(specifier: &'static str, kind: &'static str) -> IoModule {
-    IoModule { specifier, kind }
+const fn io(specifier: &'static str, kinds: &'static [&'static str]) -> IoModule {
+    IoModule { specifier, kinds }
 }
+
+static FILE: &[&str] = &["file"];
+static API: &[&str] = &["api"];
+static DATABASE: &[&str] = &["database"];
+static PROCESS: &[&str] = &["process"];
+static FILE_OR_PROCESS: &[&str] = &["file", "process"];
 
 static IO_MODULES: &[IoModule] = &[
-    io("Alamofire", "api"),
-    io("Directory", "file"),
-    io("File", "file"),
-    io("FileManager", "file"),
-    io("HttpClient", "api"),
-    io("URLSession", "api"),
-    io("ActiveRecord", "database"),
-    io("System.Data", "database"),
-    io("System.IO", "file"),
-    io("System.Net.Http", "api"),
-    io("aiohttp", "api"),
-    io("axios", "api"),
-    io("database/sql", "database"),
-    io("diesel", "database"),
-    io("fs", "file"),
-    io("fs/promises", "file"),
-    io("got", "api"),
-    io("hyper", "api"),
-    io("httpx", "api"),
-    io("io/ioutil", "file"),
-    io("java.io", "file"),
-    io("java.net.http", "api"),
-    io("java.nio.file", "file"),
-    io("java.sql", "database"),
-    io("mongoose", "database"),
-    io("mysql2", "database"),
-    io("net/http", "api"),
-    io("node-fetch", "api"),
-    io("okhttp3", "api"),
-    io("os", "file"),
-    io("pathlib", "file"),
-    io("pg", "database"),
-    io("psycopg2", "database"),
-    io("pymysql", "database"),
-    io("reqwest", "api"),
-    io("requests", "api"),
-    io("retrofit2", "api"),
-    io("shutil", "file"),
-    io("sqlite3", "database"),
-    io("sqlx", "database"),
-    io("std::fs", "file"),
-    io("std::net", "api"),
-    io("tokio::fs", "file"),
-    io("tokio::net", "api"),
-    io("undici", "api"),
-    io("ureq", "api"),
-    io("urllib", "api"),
+    io("ActiveRecord", DATABASE),
+    io("Alamofire", API),
+    io("Directory", FILE),
+    io("File", FILE),
+    io("FileManager", FILE),
+    io("HttpClient", API),
+    io("System.Data", DATABASE),
+    io("System.Diagnostics", PROCESS),
+    io("System.IO", FILE),
+    io("System.Net.Http", API),
+    io("URLSession", API),
+    io("aiohttp", API),
+    io("axios", API),
+    io("child_process", PROCESS),
+    io("database/sql", DATABASE),
+    io("diesel", DATABASE),
+    io("fs", FILE),
+    io("fs/promises", FILE),
+    io("got", API),
+    io("httpx", API),
+    io("hyper", API),
+    io("io/ioutil", FILE),
+    io("java.io", FILE),
+    io("java.lang.ProcessBuilder", PROCESS),
+    io("java.lang.Runtime", PROCESS),
+    io("java.net.http", API),
+    io("java.nio.file", FILE),
+    io("java.sql", DATABASE),
+    io("mongoose", DATABASE),
+    io("mysql2", DATABASE),
+    io("net/http", API),
+    io("node-fetch", API),
+    io("okhttp3", API),
+    io("os", FILE_OR_PROCESS),
+    io("os/exec", PROCESS),
+    io("pathlib", FILE),
+    io("pg", DATABASE),
+    io("psycopg2", DATABASE),
+    io("pymysql", DATABASE),
+    io("requests", API),
+    io("reqwest", API),
+    io("retrofit2", API),
+    io("shutil", FILE),
+    io("sqlite3", DATABASE),
+    io("sqlx", DATABASE),
+    io("std::fs", FILE),
+    io("std::net", API),
+    io("std::process", PROCESS),
+    io("subprocess", PROCESS),
+    io("tokio::fs", FILE),
+    io("tokio::net", API),
+    io("tokio::process", PROCESS),
+    io("undici", API),
+    io("ureq", API),
+    io("urllib", API),
 ];
 
-fn module_kind(specifier: &str) -> Option<&'static str> {
+fn module_kind(specifier: &str) -> Option<&'static [&'static str]> {
     let specifier = specifier.trim_start_matches("./").trim_start_matches("node:");
     IO_MODULES
         .iter()
@@ -330,7 +349,7 @@ fn module_kind(specifier: &str) -> Option<&'static str> {
                     })
         })
         .max_by_key(|entry| entry.specifier.len())
-        .map(|entry| entry.kind)
+        .map(|entry| entry.kinds)
 }
 
 fn classify_exit(binding: &str, origin: &str, member: &str) -> Option<&'static str> {
@@ -342,12 +361,15 @@ fn classify_exit(binding: &str, origin: &str, member: &str) -> Option<&'static s
     // A module that names what it reaches is authoritative: `os.execute` shells out, and the
     // fact that "execute" also reads as a database verb must not make it a query.
     if let Some(reaches) = module_kind(origin) {
-        let operations = match reaches {
-            "file" => FILE_OPERATIONS,
-            "api" => NETWORK_OPERATIONS,
-            _ => DATABASE_OPERATIONS,
-        };
-        return operations.binary_search(&operation).is_ok().then_some(reaches);
+        return reaches.iter().copied().find(|kind| {
+            let operations = match *kind {
+                "file" => FILE_OPERATIONS,
+                "api" => NETWORK_OPERATIONS,
+                "process" => PROCESS_OPERATIONS,
+                _ => DATABASE_OPERATIONS,
+            };
+            operations.binary_search(&operation).is_ok()
+        });
     }
     if is_file_origin(origin) && FILE_OPERATIONS.binary_search(&operation).is_ok() {
         return Some("file");
@@ -398,6 +420,20 @@ fn manager_exit(receiver: &str, operation: &str) -> Option<&'static str> {
         return Some("database");
     }
     None
+}
+
+/// Members of a request or a response that hold data rather than a connection. The origin of
+/// `req.Header` is `net/http` because `req` is, but reading a header leaves nothing: the
+/// package a value's type came from does not make every member of it an exit.
+static DATA_MEMBERS: &[&str] = &[
+    "body", "cookies", "form", "header", "headers", "multipartform", "params", "postform",
+    "query", "request", "response", "tls", "trailer", "url",
+];
+
+fn reads_a_data_member(receiver: &str) -> bool {
+    let member = receiver.rsplit('.').next().unwrap_or(receiver);
+    let member = member.split(['(', '[']).next().unwrap_or(member).trim();
+    DATA_MEMBERS.binary_search(&member.to_ascii_lowercase().as_str()).is_ok()
 }
 
 fn root_binding(receiver: &str) -> &str {
@@ -726,6 +762,9 @@ pub fn derive(
             continue;
         };
         let binding = root_binding(receiver);
+        if receiver.contains('.') && reads_a_data_member(receiver) {
+            continue;
+        }
         if let Some(kind) = manager_exit(receiver, &call.callee) {
             let operation = tail(&call.callee);
             exit_points.push(ExitPoint {
@@ -774,4 +813,55 @@ pub fn derive(
     exit_points.sort_by(|left, right| left.id.cmp(&right.id));
     entry_points.retain(|entry| entry.kind != "http" || !is_test(&files[entry.file as usize]));
     Derived { entry_points, exit_points }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every vocabulary here is looked up with `binary_search`, which answers "absent" for a
+    /// table that is merely unsorted. That failure is silent: the rule simply stops firing.
+    #[test]
+    fn every_vocabulary_is_sorted() {
+        let tables: &[(&str, &[&str])] = &[
+            ("CACHE_OPERATIONS", CACHE_OPERATIONS),
+            ("CLIENT_STORAGE_GLOBALS", CLIENT_STORAGE_GLOBALS),
+            ("COMMAND_REGISTRARS", COMMAND_REGISTRARS),
+            ("DATABASE_OPERATIONS", DATABASE_OPERATIONS),
+            ("DATA_MEMBERS", DATA_MEMBERS),
+            ("EVENT_REGISTRARS", EVENT_REGISTRARS),
+            ("FILE_OPERATIONS", FILE_OPERATIONS),
+            ("HTTP_METHODS", HTTP_METHODS),
+            ("IO_GLOBALS", IO_GLOBALS),
+            ("IPC_REGISTRARS", IPC_REGISTRARS),
+            ("LIFECYCLE_NAMES", LIFECYCLE_NAMES),
+            ("MESSAGE_OPERATIONS", MESSAGE_OPERATIONS),
+            ("MESSAGE_REGISTRARS", MESSAGE_REGISTRARS),
+            ("NETWORK_OPERATIONS", NETWORK_OPERATIONS),
+            ("PATH_REGISTRARS", PATH_REGISTRARS),
+            ("PROCESS_OPERATIONS", PROCESS_OPERATIONS),
+            ("SCHEDULE_REGISTRARS", SCHEDULE_REGISTRARS),
+            ("SESSION_OPERATIONS", SESSION_OPERATIONS),
+            ("TEST_REGISTRARS", TEST_REGISTRARS),
+        ];
+        for (name, table) in tables {
+            assert!(table.is_sorted(), "{name} is not sorted, so binary_search cannot find it");
+        }
+    }
+
+    #[test]
+    fn a_module_reaches_only_what_its_own_operations_name() {
+        assert_eq!(classify_exit("os", "os", "execute"), Some("process"));
+        assert_eq!(classify_exit("os", "os", "readfile"), Some("file"));
+        assert_eq!(classify_exit("os", "os", "getenv"), None);
+        assert_eq!(classify_exit("subprocess", "subprocess", "check_output"), Some("process"));
+    }
+
+    #[test]
+    fn a_data_member_of_a_request_is_not_a_connection() {
+        assert!(reads_a_data_member("req.Header"));
+        assert!(reads_a_data_member("this.rw.Header()"));
+        assert!(!reads_a_data_member("this.client"));
+        assert!(!reads_a_data_member("http.DefaultClient"));
+    }
 }
