@@ -14,6 +14,16 @@ pub enum Declares {
     Ship,
 }
 
+impl Declares {
+    fn category(self) -> &'static str {
+        match self {
+            Declares::Identity => "library",
+            Declares::Run => "runnable",
+            Declares::Ship => "shipped",
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct Declaration {
     pub declares: Declares,
@@ -26,6 +36,7 @@ pub struct Deployable {
     pub id: String,
     pub name: String,
     pub root: String,
+    pub category: &'static str,
     pub declarations: Vec<Declaration>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub ships: Vec<String>,
@@ -35,6 +46,7 @@ pub struct Deployable {
     pub members: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bundled_into: Option<String>,
+    #[serde(skip)]
     pub shipped: bool,
     pub units: u32,
     pub entry_points: u32,
@@ -224,8 +236,12 @@ static MODULE_MANIFESTS: &[&str] = &[
     "build.gradle.kts",
     "build.sbt",
     "cmakelists.txt",
+    "composer.json",
     "go.mod",
+    "mix.exs",
+    "package.swift",
     "pom.xml",
+    "project.toml",
     "pyproject.toml",
     "setup.py",
 ];
@@ -234,7 +250,9 @@ fn module_manifest(path: &str, runnable: &HashSet<&str>) -> Option<Candidate> {
     let basename = path.rsplit('/').next()?.to_ascii_lowercase();
     let known = MODULE_MANIFESTS.binary_search(&basename.as_str()).is_ok()
         || basename.ends_with(".csproj")
-        || basename.ends_with(".fsproj");
+        || basename.ends_with(".fsproj")
+        || basename.ends_with(".cabal")
+        || basename.ends_with(".gemspec");
     if !known {
         return None;
     }
@@ -246,7 +264,7 @@ fn module_manifest(path: &str, runnable: &HashSet<&str>) -> Option<Candidate> {
     }];
     if runnable.contains(root.as_str()) {
         declarations.push(Declaration {
-            declares: Declares::Ship,
+            declares: Declares::Run,
             kind: "runnable-module",
             at: path.to_string(),
         });
@@ -352,7 +370,7 @@ fn cargo_manifest(files: &Files, path: &str) -> Option<Candidate> {
     let mut declarations = Vec::new();
     for binary in document.iter().filter(|node| node.name == "bin") {
         declarations.push(Declaration {
-            declares: Declares::Ship,
+            declares: Declares::Run,
             kind: "cargo-bin",
             at: format!("{path}:{}", binary.span.line),
         });
@@ -605,7 +623,8 @@ fn consolidate(
     let mut deployables: Vec<Deployable> = Vec::new();
     let mut by_root: HashMap<String, usize> = HashMap::new();
     for candidate in candidates {
-        let shipped = candidate.strongest() == Declares::Ship;
+        let declares = candidate.strongest();
+        let shipped = declares == Declares::Ship;
         if let Some(at) = by_root.get(&candidate.root).copied() {
             let identifies = candidate
                 .declarations
@@ -620,6 +639,12 @@ fn consolidate(
             unit.ships.extend(candidate.ships);
             unit.runs = unit.runs.take().or(candidate.runs);
             unit.shipped |= shipped;
+            if declares.category() != "library" && unit.category == "library" {
+                unit.category = declares.category();
+            }
+            if shipped {
+                unit.category = "shipped";
+            }
             if unnamed && identifies {
                 unit.name = candidate.name;
             }
@@ -637,6 +662,7 @@ fn consolidate(
             ),
             name: candidate.name,
             root: candidate.root,
+            category: declares.category(),
             shipped,
             declarations: candidate.declarations,
             ships: candidate.ships,

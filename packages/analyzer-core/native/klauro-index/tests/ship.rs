@@ -9,25 +9,39 @@ fn shipped(index: &serde_json::Value) -> Vec<&serde_json::Value> {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|unit| unit["shipped"] == true)
+        .filter(|unit| unit["category"] == "shipped")
         .collect()
 }
 
-#[test]
-fn a_build_file_beside_an_entry_point_ships_what_it_builds() {
-    let index = index();
-    let units = shipped(&index);
-    let roots: Vec<&str> = units.iter().map(|unit| unit["root"].as_str().unwrap()).collect();
-    assert_eq!(roots, vec!["src/tool"], "the program ships, the library beside it does not");
+fn category_of(index: &serde_json::Value, root: &str) -> String {
+    index["scope"]["deployables"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|unit| unit["root"] == root)
+        .unwrap_or_else(|| panic!("{root} is a unit"))["category"]
+        .as_str()
+        .unwrap()
+        .to_string()
 }
 
 #[test]
-fn the_code_a_shipped_unit_builds_is_assigned_to_it() {
+fn a_program_is_runnable_and_the_library_beside_it_is_not() {
     let index = index();
-    let units = shipped(&index);
-    assert!(units[0]["units"].as_u64().unwrap() >= 2, "main and its helper belong to the program");
-    assert_eq!(
-        index["scope"]["unassigned_nodes"], 1,
-        "the library the program never imports is not shipped by it"
-    );
+    assert_eq!(category_of(&index, "src/tool"), "runnable");
+    assert_eq!(category_of(&index, "lib"), "library");
+    assert!(shipped(&index).is_empty(), "nothing here declares how it ships");
+}
+
+#[test]
+fn a_build_file_beside_an_entry_point_makes_a_project_of_what_it_builds() {
+    let index = index();
+    let roots: Vec<&str> = index["scope"]["deployables"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|unit| unit["root"].as_str().unwrap())
+        .collect();
+    assert!(roots.contains(&"src/tool"), "the program is a project: {roots:?}");
+    assert!(roots.contains(&"lib"), "so is the library beside it: {roots:?}");
 }

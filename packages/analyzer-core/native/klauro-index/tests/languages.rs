@@ -379,7 +379,7 @@ fn shipped(scope: &serde_json::Value) -> Vec<serde_json::Value> {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|unit| unit["shipped"] == true)
+        .filter(|unit| unit["category"] == "shipped")
         .cloned()
         .collect()
 }
@@ -430,7 +430,7 @@ fn an_installer_makes_one_ship_unit_of_what_it_names() {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|unit| unit["bundled_into"].is_null() && unit["shipped"] == false)
+        .filter(|unit| unit["bundled_into"].is_null() && unit["category"] != "shipped")
         .map(|unit| unit["name"].as_str().unwrap())
         .collect();
     assert_eq!(
