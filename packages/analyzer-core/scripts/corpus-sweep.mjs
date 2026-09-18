@@ -24,11 +24,11 @@ const SERVED_SURFACE = new Map([
   ['mastodon', { served: 230, exits: 250 }],
   ['meilisearch', { served: 14, exits: 170 }],
   ['metabase', { served: 0, exits: 230 }],
-  ['monica', { served: 215, exits: 100 }],
+  ['monica', { served: 218, exits: 100 }],
   ['neovim', { served: 25, exits: 470 }],
   ['ripgrep', { served: 6, exits: 40 }],
   ['saleor', { served: 1150, exits: 9570 }],
-  ['superset', { served: 290, exits: 385 }],
+  ['superset', { served: 290, exits: 6300 }],
   ['tivi', { served: 20, exits: 290 }],
   ['traefik', { served: 25, exits: 750 }]
 ]);

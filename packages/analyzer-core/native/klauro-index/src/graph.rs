@@ -92,15 +92,40 @@ pub fn derive(
     }
     let adjacency = build_adjacency(nodes.len(), &mut pairs);
 
+    // An entry point that names a type is served by that type's methods: a controller class
+    // is the handler, and its members are what actually run.
+    let mut members: HashMap<u32, Vec<u32>> = HashMap::new();
+    for edge in edges {
+        if !matches!(edge.kind, EdgeKind::HasMethod) {
+            continue;
+        }
+        let (Some(source), Some(target)) = (
+            position_of.get(edge.source.as_str()),
+            position_of.get(edge.target.as_str()),
+        ) else {
+            continue;
+        };
+        members.entry(*source).or_default().push(*target);
+    }
+
     let mut depth = vec![u32::MAX; nodes.len()];
     let mut entry_count = vec![0u32; nodes.len()];
     let mut queue: Vec<u32> = Vec::new();
+    let mut seed = |position: u32, depth: &mut Vec<u32>, queue: &mut Vec<u32>| {
+        if depth[position as usize] == u32::MAX {
+            depth[position as usize] = 0;
+            queue.push(position);
+        }
+    };
     for entry in entry_points {
-        if let Some(position) = position_of.get(entry.handler.as_str())
-            && depth[*position as usize] == u32::MAX
-        {
-            depth[*position as usize] = 0;
-            queue.push(*position);
+        let Some(position) = position_of.get(entry.handler.as_str()).copied() else {
+            continue;
+        };
+        seed(position, &mut depth, &mut queue);
+        if nodes[position as usize].kind.is_type() {
+            for member in members.get(&position).into_iter().flatten() {
+                seed(*member, &mut depth, &mut queue);
+            }
         }
     }
     let mut head = 0;

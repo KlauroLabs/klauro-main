@@ -41,6 +41,18 @@ static HTTP_METHODS: &[&str] = &[
 
 static LIFECYCLE_NAMES: &[&str] = &["Main", "main", "wmain"];
 
+/// A receiver that is a router. It vouches for its own registration, so a framework that
+/// writes a path without a leading slash — `Route::get('closeBeta', ...)` — is still a route,
+/// while `$collection->get('etag')` is not.
+static ROUTERS: &[&str] = &["Route", "Router", "blueprint", "bp", "mux", "route", "router"];
+
+fn registered_on_a_router(registrar: &str) -> bool {
+    match registrar.rfind('.') {
+        Some(at) => ROUTERS.binary_search(&&registrar[..at]).is_ok(),
+        None => false,
+    }
+}
+
 static PATH_REGISTRARS: &[&str] =
     &["handle", "handlefunc", "handler", "handlerfunc", "path", "re_path", "route"];
 
@@ -79,7 +91,7 @@ fn classify_registration(registrar: &str, label: Option<&str>) -> Option<&'stati
     if PATH_REGISTRARS.binary_search(&lowered.as_str()).is_ok()
         || HTTP_METHODS.binary_search(&verb).is_ok()
     {
-        let through_receiver = verb.len() != registrar.len();
+        let through_receiver = verb.len() != registrar.len() && !registered_on_a_router(registrar);
         return match label {
             Some(label) if !looks_like_route(&split_label(label).1) => None,
             Some(label) if through_receiver && !label.contains('/') => None,
@@ -436,6 +448,19 @@ fn reads_a_data_member(receiver: &str) -> bool {
     DATA_MEMBERS.binary_search(&member.to_ascii_lowercase().as_str()).is_ok()
 }
 
+/// Two paths written in the same language. A route's handler is code beside it, not a section
+/// of a workflow file that happens to carry the same name.
+fn same_language(left: &str, right: &str) -> bool {
+    fn suffix(path: &str) -> &str {
+        match path.rsplit_once('.') {
+            Some((_, extension)) if !extension.contains('/') => extension,
+            _ => "",
+        }
+    }
+    let left = suffix(left);
+    !left.is_empty() && left == suffix(right)
+}
+
 fn root_binding(receiver: &str) -> &str {
     let end = receiver.find(['.', '[', '(', ' ']).unwrap_or(receiver.len());
     &receiver[..end]
@@ -567,13 +592,22 @@ pub fn derive(
         }
     }
 
-    let mut by_name: HashMap<&str, &IndexNode> = HashMap::new();
+    // Walking heritage asks whether any type of this name reaches a framework base, so every
+    // candidate is followed. Naming a handler asks which type serves a route, and that is a
+    // guess unless the name picks out exactly one: `code` is a declared type in a stylesheet
+    // as readily as a controller, and first-one-wins would hand it the route.
+    let mut by_name: HashMap<&str, Vec<&IndexNode>> = HashMap::new();
     let mut above: HashMap<&str, Vec<&str>> = HashMap::new();
     for node in nodes {
         if node.kind.is_type() {
-            by_name.entry(node.name.as_str()).or_insert(node);
+            by_name.entry(node.name.as_str()).or_default().push(node);
         }
     }
+    let unique_type: HashMap<&str, &IndexNode> = by_name
+        .iter()
+        .filter(|(_, found)| found.len() == 1)
+        .map(|(name, found)| (*name, found[0]))
+        .collect();
     for fact in type_references {
         if !matches!(fact.kind, EdgeKind::Extends | EdgeKind::Implements) {
             continue;
@@ -592,7 +626,7 @@ pub fn derive(
                     return Some(found);
                 }
                 let leaf = name.rsplit('.').next().unwrap_or(name);
-                if let Some(declared) = by_name.get(leaf) {
+                for declared in by_name.get(leaf).into_iter().flatten() {
                     pending.push(declared.id.as_str());
                 }
             }
@@ -666,6 +700,20 @@ pub fn derive(
             .or_else(|| local.get(&(registration.file, leaf.to_string())))
             .or_else(|| unique_units.get(leaf))
             .cloned()
+            // A handler may name the type that serves the route rather than a function:
+            // `Route::get('addresses', [ReportAddressesController::class, 'index'])`. The
+            // route file is where the registration is written, not what runs.
+            .or_else(|| {
+                unique_type
+                    .get(leaf)
+                    .filter(|found| {
+                        same_language(
+                            &files[registration.file as usize],
+                            &files[found.file as usize],
+                        )
+                    })
+                    .map(|found| found.id.clone())
+            })
             .or_else(|| {
                 declared.contains(leaf).then(|| files[registration.file as usize].clone())
             })
