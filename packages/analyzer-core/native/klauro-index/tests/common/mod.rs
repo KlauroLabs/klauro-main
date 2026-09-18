@@ -4,44 +4,74 @@ use std::process::Command;
 
 use serde_json::{Map, Value};
 
-/// The index as the product's own typed reader sees it. The emitted form interns every string
-/// into a table, and a reader without the schema cannot always tell an index from a count —
-/// `exits` is a list of exit points under ICELOT and a number under a unit's metrics. Tests
-/// have no schema, so they ask for the uninterned form. `the_interned_form_carries_the_same_
-/// strings` in tests/wire.rs keeps the two honest.
+/// Fields whose value is text. A map key is always text and needs no entry here, and a field
+/// is read by the shape of its value, so `exits` is a list of exit points under ICELOT and a
+/// count under a unit's metrics without the two colliding.
+const TEXT: &[&str] = &[
+    "annotation", "at", "bundled_into", "callback_of", "callee", "caller", "category",
+    "composition", "constructed", "declared_by", "declares", "default_value", "documentation",
+    "entry_point", "from", "from_call", "handler", "id", "imported", "kind", "label", "language",
+    "local", "method", "name", "node", "operation", "parent", "path", "project", "reason",
+    "receiver", "reexport_from", "registrar", "registration_label", "return_type", "role", "root",
+    "runs", "shape", "source", "specifier", "target", "type_annotation", "unit", "value",
+];
+
+const TEXT_LISTS: &[&str] = &[
+    "categories", "consumed_by", "exits", "integrations", "literals", "members",
+    "nested_repositories", "projects", "reaches", "reads", "ships", "ships_in",
+    "skipped_directories", "throws", "type_parameters", "types", "writes",
+];
+
 pub fn read(fixture: &str) -> Value {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(fixture);
     let binary = PathBuf::from(env!("CARGO_BIN_EXE_klauro-index"));
-    let output = Command::new(binary)
-        .arg(&root)
-        .env("KLAURO_UNINTERNED", "1")
-        .output()
-        .expect("index runs");
+    let output = Command::new(binary).arg(&root).output().expect("index runs");
     let mut stream = Cursor::new(output.stdout);
+    let table = rmpv::decode::read_value(&mut stream).expect("index emits a string table");
     let body = rmpv::decode::read_value(&mut stream).expect("index emits an index");
-    plain(&body)
+    let strings: Vec<String> = table
+        .as_array()
+        .expect("the table is an array")
+        .iter()
+        .map(|value| value.as_str().expect("the table holds strings").to_string())
+        .collect();
+    rehydrate(&body, &strings, false)
 }
 
-fn plain(value: &rmpv::Value) -> Value {
+fn rehydrate(value: &rmpv::Value, strings: &[String], text: bool) -> Value {
     match value {
         rmpv::Value::Nil => Value::Null,
-        rmpv::Value::Boolean(found) => Value::Bool(*found),
-        rmpv::Value::Integer(found) => match found.as_i64() {
-            Some(found) => Value::from(found),
-            None => Value::from(found.as_u64().unwrap_or_default()),
-        },
-        rmpv::Value::F32(found) => Value::from(*found),
-        rmpv::Value::F64(found) => Value::from(*found),
-        rmpv::Value::String(found) => Value::String(found.as_str().unwrap_or_default().to_string()),
-        rmpv::Value::Binary(found) => Value::from(found.len()),
-        rmpv::Value::Array(found) => Value::Array(found.iter().map(plain).collect()),
-        rmpv::Value::Map(found) => {
-            let mut map = Map::new();
-            for (key, value) in found {
-                map.insert(key.as_str().unwrap_or_default().to_string(), plain(value));
+        rmpv::Value::Boolean(flag) => Value::Bool(*flag),
+        rmpv::Value::Integer(number) => {
+            let index = number.as_u64().unwrap_or_default() as usize;
+            match text {
+                true => Value::String(strings[index].clone()),
+                false => Value::Number(number.as_i64().unwrap_or_default().into()),
             }
-            Value::Object(map)
         }
-        rmpv::Value::Ext(_, found) => Value::from(found.len()),
+        rmpv::Value::F32(number) => serde_json::json!(number),
+        rmpv::Value::F64(number) => serde_json::json!(number),
+        rmpv::Value::String(word) => Value::String(word.as_str().unwrap_or_default().to_string()),
+        rmpv::Value::Array(items) => {
+            Value::Array(items.iter().map(|item| rehydrate(item, strings, text)).collect())
+        }
+        rmpv::Value::Map(pairs) => {
+            let mut fields = Map::new();
+            for (key, value) in pairs {
+                let name = match key {
+                    rmpv::Value::Integer(number) => {
+                        strings[number.as_u64().unwrap_or_default() as usize].clone()
+                    }
+                    other => other.as_str().unwrap_or_default().to_string(),
+                };
+                let text = match value {
+                    rmpv::Value::Array(_) => TEXT_LISTS.contains(&name.as_str()),
+                    _ => TEXT.contains(&name.as_str()),
+                };
+                fields.insert(name, rehydrate(value, strings, text));
+            }
+            Value::Object(fields)
+        }
+        rmpv::Value::Binary(_) | rmpv::Value::Ext(_, _) => Value::Null,
     }
 }
