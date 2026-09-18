@@ -1,8 +1,4 @@
-//! Reading a qualified name. A name written `app.Session.open`, `app::Session::open` or
-//! `Session->open` names the same member of the same type, and every pass reads it the same way.
 
-/// The member a qualified name ends in: `Session.open` and `fs::metadata` name `open` and
-/// `metadata`.
 pub fn leaf(name: &str) -> &str {
     let mut at = 0;
     let bytes = name.as_bytes();
@@ -16,8 +12,6 @@ pub fn leaf(name: &str) -> &str {
     &name[at.min(name.len())..]
 }
 
-/// The value a receiver path starts from, before any member access, index or call:
-/// `this.client.Do` starts from `this`.
 pub fn root(receiver: &str) -> &str {
     let end = receiver.find(['.', '[', '(', ' ', '-']).unwrap_or(receiver.len());
     &receiver[..end]

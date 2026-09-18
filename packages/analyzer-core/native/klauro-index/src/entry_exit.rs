@@ -42,9 +42,6 @@ static HTTP_METHODS: &[&str] = &[
 
 static LIFECYCLE_NAMES: &[&str] = &["Main", "main", "wmain"];
 
-/// A receiver that is a router. It vouches for its own registration, so a framework that
-/// writes a path without a leading slash — `Route::get('closeBeta', ...)` — is still a route,
-/// while `$collection->get('etag')` is not.
 static ROUTERS: &[&str] = &["Route", "Router", "blueprint", "bp", "mux", "route", "router"];
 
 fn registered_on_a_router(registrar: &str) -> bool {
@@ -201,9 +198,6 @@ const fn base(base: &'static str, kind: &'static str, members: &'static [&'stati
 static GRAPHQL_MEMBERS: &[&str] = &["resolve_*", "mutate", "mutate_and_get_payload", "perform_mutation"];
 static COMMAND_MEMBERS: &[&str] = &["execute", "handle"];
 
-/// A base type names a framework's entry, so it has to be specific enough to mean only that.
-/// Bare `Activity` and `Service` are not: `ActivityPub::Activity` and every Rails service
-/// object end in them.
 static ENTRY_BASES: &[EntryBase] = &[
     base("AppCompatActivity", "lifecycle", &[]),
     base("Application", "lifecycle", &[]),
@@ -267,9 +261,6 @@ static CACHE_OPERATIONS: &[&str] = &[
 static CLIENT_STORAGE_GLOBALS: &[&str] = &["localStorage", "sessionStorage"];
 static IO_GLOBALS: &[&str] = &["fetch", "localStorage", "process", "sessionStorage"];
 
-/// What a module reaches out to. The specifier is matched whole or as a path prefix, so
-/// `std::fs::read` and `fs` both land on the same entry. Only modules that leave the process
-/// belong here: `std::path` manipulates strings and is not an exit.
 struct IoModule {
     specifier: &'static str,
     kinds: &'static [&'static str],
@@ -365,8 +356,6 @@ fn classify_exit(binding: &str, origin: &str, member: &str) -> Option<&'static s
     if CLIENT_STORAGE_GLOBALS.binary_search(&binding).is_ok() {
         return Some("client_storage");
     }
-    // A module that names what it reaches is authoritative: `os.execute` shells out, and the
-    // fact that "execute" also reads as a database verb must not make it a query.
     if let Some(reaches) = module_kind(origin) {
         return reaches.iter().copied().find(|kind| {
             let operations = match *kind {
@@ -415,8 +404,6 @@ fn manager_exit(receiver: &str, operation: &str) -> Option<&'static str> {
     if manager == "objects" {
         return Some("database");
     }
-    // A generated query object carries the query in its own method names, so the receiver is
-    // the only stable evidence: `db.episodesQueries.showIdForEpisodeId(...)`.
     if manager.len() > "Queries".len() && manager.ends_with("Queries") {
         return Some("database");
     }
@@ -429,9 +416,6 @@ fn manager_exit(receiver: &str, operation: &str) -> Option<&'static str> {
     None
 }
 
-/// Members of a request or a response that hold data rather than a connection. The origin of
-/// `req.Header` is `net/http` because `req` is, but reading a header leaves nothing: the
-/// package a value's type came from does not make every member of it an exit.
 static DATA_MEMBERS: &[&str] = &[
     "body", "cookies", "form", "header", "headers", "multipartform", "params", "postform",
     "query", "request", "response", "tls", "trailer", "url",
@@ -443,8 +427,6 @@ fn reads_a_data_member(receiver: &str) -> bool {
     DATA_MEMBERS.binary_search(&member.to_ascii_lowercase().as_str()).is_ok()
 }
 
-/// Two paths written in the same language. A route's handler is code beside it, not a section
-/// of a workflow file that happens to carry the same name.
 fn same_language(left: &str, right: &str) -> bool {
     fn suffix(path: &str) -> &str {
         match path.rsplit_once('.') {
@@ -476,8 +458,6 @@ fn bare_exit(call: &CallFact, modules: &HashMap<(u32, String), String>) -> Optio
     if let Some(specifier) = modules.get(&(call.file, call.callee.clone())) {
         return classify_exit(&call.callee, specifier, &call.callee);
     }
-    // A qualified call names its own module: `fs::metadata`, `std::fs::read`. The root is
-    // resolved through the file's imports when it is an alias, and read literally otherwise.
     let at = call.callee.rfind("::").map(|at| at + 2).or_else(|| {
         call.callee.rfind('.').map(|at| at + 1)
     })?;
@@ -490,8 +470,6 @@ fn bare_exit(call: &CallFact, modules: &HashMap<(u32, String), String>) -> Optio
     let root = path.split([':', '.']).next().unwrap_or(path);
     match modules.get(&(call.file, root.to_string())) {
         Some(specifier) => classify_exit(root, specifier, operation),
-        // Nothing imported this root, so the call path is the only evidence. It must name a
-        // module that leaves the process; an operation name alone is not enough to claim one.
         None => module_kind(path).and(classify_exit(root, path, operation)),
     }
 }
@@ -582,10 +560,6 @@ pub fn derive(
         }
     }
 
-    // Walking heritage asks whether any type of this name reaches a framework base, so every
-    // candidate is followed. Naming a handler asks which type serves a route, and that is a
-    // guess unless the name picks out exactly one: `code` is a declared type in a stylesheet
-    // as readily as a controller, and first-one-wins would hand it the route.
     let mut by_name: HashMap<&str, Vec<&IndexNode>> = HashMap::new();
     let mut above: HashMap<&str, Vec<&str>> = HashMap::new();
     for node in nodes {
@@ -604,9 +578,6 @@ pub fn derive(
         }
         above.entry(fact.source.as_str()).or_default().push(fact.name.as_str());
     }
-    // Which type names reach a framework base, settled by repetition rather than by walking
-    // the chain again for every type: saleor declares 152 types named `BaseMutation`, and
-    // following every candidate from each of its 5,000 types costs a minute and a half.
     fn supertype_base(
         name: &str,
         reaches: &HashMap<&str, &'static EntryBase>,
@@ -709,9 +680,6 @@ pub fn derive(
             .or_else(|| local.get(&(registration.file, leaf.to_string())))
             .or_else(|| unique_units.get(leaf))
             .cloned()
-            // A handler may name the type that serves the route rather than a function:
-            // `Route::get('addresses', [ReportAddressesController::class, 'index'])`. The
-            // route file is where the registration is written, not what runs.
             .or_else(|| {
                 unique_type
                     .get(leaf)
@@ -847,7 +815,6 @@ pub fn derive(
         {
             Some(specifier) => specifier.as_str(),
             None if IO_GLOBALS.binary_search(&binding).is_ok() => binding,
-            // A static I/O type is its own evidence: `File.ReadAllBytes`, `Directory.Delete`.
             None if module_kind(binding).is_some() => binding,
             None => continue,
         };
@@ -855,8 +822,6 @@ pub fn derive(
             continue;
         };
         let receiver = receiver.to_string();
-        // Some extractors record the whole dotted path as the callee, so the receiver would be
-        // spelled twice: `session` + `session.query`. The operation is its last segment.
         let operation = names::leaf(&call.callee);
         reached_through.push(receiver.to_string());
         exit_points.push(ExitPoint {
@@ -874,10 +839,6 @@ pub fn derive(
 
     entry_points.sort_by(|left, right| left.id.cmp(&right.id));
     entry_points.dedup_by(|left, right| left.id == right.id);
-    // A chained query crosses the boundary once. `session.query(Tag).filter_by(...)` reaches
-    // the database through `session`, and the link that follows is reached through the first
-    // link's own text — so an exit whose receiver extends another exit's receiver at the same
-    // place was already counted there.
     let mut at_site: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
     for (at, exit) in exit_points.iter().enumerate() {
         at_site.entry((exit.file, exit.line)).or_default().push(at);
@@ -910,8 +871,6 @@ pub fn derive(
 mod tests {
     use super::*;
 
-    /// Every vocabulary here is looked up with `binary_search`, which answers "absent" for a
-    /// table that is merely unsorted. That failure is silent: the rule simply stops firing.
     #[test]
     fn every_vocabulary_is_sorted() {
         let tables: &[(&str, &[&str])] = &[

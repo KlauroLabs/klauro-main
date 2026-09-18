@@ -29,8 +29,6 @@ pub struct Effects {
     pub writes: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub exits: Vec<String>,
-    /// What this unit reaches outside itself, named rather than counted: the packages and
-    /// runtimes its resolved calls land in.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub integrations: Vec<String>,
     pub external_calls: u16,
@@ -53,7 +51,6 @@ pub struct Output {
 }
 
 impl Icelot {
-    /// Whether anything at all was observed of this unit.
     pub fn observed(&self) -> bool {
         !self.input.is_silent()
             || !self.constraints.is_silent()
@@ -71,8 +68,6 @@ pub struct TelemetrySite {
     pub line: u32,
 }
 
-/// A facet describes an observed trait. Artificial completeness is forbidden: a unit that
-/// takes nothing carries no Input, and one that reaches nothing carries no Effects.
 #[derive(Debug, Serialize)]
 pub struct Icelot {
     pub unit: String,
@@ -126,8 +121,6 @@ pub fn derive(
     exits: &[ExitPoint],
     external: &HashMap<String, ()>,
 ) -> Vec<Icelot> {
-    // What a unit reaches outside itself, from the graph rather than from a count. An external
-    // node is identified `space:origin:member`, so the integration is its first two segments.
     let mut integrations: HashMap<&str, Vec<String>> = HashMap::new();
     for edge in edges {
         if !matches!(edge.kind, EdgeKind::Calls | EdgeKind::Instantiates) {

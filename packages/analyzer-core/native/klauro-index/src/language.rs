@@ -2,7 +2,6 @@ use tree_sitter::Language;
 
 use crate::model::NodeKind;
 
-/// What a grammar spells as a declaration.
 pub struct Declares {
     pub type_kinds: &'static [(&'static str, NodeKind)],
     pub function_kinds: &'static [(&'static str, NodeKind)],
@@ -23,7 +22,6 @@ pub struct Declares {
     pub text_kinds: &'static [&'static str],
 }
 
-/// Where a declaration keeps its name.
 pub struct Names {
     pub fields: &'static [&'static str],
     pub descend: &'static [&'static str],
@@ -33,7 +31,6 @@ pub struct Names {
     pub require_field: bool,
 }
 
-/// Where a callable keeps the parts of its signature.
 pub struct Signature {
     pub parameter_fields: &'static [&'static str],
     pub parameter_kinds: &'static [&'static str],
@@ -45,7 +42,6 @@ pub struct Signature {
     pub extension_receiver_kinds: &'static [&'static str],
 }
 
-/// How a call is spelled, and where it keeps its receiver.
 pub struct Calls {
     pub kinds: &'static [&'static str],
     pub receiver_fields: &'static [&'static str],
@@ -53,7 +49,6 @@ pub struct Calls {
     pub receiver_type_field: &'static str,
 }
 
-/// The shapes control flow takes.
 pub struct Flow {
     pub branch_kinds: &'static [&'static str],
     pub loop_kinds: &'static [&'static str],
@@ -62,7 +57,6 @@ pub struct Flow {
     pub await_kinds: &'static [&'static str],
 }
 
-/// Declarations spelled as a keyword form, as the Lisp family does.
 pub struct Keywords {
     pub kind: &'static str,
     pub target_field: &'static str,
@@ -70,8 +64,6 @@ pub struct Keywords {
     pub functions: &'static [&'static str],
 }
 
-/// How one language is read. A grammar names the same things differently, and a pass asks
-/// this table rather than knowing any language by name.
 pub struct LanguageSpec {
     pub id: &'static str,
     pub declares: Declares,
@@ -81,7 +73,6 @@ pub struct LanguageSpec {
     pub flow: Flow,
     pub keywords: Keywords,
 }
-
 
 const BASH_NAME_LEAVES: &[&str] = &["word", "command_name", "variable_name"];
 const GDSCRIPT_NAME_LEAVES: &[&str] = &["name", "identifier"];
@@ -217,9 +208,6 @@ pub fn language_for(id: &str) -> Option<(Language, &'static LanguageSpec)> {
 }
 
 pub fn spec_for(id: &str) -> Option<&'static LanguageSpec> {
-    // A dialect reads through the grammar of the language it extends. Each of these was
-    // checked against a sample first: tree-sitter recovers around `__global__` and `<<<>>>`,
-    // and still names the kernel.
     let id = match id {
         "shell" | "fish" => "bash",
         "terraform" => "hcl",

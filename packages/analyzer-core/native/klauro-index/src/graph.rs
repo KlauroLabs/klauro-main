@@ -92,8 +92,6 @@ pub fn derive(
     }
     let adjacency = build_adjacency(nodes.len(), &mut pairs);
 
-    // An entry point that names a type is served by that type's methods: a controller class
-    // is the handler, and its members are what actually run.
     let mut members: HashMap<u32, Vec<u32>> = HashMap::new();
     for edge in edges {
         if !matches!(edge.kind, EdgeKind::HasMethod) {

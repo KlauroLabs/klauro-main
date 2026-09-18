@@ -62,8 +62,6 @@ struct Bindings<'a> {
     file_locals: HashMap<(u32, &'a str), &'a str>,
 }
 
-
-
 fn unique(counts: HashMap<&str, (u32, u32)>) -> HashMap<&str, u32> {
     counts
         .into_iter()
@@ -245,8 +243,6 @@ fn runtime_member(name: &str) -> Option<&'static RuntimeMember> {
         .map(|at| &RUNTIME_MEMBERS[at])
 }
 
-/// The single type argument of a holder, or nothing when the annotation names none or several.
-/// `Lazy<Session>` holds a `Session`; `Map<String, Session>` holds neither of them.
 fn sole_type_argument(annotation: &str) -> Option<&str> {
     let open = annotation.find(['<', '['])?;
     let close = annotation.rfind(['>', ']'])?;
@@ -350,8 +346,6 @@ impl<'a> Resolver<'a> {
     }
 
     fn root(&self, unit: u32, file: u32, name: &'a str) -> Origin<'a> {
-        // A language may sigil its variables, so the receiver that means "the enclosing
-        // instance" is spelled `$this` as readily as `this`.
         let bare = name.strip_prefix('$').unwrap_or(name);
         if bare == "this" || bare == "self" {
             return match self.symbols.owning_type(unit) {
@@ -472,8 +466,6 @@ impl<'a> Resolver<'a> {
         origin
     }
 
-    /// The annotation a name carries where it is declared, so a holder can be unwrapped when
-    /// the holder type itself is not declared here.
     fn held(&self, unit: u32, file: u32, name: &'a str) -> Option<&'a str> {
         let holder = &self.symbols.nodes[unit as usize];
         if let Some(signature) = holder.signature.as_ref()
@@ -512,8 +504,6 @@ fn strip_extension(specifier: &str) -> &str {
     }
     specifier
 }
-
-
 
 fn dotted_module(files: &HashMap<&str, u32>, from: &str, specifier: &str) -> Option<u32> {
     let depth = specifier.chars().take_while(|character| *character == '.').count();

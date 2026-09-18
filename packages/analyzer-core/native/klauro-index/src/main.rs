@@ -81,10 +81,6 @@ enum Read {
     Unreadable,
 }
 
-/// A file dense with NUL bytes is not text, whatever its extension claims. Extensions collide
-/// across ecosystems — `.res` is ReScript source and a Godot binary resource — and a grammar
-/// handed a binary blob can take minutes on a few megabytes. Density rather than presence:
-/// real source occasionally carries a stray NUL and is still source.
 fn is_binary(source: &[u8]) -> bool {
     let window = source.len().min(8000);
     if window == 0 {

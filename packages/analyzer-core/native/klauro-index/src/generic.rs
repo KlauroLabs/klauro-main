@@ -1152,8 +1152,6 @@ impl<'a> Extractor<'a> {
             .or_else(|| node.child_by_field_name("type"));
         let (receiver, callee) = match function {
             Some(function) => {
-                // A receiver is kept on the called expression by some grammars and on the call
-                // itself by others, and which is which is stated per language.
                 let receiver = self
                     .spec
                     .calls.receiver_fields
