@@ -614,24 +614,43 @@ pub fn derive(
         }
         above.entry(fact.source.as_str()).or_default().push(fact.name.as_str());
     }
-    let inherits = |node: &IndexNode| -> Option<&'static EntryBase> {
-        let mut seen: HashSet<&str> = HashSet::new();
-        let mut pending: Vec<&str> = vec![node.id.as_str()];
-        while let Some(at) = pending.pop() {
-            if !seen.insert(at) {
+    // Which type names reach a framework base, settled by repetition rather than by walking
+    // the chain again for every type: saleor declares 152 types named `BaseMutation`, and
+    // following every candidate from each of its 5,000 types costs a minute and a half.
+    fn supertype_base(
+        name: &str,
+        reaches: &HashMap<&str, &'static EntryBase>,
+    ) -> Option<&'static EntryBase> {
+        entry_base(name)
+            .or_else(|| reaches.get(name.rsplit('.').next().unwrap_or(name)).copied())
+    }
+    let mut reaches: HashMap<&str, &'static EntryBase> = HashMap::new();
+    loop {
+        let mut settled = false;
+        for node in nodes {
+            if !node.kind.is_type() || reaches.contains_key(node.name.as_str()) {
                 continue;
             }
-            for name in above.get(at).into_iter().flatten() {
-                if let Some(found) = entry_base(name) {
-                    return Some(found);
-                }
-                let leaf = name.rsplit('.').next().unwrap_or(name);
-                for declared in by_name.get(leaf).into_iter().flatten() {
-                    pending.push(declared.id.as_str());
-                }
+            let found = above
+                .get(node.id.as_str())
+                .into_iter()
+                .flatten()
+                .find_map(|name| supertype_base(name, &reaches));
+            if let Some(found) = found {
+                reaches.insert(node.name.as_str(), found);
+                settled = true;
             }
         }
-        None
+        if !settled {
+            break;
+        }
+    }
+    let inherits = |node: &IndexNode| -> Option<&'static EntryBase> {
+        above
+            .get(node.id.as_str())
+            .into_iter()
+            .flatten()
+            .find_map(|name| supertype_base(name, &reaches))
     };
 
     let mut members: HashMap<&str, Vec<&IndexNode>> = HashMap::new();
@@ -869,18 +888,24 @@ pub fn derive(
     // the database through `session`, and the link that follows is reached through the first
     // link's own text — so an exit whose receiver extends another exit's receiver at the same
     // place was already counted there.
+    let mut at_site: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+    for (at, exit) in exit_points.iter().enumerate() {
+        at_site.entry((exit.file, exit.line)).or_default().push(at);
+    }
     let mut counted = Vec::with_capacity(exit_points.len());
     for (at, exit) in exit_points.iter().enumerate() {
         let receiver = reached_through[at].as_str();
         let chained = receiver.contains('(')
-            && exit_points.iter().enumerate().any(|(other, beside)| {
-                other != at
-                    && beside.file == exit.file
-                    && beside.line == exit.line
-                    && !reached_through[other].is_empty()
-                    && reached_through[other].len() < receiver.len()
-                    && receiver.starts_with(reached_through[other].as_str())
-            });
+            && at_site
+                .get(&(exit.file, exit.line))
+                .into_iter()
+                .flatten()
+                .any(|other| {
+                    *other != at
+                        && !reached_through[*other].is_empty()
+                        && reached_through[*other].len() < receiver.len()
+                        && receiver.starts_with(reached_through[*other].as_str())
+                });
         counted.push(!chained);
     }
     let mut keep = counted.iter();

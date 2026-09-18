@@ -33,16 +33,16 @@ const SERVED_SURFACE = new Map([
   ['traefik', { served: 25, exits: 750 }]
 ]);
 
+// The whole run, not a sum of the passes it reports: a pass left out of that sum is a pass
+// with no budget at all, and one of them once spent 96 seconds where the sum read 1.
 function run(root) {
-  return spawnSync(INDEXER, [root], {
+  const started = Date.now();
+  const finished = spawnSync(INDEXER, [root], {
     env: { ...process.env, KLAURO_REPORT_COVERAGE: '1' },
     maxBuffer: 1 << 30
   });
-}
-
-function elapsed(report) {
-  return seconds(report, /parse ([\d.]+)(m?s)/) + seconds(report, /discover ([\d.]+)(m?s)/) +
-    seconds(report, /resolve ([\d.]+)(m?s)/) + seconds(report, /graph ([\d.]+)(m?s)/);
+  finished.milliseconds = Date.now() - started;
+  return finished;
 }
 
 function index(root, repeat) {
@@ -60,7 +60,7 @@ function index(root, repeat) {
   );
   const files = number(/\((\d+) files\)/);
   const allowance = Math.max(200, files * MILLISECONDS_PER_FILE);
-  let milliseconds = elapsed(report);
+  let milliseconds = first.milliseconds;
   let again;
   // Wall time on a machine that is also building is noisy, and a budget that fails at random
   // teaches everyone to re-run it until it is green. A repo is only over budget when it is
@@ -68,7 +68,7 @@ function index(root, repeat) {
   if (repeat || milliseconds > allowance) {
     const second = run(root);
     if (second.status === 0) {
-      milliseconds = Math.min(milliseconds, elapsed(second.stderr.toString()));
+      milliseconds = Math.min(milliseconds, second.milliseconds);
       again = createHash('sha1').update(second.stdout).digest('hex').slice(0, 12);
     }
   }
@@ -85,11 +85,6 @@ function index(root, repeat) {
   };
 }
 
-function seconds(report, pattern) {
-  const found = report.match(pattern);
-  if (!found) return 0;
-  return found[2] === 'ms' ? Number(found[1]) : Number(found[1]) * 1000;
-}
 
 const repos = readdirSync(CORPUS)
   .filter(name => statSync(path.join(CORPUS, name)).isDirectory())
