@@ -1152,9 +1152,8 @@ impl<'a> Extractor<'a> {
             .or_else(|| node.child_by_field_name("type"));
         let (receiver, callee) = match function {
             Some(function) => {
-                // The first field names where a method call keeps its receiver, on the called
-                // expression. Any field after it names another call form that keeps its
-                // receiver on the call itself, as a static call keeps its scope.
+                // A receiver is kept on the called expression by some grammars and on the call
+                // itself by others, and which is which is stated per language.
                 let receiver = self
                     .spec
                     .receiver_fields
@@ -1162,9 +1161,8 @@ impl<'a> Extractor<'a> {
                     .find_map(|field| function.child_by_field_name(field))
                     .or_else(|| {
                         self.spec
-                            .receiver_fields
+                            .call_receiver_fields
                             .iter()
-                            .skip(1)
                             .find_map(|field| node.child_by_field_name(field))
                     })
                     .map(|found| self.text(found).to_string());

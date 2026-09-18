@@ -350,7 +350,10 @@ impl<'a> Resolver<'a> {
     }
 
     fn root(&self, unit: u32, file: u32, name: &'a str) -> Origin<'a> {
-        if name == "this" || name == "self" {
+        // A language may sigil its variables, so the receiver that means "the enclosing
+        // instance" is spelled `$this` as readily as `this`.
+        let bare = name.strip_prefix('$').unwrap_or(name);
+        if bare == "this" || bare == "self" {
             return match self.symbols.owning_type(unit) {
                 Some(owner) => Origin::Declared(owner),
                 None => Origin::Unknown,
@@ -358,7 +361,8 @@ impl<'a> Resolver<'a> {
         }
         let holder = &self.symbols.nodes[unit as usize];
         if let Some(signature) = holder.signature.as_ref()
-            && let Some(parameter) = signature.parameters.iter().find(|p| p.name == name)
+            && let Some(parameter) =
+                signature.parameters.iter().find(|p| p.name == name || p.name == bare)
         {
             return match parameter.type_annotation.as_deref() {
                 Some(annotation) => match self.annotated(file, annotation) {
@@ -368,12 +372,17 @@ impl<'a> Resolver<'a> {
                 None => Origin::Indirect,
             };
         }
-        if let Some(annotation) = self.bindings.annotation(&holder.id, file, name) {
+        if let Some(annotation) = self
+            .bindings
+            .annotation(&holder.id, file, name)
+            .or_else(|| self.bindings.annotation(&holder.id, file, bare))
+        {
             return self.annotated(file, annotation);
         }
         if let Some(owner) = self.symbols.owning_type(unit)
             && let Some(signature) = self.symbols.nodes[owner as usize].signature.as_ref()
-            && let Some(parameter) = signature.parameters.iter().find(|p| p.name == name)
+            && let Some(parameter) =
+                signature.parameters.iter().find(|p| p.name == name || p.name == bare)
             && let Some(annotation) = parameter.type_annotation.as_deref()
         {
             return match self.annotated(file, annotation) {
@@ -382,7 +391,8 @@ impl<'a> Resolver<'a> {
             };
         }
         if let Some(owner) = self.symbols.owning_type(unit)
-            && let Some(member) = self.symbols.member(owner, name)
+            && let Some(member) =
+                self.symbols.member(owner, name).or_else(|| self.symbols.member(owner, bare))
         {
             let held = &self.symbols.nodes[member as usize];
             if !held.kind.is_type()

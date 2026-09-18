@@ -37,3 +37,29 @@ fn a_route_is_served_by_the_controller_rather_than_the_file_it_is_written_in() {
         );
     }
 }
+
+fn calls(index: &serde_json::Value, source: &str, target: &str) -> bool {
+    index["edges"].as_array().unwrap().iter().any(|edge| {
+        edge["kind"] == "calls"
+            && edge["source"].as_str().unwrap().ends_with(source)
+            && edge["target"].as_str().unwrap().ends_with(target)
+    })
+}
+
+#[test]
+fn a_call_on_the_enclosing_instance_resolves_through_its_sigil() {
+    let index = index();
+    assert!(
+        calls(&index, "function:index:7", "function:render:17"),
+        "$this->render() is a call on the enclosing class"
+    );
+}
+
+#[test]
+fn a_typed_parameter_types_the_receiver_it_names() {
+    let index = index();
+    assert!(
+        calls(&index, "function:notify:15", "function:deliver:7"),
+        "$mailer is declared Mailer, so $mailer->deliver() is Mailer::deliver"
+    );
+}
