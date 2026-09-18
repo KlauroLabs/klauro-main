@@ -625,7 +625,15 @@ fn consolidate(
     for candidate in candidates {
         let declares = candidate.strongest();
         let shipped = declares == Declares::Ship;
-        if let Some(at) = by_root.get(&candidate.root).copied() {
+        let named = candidate
+            .declarations
+            .iter()
+            .any(|found| found.kind == "compose-service");
+        let identity = match named {
+            true => format!("{}\u{1}{}", candidate.root, candidate.name),
+            false => candidate.root.clone(),
+        };
+        if let Some(at) = by_root.get(&identity).copied() {
             let identifies = candidate
                 .declarations
                 .iter()
@@ -650,11 +658,11 @@ fn consolidate(
             }
             continue;
         }
-        by_root.insert(candidate.root.clone(), deployables.len());
+        by_root.insert(identity, deployables.len());
         deployables.push(Deployable {
             id: format!(
                 "deployable:{}",
-                if candidate.root.is_empty() {
+                if candidate.root.is_empty() || named {
                     candidate.name.as_str()
                 } else {
                     candidate.root.as_str()

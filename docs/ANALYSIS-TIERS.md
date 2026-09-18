@@ -108,8 +108,23 @@ what the repository declares about itself; shipping is recorded beside it, never
 **Measured today: 73 ms.** Ship and run detection, roll-up and assignment run over T1 in
 `native/klauro-index/src/scope.rs`. A container's root is its build context rather than the
 directory holding its Dockerfile, so packaging variants of one product are one unit; a compose
-service that pulls an image ships none of this repository's code. Every node carries its unit by
+service that pulls an image ships none of this repository's code. A compose file that names
+several services declares several units even where they build from one context, because a named
+service is a deployable and a build context is packaging. Every node carries its unit by
 containment, and otherwise by the units whose imports reach it, so shared code belongs to each.
+
+Every unit carries the category its strongest declaration earns — `shipped` for a ship artifact,
+`runnable` for an entry the repository can start, `library` for a named package with neither.
+A runnable is not a deployable: repositories accumulate sample and utility binaries that build
+and never ship, and reading them as ship units buries the four that matter under a hundred that
+do not.
+
+Assignment by containment cannot separate units that share a root. Several services built from
+one repository-wide context resolve to the same territory, so the first of them takes the code
+and its siblings take none; separating them needs each service's own build file, which is not
+read. This is also why shared assignment does not fire on a repository whose root is a container:
+that container contains every path, so nothing reaches the import-reach branch. Both are
+attribution limits, not missing units — the units themselves are all present and categorised.
 
 A separate TypeScript implementation of ship and run detection predates this one
 (`analyzer-core/src/analyzer/core/deployable-evidence/`, 14 providers, and `resolveDeployables` in

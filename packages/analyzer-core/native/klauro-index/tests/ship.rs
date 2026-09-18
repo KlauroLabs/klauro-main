@@ -45,3 +45,22 @@ fn a_build_file_beside_an_entry_point_makes_a_project_of_what_it_builds() {
     assert!(roots.contains(&"src/tool"), "the program is a project: {roots:?}");
     assert!(roots.contains(&"lib"), "so is the library beside it: {roots:?}");
 }
+
+#[test]
+fn a_compose_file_naming_two_services_declares_two_units() {
+    let index = common::read("scope");
+    let services: Vec<&str> = index["scope"]["deployables"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|unit| {
+            unit["declarations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|found| found["kind"] == "compose-service")
+        })
+        .map(|unit| unit["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(services, ["api", "worker"], "each service is its own unit");
+}
