@@ -35,3 +35,45 @@ unsafe extern "C" {
 }
 
 pub const GDSHADER: LanguageFn = unsafe { LanguageFn::from_raw(tree_sitter_gdshader) };
+
+unsafe extern "C" {
+    fn tree_sitter_prisma() -> *const ();
+}
+
+pub const PRISMA: LanguageFn = unsafe { LanguageFn::from_raw(tree_sitter_prisma) };
+
+unsafe extern "C" {
+    fn tree_sitter_thrift() -> *const ();
+}
+
+pub const THRIFT: LanguageFn = unsafe { LanguageFn::from_raw(tree_sitter_thrift) };
+
+unsafe extern "C" {
+    fn tree_sitter_capnp() -> *const ();
+}
+
+pub const CAPNP: LanguageFn = unsafe { LanguageFn::from_raw(tree_sitter_capnp) };
+
+unsafe extern "C" {
+    fn tree_sitter_haxe() -> *const ();
+}
+
+pub const HAXE: LanguageFn = unsafe { LanguageFn::from_raw(tree_sitter_haxe) };
+
+unsafe extern "C" {
+    fn tree_sitter_wgsl() -> *const ();
+}
+
+pub const WGSL: LanguageFn = unsafe { LanguageFn::from_raw(tree_sitter_wgsl) };
+
+unsafe extern "C" {
+    fn tree_sitter_puppet() -> *const ();
+}
+
+pub const PUPPET: LanguageFn = unsafe { LanguageFn::from_raw(tree_sitter_puppet) };
+
+unsafe extern "C" {
+    fn tree_sitter_awk() -> *const ();
+}
+
+pub const AWK: LanguageFn = unsafe { LanguageFn::from_raw(tree_sitter_awk) };
