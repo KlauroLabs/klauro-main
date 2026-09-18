@@ -160,6 +160,31 @@ the operation is now the callee's last segment everywhere. The same full path wa
 to the manager rule as its operation, which is why SQLAlchemy's `session` never matched its own
 vocabulary.
 
+## Rule 7 — a registration is vouched for by its router, and served by its handler
+
+Laravel's routes were invisible and its collections were routes. Three defects in a chain:
+
+- A static call keeps its receiver on the call, not on the called expression, so `Route::get`
+  arrived with no receiver at all and was indistinguishable from a bare `get`. A spec now
+  lists more than one receiver field: the first is where a method call keeps its receiver, and
+  any after it are where another call form keeps it.
+- With no receiver, `$collection->get('etag')` passed the route test, because a label counted
+  as a path whenever it held no dot. 208 of monica's 217 served entry points were collection
+  reads. A slash-less label is now a route only when the receiver is a router.
+- The handler named a controller class, which resolved to neither a unit nor a local, so it
+  fell back to the file the registration was written in. A route file has no outgoing calls,
+  so 207 entry points reached nothing. A handler naming a type now resolves to that type, and
+  the graph seeds an entry from that type's members.
+
+monica: 217 served entry points, almost all false, to 221 real ones; reachable units 111 to 422.
+
+Resolving a name to a type needs two guards, both found by regression rather than foresight.
+The name must pick out exactly one type — `code` is a declared type in a stylesheet, and
+first-one-wins handed it one of shiny's tests. And the type must be declared in the same
+language as the registration, or a section of a GitHub workflow file serves 116 of neovim's
+tests. Walking heritage keeps the unguarded map on purpose: it asks whether *any* type of that
+name reaches a framework base, and narrowing it to unique names lost 12 real saleor resolvers.
+
 ## What stays out
 
 - Compose `@Composable` functions are not entry points. A composable is called by another
