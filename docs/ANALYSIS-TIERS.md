@@ -119,12 +119,20 @@ A runnable is not a deployable: repositories accumulate sample and utility binar
 and never ship, and reading them as ship units buries the four that matter under a hundred that
 do not.
 
-Assignment by containment cannot separate units that share a root. Several services built from
-one repository-wide context resolve to the same territory, so the first of them takes the code
-and its siblings take none; separating them needs each service's own build file, which is not
-read. This is also why shared assignment does not fire on a repository whose root is a container:
-that container contains every path, so nothing reaches the import-reach branch. Both are
-attribution limits, not missing units — the units themselves are all present and categorised.
+A container whose build context is the whole repository roots at the directory holding its
+Dockerfile instead, where that directory has sources of its own. Without this a service reading
+the workspace to build — the ordinary shape in a monorepo — merges into one unit that owns
+everything: one repository's six services became a single unit named after whichever sorted
+first, holding all 23,751 of its declarations. The cost is a Dockerfile kept in a tooling
+directory that carries a script of its own: it roots there rather than at the application it
+builds, and that application goes unassigned. `tests/context.rs` holds that case, ignored.
+
+Assignment by containment still cannot separate units that share a root. Several services built
+from one repository-wide context resolve to the same territory, so the first takes the code and
+its siblings take none; separating them needs each service's own build file, which is not read.
+This is also why shared assignment does not fire on a repository whose root is a container: that
+container contains every path, so nothing reaches the import-reach branch. Both are attribution
+limits, not missing units — the units themselves are all present and categorised.
 
 A separate TypeScript implementation of ship and run detection predates this one
 (`analyzer-core/src/analyzer/core/deployable-evidence/`, 14 providers, and `resolveDeployables` in

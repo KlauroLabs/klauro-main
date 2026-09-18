@@ -151,7 +151,7 @@ impl<'a> Files<'a> {
     }
 }
 
-fn container(files: &Files, path: &str, context: &str) -> Option<Candidate> {
+fn container(files: &Files, path: &str, context: &str, sources: &HashSet<&str>) -> Option<Candidate> {
     let stages = files.of(path)?;
     let root = context.to_string();
     let mut ships = Vec::new();
@@ -179,9 +179,14 @@ fn container(files: &Files, path: &str, context: &str) -> Option<Candidate> {
     ships.sort();
     ships.dedup();
     let context = common_ancestor(&ships);
+    let beside = directory_of(path);
+    let home = match context.is_empty() && sources.contains(beside) {
+        true => beside.to_string(),
+        false => context,
+    };
     Some(Candidate {
-        name: display_name(&context),
-        root: context,
+        name: display_name(&home),
+        root: home,
         declarations: vec![Declaration {
             declares: Declares::Ship,
             kind: "container",
@@ -492,6 +497,16 @@ fn is_workspace_container(files: &Files, path: &str) -> bool {
     })
 }
 
+fn source_roots<'a>(files: &'a [String], code: &[bool]) -> HashSet<&'a str> {
+    let mut roots = HashSet::new();
+    for (at, path) in files.iter().enumerate() {
+        if code.get(at).copied().unwrap_or(false) {
+            roots.insert(directory_of(path));
+        }
+    }
+    roots
+}
+
 fn runnable_roots<'a>(files: &'a [String], entry_points: &[EntryPoint]) -> HashSet<&'a str> {
     let lifecycle: HashSet<&str> = entry_points
         .iter()
@@ -541,6 +556,7 @@ pub fn derive(
 ) -> Scope {
     let index = Files::build(files, nodes);
     let runnable = runnable_roots(files, entry_points);
+    let sources = source_roots(files, code);
     let mut candidates: Vec<Candidate> = Vec::new();
 
     for (at, path) in index.paths.iter().enumerate() {
@@ -549,7 +565,7 @@ pub fn derive(
         }
         let basename = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
         if crate::dockerfile::is_dockerfile(path) {
-            candidates.extend(container(&index, path, ""));
+            candidates.extend(container(&index, path, "", &sources));
             continue;
         }
         if basename.contains("compose") && basename.ends_with(".yml")
