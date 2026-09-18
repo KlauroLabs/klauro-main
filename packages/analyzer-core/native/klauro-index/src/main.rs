@@ -536,6 +536,16 @@ fn main() {
 
     let emit_started = Instant::now();
     let strings = std::cell::RefCell::new(wire::Strings::default());
+    // The index is emitted with every string interned into a table, which is how it stays a
+    // third of its size. A reader that knows the schema resolves that fine; a reader that does
+    // not cannot always tell an index from a count, because `exits` is a list of exit points
+    // in one place and a number in another. This flag emits the same index with its strings
+    // written out, for readers that have no schema.
+    if std::env::var_os("KLAURO_UNINTERNED").is_some() {
+        use std::io::Write;
+        std::io::stdout().write_all(&rmp_serde::to_vec_named(&index).unwrap()).unwrap();
+        return;
+    }
     let body = rmp_serde::to_vec(&wire::Interned::new(&index, &strings)).unwrap();
     let mut serialized = rmp_serde::to_vec(&strings.into_inner().into_values()).unwrap();
     serialized.extend_from_slice(&body);
