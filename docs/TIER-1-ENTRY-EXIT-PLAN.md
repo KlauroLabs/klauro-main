@@ -54,13 +54,57 @@ Database operations are classified on the operation name alone, which is why gen
 (`get`, `filter`, `create`, `all`) cannot be added: they would fire everywhere.
 
 A receiver path is stronger evidence than a verb. `Model.objects.filter(...)` is a Django
-query because of `.objects.`, whatever the verb. The rule: a receiver path containing a
-manager segment makes the call a database exit regardless of operation.
+query because of `.objects.`, whatever the verb. The rule: a receiver path whose last segment
+is a manager makes the call a database exit regardless of operation.
 
 | Manager segment | Kind | Stack |
 |---|---|---|
 | `objects` | database | Django |
-| `session` | database | SQLAlchemy |
+| `session`, `db_session` | database | SQLAlchemy |
+| `*Queries` | database | SQLDelight, whose generated method names are per-table |
+
+## Rule 3 — the module names what it reaches
+
+`is_file_origin` and `is_network_origin` tested substrings — `origin.contains("http")` — which
+covers the JavaScript ecosystem and nothing else. A declarative table of module specifiers
+replaces them: `std::fs` and `System.IO` reach the filesystem, `reqwest` and `okhttp3` reach the
+network, `psycopg2` reaches a database. `std::path` reaches nothing and is absent by design.
+
+The module is authoritative. An operation that is not one of that module's operations is not an
+exit, rather than falling through to be claimed by another kind — `os.execute` shells out, and
+must not become a database query because "execute" reads as a database verb.
+
+Three call shapes carry a module:
+
+| Shape | Example | Where the module comes from |
+|---|---|---|
+| Imported name | `fetch(url)` | the file's imports |
+| Qualified bare call | `fs::metadata(path)` | the root segment, through imports, else read literally |
+| Static I/O type | `File.ReadAllBytes(path)` | the receiver itself |
+
+## Measured
+
+Exit points per repo, before and after:
+
+| Repo | Stack | Before | After |
+|---|---|---:|---:|
+| saleor | Django | 0 | 9,573 |
+| jellyfin | .NET | 1 | 541 |
+| neovim | Lua | 1 | 455 |
+| tivi | Kotlin, SQLDelight | 2 | 293 |
+| meilisearch | Rust | 1 | 177 |
+| monica | Laravel, Vue | 4 | 101 |
+| ripgrep | Rust | 0 | 44 |
+| traefik | Go | 824 | 790 |
+
+traefik falls because verb-only classification was claiming calls that reach nothing.
+
+## Known imprecision
+
+`req.Header.Get` is counted as a network exit in Go: the receiver root resolves to `net/http`
+and `get` is a network operation, but reading a header leaves nothing. Separating it needs the
+receiver's type, not its root. Shelling out (`os.execute`, `subprocess.run`) is currently no
+exit at all — it wants a `process` kind rather than a wrong one.
 
 ## What stays out
 

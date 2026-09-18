@@ -37,3 +37,31 @@ fn a_manager_receiver_makes_a_query_a_database_exit() {
         .expect("the manager query is an exit point");
     assert_eq!(found["kind"], "database");
 }
+
+fn exit<'a>(index: &'a serde_json::Value, name: &str) -> Option<&'a serde_json::Value> {
+    index["exit_points"].as_array().unwrap().iter().find(|exit| exit["name"] == name)
+}
+
+#[test]
+fn a_qualified_call_into_a_standard_module_is_an_exit() {
+    let index = index();
+    assert_eq!(exit(&index, "fs::read_to_string").map(|found| &found["kind"]), Some(&serde_json::json!("file")));
+    assert!(exit(&index, "fs::metadata").is_some(), "a stat still leaves the process");
+}
+
+#[test]
+fn a_static_io_type_is_an_exit_but_a_path_helper_is_not() {
+    let index = index();
+    assert_eq!(exit(&index, "File.ReadAllBytes").map(|found| &found["kind"]), Some(&serde_json::json!("file")));
+    assert!(
+        exit(&index, "Path.GetFileName").is_none(),
+        "building a path string never leaves the process"
+    );
+}
+
+#[test]
+fn a_generated_query_object_is_a_database_exit() {
+    let index = index();
+    let found = exit(&index, "db.showQueries.entriesInPage").expect("the query is an exit");
+    assert_eq!(found["kind"], "database");
+}

@@ -223,13 +223,21 @@ fn entry_base(name: &str) -> Option<&'static EntryBase> {
 }
 
 static FILE_OPERATIONS: &[&str] = &[
-    "appendfile", "copyfile", "create", "createreadstream", "createwritestream", "mkdir",
-    "mkdirall", "open", "openfile", "readall", "readdir", "readfile", "remove", "removeall",
-    "rename", "rm", "rmdir", "stat", "unlink", "writefile",
+    "appendalltext", "appendfile", "canonicalize", "contentsofdirectory", "copy", "copyfile",
+    "copyitem", "create", "create_dir", "create_dir_all", "createdirectory",
+    "createreadstream", "createwritestream", "delete", "deletefile", "enumeratefiles",
+    "exists", "exists_sync", "existssync", "getdirectories", "getfiles", "hard_link",
+    "metadata", "mkdir", "mkdirall", "move", "open", "openfile", "openread", "openwrite",
+    "read_dir", "read_link", "read_to_end", "read_to_string", "readall", "readallbytes",
+    "readalllines", "readalltext", "readalltextasync", "readdir", "readfile", "remove",
+    "remove_dir", "remove_dir_all", "remove_file", "removeall", "removeitem", "rename", "rm",
+    "rmdir", "set_permissions", "stat", "symlink_metadata", "unlink", "write_all",
+    "writeallbytes", "writealltext", "writealltextasync", "writefile",
 ];
 static NETWORK_OPERATIONS: &[&str] = &[
-    "connect", "delete", "do", "fetch", "get", "head", "newrequest", "patch", "post",
-    "postform", "put", "request", "send",
+    "connect", "data", "datatask", "delete", "deleteasync", "do", "execute", "fetch", "get",
+    "get_async", "getasync", "head", "newrequest", "patch", "patchasync", "post", "postasync",
+    "postform", "put", "putasync", "request", "send", "send_async", "sendasync",
 ];
 static DATABASE_OPERATIONS: &[&str] = &[
     "aggregate", "begin", "begintx", "deletemany", "deleteone", "exec", "execcontext",
@@ -240,16 +248,106 @@ static DATABASE_OPERATIONS: &[&str] = &[
 static MESSAGE_OPERATIONS: &[&str] = &[
     "broadcast", "emit", "produce", "publish", "sendmessage",
 ];
-static CACHE_OPERATIONS: &[&str] = &["del", "expire", "getex", "hget", "hset", "setex", "ttl"];
+static CACHE_OPERATIONS: &[&str] = &[
+    "del", "expire", "getex", "hget", "hset", "setex", "ttl",
+];
 
 static CLIENT_STORAGE_GLOBALS: &[&str] = &["localStorage", "sessionStorage"];
 static IO_GLOBALS: &[&str] = &["fetch", "localStorage", "process", "sessionStorage"];
+
+/// What a module reaches out to. The specifier is matched whole or as a path prefix, so
+/// `std::fs::read` and `fs` both land on the same entry. Only modules that leave the process
+/// belong here: `std::path` manipulates strings and is not an exit.
+struct IoModule {
+    specifier: &'static str,
+    kind: &'static str,
+}
+
+const fn io(specifier: &'static str, kind: &'static str) -> IoModule {
+    IoModule { specifier, kind }
+}
+
+static IO_MODULES: &[IoModule] = &[
+    io("Alamofire", "api"),
+    io("Directory", "file"),
+    io("File", "file"),
+    io("FileManager", "file"),
+    io("HttpClient", "api"),
+    io("URLSession", "api"),
+    io("ActiveRecord", "database"),
+    io("System.Data", "database"),
+    io("System.IO", "file"),
+    io("System.Net.Http", "api"),
+    io("aiohttp", "api"),
+    io("axios", "api"),
+    io("database/sql", "database"),
+    io("diesel", "database"),
+    io("fs", "file"),
+    io("fs/promises", "file"),
+    io("got", "api"),
+    io("hyper", "api"),
+    io("httpx", "api"),
+    io("io/ioutil", "file"),
+    io("java.io", "file"),
+    io("java.net.http", "api"),
+    io("java.nio.file", "file"),
+    io("java.sql", "database"),
+    io("mongoose", "database"),
+    io("mysql2", "database"),
+    io("net/http", "api"),
+    io("node-fetch", "api"),
+    io("okhttp3", "api"),
+    io("os", "file"),
+    io("pathlib", "file"),
+    io("pg", "database"),
+    io("psycopg2", "database"),
+    io("pymysql", "database"),
+    io("reqwest", "api"),
+    io("requests", "api"),
+    io("retrofit2", "api"),
+    io("shutil", "file"),
+    io("sqlite3", "database"),
+    io("sqlx", "database"),
+    io("std::fs", "file"),
+    io("std::net", "api"),
+    io("tokio::fs", "file"),
+    io("tokio::net", "api"),
+    io("undici", "api"),
+    io("ureq", "api"),
+    io("urllib", "api"),
+];
+
+fn module_kind(specifier: &str) -> Option<&'static str> {
+    let specifier = specifier.trim_start_matches("./").trim_start_matches("node:");
+    IO_MODULES
+        .iter()
+        .filter(|entry| {
+            specifier == entry.specifier
+                || specifier
+                    .strip_prefix(entry.specifier)
+                    .is_some_and(|rest| {
+                        rest.starts_with("::") || rest.starts_with('/') || rest.starts_with('.')
+                    })
+        })
+        .max_by_key(|entry| entry.specifier.len())
+        .map(|entry| entry.kind)
+}
 
 fn classify_exit(binding: &str, origin: &str, member: &str) -> Option<&'static str> {
     let operation = tail(member).to_ascii_lowercase();
     let operation = operation.as_str();
     if CLIENT_STORAGE_GLOBALS.binary_search(&binding).is_ok() {
         return Some("client_storage");
+    }
+    // A module that names what it reaches is authoritative: `os.execute` shells out, and the
+    // fact that "execute" also reads as a database verb must not make it a query.
+    if let Some(reaches) = module_kind(origin) {
+        let operations = match reaches {
+            "file" => FILE_OPERATIONS,
+            "api" => NETWORK_OPERATIONS,
+            _ => DATABASE_OPERATIONS,
+        };
+        return operations.binary_search(&operation).is_ok().then_some(reaches);
     }
     if is_file_origin(origin) && FILE_OPERATIONS.binary_search(&operation).is_ok() {
         return Some("file");
@@ -288,6 +386,11 @@ fn manager_exit(receiver: &str, operation: &str) -> Option<&'static str> {
     if manager == "objects" {
         return Some("database");
     }
+    // A generated query object carries the query in its own method names, so the receiver is
+    // the only stable evidence: `db.episodesQueries.showIdForEpisodeId(...)`.
+    if manager.len() > "Queries".len() && manager.ends_with("Queries") {
+        return Some("database");
+    }
     let operation = operation.to_ascii_lowercase();
     if (manager == "session" || manager == "db_session")
         && SESSION_OPERATIONS.binary_search(&operation.as_str()).is_ok()
@@ -319,8 +422,27 @@ fn bare_exit(call: &CallFact, modules: &HashMap<(u32, String), String>) -> Optio
     if call.callee == "fetch" {
         return Some("api");
     }
-    let specifier = modules.get(&(call.file, call.callee.clone()))?;
-    classify_exit(&call.callee, specifier, &call.callee)
+    if let Some(specifier) = modules.get(&(call.file, call.callee.clone())) {
+        return classify_exit(&call.callee, specifier, &call.callee);
+    }
+    // A qualified call names its own module: `fs::metadata`, `std::fs::read`. The root is
+    // resolved through the file's imports when it is an alias, and read literally otherwise.
+    let at = call.callee.rfind("::").map(|at| at + 2).or_else(|| {
+        call.callee.rfind('.').map(|at| at + 1)
+    })?;
+    let operation = &call.callee[at..];
+    if operation.is_empty() {
+        return None;
+    }
+    let path = &call.callee[..at];
+    let path = path.trim_end_matches(['.', ':']);
+    let root = path.split([':', '.']).next().unwrap_or(path);
+    match modules.get(&(call.file, root.to_string())) {
+        Some(specifier) => classify_exit(root, specifier, operation),
+        // Nothing imported this root, so the call path is the only evidence. It must name a
+        // module that leaves the process; an operation name alone is not enough to claim one.
+        None => module_kind(path).and(classify_exit(root, path, operation)),
+    }
 }
 
 pub struct Derived {
@@ -626,6 +748,8 @@ pub fn derive(
         {
             Some(specifier) => specifier.as_str(),
             None if IO_GLOBALS.binary_search(&binding).is_ok() => binding,
+            // A static I/O type is its own evidence: `File.ReadAllBytes`, `Directory.Delete`.
+            None if module_kind(binding).is_some() => binding,
             None => continue,
         };
         let Some(kind) = classify_exit(binding, origin, &call.callee) else {
