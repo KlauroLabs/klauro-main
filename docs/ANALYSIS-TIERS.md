@@ -137,9 +137,11 @@ A separate TypeScript implementation of ship and run detection predates this one
 (`analyzer-core/src/analyzer/core/deployable-evidence/`, 14 providers, and `resolveDeployables` in
 the MCP server). It reads the old CAS rather than T1 and is the thing this replaces.
 
-Not yet read: JVM and .NET project manifests, so a repository whose services ship through a shared
-parameterised Dockerfile plus `pom.xml` resolves to its containers rather than its services. An
-installer's bundled paths are not read either, since call arguments are not carried in T1.
+A project manifest names a project whatever its ecosystem — `pom.xml`, a Gradle build, a `.csproj`,
+a `.cabal`, `go.mod`, `CMakeLists.txt`, `Package.swift`, `composer.json`, `mix.exs`, a gemspec —
+and a build file sitting where a program's entry point is declares that the project runs. What a
+build target produces is not read, so a repository whose services ship through one parameterised
+Dockerfile resolves the containers rather than the services beneath them.
 
 ---
 
