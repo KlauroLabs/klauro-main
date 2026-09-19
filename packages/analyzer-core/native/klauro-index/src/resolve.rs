@@ -554,6 +554,7 @@ struct Modules {
     declaring: HashMap<String, Option<u32>>,
     condensed: HashMap<String, Option<u32>>,
     holding: HashSet<String>,
+    rooted: HashSet<String>,
 }
 
 impl Modules {
@@ -561,10 +562,14 @@ impl Modules {
         let mut declaring: HashMap<String, Option<u32>> = HashMap::new();
         let mut condensed: HashMap<String, Option<u32>> = HashMap::new();
         let mut holding = HashSet::new();
+        let mut rooted = HashSet::new();
         for (at, path) in files.iter().enumerate() {
             let language = family(languages[at]);
             let key = module_key(path);
             let plain = without_containers(&key);
+            if let Some((root, _)) = key.split_once('/') {
+                rooted.insert(format!("{language}\u{1}{root}"));
+            }
             for (key, found) in [
                 (Some(key.as_str()), &mut declaring),
                 (plain.as_deref(), &mut condensed),
@@ -593,7 +598,7 @@ impl Modules {
                 }
             }
         }
-        Modules { declaring, condensed, holding }
+        Modules { declaring, condensed, holding, rooted }
     }
 
     fn declared(&self, language: &str, specifier: &str) -> Option<u32> {
@@ -618,6 +623,9 @@ impl Modules {
     fn held(&self, language: &str, specifier: &str) -> bool {
         let Some(key) = module_path(specifier) else { return false };
         let language = family(language);
+        if !key.contains('/') {
+            return self.rooted.contains(&format!("{language}\u{1}{key}"));
+        }
         let mut tail = key.as_str();
         loop {
             let mut owner = tail;

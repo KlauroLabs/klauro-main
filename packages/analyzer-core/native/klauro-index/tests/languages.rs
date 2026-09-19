@@ -440,16 +440,23 @@ fn an_installer_makes_one_ship_unit_of_what_it_names() {
 }
 
 #[test]
-fn code_shared_by_two_units_belongs_to_both() {
+fn a_declared_library_holds_its_own_code_and_the_services_that_import_it_hold_theirs() {
     let scope = scope_of("scope");
-    assert_eq!(scope["shared_nodes"], 1, "the library both services import");
+    assert_eq!(scope["unassigned_nodes"], 0, "every declaration has a unit");
     for unit in shipped(&scope) {
         assert_eq!(
-            unit["units"], 2,
-            "{} counts its own declaration and the one it imports",
+            unit["units"], 1,
+            "{} holds the code under its own root",
             unit["name"]
         );
     }
+    let library = scope["deployables"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|unit| unit["name"] == "shared")
+        .expect("the workspace declares the library");
+    assert_eq!(library["units"], 1, "the library both services import holds its own code");
 }
 
 #[test]

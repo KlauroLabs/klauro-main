@@ -303,9 +303,10 @@ fn main() {
 
     let resolve_started = Instant::now();
     let paths: Vec<String> = index.files.iter().map(|file| file.path.clone()).collect();
+    let languages: Vec<&str> = index.files.iter().map(|file| file.language.unwrap_or("")).collect();
     let mut resolution = resolve::resolve(&resolve::Index {
         files: &paths,
-        languages: &index.files.iter().map(|file| file.language.unwrap_or("")).collect::<Vec<_>>(),
+        languages: &languages,
         nodes: &index.nodes,
         imports: &index.imports,
         calls: &index.calls,
@@ -468,10 +469,21 @@ fn main() {
         .as_ref()
         .map(|partition| partition.assignment.as_slice())
         .unwrap_or(&[]);
+    let own: std::collections::HashSet<&str> = index
+        .scope
+        .iter()
+        .flat_map(|scope| scope.deployables.iter())
+        .filter(|unit| {
+            unit.declarations.iter().any(|declared| declared.kind == "package-identity")
+        })
+        .map(|unit| unit.name.as_str())
+        .collect();
     let found = dependencies::derive(
         &index.imports,
         &internal_specifiers,
+        &own,
         &paths,
+        &languages,
         &index.entry_points,
         &index.exit_points,
         &dependencies::file_project(assignment),

@@ -169,12 +169,21 @@ From T1, scoped by T2. Deterministic.
 `native/klauro-index`, per sub-project. Querying T1 is the whole difference: the analyzers re-read
 files, and none of this does.
 
-Detection is derived rather than catalogued: every non-relative import already resolves to a
-package, so the dependency set is complete and a catalog only supplies the role and category.
-A package the catalog does not know is reported with its usage rather than dropped.
+Detection is derived rather than catalogued: every import that reaches no file the repository
+holds resolves to a package, so the dependency set is complete and a catalog only supplies the
+role and category. A package the catalog does not know is reported with its usage rather than
+dropped.
+
+Three things are not dependencies. Code the repository holds is its own, whether a module path
+names the file, a directory holds it, or a manifest declares the package it is imported by. The
+language's own library is the language, recorded as a runtime rather than as something chosen.
+And a specifier that does not read as a module — a fragment of markup, a keyword standing where
+a module goes — is not one.
 
 Roles come from a declarative table over annotations, inheritance and registration, and each role
-records what made it one. The 267 analyzer files under `analyzer/frameworks` and
+records what made it one. A declaration's own name is the weakest of these and is read only where
+the declaration is code the repository wrote, so an item in a build file never reads as a
+controller. The 267 analyzer files under `analyzer/frameworks` and
 `analyzer/libraries` (103,412 lines) hold per-framework depth — React props, hooks and event
 handlers — that this does not reproduce and does not attempt to.
 

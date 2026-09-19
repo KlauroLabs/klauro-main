@@ -1004,7 +1004,7 @@ impl<'a> Extractor<'a> {
 
     fn record_import(&mut self, specifier: &str, node: Node) {
         let specifier = specifier.trim().to_string();
-        if specifier.is_empty() {
+        if specifier.is_empty() || !reads_as_a_module(&specifier) {
             return;
         }
         let text = self.text(node);
@@ -1385,6 +1385,12 @@ static IMPORT_WORDS: &[&str] = &[
     "#include", "const", "extern", "from", "function", "import", "pub", "qualified", "static",
     "type", "use", "using",
 ];
+
+fn reads_as_a_module(specifier: &str) -> bool {
+    specifier
+        .chars()
+        .all(|letter| !letter.is_whitespace() && !matches!(letter, '"' | '\'' | '!' | '=' | '<' | '>'))
+}
 
 fn import_specifier(text: &str) -> String {
     let text = text.trim();

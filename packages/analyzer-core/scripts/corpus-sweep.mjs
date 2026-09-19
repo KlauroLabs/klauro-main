@@ -14,20 +14,20 @@ const WITHOUT_A_GRAMMAR = new Map([
 ]);
 
 const SERVED_SURFACE = new Map([
-  ['cal.com', { served: 300, exits: 615, observed: 15500, reachable: 9400, resolved: 19500, projects: 120, imported: 4200, packages: 350, roles: 6000, assigned: 26000 }],
-  ['immich', { served: 720, exits: 295, observed: 17500, reachable: 10200, resolved: 20000, projects: 18, imported: 3400, packages: 500, roles: 5900, assigned: 24000 }],
-  ['jellyfin', { served: 395, exits: 535, observed: 11800, reachable: 4450, resolved: 17500, projects: 42, packages: 260, roles: 1850, assigned: 15500 }],
+  ['cal.com', { served: 300, exits: 615, observed: 15500, reachable: 9400, resolved: 19500, projects: 120, imported: 4200, roles: 6000, assigned: 26000, packages: 366, classified: 33 }],
+  ['immich', { served: 720, exits: 295, observed: 17500, reachable: 10200, resolved: 20000, projects: 18, imported: 3400, roles: 5900, assigned: 24000, packages: 507, classified: 69 }],
+  ['jellyfin', { served: 395, exits: 535, observed: 11800, reachable: 4450, resolved: 17500, projects: 42, roles: 1850, assigned: 15500, packages: 246, classified: 53 }],
   ['jekyll', { served: 20, exits: 20 }],
-  ['mastodon', { served: 230, exits: 250, observed: 40000, reachable: 28000, resolved: 21000, projects: 3, imported: 2600, packages: 110, roles: 9700, assigned: 46000 }],
-  ['meilisearch', { served: 14, exits: 170, imported: 1000, packages: 300, roles: 210, assigned: 11500 }],
-  ['metabase', { served: 0, exits: 230, projects: 16, imported: 39000, packages: 730, roles: 28000, assigned: 132000 }],
-  ['monica', { served: 218, exits: 100, observed: 6700, reachable: 400, resolved: 8700, projects: 3, imported: 5400, packages: 320, roles: 570, assigned: 7900 }],
-  ['neovim', { served: 25, exits: 470, imported: 2700, packages: 470, roles: 5300, assigned: 20000 }],
+  ['mastodon', { served: 230, exits: 250, observed: 40000, reachable: 28000, resolved: 21000, projects: 3, imported: 2600, roles: 9700, assigned: 46000, packages: 128, classified: 15 }],
+  ['meilisearch', { served: 14, exits: 170, imported: 1000, roles: 210, assigned: 11500, packages: 343, classified: 5 }],
+  ['metabase', { served: 0, exits: 230, projects: 16, imported: 39000, roles: 28000, assigned: 132000, packages: 555, classified: 39 }],
+  ['monica', { served: 218, exits: 100, observed: 6700, reachable: 400, resolved: 8700, projects: 3, imported: 5400, roles: 570, assigned: 7900, packages: 75, classified: 3 }],
+  ['neovim', { served: 25, exits: 470, imported: 2700, roles: 5300, assigned: 20000, packages: 449, classified: 34 }],
   ['ripgrep', { served: 6, exits: 40 }],
-  ['saleor', { served: 1150, exits: 9570, observed: 21500, reachable: 16000, resolved: 55000, projects: 2, imported: 15000, packages: 200, roles: 13000, assigned: 28000 }],
-  ['superset', { served: 290, exits: 6300, observed: 55000, reachable: 40000, resolved: 63000, projects: 36, imported: 18500, packages: 700, roles: 26000, assigned: 67000 }],
-  ['tivi', { served: 20, exits: 290, imported: 1000, packages: 320, roles: 60, assigned: 5100 }],
-  ['traefik', { served: 25, exits: 750, observed: 6500, reachable: 3800, resolved: 7700, projects: 4, imported: 410, packages: 190, roles: 1300, assigned: 8300 }]
+  ['saleor', { served: 1150, exits: 9570, observed: 21500, reachable: 16000, resolved: 55000, projects: 2, imported: 15000, roles: 13000, assigned: 28000, packages: 217, classified: 55 }],
+  ['superset', { served: 290, exits: 6300, observed: 55000, reachable: 40000, resolved: 63000, projects: 36, imported: 18500, roles: 26000, assigned: 67000, packages: 764, classified: 110 }],
+  ['tivi', { served: 20, exits: 290, imported: 1000, roles: 60, assigned: 5100, packages: 312, classified: 24 }],
+  ['traefik', { served: 25, exits: 750, observed: 6500, reachable: 3800, resolved: 7700, projects: 4, imported: 410, roles: 1300, assigned: 8300, packages: 223, classified: 51 }]
 ]);
 
 function run(root) {
@@ -77,6 +77,7 @@ function index(root, repeat) {
     assigned: number(/^scope [^|]*\|[^|]*\|[^|]*\| assigned (\d+)/m),
     imported: number(/\| imported files (\d+)/),
     packages: number(/\| packages (\d+)/),
+    classified: number(/\| classified (\d+)/),
     roles: number(/^roles [^|]*\| (\d+)/m),
     unpartitioned: number(/unpartitioned (\d+)/),
     reachable: number(/reachable units (\d+)/),
@@ -140,9 +141,14 @@ for (const repo of repos) {
         `${repo} resolved ${measured.imported} imports to files it holds, below its floor of ${surface.imported}`
       );
     }
-    if (surface.packages && measured.packages < surface.packages) {
+    if (surface.packages && measured.packages > surface.packages) {
       failures.push(
-        `${repo} found ${measured.packages} packages, below its floor of ${surface.packages}`
+        `${repo} called ${measured.packages} names a package, over its ceiling of ${surface.packages}`
+      );
+    }
+    if (surface.classified && measured.classified < surface.classified) {
+      failures.push(
+        `${repo} recognised ${measured.classified} packages, below its floor of ${surface.classified}`
       );
     }
     if (surface.roles && measured.roles < surface.roles) {
