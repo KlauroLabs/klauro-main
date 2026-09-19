@@ -733,13 +733,20 @@ fn namespace_members(
         return used;
     }
     let Some((owner, leaf)) = key.rsplit_once('/') else { return Vec::new() };
-    let Some(members) = declared.get(&format!("{language}\u{1}{owner}")) else {
-        return Vec::new();
-    };
-    members
-        .iter()
+    if let Some(members) = declared.get(&format!("{language}\u{1}{owner}")) {
+        return members
+            .iter()
+            .copied()
+            .filter(|found| named.contains(&(*found, leaf.to_string())))
+            .collect();
+    }
+    let Some((namespace, holder)) = owner.rsplit_once('/') else { return Vec::new() };
+    declared
+        .get(&format!("{language}\u{1}{namespace}"))
+        .into_iter()
+        .flatten()
         .copied()
-        .filter(|found| named.contains(&(*found, leaf.to_string())))
+        .filter(|found| named.contains(&(*found, holder.to_string())))
         .collect()
 }
 

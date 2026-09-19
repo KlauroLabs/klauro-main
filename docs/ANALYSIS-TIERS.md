@@ -65,9 +65,12 @@ inheriting it does. Everything else is a package, and its name is what a unit re
 
 A declaration can carry members it does not declare. A type that uses a trait has that trait's
 methods, read as heritage wherever the language writes it inside the body rather than beside the
-name. A call to a method that extends a type resolves to the extension the file imported by that
-name before anything the receiver's type would otherwise suggest, because an import says which of
-several same-named extensions is meant.
+name. A method extends a type where the language says so: a first parameter marked as the
+receiver, a declaration written against a type, or a block whose functions all enrich the type it
+opens with. A call to such a method resolves to the extension the file imported by that name
+before anything the receiver's type would otherwise suggest, because an import says which of
+several same-named extensions is meant. A member imported without its holder — a static import —
+names the file that declares the holder.
 
 Pass 1.5 emits a facet only where something was observed, per the semantic model: a unit that
 takes nothing carries no Input, and one that reaches nothing carries no Effects. Effects names

@@ -90,3 +90,22 @@ fn an_imported_extension_answers_the_call_when_its_name_is_not_unique() {
         "the import says which of the two extensions is meant: {targets:?}"
     );
 }
+
+#[test]
+fn a_method_a_type_is_enriched_with_records_what_it_enriches() {
+    let index = index();
+    let extended: Vec<(&str, &str)> = index["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|node| !node["signature"]["receiver"].is_null())
+        .map(|node| {
+            (
+                node["name"].as_str().unwrap(),
+                node["signature"]["receiver"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert!(extended.contains(&("slugified", "String")), "{extended:?}");
+    assert!(extended.contains(&("doubled", "Int")), "{extended:?}");
+}

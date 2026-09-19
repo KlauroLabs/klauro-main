@@ -73,3 +73,14 @@ fn a_method_extending_a_type_records_what_it_extends() {
         .expect("the extension is declared");
     assert_eq!(extended["signature"]["receiver"], "string");
 }
+
+#[test]
+fn a_member_imported_without_its_holder_reaches_the_file_that_holds_it() {
+    let index = common::read("namespace");
+    let found = imported(&index, "src/com/demo/app/Page.java");
+    assert_eq!(
+        found,
+        ["src/com/demo/text/Utils.java"],
+        "a static import names a member of a type in a package: {found:?}"
+    );
+}

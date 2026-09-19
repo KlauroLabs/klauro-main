@@ -67,6 +67,7 @@ pub struct Extractor<'a> {
 #[derive(Clone)]
 struct Scope {
     owner: Option<String>,
+    extends: Option<String>,
     callable: Option<String>,
     registrar: Option<String>,
     type_owner: Option<String>,
@@ -433,6 +434,39 @@ impl<'a> Extractor<'a> {
         Signature { parameters, return_type, type_parameters: Vec::new(), receiver }
     }
 
+    fn type_kind(&self, kind: &str) -> NodeKind {
+        self.spec
+            .declares
+            .type_kinds
+            .iter()
+            .find(|(known, _)| *known == kind)
+            .map(|(_, node_kind)| *node_kind)
+            .unwrap_or(NodeKind::Class)
+    }
+
+    fn extended_type(&self, node: Node) -> Option<String> {
+        let required = self
+            .spec
+            .signature
+            .extension_container_kinds
+            .iter()
+            .find(|(kind, _)| *kind == node.kind())
+            .map(|(_, word)| *word)?;
+        if !required.is_empty() {
+            let mut cursor = node.walk();
+            let written = node
+                .named_children(&mut cursor)
+                .find(|child| child.kind() == "modifiers")
+                .map(|found| self.text(found).to_string())
+                .unwrap_or_default();
+            if !written.split_whitespace().any(|word| word == required) {
+                return None;
+            }
+        }
+        let parameters = self.parameter_list(node)?;
+        self.parameters_in(parameters).into_iter().next()?.type_annotation
+    }
+
     fn extended_parameter(&self, node: Node, parameters: &[Parameter]) -> Option<String> {
         let word = self.spec.signature.extension_parameter_word;
         if word.is_empty() {
@@ -507,6 +541,7 @@ impl<'a> Extractor<'a> {
         self.collect_types(root);
         let scope = Scope {
             owner: Some(self.module_id.clone()),
+            extends: None,
             callable: None,
             registrar: None,
             type_owner: None,
@@ -550,6 +585,17 @@ impl<'a> Extractor<'a> {
 
     fn visit(&mut self, node: Node, scope: &Scope) {
         let kind = node.kind();
+
+        if let Some(extended) = self.extended_type(node) {
+            let mut inner = scope.clone();
+            inner.extends = Some(extended);
+            let handled = self.spec.declares.type_kinds.iter().any(|(known, _)| *known == kind);
+            match handled {
+                true => self.declare_type(node, &inner, self.type_kind(kind)),
+                false => self.walk(node, &inner),
+            }
+            return;
+        }
 
         if self.spec.declares.namespace_kinds.contains(&kind) && self.facts.namespace.is_none() {
             self.facts.namespace = self.namespace_of(node);
@@ -970,7 +1016,13 @@ impl<'a> Extractor<'a> {
             file: self.file,
             span: span_of(node),
             parent: owner.clone(),
-            signature: Some(self.signature_of(node)),
+            signature: Some({
+                let mut signature = self.signature_of(node);
+                if signature.receiver.is_none() {
+                    signature.receiver = scope.extends.clone();
+                }
+                signature
+            }),
             modifiers: Modifiers::default(),
             decorators: self.decorators_of(node),
             type_annotation: None,

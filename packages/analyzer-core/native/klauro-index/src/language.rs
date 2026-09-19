@@ -42,6 +42,7 @@ pub struct Signature {
     pub constructor_parameter_path: &'static [&'static str],
     pub extension_receiver_kinds: &'static [&'static str],
     pub extension_parameter_word: &'static str,
+    pub extension_container_kinds: &'static [(&'static str, &'static str)],
 }
 
 pub struct Calls {
@@ -262,6 +263,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["call"],
@@ -323,6 +325,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["application_expression"],
@@ -384,6 +387,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["call"],
@@ -445,6 +449,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["call"],
@@ -506,6 +511,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["call_expression"],
@@ -567,6 +573,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["call_expression"],
@@ -628,6 +635,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["exprCall"],
@@ -689,6 +697,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["function_call"],
@@ -750,6 +759,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["function_call"],
@@ -811,6 +821,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["call_expression"],
@@ -872,6 +883,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["call_expression"],
@@ -933,6 +945,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["call_expression"],
@@ -994,6 +1007,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["suffix_apply"],
@@ -1055,6 +1069,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &[],
@@ -1116,6 +1131,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &[],
@@ -1177,6 +1193,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &[],
@@ -1238,6 +1255,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &[],
@@ -1299,6 +1317,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &[],
@@ -1361,6 +1380,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &[],
@@ -1423,6 +1443,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["command"],
@@ -1484,6 +1505,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["call"],
@@ -1545,6 +1567,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["invocation"],
@@ -1606,6 +1629,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &[],
@@ -1667,6 +1691,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["call_expression"],
@@ -1728,6 +1753,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["function_call"],
@@ -1794,6 +1820,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["call_expression", "new_expression"],
@@ -1846,8 +1873,8 @@ static SPECS: &[LanguageSpec] = &[
             require_field: false,
         },
         signature: Signature {
-            parameter_fields: &["parameters"],
-            parameter_kinds: &["parameter"],
+            parameter_fields: &["parameters", "class_parameters"],
+            parameter_kinds: &["parameter", "class_parameter"],
             parameter_type_kinds: &[],
             return_fields: &["return_type"],
             return_child_kinds: &[],
@@ -1855,6 +1882,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[("extension_definition", ""), ("class_definition", "implicit")],
         },
         calls: Calls {
             kinds: &["call_expression"],
@@ -1916,6 +1944,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["apply"],
@@ -1977,6 +2006,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["call_expression"],
@@ -2038,6 +2068,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["function_call_expression", "method_call_expression"],
@@ -2099,6 +2130,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["method_invocation", "object_creation_expression"],
@@ -2160,6 +2192,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &[],
@@ -2221,6 +2254,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &[],
@@ -2285,6 +2319,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["call_expression", "call_statement"],
@@ -2346,6 +2381,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["list_lit"],
@@ -2407,6 +2443,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["command"],
@@ -2468,6 +2505,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["call_expression"],
@@ -2529,6 +2567,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["function_call"],
@@ -2590,6 +2629,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["mustache_statement", "block_statement", "helper_invocation"],
@@ -2651,6 +2691,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["call_expr"],
@@ -2712,6 +2753,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["call_expression"],
@@ -2773,6 +2815,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &[],
@@ -2834,6 +2877,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &[],
@@ -2895,6 +2939,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["call_expression"],
@@ -2956,6 +3001,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["type_constructor_or_function_call_expression"],
@@ -3017,6 +3063,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["function_call", "resource_declaration"],
@@ -3078,6 +3125,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["func_call"],
@@ -3139,6 +3187,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["normal_command"],
@@ -3200,6 +3249,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &[],
@@ -3261,6 +3311,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &[],
@@ -3322,6 +3373,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["command"],
@@ -3383,6 +3435,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &[],
@@ -3444,6 +3497,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["call"],
@@ -3505,6 +3559,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["application_expression"],
@@ -3566,6 +3621,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["call_expression"],
@@ -3627,6 +3683,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["call"],
@@ -3688,6 +3745,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &[],
@@ -3749,6 +3807,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["call"],
@@ -3810,6 +3869,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["call_expression", "message_expression"],
@@ -3871,6 +3931,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["subroutine_call", "call_expression"],
@@ -3932,6 +3993,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &[],
@@ -3993,6 +4055,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &[],
@@ -4054,6 +4117,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["function_call"],
@@ -4115,6 +4179,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &[],
@@ -4176,6 +4241,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &[],
@@ -4237,6 +4303,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &[],
@@ -4299,6 +4366,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["call"],
@@ -4363,6 +4431,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["call_expression"],
@@ -4432,6 +4501,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["method_invocation", "object_creation_expression"],
@@ -4503,6 +4573,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "this",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["invocation_expression", "object_creation_expression"],
@@ -4570,6 +4641,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["call_expression"],
@@ -4631,6 +4703,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["call"],
@@ -4700,6 +4773,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["function_call_expression", "member_call_expression", "nullsafe_member_call_expression", "scoped_call_expression", "object_creation_expression"],
@@ -4768,6 +4842,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["call_expression"],
@@ -4837,6 +4912,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["call_expression", "new_expression"],
@@ -4905,6 +4981,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &[],
             extension_receiver_kinds: &[],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["call_expression"],
@@ -4969,6 +5046,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_parameter_path: &["primary_constructor", "class_parameters"],
             extension_receiver_kinds: &["type", "user_type"],
             extension_parameter_word: "",
+            extension_container_kinds: &[],
         },
         calls: Calls {
             kinds: &["call_expression"],
