@@ -109,7 +109,7 @@ pub fn derive(
     let mut depth = vec![u32::MAX; nodes.len()];
     let mut entry_count = vec![0u32; nodes.len()];
     let mut queue: Vec<u32> = Vec::new();
-    let mut seed = |position: u32, depth: &mut Vec<u32>, queue: &mut Vec<u32>| {
+    let seed = |position: u32, depth: &mut Vec<u32>, queue: &mut Vec<u32>| {
         if depth[position as usize] == u32::MAX {
             depth[position as usize] = 0;
             queue.push(position);

@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::externals;
+use crate::language_tables::SOURCE_EXTENSIONS;
 use crate::model::*;
 use crate::paths::{directory_of, normalize};
 
@@ -524,6 +525,82 @@ fn dotted_module(files: &HashMap<&str, u32>, from: &str, specifier: &str) -> Opt
     None
 }
 
+static INTERNAL_ROOTS: &[&str] = &["crate", "self", "super"];
+
+fn module_key(text: &str) -> String {
+    let trimmed = text.trim().trim_matches(['*', ';', ' ']);
+    let stem = match trimmed.rsplit_once('.') {
+        Some((stem, extension)) if SOURCE_EXTENSIONS.binary_search(&extension).is_ok() => stem,
+        _ => trimmed,
+    };
+    let stem = stem
+        .strip_suffix("/index")
+        .or_else(|| stem.strip_suffix("/mod"))
+        .unwrap_or(stem);
+    let key = stem.replace("::", "/").replace(['.', '\\'], "/").to_lowercase();
+    key.trim_matches('/').to_string()
+}
+
+fn family(language: &str) -> &str {
+    match language {
+        "cpp" => "c",
+        "javascript" | "svelte" | "vue" => "typescript",
+        other => other,
+    }
+}
+
+fn module_paths(files: &[String], languages: &[&str]) -> HashMap<String, Option<u32>> {
+    let mut reachable: HashMap<String, Option<u32>> = HashMap::new();
+    for (at, path) in files.iter().enumerate() {
+        let key = module_key(path);
+        let mut tail = key.as_str();
+        loop {
+            let scoped = format!("{}\u{1}{tail}", family(languages[at]));
+            match reachable.get_mut(&scoped) {
+                Some(known) => *known = None,
+                None => {
+                    reachable.insert(scoped, Some(at as u32));
+                }
+            }
+            match tail.find('/') {
+                Some(cut) => tail = &tail[cut + 1..],
+                None => break,
+            }
+        }
+    }
+    reachable
+}
+
+fn module_index(
+    modules: &HashMap<String, Option<u32>>,
+    language: &str,
+    specifier: &str,
+) -> Option<u32> {
+    let trimmed = specifier.trim();
+    if trimmed.is_empty() || trimmed.starts_with('.') || trimmed.starts_with('/') {
+        return None;
+    }
+    let key = module_key(trimmed);
+    let mut rest = key.as_str();
+    while let Some(trimmed) = INTERNAL_ROOTS
+        .iter()
+        .find_map(|root| rest.strip_prefix(root)?.strip_prefix('/'))
+    {
+        rest = trimmed;
+    }
+    let family = family(language);
+    if rest.contains('/') {
+        if let Some(found) = modules.get(&format!("{family}\u{1}{rest}")) {
+            return *found;
+        }
+    }
+    let owner = rest.rsplit_once('/')?.0;
+    owner
+        .contains('/')
+        .then(|| *modules.get(&format!("{family}\u{1}{owner}"))?)
+        .flatten()
+}
+
 fn file_index(files: &HashMap<&str, u32>, from: &str, specifier: &str) -> Option<u32> {
     if !specifier.starts_with('.') {
         return None;
@@ -597,6 +674,7 @@ pub fn resolve(index: &Index) -> Resolution {
         .collect();
 
     let mut edges = Vec::new();
+    let by_module = module_paths(index.files, index.languages);
     let mut bindings = Bindings {
         imported: HashMap::new(),
         modules: HashMap::new(),
@@ -606,7 +684,10 @@ pub fn resolve(index: &Index) -> Resolution {
 
     for fact in index.imports {
         let from = index.files[fact.file as usize].as_str();
-        let Some(target) = file_index(&by_path, from, &fact.specifier) else {
+        let Some(target) = file_index(&by_path, from, &fact.specifier)
+            .or_else(|| module_index(&by_module, index.languages[fact.file as usize], &fact.specifier))
+            .filter(|found| index.files[*found as usize] != from)
+        else {
             for name in &fact.names {
                 let wanted = name.imported.as_deref().unwrap_or(name.local.as_str());
                 if let Some(found) = symbols
