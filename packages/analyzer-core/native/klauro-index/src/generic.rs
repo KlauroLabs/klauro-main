@@ -1353,6 +1353,14 @@ impl<'a> Extractor<'a> {
                 Some(callee[..at].to_string()),
                 callee[at + 1..].to_string(),
             ),
+            (Some(receiver), Some(_)) => {
+                let called = callee
+                    .strip_prefix(receiver.as_str())
+                    .and_then(|rest| rest.strip_prefix('.'))
+                    .unwrap_or(&callee)
+                    .to_string();
+                (Some(receiver.clone()), called)
+            }
             _ => (receiver, callee),
         };
         let receiver = receiver.as_deref().and_then(settled);
