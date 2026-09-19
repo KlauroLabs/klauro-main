@@ -29,7 +29,21 @@ fn an_imported_namespace_reaches_what_the_importer_names_in_it() {
     let found = imported(&index, "Api/Controllers/SeriesController.cs");
     assert_eq!(
         found,
-        ["Api/Entities/Series.cs"],
-        "a namespace is a lookup scope, so the import reaches the declaration it uses"
+        ["Api/Entities/Catalogue.cs", "Api/Entities/Series.cs"],
+        "a namespace is a lookup scope, so the import reaches the declarations it uses"
+    );
+}
+
+#[test]
+fn a_declaration_is_named_by_the_types_a_file_writes_as_well_as_the_calls_it_makes() {
+    let index = common::read("namespace");
+    let found = imported(&index, "Api/Controllers/SeriesController.cs");
+    assert!(
+        found.contains(&"Api/Entities/Catalogue.cs".to_string()),
+        "a field and a parameter name their type as surely as a call does: {found:?}"
+    );
+    assert!(
+        !found.iter().any(|target| target.ends_with("Movie.cs")),
+        "what the file does not name it does not reach: {found:?}"
     );
 }

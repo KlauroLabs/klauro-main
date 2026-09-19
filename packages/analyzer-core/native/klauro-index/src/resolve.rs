@@ -857,6 +857,24 @@ pub fn resolve(index: &Index) -> Resolution {
             entry.insert(crate::names::root(receiver).to_ascii_lowercase());
         }
     }
+    for node in index.nodes {
+        let entry = referenced.entry(node.file).or_default();
+        for named in node
+            .type_annotation
+            .iter()
+            .chain(node.signature.iter().flat_map(|signature| {
+                signature
+                    .return_type
+                    .iter()
+                    .chain(signature.parameters.iter().filter_map(|p| p.type_annotation.as_ref()))
+            }))
+        {
+            entry.insert(base_type_name(named).to_ascii_lowercase());
+        }
+        for decorator in &node.decorators {
+            entry.insert(crate::names::leaf(&decorator.name).to_ascii_lowercase());
+        }
+    }
     let aliases = crate::alias::Aliases::read(index.files, index.nodes);
     let mut bindings = Bindings {
         imported: HashMap::new(),
