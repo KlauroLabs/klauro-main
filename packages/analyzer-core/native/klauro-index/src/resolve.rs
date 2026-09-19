@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::externals;
 use crate::language_tables::SOURCE_EXTENSIONS;
 use crate::model::*;
-use crate::paths::{directory_of, normalize};
+use crate::paths::{directory_of, join, normalize};
 
 pub struct Index<'a> {
     pub files: &'a [String],
@@ -767,6 +767,47 @@ fn package_members(
     members.to_vec()
 }
 
+fn module_or_owner(files: &HashMap<&str, u32>, specifier: &str, path: &str) -> Option<u32> {
+    module_file(files, path).or_else(|| {
+        if !specifier.contains(['/', '.']) && !specifier.contains("::") {
+            return None;
+        }
+        let (owner, _) = path.rsplit_once('/')?;
+        module_file(files, owner)
+    })
+}
+
+fn relative_module(from: &str, specifier: &str) -> Option<String> {
+    let mut rest = specifier.replace("::", "/");
+    let mut folder = own_module(from);
+    loop {
+        let Some((step, tail)) = rest.split_once('/').or(Some((rest.as_str(), ""))) else {
+            return None;
+        };
+        match step {
+            "self" => {}
+            "super" => folder = directory_of(&folder).to_string(),
+            _ => break,
+        }
+        rest = tail.to_string();
+        if rest.is_empty() {
+            return None;
+        }
+    }
+    (specifier.starts_with("self::") || specifier.starts_with("super::"))
+        .then(|| join(&folder, &rest))
+}
+
+fn own_module(from: &str) -> String {
+    let folder = directory_of(from);
+    let basename = crate::paths::basename(from);
+    let stem = basename.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(basename);
+    match stem {
+        "mod" | "lib" | "main" => folder.to_string(),
+        _ => join(folder, stem),
+    }
+}
+
 fn module_file(files: &HashMap<&str, u32>, path: &str) -> Option<u32> {
     if let Some(found) = files.get(path) {
         return Some(*found);
@@ -783,6 +824,9 @@ fn module_file(files: &HashMap<&str, u32>, path: &str) -> Option<u32> {
         format!("{base}.cjs"),
         format!("{base}.svelte"),
         format!("{base}.vue"),
+        format!("{base}.rs"),
+        format!("{base}/mod.rs"),
+        format!("{base}/lib.rs"),
         format!("{base}/index.ts"),
         format!("{base}/index.tsx"),
         format!("{base}/index.js"),
@@ -906,10 +950,14 @@ pub fn resolve(index: &Index) -> Resolution {
         let language = index.languages[fact.file as usize];
         let declared = file_index(&by_path, from, &fact.specifier)
             .or_else(|| {
+                relative_module(from, &fact.specifier)
+                    .and_then(|path| module_or_owner(&by_path, &fact.specifier, &path))
+            })
+            .or_else(|| {
                 aliases
                     .expand(from, &fact.specifier)
                     .iter()
-                    .find_map(|path| module_file(&by_path, path))
+                    .find_map(|path| module_or_owner(&by_path, &fact.specifier, path))
             });
         let reached: Vec<u32> = match declared {
             Some(found) => vec![found],

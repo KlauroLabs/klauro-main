@@ -64,6 +64,24 @@ impl Aliases {
                     target: join(home, "shared"),
                 });
             }
+            if name == "cargo.toml" {
+                entries.push(Entry {
+                    scope: home.to_string(),
+                    prefix: "crate".to_string(),
+                    wildcard: true,
+                    target: join(home, "src"),
+                });
+                if let Some(package) = section(&children, path, "package")
+                    && let Some(crate_name) = value_of(&children, &package.id, "name")
+                {
+                    entries.push(Entry {
+                        scope: String::new(),
+                        prefix: crate_name.replace('-', "_"),
+                        wildcard: true,
+                        target: join(home, "src"),
+                    });
+                }
+            }
             if name == "go.mod"
                 && let Some(module) = value_of(&children, path, "module")
             {
@@ -120,17 +138,19 @@ impl Aliases {
     }
 
     pub fn declares(&self, from: &str, specifier: &str) -> bool {
+        let written = specifier.replace("::", "/");
         self.entries
             .iter()
             .filter(|entry| !entry.prefix.is_empty() && contains(&entry.scope, from))
-            .any(|entry| entry.matched(specifier).is_some())
+            .any(|entry| entry.matched(&written).is_some())
     }
 
     pub fn expand(&self, from: &str, specifier: &str) -> Vec<String> {
+        let written = specifier.replace("::", "/");
         self.entries
             .iter()
             .filter(|entry| contains(&entry.scope, from))
-            .filter_map(|entry| entry.matched(specifier))
+            .filter_map(|entry| entry.matched(&written))
             .collect()
     }
 }

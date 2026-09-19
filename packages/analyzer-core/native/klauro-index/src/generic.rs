@@ -1592,6 +1592,10 @@ fn import_specifier(text: &str) -> String {
     }
     let end = cleaned.find([' ', ';', '\n']).unwrap_or(cleaned.len());
     let specifier = cleaned[..end].trim();
+    let specifier = match specifier.find('{') {
+        Some(at) => specifier[..at].trim_end_matches([':', '.', '/']),
+        None => specifier,
+    };
     match specifier.starts_with(['{', '(']) {
         true => String::new(),
         false => specifier.to_string(),

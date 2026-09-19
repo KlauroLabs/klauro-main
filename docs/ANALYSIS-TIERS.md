@@ -39,29 +39,31 @@ else is derived from.
 | | **Tier total** | **4 s** |
 
 Pass 1.3 reads an import five ways. A relative specifier is a path, resolved against the importing
-file. A specifier that names a module — dots, colons or backslashes between its segments — is the
-path of the file that declares it, matched against the repository's own files where the name picks
-out exactly one and that one is written in the same language; a source root between the segments,
-`src` or `main` or the language's own, belongs to the layout rather than to the name. A specifier
-that names something wider than a file is read as what that thing is. A package is compiled whole,
-so an import of one reaches every file it is written across, its own tests excepted: a package's
-tests are not what importing it gives you. A namespace is a lookup scope, so an import of one
-reaches the files in it whose declarations the importer names — in a call, in a type it writes on
-a field, a parameter or a return, in an annotation, or in a call to a method that extends a type
-it holds, which is named without naming what declares it — and a file records the namespace it
-declares for both to be found by. A specifier that names a directory the repository holds and
-nothing more precise is still the repository's own rather than something it depends on. A
-specifier that begins with an alias the repository declares — a compiler's path mapping, a
-package's own subpath import, a module path, a bundler's configured alias, a test runner's module
-map wherever it is declared, or the one a framework's configuration file gives it — is what that
-alias maps to, and stays the repository's own even where the file it names is generated rather
-than committed. An alias counts only where it maps onto something the repository holds: one that
-points into installed packages renames a dependency rather than declaring code. Where the alias is
-written as a pattern, it is read only as far as it reads as a path — a literal prefix, and at most
-one capture standing for the rest. A configuration that extends another inherits its mappings,
-wherever that other one lives — beside it, above it, or in a package the repository holds — and
-each mapping resolves against the configuration that declares it while applying where the one
-inheriting it does. Everything else is a package, and its name is what a unit reaches.
+file, as is one written against the module a file is — its own or the one above it — where the
+file's name is the module and a file named for its folder is that folder. A specifier that names a
+module — dots, colons or backslashes between its segments — is the path of the file that declares
+it, matched against the repository's own files where the name picks out exactly one and that one
+is written in the same language; a source root between the segments, `src` or `main` or the
+language's own, belongs to the layout rather than to the name. A specifier that names something
+wider than a file is read as what that thing is. A package is compiled whole, so an import of one
+reaches every file it is written across, its own tests excepted: a package's tests are not what
+importing it gives you. A namespace is a lookup scope, so an import of one reaches the files in it
+whose declarations the importer names — in a call, in a type it writes on a field, a parameter or
+a return, in an annotation, or in a call to a method that extends a type it holds, which is named
+without naming what declares it — and a file records the namespace it declares for both to be
+found by. A specifier that names a directory the repository holds and nothing more precise is
+still the repository's own rather than something it depends on. A specifier that begins with an
+alias the repository declares — a compiler's path mapping, a package's own subpath import, a
+module path, a bundler's configured alias, a test runner's module map wherever it is declared, or
+the one a framework's configuration file gives it — is what that alias maps to, and stays the
+repository's own even where the file it names is generated rather than committed. An alias counts
+only where it maps onto something the repository holds: one that points into installed packages
+renames a dependency rather than declaring code. Where the alias is written as a pattern, it is
+read only as far as it reads as a path — a literal prefix, and at most one capture standing for
+the rest. A configuration that extends another inherits its mappings, wherever that other one
+lives — beside it, above it, or in a package the repository holds — and each mapping resolves
+against the configuration that declares it while applying where the one inheriting it does.
+Everything else is a package, and its name is what a unit reaches.
 
 A declaration can carry members it does not declare. A type that uses a trait has that trait's
 methods, read as heritage wherever the language writes it inside the body rather than beside the
