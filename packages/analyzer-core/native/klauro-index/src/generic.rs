@@ -1381,6 +1381,11 @@ fn import_alias(text: &str) -> Option<String> {
     None
 }
 
+static IMPORT_WORDS: &[&str] = &[
+    "#include", "const", "extern", "from", "function", "import", "pub", "qualified", "static",
+    "type", "use", "using",
+];
+
 fn import_specifier(text: &str) -> String {
     let text = text.trim();
     if let Some(start) = text.find(['"', '\'', '<']) {
@@ -1393,13 +1398,18 @@ fn import_specifier(text: &str) -> String {
             return text[start + 1..start + 1 + end].to_string();
         }
     }
-    let cleaned = text
-        .trim_start_matches("import")
-        .trim_start_matches("using")
-        .trim_start_matches("use")
-        .trim_start_matches("#include")
-        .trim_start_matches("from")
-        .trim();
+    let mut cleaned = text;
+    while let Some(rest) = IMPORT_WORDS
+        .iter()
+        .find_map(|word| cleaned.strip_prefix(word))
+        .filter(|rest| rest.starts_with(|next: char| next.is_whitespace()))
+    {
+        cleaned = rest.trim_start();
+    }
     let end = cleaned.find([' ', ';', '\n']).unwrap_or(cleaned.len());
-    cleaned[..end].trim().to_string()
+    let specifier = cleaned[..end].trim();
+    match specifier.starts_with(['{', '(']) {
+        true => String::new(),
+        false => specifier.to_string(),
+    }
 }

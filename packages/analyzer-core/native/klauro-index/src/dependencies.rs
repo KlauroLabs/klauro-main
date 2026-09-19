@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::Serialize;
 
@@ -169,6 +169,9 @@ pub fn package_of(specifier: &str) -> Option<&str> {
     if !trimmed.contains('/') && trimmed.contains('.') {
         return Some(head(trimmed, '.', 3));
     }
+    if trimmed.split('/').next().is_some_and(|host| host.contains('.')) {
+        return Some(head(trimmed, '/', 3));
+    }
     if let Some(rest) = trimmed.strip_prefix("node:") {
         return Some(&trimmed[..5 + head(rest, '/', 1).len()]);
     }
@@ -200,6 +203,7 @@ fn classify(package: &str) -> Option<&'static Known> {
 
 pub fn derive(
     imports: &[ImportFact],
+    internal: &HashSet<String>,
     files: &[String],
     entry_points: &[EntryPoint],
     exit_points: &[crate::entry_exit::ExitPoint],
@@ -208,6 +212,9 @@ pub fn derive(
     let mut found: HashMap<&str, Dependency> = HashMap::new();
 
     for fact in imports {
+        if internal.contains(&fact.specifier) {
+            continue;
+        }
         let Some(package) = package_of(&fact.specifier) else { continue };
         let entry = found.entry(package).or_insert_with(|| {
             let known = classify(package);

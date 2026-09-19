@@ -312,6 +312,7 @@ fn main() {
         type_references: &index.type_references,
         locals: &index.locals,
     });
+    let internal_specifiers = std::mem::take(&mut resolution.internal_specifiers);
     let resolved = resolve_started.elapsed();
     let resolved_edges = resolution.edges.len();
     index.edges.extend(std::mem::take(&mut resolution.edges));
@@ -463,6 +464,7 @@ fn main() {
         .unwrap_or(&[]);
     let found = dependencies::derive(
         &index.imports,
+        &internal_specifiers,
         &paths,
         &index.entry_points,
         &index.exit_points,

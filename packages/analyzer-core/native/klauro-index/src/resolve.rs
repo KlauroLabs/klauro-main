@@ -23,6 +23,7 @@ pub struct Resolution {
     pub unique_units: HashMap<String, String>,
     pub call_origins: HashMap<(String, String), String>,
     pub method_owners: HashMap<String, String>,
+    pub internal_specifiers: HashSet<String>,
     pub package_calls: u32,
     pub runtime_calls: u32,
     pub indirect_calls: u32,
@@ -537,7 +538,7 @@ fn module_key(text: &str) -> String {
         .strip_suffix("/index")
         .or_else(|| stem.strip_suffix("/mod"))
         .unwrap_or(stem);
-    let key = stem.replace("::", "/").replace(['.', '\\'], "/").to_lowercase();
+    let key = stem.replace("::", "/").replace(['.', '\\'], "/").replace('-', "_").to_lowercase();
     key.trim_matches('/').to_string()
 }
 
@@ -549,33 +550,102 @@ fn family(language: &str) -> &str {
     }
 }
 
-fn module_paths(files: &[String], languages: &[&str]) -> HashMap<String, Option<u32>> {
-    let mut reachable: HashMap<String, Option<u32>> = HashMap::new();
-    for (at, path) in files.iter().enumerate() {
-        let key = module_key(path);
+struct Modules {
+    declaring: HashMap<String, Option<u32>>,
+    condensed: HashMap<String, Option<u32>>,
+    holding: HashSet<String>,
+}
+
+impl Modules {
+    fn build(files: &[String], languages: &[&str]) -> Modules {
+        let mut declaring: HashMap<String, Option<u32>> = HashMap::new();
+        let mut condensed: HashMap<String, Option<u32>> = HashMap::new();
+        let mut holding = HashSet::new();
+        for (at, path) in files.iter().enumerate() {
+            let language = family(languages[at]);
+            let key = module_key(path);
+            let plain = without_containers(&key);
+            for (key, found) in [
+                (Some(key.as_str()), &mut declaring),
+                (plain.as_deref(), &mut condensed),
+            ] {
+                let Some(key) = key else { continue };
+                let mut tail = key;
+                loop {
+                    let scoped = format!("{language}\u{1}{tail}");
+                    match found.get_mut(&scoped) {
+                        Some(known) => *known = None,
+                        None => {
+                            found.insert(scoped, Some(at as u32));
+                        }
+                    }
+                    match tail.find('/') {
+                        Some(cut) => tail = &tail[cut + 1..],
+                        None => break,
+                    }
+                }
+                let mut folder = key.rsplit_once('/').map(|(folder, _)| folder);
+                while let Some(tail) = folder {
+                    for at in tail.match_indices('/').map(|(at, _)| at + 1).chain([0]) {
+                        holding.insert(format!("{language}\u{1}{}", &tail[at..]));
+                    }
+                    folder = tail.rsplit_once('/').map(|(folder, _)| folder);
+                }
+            }
+        }
+        Modules { declaring, condensed, holding }
+    }
+
+    fn declared(&self, language: &str, specifier: &str) -> Option<u32> {
+        let key = module_path(specifier)?;
+        let language = family(language);
+        let owner = key.rsplit_once('/').map(|(owner, _)| owner).unwrap_or_default();
+        for names in [&self.declaring, &self.condensed] {
+            if key.contains('/')
+                && let Some(found) = names.get(&format!("{language}\u{1}{key}"))
+            {
+                return *found;
+            }
+            if owner.contains('/')
+                && let Some(found) = names.get(&format!("{language}\u{1}{owner}"))
+            {
+                return *found;
+            }
+        }
+        None
+    }
+
+    fn held(&self, language: &str, specifier: &str) -> bool {
+        let Some(key) = module_path(specifier) else { return false };
+        let language = family(language);
         let mut tail = key.as_str();
         loop {
-            let scoped = format!("{}\u{1}{tail}", family(languages[at]));
-            match reachable.get_mut(&scoped) {
-                Some(known) => *known = None,
-                None => {
-                    reachable.insert(scoped, Some(at as u32));
+            let mut owner = tail;
+            while owner.contains('/') {
+                if self.holding.contains(&format!("{language}\u{1}{owner}")) {
+                    return true;
                 }
+                owner = owner.rsplit_once('/').map(|(owner, _)| owner).unwrap_or_default();
             }
             match tail.find('/') {
                 Some(cut) => tail = &tail[cut + 1..],
-                None => break,
+                None => return false,
             }
         }
     }
-    reachable
 }
 
-fn module_index(
-    modules: &HashMap<String, Option<u32>>,
-    language: &str,
-    specifier: &str,
-) -> Option<u32> {
+static CONTAINER_SEGMENTS: &[&str] = &["java", "kotlin", "lib", "main", "src"];
+
+fn without_containers(key: &str) -> Option<String> {
+    let kept: Vec<&str> = key
+        .split('/')
+        .filter(|segment| !CONTAINER_SEGMENTS.contains(segment))
+        .collect();
+    (kept.len() < key.split('/').count() && !kept.is_empty()).then(|| kept.join("/"))
+}
+
+fn module_path(specifier: &str) -> Option<String> {
     let trimmed = specifier.trim();
     if trimmed.is_empty() || trimmed.starts_with('.') || trimmed.starts_with('/') {
         return None;
@@ -588,17 +658,7 @@ fn module_index(
     {
         rest = trimmed;
     }
-    let family = family(language);
-    if rest.contains('/') {
-        if let Some(found) = modules.get(&format!("{family}\u{1}{rest}")) {
-            return *found;
-        }
-    }
-    let owner = rest.rsplit_once('/')?.0;
-    owner
-        .contains('/')
-        .then(|| *modules.get(&format!("{family}\u{1}{owner}"))?)
-        .flatten()
+    (!rest.is_empty()).then(|| rest.to_string())
 }
 
 fn file_index(files: &HashMap<&str, u32>, from: &str, specifier: &str) -> Option<u32> {
@@ -674,7 +734,8 @@ pub fn resolve(index: &Index) -> Resolution {
         .collect();
 
     let mut edges = Vec::new();
-    let by_module = module_paths(index.files, index.languages);
+    let mut internal_specifiers: HashSet<String> = HashSet::new();
+    let by_module = Modules::build(index.files, index.languages);
     let mut bindings = Bindings {
         imported: HashMap::new(),
         modules: HashMap::new(),
@@ -685,9 +746,12 @@ pub fn resolve(index: &Index) -> Resolution {
     for fact in index.imports {
         let from = index.files[fact.file as usize].as_str();
         let Some(target) = file_index(&by_path, from, &fact.specifier)
-            .or_else(|| module_index(&by_module, index.languages[fact.file as usize], &fact.specifier))
+            .or_else(|| by_module.declared(index.languages[fact.file as usize], &fact.specifier))
             .filter(|found| index.files[*found as usize] != from)
         else {
+            if by_module.held(index.languages[fact.file as usize], &fact.specifier) {
+                internal_specifiers.insert(fact.specifier.clone());
+            }
             for name in &fact.names {
                 let wanted = name.imported.as_deref().unwrap_or(name.local.as_str());
                 if let Some(found) = symbols
@@ -708,6 +772,7 @@ pub fn resolve(index: &Index) -> Resolution {
             }
             continue;
         };
+        internal_specifiers.insert(fact.specifier.clone());
         edges.push(IndexEdge {
             source: from.to_string(),
             target: index.files[target as usize].clone(),
@@ -1115,6 +1180,7 @@ pub fn resolve(index: &Index) -> Resolution {
             .collect(),
         call_origins,
         method_owners: owners,
+        internal_specifiers,
         package_calls,
         runtime_calls,
         indirect_calls,

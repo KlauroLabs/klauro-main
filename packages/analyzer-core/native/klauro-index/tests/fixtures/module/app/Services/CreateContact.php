@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\Contact;
 use Illuminate\Support\Facades\DB;
+use function App\Models\named;
 
 class CreateContact
 {
