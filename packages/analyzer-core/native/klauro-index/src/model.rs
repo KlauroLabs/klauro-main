@@ -320,4 +320,5 @@ pub struct FileFacts {
     pub locals: Vec<LocalBinding>,
     pub lines: u32,
     pub parse_errors: u32,
+    pub namespace: Option<String>,
 }

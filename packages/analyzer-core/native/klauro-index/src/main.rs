@@ -48,6 +48,8 @@ struct IndexedFile {
     oversize: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     generated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    namespace: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -227,6 +229,7 @@ fn main() {
                 extracted: false,
                 oversize: !route::readable(file),
                 generated: false,
+                namespace: None,
             })
             .collect(),
         nodes: Vec::new(),
@@ -257,6 +260,8 @@ fn main() {
         if report_errors && file.parse_errors > 0 {
             eprintln!("parse errors {} in {}", file.parse_errors, index.files[file.nodes[0].file as usize].path);
         }
+        let at = file.nodes[0].file as usize;
+        index.files[at].namespace = file.namespace;
         extracted_files.insert(file.nodes[0].file);
         index.nodes.extend(file.nodes);
         index.edges.extend(file.edges);
@@ -310,9 +315,15 @@ fn main() {
     let resolve_started = Instant::now();
     let paths: Vec<String> = index.files.iter().map(|file| file.path.clone()).collect();
     let languages: Vec<&str> = index.files.iter().map(|file| file.language.unwrap_or("")).collect();
+    let namespaces: Vec<&str> = index
+        .files
+        .iter()
+        .map(|file| file.namespace.as_deref().unwrap_or(""))
+        .collect();
     let mut resolution = resolve::resolve(&resolve::Index {
         files: &paths,
         languages: &languages,
+        namespaces: &namespaces,
         nodes: &index.nodes,
         imports: &index.imports,
         calls: &index.calls,

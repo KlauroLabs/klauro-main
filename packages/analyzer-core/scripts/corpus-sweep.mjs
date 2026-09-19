@@ -17,7 +17,7 @@ const SERVED_SURFACE = new Map([
   ['cal.com', { served: 300, exits: 590, observed: 15500, reachable: 9400, resolved: 19500, projects: 120, imported: 4200, roles: 6000, assigned: 26000, packages: 366, classified: 33 }],
   ['hugo', { served: 13, exits: 200, projects: 6, imported: 18000, assigned: 11800, roles: 1900, packages: 200, classified: 45 }],
   ['immich', { served: 720, exits: 205, observed: 17500, reachable: 10200, resolved: 20000, projects: 18, imported: 3400, roles: 5900, assigned: 24000, packages: 507, classified: 69 }],
-  ['jellyfin', { served: 395, exits: 535, observed: 11800, reachable: 4450, resolved: 17500, projects: 42, roles: 1850, assigned: 15500, packages: 246, classified: 53 }],
+  ['jellyfin', { served: 395, exits: 535, imported: 2500, observed: 11800, reachable: 4450, resolved: 17500, projects: 42, roles: 1850, assigned: 15500, packages: 246, classified: 53 }],
   ['jekyll', { served: 20, exits: 20 }],
   ['mastodon', { served: 230, exits: 250, observed: 40000, reachable: 28000, resolved: 21000, projects: 3, imported: 2600, roles: 9700, assigned: 46000, packages: 128, classified: 15 }],
   ['meilisearch', { served: 14, exits: 170, imported: 1000, roles: 210, assigned: 11500, packages: 343, classified: 5 }],
@@ -27,7 +27,7 @@ const SERVED_SURFACE = new Map([
   ['ripgrep', { served: 6, exits: 40 }],
   ['saleor', { served: 1150, exits: 9570, observed: 21500, reachable: 16000, resolved: 55000, projects: 2, imported: 15000, roles: 13000, assigned: 28000, packages: 217, classified: 55 }],
   ['superset', { served: 290, exits: 6300, observed: 55000, reachable: 40000, resolved: 63000, projects: 36, imported: 18500, roles: 26000, assigned: 67000, packages: 764, classified: 110 }],
-  ['tivi', { served: 20, exits: 290, imported: 1000, roles: 60, assigned: 5100, packages: 312, classified: 24 }],
+  ['tivi', { served: 20, exits: 290, imported: 1450, roles: 60, assigned: 5100, packages: 312, classified: 24 }],
   ['traefik', { served: 25, exits: 750, observed: 6500, reachable: 3800, resolved: 7700, projects: 4, imported: 7500, roles: 1300, assigned: 8300, packages: 223, classified: 51 }]
 ]);
 

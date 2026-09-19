@@ -8,6 +8,7 @@ use crate::paths::{directory_of, normalize};
 pub struct Index<'a> {
     pub files: &'a [String],
     pub languages: &'a [&'a str],
+    pub namespaces: &'a [&'a str],
     pub nodes: &'a [IndexNode],
     pub imports: &'a [ImportFact],
     pub calls: &'a [CallFact],
@@ -693,10 +694,58 @@ fn file_index(files: &HashMap<&str, u32>, from: &str, specifier: &str) -> Option
     module_file(files, &normalize(&format!("{}/{}", directory_of(from), specifier)))
 }
 
+fn namespaces(index: &Index) -> HashMap<String, Vec<u32>> {
+    let mut declared: HashMap<String, Vec<u32>> = HashMap::new();
+    for (at, namespace) in index.namespaces.iter().enumerate() {
+        if namespace.is_empty() {
+            continue;
+        }
+        declared
+            .entry(format!("{}\u{1}{}", family(index.languages[at]), module_key(namespace)))
+            .or_default()
+            .push(at as u32);
+    }
+    declared
+}
+
+fn namespace_members(
+    declared: &HashMap<String, Vec<u32>>,
+    named: &HashSet<(u32, String)>,
+    declared_by: &HashMap<String, Vec<u32>>,
+    referenced: Option<&HashSet<String>>,
+    language: &str,
+    specifier: &str,
+) -> Vec<u32> {
+    let Some(key) = module_path(specifier) else { return Vec::new() };
+    let language = family(language);
+    if let Some(members) = declared.get(&format!("{language}\u{1}{key}")) {
+        let held: HashSet<u32> = members.iter().copied().collect();
+        let mut used: Vec<u32> = referenced
+            .into_iter()
+            .flatten()
+            .filter_map(|name| declared_by.get(name))
+            .flatten()
+            .copied()
+            .filter(|found| held.contains(found))
+            .collect();
+        used.sort();
+        used.dedup();
+        return used;
+    }
+    let Some((owner, leaf)) = key.rsplit_once('/') else { return Vec::new() };
+    let Some(members) = declared.get(&format!("{language}\u{1}{owner}")) else {
+        return Vec::new();
+    };
+    members
+        .iter()
+        .copied()
+        .filter(|found| named.contains(&(*found, leaf.to_string())))
+        .collect()
+}
+
 fn package_members(
     aliases: &crate::alias::Aliases,
     modules: &Modules,
-    index: &Index,
     fact: &ImportFact,
     from: &str,
     language: &str,
@@ -708,13 +757,7 @@ fn package_members(
     else {
         return Vec::new();
     };
-    members
-        .iter()
-        .copied()
-        .filter(|found| {
-            crate::paths::is_test(from) || !crate::paths::is_test(&index.files[*found as usize])
-        })
-        .collect()
+    members.to_vec()
 }
 
 fn module_file(files: &HashMap<&str, u32>, path: &str) -> Option<u32> {
@@ -790,6 +833,30 @@ pub fn resolve(index: &Index) -> Resolution {
     let mut edges = Vec::new();
     let mut internal_specifiers: HashSet<String> = HashSet::new();
     let by_module = Modules::build(index.files, index.languages);
+    let by_namespace = namespaces(index);
+    let named: HashSet<(u32, String)> = symbols
+        .file_scope
+        .keys()
+        .map(|(file, name)| (*file, name.to_ascii_lowercase()))
+        .collect();
+    let mut declared_by: HashMap<String, Vec<u32>> = HashMap::new();
+    for (file, name) in &named {
+        declared_by.entry(name.clone()).or_default().push(*file);
+    }
+    let mut referenced: HashMap<u32, HashSet<String>> = HashMap::new();
+    for fact in index.type_references {
+        referenced
+            .entry(fact.file)
+            .or_default()
+            .insert(base_type_name(&fact.name).to_ascii_lowercase());
+    }
+    for fact in index.calls {
+        let entry = referenced.entry(fact.file).or_default();
+        entry.insert(crate::names::leaf(&fact.callee).to_ascii_lowercase());
+        if let Some(receiver) = fact.receiver.as_deref() {
+            entry.insert(crate::names::root(receiver).to_ascii_lowercase());
+        }
+    }
     let aliases = crate::alias::Aliases::read(index.files, index.nodes);
     let mut bindings = Bindings {
         imported: HashMap::new(),
@@ -801,16 +868,41 @@ pub fn resolve(index: &Index) -> Resolution {
     for fact in index.imports {
         let from = index.files[fact.file as usize].as_str();
         let language = index.languages[fact.file as usize];
-        let reached: Vec<u32> = file_index(&by_path, from, &fact.specifier)
+        let declared = file_index(&by_path, from, &fact.specifier)
             .or_else(|| {
                 aliases
                     .expand(from, &fact.specifier)
                     .iter()
                     .find_map(|path| module_file(&by_path, path))
-            })
-            .or_else(|| by_module.declared(language, &fact.specifier))
-            .map(|found| vec![found])
-            .unwrap_or_else(|| package_members(&aliases, &by_module, index, fact, from, language))
+            });
+        let reached: Vec<u32> = match declared {
+            Some(found) => vec![found],
+            None => {
+                let members = namespace_members(
+                    &by_namespace,
+                    &named,
+                    &declared_by,
+                    referenced.get(&fact.file),
+                    language,
+                    &fact.specifier,
+                );
+                let members = match members.is_empty() {
+                    false => members,
+                    true => match by_module.declared(language, &fact.specifier) {
+                        Some(found) => vec![found],
+                        None => package_members(&aliases, &by_module, fact, from, language),
+                    },
+                };
+                members
+                    .into_iter()
+                    .filter(|found| {
+                        crate::paths::is_test(from)
+                            || !crate::paths::is_test(&index.files[*found as usize])
+                    })
+                    .collect()
+            }
+        };
+        let reached: Vec<u32> = reached
             .into_iter()
             .filter(|found| index.files[*found as usize] != from)
             .collect();

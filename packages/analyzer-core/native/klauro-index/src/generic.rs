@@ -242,6 +242,15 @@ impl<'a> Extractor<'a> {
         Some(self.metrics.entry(callable).or_default())
     }
 
+    fn namespace_of(&self, node: Node) -> Option<String> {
+        let named = node.child_by_field_name("name").or_else(|| {
+            let mut cursor = node.walk();
+            node.named_children(&mut cursor).next()
+        })?;
+        let text = self.text(named).trim().trim_end_matches(';').trim();
+        (!text.is_empty() && !text.contains(char::is_whitespace)).then(|| text.to_string())
+    }
+
     fn name_of(&self, node: Node) -> Option<String> {
         if self.spec.names.whole_kinds.contains(&node.kind()) {
             return Some(self.text(node).trim().to_string());
@@ -522,6 +531,10 @@ impl<'a> Extractor<'a> {
 
     fn visit(&mut self, node: Node, scope: &Scope) {
         let kind = node.kind();
+
+        if self.spec.declares.namespace_kinds.contains(&kind) && self.facts.namespace.is_none() {
+            self.facts.namespace = self.namespace_of(node);
+        }
 
         if let Some((_, node_kind)) = self.spec.declares.type_kinds.iter().find(|(name, _)| *name == kind) {
             let declared = !self.spec.declares.type_requires_body

@@ -38,20 +38,22 @@ else is derived from.
 | 1.6 Graph | Reachability, call chains, flow paths, structural importance | 0.3 s |
 | | **Tier total** | **4 s** |
 
-Pass 1.3 reads an import four ways. A relative specifier is a path, resolved against the importing
+Pass 1.3 reads an import five ways. A relative specifier is a path, resolved against the importing
 file. A specifier that names a module — dots, colons or backslashes between its segments — is the
 path of the file that declares it, matched against the repository's own files where the name picks
 out exactly one and that one is written in the same language; a source root between the segments,
 `src` or `main` or the language's own, belongs to the layout rather than to the name. A specifier
-that names a directory the repository holds is the repository's own even though no single file
-answers it, which is how a language whose import names a package rather than a file — Go, C# — is
-still told apart from what it depends on. Where an alias names that directory exactly, the import
-reaches the files the package is written across, its own tests excepted: a package's tests are not
-what importing it gives you. A specifier that begins with an alias the repository declares — a
-compiler's path mapping, a package's own subpath import, a module path, or the one a framework's
-configuration file gives it — is what that alias maps to, and stays the repository's own even
-where the file it names is generated rather than committed. Everything else is a package, and its
-name is what a unit reaches.
+that names something wider than a file is read as what that thing is. A package is compiled whole,
+so an import of one reaches every file it is written across, its own tests excepted: a package's
+tests are not what importing it gives you. A namespace is a lookup scope, so an import of one
+reaches the files in it whose declarations the importer names, and a file records the namespace it
+declares for both to be found by. A specifier that names a directory the repository holds and
+nothing more precise is still the repository's own rather than something it depends on. A
+specifier that begins with an alias the repository declares — a compiler's path mapping, a
+package's own subpath import, a module path, or the one a framework's configuration file gives it
+— is what that alias maps to, and stays the repository's own even where the file it names is
+generated rather than committed. Everything else is a package, and its name is what a unit
+reaches.
 
 Pass 1.5 emits a facet only where something was observed, per the semantic model: a unit that
 takes nothing carries no Input, and one that reaches nothing carries no Effects. Effects names
