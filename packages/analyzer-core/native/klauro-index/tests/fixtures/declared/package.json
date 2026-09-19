@@ -1,0 +1,11 @@
+{
+  "name": "declared-demo",
+  "version": "1.0.0",
+  "dependencies": {
+    "express": "4.19.2",
+    "marked": "12.0.0"
+  },
+  "devDependencies": {
+    "vitest": "1.6.0"
+  }
+}

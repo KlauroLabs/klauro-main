@@ -1,0 +1,6 @@
+[project]
+name = "declared-demo-py"
+dependencies = [
+  "django>=5.0,<6",
+  "graphene<3.0",
+]

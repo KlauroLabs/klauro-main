@@ -191,14 +191,17 @@ From T1, scoped by T2. Deterministic.
 | 3.3 Architecture | Route table, architectural paradigm, dependency roles | 0.2 s |
 | | **Tier total** | **1 s** |
 
-**Measured today: 26 ms** — dependencies 5 ms, roles 19 ms, architecture 2 ms — in
-`native/klauro-index`, per sub-project. Querying T1 is the whole difference: the analyzers re-read
-files, and none of this does.
+**Measured today: 4–93 ms** across the corpus, against a 1 s budget — in `native/klauro-index`,
+per sub-project. Querying T1 is the whole difference: the analyzers re-read files, and none of
+this does.
 
-Detection is derived rather than catalogued: every import that reaches no file the repository
-holds resolves to a package, so the dependency set is complete and a catalog only supplies the
-role and category. A package the catalog does not know is reported with its usage rather than
-dropped.
+A dependency is known two ways, and the tier reports which. Every import that reaches no file the
+repository holds resolves to a package, so what the code reaches is complete on its own. Beside it,
+a manifest declares what the project depends on whether the code imports it or not, with the
+version it is pinned to: `package.json`, `Cargo.toml`, `composer.json`, `pubspec.yaml`,
+`pyproject.toml`, `go.mod`, and a .NET project file's package references. A manifest is
+declarations rather than records, so the budget that keeps a data file from flooding the index
+does not apply to it.
 
 Three things are not dependencies. Code the repository holds is its own, whether a module path
 names the file, a directory holds it, or a manifest declares the package it is imported by. The
@@ -206,10 +209,24 @@ language's own library is the language, recorded as a runtime rather than as som
 And a specifier that does not read as a module — a fragment of markup, a keyword standing where
 a module goes — is not one.
 
+A catalog supplies only the role and category. A package neither the catalog nor a manifest knows
+is reported with its usage rather than dropped.
+
 Roles come from a declarative table over annotations, inheritance and registration, and each role
 records what made it one. A declaration's own name is the weakest of these and is read only where
 the declaration is code the repository wrote, so an item in a build file never reads as a
-controller. The 267 analyzer files under `analyzer/frameworks` and
+controller.
+
+3.3 reports the shape a repository's served surfaces make — one, several, or unrelated systems —
+its route table, and per project the entry kinds, roles and dependency categories it holds. It
+does not label a project layered, hexagonal or MVC: that reading is T6's, over facts recorded
+here.
+
+Limits. A dependency declared by Gradle, CMake, a Maven POM or a requirements file is not read,
+so a repository built that way reports only what its code imports; tivi and neovim are that
+shape. Roles are named for the vocabulary web and application frameworks use, so a repository
+that serves nothing — a compiler, a database engine — reports few of them, and that is the
+truth about it rather than a gap. The 267 analyzer files under `analyzer/frameworks` and
 `analyzer/libraries` (103,412 lines) hold per-framework depth — React props, hooks and event
 handlers — that this does not reproduce and does not attempt to.
 
