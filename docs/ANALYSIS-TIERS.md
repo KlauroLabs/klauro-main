@@ -63,6 +63,12 @@ wherever that other one lives — beside it, above it, or in a package the repos
 each mapping resolves against the configuration that declares it while applying where the one
 inheriting it does. Everything else is a package, and its name is what a unit reaches.
 
+A declaration can carry members it does not declare. A type that uses a trait has that trait's
+methods, read as heritage wherever the language writes it inside the body rather than beside the
+name. A call to a method that extends a type resolves to the extension the file imported by that
+name before anything the receiver's type would otherwise suggest, because an import says which of
+several same-named extensions is meant.
+
 Pass 1.5 emits a facet only where something was observed, per the semantic model: a unit that
 takes nothing carries no Input, and one that reaches nothing carries no Effects. Effects names
 the packages and runtimes a unit reaches, read from the resolved edges.

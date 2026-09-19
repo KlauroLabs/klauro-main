@@ -4671,7 +4671,7 @@ static SPECS: &[LanguageSpec] = &[
             constructor_kinds: &["__construct"],
             impl_kinds: &[],
             impl_type_field: "type",
-            heritage_kinds: &["base_clause", "class_interface_clause"],
+            heritage_kinds: &["base_clause", "class_interface_clause", "use_declaration"],
             lambda_kinds: &["anonymous_function", "arrow_function"],
             binding_kinds: &["assignment_expression"],
             binding_name_field: "left",

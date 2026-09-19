@@ -886,7 +886,14 @@ impl<'a> Extractor<'a> {
 
     fn record_heritage(&mut self, node: Node, owner: &str) {
         let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
+        let mut declared: Vec<Node> = node.named_children(&mut cursor).collect();
+        for field in self.spec.signature.body_fields {
+            if let Some(body) = node.child_by_field_name(field) {
+                let mut inside = body.walk();
+                declared.extend(body.named_children(&mut inside));
+            }
+        }
+        for child in declared {
             if !self.spec.declares.heritage_kinds.contains(&child.kind()) {
                 continue;
             }

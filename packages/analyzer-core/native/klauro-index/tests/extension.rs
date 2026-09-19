@@ -72,3 +72,21 @@ fn a_holder_is_unwrapped_to_reach_an_inherited_member() {
         "Lazy<Job> unwraps to Job, which inherits start from BaseJob"
     );
 }
+
+#[test]
+fn an_imported_extension_answers_the_call_when_its_name_is_not_unique() {
+    let index = index();
+    let targets: Vec<&str> = index["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|edge| {
+            edge["kind"] == "calls" && edge["source"].as_str().unwrap().starts_with("page.kt")
+        })
+        .map(|edge| edge["target"].as_str().unwrap())
+        .collect();
+    assert!(
+        targets.iter().any(|target| target.starts_with("format.kt")),
+        "the import says which of the two extensions is meant: {targets:?}"
+    );
+}

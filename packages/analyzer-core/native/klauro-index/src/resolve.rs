@@ -1219,6 +1219,23 @@ pub fn resolve(index: &Index) -> Resolution {
             None => fact.callee.clone(),
         };
 
+        if fact.receiver.is_some()
+            && let Some(found) = resolver
+                .bindings
+                .imported
+                .get(&(fact.file, fact.callee.as_str()))
+                .copied()
+                .filter(|found| {
+                    symbols.nodes[*found as usize]
+                        .signature
+                        .as_ref()
+                        .is_some_and(|signature| signature.receiver.is_some())
+                })
+        {
+            emit(symbols.nodes[found as usize].id.clone());
+            continue;
+        }
+
         let external = match origin {
             Origin::Package(specifier) => Some(("package", specifier.to_string(), member.clone())),
             Origin::Runtime(name) => Some((
