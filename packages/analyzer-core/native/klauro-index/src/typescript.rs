@@ -1350,12 +1350,12 @@ pub fn count_errors(root: Node) -> u32 {
 }
 
 pub fn wraps_script(id: &str) -> bool {
-    id == "vue"
+    matches!(id, "svelte" | "vue")
 }
 
 pub fn parser_for_language(id: &str) -> Option<Parser> {
     let language: tree_sitter::Language = match id {
-        "typescript" | "vue" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+        "typescript" | "svelte" | "vue" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
         "javascript" => tree_sitter_javascript::LANGUAGE.into(),
         _ => return None,
     };
