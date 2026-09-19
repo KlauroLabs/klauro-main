@@ -47,7 +47,8 @@ that names something wider than a file is read as what that thing is. A package 
 so an import of one reaches every file it is written across, its own tests excepted: a package's
 tests are not what importing it gives you. A namespace is a lookup scope, so an import of one
 reaches the files in it whose declarations the importer names — in a call, in a type it writes on
-a field, a parameter or a return, or in an annotation — and a file records the namespace it
+a field, a parameter or a return, in an annotation, or in a call to a method that extends a type
+it holds, which is named without naming what declares it — and a file records the namespace it
 declares for both to be found by. A specifier that names a directory the repository holds and
 nothing more precise is still the repository's own rather than something it depends on. A
 specifier that begins with an alias the repository declares — a compiler's path mapping, a

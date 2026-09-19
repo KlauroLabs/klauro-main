@@ -427,12 +427,31 @@ impl<'a> Extractor<'a> {
             .map(|found| self.text(found).trim().to_string())
             .filter(|found| !found.is_empty())
             .or_else(|| self.trailing_return(node));
-        Signature {
-            parameters,
-            return_type,
-            type_parameters: Vec::new(),
-            receiver: self.extension_receiver(node),
+        let receiver = self
+            .extension_receiver(node)
+            .or_else(|| self.extended_parameter(node, &parameters));
+        Signature { parameters, return_type, type_parameters: Vec::new(), receiver }
+    }
+
+    fn extended_parameter(&self, node: Node, parameters: &[Parameter]) -> Option<String> {
+        let word = self.spec.signature.extension_parameter_word;
+        if word.is_empty() {
+            return None;
         }
+        let first = parameters.first()?;
+        let declared = self
+            .spec
+            .signature
+            .parameter_fields
+            .iter()
+            .find_map(|field| node.child_by_field_name(field))?;
+        let mut cursor = declared.walk();
+        let written = declared.named_children(&mut cursor).next()?;
+        self.text(written)
+            .trim_start()
+            .strip_prefix(word)
+            .filter(|rest| rest.starts_with(char::is_whitespace))?;
+        first.type_annotation.clone()
     }
 
     fn extension_receiver(&self, node: Node) -> Option<String> {

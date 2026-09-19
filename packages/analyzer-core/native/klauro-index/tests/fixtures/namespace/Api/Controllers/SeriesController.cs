@@ -13,6 +13,6 @@ public class SeriesController
 
     public Series Read(string name)
     {
-        return new Series { Name = name };
+        return new Series { Name = name.Slugify() };
     }
 }

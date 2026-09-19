@@ -29,7 +29,11 @@ fn an_imported_namespace_reaches_what_the_importer_names_in_it() {
     let found = imported(&index, "Api/Controllers/SeriesController.cs");
     assert_eq!(
         found,
-        ["Api/Entities/Catalogue.cs", "Api/Entities/Series.cs"],
+        [
+            "Api/Entities/Catalogue.cs",
+            "Api/Entities/Series.cs",
+            "Api/Entities/StringExtensions.cs"
+        ],
         "a namespace is a lookup scope, so the import reaches the declarations it uses"
     );
 }
@@ -46,4 +50,26 @@ fn a_declaration_is_named_by_the_types_a_file_writes_as_well_as_the_calls_it_mak
         !found.iter().any(|target| target.ends_with("Movie.cs")),
         "what the file does not name it does not reach: {found:?}"
     );
+}
+
+#[test]
+fn an_extension_method_is_named_by_the_call_that_uses_it() {
+    let index = common::read("namespace");
+    let found = imported(&index, "Api/Controllers/SeriesController.cs");
+    assert!(
+        found.contains(&"Api/Entities/StringExtensions.cs".to_string()),
+        "an extension is called without naming the type that holds it: {found:?}"
+    );
+}
+
+#[test]
+fn a_method_extending_a_type_records_what_it_extends() {
+    let index = common::read("namespace");
+    let extended = index["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["name"] == "Slugify")
+        .expect("the extension is declared");
+    assert_eq!(extended["signature"]["receiver"], "string");
 }

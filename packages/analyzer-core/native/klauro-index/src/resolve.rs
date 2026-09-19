@@ -834,11 +834,22 @@ pub fn resolve(index: &Index) -> Resolution {
     let mut internal_specifiers: HashSet<String> = HashSet::new();
     let by_module = Modules::build(index.files, index.languages);
     let by_namespace = namespaces(index);
-    let named: HashSet<(u32, String)> = symbols
+    let mut named: HashSet<(u32, String)> = symbols
         .file_scope
         .keys()
         .map(|(file, name)| (*file, name.to_ascii_lowercase()))
         .collect();
+    named.extend(
+        index
+            .nodes
+            .iter()
+            .filter(|node| {
+                node.signature
+                    .as_ref()
+                    .is_some_and(|signature| signature.receiver.is_some())
+            })
+            .map(|node| (node.file, node.name.to_ascii_lowercase())),
+    );
     let mut declared_by: HashMap<String, Vec<u32>> = HashMap::new();
     for (file, name) in &named {
         declared_by.entry(name.clone()).or_default().push(*file);
