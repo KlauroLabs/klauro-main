@@ -163,7 +163,7 @@ impl<'a> Files<'a> {
     }
 }
 
-fn container(files: &Files, path: &str, context: &str, sources: &HashSet<&str>) -> Option<Candidate> {
+fn container(files: &Files, path: &str, context: &str) -> Option<Candidate> {
     let stages = files.of(path)?;
     let root = context.to_string();
     let mut ships = Vec::new();
@@ -190,11 +190,9 @@ fn container(files: &Files, path: &str, context: &str, sources: &HashSet<&str>) 
     runs.as_ref()?;
     ships.sort();
     ships.dedup();
-    let context = common_ancestor(&ships);
-    let beside = directory_of(path);
-    let home = match context.is_empty() && sources.contains(beside) {
-        true => beside.to_string(),
-        false => context,
+    let home = match ships.is_empty() {
+        true => directory_of(path).to_string(),
+        false => common_ancestor(&ships),
     };
     Some(Candidate {
         name: display_name(&home),
@@ -521,16 +519,6 @@ fn is_workspace_container(files: &Files, path: &str) -> bool {
     })
 }
 
-fn source_roots<'a>(files: &'a [String], code: &[bool]) -> HashSet<&'a str> {
-    let mut roots = HashSet::new();
-    for (at, path) in files.iter().enumerate() {
-        if code.get(at).copied().unwrap_or(false) {
-            roots.insert(directory_of(path));
-        }
-    }
-    roots
-}
-
 fn runnable_roots<'a>(files: &'a [String], entry_points: &[EntryPoint]) -> HashSet<&'a str> {
     let lifecycle: HashSet<&str> = entry_points
         .iter()
@@ -580,7 +568,6 @@ pub fn derive(
 ) -> Scope {
     let index = Files::build(files, nodes);
     let runnable = runnable_roots(files, entry_points);
-    let sources = source_roots(files, code);
     let mut candidates: Vec<Candidate> = Vec::new();
 
     for (at, path) in index.paths.iter().enumerate() {
@@ -589,7 +576,7 @@ pub fn derive(
         }
         let basename = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
         if crate::dockerfile::is_dockerfile(path) {
-            candidates.extend(container(&index, path, "", &sources));
+            candidates.extend(container(&index, path, ""));
             continue;
         }
         if basename.contains("compose") && basename.ends_with(".yml")
@@ -648,7 +635,41 @@ pub fn derive(
         }
     }
 
+    separate_containers(&mut candidates);
     consolidate(candidates, nodes, edges, entry_points, code)
+}
+
+fn separate_containers(candidates: &mut [Candidate]) {
+    let containers: Vec<usize> = candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, candidate)| {
+            candidate.declarations.iter().any(|declared| declared.kind == "container")
+        })
+        .map(|(at, _)| at)
+        .collect();
+    if containers.len() < 2 {
+        return;
+    }
+    let mut shared: HashMap<String, u32> = HashMap::new();
+    for at in &containers {
+        for path in &candidates[*at].ships {
+            *shared.entry(path.clone()).or_insert(0) += 1;
+        }
+    }
+    for at in containers {
+        let alone: Vec<String> = candidates[at]
+            .ships
+            .iter()
+            .filter(|path| shared.get(*path).copied().unwrap_or(0) == 1)
+            .cloned()
+            .collect();
+        if alone.is_empty() {
+            continue;
+        }
+        candidates[at].root = common_ancestor(&alone);
+        candidates[at].name = display_name(&candidates[at].root);
+    }
 }
 
 fn consolidate(
@@ -744,15 +765,14 @@ fn consolidate(
         .collect();
 
     for at in 0..deployables.len() {
-        if deployables[at].shipped {
+        let root = deployables[at].root.clone();
+        if root.is_empty() {
             continue;
         }
-        let root = deployables[at].root.clone();
         let bundle = shipped.iter().find(|(other, ships)| {
             *other != at
-                && ships
-                    .iter()
-                    .any(|path| !root.is_empty() && contains(&root, path))
+                && !contains(&root, &deployables[*other].root)
+                && ships.iter().any(|path| contains(&root, path))
         });
         if let Some((owner, _)) = bundle {
             let owner_id = deployables[*owner].id.clone();
@@ -766,7 +786,7 @@ fn consolidate(
         deployables
             .iter()
             .enumerate()
-            .filter(|(_, unit)| unit.bundled_into.is_none() && unit.shipped)
+            .filter(|(_, unit)| unit.bundled_into.is_none())
             .map(|(at, unit)| (unit.root.clone(), at))
             .collect(),
     );
@@ -798,7 +818,7 @@ fn consolidate(
 
     let mut reach: HashMap<&str, Vec<usize>> = HashMap::new();
     for (at, unit) in deployables.iter().enumerate() {
-        if unit.bundled_into.is_some() || !unit.shipped {
+        if unit.bundled_into.is_some() {
             continue;
         }
         for path in &owned[at] {

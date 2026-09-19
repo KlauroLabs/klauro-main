@@ -5,7 +5,7 @@ fn shipped(index: &serde_json::Value) -> Vec<&str> {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|unit| unit["category"] == "shipped")
+        .filter(|unit| unit["category"] == "shipped" && unit["bundled_into"].is_null())
         .map(|unit| unit["root"].as_str().unwrap())
         .collect()
 }
@@ -30,8 +30,6 @@ fn code_outside_both_belongs_to_each_that_reaches_it() {
 }
 
 #[test]
-#[ignore = "a Dockerfile in a tooling directory that holds a script of its own roots there \
-            rather than at the context it builds, so the application it ships is unassigned"]
 fn a_dockerfile_in_a_tooling_directory_ships_the_application_beside_it() {
     let index = common::read("tooling");
     assert_eq!(shipped(&index), [""], "the unit roots at what it builds, not where it lives");
