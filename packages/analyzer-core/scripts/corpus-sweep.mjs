@@ -14,8 +14,8 @@ const WITHOUT_A_GRAMMAR = new Map([
 ]);
 
 const SERVED_SURFACE = new Map([
-  ['cal.com', { served: 300, exits: 615, observed: 15500, reachable: 9400, resolved: 19500, projects: 120, imported: 4200, roles: 6000, assigned: 26000, packages: 366, classified: 33 }],
-  ['immich', { served: 720, exits: 295, observed: 17500, reachable: 10200, resolved: 20000, projects: 18, imported: 3400, roles: 5900, assigned: 24000, packages: 507, classified: 69 }],
+  ['cal.com', { served: 300, exits: 590, observed: 15500, reachable: 9400, resolved: 19500, projects: 120, imported: 4200, roles: 6000, assigned: 26000, packages: 366, classified: 33 }],
+  ['immich', { served: 720, exits: 205, observed: 17500, reachable: 10200, resolved: 20000, projects: 18, imported: 3400, roles: 5900, assigned: 24000, packages: 507, classified: 69 }],
   ['jellyfin', { served: 395, exits: 535, observed: 11800, reachable: 4450, resolved: 17500, projects: 42, roles: 1850, assigned: 15500, packages: 246, classified: 53 }],
   ['jekyll', { served: 20, exits: 20 }],
   ['mastodon', { served: 230, exits: 250, observed: 40000, reachable: 28000, resolved: 21000, projects: 3, imported: 2600, roles: 9700, assigned: 46000, packages: 128, classified: 15 }],

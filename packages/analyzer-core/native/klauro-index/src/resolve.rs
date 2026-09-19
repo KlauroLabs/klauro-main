@@ -678,8 +678,14 @@ fn file_index(files: &HashMap<&str, u32>, from: &str, specifier: &str) -> Option
     {
         return Some(found);
     }
-    let joined = normalize(&format!("{}/{}", directory_of(from), specifier));
-    let base = strip_extension(&joined);
+    module_file(files, &normalize(&format!("{}/{}", directory_of(from), specifier)))
+}
+
+fn module_file(files: &HashMap<&str, u32>, path: &str) -> Option<u32> {
+    if let Some(found) = files.get(path) {
+        return Some(*found);
+    }
+    let base = strip_extension(path);
     for candidate in [
         format!("{base}.ts"),
         format!("{base}.tsx"),
@@ -689,9 +695,13 @@ fn file_index(files: &HashMap<&str, u32>, from: &str, specifier: &str) -> Option
         format!("{base}.cts"),
         format!("{base}.mjs"),
         format!("{base}.cjs"),
+        format!("{base}.svelte"),
+        format!("{base}.vue"),
         format!("{base}/index.ts"),
         format!("{base}/index.tsx"),
         format!("{base}/index.js"),
+        format!("{base}/index.jsx"),
+        format!("{base}/index.svelte"),
     ] {
         if let Some(found) = files.get(candidate.as_str()) {
             return Some(*found);
@@ -744,6 +754,7 @@ pub fn resolve(index: &Index) -> Resolution {
     let mut edges = Vec::new();
     let mut internal_specifiers: HashSet<String> = HashSet::new();
     let by_module = Modules::build(index.files, index.languages);
+    let aliases = crate::alias::Aliases::read(index.files, index.nodes);
     let mut bindings = Bindings {
         imported: HashMap::new(),
         modules: HashMap::new(),
@@ -754,10 +765,18 @@ pub fn resolve(index: &Index) -> Resolution {
     for fact in index.imports {
         let from = index.files[fact.file as usize].as_str();
         let Some(target) = file_index(&by_path, from, &fact.specifier)
+            .or_else(|| {
+                aliases
+                    .expand(from, &fact.specifier)
+                    .iter()
+                    .find_map(|path| module_file(&by_path, path))
+            })
             .or_else(|| by_module.declared(index.languages[fact.file as usize], &fact.specifier))
             .filter(|found| index.files[*found as usize] != from)
         else {
-            if by_module.held(index.languages[fact.file as usize], &fact.specifier) {
+            if aliases.declares(from, &fact.specifier)
+                || by_module.held(index.languages[fact.file as usize], &fact.specifier)
+            {
                 internal_specifiers.insert(fact.specifier.clone());
             }
             for name in &fact.names {
