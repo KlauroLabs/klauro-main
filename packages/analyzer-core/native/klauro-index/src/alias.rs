@@ -68,10 +68,17 @@ impl Aliases {
             }
             if crate::bundler::is_config(path) {
                 bundled_aliases(&children, path, home, &mut entries);
-                mapped_modules(&children, path, home, &mut entries);
+                if let Some(mapped) = section(&children, path, "moduleNameMapper") {
+                    mapped_modules(&children, &mapped.id, home, &mut entries);
+                }
             }
             if name == "package.json" {
                 subpath_imports(&children, path, home, &mut entries);
+                if let Some(runner) = section(&children, path, "jest")
+                    && let Some(mapped) = section(&children, &runner.id, "moduleNameMapper")
+                {
+                    mapped_modules(&children, &mapped.id, home, &mut entries);
+                }
             }
             if name.starts_with("svelte.config.") {
                 entries.push(Entry {
@@ -223,12 +230,11 @@ fn bundled_aliases(
 
 fn mapped_modules(
     children: &HashMap<&str, Vec<&IndexNode>>,
-    path: &str,
+    declared: &str,
     home: &str,
     entries: &mut Vec<Entry>,
 ) {
-    let Some(declared) = section(children, path, "moduleNameMapper") else { return };
-    for mapped in children.get(declared.id.as_str()).into_iter().flatten() {
+    for mapped in children.get(declared).into_iter().flatten() {
         let (Some((prefix, wildcard)), Some(target)) = (
             matched_prefix(&mapped.name),
             mapped.type_annotation.as_deref(),

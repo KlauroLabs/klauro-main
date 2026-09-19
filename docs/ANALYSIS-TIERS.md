@@ -51,12 +51,13 @@ declares for both to be found by. A specifier that names a directory the reposit
 nothing more precise is still the repository's own rather than something it depends on. A
 specifier that begins with an alias the repository declares — a compiler's path mapping, a
 package's own subpath import, a module path, a bundler's configured alias, a test runner's module
-map, or the one a framework's configuration file gives it — is what that alias maps to, and stays
-the repository's own even where the file it names is generated rather than committed. An alias
-counts only where it maps onto something the repository holds: one that points into installed
-packages renames a dependency rather than declaring code. Where the alias is written as a pattern,
-it is read only as far as it reads as a path — a literal prefix, and at most one capture standing
-for the rest. Everything else is a package, and its name is what a unit reaches.
+map wherever it is declared, or the one a framework's configuration file gives it — is what that
+alias maps to, and stays the repository's own even where the file it names is generated rather
+than committed. An alias counts only where it maps onto something the repository holds: one that
+points into installed packages renames a dependency rather than declaring code. Where the alias is
+written as a pattern, it is read only as far as it reads as a path — a literal prefix, and at most
+one capture standing for the rest. Everything else is a package, and its name is what a unit
+reaches.
 
 Pass 1.5 emits a facet only where something was observed, per the semantic model: a unit that
 takes nothing carries no Input, and one that reaches nothing carries no Effects. Effects names

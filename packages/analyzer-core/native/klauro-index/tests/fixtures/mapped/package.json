@@ -1,0 +1,10 @@
+{
+  "name": "mapped",
+  "version": "1.0.0",
+  "jest": {
+    "moduleNameMapper": {
+      "^support/(.*)$": "<rootDir>/src/support/$1",
+      "^lodash-es$": "<rootDir>/node_modules/lodash"
+    }
+  }
+}
