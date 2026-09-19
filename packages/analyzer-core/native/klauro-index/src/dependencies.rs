@@ -150,6 +150,8 @@ fn head(text: &str, separator: char, keep: usize) -> &str {
     &text[..end.min(text.len())]
 }
 
+static INTERNAL_ROOTS: &[&str] = &["crate", "self", "super"];
+
 pub fn package_of(specifier: &str) -> Option<&str> {
     let trimmed = specifier.trim().trim_end_matches(['*', '.', ';']);
     if trimmed.is_empty() || trimmed.starts_with('.') || trimmed.starts_with('/') {
@@ -157,6 +159,9 @@ pub fn package_of(specifier: &str) -> Option<&str> {
     }
     if let Some(matched) = catalog_prefix(trimmed) {
         return Some(&trimmed[..matched.len()]);
+    }
+    if let Some(root) = trimmed.split("::").next().filter(|root| *root != trimmed) {
+        return (!INTERNAL_ROOTS.contains(&root)).then_some(root);
     }
     if trimmed.starts_with('@') {
         return Some(head(trimmed, '/', 2));
