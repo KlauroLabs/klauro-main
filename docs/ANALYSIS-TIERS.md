@@ -40,8 +40,7 @@ else is derived from.
 
 Pass 1.5 emits a facet only where something was observed, per the semantic model: a unit that
 takes nothing carries no Input, and one that reaches nothing carries no Effects. Effects names
-the packages and runtimes a unit reaches, from the resolved edges, rather than counting them.
-On immich, 17,751 of 21,081 units carry at least one facet and 6,619 name an integration.
+the packages and runtimes a unit reaches, read from the resolved edges.
 
 1.2 is the only pass that reads source. Flows appear here as paths, not as meaning: the
 specification places ICELOT at code-unit, step and flow granularity within this tier. What a flow is
@@ -113,30 +112,26 @@ several services declares several units even where they build from one context, 
 service is a deployable and a build context is packaging. Every node carries its unit by
 containment, and otherwise by the units whose imports reach it, so shared code belongs to each.
 
-A script that installs a build is not a ship artifact. An `install*` script under a continuous
-integration directory installs dependencies for a job, and reading it as one leaves a repository
-whose only declared unit is the thing that prepares its own CI.
+An `install*` script under a continuous integration directory prepares a job rather than the
+product, and declares nothing.
 
 Every unit carries the category its strongest declaration earns — `shipped` for a ship artifact,
 `runnable` for an entry the repository can start, `library` for a named package with neither.
-A runnable is not a deployable: repositories accumulate sample and utility binaries that build
-and never ship, and reading them as ship units buries the four that matter under a hundred that
-do not.
+A runnable is not a deployable: repositories hold sample and utility binaries that build and
+never ship, and counting those as ship units buries the few that matter.
 
 A container whose build context is the whole repository roots at the directory holding its
-Dockerfile instead, where that directory has sources of its own. Without this a service reading
-the workspace to build — the ordinary shape in a monorepo — merges into one unit that owns
-everything: one repository's six services became a single unit named after whichever sorted
-first, holding all 23,751 of its declarations. The cost is a Dockerfile kept in a tooling
-directory that carries a script of its own: it roots there rather than at the application it
-builds, and that application goes unassigned. `tests/context.rs` holds that case, ignored.
+Dockerfile, where that directory has sources of its own, so a service that reads the workspace
+to build is itself rather than the workspace. A Dockerfile kept beside a script of its own in a
+tooling directory roots there too, and the application it builds is assigned to no ship unit;
+`tests/context.rs` holds that shape.
 
-Assignment by containment still cannot separate units that share a root. Several services built
-from one repository-wide context resolve to the same territory, so the first takes the code and
-its siblings take none; separating them needs each service's own build file, which is not read.
-This is also why shared assignment does not fire on a repository whose root is a container: that
-container contains every path, so nothing reaches the import-reach branch. Both are attribution
-limits, not missing units — the units themselves are all present and categorised.
+Assignment by containment cannot separate units that share a root. Several services built from
+one repository-wide context resolve to one territory, so the first takes the code and its
+siblings take none; separating them needs each service's own build file, which is not read. For
+the same reason shared assignment is silent on a repository whose root is a container: that
+container holds every path, so nothing reaches the import-reach branch. Both bound which unit is
+credited, not which units exist.
 
 A separate TypeScript implementation of ship and run detection predates this one
 (`analyzer-core/src/analyzer/core/deployable-evidence/`, 14 providers, and `resolveDeployables` in

@@ -4,9 +4,6 @@ use std::process::Command;
 
 use serde_json::{Map, Value};
 
-/// Fields whose value is text. A map key is always text and needs no entry here, and a field
-/// is read by the shape of its value, so `exits` is a list of exit points under ICELOT and a
-/// count under a unit's metrics without the two colliding.
 const TEXT: &[&str] = &[
     "annotation", "at", "bundled_into", "callback_of", "callee", "caller", "category",
     "composition", "constructed", "declared_by", "declares", "default_value", "documentation",

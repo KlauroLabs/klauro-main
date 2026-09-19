@@ -13,11 +13,6 @@ const WITHOUT_A_GRAMMAR = new Map([
   ['installer_scripts', 'batch and installer scripts have no grammar']
 ]);
 
-// A repo with a known served surface, and the floors its analysis must hold. Pass 1.6 measures
-// reachability from entry points, so a surface that silently drops reports working code as
-// unreachable. Test entries are excluded: saleor declares 12,817 of them and 1,156 real ones.
-// `observed` is pass 1.5: units of which some ICELOT facet was actually seen. A pass with no
-// floor is a pass that rots, which is how entry points and exits both got here.
 const SERVED_SURFACE = new Map([
   ['cal.com', { served: 300, exits: 615, observed: 15500, reachable: 9400, resolved: 19500, projects: 120 }],
   ['immich', { served: 720, exits: 295, observed: 17500, reachable: 10200, resolved: 20000, projects: 18 }],
@@ -35,8 +30,6 @@ const SERVED_SURFACE = new Map([
   ['traefik', { served: 25, exits: 750, observed: 6500, reachable: 3800, resolved: 7700, projects: 4 }]
 ]);
 
-// The whole run, not a sum of the passes it reports: a pass left out of that sum is a pass
-// with no budget at all, and one of them once spent 96 seconds where the sum read 1.
 function run(root) {
   const started = Date.now();
   const finished = spawnSync(INDEXER, [root], {
@@ -64,9 +57,6 @@ function index(root, repeat) {
   const allowance = Math.max(200, files * MILLISECONDS_PER_FILE);
   let milliseconds = first.milliseconds;
   let again;
-  // Wall time on a machine that is also building is noisy, and a budget that fails at random
-  // teaches everyone to re-run it until it is green. A repo is only over budget when it is
-  // over twice, and the second run doubles as the determinism check.
   if (repeat || milliseconds > allowance) {
     const second = run(root);
     if (second.status === 0) {
@@ -81,8 +71,6 @@ function index(root, repeat) {
     files,
     served: number(/\| served (\d+)/),
     observed: number(/\| observed (\d+)/),
-    // Pass 1.3: edges that land on something declared here, rather than on a package or a
-    // runtime. This is the number every later tier is built from.
     resolved: number(/resolve [^|]*\| edges (\d+)/) - number(/\| package (\d+)/) -
       number(/\| runtime (\d+)/),
     projects: number(/\| projects (\d+)/),
@@ -94,7 +82,6 @@ function index(root, repeat) {
     coverage
   };
 }
-
 
 const repos = readdirSync(CORPUS)
   .filter(name => statSync(path.join(CORPUS, name)).isDirectory())
