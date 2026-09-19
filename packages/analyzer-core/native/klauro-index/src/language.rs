@@ -57,6 +57,7 @@ pub struct Flow {
     pub loop_kinds: &'static [&'static str],
     pub return_kinds: &'static [&'static str],
     pub throw_kinds: &'static [&'static str],
+    pub assert_kinds: &'static [&'static str],
     pub await_kinds: &'static [&'static str],
 }
 
@@ -276,6 +277,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &[],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -338,6 +340,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &[],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -400,6 +403,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["while", "until"],
             return_kinds: &["return"],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -462,6 +466,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["while", "for"],
             return_kinds: &["return_statement"],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -524,6 +529,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_statement"],
             return_kinds: &["return_statement"],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -586,6 +592,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_statement", "while_statement"],
             return_kinds: &["return_statement"],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -648,6 +655,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["while", "for", "repeat"],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -710,6 +718,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &[],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -772,6 +781,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_statement", "while_statement"],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -834,6 +844,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_statement", "while_statement"],
             return_kinds: &["return_statement"],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -896,6 +907,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_statement", "while_statement"],
             return_kinds: &["return_statement"],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -958,6 +970,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_statement"],
             return_kinds: &["return_statement"],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -1020,6 +1033,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &[],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -1082,6 +1096,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &[],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -1144,6 +1159,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &[],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -1206,6 +1222,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &[],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -1268,6 +1285,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &[],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -1330,6 +1348,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &[],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -1393,6 +1412,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &[],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -1456,6 +1476,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_statement", "while_statement"],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -1518,6 +1539,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_statement", "while_statement"],
             return_kinds: &["return_statement"],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -1580,6 +1602,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &[],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -1642,6 +1665,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &[],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -1704,6 +1728,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_statement", "while_statement"],
             return_kinds: &["return_statement"],
             throw_kinds: &["revert_statement"],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -1766,6 +1791,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_statement", "for_numeric_statement", "while_statement", "repeat_statement"],
             return_kinds: &["return_statement"],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -1833,6 +1859,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_statement", "while_statement", "do_statement"],
             return_kinds: &["return_statement"],
             throw_kinds: &["throw_expression"],
+            assert_kinds: &[],
             await_kinds: &["await_expression"],
         },
         keywords: Keywords {
@@ -1895,6 +1922,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_expression", "while_expression"],
             return_kinds: &["return_expression"],
             throw_kinds: &["throw_expression"],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -1957,6 +1985,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &[],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -2019,6 +2048,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_statement", "while_statement"],
             return_kinds: &["return_expression"],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -2081,6 +2111,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["loop_statement"],
             return_kinds: &["return_expression"],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -2143,6 +2174,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_statement", "while_statement", "enhanced_for_statement"],
             return_kinds: &["return_statement"],
             throw_kinds: &["throw_statement"],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -2205,6 +2237,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &[],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -2267,6 +2300,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &[],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -2332,6 +2366,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_loop", "while_loop"],
             return_kinds: &["return_statement"],
             throw_kinds: &["throw_statement"],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -2394,6 +2429,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &[],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -2456,6 +2492,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["foreach", "while"],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -2518,6 +2555,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_expression", "while_expression"],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -2580,6 +2618,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_statement"],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -2642,6 +2681,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &[],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -2704,6 +2744,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_statement", "while_statement"],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -2766,6 +2807,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &[],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -2828,6 +2870,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &[],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -2890,6 +2933,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &[],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -2952,6 +2996,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_statement", "while_statement", "do_while_statement"],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -3014,6 +3059,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_statement", "while_statement", "loop_statement"],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -3076,6 +3122,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &[],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -3138,6 +3185,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_statement", "for_in_statement", "while_statement", "do_while_statement"],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -3200,6 +3248,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["foreach_loop", "while_loop"],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -3262,6 +3311,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &[],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -3324,6 +3374,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &[],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -3386,6 +3437,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_statement", "while_statement", "foreach_statement"],
             return_kinds: &["return_statement"],
             throw_kinds: &["throw_statement"],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -3448,6 +3500,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &[],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -3510,6 +3563,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &[],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -3572,6 +3626,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &[],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -3634,6 +3689,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_statement", "while_statement"],
             return_kinds: &["return_statement"],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -3696,6 +3752,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_statement"],
             return_kinds: &["return_statement"],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -3758,6 +3815,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &[],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -3820,6 +3878,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_statement", "while_statement"],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -3882,6 +3941,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_statement", "while_statement"],
             return_kinds: &["return_statement"],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -3944,6 +4004,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["do_loop_statement"],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -4006,6 +4067,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &[],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -4068,6 +4130,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &[],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -4130,6 +4193,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &[],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -4192,6 +4256,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &[],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -4254,6 +4319,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &[],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -4316,6 +4382,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &[],
             return_kinds: &[],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -4379,6 +4446,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_statement", "while_statement"],
             return_kinds: &["return_statement"],
             throw_kinds: &["raise_statement"],
+            assert_kinds: &["assert_statement"],
             await_kinds: &["await"],
         },
         keywords: Keywords {
@@ -4444,6 +4512,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_statement"],
             return_kinds: &["return_statement"],
             throw_kinds: &["go_statement"],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -4514,6 +4583,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_statement", "enhanced_for_statement", "while_statement", "do_statement"],
             return_kinds: &["return_statement"],
             throw_kinds: &["throw_statement"],
+            assert_kinds: &["assert_statement"],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -4586,6 +4656,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_statement", "for_each_statement", "while_statement", "do_statement"],
             return_kinds: &["return_statement"],
             throw_kinds: &["throw_statement", "throw_expression"],
+            assert_kinds: &[],
             await_kinds: &["await_expression"],
         },
         keywords: Keywords {
@@ -4618,7 +4689,7 @@ static SPECS: &[LanguageSpec] = &[
             binding_name_field: "pattern",
             binding_type_field: "type",
             binding_value_field: "value",
-            decorator_kinds: &[],
+            decorator_kinds: &["attribute_item"],
             decorator_container_kinds: &[],
             type_requires_body: false,
             text_kinds: &[],
@@ -4644,7 +4715,7 @@ static SPECS: &[LanguageSpec] = &[
             extension_container_kinds: &[],
         },
         calls: Calls {
-            kinds: &["call_expression"],
+            kinds: &["call_expression", "macro_invocation"],
             receiver_fields: &["value"],
             call_receiver_fields: &[],
             receiver_type_field: "",
@@ -4654,6 +4725,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_expression", "while_expression", "loop_expression"],
             return_kinds: &["return_expression"],
             throw_kinds: &["try_expression"],
+            assert_kinds: &[],
             await_kinds: &["await_expression"],
         },
         keywords: Keywords {
@@ -4716,6 +4788,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["while", "until", "for"],
             return_kinds: &["return"],
             throw_kinds: &["rescue"],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -4786,6 +4859,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_statement", "foreach_statement", "while_statement", "do_statement"],
             return_kinds: &["return_statement"],
             throw_kinds: &["throw_expression", "throw_statement"],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -4855,6 +4929,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_statement", "while_statement", "do_statement"],
             return_kinds: &["return_statement"],
             throw_kinds: &[],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -4925,6 +5000,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_statement", "for_range_loop", "while_statement", "do_statement"],
             return_kinds: &["return_statement"],
             throw_kinds: &["throw_statement"],
+            assert_kinds: &[],
             await_kinds: &["co_await_expression"],
         },
         keywords: Keywords {
@@ -4994,6 +5070,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_statement", "while_statement", "repeat_while_statement"],
             return_kinds: &["control_transfer_statement"],
             throw_kinds: &["throw_statement"],
+            assert_kinds: &[],
             await_kinds: &["await_expression"],
         },
         keywords: Keywords {
@@ -5059,6 +5136,7 @@ static SPECS: &[LanguageSpec] = &[
             loop_kinds: &["for_statement", "while_statement", "do_while_statement"],
             return_kinds: &["return_expression", "jump_expression"],
             throw_kinds: &["throw_expression"],
+            assert_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {

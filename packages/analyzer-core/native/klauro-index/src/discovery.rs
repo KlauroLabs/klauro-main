@@ -148,6 +148,9 @@ pub fn classify(basename: &str, absolute: &Path) -> Option<FileKind> {
     {
         return Some(FileKind::Manifest);
     }
+    if crate::coverage::is_report(&lower) {
+        return Some(FileKind::Config);
+    }
     if !extension.is_empty() && tables.source_extensions.contains(extension) {
         return Some(FileKind::Source);
     }

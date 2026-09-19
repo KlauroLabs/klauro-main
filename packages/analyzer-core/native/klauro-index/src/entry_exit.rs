@@ -200,6 +200,8 @@ const fn base(base: &'static str, kind: &'static str, members: &'static [&'stati
 static GRAPHQL_MEMBERS: &[&str] = &["resolve_*", "mutate", "mutate_and_get_payload", "perform_mutation"];
 static COMMAND_MEMBERS: &[&str] = &["execute", "handle"];
 
+static CASE_MEMBERS: &[&str] = &["it_*", "should_*", "test*"];
+
 static ENTRY_BASES: &[EntryBase] = &[
     base("AppCompatActivity", "lifecycle", &[]),
     base("Application", "lifecycle", &[]),
@@ -210,6 +212,7 @@ static ENTRY_BASES: &[EntryBase] = &[
     base("Mutation", "graphql", GRAPHQL_MEMBERS),
     base("ObjectType", "graphql", GRAPHQL_MEMBERS),
     base("Subscription", "graphql", GRAPHQL_MEMBERS),
+    base("TestCase", "test", CASE_MEMBERS),
     base("Worker", "lifecycle", &[]),
 ];
 

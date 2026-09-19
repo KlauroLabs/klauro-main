@@ -292,6 +292,8 @@ pub struct RegistrationFact {
 #[derive(Debug, Default, Serialize)]
 pub struct UnitMetrics {
     pub branches: u16,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub asserts: u16,
     pub loops: u16,
     pub returns: u16,
     pub awaits: u16,

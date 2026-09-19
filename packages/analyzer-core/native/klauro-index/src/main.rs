@@ -1,6 +1,7 @@
 mod alias;
 mod architecture;
 mod builtins;
+mod coverage;
 mod bundler;
 mod dependencies;
 mod discovery;
@@ -25,6 +26,7 @@ mod source_rewrite;
 mod structured;
 mod subproject;
 mod typescript;
+mod verify;
 mod vendored;
 mod wire;
 
@@ -72,6 +74,8 @@ struct Index {
     graph: Option<graph::GraphFacts>,
     dependencies: Option<dependencies::Dependencies>,
     roles: Option<roles::Roles>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    verification: Option<verify::Verification>,
     architecture: Option<architecture::Architecture>,
     scope: Option<scope::Scope>,
     partition: Option<subproject::Partition>,
@@ -141,6 +145,10 @@ fn read(
     if dockerfile::is_dockerfile(path) {
         let text = std::str::from_utf8(source).ok()?;
         return Some(dockerfile::extract(text, file, path));
+    }
+    if coverage::is_report(path) {
+        let text = std::str::from_utf8(source).ok()?;
+        return Some(coverage::extract(text, file, path));
     }
     if gomod::is_go_module(path) {
         let text = std::str::from_utf8(source).ok()?;
@@ -252,6 +260,7 @@ fn main() {
         graph: None,
         dependencies: None,
         roles: None,
+        verification: None,
         architecture: None,
         scope: None,
         partition: None,
@@ -583,6 +592,40 @@ fn main() {
             eprintln!("  unresolved {count:6} {name}");
         }
     }
+
+    let verify_started = Instant::now();
+    let verification = verify::derive(
+        &index.nodes,
+        &index.edges,
+        &paths,
+        &index.calls,
+        &index.metrics,
+        &index.entry_points,
+        index.graph.as_ref().expect("the graph is derived before verification"),
+        &index
+            .architecture
+            .iter()
+            .flat_map(|architecture| architecture.projects.iter())
+            .flat_map(|project| project.routes.iter())
+            .collect::<Vec<_>>(),
+    );
+    eprintln!(
+        "verify {:?} | cases {} | suites {} | asserting {} | standing in {} | served {} of {} units | tested {} | entries tested {} of {} | routes asked {} | gaps {} | invariants {}",
+        verify_started.elapsed(),
+        verification.cases.len() as u32 - verification.suites,
+        verification.suites,
+        verification.asserting,
+        verification.standing_in,
+        verification.coverage.served,
+        verification.coverage.units,
+        verification.coverage.served_and_tested,
+        verification.coverage.entry_points_tested,
+        verification.coverage.entry_points,
+        verification.coverage.requested_routes,
+        verification.gaps.len(),
+        verification.invariants.len()
+    );
+    index.verification = Some(verification);
 
     let emit_started = Instant::now();
     let strings = std::cell::RefCell::new(wire::Strings::default());

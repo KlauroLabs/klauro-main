@@ -29,6 +29,10 @@ pub struct GraphFacts {
     pub entry_reach: Vec<EntryReach>,
     pub unreachable_units: u32,
     pub reachable_units: u32,
+    #[serde(skip)]
+    pub served: Vec<bool>,
+    #[serde(skip)]
+    pub tested: Vec<bool>,
 }
 
 struct Adjacency {
@@ -141,6 +145,45 @@ pub fn derive(
         }
     }
 
+    let reach_from = |kind: fn(&str) -> bool| {
+        let mut reached = vec![false; nodes.len()];
+        let mut queue: Vec<u32> = Vec::new();
+        for entry in entry_points.iter().filter(|entry| kind(entry.kind)) {
+            let Some(position) = position_of.get(entry.handler.as_str()).copied() else {
+                continue;
+            };
+            for start in [position].into_iter().chain(
+                nodes[position as usize]
+                    .kind
+                    .is_type()
+                    .then(|| members.get(&position).into_iter().flatten().copied())
+                    .into_iter()
+                    .flatten(),
+            ) {
+                if !reached[start as usize] {
+                    reached[start as usize] = true;
+                    queue.push(start);
+                }
+            }
+        }
+        let mut head = 0;
+        while head < queue.len() {
+            let current = queue[head];
+            head += 1;
+            let start = adjacency.offsets[current as usize] as usize;
+            let end = adjacency.offsets[current as usize + 1] as usize;
+            for target in &adjacency.targets[start..end] {
+                if !reached[*target as usize] {
+                    reached[*target as usize] = true;
+                    queue.push(*target);
+                }
+            }
+        }
+        reached
+    };
+    let served = reach_from(|kind| kind != "test");
+    let tested = reach_from(|kind| kind == "test");
+
     let mut entry_reach = Vec::with_capacity(entry_points.len());
     let mut seen = vec![u32::MAX; nodes.len()];
     let mut frontier: Vec<u32> = Vec::new();
@@ -228,5 +271,5 @@ pub fn derive(
         });
     }
 
-    GraphFacts { reach, entry_reach, unreachable_units, reachable_units }
+    GraphFacts { reach, entry_reach, unreachable_units, reachable_units, served, tested }
 }

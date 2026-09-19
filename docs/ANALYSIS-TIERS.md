@@ -243,7 +243,35 @@ From T1, scoped by T2. Deterministic.
 | 4.3 Invariants and gaps | Behavioral invariants, what is untested | 0.1 s |
 | | **Tier total** | **0.5 s** |
 
-**Measured today: 1.5 s.** This is selection over T1, not discovery.
+**Measured today: under 30 ms on most repositories, 0.6 s on the largest** — in
+`native/klauro-index`. This is selection over T1, not discovery.
+
+A test case is an entry point T1 already found, told from a suite by the registrar that declared
+it. Three facts are added: what it checks, counted from the assertion vocabulary it calls and the
+assertion statements a language writes without a call; what it stands in for, from the mocking
+calls it makes and what they name; and, where the language annotates its tests rather than
+registering them, the annotation that made it one.
+
+Coverage is read two ways, because a test reaches its subject two ways. A test that calls a unit
+covers it, marked while the graph pass walks reachability, so what a served surface reaches and
+what a test reaches are recorded side by side. A test that asks for a route covers the surface it
+serves, matched from the method and path it writes against the route table T3 emits — a test that
+never calls a controller still covers it. Where the repository holds a coverage report — an LCOV
+tracefile or a Cobertura run — its per-file lines are read and matched to the files indexed here,
+and reported separately from what is derived, because it is a record of a run rather than a fact
+about the code.
+
+A gap is what verification does not reach: a served surface no test reaches, a case that checks
+nothing, a case that stands in for everything it touches, and a surface beside a guarded one that
+carries no guard. An invariant is recorded only where the code enforces it at a site that can be
+named — an authorization guard on an entry point or the type that holds it — and carries both what
+it holds for and what it is missing from. What such a rule *means* is T6's reading; T4 records
+where it is enforced and where it is not.
+
+Limits. A test that reaches its subject through a GraphQL document rather than a route path is not
+linked to the resolver it exercises; saleor is that shape, and its unit-level coverage stands while
+its surface coverage reads low. Coverage reports are read as LCOV and Cobertura, and a repository
+that commits neither reports only what is derived.
 
 ---
 

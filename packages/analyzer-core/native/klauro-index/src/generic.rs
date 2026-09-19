@@ -702,6 +702,13 @@ impl<'a> Extractor<'a> {
             self.walk(node, scope);
             return;
         }
+        if self.spec.flow.assert_kinds.contains(&kind) {
+            if let Some(unit) = self.unit(scope) {
+                unit.asserts += 1;
+            }
+            self.walk(node, scope);
+            return;
+        }
         if self.spec.flow.throw_kinds.contains(&kind) {
             let thrown = node
                 .named_child(0)
@@ -742,6 +749,13 @@ impl<'a> Extractor<'a> {
                     }
                 }
             }
+        }
+        let mut preceding = node.prev_named_sibling();
+        while let Some(written) = preceding.filter(|found| {
+            self.spec.declares.decorator_kinds.contains(&found.kind())
+        }) {
+            found.push(self.decorator(written));
+            preceding = written.prev_named_sibling();
         }
         if let Some(parent) = node.parent()
             && self.spec.declares.decorator_container_kinds.contains(&parent.kind())

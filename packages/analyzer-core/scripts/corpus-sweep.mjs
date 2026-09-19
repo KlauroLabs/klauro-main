@@ -14,21 +14,21 @@ const WITHOUT_A_GRAMMAR = new Map([
 ]);
 
 const SERVED_SURFACE = new Map([
-  ['cal.com', { served: 300, exits: 590, observed: 15500, reachable: 9400, resolved: 19500, projects: 120, imported: 4200, roles: 6000, assigned: 26000, packages: 366, classified: 62, declared: 300 }],
-  ['hugo', { served: 13, exits: 200, projects: 6, imported: 18000, assigned: 11800, roles: 1900, packages: 200, classified: 45, declared: 152 }],
-  ['immich', { served: 720, exits: 205, observed: 17500, reachable: 10200, resolved: 20000, projects: 18, imported: 3400, roles: 5900, assigned: 24000, packages: 507, classified: 92, declared: 263 }],
-  ['jellyfin', { served: 395, exits: 535, imported: 6500, observed: 11800, reachable: 4450, resolved: 17500, projects: 42, roles: 1850, assigned: 15500, packages: 246, classified: 59, declared: 63 }],
+  ['cal.com', { served: 300, exits: 590, observed: 15500, reachable: 9400, resolved: 19500, projects: 120, imported: 4200, roles: 6000, assigned: 26000, packages: 366, classified: 62, declared: 300, cases: 3573, asserting: 3486, exercised: 162, invariants: 30 }],
+  ['hugo', { served: 13, exits: 200, projects: 6, imported: 18000, assigned: 11800, roles: 1900, packages: 200, classified: 45, declared: 152, cases: 1800, asserting: 1410, exercised: 0 }],
+  ['immich', { served: 720, exits: 205, observed: 17500, reachable: 10200, resolved: 20000, projects: 18, imported: 3400, roles: 5900, assigned: 24000, packages: 507, classified: 92, declared: 263, cases: 3548, asserting: 3483, exercised: 893, invariants: 41 }],
+  ['jellyfin', { served: 395, exits: 535, imported: 6500, observed: 11800, reachable: 4450, resolved: 17500, projects: 42, roles: 1850, assigned: 15500, packages: 246, classified: 59, declared: 63, cases: 1273, asserting: 1237, exercised: 234, invariants: 50 }],
   ['jekyll', { served: 20, exits: 20 }],
-  ['mastodon', { served: 230, exits: 250, observed: 40000, reachable: 28000, resolved: 21000, projects: 3, imported: 2600, roles: 9700, assigned: 46000, packages: 128, classified: 18, declared: 129 }],
-  ['meilisearch', { served: 14, exits: 170, imported: 2600, roles: 210, assigned: 11500, packages: 343, classified: 6, declared: 125 }],
-  ['metabase', { served: 0, exits: 230, projects: 16, imported: 39000, roles: 28000, assigned: 132000, packages: 555, classified: 54, declared: 314 }],
-  ['monica', { served: 218, exits: 100, observed: 6700, reachable: 400, resolved: 8700, projects: 3, imported: 5400, roles: 570, assigned: 7900, packages: 75, classified: 17, declared: 76 }],
-  ['neovim', { served: 25, exits: 470, imported: 2700, roles: 5300, assigned: 20000, packages: 449, classified: 34 }],
-  ['ripgrep', { served: 6, exits: 40, imported: 95 }],
-  ['saleor', { served: 1150, exits: 9570, observed: 21500, reachable: 16000, resolved: 55000, projects: 2, imported: 15000, roles: 13000, assigned: 28000, packages: 217, classified: 55, declared: 54 }],
-  ['superset', { served: 290, exits: 6300, observed: 55000, reachable: 40000, resolved: 63000, projects: 36, imported: 18500, roles: 26000, assigned: 67000, packages: 764, classified: 117, declared: 353 }],
-  ['tivi', { served: 20, exits: 290, imported: 1450, roles: 60, assigned: 5100, packages: 312, classified: 24 }],
-  ['traefik', { served: 25, exits: 750, observed: 6500, reachable: 3800, resolved: 7700, projects: 4, imported: 7500, roles: 1300, assigned: 8300, packages: 223, classified: 55, declared: 365 }]
+  ['mastodon', { served: 230, exits: 250, observed: 40000, reachable: 28000, resolved: 21000, projects: 3, imported: 2600, roles: 9700, assigned: 46000, packages: 128, classified: 18, declared: 129, cases: 5741, asserting: 5103, exercised: 55 }],
+  ['meilisearch', { served: 14, exits: 170, imported: 2600, roles: 210, assigned: 11500, packages: 343, classified: 6, declared: 125, cases: 1328, asserting: 538 }],
+  ['metabase', { served: 0, exits: 230, projects: 16, imported: 39000, roles: 28000, assigned: 132000, packages: 555, classified: 54, declared: 314, cases: 19733, asserting: 17527, exercised: 783 }],
+  ['monica', { served: 218, exits: 100, observed: 6700, reachable: 400, resolved: 8700, projects: 3, imported: 5400, roles: 570, assigned: 7900, packages: 75, classified: 17, declared: 76, cases: 1810, asserting: 1582, exercised: 439 }],
+  ['neovim', { served: 25, exits: 470, imported: 2700, roles: 5300, assigned: 20000, packages: 449, classified: 34, cases: 4477, asserting: 4054, exercised: 3621 }],
+  ['ripgrep', { served: 6, exits: 40, imported: 95, cases: 442, asserting: 435, exercised: 6 }],
+  ['saleor', { served: 1150, exits: 9570, observed: 21500, reachable: 16000, resolved: 55000, projects: 2, imported: 15000, roles: 13000, assigned: 28000, packages: 217, classified: 55, declared: 54, cases: 11535, asserting: 11145, exercised: 854 }],
+  ['superset', { served: 290, exits: 6300, observed: 55000, reachable: 40000, resolved: 63000, projects: 36, imported: 18500, roles: 26000, assigned: 67000, packages: 764, classified: 117, declared: 353, cases: 23607, asserting: 21754, exercised: 393 }],
+  ['tivi', { served: 20, exits: 290, imported: 1450, roles: 60, assigned: 5100, packages: 312, classified: 24, cases: 34, asserting: 14 }],
+  ['traefik', { served: 25, exits: 750, observed: 6500, reachable: 3800, resolved: 7700, projects: 4, imported: 7500, roles: 1300, assigned: 8300, packages: 223, classified: 55, declared: 365, cases: 1170, asserting: 541, exercised: 3 }]
 ]);
 
 function run(root) {
@@ -79,6 +79,10 @@ function index(root, repeat) {
     imported: number(/\| imported files (\d+)/),
     packages: number(/\| imported (\d+)/),
     declared: number(/\| declared (\d+)/),
+    cases: number(/verify [^|]*\| cases (\d+)/),
+    asserting: number(/\| asserting (\d+)/),
+    exercised: number(/units \| tested (\d+)/),
+    invariants: number(/\| invariants (\d+)/),
     classified: number(/\| classified (\d+)/),
     roles: number(/^roles [^|]*\| (\d+)/m),
     unpartitioned: number(/unpartitioned (\d+)/),
@@ -147,6 +151,16 @@ for (const repo of repos) {
       failures.push(
         `${repo} called ${measured.packages} names a package, over its ceiling of ${surface.packages}`
       );
+    }
+    for (const [name, label] of [
+      ['cases', 'test cases'],
+      ['asserting', 'cases that assert'],
+      ['exercised', 'units a test reaches'],
+      ['invariants', 'guarded surfaces'],
+    ]) {
+      if (surface[name] && measured[name] < surface[name]) {
+        failures.push(`${repo} found ${measured[name]} ${label}, below its floor of ${surface[name]}`);
+      }
     }
     if (surface.declared && measured.declared < surface.declared) {
       failures.push(

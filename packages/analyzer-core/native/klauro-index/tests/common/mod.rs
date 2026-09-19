@@ -7,7 +7,7 @@ use serde_json::{Map, Value};
 const TEXT: &[&str] = &[
     "annotation", "at", "bundled_into", "callback_of", "callee", "caller", "category",
     "composition", "constructed", "declared_by", "declares", "default_value", "documentation",
-    "entry_point", "from", "from_call", "handler", "id", "imported", "kind", "label", "language",
+    "entry_point", "from", "from_call", "gap", "guard", "holder", "invariant", "handler", "id", "imported", "kind", "label", "language",
     "local", "method", "name", "namespace", "node", "operation", "parent", "path", "project", "reason",
     "receiver", "reexport_from", "registrar", "registration_label", "return_type", "role", "root",
     "version",
@@ -15,7 +15,7 @@ const TEXT: &[&str] = &[
 ];
 
 const TEXT_LISTS: &[&str] = &[
-    "categories", "consumed_by", "exits", "integrations", "literals", "members",
+    "categories", "consumed_by", "exits", "holds", "integrations", "missing", "stands_in_for", "literals", "members",
     "nested_repositories", "projects", "reaches", "reads", "ships", "ships_in",
     "skipped_directories", "throws", "type_parameters", "types", "writes",
 ];
