@@ -411,10 +411,12 @@ fn main() {
         &index.calls,
     );
     eprintln!(
-        "scope {:?} | deployables {} | shipped {} | assigned {} shared {} unscoped {}",
+        "scope {:?} | projects {} | library {} runnable {} shipped {} | assigned {} shared {} unscoped {}",
         scope_started.elapsed(),
         scope.deployables.len(),
-        scope.deployables.iter().filter(|unit| unit.shipped).count(),
+        scope.deployables.iter().filter(|unit| unit.category == "library").count(),
+        scope.deployables.iter().filter(|unit| unit.category == "runnable").count(),
+        scope.deployables.iter().filter(|unit| unit.category == "shipped").count(),
         scope.assigned_nodes,
         scope.shared_nodes,
         scope.unassigned_nodes

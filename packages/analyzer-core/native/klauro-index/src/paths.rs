@@ -68,3 +68,11 @@ pub fn is_test(path: &str) -> bool {
         || name.contains(".test.")
         || name.contains(".spec.")
 }
+
+pub fn is_continuous_integration(path: &str) -> bool {
+    static DIRECTORIES: &[&str] =
+        &[".azure/", ".buildkite/", ".circleci/", ".github/", ".gitlab/", ".woodpecker/", "ci/"];
+    DIRECTORIES.iter().any(|directory| {
+        path.starts_with(directory) || path.contains(&format!("/{directory}"))
+    }) || path.starts_with(".gitlab-ci")
+}

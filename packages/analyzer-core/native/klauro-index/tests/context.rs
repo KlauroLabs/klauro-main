@@ -37,3 +37,19 @@ fn a_dockerfile_in_a_tooling_directory_ships_the_application_beside_it() {
     assert_eq!(shipped(&index), [""], "the unit roots at what it builds, not where it lives");
     assert_eq!(index["scope"]["unassigned_nodes"], 0);
 }
+
+#[test]
+fn a_script_that_installs_the_build_is_not_a_ship_artifact() {
+    let index = common::read("tooling");
+    let declared: Vec<&str> = index["scope"]["deployables"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|unit| unit["declarations"].as_array().unwrap())
+        .map(|found| found["at"].as_str().unwrap())
+        .collect();
+    assert!(
+        !declared.iter().any(|at| at.starts_with(".github/")),
+        "continuous integration installs the build, not the product: {declared:?}"
+    );
+}

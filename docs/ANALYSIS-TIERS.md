@@ -113,6 +113,10 @@ several services declares several units even where they build from one context, 
 service is a deployable and a build context is packaging. Every node carries its unit by
 containment, and otherwise by the units whose imports reach it, so shared code belongs to each.
 
+A script that installs a build is not a ship artifact. An `install*` script under a continuous
+integration directory installs dependencies for a job, and reading it as one leaves a repository
+whose only declared unit is the thing that prepares its own CI.
+
 Every unit carries the category its strongest declaration earns — `shipped` for a ship artifact,
 `runnable` for an entry the repository can start, `library` for a named package with neither.
 A runnable is not a deployable: repositories accumulate sample and utility binaries that build

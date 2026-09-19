@@ -19,20 +19,20 @@ const WITHOUT_A_GRAMMAR = new Map([
 // `observed` is pass 1.5: units of which some ICELOT facet was actually seen. A pass with no
 // floor is a pass that rots, which is how entry points and exits both got here.
 const SERVED_SURFACE = new Map([
-  ['cal.com', { served: 300, exits: 615, observed: 15500, reachable: 9400, resolved: 19500 }],
-  ['immich', { served: 720, exits: 295, observed: 17500, reachable: 10200, resolved: 20000 }],
-  ['jellyfin', { served: 395, exits: 535, observed: 11800, reachable: 4450, resolved: 17500 }],
+  ['cal.com', { served: 300, exits: 615, observed: 15500, reachable: 9400, resolved: 19500, projects: 120 }],
+  ['immich', { served: 720, exits: 295, observed: 17500, reachable: 10200, resolved: 20000, projects: 18 }],
+  ['jellyfin', { served: 395, exits: 535, observed: 11800, reachable: 4450, resolved: 17500, projects: 42 }],
   ['jekyll', { served: 20, exits: 20 }],
-  ['mastodon', { served: 230, exits: 250, observed: 40000, reachable: 28000, resolved: 21000 }],
+  ['mastodon', { served: 230, exits: 250, observed: 40000, reachable: 28000, resolved: 21000, projects: 3 }],
   ['meilisearch', { served: 14, exits: 170 }],
-  ['metabase', { served: 0, exits: 230 }],
-  ['monica', { served: 218, exits: 100, observed: 6700, reachable: 400, resolved: 8700 }],
+  ['metabase', { served: 0, exits: 230, projects: 16 }],
+  ['monica', { served: 218, exits: 100, observed: 6700, reachable: 400, resolved: 8700, projects: 3 }],
   ['neovim', { served: 25, exits: 470 }],
   ['ripgrep', { served: 6, exits: 40 }],
-  ['saleor', { served: 1150, exits: 9570, observed: 21500, reachable: 16000, resolved: 55000 }],
-  ['superset', { served: 290, exits: 6300, observed: 55000, reachable: 40000, resolved: 63000 }],
+  ['saleor', { served: 1150, exits: 9570, observed: 21500, reachable: 16000, resolved: 55000, projects: 2 }],
+  ['superset', { served: 290, exits: 6300, observed: 55000, reachable: 40000, resolved: 63000, projects: 36 }],
   ['tivi', { served: 20, exits: 290 }],
-  ['traefik', { served: 25, exits: 750, observed: 6500, reachable: 3800, resolved: 7700 }]
+  ['traefik', { served: 25, exits: 750, observed: 6500, reachable: 3800, resolved: 7700, projects: 4 }]
 ]);
 
 // The whole run, not a sum of the passes it reports: a pass left out of that sum is a pass
@@ -85,6 +85,8 @@ function index(root, repeat) {
     // runtime. This is the number every later tier is built from.
     resolved: number(/resolve [^|]*\| edges (\d+)/) - number(/\| package (\d+)/) -
       number(/\| runtime (\d+)/),
+    projects: number(/\| projects (\d+)/),
+    unpartitioned: number(/unpartitioned (\d+)/),
     reachable: number(/reachable units (\d+)/),
     exits: number(/exit points (\d+)/),
     errors: number(/parse errors (\d+)/),
@@ -132,6 +134,11 @@ for (const repo of repos) {
         `${repo} found ${measured.exits} exit points, below its floor of ${surface.exits}`
       );
     }
+    if (surface.projects && measured.projects < surface.projects) {
+      failures.push(
+        `${repo} found ${measured.projects} projects, below its floor of ${surface.projects}`
+      );
+    }
     if (surface.resolved && measured.resolved < surface.resolved) {
       failures.push(
         `${repo} resolved ${measured.resolved} in-repo edges, below its floor of ${surface.resolved}`
@@ -147,6 +154,9 @@ for (const repo of repos) {
         `${repo} reached ${measured.reachable} units, below its floor of ${surface.reachable}`
       );
     }
+  }
+  if (measured.unpartitioned > 0) {
+    failures.push(`${repo} left ${measured.unpartitioned} declarations in no project`);
   }
   if (measured.milliseconds > measured.allowance) {
     failures.push(

@@ -447,7 +447,7 @@ fn installer(
     file: u32,
 ) -> Option<Candidate> {
     let basename = path.rsplit('/').next()?.to_ascii_lowercase();
-    if !basename.starts_with("install") {
+    if !basename.starts_with("install") || crate::paths::is_continuous_integration(path) {
         return None;
     }
     if !INSTALLER_SUFFIXES
