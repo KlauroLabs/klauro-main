@@ -50,7 +50,6 @@ static SUFFIXES: &[(&str, &str)] = &[
     ("Handler", "handler"),
     ("Middleware", "middleware"),
     ("Repository", "repository"),
-    ("Resource", "controller"),
     ("Service", "service"),
 ];
 
@@ -72,7 +71,12 @@ fn inherited_role(name: &str) -> Option<&'static str> {
         .map(|(_, role)| *role)
 }
 
-pub fn derive(nodes: &[IndexNode], edges: &[IndexEdge], entry_points: &[EntryPoint]) -> Roles {
+pub fn derive(
+    nodes: &[IndexNode],
+    edges: &[IndexEdge],
+    entry_points: &[EntryPoint],
+    declared: &[bool],
+) -> Roles {
     let named: HashMap<&str, &IndexNode> = nodes.iter().map(|node| (node.id.as_str(), node)).collect();
     let mut roles: Vec<Role> = Vec::new();
     let mut seen: std::collections::HashSet<(String, &'static str)> =
@@ -124,7 +128,7 @@ pub fn derive(nodes: &[IndexNode], edges: &[IndexEdge], entry_points: &[EntryPoi
     }
 
     for node in nodes {
-        if !node.kind.is_type() {
+        if !node.kind.is_type() || !declared.get(node.file as usize).copied().unwrap_or(false) {
             continue;
         }
         if let Some(role) = inherited_role(&node.name) {

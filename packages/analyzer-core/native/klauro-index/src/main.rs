@@ -315,6 +315,11 @@ fn main() {
     let internal_specifiers = std::mem::take(&mut resolution.internal_specifiers);
     let resolved = resolve_started.elapsed();
     let resolved_edges = resolution.edges.len();
+    let imported_files = resolution
+        .edges
+        .iter()
+        .filter(|edge| matches!(edge.kind, model::EdgeKind::Imports))
+        .count();
     index.edges.extend(std::mem::take(&mut resolution.edges));
     index.nodes.extend(std::mem::take(&mut resolution.external_nodes));
     for node in index.nodes.iter_mut() {
@@ -324,9 +329,10 @@ fn main() {
     }
 
     eprintln!(
-        "resolve {:?} | edges {} | package {} | runtime {} | indirect {} | dynamic {} | unresolved {} | no caller {}",
+        "resolve {:?} | edges {} | imported files {} | package {} | runtime {} | indirect {} | dynamic {} | unresolved {} | no caller {}",
         resolved,
         resolved_edges,
+        imported_files,
         resolution.package_calls,
         resolution.runtime_calls,
         resolution.indirect_calls,
@@ -480,7 +486,12 @@ fn main() {
     index.dependencies = Some(found);
 
     let roles_started = Instant::now();
-    let found = roles::derive(&index.nodes, &index.edges, &index.entry_points);
+    let declared: Vec<bool> = index
+        .files
+        .iter()
+        .map(|file| matches!(file.kind, discovery::FileKind::Source))
+        .collect();
+    let found = roles::derive(&index.nodes, &index.edges, &index.entry_points, &declared);
     eprintln!(
         "roles {:?} | {} across {} kinds",
         roles_started.elapsed(),

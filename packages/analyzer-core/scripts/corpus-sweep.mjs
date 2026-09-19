@@ -14,20 +14,20 @@ const WITHOUT_A_GRAMMAR = new Map([
 ]);
 
 const SERVED_SURFACE = new Map([
-  ['cal.com', { served: 300, exits: 615, observed: 15500, reachable: 9400, resolved: 19500, projects: 120 }],
-  ['immich', { served: 720, exits: 295, observed: 17500, reachable: 10200, resolved: 20000, projects: 18 }],
-  ['jellyfin', { served: 395, exits: 535, observed: 11800, reachable: 4450, resolved: 17500, projects: 42 }],
+  ['cal.com', { served: 300, exits: 615, observed: 15500, reachable: 9400, resolved: 19500, projects: 120, imported: 4200, packages: 350, roles: 6000 }],
+  ['immich', { served: 720, exits: 295, observed: 17500, reachable: 10200, resolved: 20000, projects: 18, imported: 3400, packages: 500, roles: 5900 }],
+  ['jellyfin', { served: 395, exits: 535, observed: 11800, reachable: 4450, resolved: 17500, projects: 42, packages: 260, roles: 1850 }],
   ['jekyll', { served: 20, exits: 20 }],
-  ['mastodon', { served: 230, exits: 250, observed: 40000, reachable: 28000, resolved: 21000, projects: 3 }],
-  ['meilisearch', { served: 14, exits: 170 }],
-  ['metabase', { served: 0, exits: 230, projects: 16 }],
-  ['monica', { served: 218, exits: 100, observed: 6700, reachable: 400, resolved: 8700, projects: 3 }],
-  ['neovim', { served: 25, exits: 470 }],
+  ['mastodon', { served: 230, exits: 250, observed: 40000, reachable: 28000, resolved: 21000, projects: 3, imported: 2600, packages: 110, roles: 9700 }],
+  ['meilisearch', { served: 14, exits: 170, imported: 1000, packages: 300, roles: 210 }],
+  ['metabase', { served: 0, exits: 230, projects: 16, imported: 39000, packages: 730, roles: 28000 }],
+  ['monica', { served: 218, exits: 100, observed: 6700, reachable: 400, resolved: 8700, projects: 3, imported: 5400, packages: 320, roles: 570 }],
+  ['neovim', { served: 25, exits: 470, imported: 2700, packages: 470, roles: 5300 }],
   ['ripgrep', { served: 6, exits: 40 }],
-  ['saleor', { served: 1150, exits: 9570, observed: 21500, reachable: 16000, resolved: 55000, projects: 2 }],
-  ['superset', { served: 290, exits: 6300, observed: 55000, reachable: 40000, resolved: 63000, projects: 36 }],
-  ['tivi', { served: 20, exits: 290 }],
-  ['traefik', { served: 25, exits: 750, observed: 6500, reachable: 3800, resolved: 7700, projects: 4 }]
+  ['saleor', { served: 1150, exits: 9570, observed: 21500, reachable: 16000, resolved: 55000, projects: 2, imported: 15000, packages: 200, roles: 13000 }],
+  ['superset', { served: 290, exits: 6300, observed: 55000, reachable: 40000, resolved: 63000, projects: 36, imported: 18500, packages: 700, roles: 26000 }],
+  ['tivi', { served: 20, exits: 290, imported: 1000, packages: 320, roles: 60 }],
+  ['traefik', { served: 25, exits: 750, observed: 6500, reachable: 3800, resolved: 7700, projects: 4, imported: 410, packages: 190, roles: 1300 }]
 ]);
 
 function run(root) {
@@ -74,6 +74,9 @@ function index(root, repeat) {
     resolved: number(/resolve [^|]*\| edges (\d+)/) - number(/\| package (\d+)/) -
       number(/\| runtime (\d+)/),
     projects: number(/\| projects (\d+)/),
+    imported: number(/\| imported files (\d+)/),
+    packages: number(/\| packages (\d+)/),
+    roles: number(/^roles [^|]*\| (\d+)/m),
     unpartitioned: number(/unpartitioned (\d+)/),
     reachable: number(/reachable units (\d+)/),
     exits: number(/exit points (\d+)/),
@@ -124,6 +127,21 @@ for (const repo of repos) {
     if (surface.projects && measured.projects < surface.projects) {
       failures.push(
         `${repo} found ${measured.projects} projects, below its floor of ${surface.projects}`
+      );
+    }
+    if (surface.imported && measured.imported < surface.imported) {
+      failures.push(
+        `${repo} resolved ${measured.imported} imports to files it holds, below its floor of ${surface.imported}`
+      );
+    }
+    if (surface.packages && measured.packages < surface.packages) {
+      failures.push(
+        `${repo} found ${measured.packages} packages, below its floor of ${surface.packages}`
+      );
+    }
+    if (surface.roles && measured.roles < surface.roles) {
+      failures.push(
+        `${repo} gave ${measured.roles} declarations a role, below its floor of ${surface.roles}`
       );
     }
     if (surface.resolved && measured.resolved < surface.resolved) {
