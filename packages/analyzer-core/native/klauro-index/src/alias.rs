@@ -22,13 +22,21 @@ impl Aliases {
                 children.entry(parent).or_default().push(node);
             }
         }
+        let mut packages: HashMap<String, String> = HashMap::new();
+        for path in files {
+            if basename(path) == "package.json"
+                && let Some(name) = value_of(&children, path, "name")
+            {
+                packages.entry(name).or_insert_with(|| directory_of(path).to_string());
+            }
+        }
         let mut entries = Vec::new();
         for path in files {
             let name = basename(path).to_ascii_lowercase();
             let home = directory_of(path);
             if name.ends_with(".json") && (name.starts_with("tsconfig") || name.starts_with("jsconfig"))
             {
-                declared_paths(&children, path, home, &mut entries);
+                declared_paths(&children, &packages, path, home, &mut entries);
             }
             if name.starts_with("nuxt.config.") {
                 for prefix in ["~", "@"] {
@@ -171,10 +179,81 @@ impl Entry {
 
 fn declared_paths(
     children: &HashMap<&str, Vec<&IndexNode>>,
+    packages: &HashMap<String, String>,
     path: &str,
-    home: &str,
+    scope: &str,
     entries: &mut Vec<Entry>,
 ) {
+    let mut read = vec![path.to_string()];
+    let mut seen: HashSet<String> = HashSet::new();
+    while let Some(config) = read.pop() {
+        if !seen.insert(config.clone()) {
+            continue;
+        }
+        mapped_paths(children, &config, scope, entries);
+        read.extend(extended(children, packages, &config));
+    }
+}
+
+fn extended(
+    children: &HashMap<&str, Vec<&IndexNode>>,
+    packages: &HashMap<String, String>,
+    path: &str,
+) -> Vec<String> {
+    let home = directory_of(path);
+    let mut named = Vec::new();
+    if let Some(value) = value_of(children, path, "extends") {
+        named.push(value);
+    }
+    if let Some(several) = section(children, path, "extends") {
+        named.extend(
+            children
+                .get(several.id.as_str())
+                .into_iter()
+                .flatten()
+                .map(|base| base.name.clone()),
+        );
+    }
+    named
+        .iter()
+        .filter_map(|base| located(packages, home, base))
+        .collect()
+}
+
+fn located(packages: &HashMap<String, String>, home: &str, base: &str) -> Option<String> {
+    let base = match base.starts_with('.') {
+        true => normalize(&join(home, base)),
+        false => {
+            let segments: Vec<&str> = base.split('/').collect();
+            let owned = match base.starts_with('@') {
+                true => segments.first().zip(segments.get(1)).map(|(scope, name)| {
+                    (format!("{scope}/{name}"), segments[2.min(segments.len())..].join("/"))
+                }),
+                false => segments
+                    .first()
+                    .map(|name| ((*name).to_string(), segments[1.min(segments.len())..].join("/"))),
+            }?;
+            let (package, rest) = owned;
+            let home = packages.get(&package)?;
+            match rest.is_empty() {
+                true => join(home, "tsconfig.json"),
+                false => join(home, &rest),
+            }
+        }
+    };
+    Some(match base.ends_with(".json") {
+        true => base,
+        false => format!("{base}.json"),
+    })
+}
+
+fn mapped_paths(
+    children: &HashMap<&str, Vec<&IndexNode>>,
+    path: &str,
+    scope: &str,
+    entries: &mut Vec<Entry>,
+) {
+    let home = directory_of(path);
     let Some(options) = section(children, path, "compilerOptions") else { return };
     let base = match value_of(children, &options.id, "baseUrl") {
         Some(base) => normalize(&join(home, &base)),
@@ -201,7 +280,7 @@ fn declared_paths(
         };
         for target in targets {
             entries.push(Entry {
-                scope: home.to_string(),
+                scope: scope.to_string(),
                 prefix: prefix.clone(),
                 wildcard,
                 target: normalize(&join(&base, &target)),

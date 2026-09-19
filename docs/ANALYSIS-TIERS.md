@@ -56,8 +56,10 @@ alias maps to, and stays the repository's own even where the file it names is ge
 than committed. An alias counts only where it maps onto something the repository holds: one that
 points into installed packages renames a dependency rather than declaring code. Where the alias is
 written as a pattern, it is read only as far as it reads as a path — a literal prefix, and at most
-one capture standing for the rest. Everything else is a package, and its name is what a unit
-reaches.
+one capture standing for the rest. A configuration that extends another inherits its mappings,
+wherever that other one lives — beside it, above it, or in a package the repository holds — and
+each mapping resolves against the configuration that declares it while applying where the one
+inheriting it does. Everything else is a package, and its name is what a unit reaches.
 
 Pass 1.5 emits a facet only where something was observed, per the semantic model: a unit that
 takes nothing carries no Input, and one that reaches nothing carries no Effects. Effects names
