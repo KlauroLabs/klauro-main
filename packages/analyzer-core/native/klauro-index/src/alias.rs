@@ -68,6 +68,7 @@ impl Aliases {
             }
             if crate::bundler::is_config(path) {
                 bundled_aliases(&children, path, home, &mut entries);
+                mapped_modules(&children, path, home, &mut entries);
             }
             if name == "package.json" {
                 subpath_imports(&children, path, home, &mut entries);
@@ -217,6 +218,60 @@ fn bundled_aliases(
             wildcard: true,
             target: normalize(&join(home, target)),
         });
+    }
+}
+
+fn mapped_modules(
+    children: &HashMap<&str, Vec<&IndexNode>>,
+    path: &str,
+    home: &str,
+    entries: &mut Vec<Entry>,
+) {
+    let Some(declared) = section(children, path, "moduleNameMapper") else { return };
+    for mapped in children.get(declared.id.as_str()).into_iter().flatten() {
+        let (Some((prefix, wildcard)), Some(target)) = (
+            matched_prefix(&mapped.name),
+            mapped.type_annotation.as_deref(),
+        ) else {
+            continue;
+        };
+        let target = target.replace("<rootDir>/", "").replace("<rootDir>", "").replace("$1", "*");
+        entries.push(Entry {
+            scope: home.to_string(),
+            prefix,
+            wildcard,
+            target: normalize(&join(home, &target)),
+        });
+    }
+}
+
+fn matched_prefix(pattern: &str) -> Option<(String, bool)> {
+    let body = pattern.trim().trim_start_matches('^');
+    let body = body.strip_suffix('$').unwrap_or(body);
+    let mut literal = String::new();
+    let mut letters = body.char_indices();
+    let mut rest = "";
+    while let Some((at, letter)) = letters.next() {
+        match letter {
+            '\\' => match letters.next() {
+                Some((_, escaped)) => literal.push(escaped),
+                None => return None,
+            },
+            '(' | '[' | '{' | '*' | '+' | '?' | '.' | '|' | ')' | ']' | '}' => {
+                rest = &body[at..];
+                break;
+            }
+            plain => literal.push(plain),
+        }
+    }
+    let literal = literal.trim_end_matches('/').to_string();
+    if literal.is_empty() {
+        return None;
+    }
+    match rest {
+        "" => Some((literal, false)),
+        "(.*)" | "(.+)" | ".*" | ".+" => Some((literal, true)),
+        _ => None,
     }
 }
 

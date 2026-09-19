@@ -8,7 +8,11 @@ pub fn is_config(path: &str) -> bool {
     basename.contains(".config.") && CONFIGURED.contains(&stem)
 }
 
-static CONFIGURED: &[&str] = &["nuxt", "rollup", "rsbuild", "rspack", "svelte", "vite", "webpack"];
+static CONFIGURED: &[&str] = &[
+    "jest", "nuxt", "rollup", "rsbuild", "rspack", "svelte", "vite", "vitest", "webpack",
+];
+
+static MAPPINGS: &[&str] = &["alias", "moduleNameMapper"];
 
 pub fn declared_aliases(tree: &Tree, source: &[u8], file: u32, path: &str) -> Vec<IndexNode> {
     let mut found = Vec::new();
@@ -16,27 +20,38 @@ pub fn declared_aliases(tree: &Tree, source: &[u8], file: u32, path: &str) -> Ve
     while let Some(node) = pending.pop() {
         if node.kind() == "pair"
             && let Some(key) = node.child_by_field_name("key")
-            && unquoted(text(source, key)) == "alias"
+            && let Some(section) = MAPPINGS
+                .iter()
+                .find(|known| **known == unquoted(text(source, key)))
             && let Some(value) = node.child_by_field_name("value")
         {
-            declare(source, value, file, path, &mut found);
+            declare(source, value, file, path, section, &mut found);
             continue;
         }
         let mut cursor = node.walk();
         pending.extend(node.named_children(&mut cursor));
     }
-    match found.is_empty() {
-        true => Vec::new(),
-        false => {
-            let line = found[0].span.line;
-            let mut nodes = vec![section(path, line, file)];
-            nodes.extend(found);
-            nodes
+    let mut sections: Vec<IndexNode> = Vec::new();
+    for declared in &found {
+        let Some(parent) = declared.parent.as_deref() else { continue };
+        if sections.iter().any(|known| known.id == parent) {
+            continue;
         }
+        let name = parent.rsplit(':').next().unwrap_or_default().to_string();
+        sections.push(section(path, &name, declared.span.line, file));
     }
+    sections.extend(found);
+    sections
 }
 
-fn declare(source: &[u8], value: Node, file: u32, path: &str, found: &mut Vec<IndexNode>) {
+fn declare(
+    source: &[u8],
+    value: Node,
+    file: u32,
+    path: &str,
+    section: &str,
+    found: &mut Vec<IndexNode>,
+) {
     let mut cursor = value.walk();
     for member in value.named_children(&mut cursor) {
         match member.kind() {
@@ -53,7 +68,7 @@ fn declare(source: &[u8], value: Node, file: u32, path: &str, found: &mut Vec<In
                 ) else {
                     continue;
                 };
-                found.push(mapping(path, name, &target, member, file));
+                found.push(mapping(path, section, name, &target, member, file));
             }
             "object" => {
                 let mut pairs = member.walk();
@@ -73,7 +88,7 @@ fn declare(source: &[u8], value: Node, file: u32, path: &str, found: &mut Vec<In
                     }
                 }
                 if let (Some(name), Some(target)) = (name, target) {
-                    found.push(mapping(path, name, &target, member, file));
+                    found.push(mapping(path, section, name, &target, member, file));
                 }
             }
             _ => {}
@@ -100,7 +115,14 @@ fn mapped_path(source: &[u8], node: Node) -> Option<String> {
     last
 }
 
-fn mapping(path: &str, name: &str, target: &str, node: Node, file: u32) -> IndexNode {
+fn mapping(
+    path: &str,
+    section: &str,
+    name: &str,
+    target: &str,
+    node: Node,
+    file: u32,
+) -> IndexNode {
     let line = node.start_position().row as u32 + 1;
     declaration(
         format!("{path}:key:{name}:{line}"),
@@ -108,15 +130,15 @@ fn mapping(path: &str, name: &str, target: &str, node: Node, file: u32) -> Index
         NodeKind::Property,
         file,
         line,
-        Some(format!("{path}:section:alias")),
+        Some(format!("{path}:section:{section}")),
         Some(target.to_string()),
     )
 }
 
-fn section(path: &str, line: u32, file: u32) -> IndexNode {
+fn section(path: &str, name: &str, line: u32, file: u32) -> IndexNode {
     declaration(
-        format!("{path}:section:alias"),
-        "alias".to_string(),
+        format!("{path}:section:{name}"),
+        name.to_string(),
         NodeKind::Class,
         file,
         line,

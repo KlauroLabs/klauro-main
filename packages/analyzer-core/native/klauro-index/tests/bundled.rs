@@ -36,3 +36,25 @@ fn an_alias_onto_an_installed_package_leaves_it_a_dependency() {
         "an alias onto something the repository does not hold declares nothing: {found:?}"
     );
 }
+
+#[test]
+fn a_test_runners_module_map_resolves_the_patterns_that_read_as_a_path() {
+    let index = index();
+    let found = imported(&index, "test/main.spec.ts");
+    assert!(
+        found.contains(&"test/helpers.ts".to_string()),
+        "an anchored prefix with one capture is an alias: {found:?}"
+    );
+}
+
+#[test]
+fn a_pattern_that_maps_a_package_elsewhere_leaves_it_a_dependency() {
+    let index = index();
+    let found: Vec<&str> = index["dependencies"]["dependencies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|dependency| dependency["name"].as_str().unwrap())
+        .collect();
+    assert!(found.contains(&"lodash-es"), "{found:?}");
+}
