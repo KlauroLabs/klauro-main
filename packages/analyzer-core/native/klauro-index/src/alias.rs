@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::model::{IndexNode, NodeKind};
 use crate::paths::{basename, contains, directory_of, join, normalize};
@@ -66,6 +66,9 @@ impl Aliases {
                     target: home.to_string(),
                 });
             }
+            if crate::bundler::is_config(path) {
+                bundled_aliases(&children, path, home, &mut entries);
+            }
             if name == "package.json" {
                 subpath_imports(&children, path, home, &mut entries);
             }
@@ -88,6 +91,8 @@ impl Aliases {
                 });
             }
         }
+        let held = holdings(files);
+        entries.retain(|entry| entry.holds(&held));
         entries.sort_by(|left, right| {
             right
                 .prefix
@@ -114,7 +119,30 @@ impl Aliases {
     }
 }
 
+fn holdings(files: &[String]) -> HashSet<&str> {
+    let mut held = HashSet::new();
+    for path in files {
+        held.insert(path.as_str());
+        let mut folder = directory_of(path);
+        while !folder.is_empty() {
+            if !held.insert(folder) {
+                break;
+            }
+            folder = directory_of(folder);
+        }
+    }
+    held
+}
+
 impl Entry {
+    fn holds(&self, held: &HashSet<&str>) -> bool {
+        let target = match self.target.split_once('*') {
+            Some((head, _)) => head.trim_end_matches('/'),
+            None => self.target.as_str(),
+        };
+        target.is_empty() || held.contains(target) || held.contains(directory_of(target))
+    }
+
     fn matched(&self, specifier: &str) -> Option<String> {
         if !self.wildcard {
             return (specifier == self.prefix).then(|| self.target.clone());
@@ -171,6 +199,24 @@ fn declared_paths(
                 target: normalize(&join(&base, &target)),
             });
         }
+    }
+}
+
+fn bundled_aliases(
+    children: &HashMap<&str, Vec<&IndexNode>>,
+    path: &str,
+    home: &str,
+    entries: &mut Vec<Entry>,
+) {
+    let Some(declared) = section(children, path, "alias") else { return };
+    for alias in children.get(declared.id.as_str()).into_iter().flatten() {
+        let Some(target) = alias.type_annotation.as_deref() else { continue };
+        entries.push(Entry {
+            scope: home.to_string(),
+            prefix: alias.name.trim_end_matches('/').to_string(),
+            wildcard: true,
+            target: normalize(&join(home, target)),
+        });
     }
 }
 

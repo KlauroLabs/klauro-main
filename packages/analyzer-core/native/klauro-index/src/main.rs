@@ -1,6 +1,7 @@
 mod alias;
 mod architecture;
 mod builtins;
+mod bundler;
 mod dependencies;
 mod discovery;
 mod dockerfile;
@@ -131,7 +132,11 @@ fn read(
         source_rewrite::grammar_limitations(source);
         let tree = parser.parse(&source, None)?;
         report_first_error(path, source, &tree);
-        return Some(typescript::Extractor::new(source, file, path).run(&tree, path, lines(source)));
+        let mut facts = typescript::Extractor::new(source, file, path).run(&tree, path, lines(source));
+        if bundler::is_config(path) {
+            facts.nodes.extend(bundler::declared_aliases(&tree, source, file, path));
+        }
+        return Some(facts);
     }
     if dockerfile::is_dockerfile(path) {
         let text = std::str::from_utf8(source).ok()?;

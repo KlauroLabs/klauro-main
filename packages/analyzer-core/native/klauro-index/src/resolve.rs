@@ -574,8 +574,8 @@ impl Modules {
                 .push(at as u32);
             let key = module_key(path);
             let plain = without_containers(&key);
-            if let Some((root, _)) = key.split_once('/') {
-                rooted.insert(format!("{language}\u{1}{root}"));
+            if let Some((root, _)) = path.split_once('/') {
+                rooted.insert(format!("{language}\u{1}{}", root.to_ascii_lowercase()));
             }
             for (key, found) in [
                 (Some(key.as_str()), &mut declaring),

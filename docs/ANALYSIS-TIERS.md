@@ -50,9 +50,11 @@ reaches the files in it whose declarations the importer names, and a file record
 declares for both to be found by. A specifier that names a directory the repository holds and
 nothing more precise is still the repository's own rather than something it depends on. A
 specifier that begins with an alias the repository declares — a compiler's path mapping, a
-package's own subpath import, a module path, or the one a framework's configuration file gives it
-— is what that alias maps to, and stays the repository's own even where the file it names is
-generated rather than committed. Everything else is a package, and its name is what a unit
+package's own subpath import, a module path, a bundler's configured alias, or the one a
+framework's configuration file gives it — is what that alias maps to, and stays the repository's
+own even where the file it names is generated rather than committed. An alias counts only where it
+maps onto something the repository holds: one that points into installed packages renames a
+dependency rather than declaring code. Everything else is a package, and its name is what a unit
 reaches.
 
 Pass 1.5 emits a facet only where something was observed, per the semantic model: a unit that
