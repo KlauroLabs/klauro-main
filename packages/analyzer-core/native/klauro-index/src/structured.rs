@@ -53,6 +53,8 @@ pub fn language_for(id: &str) -> Option<(Language, &'static StructuredSpec)> {
 
 const COLLECTION_LIMIT: usize = 64;
 const SCHEMA_BUDGET: usize = 512;
+const DECLARED_LIMIT: usize = 512;
+const DECLARED_BUDGET: usize = 4096;
 
 pub struct Extractor<'a> {
     source: &'a [u8],
@@ -60,6 +62,18 @@ pub struct Extractor<'a> {
     module_id: String,
     spec: &'static StructuredSpec,
     facts: FileFacts,
+    collection: usize,
+    budget: usize,
+}
+
+fn declares_packages(path: &str) -> bool {
+    let basename = crate::paths::basename(path).to_ascii_lowercase();
+    crate::language_tables::MANIFEST_NAMES.contains(&basename.as_str())
+        || basename
+            .rsplit_once('.')
+            .is_some_and(|(_, extension)| {
+                crate::language_tables::MANIFEST_EXTENSIONS.contains(&extension)
+            })
 }
 
 fn span_of(node: Node) -> Span {
@@ -73,12 +87,21 @@ fn span_of(node: Node) -> Span {
 
 impl<'a> Extractor<'a> {
     pub fn new(source: &'a [u8], file: u32, path: &str, spec: &'static StructuredSpec) -> Self {
+        let declares = declares_packages(path);
         Extractor {
             source,
             file,
             module_id: path.to_string(),
             spec,
             facts: FileFacts::default(),
+            collection: match declares {
+                true => DECLARED_LIMIT,
+                false => COLLECTION_LIMIT,
+            },
+            budget: match declares {
+                true => DECLARED_BUDGET,
+                false => SCHEMA_BUDGET,
+            },
         }
     }
 
@@ -139,7 +162,7 @@ impl<'a> Extractor<'a> {
         });
         let module = self.module_id.clone();
         self.walk(root, &module, 0);
-        if self.facts.nodes.len() > SCHEMA_BUDGET {
+        if self.facts.nodes.len() > self.budget {
             self.facts.nodes.truncate(1);
             self.facts.edges.clear();
             self.facts.nodes[0].type_annotation = Some(format!("{} bytes", self.source.len()));
@@ -162,7 +185,7 @@ impl<'a> Extractor<'a> {
     }
 
     fn walk(&mut self, node: Node, owner: &str, depth: u16) {
-        if depth > 12 || self.facts.nodes.len() > SCHEMA_BUDGET {
+        if depth > 12 || self.facts.nodes.len() > self.budget {
             return;
         }
         let mut cursor = node.walk();
@@ -205,7 +228,7 @@ impl<'a> Extractor<'a> {
             let id = self.declare(&name, node, owner, NodeKind::Class, EdgeKind::Contains);
             let Some(value) = value else { return };
             let entries = self.entries(value);
-            if entries > COLLECTION_LIMIT {
+            if entries > self.collection {
                 if let Some(found) = self.facts.nodes.iter_mut().find(|found| found.id == id) {
                     found.type_annotation = Some(format!("{entries} entries"));
                 }

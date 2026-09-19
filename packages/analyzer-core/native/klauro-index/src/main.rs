@@ -500,8 +500,10 @@ fn main() {
         })
         .map(|unit| unit.name.as_str())
         .collect();
+    let manifested = dependencies::manifested(&paths, &index.nodes);
     let found = dependencies::derive(
         &index.imports,
+        &manifested,
         &internal_specifiers,
         &own,
         &paths,
@@ -511,9 +513,11 @@ fn main() {
         &dependencies::file_project(assignment),
     );
     eprintln!(
-        "dependencies {:?} | packages {} | classified {} unclassified {}",
+        "dependencies {:?} | packages {} | imported {} | declared {} | classified {} unclassified {}",
         dependencies_started.elapsed(),
         found.dependencies.len(),
+        found.imported,
+        found.declared,
         found.classified,
         found.unclassified
     );

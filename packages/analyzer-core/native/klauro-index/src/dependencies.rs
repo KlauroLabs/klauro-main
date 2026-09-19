@@ -10,6 +10,10 @@ pub struct Dependency {
     pub name: String,
     pub role: &'static str,
     pub category: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub declared: bool,
     pub imports: u32,
     pub entry_points: u32,
     pub exit_points: u32,
@@ -19,8 +23,121 @@ pub struct Dependency {
 #[derive(Debug, Serialize)]
 pub struct Dependencies {
     pub dependencies: Vec<Dependency>,
+    pub imported: u32,
+    pub declared: u32,
     pub classified: u32,
     pub unclassified: u32,
+}
+
+static MANIFEST_SECTIONS: &[(&str, &[&str])] = &[
+    ("cargo.toml", &["build-dependencies", "dependencies", "dev-dependencies"]),
+    ("composer.json", &["require", "require-dev"]),
+    ("go.mod", &["require"]),
+    ("package.json", &[
+        "dependencies", "devDependencies", "optionalDependencies", "peerDependencies",
+    ]),
+    ("pubspec.yaml", &["dependencies", "dev_dependencies"]),
+    ("pyproject.toml", &["dependencies"]),
+];
+
+pub fn manifested(files: &[String], nodes: &[IndexNode]) -> Vec<(String, Option<String>)> {
+    let mut children: HashMap<&str, Vec<&IndexNode>> = HashMap::new();
+    for node in nodes {
+        if let Some(parent) = node.parent.as_deref() {
+            children.entry(parent).or_default().push(node);
+        }
+    }
+    let mut found = Vec::new();
+    for path in files {
+        let basename = crate::paths::basename(path).to_ascii_lowercase();
+        if basename.ends_with(".csproj") || basename.ends_with(".fsproj") {
+            referenced_packages(&children, path, &mut found);
+            continue;
+        }
+        let Some((_, sections)) = MANIFEST_SECTIONS.iter().find(|(name, _)| *name == basename)
+        else {
+            continue;
+        };
+        for section in *sections {
+            for declared in sections_named(&children, path, section) {
+                for entry in children.get(declared.as_str()).into_iter().flatten() {
+                    let name = required_name(&entry.name);
+                    if name.is_empty() {
+                        continue;
+                    }
+                    found.push((name.to_string(), version_of(entry)));
+                }
+            }
+        }
+    }
+    found
+}
+
+fn sections_named(
+    children: &HashMap<&str, Vec<&IndexNode>>,
+    path: &str,
+    name: &str,
+) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut pending = vec![path.to_string()];
+    while let Some(parent) = pending.pop() {
+        for node in children.get(parent.as_str()).into_iter().flatten() {
+            if node.kind != NodeKind::Class {
+                continue;
+            }
+            let named = node.name.rsplit('.').next().unwrap_or(node.name.as_str());
+            match named == name {
+                true => found.push(node.id.clone()),
+                false => pending.push(node.id.clone()),
+            }
+        }
+    }
+    found
+}
+
+fn referenced_packages(
+    children: &HashMap<&str, Vec<&IndexNode>>,
+    path: &str,
+    found: &mut Vec<(String, Option<String>)>,
+) {
+    let mut pending = vec![path.to_string()];
+    while let Some(parent) = pending.pop() {
+        for node in children.get(parent.as_str()).into_iter().flatten() {
+            pending.push(node.id.clone());
+            if node.name != "PackageReference" {
+                continue;
+            }
+            let named = children
+                .get(node.id.as_str())
+                .into_iter()
+                .flatten()
+                .find(|field| field.name == "Include")
+                .and_then(|field| field.type_annotation.as_deref())
+                .map(unquoted)
+                .unwrap_or_default();
+            if !named.is_empty() {
+                found.push((named.to_string(), None));
+            }
+        }
+    }
+}
+
+fn required_name(written: &str) -> &str {
+    let name = unquoted(written);
+    let end = name
+        .find(['>', '<', '=', '!', '~', '[', ';', ' ', ','])
+        .unwrap_or(name.len());
+    name[..end].trim()
+}
+
+fn version_of(entry: &IndexNode) -> Option<String> {
+    let written = unquoted(entry.type_annotation.as_deref()?);
+    (!written.is_empty() && written != "true" && written != "false")
+        .then(|| written.to_string())
+}
+
+fn unquoted(value: &str) -> &str {
+    value.trim().trim_matches(['"', '\''])
 }
 
 struct Known {
@@ -305,6 +422,7 @@ fn classify(package: &str) -> Option<&'static Known> {
 
 pub fn derive(
     imports: &[ImportFact],
+    manifested: &[(String, Option<String>)],
     internal: &HashSet<String>,
     own: &HashSet<&str>,
     files: &[String],
@@ -329,6 +447,8 @@ pub fn derive(
             let standard = known.is_none() && runtime_of(language, package);
             Dependency {
                 name: package.to_string(),
+                version: None,
+                declared: false,
                 role: match (known, standard) {
                     (Some(found), _) => found.role,
                     (None, true) => "runtime",
@@ -375,6 +495,30 @@ pub fn derive(
         }
     }
 
+    for (name, version) in manifested {
+        if declares(name, own) {
+            continue;
+        }
+        let entry = found.entry(name.as_str()).or_insert_with(|| {
+            let known = classify(name);
+            Dependency {
+                name: name.clone(),
+                version: None,
+                declared: false,
+                role: known.map(|found| found.role).unwrap_or("unclassified"),
+                category: known.map(|found| found.category).unwrap_or(""),
+                imports: 0,
+                entry_points: 0,
+                exit_points: 0,
+                projects: Vec::new(),
+            }
+        });
+        entry.declared = true;
+        if entry.version.is_none() {
+            entry.version = version.clone();
+        }
+    }
+
     let mut dependencies: Vec<Dependency> = found.into_values().collect();
     for dependency in dependencies.iter_mut() {
         dependency.projects.sort();
@@ -390,7 +534,9 @@ pub fn derive(
         .filter(|dependency| dependency.role != "unclassified")
         .count() as u32;
     let unclassified = dependencies.len() as u32 - classified;
-    Dependencies { dependencies, classified, unclassified }
+    let declared = dependencies.iter().filter(|dependency| dependency.declared).count() as u32;
+    let imported = dependencies.iter().filter(|dependency| dependency.imports > 0).count() as u32;
+    Dependencies { dependencies, imported, declared, classified, unclassified }
 }
 
 pub fn file_project(assignment: &[(String, String)]) -> HashMap<&str, &str> {
