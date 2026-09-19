@@ -68,6 +68,8 @@ pub struct Extractor<'a> {
 struct Scope {
     owner: Option<String>,
     extends: Option<String>,
+    in_catch: bool,
+    in_finally: bool,
     callable: Option<String>,
     registrar: Option<String>,
     type_owner: Option<String>,
@@ -542,6 +544,8 @@ impl<'a> Extractor<'a> {
         let scope = Scope {
             owner: Some(self.module_id.clone()),
             extends: None,
+            in_catch: false,
+            in_finally: false,
             callable: None,
             registrar: None,
             type_owner: None,
@@ -700,6 +704,21 @@ impl<'a> Extractor<'a> {
                 unit.returns += 1;
             }
             self.walk(node, scope);
+            return;
+        }
+        if self.spec.flow.try_kinds.contains(&kind) {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                let mut inner = scope.clone();
+                if self.spec.flow.catch_kinds.contains(&child.kind()) {
+                    inner.in_catch = true;
+                } else if self.spec.flow.finally_kinds.contains(&child.kind()) {
+                    inner.in_finally = true;
+                } else {
+                    inner.in_try = true;
+                }
+                self.visit(child, &inner);
+            }
             return;
         }
         if self.spec.flow.assert_kinds.contains(&kind) {
@@ -1466,8 +1485,8 @@ impl<'a> Extractor<'a> {
             constructs: node.kind().contains("new") || node.kind().contains("creation"),
             context: CallContext {
                 in_try: scope.in_try,
-                in_catch: false,
-                in_finally: false,
+                in_catch: scope.in_catch,
+                in_finally: scope.in_finally,
                 awaited: scope.awaited,
                 optional_chained: false,
                 conditional_depth: scope.conditional_depth,

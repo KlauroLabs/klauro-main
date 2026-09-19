@@ -291,7 +291,31 @@ describes.
 T1 through T4 say what the system is. T5 says how well it holds together. That difference in
 character is why these stages never sat anywhere comfortably.
 
-**Measured today: ~2 s.** 5.3 is real I/O against the commit log and will not compress much.
+**Measured today: 25–190 ms** — conventions 4–22 ms, history 15–155 ms, health 5–30 ms — in
+`native/klauro-index`. 5.3 is real I/O against the commit log and is the tier's floor.
+
+A convention is the shape most of a population takes, recorded as a count rather than a rule: how
+a language's files are named, where tests sit, whether a served surface carries a guard, whether a
+call that leaves the process is wrapped, whether an exported unit is documented. It is reported
+only where the population is large enough to have a shape and most of it agrees; what departs is
+named, up to a cap. Sprawl is the same reading applied to T3: one project, one job, more than one
+framework doing it.
+
+History is read from the commit log at the repository's own top level — a subdirectory of a
+repository is not that repository, and reports none. It carries what changed most, who changed it
+and when, and which files change together, all bounded to the most recent commits so a long
+history costs the same as a short one.
+
+Health rolls the tiers up per project: units, what a served entry reaches, what a test reaches,
+surfaces and the share of them exercised, gaps, and commits. Its notes are thresholds over those
+numbers and nothing else — most of what it serves untested, no surface exercised at all, changing
+often with no test reaching it. There is no score: a number nobody can derive from the record is
+not an assessment.
+
+Limits. The corpus is shallow-cloned, so 5.3 is measured against this repository and a committed
+fixture rather than against the corpus. A guard the code declares as data rather than as an
+annotation — a permission list on a class — is not read as one, so a repository that guards that
+way reports its surfaces open.
 
 ---
 

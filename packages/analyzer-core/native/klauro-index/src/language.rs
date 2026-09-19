@@ -58,6 +58,9 @@ pub struct Flow {
     pub return_kinds: &'static [&'static str],
     pub throw_kinds: &'static [&'static str],
     pub assert_kinds: &'static [&'static str],
+    pub try_kinds: &'static [&'static str],
+    pub catch_kinds: &'static [&'static str],
+    pub finally_kinds: &'static [&'static str],
     pub await_kinds: &'static [&'static str],
 }
 
@@ -278,6 +281,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -341,6 +347,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -404,6 +413,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &["return"],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -467,6 +479,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &["return_statement"],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -530,6 +545,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &["return_statement"],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -593,6 +611,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &["return_statement"],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -656,6 +677,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -719,6 +743,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -782,6 +809,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -845,6 +875,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &["return_statement"],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -908,6 +941,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &["return_statement"],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -971,6 +1007,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &["return_statement"],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -1034,6 +1073,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -1097,6 +1139,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -1160,6 +1205,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -1223,6 +1271,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -1286,6 +1337,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -1349,6 +1403,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -1413,6 +1470,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -1477,6 +1537,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -1540,6 +1603,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &["return_statement"],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -1603,6 +1669,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -1666,6 +1735,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -1729,6 +1801,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &["return_statement"],
             throw_kinds: &["revert_statement"],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -1792,6 +1867,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &["return_statement"],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -1860,6 +1938,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &["return_statement"],
             throw_kinds: &["throw_expression"],
             assert_kinds: &[],
+            try_kinds: &["try_statement"],
+            catch_kinds: &["catch_clause", "on_part"],
+            finally_kinds: &["finally_clause"],
             await_kinds: &["await_expression"],
         },
         keywords: Keywords {
@@ -1923,6 +2004,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &["return_expression"],
             throw_kinds: &["throw_expression"],
             assert_kinds: &[],
+            try_kinds: &["try_expression"],
+            catch_kinds: &["catch_clause"],
+            finally_kinds: &["finally_clause"],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -1986,6 +2070,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -2049,6 +2136,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &["return_expression"],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -2112,6 +2202,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &["return_expression"],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -2175,6 +2268,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &["return_statement"],
             throw_kinds: &["throw_statement"],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -2238,6 +2334,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -2301,6 +2400,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -2367,6 +2469,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &["return_statement"],
             throw_kinds: &["throw_statement"],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -2430,6 +2535,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -2493,6 +2601,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -2556,6 +2667,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -2619,6 +2733,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -2682,6 +2799,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -2745,6 +2865,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -2808,6 +2931,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -2871,6 +2997,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -2934,6 +3063,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -2997,6 +3129,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -3060,6 +3195,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -3123,6 +3261,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -3186,6 +3327,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -3249,6 +3393,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -3312,6 +3459,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -3375,6 +3525,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -3438,6 +3591,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &["return_statement"],
             throw_kinds: &["throw_statement"],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -3501,6 +3657,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -3564,6 +3723,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -3627,6 +3789,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -3690,6 +3855,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &["return_statement"],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -3753,6 +3921,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &["return_statement"],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -3816,6 +3987,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -3879,6 +4053,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -3942,6 +4119,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &["return_statement"],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -4005,6 +4185,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -4068,6 +4251,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -4131,6 +4317,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -4194,6 +4383,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -4257,6 +4449,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -4320,6 +4515,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -4383,6 +4581,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &[],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -4447,6 +4648,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &["return_statement"],
             throw_kinds: &["raise_statement"],
             assert_kinds: &["assert_statement"],
+            try_kinds: &["try_statement"],
+            catch_kinds: &["except_clause"],
+            finally_kinds: &["finally_clause"],
             await_kinds: &["await"],
         },
         keywords: Keywords {
@@ -4513,6 +4717,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &["return_statement"],
             throw_kinds: &["go_statement"],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -4584,6 +4791,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &["return_statement"],
             throw_kinds: &["throw_statement"],
             assert_kinds: &["assert_statement"],
+            try_kinds: &["try_statement", "try_with_resources_statement"],
+            catch_kinds: &["catch_clause"],
+            finally_kinds: &["finally_clause"],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -4657,6 +4867,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &["return_statement"],
             throw_kinds: &["throw_statement", "throw_expression"],
             assert_kinds: &[],
+            try_kinds: &["try_statement"],
+            catch_kinds: &["catch_clause"],
+            finally_kinds: &["finally_clause"],
             await_kinds: &["await_expression"],
         },
         keywords: Keywords {
@@ -4726,6 +4939,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &["return_expression"],
             throw_kinds: &["try_expression"],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &["await_expression"],
         },
         keywords: Keywords {
@@ -4789,6 +5005,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &["return"],
             throw_kinds: &["rescue"],
             assert_kinds: &[],
+            try_kinds: &["begin", "begin_block"],
+            catch_kinds: &["rescue"],
+            finally_kinds: &["ensure"],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -4860,6 +5079,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &["return_statement"],
             throw_kinds: &["throw_expression", "throw_statement"],
             assert_kinds: &[],
+            try_kinds: &["try_statement"],
+            catch_kinds: &["catch_clause"],
+            finally_kinds: &["finally_clause"],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -4930,6 +5152,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &["return_statement"],
             throw_kinds: &[],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &[],
         },
         keywords: Keywords {
@@ -5001,6 +5226,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &["return_statement"],
             throw_kinds: &["throw_statement"],
             assert_kinds: &[],
+            try_kinds: &[],
+            catch_kinds: &[],
+            finally_kinds: &[],
             await_kinds: &["co_await_expression"],
         },
         keywords: Keywords {
@@ -5071,6 +5299,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &["control_transfer_statement"],
             throw_kinds: &["throw_statement"],
             assert_kinds: &[],
+            try_kinds: &["do_statement"],
+            catch_kinds: &["catch_block"],
+            finally_kinds: &[],
             await_kinds: &["await_expression"],
         },
         keywords: Keywords {
@@ -5137,6 +5368,9 @@ static SPECS: &[LanguageSpec] = &[
             return_kinds: &["return_expression", "jump_expression"],
             throw_kinds: &["throw_expression"],
             assert_kinds: &[],
+            try_kinds: &["try_expression"],
+            catch_kinds: &["catch_block"],
+            finally_kinds: &["finally_block"],
             await_kinds: &[],
         },
         keywords: Keywords {

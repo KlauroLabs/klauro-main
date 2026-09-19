@@ -7,11 +7,11 @@ use serde_json::{Map, Value};
 const TEXT: &[&str] = &[
     "annotation", "at", "bundled_into", "callback_of", "callee", "caller", "category",
     "composition", "constructed", "declared_by", "declares", "default_value", "documentation",
-    "entry_point", "from", "from_call", "gap", "guard", "holder", "invariant", "handler", "id", "imported", "kind", "label", "language",
+    "convention", "entry_point", "from", "from_call", "gap", "guard", "holder", "invariant", "handler", "id", "imported", "kind", "label", "language",
     "local", "method", "name", "namespace", "node", "operation", "parent", "path", "project", "reason",
     "receiver", "reexport_from", "registrar", "registration_label", "return_type", "role", "root",
     "version",
-    "runs", "shape", "source", "specifier", "target", "type_annotation", "unit", "value",
+    "runs", "shape", "source", "specifier", "target", "type_annotation", "unit", "value", "with",
 ];
 
 const TEXT_LISTS: &[&str] = &[
@@ -19,6 +19,19 @@ const TEXT_LISTS: &[&str] = &[
     "nested_repositories", "projects", "reaches", "reads", "ships", "ships_in",
     "skipped_directories", "throws", "type_parameters", "types", "writes",
 ];
+
+pub fn rehydrate_stream(stdout: &[u8]) -> Value {
+    let mut stream = Cursor::new(stdout.to_vec());
+    let table = rmpv::decode::read_value(&mut stream).expect("index emits a string table");
+    let body = rmpv::decode::read_value(&mut stream).expect("index emits an index");
+    let strings: Vec<String> = table
+        .as_array()
+        .expect("the table is an array")
+        .iter()
+        .map(|value| value.as_str().expect("the table holds strings").to_string())
+        .collect();
+    rehydrate(&body, &strings, false)
+}
 
 pub fn read(fixture: &str) -> Value {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(fixture);

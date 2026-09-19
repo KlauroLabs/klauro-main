@@ -1,6 +1,7 @@
 mod alias;
 mod architecture;
 mod builtins;
+mod conform;
 mod coverage;
 mod bundler;
 mod dependencies;
@@ -9,10 +10,12 @@ mod dockerfile;
 mod language_tables;
 mod entry_exit;
 mod generated;
+mod history;
 mod gomod;
 mod generic;
 mod externals;
 mod graph;
+mod health;
 mod language;
 mod icelot;
 mod model;
@@ -76,6 +79,12 @@ struct Index {
     roles: Option<roles::Roles>,
     #[serde(skip_serializing_if = "Option::is_none")]
     verification: Option<verify::Verification>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    conformance: Option<conform::Conformance>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    history: Option<history::History>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    health: Option<health::Health>,
     architecture: Option<architecture::Architecture>,
     scope: Option<scope::Scope>,
     partition: Option<subproject::Partition>,
@@ -261,6 +270,9 @@ fn main() {
         dependencies: None,
         roles: None,
         verification: None,
+        conformance: None,
+        history: None,
+        health: None,
         architecture: None,
         scope: None,
         partition: None,
@@ -626,6 +638,56 @@ fn main() {
         verification.invariants.len()
     );
     index.verification = Some(verification);
+
+    let conform_started = Instant::now();
+    let conformance = conform::derive(
+        &paths,
+        &languages,
+        &index.nodes,
+        &index.calls,
+        &index.entry_points,
+        &index.exit_points,
+        index.verification.as_ref().expect("verification precedes conformance"),
+        index.dependencies.as_ref().expect("dependencies precede conformance"),
+    );
+    eprintln!(
+        "conform {:?} | conventions {} | departures {} | sprawl {}",
+        conform_started.elapsed(),
+        conformance.conventions.len(),
+        conformance.departures,
+        conformance.sprawl.len()
+    );
+    index.conformance = Some(conformance);
+
+    let history_started = Instant::now();
+    let history = history::read(&root, &paths);
+    if let Some(found) = history.as_ref() {
+        eprintln!(
+            "history {:?} | commits {} | files touched {} | co-change pairs {}",
+            history_started.elapsed(),
+            found.commits,
+            found.touched,
+            found.co_change.len()
+        );
+    }
+    index.history = history;
+
+    let health_started = Instant::now();
+    let health = health::derive(
+        &index.nodes,
+        &paths,
+        &index.entry_points,
+        index.graph.as_ref().expect("the graph precedes health"),
+        index.verification.as_ref().expect("verification precedes health"),
+        index.history.as_ref(),
+    );
+    eprintln!(
+        "health {:?} | projects {} | noted {}",
+        health_started.elapsed(),
+        health.projects.len(),
+        health.noted
+    );
+    index.health = Some(health);
 
     let emit_started = Instant::now();
     let strings = std::cell::RefCell::new(wire::Strings::default());
