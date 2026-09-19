@@ -127,6 +127,18 @@ impl<'a> Files<'a> {
         }
     }
 
+    fn descendants(&self, path: &str) -> Vec<&'a IndexNode> {
+        let mut found = Vec::new();
+        let mut pending = vec![path];
+        while let Some(at) = pending.pop() {
+            for node in self.children.get(at).into_iter().flatten() {
+                found.push(*node);
+                pending.push(node.id.as_str());
+            }
+        }
+        found
+    }
+
     fn of(&self, path: &str) -> Option<&Vec<&'a IndexNode>> {
         self.children.get(path)
     }
@@ -388,15 +400,27 @@ fn cargo_manifest(files: &Files, path: &str) -> Option<Candidate> {
     Some(Candidate { name: named, root, declarations, ships: Vec::new(), runs: None })
 }
 
-static EXECUTABLE_SDKS: &[&str] = &["Microsoft.NET.Sdk.Web", "Microsoft.NET.Sdk.Worker"];
+static LAUNCHER: &str = "android.intent.category.LAUNCHER";
+static EXECUTABLE_SDKS: &[&str] =
+    &["Aspire.AppHost.Sdk", "Microsoft.NET.Sdk.Web", "Microsoft.NET.Sdk.Worker"];
 static EXECUTABLE_OUTPUTS: &[&str] = &["Exe", "WinExe"];
 static EXECUTABLE_PLUGINS: &[&str] = &["application", "com.android.application"];
 static PACKAGED_ARTIFACTS: &[&str] = &["ear", "war"];
 
 fn build_target(files: &Files, path: &str, calls: &[CallFact], file: u32) -> Option<&'static str> {
+    if crate::paths::is_test(path) {
+        return None;
+    }
     let basename = path.rsplit('/').next()?.to_ascii_lowercase();
+    if basename == "androidmanifest.xml" {
+        return files
+            .descendants(path)
+            .iter()
+            .any(|node| node.type_annotation.as_deref().is_some_and(|text| text.contains(LAUNCHER)))
+            .then_some("android-application");
+    }
     if basename.ends_with(".csproj") || basename.ends_with(".fsproj") {
-        let document = files.of(path)?;
+        let document = files.descendants(path);
         let sdk = document.iter().any(|node| {
             node.type_annotation
                 .as_deref()
@@ -424,7 +448,7 @@ fn build_target(files: &Files, path: &str, calls: &[CallFact], file: u32) -> Opt
             .then_some("gradle-application");
     }
     if basename == "pom.xml" {
-        let document = files.of(path)?;
+        let document = files.descendants(path);
         return document
             .iter()
             .any(|node| {
@@ -604,7 +628,12 @@ pub fn derive(
             continue;
         }
         if let Some(kind) = build_target(&index, path, calls, at as u32) {
-            let root = directory_of(path).to_string();
+            let root = directory_of(path);
+            let root = root
+                .strip_suffix("/src/main")
+                .or_else(|| root.strip_suffix("/src/androidMain"))
+                .unwrap_or(root)
+                .to_string();
             candidates.push(Candidate {
                 name: display_name(&root),
                 root,

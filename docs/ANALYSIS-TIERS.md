@@ -139,9 +139,10 @@ the MCP server). It reads the old CAS rather than T1 and is the thing this repla
 
 A project manifest names a project whatever its ecosystem — `pom.xml`, a Gradle build, a `.csproj`,
 a `.cabal`, `go.mod`, `CMakeLists.txt`, `Package.swift`, `composer.json`, `mix.exs`, a gemspec —
-and a build file sitting where a program's entry point is declares that the project runs. What a
-build target produces is not read, so a repository whose services ship through one parameterised
-Dockerfile resolves the containers rather than the services beneath them.
+and a build file sitting where a program's entry point is declares that the project runs. A build
+file that names the artifact it produces declares a ship without a container to read: a project
+whose framework builds an executable or hosts other projects, a manifest declaring a launchable
+application, a packaging of `war` or `ear`. A test project builds an executable and ships nothing.
 
 ---
 

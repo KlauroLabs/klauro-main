@@ -4071,7 +4071,7 @@ static SPECS: &[LanguageSpec] = &[
         declares: Declares {
             type_kinds: &[("element", NodeKind::Class)],
             function_kinds: &[],
-            field_kinds: &[],
+            field_kinds: &["Attribute"],
             import_kinds: &[],
             constructor_kinds: &[],
             impl_kinds: &[],
@@ -4085,11 +4085,11 @@ static SPECS: &[LanguageSpec] = &[
             decorator_kinds: &[],
             decorator_container_kinds: &[],
             type_requires_body: false,
-            text_kinds: &["content"],
+            text_kinds: &["content", "AttValue"],
         },
         names: Names {
             fields: &["name"],
-            descend: &["STag", "Name"],
+            descend: &["STag", "EmptyElemTag", "Name"],
             leaf_kinds: XML_NAME_LEAVES,
             whole_kinds: &[],
             skip_words: &[],

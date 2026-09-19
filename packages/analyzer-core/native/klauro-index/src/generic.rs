@@ -964,7 +964,8 @@ impl<'a> Extractor<'a> {
         let id = self.id("field", &name, node);
         let type_annotation = node
             .child_by_field_name("type")
-            .map(|annotation| self.text(annotation).trim().to_string());
+            .map(|annotation| self.text(annotation).trim().to_string())
+            .or_else(|| self.text_content(node));
         self.facts.nodes.push(IndexNode {
             id: id.clone(),
             name,
