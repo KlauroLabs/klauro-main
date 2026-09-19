@@ -56,6 +56,16 @@ impl Aliases {
                     target: join(home, "shared"),
                 });
             }
+            if name == "go.mod"
+                && let Some(module) = value_of(&children, path, "module")
+            {
+                entries.push(Entry {
+                    scope: home.to_string(),
+                    prefix: module,
+                    wildcard: true,
+                    target: home.to_string(),
+                });
+            }
             if name == "package.json" {
                 subpath_imports(&children, path, home, &mut entries);
             }

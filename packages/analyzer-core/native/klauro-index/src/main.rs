@@ -7,6 +7,7 @@ mod dockerfile;
 mod language_tables;
 mod entry_exit;
 mod generated;
+mod gomod;
 mod generic;
 mod externals;
 mod graph;
@@ -133,6 +134,10 @@ fn read(
     if dockerfile::is_dockerfile(path) {
         let text = std::str::from_utf8(source).ok()?;
         return Some(dockerfile::extract(text, file, path));
+    }
+    if gomod::is_go_module(path) {
+        let text = std::str::from_utf8(source).ok()?;
+        return Some(gomod::extract(text, file, path));
     }
     let declared = language_id.or_else(|| language_of(path));
     if let Some(id) = declared
