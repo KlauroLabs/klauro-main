@@ -73,9 +73,9 @@ pub fn derive(
             .or_default()
             .entry(entry.kind)
             .or_insert(0) += 1;
-        if let (Some(method), Some(path)) = (entry.method.as_deref(), entry.path.as_deref()) {
+        if let Some(path) = entry.path.as_deref() {
             routes.entry(project).or_default().push(Route {
-                method: method.to_string(),
+                method: entry.method.as_deref().unwrap_or("ANY").to_string(),
                 path: path.to_string(),
                 handler: entry.handler.clone(),
             });

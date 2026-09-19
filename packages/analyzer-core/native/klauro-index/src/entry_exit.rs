@@ -51,8 +51,10 @@ fn registered_on_a_router(registrar: &str) -> bool {
     }
 }
 
-static PATH_REGISTRARS: &[&str] =
-    &["handle", "handlefunc", "handler", "handlerfunc", "path", "re_path", "route"];
+static PATH_REGISTRARS: &[&str] = &[
+    "handle", "handlefunc", "handler", "handlerfunc", "mount", "nest", "path", "re_path",
+    "resource", "route", "service",
+];
 
 static EVENT_REGISTRARS: &[&str] = &["addEventListener", "on", "once", "prependListener"];
 static TEST_REGISTRARS: &[&str] = &["bench", "describe", "it", "suite", "test"];
@@ -706,10 +708,14 @@ pub fn derive(
             id: format!("entry:{handler}:{}", registration.label),
             kind,
             name: registration.label.clone(),
-            method: if kind == "http" {
-                Some(label_method.unwrap_or_else(|| verb.to_ascii_uppercase()))
-            } else {
-                None
+            method: match kind == "http" {
+                true => label_method.or_else(|| {
+                    HTTP_METHODS
+                        .binary_search(&verb.to_ascii_lowercase().as_str())
+                        .is_ok()
+                        .then(|| verb.to_ascii_uppercase())
+                }),
+                false => None,
             },
             path: if kind == "http" { Some(path) } else { None },
             handler,

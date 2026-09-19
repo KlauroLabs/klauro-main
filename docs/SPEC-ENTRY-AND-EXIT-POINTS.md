@@ -46,6 +46,11 @@ name only where the name picks out exactly one and that one is written in the sa
 the registration — a section of a workflow file is a declared type as readily as a controller.
 An entry point attached to a type seeds pass 1.6 from that type's members.
 
+A framework may mount a resource rather than name a route: the path, the method and the handler
+sit on different calls of one chain. A registration whose own arguments carry no label takes the
+path mounted inside them, and a route whose registrar is not itself a verb takes the method from
+the call that hands the handler over. A route that declares no method answers any.
+
 ## What makes a call an exit point
 
 A call leaves the process when the module it reaches says so. Three shapes carry a module:

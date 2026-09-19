@@ -13,6 +13,9 @@ fn names_code(text: &str) -> bool {
         })
 }
 
+static REQUEST_METHODS: &[&str] =
+    &["delete", "get", "head", "options", "patch", "post", "put", "trace"];
+
 const REFERENCE_DEPTH: u8 = 3;
 const REFERENCE_WIDTH: usize = 4;
 
@@ -131,6 +134,67 @@ impl<'a> Extractor<'a> {
 
     fn owner_for_type_name(&self, name: &str) -> Option<String> {
         self.types_by_name.get(base_name(name)).cloned()
+    }
+
+    fn handed_over<'b>(&self, node: Node<'b>, found: &mut Vec<(String, Node<'b>)>) {
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind().contains("string") {
+                continue;
+            }
+            if matches!(child.kind(), "arguments" | "argument_list") {
+                let mut inner = child.walk();
+                for argument in child.named_children(&mut inner) {
+                    for handler in self.referenced_names(unwrapped(argument), 0) {
+                        found.push((handler, argument));
+                    }
+                }
+            }
+            self.handed_over(child, found);
+        }
+    }
+
+    fn mounted_route(&self, node: Node) -> Option<String> {
+        let path = self.mounted_path(node)?;
+        match self.mounted_method(node) {
+            Some(method) => Some(format!("{method} {path}")),
+            None => Some(path),
+        }
+    }
+
+    fn mounted_path(&self, node: Node) -> Option<String> {
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind().contains("string") {
+                let text = trim_quotes(self.text(child));
+                if text.starts_with('/') {
+                    return Some(text.to_string());
+                }
+                continue;
+            }
+            if let Some(found) = self.mounted_path(child) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    fn mounted_method(&self, node: Node) -> Option<String> {
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if self.spec.calls.kinds.contains(&child.kind())
+                && let Some(function) = child.child_by_field_name("function")
+            {
+                let verb = crate::names::leaf(self.text(function)).to_ascii_lowercase();
+                if REQUEST_METHODS.binary_search(&verb.as_str()).is_ok() {
+                    return Some(verb.to_ascii_uppercase());
+                }
+            }
+            if let Some(found) = self.mounted_method(child) {
+                return Some(found);
+            }
+        }
+        None
     }
 
     fn referenced_names(&self, node: Node, depth: u8) -> Vec<String> {
@@ -1215,28 +1279,43 @@ impl<'a> Extractor<'a> {
         if let Some(arguments) = arguments {
             let mut cursor = arguments.walk();
             let children: Vec<Node> = arguments.named_children(&mut cursor).map(unwrapped).collect();
-            let label = children
+            let nested = self.mounted_route(arguments);
+            let direct = children
                 .iter()
                 .find(|argument| argument.kind().contains("string"))
                 .map(|argument| trim_quotes(self.text(*argument)).to_string());
+            let label = match direct {
+                Some(path) => Some(match self.mounted_method(arguments) {
+                    Some(method) if path.starts_with('/') => format!("{method} {path}"),
+                    _ => path,
+                }),
+                None => nested.clone(),
+            };
             if let Some(label) = label {
                 let registrar = match &receiver {
                     Some(receiver) => format!("{receiver}.{callee}"),
                     None => callee.clone(),
                 };
+                let mut handlers: Vec<(String, Node)> = Vec::new();
                 for argument in children.iter() {
                     if argument.kind().contains("string") {
                         continue;
                     }
                     for handler in self.referenced_names(*argument, 0) {
-                        self.facts.registrations.push(RegistrationFact {
-                            file: self.file,
-                            registrar: registrar.clone(),
-                            label: label.clone(),
-                            handler,
-                            line: argument.start_position().row as u32 + 1,
-                        });
+                        handlers.push((handler, *argument));
                     }
+                }
+                if nested.is_some() {
+                    self.handed_over(arguments, &mut handlers);
+                }
+                for (handler, at) in handlers {
+                    self.facts.registrations.push(RegistrationFact {
+                        file: self.file,
+                        registrar: registrar.clone(),
+                        label: label.clone(),
+                        handler,
+                        line: at.start_position().row as u32 + 1,
+                    });
                 }
             }
         }

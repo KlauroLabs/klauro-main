@@ -505,7 +505,17 @@ fn a_route_path_is_composed_from_the_prefix_its_type_declares() {
 #[test]
 fn a_type_prefix_is_not_itself_an_endpoint() {
     let index = index("routes");
-    assert!(!routes(&index).iter().any(|(method, _)| method == "ANY"));
+    let handlers: Vec<String> = index["architecture"]["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|project| project["routes"].as_array().unwrap())
+        .map(|route| route["handler"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        handlers.iter().all(|handler| !handler.contains(":type:")),
+        "the prefix a controller declares belongs to its methods: {handlers:?}"
+    );
 }
 
 #[test]
