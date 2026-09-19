@@ -555,6 +555,7 @@ struct Modules {
     condensed: HashMap<String, Option<u32>>,
     holding: HashSet<String>,
     rooted: HashSet<String>,
+    packaged: HashMap<String, Vec<u32>>,
 }
 
 impl Modules {
@@ -563,8 +564,13 @@ impl Modules {
         let mut condensed: HashMap<String, Option<u32>> = HashMap::new();
         let mut holding = HashSet::new();
         let mut rooted = HashSet::new();
+        let mut packaged: HashMap<String, Vec<u32>> = HashMap::new();
         for (at, path) in files.iter().enumerate() {
             let language = family(languages[at]);
+            packaged
+                .entry(format!("{language}\u{1}{}", directory_of(path)))
+                .or_default()
+                .push(at as u32);
             let key = module_key(path);
             let plain = without_containers(&key);
             if let Some((root, _)) = key.split_once('/') {
@@ -598,7 +604,7 @@ impl Modules {
                 }
             }
         }
-        Modules { declaring, condensed, holding, rooted }
+        Modules { declaring, condensed, holding, rooted, packaged }
     }
 
     fn declared(&self, language: &str, specifier: &str) -> Option<u32> {
@@ -618,6 +624,12 @@ impl Modules {
             }
         }
         None
+    }
+
+    fn package_files(&self, language: &str, folder: &str) -> Option<&[u32]> {
+        self.packaged
+            .get(&format!("{}\u{1}{folder}", family(language)))
+            .map(Vec::as_slice)
     }
 
     fn held(&self, language: &str, specifier: &str) -> bool {
@@ -679,6 +691,30 @@ fn file_index(files: &HashMap<&str, u32>, from: &str, specifier: &str) -> Option
         return Some(found);
     }
     module_file(files, &normalize(&format!("{}/{}", directory_of(from), specifier)))
+}
+
+fn package_members(
+    aliases: &crate::alias::Aliases,
+    modules: &Modules,
+    index: &Index,
+    fact: &ImportFact,
+    from: &str,
+    language: &str,
+) -> Vec<u32> {
+    let Some(members) = aliases
+        .expand(from, &fact.specifier)
+        .iter()
+        .find_map(|folder| modules.package_files(language, folder))
+    else {
+        return Vec::new();
+    };
+    members
+        .iter()
+        .copied()
+        .filter(|found| {
+            crate::paths::is_test(from) || !crate::paths::is_test(&index.files[*found as usize])
+        })
+        .collect()
 }
 
 fn module_file(files: &HashMap<&str, u32>, path: &str) -> Option<u32> {
@@ -764,19 +800,22 @@ pub fn resolve(index: &Index) -> Resolution {
 
     for fact in index.imports {
         let from = index.files[fact.file as usize].as_str();
-        let Some(target) = file_index(&by_path, from, &fact.specifier)
+        let language = index.languages[fact.file as usize];
+        let reached: Vec<u32> = file_index(&by_path, from, &fact.specifier)
             .or_else(|| {
                 aliases
                     .expand(from, &fact.specifier)
                     .iter()
                     .find_map(|path| module_file(&by_path, path))
             })
-            .or_else(|| by_module.declared(index.languages[fact.file as usize], &fact.specifier))
+            .or_else(|| by_module.declared(language, &fact.specifier))
+            .map(|found| vec![found])
+            .unwrap_or_else(|| package_members(&aliases, &by_module, index, fact, from, language))
+            .into_iter()
             .filter(|found| index.files[*found as usize] != from)
-        else {
-            if aliases.declares(from, &fact.specifier)
-                || by_module.held(index.languages[fact.file as usize], &fact.specifier)
-            {
+            .collect();
+        if reached.is_empty() {
+            if aliases.declares(from, &fact.specifier) || by_module.held(language, &fact.specifier) {
                 internal_specifiers.insert(fact.specifier.clone());
             }
             for name in &fact.names {
@@ -798,21 +837,24 @@ pub fn resolve(index: &Index) -> Resolution {
                     .insert((fact.file, name.local.as_str()), fact.specifier.as_str());
             }
             continue;
-        };
+        }
         internal_specifiers.insert(fact.specifier.clone());
-        edges.push(IndexEdge {
-            source: from.to_string(),
-            target: index.files[target as usize].clone(),
-            kind: EdgeKind::Imports,
-        });
+        for target in &reached {
+            edges.push(IndexEdge {
+                source: from.to_string(),
+                target: index.files[*target as usize].clone(),
+                kind: EdgeKind::Imports,
+            });
+        }
         for name in &fact.names {
             let wanted = name.imported.as_deref().unwrap_or(name.local.as_str());
-            if let Some(found) = symbols
-                .exported
-                .get(&(target, wanted))
-                .or_else(|| symbols.file_scope.get(&(target, wanted)))
-                .copied()
-            {
+            if let Some(found) = reached.iter().find_map(|target| {
+                symbols
+                    .exported
+                    .get(&(*target, wanted))
+                    .or_else(|| symbols.file_scope.get(&(*target, wanted)))
+                    .copied()
+            }) {
                 bindings.imported.insert((fact.file, name.local.as_str()), found);
             }
         }

@@ -45,11 +45,13 @@ out exactly one and that one is written in the same language; a source root betw
 `src` or `main` or the language's own, belongs to the layout rather than to the name. A specifier
 that names a directory the repository holds is the repository's own even though no single file
 answers it, which is how a language whose import names a package rather than a file — Go, C# — is
-still told apart from what it depends on. A specifier that begins with an alias the repository
-declares — a compiler's path mapping, a package's own subpath import, a module path, or the one a
-framework's configuration file gives it — is what that alias maps to, and stays the repository's
-own even where the file it names is generated rather than committed. Everything else is a package,
-and its name is what a unit reaches.
+still told apart from what it depends on. Where an alias names that directory exactly, the import
+reaches the files the package is written across, its own tests excepted: a package's tests are not
+what importing it gives you. A specifier that begins with an alias the repository declares — a
+compiler's path mapping, a package's own subpath import, a module path, or the one a framework's
+configuration file gives it — is what that alias maps to, and stays the repository's own even
+where the file it names is generated rather than committed. Everything else is a package, and its
+name is what a unit reaches.
 
 Pass 1.5 emits a facet only where something was observed, per the semantic model: a unit that
 takes nothing carries no Input, and one that reaches nothing carries no Effects. Effects names
