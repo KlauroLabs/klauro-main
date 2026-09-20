@@ -29,16 +29,32 @@ const roots = readdirSync(CORPUS, { withFileTypes: true })
   .filter(entry => entry.isDirectory())
   .map(entry => path.join(CORPUS, entry.name));
 
+const wanted = claimed();
+
+// A package answers to the catalogue entry it starts with, whatever its case and
+// whatever it carries after a boundary, exactly as the catalogue reads it.
+const answeredBy = name => {
+  const held = name.toLowerCase();
+  return wanted
+    .filter(entry => {
+      const prefix = entry.toLowerCase();
+      if (!held.startsWith(prefix)) return false;
+      const next = held[prefix.length];
+      return next === undefined || next === '/' || next === '.';
+    })
+    .sort((left, right) => right.length - left.length)[0];
+};
+
 const seen = new Map();
 for (const root of roots) {
   const held = read(root);
   for (const framework of held.frameworks) {
-    if (!seen.has(framework)) seen.set(framework, []);
-    seen.get(framework).push({ repo: path.basename(root), served: held.served });
+    const entry = answeredBy(framework);
+    if (!entry) continue;
+    if (!seen.has(entry)) seen.set(entry, []);
+    seen.get(entry).push({ repo: path.basename(root), served: held.served });
   }
 }
-
-const wanted = claimed();
 const bare = wanted.filter(framework => !seen.has(framework));
 const silent = [...seen.entries()].filter(([, rows]) => rows.every(row => row.served === 0));
 

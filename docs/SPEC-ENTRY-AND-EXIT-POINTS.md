@@ -99,6 +99,10 @@ the command runs is written inside it.
 
 ### Registration
 
+A method is the method it names however the language spells it: `Get`, `GET` and `get` register
+the same route, and reading the verb in one case only loses every framework whose language
+capitalises.
+
 A registration is an HTTP route when its label reads as a path, or when a router vouches for it.
 A router is a receiver named `Route`, `Router`, `router`, `blueprint`, `bp`, `mux` or `route`;
 frameworks that write a path without a leading slash are routes on its word, while reading a key

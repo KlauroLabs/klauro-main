@@ -93,7 +93,7 @@ fn classify_registration(registrar: &str, label: Option<&str>) -> Option<&'stati
     let verb = names::leaf(registrar);
     let lowered = verb.to_ascii_lowercase();
     if PATH_REGISTRARS.binary_search(&lowered.as_str()).is_ok()
-        || HTTP_METHODS.binary_search(&verb).is_ok()
+        || HTTP_METHODS.binary_search(&lowered.as_str()).is_ok()
     {
         let through_receiver = verb.len() != registrar.len() && !registered_on_a_router(registrar);
         return match label {
@@ -1074,6 +1074,14 @@ mod tests {
         assert!(reads_a_data_member("this.rw.Header()"));
         assert!(!reads_a_data_member("this.client"));
         assert!(!reads_a_data_member("http.DefaultClient"));
+    }
+
+    #[test]
+    fn a_method_is_a_method_however_the_language_spells_it() {
+        assert_eq!(classify_registration("app.Get", Some("/users")), Some("http"));
+        assert_eq!(classify_registration("app.get", Some("/users")), Some("http"));
+        assert_eq!(classify_registration("e.GET", Some("/users")), Some("http"));
+        assert_eq!(classify_registration("api.MapPost", Some("/items")), Some("http"));
     }
 
     #[test]
