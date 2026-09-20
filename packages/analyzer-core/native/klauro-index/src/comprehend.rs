@@ -1,0 +1,257 @@
+use std::collections::{HashMap, HashSet};
+
+use serde::Serialize;
+
+use crate::entry_exit::{EntryPoint, ExitPoint};
+use crate::model::*;
+
+const STEPS_KEPT: usize = 16;
+const FLOWS_KEPT: usize = 400;
+
+#[derive(Debug, Serialize)]
+pub struct Step {
+    pub unit: String,
+    pub depth: u32,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub leaves: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Flow {
+    pub id: String,
+    pub entry_point: String,
+    pub kind: &'static str,
+    pub name: String,
+    pub standing: &'static str,
+    pub steps: Vec<Step>,
+    pub units: u32,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub changes: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub leads_into: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Entity {
+    pub name: String,
+    pub declared_in: String,
+    pub fields: u32,
+    pub written_by: Vec<String>,
+    pub read_by: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Comprehension {
+    pub flows: Vec<Flow>,
+    pub entities: Vec<Entity>,
+    pub terminal: u32,
+    pub chained: u32,
+}
+
+static CHANGING: &[&str] = &[
+    "create", "delete", "dispatch", "emit", "enqueue", "insert", "patch", "post", "publish", "put",
+    "remove", "save", "send", "set", "store", "update", "upsert", "write",
+];
+
+fn changes(exit: &ExitPoint) -> bool {
+    let operation = exit.operation.to_ascii_lowercase();
+    match exit.kind {
+        "process" | "message" => true,
+        "database" | "file" | "network" | "api" | "client_storage" | "cache" => CHANGING
+            .iter()
+            .any(|word| operation.contains(word)),
+        _ => false,
+    }
+}
+
+pub fn derive(
+    nodes: &[IndexNode],
+    edges: &[IndexEdge],
+    entry_points: &[EntryPoint],
+    exit_points: &[ExitPoint],
+    roles: &crate::roles::Roles,
+) -> Comprehension {
+    let position_of: HashMap<&str, u32> = nodes
+        .iter()
+        .enumerate()
+        .map(|(at, node)| (node.id.as_str(), at as u32))
+        .collect();
+    let mut next: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut members: HashMap<u32, Vec<u32>> = HashMap::new();
+    for edge in edges {
+        let (Some(source), Some(target)) = (
+            position_of.get(edge.source.as_str()).copied(),
+            position_of.get(edge.target.as_str()).copied(),
+        ) else {
+            continue;
+        };
+        match edge.kind {
+            EdgeKind::Calls | EdgeKind::Instantiates => next.entry(source).or_default().push(target),
+            EdgeKind::HasMethod => members.entry(source).or_default().push(target),
+            _ => {}
+        }
+    }
+    let mut leaving: HashMap<&str, Vec<&ExitPoint>> = HashMap::new();
+    for exit in exit_points {
+        leaving.entry(exit.source.as_str()).or_default().push(exit);
+    }
+
+    let served: Vec<&EntryPoint> = entry_points
+        .iter()
+        .filter(|entry| entry.kind != "test")
+        .take(FLOWS_KEPT)
+        .collect();
+    let handlers: HashMap<&str, &str> = served
+        .iter()
+        .map(|entry| (entry.handler.as_str(), entry.id.as_str()))
+        .collect();
+
+    let mut flows = Vec::with_capacity(served.len());
+    for entry in &served {
+        let Some(start) = position_of.get(entry.handler.as_str()).copied() else { continue };
+        let mut seen: HashSet<u32> = HashSet::from([start]);
+        let mut queue: Vec<(u32, u32)> = vec![(start, 0)];
+        for member in members.get(&start).into_iter().flatten() {
+            if seen.insert(*member) {
+                queue.push((*member, 0));
+            }
+        }
+        let mut steps = Vec::new();
+        let mut changing: Vec<String> = Vec::new();
+        let mut into: Vec<String> = Vec::new();
+        let mut head = 0;
+        while head < queue.len() {
+            let (current, depth) = queue[head];
+            head += 1;
+            let unit = nodes[current as usize].id.as_str();
+            let leaves: Vec<String> = leaving
+                .get(unit)
+                .into_iter()
+                .flatten()
+                .map(|exit| format!("{}:{}", exit.kind, exit.operation))
+                .collect();
+            for exit in leaving.get(unit).into_iter().flatten() {
+                if changes(exit) {
+                    changing.push(format!("{}:{}", exit.kind, exit.operation));
+                }
+            }
+            if let Some(other) = handlers.get(unit)
+                && *other != entry.id
+            {
+                into.push((*other).to_string());
+            }
+            if steps.len() < STEPS_KEPT {
+                steps.push(Step { unit: unit.to_string(), depth, leaves });
+            }
+            for target in next.get(&current).into_iter().flatten() {
+                if seen.insert(*target) {
+                    queue.push((*target, depth + 1));
+                }
+            }
+        }
+        changing.sort();
+        changing.dedup();
+        into.sort();
+        into.dedup();
+        let standing = match (!changing.is_empty(), !into.is_empty()) {
+            (true, _) => "terminal",
+            (false, true) => "proximal",
+            (false, false) => "reading",
+        };
+        flows.push(Flow {
+            id: format!("flow:{}", entry.id),
+            entry_point: entry.id.clone(),
+            kind: entry.kind,
+            name: entry.name.clone(),
+            standing,
+            steps,
+            units: seen.len() as u32,
+            changes: changing,
+            leads_into: into,
+            project: nodes[start as usize].project.clone(),
+        });
+    }
+    flows.sort_by(|left, right| left.id.cmp(&right.id));
+
+    let entities = entities(nodes, edges, exit_points, roles);
+    let terminal = flows.iter().filter(|flow| flow.standing == "terminal").count() as u32;
+    let chained = flows.iter().filter(|flow| !flow.leads_into.is_empty()).count() as u32;
+    Comprehension { flows, entities, terminal, chained }
+}
+
+fn entities(
+    nodes: &[IndexNode],
+    edges: &[IndexEdge],
+    exit_points: &[ExitPoint],
+    roles: &crate::roles::Roles,
+) -> Vec<Entity> {
+    let mut fields: HashMap<&str, u32> = HashMap::new();
+    for edge in edges {
+        if edge.kind == EdgeKind::HasField {
+            *fields.entry(edge.source.as_str()).or_insert(0) += 1;
+        }
+    }
+    let modelled: HashSet<&str> = roles
+        .roles
+        .iter()
+        .filter(|role| role.role == "model")
+        .map(|role| role.node.as_str())
+        .collect();
+    let stored: HashSet<&str> = exit_points
+        .iter()
+        .filter(|exit| exit.kind == "database")
+        .map(|exit| crate::names::root(&exit.target))
+        .collect();
+    let storing: HashSet<&str> = exit_points
+        .iter()
+        .filter(|exit| matches!(exit.kind, "database" | "file" | "client_storage"))
+        .map(|exit| exit.source.as_str())
+        .collect();
+    let holder_of: HashMap<&str, &str> = nodes
+        .iter()
+        .filter_map(|node| Some((node.id.as_str(), node.parent.as_deref()?)))
+        .collect();
+    let mut written: HashMap<&str, Vec<String>> = HashMap::new();
+    let mut read: HashMap<&str, Vec<String>> = HashMap::new();
+    for edge in edges {
+        if !matches!(edge.kind, EdgeKind::Instantiates | EdgeKind::Calls) {
+            continue;
+        }
+        let holder = holder_of.get(edge.target.as_str()).copied().unwrap_or(edge.target.as_str());
+        let held = match storing.contains(edge.source.as_str()) {
+            true => written.entry(holder).or_default(),
+            false => read.entry(holder).or_default(),
+        };
+        if held.len() < 8 {
+            held.push(edge.source.clone());
+        }
+    }
+    let mut entities: Vec<Entity> = nodes
+        .iter()
+        .filter(|node| node.kind.is_type())
+        .filter(|node| {
+            modelled.contains(node.id.as_str()) || stored.contains(node.name.as_str())
+        })
+        .filter(|node| fields.get(node.id.as_str()).copied().unwrap_or(0) >= 1)
+        .map(|node| Entity {
+            name: node.name.clone(),
+            declared_in: node.id.clone(),
+            fields: fields.get(node.id.as_str()).copied().unwrap_or(0),
+            written_by: written.get(node.id.as_str()).cloned().unwrap_or_default(),
+            read_by: read.get(node.id.as_str()).cloned().unwrap_or_default(),
+            project: node.project.clone(),
+        })
+        .collect();
+    entities.sort_by(|left, right| {
+        right
+            .fields
+            .cmp(&left.fields)
+            .then(left.declared_in.cmp(&right.declared_in))
+    });
+    entities.truncate(FLOWS_KEPT);
+    entities
+}

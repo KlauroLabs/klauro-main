@@ -47,9 +47,13 @@ static ANNOTATIONS: &[(&str, &str)] = &[
 
 static SUFFIXES: &[(&str, &str)] = &[
     ("Controller", "controller"),
+    ("Document", "model"),
+    ("Entity", "model"),
     ("Handler", "handler"),
     ("Middleware", "middleware"),
+    ("Model", "model"),
     ("Repository", "repository"),
+    ("Schema", "model"),
     ("Service", "service"),
 ];
 
@@ -63,10 +67,18 @@ fn annotation_role(name: &str) -> Option<&'static str> {
 }
 
 fn inherited_role(name: &str) -> Option<&'static str> {
+    suffix_role(name, true)
+}
+
+fn named_role(name: &str) -> Option<&'static str> {
+    suffix_role(name, false)
+}
+
+fn suffix_role(name: &str, whole: bool) -> Option<&'static str> {
     let leaf = name.rsplit(['.', ':']).next().unwrap_or(name);
     SUFFIXES
         .iter()
-        .filter(|(suffix, _)| leaf.ends_with(suffix) && leaf.len() > suffix.len())
+        .filter(|(suffix, _)| leaf.ends_with(suffix) && (whole || leaf.len() > suffix.len()))
         .max_by_key(|(suffix, _)| suffix.len())
         .map(|(_, role)| *role)
 }
@@ -74,6 +86,7 @@ fn inherited_role(name: &str) -> Option<&'static str> {
 pub fn derive(
     nodes: &[IndexNode],
     edges: &[IndexEdge],
+    type_references: &[TypeReferenceFact],
     entry_points: &[EntryPoint],
     declared: &[bool],
 ) -> Roles {
@@ -114,6 +127,19 @@ pub fn derive(
         }
     }
 
+    for fact in type_references {
+        if !matches!(fact.kind, EdgeKind::Extends | EdgeKind::Implements) {
+            continue;
+        }
+        let (Some(node), Some(role)) = (
+            named.get(fact.source.as_str()),
+            inherited_role(&fact.name),
+        ) else {
+            continue;
+        };
+        record(node, role, format!("inherits:{}", fact.name));
+    }
+
     for entry in entry_points {
         let Some(node) = named.get(entry.handler.as_str()) else { continue };
         let role = match entry.kind {
@@ -131,7 +157,7 @@ pub fn derive(
         if !node.kind.is_type() || !declared.get(node.file as usize).copied().unwrap_or(false) {
             continue;
         }
-        if let Some(role) = inherited_role(&node.name) {
+        if let Some(role) = named_role(&node.name) {
             record(node, role, format!("name:{}", node.name));
         }
     }

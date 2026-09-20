@@ -1,6 +1,7 @@
 mod alias;
 mod architecture;
 mod builtins;
+mod comprehend;
 mod conform;
 mod coverage;
 mod bundler;
@@ -86,6 +87,8 @@ struct Index {
     history: Option<history::History>,
     #[serde(skip_serializing_if = "Option::is_none")]
     health: Option<health::Health>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    comprehension: Option<comprehend::Comprehension>,
     architecture: Option<architecture::Architecture>,
     scope: Option<scope::Scope>,
     partition: Option<subproject::Partition>,
@@ -274,6 +277,7 @@ fn main() {
         conformance: None,
         history: None,
         health: None,
+        comprehension: None,
         architecture: None,
         scope: None,
         partition: None,
@@ -566,7 +570,13 @@ fn main() {
         .iter()
         .map(|file| matches!(file.kind, discovery::FileKind::Source))
         .collect();
-    let found = roles::derive(&index.nodes, &index.edges, &index.entry_points, &declared);
+    let found = roles::derive(
+        &index.nodes,
+        &index.edges,
+        &index.type_references,
+        &index.entry_points,
+        &declared,
+    );
     eprintln!(
         "roles {:?} | {} across {} kinds",
         roles_started.elapsed(),
@@ -704,6 +714,24 @@ fn main() {
         health.noted
     );
     index.health = Some(health);
+
+    let comprehend_started = Instant::now();
+    let comprehension = comprehend::derive(
+        &index.nodes,
+        &index.edges,
+        &index.entry_points,
+        &index.exit_points,
+        index.roles.as_ref().expect("roles precede comprehension"),
+    );
+    eprintln!(
+        "comprehend {:?} | flows {} | terminal {} | chained {} | entities {}",
+        comprehend_started.elapsed(),
+        comprehension.flows.len(),
+        comprehension.terminal,
+        comprehension.chained,
+        comprehension.entities.len()
+    );
+    index.comprehension = Some(comprehension);
 
     let emit_started = Instant::now();
     let strings = std::cell::RefCell::new(wire::Strings::default());
