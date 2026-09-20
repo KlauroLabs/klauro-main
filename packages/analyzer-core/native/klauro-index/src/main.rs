@@ -11,6 +11,7 @@ mod language_tables;
 mod entry_exit;
 mod generated;
 mod history;
+mod jev;
 mod gomod;
 mod generic;
 mod externals;
@@ -533,14 +534,29 @@ fn main() {
         &index.exit_points,
         &dependencies::file_project(assignment),
     );
+    let mut found = found;
+    let leading = index
+        .files
+        .iter()
+        .filter_map(|file| file.language)
+        .fold(std::collections::HashMap::new(), |mut counted, language| {
+            *counted.entry(language).or_insert(0u32) += 1;
+            counted
+        })
+        .into_iter()
+        .max_by_key(|(_, count)| *count)
+        .map(|(language, _)| language)
+        .unwrap_or("");
+    let interpreted = dependencies::interpret(&mut found, leading);
     eprintln!(
-        "dependencies {:?} | packages {} | imported {} | declared {} | classified {} unclassified {}",
+        "dependencies {:?} | packages {} | imported {} | declared {} | classified {} unclassified {} | interpreted {}",
         dependencies_started.elapsed(),
         found.dependencies.len(),
         found.imported,
         found.declared,
         found.classified,
-        found.unclassified
+        found.unclassified,
+        interpreted
     );
     index.dependencies = Some(found);
 

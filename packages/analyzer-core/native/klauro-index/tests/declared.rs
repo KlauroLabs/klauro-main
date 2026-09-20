@@ -50,3 +50,23 @@ fn a_package_a_project_file_references_is_a_dependency() {
     let found = dependencies(&index);
     assert!(found.iter().any(|(name, ..)| *name == "Serilog"), "{found:?}");
 }
+
+#[test]
+fn a_package_no_catalog_knows_stays_unclassified_without_a_model() {
+    let index = common::read("declared");
+    let found: Vec<(&str, Option<&str>)> = index["dependencies"]["dependencies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|dependency| {
+            (
+                dependency["name"].as_str().unwrap(),
+                dependency["decided_by"].as_str(),
+            )
+        })
+        .collect();
+    assert!(
+        found.iter().all(|(_, decided)| decided.is_none()),
+        "a fixture run carries no model answers: {found:?}"
+    );
+}

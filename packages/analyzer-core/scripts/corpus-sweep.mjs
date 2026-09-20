@@ -34,7 +34,7 @@ const SERVED_SURFACE = new Map([
 function run(root) {
   const started = Date.now();
   const finished = spawnSync(INDEXER, [root], {
-    env: { ...process.env, KLAURO_REPORT_COVERAGE: '1' },
+    env: { ...process.env, KLAURO_REPORT_COVERAGE: '1', KLAURO_ENRICH: '0' },
     maxBuffer: 1 << 30
   });
   finished.milliseconds = Date.now() - started;
@@ -86,6 +86,7 @@ function index(root, repeat) {
     conventions: number(/conform [^|]*\| conventions (\d+)/),
     noted: number(/health [^|]*\| projects \d+ \| noted (\d+)/),
     classified: number(/\| classified (\d+)/),
+    interpreted: number(/\| interpreted (\d+)/),
     roles: number(/^roles [^|]*\| (\d+)/m),
     unpartitioned: number(/unpartitioned (\d+)/),
     reachable: number(/reachable units (\d+)/),

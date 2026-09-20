@@ -14,6 +14,10 @@ pub struct Dependency {
     pub version: Option<String>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub declared: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decided_by: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f64>,
     pub imports: u32,
     pub entry_points: u32,
     pub exit_points: u32,
@@ -449,6 +453,8 @@ pub fn derive(
                 name: package.to_string(),
                 version: None,
                 declared: false,
+                decided_by: None,
+                confidence: None,
                 role: match (known, standard) {
                     (Some(found), _) => found.role,
                     (None, true) => "runtime",
@@ -505,6 +511,8 @@ pub fn derive(
                 name: name.clone(),
                 version: None,
                 declared: false,
+                decided_by: None,
+                confidence: None,
                 role: known.map(|found| found.role).unwrap_or("unclassified"),
                 category: known.map(|found| found.category).unwrap_or(""),
                 imports: 0,
@@ -537,6 +545,109 @@ pub fn derive(
     let declared = dependencies.iter().filter(|dependency| dependency.declared).count() as u32;
     let imported = dependencies.iter().filter(|dependency| dependency.imports > 0).count() as u32;
     Dependencies { dependencies, imported, declared, classified, unclassified }
+}
+
+static CATEGORIES: &[(&str, &str)] = &[
+    ("build", "Bundling, compiling, transpiling or packaging the project"),
+    ("cli", "Parsing command line arguments or drawing a terminal interface"),
+    ("data", "Databases, ORMs, query builders, caches, migrations, storage"),
+    ("injection", "Wiring dependencies into the objects that need them"),
+    ("network", "HTTP clients, sockets, transport between processes"),
+    ("observability", "Logging, metrics, tracing, error reporting"),
+    ("other", "None of these"),
+    ("rpc", "GraphQL, gRPC or another remote call protocol"),
+    ("test", "Testing, mocking, assertions, fixtures"),
+    ("translation", "Localisation and message catalogues"),
+    ("ui", "Rendering a user interface"),
+    ("validation", "Validating or parsing input against a schema"),
+    ("web", "HTTP servers, routing, request handling, web frameworks"),
+];
+
+static ROLES: &[(&str, &str)] = &[
+    ("framework", "Defines the shape of the application; code is written inside it"),
+    ("library", "Called by the application; code is written with it"),
+    ("runtime", "Part of the language's own standard library or platform"),
+];
+
+const SETTLED: f64 = 0.7;
+const CLASSIFIED_AT_MOST: usize = 240;
+
+pub fn interpret(found: &mut Dependencies, language: &str) -> u32 {
+    if !crate::jev::asked() {
+        return 0;
+    }
+    let unknown: Vec<usize> = found
+        .dependencies
+        .iter()
+        .enumerate()
+        .filter(|(_, dependency)| dependency.role == "unclassified")
+        .map(|(at, _)| at)
+        .take(CLASSIFIED_AT_MOST)
+        .collect();
+    if unknown.is_empty() {
+        return 0;
+    }
+    let mut questions = std::collections::BTreeMap::new();
+    for at in &unknown {
+        let dependency = &found.dependencies[*at];
+        questions.insert(
+            format!("r{at}"),
+            crate::jev::Question {
+                kind: "choice",
+                instructions: format!(
+                    "What is the package named '{}' to a project that imports it",
+                    dependency.name
+                ),
+                criteria: ROLES.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            },
+        );
+        questions.insert(
+            format!("c{at}"),
+            crate::jev::Question {
+                kind: "choice",
+                instructions: format!("What job does the package named '{}' do", dependency.name),
+                criteria: CATEGORIES.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            },
+        );
+    }
+    let state = format!(
+        "These are third-party package names imported by the source of a {language} project.          Classify each by what it is and the job it does.
+Packages: {}",
+        unknown
+            .iter()
+            .map(|at| found.dependencies[*at].name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let answers = crate::jev::decide(&state, questions);
+    let mut settled = 0;
+    for at in unknown {
+        let (Some(role), Some(category)) = (
+            answers.get(&format!("r{at}")).and_then(|held| held.held(SETTLED)),
+            answers.get(&format!("c{at}")).and_then(|held| held.held(SETTLED)),
+        ) else {
+            continue;
+        };
+        let (Some(role), Some(category)) = (
+            ROLES.iter().find(|(known, _)| *known == role).map(|(known, _)| *known),
+            CATEGORIES.iter().find(|(known, _)| *known == category).map(|(known, _)| *known),
+        ) else {
+            continue;
+        };
+        let confidence = answers
+            .get(&format!("c{at}"))
+            .map(crate::jev::Decision::settled)
+            .unwrap_or_default();
+        let dependency = &mut found.dependencies[at];
+        dependency.role = role;
+        dependency.category = category;
+        dependency.decided_by = Some("model");
+        dependency.confidence = Some(confidence);
+        settled += 1;
+    }
+    found.classified += settled;
+    found.unclassified -= settled;
+    settled
 }
 
 pub fn file_project(assignment: &[(String, String)]) -> HashMap<&str, &str> {

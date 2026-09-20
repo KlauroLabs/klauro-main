@@ -210,7 +210,12 @@ And a specifier that does not read as a module — a fragment of markup, a keywo
 a module goes — is not one.
 
 A catalog supplies only the role and category. A package neither the catalog nor a manifest knows
-is reported with its usage rather than dropped.
+is reported with its usage rather than dropped, and where a decision model is reachable it is asked
+what that package is — a choice from the same two enumerations, taken only above a confidence floor,
+recorded with the confidence it carried and marked as decided by a model rather than read from the
+code. The catalog always wins; the model only answers what the catalog left unclassified. A
+repository indexed without a key, or with `KLAURO_ENRICH=0`, reports exactly what the code and the
+manifests say, and every gate is measured that way.
 
 Roles come from a declarative table over annotations, inheritance and registration, and each role
 records what made it one. A declaration's own name is the weakest of these and is read only where
