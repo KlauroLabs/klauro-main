@@ -44,7 +44,24 @@ static MANIFEST_SECTIONS: &[(&str, &[&str])] = &[
     ("pyproject.toml", &["dependencies"]),
 ];
 
-pub fn manifested(files: &[String], nodes: &[IndexNode]) -> Vec<(String, Option<String>)> {
+static REQUIRING: &[(&str, &[&str])] = &[
+    ("gemfile", &["gem"]),
+    ("gemspec", &["add_dependency", "add_development_dependency", "add_runtime_dependency"]),
+    ("podfile", &["pod"]),
+];
+
+fn required_by_a_call(basename: &str) -> Option<&'static [&'static str]> {
+    REQUIRING
+        .iter()
+        .find(|(named, _)| basename == *named || basename.ends_with(&format!(".{named}")))
+        .map(|(_, verbs)| *verbs)
+}
+
+pub fn manifested(
+    files: &[String],
+    nodes: &[IndexNode],
+    calls: &[CallFact],
+) -> Vec<(String, Option<String>)> {
     let mut children: HashMap<&str, Vec<&IndexNode>> = HashMap::new();
     for node in nodes {
         if let Some(parent) = node.parent.as_deref() {
@@ -52,6 +69,25 @@ pub fn manifested(files: &[String], nodes: &[IndexNode]) -> Vec<(String, Option<
         }
     }
     let mut found = Vec::new();
+    let mut asking: HashMap<u32, &'static [&'static str]> = HashMap::new();
+    for (at, path) in files.iter().enumerate() {
+        if let Some(verbs) = required_by_a_call(&crate::paths::basename(path).to_ascii_lowercase())
+        {
+            asking.insert(at as u32, verbs);
+        }
+    }
+    for call in calls {
+        let Some(verbs) = asking.get(&call.file) else { continue };
+        if !verbs.contains(&crate::names::leaf(&call.callee)) {
+            continue;
+        }
+        let Some(name) = call.literals.first() else { continue };
+        let name = name.trim();
+        if name.is_empty() || name.contains(['/', ' ']) {
+            continue;
+        }
+        found.push((name.to_string(), call.literals.get(1).cloned()));
+    }
     for path in files {
         let basename = crate::paths::basename(path).to_ascii_lowercase();
         if basename.ends_with(".csproj") || basename.ends_with(".fsproj") {

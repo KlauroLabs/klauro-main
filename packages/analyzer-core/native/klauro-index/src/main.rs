@@ -553,7 +553,7 @@ fn main() {
         })
         .map(|unit| unit.name.as_str())
         .collect();
-    let manifested = dependencies::manifested(&paths, &index.nodes);
+    let manifested = dependencies::manifested(&paths, &index.nodes, &index.calls);
     let found = dependencies::derive(
         &index.imports,
         &manifested,
@@ -589,6 +589,18 @@ fn main() {
         found.unclassified,
         interpreted
     );
+    let built_with: Vec<&str> = found
+        .dependencies
+        .iter()
+        .filter(|held| held.role == "framework" && (held.imports > 0 || held.declared))
+        .map(|held| held.name.as_str())
+        .collect();
+    if !built_with.is_empty() {
+        eprintln!(
+            "built with | {}",
+            built_with.iter().map(|named| format!("framework:{named}")).collect::<Vec<_>>().join(" ")
+        );
+    }
     index.dependencies = Some(found);
 
     let roles_started = Instant::now();
