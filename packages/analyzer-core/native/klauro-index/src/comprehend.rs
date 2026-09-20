@@ -7,9 +7,7 @@ use crate::entry_exit::{EntryPoint, ExitPoint};
 use crate::model::*;
 
 const STEPS_KEPT: usize = 16;
-const FLOWS_KEPT: usize = 400;
-const PROPOSED: usize = 160;
-const REACHING_AT_ONCE: usize = 32;
+const REACHING_AT_ONCE: usize = 24;
 
 fn shared<T>(lanes: &[Vec<T>], budget: usize) -> Vec<usize> {
     let offered: usize = lanes.iter().map(Vec::len).sum();
@@ -288,7 +286,6 @@ fn describe_one(
                 None => entities.iter().map(|entity| entity.declared_as.as_str()).collect(),
             };
             kept.dedup();
-            kept.truncate(14);
             match kept.is_empty() {
                 true => "no named records".to_string(),
                 false => kept.join(", "),
@@ -408,12 +405,7 @@ fn form_capabilities(held: &Comprehension, spoken: &str) -> Vec<Capability> {
             ))
         });
     }
-    let shares = shared(&lanes, PROPOSED);
-    let ranked: Vec<&Flow> = lanes
-        .iter()
-        .zip(&shares)
-        .flat_map(|(lane, share)| lane.iter().take(*share).copied())
-        .collect();
+    let ranked: Vec<&Flow> = lanes.into_iter().flatten().collect();
     let candidates: Vec<(&str, String)> = ranked
         .into_iter()
         .map(|flow| {
@@ -451,7 +443,7 @@ fn form_capabilities(held: &Comprehension, spoken: &str) -> Vec<Capability> {
     let mut criteria: std::collections::BTreeMap<String, String> = outcomes
         .iter()
         .enumerate()
-        .map(|(at, outcome)| (format!("o{at}"), outcome.description.clone()))
+        .map(|(at, outcome)| (format!("o{at}"), outcome.name.clone()))
         .collect();
     criteria.insert("none".to_string(), "This path serves none of these".to_string());
     let questions: std::collections::BTreeMap<String, crate::jev::Question> = candidates
@@ -524,7 +516,6 @@ fn form_capabilities(held: &Comprehension, spoken: &str) -> Vec<Capability> {
                 .collect();
             surfaces.sort();
             surfaces.dedup();
-            surfaces.truncate(12);
             let mut records: Vec<String> = flows
                 .iter()
                 .flat_map(|(flow, _)| flow.writes.iter().cloned())
@@ -599,30 +590,7 @@ pub fn author(
         owner.insert(key.clone(), id.to_string());
         key
     };
-    for flow in held.flows.iter().take(40) {
-        let key = mark(&mut owner, &flow.id);
-        evidence.insert(
-            key,
-            format!(
-                "  kind: a path through the system that someone sets off\n  \
-                 the operation it serves, named as the code names it: {}\n  \
-                 how it is reached: {}\n  the records it writes: {}\n  \
-                 it runs {} units and ends by: {}",
-                flow.operation,
-                flow.kind,
-                match flow.writes.is_empty() {
-                    true => "none named".to_string(),
-                    false => flow.writes.join(", "),
-                },
-                flow.units,
-                match flow.changes.is_empty() {
-                    true => "leading into other paths".to_string(),
-                    false => flow.changes.join(", "),
-                }
-            ),
-        );
-    }
-    for entity in held.entities.iter().take(40) {
+    for entity in held.entities.iter() {
         let key = mark(&mut owner, &entity.id);
         evidence.insert(
             key,
@@ -668,7 +636,7 @@ pub fn author(
             (capabilities, products)
         },
         || {
-            let written = crate::author::name_them("paths and data records", &evidence);
+            let written = crate::author::name_them("the records this system keeps", &evidence);
             let named = started.elapsed();
             let grounded = crate::author::ground(&written, &evidence);
             eprintln!("  author name {named:?} | ground {:?}", started.elapsed() - named);
@@ -681,6 +649,31 @@ pub fn author(
     };
     held.capabilities = capabilities;
     held.products = products;
+    let delivered: HashMap<&str, (&str, &str)> = held
+        .capabilities
+        .iter()
+        .flat_map(|capability| {
+            let told = (
+                capability.name.as_deref().unwrap_or_default(),
+                capability.description.as_deref().unwrap_or_default(),
+            );
+            capability.flows.iter().map(move |flow| (flow.as_str(), told))
+        })
+        .collect();
+    let spoken_of: HashMap<String, (String, String)> = held
+        .flows
+        .iter()
+        .filter_map(|flow| {
+            let (name, description) = delivered.get(flow.id.as_str())?;
+            Some((flow.id.clone(), ((*name).to_string(), (*description).to_string())))
+        })
+        .collect();
+    for flow in held.flows.iter_mut() {
+        if let Some((name, description)) = spoken_of.get(&flow.id) {
+            flow.name = Some(name.clone());
+            flow.description = Some(description.clone());
+        }
+    }
     let by_id: std::collections::BTreeMap<String, (&crate::author::Written, crate::author::Grounding)> =
         owner
             .iter()
@@ -689,16 +682,6 @@ pub fn author(
             })
             .collect();
     let mut settled = held.capabilities.len() as u32;
-    for flow in held.flows.iter_mut() {
-        let Some((written, grounding)) = by_id.get(&flow.id).copied() else { continue };
-        let (name, description) = crate::author::written_name(written);
-        flow.grounding = Some(grounding);
-        if grounding.reads_as_an_outcome() {
-            flow.name = Some(name.to_string());
-            flow.description = Some(description.to_string());
-            settled += 1;
-        }
-    }
     for entity in held.entities.iter_mut() {
         let Some((held, grounding)) = by_id.get(&entity.id).copied() else { continue };
         let (name, description) = crate::author::written_name(held);
@@ -776,13 +759,7 @@ pub fn derive(
             .or_default()
             .push(entry);
     }
-    let lanes: Vec<Vec<&EntryPoint>> = by_project.into_values().collect();
-    let shares = shared(&lanes, FLOWS_KEPT);
-    let served: Vec<&EntryPoint> = lanes
-        .iter()
-        .zip(&shares)
-        .flat_map(|(lane, share)| lane.iter().take(*share).copied())
-        .collect();
+    let served: Vec<&EntryPoint> = by_project.into_values().flatten().collect();
     let handlers: HashMap<&str, &str> = served
         .iter()
         .map(|entry| (entry.handler.as_str(), entry.id.as_str()))
@@ -1096,7 +1073,6 @@ fn entities(
             .then(right.fields.cmp(&left.fields))
             .then(left.id.cmp(&right.id))
     });
-    entities.truncate(FLOWS_KEPT);
     entities
 }
 

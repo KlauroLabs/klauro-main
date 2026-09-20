@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 const ENDPOINT: &str = "https://api.deepinfra.com/v1/openai/chat/completions";
 const SECONDS: &str = "25";
 const GROUNDED: f64 = 0.5;
-const TRIES: usize = 2;
-const NAMED_PER_CALL: usize = 4;
+const TRIES: usize = 5;
+const NAMED_PER_CALL: usize = 48;
 const NAMED_PER_SPOKEN_CALL: usize = 40;
 
 pub fn reaching_at_once(over_a_network: usize) -> usize {
@@ -25,7 +25,7 @@ fn named_per_call() -> usize {
         false => NAMED_PER_CALL,
     }
 }
-const PATHS_PER_PROPOSAL: usize = 400;
+const PATHS_PER_PROPOSAL: usize = 500;
 
 #[derive(Debug, Serialize, Clone, Copy)]
 pub struct Grounding {
@@ -65,11 +65,10 @@ fn endpoint() -> String {
 }
 
 fn model() -> String {
-    std::env::var("KLAURO_AUTHOR_MODEL").unwrap_or_else(|_| "google/gemma-3-12b-it".to_string())
+    std::env::var("KLAURO_AUTHOR_MODEL").unwrap_or_else(|_| BESIDE[0].to_string())
 }
 
-static BESIDE: &[&str] =
-    &["meta-llama/Llama-4-Scout-17B-16E-Instruct", "meta-llama/Llama-3.3-70B-Instruct"];
+static BESIDE: &[&str] = &["deepseek-coder-v2:16b", "qwen2.5:14b-instruct"];
 
 fn asking_of_models(first: String) -> Vec<String> {
     let mut held = vec![first];
@@ -112,8 +111,51 @@ pub fn propose_outcomes(evidence: &[String], spoken_for: &str) -> Vec<Outcome> {
         .collect();
     outcomes.sort_by(|left, right| left.name.cmp(&right.name));
     outcomes.dedup_by(|left, right| left.name.eq_ignore_ascii_case(&right.name));
-    outcomes.truncate(24);
-    outcomes
+    match evidence.len() > PATHS_PER_PROPOSAL {
+        true => consolidate(&outcomes, spoken_for),
+        false => outcomes,
+    }
+}
+
+fn consolidate(outcomes: &[Outcome], spoken_for: &str) -> Vec<Outcome> {
+    if outcomes.len() < 2 {
+        return outcomes.to_vec();
+    }
+    let prompt = format!(
+        "A software system describes itself like this:\n{spoken_for}\n\n\
+         Readers each looked at one part of it and proposed the outcomes it delivers. Their \
+         lists overlap, because the same outcome is reached from many parts.\n\n{}\n\n\
+         Give the one list the whole system delivers, by these rules:\n{RULES}\n\n\
+         Fold together the ones that name the same outcome, keeping the clearer wording. Keep \
+         every outcome that is genuinely its own. Do not invent one nobody proposed, and do not \
+         drop one because it was proposed only once.\n\n\
+         Return JSON only: {{\"outcomes\":[{{\"name\":\"...\",\"description\":\"...\",\"audience\":\"...\"}}]}}",
+        outcomes
+            .iter()
+            .map(|outcome| format!("- {} (for {}): {}", outcome.name, outcome.audience, outcome.description))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    let Some(held) = answered::<Proposed>(&prompt, 4000, &proposing()) else {
+        return outcomes.to_vec();
+    };
+    let mut folded: Vec<Outcome> = held
+        .outcomes
+        .into_iter()
+        .map(|mut outcome| {
+            outcome.name = outcome.name.trim().to_string();
+            outcome.description = outcome.description.trim().to_string();
+            outcome.audience = outcome.audience.trim().to_ascii_lowercase();
+            outcome
+        })
+        .filter(|outcome| !outcome.name.is_empty() && !outcome.description.is_empty())
+        .collect();
+    folded.sort_by(|left, right| left.name.cmp(&right.name));
+    folded.dedup_by(|left, right| left.name.eq_ignore_ascii_case(&right.name));
+    match folded.is_empty() {
+        true => outcomes.to_vec(),
+        false => folded,
+    }
 }
 
 fn propose_batch(evidence: &[String], spoken_for: &str) -> Vec<Outcome> {
@@ -193,72 +235,89 @@ pub fn ground(
     written: &BTreeMap<String, Written>,
     evidence: &BTreeMap<String, String>,
 ) -> BTreeMap<String, Grounding> {
-    let asked: Vec<(&String, &Written)> = written.iter().collect();
-    asked
-        .par_iter()
-        .filter_map(|(id, held)| {
-            let facts = evidence.get(*id)?;
-            Some(((*id).clone(), grounding_of(held, facts)))
+    let asking: Vec<(&String, &Written, &String)> = written
+        .iter()
+        .filter_map(|(id, held)| Some((id, held, evidence.get(id)?)))
+        .collect();
+    let mut questions: BTreeMap<String, crate::jev::Question> = BTreeMap::new();
+    for (at, (_, held, facts)) in asking.iter().enumerate() {
+        let told = format!(
+            "FACTS extracted from code:\n{facts}\n\nPROPOSED NAME: {}\nPROPOSED DESCRIPTION: {}",
+            held.name, held.description
+        );
+        for (named, question) in written_of(&told) {
+            questions.insert(format!("w{at}-{named}"), question);
+        }
+    }
+    let answers = crate::jev::decide("Each question carries its own facts.", questions);
+    asking
+        .iter()
+        .enumerate()
+        .map(|(at, (id, _, _))| {
+            let settled = |named: &str, fallback: f64| {
+                answers
+                    .get(&format!("w{at}-{named}"))
+                    .map(crate::jev::Decision::settled)
+                    .unwrap_or(fallback)
+            };
+            (
+                (*id).clone(),
+                Grounding {
+                    supported: settled("supported", 0.0),
+                    invented: settled("invented", 1.0),
+                    outcome: settled("outcome", 0.0),
+                    universal: None,
+                    specific: answers
+                        .get(&format!("w{at}-specific"))
+                        .and_then(|held| held.score)
+                        .map(|score| (score * 10.0).round() / 10.0)
+                        .unwrap_or(0.0),
+                },
+            )
         })
         .collect()
 }
 
-fn grounding_of(held: &Written, facts: &str) -> Grounding {
-    {
-        let state = format!(
-            "FACTS extracted from code:\n{facts}\n\nPROPOSED NAME: {}\nPROPOSED DESCRIPTION: {}",
-            held.name, held.description
-        );
-        let questions = BTreeMap::from([
-            (
-                "outcome".to_string(),
-                crate::jev::Question {
-                    kind: "noul",
-                    instructions: "The proposed name describes something a person gets from the system, rather than a database operation or a code mechanism".to_string(),
-                    criteria: BTreeMap::new().into(),
-                },
-            ),
-            (
-                "supported".to_string(),
-                crate::jev::Question {
-                    kind: "noul",
-                    instructions: "Every claim in the proposed name and description is supported by the facts".to_string(),
-                    criteria: BTreeMap::new().into(),
-                },
-            ),
-            (
-                "invented".to_string(),
-                crate::jev::Question {
-                    kind: "noul",
-                    instructions: "The name or description mentions a technology, vendor or system that does not appear in the facts".to_string(),
-                    criteria: BTreeMap::new().into(),
-                },
-            ),
-            (
-                "specific".to_string(),
-                crate::jev::Question {
-                    kind: "score",
-                    instructions: "How specific this is to these facts rather than generic".to_string(),
-                    criteria: vec![
-                        "Generic; could describe any system".to_string(),
-                        "Names the domain but little else".to_string(),
-                        "Names what only this part of the system does".to_string(),
-                    ]
-                    .into(),
-                },
-            ),
-        ]);
-        let answers = crate::jev::decide(&state, questions);
-        let supported = answers.get("supported").map(crate::jev::Decision::settled).unwrap_or(0.0);
-        let invented = answers.get("invented").map(crate::jev::Decision::settled).unwrap_or(1.0);
-        let specific = answers
-            .get("specific")
-            .and_then(|held| held.score)
-            .map(|score| (score * 10.0).round() / 10.0)
-            .unwrap_or(0.0);
-        let outcome = answers.get("outcome").map(crate::jev::Decision::settled).unwrap_or(0.0);
-        Grounding { supported, invented, specific, outcome, universal: None }
-    }
+fn written_of(told: &str) -> BTreeMap<&'static str, crate::jev::Question> {
+    BTreeMap::from([
+        (
+            "outcome",
+            crate::jev::Question {
+                kind: "noul",
+                instructions: format!("{told}\n\nThe proposed name describes something a person gets from the system, rather than a database operation or a code mechanism"),
+                criteria: BTreeMap::new().into(),
+            },
+        ),
+        (
+            "supported",
+            crate::jev::Question {
+                kind: "noul",
+                instructions: format!("{told}\n\nEvery claim in the proposed name and description is supported by the facts"),
+                criteria: BTreeMap::new().into(),
+            },
+        ),
+        (
+            "invented",
+            crate::jev::Question {
+                kind: "noul",
+                instructions: format!("{told}\n\nThe name or description mentions a technology, vendor or system that does not appear in the facts"),
+                criteria: BTreeMap::new().into(),
+            },
+        ),
+        (
+            "specific",
+            crate::jev::Question {
+                kind: "score",
+                instructions: format!("{told}\n\nHow specific this is to these facts rather than generic"),
+                criteria: vec![
+                    "Generic; could describe any system".to_string(),
+                    "Names the domain but little else".to_string(),
+                    "Names what only this part of the system does".to_string(),
+                ]
+                .into(),
+            },
+        ),
+    ])
 }
 
 pub const RULES: &str = "A capability is an outcome someone gets from the system. It is judged by \
@@ -502,15 +561,26 @@ fn answered<T: serde::de::DeserializeOwned>(prompt: &str, most: u32, models: &[S
             return Some(value);
         }
         for attempt in 0..TRIES {
-            let text = match &spoken_to {
-                Some(command) => spoken(command, prompt),
+            let answered = match &spoken_to {
+                Some(command) => spoken(command, prompt).map_or(
+                    crate::reach::Answer::Missed,
+                    crate::reach::Answer::Held,
+                ),
                 None => ask(&request),
             };
-            if let Some(value) = text.as_deref().and_then(read) {
-                held = Some((value, text.unwrap_or_default(), request));
-                break 'asking;
+            match answered {
+                crate::reach::Answer::Held(text) => {
+                    if let Some(value) = read(&text) {
+                        held = Some((value, text, request));
+                        break 'asking;
+                    }
+                    break;
+                }
+                crate::reach::Answer::Refused => break,
+                crate::reach::Answer::Missed => {
+                    std::thread::sleep(std::time::Duration::from_millis(500 << attempt))
+                }
             }
-            std::thread::sleep(std::time::Duration::from_millis(300 * (attempt + 1) as u64));
         }
     }
     let Some((value, text, request)) = held else {
@@ -539,34 +609,9 @@ fn spoken(command: &str, prompt: &str) -> Option<String> {
     String::from_utf8(answered.stdout).ok()
 }
 
-fn ask(request: &str) -> Option<String> {
-    let key = key()?;
-    let mut call = Command::new("curl")
-        .args([
-            "--silent",
-            "--max-time",
-            SECONDS,
-            "-X",
-            "POST",
-            &endpoint(),
-            "-H",
-            &format!("Authorization: Bearer {key}"),
-            "-H",
-            "Content-Type: application/json",
-            "--data-binary",
-            "@-",
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    call.stdin.as_mut()?.write_all(request.as_bytes()).ok()?;
-    let answered = call.wait_with_output().ok()?;
-    let text = answered
-        .status
-        .success()
-        .then(|| String::from_utf8(answered.stdout).ok())
-        .flatten()?;
-    Some(text)
+fn ask(request: &str) -> crate::reach::Answer {
+    match key() {
+        Some(key) => crate::reach::asking(&endpoint(), &key, request),
+        None => crate::reach::Answer::Refused,
+    }
 }

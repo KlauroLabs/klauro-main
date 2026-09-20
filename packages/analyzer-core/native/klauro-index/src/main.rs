@@ -25,6 +25,7 @@ mod icelot;
 mod model;
 mod names;
 mod paths;
+mod reach;
 mod published;
 mod resolve;
 mod roles;
@@ -806,14 +807,15 @@ fn main() {
     };
     let named = comprehend::author(&mut comprehension, &root, &index.nodes, &paths, &told);
     eprintln!(
-        "comprehend {:?} | capabilities {} | flows {} | terminal {} | chained {} | entities {} | named {}",
+        "comprehend {:?} | capabilities {} | flows {} | terminal {} | chained {} | entities {} | named {} | asked {}",
         comprehend_started.elapsed(),
         comprehension.capabilities.len(),
         comprehension.flows.len(),
         comprehension.terminal,
         comprehension.chained,
         comprehension.entities.len(),
-        named
+        named,
+        reach::asked()
     );
     index.comprehension = Some(comprehension);
 

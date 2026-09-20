@@ -1,15 +1,21 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::entry_exit::EntryPoint;
 use crate::model::*;
 use crate::paths::is_test;
 
-const PUBLISHED_PER_PROJECT: usize = 120;
-
 static HEADERS: &[&str] = &["h", "h++", "hh", "hpp", "hxx"];
 
 fn extension(path: &str) -> &str {
     crate::paths::basename(path).rsplit_once('.').map(|(_, held)| held).unwrap_or("")
+}
+
+fn holding(path: &str) -> &str {
+    let folder = path.rsplit_once('/').map(|(held, _)| held).unwrap_or("");
+    match folder.rsplit_once("/src") {
+        Some((held, rest)) if rest.is_empty() || rest.starts_with('/') => held,
+        _ => folder,
+    }
 }
 
 fn under(path: &str, root: &str) -> bool {
@@ -139,17 +145,24 @@ pub fn published(
                 .cmp(&names.iter().any(|named| named == &files[left.file as usize]))
                 .then(left.id.cmp(&right.id))
         });
-        kept.truncate(PUBLISHED_PER_PROJECT);
+        let mut offered: BTreeMap<&str, Vec<&IndexNode>> = BTreeMap::new();
         for node in kept {
+            offered.entry(holding(&files[node.file as usize])).or_default().push(node);
+        }
+        for (module, nodes) in offered {
+            let Some(first) = nodes.first() else { continue };
+            let mut names: Vec<&str> = nodes.iter().map(|node| node.name.as_str()).collect();
+            names.sort();
+            names.dedup();
             found.push(EntryPoint {
-                id: format!("entry:{}:published", node.id),
+                id: format!("entry:{module}:published"),
                 kind: "export",
-                name: node.name.clone(),
+                name: format!("{module}, publishing {}", names.join(", ")),
                 method: None,
                 path: None,
-                handler: node.id.clone(),
-                file: node.file,
-                line: node.span.line,
+                handler: first.id.clone(),
+                file: first.file,
+                line: first.span.line,
                 registrar: "published".to_string(),
             });
         }

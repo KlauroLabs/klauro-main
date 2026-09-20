@@ -396,6 +396,18 @@ because a monorepo has no single answer and an average of its parts is not one.
 because a capability derived by grouping code is a cluster of code, which is the one thing it must
 never be.
 
+What is asked of a model is asked once. A repository with four thousand surfaces is not four
+thousand questions: the names a library publishes are read as the module that offers them, every
+judgement of the same kind travels in one request filled to what the decider will take, and the
+list of outcomes a path is placed against is carried once in the state each request already holds
+rather than repeated inside every question. A path takes the name and description of the
+capability it was placed in, because that is what the path delivers and it was already written.
+Measured over the corpus, this is the difference between five hundred requests for a large
+repository and fewer than seventy.
+
+A refusal is not a failure to answer. Where a model says a prompt is more than it will take, the
+next model is asked at once; only silence is worth waiting through.
+
 A model that does not answer is not an answer. Each role names more than one model and takes the
 first that replies with something readable, because a hosted model stalls on a long prompt often
 enough that one of them alone leaves a repository with nothing to say — and nothing to say is the

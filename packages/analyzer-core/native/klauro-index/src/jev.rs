@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 
 const ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
 const MODEL: &str = "jev-latest";
-const QUESTIONS_PER_CALL: usize = 48;
-const TRIES: usize = 3;
+const BYTES_PER_CALL: usize = 60_000;
+const TRIES: usize = 5;
 const SECONDS: &str = "20";
 
 #[derive(Debug, Serialize)]
@@ -29,6 +29,15 @@ pub enum Criteria {
 }
 
 impl Criteria {
+    fn weight(&self) -> usize {
+        match self {
+            Criteria::Named(held) => {
+                held.iter().map(|(key, value)| key.len() + value.len() + 6).sum()
+            }
+            Criteria::Ranked(held) => held.iter().map(|value| value.len() + 4).sum(),
+        }
+    }
+
     fn is_empty(&self) -> bool {
         match self {
             Criteria::Named(held) => held.is_empty(),
@@ -101,9 +110,25 @@ pub fn decide(state: &str, questions: BTreeMap<String, Question>) -> BTreeMap<St
         return answers;
     }
     let asking: Vec<(String, Question)> = questions.into_iter().collect();
-    let batches: Vec<BTreeMap<String, Decision>> = asking
-        .par_chunks(QUESTIONS_PER_CALL)
+    let mut batches_of: Vec<Vec<(String, Question)>> = Vec::new();
+    let mut held: Vec<(String, Question)> = Vec::new();
+    let mut weight = 0;
+    for (named, question) in asking {
+        let size = named.len() + question.instructions.len() + question.criteria.weight() + 32;
+        if weight + size > BYTES_PER_CALL && !held.is_empty() {
+            batches_of.push(std::mem::take(&mut held));
+            weight = 0;
+        }
+        weight += size;
+        held.push((named, question));
+    }
+    if !held.is_empty() {
+        batches_of.push(held);
+    }
+    let batches: Vec<BTreeMap<String, Decision>> = batches_of
+        .par_iter()
         .map(|batch| {
+            let batch = batch.as_slice();
             let body = serde_json::json!({
                 "model": MODEL,
                 "state": state,
@@ -121,7 +146,7 @@ pub fn decide(state: &str, questions: BTreeMap<String, Question>) -> BTreeMap<St
                 if held.is_some() {
                     break;
                 }
-                std::thread::sleep(std::time::Duration::from_millis(400 * (attempt + 1) as u64));
+                std::thread::sleep(std::time::Duration::from_millis(500 << attempt));
             }
             match held {
                 Some(answered) => answered.answers,
@@ -147,33 +172,7 @@ fn ask(request: &str) -> Option<Answered> {
         return serde_json::from_str(&held).ok();
     }
     let key = std::env::var("TYPESAFE_API_KEY").ok()?;
-    let mut call = Command::new("curl")
-        .args([
-            "--silent",
-            "--show-error",
-            "--max-time",
-            SECONDS,
-            "-X",
-            "POST",
-            ENDPOINT,
-            "-H",
-            &format!("Authorization: Bearer {key}"),
-            "-H",
-            "Content-Type: application/json",
-            "--data-binary",
-            "@-",
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    call.stdin.as_mut()?.write_all(request.as_bytes()).ok()?;
-    let answered = call.wait_with_output().ok()?;
-    if !answered.status.success() {
-        return None;
-    }
-    let text = String::from_utf8(answered.stdout).ok()?;
+    let text = crate::reach::post(ENDPOINT, &key, request)?;
     let held: Answered = serde_json::from_str(&text).ok()?;
     remember(request, &text);
     Some(held)
