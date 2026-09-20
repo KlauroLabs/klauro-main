@@ -396,6 +396,18 @@ because a monorepo has no single answer and an average of its parts is not one.
 because a capability derived by grouping code is a cluster of code, which is the one thing it must
 never be.
 
+A record addressed through the type that declares it is still a record reached. Where a framework
+lets a model speak for its own table — `Contact::create`, a row saved through the object that
+holds it — there is no module to read the call against, and without this a repository built that
+way shows its paths reaching nothing at all while its records sit untouched. The evidence is the
+declaration: a type the code declares to be a model, addressed by an operation that keeps or
+fetches a row.
+
+Reading a record is worth recording. A path that fetches one touches it as surely as a path that
+writes one, and a path known to read a label and a vault says far more about what it is for than
+a path known only by its route. Measured over the corpus, naming what a path reads takes the
+share of paths that name any record at all from six in a hundred to four in ten.
+
 A description says what a thing is, not what it is made of. Whoever reads one can already see the
 fields, so listing them back says nothing; what is worth writing is what the record stands for in
 the world the product is about. That in turn decides how it is judged: a claim is tested by

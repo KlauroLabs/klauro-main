@@ -649,6 +649,19 @@ fn main() {
         index.architecture = Some(shaped);
     }
 
+    let kept = entry_exit::kept_by_a_model(
+        &index.calls,
+        &paths,
+        &index.nodes,
+        index.roles.as_ref().expect("roles precede what a model keeps"),
+    );
+    if !kept.is_empty() {
+        eprintln!("kept by a model | exits {}", kept.len());
+        index.exit_points.extend(kept);
+        index.exit_points.sort_by(|left, right| left.id.cmp(&right.id));
+        index.exit_points.dedup_by(|left, right| left.id == right.id);
+    }
+
     let graph_started = Instant::now();
     let mut exits_by_unit: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     for exit in &index.exit_points {

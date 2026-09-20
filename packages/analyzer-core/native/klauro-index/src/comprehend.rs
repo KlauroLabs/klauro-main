@@ -48,6 +48,8 @@ pub struct Step {
 pub struct Flow {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub writes: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reads: Vec<String>,
     pub id: String,
     pub entry_point: String,
     pub kind: &'static str,
@@ -421,9 +423,13 @@ fn form_capabilities(held: &Comprehension, spoken: &str) -> Vec<Capability> {
                         "proximal" => "leads on",
                         _ => "reads",
                     },
-                    match flow.writes.is_empty() {
-                        true => String::new(),
-                        false => format!(" {}", flow.writes.join("/")),
+                    match (flow.writes.is_empty(), flow.reads.is_empty()) {
+                        (true, true) => String::new(),
+                        (true, false) => format!(" reads {}", flow.reads.join("/")),
+                        (false, true) => format!(" {}", flow.writes.join("/")),
+                        (false, false) => {
+                            format!(" {} reads {}", flow.writes.join("/"), flow.reads.join("/"))
+                        }
                     }
                 ),
             )
@@ -731,15 +737,19 @@ pub fn derive(
         .map(|entity| entity.declared_as.as_str())
         .collect();
     let mut entity_of: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut read_of: HashMap<&str, Vec<&str>> = HashMap::new();
     for exit in exit_points {
-        if exit.kind != "database" || !changes(exit) {
+        if exit.kind != "database" {
             continue;
         }
         let named = crate::names::root(&exit.target);
         if !held.contains(named) {
             continue;
         }
-        let touching = entity_of.entry(exit.source.as_str()).or_default();
+        let touching = match changes(exit) {
+            true => entity_of.entry(exit.source.as_str()).or_default(),
+            false => read_of.entry(exit.source.as_str()).or_default(),
+        };
         if !touching.contains(&named) {
             touching.push(named);
         }
@@ -844,8 +854,18 @@ pub fn derive(
             .collect();
         writes.sort();
         writes.dedup();
+        let mut reads: Vec<String> = seen
+            .iter()
+            .filter_map(|unit| read_of.get(nodes[*unit as usize].id.as_str()))
+            .flatten()
+            .map(|named| (*named).to_string())
+            .filter(|named| !writes.contains(named))
+            .collect();
+        reads.sort();
+        reads.dedup();
         flows.push(Flow {
             writes,
+            reads,
             id: format!("flow:{}", entry.id),
             entry_point: entry.id.clone(),
             kind: entry.kind,

@@ -451,6 +451,62 @@ fn join_paths(base: &str, path: &str) -> String {
     format!("{base}/{path}")
 }
 
+static KEPT_OPERATIONS: &[&str] = &[
+    "all", "count", "create", "delete", "destroy", "exists", "find", "findorfail", "first",
+    "firstorcreate", "firstorfail", "forcedelete", "get", "increment", "insert", "paginate",
+    "restore", "save", "update", "updateorcreate", "upsert", "where",
+];
+
+static CHANGING_OPERATIONS: &[&str] = &[
+    "create", "delete", "destroy", "forcedelete", "increment", "insert", "restore", "save",
+    "update", "updateorcreate", "upsert",
+];
+
+/// A record addressed through the type that declares it: `Contact::create(...)`, `$post->save()`.
+pub fn kept_by_a_model(
+    calls: &[CallFact],
+    files: &[String],
+    nodes: &[IndexNode],
+    roles: &crate::roles::Roles,
+) -> Vec<ExitPoint> {
+    let modelled: HashSet<&str> = roles
+        .roles
+        .iter()
+        .filter(|role| role.role == "model" && !role.from.starts_with("name:"))
+        .filter_map(|role| nodes.iter().find(|node| node.id == role.node))
+        .map(|node| node.name.as_str())
+        .collect();
+    if modelled.is_empty() {
+        return Vec::new();
+    }
+    let mut found = Vec::new();
+    for (position, call) in calls.iter().enumerate() {
+        let Some(receiver) = call.receiver.as_deref() else { continue };
+        let named = names::root(receiver);
+        if !modelled.contains(named) {
+            continue;
+        }
+        let operation = names::leaf(&call.callee);
+        let lowered = operation.to_ascii_lowercase();
+        if KEPT_OPERATIONS.binary_search(&lowered.as_str()).is_err() {
+            continue;
+        }
+        let Some(source) = call.caller.clone() else { continue };
+        found.push(ExitPoint {
+            id: format!("exit:{}:{}:model", files[call.file as usize], position),
+            kind: "database",
+            name: format!("{named}.{operation}"),
+            source,
+            target: named.to_string(),
+            operation: operation.to_string(),
+            file: call.file,
+            line: call.line,
+            awaited: call.context.awaited,
+        });
+    }
+    found
+}
+
 static SESSION_OPERATIONS: &[&str] = &[
     "add", "add_all", "bulk_save_objects", "commit", "delete", "execute", "flush", "merge",
     "query", "refresh", "rollback", "scalar", "scalars",
@@ -992,6 +1048,8 @@ mod tests {
             ("NETWORK_OPERATIONS", NETWORK_OPERATIONS),
             ("PATH_REGISTRARS", PATH_REGISTRARS),
             ("PROCESS_OPERATIONS", PROCESS_OPERATIONS),
+            ("CHANGING_OPERATIONS", CHANGING_OPERATIONS),
+            ("KEPT_OPERATIONS", KEPT_OPERATIONS),
             ("PROCEDURE_REGISTRARS", PROCEDURE_REGISTRARS),
             ("SCHEDULE_REGISTRARS", SCHEDULE_REGISTRARS),
             ("SESSION_OPERATIONS", SESSION_OPERATIONS),
