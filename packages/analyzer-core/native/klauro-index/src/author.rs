@@ -15,6 +15,7 @@ pub struct Grounding {
     pub supported: f64,
     pub invented: f64,
     pub specific: f64,
+    pub outcome: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -70,8 +71,10 @@ fn name_batch(member: &str, listed: &[String]) -> BTreeMap<String, Written> {
          Rules: say only what the facts say. Never name a technology, vendor or product that does \
          not appear in the facts. Never invent a purpose, an audience or a behaviour the facts do \
          not state. A name is 2-5 words. For a data entity, the description says what the record \
-         is and what it holds, using the field names given. For a capability, the description says \
-         what changes when it runs, using the changes given.\n\n\
+         is and what it holds, using the field names given. For an outcome, name the thing someone \
+         gets from the system, taking the words from the operation names given — never name the \
+         database, the storage or the code mechanism, and never use the words create, update, \
+         delete, select or query on their own.\n\n\
          Echo each id back exactly as given.\n\
          Return JSON only: {{\"items\":[{{\"id\":\"...\",\"name\":\"...\",\"description\":\"...\"}}]}}\n\n\
          The {member}:\n{}",
@@ -126,6 +129,14 @@ fn grounding_of(held: &Written, facts: &str) -> Grounding {
         );
         let questions = BTreeMap::from([
             (
+                "outcome".to_string(),
+                crate::jev::Question {
+                    kind: "noul",
+                    instructions: "The proposed name describes something a person gets from the system, rather than a database operation or a code mechanism".to_string(),
+                    criteria: BTreeMap::new().into(),
+                },
+            ),
+            (
                 "supported".to_string(),
                 crate::jev::Question {
                     kind: "noul",
@@ -163,13 +174,18 @@ fn grounding_of(held: &Written, facts: &str) -> Grounding {
             .and_then(|held| held.score)
             .map(|score| (score * 10.0).round() / 10.0)
             .unwrap_or(0.0);
-        Grounding { supported, invented, specific }
+        let outcome = answers.get("outcome").map(crate::jev::Decision::settled).unwrap_or(0.0);
+        Grounding { supported, invented, specific, outcome }
     }
 }
 
 impl Grounding {
     pub fn holds(&self) -> bool {
         self.supported >= GROUNDED && self.invented < GROUNDED
+    }
+
+    pub fn reads_as_an_outcome(&self) -> bool {
+        self.holds() && self.outcome >= GROUNDED
     }
 }
 

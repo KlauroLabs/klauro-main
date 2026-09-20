@@ -18,6 +18,8 @@ pub struct Step {
 
 #[derive(Debug, Serialize)]
 pub struct Flow {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub writes: Vec<String>,
     pub id: String,
     pub entry_point: String,
     pub kind: &'static str,
@@ -55,6 +57,8 @@ pub struct Entity {
 #[derive(Debug, Serialize)]
 pub struct Capability {
     pub id: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub records: Vec<String>,
     pub changes: Vec<String>,
     pub flows: Vec<String>,
     pub surfaces: Vec<String>,
@@ -76,6 +80,11 @@ pub struct Comprehension {
     pub terminal: u32,
     pub chained: u32,
 }
+
+static GENERIC: &[&str] = &[
+    "Command", "Controller", "Handler", "Mutation", "Query", "Resolver", "Service", "View",
+    "ViewSet", "handle", "perform_mutation", "run",
+];
 
 static CHANGING: &[&str] = &[
     "create", "delete", "dispatch", "emit", "enqueue", "insert", "patch", "post", "publish", "put",
@@ -152,7 +161,7 @@ pub fn author(held: &mut Comprehension) -> u32 {
         let Some((held, grounding)) = by_id.get(&capability.id).copied() else { continue };
         let (name, description) = crate::author::written_name(held);
         capability.grounding = Some(grounding);
-        if grounding.holds() {
+        if grounding.reads_as_an_outcome() {
             capability.name = Some(name.to_string());
             capability.description = Some(description.to_string());
             settled += 1;
@@ -174,6 +183,7 @@ pub fn author(held: &mut Comprehension) -> u32 {
 
 pub fn derive(
     nodes: &[IndexNode],
+    files: &[String],
     edges: &[IndexEdge],
     entry_points: &[EntryPoint],
     exit_points: &[ExitPoint],
@@ -204,6 +214,23 @@ pub fn derive(
         leaving.entry(exit.source.as_str()).or_default().push(exit);
     }
 
+    let entities_first = entities(nodes, edges, exit_points, roles);
+    let held: HashSet<&str> = entities_first.iter().map(|entity| entity.name.as_str()).collect();
+    let mut entity_of: HashMap<&str, Vec<&str>> = HashMap::new();
+    for exit in exit_points {
+        if exit.kind != "database" || !changes(exit) {
+            continue;
+        }
+        let named = crate::names::root(&exit.target);
+        if !held.contains(named) {
+            continue;
+        }
+        let touching = entity_of.entry(exit.source.as_str()).or_default();
+        if !touching.contains(&named) {
+            touching.push(named);
+        }
+    }
+
     let served: Vec<&EntryPoint> = entry_points
         .iter()
         .filter(|entry| entry.kind != "test")
@@ -214,6 +241,8 @@ pub fn derive(
         .map(|entry| (entry.handler.as_str(), entry.id.as_str()))
         .collect();
 
+    let named_of: HashMap<&str, &IndexNode> =
+        nodes.iter().map(|node| (node.id.as_str(), node)).collect();
     let mut flows = Vec::with_capacity(served.len());
     for entry in &served {
         let Some(start) = position_of.get(entry.handler.as_str()).copied() else { continue };
@@ -266,11 +295,35 @@ pub fn derive(
             (false, true) => "proximal",
             (false, false) => "reading",
         };
+        let named = named_of
+            .get(entry.handler.as_str())
+            .and_then(|node| node.parent.as_deref())
+            .and_then(|parent| named_of.get(parent))
+            .filter(|owner| owner.kind.is_type())
+            .map(|owner| owner.name.as_str())
+            .filter(|named| !GENERIC.contains(named))
+            .map(str::to_string)
+            .or_else(|| {
+                GENERIC.contains(&entry.name.as_str()).then(|| {
+                    let path = crate::paths::basename(&files[entry.file as usize]);
+                    path.split('.').next().unwrap_or(path).to_string()
+                })
+            })
+            .unwrap_or_else(|| entry.name.clone());
+        let mut writes: Vec<String> = seen
+            .iter()
+            .filter_map(|unit| entity_of.get(nodes[*unit as usize].id.as_str()))
+            .flatten()
+            .map(|named| (*named).to_string())
+            .collect();
+        writes.sort();
+        writes.dedup();
         flows.push(Flow {
+            writes,
             id: format!("flow:{}", entry.id),
             entry_point: entry.id.clone(),
             kind: entry.kind,
-            name: entry.name.clone(),
+            name: named,
             standing,
             steps,
             units: seen.len() as u32,
@@ -281,7 +334,7 @@ pub fn derive(
     }
     flows.sort_by(|left, right| left.id.cmp(&right.id));
 
-    let entities = entities(nodes, edges, exit_points, roles);
+    let entities = entities_first;
     let terminal = flows.iter().filter(|flow| flow.standing == "terminal").count() as u32;
     let chained = flows.iter().filter(|flow| !flow.leads_into.is_empty()).count() as u32;
     let capabilities = capabilities(&flows);
@@ -294,11 +347,14 @@ fn capabilities(flows: &[Flow]) -> Vec<Capability> {
         if flow.standing == "reading" {
             continue;
         }
-        let signature = match flow.changes.is_empty() {
-            false => flow.changes.join(","),
-            true => format!("reaches:{}", flow.leads_into.len()),
+        let signatures: Vec<String> = match (flow.writes.is_empty(), flow.changes.is_empty()) {
+            (false, _) => flow.writes.clone(),
+            (true, false) => vec![flow.changes.join(",")],
+            (true, true) => vec!["reaches other flows".to_string()],
         };
-        grouped.entry((flow.project.clone(), signature)).or_default().push(flow);
+        for signature in signatures {
+            grouped.entry((flow.project.clone(), signature)).or_default().push(flow);
+        }
     }
     let mut capabilities: Vec<Capability> = grouped
         .into_iter()
@@ -313,7 +369,12 @@ fn capabilities(flows: &[Flow]) -> Vec<Capability> {
                 .collect();
             changes.sort();
             changes.dedup();
+            let records = match held.iter().any(|flow| flow.writes.contains(&signature)) {
+                true => vec![signature.clone()],
+                false => Vec::new(),
+            };
             Capability {
+                records,
                 id: format!("capability:{}:{signature}", project.as_deref().unwrap_or("root")),
                 changes,
                 flows: held.iter().map(|flow| flow.id.clone()).collect(),

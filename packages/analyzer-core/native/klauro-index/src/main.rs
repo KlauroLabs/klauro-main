@@ -719,6 +719,7 @@ fn main() {
     let comprehend_started = Instant::now();
     let comprehension = comprehend::derive(
         &index.nodes,
+        &paths,
         &index.edges,
         &index.entry_points,
         &index.exit_points,
