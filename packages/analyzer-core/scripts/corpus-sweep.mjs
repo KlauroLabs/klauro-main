@@ -14,9 +14,9 @@ const WITHOUT_A_GRAMMAR = new Map([
 ]);
 
 const SERVED_SURFACE = new Map([
-  ['cal.com', { served: 300, exits: 590, observed: 15500, reachable: 9400, resolved: 19500, projects: 120, imported: 4200, roles: 6000, assigned: 26000, packages: 366, classified: 62, declared: 300, cases: 3573, asserting: 3486, exercised: 162, invariants: 30, conventions: 7, comprehended: 273, entities: 38 }],
+  ['cal.com', { served: 450, exits: 640, observed: 15500, reachable: 9400, resolved: 19500, projects: 120, imported: 4200, roles: 6000, assigned: 26000, packages: 366, classified: 62, declared: 300, cases: 3573, asserting: 3486, exercised: 162, invariants: 30, conventions: 7, comprehended: 273, entities: 38 }],
   ['hugo', { served: 13, exits: 200, projects: 6, imported: 18000, assigned: 11800, roles: 1900, packages: 200, classified: 45, declared: 152, cases: 1800, asserting: 1410, exercised: 0, conventions: 7, comprehended: 11, entities: 1 }],
-  ['immich', { served: 720, exits: 205, observed: 17500, reachable: 10200, resolved: 20000, projects: 18, imported: 3400, roles: 5900, assigned: 24000, packages: 507, classified: 92, declared: 263, cases: 3548, asserting: 3483, exercised: 893, invariants: 41, conventions: 9, comprehended: 360, entities: 76 }],
+  ['immich', { served: 830, exits: 205, observed: 17500, reachable: 10200, resolved: 20000, projects: 18, imported: 3400, roles: 5900, assigned: 24000, packages: 507, classified: 92, declared: 263, cases: 3548, asserting: 3483, exercised: 893, invariants: 41, conventions: 9, comprehended: 360, entities: 76 }],
   ['jellyfin', { served: 395, exits: 535, imported: 6500, observed: 11800, reachable: 4450, resolved: 17500, projects: 42, roles: 1850, assigned: 15500, packages: 246, classified: 59, declared: 63, cases: 1273, asserting: 1237, exercised: 234, invariants: 50, conventions: 5, comprehended: 359, entities: 4 }],
   ['jekyll', { served: 20, exits: 20 }],
   ['mastodon', { served: 230, exits: 250, observed: 40000, reachable: 28000, resolved: 21000, projects: 3, imported: 2600, roles: 9700, assigned: 46000, packages: 128, classified: 18, declared: 129, cases: 5741, asserting: 5103, exercised: 55, conventions: 7, comprehended: 211, entities: 1 }],

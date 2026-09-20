@@ -62,6 +62,11 @@ static SCHEDULE_REGISTRARS: &[&str] = &["cron", "schedule", "setInterval", "setT
 static MESSAGE_REGISTRARS: &[&str] = &["consume", "process", "subscribe", "worker"];
 static COMMAND_REGISTRARS: &[&str] = &["action", "command", "handler"];
 static IPC_REGISTRARS: &[&str] = &["handle", "handleOnce", "invoke"];
+static PROCEDURE_REGISTRARS: &[&str] = &["mutation", "query", "subscription"];
+
+fn registered_on_a_procedure(registrar: &str) -> bool {
+    names::root(registrar).to_ascii_lowercase().ends_with("procedure")
+}
 
 fn looks_like_path(label: &str) -> bool {
     label.starts_with('/') || label.starts_with("./") || label.contains("/:")
@@ -91,6 +96,11 @@ fn classify_registration(registrar: &str, label: Option<&str>) -> Option<&'stati
             Some(_) => Some("http"),
             None => None,
         };
+    }
+    if PROCEDURE_REGISTRARS.binary_search(&lowered.as_str()).is_ok()
+        && registered_on_a_procedure(registrar)
+    {
+        return Some("rpc");
     }
     if verb == "use" && label.is_some_and(looks_like_path) {
         return Some("http");
@@ -356,21 +366,37 @@ fn module_kind(specifier: &str) -> Option<&'static [&'static str]> {
 }
 
 fn classify_exit(binding: &str, origin: &str, member: &str) -> Option<&'static str> {
+    classify_reached(binding, origin, member, None)
+}
+
+fn reaching(kinds: &[&'static str], operation: &str) -> Option<&'static str> {
+    kinds.iter().copied().find(|kind| {
+        let operations = match *kind {
+            "file" => FILE_OPERATIONS,
+            "api" => NETWORK_OPERATIONS,
+            "process" => PROCESS_OPERATIONS,
+            _ => DATABASE_OPERATIONS,
+        };
+        operations.binary_search(&operation).is_ok()
+    })
+}
+
+fn classify_reached(
+    binding: &str,
+    origin: &str,
+    member: &str,
+    standing: Option<&[&'static str]>,
+) -> Option<&'static str> {
     let operation = names::leaf(member).to_ascii_lowercase();
     let operation = operation.as_str();
     if CLIENT_STORAGE_GLOBALS.binary_search(&binding).is_ok() {
         return Some("client_storage");
     }
     if let Some(reaches) = module_kind(origin) {
-        return reaches.iter().copied().find(|kind| {
-            let operations = match *kind {
-                "file" => FILE_OPERATIONS,
-                "api" => NETWORK_OPERATIONS,
-                "process" => PROCESS_OPERATIONS,
-                _ => DATABASE_OPERATIONS,
-            };
-            operations.binary_search(&operation).is_ok()
-        });
+        return reaching(reaches, operation);
+    }
+    if let Some(reaches) = standing {
+        return reaching(reaches, operation);
     }
     if is_file_origin(origin) && FILE_OPERATIONS.binary_search(&operation).is_ok() {
         return Some("file");
@@ -492,7 +518,17 @@ pub fn derive(
     type_references: &[TypeReferenceFact],
     resolution: &Resolution,
 ) -> Derived {
-    let Resolution { modules, local, unique_units, call_origins, .. } = resolution;
+    let Resolution { modules, local, unique_units, call_origins, through, .. } = resolution;
+    let mut stands_in: HashMap<&str, Vec<&'static str>> = HashMap::new();
+    for ((file, _), specifier) in modules {
+        let Some(kinds) = module_kind(specifier) else { continue };
+        let holding = stands_in.entry(files[*file as usize].as_str()).or_default();
+        for kind in kinds {
+            if !holding.contains(kind) {
+                holding.push(kind);
+            }
+        }
+    }
     let mut entry_points = Vec::new();
     let mut base_paths: HashMap<&str, String> = HashMap::new();
     for node in nodes {
@@ -825,9 +861,34 @@ pub fn derive(
             Some(specifier) => specifier.as_str(),
             None if IO_GLOBALS.binary_search(&binding).is_ok() => binding,
             None if module_kind(binding).is_some() => binding,
-            None => continue,
+            None => match through
+                .get(&(call.file, receiver.to_string()))
+                .or_else(|| through.get(&(call.file, binding.to_string())))
+                .and_then(|held| stands_in.get(held.as_str()))
+                .and_then(|kinds| reaching(kinds, &names::leaf(&call.callee).to_ascii_lowercase()))
+            {
+                Some(kind) => {
+                    let operation = names::leaf(&call.callee);
+                    reached_through.push(receiver.to_string());
+                    exit_points.push(ExitPoint {
+                        id: format!("exit:{}:{}", files[call.file as usize], position),
+                        kind,
+                        name: format!("{receiver}.{operation}"),
+                        source: source.clone(),
+                        target: binding.to_string(),
+                        operation: operation.to_string(),
+                        file: call.file,
+                        line: call.line,
+                        awaited: call.context.awaited,
+                    });
+                    continue;
+                }
+                None => continue,
+            },
         };
-        let Some(kind) = classify_exit(binding, origin, &call.callee) else {
+        let Some(kind) =
+            classify_reached(binding, origin, &call.callee, stands_in.get(origin).map(Vec::as_slice))
+        else {
             continue;
         };
         let receiver = receiver.to_string();
@@ -899,6 +960,7 @@ mod tests {
             ("NETWORK_OPERATIONS", NETWORK_OPERATIONS),
             ("PATH_REGISTRARS", PATH_REGISTRARS),
             ("PROCESS_OPERATIONS", PROCESS_OPERATIONS),
+            ("PROCEDURE_REGISTRARS", PROCEDURE_REGISTRARS),
             ("SCHEDULE_REGISTRARS", SCHEDULE_REGISTRARS),
             ("SESSION_OPERATIONS", SESSION_OPERATIONS),
             ("TEST_REGISTRARS", TEST_REGISTRARS),
@@ -922,5 +984,17 @@ mod tests {
         assert!(reads_a_data_member("this.rw.Header()"));
         assert!(!reads_a_data_member("this.client"));
         assert!(!reads_a_data_member("http.DefaultClient"));
+    }
+
+    #[test]
+    fn a_module_that_wraps_another_reaches_what_it_wraps() {
+        assert_eq!(
+            classify_reached("prisma", "packages/prisma/index.ts", "booking.findMany", Some(DATABASE)),
+            Some("database")
+        );
+        assert_eq!(
+            classify_reached("prisma", "packages/prisma/index.ts", "format", Some(DATABASE)),
+            None
+        );
     }
 }

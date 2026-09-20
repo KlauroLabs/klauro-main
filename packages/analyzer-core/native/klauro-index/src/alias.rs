@@ -31,6 +31,17 @@ impl Aliases {
             }
         }
         let mut entries = Vec::new();
+        for (name, home) in &packages {
+            if home.is_empty() || name.starts_with('.') {
+                continue;
+            }
+            entries.push(Entry {
+                scope: String::new(),
+                prefix: name.clone(),
+                wildcard: true,
+                target: home.clone(),
+            });
+        }
         for path in files {
             let name = basename(path).to_ascii_lowercase();
             let home = directory_of(path);

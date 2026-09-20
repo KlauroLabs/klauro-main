@@ -1112,13 +1112,27 @@ impl<'a> Extractor<'a> {
         });
     }
 
+    fn property_holding(&self, arguments: Node) -> Option<String> {
+        let mut held = arguments.parent()?;
+        while matches!(held.kind(), "call_expression" | "member_expression" | "arguments") {
+            held = held.parent()?;
+        }
+        let named = match held.kind() {
+            "pair" => held.child_by_field_name("key")?,
+            "variable_declarator" => held.child_by_field_name("name")?,
+            _ => return None,
+        };
+        Some(trim_quotes(self.text(named)).to_string())
+    }
+
     fn callback_arguments(&mut self, arguments: Node, scope: &Scope, callee: &str) {
         let mut cursor = arguments.walk();
         let children: Vec<Node> = arguments.named_children(&mut cursor).collect();
         let label = children
             .iter()
             .find(|argument| argument.kind() == "string")
-            .map(|argument| trim_quotes(self.text(*argument)).to_string());
+            .map(|argument| trim_quotes(self.text(*argument)).to_string())
+            .or_else(|| self.property_holding(arguments));
 
         if let Some(label) = label.as_deref() {
             for argument in children.iter() {

@@ -4,6 +4,7 @@ mod builtins;
 mod author;
 mod comprehend;
 mod conform;
+mod convention;
 mod coverage;
 mod bundler;
 mod dependencies;
@@ -400,6 +401,13 @@ fn main() {
         &index.type_references,
         &resolution,
     );
+    let mut derived = derived;
+    derived
+        .entry_points
+        .extend(convention::conventional(&index.nodes, &paths, &index.exports));
+    derived.entry_points.sort_by(|left, right| left.id.cmp(&right.id));
+    derived.entry_points.dedup_by(|left, right| left.id == right.id);
+    let derived = derived;
     let derived_elapsed = derive_started.elapsed();
     let served = derived.entry_points.iter().filter(|entry| entry.kind != "test").count();
     eprintln!(
@@ -726,7 +734,47 @@ fn main() {
         index.roles.as_ref().expect("roles precede comprehension"),
     );
     let mut comprehension = comprehension;
-    let named = comprehend::author(&mut comprehension, &root, &index.nodes, &paths);
+    let mut spoken_languages: std::collections::BTreeMap<&str, u32> =
+        std::collections::BTreeMap::new();
+    for file in &index.files {
+        if let Some(language) = file.language {
+            *spoken_languages.entry(language).or_default() += 1;
+        }
+    }
+    let mut languages: Vec<(String, u32)> = spoken_languages
+        .into_iter()
+        .map(|(language, count)| (language.to_string(), count))
+        .collect();
+    languages.sort_by(|left, right| right.1.cmp(&left.1).then(left.0.cmp(&right.0)));
+    let frameworks: Vec<String> = index
+        .dependencies
+        .as_ref()
+        .map(|found| {
+            let mut leading: Vec<&dependencies::Dependency> = found
+                .dependencies
+                .iter()
+                .filter(|dependency| dependency.role != "unknown" && dependency.imports > 0)
+                .collect();
+            leading.sort_by(|left, right| right.imports.cmp(&left.imports));
+            leading.iter().take(10).map(|dependency| dependency.name.clone()).collect()
+        })
+        .unwrap_or_default();
+    let told = comprehend::Telling {
+        shape: index.architecture.as_ref().map(|shaped| shaped.shape).unwrap_or("unknown"),
+        serving: index.architecture.as_ref().map(|shaped| shaped.serving_projects).unwrap_or(0),
+        routes: index.architecture.as_ref().map(|shaped| shaped.routes).unwrap_or(0),
+        shipped: index
+            .scope
+            .as_ref()
+            .map(|scoped| {
+                scoped.deployables.iter().filter(|unit| unit.bundled_into.is_none()).count() as u32
+            })
+            .unwrap_or(0),
+        projects: index.partition.as_ref().map(|split| split.sub_projects.len()).unwrap_or(1),
+        languages,
+        frameworks,
+    };
+    let named = comprehend::author(&mut comprehension, &root, &index.nodes, &paths, &told);
     eprintln!(
         "comprehend {:?} | capabilities {} | flows {} | terminal {} | chained {} | entities {} | named {}",
         comprehend_started.elapsed(),

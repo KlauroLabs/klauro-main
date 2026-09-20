@@ -370,6 +370,18 @@ capability, and it is dropped. What survives always carries a name, a descriptio
 because those were written when it was proposed rather than added afterwards. The count is an
 output: a focused tool has one.
 
+The flow budget is shared out between the projects in proportion to how many surfaces each
+serves, never taken in the order the flows happen to sit in, so a repository holding a hundred
+small packages beside one large application does not spend its budget on the packages.
+
+Last, the model writes the paragraph that says what the product is: what it is and who it is for,
+what someone can do with it, what it keeps, and how it is put together and shipped. It is written
+from the capabilities, the records, the surfaces, the ship units and the product's own words, and
+it is put to the same tests — supported by the facts, naming no vendor the facts never mention,
+saying what this product is rather than describing software, and specific to this product rather
+than any. A repository holding more than one project answers once for each and once for the whole,
+because a monorepo has no single answer and an average of its parts is not one.
+
 **Both models are required.** Where either is unreachable the tier reports no capabilities at all,
 because a capability derived by grouping code is a cluster of code, which is the one thing it must
 never be.

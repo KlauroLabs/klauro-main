@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::Serialize;
 
@@ -7,6 +7,34 @@ use crate::model::*;
 
 const STEPS_KEPT: usize = 16;
 const FLOWS_KEPT: usize = 400;
+const PROPOSED: usize = 160;
+
+fn shared<T>(lanes: &[Vec<T>], budget: usize) -> Vec<usize> {
+    let offered: usize = lanes.iter().map(Vec::len).sum();
+    let mut shares: Vec<usize> = lanes
+        .iter()
+        .map(|lane| match offered <= budget {
+            true => lane.len(),
+            false => (budget * lane.len() / offered).max(1).min(lane.len()),
+        })
+        .collect();
+    let mut spent: usize = shares.iter().sum();
+    let mut order: Vec<usize> = (0..lanes.len()).collect();
+    order.sort_by_key(|at| std::cmp::Reverse(lanes[*at].len()));
+    while spent > budget {
+        let Some(at) = order.iter().rev().find(|at| shares[**at] > 1).copied() else { break };
+        shares[at] -= 1;
+        spent -= 1;
+    }
+    while spent < budget {
+        let Some(at) = order.iter().find(|at| shares[**at] < lanes[**at].len()).copied() else {
+            break;
+        };
+        shares[at] += 1;
+        spent += 1;
+    }
+    shares
+}
 
 #[derive(Debug, Serialize)]
 pub struct Step {
@@ -23,6 +51,8 @@ pub struct Flow {
     pub id: String,
     pub entry_point: String,
     pub kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
     pub operation: String,
     pub standing: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -90,7 +120,17 @@ pub struct Capability {
 }
 
 #[derive(Debug, Serialize)]
+pub struct Product {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    pub description: String,
+    pub grounding: crate::author::Grounding,
+}
+
+#[derive(Debug, Serialize)]
 pub struct Comprehension {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub products: Vec<Product>,
     pub capabilities: Vec<Capability>,
     pub flows: Vec<Flow>,
     pub entities: Vec<Entity>,
@@ -156,6 +196,127 @@ fn spoken_for(root: &std::path::Path, nodes: &[IndexNode], files: &[String]) -> 
     }
 }
 
+pub struct Telling<'a> {
+    pub shape: &'a str,
+    pub serving: u32,
+    pub routes: u32,
+    pub shipped: u32,
+    pub projects: usize,
+    pub languages: Vec<(String, u32)>,
+    pub frameworks: Vec<String>,
+}
+
+fn describe_product(held: &mut Comprehension, spoken: &str, told: &Telling<'_>) {
+    if held.capabilities.is_empty() {
+        return;
+    }
+    let mut projects: Vec<Option<String>> = held
+        .capabilities
+        .iter()
+        .map(|capability| capability.project.clone())
+        .collect();
+    projects.sort();
+    projects.dedup();
+    let mut written: Vec<Product> = Vec::new();
+    if projects.len() > 1 {
+        for project in &projects {
+            if let Some(product) = describe_one(held, spoken, told, project.as_deref()) {
+                written.push(product);
+            }
+        }
+    }
+    if let Some(whole) = describe_one(held, spoken, told, None) {
+        written.push(whole);
+    }
+    written.sort_by(|left, right| left.project.cmp(&right.project));
+    held.products = written;
+}
+
+fn describe_one(
+    held: &Comprehension,
+    spoken: &str,
+    told: &Telling<'_>,
+    project: Option<&str>,
+) -> Option<Product> {
+    let its = |held: Option<&String>| project.is_none() || held.map(String::as_str) == project;
+    let capabilities: Vec<&Capability> = held
+        .capabilities
+        .iter()
+        .filter(|capability| its(capability.project.as_ref()))
+        .collect();
+    if capabilities.is_empty() {
+        return None;
+    }
+    let facts = format!(
+        "{}The product says this about itself:\n{spoken}\n\n\
+         What someone can do with it, read from the code, with the audience each is for:\n{}\n\n\
+         What it keeps: {}\n\
+         {}How it serves: {} across {} serving surfaces, {} routes\n\
+         How it ships: {} shipped units across {} projects\n\
+         What it is written in: {}\n\
+         What it is built with: {}",
+        match project {
+            Some(named) => format!(
+                "These facts are about one part of a larger repository, the part called {named}. \
+                 Describe that part, not the repository around it.\n\n"
+            ),
+            None => String::new(),
+        },
+        capabilities
+            .iter()
+            .map(|capability| format!(
+                "- {} (for {}): {}",
+                capability.name.as_deref().unwrap_or(""),
+                capability.audience.as_deref().unwrap_or("someone"),
+                capability.description.as_deref().unwrap_or("")
+            ))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        {
+            let kept: Vec<&str> = held
+                .entities
+                .iter()
+                .filter(|entity| its(entity.project.as_ref()))
+                .take(14)
+                .map(|entity| entity.declared_as.as_str())
+                .collect();
+            match kept.is_empty() {
+                true => "no named records".to_string(),
+                false => kept.join(", "),
+            }
+        },
+        match project.is_some() {
+            true => "These last counts are the whole repository's, not this part's, and belong in a \
+                     description of this part only where they are plainly true of it:\n",
+            false => "",
+        },
+        told.shape,
+        told.serving,
+        told.routes,
+        told.shipped,
+        told.projects,
+        told.languages
+            .iter()
+            .take(4)
+            .map(|(language, count)| format!("{language} ({count} files)"))
+            .collect::<Vec<_>>()
+            .join(", "),
+        match told.frameworks.is_empty() {
+            true => "nothing the catalog names".to_string(),
+            false => told.frameworks.join(", "),
+        }
+    );
+    let description = crate::author::describe_system(&facts)?;
+    let grounding = crate::author::test_description(&format!(
+        "{facts}\n\nPROPOSED DESCRIPTION: {description}"
+    ));
+    (grounding.holds() && grounding.outcome >= TESTED).then(|| Product {
+        project: project.map(str::to_string),
+        description,
+        grounding,
+    })
+}
+
 fn test_capabilities(held: &mut Comprehension, spoken: &str) {
     let tests: Vec<(String, crate::author::Grounding)> = held
         .capabilities
@@ -163,7 +324,7 @@ fn test_capabilities(held: &mut Comprehension, spoken: &str) {
         .map(|capability| {
             let facts = format!(
                 "A software system describes itself like this:\n{spoken}\n\n\
-                 FACTS about one part of it:\n  reached through these operations: {}\n  \
+                 FACTS about one part of it:\n  reached through these surfaces: {}\n  \
                  it writes these records: {}\n  it ends by: {}\n\n\
                  PROPOSED CAPABILITY: {}\nPROPOSED DESCRIPTION: {}",
                 capability.surfaces.join(", "),
@@ -204,24 +365,44 @@ fn form_capabilities(held: &mut Comprehension, spoken: &str) {
     if !crate::author::asked() || !crate::jev::asked() {
         return;
     }
-    let candidates: Vec<(&str, String)> = held
-        .flows
+    let mut ranked: Vec<&Flow> = held.flows.iter().collect();
+    ranked.sort_by_key(|flow| match flow.standing {
+        "terminal" => 0,
+        "proximal" => 1,
+        _ => 2,
+    });
+    let mut lanes: BTreeMap<Option<&str>, Vec<&Flow>> = BTreeMap::new();
+    for flow in ranked {
+        lanes.entry(flow.project.as_deref()).or_default().push(flow);
+    }
+    let lanes: Vec<Vec<&Flow>> = lanes.into_values().collect();
+    let shares = shared(&lanes, PROPOSED);
+    let ranked: Vec<&Flow> = lanes
         .iter()
-        .filter(|flow| flow.standing != "reading")
-        .take(120)
+        .zip(&shares)
+        .flat_map(|(lane, share)| lane.iter().take(*share).copied())
+        .collect();
+    let candidates: Vec<(&str, String)> = ranked
+        .into_iter()
         .map(|flow| {
             (
                 flow.id.as_str(),
                 format!(
-                    "- operation: {} ({}), writes: {}, ends by: {}",
+                    "- reached by: {}{} ({}), it {}, writes: {}, ends by: {}",
+                    flow.method.as_deref().map(|held| format!("{held} ")).unwrap_or_default(),
                     flow.operation,
                     flow.kind,
+                    match flow.standing {
+                        "terminal" => "changes something outside the process",
+                        "proximal" => "sets off other paths",
+                        _ => "only reads",
+                    },
                     match flow.writes.is_empty() {
                         true => "no named record".to_string(),
                         false => flow.writes.join("/"),
                     },
                     match flow.changes.is_empty() {
-                        true => "leading into other paths".to_string(),
+                        true => "nothing directly".to_string(),
                         false => flow.changes.join("/"),
                     }
                 ),
@@ -285,8 +466,13 @@ fn form_capabilities(held: &mut Comprehension, spoken: &str) {
         .into_iter()
         .filter_map(|(at, flows)| {
             let outcome = outcomes.get(at)?;
-            let mut surfaces: Vec<String> =
-                flows.iter().map(|(flow, _)| flow.operation.clone()).collect();
+            let mut surfaces: Vec<String> = flows
+                .iter()
+                .map(|(flow, _)| match flow.method.as_deref() {
+                    Some(method) => format!("{method} {}", flow.operation),
+                    None => flow.operation.clone(),
+                })
+                .collect();
             surfaces.sort();
             surfaces.dedup();
             surfaces.truncate(12);
@@ -349,6 +535,7 @@ pub fn author(
     root: &std::path::Path,
     nodes: &[IndexNode],
     files: &[String],
+    told: &Telling<'_>,
 ) -> u32 {
     if !crate::author::asked() || !crate::jev::asked() {
         return 0;
@@ -356,6 +543,7 @@ pub fn author(
     let spoken = spoken_for(root, nodes, files);
     form_capabilities(held, &spoken);
     test_capabilities(held, &spoken);
+    describe_product(held, &spoken, told);
     let mut evidence = std::collections::BTreeMap::new();
     let mut owner: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
     let mut ticket = 0;
@@ -380,7 +568,7 @@ pub fn author(
             ),
         );
     }
-    for flow in held.flows.iter().filter(|flow| flow.standing != "reading").take(40) {
+    for flow in held.flows.iter().take(40) {
         let key = mark(&mut owner, &flow.id);
         evidence.insert(
             key,
@@ -479,7 +667,9 @@ pub fn derive(
         };
         match edge.kind {
             EdgeKind::Calls | EdgeKind::Instantiates => next.entry(source).or_default().push(target),
-            EdgeKind::HasMethod => members.entry(source).or_default().push(target),
+            EdgeKind::Contains | EdgeKind::HasMethod => {
+                members.entry(source).or_default().push(target)
+            }
             _ => {}
         }
     }
@@ -508,10 +698,21 @@ pub fn derive(
         }
     }
 
-    let served: Vec<&EntryPoint> = entry_points
+    let project_of: HashMap<&str, Option<&str>> =
+        nodes.iter().map(|node| (node.id.as_str(), node.project.as_deref())).collect();
+    let mut by_project: BTreeMap<Option<&str>, Vec<&EntryPoint>> = BTreeMap::new();
+    for entry in entry_points.iter().filter(|entry| entry.kind != "test") {
+        by_project
+            .entry(project_of.get(entry.handler.as_str()).copied().flatten())
+            .or_default()
+            .push(entry);
+    }
+    let lanes: Vec<Vec<&EntryPoint>> = by_project.into_values().collect();
+    let shares = shared(&lanes, FLOWS_KEPT);
+    let served: Vec<&EntryPoint> = lanes
         .iter()
-        .filter(|entry| entry.kind != "test")
-        .take(FLOWS_KEPT)
+        .zip(&shares)
+        .flat_map(|(lane, share)| lane.iter().take(*share).copied())
         .collect();
     let handlers: HashMap<&str, &str> = served
         .iter()
@@ -600,6 +801,7 @@ pub fn derive(
             id: format!("flow:{}", entry.id),
             entry_point: entry.id.clone(),
             kind: entry.kind,
+            method: entry.method.clone(),
             operation: named,
             name: None,
             description: None,
@@ -617,7 +819,7 @@ pub fn derive(
     let entities = entities_first;
     let terminal = flows.iter().filter(|flow| flow.standing == "terminal").count() as u32;
     let chained = flows.iter().filter(|flow| !flow.leads_into.is_empty()).count() as u32;
-    Comprehension { capabilities: Vec::new(), flows, entities, terminal, chained }
+    Comprehension { products: Vec::new(), capabilities: Vec::new(), flows, entities, terminal, chained }
 }
 
 fn entities(

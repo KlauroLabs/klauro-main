@@ -14,6 +14,7 @@ An entry point is never inferred from a name. Four classes of evidence, each exa
 | Decorator | An annotation on the declaration names the surface | `@GetMapping("/users")` |
 | Callback | A function is passed to a registrar | `describe("x", () => {})` |
 | Heritage | The declaration's supertype is a framework entry base | `class Foo(graphene.ObjectType)` |
+| Convention | The file's place in a routing tree names the surface | `app/api/cancel/route.ts` |
 
 ### Heritage
 
@@ -33,6 +34,39 @@ so would match.
 
 Which type names reach a base is settled once for the whole index rather than walked again for
 each type, because a large schema declares hundreds of types sharing a base name.
+
+### Convention
+
+Some frameworks write no registration at all: the path of the file is the route, and the name
+of what it exports is the method. A convention applies only inside a **routing root** — a
+directory holding that framework's own configuration file — so a folder called `pages` in a
+repository that runs none of them names nothing.
+
+| Root | Tree | File | Members | Method |
+|---|---|---|---|---|
+| `next.config.*` | `app/` | `route.*` | exported `GET`…`OPTIONS` | the export |
+| `next.config.*` | `app/` | `page.*` | the default export | GET |
+| `next.config.*` | `pages/` | any script not starting with `_` | the default export | any under `api/`, else GET |
+| `svelte.config.*` | `routes/` | `+server.*` | exported `GET`…`OPTIONS` | the export |
+| `svelte.config.*` | `routes/` | `+page.server.*` | `load`, `actions` | GET, POST |
+| `svelte.config.*` | `routes/` | `+page.*` | `load` | GET |
+| `nuxt.config.*` | `server/api/`, `server/routes/` | any | the default export | a `.get`-style suffix, else any |
+| `nuxt.config.*` | `pages/` | `*.vue` | the file | GET |
+| `astro.config.*` | `pages/` | `*.astro`, scripts | the file, exported `GET`…`OPTIONS` | GET, the export |
+| `remix.config.*` | `app/routes/` | any script | `loader`, `action`, the default export | GET, POST, GET |
+
+The route is read from the segments between the tree and the file. A segment wrapped in
+parentheses is a grouping and names nothing; a Next parallel segment beginning with `@` names
+nothing; a bracketed name is the parameter it holds, wherever it sits inside the segment, and a
+matcher after `=` is not part of the name; a bracketed rest parameter answers every remaining
+segment. A leaf named `index` names the folder it sits in.
+
+A page that is drawn beside a file that loads it is not a second entry point: the loader is the
+one that runs.
+
+An export that names a function is that entry point's handler. An export bound to a value —
+a route wrapped in a responder, a page wrapped in a layout — names no unit to start from, so
+the file itself is the handler and pass 1.6 seeds from its declarations.
 
 ### Registration
 
@@ -68,6 +102,17 @@ claimed by another kind.
 
 Only modules that leave the process belong in the table. A path module manipulates strings.
 
+### Modules that stand in for others
+
+A repository wraps the connections it opens: one file constructs the database client and every
+other file imports it from there. The import resolves inside the repository, so the call has no
+package to be read against, and the connection would go unseen.
+
+A file stands in for what it imports. Where a binding resolves to a file in the repository, that
+file's own imported modules answer for it, and the operation decides among them exactly as it
+does for a module named directly. A wrapper that imports nothing which leaves the process stands
+in for nothing.
+
 ### Receivers that are their own evidence
 
 A receiver path is stronger evidence than a verb. A query reaches the database because of what
@@ -102,6 +147,9 @@ bury the handful that serve.
 
 Reading a header off a request is counted as a network exit where the receiver's root resolves
 to a network package: separating them needs the receiver's type rather than its root.
+
+A convention names a route without proving one is served: a `pages` tree beside a framework
+config is read as routed even where the build excludes it.
 
 Every vocabulary here is read with a binary search, which answers "absent" for a table that is
 merely unsorted — a silence that stops a rule without failing. A test holds them sorted.

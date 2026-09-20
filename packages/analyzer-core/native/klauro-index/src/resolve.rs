@@ -25,6 +25,7 @@ pub struct Resolution {
     pub call_origins: HashMap<(String, String), String>,
     pub method_owners: HashMap<String, String>,
     pub internal_specifiers: HashSet<String>,
+    pub through: HashMap<(u32, String), String>,
     pub package_calls: u32,
     pub runtime_calls: u32,
     pub indirect_calls: u32,
@@ -60,6 +61,7 @@ struct Symbols<'a> {
 
 struct Bindings<'a> {
     imported: HashMap<(u32, &'a str), u32>,
+    through: HashMap<(u32, &'a str), &'a str>,
     modules: HashMap<(u32, &'a str), &'a str>,
     locals: HashMap<(&'a str, &'a str), &'a str>,
     file_locals: HashMap<(u32, &'a str), &'a str>,
@@ -940,6 +942,7 @@ pub fn resolve(index: &Index) -> Resolution {
     let aliases = crate::alias::Aliases::read(index.files, index.nodes);
     let mut bindings = Bindings {
         imported: HashMap::new(),
+        through: HashMap::new(),
         modules: HashMap::new(),
         locals: HashMap::new(),
         file_locals: HashMap::new(),
@@ -1015,6 +1018,12 @@ pub fn resolve(index: &Index) -> Resolution {
             continue;
         }
         internal_specifiers.insert(fact.specifier.clone());
+        if let Some(first) = reached.first() {
+            let holding = index.files[*first as usize].as_str();
+            for name in &fact.names {
+                bindings.through.insert((fact.file, name.local.as_str()), holding);
+            }
+        }
         for target in &reached {
             edges.push(IndexEdge {
                 source: from.to_string(),
@@ -1096,6 +1105,11 @@ pub fn resolve(index: &Index) -> Resolution {
         }
     }
 
+    let through: HashMap<(u32, String), String> = bindings
+        .through
+        .iter()
+        .map(|((file, name), held)| ((*file, (*name).to_string()), (*held).to_string()))
+        .collect();
     let resolver = Resolver {
         symbols,
         bindings,
@@ -1443,6 +1457,7 @@ pub fn resolve(index: &Index) -> Resolution {
         call_origins,
         method_owners: owners,
         internal_specifiers,
+        through,
         package_calls,
         runtime_calls,
         indirect_calls,
