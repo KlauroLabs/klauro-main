@@ -5,6 +5,11 @@ use tree_sitter::{Node, Tree};
 use crate::language::LanguageSpec;
 use crate::model::*;
 
+static COLUMNS_OF: &[&str] = &[
+    "appends", "attributes", "casts", "columns", "dates", "fields", "fillable", "guarded",
+    "hidden", "visible",
+];
+
 fn names_code(text: &str) -> bool {
     let mut characters = text.chars();
     characters.next().is_some_and(|first| first.is_alphabetic() || first == '_' || first == ':')
@@ -1165,9 +1170,52 @@ impl<'a> Extractor<'a> {
         }
     }
 
+    fn columns_of(&self, node: Node) -> Vec<String> {
+        // a property that lists the record's columns rather than being one
+        let mut held = Vec::new();
+        let Some(listed) = self.listed_in(node) else { return held };
+        let mut cursor = listed.walk();
+        for element in listed.named_children(&mut cursor) {
+            if let Some(spoken) = self.first_string(element) {
+                let named = spoken.trim();
+                if !named.is_empty() && named.len() < 64 && !held.iter().any(|kept| kept == named) {
+                    held.push(named.to_string());
+                }
+            }
+        }
+        held
+    }
+
+    fn listed_in<'held>(&self, node: Node<'held>) -> Option<Node<'held>> {
+        let mut cursor = node.walk();
+        let mut waiting = vec![node];
+        while let Some(held) = waiting.pop() {
+            let kind = held.kind();
+            if held.id() != node.id() && (kind.contains("array") || kind == "list") {
+                return Some(held);
+            }
+            waiting.extend(held.named_children(&mut cursor));
+        }
+        None
+    }
+
+    fn first_string(&self, node: Node) -> Option<String> {
+        let mut cursor = node.walk();
+        let mut waiting = vec![node];
+        while let Some(held) = waiting.pop() {
+            let kind = held.kind();
+            if kind.contains("string") || kind == "simple_symbol" {
+                return Some(trim_quotes(self.text(held)).to_string());
+            }
+            waiting.extend(held.named_children(&mut cursor));
+        }
+        None
+    }
+
     fn declare_field(&mut self, node: Node, scope: &Scope) {
         let Some(owner) = scope.type_owner.clone() else { return };
         let Some(name) = self.name_of(node) else { return };
+        let held = name.clone();
         let id = self.id("field", &name, node);
         let type_annotation = node
             .child_by_field_name("type")
@@ -1190,10 +1238,40 @@ impl<'a> Extractor<'a> {
             registration_label: None,
         });
         self.facts.edges.push(IndexEdge {
-            source: owner,
+            source: owner.clone(),
             target: id,
             kind: EdgeKind::HasField,
         });
+        if !COLUMNS_OF.contains(&held.as_str()) {
+            return;
+        }
+        for column in self.columns_of(node) {
+            let held = self.id("field", &column, node);
+            if self.facts.nodes.iter().any(|node| node.id == held) {
+                continue;
+            }
+            self.facts.nodes.push(IndexNode {
+                id: held.clone(),
+                name: column,
+                kind: NodeKind::Property,
+                file: self.file,
+                span: span_of(node),
+                parent: Some(owner.clone()),
+                signature: None,
+                modifiers: Modifiers::default(),
+                decorators: Vec::new(),
+                type_annotation: None,
+                documentation: None,
+                project: None,
+                callback_of: None,
+                registration_label: None,
+            });
+            self.facts.edges.push(IndexEdge {
+                source: owner.clone(),
+                target: held,
+                kind: EdgeKind::HasField,
+            });
+        }
     }
 
     fn declare_import(&mut self, node: Node) {

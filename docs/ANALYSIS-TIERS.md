@@ -396,6 +396,12 @@ because a monorepo has no single answer and an average of its parts is not one.
 because a capability derived by grouping code is a cluster of code, which is the one thing it must
 never be.
 
+Where a record declares its own columns — a list of names a framework reads to know what may be
+written — those names are the record's fields, and the property that holds the list is not one of
+them. The first name in each entry is the column, so a list that maps a column to how it is cast
+still names the column. Without this a record declares three fields called table, fillable and
+casts, and every description written from them describes the framework.
+
 A record is called what its declaration calls it. Turning `AddressBookSubscription` into
 "Address book subscription" is reading, not writing, and a model asked to do it spends most of a
 run restating identifiers it was given; only the sentence saying what the record holds is worth
