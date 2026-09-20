@@ -356,6 +356,11 @@ within a project that change the same thing — settled from the facts, never fr
 entity is a type the code stores: one a model annotation or base class declares, or one a database
 call addresses by name, with the fields it holds.
 
+Nothing in this tier is named without a model. A member carries the label the code gives it — the
+operation a flow serves, the type an entity is declared as — and that is a fact from T1, not a
+reading. A name and a description are authored or absent; there is no derived wording, no template
+and no fallback, because a comprehension nobody wrote is not a comprehension.
+
 The model names what those facts describe, and **a second model checks the naming against the same
 facts before it is kept**: whether every claim is supported, whether it names a technology the facts
 never mention, and how specific it is to this system rather than to any system. A name that fails

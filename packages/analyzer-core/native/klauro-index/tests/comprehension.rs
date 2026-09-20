@@ -10,7 +10,7 @@ fn a_served_surface_is_a_flow_with_the_steps_it_runs() {
     let flows = index["comprehension"]["flows"].as_array().unwrap();
     let reading = flows
         .iter()
-        .find(|flow| flow["name"].as_str().unwrap().contains("stores"))
+        .find(|flow| flow["operation"].as_str().unwrap().contains("store"))
         .expect("the route is a flow");
     assert!(reading["units"].as_u64().unwrap() >= 2, "{reading}");
     assert!(!reading["steps"].as_array().unwrap().is_empty(), "{reading}");
@@ -38,14 +38,20 @@ fn an_entity_is_a_type_the_code_stores_rather_than_any_type_with_fields() {
 }
 
 #[test]
-fn nothing_is_named_without_a_model() {
+fn no_member_carries_a_name_or_a_description_without_a_model() {
     let index = index();
-    let named: Vec<&serde_json::Value> = index["comprehension"]["capabilities"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .chain(index["comprehension"]["entities"].as_array().unwrap())
-        .filter(|member| !member["description"].is_null())
+    let comprehension = &index["comprehension"];
+    let members: Vec<&serde_json::Value> = ["capabilities", "flows", "entities"]
+        .into_iter()
+        .flat_map(|member| comprehension[member].as_array().unwrap())
         .collect();
-    assert!(named.is_empty(), "a run without a key authors nothing: {named:?}");
+    assert!(!members.is_empty(), "the fixture holds members to check");
+    let written: Vec<&&serde_json::Value> = members
+        .iter()
+        .filter(|member| !member["name"].is_null() || !member["description"].is_null())
+        .collect();
+    assert!(
+        written.is_empty(),
+        "comprehension is authored or absent, never derived: {written:?}"
+    );
 }

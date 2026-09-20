@@ -23,8 +23,14 @@ pub struct Flow {
     pub id: String,
     pub entry_point: String,
     pub kind: &'static str,
-    pub name: String,
+    pub operation: String,
     pub standing: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grounding: Option<crate::author::Grounding>,
     pub steps: Vec<Step>,
     pub units: u32,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -37,11 +43,11 @@ pub struct Flow {
 
 #[derive(Debug, Serialize)]
 pub struct Entity {
-    pub name: String,
+    pub declared_as: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub named_fields: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub called: Option<String>,
+    pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -130,13 +136,36 @@ pub fn author(held: &mut Comprehension) -> u32 {
             ),
         );
     }
+    for flow in held.flows.iter().filter(|flow| flow.standing != "reading").take(40) {
+        let key = mark(&mut owner, &flow.id);
+        evidence.insert(
+            key,
+            format!(
+                "  kind: a path through the system that someone sets off\n  \
+                 the operation it serves, named as the code names it: {}\n  \
+                 how it is reached: {}\n  the records it writes: {}\n  \
+                 it runs {} units and ends by: {}",
+                flow.operation,
+                flow.kind,
+                match flow.writes.is_empty() {
+                    true => "none named".to_string(),
+                    false => flow.writes.join(", "),
+                },
+                flow.units,
+                match flow.changes.is_empty() {
+                    true => "leading into other paths".to_string(),
+                    false => flow.changes.join(", "),
+                }
+            ),
+        );
+    }
     for entity in held.entities.iter().take(40) {
         let key = mark(&mut owner, &format!("entity:{}", entity.declared_in));
         evidence.insert(
             key,
             format!(
                 "  kind: data entity\n  declared as: {} in {}\n  it holds these fields: {}\n  written by {} units, read by {} units",
-                entity.name,
+                entity.declared_as,
                 entity.declared_in.split(':').next().unwrap_or(""),
                 match entity.named_fields.is_empty() {
                     true => format!("{} unnamed", entity.fields),
@@ -147,7 +176,7 @@ pub fn author(held: &mut Comprehension) -> u32 {
             ),
         );
     }
-    let written = crate::author::name_them("capabilities and data entities", &evidence);
+    let written = crate::author::name_them("outcomes, paths and data records", &evidence);
     let grounded = crate::author::ground(&written, &evidence);
     let by_id: std::collections::BTreeMap<String, (&crate::author::Written, crate::author::Grounding)> =
         owner
@@ -167,13 +196,23 @@ pub fn author(held: &mut Comprehension) -> u32 {
             settled += 1;
         }
     }
+    for flow in held.flows.iter_mut() {
+        let Some((written, grounding)) = by_id.get(&flow.id).copied() else { continue };
+        let (name, description) = crate::author::written_name(written);
+        flow.grounding = Some(grounding);
+        if grounding.reads_as_an_outcome() {
+            flow.name = Some(name.to_string());
+            flow.description = Some(description.to_string());
+            settled += 1;
+        }
+    }
     for entity in held.entities.iter_mut() {
         let id = format!("entity:{}", entity.declared_in);
         let Some((held, grounding)) = by_id.get(&id).copied() else { continue };
         let (name, description) = crate::author::written_name(held);
         entity.grounding = Some(grounding);
         if grounding.holds() {
-            entity.called = Some(name.to_string());
+            entity.name = Some(name.to_string());
             entity.description = Some(description.to_string());
             settled += 1;
         }
@@ -215,7 +254,10 @@ pub fn derive(
     }
 
     let entities_first = entities(nodes, edges, exit_points, roles);
-    let held: HashSet<&str> = entities_first.iter().map(|entity| entity.name.as_str()).collect();
+    let held: HashSet<&str> = entities_first
+        .iter()
+        .map(|entity| entity.declared_as.as_str())
+        .collect();
     let mut entity_of: HashMap<&str, Vec<&str>> = HashMap::new();
     for exit in exit_points {
         if exit.kind != "database" || !changes(exit) {
@@ -323,7 +365,10 @@ pub fn derive(
             id: format!("flow:{}", entry.id),
             entry_point: entry.id.clone(),
             kind: entry.kind,
-            name: named,
+            operation: named,
+            name: None,
+            description: None,
+            grounding: None,
             standing,
             steps,
             units: seen.len() as u32,
@@ -359,7 +404,7 @@ fn capabilities(flows: &[Flow]) -> Vec<Capability> {
     let mut capabilities: Vec<Capability> = grouped
         .into_iter()
         .map(|((project, signature), held)| {
-            let mut surfaces: Vec<String> = held.iter().map(|flow| flow.name.clone()).collect();
+            let mut surfaces: Vec<String> = held.iter().map(|flow| flow.operation.clone()).collect();
             surfaces.sort();
             surfaces.dedup();
             surfaces.truncate(12);
@@ -456,9 +501,9 @@ fn entities(
         })
         .filter(|node| fields.get(node.id.as_str()).copied().unwrap_or(0) >= 1)
         .map(|node| Entity {
-            name: node.name.clone(),
+            declared_as: node.name.clone(),
             named_fields: named_fields.get(node.id.as_str()).cloned().unwrap_or_default(),
-            called: None,
+            name: None,
             description: None,
             grounding: None,
             declared_in: node.id.clone(),
