@@ -520,6 +520,19 @@ impl<'a> Extractor<'a> {
             .map(|child| self.text(*child).trim().to_string())
     }
 
+    fn published(&self, node: Node) -> Modifiers {
+        let mut cursor = node.walk();
+        let open = node.children(&mut cursor).any(|child| match child.kind() {
+            "visibility_modifier" => !self.text(child).contains("crate") && !self.text(child).contains("super"),
+            "modifiers" | "modifier" | "access_modifier" | "accessibility_modifier" | "member_modifiers" => {
+                let held = self.text(child);
+                held.contains("public") || held.contains("open")
+            }
+            held => held == "public" || held == "open",
+        });
+        Modifiers { exported: open, ..Modifiers::default() }
+    }
+
     pub fn run(mut self, tree: &Tree, path: &str, line_count: u32) -> FileFacts {
         let root = tree.root_node();
         self.facts.lines = line_count;
@@ -852,7 +865,7 @@ impl<'a> Extractor<'a> {
             span: span_of(node),
             parent: owner.clone(),
             signature: Some(self.keyword_signature(node)),
-            modifiers: Modifiers::default(),
+            modifiers: self.published(node),
             decorators: Vec::new(),
             type_annotation: None,
             documentation: None,
@@ -921,7 +934,7 @@ impl<'a> Extractor<'a> {
                     receiver: None,
                 }),
             },
-            modifiers: Modifiers::default(),
+            modifiers: self.published(node),
             decorators: self.decorators_of(node),
             type_annotation: self.text_content(node),
             documentation: None,
@@ -1056,7 +1069,7 @@ impl<'a> Extractor<'a> {
                 }
                 signature
             }),
-            modifiers: Modifiers::default(),
+            modifiers: self.published(node),
             decorators: self.decorators_of(node),
             type_annotation: None,
             documentation: None,

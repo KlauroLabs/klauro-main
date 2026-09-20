@@ -15,6 +15,7 @@ An entry point is never inferred from a name. Four classes of evidence, each exa
 | Callback | A function is passed to a registrar | `describe("x", () => {})` |
 | Heritage | The declaration's supertype is a framework entry base | `class Foo(graphene.ObjectType)` |
 | Convention | The file's place in a routing tree names the surface | `app/api/cancel/route.ts` |
+| Publication | A library declares the name for others to call | `pub fn search(...)` |
 
 ### Heritage
 
@@ -67,6 +68,23 @@ one that runs.
 An export that names a function is that entry point's handler. An export bound to a value —
 a route wrapped in a responder, a page wrapped in a layout — names no unit to start from, so
 the file itself is the handler and pass 1.6 seeds from its declarations.
+
+### Publication
+
+Not every system waits to be asked over a socket. A library is called by importing it, so its
+entry points are the names it publishes, and a repository whose surfaces are only its exports
+would otherwise report that nothing reaches it.
+
+A project publishes when the unit it ships is a library and nothing under its root is served: a
+library beside the service that serves is reached through that service, not on its own. Within
+it, a declaration at the top of a file is published when the language says it is — a Rust or
+Swift visibility marker, an exported name in a module that a manifest's `main` or `module`
+names, a Go name that begins in upper case, a Python name that does not begin with an
+underscore, a declaration in a header under `include`. The manifest's own entry file is offered
+first, because what a package names is what it means a caller to reach.
+
+Only the top of a file counts. A method on a published type is reached through the type, and
+counting it again would bury the handful of names a caller actually starts from.
 
 ### Registration
 
@@ -147,6 +165,10 @@ bury the handful that serve.
 
 Reading a header off a request is counted as a network exit where the receiver's root resolves
 to a network package: separating them needs the receiver's type rather than its root.
+
+A published name is a surface a caller may reach, not one that is known to be reached: a `pub`
+item no module re-exports is counted, because proving otherwise means walking each language's
+own visibility tree.
 
 A convention names a route without proving one is served: a `pages` tree beside a framework
 config is read as routed even where the build excludes it.

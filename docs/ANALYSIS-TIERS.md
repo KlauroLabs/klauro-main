@@ -428,6 +428,11 @@ index yields a description the check refuses, which is the right outcome and a t
 repository whose calls dispatch through interfaces the index cannot resolve — jellyfin — reports
 flows that reach no exit, so its terminal count is zero and its capabilities are proximal only.
 
+A library is reached by being imported rather than by being called over a socket, so the names it
+publishes are its surfaces and its flows begin there. Measured over the corpus, this is the
+difference between a search tool reporting nothing and reporting that it matches patterns, honours
+ignore files and shapes its output.
+
 A repository that keeps nothing reports no records, and one whose records are named only in a
 call's arguments rather than through its receiver — a keyword naming a table, a string naming a
 collection — reports none either, rather than reporting the types that merely sound like records.

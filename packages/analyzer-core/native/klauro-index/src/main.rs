@@ -25,6 +25,7 @@ mod icelot;
 mod model;
 mod names;
 mod paths;
+mod published;
 mod resolve;
 mod roles;
 mod route;
@@ -487,6 +488,24 @@ fn main() {
         scope.unassigned_nodes
     );
     index.scope = Some(scope);
+
+    let published_started = Instant::now();
+    let published = published::published(
+        &paths,
+        &index.nodes,
+        index.scope.as_ref().expect("scope precedes what it publishes"),
+        &index.entry_points,
+    );
+    if !published.is_empty() {
+        eprintln!(
+            "published {:?} | surfaces {}",
+            published_started.elapsed(),
+            published.len()
+        );
+        index.entry_points.extend(published);
+        index.entry_points.sort_by(|left, right| left.id.cmp(&right.id));
+        index.entry_points.dedup_by(|left, right| left.id == right.id);
+    }
 
     let partition_started = Instant::now();
     let partition = subproject::derive(
