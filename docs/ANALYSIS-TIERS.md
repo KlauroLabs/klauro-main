@@ -396,6 +396,13 @@ because a monorepo has no single answer and an average of its parts is not one.
 because a capability derived by grouping code is a cluster of code, which is the one thing it must
 never be.
 
+A description says what a thing is, not what it is made of. Whoever reads one can already see the
+fields, so listing them back says nothing; what is worth writing is what the record stands for in
+the world the product is about. That in turn decides how it is judged: a claim is tested by
+whether the facts support it, but an interpretation is tested by whether it fits them and
+contradicts nothing — asking the stricter question of an interpretation rewards restating the
+evidence, which is the one thing it must not do.
+
 Where a record declares its own columns — a list of names a framework reads to know what may be
 written — those names are the record's fields, and the property that holds the list is not one of
 them. The first name in each entry is the column, so a list that maps a column to how it is cast

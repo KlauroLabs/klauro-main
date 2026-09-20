@@ -412,22 +412,18 @@ fn form_capabilities(held: &Comprehension, spoken: &str) -> Vec<Capability> {
             (
                 flow.id.as_str(),
                 format!(
-                    "- reached by: {}{} ({}), it {}, writes: {}, ends by: {}",
+                    "{}{} ({}), {}{}",
                     flow.method.as_deref().map(|held| format!("{held} ")).unwrap_or_default(),
                     flow.operation,
                     flow.kind,
                     match flow.standing {
-                        "terminal" => "changes something outside the process",
-                        "proximal" => "sets off other paths",
-                        _ => "only reads",
+                        "terminal" => "changes",
+                        "proximal" => "leads on",
+                        _ => "reads",
                     },
                     match flow.writes.is_empty() {
-                        true => "no named record".to_string(),
-                        false => flow.writes.join("/"),
-                    },
-                    match flow.changes.is_empty() {
-                        true => "nothing directly".to_string(),
-                        false => flow.changes.join("/"),
+                        true => String::new(),
+                        false => format!(" {}", flow.writes.join("/")),
                     }
                 ),
             )
@@ -461,14 +457,13 @@ fn form_capabilities(held: &Comprehension, spoken: &str) -> Vec<Capability> {
         })
         .collect();
     let state = format!(
-        "A software system describes itself like this:\n{spoken}\n\nIt delivers these outcomes:\n{}\n\n\
-         Each question names one path through the system. Decide which outcome that path serves.",
+        "Outcomes of this system: {}",
         outcomes
             .iter()
             .enumerate()
-            .map(|(at, outcome)| format!("o{at}: {} — {}", outcome.name, outcome.description))
+            .map(|(at, outcome)| format!("o{at} {}", outcome.name))
             .collect::<Vec<_>>()
-            .join("\n")
+            .join("; ")
     );
     let answers = crate::jev::decide(&state, questions);
     let mut grouped: HashMap<usize, Vec<(&Flow, f64)>> = HashMap::new();
@@ -636,7 +631,7 @@ pub fn author(
             (capabilities, products)
         },
         || {
-            let written = crate::author::name_them("the records this system keeps", &evidence);
+            let written = crate::author::name_them("records this system keeps", &spoken, &evidence);
             let named = started.elapsed();
             let grounded = crate::author::ground(&written, &evidence);
             eprintln!("  author name {named:?} | ground {:?}", started.elapsed() - named);

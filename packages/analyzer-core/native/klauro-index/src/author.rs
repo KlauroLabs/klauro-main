@@ -192,7 +192,11 @@ fn propose_batch(evidence: &[String], spoken_for: &str) -> Vec<Outcome> {
         .collect()
 }
 
-pub fn name_them(member: &str, evidence: &BTreeMap<String, String>) -> BTreeMap<String, Written> {
+pub fn name_them(
+    member: &str,
+    spoken_for: &str,
+    evidence: &BTreeMap<String, String>,
+) -> BTreeMap<String, Written> {
     let mut named = BTreeMap::new();
     if !asked() || evidence.is_empty() {
         return named;
@@ -203,7 +207,7 @@ pub fn name_them(member: &str, evidence: &BTreeMap<String, String>) -> BTreeMap<
         .collect();
     let batches: Vec<BTreeMap<String, Written>> = listed
         .par_chunks(named_per_call())
-        .map(|batch| name_batch(member, batch))
+        .map(|batch| name_batch(member, spoken_for, batch))
         .collect();
     for batch in batches {
         named.extend(batch);
@@ -211,15 +215,15 @@ pub fn name_them(member: &str, evidence: &BTreeMap<String, String>) -> BTreeMap<
     named
 }
 
-fn name_batch(member: &str, listed: &[String]) -> BTreeMap<String, Written> {
+fn name_batch(member: &str, spoken_for: &str, listed: &[String]) -> BTreeMap<String, Written> {
     let mut named = BTreeMap::new();
     let prompt = format!(
-        "You are describing the {member} of a software system from facts extracted from its code.\n\
-         Say only what the facts say. Never name a technology, vendor or product that does not \
-         appear in the facts, and never name the storage, the framework or the code mechanism. \
-         Never invent a purpose, an audience or a behaviour the facts do not state. Each \
-         description is one clause saying what the record is and what it holds, taking its words \
-         from the field names given. No more than fifteen words.\n\n\
+        "A software system describes itself like this:\n{spoken_for}\n\n\
+         Describe the {member} of that system. For each one, say in a single clause what it is \
+         and why this product keeps one — what it stands for in the world the product is about.\n\n\
+         Do not list its fields: whoever reads this can already see them. Use them only to work \
+         out what the thing is. Never name a technology, vendor, framework or storage, and never \
+         invent a purpose the facts do not support. No more than fifteen words.\n\n\
          Echo each id back exactly as given.\n\
          Return JSON only: {{\"items\":[{{\"id\":\"...\",\"description\":\"...\"}}]}}\n\n\
          The {member}:\n{}",
@@ -286,7 +290,7 @@ fn written_of(told: &str) -> BTreeMap<&'static str, crate::jev::Question> {
             "outcome",
             crate::jev::Question {
                 kind: "noul",
-                instructions: format!("{told}\n\nThe proposed description says what the record holds, rather than describing a database operation or a code mechanism"),
+                instructions: format!("{told}\n\nThe proposed description says what the thing is and what it stands for, rather than listing its fields or naming a code mechanism"),
                 criteria: BTreeMap::new().into(),
             },
         ),
@@ -294,7 +298,7 @@ fn written_of(told: &str) -> BTreeMap<&'static str, crate::jev::Question> {
             "supported",
             crate::jev::Question {
                 kind: "noul",
-                instructions: format!("{told}\n\nEvery claim in the proposed description is supported by the facts"),
+                instructions: format!("{told}\n\nThe proposed description fits the facts: nothing in it contradicts them, and it reads as a fair account of what this is"),
                 criteria: BTreeMap::new().into(),
             },
         ),
