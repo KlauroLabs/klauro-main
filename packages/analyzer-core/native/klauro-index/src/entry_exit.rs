@@ -102,6 +102,12 @@ fn classify_registration(registrar: &str, label: Option<&str>) -> Option<&'stati
     {
         return Some("rpc");
     }
+    if let Some(_) = mapped_method(verb) {
+        return match label {
+            Some(label) if looks_like_route(&split_label(label).1) => Some("http"),
+            _ => None,
+        };
+    }
     if verb == "use" && label.is_some_and(looks_like_path) {
         return Some("http");
     }
@@ -150,6 +156,15 @@ fn names_a_test(name: &str) -> bool {
         return false;
     };
     rest.is_empty() || rest.starts_with('_') || rest.starts_with(char::is_uppercase)
+}
+
+fn mapped_method(verb: &str) -> Option<String> {
+    let rest = verb.strip_prefix("Map").or_else(|| verb.strip_prefix("map"))?;
+    let lowered = rest.to_ascii_lowercase();
+    HTTP_METHODS
+        .binary_search(&lowered.as_str())
+        .is_ok()
+        .then(|| lowered.to_ascii_uppercase())
 }
 
 fn looks_like_route(value: &str) -> bool {
@@ -748,12 +763,14 @@ pub fn derive(
             kind,
             name: registration.label.clone(),
             method: match kind == "http" {
-                true => label_method.or_else(|| {
-                    HTTP_METHODS
-                        .binary_search(&verb.to_ascii_lowercase().as_str())
-                        .is_ok()
-                        .then(|| verb.to_ascii_uppercase())
-                }),
+                true => label_method
+                    .or_else(|| mapped_method(verb))
+                    .or_else(|| {
+                        HTTP_METHODS
+                            .binary_search(&verb.to_ascii_lowercase().as_str())
+                            .is_ok()
+                            .then(|| verb.to_ascii_uppercase())
+                    }),
                 false => None,
             },
             path: if kind == "http" { Some(path) } else { None },

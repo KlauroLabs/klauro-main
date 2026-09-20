@@ -637,7 +637,10 @@ pub fn author(
         );
     }
     let started = std::time::Instant::now();
-    let reaching = rayon::ThreadPoolBuilder::new().num_threads(REACHING_AT_ONCE).build().ok();
+    let reaching = rayon::ThreadPoolBuilder::new()
+        .num_threads(crate::author::reaching_at_once(REACHING_AT_ONCE))
+        .build()
+        .ok();
     let work = || rayon::join(
         || {
             let mut capabilities = form_capabilities(held, &spoken);
@@ -827,19 +830,26 @@ pub fn derive(
             (false, true) => "proximal",
             (false, false) => "reading",
         };
-        let named = named_of
-            .get(entry.handler.as_str())
-            .and_then(|node| node.parent.as_deref())
-            .and_then(|parent| named_of.get(parent))
-            .filter(|owner| owner.kind.is_type())
-            .map(|owner| owner.name.as_str())
-            .filter(|named| !GENERIC.contains(named))
+        let named = entry
+            .path
+            .as_deref()
+            .filter(|_| entry.kind == "http")
             .map(str::to_string)
             .or_else(|| {
-                GENERIC.contains(&entry.name.as_str()).then(|| {
-                    let path = crate::paths::basename(&files[entry.file as usize]);
-                    path.split('.').next().unwrap_or(path).to_string()
-                })
+                named_of
+                    .get(entry.handler.as_str())
+                    .and_then(|node| node.parent.as_deref())
+                    .and_then(|parent| named_of.get(parent))
+                    .filter(|owner| owner.kind.is_type())
+                    .map(|owner| owner.name.as_str())
+                    .filter(|named| !GENERIC.contains(named))
+                    .map(str::to_string)
+                    .or_else(|| {
+                        GENERIC.contains(&entry.name.as_str()).then(|| {
+                            let path = crate::paths::basename(&files[entry.file as usize]);
+                            path.split('.').next().unwrap_or(path).to_string()
+                        })
+                    })
             })
             .unwrap_or_else(|| entry.name.clone());
         let mut writes: Vec<String> = seen

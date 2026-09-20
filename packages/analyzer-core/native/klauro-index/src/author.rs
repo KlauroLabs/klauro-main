@@ -9,6 +9,21 @@ const ENDPOINT: &str = "https://api.deepinfra.com/v1/openai/chat/completions";
 const SECONDS: &str = "60";
 const GROUNDED: f64 = 0.5;
 const NAMED_PER_CALL: usize = 4;
+const NAMED_PER_SPOKEN_CALL: usize = 40;
+
+pub fn reaching_at_once(over_a_network: usize) -> usize {
+    match spoken_to().is_some() {
+        true => 6,
+        false => over_a_network,
+    }
+}
+
+fn named_per_call() -> usize {
+    match spoken_to().is_some() {
+        true => NAMED_PER_SPOKEN_CALL,
+        false => NAMED_PER_CALL,
+    }
+}
 const PATHS_PER_PROPOSAL: usize = 400;
 
 #[derive(Debug, Serialize, Clone, Copy)]
@@ -125,7 +140,7 @@ pub fn name_them(member: &str, evidence: &BTreeMap<String, String>) -> BTreeMap<
         .map(|(id, facts)| format!("- id: {id}\n{facts}"))
         .collect();
     let batches: Vec<BTreeMap<String, Written>> = listed
-        .par_chunks(NAMED_PER_CALL)
+        .par_chunks(named_per_call())
         .map(|batch| name_batch(member, batch))
         .collect();
     for batch in batches {
