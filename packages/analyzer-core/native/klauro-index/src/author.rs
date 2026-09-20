@@ -9,7 +9,7 @@ const ENDPOINT: &str = "https://api.deepinfra.com/v1/openai/chat/completions";
 const SECONDS: &str = "25";
 const GROUNDED: f64 = 0.5;
 const TRIES: usize = 5;
-const NAMED_PER_CALL: usize = 10;
+const NAMED_PER_CALL: usize = 24;
 const NAMED_PER_SPOKEN_CALL: usize = 40;
 
 pub fn reaching_at_once(over_a_network: usize) -> usize {

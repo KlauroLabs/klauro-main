@@ -34,12 +34,20 @@ pub fn post(endpoint: &str, key: &str, request: &str) -> Option<String> {
 }
 
 pub fn asking(endpoint: &str, key: &str, request: &str) -> Answer {
-    ASKED.fetch_add(1, Ordering::Relaxed);
+    let at = ASKED.fetch_add(1, Ordering::Relaxed);
+    let telling = std::env::var("KLAURO_REACH_DEBUG").is_ok();
+    let started = std::time::Instant::now();
+    if telling {
+        eprintln!("    reach {at} start {:?}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 1_000_000);
+    }
     let answered = agent()
         .post(endpoint)
         .header("Authorization", &format!("Bearer {key}"))
         .header("Content-Type", "application/json")
         .send(request);
+    if telling {
+        eprintln!("    reach {at} done  {:?} after {:?}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 1_000_000, started.elapsed());
+    }
     match answered {
         Ok(mut held) => match held.body_mut().read_to_string() {
             Ok(text) => Answer::Held(text),
