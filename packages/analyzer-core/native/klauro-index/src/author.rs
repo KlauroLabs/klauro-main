@@ -72,6 +72,9 @@ static BESIDE: &[&str] = &["deepseek-coder-v2:16b", "qwen2.5:14b-instruct"];
 
 fn asking_of_models(first: String) -> Vec<String> {
     let mut held = vec![first];
+    if std::env::var("KLAURO_AUTHOR_MODEL").is_ok() {
+        return held;
+    }
     for other in BESIDE {
         if !held.iter().any(|named| named == other) {
             held.push((*other).to_string());
@@ -529,25 +532,42 @@ fn carved(text: &str) -> &str {
     &held[open..=close]
 }
 
+fn speaks_of_chat() -> bool {
+    endpoint().contains("/api/chat")
+}
+
 fn bodied(prompt: &str, most: u32, model: &str) -> Option<String> {
-    serde_json::to_string(&serde_json::json!({
-        "model": model,
-        "messages": [{"role": "user", "content": prompt}],
-        "response_format": {"type": "json_object"},
-        "max_tokens": most,
-        "temperature": 0,
-    }))
-    .ok()
+    let held = match speaks_of_chat() {
+        true => serde_json::json!({
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": false,
+            "options": {"temperature": 0, "num_predict": most},
+        }),
+        false => serde_json::json!({
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "response_format": {"type": "json_object"},
+            "max_tokens": most,
+            "temperature": 0,
+        }),
+    };
+    serde_json::to_string(&held).ok()
+}
+
+fn spoken_content(text: &str) -> Option<String> {
+    let held = serde_json::from_str::<serde_json::Value>(text).ok()?;
+    match speaks_of_chat() {
+        true => held["message"]["content"].as_str().map(str::to_string),
+        false => held["choices"][0]["message"]["content"].as_str().map(str::to_string),
+    }
 }
 
 fn answered<T: serde::de::DeserializeOwned>(prompt: &str, most: u32, models: &[String]) -> Option<T> {
     let spoken_to = spoken_to();
     let read = |text: &str| -> Option<T> { match &spoken_to {
         Some(_) => serde_json::from_str::<T>(carved(text)).ok(),
-        None => serde_json::from_str::<serde_json::Value>(text)
-            .ok()
-            .and_then(|held| held["choices"][0]["message"]["content"].as_str().map(str::to_string))
-            .and_then(|held| serde_json::from_str::<T>(carved(&held)).ok()),
+        None => spoken_content(text).and_then(|held| serde_json::from_str::<T>(carved(&held)).ok()),
     } };
     let mut held = None;
     'asking: for model in models {
