@@ -351,10 +351,15 @@ once rather than once per run.
 
 A flow is a served surface and everything it reaches. Its standing is what it does at the end: a
 flow that reaches a call which changes something outside the process is terminal, one that reaches
-another flow is proximal, and one that only reads is neither. A capability is a group of flows
-within a project that change the same thing — settled from the facts, never from the naming. An
-entity is a type the code stores: one a model annotation or base class declares, or one a database
-call addresses by name, with the fields it holds.
+another flow is proximal, and one that only reads is neither. An entity is a type the code stores:
+one a model annotation or base class declares, or one a database call addresses by name, with the
+fields it holds. Those are facts, and 6.1 and 6.2 settle them.
+
+A capability is not. One model reads the changing paths and proposes the outcomes this system
+delivers; a decision model then places each path against those outcomes, or against none, and a
+capability is the paths that landed on the same one. **Both models are required.** Where either is
+unreachable the tier reports no capabilities at all, because a capability derived by grouping code
+is a cluster of code, which is the one thing it must never be.
 
 Nothing in this tier is named without a model. A member carries the label the code gives it — the
 operation a flow serves, the type an entity is declared as — and that is a fact from T1, not a

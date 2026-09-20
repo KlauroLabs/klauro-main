@@ -38,10 +38,20 @@ fn an_entity_is_a_type_the_code_stores_rather_than_any_type_with_fields() {
 }
 
 #[test]
+fn no_capability_exists_without_a_model_to_form_it() {
+    let index = index();
+    let capabilities = index["comprehension"]["capabilities"].as_array().unwrap();
+    assert!(
+        capabilities.is_empty(),
+        "capabilities are formed by a model or not at all: {capabilities:?}"
+    );
+}
+
+#[test]
 fn no_member_carries_a_name_or_a_description_without_a_model() {
     let index = index();
     let comprehension = &index["comprehension"];
-    let members: Vec<&serde_json::Value> = ["capabilities", "flows", "entities"]
+    let members: Vec<&serde_json::Value> = ["flows", "entities"]
         .into_iter()
         .flat_map(|member| comprehension[member].as_array().unwrap())
         .collect();

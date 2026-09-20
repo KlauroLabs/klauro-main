@@ -45,6 +45,49 @@ fn model() -> String {
         .unwrap_or_else(|_| "meta-llama/Llama-3.3-70B-Instruct".to_string())
 }
 
+#[derive(Debug, Deserialize)]
+struct Proposed {
+    outcomes: Vec<String>,
+}
+
+pub fn propose_outcomes(evidence: &[String]) -> Vec<String> {
+    if !asked() || evidence.is_empty() {
+        return Vec::new();
+    }
+    let prompt = format!(
+        "These are the paths through a software system that change something, described by the \
+         operation each one serves and the records it writes.\n\n{}\n\n\
+         Name the outcomes this system delivers to the people who use it. An outcome is something \
+         someone gets, in 2-5 words, taken from the words in the operations given. Never name a \
+         database, a table, a framework or a code mechanism. Propose at most 24, fewest first, \
+         each one covering several of the paths where you can.\n\n\
+         Return JSON only: {{\"outcomes\":[\"...\"]}}",
+        evidence.join("\n")
+    );
+    let body = serde_json::json!({
+        "model": model(),
+        "messages": [{"role": "user", "content": prompt}],
+        "response_format": {"type": "json_object"},
+        "max_tokens": 900,
+        "temperature": 0,
+    });
+    let Ok(request) = serde_json::to_string(&body) else { return Vec::new() };
+    let Some(answer) = ask(&request) else { return Vec::new() };
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&answer) else { return Vec::new() };
+    let Some(text) = parsed["choices"][0]["message"]["content"].as_str() else { return Vec::new() };
+    let Ok(held) = serde_json::from_str::<Proposed>(text) else { return Vec::new() };
+    let mut outcomes: Vec<String> = held
+        .outcomes
+        .into_iter()
+        .map(|outcome| outcome.trim().to_string())
+        .filter(|outcome| !outcome.is_empty() && outcome.len() < 60)
+        .collect();
+    outcomes.sort();
+    outcomes.dedup();
+    outcomes.truncate(24);
+    outcomes
+}
+
 pub fn name_them(member: &str, evidence: &BTreeMap<String, String>) -> BTreeMap<String, Written> {
     let mut named = BTreeMap::new();
     if !asked() || evidence.is_empty() {

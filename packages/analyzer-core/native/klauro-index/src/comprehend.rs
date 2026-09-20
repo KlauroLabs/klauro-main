@@ -108,10 +108,131 @@ fn changes(exit: &ExitPoint) -> bool {
     }
 }
 
+const ASSIGNED: f64 = 0.6;
+
+fn form_capabilities(held: &mut Comprehension) {
+    if !crate::author::asked() || !crate::jev::asked() {
+        return;
+    }
+    let candidates: Vec<(&str, String)> = held
+        .flows
+        .iter()
+        .filter(|flow| flow.standing != "reading")
+        .take(120)
+        .map(|flow| {
+            (
+                flow.id.as_str(),
+                format!(
+                    "- operation: {} ({}), writes: {}, ends by: {}",
+                    flow.operation,
+                    flow.kind,
+                    match flow.writes.is_empty() {
+                        true => "no named record".to_string(),
+                        false => flow.writes.join("/"),
+                    },
+                    match flow.changes.is_empty() {
+                        true => "leading into other paths".to_string(),
+                        false => flow.changes.join("/"),
+                    }
+                ),
+            )
+        })
+        .collect();
+    let outcomes = crate::author::propose_outcomes(
+        &candidates.iter().map(|(_, facts)| facts.clone()).collect::<Vec<_>>(),
+    );
+    if outcomes.is_empty() {
+        return;
+    }
+    let mut criteria: std::collections::BTreeMap<String, String> = outcomes
+        .iter()
+        .enumerate()
+        .map(|(at, outcome)| (format!("o{at}"), outcome.clone()))
+        .collect();
+    criteria.insert("none".to_string(), "This path serves none of these outcomes".to_string());
+    let questions: std::collections::BTreeMap<String, crate::jev::Question> = candidates
+        .iter()
+        .enumerate()
+        .map(|(at, (_, facts))| {
+            (
+                format!("f{at}"),
+                crate::jev::Question {
+                    kind: "choice",
+                    instructions: format!("Which outcome does this path serve? {facts}"),
+                    criteria: criteria.clone().into(),
+                },
+            )
+        })
+        .collect();
+    let state = format!(
+        "A software system delivers these outcomes:\n{}\n\nEach question names one path through \
+         the system. Decide which outcome that path serves.",
+        outcomes
+            .iter()
+            .enumerate()
+            .map(|(at, outcome)| format!("o{at}: {outcome}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    let answers = crate::jev::decide(&state, questions);
+    let mut grouped: HashMap<String, Vec<&Flow>> = HashMap::new();
+    let by_id: HashMap<&str, &Flow> = held.flows.iter().map(|flow| (flow.id.as_str(), flow)).collect();
+    for (at, (id, _)) in candidates.iter().enumerate() {
+        let Some(chosen) = answers.get(&format!("f{at}")).and_then(|held| held.held(ASSIGNED))
+        else {
+            continue;
+        };
+        if chosen == "none" {
+            continue;
+        }
+        let Some(outcome) = chosen
+            .strip_prefix('o')
+            .and_then(|at| at.parse::<usize>().ok())
+            .and_then(|at| outcomes.get(at))
+        else {
+            continue;
+        };
+        if let Some(flow) = by_id.get(id) {
+            grouped.entry(outcome.clone()).or_default().push(flow);
+        }
+    }
+    let mut capabilities: Vec<Capability> = grouped
+        .into_iter()
+        .map(|(outcome, flows)| {
+            let mut surfaces: Vec<String> = flows.iter().map(|flow| flow.operation.clone()).collect();
+            surfaces.sort();
+            surfaces.dedup();
+            surfaces.truncate(12);
+            let mut records: Vec<String> =
+                flows.iter().flat_map(|flow| flow.writes.iter().cloned()).collect();
+            records.sort();
+            records.dedup();
+            let mut changes: Vec<String> =
+                flows.iter().flat_map(|flow| flow.changes.iter().cloned()).collect();
+            changes.sort();
+            changes.dedup();
+            Capability {
+                id: format!("capability:{}", outcome.to_ascii_lowercase().replace(' ', "-")),
+                records,
+                changes,
+                flows: flows.iter().map(|flow| flow.id.clone()).collect(),
+                surfaces,
+                project: flows.first().and_then(|flow| flow.project.clone()),
+                name: Some(outcome),
+                description: None,
+                grounding: None,
+            }
+        })
+        .collect();
+    capabilities.sort_by(|left, right| left.id.cmp(&right.id));
+    held.capabilities = capabilities;
+}
+
 pub fn author(held: &mut Comprehension) -> u32 {
-    if !crate::author::asked() {
+    if !crate::author::asked() || !crate::jev::asked() {
         return 0;
     }
+    form_capabilities(held);
     let mut evidence = std::collections::BTreeMap::new();
     let mut owner: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
     let mut ticket = 0;
@@ -187,8 +308,8 @@ pub fn author(held: &mut Comprehension) -> u32 {
             .collect();
     let mut settled = 0;
     for capability in held.capabilities.iter_mut() {
-        let Some((held, grounding)) = by_id.get(&capability.id).copied() else { continue };
-        let (name, description) = crate::author::written_name(held);
+        let Some((written, grounding)) = by_id.get(&capability.id).copied() else { continue };
+        let (name, description) = crate::author::written_name(written);
         capability.grounding = Some(grounding);
         if grounding.reads_as_an_outcome() {
             capability.name = Some(name.to_string());
@@ -382,57 +503,7 @@ pub fn derive(
     let entities = entities_first;
     let terminal = flows.iter().filter(|flow| flow.standing == "terminal").count() as u32;
     let chained = flows.iter().filter(|flow| !flow.leads_into.is_empty()).count() as u32;
-    let capabilities = capabilities(&flows);
-    Comprehension { capabilities, flows, entities, terminal, chained }
-}
-
-fn capabilities(flows: &[Flow]) -> Vec<Capability> {
-    let mut grouped: HashMap<(Option<String>, String), Vec<&Flow>> = HashMap::new();
-    for flow in flows {
-        if flow.standing == "reading" {
-            continue;
-        }
-        let signatures: Vec<String> = match (flow.writes.is_empty(), flow.changes.is_empty()) {
-            (false, _) => flow.writes.clone(),
-            (true, false) => vec![flow.changes.join(",")],
-            (true, true) => vec!["reaches other flows".to_string()],
-        };
-        for signature in signatures {
-            grouped.entry((flow.project.clone(), signature)).or_default().push(flow);
-        }
-    }
-    let mut capabilities: Vec<Capability> = grouped
-        .into_iter()
-        .map(|((project, signature), held)| {
-            let mut surfaces: Vec<String> = held.iter().map(|flow| flow.operation.clone()).collect();
-            surfaces.sort();
-            surfaces.dedup();
-            surfaces.truncate(12);
-            let mut changes: Vec<String> = held
-                .iter()
-                .flat_map(|flow| flow.changes.iter().cloned())
-                .collect();
-            changes.sort();
-            changes.dedup();
-            let records = match held.iter().any(|flow| flow.writes.contains(&signature)) {
-                true => vec![signature.clone()],
-                false => Vec::new(),
-            };
-            Capability {
-                records,
-                id: format!("capability:{}:{signature}", project.as_deref().unwrap_or("root")),
-                changes,
-                flows: held.iter().map(|flow| flow.id.clone()).collect(),
-                surfaces,
-                project,
-                name: None,
-                description: None,
-                grounding: None,
-            }
-        })
-        .collect();
-    capabilities.sort_by(|left, right| left.id.cmp(&right.id));
-    capabilities
+    Comprehension { capabilities: Vec::new(), flows, entities, terminal, chained }
 }
 
 fn entities(
