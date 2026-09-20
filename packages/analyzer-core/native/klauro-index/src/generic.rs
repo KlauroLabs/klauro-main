@@ -683,6 +683,12 @@ impl<'a> Extractor<'a> {
             }
             return;
         }
+        if kind.ends_with("composite_literal")
+            || kind == "struct_expression"
+            || kind == "object_creation_expression"
+        {
+            self.declare_command(node, scope);
+        }
         if self.spec.calls.kinds.contains(&kind) {
             let registrar = self.record_call(node, scope);
             let mut inner = scope.clone();
@@ -1235,6 +1241,52 @@ impl<'a> Extractor<'a> {
             line: node.start_position().row as u32 + 1,
             type_only: false,
             names,
+        });
+    }
+
+    fn declare_command(&mut self, node: Node, scope: &Scope) {
+        let Some(named) = node
+            .child_by_field_name("type")
+            .or_else(|| node.named_child(0))
+            .map(|held| self.text(held).trim().trim_start_matches('&').to_string())
+        else {
+            return;
+        };
+        let leaf = named.rsplit(['.', ':']).next().unwrap_or(&named).to_ascii_lowercase();
+        if !leaf.ends_with("command") && !leaf.ends_with("cmd") {
+            return;
+        }
+        let mut cursor = node.walk();
+        let mut fields: Vec<(String, Node)> = Vec::new();
+        for held in node.named_children(&mut cursor) {
+            let mut inner = held.walk();
+            for element in held.named_children(&mut inner) {
+                let mut keyed = element.walk();
+                let parts: Vec<Node> = element.named_children(&mut keyed).collect();
+                if parts.len() == 2 {
+                    fields.push((self.text(parts[0]).trim().to_ascii_lowercase(), parts[1]));
+                }
+            }
+        }
+        let spoken = fields
+            .iter()
+            .find(|(key, _)| matches!(key.as_str(), "name" | "use" | "command"))
+            .map(|(_, value)| trim_quotes(self.text(*value)).trim().to_string())
+            .filter(|held| !held.is_empty() && !held.contains(' '));
+        let running = fields.iter().find(|(key, _)| {
+            matches!(key.as_str(), "run" | "rune" | "runfunc" | "action" | "execute" | "handler")
+        });
+        let (Some(spoken), Some((held, target))) = (spoken, running) else { return };
+        self.facts.registrations.push(RegistrationFact {
+            file: self.file,
+            registrar: format!("{named}.{held}"),
+            label: spoken,
+            handler: scope
+                .callable
+                .clone()
+                .or_else(|| scope.owner.clone())
+                .unwrap_or_else(|| self.module_id.clone()),
+            line: target.start_position().row as u32 + 1,
         });
     }
 

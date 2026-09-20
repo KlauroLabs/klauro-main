@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 const ENDPOINT: &str = "https://api.deepinfra.com/v1/openai/chat/completions";
 const SECONDS: &str = "60";
 const GROUNDED: f64 = 0.5;
+const TRIES: usize = 3;
 const NAMED_PER_CALL: usize = 4;
 const NAMED_PER_SPOKEN_CALL: usize = 40;
 
@@ -479,16 +480,20 @@ fn answered<T: serde::de::DeserializeOwned>(prompt: &str, most: u32, model: &str
     {
         return Some(value);
     }
-    let text = match &spoken_to {
-        Some(command) => spoken(command, prompt)?,
-        None => ask(&request)?,
-    };
-    let Some(value) = read(&text) else {
-        eprintln!(
-            "  author unreadable answer of {} bytes to a prompt of {} bytes",
-            text.len(),
-            prompt.len()
-        );
+    let mut held = None;
+    for attempt in 0..TRIES {
+        let text = match &spoken_to {
+            Some(command) => spoken(command, prompt),
+            None => ask(&request),
+        };
+        held = text.and_then(|text| read(&text).map(|value| (value, text)));
+        if held.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(400 * (attempt + 1) as u64));
+    }
+    let Some((value, text)) = held else {
+        eprintln!("  author no answer to a prompt of {} bytes", prompt.len());
         return None;
     };
     crate::jev::remember(&request, &text);

@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 const ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
 const MODEL: &str = "jev-latest";
 const QUESTIONS_PER_CALL: usize = 48;
+const TRIES: usize = 3;
 const SECONDS: &str = "20";
 
 #[derive(Debug, Serialize)]
@@ -114,7 +115,15 @@ pub fn decide(state: &str, questions: BTreeMap<String, Question>) -> BTreeMap<St
             let Ok(request) = serde_json::to_string(&body) else {
                 return BTreeMap::new();
             };
-            match ask(&request) {
+            let mut held = None;
+            for attempt in 0..TRIES {
+                held = ask(&request);
+                if held.is_some() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(400 * (attempt + 1) as u64));
+            }
+            match held {
                 Some(answered) => answered.answers,
                 None => {
                     eprintln!(

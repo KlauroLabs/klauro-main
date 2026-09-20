@@ -64,6 +64,12 @@ static COMMAND_REGISTRARS: &[&str] = &["action", "command", "handler"];
 static IPC_REGISTRARS: &[&str] = &["handle", "handleOnce", "invoke"];
 static PROCEDURE_REGISTRARS: &[&str] = &["mutation", "query", "subscription"];
 
+fn declared_by_a_command(registrar: &str) -> bool {
+    let Some((held, _)) = registrar.rsplit_once('.') else { return false };
+    let leaf = held.rsplit(['.', ':']).next().unwrap_or(held).to_ascii_lowercase();
+    leaf.ends_with("command") || leaf.ends_with("cmd")
+}
+
 fn registered_on_a_procedure(registrar: &str) -> bool {
     names::root(registrar).to_ascii_lowercase().ends_with("procedure")
 }
@@ -96,6 +102,11 @@ fn classify_registration(registrar: &str, label: Option<&str>) -> Option<&'stati
             Some(_) => Some("http"),
             None => None,
         };
+    }
+    if declared_by_a_command(registrar)
+        && matches!(lowered.as_str(), "run" | "rune" | "runfunc" | "action" | "execute" | "handler")
+    {
+        return Some("cli");
     }
     if PROCEDURE_REGISTRARS.binary_search(&lowered.as_str()).is_ok()
         && registered_on_a_procedure(registrar)
@@ -534,6 +545,7 @@ pub fn derive(
     resolution: &Resolution,
 ) -> Derived {
     let Resolution { modules, local, unique_units, call_origins, through, .. } = resolution;
+    let known: HashSet<&str> = nodes.iter().map(|node| node.id.as_str()).collect();
     let mut stands_in: HashMap<&str, Vec<&'static str>> = HashMap::new();
     for ((file, _), specifier) in modules {
         let Some(kinds) = module_kind(specifier) else { continue };
@@ -731,7 +743,10 @@ pub fn derive(
             .rsplit('.')
             .next()
             .unwrap_or(&registration.handler);
-        let Some(handler) = local
+        let Some(handler) = known
+            .contains(registration.handler.as_str())
+            .then(|| registration.handler.clone())
+            .or_else(|| local
             .get(&(registration.file, registration.handler.clone()))
             .or_else(|| local.get(&(registration.file, leaf.to_string())))
             .or_else(|| unique_units.get(leaf))
@@ -749,7 +764,7 @@ pub fn derive(
             })
             .or_else(|| {
                 declared.contains(leaf).then(|| files[registration.file as usize].clone())
-            })
+            }))
         else {
             continue;
         };
