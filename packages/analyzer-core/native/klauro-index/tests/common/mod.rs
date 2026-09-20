@@ -8,7 +8,7 @@ const TEXT: &[&str] = &[
     "annotation", "at", "bundled_into", "callback_of", "called", "callee", "caller", "category",
     "composition", "constructed", "declared_as", "declared_by", "declares", "default_value", "description", "documentation",
     "convention", "entry_point", "from", "from_call", "gap", "guard", "holder", "invariant", "handler", "id", "imported", "kind", "label", "language",
-    "local", "method", "name", "namespace", "node", "operation", "parent", "path", "project", "reason",
+    "local", "method", "name", "namespace", "node", "operation", "parent", "path", "project", "rationale", "reason",
     "receiver", "reexport_from", "registrar", "registration_label", "return_type", "role", "root",
     "version",
     "runs", "shape", "source", "specifier", "target", "type_annotation", "unit", "value", "with",

@@ -16,6 +16,8 @@ pub struct Grounding {
     pub invented: f64,
     pub specific: f64,
     pub outcome: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub universal: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -50,35 +52,58 @@ fn model() -> String {
         .unwrap_or_else(|_| "meta-llama/Llama-3.3-70B-Instruct".to_string())
 }
 
-#[derive(Debug, Deserialize)]
-struct Proposed {
-    outcomes: Vec<String>,
+#[derive(Debug, Deserialize, Clone)]
+pub struct Outcome {
+    pub name: String,
+    pub description: String,
+    #[serde(default)]
+    pub audience: String,
 }
 
-pub fn propose_outcomes(evidence: &[String]) -> Vec<String> {
+#[derive(Debug, Deserialize)]
+struct Proposed {
+    outcomes: Vec<Outcome>,
+}
+
+pub fn propose_outcomes(evidence: &[String], spoken_for: &str) -> Vec<Outcome> {
     if !asked() || evidence.is_empty() {
         return Vec::new();
     }
     let prompt = format!(
-        "These are the paths through a software system that change something, described by the \
-         operation each one serves and the records it writes.\n\n{}\n\n\
-         Name the outcomes this system delivers to the people who use it. An outcome is something \
-         someone gets, in 2-5 words, taken from the words in the operations given. Never name a \
-         database, a table, a framework or a code mechanism. Propose at most 24, fewest first, \
-         each one covering several of the paths where you can.\n\n\
-         Return JSON only: {{\"outcomes\":[\"...\"]}}",
+        "A software system describes itself like this:\n{spoken_for}\n\n\
+         These are the paths through it that change something, each named as the code names the \
+         operation it serves, with the records it writes:\n{}\n\n\
+         Name the capabilities of this system. A capability is an outcome someone gets — something \
+         that would appear in a product description, a user objective or an operational \
+         responsibility. It must pass two tests. The audience test: would this product's own \
+         audience recognise it as something they came for? Name that audience — an end user, an \
+         operator, an administrator, a developer, an analyst or an agent — and judge by them, not \
+         by a passer-by. The universality test: would this be true of most codebases? Then it is \
+         infrastructure and not a capability, so leave it out. Take your words from the operations \
+         and the self-description, never from the storage or the framework. Say how many there are \
+         by what you find; a focused tool has one.\n\n\
+         For each, give a name of 2-6 words, one sentence saying what someone gets, and the \
+         audience it is for.\n\n\
+         Return JSON only: {{\"outcomes\":[{{\"name\":\"...\",\"description\":\"...\",\"audience\":\"...\"}}]}}",
         evidence.join("\n")
     );
-    let Some(text) = complete(&prompt, 900) else { return Vec::new() };
+    let Some(text) = complete(&prompt, 2400) else { return Vec::new() };
     let Ok(held) = serde_json::from_str::<Proposed>(carved(&text)) else { return Vec::new() };
-    let mut outcomes: Vec<String> = held
+    let mut outcomes: Vec<Outcome> = held
         .outcomes
         .into_iter()
-        .map(|outcome| outcome.trim().to_string())
-        .filter(|outcome| !outcome.is_empty() && outcome.len() < 60)
+        .map(|mut outcome| {
+            outcome.name = outcome.name.trim().to_string();
+            outcome.description = outcome.description.trim().to_string();
+            outcome.audience = outcome.audience.trim().to_ascii_lowercase();
+            outcome
+        })
+        .filter(|outcome| {
+            !outcome.name.is_empty() && outcome.name.len() < 70 && !outcome.description.is_empty()
+        })
         .collect();
-    outcomes.sort();
-    outcomes.dedup();
+    outcomes.sort_by(|left, right| left.name.cmp(&right.name));
+    outcomes.dedup_by(|left, right| left.name == right.name);
     outcomes.truncate(24);
     outcomes
 }
@@ -198,11 +223,83 @@ fn grounding_of(held: &Written, facts: &str) -> Grounding {
             .map(|score| (score * 10.0).round() / 10.0)
             .unwrap_or(0.0);
         let outcome = answers.get("outcome").map(crate::jev::Decision::settled).unwrap_or(0.0);
-        Grounding { supported, invented, specific, outcome }
+        Grounding { supported, invented, specific, outcome, universal: None }
+    }
+}
+
+pub fn test_capability(facts: &str) -> Grounding {
+    let questions = BTreeMap::from([
+        (
+            "supported".to_string(),
+            crate::jev::Question {
+                kind: "noul",
+                instructions: "Every claim in the proposed capability and description is supported by the facts".to_string(),
+                criteria: BTreeMap::new().into(),
+            },
+        ),
+        (
+            "invented".to_string(),
+            crate::jev::Question {
+                kind: "noul",
+                instructions: "The proposal names a specific third-party product, vendor, brand or technology — a payment provider, a cloud service, a database engine, a named library — that does not appear in the facts. Ordinary words for the people who use the system and for what it does are not that.".to_string(),
+                criteria: BTreeMap::new().into(),
+            },
+        ),
+        (
+            "outcome".to_string(),
+            crate::jev::Question {
+                kind: "noul",
+                instructions: "This is something the product's own audience came for — it would appear in a product description, a user objective, a business offering or an operational responsibility".to_string(),
+                criteria: BTreeMap::new().into(),
+            },
+        ),
+        (
+            "universal".to_string(),
+            crate::jev::Question {
+                kind: "noul",
+                instructions: "This would be true of most codebases, so it is infrastructure rather than something this product offers".to_string(),
+                criteria: BTreeMap::new().into(),
+            },
+        ),
+        (
+            "specific".to_string(),
+            crate::jev::Question {
+                kind: "score",
+                instructions: "How specific this is to these facts rather than generic".to_string(),
+                criteria: vec![
+                    "Generic; could describe any system".to_string(),
+                    "Names the domain but little else".to_string(),
+                    "Names what only this part of the system does".to_string(),
+                ]
+                .into(),
+            },
+        ),
+    ]);
+    let answers = crate::jev::decide(facts, questions);
+    let settled = |named: &str, fallback: f64| {
+        answers.get(named).map(crate::jev::Decision::settled).unwrap_or(fallback)
+    };
+    Grounding {
+        supported: settled("supported", 0.0),
+        invented: settled("invented", 1.0),
+        outcome: settled("outcome", 0.0),
+        universal: Some(settled("universal", 1.0)),
+        specific: answers
+            .get("specific")
+            .and_then(|held| held.score)
+            .map(|score| (score * 10.0).round() / 10.0)
+            .unwrap_or(0.0),
     }
 }
 
 impl Grounding {
+    pub fn stands(&self) -> bool {
+        self.supported >= GROUNDED
+            && self.invented < GROUNDED
+            && self.outcome >= GROUNDED
+            && self.universal.unwrap_or(1.0) < GROUNDED
+    }
+
     pub fn holds(&self) -> bool {
         self.supported >= GROUNDED && self.invented < GROUNDED
     }

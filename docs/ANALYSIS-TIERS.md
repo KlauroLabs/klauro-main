@@ -355,11 +355,24 @@ another flow is proximal, and one that only reads is neither. An entity is a typ
 one a model annotation or base class declares, or one a database call addresses by name, with the
 fields it holds. Those are facts, and 6.1 and 6.2 settle them.
 
-A capability is not. One model reads the changing paths and proposes the outcomes this system
-delivers; a decision model then places each path against those outcomes, or against none, and a
-capability is the paths that landed on the same one. **Both models are required.** Where either is
-unreachable the tier reports no capabilities at all, because a capability derived by grouping code
-is a cluster of code, which is the one thing it must never be.
+A capability is not. One model reads the changing paths **and the product's own words** — the
+opening of its README, the description its manifest carries — and proposes the outcomes this system
+delivers, each with the audience it is for, because bottom-up clustering alone names the mechanism
+and top-down text alone names things the code never implements. A decision model then places each
+path against those outcomes or against none, and a capability is the paths that landed on the same
+one, each carrying the role it plays in that capability and why it was placed there.
+
+Every capability is then put to the tests the model demands of it: is every claim supported by the
+facts, does it name a product or vendor the facts never mention, would this product's own audience
+recognise it as something they came for, and would it be true of most codebases — in which case it
+is infrastructure and not a capability. One that fails is not described more carefully; it is not a
+capability, and it is dropped. What survives always carries a name, a description and an audience,
+because those were written when it was proposed rather than added afterwards. The count is an
+output: a focused tool has one.
+
+**Both models are required.** Where either is unreachable the tier reports no capabilities at all,
+because a capability derived by grouping code is a cluster of code, which is the one thing it must
+never be.
 
 The authoring model is reached one of two ways and the tier does not care which: a chat endpoint,
 named by `KLAURO_AUTHOR_ENDPOINT` and `KLAURO_AUTHOR_MODEL`, which serves a hosted provider, a

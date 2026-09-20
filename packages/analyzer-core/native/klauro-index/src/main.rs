@@ -726,7 +726,7 @@ fn main() {
         index.roles.as_ref().expect("roles precede comprehension"),
     );
     let mut comprehension = comprehension;
-    let named = comprehend::author(&mut comprehension);
+    let named = comprehend::author(&mut comprehension, &root, &index.nodes, &paths);
     eprintln!(
         "comprehend {:?} | capabilities {} | flows {} | terminal {} | chained {} | entities {} | named {}",
         comprehend_started.elapsed(),

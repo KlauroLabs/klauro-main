@@ -61,8 +61,19 @@ pub struct Entity {
 }
 
 #[derive(Debug, Serialize)]
+pub struct Delivery {
+    pub flow: String,
+    pub role: &'static str,
+    pub rationale: String,
+}
+
+#[derive(Debug, Serialize)]
 pub struct Capability {
     pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audience: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub delivered: Vec<Delivery>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub records: Vec<String>,
     pub changes: Vec<String>,
@@ -109,8 +120,87 @@ fn changes(exit: &ExitPoint) -> bool {
 }
 
 const ASSIGNED: f64 = 0.6;
+const TESTED: f64 = 0.5;
 
-fn form_capabilities(held: &mut Comprehension) {
+fn spoken_for(root: &std::path::Path, nodes: &[IndexNode], files: &[String]) -> String {
+    let mut said = Vec::new();
+    for (at, path) in files.iter().enumerate() {
+        let basename = crate::paths::basename(path).to_ascii_lowercase();
+        if basename.starts_with("readme") && path.matches('/').count() == 0 {
+            if let Ok(text) = std::fs::read_to_string(root.join(path)) {
+                let opening: String = text.lines().take(24).collect::<Vec<_>>().join("\n");
+                said.push(opening.chars().take(1600).collect::<String>());
+            }
+            let _ = at;
+            break;
+        }
+    }
+    for node in nodes {
+        if node.name != "description" || node.kind != NodeKind::Property {
+            continue;
+        }
+        let Some(path) = files.get(node.file as usize) else { continue };
+        if !matches!(
+            crate::paths::basename(path),
+            "package.json" | "composer.json" | "pyproject.toml" | "Cargo.toml" | "pubspec.yaml"
+        ) {
+            continue;
+        }
+        if let Some(said_here) = node.type_annotation.as_deref() {
+            said.push(format!("It describes itself as: {}", said_here.trim_matches('"')));
+        }
+    }
+    match said.is_empty() {
+        true => "It says nothing about itself.".to_string(),
+        false => said.join("\n"),
+    }
+}
+
+fn test_capabilities(held: &mut Comprehension, spoken: &str) {
+    let tests: Vec<(String, crate::author::Grounding)> = held
+        .capabilities
+        .iter()
+        .map(|capability| {
+            let facts = format!(
+                "A software system describes itself like this:\n{spoken}\n\n\
+                 FACTS about one part of it:\n  reached through these operations: {}\n  \
+                 it writes these records: {}\n  it ends by: {}\n\n\
+                 PROPOSED CAPABILITY: {}\nPROPOSED DESCRIPTION: {}",
+                capability.surfaces.join(", "),
+                match capability.records.is_empty() {
+                    true => "none named".to_string(),
+                    false => capability.records.join(", "),
+                },
+                match capability.changes.is_empty() {
+                    true => "leading into other paths".to_string(),
+                    false => capability.changes.join(", "),
+                },
+                capability.name.as_deref().unwrap_or(""),
+                capability.description.as_deref().unwrap_or("")
+            );
+            (capability.id.clone(), crate::author::test_capability(&facts))
+        })
+        .collect();
+    let judged: HashMap<String, crate::author::Grounding> = tests.into_iter().collect();
+    held.capabilities.retain_mut(|capability| {
+        let Some(grounding) = judged.get(&capability.id).copied() else { return false };
+        capability.grounding = Some(grounding);
+        if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
+            eprintln!(
+                "capability {:<44} supported {:.2} invented {:.2} outcome {:.2} universal {:.2} -> {}",
+                capability.name.as_deref().unwrap_or(""),
+                grounding.supported,
+                grounding.invented,
+                grounding.outcome,
+                grounding.universal.unwrap_or(1.0),
+                grounding.stands()
+            );
+        }
+        grounding.stands()
+    });
+}
+
+fn form_capabilities(held: &mut Comprehension, spoken: &str) {
     if !crate::author::asked() || !crate::jev::asked() {
         return;
     }
@@ -140,6 +230,7 @@ fn form_capabilities(held: &mut Comprehension) {
         .collect();
     let outcomes = crate::author::propose_outcomes(
         &candidates.iter().map(|(_, facts)| facts.clone()).collect::<Vec<_>>(),
+        spoken,
     );
     if outcomes.is_empty() {
         return;
@@ -147,9 +238,9 @@ fn form_capabilities(held: &mut Comprehension) {
     let mut criteria: std::collections::BTreeMap<String, String> = outcomes
         .iter()
         .enumerate()
-        .map(|(at, outcome)| (format!("o{at}"), outcome.clone()))
+        .map(|(at, outcome)| (format!("o{at}"), outcome.description.clone()))
         .collect();
-    criteria.insert("none".to_string(), "This path serves none of these outcomes".to_string());
+    criteria.insert("none".to_string(), "This path serves none of these".to_string());
     let questions: std::collections::BTreeMap<String, crate::jev::Question> = candidates
         .iter()
         .enumerate()
@@ -165,74 +256,106 @@ fn form_capabilities(held: &mut Comprehension) {
         })
         .collect();
     let state = format!(
-        "A software system delivers these outcomes:\n{}\n\nEach question names one path through \
-         the system. Decide which outcome that path serves.",
+        "A software system describes itself like this:\n{spoken}\n\nIt delivers these outcomes:\n{}\n\n\
+         Each question names one path through the system. Decide which outcome that path serves.",
         outcomes
             .iter()
             .enumerate()
-            .map(|(at, outcome)| format!("o{at}: {outcome}"))
+            .map(|(at, outcome)| format!("o{at}: {} — {}", outcome.name, outcome.description))
             .collect::<Vec<_>>()
             .join("\n")
     );
     let answers = crate::jev::decide(&state, questions);
-    let mut grouped: HashMap<String, Vec<&Flow>> = HashMap::new();
+    let mut grouped: HashMap<usize, Vec<(&Flow, f64)>> = HashMap::new();
     let by_id: HashMap<&str, &Flow> = held.flows.iter().map(|flow| (flow.id.as_str(), flow)).collect();
     for (at, (id, _)) in candidates.iter().enumerate() {
-        let Some(chosen) = answers.get(&format!("f{at}")).and_then(|held| held.held(ASSIGNED))
-        else {
-            continue;
-        };
-        if chosen == "none" {
-            continue;
-        }
-        let Some(outcome) = chosen
-            .strip_prefix('o')
-            .and_then(|at| at.parse::<usize>().ok())
-            .and_then(|at| outcomes.get(at))
-        else {
+        let Some(answer) = answers.get(&format!("f{at}")) else { continue };
+        let Some(chosen) = answer.held(ASSIGNED) else { continue };
+        let Some(outcome) = chosen.strip_prefix('o').and_then(|at| at.parse::<usize>().ok()) else {
             continue;
         };
         if let Some(flow) = by_id.get(id) {
-            grouped.entry(outcome.clone()).or_default().push(flow);
+            grouped
+                .entry(outcome)
+                .or_default()
+                .push((flow, answer.confidence.unwrap_or(0.0)));
         }
     }
     let mut capabilities: Vec<Capability> = grouped
         .into_iter()
-        .map(|(outcome, flows)| {
-            let mut surfaces: Vec<String> = flows.iter().map(|flow| flow.operation.clone()).collect();
+        .filter_map(|(at, flows)| {
+            let outcome = outcomes.get(at)?;
+            let mut surfaces: Vec<String> =
+                flows.iter().map(|(flow, _)| flow.operation.clone()).collect();
             surfaces.sort();
             surfaces.dedup();
             surfaces.truncate(12);
-            let mut records: Vec<String> =
-                flows.iter().flat_map(|flow| flow.writes.iter().cloned()).collect();
+            let mut records: Vec<String> = flows
+                .iter()
+                .flat_map(|(flow, _)| flow.writes.iter().cloned())
+                .collect();
             records.sort();
             records.dedup();
-            let mut changes: Vec<String> =
-                flows.iter().flat_map(|flow| flow.changes.iter().cloned()).collect();
+            let mut changes: Vec<String> = flows
+                .iter()
+                .flat_map(|(flow, _)| flow.changes.iter().cloned())
+                .collect();
             changes.sort();
             changes.dedup();
-            Capability {
-                id: format!("capability:{}", outcome.to_ascii_lowercase().replace(' ', "-")),
+            let mut delivered: Vec<Delivery> = flows
+                .iter()
+                .map(|(flow, settled)| Delivery {
+                    flow: flow.id.clone(),
+                    role: match *settled >= 0.85 {
+                        true => "primary",
+                        false => "supporting",
+                    },
+                    rationale: format!(
+                        "{} {} and it was placed here with confidence {:.2}",
+                        flow.operation,
+                        match flow.changes.is_empty() {
+                            true => "leads into other paths".to_string(),
+                            false => format!("ends by {}", flow.changes.join(", ")),
+                        },
+                        settled
+                    ),
+                })
+                .collect();
+            delivered.sort_by(|left, right| left.flow.cmp(&right.flow));
+            Some(Capability {
+                id: format!("capability:{}", outcome.name.to_ascii_lowercase().replace(' ', "-")),
                 records,
                 changes,
-                flows: flows.iter().map(|flow| flow.id.clone()).collect(),
+                flows: delivered.iter().map(|held| held.flow.clone()).collect(),
+                delivered,
                 surfaces,
-                project: flows.first().and_then(|flow| flow.project.clone()),
-                name: Some(outcome),
-                description: None,
+                project: flows.first().and_then(|(flow, _)| flow.project.clone()),
+                audience: match outcome.audience.is_empty() {
+                    true => None,
+                    false => Some(outcome.audience.clone()),
+                },
+                name: Some(outcome.name.clone()),
+                description: Some(outcome.description.clone()),
                 grounding: None,
-            }
+            })
         })
         .collect();
     capabilities.sort_by(|left, right| left.id.cmp(&right.id));
     held.capabilities = capabilities;
 }
 
-pub fn author(held: &mut Comprehension) -> u32 {
+pub fn author(
+    held: &mut Comprehension,
+    root: &std::path::Path,
+    nodes: &[IndexNode],
+    files: &[String],
+) -> u32 {
     if !crate::author::asked() || !crate::jev::asked() {
         return 0;
     }
-    form_capabilities(held);
+    let spoken = spoken_for(root, nodes, files);
+    form_capabilities(held, &spoken);
+    test_capabilities(held, &spoken);
     let mut evidence = std::collections::BTreeMap::new();
     let mut owner: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
     let mut ticket = 0;
@@ -307,16 +430,7 @@ pub fn author(held: &mut Comprehension) -> u32 {
             })
             .collect();
     let mut settled = 0;
-    for capability in held.capabilities.iter_mut() {
-        let Some((written, grounding)) = by_id.get(&capability.id).copied() else { continue };
-        let (name, description) = crate::author::written_name(written);
-        capability.grounding = Some(grounding);
-        if grounding.reads_as_an_outcome() {
-            capability.name = Some(name.to_string());
-            capability.description = Some(description.to_string());
-            settled += 1;
-        }
-    }
+    settled += held.capabilities.len() as u32;
     for flow in held.flows.iter_mut() {
         let Some((written, grounding)) = by_id.get(&flow.id).copied() else { continue };
         let (name, description) = crate::author::written_name(written);
