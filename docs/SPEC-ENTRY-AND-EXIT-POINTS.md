@@ -16,6 +16,7 @@ An entry point is never inferred from a name. Four classes of evidence, each exa
 | Heritage | The declaration's supertype is a framework entry base | `class Foo(graphene.ObjectType)` |
 | Convention | The file's place in a routing tree names the surface | `app/api/cancel/route.ts` |
 | Publication | A library declares the name for others to call | `pub fn search(...)` |
+| Declaration | A literal names the command and the code it runs | `&cli.Command{Name: "serve", Run: …}` |
 
 ### Heritage
 
@@ -75,8 +76,10 @@ Not every system waits to be asked over a socket. A library is called by importi
 entry points are the names it publishes, and a repository whose surfaces are only its exports
 would otherwise report that nothing reaches it.
 
-A project publishes when the unit it ships is a library and nothing under its root is served: a
-library beside the service that serves is reached through that service, not on its own. Within
+A project publishes when the unit it ships is a library that runs nothing and is bundled into
+nothing: a library packaged inside the service that ships it is reached through that service, and
+a unit with something to run is reached by running it. A repository that ships no library
+publishes nothing. Within
 it, a declaration at the top of a file is published when the language says it is — a Rust or
 Swift visibility marker, an exported name in a module that a manifest's `main` or `module`
 names, a Go name that begins in upper case, a Python name that does not begin with an
@@ -85,6 +88,14 @@ first, because what a package names is what it means a caller to reach.
 
 Only the top of a file counts. A method on a published type is reached through the type, and
 counting it again would bury the handful of names a caller actually starts from.
+
+### Declaration
+
+A command-line tool does not register its commands; it declares them. A literal whose type is a
+command — its name ending in `Command` or `Cmd`, so that it means only what it names — and which
+holds both a field naming the command and a field holding the code to run, declares that command.
+The name is the label and the function that builds the literal is the handler, because the code
+the command runs is written inside it.
 
 ### Registration
 

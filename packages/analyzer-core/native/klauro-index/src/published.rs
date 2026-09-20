@@ -88,30 +88,19 @@ pub fn published(
     files: &[String],
     nodes: &[IndexNode],
     scope: &crate::scope::Scope,
-    entry_points: &[EntryPoint],
 ) -> Vec<EntryPoint> {
-    let served: Vec<&str> = entry_points
-        .iter()
-        .filter(|entry| !matches!(entry.kind, "test" | "lifecycle"))
-        .map(|entry| files[entry.file as usize].as_str())
-        .filter(|path| !is_test(path))
-        .collect();
     let children = held_by(nodes);
-    let mut publishing: Vec<Publishes> = scope
+    let publishing: Vec<Publishes> = scope
         .deployables
         .iter()
-        .filter(|unit| unit.category == "library")
+        .filter(|unit| {
+            unit.category == "library" && unit.runs.is_none() && unit.bundled_into.is_none()
+        })
         .map(|unit| Publishes { root: unit.root.as_str() })
         .collect();
-    if publishing.is_empty() {
-        publishing.push(Publishes { root: "" });
-    }
 
     let mut found = Vec::new();
     for held in &publishing {
-        if served.iter().any(|path| under(path, held.root)) {
-            continue;
-        }
         let names = manifest_files(files, &children, held.root);
         let mut kept: Vec<&IndexNode> = Vec::new();
         for node in nodes {

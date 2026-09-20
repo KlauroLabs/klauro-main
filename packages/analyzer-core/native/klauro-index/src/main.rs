@@ -494,7 +494,6 @@ fn main() {
         &paths,
         &index.nodes,
         index.scope.as_ref().expect("scope precedes what it publishes"),
-        &index.entry_points,
     );
     if !published.is_empty() {
         eprintln!(
