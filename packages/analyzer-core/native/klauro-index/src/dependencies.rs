@@ -417,10 +417,16 @@ fn catalog_prefix(specifier: &str) -> Option<&'static str> {
         .map(|entry| entry.prefix)
 }
 
+fn named_as(package: &str, prefix: &str) -> bool {
+    package.len() >= prefix.len()
+        && package[..prefix.len()].eq_ignore_ascii_case(prefix)
+        && bounded(package, prefix)
+}
+
 fn classify(package: &str) -> Option<&'static Known> {
     CATALOG
         .iter()
-        .filter(|entry| package.starts_with(entry.prefix) && bounded(package, entry.prefix))
+        .filter(|entry| named_as(package, entry.prefix))
         .max_by_key(|entry| entry.prefix.len())
 }
 

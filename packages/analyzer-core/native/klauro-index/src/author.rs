@@ -6,9 +6,9 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 const ENDPOINT: &str = "https://api.deepinfra.com/v1/openai/chat/completions";
-const SECONDS: &str = "60";
+const SECONDS: &str = "25";
 const GROUNDED: f64 = 0.5;
-const TRIES: usize = 3;
+const TRIES: usize = 2;
 const NAMED_PER_CALL: usize = 4;
 const NAMED_PER_SPOKEN_CALL: usize = 40;
 
@@ -68,10 +68,25 @@ fn model() -> String {
     std::env::var("KLAURO_AUTHOR_MODEL").unwrap_or_else(|_| "google/gemma-3-12b-it".to_string())
 }
 
-fn proposing() -> String {
-    std::env::var("KLAURO_PROPOSAL_MODEL")
-        .or_else(|_| std::env::var("KLAURO_AUTHOR_MODEL"))
-        .unwrap_or_else(|_| "Qwen/Qwen2.5-72B-Instruct".to_string())
+static BESIDE: &[&str] =
+    &["meta-llama/Llama-4-Scout-17B-16E-Instruct", "meta-llama/Llama-3.3-70B-Instruct"];
+
+fn asking_of_models(first: String) -> Vec<String> {
+    let mut held = vec![first];
+    for other in BESIDE {
+        if !held.iter().any(|named| named == other) {
+            held.push((*other).to_string());
+        }
+    }
+    held
+}
+
+fn proposing() -> Vec<String> {
+    asking_of_models(
+        std::env::var("KLAURO_PROPOSAL_MODEL")
+            .or_else(|_| std::env::var("KLAURO_AUTHOR_MODEL"))
+            .unwrap_or_else(|_| model()),
+    )
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -166,7 +181,7 @@ fn name_batch(member: &str, listed: &[String]) -> BTreeMap<String, Written> {
          The {member}:\n{}",
         listed.join("\n\n")
     );
-    let Some(written) = answered::<serde_json::Value>(&prompt, 2400, &model()) else { return named };
+    let Some(written) = answered::<serde_json::Value>(&prompt, 2400, &asking_of_models(model())) else { return named };
     for item in written["items"].as_array().into_iter().flatten() {
         let Ok(held) = serde_json::from_value::<Written>(item.clone()) else { continue };
         named.insert(held.id.clone(), held);
@@ -455,44 +470,50 @@ fn carved(text: &str) -> &str {
     &held[open..=close]
 }
 
-fn answered<T: serde::de::DeserializeOwned>(prompt: &str, most: u32, model: &str) -> Option<T> {
+fn bodied(prompt: &str, most: u32, model: &str) -> Option<String> {
+    serde_json::to_string(&serde_json::json!({
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "response_format": {"type": "json_object"},
+        "max_tokens": most,
+        "temperature": 0,
+    }))
+    .ok()
+}
+
+fn answered<T: serde::de::DeserializeOwned>(prompt: &str, most: u32, models: &[String]) -> Option<T> {
     let spoken_to = spoken_to();
-    let request = match &spoken_to {
-        Some(command) => format!("{command}\n{prompt}"),
-        None => serde_json::to_string(&serde_json::json!({
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "response_format": {"type": "json_object"},
-            "max_tokens": most,
-            "temperature": 0,
-        }))
-        .ok()?,
-    };
-    let read = |text: &str| match &spoken_to {
+    let read = |text: &str| -> Option<T> { match &spoken_to {
         Some(_) => serde_json::from_str::<T>(carved(text)).ok(),
         None => serde_json::from_str::<serde_json::Value>(text)
             .ok()
             .and_then(|held| held["choices"][0]["message"]["content"].as_str().map(str::to_string))
             .and_then(|held| serde_json::from_str::<T>(carved(&held)).ok()),
-    };
-    if let Some(held) = crate::jev::remembered(&request)
-        && let Some(value) = read(&held)
-    {
-        return Some(value);
-    }
+    } };
     let mut held = None;
-    for attempt in 0..TRIES {
-        let text = match &spoken_to {
-            Some(command) => spoken(command, prompt),
-            None => ask(&request),
+    'asking: for model in models {
+        let request = match &spoken_to {
+            Some(command) => format!("{command}\n{prompt}"),
+            None => bodied(prompt, most, model)?,
         };
-        held = text.and_then(|text| read(&text).map(|value| (value, text)));
-        if held.is_some() {
-            break;
+        if let Some(remembered) = crate::jev::remembered(&request)
+            && let Some(value) = read(&remembered)
+        {
+            return Some(value);
         }
-        std::thread::sleep(std::time::Duration::from_millis(400 * (attempt + 1) as u64));
+        for attempt in 0..TRIES {
+            let text = match &spoken_to {
+                Some(command) => spoken(command, prompt),
+                None => ask(&request),
+            };
+            if let Some(value) = text.as_deref().and_then(read) {
+                held = Some((value, text.unwrap_or_default(), request));
+                break 'asking;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(300 * (attempt + 1) as u64));
+        }
     }
-    let Some((value, text)) = held else {
+    let Some((value, text, request)) = held else {
         eprintln!("  author no answer to a prompt of {} bytes", prompt.len());
         return None;
     };

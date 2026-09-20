@@ -396,6 +396,12 @@ because a monorepo has no single answer and an average of its parts is not one.
 because a capability derived by grouping code is a cluster of code, which is the one thing it must
 never be.
 
+A model that does not answer is not an answer. Each role names more than one model and takes the
+first that replies with something readable, because a hosted model stalls on a long prompt often
+enough that one of them alone leaves a repository with nothing to say — and nothing to say is the
+one thing this tier must never report when there is something. Waiting is bounded rather than
+patient: a call that has not answered within its budget is abandoned and the next model asked.
+
 Two models write, because the work is two kinds. Proposing what a product does and describing it
 are a handful of calls that decide what the analysis says, and they are given the abler model. Naming
 the paths and records is a hundred small writes whose worth is settled afterwards by the tests, and
