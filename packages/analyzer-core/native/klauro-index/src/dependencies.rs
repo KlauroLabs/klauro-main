@@ -598,7 +598,11 @@ pub fn interpret(found: &mut Dependencies, language: &str) -> u32 {
                     "What is the package named '{}' to a project that imports it",
                     dependency.name
                 ),
-                criteria: ROLES.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+                criteria: ROLES
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect::<std::collections::BTreeMap<_, _>>()
+                    .into(),
             },
         );
         questions.insert(
@@ -606,7 +610,11 @@ pub fn interpret(found: &mut Dependencies, language: &str) -> u32 {
             crate::jev::Question {
                 kind: "choice",
                 instructions: format!("What job does the package named '{}' do", dependency.name),
-                criteria: CATEGORIES.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+                criteria: CATEGORIES
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect::<std::collections::BTreeMap<_, _>>()
+                    .into(),
             },
         );
     }

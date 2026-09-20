@@ -5,8 +5,8 @@ use std::process::Command;
 use serde_json::{Map, Value};
 
 const TEXT: &[&str] = &[
-    "annotation", "at", "bundled_into", "callback_of", "callee", "caller", "category",
-    "composition", "constructed", "declared_by", "declares", "default_value", "documentation",
+    "annotation", "at", "bundled_into", "callback_of", "called", "callee", "caller", "category",
+    "composition", "constructed", "declared_by", "declares", "default_value", "description", "documentation",
     "convention", "entry_point", "from", "from_call", "gap", "guard", "holder", "invariant", "handler", "id", "imported", "kind", "label", "language",
     "local", "method", "name", "namespace", "node", "operation", "parent", "path", "project", "reason",
     "receiver", "reexport_from", "registrar", "registration_label", "return_type", "role", "root",

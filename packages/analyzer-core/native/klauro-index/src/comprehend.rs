@@ -36,6 +36,14 @@ pub struct Flow {
 #[derive(Debug, Serialize)]
 pub struct Entity {
     pub name: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub named_fields: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub called: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grounding: Option<crate::author::Grounding>,
     pub declared_in: String,
     pub fields: u32,
     pub written_by: Vec<String>,
@@ -45,7 +53,24 @@ pub struct Entity {
 }
 
 #[derive(Debug, Serialize)]
+pub struct Capability {
+    pub id: String,
+    pub changes: Vec<String>,
+    pub flows: Vec<String>,
+    pub surfaces: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grounding: Option<crate::author::Grounding>,
+}
+
+#[derive(Debug, Serialize)]
 pub struct Comprehension {
+    pub capabilities: Vec<Capability>,
     pub flows: Vec<Flow>,
     pub entities: Vec<Entity>,
     pub terminal: u32,
@@ -66,6 +91,85 @@ fn changes(exit: &ExitPoint) -> bool {
             .any(|word| operation.contains(word)),
         _ => false,
     }
+}
+
+pub fn author(held: &mut Comprehension) -> u32 {
+    if !crate::author::asked() {
+        return 0;
+    }
+    let mut evidence = std::collections::BTreeMap::new();
+    let mut owner: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    let mut ticket = 0;
+    let mut mark = |owner: &mut std::collections::BTreeMap<String, String>, id: &str| {
+        ticket += 1;
+        let key = format!("m{ticket}");
+        owner.insert(key.clone(), id.to_string());
+        key
+    };
+    for capability in held.capabilities.iter().take(40) {
+        let key = mark(&mut owner, &capability.id);
+        evidence.insert(
+            key,
+            format!(
+                "  kind: capability of a software system\n  what it changes when it runs: {}\n                   how it is reached: {} flows\n  the surfaces that reach it, named as the code names them: {}",
+                match capability.changes.is_empty() {
+                    true => "nothing directly; it leads into other flows".to_string(),
+                    false => capability.changes.join(", "),
+                },
+                capability.flows.len(),
+                capability.surfaces.join(", ")
+            ),
+        );
+    }
+    for entity in held.entities.iter().take(40) {
+        let key = mark(&mut owner, &format!("entity:{}", entity.declared_in));
+        evidence.insert(
+            key,
+            format!(
+                "  kind: data entity\n  declared as: {} in {}\n  it holds these fields: {}\n  written by {} units, read by {} units",
+                entity.name,
+                entity.declared_in.split(':').next().unwrap_or(""),
+                match entity.named_fields.is_empty() {
+                    true => format!("{} unnamed", entity.fields),
+                    false => entity.named_fields.join(", "),
+                },
+                entity.written_by.len(),
+                entity.read_by.len()
+            ),
+        );
+    }
+    let written = crate::author::name_them("capabilities and data entities", &evidence);
+    let grounded = crate::author::ground(&written, &evidence);
+    let by_id: std::collections::BTreeMap<String, (&crate::author::Written, crate::author::Grounding)> =
+        owner
+            .iter()
+            .filter_map(|(key, id)| {
+                Some((id.clone(), (written.get(key)?, grounded.get(key).copied()?)))
+            })
+            .collect();
+    let mut settled = 0;
+    for capability in held.capabilities.iter_mut() {
+        let Some((held, grounding)) = by_id.get(&capability.id).copied() else { continue };
+        let (name, description) = crate::author::written_name(held);
+        capability.grounding = Some(grounding);
+        if grounding.holds() {
+            capability.name = Some(name.to_string());
+            capability.description = Some(description.to_string());
+            settled += 1;
+        }
+    }
+    for entity in held.entities.iter_mut() {
+        let id = format!("entity:{}", entity.declared_in);
+        let Some((held, grounding)) = by_id.get(&id).copied() else { continue };
+        let (name, description) = crate::author::written_name(held);
+        entity.grounding = Some(grounding);
+        if grounding.holds() {
+            entity.called = Some(name.to_string());
+            entity.description = Some(description.to_string());
+            settled += 1;
+        }
+    }
+    settled
 }
 
 pub fn derive(
@@ -180,7 +284,49 @@ pub fn derive(
     let entities = entities(nodes, edges, exit_points, roles);
     let terminal = flows.iter().filter(|flow| flow.standing == "terminal").count() as u32;
     let chained = flows.iter().filter(|flow| !flow.leads_into.is_empty()).count() as u32;
-    Comprehension { flows, entities, terminal, chained }
+    let capabilities = capabilities(&flows);
+    Comprehension { capabilities, flows, entities, terminal, chained }
+}
+
+fn capabilities(flows: &[Flow]) -> Vec<Capability> {
+    let mut grouped: HashMap<(Option<String>, String), Vec<&Flow>> = HashMap::new();
+    for flow in flows {
+        if flow.standing == "reading" {
+            continue;
+        }
+        let signature = match flow.changes.is_empty() {
+            false => flow.changes.join(","),
+            true => format!("reaches:{}", flow.leads_into.len()),
+        };
+        grouped.entry((flow.project.clone(), signature)).or_default().push(flow);
+    }
+    let mut capabilities: Vec<Capability> = grouped
+        .into_iter()
+        .map(|((project, signature), held)| {
+            let mut surfaces: Vec<String> = held.iter().map(|flow| flow.name.clone()).collect();
+            surfaces.sort();
+            surfaces.dedup();
+            surfaces.truncate(12);
+            let mut changes: Vec<String> = held
+                .iter()
+                .flat_map(|flow| flow.changes.iter().cloned())
+                .collect();
+            changes.sort();
+            changes.dedup();
+            Capability {
+                id: format!("capability:{}:{signature}", project.as_deref().unwrap_or("root")),
+                changes,
+                flows: held.iter().map(|flow| flow.id.clone()).collect(),
+                surfaces,
+                project,
+                name: None,
+                description: None,
+                grounding: None,
+            }
+        })
+        .collect();
+    capabilities.sort_by(|left, right| left.id.cmp(&right.id));
+    capabilities
 }
 
 fn entities(
@@ -189,10 +335,21 @@ fn entities(
     exit_points: &[ExitPoint],
     roles: &crate::roles::Roles,
 ) -> Vec<Entity> {
+    let named_of: HashMap<&str, &str> = nodes
+        .iter()
+        .map(|node| (node.id.as_str(), node.name.as_str()))
+        .collect();
     let mut fields: HashMap<&str, u32> = HashMap::new();
+    let mut named_fields: HashMap<&str, Vec<String>> = HashMap::new();
     for edge in edges {
         if edge.kind == EdgeKind::HasField {
             *fields.entry(edge.source.as_str()).or_insert(0) += 1;
+            let held = named_fields.entry(edge.source.as_str()).or_default();
+            if held.len() < 16
+                && let Some(named) = named_of.get(edge.target.as_str())
+            {
+                held.push((*named).to_string());
+            }
         }
     }
     let modelled: HashSet<&str> = roles
@@ -239,6 +396,10 @@ fn entities(
         .filter(|node| fields.get(node.id.as_str()).copied().unwrap_or(0) >= 1)
         .map(|node| Entity {
             name: node.name.clone(),
+            named_fields: named_fields.get(node.id.as_str()).cloned().unwrap_or_default(),
+            called: None,
+            description: None,
+            grounding: None,
             declared_in: node.id.clone(),
             fields: fields.get(node.id.as_str()).copied().unwrap_or(0),
             written_by: written.get(node.id.as_str()).cloned().unwrap_or_default(),

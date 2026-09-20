@@ -17,8 +17,44 @@ pub struct Question {
     #[serde(rename = "type")]
     pub kind: &'static str,
     pub instructions: String,
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub criteria: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Criteria::is_empty")]
+    pub criteria: Criteria,
+}
+
+#[derive(Debug)]
+pub enum Criteria {
+    Named(BTreeMap<String, String>),
+    Ranked(Vec<String>),
+}
+
+impl Criteria {
+    fn is_empty(&self) -> bool {
+        match self {
+            Criteria::Named(held) => held.is_empty(),
+            Criteria::Ranked(held) => held.is_empty(),
+        }
+    }
+}
+
+impl Serialize for Criteria {
+    fn serialize<S: serde::Serializer>(&self, writer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Criteria::Named(held) => held.serialize(writer),
+            Criteria::Ranked(held) => held.serialize(writer),
+        }
+    }
+}
+
+impl From<BTreeMap<String, String>> for Criteria {
+    fn from(held: BTreeMap<String, String>) -> Self {
+        Criteria::Named(held)
+    }
+}
+
+impl From<Vec<String>> for Criteria {
+    fn from(held: Vec<String>) -> Self {
+        Criteria::Ranked(held)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -124,26 +160,26 @@ fn ask(request: &str) -> Option<Answered> {
     Some(held)
 }
 
-fn kept() -> Option<PathBuf> {
+pub fn kept() -> Option<PathBuf> {
     let home = std::env::var("HOME").ok()?;
     let folder = PathBuf::from(home).join(".klauro/model-answers");
     std::fs::create_dir_all(&folder).ok()?;
     Some(folder)
 }
 
-fn named(request: &str) -> String {
+pub fn named(request: &str) -> String {
     let mut hasher = rustc_hash::FxHasher::default();
     request.hash(&mut hasher);
     format!("{:016x}-{}", hasher.finish(), request.len())
 }
 
-fn remembered(request: &str) -> Option<String> {
+pub fn remembered(request: &str) -> Option<String> {
     let held = std::fs::read_to_string(kept()?.join(named(request))).ok()?;
     let (asked, answered) = held.split_once('\u{0}')?;
     (asked == request).then(|| answered.to_string())
 }
 
-fn remember(request: &str, answered: &str) {
+pub fn remember(request: &str, answered: &str) {
     let Some(folder) = kept() else { return };
     let _ = std::fs::write(folder.join(named(request)), format!("{request}\u{0}{answered}"));
 }

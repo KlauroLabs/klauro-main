@@ -342,13 +342,31 @@ use cases are read-time projections over flows, never separate stored members.
 
 6.1 and 6.2 decide *which* flows are the reason the codebase exists. 6.3 is where the model states
 what they mean in human, product and business language. Nothing in 6.3 decides what is or is not a
-capability; that was settled in 6.2. There is no candidate stage, no validation pass, no confidence
-score and no approval cycle, because a capability is not a claim that might be wrong.
+capability; that was settled in 6.2.
 
-The 6.3 budget is the slowest single request, not the sum, because the four are independent. **It is
-the weakest number here**: the comprehension layer has never been measured, so this is reasoning
-about batched model calls in general rather than about this system. Replace it with a real figure at
-the first opportunity.
+**Measured today: 8–40 ms for 6.1 and 6.2; 23 s for 6.3 and 6.4 on a first run, 0.5 s on a second.**
+The deterministic passes are the tier's floor and run always. Authoring runs where a model is
+reachable, in batches issued concurrently, and every answer is kept so the same repository is named
+once rather than once per run.
+
+A flow is a served surface and everything it reaches. Its standing is what it does at the end: a
+flow that reaches a call which changes something outside the process is terminal, one that reaches
+another flow is proximal, and one that only reads is neither. A capability is a group of flows
+within a project that change the same thing — settled from the facts, never from the naming. An
+entity is a type the code stores: one a model annotation or base class declares, or one a database
+call addresses by name, with the fields it holds.
+
+The model names what those facts describe, and **a second model checks the naming against the same
+facts before it is kept**: whether every claim is supported, whether it names a technology the facts
+never mention, and how specific it is to this system rather than to any system. A name that fails
+that check is withheld and the check is recorded beside it, so the record says why nothing was
+written. On tivi, nine of nine entities passed; on monica, 42 of 64 members passed and the rest were
+left unnamed rather than guessed at.
+
+Limits. Prose is only as good as the evidence bundle: an entity whose fields are unnamed in the
+index yields a description the check refuses, which is the right outcome and a thin one. A
+repository whose calls dispatch through interfaces the index cannot resolve — jellyfin — reports
+flows that reach no exit, so its terminal count is zero and its capabilities are proximal only.
 
 ---
 
