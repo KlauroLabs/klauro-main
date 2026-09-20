@@ -361,6 +361,13 @@ capability is the paths that landed on the same one. **Both models are required.
 unreachable the tier reports no capabilities at all, because a capability derived by grouping code
 is a cluster of code, which is the one thing it must never be.
 
+The authoring model is reached one of two ways and the tier does not care which: a chat endpoint,
+named by `KLAURO_AUTHOR_ENDPOINT` and `KLAURO_AUTHOR_MODEL`, which serves a hosted provider, a
+model on the machine, or one on another machine across a private network equally well; or a command
+line, named by `KLAURO_AUTHOR_CLI`, which is handed the prompt on its input and read from its
+output. Every answer is kept against the text that asked for it, so a repository is authored once
+however it was reached.
+
 Nothing in this tier is named without a model. A member carries the label the code gives it — the
 operation a flow serves, the type an entity is declared as — and that is a fact from T1, not a
 reading. A name and a description are authored or absent; there is no derived wording, no template

@@ -25,6 +25,10 @@ pub struct Written {
     pub description: String,
 }
 
+fn spoken_to() -> Option<String> {
+    std::env::var("KLAURO_AUTHOR_CLI").ok().filter(|held| !held.is_empty())
+}
+
 fn key() -> Option<String> {
     ["KLAURO_AUTHOR_KEY", "DEEPINFRA_API_KEY"]
         .into_iter()
@@ -33,7 +37,8 @@ fn key() -> Option<String> {
 }
 
 pub fn asked() -> bool {
-    std::env::var("KLAURO_ENRICH").map(|held| held != "0").unwrap_or(true) && key().is_some()
+    std::env::var("KLAURO_ENRICH").map(|held| held != "0").unwrap_or(true)
+        && (spoken_to().is_some() || key().is_some())
 }
 
 fn endpoint() -> String {
@@ -64,18 +69,8 @@ pub fn propose_outcomes(evidence: &[String]) -> Vec<String> {
          Return JSON only: {{\"outcomes\":[\"...\"]}}",
         evidence.join("\n")
     );
-    let body = serde_json::json!({
-        "model": model(),
-        "messages": [{"role": "user", "content": prompt}],
-        "response_format": {"type": "json_object"},
-        "max_tokens": 900,
-        "temperature": 0,
-    });
-    let Ok(request) = serde_json::to_string(&body) else { return Vec::new() };
-    let Some(answer) = ask(&request) else { return Vec::new() };
-    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&answer) else { return Vec::new() };
-    let Some(text) = parsed["choices"][0]["message"]["content"].as_str() else { return Vec::new() };
-    let Ok(held) = serde_json::from_str::<Proposed>(text) else { return Vec::new() };
+    let Some(text) = complete(&prompt, 900) else { return Vec::new() };
+    let Ok(held) = serde_json::from_str::<Proposed>(carved(&text)) else { return Vec::new() };
     let mut outcomes: Vec<String> = held
         .outcomes
         .into_iter()
@@ -123,26 +118,11 @@ fn name_batch(member: &str, listed: &[String]) -> BTreeMap<String, Written> {
          The {member}:\n{}",
         listed.join("\n\n")
     );
-    let body = serde_json::json!({
-        "model": model(),
-        "messages": [{"role": "user", "content": prompt}],
-        "response_format": {"type": "json_object"},
-        "max_tokens": 2400,
-        "temperature": 0,
-    });
-    let Ok(request) = serde_json::to_string(&body) else { return named };
-    let Some(answer) = ask(&request) else {
-        if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
-            eprintln!("author: no answer");
-        }
-        return named;
-    };
+    let Some(text) = complete(&prompt, 2400) else { return named };
     if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
-        eprintln!("author raw: {}", &answer[..answer.len().min(600)]);
+        eprintln!("author raw: {}", &text[..text.len().min(400)]);
     }
-    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&answer) else { return named };
-    let Some(text) = parsed["choices"][0]["message"]["content"].as_str() else { return named };
-    let Ok(written) = serde_json::from_str::<serde_json::Value>(text) else { return named };
+    let Ok(written) = serde_json::from_str::<serde_json::Value>(carved(&text)) else { return named };
     for item in written["items"].as_array().into_iter().flatten() {
         let Ok(held) = serde_json::from_value::<Written>(item.clone()) else { continue };
         named.insert(held.id.clone(), held);
@@ -234,6 +214,63 @@ impl Grounding {
 
 pub fn written_name(written: &Written) -> (&str, &str) {
     (&written.name, &written.description)
+}
+
+fn carved(text: &str) -> &str {
+    let trimmed = text.trim();
+    let held = trimmed
+        .strip_prefix("```json")
+        .or_else(|| trimmed.strip_prefix("```"))
+        .map(|rest| rest.trim_start())
+        .and_then(|rest| rest.strip_suffix("```"))
+        .unwrap_or(trimmed);
+    let (Some(open), Some(close)) = (held.find('{'), held.rfind('}')) else { return held };
+    &held[open..=close]
+}
+
+fn complete(prompt: &str, most: u32) -> Option<String> {
+    match spoken_to() {
+        Some(command) => spoken(&command, prompt),
+        None => {
+            let body = serde_json::json!({
+                "model": model(),
+                "messages": [{"role": "user", "content": prompt}],
+                "response_format": {"type": "json_object"},
+                "max_tokens": most,
+                "temperature": 0,
+            });
+            let request = serde_json::to_string(&body).ok()?;
+            let answer = ask(&request)?;
+            let parsed = serde_json::from_str::<serde_json::Value>(&answer).ok()?;
+            parsed["choices"][0]["message"]["content"]
+                .as_str()
+                .map(str::to_string)
+        }
+    }
+}
+
+fn spoken(command: &str, prompt: &str) -> Option<String> {
+    let request = format!("{command}\u{0}{prompt}");
+    if let Some(held) = crate::jev::remembered(&request) {
+        return Some(held);
+    }
+    let mut words = command.split_whitespace();
+    let program = words.next()?;
+    let mut call = Command::new(program)
+        .args(words)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    call.stdin.as_mut()?.write_all(prompt.as_bytes()).ok()?;
+    let answered = call.wait_with_output().ok()?;
+    if !answered.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(answered.stdout).ok()?;
+    crate::jev::remember(&request, &text);
+    Some(text)
 }
 
 fn ask(request: &str) -> Option<String> {
