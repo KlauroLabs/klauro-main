@@ -171,7 +171,7 @@ mod tests {
 
     #[test]
     fn a_header_is_told_from_a_source_file() {
-        assert!(HEADERS.contains(&extension("include/nlohmann/json.hpp")));
+        assert!(HEADERS.contains(&extension("include/shape/tree.hpp")));
         assert!(HEADERS.contains(&extension("include/vec.h")));
         assert!(!HEADERS.contains(&extension("src/main.cpp")));
     }
