@@ -31,6 +31,7 @@ mod resolve;
 mod roles;
 mod route;
 mod scope;
+mod tables;
 mod source_rewrite;
 mod structured;
 mod subproject;
@@ -154,6 +155,7 @@ fn read(
         let tree = parser.parse(&source, None)?;
         report_first_error(path, source, &tree);
         let mut facts = typescript::Extractor::new(source, file, path).run(&tree, path, lines(source));
+        facts.tables = tables::declared(source, path, file);
         if bundler::is_config(path) {
             facts.nodes.extend(bundler::declared_aliases(&tree, source, file, path));
         }
@@ -176,13 +178,17 @@ fn read(
         && let Some((mut parser, spec)) = structured::parser_for(id)
     {
         let tree = parser.parse(&source, None)?;
-        return Some(structured::Extractor::new(source, file, path, spec).run(&tree, path, lines(source)));
+        let mut facts = structured::Extractor::new(source, file, path, spec).run(&tree, path, lines(source));
+        facts.tables = tables::declared(source, path, file);
+        return Some(facts);
     }
     let (language, spec) = language::language_for(declared?)?;
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).ok()?;
     let tree = parser.parse(&source, None)?;
-    Some(generic::Extractor::new(source, file, path, spec).run(&tree, path, lines(source)))
+    let mut facts = generic::Extractor::new(source, file, path, spec).run(&tree, path, lines(source));
+    facts.tables = tables::declared(source, path, file);
+    Some(facts)
 }
 
 fn language_of(path: &str) -> Option<&'static str> {
@@ -288,6 +294,7 @@ fn main() {
         skipped_directories: found.skipped_directories,
         nested_repositories: found.nested_repositories,
     };
+    let mut declared_tables: Vec<tables::Table> = Vec::new();
     let mut parse_errors = 0;
     let mut extracted_files = std::collections::HashSet::new();
     let report_errors = std::env::var("KLAURO_REPORT_PARSE_ERRORS").is_ok();
@@ -307,6 +314,7 @@ fn main() {
         index.metrics.extend(file.metrics);
         index.registrations.extend(file.registrations);
         index.locals.extend(file.locals);
+        declared_tables.extend(file.tables);
         parse_errors += file.parse_errors;
     }
 
@@ -776,6 +784,7 @@ fn main() {
         &index.entry_points,
         &index.exit_points,
         index.roles.as_ref().expect("roles precede comprehension"),
+        &declared_tables,
     );
     let mut comprehension = comprehension;
     let mut spoken_languages: std::collections::BTreeMap<&str, u32> =

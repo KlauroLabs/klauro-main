@@ -42,7 +42,7 @@ export const LANGUAGE_REGISTRY: LanguageRegistryEntry[] = [
 
 
     id: 'sql',
-    extensions: ['sql', 'ddl'],
+    extensions: ['sql', 'ddl', 'sq', 'sqm'],
 
     manifests: [],
   },

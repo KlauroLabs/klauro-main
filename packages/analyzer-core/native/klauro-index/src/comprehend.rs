@@ -5,6 +5,7 @@ use serde::Serialize;
 
 use crate::entry_exit::{EntryPoint, ExitPoint};
 use crate::model::*;
+use crate::tables::Table;
 
 const STEPS_KEPT: usize = 16;
 const REACHING_AT_ONCE: usize = 24;
@@ -703,6 +704,7 @@ pub fn derive(
     entry_points: &[EntryPoint],
     exit_points: &[ExitPoint],
     roles: &crate::roles::Roles,
+    declared_tables: &[crate::tables::Table],
 ) -> Comprehension {
     let position_of: HashMap<&str, u32> = nodes
         .iter()
@@ -731,7 +733,7 @@ pub fn derive(
         leaving.entry(exit.source.as_str()).or_default().push(exit);
     }
 
-    let entities_first = entities(nodes, edges, exit_points, roles);
+    let entities_first = entities(nodes, files, edges, exit_points, roles, declared_tables);
     let held: HashSet<&str> = entities_first
         .iter()
         .map(|entity| entity.declared_as.as_str())
@@ -950,7 +952,11 @@ fn plainly_named(held: &str) -> bool {
         && !held.chars().next().is_some_and(|letter| letter.is_ascii_digit())
 }
 
-fn addressed<'a>(receiver: &'a str, modelled: &HashSet<&str>) -> Option<&'a str> {
+fn addressed<'a>(
+    receiver: &'a str,
+    modelled: &HashSet<&str>,
+    declared: &HashSet<String>,
+) -> Option<&'a str> {
     let segments: Vec<&str> = receiver
         .split('.')
         .filter(|held| !matches!(*held, "this" | "self"))
@@ -962,16 +968,49 @@ fn addressed<'a>(receiver: &'a str, modelled: &HashSet<&str>) -> Option<&'a str>
         return segments[..at].last().copied().filter(|held| modelled.contains(held));
     }
     match segments.len() == 2 {
-        true => segments.get(1).copied(),
+        true => segments
+            .get(1)
+            .copied()
+            .filter(|held| declared.contains(&held.to_ascii_lowercase())),
         false => None,
     }
 }
 
+/// A file that configures a codebase rather than declaring anything in it.
+fn a_setting(path: &str) -> bool {
+    let lowered = path.to_ascii_lowercase();
+    [".yml", ".yaml", ".json", ".toml", ".ini", ".cfg", ".conf", ".properties", ".xml"]
+        .iter()
+        .any(|extension| lowered.ends_with(extension))
+}
+
+/// Whether two shapes describe the same record, told by the fields they share.
+fn the_same_record(left: &[String], right: &[String]) -> bool {
+    let smaller = left.len().min(right.len());
+    if smaller < 4 {
+        return false;
+    }
+    let held: HashSet<String> = right.iter().map(|field| field.to_ascii_lowercase()).collect();
+    let shared = left
+        .iter()
+        .filter(|field| held.contains(&field.to_ascii_lowercase()))
+        .count();
+    shared * 5 >= smaller * 4
+}
+
+/// A file whose whole purpose is to declare the shape of stored data.
+fn a_schema(path: &str) -> bool {
+    let lowered = path.to_ascii_lowercase();
+    lowered.ends_with(".prisma") || lowered.ends_with(".sql")
+}
+
 fn entities(
     nodes: &[IndexNode],
+    files: &[String],
     edges: &[IndexEdge],
     exit_points: &[ExitPoint],
     roles: &crate::roles::Roles,
+    declared_tables: &[crate::tables::Table],
 ) -> Vec<Entity> {
     let named_of: HashMap<&str, &str> = nodes
         .iter()
@@ -1006,9 +1045,34 @@ fn entities(
         .filter(|node| modelled.contains(node.id.as_str()))
         .map(|node| node.name.as_str())
         .collect();
+    let mut created: BTreeMap<String, Table> = BTreeMap::new();
+    for table in declared_tables {
+        let key = table.named.to_ascii_lowercase();
+        let fuller = created
+            .get(&key)
+            .is_none_or(|held| table.columns.len() > held.columns.len());
+        if fuller {
+            created.insert(
+                key,
+                Table {
+                    named: table.named.clone(),
+                    columns: table.columns.clone(),
+                    file: table.file,
+                    line: table.line,
+                },
+            );
+        }
+    }
+    let declared_names: HashSet<String> = nodes
+        .iter()
+        .filter(|node| node.kind.is_type())
+        .filter(|node| files.get(node.file as usize).is_none_or(|path| !a_setting(path)))
+        .map(|node| node.name.to_ascii_lowercase())
+        .chain(created.keys().cloned())
+        .collect();
     let mut kept: BTreeMap<String, (Vec<String>, Vec<String>, u32)> = BTreeMap::new();
     for exit in exit_points.iter().filter(|exit| exit.kind == "database") {
-        let Some(named) = addressed(receiver_of(exit), &modelled_names) else { continue };
+        let Some(named) = addressed(receiver_of(exit), &modelled_names, &declared_names) else { continue };
         let held = kept.entry(named.to_ascii_lowercase()).or_default();
         held.2 += 1;
         let reaching = match changes(exit) {
@@ -1047,8 +1111,10 @@ fn entities(
     let mut entities: Vec<Entity> = nodes
         .iter()
         .filter(|node| node.kind.is_type())
+        .filter(|node| files.get(node.file as usize).is_none_or(|path| !a_setting(path)))
         .filter(|node| {
             modelled.contains(node.id.as_str())
+                || files.get(node.file as usize).is_some_and(|path| a_schema(path))
                 || handled.contains(node.name.as_str())
                 || (stored.contains(node.name.to_ascii_lowercase().as_str())
                     && fields.get(node.id.as_str()).copied().unwrap_or(0) >= 1)
@@ -1086,22 +1152,45 @@ fn entities(
     }
     let written_down: HashSet<String> = richest.keys().cloned().collect();
     let mut entities: Vec<Entity> = richest.into_values().collect();
+    created.retain(|key, table| {
+        !written_down.contains(key)
+            && !entities
+                .iter()
+                .any(|entity| the_same_record(&table.columns, &entity.named_fields))
+    });
     for (named, (written_by, read_by, addressed_by)) in kept {
         if written_down.contains(&named) {
             continue;
         }
+        let columns = created.remove(&named).map(|table| table.columns).unwrap_or_default();
         entities.push(Entity {
             id: format!("record:{named}"),
+            fields: columns.len() as u32,
+            named_fields: columns,
             declared_as: named,
-            named_fields: Vec::new(),
             name: None,
             description: None,
             grounding: None,
             declared_in: None,
-            fields: 0,
             addressed_by,
             written_by,
             read_by,
+            project: None,
+        });
+    }
+    for (named, table) in created {
+        entities.push(Entity {
+            id: format!("record:{named}"),
+            declared_as: table.named,
+            fields: table.columns.len() as u32,
+            named_fields: table.columns,
+            name: None,
+            description: None,
+            grounding: None,
+            declared_in: None,
+            addressed_by: 0,
+            written_by: Vec::new(),
+            read_by: Vec::new(),
             project: None,
         });
     }
@@ -1122,13 +1211,14 @@ mod tests {
     #[test]
     fn a_database_call_names_the_record_it_addresses() {
         let modelled = HashSet::from(["Booking"]);
-        assert_eq!(addressed("prisma.booking", &modelled), Some("booking"));
-        assert_eq!(addressed("this.prisma.booking", &modelled), Some("booking"));
-        assert_eq!(addressed("Booking.objects", &modelled), Some("Booking"));
-        assert_eq!(addressed("db.session", &modelled), None);
-        assert_eq!(addressed("session", &modelled), None);
-        assert_eq!(addressed("queryHistoryApi.endpoints.editorQueries", &modelled), None);
-        assert_eq!(addressed("request(app.getHttpServer())", &modelled), None);
+        let declared = HashSet::from(["booking".to_string()]);
+        assert_eq!(addressed("prisma.booking", &modelled, &declared), Some("booking"));
+        assert_eq!(addressed("this.prisma.booking", &modelled, &declared), Some("booking"));
+        assert_eq!(addressed("Booking.objects", &modelled, &declared), Some("Booking"));
+        assert_eq!(addressed("db.session", &modelled, &declared), None);
+        assert_eq!(addressed("session", &modelled, &declared), None);
+        assert_eq!(addressed("queryHistoryApi.endpoints.editorQueries", &modelled, &declared), None);
+        assert_eq!(addressed("request(app.getHttpServer())", &modelled, &declared), None);
     }
 
     #[test]

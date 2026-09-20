@@ -320,6 +320,8 @@ pub struct FileFacts {
     pub metrics: Vec<UnitMetricsEntry>,
     pub registrations: Vec<RegistrationFact>,
     pub locals: Vec<LocalBinding>,
+    #[serde(skip)]
+    pub tables: Vec<crate::tables::Table>,
     pub lines: u32,
     pub parse_errors: u32,
     pub namespace: Option<String>,
