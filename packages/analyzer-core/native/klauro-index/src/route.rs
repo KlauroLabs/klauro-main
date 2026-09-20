@@ -5,9 +5,12 @@ const DECLARATION_CEILING: u64 = 8 << 20;
 const STRUCTURE_CEILING: u64 = 64 << 10;
 
 fn declares(language: &str) -> bool {
-    spec_for(language).is_some_and(|spec| {
-        !spec.declares.type_kinds.is_empty() || !spec.declares.function_kinds.is_empty() || !spec.calls.kinds.is_empty()
-    })
+    crate::typescript::reads(language)
+        || spec_for(language).is_some_and(|spec| {
+            !spec.declares.type_kinds.is_empty()
+                || !spec.declares.function_kinds.is_empty()
+                || !spec.calls.kinds.is_empty()
+        })
 }
 
 fn ceiling(language: Option<&str>) -> u64 {

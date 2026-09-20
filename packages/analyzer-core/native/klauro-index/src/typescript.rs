@@ -1367,6 +1367,11 @@ pub fn wraps_script(id: &str) -> bool {
     matches!(id, "svelte" | "vue")
 }
 
+/// Whether this extractor reads declarations out of a language, whatever its file holds.
+pub fn reads(id: &str) -> bool {
+    matches!(id, "typescript" | "javascript" | "svelte" | "vue")
+}
+
 pub fn parser_for_language(id: &str) -> Option<Parser> {
     let language: tree_sitter::Language = match id {
         "typescript" | "svelte" | "vue" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
