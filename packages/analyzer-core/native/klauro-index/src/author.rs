@@ -83,8 +83,7 @@ pub fn propose_outcomes(evidence: &[String], spoken_for: &str) -> Vec<Outcome> {
          Return JSON only: {{\"outcomes\":[{{\"name\":\"...\",\"description\":\"...\",\"audience\":\"...\"}}]}}",
         evidence.join("\n")
     );
-    let Some(text) = complete(&prompt, 2400) else { return Vec::new() };
-    let Ok(held) = serde_json::from_str::<Proposed>(carved(&text)) else { return Vec::new() };
+    let Some(held) = answered::<Proposed>(&prompt, 2400) else { return Vec::new() };
     let mut outcomes: Vec<Outcome> = held
         .outcomes
         .into_iter()
@@ -139,11 +138,7 @@ fn name_batch(member: &str, listed: &[String]) -> BTreeMap<String, Written> {
          The {member}:\n{}",
         listed.join("\n\n")
     );
-    let Some(text) = complete(&prompt, 2400) else { return named };
-    if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
-        eprintln!("author raw: {}", &text[..text.len().min(400)]);
-    }
-    let Ok(written) = serde_json::from_str::<serde_json::Value>(carved(&text)) else { return named };
+    let Some(written) = answered::<serde_json::Value>(&prompt, 2400) else { return named };
     for item in written["items"].as_array().into_iter().flatten() {
         let Ok(held) = serde_json::from_value::<Written>(item.clone()) else { continue };
         named.insert(held.id.clone(), held);
@@ -251,8 +246,7 @@ pub fn describe_system(facts: &str) -> Option<String> {
          analysis, the repository or the code layout — describe the thing the code is.\n\n\
          Return JSON only: {{\"description\":\"...\"}}"
     );
-    let text = complete(&prompt, 1200)?;
-    let told: Told = serde_json::from_str(carved(&text)).ok()?;
+    let told: Told = answered(&prompt, 1200)?;
     let described = told.description.trim().to_string();
     (!described.is_empty()).then_some(described)
 }
@@ -413,32 +407,41 @@ fn carved(text: &str) -> &str {
     &held[open..=close]
 }
 
-fn complete(prompt: &str, most: u32) -> Option<String> {
-    match spoken_to() {
-        Some(command) => spoken(&command, prompt),
-        None => {
-            let body = serde_json::json!({
-                "model": model(),
-                "messages": [{"role": "user", "content": prompt}],
-                "response_format": {"type": "json_object"},
-                "max_tokens": most,
-                "temperature": 0,
-            });
-            let request = serde_json::to_string(&body).ok()?;
-            let answer = ask(&request)?;
-            let parsed = serde_json::from_str::<serde_json::Value>(&answer).ok()?;
-            parsed["choices"][0]["message"]["content"]
-                .as_str()
-                .map(str::to_string)
-        }
+fn answered<T: serde::de::DeserializeOwned>(prompt: &str, most: u32) -> Option<T> {
+    let spoken_to = spoken_to();
+    let request = match &spoken_to {
+        Some(command) => format!("{command}\n{prompt}"),
+        None => serde_json::to_string(&serde_json::json!({
+            "model": model(),
+            "messages": [{"role": "user", "content": prompt}],
+            "response_format": {"type": "json_object"},
+            "max_tokens": most,
+            "temperature": 0,
+        }))
+        .ok()?,
+    };
+    let read = |text: &str| match &spoken_to {
+        Some(_) => serde_json::from_str::<T>(carved(text)).ok(),
+        None => serde_json::from_str::<serde_json::Value>(text)
+            .ok()
+            .and_then(|held| held["choices"][0]["message"]["content"].as_str().map(str::to_string))
+            .and_then(|held| serde_json::from_str::<T>(carved(&held)).ok()),
+    };
+    if let Some(held) = crate::jev::remembered(&request)
+        && let Some(value) = read(&held)
+    {
+        return Some(value);
     }
+    let text = match &spoken_to {
+        Some(command) => spoken(command, prompt)?,
+        None => ask(&request)?,
+    };
+    let value = read(&text)?;
+    crate::jev::remember(&request, &text);
+    Some(value)
 }
 
 fn spoken(command: &str, prompt: &str) -> Option<String> {
-    let request = format!("{command}\n{prompt}");
-    if let Some(held) = crate::jev::remembered(&request) {
-        return Some(held);
-    }
     let mut words = command.split_whitespace();
     let program = words.next()?;
     let mut call = Command::new(program)
@@ -453,15 +456,10 @@ fn spoken(command: &str, prompt: &str) -> Option<String> {
     if !answered.status.success() {
         return None;
     }
-    let text = String::from_utf8(answered.stdout).ok()?;
-    crate::jev::remember(&request, &text);
-    Some(text)
+    String::from_utf8(answered.stdout).ok()
 }
 
 fn ask(request: &str) -> Option<String> {
-    if let Some(held) = crate::jev::remembered(request) {
-        return Some(held);
-    }
     let key = key()?;
     let mut call = Command::new("curl")
         .args([
@@ -490,6 +488,5 @@ fn ask(request: &str) -> Option<String> {
         .success()
         .then(|| String::from_utf8(answered.stdout).ok())
         .flatten()?;
-    crate::jev::remember(request, &text);
     Some(text)
 }

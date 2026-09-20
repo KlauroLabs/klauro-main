@@ -73,6 +73,7 @@ pub struct Flow {
 
 #[derive(Debug, Serialize)]
 pub struct Entity {
+    pub id: String,
     pub declared_as: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub named_fields: Vec<String>,
@@ -82,8 +83,10 @@ pub struct Entity {
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub grounding: Option<crate::author::Grounding>,
-    pub declared_in: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub declared_in: Option<String>,
     pub fields: u32,
+    pub addressed_by: u32,
     pub written_by: Vec<String>,
     pub read_by: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -273,13 +276,19 @@ fn describe_one(
             .collect::<Vec<_>>()
             .join("\n"),
         {
-            let kept: Vec<&str> = held
-                .entities
-                .iter()
-                .filter(|entity| its(entity.project.as_ref()))
-                .take(14)
-                .map(|entity| entity.declared_as.as_str())
-                .collect();
+            let mut kept: Vec<&str> = match project {
+                Some(_) => capabilities
+                    .iter()
+                    .flat_map(|capability| capability.records.iter().map(String::as_str))
+                    .collect(),
+                None => held
+                    .entities
+                    .iter()
+                    .map(|entity| entity.declared_as.as_str())
+                    .collect(),
+            };
+            kept.dedup();
+            kept.truncate(14);
             match kept.is_empty() {
                 true => "no named records".to_string(),
                 false => kept.join(", "),
@@ -310,6 +319,16 @@ fn describe_one(
     let grounding = crate::author::test_description(&format!(
         "{facts}\n\nPROPOSED DESCRIPTION: {description}"
     ));
+    if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
+        eprintln!(
+            "product {:<34} supported {:.2} invented {:.2} outcome {:.2} -> {}",
+            project.unwrap_or("the whole system"),
+            grounding.supported,
+            grounding.invented,
+            grounding.outcome,
+            grounding.holds() && grounding.outcome >= TESTED
+        );
+    }
     (grounding.holds() && grounding.outcome >= TESTED).then(|| Product {
         project: project.map(str::to_string),
         description,
@@ -592,13 +611,22 @@ pub fn author(
         );
     }
     for entity in held.entities.iter().take(40) {
-        let key = mark(&mut owner, &format!("entity:{}", entity.declared_in));
+        let key = mark(&mut owner, &entity.id);
         evidence.insert(
             key,
             format!(
-                "  kind: data entity\n  declared as: {} in {}\n  it holds these fields: {}\n  written by {} units, read by {} units",
-                entity.declared_as,
-                entity.declared_in.split(':').next().unwrap_or(""),
+                "  kind: data entity\n  {}\n  it holds these fields: {}\n  written by {} units, read by {} units",
+                match entity.declared_in.as_deref() {
+                    Some(held) => format!(
+                        "declared as: {} in {}",
+                        entity.declared_as,
+                        held.split(':').next().unwrap_or("")
+                    ),
+                    None => format!(
+                        "never declared; the database is addressed by the name {} in {} places",
+                        entity.declared_as, entity.addressed_by
+                    ),
+                },
                 match entity.named_fields.is_empty() {
                     true => format!("{} unnamed", entity.fields),
                     false => entity.named_fields.join(", "),
@@ -630,8 +658,7 @@ pub fn author(
         }
     }
     for entity in held.entities.iter_mut() {
-        let id = format!("entity:{}", entity.declared_in);
-        let Some((held, grounding)) = by_id.get(&id).copied() else { continue };
+        let Some((held, grounding)) = by_id.get(&entity.id).copied() else { continue };
         let (name, description) = crate::author::written_name(held);
         entity.grounding = Some(grounding);
         if grounding.holds() {
@@ -822,6 +849,59 @@ pub fn derive(
     Comprehension { products: Vec::new(), capabilities: Vec::new(), flows, entities, terminal, chained }
 }
 
+static MANAGERS: &[&str] = &["db_session", "objects", "session"];
+static HANDLES: &[&str] = &[
+    "CrudRepository",
+    "DbQuery",
+    "DbSet",
+    "EntityRepository",
+    "IMongoCollection",
+    "JpaRepository",
+    "MongoCollection",
+    "MongoRepository",
+    "Repository",
+];
+
+fn held_by_a_handle(annotation: &str) -> Option<&str> {
+    let (handle, rest) = annotation.split_once('<')?;
+    let handle = handle.rsplit(['.', ':']).next()?;
+    if HANDLES.binary_search(&handle).is_err() {
+        return None;
+    }
+    let held = rest.strip_suffix('>')?;
+    match held.contains([',', '<']) {
+        true => None,
+        false => Some(held.trim()),
+    }
+}
+
+fn receiver_of(exit: &ExitPoint) -> &str {
+    exit.name.strip_suffix(&format!(".{}", exit.operation)).unwrap_or(&exit.name)
+}
+
+fn plainly_named(held: &str) -> bool {
+    !held.is_empty()
+        && held.chars().all(|letter| letter.is_alphanumeric() || letter == '_')
+        && !held.chars().next().is_some_and(|letter| letter.is_ascii_digit())
+}
+
+fn addressed<'a>(receiver: &'a str, modelled: &HashSet<&str>) -> Option<&'a str> {
+    let segments: Vec<&str> = receiver
+        .split('.')
+        .filter(|held| !matches!(*held, "this" | "self"))
+        .collect();
+    if !segments.iter().all(|held| plainly_named(held)) {
+        return None;
+    }
+    if let Some(at) = segments.iter().position(|held| MANAGERS.binary_search(held).is_ok()) {
+        return segments[..at].last().copied().filter(|held| modelled.contains(held));
+    }
+    match segments.len() == 2 {
+        true => segments.get(1).copied(),
+        false => None,
+    }
+}
+
 fn entities(
     nodes: &[IndexNode],
     edges: &[IndexEdge],
@@ -848,14 +928,33 @@ fn entities(
     let modelled: HashSet<&str> = roles
         .roles
         .iter()
-        .filter(|role| role.role == "model")
+        .filter(|role| role.role == "model" && !role.from.starts_with("name:"))
         .map(|role| role.node.as_str())
         .collect();
-    let stored: HashSet<&str> = exit_points
+    let handled: HashSet<&str> = nodes
         .iter()
-        .filter(|exit| exit.kind == "database")
-        .map(|exit| crate::names::root(&exit.target))
+        .filter_map(|node| node.type_annotation.as_deref())
+        .filter_map(held_by_a_handle)
         .collect();
+    let modelled_names: HashSet<&str> = nodes
+        .iter()
+        .filter(|node| modelled.contains(node.id.as_str()))
+        .map(|node| node.name.as_str())
+        .collect();
+    let mut kept: BTreeMap<String, (Vec<String>, Vec<String>, u32)> = BTreeMap::new();
+    for exit in exit_points.iter().filter(|exit| exit.kind == "database") {
+        let Some(named) = addressed(receiver_of(exit), &modelled_names) else { continue };
+        let held = kept.entry(named.to_ascii_lowercase()).or_default();
+        held.2 += 1;
+        let reaching = match changes(exit) {
+            true => &mut held.0,
+            false => &mut held.1,
+        };
+        if reaching.len() < 8 && !reaching.contains(&exit.source) {
+            reaching.push(exit.source.clone());
+        }
+    }
+    let stored: HashSet<&str> = kept.keys().map(String::as_str).collect();
     let storing: HashSet<&str> = exit_points
         .iter()
         .filter(|exit| matches!(exit.kind, "database" | "file" | "client_storage"))
@@ -884,28 +983,97 @@ fn entities(
         .iter()
         .filter(|node| node.kind.is_type())
         .filter(|node| {
-            modelled.contains(node.id.as_str()) || stored.contains(node.name.as_str())
+            modelled.contains(node.id.as_str())
+                || handled.contains(node.name.as_str())
+                || (stored.contains(node.name.to_ascii_lowercase().as_str())
+                    && fields.get(node.id.as_str()).copied().unwrap_or(0) >= 1)
         })
-        .filter(|node| fields.get(node.id.as_str()).copied().unwrap_or(0) >= 1)
         .map(|node| Entity {
+            id: format!("entity:{}", node.id),
+            addressed_by: kept
+                .get(&node.name.to_ascii_lowercase())
+                .map(|held| held.2)
+                .unwrap_or(0),
             declared_as: node.name.clone(),
             named_fields: named_fields.get(node.id.as_str()).cloned().unwrap_or_default(),
             name: None,
             description: None,
             grounding: None,
-            declared_in: node.id.clone(),
+            declared_in: Some(node.id.clone()),
             fields: fields.get(node.id.as_str()).copied().unwrap_or(0),
             written_by: written.get(node.id.as_str()).cloned().unwrap_or_default(),
             read_by: read.get(node.id.as_str()).cloned().unwrap_or_default(),
             project: node.project.clone(),
         })
         .collect();
+    let mut richest: BTreeMap<String, Entity> = BTreeMap::new();
+    for entity in entities {
+        match richest.entry(entity.declared_as.to_ascii_lowercase()) {
+            std::collections::btree_map::Entry::Vacant(held) => {
+                held.insert(entity);
+            }
+            std::collections::btree_map::Entry::Occupied(mut held) => {
+                if entity.fields > held.get().fields {
+                    held.insert(entity);
+                }
+            }
+        }
+    }
+    let written_down: HashSet<String> = richest.keys().cloned().collect();
+    let mut entities: Vec<Entity> = richest.into_values().collect();
+    for (named, (written_by, read_by, addressed_by)) in kept {
+        if written_down.contains(&named) {
+            continue;
+        }
+        entities.push(Entity {
+            id: format!("record:{named}"),
+            declared_as: named,
+            named_fields: Vec::new(),
+            name: None,
+            description: None,
+            grounding: None,
+            declared_in: None,
+            fields: 0,
+            addressed_by,
+            written_by,
+            read_by,
+            project: None,
+        });
+    }
     entities.sort_by(|left, right| {
         right
-            .fields
-            .cmp(&left.fields)
-            .then(left.declared_in.cmp(&right.declared_in))
+            .addressed_by
+            .cmp(&left.addressed_by)
+            .then(right.fields.cmp(&left.fields))
+            .then(left.id.cmp(&right.id))
     });
     entities.truncate(FLOWS_KEPT);
     entities
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_database_call_names_the_record_it_addresses() {
+        let modelled = HashSet::from(["Booking"]);
+        assert_eq!(addressed("prisma.booking", &modelled), Some("booking"));
+        assert_eq!(addressed("this.prisma.booking", &modelled), Some("booking"));
+        assert_eq!(addressed("Booking.objects", &modelled), Some("Booking"));
+        assert_eq!(addressed("db.session", &modelled), None);
+        assert_eq!(addressed("session", &modelled), None);
+        assert_eq!(addressed("queryHistoryApi.endpoints.editorQueries", &modelled), None);
+        assert_eq!(addressed("request(app.getHttpServer())", &modelled), None);
+    }
+
+    #[test]
+    fn a_persistence_handle_names_what_it_holds() {
+        assert_eq!(held_by_a_handle("DbSet<AccessSchedule>"), Some("AccessSchedule"));
+        assert_eq!(held_by_a_handle("Microsoft.EntityFrameworkCore.DbSet<User>"), Some("User"));
+        assert_eq!(held_by_a_handle("Dictionary<string, User>"), None);
+        assert_eq!(held_by_a_handle("DbSet<List<User>>"), None);
+        assert_eq!(held_by_a_handle("User"), None);
+    }
+}
+

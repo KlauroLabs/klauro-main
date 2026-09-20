@@ -352,8 +352,18 @@ once rather than once per run.
 A flow is a served surface and everything it reaches. Its standing is what it does at the end: a
 flow that reaches a call which changes something outside the process is terminal, one that reaches
 another flow is proximal, and one that only reads is neither. An entity is a type the code stores:
-one a model annotation or base class declares, or one a database call addresses by name, with the
-fields it holds. Those are facts, and 6.1 and 6.2 settle them.
+one a model annotation or base class declares, one a persistence handle holds — the type argument
+of a `DbSet` or a repository — or one a database call addresses by name, with the fields it holds.
+Those are facts, and 6.1 and 6.2 settle them.
+
+A name is not one of those facts. A type called `UpdateProfileInputSchema` is the shape of a
+request, and a type whose name merely ends in `Model` is a type whose name ends in `Model`; the
+role a name suggests is enough to place code in an architecture and never enough to call it a
+record. Where a database call addresses a record the repository never declares — the client is
+generated, or the table is named only in the call — the record is still one, known by the name the
+call uses and by who writes and reads it. One record declared in several packages is one record,
+described by its richest declaration, and the records a repository keeps are ordered by how often
+its database calls address them.
 
 A capability is not. One model reads the changing paths **and the product's own words** — the
 opening of its README, the description its manifest carries — and proposes the outcomes this system
@@ -409,6 +419,10 @@ Limits. Prose is only as good as the evidence bundle: an entity whose fields are
 index yields a description the check refuses, which is the right outcome and a thin one. A
 repository whose calls dispatch through interfaces the index cannot resolve — jellyfin — reports
 flows that reach no exit, so its terminal count is zero and its capabilities are proximal only.
+
+A repository that keeps nothing reports no records, and one whose records are named only in a
+call's arguments rather than through its receiver — a keyword naming a table, a string naming a
+collection — reports none either, rather than reporting the types that merely sound like records.
 
 ---
 
