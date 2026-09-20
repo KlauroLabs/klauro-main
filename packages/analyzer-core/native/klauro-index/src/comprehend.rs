@@ -757,10 +757,27 @@ pub fn derive(
         }
     }
 
+    /// A message names a surface when someone could ask for it by that name. A keystroke
+    /// a reader binds, or a topic left unnamed, is a registration and nothing more.
+    fn names_a_surface(entry: &EntryPoint) -> bool {
+        if !matches!(entry.kind, "event" | "message") {
+            return true;
+        }
+        entry
+            .name
+            .as_bytes()
+            .windows(2)
+            .any(|held| held.iter().all(u8::is_ascii_alphabetic))
+    }
+
     let project_of: HashMap<&str, Option<&str>> =
         nodes.iter().map(|node| (node.id.as_str(), node.project.as_deref())).collect();
     let mut by_project: BTreeMap<Option<&str>, Vec<&EntryPoint>> = BTreeMap::new();
-    for entry in entry_points.iter().filter(|entry| entry.kind != "test") {
+    for entry in entry_points
+        .iter()
+        .filter(|entry| entry.kind != "test")
+        .filter(|entry| names_a_surface(entry))
+    {
         by_project
             .entry(project_of.get(entry.handler.as_str()).copied().flatten())
             .or_default()
