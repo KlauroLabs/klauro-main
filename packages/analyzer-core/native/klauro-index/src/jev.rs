@@ -114,7 +114,17 @@ pub fn decide(state: &str, questions: BTreeMap<String, Question>) -> BTreeMap<St
             let Ok(request) = serde_json::to_string(&body) else {
                 return BTreeMap::new();
             };
-            ask(&request).map(|answered| answered.answers).unwrap_or_default()
+            match ask(&request) {
+                Some(answered) => answered.answers,
+                None => {
+                    eprintln!(
+                        "  jev unanswered: {} questions in a request of {} bytes",
+                        batch.len(),
+                        request.len()
+                    );
+                    BTreeMap::new()
+                }
+            }
         })
         .collect();
     for batch in batches {

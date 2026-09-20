@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 const ENDPOINT: &str = "https://api.deepinfra.com/v1/openai/chat/completions";
 const SECONDS: &str = "60";
 const GROUNDED: f64 = 0.5;
-const NAMED_PER_CALL: usize = 8;
+const NAMED_PER_CALL: usize = 4;
+const PATHS_PER_PROPOSAL: usize = 400;
 
 #[derive(Debug, Serialize, Clone, Copy)]
 pub struct Grounding {
@@ -48,8 +49,13 @@ fn endpoint() -> String {
 }
 
 fn model() -> String {
-    std::env::var("KLAURO_AUTHOR_MODEL")
-        .unwrap_or_else(|_| "meta-llama/Llama-3.3-70B-Instruct".to_string())
+    std::env::var("KLAURO_AUTHOR_MODEL").unwrap_or_else(|_| "google/gemma-3-12b-it".to_string())
+}
+
+fn proposing() -> String {
+    std::env::var("KLAURO_PROPOSAL_MODEL")
+        .or_else(|_| std::env::var("KLAURO_AUTHOR_MODEL"))
+        .unwrap_or_else(|_| "Qwen/Qwen2.5-72B-Instruct".to_string())
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -69,6 +75,17 @@ pub fn propose_outcomes(evidence: &[String], spoken_for: &str) -> Vec<Outcome> {
     if !asked() || evidence.is_empty() {
         return Vec::new();
     }
+    let mut outcomes: Vec<Outcome> = evidence
+        .par_chunks(PATHS_PER_PROPOSAL)
+        .flat_map(|batch| propose_batch(batch, spoken_for))
+        .collect();
+    outcomes.sort_by(|left, right| left.name.cmp(&right.name));
+    outcomes.dedup_by(|left, right| left.name.eq_ignore_ascii_case(&right.name));
+    outcomes.truncate(24);
+    outcomes
+}
+
+fn propose_batch(evidence: &[String], spoken_for: &str) -> Vec<Outcome> {
     let prompt = format!(
         "A software system describes itself like this:\n{spoken_for}\n\n\
          These are the paths through it that change something, each named as the code names the \
@@ -83,9 +100,8 @@ pub fn propose_outcomes(evidence: &[String], spoken_for: &str) -> Vec<Outcome> {
          Return JSON only: {{\"outcomes\":[{{\"name\":\"...\",\"description\":\"...\",\"audience\":\"...\"}}]}}",
         evidence.join("\n")
     );
-    let Some(held) = answered::<Proposed>(&prompt, 2400) else { return Vec::new() };
-    let mut outcomes: Vec<Outcome> = held
-        .outcomes
+    let Some(held) = answered::<Proposed>(&prompt, 3000, &proposing()) else { return Vec::new() };
+    held.outcomes
         .into_iter()
         .map(|mut outcome| {
             outcome.name = outcome.name.trim().to_string();
@@ -96,11 +112,7 @@ pub fn propose_outcomes(evidence: &[String], spoken_for: &str) -> Vec<Outcome> {
         .filter(|outcome| {
             !outcome.name.is_empty() && outcome.name.len() < 70 && !outcome.description.is_empty()
         })
-        .collect();
-    outcomes.sort_by(|left, right| left.name.cmp(&right.name));
-    outcomes.dedup_by(|left, right| left.name == right.name);
-    outcomes.truncate(24);
-    outcomes
+        .collect()
 }
 
 pub fn name_them(member: &str, evidence: &BTreeMap<String, String>) -> BTreeMap<String, Written> {
@@ -138,7 +150,7 @@ fn name_batch(member: &str, listed: &[String]) -> BTreeMap<String, Written> {
          The {member}:\n{}",
         listed.join("\n\n")
     );
-    let Some(written) = answered::<serde_json::Value>(&prompt, 2400) else { return named };
+    let Some(written) = answered::<serde_json::Value>(&prompt, 2400, &model()) else { return named };
     for item in written["items"].as_array().into_iter().flatten() {
         let Ok(held) = serde_json::from_value::<Written>(item.clone()) else { continue };
         named.insert(held.id.clone(), held);
@@ -246,7 +258,7 @@ pub fn describe_system(facts: &str) -> Option<String> {
          analysis, the repository or the code layout — describe the thing the code is.\n\n\
          Return JSON only: {{\"description\":\"...\"}}"
     );
-    let told: Told = answered(&prompt, 1200)?;
+    let told: Told = answered(&prompt, 1200, &proposing())?;
     let described = told.description.trim().to_string();
     (!described.is_empty()).then_some(described)
 }
@@ -309,45 +321,45 @@ pub fn test_description(facts: &str) -> Grounding {
     }
 }
 
-pub fn test_capability(facts: &str) -> Grounding {
-    let questions = BTreeMap::from([
+fn asking_of(facts: &str) -> BTreeMap<&'static str, crate::jev::Question> {
+    BTreeMap::from([
         (
-            "supported".to_string(),
+            "supported",
             crate::jev::Question {
                 kind: "noul",
-                instructions: "Every claim in the proposed capability and description is supported by the facts".to_string(),
+                instructions: format!("{facts}\n\nEvery claim in the proposed capability and description is supported by the facts"),
                 criteria: BTreeMap::new().into(),
             },
         ),
         (
-            "invented".to_string(),
+            "invented",
             crate::jev::Question {
                 kind: "noul",
-                instructions: "The proposal names a specific third-party product, vendor, brand or technology — a payment provider, a cloud service, a database engine, a named library — that does not appear in the facts. Ordinary words for the people who use the system and for what it does are not that.".to_string(),
+                instructions: format!("{facts}\n\nThe proposal names a specific third-party product, vendor, brand or technology — a payment provider, a cloud service, a database engine, a named library — that does not appear in the facts. Ordinary words for the people who use the system and for what it does are not that."),
                 criteria: BTreeMap::new().into(),
             },
         ),
         (
-            "outcome".to_string(),
+            "outcome",
             crate::jev::Question {
                 kind: "noul",
-                instructions: "By the rules above, this passes the audience test: this product's own audience would recognise it as something they came for, and it would appear in a product description, a user objective, a business offering or an operational responsibility".to_string(),
+                instructions: format!("{facts}\n\nBy the rules above, this passes the audience test: this product's own audience would recognise it as something they came for, and it would appear in a product description, a user objective, a business offering or an operational responsibility"),
                 criteria: BTreeMap::new().into(),
             },
         ),
         (
-            "universal".to_string(),
+            "universal",
             crate::jev::Question {
                 kind: "noul",
-                instructions: "By the rules above, this fails the universality test: it would be true of most codebases, so it is infrastructure rather than something this product offers".to_string(),
+                instructions: format!("{facts}\n\nBy the rules above, this fails the universality test: it would be true of most codebases, so it is infrastructure rather than something this product offers"),
                 criteria: BTreeMap::new().into(),
             },
         ),
         (
-            "specific".to_string(),
+            "specific",
             crate::jev::Question {
                 kind: "score",
-                instructions: "How specific this is to these facts rather than generic".to_string(),
+                instructions: format!("{facts}\n\nHow specific this is to these facts rather than generic"),
                 criteria: vec![
                     "Generic; could describe any system".to_string(),
                     "Names the domain but little else".to_string(),
@@ -356,22 +368,42 @@ pub fn test_capability(facts: &str) -> Grounding {
                 .into(),
             },
         ),
-    ]);
-    let answers = crate::jev::decide(&format!("{RULES}\n\n{facts}"), questions);
-    let settled = |named: &str, fallback: f64| {
-        answers.get(named).map(crate::jev::Decision::settled).unwrap_or(fallback)
-    };
-    Grounding {
-        supported: settled("supported", 0.0),
-        invented: settled("invented", 1.0),
-        outcome: settled("outcome", 0.0),
-        universal: Some(settled("universal", 1.0)),
-        specific: answers
-            .get("specific")
-            .and_then(|held| held.score)
-            .map(|score| (score * 10.0).round() / 10.0)
-            .unwrap_or(0.0),
+    ])
+}
+
+pub fn test_capabilities(spoken: &str, held: &[(String, String)]) -> BTreeMap<String, Grounding> {
+    let mut questions: BTreeMap<String, crate::jev::Question> = BTreeMap::new();
+    for (at, (_, facts)) in held.iter().enumerate() {
+        for (named, question) in asking_of(facts) {
+            questions.insert(format!("c{at}-{named}"), question);
+        }
     }
+    let answers = crate::jev::decide(&format!("{RULES}\n\n{spoken}"), questions);
+    held.iter()
+        .enumerate()
+        .map(|(at, (id, _))| {
+            let settled = |named: &str, fallback: f64| {
+                answers
+                    .get(&format!("c{at}-{named}"))
+                    .map(crate::jev::Decision::settled)
+                    .unwrap_or(fallback)
+            };
+            (
+                id.clone(),
+                Grounding {
+                    supported: settled("supported", 0.0),
+                    invented: settled("invented", 1.0),
+                    outcome: settled("outcome", 0.0),
+                    universal: Some(settled("universal", 1.0)),
+                    specific: answers
+                        .get(&format!("c{at}-specific"))
+                        .and_then(|held| held.score)
+                        .map(|score| (score * 10.0).round() / 10.0)
+                        .unwrap_or(0.0),
+                },
+            )
+        })
+        .collect()
 }
 
 impl Grounding {
@@ -407,12 +439,12 @@ fn carved(text: &str) -> &str {
     &held[open..=close]
 }
 
-fn answered<T: serde::de::DeserializeOwned>(prompt: &str, most: u32) -> Option<T> {
+fn answered<T: serde::de::DeserializeOwned>(prompt: &str, most: u32, model: &str) -> Option<T> {
     let spoken_to = spoken_to();
     let request = match &spoken_to {
         Some(command) => format!("{command}\n{prompt}"),
         None => serde_json::to_string(&serde_json::json!({
-            "model": model(),
+            "model": model,
             "messages": [{"role": "user", "content": prompt}],
             "response_format": {"type": "json_object"},
             "max_tokens": most,
@@ -436,7 +468,14 @@ fn answered<T: serde::de::DeserializeOwned>(prompt: &str, most: u32) -> Option<T
         Some(command) => spoken(command, prompt)?,
         None => ask(&request)?,
     };
-    let value = read(&text)?;
+    let Some(value) = read(&text) else {
+        eprintln!(
+            "  author unreadable answer of {} bytes to a prompt of {} bytes",
+            text.len(),
+            prompt.len()
+        );
+        return None;
+    };
     crate::jev::remember(&request, &text);
     Some(value)
 }

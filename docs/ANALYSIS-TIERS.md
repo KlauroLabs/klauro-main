@@ -396,6 +396,14 @@ because a monorepo has no single answer and an average of its parts is not one.
 because a capability derived by grouping code is a cluster of code, which is the one thing it must
 never be.
 
+Two models write, because the work is two kinds. Proposing what a product does and describing it
+are a handful of calls that decide what the analysis says, and they are given the abler model. Naming
+the paths and records is a hundred small writes whose worth is settled afterwards by the tests, and
+they are given the faster one: measured against the same repositories, the abler model spends four
+times as long on the naming and the capabilities that survive are the same. Both roles run at once,
+because neither reads the other's work, and every call within a role runs beside its siblings — a
+pool sized for waiting on a network rather than for the cores of the machine.
+
 The authoring model is reached one of two ways and the tier does not care which: a chat endpoint,
 named by `KLAURO_AUTHOR_ENDPOINT` and `KLAURO_AUTHOR_MODEL`, which serves a hosted provider, a
 model on the machine, or one on another machine across a private network equally well; or a command
