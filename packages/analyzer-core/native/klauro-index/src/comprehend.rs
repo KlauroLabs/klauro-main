@@ -395,7 +395,11 @@ fn form_capabilities(held: &Comprehension, spoken: &str) -> Vec<Capability> {
     for flow in ranked {
         lanes.entry(flow.project.as_deref()).or_default().push(flow);
     }
-    let lanes: Vec<Vec<&Flow>> = lanes.into_values().collect();
+    let mut lanes: Vec<Vec<&Flow>> = lanes.into_values().collect();
+    for lane in &mut lanes {
+        let mut seen: HashSet<(&str, &str)> = HashSet::new();
+        lane.retain(|flow| seen.insert((flow.operation.as_str(), flow.standing)));
+    }
     let shares = shared(&lanes, PROPOSED);
     let ranked: Vec<&Flow> = lanes
         .iter()
