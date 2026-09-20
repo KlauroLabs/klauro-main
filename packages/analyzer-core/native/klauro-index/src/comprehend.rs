@@ -144,8 +144,8 @@ pub struct Comprehension {
 }
 
 static GENERIC: &[&str] = &[
-    "Command", "Controller", "Handler", "Mutation", "Query", "Resolver", "Service", "View",
-    "ViewSet", "handle", "perform_mutation", "run",
+    "Command", "Controller", "Handler", "Main", "Mutation", "Query", "Resolver", "Service", "View",
+    "ViewSet", "handle", "main", "on", "perform_mutation", "run", "wmain",
 ];
 
 static CHANGING: &[&str] = &[
@@ -397,8 +397,16 @@ fn form_capabilities(held: &Comprehension, spoken: &str) -> Vec<Capability> {
     }
     let mut lanes: Vec<Vec<&Flow>> = lanes.into_values().collect();
     for lane in &mut lanes {
-        let mut seen: HashSet<(&str, &str)> = HashSet::new();
-        lane.retain(|flow| seen.insert((flow.operation.as_str(), flow.standing)));
+        let mut seen: HashSet<String> = HashSet::new();
+        lane.retain(|flow| {
+            seen.insert(format!(
+                "{}|{}|{}|{}",
+                flow.operation,
+                flow.standing,
+                flow.writes.join(","),
+                flow.changes.join(",")
+            ))
+        });
     }
     let shares = shared(&lanes, PROPOSED);
     let ranked: Vec<&Flow> = lanes
