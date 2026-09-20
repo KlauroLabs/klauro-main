@@ -451,6 +451,12 @@ repository and fewer than seventy.
 A refusal is not a failure to answer. Where a model says a prompt is more than it will take, the
 next model is asked at once; only silence is worth waiting through.
 
+A model is told the shape of the answer, not asked for it. Given the shape, it cannot open with a
+paragraph of preamble, cannot leave its JSON unclosed, and stops the moment the shape is filled;
+without it a smaller model writes until it runs out of room and the whole answer is thrown away.
+Measured on one model and one prompt, the same question answered in twenty-two seconds as prose
+that could not be read, and in six seconds as something that could.
+
 A model that does not answer is not an answer. Each role names more than one model and takes the
 first that replies with something readable, because a hosted model stalls on a long prompt often
 enough that one of them alone leaves a repository with nothing to say — and nothing to say is the

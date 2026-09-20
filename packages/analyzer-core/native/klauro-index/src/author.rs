@@ -140,7 +140,7 @@ fn consolidate(outcomes: &[Outcome], spoken_for: &str) -> Vec<Outcome> {
             .collect::<Vec<_>>()
             .join("\n")
     );
-    let Some(held) = answered::<Proposed>(&prompt, 4000, &proposing()) else {
+    let Some(held) = answered::<Proposed>(&prompt, 4000, &proposing(), "outcomes") else {
         return outcomes.to_vec();
     };
     let mut folded: Vec<Outcome> = held
@@ -177,7 +177,7 @@ fn propose_batch(evidence: &[String], spoken_for: &str) -> Vec<Outcome> {
          Return JSON only: {{\"outcomes\":[{{\"name\":\"...\",\"description\":\"...\",\"audience\":\"...\"}}]}}",
         evidence.join("\n")
     );
-    let Some(held) = answered::<Proposed>(&prompt, 3000, &proposing()) else { return Vec::new() };
+    let Some(held) = answered::<Proposed>(&prompt, 3000, &proposing(), "outcomes") else { return Vec::new() };
     held.outcomes
         .into_iter()
         .map(|mut outcome| {
@@ -229,7 +229,7 @@ fn name_batch(member: &str, spoken_for: &str, listed: &[String]) -> BTreeMap<Str
          The {member}:\n{}",
         listed.join("\n\n")
     );
-    let Some(written) = answered::<serde_json::Value>(&prompt, 1200, &asking_of_models(model())) else { return named };
+    let Some(written) = answered::<serde_json::Value>(&prompt, 1200, &asking_of_models(model()), "items") else { return named };
     for item in written["items"].as_array().into_iter().flatten() {
         let Ok(held) = serde_json::from_value::<Written>(item.clone()) else { continue };
         named.insert(held.id.clone(), held);
@@ -354,7 +354,7 @@ pub fn describe_system(facts: &str) -> Option<String> {
          analysis, the repository or the code layout — describe the thing the code is.\n\n\
          Return JSON only: {{\"description\":\"...\"}}"
     );
-    let told: Told = answered(&prompt, 1200, &proposing())?;
+    let told: Told = answered(&prompt, 1200, &proposing(), "description")?;
     let described = told.description.trim().to_string();
     (!described.is_empty()).then_some(described)
 }
@@ -539,18 +539,54 @@ fn speaks_of_chat() -> bool {
     endpoint().contains("/api/chat")
 }
 
-fn bodied(prompt: &str, most: u32, model: &str) -> Option<String> {
+/// The shape an answer must take. A model told the shape cannot wander off into prose,
+/// cannot leave its JSON unclosed, and stops as soon as the shape is filled.
+fn shaped(of: &str) -> serde_json::Value {
+    let text = serde_json::json!({"type": "string"});
+    match of {
+        "outcomes" => serde_json::json!({
+            "type": "object",
+            "properties": {"outcomes": {"type": "array", "items": {
+                "type": "object",
+                "properties": {"name": text, "description": text, "audience": text},
+                "required": ["name", "description", "audience"],
+            }}},
+            "required": ["outcomes"],
+        }),
+        "items" => serde_json::json!({
+            "type": "object",
+            "properties": {"items": {"type": "array", "items": {
+                "type": "object",
+                "properties": {"id": text, "description": text},
+                "required": ["id", "description"],
+            }}},
+            "required": ["items"],
+        }),
+        _ => serde_json::json!({
+            "type": "object",
+            "properties": {"description": text},
+            "required": ["description"],
+        }),
+    }
+}
+
+fn bodied(prompt: &str, most: u32, model: &str, of: &str) -> Option<String> {
+    let shape = shaped(of);
     let held = match speaks_of_chat() {
         true => serde_json::json!({
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
             "stream": false,
+            "format": shape,
             "options": {"temperature": 0, "num_predict": most},
         }),
         false => serde_json::json!({
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
-            "response_format": {"type": "json_object"},
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {"name": of, "strict": true, "schema": shape},
+            },
             "max_tokens": most,
             "temperature": 0,
         }),
@@ -566,7 +602,12 @@ fn spoken_content(text: &str) -> Option<String> {
     }
 }
 
-fn answered<T: serde::de::DeserializeOwned>(prompt: &str, most: u32, models: &[String]) -> Option<T> {
+fn answered<T: serde::de::DeserializeOwned>(
+    prompt: &str,
+    most: u32,
+    models: &[String],
+    of: &str,
+) -> Option<T> {
     let spoken_to = spoken_to();
     let read = |text: &str| -> Option<T> { match &spoken_to {
         Some(_) => serde_json::from_str::<T>(carved(text)).ok(),
@@ -576,7 +617,7 @@ fn answered<T: serde::de::DeserializeOwned>(prompt: &str, most: u32, models: &[S
     'asking: for model in models {
         let request = match &spoken_to {
             Some(command) => format!("{command}\n{prompt}"),
-            None => bodied(prompt, most, model)?,
+            None => bodied(prompt, most, model, of)?,
         };
         if let Some(remembered) = crate::jev::remembered(&request)
             && let Some(value) = read(&remembered)
