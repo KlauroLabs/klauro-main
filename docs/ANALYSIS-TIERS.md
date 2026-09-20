@@ -396,6 +396,12 @@ because a monorepo has no single answer and an average of its parts is not one.
 because a capability derived by grouping code is a cluster of code, which is the one thing it must
 never be.
 
+A project may sit under a namespace the catalogue also names. Code written inside
+`org.springframework.samples` resolves to files in the repository, and reading every import
+beneath that namespace as the repository's own hides the framework the project is built on —
+which is the one thing worth knowing about it. A specifier the catalogue names is a package
+however the repository names itself.
+
 A record addressed through the type that declares it is still a record reached. Where a framework
 lets a model speak for its own table — `Contact::create`, a row saved through the object that
 holds it — there is no module to read the call against, and without this a repository built that

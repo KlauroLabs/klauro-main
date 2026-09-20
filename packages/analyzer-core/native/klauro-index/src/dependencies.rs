@@ -480,10 +480,12 @@ pub fn derive(
     let mut found: HashMap<&str, Dependency> = HashMap::new();
 
     for fact in imports {
-        if internal.contains(&fact.specifier) {
+        let Some(package) = package_of(&fact.specifier) else { continue };
+        // A project may sit under a namespace the catalogue also names: its own package
+        // resolves inside the repository, while the framework it is built on does not.
+        if internal.contains(&fact.specifier) && classify(package).is_none() {
             continue;
         }
-        let Some(package) = package_of(&fact.specifier) else { continue };
         if declares(package, own) {
             continue;
         }
