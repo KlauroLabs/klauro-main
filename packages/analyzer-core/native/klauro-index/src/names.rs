@@ -36,3 +36,46 @@ mod tests {
         assert_eq!(root("values"), "values");
     }
 }
+
+pub fn spoken_as(declared: &str) -> String {
+    let mut held = String::new();
+    let mut previous = '\0';
+    for letter in declared.chars() {
+        if letter == '_' || letter == '-' || letter == '.' {
+            held.push(' ');
+            previous = ' ';
+            continue;
+        }
+        if letter.is_uppercase() && !held.is_empty() && previous != ' ' && !previous.is_uppercase() {
+            held.push(' ');
+        }
+        held.push(letter);
+        previous = letter;
+    }
+    let held = held.trim();
+    let mut spoken = String::with_capacity(held.len());
+    for (at, letter) in held.chars().enumerate() {
+        match at {
+            0 => spoken.extend(letter.to_uppercase()),
+            _ => match letter.is_uppercase() && held.chars().nth(at + 1).is_some_and(char::is_uppercase) {
+                true => spoken.push(letter),
+                false => spoken.extend(letter.to_lowercase()),
+            },
+        }
+    }
+    spoken
+}
+
+#[cfg(test)]
+mod spoken {
+    use super::spoken_as;
+
+    #[test]
+    fn a_record_is_spoken_as_its_declared_name_reads() {
+        assert_eq!(spoken_as("AddressBookSubscription"), "Address book subscription");
+        assert_eq!(spoken_as("ContactImportantDateType"), "Contact important date type");
+        assert_eq!(spoken_as("life_event"), "Life event");
+        assert_eq!(spoken_as("Call"), "Call");
+        assert_eq!(spoken_as("booking"), "Booking");
+    }
+}

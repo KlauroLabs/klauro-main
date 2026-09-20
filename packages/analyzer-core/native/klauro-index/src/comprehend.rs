@@ -683,11 +683,11 @@ pub fn author(
             .collect();
     let mut settled = held.capabilities.len() as u32;
     for entity in held.entities.iter_mut() {
+        entity.name = Some(crate::names::spoken_as(&entity.declared_as));
         let Some((held, grounding)) = by_id.get(&entity.id).copied() else { continue };
-        let (name, description) = crate::author::written_name(held);
+        let (_, description) = crate::author::written_name(held);
         entity.grounding = Some(grounding);
         if grounding.holds() {
-            entity.name = Some(name.to_string());
             entity.description = Some(description.to_string());
             settled += 1;
         }
@@ -875,6 +875,30 @@ pub fn derive(
     Comprehension { products: Vec::new(), capabilities: Vec::new(), flows, entities, terminal, chained }
 }
 
+static DECLARED_OF: &[&str] = &[
+    "appends",
+    "attributes",
+    "casts",
+    "connection",
+    "dates",
+    "dispatchesEvents",
+    "fillable",
+    "guarded",
+    "hidden",
+    "incrementing",
+    "keyType",
+    "perPage",
+    "primaryKey",
+    "table",
+    "timestamps",
+    "touches",
+    "with",
+];
+
+fn tells_of_itself(named: &str) -> bool {
+    DECLARED_OF.binary_search(&named).is_ok()
+}
+
 static MANAGERS: &[&str] = &["db_session", "objects", "session"];
 static HANDLES: &[&str] = &[
     "CrudRepository",
@@ -944,8 +968,8 @@ fn entities(
         if edge.kind == EdgeKind::HasField {
             *fields.entry(edge.source.as_str()).or_insert(0) += 1;
             let held = named_fields.entry(edge.source.as_str()).or_default();
-            if held.len() < 16
-                && let Some(named) = named_of.get(edge.target.as_str())
+            if let Some(named) = named_of.get(edge.target.as_str())
+                && !tells_of_itself(named)
             {
                 held.push((*named).to_string());
             }

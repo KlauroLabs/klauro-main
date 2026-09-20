@@ -9,7 +9,7 @@ const ENDPOINT: &str = "https://api.deepinfra.com/v1/openai/chat/completions";
 const SECONDS: &str = "25";
 const GROUNDED: f64 = 0.5;
 const TRIES: usize = 5;
-const NAMED_PER_CALL: usize = 48;
+const NAMED_PER_CALL: usize = 10;
 const NAMED_PER_SPOKEN_CALL: usize = 40;
 
 pub fn reaching_at_once(over_a_network: usize) -> usize {
@@ -40,6 +40,7 @@ pub struct Grounding {
 #[derive(Debug, Deserialize)]
 pub struct Written {
     pub id: String,
+    #[serde(default)]
     pub name: String,
     pub description: String,
 }
@@ -213,20 +214,18 @@ pub fn name_them(member: &str, evidence: &BTreeMap<String, String>) -> BTreeMap<
 fn name_batch(member: &str, listed: &[String]) -> BTreeMap<String, Written> {
     let mut named = BTreeMap::new();
     let prompt = format!(
-        "You are naming the {member} of a software system from facts extracted from its code.\n\
-         Rules: say only what the facts say. Never name a technology, vendor or product that does \
-         not appear in the facts. Never invent a purpose, an audience or a behaviour the facts do \
-         not state. A name is 2-5 words. For a data entity, the description says what the record \
-         is and what it holds, using the field names given. For an outcome, name the thing someone \
-         gets from the system, taking the words from the operation names given — never name the \
-         database, the storage or the code mechanism, and never use the words create, update, \
-         delete, select or query on their own.\n\n\
+        "You are describing the {member} of a software system from facts extracted from its code.\n\
+         Say only what the facts say. Never name a technology, vendor or product that does not \
+         appear in the facts, and never name the storage, the framework or the code mechanism. \
+         Never invent a purpose, an audience or a behaviour the facts do not state. Each \
+         description is one clause saying what the record is and what it holds, taking its words \
+         from the field names given. No more than fifteen words.\n\n\
          Echo each id back exactly as given.\n\
-         Return JSON only: {{\"items\":[{{\"id\":\"...\",\"name\":\"...\",\"description\":\"...\"}}]}}\n\n\
+         Return JSON only: {{\"items\":[{{\"id\":\"...\",\"description\":\"...\"}}]}}\n\n\
          The {member}:\n{}",
         listed.join("\n\n")
     );
-    let Some(written) = answered::<serde_json::Value>(&prompt, 2400, &asking_of_models(model())) else { return named };
+    let Some(written) = answered::<serde_json::Value>(&prompt, 1200, &asking_of_models(model())) else { return named };
     for item in written["items"].as_array().into_iter().flatten() {
         let Ok(held) = serde_json::from_value::<Written>(item.clone()) else { continue };
         named.insert(held.id.clone(), held);
@@ -245,8 +244,8 @@ pub fn ground(
     let mut questions: BTreeMap<String, crate::jev::Question> = BTreeMap::new();
     for (at, (_, held, facts)) in asking.iter().enumerate() {
         let told = format!(
-            "FACTS extracted from code:\n{facts}\n\nPROPOSED NAME: {}\nPROPOSED DESCRIPTION: {}",
-            held.name, held.description
+            "FACTS extracted from code:\n{facts}\n\nPROPOSED DESCRIPTION: {}",
+            held.description
         );
         for (named, question) in written_of(&told) {
             questions.insert(format!("w{at}-{named}"), question);
@@ -287,7 +286,7 @@ fn written_of(told: &str) -> BTreeMap<&'static str, crate::jev::Question> {
             "outcome",
             crate::jev::Question {
                 kind: "noul",
-                instructions: format!("{told}\n\nThe proposed name describes something a person gets from the system, rather than a database operation or a code mechanism"),
+                instructions: format!("{told}\n\nThe proposed description says what the record holds, rather than describing a database operation or a code mechanism"),
                 criteria: BTreeMap::new().into(),
             },
         ),
@@ -295,7 +294,7 @@ fn written_of(told: &str) -> BTreeMap<&'static str, crate::jev::Question> {
             "supported",
             crate::jev::Question {
                 kind: "noul",
-                instructions: format!("{told}\n\nEvery claim in the proposed name and description is supported by the facts"),
+                instructions: format!("{told}\n\nEvery claim in the proposed description is supported by the facts"),
                 criteria: BTreeMap::new().into(),
             },
         ),
@@ -303,7 +302,7 @@ fn written_of(told: &str) -> BTreeMap<&'static str, crate::jev::Question> {
             "invented",
             crate::jev::Question {
                 kind: "noul",
-                instructions: format!("{told}\n\nThe name or description mentions a technology, vendor or system that does not appear in the facts"),
+                instructions: format!("{told}\n\nThe description mentions a technology, vendor or system that does not appear in the facts"),
                 criteria: BTreeMap::new().into(),
             },
         ),

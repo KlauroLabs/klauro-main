@@ -396,6 +396,18 @@ because a monorepo has no single answer and an average of its parts is not one.
 because a capability derived by grouping code is a cluster of code, which is the one thing it must
 never be.
 
+A record is called what its declaration calls it. Turning `AddressBookSubscription` into
+"Address book subscription" is reading, not writing, and a model asked to do it spends most of a
+run restating identifiers it was given; only the sentence saying what the record holds is worth
+asking for. What a framework declares about a record — the table it sits in, which of its
+columns may be filled, how they are cast — is not a field of the record, and a description built
+from those words describes the framework rather than the thing.
+
+Requests are sized for the time they take, not for how few of them there are. Work that can be
+asked for at once is split until each request is small enough to answer quickly, because many
+short answers arriving together finish sooner than one long answer arriving alone, and the
+longest single request is what a reader waits for.
+
 What is asked of a model is asked once. A repository with four thousand surfaces is not four
 thousand questions: the names a library publishes are read as the module that offers them, every
 judgement of the same kind travels in one request filled to what the decider will take, and the
