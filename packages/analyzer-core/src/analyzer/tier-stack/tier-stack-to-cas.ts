@@ -3,6 +3,7 @@ import * as path from 'path';
 
 import {
   CAS_VERSION,
+  type CapabilityFlowRelationship,
   type FlowICELOTContract,
   type FlowStep,
   type CASDataEntity,
@@ -176,6 +177,7 @@ function stepsOf(flow: TierStackFlow): FlowStep[] {
 }
 
 function flowsOf(index: TierStackIndex): CASOutput['flows'] {
+  const serving = servingByFlow(index);
   return (index.comprehension?.flows ?? []).map(flow => ({
     flow_id: flow.id,
     name: flow.name ?? flow.operation,
@@ -185,7 +187,24 @@ function flowsOf(index: TierStackIndex): CASOutput['flows'] {
     entities: [...(flow.writes ?? []), ...(flow.reads ?? [])],
     contract: contractOf(flow),
     steps: stepsOf(flow),
+    capability_relationships: serving.get(flow.id) ?? [],
   }));
+}
+
+function servingByFlow(index: TierStackIndex): Map<string, CapabilityFlowRelationship[]> {
+  const serving = new Map<string, CapabilityFlowRelationship[]>();
+  for (const capability of index.comprehension?.capabilities ?? []) {
+    for (const delivery of capability.delivered ?? []) {
+      const held = serving.get(delivery.flow) ?? [];
+      held.push({
+        capability_id: capability.id,
+        role: delivery.role === 'primary' ? 'primary' : 'supporting',
+        rationale: delivery.rationale,
+      });
+      serving.set(delivery.flow, held);
+    }
+  }
+  return serving;
 }
 
 function entitiesOf(index: TierStackIndex): CASDataEntity[] {
