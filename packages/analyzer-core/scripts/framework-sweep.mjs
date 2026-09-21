@@ -31,8 +31,6 @@ const roots = readdirSync(CORPUS, { withFileTypes: true })
 
 const wanted = claimed();
 
-// A package answers to the catalogue entry it starts with, whatever its case and
-// whatever it carries after a boundary, exactly as the catalogue reads it.
 const answeredBy = name => {
   const held = name.toLowerCase();
   return wanted

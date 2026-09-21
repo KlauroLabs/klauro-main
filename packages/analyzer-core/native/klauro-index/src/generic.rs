@@ -1171,7 +1171,6 @@ impl<'a> Extractor<'a> {
     }
 
     fn columns_of(&self, node: Node) -> Vec<String> {
-        // a property that lists the record's columns rather than being one
         let mut held = Vec::new();
         let Some(listed) = self.listed_in(node) else { return held };
         let mut cursor = listed.walk();

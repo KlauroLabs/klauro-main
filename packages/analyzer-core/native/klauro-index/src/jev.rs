@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
-use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -11,7 +9,6 @@ const ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
 const MODEL: &str = "jev-latest";
 const BYTES_PER_CALL: usize = 60_000;
 const TRIES: usize = 5;
-const SECONDS: &str = "20";
 
 #[derive(Debug, Serialize)]
 pub struct Question {

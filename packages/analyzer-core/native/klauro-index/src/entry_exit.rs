@@ -481,12 +481,6 @@ static KEPT_OPERATIONS: &[&str] = &[
     "restore", "save", "update", "updateorcreate", "upsert", "where",
 ];
 
-static CHANGING_OPERATIONS: &[&str] = &[
-    "create", "delete", "destroy", "forcedelete", "increment", "insert", "restore", "save",
-    "update", "updateorcreate", "upsert",
-];
-
-/// A record addressed through the type that declares it: `Contact::create(...)`, `$post->save()`.
 pub fn kept_by_a_model(
     calls: &[CallFact],
     files: &[String],

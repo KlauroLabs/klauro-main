@@ -6,7 +6,6 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 const ENDPOINT: &str = "https://api.deepinfra.com/v1/openai/chat/completions";
-const SECONDS: &str = "25";
 const GROUNDED: f64 = 0.5;
 const TRIES: usize = 5;
 const NAMED_PER_CALL: usize = 24;
@@ -514,9 +513,6 @@ impl Grounding {
         self.supported >= GROUNDED && self.invented < GROUNDED
     }
 
-    pub fn reads_as_an_outcome(&self) -> bool {
-        self.holds() && self.outcome >= GROUNDED
-    }
 }
 
 pub fn written_name(written: &Written) -> (&str, &str) {
@@ -539,8 +535,6 @@ fn speaks_of_chat() -> bool {
     endpoint().contains("/api/chat")
 }
 
-/// The shape an answer must take. A model told the shape cannot wander off into prose,
-/// cannot leave its JSON unclosed, and stops as soon as the shape is filled.
 fn shaped(of: &str) -> serde_json::Value {
     let text = serde_json::json!({"type": "string"});
     match of {

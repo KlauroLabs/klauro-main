@@ -102,11 +102,6 @@ static GUARD_WORDS: &[&str] = &[
     "useguards",
 ];
 
-static FIXTURE_WORDS: &[&str] = &[
-    "afterall", "aftereach", "beforeall", "beforeeach", "fixture", "setup", "setupclass",
-    "teardown",
-];
-
 fn asserts(fact: &CallFact) -> bool {
     let callee = crate::names::leaf(&fact.callee).to_ascii_lowercase();
     if ASSERTION_WORDS.iter().any(|word| callee.starts_with(word)) {
@@ -228,11 +223,6 @@ fn guarded(nodes: &[IndexNode], entry_points: &[EntryPoint]) -> Vec<Invariant> {
         left.holder.cmp(&right.holder).then(left.guard.cmp(&right.guard))
     });
     invariants
-}
-
-pub fn is_fixture(name: &str) -> bool {
-    let lowered = name.to_ascii_lowercase();
-    FIXTURE_WORDS.binary_search(&lowered.as_str()).is_ok()
 }
 
 pub fn derive(

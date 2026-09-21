@@ -432,6 +432,10 @@ pub fn package_of(specifier: &str) -> Option<&str> {
     Some(head(trimmed, '/', 1))
 }
 
+fn resolves_within(specifier: &str, internal: &HashSet<String>) -> bool {
+    internal.contains(specifier)
+}
+
 fn declares(package: &str, own: &HashSet<&str>) -> bool {
     let name = package.strip_prefix("package:").unwrap_or(package);
     own.contains(name) || own.iter().any(|known| name.starts_with(known) && bounded(name, known))
@@ -481,9 +485,7 @@ pub fn derive(
 
     for fact in imports {
         let Some(package) = package_of(&fact.specifier) else { continue };
-        // A project may sit under a namespace the catalogue also names: its own package
-        // resolves inside the repository, while the framework it is built on does not.
-        if internal.contains(&fact.specifier) && classify(package).is_none() {
+        if resolves_within(&fact.specifier, internal) && classify(package).is_none() {
             continue;
         }
         if declares(package, own) {
