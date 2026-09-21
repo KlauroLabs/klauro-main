@@ -1,10 +1,6 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 
-const MIB = 1024 * 1024;
-const WORKER_NATIVE_MINIMUM_BYTES = 256 * MIB;
-const WORKER_NATIVE_HEAP_FRACTION = 0.25;
-const PARENT_GROWTH_RESERVE_BYTES = 256 * MIB;
 
 export interface ContainerMemory {
   limit: number;
@@ -117,42 +113,4 @@ export function readAnalysisMemoryCapacity(
     };
   }
   return { limitBytes: totalBytes, availableBytes: freeBytes, source: 'host' };
-}
-
-export function analysisWorkerMemoryRequiredBytes(heapMb: number, residentBytes = 0): number {
-  const heapBytes = heapMb * MIB;
-  const workerBytes = heapBytes + Math.max(WORKER_NATIVE_MINIMUM_BYTES, Math.ceil(heapBytes * WORKER_NATIVE_HEAP_FRACTION));
-  return Math.max(0, workerBytes - residentBytes) + PARENT_GROWTH_RESERVE_BYTES;
-}
-
-function workerResidentBytes(pid?: number): number {
-  if (!pid) return 0;
-  try {
-    const status = fs.readFileSync(`/proc/${pid}/status`, 'utf8');
-    const rssKb = status.match(/^VmRSS:\s+(\d+)\s+kB$/m)?.[1];
-    return rssKb ? Number(rssKb) * 1024 : 0;
-  } catch {
-    return 0;
-  }
-}
-
-export class AnalysisMemoryCapacityError extends Error {
-  readonly code = 'analysis_memory_capacity_exhausted';
-
-  constructor(readonly capacity: AnalysisMemoryCapacity, readonly requiredBytes: number, readonly heapMb: number) {
-    const available = capacity.availableBytes === null ? 'unknown' : `${Math.floor(capacity.availableBytes / MIB)} MiB`;
-    super(`Analysis was not started: ${available} available within the ${Math.floor(capacity.limitBytes / MIB)} MiB ${capacity.source} budget; ${Math.ceil(requiredBytes / MIB)} MiB required for the ${heapMb} MiB worker heap, native overhead and API growth reserve. Free capacity or isolate the analysis worker before retrying. No source or analysis scope was reduced.`);
-    this.name = 'AnalysisMemoryCapacityError';
-  }
-}
-
-export function assertAnalysisWorkerMemoryAvailable(
-  heapMb: number,
-  workerPid?: number,
-  capacity: AnalysisMemoryCapacity = readAnalysisMemoryCapacity(),
-): void {
-  const requiredBytes = analysisWorkerMemoryRequiredBytes(heapMb, workerResidentBytes(workerPid));
-  if (capacity.availableBytes === null || capacity.availableBytes < requiredBytes) {
-    throw new AnalysisMemoryCapacityError(capacity, requiredBytes, heapMb);
-  }
 }

@@ -4,7 +4,6 @@ import * as net from 'node:net';
 import * as path from 'node:path';
 import { analysisWorkerExecArgv, resolveAnalysisWorkerEntry, workerChannel } from './analysis-worker-channel';
 import { resolveAnalysisHeapMb } from './analysis-heap';
-import { assertAnalysisWorkerMemoryAvailable } from './analysis-memory';
 
 async function removeStaleSocket(socketPath: string): Promise<void> {
   if (!fs.existsSync(socketPath)) return;
@@ -99,7 +98,6 @@ export async function startAnalysisWorkerService(
       active = socket;
       try {
         const heap = resolveAnalysisHeapMb({ ...process.env, ...request.env });
-        assertAnalysisWorkerMemoryAvailable(heap.heapMb);
         child = fork(workerEntry, [], {
           execArgv: [...analysisWorkerExecArgv(process.execArgv), `--max-old-space-size=${heap.heapMb}`],
           stdio: ['ignore', 'pipe', 'pipe', 'ipc'],

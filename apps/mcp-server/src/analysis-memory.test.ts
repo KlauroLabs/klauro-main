@@ -1,9 +1,6 @@
 import { test } from 'node:test';
 import * as assert from 'node:assert/strict';
 import {
-  AnalysisMemoryCapacityError,
-  analysisWorkerMemoryRequiredBytes,
-  assertAnalysisWorkerMemoryAvailable,
   readAnalysisMemoryCapacity,
   readHostAvailableMemory,
   readContainerMemory,
@@ -36,10 +33,6 @@ test('Linux host headroom uses kernel available memory while preserving the tigh
   const container = cachedContainer()!;
   const capacity = readAnalysisMemoryCapacity(container, 8 * GIB, available);
   assert.equal(capacity.availableBytes, 2080 * MIB);
-  assert.throws(() => assertAnalysisWorkerMemoryAvailable(1024, undefined,
-    readAnalysisMemoryCapacity(container, 8 * GIB, 512 * MIB)), AnalysisMemoryCapacityError);
-  assert.doesNotThrow(() => assertAnalysisWorkerMemoryAvailable(1024, undefined, capacity));
-  assert.equal(analysisWorkerMemoryRequiredBytes(1024), 1536 * MIB);
 });
 
 test('unavailable or invalid host memory estimates fall back to unused RAM', () => {
@@ -52,18 +45,6 @@ test('unavailable or invalid host memory estimates fall back to unused RAM', () 
     'MemAvailable: unknown',
   ]) {
     assert.equal(readHostAvailableMemory(files({ '/proc/meminfo': info }), 8 * GIB, fallback), fallback);
-  }
-});
-
-test('host memory pressure still refuses workers even with reclaimable container cache', () => {
-  for (const availableBytes of [0, 128 * MIB, 1535 * MIB]) {
-    const host = readHostAvailableMemory(files({
-      '/proc/meminfo': `MemAvailable: ${availableBytes / 1024} kB`,
-    }), 8 * GIB, 2 * GIB);
-    assert.equal(host, availableBytes);
-    const capacity = readAnalysisMemoryCapacity(cachedContainer(), 8 * GIB, host);
-    assert.equal(capacity.availableBytes, availableBytes);
-    assert.throws(() => assertAnalysisWorkerMemoryAvailable(1024, undefined, capacity), AnalysisMemoryCapacityError);
   }
 });
 
@@ -80,13 +61,8 @@ test('credits only clean inactive file cache without changing raw cgroup usage o
   assert.deepEqual(container, { limit: 3 * GIB, usage: 2 * GIB, reclaimableFileBytes: 1056 * MIB });
   const capacity = readAnalysisMemoryCapacity(container, 8 * GIB, 6 * GIB);
   assert.equal(capacity.availableBytes, 2080 * MIB);
-  assert.equal(analysisWorkerMemoryRequiredBytes(1024), 1536 * MIB);
-  assert.throws(() => assertAnalysisWorkerMemoryAvailable(1024, undefined,
-    readAnalysisMemoryCapacity({ limit: 3 * GIB, usage: 2 * GIB }, 8 * GIB, 6 * GIB)), AnalysisMemoryCapacityError);
-  assert.doesNotThrow(() => assertAnalysisWorkerMemoryAvailable(1024, undefined, capacity));
   const hostLimited = readAnalysisMemoryCapacity(container, 8 * GIB, 128 * MIB);
   assert.equal(hostLimited.availableBytes, 128 * MIB);
-  assert.throws(() => assertAnalysisWorkerMemoryAvailable(1024, undefined, hostLimited), AnalysisMemoryCapacityError);
 });
 
 test('active, dirty, shared and anonymous pages do not turn into reclaimable capacity', () => {
@@ -143,8 +119,6 @@ test('uses the larger usage sample around cache statistics and refuses an unknow
   });
   const container = readContainerMemory(file => file.endsWith('/memory.current') ? (++samples === 1 ? String(2 * GIB) : 'unknown') : read(file));
   assert.deepEqual(container, { limit: 3 * GIB, usage: null });
-  assert.throws(() => assertAnalysisWorkerMemoryAvailable(1024, undefined,
-    readAnalysisMemoryCapacity(container, 8 * GIB, 6 * GIB)), AnalysisMemoryCapacityError);
 });
 
 test('invalid injected cache credits cannot inflate admission headroom', () => {
@@ -177,7 +151,6 @@ test('a known container limit is retained when its current usage cannot be read'
   const container = readContainerMemory(files({ '/sys/fs/cgroup/memory.max': String(GIB) }));
   const capacity = readAnalysisMemoryCapacity(container, 64 * GIB, 32 * GIB);
   assert.deepEqual(capacity, { limitBytes: GIB, availableBytes: null, source: 'cgroup' });
-  assert.throws(() => assertAnalysisWorkerMemoryAvailable(256, undefined, capacity), AnalysisMemoryCapacityError);
 });
 
 test('uses the tighter physical or container headroom and never negative capacity', () => {
@@ -197,35 +170,3 @@ test('heap defaults are capped by the effective container limit rather than host
   assert.equal(resolveAnalysisHeapMb({ KLAURO_ANALYSIS_HEAP_MB: '4096' }, capacity.limitBytes).heapMb, 4096);
 });
 
-test('reserves native overhead and API growth beyond the V8 heap', () => {
-  assert.equal(analysisWorkerMemoryRequiredBytes(4096), 5376 * MIB);
-  assert.equal(analysisWorkerMemoryRequiredBytes(512), 1024 * MIB);
-  assert.equal(analysisWorkerMemoryRequiredBytes(512, 400 * MIB), 624 * MIB);
-  assert.equal(analysisWorkerMemoryRequiredBytes(512, 2 * GIB), 256 * MIB);
-});
-
-test('rejects the observed 6 GiB container and 4 GiB resident-parent shape before starting a 4 GiB worker', () => {
-  const capacity = readAnalysisMemoryCapacity({ limit: 6 * GIB, usage: 4 * GIB }, 8 * GIB, 4 * GIB);
-  assert.throws(() => assertAnalysisWorkerMemoryAvailable(4096, undefined, capacity), (error: unknown) => {
-    assert.ok(error instanceof AnalysisMemoryCapacityError);
-    assert.equal(error.code, 'analysis_memory_capacity_exhausted');
-    assert.equal(error.requiredBytes, 5376 * MIB);
-    assert.match(error.message, /2048 MiB available.*6144 MiB cgroup budget/);
-    assert.match(error.message, /No source or analysis scope was reduced/);
-    return true;
-  });
-});
-
-test('admits the same configured heap when the parent is small without lowering it', () => {
-  const capacity = readAnalysisMemoryCapacity({ limit: 6 * GIB, usage: 240 * MIB }, 8 * GIB, 6 * GIB);
-  assert.doesNotThrow(() => assertAnalysisWorkerMemoryAvailable(4096, undefined, capacity));
-});
-
-test('rechecks headroom rather than caching a successful admission', () => {
-  const capacity = { limitBytes: 3 * GIB, availableBytes: 2 * GIB, source: 'cgroup' as const };
-  assert.doesNotThrow(() => assertAnalysisWorkerMemoryAvailable(1024, undefined, capacity));
-  capacity.availableBytes = GIB;
-  assert.throws(() => assertAnalysisWorkerMemoryAvailable(1024, undefined, capacity), AnalysisMemoryCapacityError);
-  capacity.availableBytes = 2 * GIB;
-  assert.doesNotThrow(() => assertAnalysisWorkerMemoryAvailable(1024, undefined, capacity));
-});

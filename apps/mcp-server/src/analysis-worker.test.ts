@@ -130,37 +130,7 @@ test('prewarmAnalysisWorker starts the isolated worker before the first analysis
   assert.strictEqual(__analysisWorkerRunningForTests(), true);
 });
 
-test('memory admission fails without starting work and recovers when capacity fits', async () => {
-  shutdownAnalysisWorker();
-  const startsBefore = readRunLogEvents().filter(event => event.event === 'run-start').length;
-  process.env.KLAURO_ANALYSIS_HEAP_MB = String(Math.ceil(os.totalmem() / (1024 * 1024)) * 2);
-  try {
-    await assert.rejects(() => runAnalysis(fixtureProject, { forceFull: true }), {
-      name: 'AnalysisMemoryCapacityError',
-      code: 'analysis_memory_capacity_exhausted',
-    });
-    assert.strictEqual(__analysisWorkerRunningForTests(), false);
-    assert.strictEqual(readRunLogEvents().filter(event => event.event === 'run-start').length, startsBefore);
-    process.env.KLAURO_ANALYSIS_HEAP_MB = '512';
-    const result = await runAnalysis(fixtureProject, { forceFull: true });
-    assert.ok(result.nodes > 0);
-  } finally {
-    delete process.env.KLAURO_ANALYSIS_HEAP_MB;
-    shutdownAnalysisWorker();
-  }
-});
 
-test('prewarm refuses a worker whose configured heap exceeds available memory', () => {
-  shutdownAnalysisWorker();
-  process.env.KLAURO_ANALYSIS_HEAP_MB = String(Math.ceil(os.totalmem() / (1024 * 1024)) * 2);
-  try {
-    assert.doesNotThrow(() => prewarmAnalysisWorker());
-    assert.strictEqual(__analysisWorkerRunningForTests(), false);
-  } finally {
-    delete process.env.KLAURO_ANALYSIS_HEAP_MB;
-    shutdownAnalysisWorker();
-  }
-});
 
 test('analysis worker idle policy defaults to per-job recycling and permits explicit reuse', () => {
   assert.strictEqual(resolveAnalysisWorkerIdleMs({}), 0);

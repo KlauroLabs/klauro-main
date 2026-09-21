@@ -24,7 +24,8 @@ import {
   type AnalysisRunStartRecord,
 } from '../../../packages/analyzer-core/src/analyzer/core/run-log';
 import { resolveAnalysisHeapMb, type AnalysisHeapResolution } from './analysis-heap';
-import { AnalysisMemoryCapacityError, assertAnalysisWorkerMemoryAvailable, readContainerMemory } from './analysis-memory';
+import { readContainerMemory } from './analysis-memory';
+import { recorded } from './analysis-run-record';
 import { analysisWorkerExecArgv, resolveAnalysisWorkerEntry } from './analysis-worker-channel';
 export { analysisWorkerExecArgv } from './analysis-worker-channel';
 import {
@@ -977,7 +978,7 @@ export async function analyzeProject(projectPath: string, displayName?: string, 
 
   const sizeHint = await estimateProjectSizeHint(projectPath);
   return withProjectAnalysisLock(projectPath, () => withAnalysisLane(async (orch) => {
-    const analyzed = await analyzeWithTierStack(projectPath, displayName);
+    const analyzed = await recorded(projectPath, () => analyzeWithTierStack(projectPath, displayName));
     const result = options.reuseStoredContext === false
       ? analyzed
       : await applyStoredElementDescriptions(projectPath, preservePreviousAIDescriptions(
@@ -2530,7 +2531,6 @@ function ensureAnalysisWorker(): WorkerHandle {
   if (workerHandle && (workerHandle.heap.heapMb !== heap.heapMb || workerHandle.remote !== Boolean(process.env.KLAURO_ANALYSIS_WORKER_SOCKET))) {
     shutdownAnalysisWorker();
   }
-  assertAnalysisWorkerMemoryAvailable(process.env.KLAURO_ANALYSIS_WORKER_SOCKET ? 64 : heap.heapMb, workerHandle?.child.pid);
   if (!workerHandle) {
     workerHandle = spawnAnalysisWorker(heap);
   }
@@ -2540,12 +2540,7 @@ function ensureAnalysisWorker(): WorkerHandle {
 
 export function prewarmAnalysisWorker(): void {
   if (analysisRunsInProcess()) return;
-  try {
-    ensureAnalysisWorker();
-  } catch (error) {
-    if (!(error instanceof AnalysisMemoryCapacityError)) throw error;
-    console.error(`[Klauro] Worker prewarm deferred: ${error.message}`);
-  }
+  ensureAnalysisWorker();
 }
 
 export function shutdownAnalysisWorker(): void {

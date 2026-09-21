@@ -86,7 +86,6 @@ test('comprehension responses fail closed when L4 or L5 failed', () => {
 
 test('settled but unaccepted comprehension is partial, never ready', () => {
   const result = comprehensionResponseReadiness(cas({
-    layers_ready: { layers: [{ layer: 'L5', name: 'comprehension', status: 'ready' }] } as never,
     layers_ready: {
       complete: true,
       layers: [
