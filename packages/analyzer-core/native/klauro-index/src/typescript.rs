@@ -409,6 +409,17 @@ impl<'a> Extractor<'a> {
 
     fn decorators_of(&self, node: Node) -> Vec<Decorator> {
         let mut found = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "decorator"
+                && let Some(decorator) = self.decorator(child)
+            {
+                found.push(decorator);
+            }
+        }
+        if !found.is_empty() {
+            return found;
+        }
         let mut sibling = node.prev_sibling();
         while let Some(current) = sibling {
             if current.kind() == "decorator" {

@@ -716,6 +716,7 @@ pub fn derive(
     exit_points: &[ExitPoint],
     roles: &crate::roles::Roles,
     declared_tables: &[crate::tables::Table],
+    calls: &[CallFact],
 ) -> Comprehension {
     let position_of: HashMap<&str, u32> = nodes
         .iter()
@@ -744,7 +745,7 @@ pub fn derive(
         leaving.entry(exit.source.as_str()).or_default().push(exit);
     }
 
-    let entities_first = entities(nodes, files, edges, exit_points, roles, declared_tables);
+    let entities_first = entities(nodes, files, edges, exit_points, roles, declared_tables, calls);
     let held: HashSet<&str> = entities_first
         .iter()
         .map(|entity| entity.declared_as.as_str())
@@ -1007,6 +1008,13 @@ fn addressed<'a>(
     }
 }
 
+/// The names a declaration mentions, for matching against the records a codebase keeps.
+fn naming(held: &str) -> Vec<&str> {
+    held.split(|letter: char| !letter.is_alphanumeric() && letter != '_')
+        .filter(|word| word.len() > 1 && word.starts_with(|letter: char| letter.is_alphabetic()))
+        .collect()
+}
+
 /// The record a field's type names, and whether the field holds many of them.
 fn points_at(annotation: &str) -> Option<(String, bool)> {
     let mut held = annotation.trim();
@@ -1068,6 +1076,7 @@ fn entities(
     exit_points: &[ExitPoint],
     roles: &crate::roles::Roles,
     declared_tables: &[crate::tables::Table],
+    calls: &[CallFact],
 ) -> Vec<Entity> {
     let node_of: HashMap<&str, &IndexNode> =
         nodes.iter().map(|node| (node.id.as_str(), node)).collect();
@@ -1082,18 +1091,46 @@ fn entities(
                 && !tells_of_itself(&field.name)
             {
                 held.push(field.name.clone());
+                let held = pointing.entry(edge.source.as_str()).or_default();
                 if let Some(annotation) = field.type_annotation.as_deref()
                     && let Some((entity, many)) = points_at(annotation)
                 {
-                    pointing.entry(edge.source.as_str()).or_default().push(Reference {
+                    held.push(Reference { field: field.name.clone(), entity, many });
+                }
+                for named in field
+                    .decorators
+                    .iter()
+                    .filter_map(|decorator| decorator.arguments.first())
+                    .filter(|argument| !argument.literal)
+                    .flat_map(|argument| naming(&argument.value))
+                {
+                    held.push(Reference {
                         field: field.name.clone(),
-                        entity,
-                        many,
+                        entity: named.to_string(),
+                        many: false,
                     });
                 }
             }
         }
     }
+    // A record's own method may declare a relation by naming the record it reaches.
+    for call in calls {
+        let Some(caller) = call.caller.as_deref().and_then(|id| node_of.get(id)) else { continue };
+        let Some(owner) = caller.parent.as_deref().and_then(|id| node_of.get(id)) else { continue };
+        let Some(named) = call.literals.first() else { continue };
+        if !owner.kind.is_type() || caller.name.is_empty() {
+            continue;
+        }
+        let many = call.callee.to_ascii_lowercase().contains("many");
+        for held in naming(named) {
+            pointing.entry(owner.id.as_str()).or_default().push(Reference {
+                field: caller.name.clone(),
+                entity: held.to_string(),
+                many,
+            });
+        }
+    }
+
     let modelled: HashSet<&str> = roles
         .roles
         .iter()
