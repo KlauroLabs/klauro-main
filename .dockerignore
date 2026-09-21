@@ -5,6 +5,8 @@
 **/.next
 **/.turbo
 **/.cache
+**/.pack
+**/dist-hosted
 **/.klauro*
 apps/mcp-server/.klauro-*
 **/coverage

@@ -9,7 +9,7 @@ RUN mkdir src && printf 'fn main() {}\n' > src/main.rs && cargo build --release 
 COPY packages/analyzer-core/native/klauro-parse/src ./src
 RUN touch src/main.rs && cargo build --release
 
-FROM rust:1.88-bookworm AS native-index-builder
+FROM rust:1.93-bookworm AS native-index-builder
 
 WORKDIR /build/klauro-index
 
