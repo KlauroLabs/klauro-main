@@ -133,7 +133,8 @@ export interface TierStackIndex {
     imported?: number;
     declared?: number;
   };
-  architecture?: { shape?: string; routes?: number };
+  architecture?: { shape?: string; routes?: number; serving?: number };
+  roles?: { roles?: Array<{ node: string; role: string }> };
   comprehension?: {
     capabilities?: TierStackCapability[];
     flows?: TierStackFlow[];

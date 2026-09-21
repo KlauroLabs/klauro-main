@@ -9,8 +9,11 @@ import {
   type CASEdge,
   type CASEntryPoint,
   type CASExitPoint,
+  type CASAnalyzerContribution,
+  type CASArchitectureSummary,
   type CASNode,
   type CASOutput,
+  type CASRouteTableEntry,
   type CASSystem,
 } from '../../types/cas.types';
 import type {
@@ -260,6 +263,80 @@ function dependenciesOf(index: TierStackIndex): CASOutput['dependencies'] {
   };
 }
 
+function contributionOf(
+  index: TierStackIndex,
+  nodes: CASNode[],
+  edges: CASEdge[],
+  entry_points: CASEntryPoint[]
+): CASAnalyzerContribution {
+  const read = index.files.filter(file => file.extracted === true).length;
+  return {
+    analyzer_id: TIER_STACK_ANALYZER,
+    analyzer_name: 'Tier stack',
+    contribution_type: 'language',
+    nodes_created: nodes.length,
+    edges_created: edges.length,
+    contributed_entry_points: entry_points.length,
+    contributed_exit_points: (index.exit_points ?? []).length,
+    analysis_scope: {
+      applicability: 'file-coverage',
+      files_eligible: index.files.length,
+      files_analyzed: read,
+      files_skipped: index.files.length - read,
+      files_partial: 0,
+      complete: read === index.files.length,
+    },
+  };
+}
+
+function routesOf(index: TierStackIndex): CASRouteTableEntry[] {
+  const holder = new Map(index.nodes.map(node => [node.id, node]));
+  const guarded = new Set(
+    (index.roles?.roles ?? [])
+      .filter(held => held.role === 'middleware')
+      .map(held => held.node)
+  );
+  return (index.entry_points ?? [])
+    .filter(entry => entry.path !== undefined)
+    .map(entry => ({
+      method: entry.method ?? 'ANY',
+      path: entry.path as string,
+      controller: holder.get(entry.handler)?.parent ?? index.files[entry.file]?.path ?? '',
+      handler: holder.get(entry.handler)?.name ?? entry.handler,
+      auth: guarded.has(entry.handler),
+      source_node: entry.handler,
+    }));
+}
+
+function technologiesOf(index: TierStackIndex): CASSystem['technologies'] {
+  const counted = new Map<string, number>();
+  for (const file of index.files) {
+    if (file.language === undefined) continue;
+    counted.set(file.language, (counted.get(file.language) ?? 0) + 1);
+  }
+  return {
+    languages: [...counted]
+      .sort(([, left], [, right]) => right - left)
+      .map(([name, files]) => ({ name, files })),
+    frameworks: (index.dependencies?.dependencies ?? [])
+      .filter(held => held.role === 'framework')
+      .map(held => ({ name: held.name })),
+  };
+}
+
+function architectureOf(index: TierStackIndex, nodes: CASNode[]): CASArchitectureSummary {
+  const serving = index.architecture?.serving ?? 0;
+  return {
+    system_type: index.architecture?.shape ?? 'unstated',
+    total_files: index.files.length,
+    layers: {
+      presentation: { endpoints: index.architecture?.routes ?? 0, controllers: serving },
+      business: { services: nodes.filter(node => node.type === 'class').length },
+      data: { entities: (index.comprehension?.entities ?? []).length },
+    },
+  };
+}
+
 export function tierStackToCas(index: TierStackIndex, displayName?: string): CASOutput {
   const name = displayName ?? path.basename(index.root);
   const nodes = nodesOf(index);
@@ -279,7 +356,10 @@ export function tierStackToCas(index: TierStackIndex, displayName?: string): CAS
       name,
       type: shapeOf(index),
       root_path: index.root,
+      technologies: technologiesOf(index),
     },
+    architecture_summary: architectureOf(index, nodes),
+    route_table: routesOf(index),
     nodes,
     edges,
     entry_points,
@@ -288,15 +368,7 @@ export function tierStackToCas(index: TierStackIndex, displayName?: string): CAS
     capabilities: capabilitiesOf(index),
     flows: flowsOf(index),
     dependencies: dependenciesOf(index),
-    analyzer_contributions: [
-      {
-        analyzer_id: TIER_STACK_ANALYZER,
-        analyzer_name: 'Tier stack',
-        contribution_type: 'language',
-        nodes_created: nodes.length,
-        edges_created: edges.length,
-      },
-    ],
+    analyzer_contributions: [contributionOf(index, nodes, edges, entry_points)],
     progressive_levels: levelsOf(nodes),
   };
 }

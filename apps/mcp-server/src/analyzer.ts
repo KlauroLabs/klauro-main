@@ -972,22 +972,28 @@ function hasStaleNarrativePattern(
   return hasPurposeEvidenceDrift(previousPurpose, output);
 }
 
-export async function analyzeProject(projectPath: string, displayName?: string, options: { reuseStoredContext?: boolean; persist?: boolean } = {}): Promise<CASOutput> {
-    if (!(await fs.pathExists(projectPath))) {
-      throw new Error(`Project path does not exist: ${projectPath}`);
-    }
-
-
+async function described(
+  orchestrator: AnalyzerOrchestrator,
+  projectPath: string,
+  displayName?: string
+): Promise<CASOutput> {
   if (tierStackRequested()) {
     return analyzeWithTierStack(projectPath, displayName);
+  }
+  orchestrator.configureEmbedding(await buildEmbeddingPhaseConfig(projectPath));
+  const conventions = await loadConventionsForAnalysis(projectPath);
+  const packGlobs = await loadPackGlobsForAnalysis(projectPath);
+  return orchestrator.orchestrateAnalysis(projectPath, { displayName, conventions, packGlobs });
+}
+
+export async function analyzeProject(projectPath: string, displayName?: string, options: { reuseStoredContext?: boolean; persist?: boolean } = {}): Promise<CASOutput> {
+  if (!(await fs.pathExists(projectPath))) {
+    throw new Error(`Project path does not exist: ${projectPath}`);
   }
 
   const sizeHint = await estimateProjectSizeHint(projectPath);
   return withProjectAnalysisLock(projectPath, () => withAnalysisLane(async (orch) => {
-    orch.configureEmbedding(await buildEmbeddingPhaseConfig(projectPath));
-    const conventions = await loadConventionsForAnalysis(projectPath);
-    const packGlobs = await loadPackGlobsForAnalysis(projectPath);
-    const analyzed = await orch.orchestrateAnalysis(projectPath, { displayName, conventions, packGlobs });
+    const analyzed = await described(orch, projectPath, displayName);
     const result = options.reuseStoredContext === false
       ? analyzed
       : await applyStoredElementDescriptions(projectPath, preservePreviousAIDescriptions(
