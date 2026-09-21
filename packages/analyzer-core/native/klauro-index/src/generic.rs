@@ -1219,6 +1219,7 @@ impl<'a> Extractor<'a> {
         let id = self.id("field", &name, node);
         let type_annotation = node
             .child_by_field_name("type")
+            .or_else(|| self.typed_child(node))
             .map(|annotation| self.text(annotation).trim().to_string())
             .or_else(|| self.text_content(node));
         self.facts.nodes.push(IndexNode {

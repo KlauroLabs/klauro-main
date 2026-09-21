@@ -75,6 +75,14 @@ pub struct Flow {
 }
 
 #[derive(Debug, Serialize)]
+pub struct Reference {
+    pub field: String,
+    pub entity: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub many: bool,
+}
+
+#[derive(Debug, Serialize)]
 pub struct Entity {
     pub id: String,
     pub declared_as: String,
@@ -92,6 +100,9 @@ pub struct Entity {
     pub addressed_by: u32,
     pub written_by: Vec<String>,
     pub read_by: Vec<String>,
+    /// The records this one points at, and the field that points.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<Reference>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
 }
@@ -996,6 +1007,32 @@ fn addressed<'a>(
     }
 }
 
+/// The record a field's type names, and whether the field holds many of them.
+fn points_at(annotation: &str) -> Option<(String, bool)> {
+    let mut held = annotation.trim();
+    let many = held.contains("[]");
+    loop {
+        let trimmed = held
+            .trim_end_matches(['?', '!', ' '])
+            .trim_start_matches(['?', ' ']);
+        let trimmed = trimmed.strip_suffix("[]").unwrap_or(trimmed);
+        let trimmed = match (trimmed.find('<'), trimmed.rfind('>')) {
+            (Some(open), Some(close)) if close > open + 1 => &trimmed[open + 1..close],
+            _ => trimmed,
+        };
+        if trimmed == held {
+            break;
+        }
+        held = trimmed;
+    }
+    let held = held.rsplit(['.', ':']).next()?.trim();
+    let named = held
+        .chars()
+        .all(|letter| letter.is_alphanumeric() || letter == '_')
+        .then(|| held.to_string())?;
+    (!named.is_empty()).then_some((named, many))
+}
+
 /// A file that configures a codebase rather than declaring anything in it.
 fn a_setting(path: &str) -> bool {
     let lowered = path.to_ascii_lowercase();
@@ -1032,20 +1069,28 @@ fn entities(
     roles: &crate::roles::Roles,
     declared_tables: &[crate::tables::Table],
 ) -> Vec<Entity> {
-    let named_of: HashMap<&str, &str> = nodes
-        .iter()
-        .map(|node| (node.id.as_str(), node.name.as_str()))
-        .collect();
+    let node_of: HashMap<&str, &IndexNode> =
+        nodes.iter().map(|node| (node.id.as_str(), node)).collect();
     let mut fields: HashMap<&str, u32> = HashMap::new();
     let mut named_fields: HashMap<&str, Vec<String>> = HashMap::new();
+    let mut pointing: HashMap<&str, Vec<Reference>> = HashMap::new();
     for edge in edges {
         if edge.kind == EdgeKind::HasField {
             *fields.entry(edge.source.as_str()).or_insert(0) += 1;
             let held = named_fields.entry(edge.source.as_str()).or_default();
-            if let Some(named) = named_of.get(edge.target.as_str())
-                && !tells_of_itself(named)
+            if let Some(field) = node_of.get(edge.target.as_str())
+                && !tells_of_itself(&field.name)
             {
-                held.push((*named).to_string());
+                held.push(field.name.clone());
+                if let Some(annotation) = field.type_annotation.as_deref()
+                    && let Some((entity, many)) = points_at(annotation)
+                {
+                    pointing.entry(edge.source.as_str()).or_default().push(Reference {
+                        field: field.name.clone(),
+                        entity,
+                        many,
+                    });
+                }
             }
         }
     }
@@ -1077,6 +1122,7 @@ fn entities(
                 Table {
                     named: table.named.clone(),
                     columns: table.columns.clone(),
+                    points_at: table.points_at.clone(),
                     file: table.file,
                     line: table.line,
                 },
@@ -1154,6 +1200,7 @@ fn entities(
             fields: fields.get(node.id.as_str()).copied().unwrap_or(0),
             written_by: written.get(node.id.as_str()).cloned().unwrap_or_default(),
             read_by: read.get(node.id.as_str()).cloned().unwrap_or_default(),
+            references: pointing.remove(node.id.as_str()).unwrap_or_default(),
             project: node.project.clone(),
         })
         .collect();
@@ -1195,6 +1242,7 @@ fn entities(
             addressed_by,
             written_by,
             read_by,
+            references: Vec::new(),
             project: None,
         });
     }
@@ -1211,8 +1259,28 @@ fn entities(
             addressed_by: 0,
             written_by: Vec::new(),
             read_by: Vec::new(),
+            references: table
+                .points_at
+                .into_iter()
+                .map(|(field, entity)| Reference { field, entity, many: false })
+                .collect(),
             project: None,
         });
+    }
+    let known: HashMap<String, String> = entities
+        .iter()
+        .map(|entity| (entity.declared_as.to_ascii_lowercase(), entity.declared_as.clone()))
+        .collect();
+    for entity in entities.iter_mut() {
+        entity.references.retain_mut(|reference| {
+            let Some(declared) = known.get(&reference.entity.to_ascii_lowercase()) else {
+                return false;
+            };
+            reference.entity = declared.clone();
+            true
+        });
+        entity.references.sort_by(|left, right| left.field.cmp(&right.field));
+        entity.references.dedup_by(|left, right| left.field == right.field);
     }
     entities.sort_by(|left, right| {
         right
