@@ -84,6 +84,6 @@ test('an L4-only failure degrades comprehension without failing the structural a
 
   const status = buildHostedProjectAnalysisStatus(cas, 'project', 'analysis');
   assert.equal(status.status, 'degraded');
-  assert.equal(status.ai_enrichment, 'error');
+  assert.equal(status.interpreted_by, 'error');
   assert.equal('failed_layers' in status, false);
 });

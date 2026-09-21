@@ -19,7 +19,7 @@ const focusKeys = [
   'OPENAI_MODEL',
 ] as const;
 
-test('ui-overview focus enables AI enrichment without silently opting into local AI', async () => {
+test('ui-overview focus enables interpretation without silently opting into local AI', async () => {
   await withCleanFocusEnv(async () => {
     const seen = await withAnalysisFocus('ui-overview', async () => ({
       focus: process.env.KLAURO_ANALYSIS_FOCUS,

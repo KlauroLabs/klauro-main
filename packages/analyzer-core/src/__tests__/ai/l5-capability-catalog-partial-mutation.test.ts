@@ -6,7 +6,7 @@ import { emptyFlowGraph } from '../helpers/empty-flow-graph';
 /**
  * CONSISTENCY-AND-COUNTING defect (2026-08 blackbox audit of a desktop app):
  * a single analysis response served summary.top_capabilities with 6
- * AI-polished names while ai_enrichment:"error", AND product_map.capabilities
+ * AI-polished names while comprehension failed, AND product_map.capabilities
  * with 28 raw duplicate-laden entries -- two irreconcilable answers to "how
  * many capabilities does this app have" in the SAME response.
  *
@@ -27,7 +27,7 @@ import { emptyFlowGraph } from '../helpers/empty-flow-graph';
  * snapshots the raw pre-AI capabilities before calling applyAIInterpretation
  * (via runAiInterpretation), and on any throw rolls system_capabilities back
  * to that raw snapshot AND rebuilds product_map from the same rolled-back
- * state, so a response with ai_enrichment==='error' never presents
+ * state, so a response whose comprehension failed never presents
  * AI-polished capability names in one field while another field is stuck on
  * stale raw data. This test documents the underlying partial-mutation
  * mechanism that fix guards against.
@@ -170,7 +170,7 @@ describe('applyAIInterpretation partial mutation on later failure (root cause of
     }
 
     // The pass DID fail overall (the provider never answered at all) --
-    // matches the audited response's ai_enrichment:"error".
+    // matches the audited response's failed comprehension.
     expect(thrown).toBeInstanceOf(Error);
     // Nothing was spliced before the throw — the outer deferred-enrichment
     // closure's rollback-to-raw-snapshot is a no-op here, but harmless.

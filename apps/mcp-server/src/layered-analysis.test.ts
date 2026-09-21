@@ -34,7 +34,7 @@ function outputWithCatalog(
 ): CASOutput {
   return {
     analysis_timestamp: '2026-08-20T00:00:00.000Z',
-    ai_enrichment: 'ready',
+    interpreted_by: 'ready',
     capabilities: Array.from({ length: publishedCapabilities }, (_, index) => ({
       id: `capability-${index}`,
       name: `Manage record ${index}`,
@@ -103,29 +103,18 @@ test('keeps a grounded partial catalog queryable without claiming its layers are
   assert.equal(output.enhanced_system_purpose?.capability_catalog_coverage?.published_capabilities, 5);
 });
 
-test('keeps unavailable comprehension pending only while enrichment is running', () => {
+test('an unavailable capability catalog fails comprehension on both its layers', () => {
   const output = outputWithCatalog('rejected', 0);
-  output.ai_enrichment = 'pending';
-  assert.equal(layer(output, 'L4')?.status, 'pending');
-  assert.equal(layer(output, 'L5')?.status, 'pending');
+  assert.equal(layer(output, 'L4')?.status, 'error');
+  assert.equal(layer(output, 'L5')?.status, 'error');
   assert.equal(buildCompletedAnalysisLayersReady(output).complete, false);
 
-  for (const state of ['disabled', 'error', 'synchronous', 'ready', undefined] as const) {
-    output.ai_enrichment = state;
-    assert.equal(layer(output, 'L4')?.status, 'error');
-    assert.equal(layer(output, 'L5')?.status, 'error');
-    assert.equal(buildCompletedAnalysisLayersReady(output).complete, false);
-  }
-
   const accepted = outputWithCatalog('accepted', 2);
-  accepted.ai_enrichment = 'pending';
   assert.equal(layer(accepted, 'L4')?.status, 'ready');
-  assert.equal(layer(accepted, 'L5')?.status, 'pending');
 });
 
-test('does not hide unavailable source extraction behind pending enrichment', () => {
+test('source extraction that read nothing fails every layer, comprehension included', () => {
   const output = outputWithCatalog('rejected', 0);
-  output.ai_enrichment = 'pending';
   output.analyzer_contributions = [{
     analyzer_id: 'typescript-javascript',
     analyzer_name: 'TypeScript',
@@ -138,16 +127,12 @@ test('does not hide unavailable source extraction behind pending enrichment', ()
   }
 });
 
-test('reports disabled required AI comprehension as L4 and L5 errors', () => {
-  const output = {
-    analysis_timestamp: '2026-08-20T00:00:00.000Z',
-    ai_enrichment: 'disabled',
-  } as CASOutput;
+test('an analysis that reports no comprehension at all fails its comprehension layers', () => {
+  const output = { analysis_timestamp: '2026-08-20T00:00:00.000Z' } as CASOutput;
 
   assert.equal(layer(output, 'L4')?.status, 'error');
   assert.match(layer(output, 'L4')?.error || '', /coverage was not reported/);
   assert.equal(layer(output, 'L5')?.status, 'error');
-  assert.match(layer(output, 'L5')?.error || '', /disabled/);
 });
 
 test('incomplete source coverage degrades the structural layers to ready-with-warning, never to error', () => {

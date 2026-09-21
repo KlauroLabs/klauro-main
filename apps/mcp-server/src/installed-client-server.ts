@@ -455,7 +455,6 @@ export function createServer(): McpServer {
       analysis_id: analysis.analysis_id,
       ...(analysis.failed_layers ? { failed_layers: analysis.failed_layers } : {}),
       ...(analysis.analysis_error ? { error: analysis.analysis_error } : {}),
-      ...(analysis.ai_enrichment_error ? { error: analysis.ai_enrichment_error } : {}),
       ...(analysis.comprehension?.partial ? { error: analysis.comprehension.detail || 'Analysis comprehension is partial.' } : {}),
       ...(unavailable ? {} : { product_map: analysis.product_map }),
     });

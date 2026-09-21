@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { applyCapabilityCatalogStatus } from './capability-catalog-status';
 import { AnalyzerOrchestrator } from './orchestrator';
 import { CASAnalysisError, CASContribution, CASOutput, SystemCapability } from '../../types/cas.types';
 import { evaluateCapabilityCatalogOperationCoverage } from './capability-operation-coverage';
@@ -286,9 +287,9 @@ test('a scoped AI repair attempt cannot outlive its scheduler deadline', async (
   assert.ok(Date.now() - startedAt < 500);
 });
 
-function rejectedCapabilityOutput(aiEnrichment: CASOutput['ai_enrichment']): CASOutput {
+function rejectedCapabilityOutput(): CASOutput {
   return {
-    ai_enrichment: aiEnrichment,
+    layers_ready: { layers: [{ layer: 'L5', name: 'comprehension', status: 'ready' }] },
     enhanced_system_purpose: {
       ai_phase_status: 'degraded',
       inferred_description: 'Patients schedule appointments with available clinicians.',
@@ -302,40 +303,23 @@ function rejectedCapabilityOutput(aiEnrichment: CASOutput['ai_enrichment']): CAS
     },
     analysis_phases: [
       { id: 'agent-context', name: 'Agent context', priority: 2, status: 'partial', purpose: 'agent-development', default_phase: true, description: '', outputs: [], agent_value: '', visualization_value: '', can_run_later: false },
-      { id: 'ai-system-narrative', name: 'AI narrative', priority: 3, status: 'complete', purpose: 'ai-enrichment', default_phase: true, description: '', outputs: [], agent_value: '', visualization_value: '', can_run_later: true },
+      { id: 'ai-system-narrative', name: 'AI narrative', priority: 3, status: 'complete', purpose: 'comprehension', default_phase: true, description: '', outputs: [], agent_value: '', visualization_value: '', can_run_later: true },
     ],
     analysis_errors: [],
   } as unknown as CASOutput;
 }
 
-function assertRejectedCapabilityStatus(output: CASOutput, expectedEnrichment: 'ready' | 'synchronous'): void {
-  assert.equal(output.ai_enrichment, expectedEnrichment);
+test('a rejected capability catalog is recorded once, however often it is settled', () => {
+  const output = rejectedCapabilityOutput();
+
+  applyCapabilityCatalogStatus(output);
+  applyCapabilityCatalogStatus(output);
+
   assert.equal(output.analysis_errors?.length, 1);
   assert.equal(output.analysis_errors?.[0].code, 'CAPABILITY_CATALOG_REJECTED');
   assert.match(output.analysis_errors?.[0].message || '', /omitted required operation obligations/);
   assert.equal(output.analysis_phases?.find(phase => phase.id === 'agent-context')?.status, 'failed');
   assert.equal(output.analysis_phases?.find(phase => phase.id === 'ai-system-narrative')?.status, 'complete');
-}
-
-test('synchronous AI settlement records a rejected capability catalog after enrichment status settles', () => {
-  const orchestrator = new AnalyzerOrchestrator() as any;
-  const output = rejectedCapabilityOutput(undefined);
-
-  orchestrator.settleCapabilityCatalogStatus(output, 'synchronous');
-  orchestrator.settleCapabilityCatalogStatus(output, 'synchronous');
-
-  assertRejectedCapabilityStatus(output, 'synchronous');
-});
-
-test('deferred AI settlement records a rejected capability catalog only after enrichment completes', async () => {
-  const orchestrator = new AnalyzerOrchestrator() as any;
-  const output = rejectedCapabilityOutput('pending');
-  orchestrator.deferredAiEnrichments.set(output, async () => undefined);
-
-  await orchestrator.enrichAnalysisAI(output);
-  await orchestrator.enrichAnalysisAI(output);
-
-  assertRejectedCapabilityStatus(output, 'ready');
 });
 
 test('capability merging preserves operations beyond the former 24 and 64 item limits for coverage', () => {

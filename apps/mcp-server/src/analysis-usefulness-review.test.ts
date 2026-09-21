@@ -909,11 +909,11 @@ test('agent-fast usefulness review requires default AI summary and capability de
     analysis_facts: [{ id: 'fact', type: 'route', description: 'Orders route calls service', evidence: ['src/orders/orders.controller.ts'] }],
     analysis_phases: [
       {
-        id: 'ai-enrichment',
-        name: 'AI Enrichment',
+        id: 'comprehension',
+        name: 'interpretation',
         priority: 4,
         status: 'complete',
-        purpose: 'ai-enrichment',
+        purpose: 'comprehension',
         default_phase: true,
         description: 'Required default AI summary and primary capability pass',
         outputs: ['enhanced_system_purpose.inferred_description', 'capabilities.description'],

@@ -6,9 +6,7 @@ import { linkStructuralOwnership } from '../../../packages/analyzer-core/src/ana
 import { assignNodeRoles } from '../../../packages/analyzer-core/src/analyzer/core/node-roles';
 import { partitionAnalysisDiagnostics } from '../../../packages/analyzer-core/src/analyzer/core/analysis-diagnostics';
 import type { CASOutput, IncrementalState, ChangeReport, ChangeHistoryEntry } from '../../../packages/analyzer-core/src/types/cas.types';
-import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
 import { buildCompletedAnalysisLayersReady } from './layered-analysis';
-import { resolveLayeredEnrichmentPhase } from './layered-analysis-metadata';
 import { saveAnalysisWithSourceCoverage as saveAnalysis } from './source-coverage';
 import { beginForegroundAnalysis } from './foreground-analysis';
 import { registerHostedBackgroundPreflight, withHostedForegroundPermit } from './hosted-background-queue';
@@ -64,7 +62,7 @@ import { getPgPool, resolvePgConnectionString } from './pg-pool';
 import { applyStoredElementDescriptions, validateDescription } from './description-enrichment';
 import { isLanguageBuiltinName } from '../../../packages/analyzer-core/src/analyzer/core/language-builtins';
 import { TEST_FRAMEWORK_DETECTION_FILES } from './test-framework-detection';
-import { analyzeWithTierStack, tierStackRequested } from '../../../packages/analyzer-core/src/analyzer/tier-stack';
+import { analyzeWithTierStack } from '../../../packages/analyzer-core/src/analyzer/tier-stack';
 
 let orchestrator: AnalyzerOrchestrator | null = null;
 
@@ -972,20 +970,6 @@ function hasStaleNarrativePattern(
   return hasPurposeEvidenceDrift(previousPurpose, output);
 }
 
-async function described(
-  orchestrator: AnalyzerOrchestrator,
-  projectPath: string,
-  displayName?: string
-): Promise<CASOutput> {
-  if (tierStackRequested()) {
-    return analyzeWithTierStack(projectPath, displayName);
-  }
-  orchestrator.configureEmbedding(await buildEmbeddingPhaseConfig(projectPath));
-  const conventions = await loadConventionsForAnalysis(projectPath);
-  const packGlobs = await loadPackGlobsForAnalysis(projectPath);
-  return orchestrator.orchestrateAnalysis(projectPath, { displayName, conventions, packGlobs });
-}
-
 export async function analyzeProject(projectPath: string, displayName?: string, options: { reuseStoredContext?: boolean; persist?: boolean } = {}): Promise<CASOutput> {
   if (!(await fs.pathExists(projectPath))) {
     throw new Error(`Project path does not exist: ${projectPath}`);
@@ -993,7 +977,7 @@ export async function analyzeProject(projectPath: string, displayName?: string, 
 
   const sizeHint = await estimateProjectSizeHint(projectPath);
   return withProjectAnalysisLock(projectPath, () => withAnalysisLane(async (orch) => {
-    const analyzed = await described(orch, projectPath, displayName);
+    const analyzed = await analyzeWithTierStack(projectPath, displayName);
     const result = options.reuseStoredContext === false
       ? analyzed
       : await applyStoredElementDescriptions(projectPath, preservePreviousAIDescriptions(
@@ -1019,114 +1003,6 @@ export async function analyzeProject(projectPath: string, displayName?: string, 
 
 
 
-export interface DeferredAnalysisResult {
-  output: CASOutput;
-  enrichment: Promise<void>;
-}
-export async function analyzeProjectDeferred(
-  projectPath: string,
-  displayName?: string,
-  onProgress?: (event: AnalysisProgressEvent) => void,
-  options: {
-    reuseStoredContext?: boolean;
-    prepareStructuralCheckpoint?: (output: CASOutput) => void;
-    persistEnrichmentResult?: boolean;
-    deferStructuralSegments?: boolean;
-  } = {},
-): Promise<DeferredAnalysisResult> {
-  if (!(await fs.pathExists(projectPath))) {
-    throw new Error(`Project path does not exist: ${projectPath}`);
-  }
-  const dedicatedOrch = createOrchestrator();
-
-  const sizeHint = await estimateProjectSizeHint(projectPath);
-
-  const output = await withProjectAnalysisLock(projectPath, () => withLanePermit(async () => {
-    dedicatedOrch.configureEmbedding(await buildEmbeddingPhaseConfig(projectPath));
-    const conventions = await loadConventionsForAnalysis(projectPath);
-    const packGlobs = await loadPackGlobsForAnalysis(projectPath);
-    const previousOutput = options.reuseStoredContext === false
-      ? null
-      : await loadAnalysis(projectPath, { preferCache: true }).catch(() => null);
-    const result = await applyStoredElementDescriptions(projectPath, preservePreviousAIDescriptions(
-      previousOutput,
-      await dedicatedOrch.orchestrateAnalysis(projectPath, { deferAiEnrichment: true, displayName, conventions, packGlobs, onProgress })
-    ));
-
-    options.prepareStructuralCheckpoint?.(result);
-    if (!result.layers_ready?.layers?.length) {
-      result.layers_ready = buildCompletedAnalysisLayersReady(result);
-    }
-    await saveAnalysis(projectPath, result, 'main', { deferSegmentedWrite: options.deferStructuralSegments });
-    await saveIncrementalState(projectPath, dedicatedOrch.createIncrementalBaseline(projectPath, result));
-    clearFreshnessSummaryCache();
-    await saveAnalysisSnapshot(projectPath, result);
-
-    return result;
-  }, sizeHint, projectPath));
-
-
-  if (output.ai_enrichment !== 'pending') {
-    return { output, enrichment: Promise.resolve() };
-  }
-
-
-
-
-
-
-
-  const enrichment = withProjectAnalysisLock(projectPath, () => withAiEnrichmentLanePermit(async () => {
-
-
-
-
-
-    const statsBefore = aiService.getCacheStats();
-    await dedicatedOrch.enrichAnalysisAI(output);
-    const statsAfter = aiService.getCacheStats();
-    output.ai_cache_reuse = {
-      hits: Math.max(0, statsAfter.hits - statsBefore.hits),
-      misses: Math.max(0, statsAfter.misses - statsBefore.misses),
-      bypassed: process.env.KLAURO_FORCE_AI_REFRESH === '1',
-    };
-    if (options.persistEnrichmentResult !== false) {
-      await saveAnalysis(projectPath, output);
-      output.layers_ready = buildCompletedAnalysisLayersReady(output);
-      clearFreshnessSummaryCache();
-      await saveAnalysisSnapshot(projectPath, output);
-    }
-  }, output.nodes.length, projectPath)).catch(async (error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
-
-
-
-
-
-    output.ai_enrichment = 'error';
-
-
-
-
-
-    output.ai_enrichment_error = message;
-    console.error(`[Klauro] deferred AI enrichment FAILED for ${projectPath} (${message}); marked ai_enrichment='error' (comprehension is AI-only, no deterministic substitute)`);
-    if (options.persistEnrichmentResult === false) return;
-    try {
-      await withProjectAnalysisLock(projectPath, () => withAiEnrichmentLanePermit(async () => {
-        await saveAnalysis(projectPath, output);
-        output.layers_ready = buildCompletedAnalysisLayersReady(output);
-        clearFreshnessSummaryCache();
-        await saveAnalysisSnapshot(projectPath, output);
-      }, undefined, projectPath));
-    } catch (saveError) {
-      const saveMessage = saveError instanceof Error ? saveError.message : String(saveError);
-      console.error(`[Klauro] failed to persist ai_enrichment='error' for ${projectPath} (${saveMessage})`);
-    }
-  });
-
-  return { output, enrichment };
-}
 
 
 
@@ -1142,7 +1018,7 @@ export async function analyzeProjectDeferred(
 
 export interface LayeredAnalysisResult {
   l0: Promise<CASOutput>;
-  rest: Promise<DeferredAnalysisResult>;
+  rest: Promise<CASOutput>;
 }
 
 
@@ -1212,84 +1088,27 @@ export async function analyzeProjectLayered(
   })();
 
   const restPromise = l0Promise.then(async () => {
-
-
-
-
-
-
-
-
-
     const previous = forceFullRebuild
       ? null
       : await loadAnalysis(projectPath, { preferCache: true }).catch(() => null);
     const hasCompletePrevious = !forceFullRebuild && Boolean(
       previous && previous.layers_ready?.complete === true && (previous.nodes?.length ?? 0) > 0
     );
-    const stampStructuralLayers = (output: CASOutput): void => {
-      output.layers_ready = buildCompletedAnalysisLayersReady(output);
-    };
-    let structuralCheckpointPrepared = false;
-    const prepareStructuralCheckpoint = (output: CASOutput): void => {
-      stampStructuralLayers(output);
-      structuralCheckpointPrepared = true;
-    };
-    let deferred: DeferredAnalysisResult;
-    if (hasCompletePrevious) {
-      try {
-        const incremental = await analyzeProjectIncremental(projectPath, displayName, onProgress);
-        deferred = { output: incremental.output, enrichment: Promise.resolve() };
-      } catch (error) {
+    const analyzed = hasCompletePrevious
+      ? await analyzeProjectIncremental(projectPath, displayName, onProgress)
+          .then(incremental => incremental.output)
+          .catch(async (error: unknown) => {
+            if (error instanceof AnalysisLoopBreakerError) throw error;
+            const message = error instanceof Error ? error.message : String(error);
+            console.error(`[Klauro] warm incremental pass failed for ${projectPath} (${message}); falling back to a full analysis`);
+            return analyzeProject(projectPath, displayName);
+          })
+      : await analyzeProject(projectPath, displayName, { reuseStoredContext: !forceFullRebuild });
 
-
-
-
-
-
-        if (error instanceof AnalysisLoopBreakerError) throw error;
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(`[Klauro] warm incremental pass failed for ${projectPath} (${message}); falling back to full deferred analysis`);
-        deferred = await analyzeProjectDeferred(projectPath, displayName, onProgress, {
-          prepareStructuralCheckpoint,
-          persistEnrichmentResult: false,
-          deferStructuralSegments: true,
-        });
-      }
-    } else {
-      deferred = await analyzeProjectDeferred(projectPath, displayName, onProgress, {
-        reuseStoredContext: !forceFullRebuild,
-        prepareStructuralCheckpoint,
-        persistEnrichmentResult: false,
-        deferStructuralSegments: true,
-      });
-    }
-    if (!structuralCheckpointPrepared) {
-      stampStructuralLayers(deferred.output);
-      await saveAnalysis(projectPath, deferred.output, 'main', { deferSegmentedWrite: true });
-      clearFreshnessSummaryCache();
-    }
-
-
-
-
-
-
-
-
-    const enrichment = deferred.enrichment.then(async () => {
-      if (deferred.output.ai_enrichment === 'pending') return;
-      const nextLayers = buildCompletedAnalysisLayersReady(deferred.output);
-      if (JSON.stringify(deferred.output.layers_ready) === JSON.stringify(nextLayers)) return;
-      deferred.output.layers_ready = nextLayers;
-      await saveAnalysis(projectPath, deferred.output, 'main', { deferSegmentedWrite: true });
-      clearFreshnessSummaryCache();
-    }).catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`[Klauro] layers_ready L5 re-stamp failed for ${projectPath} (${message})`);
-    });
-
-    return { output: deferred.output, enrichment };
+    analyzed.layers_ready = buildCompletedAnalysisLayersReady(analyzed);
+    await saveAnalysis(projectPath, analyzed, 'main', { deferSegmentedWrite: true });
+    clearFreshnessSummaryCache();
+    return analyzed;
   });
 
   return { l0: l0Promise, rest: restPromise };
@@ -1720,13 +1539,13 @@ function createLanePool(getCapacity: () => number) {
 
 
 
-const DEFAULT_AI_ENRICHMENT_LANES = 4;
+const DEFAULT_INTERPRETATION_LANES = 4;
 
 function getAiEnrichmentLaneCount(): number {
-  const raw = process.env.KLAURO_AI_ENRICHMENT_CONCURRENCY ?? process.env.KLAURO_AI_ENRICHMENT_LANES;
-  if (raw === undefined || raw === '') return DEFAULT_AI_ENRICHMENT_LANES;
+  const raw = process.env.KLAURO_INTERPRETATION_CONCURRENCY ?? process.env.KLAURO_INTERPRETATION_LANES;
+  if (raw === undefined || raw === '') return DEFAULT_INTERPRETATION_LANES;
   const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed >= 1 ? Math.floor(parsed) : DEFAULT_AI_ENRICHMENT_LANES;
+  return Number.isFinite(parsed) && parsed >= 1 ? Math.floor(parsed) : DEFAULT_INTERPRETATION_LANES;
 }
 
 const deterministicLanePool = createLanePool(getAnalysisLaneCount);
@@ -1976,12 +1795,12 @@ function withLanePermit<T>(
 
 
 
-function withAiEnrichmentLanePermit<T>(
+function withInterpretationLanePermit<T>(
   fn: () => Promise<T>,
   sizeHint: number = Number.POSITIVE_INFINITY,
   projectPath: string = 'analysis'
 ): Promise<T> {
-  return withPoolPermit(acquireAiEnrichmentLanePermit, releaseAiEnrichmentLanePermit, fn, sizeHint, projectPath, 'AI ENRICHMENT');
+  return withPoolPermit(acquireAiEnrichmentLanePermit, releaseAiEnrichmentLanePermit, fn, sizeHint, projectPath, 'interpretation');
 }
 
 
@@ -2018,8 +1837,8 @@ export function __withLanePermitForTests<T>(fn: () => Promise<T>, sizeHint?: num
 
 
 
-export function __withAiEnrichmentLanePermitForTests<T>(fn: () => Promise<T>, sizeHint?: number, describe?: string): Promise<T> {
-  return withAiEnrichmentLanePermit(fn, sizeHint, describe);
+export function __withInterpretationLanePermitForTests<T>(fn: () => Promise<T>, sizeHint?: number, describe?: string): Promise<T> {
+  return withInterpretationLanePermit(fn, sizeHint, describe);
 }
 
 
@@ -2356,8 +2175,6 @@ export interface LayeredRunSummary {
   analyzersRun: number;
   errors: number;
   casVersion?: string;
-  aiEnrichment: CASOutput['ai_enrichment'];
-  aiEnrichmentError?: string;
   failedLayers: Array<{ layer: string; error?: string }>;
 }
 
@@ -2371,8 +2188,6 @@ export function summarizeLayeredAnalysis(projectPath: string, output: CASOutput)
     analyzersRun: base.analyzersRun,
     errors: base.errors,
     casVersion: base.casVersion,
-    aiEnrichment: output.ai_enrichment,
-    aiEnrichmentError: output.ai_enrichment_error,
     failedLayers: (output.layers_ready?.layers || [])
       .filter(layer => layer.status === 'error')
       .map(layer => ({ layer: layer.layer, ...(layer.error ? { error: layer.error } : {}) })),
@@ -2970,24 +2785,20 @@ export async function runLayeredAnalysis(
       } catch (error) {
         options.onPhase?.({ phase: 'l0', status: 'failed', error: error instanceof Error ? error.message : String(error) });
       }
-      let deferred: DeferredAnalysisResult;
+      let analyzed: CASOutput;
       try {
-        deferred = await layered.rest;
+        analyzed = await layered.rest;
         const { applyLayeredAnalysisMetadata } = await import('./layered-analysis-metadata.js');
-        applyLayeredAnalysisMetadata(deferred.output, options);
+        applyLayeredAnalysisMetadata(analyzed, options);
         options.onPhase?.({ phase: 'rest', status: 'succeeded' });
       } catch (error) {
         options.onPhase?.({ phase: 'rest', status: 'failed', error: error instanceof Error ? error.message : String(error) });
         throw error;
       }
-      const enrichmentPersistsOutput = deferred.output.ai_enrichment === 'pending';
-      await deferred.enrichment.catch(() => undefined);
-      if ((options.repoFacts || options.repoFactsUnavailable) && !enrichmentPersistsOutput) await saveAnalysis(projectPath, deferred.output, 'main', { deferSegmentedWrite: true });
-      options.onPhase?.({
-        phase: 'enrichment',
-        ...resolveLayeredEnrichmentPhase(deferred.output),
-      });
-      return summarizeLayeredAnalysis(projectPath, deferred.output);
+      if (options.repoFacts || options.repoFactsUnavailable) {
+        await saveAnalysis(projectPath, analyzed, 'main', { deferSegmentedWrite: true });
+      }
+      return summarizeLayeredAnalysis(projectPath, analyzed);
       });
     } finally {
       if (previousForceAiRefresh === undefined) delete process.env.KLAURO_FORCE_AI_REFRESH;

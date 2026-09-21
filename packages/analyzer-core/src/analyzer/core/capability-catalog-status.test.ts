@@ -5,7 +5,7 @@ import { applyCapabilityCatalogStatus, capabilityCatalogErrorCode } from './capa
 
 function output(status: 'accepted' | 'rejected', capabilities: number): CASOutput {
   return {
-    ai_enrichment: 'synchronous',
+    layers_ready: { layers: [{ layer: 'L5', name: 'comprehension', status: 'ready' }] } as never,
     capabilities: Array.from({ length: capabilities }, (_, index) => ({ id: `cap-${index}`, name: `Capability ${index}` })),
     enhanced_system_purpose: {
       ai_phase_status: status === 'accepted' ? 'complete' : 'degraded',
@@ -20,7 +20,7 @@ function output(status: 'accepted' | 'rejected', capabilities: number): CASOutpu
     },
     analysis_phases: [
       { id: 'agent-context', name: 'Agent context', priority: 2, status: 'partial', purpose: 'agent-development', default_phase: true, description: '', outputs: [], agent_value: '', visualization_value: '', can_run_later: false },
-      { id: 'ai-system-narrative', name: 'AI narrative', priority: 3, status: 'complete', purpose: 'ai-enrichment', default_phase: true, description: '', outputs: [], agent_value: '', visualization_value: '', can_run_later: true },
+      { id: 'ai-system-narrative', name: 'AI narrative', priority: 3, status: 'complete', purpose: 'comprehension', default_phase: true, description: '', outputs: [], agent_value: '', visualization_value: '', can_run_later: true },
     ],
     analysis_errors: [],
   } as unknown as CASOutput;
@@ -37,7 +37,6 @@ test('rejected catalog records one hard error and fails agent context without fa
   assert.equal(cas.analysis_phases?.find(phase => phase.id === 'agent-context')?.status, 'failed');
   assert.match(cas.analysis_phases?.find(phase => phase.id === 'agent-context')?.notes?.[0] || '', /catalog was rejected/i);
   assert.equal(cas.analysis_phases?.find(phase => phase.id === 'ai-system-narrative')?.status, 'complete');
-  assert.equal(cas.ai_enrichment, 'synchronous');
 });
 
 test('accepted non-empty catalog does not create an analysis error or alter phase status', () => {

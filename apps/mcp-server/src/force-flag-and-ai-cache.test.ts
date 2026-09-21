@@ -147,14 +147,14 @@ test('--force bypasses the snapshot reuse gate AND the AI cache, producing a gen
     assert.notEqual(forcedTimestamp, firstTimestamp, '--force must produce a distinct analysis_timestamp from the original run');
 
     // --- AI-cache visibility (honest-degradation parity with reuse_decision
-    // / comprehension.degraded): whenever the AI enrichment pass actually
+    // / comprehension.degraded): whenever the interpretation pass actually
     // attempted to run (this test environment has no AI provider configured,
     // so it legitimately may not — 'disabled'/'pending'), the forced CAS
     // must say its AI content was regenerated, not silently served from
     // cache.
-    const aiEnrichment = (forced.cas as any)?.ai_enrichment;
-    if (aiEnrichment === 'ready' || aiEnrichment === 'error') {
-      assert.ok((forced.cas as any)?.ai_cache_reuse, 'forced CAS must carry ai_cache_reuse for visibility once AI enrichment attempted');
+    const interpretation = (forced.cas as any)?.interpreted_by;
+    if (interpretation === 'ready' || interpretation === 'error') {
+      assert.ok((forced.cas as any)?.ai_cache_reuse, 'forced CAS must carry ai_cache_reuse for visibility once interpretation attempted');
       assert.equal((forced.cas as any).ai_cache_reuse.bypassed, true);
     }
   } finally {

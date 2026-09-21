@@ -208,7 +208,7 @@ test('a background analysis that crashed reports status=failed with the reason (
       layers: [
         { layer: 'L0', name: 'Index / inventory', status: 'ready', fields: ['l0_index'] },
         { layer: 'L1', name: 'Nodes, entry points, routes', status: 'error', error: 'ReferenceError: someSymbol is not defined', fields: ['nodes'] },
-        { layer: 'L5', name: 'AI enrichment', status: 'error', error: 'boom', fields: ['enhanced_system_purpose'] },
+        { layer: 'L5', name: 'interpretation', status: 'error', error: 'boom', fields: ['enhanced_system_purpose'] },
       ],
     } as never;
     await saveAnalysis(serverWorkspace, stored!);

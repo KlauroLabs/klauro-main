@@ -879,34 +879,23 @@ test('buildSummary falls back to product-node language signals only when technol
     `product-node fallback must still detect TypeScript: ${JSON.stringify(summary.languages)}`);
 });
 
-// Honest L5 status (live prod: electripure/hercules/openclaw): when the AI
-// comprehension pass terminally FAILED, the summary must SAY so — surfacing
-// ai_enrichment: 'error' + the underlying rejection reason — instead of leaving
-// readers to infer forever-pending from description_source: null.
-test('buildSummary surfaces a terminal ai_enrichment error with its rejection reason', () => {
+test('buildSummary carries the comprehension layer that failed, with its reason', () => {
   const cas = buildTwoSourceCas();
-  cas.ai_enrichment = 'error';
-  cas.ai_enrichment_error = 'grounding gate rejection (source-bucket-restatement)';
+  cas.layers_ready = {
+    complete: false,
+    layers: [{
+      layer: 'L5',
+      name: 'comprehension',
+      status: 'error',
+      error: 'grounding gate rejection (source-bucket-restatement)',
+    }],
+  } as never;
   const summary: any = buildSummary(cas, { detail: 'compact' });
-  assert.equal(summary.ai_enrichment, 'error');
-  assert.equal(summary.ai_enrichment_error, 'grounding gate rejection (source-bucket-restatement)');
-
-  // Non-error states surface the marker without the error field; absent marker stays absent.
-  cas.ai_enrichment = 'ready';
-  delete cas.ai_enrichment_error;
-  const readySummary: any = buildSummary(cas, { detail: 'compact' });
-  assert.equal(readySummary.ai_enrichment, 'ready');
-  assert.equal('ai_enrichment_error' in readySummary, false);
-
-  delete cas.ai_enrichment;
-  const legacySummary: any = buildSummary(cas, { detail: 'compact' });
-  assert.equal('ai_enrichment' in legacySummary, false);
+  const comprehension = summary.layers_ready.layers.find((layer: any) => layer.layer === 'L5');
+  assert.equal(comprehension.status, 'error');
+  assert.equal(comprehension.error, 'grounding gate rejection (source-bucket-restatement)');
 });
 
-// Regression (live, openclaw): the #1 top capability in get_summary was
-// "Deletes Profile data" — supporting plumbing outranked the product's core
-// capabilities because the sort keyed on criticality alone. Plumbing must
-// never lead: supporting/admin rank strictly below core, internal is excluded.
 test('buildSummary top_capabilities is never led by supporting/admin plumbing', () => {
   const cas = buildTwoSourceCas();
   cas.capabilities = [

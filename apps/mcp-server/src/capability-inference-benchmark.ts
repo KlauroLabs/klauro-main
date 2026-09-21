@@ -56,10 +56,9 @@ export async function runCapabilityInferenceBenchmark(options: { outputPath?: st
 
     const domainSource = cas.enhanced_system_purpose?.domain_source || '';
     const descriptionStatus = cas.enhanced_system_purpose?.description_generation?.status || '';
-    const aiEnrichment = cas.ai_enrichment || '';
     const domainProvenanceOk = primaryDomain
       ? domainSource === 'ai' || domainSource === 'ai-refined'
-      : ['ai_skipped', 'ai_rejected', 'ai_failed'].includes(descriptionStatus) || aiEnrichment === 'disabled';
+      : ['ai_skipped', 'ai_rejected', 'ai_failed'].includes(descriptionStatus);
     const genericCapabilities = capabilities.filter(capability => isGenericCapabilityName(capability.name));
     const isolatedDomainCapabilities = ['vehicle', 'fuel', 'invoice'].filter(domain =>
       names.some(name => name.toLowerCase().includes(domain) &&
@@ -72,7 +71,7 @@ export async function runCapabilityInferenceBenchmark(options: { outputPath?: st
       capability.description_generation?.status !== 'ai_rejected'
     );
     const gates = [
-      gate('capability-inference:primary-domain-provenance', domainProvenanceOk, `primary domain ${primaryDomain || 'absent'} (domain_source=${domainSource || 'unset'}, description_generation=${descriptionStatus || 'unset'}, ai_enrichment=${aiEnrichment || 'unset'})`),
+      gate('capability-inference:primary-domain-provenance', domainProvenanceOk, `primary domain ${primaryDomain || 'absent'} (domain_source=${domainSource || 'unset'}, description_generation=${descriptionStatus || 'unset'})`),
       gate('capability-inference:no-generic-primary-capabilities', genericCapabilities.length === 0, `${genericCapabilities.length} generic capabilities: ${genericCapabilities.map(item => item.name).join(', ') || 'none'}`),
       gate('capability-inference:canonical-language-authored', (cas.capabilities || []).every(capability =>
         ['ai', 'manual', 'reused'].includes(capability.name_source || '')

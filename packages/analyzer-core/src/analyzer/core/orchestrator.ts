@@ -484,7 +484,6 @@ interface DiscoveredEntryPointCandidate {
 }
 export interface OrchestrateAnalysisOptions {
   onProgress?: (event: AnalysisProgressEvent) => void;
-  deferAiEnrichment?: boolean;
   displayName?: string;
   conventions?: KlauroConventionsInput;
   packGlobs?: string[];
@@ -523,7 +522,6 @@ export class AnalyzerOrchestrator {
   private declaredProductRootsCache: Map<string, string[]> = new Map();
   private elementDescriptionGroundingVocabulary: string[] = [];
   private elementDescriptionArtifactType?: string;
-  private deferredAiEnrichments: WeakMap<CASOutput, () => Promise<void>> = new WeakMap();
   registerAnalyzer(registration: AnalyzerRegistration): void {
     this.analyzers.set(registration.id, registration);
   }
@@ -885,21 +883,6 @@ export class AnalyzerOrchestrator {
     } finally {
       endGlobRun(globRun);
     }
-  }
-  async enrichAnalysisAI(output: CASOutput): Promise<CASOutput> {
-    const run = this.deferredAiEnrichments.get(output);
-    if (!run) {
-      return output;
-    }
-    this.deferredAiEnrichments.delete(output);
-    try {
-      await run();
-    } catch (error) {
-      output.ai_enrichment = 'error';
-      throw error;
-    }
-    this.settleCapabilityCatalogStatus(output, 'ready');
-    return output;
   }
   private deriveEntryPointContractAndCapability(
     entryPoints: CASEntryPoint[],
@@ -1480,7 +1463,6 @@ export class AnalyzerOrchestrator {
       ? topLevelShipUnits.length
       : undefined;
     await yieldToEventLoop();
-    const deferAiEnrichment = options?.deferAiEnrichment === true;
     const runAiInterpretation = async (): Promise<void> => {
       const aiPhaseStart = Date.now();
       await this.applyAIInterpretation(
@@ -1522,13 +1504,10 @@ export class AnalyzerOrchestrator {
       });
     };
     const aiInterpretationStartedAt = Date.now();
-    const aiInterpretationPromise = deferAiEnrichment
-      ? undefined
-      : runAiInterpretation().then(
-        () => ({ status: 'fulfilled' as const }),
-        reason => ({ status: 'rejected' as const, reason })
-      );
-    if (deferAiEnrichment) logTiming('pp_aiInterpretation', aiInterpretationStartedAt);
+    const aiInterpretationPromise = runAiInterpretation().then(
+      () => ({ status: 'fulfilled' as const }),
+      reason => ({ status: 'rejected' as const, reason })
+    );
     await yieldToEventLoop();
     phaseStart = startPhase();
     const methodCalls = this.buildMethodCalls(allNodes, allEdges, allExitPoints);
@@ -1616,10 +1595,8 @@ export class AnalyzerOrchestrator {
     logTiming('pp_traceability', phaseStart);
     await yieldToEventLoop();
     phaseStart = startPhase();
-    if (!deferAiEnrichment) {
-      this.finalizeSystemCapabilityNames(systemCapabilities, dataEntities, enhancedSystemPurpose);
-    }
-    const canonicalSystemCapabilities = deferAiEnrichment ? [] : systemCapabilities;
+    this.finalizeSystemCapabilityNames(systemCapabilities, dataEntities, enhancedSystemPurpose);
+    const canonicalSystemCapabilities = systemCapabilities;
     this.finalizeFlowGraphCapabilities(flowGraph);
     const finalizedComprehensionGraph = buildComprehensionGraph({
       nodes: allNodes, edges: allEdges, entryPoints: allEntryPoints, exitPoints: allExitPoints,
@@ -1826,67 +1803,7 @@ export class AnalyzerOrchestrator {
     }
     this.enforceCapabilityDescriptionProvenanceInvariant(output.capabilities);
     output.product_map = buildProductMap(output, userJourneyResult);
-    if (deferAiEnrichment) {
-      output.ai_enrichment = this.analysisAiEnrichmentStatus(true);
-      if (output.ai_enrichment === 'pending') {
-        this.deferredAiEnrichments.set(output, async () => {
-          const rawCapabilitySnapshot = systemCapabilities.map(capability => ({ ...capability }));
-          try {
-            await runAiInterpretation();
-          } catch (error) {
-            systemCapabilities.splice(0, systemCapabilities.length, ...rawCapabilitySnapshot);
-            output.capabilities = systemCapabilities.length > 0 ? systemCapabilities : undefined;
-            this.enforceCapabilityDescriptionProvenanceInvariant(output.capabilities);
-            output.product_map = buildProductMap(output);
-            throw error;
-          }
-          output.entry_points = this.deriveEntryPointContractAndCapability(allEntryPoints, {
-            nodes: allNodes,
-            edges: allEdges,
-            entry_points: allEntryPoints,
-            exit_points: allExitPoints,
-            call_chains: callChains,
-            data_lineage: dataLineage,
-            capabilities: systemCapabilities,
-            behavior_surfaces: behaviorSurfaces,
-            entities: dataEntities,
-          }, flows => {
-            output.flows = flows.length > 0 ? flows : undefined;
-            output.steps = flows.length > 0 ? flows.flatMap(flow => flow.steps) : undefined;
-          });
-          output.capabilities = systemCapabilities.length > 0 ? systemCapabilities : undefined;
-          output.terminality = buildCasTerminality(output);
-          output.analysis_phases = this.buildAnalysisPhases({
-            hasAIProvider: this.hasAIInterpretationProviderConfigured(),
-            systemDescriptionSource: enhancedSystemPurpose.description_source,
-            capabilityDescriptionSource: systemCapabilities.some(capability => capability.description_source === 'ai') ? 'ai' : 'skipped',
-            canonicalCapabilities: systemCapabilities.length,
-            embeddingEnabled: Boolean(this.embeddingPhaseConfig),
-            runtimeSignals: runtimeStaticLinks.length,
-          });
-          this.stampPhaseTimings(output.analysis_phases, phaseTimingRecords);
-          output.timings = this.buildTimingsBlock(phaseTimingRecords, Date.now() - startTime, contributions, cpuUsageStart);
-          output.system_purpose = {
-            ...systemPurpose,
-            primary_type: enhancedSystemPurpose.primary_type,
-            confidence: Math.max(systemPurpose.confidence || 0, enhancedSystemPurpose.confidence || 0),
-            evidence: enhancedSystemPurpose.evidence || systemPurpose.evidence,
-          };
-          if (enhancedSystemPurpose.inferred_description) {
-            output.system.description = enhancedSystemPurpose.inferred_description;
-          }
-          this.enforceCapabilityDescriptionProvenanceInvariant(output.capabilities);
-          output.product_map = buildProductMap(output);
-        });
-      } else {
-        this.recordComprehensionSkipped(enhancedSystemPurpose, systemCapabilities, dataEntities, 'no-ai-provider-configured');
-        output.capabilities = systemCapabilities.length > 0 ? systemCapabilities : undefined;
-        this.enforceCapabilityDescriptionProvenanceInvariant(output.capabilities);
-        output.product_map = buildProductMap(output, userJourneyResult);
-      }
-    } else {
-      this.settleCapabilityCatalogStatus(output, this.analysisAiEnrichmentStatus(false));
-    }
+    applyCapabilityCatalogStatus(output);
     phaseStart = startPhase();
     await this.applyEmbeddingPhase(output, projectPath);
     logTiming('pp_embeddingAndFinalize', phaseStart);
@@ -10154,7 +10071,7 @@ export class AnalyzerOrchestrator {
       ? (reconciled.length > 0 ? 'rejected-hard-deadline' : 'unavailable-hard-deadline')
       : qualityFailure ? 'ai-below-quality-bar' : 'ai';
     const gateReason = deadlineExceeded
-      ? `${AI_CATALOG_HARD_DEADLINE_MARKER}: capability-catalog AI enrichment abandoned after ${cyclesRun} cycle(s) to protect the overall analysis latency budget; structural capability candidates remain available${qualityFailure ? ` (last quality check: ${qualityFailure})` : ''}`
+      ? `${AI_CATALOG_HARD_DEADLINE_MARKER}: capability-catalog interpretation abandoned after ${cyclesRun} cycle(s) to protect the overall analysis latency budget; structural capability candidates remain available${qualityFailure ? ` (last quality check: ${qualityFailure})` : ''}`
       : qualityFailure;
     if (!deadlineExceeded && !qualityFailure && retainedInterpretationRaw) {
       args.onInterpretationAccepted?.(retainedInterpretationRaw);
@@ -11341,21 +11258,6 @@ export class AnalyzerOrchestrator {
     );
   }
 
-  private analysisAiEnrichmentStatus(deferred: true): 'pending' | 'disabled';
-  private analysisAiEnrichmentStatus(deferred: false): 'synchronous' | 'disabled';
-  private analysisAiEnrichmentStatus(deferred: boolean): 'pending' | 'disabled' | 'synchronous' {
-    if (!this.hasAIInterpretationProviderConfigured()) return 'disabled';
-    return deferred ? 'pending' : 'synchronous';
-  }
-
-  private settleCapabilityCatalogStatus(
-    output: CASOutput,
-    status: 'ready' | 'synchronous' | 'disabled',
-  ): void {
-    output.ai_enrichment = status;
-    applyCapabilityCatalogStatus(output);
-  }
-
   private configuredAiInterpretationProviders(): string[] {
     const freshConfig = getAIConfig();
     const providers = new Set<string>();
@@ -12099,7 +12001,7 @@ export class AnalyzerOrchestrator {
   private static readonly TIMING_STAGE_OF = (phase: string): string | undefined => {
     if (phase === 'detectAnalyzers') return 'scan';
     if (phase === 'frameworkAnalyzers' || phase.startsWith('language_')) return 'parse';
-    if (phase === 'pp_aiInterpretation' || phase === 'pp_enhancedPurpose') return 'ai_enrichment';
+    if (phase === 'pp_aiInterpretation' || phase === 'pp_enhancedPurpose') return 'comprehension';
     if (phase === 'pp_enrichNodes' || phase === 'pp_testData') return 'decorators';
     if (phase === 'pp_finalMetadata' || phase === 'pp_embeddingAndFinalize') return 'save';
     if (phase.startsWith('pp_')) return 'graph';
@@ -12130,8 +12032,8 @@ export class AnalyzerOrchestrator {
     contributions: Array<{ analyzer_id: string; execution_time_ms?: number }>,
     cpuUsageStart?: NodeJS.CpuUsage
   ): CASAnalysisTimings {
-    const stages: Record<string, number> = { scan: 0, parse: 0, graph: 0, decorators: 0, ai_enrichment: 0, save: 0 };
-    const cpuStages: Record<string, number> = { scan: 0, parse: 0, graph: 0, decorators: 0, ai_enrichment: 0, save: 0 };
+    const stages: Record<string, number> = { scan: 0, parse: 0, graph: 0, decorators: 0, comprehension: 0, save: 0 };
+    const cpuStages: Record<string, number> = { scan: 0, parse: 0, graph: 0, decorators: 0, comprehension: 0, save: 0 };
     for (const [phase, record] of Object.entries(phaseTimings)) {
       const stage = AnalyzerOrchestrator.TIMING_STAGE_OF(phase);
       if (stage) {
@@ -12240,7 +12142,7 @@ export class AnalyzerOrchestrator {
         status: input.hasAIProvider
           ? (input.systemDescriptionSource === 'ai' || input.capabilityDescriptionSource === 'ai' ? 'complete' : 'partial')
           : 'deferred',
-        purpose: 'ai-enrichment',
+        purpose: 'comprehension',
         default_phase: true,
         description: 'Uses AI to turn the structural CAS facts into the system overview and primary capability descriptions.',
         outputs: ['enhanced_system_purpose.inferred_description', 'capabilities.description'],
@@ -12256,7 +12158,7 @@ export class AnalyzerOrchestrator {
         name: 'Manual element descriptions',
         priority: 4,
         status: 'deferred',
-        purpose: 'ai-enrichment',
+        purpose: 'comprehension',
         default_phase: false,
         description: 'Generates AI descriptions for individual nodes, services, entities, capabilities, entry points, or exit points only when explicitly requested.',
         outputs: ['nodes.description', 'entities.description', 'entry_points.description', 'exit_points.description'],

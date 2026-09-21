@@ -1,10 +1,10 @@
 import type { CASOutput } from '../../types/cas.types';
-import { applyComprehensionNarrativeStatus } from './comprehension-status';
+import { applyComprehensionNarrativeStatus, comprehensionSettled } from './comprehension-status';
 
 const ERROR_CODE = 'CAPABILITY_CATALOG_REJECTED';
 
 function catalogFailure(output: CASOutput): string | undefined {
-  const settled = output.ai_enrichment === 'ready' || output.ai_enrichment === 'synchronous';
+  const settled = comprehensionSettled(output);
   if (!settled) return undefined;
   const coverage = output.enhanced_system_purpose?.capability_catalog_coverage;
   if (coverage?.status === 'accepted') return undefined;

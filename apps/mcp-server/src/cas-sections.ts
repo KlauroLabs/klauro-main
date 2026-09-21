@@ -160,8 +160,6 @@ const IDENTITY_FIELDS = new Set([
   'analysis_phases',
   'timings',
   'validation',
-  'ai_enrichment',
-  'ai_enrichment_error',
   'analysis_source',
 ]);
 

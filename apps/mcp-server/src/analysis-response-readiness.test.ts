@@ -42,7 +42,7 @@ test('accepted catalog flags cannot override a missing or rejected system narrat
     { inferred_description: '', description_generation: { status: 'ai_applied', attempted: true } },
   ]) {
     const output = cas({ capabilities: [{ id: 'cap', name: 'Understand what a codebase actually built' }],
-      ai_enrichment: 'ready', enhanced_system_purpose: {
+      layers_ready: { layers: [{ layer: 'L5', name: 'comprehension', status: 'ready' }] } as never, enhanced_system_purpose: {
         ...purpose, ai_phase_status: 'complete', capability_catalog_coverage: { status: 'accepted', published_capabilities: 1 },
       } });
     const readiness = evaluateComprehensionReadiness(output);
@@ -72,7 +72,7 @@ test('comprehension responses fail closed when L4 or L5 failed', () => {
       complete: false,
       layers: [
         { layer: 'L4', name: 'Flows, capabilities, contracts', status: 'error', error: 'Capability catalog is partial', fields: ['capabilities'] },
-        { layer: 'L5', name: 'AI enrichment', status: 'error', error: 'Capability catalog is partial', fields: ['enhanced_system_purpose'] },
+        { layer: 'L5', name: 'interpretation', status: 'error', error: 'Capability catalog is partial', fields: ['enhanced_system_purpose'] },
       ],
     },
     capabilities: [{ id: 'partial', name: 'Partial result' }],
@@ -86,12 +86,12 @@ test('comprehension responses fail closed when L4 or L5 failed', () => {
 
 test('settled but unaccepted comprehension is partial, never ready', () => {
   const result = comprehensionResponseReadiness(cas({
-    ai_enrichment: 'ready',
+    layers_ready: { layers: [{ layer: 'L5', name: 'comprehension', status: 'ready' }] } as never,
     layers_ready: {
       complete: true,
       layers: [
         { layer: 'L4', name: 'Flows, capabilities, contracts', status: 'ready', fields: ['capabilities'] },
-        { layer: 'L5', name: 'AI enrichment', status: 'ready', fields: ['enhanced_system_purpose'] },
+        { layer: 'L5', name: 'interpretation', status: 'ready', fields: ['enhanced_system_purpose'] },
       ],
     },
     capabilities: [{ id: 'cap-partial', name: 'Partial capability' }],
@@ -250,7 +250,7 @@ test('readiness counts the authoritative capability catalog instead of summing d
         id: `product_${index}`,
       })),
     },
-    ai_enrichment: 'ready',
+    layers_ready: { layers: [{ layer: 'L5', name: 'comprehension', status: 'ready' }] } as never,
     enhanced_system_purpose: {
       inferred_description: 'Patients schedule appointments with available clinicians.',
       description_source: 'ai',
@@ -267,7 +267,7 @@ test('readiness counts the authoritative capability catalog instead of summing d
 test('accepted zero-capability catalogs are ready when the evidence requires no product outcome', () => {
   const readiness = evaluateComprehensionReadiness(cas({
     capabilities: [],
-    ai_enrichment: 'synchronous',
+    layers_ready: { layers: [{ layer: 'L5', name: 'comprehension', status: 'ready' }] } as never,
     enhanced_system_purpose: {
       inferred_description: 'Patients schedule appointments with available clinicians.',
       description_source: 'ai',
@@ -294,7 +294,7 @@ test('accepted zero-capability catalogs are ready when the evidence requires no 
 test('accepted comprehension fails closed when grounded reconciliation references do not resolve', () => {
   const readiness = evaluateComprehensionReadiness(cas({
     capabilities: [{ id: 'cap-present', name: 'Review change impact' }],
-    ai_enrichment: 'ready',
+    layers_ready: { layers: [{ layer: 'L5', name: 'comprehension', status: 'ready' }] } as never,
     enhanced_system_purpose: {
       inferred_description: 'Patients schedule appointments with available clinicians.',
       description_source: 'ai',
@@ -329,7 +329,7 @@ test('accepted comprehension fails closed when capability flow references do not
       related_flows: [{ flow_id: 'flow-missing', role: 'primary', rationale: 'implements outcome' }],
     }],
     flows: [{ flow_id: 'flow-present', name: 'Assess change', intent: 'Assess change', entry_point: 'entry-one', entities: [], contract: {}, steps: [] }],
-    ai_enrichment: 'ready',
+    layers_ready: { layers: [{ layer: 'L5', name: 'comprehension', status: 'ready' }] } as never,
     enhanced_system_purpose: {
       inferred_description: 'Patients schedule appointments with available clinicians.',
       description_source: 'ai',
@@ -354,7 +354,7 @@ test('accepted comprehension rejects relationship roles outside the canonical vo
       related_flows: [{ flow_id: 'flow-present', role: 'owner', rationale: 'non-canonical role' }],
     } as any],
     flows: [{ flow_id: 'flow-present', name: 'Assess change', intent: 'Assess change', entry_point: 'entry-one', entities: [], contract: {}, steps: [] }],
-    ai_enrichment: 'ready',
+    layers_ready: { layers: [{ layer: 'L5', name: 'comprehension', status: 'ready' }] } as never,
     enhanced_system_purpose: {
       inferred_description: 'Patients schedule appointments with available clinicians.',
       description_source: 'ai',
@@ -380,7 +380,7 @@ test('node-backed capability operations satisfy reference integrity when the nod
       operations: [{ entry_point_id: 'node:worker', entry_point_type: 'function', action: 'Process' }],
     }],
     entry_points: [{ id: 'entry-present', type: 'http', name: 'present', source_node: 'worker' }],
-    ai_enrichment: 'ready',
+    layers_ready: { layers: [{ layer: 'L5', name: 'comprehension', status: 'ready' }] } as never,
     enhanced_system_purpose: {
       inferred_description: 'Patients schedule appointments with available clinicians.',
       description_source: 'ai',
@@ -398,7 +398,7 @@ test('node-backed capability operations satisfy reference integrity when the nod
 
 test("unavailable comprehension exposes the persisted fail-closed catalog reason", () => {
   const readiness = evaluateComprehensionReadiness(cas({
-    ai_enrichment: "synchronous",
+    layers_ready: { layers: [{ layer: 'L5', name: 'comprehension', status: 'ready' }] } as never,
     enhanced_system_purpose: {
       inferred_description: 'Patients schedule appointments with available clinicians.',
       description_source: 'ai',

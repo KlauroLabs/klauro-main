@@ -1659,7 +1659,7 @@ test('readiness warns when security evidence reports missing enforcement', async
 test('readiness rejects completed comprehension with no published product capabilities', async () => {
   await withWorkspace(async workspace => {
     const cas = fixtureCas();
-    cas.ai_enrichment = 'ready';
+    cas.layers_ready = { layers: [{ layer: 'L5', name: 'comprehension', status: 'ready' }] } as never;
     cas.capabilities = [];
     if (cas.product_map) cas.product_map.capabilities = [];
     cas.enhanced_system_purpose = {
@@ -1686,7 +1686,7 @@ test('readiness rejects completed comprehension with no published product capabi
 test('readiness refuses agent context when canonical comprehension is unavailable', async () => {
   await withWorkspace(async workspace => {
     const cas = fixtureCas();
-    cas.ai_enrichment = 'disabled';
+    cas.layers_ready = { layers: [{ layer: 'L5', name: 'comprehension', status: 'error', error: 'comprehension unavailable' }] } as never;
     cas.capabilities = [];
     cas.flow_graph = {
       ...(cas.flow_graph || {} as any),

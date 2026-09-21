@@ -273,7 +273,7 @@ function renderMarkdown(report: ColdReviewReport): string {
 function verdictFor(status: ReviewStatus, agentScore: number, narrativeScore: number): string {
   if (status === 'fail') return 'Not good enough for default product trust.';
   if (status === 'pass') return 'Useful product output for a cold agent and human reviewer.';
-  if (narrativeScore < 75) return 'Agent context is useful, but human-facing narrative still needs AI enrichment.';
+  if (narrativeScore < 75) return 'Agent context is useful, but human-facing narrative still needs interpretation.';
   if (agentScore < 90) return 'Narrative is acceptable, but the MCP agent context needs sharper agent context.';
   return 'Useful product output for a cold agent and human reviewer.';
 }

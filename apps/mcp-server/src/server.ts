@@ -108,7 +108,7 @@ export const SERVER_INSTRUCTIONS = `Klauro serves a precomputed analysis of this
 
 Orient (once per repo): resolve_agent_analysis(path) confirms an analysis exists and selects the right one (not an embedded sub-fixture); if none, analyze_codebase. get_summary gives domain, capabilities, and entry points in one call.
 
-Progressive availability (don't wait): structural facts — call graph, routes, entry points, file nodes, data flows — are precomputed and return instantly. They are complete and authoritative; use them immediately. AI-written prose (the system/element descriptions) enriches in the background, so every result carries an ai_enrichment field: 'ready' = prose included; 'pending' = you got deterministic text now, re-call in a few seconds only if you specifically need the richer narrative; 'disabled'/'synchronous' = no background pass, the text you have is final. Never block on 'pending' — act on the structure first; the prose is flavor, the facts are the product.
+An analysis is whole when it answers: structural facts — call graph, routes, entry points, file nodes, data flows — and the prose that interprets them arrive together, and both are final. Structure is the product; prose reads it back to you. When comprehension could not be written, layers_ready names the layer that failed and why, and the structural answer still stands on its own.
 
 Find (instead of grep): search_nodes / semantic_search rank nodes by name+meaning with file:line and risk flags. get_route_table for routes (method/path/handler/auth); get_entry_points and get_exit_points for CLI, events, and queues; get_file_nodes for what a file defines; get_data_entities for the domain's data shapes (entities, fields, and who reads/writes them); get_erd for the entity-relationship model + a renderable Mermaid erDiagram (entities, fields, evidence-gated cardinalities); get_test_summary for the test-suite inventory — pull it before writing tests so you extend the existing suites instead of inventing a parallel harness.
 
@@ -1060,14 +1060,14 @@ async function loadWorkspaceRepositoryAnalyses(options: {
   };
 }
 
-function markWorkspaceAiEnrichmentSkipped(graph: crossCodebaseAnalysis.CrossCodebaseSystemGraph): crossCodebaseAnalysis.CrossCodebaseSystemGraph {
+function withoutWorkspaceInterpretation(graph: crossCodebaseAnalysis.CrossCodebaseSystemGraph): crossCodebaseAnalysis.CrossCodebaseSystemGraph {
 
 
 
   graph.workspace_narrative = {
     ...graph.workspace_narrative,
     source: 'ai-required-degraded',
-    degraded_reason: 'Workspace AI enrichment was intentionally skipped; comprehension is AI-only, so no workspace narrative was generated.',
+    degraded_reason: 'Workspace interpretation was intentionally skipped; comprehension is AI-only, so no workspace narrative was generated.',
   };
   return graph;
 }
@@ -1152,7 +1152,7 @@ function validateWorkspaceGraph(graph: any, freshnessResult?: Awaited<ReturnType
     score,
     conforms_to_was: missing.length === 0 && !stale,
     missing_required_sections: missing,
-    ai_enrichment: {
+    narrative: {
       required: true,
       default_summary_status: graph?.workspace_narrative?.source === 'ai' ? 'applied' : 'degraded',
       reason: graph?.workspace_narrative?.degraded_reason || null,
@@ -1278,7 +1278,7 @@ function registerTools(server: McpServer) {
     'get_description_enrichment_targets',
     {
       title: 'Get Description Enrichment Targets',
-      description: 'Return the exact system, capability, node, service, entity, and entry-point descriptions that need AI enrichment next, with suggested run_analysis_layer or generate_element_description arguments. Use when UI/drilldown text is deterministic, generic, inventory-like, missing, or failed validation.',
+      description: 'Return the exact system, capability, node, service, entity, and entry-point descriptions that need interpretation next, with suggested run_analysis_layer or generate_element_description arguments. Use when UI/drilldown text is deterministic, generic, inventory-like, missing, or failed validation.',
       inputSchema: {
         path: z.string().describe('Absolute path to the analyzed project directory'),
         limit: z.number().optional().describe('Maximum targets to return'),
@@ -2044,7 +2044,7 @@ function registerTools(server: McpServer) {
     'get_summary',
     {
       title: 'Get Summary',
-      description: 'Get condensed intelligence summary of an analyzed codebase. Includes system purpose, flow graph highlights (top 15 capabilities by score), architecture summary, database entities, entry point breakdown, node/edge counts, and analyzer contributions. This is the first tool to call to orient on a codebase — the top of the Capability -> Flow -> Step -> Function hierarchy; drill a named capability into its flows with get_flow_concepts, then a flow/step into concrete code with get_coding_context/get_call_chain. Its orient_capsule field is a pure pullable-INDEX of the fabric: per dimension (routes, seams, topology, cicd, runtime metrics, entities, tests) it reports availability + a count + the exact tool that pulls it, at near-zero tokens and with NO narrative — the cheap map of what is knowable. For the woven NARRATIVE of how those layers fit together (entry points -> deployables with bundled members -> topology -> seams -> CAP, as a headline plus compacted content), call get_system_overview and read its system_fit; the capsule tells you what to pull, system_fit tells you the story. Progressive availability: structural fields (entry points, counts, entities, flow highlights) are always final; the prose system purpose and capability descriptions may still be enriching — check ai_enrichment (pending = deterministic text now; re-call in a few seconds only if you need the richer narrative). Never block on pending prose; orient on the structure and proceed.',
+      description: 'Get condensed intelligence summary of an analyzed codebase. Includes system purpose, flow graph highlights (top 15 capabilities by score), architecture summary, database entities, entry point breakdown, node/edge counts, and analyzer contributions. This is the first tool to call to orient on a codebase — the top of the Capability -> Flow -> Step -> Function hierarchy; drill a named capability into its flows with get_flow_concepts, then a flow/step into concrete code with get_coding_context/get_call_chain. Its orient_capsule field is a pure pullable-INDEX of the fabric: per dimension (routes, seams, topology, cicd, runtime metrics, entities, tests) it reports availability + a count + the exact tool that pulls it, at near-zero tokens and with NO narrative — the cheap map of what is knowable. For the woven NARRATIVE of how those layers fit together (entry points -> deployables with bundled members -> topology -> seams -> CAP, as a headline plus compacted content), call get_system_overview and read its system_fit; the capsule tells you what to pull, system_fit tells you the story. Every field it returns is final; where comprehension could not be written, layers_ready names the layer that failed and the structural fields still stand.',
       inputSchema: {
         path: z.string().describe('Project path (must be previously analyzed)'),
         track: TRACK_PARAM,
@@ -2234,16 +2234,16 @@ function registerTools(server: McpServer) {
         paths: z.array(z.string()).optional().describe('Analyzed project paths to include. Omit to use all analyzed repositories.'),
         workspace_root: z.string().optional().describe('Optional workspace folder. When provided, include analyzed repos under this root and honor its .klaurorc source.exclude and .klauroignore policy.'),
         exclude: z.array(z.string()).optional().describe('Optional additional workspace exclude patterns, e.g. ["desktop-tray/**", "archives/**"].'),
-        ai_enrichment: z.boolean().optional().describe('Defaults to true. Set false for fast deterministic workspace-level CAS generation; the returned narrative is marked AI-required degraded.'),
+        interpret: z.boolean().optional().describe('Defaults to true. Set false for fast deterministic workspace-level CAS generation; the returned narrative is marked AI-required degraded.'),
       } as any,
     } as any,
-    async ({ name, paths, workspace_root, exclude, ai_enrichment }: any) => withErrorHandling(async () => {
+    async ({ name, paths, workspace_root, exclude, interpret }: any) => withErrorHandling(async () => {
       const { repositories, skippedInputs, inputPolicy } = await loadWorkspaceRepositoryAnalyses({ paths, workspaceRoot: workspace_root, exclude });
       const graphName = name || 'analyzed-workspace';
       const baseGraph = crossCodebaseAnalysis.buildWorkspaceAnalysis(graphName, repositories);
-      const graph = ai_enrichment === false
-        ? markWorkspaceAiEnrichmentSkipped(baseGraph)
-        : await crossCodebaseAnalysis.enrichWorkspaceAnalysisNarrative(baseGraph);
+      const graph = interpret === false
+        ? withoutWorkspaceInterpretation(baseGraph)
+        : await crossCodebaseAnalysis.interpretWorkspaceNarrative(baseGraph);
       const saved = await saveCrossCodebaseSystemGraph(graph);
       return json({
         saved,
@@ -2311,9 +2311,9 @@ function registerTools(server: McpServer) {
         generated_at: graph.generated_at,
         narrative: {
           source: graph.workspace_narrative.source,
-          ai_provider: graph.workspace_narrative.ai_provider || graph.ai_enrichment?.provider,
-          ai_model: graph.workspace_narrative.ai_model || graph.ai_enrichment?.model,
-          ai_structured_model: graph.workspace_narrative.ai_structured_model || graph.ai_enrichment?.structured_model,
+          ai_provider: graph.workspace_narrative.ai_provider || graph.interpreted_by?.provider,
+          ai_model: graph.workspace_narrative.ai_model || graph.interpreted_by?.model,
+          ai_structured_model: graph.workspace_narrative.ai_structured_model || graph.interpreted_by?.structured_model,
           confidence: graph.workspace_narrative.confidence,
           title: graph.workspace_narrative.title,
           product_value_summary: graph.workspace_narrative.product_value_summary,
@@ -2731,16 +2731,16 @@ function registerTools(server: McpServer) {
         paths: z.array(z.string()).optional().describe('Analyzed project paths to include. Omit to use all analyzed repositories.'),
         workspace_root: z.string().optional().describe('Optional workspace folder. When provided, include analyzed repos under this root and honor its .klaurorc source.exclude and .klauroignore policy.'),
         exclude: z.array(z.string()).optional().describe('Optional additional workspace exclude patterns.'),
-        ai_enrichment: z.boolean().optional().describe('Defaults to true. Set false for fast deterministic workspace-level CAS generation.'),
+        interpret: z.boolean().optional().describe('Defaults to true. Set false for fast deterministic workspace-level CAS generation.'),
       } as any,
     } as any,
-    async ({ name, paths, workspace_root, exclude, ai_enrichment }: any) => withErrorHandling(async () => {
+    async ({ name, paths, workspace_root, exclude, interpret }: any) => withErrorHandling(async () => {
       const { repositories, skippedInputs, inputPolicy } = await loadWorkspaceRepositoryAnalyses({ paths, workspaceRoot: workspace_root, exclude });
       const graphName = name || 'analyzed-workspace';
       const baseGraph = crossCodebaseAnalysis.buildWorkspaceAnalysis(graphName, repositories);
-      const graph = ai_enrichment === false
-        ? markWorkspaceAiEnrichmentSkipped(baseGraph)
-        : await crossCodebaseAnalysis.enrichWorkspaceAnalysisNarrative(baseGraph);
+      const graph = interpret === false
+        ? withoutWorkspaceInterpretation(baseGraph)
+        : await crossCodebaseAnalysis.interpretWorkspaceNarrative(baseGraph);
       const saved = await saveCrossCodebaseSystemGraph(graph);
       return json({
         saved,

@@ -6,7 +6,7 @@ test('a workspace member reference keeps composition identity and drops member b
   const cas: any = {
     id: 'member', composition_mode: 'composed',
     cas_version: '1.11.0', analysis_id: 'member-analysis', analysis_timestamp: '2026-01-01T00:00:00.000Z',
-    derived_fingerprint: 'fp', ai_enrichment: 'ready', layers_ready: { complete: true, layers: [] },
+    derived_fingerprint: 'fp', interpreted_by: 'ready', layers_ready: { complete: true, layers: [] },
     system: { id: 'member', name: 'Member', type: 'service', root_path: '/tmp/member' },
     nodes: [{ id: 'node', name: 'run', type: 'function', level: 1, file: 'src/run.ts' }],
     edges: [],

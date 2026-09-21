@@ -71,7 +71,6 @@ export interface LayersReady {
   [key: string]: unknown;
 }
 
-export type AiEnrichmentState = 'pending' | 'ready' | 'disabled' | 'synchronous' | 'error';
 
 export interface RepoFacts {
   contributor_count?: number;
@@ -93,8 +92,6 @@ export interface AnalysisSummary {
   capabilities?: number;
   top_capabilities?: string[];
   layers_ready?: LayersReady;
-  ai_enrichment?: AiEnrichmentState;
-  ai_enrichment_error?: string;
   [key: string]: unknown;
 }
 
@@ -104,9 +101,6 @@ export interface ProjectAnalysisResponse {
   analysis_id?: string;
   summary?: AnalysisSummary;
   product_map?: ProductMap;
-
-  ai_enrichment?: AiEnrichmentState;
-  ai_enrichment_error?: string;
   error?: string;
 }
 

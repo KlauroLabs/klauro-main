@@ -100,9 +100,9 @@ export function evaluateComprehensionReadiness(cas: CASOutput): ComprehensionRea
   const coverage = cas.enhanced_system_purpose?.capability_catalog_coverage;
   const coverageStatus = coverage?.status || 'unreported';
   const l5 = cas.layers_ready?.layers?.find(layer => layer.layer === 'L5');
-  const failed = cas.ai_enrichment === 'error' || l5?.status === 'error';
-  const pending = cas.ai_enrichment === 'pending' || l5?.status === 'pending';
-  const settled = cas.ai_enrichment === 'ready' || cas.ai_enrichment === 'synchronous' || l5?.status === 'ready';
+  const failed = l5?.status === 'error';
+  const pending = l5?.status === 'pending';
+  const settled = l5?.status === 'ready';
   const accepted = coverageStatus === 'accepted';
   const integrityFailures = comprehensionIntegrityFailures(cas);
   const narrativeFailure = settled && accepted ? comprehensionNarrativeFailure(cas.enhanced_system_purpose) : undefined;
@@ -125,7 +125,7 @@ export function evaluateComprehensionReadiness(cas: CASOutput): ComprehensionRea
       canonical_capabilities: canonicalCapabilities,
       structural_candidates: structuralCandidates,
       catalog_coverage: coverageStatus,
-      reason: cas.ai_enrichment_error || l5?.error || narrativeFailure || 'AI comprehension failed',
+      reason: l5?.error || narrativeFailure || 'AI comprehension failed',
     };
   }
   if (integrityFailures.length > 0) {
@@ -166,8 +166,8 @@ export function evaluateComprehensionReadiness(cas: CASOutput): ComprehensionRea
     canonical_capabilities: 0,
     structural_candidates: structuralCandidates,
     catalog_coverage: coverageStatus,
-    reason: cas.ai_enrichment === 'disabled'
-      ? 'AI comprehension is disabled; structural candidates are not canonical product capabilities'
+    reason: l5?.status === 'not_loaded'
+      ? 'AI comprehension is unavailable; structural candidates are not canonical product capabilities'
       : coverage?.reason || 'No canonical product capabilities are available',
   };
 }

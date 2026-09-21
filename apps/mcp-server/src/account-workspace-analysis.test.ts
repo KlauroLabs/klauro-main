@@ -84,21 +84,20 @@ async function waitFor(check: () => Promise<boolean>, timeoutMs = 10_000, interv
 }
 
 test('workspace comprehension waits for a pending L5 member and treats ready or failed L5 as terminal', () => {
-  assert.equal(isCasComprehensionSettled({ ai_enrichment: 'pending' }), false);
   assert.equal(isCasComprehensionSettled({ layers_ready: { layers: [{ layer: 'L0', status: 'ready' }] } }), false);
   assert.equal(isCasComprehensionSettled({ layers_ready: { layers: [{ layer: 'L5', status: 'pending' }] } }), false);
-  assert.equal(isCasComprehensionSettled({ ai_enrichment: 'ready', layers_ready: { layers: [{ layer: 'L5', status: 'ready' }] } }), true);
-  assert.equal(isCasComprehensionSettled({ ai_enrichment: 'error', layers_ready: { layers: [{ layer: 'L5', status: 'error' }] } }), true);
+  assert.equal(isCasComprehensionSettled({ layers_ready: { layers: [{ layer: 'L5', status: 'ready' }] } }), true);
+  assert.equal(isCasComprehensionSettled({ layers_ready: { layers: [{ layer: 'L5', status: 'error' }] } }), true);
   assert.equal(isCasComprehensionSettled({ analysis_timestamp: 'legacy-synchronous' }), false);
 });
 
 test('workspace input signature is order-independent and changes when a member comprehension layer settles', () => {
   const pending = {
-    analysis_id: 'analysis-a', analysis_timestamp: '2026-07-22T00:00:00.000Z', ai_enrichment: 'pending',
+    analysis_id: 'analysis-a', analysis_timestamp: '2026-07-22T00:00:00.000Z',
     layers_ready: { layers: [{ layer: 'L5', status: 'pending' }] }, nodes: [], edges: [], system: { primary_capabilities: [] },
   } as any;
   const ready = {
-    ...pending, ai_enrichment: 'ready',
+    ...pending,
     layers_ready: { layers: [{ layer: 'L5', status: 'ready', completed_at: '2026-07-22T00:00:05.000Z' }] },
     system: { description: 'AI description', primary_capabilities: [{ name: 'Manage orders', description: 'Processes orders.', description_source: 'ai' }] },
   } as any;
@@ -316,14 +315,14 @@ test('workspace analysis auto-builds once from stored member analyses after a de
   const previousRemoteData = process.env.KLAURO_REMOTE_ANALYZER_DATA;
   const previousDebounce = process.env.KLAURO_WORKSPACE_ANALYSIS_DEBOUNCE_MS;
   const previousInterpretation = process.env.KLAURO_AI_INTERPRETATION;
-  const previousWorkspaceAi = process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
+  const previousWorkspaceAi = process.env.KLAURO_WORKSPACE_INTERPRETATION;
   process.env.KLAURO_REMOTE_ANALYZER_DATA = remoteData;
   process.env.KLAURO_WORKSPACE_ANALYSIS_DEBOUNCE_MS = '150';
   // Comprehension is AI-only and THROWS without a provider. This test exercises
   // workspace auto-build orchestration on Camp-B STRUCTURE, not comprehension, so
   // run it structure-only (no AI provider is configured in CI).
   process.env.KLAURO_AI_INTERPRETATION = 'false';
-  process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = 'false';
+  process.env.KLAURO_WORKSPACE_INTERPRETATION = 'false';
 
   const server = createRemoteAnalyzerHttpServer({ dataDir: remoteData });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -436,8 +435,8 @@ test('workspace analysis auto-builds once from stored member analyses after a de
     else process.env.KLAURO_WORKSPACE_ANALYSIS_DEBOUNCE_MS = previousDebounce;
     if (previousInterpretation === undefined) delete process.env.KLAURO_AI_INTERPRETATION;
     else process.env.KLAURO_AI_INTERPRETATION = previousInterpretation;
-    if (previousWorkspaceAi === undefined) delete process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
-    else process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = previousWorkspaceAi;
+    if (previousWorkspaceAi === undefined) delete process.env.KLAURO_WORKSPACE_INTERPRETATION;
+    else process.env.KLAURO_WORKSPACE_INTERPRETATION = previousWorkspaceAi;
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
@@ -449,7 +448,7 @@ test('workspace analysis auto-builds once from stored member analyses after a de
  * 'ai-required-degraded' (empty description) and there was NO endpoint to
  * re-run the workspace with enrichment attached. Asserts: (1) 202 accepted
  * immediately, (2) the rebuild runs in the background and persists a record
- * whose narrative source is 'ai' when the AI enrichment pass succeeds,
+ * whose narrative source is 'ai' when the interpretation pass succeeds,
  * (3) workspace isolation — a non-member gets 404, never a scheduled rebuild.
  */
 test('workspace reanalyze returns 202, background-persists an AI-enriched narrative, and is workspace-isolated', async () => {
@@ -458,7 +457,7 @@ test('workspace reanalyze returns 202, background-persists an AI-enriched narrat
   const previousRemoteData = process.env.KLAURO_REMOTE_ANALYZER_DATA;
   const previousDebounce = process.env.KLAURO_WORKSPACE_ANALYSIS_DEBOUNCE_MS;
   const previousInterpretation = process.env.KLAURO_AI_INTERPRETATION;
-  const previousWorkspaceAi = process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
+  const previousWorkspaceAi = process.env.KLAURO_WORKSPACE_INTERPRETATION;
   const previousAutoConfig = process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG;
   const previousOllamaBaseUrl = process.env.OLLAMA_BASE_URL;
   const previousOllamaAuto = process.env.KLAURO_OLLAMA_AUTO;
@@ -469,7 +468,7 @@ test('workspace reanalyze returns 202, background-persists an AI-enriched narrat
   // the aiService seam (same pattern as cross-codebase-analysis.test.ts), so
   // this asserts the server-side WIRING: attach -> background -> persist 'ai'.
   process.env.KLAURO_AI_INTERPRETATION = 'true';
-  process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = 'true';
+  process.env.KLAURO_WORKSPACE_INTERPRETATION = 'true';
   process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG = 'false';
   delete process.env.OLLAMA_BASE_URL;
   delete process.env.KLAURO_OLLAMA_AUTO;
@@ -478,7 +477,7 @@ test('workspace reanalyze returns 202, background-persists an AI-enriched narrat
   // (http/api/service/server/client/route), behavior verbs (routes/records/
   // returns/handles/provides/supports), and none of the ungrounded product
   // frames the workspace-level-CAS quality gate rejects — so the real
-  // enrichWorkspaceAnalysisNarrative pass accepts it and stamps source 'ai'.
+  // interpretWorkspaceNarrative pass accepts it and stamps source 'ai'.
   const enrichedDescription = 'Repo-reanalyze calculates totals through its observed application behavior and returns the resulting values. The workspace presents that total-calculation behavior, preserves its ownership by repo-reanalyze, and explains how callers retrieve the calculated result through the analyzed capability.';
   const originalGenerate = aiService.generateComponentDescription;
   let delayedWorkspaceCall = false;
@@ -635,8 +634,8 @@ test('workspace reanalyze returns 202, background-persists an AI-enriched narrat
     else process.env.KLAURO_WORKSPACE_ANALYSIS_DEBOUNCE_MS = previousDebounce;
     if (previousInterpretation === undefined) delete process.env.KLAURO_AI_INTERPRETATION;
     else process.env.KLAURO_AI_INTERPRETATION = previousInterpretation;
-    if (previousWorkspaceAi === undefined) delete process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
-    else process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = previousWorkspaceAi;
+    if (previousWorkspaceAi === undefined) delete process.env.KLAURO_WORKSPACE_INTERPRETATION;
+    else process.env.KLAURO_WORKSPACE_INTERPRETATION = previousWorkspaceAi;
     if (previousAutoConfig === undefined) delete process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG;
     else process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG = previousAutoConfig;
     if (previousOllamaBaseUrl === undefined) delete process.env.OLLAMA_BASE_URL;
@@ -665,11 +664,11 @@ test('a member CAS landed via /v1/sync (not just /v1/analyze) still triggers the
   const previousRemoteData = process.env.KLAURO_REMOTE_ANALYZER_DATA;
   const previousDebounce = process.env.KLAURO_WORKSPACE_ANALYSIS_DEBOUNCE_MS;
   const previousInterpretation = process.env.KLAURO_AI_INTERPRETATION;
-  const previousWorkspaceAi = process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
+  const previousWorkspaceAi = process.env.KLAURO_WORKSPACE_INTERPRETATION;
   process.env.KLAURO_REMOTE_ANALYZER_DATA = remoteData;
   process.env.KLAURO_WORKSPACE_ANALYSIS_DEBOUNCE_MS = '150';
   process.env.KLAURO_AI_INTERPRETATION = 'false';
-  process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = 'false';
+  process.env.KLAURO_WORKSPACE_INTERPRETATION = 'false';
 
   const server = createRemoteAnalyzerHttpServer({ dataDir: remoteData });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -732,8 +731,8 @@ test('a member CAS landed via /v1/sync (not just /v1/analyze) still triggers the
     else process.env.KLAURO_WORKSPACE_ANALYSIS_DEBOUNCE_MS = previousDebounce;
     if (previousInterpretation === undefined) delete process.env.KLAURO_AI_INTERPRETATION;
     else process.env.KLAURO_AI_INTERPRETATION = previousInterpretation;
-    if (previousWorkspaceAi === undefined) delete process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
-    else process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = previousWorkspaceAi;
+    if (previousWorkspaceAi === undefined) delete process.env.KLAURO_WORKSPACE_INTERPRETATION;
+    else process.env.KLAURO_WORKSPACE_INTERPRETATION = previousWorkspaceAi;
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
@@ -751,14 +750,14 @@ test('a short-circuited AI attempt persists an honest enrichment error, not a fa
   const previousRemoteData = process.env.KLAURO_REMOTE_ANALYZER_DATA;
   const previousDebounce = process.env.KLAURO_WORKSPACE_ANALYSIS_DEBOUNCE_MS;
   const previousInterpretation = process.env.KLAURO_AI_INTERPRETATION;
-  const previousWorkspaceAi = process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
+  const previousWorkspaceAi = process.env.KLAURO_WORKSPACE_INTERPRETATION;
   const previousAutoConfig = process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG;
   const previousOllamaBaseUrl = process.env.OLLAMA_BASE_URL;
   const previousOllamaAuto = process.env.KLAURO_OLLAMA_AUTO;
   process.env.KLAURO_REMOTE_ANALYZER_DATA = remoteData;
   process.env.KLAURO_WORKSPACE_ANALYSIS_DEBOUNCE_MS = '150';
   process.env.KLAURO_AI_INTERPRETATION = 'true';
-  process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = 'true';
+  process.env.KLAURO_WORKSPACE_INTERPRETATION = 'true';
   process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG = 'false';
   delete process.env.OLLAMA_BASE_URL;
   delete process.env.KLAURO_OLLAMA_AUTO;
@@ -820,8 +819,8 @@ test('a short-circuited AI attempt persists an honest enrichment error, not a fa
     else process.env.KLAURO_WORKSPACE_ANALYSIS_DEBOUNCE_MS = previousDebounce;
     if (previousInterpretation === undefined) delete process.env.KLAURO_AI_INTERPRETATION;
     else process.env.KLAURO_AI_INTERPRETATION = previousInterpretation;
-    if (previousWorkspaceAi === undefined) delete process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
-    else process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = previousWorkspaceAi;
+    if (previousWorkspaceAi === undefined) delete process.env.KLAURO_WORKSPACE_INTERPRETATION;
+    else process.env.KLAURO_WORKSPACE_INTERPRETATION = previousWorkspaceAi;
     if (previousAutoConfig === undefined) delete process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG;
     else process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG = previousAutoConfig;
     if (previousOllamaBaseUrl === undefined) delete process.env.OLLAMA_BASE_URL;

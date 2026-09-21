@@ -58,7 +58,7 @@ test('capability vision acceptance requires proven domain provenance instead of 
       { name: 'Invoice Settlement' },
     ],
     gates: [
-      { id: 'capability-inference:primary-domain-provenance', status: 'pass', detail: 'primary domain absent because AI enrichment was disabled' },
+      { id: 'capability-inference:primary-domain-provenance', status: 'pass', detail: 'primary domain absent because interpretation was disabled' },
       { id: 'capability-inference:capability-1', status: 'pass' },
       { id: 'capability-inference:capability-2', status: 'pass' },
       { id: 'capability-inference:capability-3', status: 'pass' },

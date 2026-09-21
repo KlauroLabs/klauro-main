@@ -1,7 +1,13 @@
 import type { CASOutput, EnhancedSystemPurpose } from '../../types/cas.types';
 
+export function comprehensionSettled(output: CASOutput): boolean {
+  const comprehension = output.layers_ready?.layers
+    ?.filter(layer => layer.layer === 'L4' || layer.layer === 'L5') || [];
+  return comprehension.length > 0 && comprehension.every(layer => layer.status !== 'pending');
+}
+
 export function applyComprehensionNarrativeStatus(output: CASOutput): void {
-  if (output.ai_enrichment !== 'ready' && output.ai_enrichment !== 'synchronous') return;
+  if (!comprehensionSettled(output)) return;
   const purpose = output.enhanced_system_purpose;
   if (purpose) purpose.ai_phase_status = comprehensionAiPhaseStatus(purpose);
   const failure = comprehensionNarrativeFailure(purpose);

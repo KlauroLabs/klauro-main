@@ -73,7 +73,7 @@ interface McpConsumerResult {
     next_mcp_calls: Array<Record<string, unknown>>;
   };
   generated_via_mcp?: boolean;
-  ai_enrichment?: boolean;
+  interpreted_by?: boolean;
   ai_provider?: Record<string, unknown>;
   narrative_source?: string;
   ai_quality_flags?: string[];
@@ -217,16 +217,16 @@ async function main() {
       observed: args.mcpConsumer ? mcpConsumerResults : 'skipped',
     },
     {
-      name: 'mcp-product-path-default-ai-enrichment-proven',
+      name: 'mcp-product-path-default-comprehension-proven',
       pass: !args.withAi || mcpConsumerResults.length === systems.length && mcpConsumerResults.every(result =>
         result.status === 'pass' &&
-        result.ai_enrichment === true &&
+        result.interpreted_by === true &&
         result.narrative_source === 'ai' &&
         (!process.env.KLAURO_EXPECT_AI_PROVIDER || String(result.ai_provider?.provider || '') === process.env.KLAURO_EXPECT_AI_PROVIDER) &&
         (result.ai_quality_flags || []).length === 0
       ),
       observed: args.withAi ? Object.fromEntries(mcpConsumerResults.map(result => [result.system, {
-        ai_enrichment: result.ai_enrichment,
+        interpreted_by: result.interpreted_by,
         ai_provider: result.ai_provider,
         narrative_source: result.narrative_source,
         ai_quality_flags: result.ai_quality_flags,
@@ -326,7 +326,7 @@ async function main() {
     systems: systems.map(system => ({
       name: system.name,
       summary: summarizeCrossCodebaseSystemGraph(system.graph),
-      ai_provider: system.graph.ai_enrichment,
+      ai_provider: system.graph.interpreted_by,
       unmatched_breakdown: unmatchedBreakdown(system.graph),
       mermaid: formatMermaid(system.graph),
       graph: args.includeGraph ? system.graph : undefined,
@@ -371,13 +371,13 @@ function buildInternalSystemReports(inputs: SystemInput[]): SystemReport[] {
   }));
 }
 
-async function runMcpWorkspacePipeline(inputs: SystemInput[], aiEnrichment: boolean): Promise<{ systems: SystemReport[]; mcpConsumerResults: McpConsumerResult[] }> {
+async function runMcpWorkspacePipeline(inputs: SystemInput[], interpreting: boolean): Promise<{ systems: SystemReport[]; mcpConsumerResults: McpConsumerResult[] }> {
   if (inputs.length === 0) return { systems: [], mcpConsumerResults: [] };
   const results: McpConsumerResult[] = [];
   const systems: SystemReport[] = [];
   const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
   for (const input of inputs) {
-    const result = await runMcpWorkspacePipelineInput(input, aiEnrichment, suffix);
+    const result = await runMcpWorkspacePipelineInput(input, interpreting, suffix);
     if (result.system) systems.push(result.system);
     results.push(result.consumerResult);
   }
@@ -386,7 +386,7 @@ async function runMcpWorkspacePipeline(inputs: SystemInput[], aiEnrichment: bool
 
 async function runMcpWorkspacePipelineInput(
   input: SystemInput,
-  aiEnrichment: boolean,
+  interpreting: boolean,
   suffix: string,
 ): Promise<{ system?: SystemReport; consumerResult: McpConsumerResult }> {
   const transport = new StdioClientTransport({
@@ -397,7 +397,7 @@ async function runMcpWorkspacePipelineInput(
 	    env: {
 	      ...process.env,
 	      KLAURO_TOOL_PROFILE: 'full',
-	      KLAURO_WORKSPACE_AI_TIMEOUT_MS: aiEnrichment
+	      KLAURO_WORKSPACE_AI_TIMEOUT_MS: interpreting
 	        ? (process.env.KLAURO_WORKSPACE_AI_TIMEOUT_MS || '120000')
 	        : (process.env.KLAURO_WORKSPACE_AI_TIMEOUT_MS || '15000'),
 	    } as Record<string, string>,
@@ -408,7 +408,7 @@ async function runMcpWorkspacePipelineInput(
   try {
     await client.connect(transport);
     const analysisName = `gauntlet-${input.name.toLowerCase()}-${suffix}`;
-    const buildResult = await runMcpWorkspaceBuild(client, input, analysisName, aiEnrichment);
+    const buildResult = await runMcpWorkspaceBuild(client, input, analysisName, interpreting);
     if (!buildResult.graph || !buildResult.analysisId) {
       return {
         consumerResult: {
@@ -416,7 +416,7 @@ async function runMcpWorkspacePipelineInput(
           status: 'fail',
           error: buildResult.error || 'MCP workspace generation did not produce a saved graph.',
           generated_via_mcp: false,
-          ai_enrichment: aiEnrichment,
+          interpreted_by: interpreting,
         },
       };
     }
@@ -429,7 +429,7 @@ async function runMcpWorkspacePipelineInput(
     await client.close().catch(() => undefined);
     return {
       system,
-      consumerResult: await runMcpConsumerCheckFreshClient(system, buildResult.analysisId, true, aiEnrichment),
+      consumerResult: await runMcpConsumerCheckFreshClient(system, buildResult.analysisId, true, interpreting),
     };
   } catch (error) {
     const message = [
@@ -437,7 +437,7 @@ async function runMcpWorkspacePipelineInput(
       stderrChunks.join('').trim(),
     ].filter(Boolean).join('\n');
     return {
-      consumerResult: { system: input.name, status: 'fail', error: message, generated_via_mcp: false, ai_enrichment: aiEnrichment },
+      consumerResult: { system: input.name, status: 'fail', error: message, generated_via_mcp: false, interpreted_by: interpreting },
     };
   } finally {
     await client.close().catch(() => undefined);
@@ -448,7 +448,7 @@ async function runMcpConsumerCheckFreshClient(
   system: SystemReport,
   analysisId: string,
   generatedViaMcp: boolean,
-  aiEnrichment: boolean,
+  interpreting: boolean,
 ): Promise<McpConsumerResult> {
   const transport = new StdioClientTransport({
     command: process.execPath,
@@ -458,7 +458,7 @@ async function runMcpConsumerCheckFreshClient(
     env: {
       ...process.env,
       KLAURO_TOOL_PROFILE: 'full',
-      KLAURO_WORKSPACE_AI_TIMEOUT_MS: aiEnrichment
+      KLAURO_WORKSPACE_AI_TIMEOUT_MS: interpreting
         ? (process.env.KLAURO_WORKSPACE_AI_TIMEOUT_MS || '120000')
         : (process.env.KLAURO_WORKSPACE_AI_TIMEOUT_MS || '15000'),
     } as Record<string, string>,
@@ -468,7 +468,7 @@ async function runMcpConsumerCheckFreshClient(
   transport.stderr?.on('data', chunk => stderrChunks.push(String(chunk)));
   try {
     await client.connect(transport);
-    return await runMcpConsumerCheck(client, system, analysisId, generatedViaMcp, aiEnrichment);
+    return await runMcpConsumerCheck(client, system, analysisId, generatedViaMcp, interpreting);
   } catch (error) {
     const message = [
       error instanceof Error ? error.message : String(error),
@@ -478,7 +478,7 @@ async function runMcpConsumerCheckFreshClient(
       system: system.name,
       status: 'fail',
       generated_via_mcp: generatedViaMcp,
-      ai_enrichment: aiEnrichment,
+      interpreted_by: interpreting,
       error: message,
     };
   } finally {
@@ -490,15 +490,15 @@ async function runMcpWorkspaceBuild(
   client: Client,
   input: SystemInput,
   analysisName: string,
-  aiEnrichment: boolean
+  interpreting: boolean
 ): Promise<{ analysisId?: string; graph?: CrossCodebaseSystemGraph; error?: string }> {
   try {
     const aiTimeout = Number(process.env.KLAURO_WORKSPACE_GAUNTLET_AI_TIMEOUT_MS || process.env.KLAURO_WORKSPACE_AI_TIMEOUT_MS || 900_000);
-    const timeout = aiEnrichment ? Math.max(360_000, aiTimeout) : 120_000;
+    const timeout = interpreting ? Math.max(360_000, aiTimeout) : 120_000;
     const payload = await callMcpTool(client, 'run_workspace_analysis', {
       name: analysisName,
       paths: input.paths,
-      ai_enrichment: aiEnrichment,
+      interpreted_by: interpreting,
     }, { timeout });
     const analysisId = String((payload as any)?.saved?.id || analysisName);
     const graph = await loadCrossCodebaseSystemGraph(analysisId);
@@ -511,7 +511,7 @@ async function runMcpWorkspaceBuild(
   }
 }
 
-async function runMcpConsumerCheck(client: Client, system: SystemReport, analysisName: string, generatedViaMcp: boolean, aiEnrichment: boolean): Promise<McpConsumerResult> {
+async function runMcpConsumerCheck(client: Client, system: SystemReport, analysisName: string, generatedViaMcp: boolean, interpreting: boolean): Promise<McpConsumerResult> {
   try {
     const resolvedPayload = await callMcpTool(client, 'resolve_workspace_analysis', {
       paths: system.paths,
@@ -583,8 +583,8 @@ async function runMcpConsumerCheck(client: Client, system: SystemReport, analysi
         next_mcp_calls: (((context as any)?.agent_guidance?.next_mcp_calls || []) as Array<Record<string, unknown>>).slice(0, 4),
       },
       generated_via_mcp: generatedViaMcp,
-      ai_enrichment: aiEnrichment,
-      ai_provider: savedGraph?.ai_enrichment || system.graph.ai_enrichment,
+      interpreted_by: interpreting,
+      ai_provider: savedGraph?.interpreted_by || system.graph.interpreted_by,
       narrative_source: system.graph.workspace_narrative?.source,
       semantic_quality: workspacePrimarySemanticAiCoverage(system.graph),
       semantic_preview: workspaceSemanticPreview(savedGraph || system.graph),
@@ -600,7 +600,7 @@ async function runMcpConsumerCheck(client: Client, system: SystemReport, analysi
       system: system.name,
       status: 'fail',
       generated_via_mcp: generatedViaMcp,
-      ai_enrichment: aiEnrichment,
+      interpreted_by: interpreting,
       error: error instanceof Error ? error.message : String(error),
     };
   }
@@ -617,7 +617,7 @@ async function runMcpExcludeGenerationCheck(client: Client, system: SystemReport
       workspace_root: workspaceRoot,
       paths: system.paths,
       exclude: [`${excludedName}/**`],
-      ai_enrichment: false,
+      interpreted_by: false,
     }, { timeout: 120_000 });
     const skippedPaths = ((payload as any)?.skipped_inputs || []).map((input: any) => String(input.path));
     const includedCodebases = Number((payload as any)?.summary?.codebase_count || 0);
@@ -974,7 +974,7 @@ function parseArgs(argv: string[]) {
     else if (arg === '--include-graph') parsed.includeGraph = true;
     else if (arg === '--fresh') parsed.fresh = true;
     else if (arg === '--no-mcp-consumer') parsed.mcpConsumer = false;
-    else if (arg === '--with-ai' || arg === '--ai-enrichment') parsed.withAi = true;
+    else if (arg === '--with-ai' || arg === '--comprehension') parsed.withAi = true;
     else if (arg === '--require-links') parsed.requireLinks = true;
     else if (arg === '--help' || arg === '-h') {
       process.stdout.write(formatUsage());
@@ -999,7 +999,7 @@ function formatUsage(): string {
     '  --include-graph         Include full workspace graphs in the report.',
     '  --fresh                 Re-analyze target repos before building workspace graphs.',
     '  --no-mcp-consumer       Use internal graph builder only; skip MCP consumer validation.',
-    '  --with-ai               Enable AI enrichment checks when provider config is available.',
+    '  --with-ai               Enable interpretation checks when provider config is available.',
     '  --require-links         Require at least one resolved cross-repository link.',
     '  -h, --help              Show this help.',
     '',
@@ -1157,8 +1157,8 @@ function workspaceSemanticPreview(graph: CrossCodebaseSystemGraph | undefined): 
   return {
     narrative: {
       source: graph.workspace_narrative?.source,
-      ai_provider: graph.workspace_narrative?.ai_provider || graph.ai_enrichment?.provider,
-      ai_model: graph.workspace_narrative?.ai_model || graph.ai_enrichment?.model,
+      ai_provider: graph.workspace_narrative?.ai_provider || graph.interpreted_by?.provider,
+      ai_model: graph.workspace_narrative?.ai_model || graph.interpreted_by?.model,
       product_value_summary: graph.workspace_narrative?.product_value_summary,
       description: graph.workspace_narrative?.description,
       key_capabilities: graph.workspace_narrative?.key_capabilities?.slice(0, 8),

@@ -343,7 +343,7 @@ test('stampRepoFactsFromLastKnownOrMarkAbsent: does not overwrite an already-sta
 /**
  * TASK #143: the beta-blocking defect measured on a real 4,810-file/85,652-
  * node client repo was `status: 'degraded'` with 2 of 12 capabilities
- * shipped without AI enrichment — an honest-but-terminal-sounding label that
+ * shipped without interpretation — an honest-but-terminal-sounding label that
  * read identically to a fully-failed AI comprehension pass. These cases must
  * stay distinguishable: only a genuine AI-pass failure (aiDegraded) may ever
  * produce comprehensionFailed (the only input the `/analysis` route's status

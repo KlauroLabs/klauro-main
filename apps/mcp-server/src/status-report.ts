@@ -126,7 +126,7 @@ export function buildAnalysisStatusLine(input: {
 
   if (hosted?.status === 'queryable') {
     const system = hosted.summary?.name || local.system || 'analyzed';
-    return `Analysis: ${system} · structure ready on server, AI enrichment still running · queryable now`;
+    return `Analysis: ${system} · structure ready on server, interpretation still running · queryable now`;
   }
 
 

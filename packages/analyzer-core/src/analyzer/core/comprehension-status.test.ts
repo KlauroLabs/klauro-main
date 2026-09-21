@@ -42,7 +42,7 @@ test('accepted manual and reused narrative origins remain valid; deterministic o
 
 test('canonical settlement records self-analysis narrative failure without deleting capabilities or failing other phases', () => {
   const cas = {
-    ai_enrichment: 'synchronous',
+    layers_ready: { layers: [{ layer: 'L5', name: 'comprehension', status: 'ready' }] } as never,
     capabilities: [{ id: 'cap', name: 'Understand what a codebase actually built' }],
     enhanced_system_purpose: purpose({ ai_phase_status: 'complete', inferred_description: '',
       description_generation: { status: 'ai_rejected', attempted: true, reason: 'omits-core-capability' } }),
@@ -69,7 +69,7 @@ test('canonical settlement records self-analysis narrative failure without delet
 });
 
 test('pending work is not rejected before it has had a chance to generate a narrative', () => {
-  const cas = { ai_enrichment: 'pending', enhanced_system_purpose: purpose({ inferred_description: '' }) } as CASOutput;
+  const cas = { layers_ready: { layers: [{ layer: 'L5', name: 'comprehension', status: 'pending' }] }, enhanced_system_purpose: purpose({ inferred_description: '' }) } as unknown as CASOutput;
   applyComprehensionNarrativeStatus(cas);
   assert.equal(cas.analysis_errors, undefined);
 });

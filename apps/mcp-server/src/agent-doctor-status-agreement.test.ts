@@ -149,7 +149,7 @@ test('a CAS still populating (layers_ready.complete=false) is reported as incomp
         layers: [
           { layer: 'L0', name: 'inventory', status: 'ready', fields: ['l0_index'] },
           { layer: 'L1', name: 'structure', status: 'ready', fields: ['nodes', 'edges'] },
-          { layer: 'L5', name: 'ai-enrichment', status: 'pending', fields: ['descriptions'] },
+          { layer: 'L5', name: 'comprehension', status: 'pending', fields: ['descriptions'] },
         ],
         complete: false,
         generated_at: analyzedAt,

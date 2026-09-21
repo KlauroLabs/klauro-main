@@ -5,7 +5,7 @@ import {
   __setMemoryGuardOverrideForTests,
   __withLanePermitForTests,
   __getLanePermitsInUseForTests,
-  __withAiEnrichmentLanePermitForTests,
+  __withInterpretationLanePermitForTests,
   __getAiEnrichmentLanePermitsInUseForTests,
 } from './analyzer';
 
@@ -213,24 +213,24 @@ test('a crashing job releases its permit and does not block the next job', async
   });
 });
 
-// --- task #118: deterministic pool and AI-enrichment pool must be independent ---
+// --- task #118: deterministic pool and interpretation pool must be independent ---
 //
 // Regression coverage for the measured, blackbox production symptom: a small
 // project's deterministic analysis was observed queued for ~40s behind
-// another project's slow AI-enrichment tail, even though the deterministic
+// another project's slow interpretation tail, even though the deterministic
 // pool had a free slot in spirit (the peer project was already past its own
 // deterministic phase). Root cause: both phases drew permits from the SAME
-// single-slot semaphore. Fix: withAiEnrichmentLanePermit draws from an
-// INDEPENDENT pool (KLAURO_AI_ENRICHMENT_CONCURRENCY), so it can never
+// single-slot semaphore. Fix: withInterpretationLanePermit draws from an
+// INDEPENDENT pool (KLAURO_INTERPRETATION_CONCURRENCY), so it can never
 // occupy — or wait behind — a deterministic-analysis slot.
-test('an AI-enrichment permit never blocks or is blocked by the deterministic pool', async () => {
+test('an interpretation permit never blocks or is blocked by the deterministic pool', async () => {
   __resetAnalysisLanesForTests();
-  await withEnv({ KLAURO_ANALYSIS_CONCURRENCY: '1', KLAURO_AI_ENRICHMENT_CONCURRENCY: '1' }, async () => {
+  await withEnv({ KLAURO_ANALYSIS_CONCURRENCY: '1', KLAURO_INTERPRETATION_CONCURRENCY: '1' }, async () => {
     let deterministicStartedWhileAiWasRunning = false;
 
-    // Simulate a peer project's long AI-enrichment tail holding the AI pool.
+    // Simulate a peer project's long interpretation tail holding the AI pool.
     let resolveAi!: () => void;
-    const aiJob = __withAiEnrichmentLanePermitForTests(
+    const aiJob = __withInterpretationLanePermitForTests(
       () => new Promise<void>((resolve) => { resolveAi = resolve; }),
     );
     await sleep(5); // let the AI job actually acquire its permit first
@@ -245,7 +245,7 @@ test('an AI-enrichment permit never blocks or is blocked by the deterministic po
     });
 
     assert.equal(await deterministicJob, 'deterministic-ok');
-    assert.ok(Date.now() - startedAt < 200, 'deterministic work must not wait on an in-flight AI-enrichment permit');
+    assert.ok(Date.now() - startedAt < 200, 'deterministic work must not wait on an in-flight interpretation permit');
     assert.equal(deterministicStartedWhileAiWasRunning, true, 'deterministic job ran concurrently with the still-running AI job, proving the pools are independent');
 
     resolveAi();
@@ -253,9 +253,9 @@ test('an AI-enrichment permit never blocks or is blocked by the deterministic po
   });
 });
 
-test('a queued deterministic job never gets diverted onto the AI-enrichment pool, and vice versa', async () => {
+test('a queued deterministic job never gets diverted onto the interpretation pool, and vice versa', async () => {
   __resetAnalysisLanesForTests();
-  await withEnv({ KLAURO_ANALYSIS_CONCURRENCY: '1', KLAURO_AI_ENRICHMENT_CONCURRENCY: '2' }, async () => {
+  await withEnv({ KLAURO_ANALYSIS_CONCURRENCY: '1', KLAURO_INTERPRETATION_CONCURRENCY: '2' }, async () => {
     assert.equal(__getLanePermitsInUseForTests(), 0);
     assert.equal(__getAiEnrichmentLanePermitsInUseForTests(), 0);
 
@@ -264,7 +264,7 @@ test('a queued deterministic job never gets diverted onto the AI-enrichment pool
       assert.equal(__getAiEnrichmentLanePermitsInUseForTests(), 0, 'a deterministic permit must never register on the AI pool');
     });
 
-    await __withAiEnrichmentLanePermitForTests(async () => {
+    await __withInterpretationLanePermitForTests(async () => {
       assert.equal(__getAiEnrichmentLanePermitsInUseForTests(), 1);
       assert.equal(__getLanePermitsInUseForTests(), 0, 'an AI permit must never register on the deterministic pool');
     });

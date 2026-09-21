@@ -95,7 +95,7 @@ describe('per-phase timing + timings block (instrumentation only)', () => {
     expect(output.timings!.total_ms).toBeGreaterThanOrEqual(0);
     expect(output.timings!.stages).toBeDefined();
     expect(output.timings!.cpu_stages).toBeDefined();
-    for (const stage of ['scan', 'parse', 'graph', 'decorators', 'ai_enrichment', 'save']) {
+    for (const stage of ['scan', 'parse', 'graph', 'decorators', 'comprehension', 'save']) {
       expect(typeof output.timings!.stages![stage]).toBe('number');
       expect(typeof output.timings!.cpu_stages![stage]).toBe('number');
       expect(output.timings!.cpu_stages![stage]).toBeGreaterThanOrEqual(0);

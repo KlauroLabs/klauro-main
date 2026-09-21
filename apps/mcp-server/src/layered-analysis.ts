@@ -133,7 +133,7 @@ const LAYER_DEFINITIONS: Array<{ layer: CASLayerStatus['layer']; name: string; f
   { layer: 'L2', name: 'Call graph / edges', fields: ['edges', 'method_calls', 'call_chains'] },
   { layer: 'L3', name: 'Entities, lineage, database schema', fields: ['entities', 'data_lineage', 'database_schema'] },
   { layer: 'L4', name: 'Canonical comprehension', fields: ['capabilities', 'flows', 'steps', 'entities'] },
-  { layer: 'L5', name: 'AI enrichment', fields: ['enhanced_system_purpose', 'system_purpose.description_source'] },
+  { layer: 'L5', name: 'interpretation', fields: ['enhanced_system_purpose', 'system_purpose.description_source'] },
 ];
 
 export function buildLayersReady(
@@ -253,36 +253,21 @@ export function buildCompletedAnalysisLayersReady(output: CASOutput): CASLayersR
   const l4 = extractionError
     ? structural
     : catalogError
-      ? output.ai_enrichment === 'pending'
-        ? { status: 'pending' as const }
-        : { status: 'error' as const, completedAt: generatedAt, error: catalogError }
+      ? { status: 'error' as const, completedAt: generatedAt, error: catalogError }
       : ready;
   const narrativeError = comprehensionNarrativeFailure(output.enhanced_system_purpose);
+  const comprehensionError = extractionError
+    ? undefined
+    : catalogError
+      || narrativeError
+      || (output.enhanced_system_purpose?.ai_phase_status === 'degraded'
+        ? 'AI comprehension completed with rejected required output'
+        : undefined);
   const l5 = extractionError
     ? structural
-    : output.ai_enrichment === 'pending'
-    ? { status: 'pending' as const }
-    : output.ai_enrichment === 'error'
-      ? {
-          status: 'error' as const,
-          completedAt: generatedAt,
-          error: output.ai_enrichment_error
-            ? `AI comprehension pass failed (comprehension is AI-only, no deterministic fallback): ${output.ai_enrichment_error}`
-            : 'AI comprehension pass failed; comprehension is AI-only (no deterministic fallback)',
-        }
-      : output.ai_enrichment === 'disabled'
-        ? {
-            status: 'error' as const,
-            completedAt: generatedAt,
-            error: 'AI comprehension is disabled; required product narrative and capability comprehension were not generated',
-          }
-        : catalogError || narrativeError || output.enhanced_system_purpose?.ai_phase_status === 'degraded'
-          ? {
-              status: 'error' as const,
-              completedAt: generatedAt,
-              error: catalogError || narrativeError || 'AI comprehension completed with rejected required output',
-            }
-          : ready;
+    : comprehensionError
+      ? { status: 'error' as const, completedAt: generatedAt, error: comprehensionError }
+      : ready;
 
   return buildLayersReady({
     L0: structural,

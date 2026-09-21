@@ -5,7 +5,7 @@ import { casSectionForField } from './cas-sections';
 
 export const WORKSPACE_MEMBER_REFERENCE_FIELDS = [
   'id', 'parent_id', 'label', 'composition_mode', 'cas_version', 'analysis_id', 'analysis_timestamp',
-  'derived_fingerprint', 'ai_enrichment', 'layers_ready', 'member_reference', 'system', 'nodes', 'edges', 'dependencies',
+  'derived_fingerprint', 'layers_ready', 'member_reference', 'system', 'nodes', 'edges', 'dependencies',
   'children', 'capabilities', 'entities', 'analyzer_contributions',
 ] as const;
 

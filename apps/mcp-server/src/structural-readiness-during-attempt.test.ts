@@ -2,7 +2,7 @@
  * Latency finding (2026-08-10 latency-lever session): GET
  * /api/projects/:id/analysis-status and GET /api/projects/:id/analysis both
  * report bare 'populating' for the ENTIRE duration of an in-progress attempt
- * — including the L5 (AI enrichment) tail, which a live quiet-box
+ * — including the L5 (interpretation) tail, which a live quiet-box
  * measurement on the 418-file/11,890-node Go benchmark repo showed taking
  * ~63s of an ~88s total, while L0-L4 (the deterministic core-graph/
  * agent-context ladder) land and are durably saved around the ~20s mark

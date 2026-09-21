@@ -5,7 +5,7 @@ import { acquireCurrentSegmentedAnalysisLease, loadAnalysisSections, resolveAnal
 import { CAS_SECTION_NAMES } from './cas-sections';
 import type { CASMemberReference } from '../../../packages/analyzer-core/src/types/cas.types';
 import { projectLayersReady } from './workspace-member-reference';
-import { enrichWorkspaceAnalysisNarrative, workspaceAiEnrichmentEnabled, type CrossCodebaseInput, type CrossCodebaseSystemGraph } from './cross-codebase-analysis';
+import { interpretWorkspaceNarrative, workspaceInterpretationEnabled, type CrossCodebaseInput, type CrossCodebaseSystemGraph } from './cross-codebase-analysis';
 import { buildIncrementalCrossCodebaseSystemGraph } from './incremental-workspace-analysis';
 import type { AccountStore } from './account-store';
 import { waitForForegroundAnalysisIdle } from './foreground-analysis';
@@ -24,7 +24,7 @@ export const WORKSPACE_MEMBER_FIELDS = [
   'external_services', 'route_table', 'runtime_static_links', 'communication_seams', 'database_schema', 'data_lineage',
   'change_risks', 'temporal_stability', 'analyzer_contributions', 'analysis_errors', 'types', 'metadata',
   'id', 'version', 'generated_at', 'analysis_id', 'analysis_timestamp', 'cas_version', 'derived_fingerprint',
-  'ai_enrichment', 'layers_ready', 'flows', 'nodes', 'edges',
+  'layers_ready', 'flows', 'nodes', 'edges',
 ] as const;
 
 export async function loadWorkspaceMemberProjection(memberWorkspace: string, projectId: string): Promise<Partial<CASOutput> | null> {
@@ -412,14 +412,14 @@ export class AccountWorkspaceAnalysisScheduler {
 
     if (!memberComprehensionSettled) return;
 
-    if (!workspaceAiEnrichmentEnabled()) {
+    if (!workspaceInterpretationEnabled()) {
 
 
 
 
       record.enrichment = {
         status: 'skipped',
-        reason: 'Workspace AI enrichment is disabled by environment; no workspace narrative was generated.',
+        reason: 'Workspace interpretation is disabled by environment; no workspace narrative was generated.',
         started_at: record.enrichment?.started_at,
         completed_at: new Date().toISOString(),
       };
@@ -433,7 +433,7 @@ export class AccountWorkspaceAnalysisScheduler {
 
 
     try {
-      record.graph = await enrichWorkspaceAnalysisNarrative(graph);
+      record.graph = await interpretWorkspaceNarrative(graph);
       const requiredDescriptionsReady =
         record.graph.workspace_domains.slice(0, 6).every(item => item.description_source === 'ai' && Boolean(item.description?.trim())) &&
         record.graph.workspace_capabilities.slice(0, 8).every(item => item.description_source === 'ai' && Boolean(item.description?.trim()));
@@ -486,7 +486,6 @@ function resolveDebounceMs(): number {
 }
 
 export function isCasComprehensionSettled(cas: any): boolean {
-  if (cas?.ai_enrichment === 'pending') return false;
   if (!cas?.layers_ready?.layers?.length) return false;
   const layers = Array.isArray(cas.layers_ready.layers) ? cas.layers_ready.layers : [];
   const l5 = layers.find((layer: any) => layer?.layer === 'L5');
@@ -503,7 +502,6 @@ export function workspaceInputSignature(inputs: CrossCodebaseInput[], memberIds:
       analysis_id: cas?.analysis_id,
       analysis_timestamp: cas?.analysis_timestamp,
       derived_fingerprint: cas?.derived_fingerprint,
-      ai_enrichment: cas?.ai_enrichment,
       layers: Array.isArray(cas?.layers_ready?.layers)
         ? cas.layers_ready.layers.map((layer: any) => [layer.layer, layer.status, layer.completed_at || '', layer.error || ''])
         : [],

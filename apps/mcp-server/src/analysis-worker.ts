@@ -13,7 +13,7 @@ import { AnalysisRunLog } from '../../../packages/analyzer-core/src/analyzer/cor
 import { applyAnalysisFocus, type AnalysisFocus } from './analysis-focus';
 import { saveAnalysis, waitForPendingSegmentedWrites } from './storage';
 import type { RepoFacts } from './remote-source';
-import { applyLayeredAnalysisMetadata, resolveLayeredEnrichmentPhase } from './layered-analysis-metadata';
+import { applyLayeredAnalysisMetadata } from './layered-analysis-metadata';
 
 interface WorkerAnalyzeRequest {
   type: 'analyze';
@@ -147,10 +147,10 @@ async function executeLayeredAnalysis(request: WorkerLayeredRequest): Promise<La
     process.kill(process.pid, 'SIGKILL');
   }
 
-  let deferred: Awaited<typeof layered.rest>;
+  let analyzed: Awaited<typeof layered.rest>;
   try {
-    deferred = await layered.rest;
-    applyLayeredAnalysisMetadata(deferred.output, request);
+    analyzed = await layered.rest;
+    applyLayeredAnalysisMetadata(analyzed, request);
     restDoneAt = Date.now();
     sendPhase(request.id, 'rest', 'succeeded');
   } catch (error) {
@@ -159,31 +159,19 @@ async function executeLayeredAnalysis(request: WorkerLayeredRequest): Promise<La
   }
 
   if (process.env.KLAURO_TEST_ANALYSIS_WORKER_CRASH === 'sigkill-after-rest') {
-
     process.kill(process.pid, 'SIGKILL');
   }
 
-  const enrichmentPersistsOutput = deferred.output.ai_enrichment === 'pending';
-  await deferred.enrichment.catch(() => {
-
-
-
-
-  });
-  if ((request.repoFacts || request.repoFactsUnavailable) && !enrichmentPersistsOutput) {
-    await saveAnalysis(request.projectPath, deferred.output, 'main', { deferSegmentedWrite: true });
+  if (request.repoFacts || request.repoFactsUnavailable) {
+    await saveAnalysis(request.projectPath, analyzed, 'main', { deferSegmentedWrite: true });
   }
   await waitForPendingSegmentedWrites();
-  const enrichmentPhase = resolveLayeredEnrichmentPhase(deferred.output);
-  sendPhase(request.id, 'enrichment', enrichmentPhase.status, enrichmentPhase.error);
 
-  const enrichmentDoneAt = Date.now();
   console.error(
     `[Klauro] worker segments: l0=${l0DoneAt - workerStartedAt}ms ` +
-    `rest=${restDoneAt - l0DoneAt}ms enrichment=${enrichmentDoneAt - restDoneAt}ms ` +
-    `total=${enrichmentDoneAt - workerStartedAt}ms`,
+    `rest=${restDoneAt - l0DoneAt}ms total=${restDoneAt - workerStartedAt}ms`,
   );
-  return summarizeLayeredAnalysis(request.projectPath, deferred.output);
+  return summarizeLayeredAnalysis(request.projectPath, analyzed);
 }
 
 let jobChain: Promise<unknown> = Promise.resolve();

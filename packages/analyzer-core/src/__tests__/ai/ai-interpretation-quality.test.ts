@@ -997,7 +997,7 @@ describe('element description grounding parity with the system validator', () =>
   });
 });
 
-describe('AI enrichment completeness is independent of aggregate elapsed time', () => {
+describe('interpretation completeness is independent of aggregate elapsed time', () => {
   it('attempts every required batch after the obsolete aggregate budget has elapsed', async () => {
     const envKeys = [
       'OPENAI_API_KEY', 'KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS',

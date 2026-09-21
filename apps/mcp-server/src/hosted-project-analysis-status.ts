@@ -16,11 +16,11 @@ export function buildHostedProjectAnalysisStatus(
   const pending = layers.some(layer => layer.status === 'pending');
   const errors = layers.filter(layer => layer.status === 'error');
   const structuralErrors = errors.filter(layer => isStructuralAnalysisLayer(layer.layer));
-  const aiDegraded = cas.ai_enrichment === 'error' || (errors.some(layer => layer.layer === 'L4' || layer.layer === 'L5') && !pending);
+  const aiDegraded = errors.some(layer => layer.layer === 'L4' || layer.layer === 'L5') && !pending;
   const naming = cas.enhanced_system_purpose?.capability_naming_coverage;
   const nameDegradations = cas.enhanced_system_purpose?.capability_name_degradations || [];
   const descriptionDegradations = cas.enhanced_system_purpose?.capability_description_degradations || [];
-  const comprehensionAttempted = ['ready', 'synchronous', 'error'].includes(cas.ai_enrichment || '');
+  const comprehensionAttempted = layers.some(layer => (layer.layer === 'L4' || layer.layer === 'L5') && layer.status !== 'not_loaded');
   const namingTotal = naming?.total || 0;
   const namingAuthored = naming?.authored || 0;
   const comprehensionFailed = aiDegraded;
@@ -51,8 +51,7 @@ export function buildHostedProjectAnalysisStatus(
       failed_layers: structuralErrors.map(layer => layer.layer),
     } : {}),
     ...(comprehensionFailed ? {
-      ai_enrichment: 'error',
-      ai_enrichment_error: cas.ai_enrichment_error || errors.find(layer => layer.layer === 'L5' && layer.error)?.error || 'AI comprehension pass failed; comprehension is AI-only (no deterministic fallback)',
+      comprehension_error: errors.find(layer => layer.layer === 'L5' && layer.error)?.error || 'AI comprehension pass failed; comprehension is AI-only (no deterministic fallback)',
     } : {}),
     ...(comprehensionFailed || comprehensionPartial ? {
       comprehension: {
@@ -65,7 +64,7 @@ export function buildHostedProjectAnalysisStatus(
         detail: comprehensionFailed
           ? 'The AI comprehension pass failed; capability names and descriptions are un-enriched deterministic facts.'
           : unenriched.length > 0
-            ? `${unenriched.length} of ${naming?.total ?? '?'} capabilities fell short of full AI enrichment (${unenriched.map(entry => `${entry.name}: ${entry.missing}`).join('; ')}); those fields carry deterministic evidence text, not authored comprehension. The analysis is otherwise complete and fully queryable.`
+            ? `${unenriched.length} of ${naming?.total ?? '?'} capabilities fell short of full interpretation (${unenriched.map(entry => `${entry.name}: ${entry.missing}`).join('; ')}); those fields carry deterministic evidence text, not authored comprehension. The analysis is otherwise complete and fully queryable.`
             : 'Part of the capability catalog could not be AI-enriched; those entries carry deterministic evidence text, not authored comprehension.',
       },
     } : {}),

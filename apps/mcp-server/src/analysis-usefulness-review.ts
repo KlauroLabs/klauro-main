@@ -760,7 +760,7 @@ function scoreLayeredDescriptionPolicy(cas: CASOutput): UsefulnessGate {
     catalogCoverage?.status === 'accepted' &&
     (catalogCoverage.evidence_families || 0) === 0;
   const phases = cas.analysis_phases || [];
-  const aiPhase = phases.find((phase: any) => phase.id === 'ai-enrichment' || phase.purpose === 'ai-enrichment');
+  const aiPhase = phases.find((phase: any) => phase.id === 'comprehension' || phase.purpose === 'comprehension');
   const details: string[] = [];
   let score = 0;
 

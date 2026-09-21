@@ -936,7 +936,7 @@ export interface CrossCodebaseSystemGraph {
   data_flow_paths: SystemDataFlowPath[];
   unmatched_interfaces: UnmatchedSystemInterface[];
   workspace_narrative: WorkspaceNarrative;
-  ai_enrichment: WorkspaceAiProviderMetadata;
+  interpreted_by: WorkspaceAiProviderMetadata;
   detail_views: WorkspaceDetailViews;
   validation: WorkspaceValidation;
   quality_flags: WorkspaceQualityFlag[];
@@ -1454,7 +1454,7 @@ export function buildCrossCodebaseSystemGraph(
     data_flow_paths: dataFlowPaths,
     unmatched_interfaces: unmatchedInterfaces,
     workspace_narrative: workspaceNarrative,
-    ai_enrichment: workspaceAiProviderMetadata(),
+    interpreted_by: workspaceAiProviderMetadata(),
     detail_views: detailViews,
     validation,
     quality_flags: qualityFlags,
@@ -1722,7 +1722,7 @@ function workspaceAiProviderMetadata(): WorkspaceAiProviderMetadata {
 
 function applyWorkspaceAiProviderMetadata(graph: WorkspaceAnalysisGraph): void {
   const metadata = workspaceAiProviderMetadata();
-  graph.ai_enrichment = metadata;
+  graph.interpreted_by = metadata;
   graph.workspace_narrative = {
     ...graph.workspace_narrative,
     ai_provider: metadata.provider,
@@ -1748,18 +1748,18 @@ function normalizeWorkspaceNextMcpCalls(graph: CrossCodebaseSystemGraph): void {
   }
 }
 
-export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisGraph): Promise<WorkspaceAnalysisGraph> {
+export async function interpretWorkspaceNarrative(graph: WorkspaceAnalysisGraph): Promise<WorkspaceAnalysisGraph> {
 
-  if (!workspaceAiEnrichmentEnabled()) {
-    throw new Error('Klauro workspace comprehension requires AI enrichment, but it is disabled by environment. Workspace narrative/domains/capabilities are AI-only; there is no deterministic fallback (see docs/cas/DETERMINISM-BOUNDARY.md).');
+  if (!workspaceInterpretationEnabled()) {
+    throw new Error('Klauro workspace comprehension requires interpretation, but it is disabled by environment. Workspace narrative/domains/capabilities are AI-only; there is no deterministic fallback (see docs/cas/DETERMINISM-BOUNDARY.md).');
   }
 
   try {
     await configureWorkspaceAiProviderDefaults();
     applyWorkspaceAiProviderMetadata(graph);
-    const expectedProvider = graph.ai_enrichment.expected_provider;
-    if (expectedProvider && graph.ai_enrichment.provider !== expectedProvider) {
-      throw new Error(`Expected workspace AI provider "${expectedProvider}" but configured provider is "${graph.ai_enrichment.provider}"`);
+    const expectedProvider = graph.interpreted_by.expected_provider;
+    if (expectedProvider && graph.interpreted_by.provider !== expectedProvider) {
+      throw new Error(`Expected workspace AI provider "${expectedProvider}" but configured provider is "${graph.interpreted_by.provider}"`);
     }
 
     graph.workspace_capabilities = await aiMergeWorkspaceCapabilities(graph);
@@ -1777,7 +1777,7 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
       realign(graph.workspace_narrative);
     }
     if (useSmallWorkspaceAiDefaultPasses()) {
-      return await enrichWorkspaceAnalysisNarrativeWithSmallPasses(graph);
+      return await interpretWorkspaceNarrativeWithSmallPasses(graph);
     }
     const raw = await withWorkspaceAiTimeout(generateWorkspaceAiText(workspaceNarrativePromptContext(graph)));
     assertRealWorkspaceAiAttempt(raw);
@@ -1803,9 +1803,9 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
     graph.workspace_narrative = narrativeGate.accepted
       ? {
           ...graph.workspace_narrative,
-          ai_provider: graph.ai_enrichment.provider,
-          ai_model: graph.ai_enrichment.model,
-          ai_structured_model: graph.ai_enrichment.structured_model,
+          ai_provider: graph.interpreted_by.provider,
+          ai_model: graph.interpreted_by.model,
+          ai_structured_model: graph.interpreted_by.structured_model,
           source: 'ai',
           generated_at: now,
           confidence: Math.max(graph.workspace_narrative.confidence, 0.76),
@@ -1821,20 +1821,20 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
         }
       : {
           ...graph.workspace_narrative,
-          ai_provider: graph.ai_enrichment.provider,
-          ai_model: graph.ai_enrichment.model,
-          ai_structured_model: graph.ai_enrichment.structured_model,
+          ai_provider: graph.interpreted_by.provider,
+          ai_model: graph.interpreted_by.model,
+          ai_structured_model: graph.interpreted_by.structured_model,
           source: 'ai-required-degraded',
           generated_at: now,
-          degraded_reason: `Workspace AI enrichment was rejected by the workspace narrative quality gate: ${narrativeGate.reason}`,
+          degraded_reason: `Workspace interpretation was rejected by the workspace narrative quality gate: ${narrativeGate.reason}`,
         };
 
     recordSemanticDecision({
       ts: Date.now(),
       decision_type: 'workspace_narrative',
       prompt_version: 'workspace_narrative.v1',
-      provider: graph.ai_enrichment.provider,
-      model: graph.ai_enrichment.model,
+      provider: graph.interpreted_by.provider,
+      model: graph.interpreted_by.model,
       input_evidence_digest: {
         codebases: graph.codebases.length,
         workspace_capabilities: graph.workspace_capabilities.length,
@@ -1888,8 +1888,8 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
         ts: Date.now(),
         decision_type: 'workspace_item_descriptions',
         prompt_version: 'workspace_item_descriptions.v1',
-        provider: graph.ai_enrichment.provider,
-        model: graph.ai_enrichment.model,
+        provider: graph.interpreted_by.provider,
+        model: graph.interpreted_by.model,
         input_evidence_digest: {
           domains: graph.workspace_domains.length,
           capabilities: graph.workspace_capabilities.length,
@@ -1921,7 +1921,7 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
       throw error;
     }
 
-    const fallback = await enrichWorkspaceAnalysisNarrativeWithSmallPasses(graph, error);
+    const fallback = await interpretWorkspaceNarrativeWithSmallPasses(graph, error);
     if (fallback.workspace_narrative.source === 'ai' || !fallback.quality_flags?.some(flag => flag.code === 'capability-descriptions-degraded' || flag.code === 'domain-descriptions-degraded')) {
       return fallback;
     }
@@ -1929,7 +1929,7 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
   }
 }
 
-async function enrichWorkspaceAnalysisNarrativeWithSmallPasses(
+async function interpretWorkspaceNarrativeWithSmallPasses(
   graph: WorkspaceAnalysisGraph,
   initialError?: unknown,
 ): Promise<WorkspaceAnalysisGraph> {
@@ -1987,10 +1987,10 @@ function useSmallWorkspaceAiDefaultPasses(): boolean {
 export function assertRealWorkspaceAiAttempt(raw: string): void {
   const text = String(raw || '').trim();
   if (!text) {
-    throw new Error('Workspace AI enrichment returned an empty response — no usable AI attempt was made (provider misconfigured, out of budget, or empty completion). This is an enrichment error, not a quality-gate rejection.');
+    throw new Error('Workspace interpretation returned an empty response — no usable AI attempt was made (provider misconfigured, out of budget, or empty completion). This is an enrichment error, not a quality-gate rejection.');
   }
   if (/^AI description generation is disabled\b/i.test(text)) {
-    throw new Error('Workspace AI enrichment made no real attempt: the AI service reports description generation is disabled (features.naturalLanguageDescriptions=false). Enable an AI provider and retry; this is an enrichment error, not a quality-gate rejection.');
+    throw new Error('Workspace interpretation made no real attempt: the AI service reports description generation is disabled (features.naturalLanguageDescriptions=false). Enable an AI provider and retry; this is an enrichment error, not a quality-gate rejection.');
   }
 }
 
@@ -2243,7 +2243,7 @@ async function repairRejectedWorkspaceNarrative(
     if (!gate.accepted) {
       return {
         ...graph.workspace_narrative,
-        degraded_reason: `Workspace AI enrichment was rejected by the workspace narrative quality gate: ${gate.reason}`,
+        degraded_reason: `Workspace interpretation was rejected by the workspace narrative quality gate: ${gate.reason}`,
       };
     }
     const metadata = workspaceAiProviderMetadata();
@@ -4048,8 +4048,8 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-export function workspaceAiEnrichmentEnabled(): boolean {
-  return process.env.KLAURO_WORKSPACE_AI_ENRICHMENT !== 'false' &&
+export function workspaceInterpretationEnabled(): boolean {
+  return process.env.KLAURO_WORKSPACE_INTERPRETATION !== 'false' &&
     process.env.KLAURO_AI_INTERPRETATION_ENABLED !== 'false' &&
     process.env.KLAURO_AI_INTERPRETATION !== 'false';
 }
@@ -6468,7 +6468,7 @@ function buildWorkspaceDomains(
       description_source: 'ai-required-degraded' as const,
       ai_required: true as const,
       generation_pass: 'default-summary' as const,
-      degraded_reason: 'Whole-workspace domain descriptions require default AI enrichment from deterministic workspace-level CAS facts.',
+      degraded_reason: 'Whole-workspace domain descriptions require default interpretation from deterministic workspace-level CAS facts.',
     }));
 }
 
@@ -6775,7 +6775,7 @@ function buildWorkspaceCapabilities(
         ai_required: true,
         generation_pass: 'default-summary',
         degraded_reason: repoAiDescriptionReady ? undefined :
-          'Whole-workspace capability descriptions require grounded AI enrichment from deterministic workspace-level CAS facts.',
+          'Whole-workspace capability descriptions require grounded interpretation from deterministic workspace-level CAS facts.',
         semantic_role: semanticRole,
         terminal_score: roundTerminalScore(infrastructureOnly || !compositionMember.terminal ? Math.min(0, terminalSignal.score) : terminalSignal.score),
         terminal_evidence: infrastructureOnly ? mergeStrings(terminalSignal.evidence, ['infrastructure-only-evidence']).slice(0, 10) : terminalSignal.evidence,
@@ -8409,7 +8409,7 @@ function buildWorkspaceQualityFlags(
     flags.push({
       severity: 'warn',
       code: 'workspace-narrative-ai-degraded',
-      message: 'The default workspace description is degraded because AI enrichment did not complete.',
+      message: 'The default workspace description is degraded because interpretation did not complete.',
       evidence: [narrative.degraded_reason || narrative.source],
     });
   }
@@ -9743,7 +9743,7 @@ function buildWorkspaceNarrative(
     ],
     ai_required: true,
     generation_pass: 'default-summary',
-    degraded_reason: 'AI workspace narrative enrichment was not attached to this synchronous workspace builder run. Overall description and primary capabilities are required default AI enrichment; refresh/run the workspace analysis with AI enrichment before customer-facing use.',
+    degraded_reason: 'AI workspace narrative enrichment was not attached to this synchronous workspace builder run. Overall description and primary capabilities are required default interpretation; refresh/run the workspace analysis with interpretation before customer-facing use.',
   };
 }
 

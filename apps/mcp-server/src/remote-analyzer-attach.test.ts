@@ -10,7 +10,7 @@ import { analyzeCodebaseRemotely } from './remote-sync-client';
 import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
 
 // The attach flow runs full analysis rebuilds (AccountWorkspaceAnalysisScheduler
-// -> enrichWorkspaceAnalysisNarrative), which lazily connects the process-wide
+// -> interpretWorkspaceNarrative), which lazily connects the process-wide
 // `aiService` singleton to Redis (packages/analyzer-core/src/ai/ai-cache.ts) the
 // first time it's touched. That connection is a deliberate long-lived resource
 // for a real server process, so the product only tears it down via the

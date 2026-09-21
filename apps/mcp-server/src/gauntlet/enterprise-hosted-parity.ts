@@ -67,8 +67,8 @@ export interface EnterpriseHostedParityReport {
 const VOLATILE_KEYS = new Set([
   'analysis_timestamp', 'analysis_id', 'generated_at', 'completed_at', 'started_at', 'finished_at',
   'duration_ms', 'timings', 'analysis_phases', 'description', 'description_generation',
-  'description_source', 'description_fingerprint', 'ai_enrichment_error', 'last_attempt',
-  'execution_time_ms', 'cache_status', 'ai_enrichment', 'layers_ready', 'analyzer_build',
+  'description_source', 'description_fingerprint', 'last_attempt',
+  'execution_time_ms', 'cache_status', 'layers_ready', 'analyzer_build',
   'parser_fingerprint', 'derived_fingerprint',
 ]);
 

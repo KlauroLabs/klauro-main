@@ -1,7 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { tierStackToCas } from './tier-stack-to-cas';
-import { tierStackRequested } from './index';
 import type { TierStackIndex } from './read-tier-stack';
 
 const INDEX: TierStackIndex = {
@@ -163,14 +162,4 @@ test('a flow keeps the surface it starts from and the records it touches', () =>
 test('a declared package is carried across', () => {
   const cas = tierStackToCas(INDEX);
   assert.deepEqual(cas.dependencies?.packages, [{ name: 'express', version: '', direct: true }]);
-});
-
-test('the tier stack is asked for only when it is asked for', () => {
-  const held = process.env.KLAURO_TIER_STACK;
-  delete process.env.KLAURO_TIER_STACK;
-  assert.equal(tierStackRequested(), false);
-  process.env.KLAURO_TIER_STACK = '1';
-  assert.equal(tierStackRequested(), true);
-  if (held === undefined) delete process.env.KLAURO_TIER_STACK;
-  else process.env.KLAURO_TIER_STACK = held;
 });

@@ -234,10 +234,7 @@ export interface CASOutput extends CASSourceInputCatalog {
 
 
 
-  ai_enrichment?: 'pending' | 'ready' | 'disabled' | 'synchronous' | 'error';
 
-
-  ai_enrichment_error?: string;
 
 
 
@@ -3224,7 +3221,7 @@ export interface CASAnalysisPhase {
   name: string;
   priority: number;
   status: 'complete' | 'partial' | 'failed' | 'skipped' | 'deferred';
-  purpose: 'visualization' | 'agent-development' | 'deep-context' | 'ai-enrichment' | 'runtime';
+  purpose: 'visualization' | 'agent-development' | 'deep-context' | 'comprehension' | 'runtime';
   default_phase: boolean;
   description: string;
   outputs: string[];

@@ -24,7 +24,7 @@ import { listAnalyses } from './storage';
 import { resolveWorkspaceInputPaths } from './workspace-inputs';
 import {
   buildCrossCodebaseSystemGraph,
-  enrichWorkspaceAnalysisNarrative,
+  interpretWorkspaceNarrative,
   buildWorkspaceAgentContext,
   type CrossCodebaseSystemGraph,
 } from './cross-codebase-analysis';
@@ -261,7 +261,7 @@ async function analyzeWorkspace(name: string, repoPaths: string[], fresh: boolea
 
 
 
-  if (withAi) graph = await enrichWorkspaceAnalysisNarrative(graph);
+  if (withAi) graph = await interpretWorkspaceNarrative(graph);
   return { graph, repos };
 }
 

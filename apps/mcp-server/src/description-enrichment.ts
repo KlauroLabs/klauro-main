@@ -194,7 +194,7 @@ async function applyElementDescriptionToCas(
   stored: boolean;
 }> {
   if (!hasAIProviderConfigured()) {
-    throw new Error('AI descriptions require hosted Klauro AI enrichment: configure DEEPINFRA_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, Azure OpenAI, or a non-local OPENAI_BASE_URL on the hosted analyzer service.');
+    throw new Error('AI descriptions require hosted Klauro interpretation: configure DEEPINFRA_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, Azure OpenAI, or a non-local OPENAI_BASE_URL on the hosted analyzer service.');
   }
 
   const resolved = await resolveTarget(projectPath, cas, input.target, input.targetKind);

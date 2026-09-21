@@ -730,7 +730,6 @@ test('wait mode follows a structural response until pending comprehension comple
           system: { name: 'structural' },
           nodes: [],
           edges: [],
-          ai_enrichment: 'pending',
           layers_ready: { complete: false, layers: [{ layer: 'L5', status: 'pending' }] },
         },
       }));
@@ -748,7 +747,6 @@ test('wait mode follows a structural response until pending comprehension comple
         system: { name: 'complete' },
         nodes: [],
         edges: [],
-        ai_enrichment: 'ready',
         layers_ready: { complete: true, layers: [{ layer: 'L5', status: 'ready' }] },
       }));
       return;
@@ -767,7 +765,6 @@ test('wait mode follows a structural response until pending comprehension comple
 
   const result = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token: 'test-token', wait: true, analysisId });
   assert.equal(result.status, 'success');
-  assert.equal(result.cas?.ai_enrichment, 'ready');
   assert.equal(result.cas?.layers_ready?.complete, true);
   assert.equal(statusRequests, 1);
 });
@@ -864,7 +861,7 @@ test('wait mode ignores a ready CAS from an older analysis revision', async (t) 
         'x-klauro-cas-codec': 'none',
         'x-klauro-analysis-revision': '2',
       });
-      res.end(JSON.stringify({ system: { name: 'current' }, nodes: [], edges: [], ai_enrichment: 'ready' }));
+      res.end(JSON.stringify({ system: { name: 'current' }, nodes: [], edges: [] }));
       return;
     }
     res.writeHead(404, { 'content-type': 'application/json' });
@@ -882,7 +879,6 @@ test('wait mode ignores a ready CAS from an older analysis revision', async (t) 
   const result = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token: 'test-token', wait: true, analysisId });
   assert.equal(result.status, 'success');
   assert.equal(result.analysis_revision, 2);
-  assert.equal(result.cas?.ai_enrichment, 'ready');
   assert.equal(statusRequests, 3);
   assert.equal(exportRequests, 2);
 });

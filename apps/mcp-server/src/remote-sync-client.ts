@@ -223,10 +223,7 @@ export async function analyzeCodebaseRemotely(options: RemoteSyncOptions): Promi
     analysis_focus: options.analysisFocus,
     force: options.force,
   }), serverUrl) as AnalyzeRemotelyResult;
-  const incompleteCas = response.cas && (
-    response.cas.layers_ready?.complete === false ||
-    response.cas.ai_enrichment === 'pending'
-  );
+  const incompleteCas = response.cas && response.cas.layers_ready?.complete === false;
   if (options.wait && (response.status === 'accepted' || incompleteCas)) {
     if (!response.analysis_id) throw new Error('Remote analyzer accepted source without an analysis_id');
     const completed = await waitForRemoteAnalysis(

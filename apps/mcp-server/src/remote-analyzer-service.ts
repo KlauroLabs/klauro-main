@@ -6,7 +6,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { ensurePrivateDataRoot, restrictProcessFileCreation } from './hosted-storage-security';
-import { analyzeProjectIncremental, analyzeProjectDeferred, checkDoomedVersionRebuild, getAnalysis, prewarmAnalysisWorker, runAnalysis, runLayeredAnalysis } from './analyzer';
+import { analyzeProjectIncremental, analyzeProject, checkDoomedVersionRebuild, getAnalysis, prewarmAnalysisWorker, runAnalysis, runLayeredAnalysis } from './analyzer';
 import { REMOTE_ANALYSIS_PROTOCOL_VERSION, clientUpgradeRequiredMessage, type AccountActivityEvent, type RemoteAnalyzeDiffRequest, type RemoteAnalyzeRequest, type RemoteAnalyzeResponse, type RemoteGreenfieldPreviewRequest, type RemoteProjectRevision, type RemoteProjectRevisionsResponse, type RemoteProposalPreviewRequest, type RemoteSyncRequest, syncResponseCasNodeBound } from './remote-analyzer-protocol';
 import { buildSourceSnapshot, type BranchDiffContext, type RemoteFileChange, type RepoFacts, type SourceManifest } from './remote-source';
 import type { CapabilityFlowRole, CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
@@ -142,7 +142,6 @@ interface RemoteAnalyzerServiceOptions {
   maxBodyBytes?: number;
   rateLimitPerMinute?: number;
   fabricRateLimitPerMinute?: number;
-  deferAiEnrichment?: boolean;
 }
 interface RateLimitBucket {
   windowStart: number;
@@ -3582,8 +3581,7 @@ async function handleAnalyzeDiff(dataDir: string, request: RemoteAnalyzeDiffRequ
     const message = error instanceof Error ? error.message : String(error);
     if (!/comprehension/i.test(message)) throw error;
     console.error(`[Klauro] remote analyze-diff: comprehension unavailable, returning structure-only CAS (${message})`);
-    const deferred = await analyzeProjectDeferred(workspace, displayName);
-    cas = deferred.output;
+    cas = await analyzeProject(workspace, displayName);
     analysisType = 'full';
   }
   cas.analyzed_track = 'other-branch';

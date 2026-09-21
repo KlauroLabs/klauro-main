@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { assertRealWorkspaceAiAttempt, buildCrossCodebaseSystemGraph, buildWorkspaceAgentContext, computeCodebaseComplexity, computeWorkspaceComplexity, enforceWorkspaceNarrativeProductValueSummary, enrichWorkspaceAnalysisNarrative, evaluateWorkspaceNarrativeGate, humanizeWorkspaceNarrativeIdentifiers, isGroundedAiWorkspaceItemDescription, isUncorroboratedEntityNameDomain, isVerbPhraseDomainLabel, isWorkspaceAiParseArtifactText, normalizeWorkspaceAiDescriptionText, productFrameworksFromCas, selectPreferredWorkspaceOllamaModel, selectWorkspaceAnalysisDetail, stripUngroundedWorkspaceMarketingLanguage, stripWorkspaceItemDescriptionArtifacts, withWorkspaceAiTimeout, workspaceNarrativeApplicationMisattributionReason, workspaceNarrativeDomainMisattributionReason, workspaceNarrativeEntityMisattributionReason, workspaceNarrativeHardRejectReason, workspaceNarrativeMarketingMatches, workspaceNarrativeMisattributionReason, workspaceNarrativePromptContext, workspaceNarrativeRepairPromptContext } from './cross-codebase-analysis';
+import { assertRealWorkspaceAiAttempt, buildCrossCodebaseSystemGraph, buildWorkspaceAgentContext, computeCodebaseComplexity, computeWorkspaceComplexity, enforceWorkspaceNarrativeProductValueSummary, interpretWorkspaceNarrative, evaluateWorkspaceNarrativeGate, humanizeWorkspaceNarrativeIdentifiers, isGroundedAiWorkspaceItemDescription, isUncorroboratedEntityNameDomain, isVerbPhraseDomainLabel, isWorkspaceAiParseArtifactText, normalizeWorkspaceAiDescriptionText, productFrameworksFromCas, selectPreferredWorkspaceOllamaModel, selectWorkspaceAnalysisDetail, stripUngroundedWorkspaceMarketingLanguage, stripWorkspaceItemDescriptionArtifacts, withWorkspaceAiTimeout, workspaceNarrativeApplicationMisattributionReason, workspaceNarrativeDomainMisattributionReason, workspaceNarrativeEntityMisattributionReason, workspaceNarrativeHardRejectReason, workspaceNarrativeMarketingMatches, workspaceNarrativeMisattributionReason, workspaceNarrativePromptContext, workspaceNarrativeRepairPromptContext } from './cross-codebase-analysis';
 import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
 import { CAS_VERSION, type CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { validateCasTree } from '../../../packages/analyzer-core/src/analyzer/core/recursive-cas';
@@ -648,7 +648,7 @@ test('workspace analysis composes completed CAS outputs without source reads', (
   assert.equal(graph.composition.recommended_primary_view, 'system-map');
   // Comprehension is AI-only: the synchronous workspace-level-CAS builder leaves the narrative
   // description empty (a pre-AI placeholder). There is no deterministic workspace
-  // description; enrichWorkspaceAnalysisNarrative writes it, or throws.
+  // description; interpretWorkspaceNarrative writes it, or throws.
   assert.equal(graph.workspace_narrative.description, '');
   assert.equal(graph.workspace_narrative.ai_required, true);
   assert.equal(graph.workspace_narrative.generation_pass, 'default-summary');
@@ -898,13 +898,13 @@ test('links a UI to an API once a real endpoint call is present (source-backed, 
   assert.ok(link.confidence >= 0.7);
 });
 
-test('AI enrichment updates workspace narrative, domains, and primary capability descriptions without adding graph facts', async () => {
+test('interpretation updates workspace narrative, domains, and primary capability descriptions without adding graph facts', async () => {
   const originalGenerate = aiService.generateComponentDescription;
-  const originalEnv = process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
+  const originalEnv = process.env.KLAURO_WORKSPACE_INTERPRETATION;
   const originalAutoConfig = process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG;
   const originalOllamaBaseUrl = process.env.OLLAMA_BASE_URL;
   const originalOllamaAuto = process.env.KLAURO_OLLAMA_AUTO;
-  process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = 'true';
+  process.env.KLAURO_WORKSPACE_INTERPRETATION = 'true';
   process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG = 'false';
   delete process.env.OLLAMA_BASE_URL;
   delete process.env.KLAURO_OLLAMA_AUTO;
@@ -966,7 +966,7 @@ test('AI enrichment updates workspace narrative, domains, and primary capability
     const graph = buildCrossCodebaseSystemGraph('agent-workspace', [
       { path: '/tmp/agent-api', name: 'agent-api', cas: api },
     ]);
-    const enriched = await enrichWorkspaceAnalysisNarrative(graph);
+    const enriched = await interpretWorkspaceNarrative(graph);
 
     assert.equal(enriched.workspace_narrative.source, 'ai');
     assert.match(enriched.workspace_narrative.description, /agent enrollment/i);
@@ -988,8 +988,8 @@ test('AI enrichment updates workspace narrative, domains, and primary capability
     assert.equal(enriched.links.length, graph.links.length);
   } finally {
     aiService.generateComponentDescription = originalGenerate;
-    if (originalEnv === undefined) delete process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
-    else process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = originalEnv;
+    if (originalEnv === undefined) delete process.env.KLAURO_WORKSPACE_INTERPRETATION;
+    else process.env.KLAURO_WORKSPACE_INTERPRETATION = originalEnv;
     if (originalAutoConfig === undefined) delete process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG;
     else process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG = originalAutoConfig;
     if (originalOllamaBaseUrl === undefined) delete process.env.OLLAMA_BASE_URL;
@@ -999,13 +999,13 @@ test('AI enrichment updates workspace narrative, domains, and primary capability
   }
 });
 
-test('AI enrichment rejects generic or unsupported workspace descriptions instead of marking them ready', async () => {
+test('interpretation rejects generic or unsupported workspace descriptions instead of marking them ready', async () => {
   const originalGenerate = aiService.generateComponentDescription;
-  const originalEnv = process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
+  const originalEnv = process.env.KLAURO_WORKSPACE_INTERPRETATION;
   const originalAutoConfig = process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG;
   const originalOllamaBaseUrl = process.env.OLLAMA_BASE_URL;
   const originalOllamaAuto = process.env.KLAURO_OLLAMA_AUTO;
-  process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = 'true';
+  process.env.KLAURO_WORKSPACE_INTERPRETATION = 'true';
   process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG = 'false';
   delete process.env.OLLAMA_BASE_URL;
   delete process.env.KLAURO_OLLAMA_AUTO;
@@ -1046,7 +1046,7 @@ test('AI enrichment rejects generic or unsupported workspace descriptions instea
     const graph = buildCrossCodebaseSystemGraph('analysis-workspace', [
       { path: '/tmp/analysis-api', name: 'analysis-api', cas: api },
     ]);
-    const enriched = await enrichWorkspaceAnalysisNarrative(graph);
+    const enriched = await interpretWorkspaceNarrative(graph);
 
     assert.equal(enriched.workspace_narrative.source, 'ai-required-degraded');
     assert.ok(enriched.workspace_domains.every(domain => domain.description_source !== 'ai'));
@@ -1055,8 +1055,8 @@ test('AI enrichment rejects generic or unsupported workspace descriptions instea
     assert.ok(enriched.quality_flags.some(flag => flag.code === 'capability-descriptions-degraded'));
   } finally {
     aiService.generateComponentDescription = originalGenerate;
-    if (originalEnv === undefined) delete process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
-    else process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = originalEnv;
+    if (originalEnv === undefined) delete process.env.KLAURO_WORKSPACE_INTERPRETATION;
+    else process.env.KLAURO_WORKSPACE_INTERPRETATION = originalEnv;
     if (originalAutoConfig === undefined) delete process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG;
     else process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG = originalAutoConfig;
     if (originalOllamaBaseUrl === undefined) delete process.env.OLLAMA_BASE_URL;
@@ -1196,13 +1196,13 @@ test('workspace domains reject token-frequency concepts sourced only from shell 
   assert.ok(domainNames.some(name => /Policy/i.test(name)), `expected a Policy domain: ${JSON.stringify(domainNames)}`);
 });
 
-test('AI enrichment rejects item descriptions that are useful-sounding but not grounded in target evidence', async () => {
+test('interpretation rejects item descriptions that are useful-sounding but not grounded in target evidence', async () => {
   const originalGenerate = aiService.generateComponentDescription;
-  const originalEnv = process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
+  const originalEnv = process.env.KLAURO_WORKSPACE_INTERPRETATION;
   const originalAutoConfig = process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG;
   const originalOllamaBaseUrl = process.env.OLLAMA_BASE_URL;
   const originalOllamaAuto = process.env.KLAURO_OLLAMA_AUTO;
-  process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = 'true';
+  process.env.KLAURO_WORKSPACE_INTERPRETATION = 'true';
   process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG = 'false';
   delete process.env.OLLAMA_BASE_URL;
   delete process.env.KLAURO_OLLAMA_AUTO;
@@ -1261,7 +1261,7 @@ test('AI enrichment rejects item descriptions that are useful-sounding but not g
     const graph = buildCrossCodebaseSystemGraph('analysis-workspace', [
       { path: '/tmp/analysis-api', name: 'analysis-api', cas: api },
     ]);
-    const enriched = await enrichWorkspaceAnalysisNarrative(graph);
+    const enriched = await interpretWorkspaceNarrative(graph);
     const customer = enriched.workspace_domains.find(domain => domain.name === 'Customer');
     const capability = enriched.workspace_capabilities.find(item => item.name === 'Codebase Analysis');
 
@@ -1269,8 +1269,8 @@ test('AI enrichment rejects item descriptions that are useful-sounding but not g
     assert.notEqual(customer?.description_source, 'ai');
   } finally {
     aiService.generateComponentDescription = originalGenerate;
-    if (originalEnv === undefined) delete process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
-    else process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = originalEnv;
+    if (originalEnv === undefined) delete process.env.KLAURO_WORKSPACE_INTERPRETATION;
+    else process.env.KLAURO_WORKSPACE_INTERPRETATION = originalEnv;
     if (originalAutoConfig === undefined) delete process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG;
     else process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG = originalAutoConfig;
     if (originalOllamaBaseUrl === undefined) delete process.env.OLLAMA_BASE_URL;
@@ -1356,7 +1356,7 @@ test('surfaces source-backed auth providers and topology-only infrastructure sep
   ));
 });
 
-test('never authors deterministic product summaries — pre-AI narrative ships empty awaiting AI enrichment', () => {
+test('never authors deterministic product summaries — pre-AI narrative ships empty awaiting interpretation', () => {
   const soon = cas({
     system: { id: 'soon-sync', name: 'soon-sync', type: 'service', root_path: '/tmp/soon-sync' },
     nodes: [{ id: 'billing-route', name: 'BillingRecoveryController', type: 'function', source: { file: 'src/billing.ts', line: 1 } } as any],
@@ -1400,7 +1400,7 @@ test('never authors deterministic product summaries — pre-AI narrative ships e
   // DETERMINISM-BOUNDARY: comprehension prose is AI-only. The pre-AI structural
   // builder must never author a keyword-frame summary ("financial application
   // workspace", "codebase-intelligence workspace", ...) — it ships empty and is
-  // marked as requiring AI enrichment.
+  // marked as requiring interpretation.
   assert.equal(soonGraph.workspace_narrative.product_value_summary, '');
   assert.equal(klauroGraph.workspace_narrative.product_value_summary, '');
   assert.equal(soonGraph.workspace_narrative.source, 'ai-required-degraded');
@@ -2141,11 +2141,11 @@ test('a no-attempt AI response surfaces an honest enrichment error, never a fake
   assert.doesNotThrow(() => assertRealWorkspaceAiAttempt('{"description":"real model output"}'));
 
   const originalGenerate = aiService.generateComponentDescription;
-  const originalEnv = process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
+  const originalEnv = process.env.KLAURO_WORKSPACE_INTERPRETATION;
   const originalAutoConfig = process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG;
   const originalOllamaBaseUrl = process.env.OLLAMA_BASE_URL;
   const originalOllamaAuto = process.env.KLAURO_OLLAMA_AUTO;
-  process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = 'true';
+  process.env.KLAURO_WORKSPACE_INTERPRETATION = 'true';
   process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG = 'false';
   delete process.env.OLLAMA_BASE_URL;
   delete process.env.KLAURO_OLLAMA_AUTO;
@@ -2158,13 +2158,13 @@ test('a no-attempt AI response surfaces an honest enrichment error, never a fake
       { path: '/tmp/shop-api', name: 'shop-api', cas: shopCas() },
     ]);
     await assert.rejects(
-      () => enrichWorkspaceAnalysisNarrative(graph),
+      () => interpretWorkspaceNarrative(graph),
       (error: Error) => /no real attempt/i.test(error.message) && !/rejected by the workspace narrative quality gate/i.test(error.message),
     );
   } finally {
     aiService.generateComponentDescription = originalGenerate;
-    if (originalEnv === undefined) delete process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
-    else process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = originalEnv;
+    if (originalEnv === undefined) delete process.env.KLAURO_WORKSPACE_INTERPRETATION;
+    else process.env.KLAURO_WORKSPACE_INTERPRETATION = originalEnv;
     if (originalAutoConfig === undefined) delete process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG;
     else process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG = originalAutoConfig;
     if (originalOllamaBaseUrl === undefined) delete process.env.OLLAMA_BASE_URL;
@@ -2176,11 +2176,11 @@ test('a no-attempt AI response surfaces an honest enrichment error, never a fake
 
 test('a gate rejection re-prompts with the rejection reason (and a fresh cache key) before degrading', async () => {
   const originalGenerate = aiService.generateComponentDescription;
-  const originalEnv = process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
+  const originalEnv = process.env.KLAURO_WORKSPACE_INTERPRETATION;
   const originalAutoConfig = process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG;
   const originalOllamaBaseUrl = process.env.OLLAMA_BASE_URL;
   const originalOllamaAuto = process.env.KLAURO_OLLAMA_AUTO;
-  process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = 'true';
+  process.env.KLAURO_WORKSPACE_INTERPRETATION = 'true';
   process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG = 'false';
   delete process.env.OLLAMA_BASE_URL;
   delete process.env.KLAURO_OLLAMA_AUTO;
@@ -2205,7 +2205,7 @@ test('a gate rejection re-prompts with the rejection reason (and a fresh cache k
     const graph = buildCrossCodebaseSystemGraph('shop-workspace', [
       { path: '/tmp/shop-api', name: 'shop-api', cas: shopCas() },
     ]);
-    const enriched = await enrichWorkspaceAnalysisNarrative(graph);
+    const enriched = await interpretWorkspaceNarrative(graph);
     assert.equal(enriched.workspace_narrative.source, 'ai');
     assert.match(enriched.workspace_narrative.description, /Order Fulfillment routes checkout orders/);
     const repairContext = contexts.find(context => typeof context?.rejection_feedback === 'string');
@@ -2216,8 +2216,8 @@ test('a gate rejection re-prompts with the rejection reason (and a fresh cache k
     assert.equal(typeof repairContext!.retry_attempt, 'number');
   } finally {
     aiService.generateComponentDescription = originalGenerate;
-    if (originalEnv === undefined) delete process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
-    else process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = originalEnv;
+    if (originalEnv === undefined) delete process.env.KLAURO_WORKSPACE_INTERPRETATION;
+    else process.env.KLAURO_WORKSPACE_INTERPRETATION = originalEnv;
     if (originalAutoConfig === undefined) delete process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG;
     else process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG = originalAutoConfig;
     if (originalOllamaBaseUrl === undefined) delete process.env.OLLAMA_BASE_URL;
@@ -2229,9 +2229,9 @@ test('a gate rejection re-prompts with the rejection reason (and a fresh cache k
 
 test('a model response that lacks product_value_summary is rejected at the accept path and re-prompted naming the missing field', async () => {
   const originalGenerate = aiService.generateComponentDescription;
-  const originalEnv = process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
+  const originalEnv = process.env.KLAURO_WORKSPACE_INTERPRETATION;
   const originalAutoConfig = process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG;
-  process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = 'true';
+  process.env.KLAURO_WORKSPACE_INTERPRETATION = 'true';
   process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG = 'false';
 
   const contexts: Array<Record<string, unknown> | undefined> = [];
@@ -2254,7 +2254,7 @@ test('a model response that lacks product_value_summary is rejected at the accep
     const graph = buildCrossCodebaseSystemGraph('shop-workspace', [
       { path: '/tmp/shop-api', name: 'shop-api', cas: shopCas() },
     ]);
-    const enriched = await enrichWorkspaceAnalysisNarrative(graph);
+    const enriched = await interpretWorkspaceNarrative(graph);
     assert.equal(enriched.workspace_narrative.source, 'ai');
     assert.equal(enriched.workspace_narrative.product_value_summary, 'Runs the storefront ordering and catalog backend.');
     const repairContext = contexts.find(context => typeof context?.rejection_feedback === 'string');
@@ -2262,8 +2262,8 @@ test('a model response that lacks product_value_summary is rejected at the accep
     assert.match(String(repairContext!.rejection_feedback), /product_value_summary/i, 'the re-prompt must name the missing field');
   } finally {
     aiService.generateComponentDescription = originalGenerate;
-    if (originalEnv === undefined) delete process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
-    else process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = originalEnv;
+    if (originalEnv === undefined) delete process.env.KLAURO_WORKSPACE_INTERPRETATION;
+    else process.env.KLAURO_WORKSPACE_INTERPRETATION = originalEnv;
     if (originalAutoConfig === undefined) delete process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG;
     else process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG = originalAutoConfig;
   }
@@ -2388,7 +2388,7 @@ test('workspace narrative prompt foregrounds the members\' own domains and conta
   assert.doesNotMatch(serialized, /agent-context infrastructure/i);
 });
 
-test('workspace narrative prompt removes storage ids and source filenames before remote AI enrichment', () => {
+test('workspace narrative prompt removes storage ids and source filenames before remote interpretation', () => {
   const graph = buildCrossCodebaseSystemGraph('shop-workspace', [
     { path: '/tmp/shop-api', name: 'shop-api', cas: shopCas() },
   ]);
@@ -2407,11 +2407,11 @@ test('workspace narrative prompt removes storage ids and source filenames before
 
 test('a frame rejection re-prompts with feedback naming the actual rejected frame, on a fresh cache key per attempt', async () => {
   const originalGenerate = aiService.generateComponentDescription;
-  const originalEnv = process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
+  const originalEnv = process.env.KLAURO_WORKSPACE_INTERPRETATION;
   const originalAutoConfig = process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG;
   const originalOllamaBaseUrl = process.env.OLLAMA_BASE_URL;
   const originalOllamaAuto = process.env.KLAURO_OLLAMA_AUTO;
-  process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = 'true';
+  process.env.KLAURO_WORKSPACE_INTERPRETATION = 'true';
   process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG = 'false';
   delete process.env.OLLAMA_BASE_URL;
   delete process.env.KLAURO_OLLAMA_AUTO;
@@ -2441,7 +2441,7 @@ test('a frame rejection re-prompts with feedback naming the actual rejected fram
     const graph = buildCrossCodebaseSystemGraph('shop-workspace', [
       { path: '/tmp/shop-api', name: 'shop-api', cas: shopCas() },
     ]);
-    const enriched = await enrichWorkspaceAnalysisNarrative(graph);
+    const enriched = await interpretWorkspaceNarrative(graph);
     assert.equal(enriched.workspace_narrative.source, 'ai', `expected convergence after frame-rejection retries, got: ${enriched.workspace_narrative.degraded_reason}`);
     assert.match(enriched.workspace_narrative.description, /Order Fulfillment routes checkout orders/);
 
@@ -2461,8 +2461,8 @@ test('a frame rejection re-prompts with feedback naming the actual rejected fram
     assert.ok(Array.isArray(repairContexts[0]!.member_projects), 'repair prompt must carry member_projects evidence');
   } finally {
     aiService.generateComponentDescription = originalGenerate;
-    if (originalEnv === undefined) delete process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
-    else process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = originalEnv;
+    if (originalEnv === undefined) delete process.env.KLAURO_WORKSPACE_INTERPRETATION;
+    else process.env.KLAURO_WORKSPACE_INTERPRETATION = originalEnv;
     if (originalAutoConfig === undefined) delete process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG;
     else process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG = originalAutoConfig;
     if (originalOllamaBaseUrl === undefined) delete process.env.OLLAMA_BASE_URL;

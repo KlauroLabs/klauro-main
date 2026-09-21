@@ -35,8 +35,6 @@ export function acceptedComprehensionFixture(cas: CASOutput): CASOutput {
   const accepted: CASOutput = {
     ...cas,
     capabilities: canonicalCapabilities,
-    ai_enrichment: 'ready',
-    ai_enrichment_error: undefined,
     enhanced_system_purpose: {
       ...enhanced,
       ai_phase_status: 'complete',

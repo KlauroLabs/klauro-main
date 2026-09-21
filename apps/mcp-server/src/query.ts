@@ -260,17 +260,6 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
 
     description: cas.enhanced_system_purpose?.inferred_description || null,
     description_source: cas.enhanced_system_purpose?.description_source || null,
-
-
-
-
-
-
-
-    ...(cas.ai_enrichment ? { ai_enrichment: cas.ai_enrichment } : {}),
-    ...(cas.ai_enrichment === 'error' && cas.ai_enrichment_error
-      ? { ai_enrichment_error: cas.ai_enrichment_error }
-      : {}),
     ...(detail === 'full' ? { analysis_phases: cas.analysis_phases || [] } : {}),
     architecture_type: cas.architecture_summary?.system_type || null,
     architectural_patterns: architecturalPatterns,

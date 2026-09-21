@@ -121,8 +121,6 @@ export const CAS_CHILD_FIELD_POLICY = {
   branch: { mode: 'inherit' },
   analyzed_track: { mode: 'inherit' },
   diff_only: { mode: 'inherit' },
-  ai_enrichment: { mode: 'inherit' },
-  ai_enrichment_error: { mode: 'inherit' },
   ai_cache_reuse: { mode: 'inherit' },
   layers_ready: { mode: 'inherit' },
   l0_index: { mode: 'inherit' },

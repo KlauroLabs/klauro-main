@@ -71,7 +71,6 @@ export function comprehensionResponseReadiness(cas: CASOutput): AnalysisResponse
   }
 
   const hasExplicitComprehensionState = comprehensionLayers.length > 0
-    || cas.ai_enrichment !== undefined
     || cas.enhanced_system_purpose?.capability_catalog_coverage !== undefined;
   if (!hasExplicitComprehensionState) return { status: 'ready', ready: true };
 
