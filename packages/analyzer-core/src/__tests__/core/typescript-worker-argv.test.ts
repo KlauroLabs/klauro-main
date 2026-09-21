@@ -38,7 +38,8 @@ describe('resolveTreeSitterWorkerPath', () => {
       '/app/dist-hosted/tree-sitter-ts-worker.cjs',
       '/app/packages/analyzer-core/dist/analyzer/core/tree-sitter-ts-worker.js',
       '/app/packages/analyzer-core/src/analyzer/core/tree-sitter-ts-worker.ts',
-      candidate => candidate.endsWith('.cjs')
+      [],
+      (candidate: string) => candidate.endsWith('.cjs')
     )).toBe('/app/dist-hosted/tree-sitter-ts-worker.cjs');
   });
 
@@ -47,7 +48,8 @@ describe('resolveTreeSitterWorkerPath', () => {
       '/app/dist-hosted/tree-sitter-ts-worker.cjs',
       '/app/packages/analyzer-core/dist/analyzer/core/tree-sitter-ts-worker.js',
       '/app/packages/analyzer-core/src/analyzer/core/tree-sitter-ts-worker.ts',
-      candidate => candidate.includes('/dist/')
+      [],
+      (candidate: string) => candidate.includes('/dist/')
     )).toBe('/app/packages/analyzer-core/dist/analyzer/core/tree-sitter-ts-worker.js');
   });
 
@@ -56,6 +58,7 @@ describe('resolveTreeSitterWorkerPath', () => {
       '/app/dist-hosted/tree-sitter-ts-worker.cjs',
       '/app/packages/analyzer-core/dist/analyzer/core/tree-sitter-ts-worker.js',
       '/app/packages/analyzer-core/src/analyzer/core/tree-sitter-ts-worker.ts',
+      [],
       () => false
     )).toBe('/app/packages/analyzer-core/src/analyzer/core/tree-sitter-ts-worker.ts');
   });
