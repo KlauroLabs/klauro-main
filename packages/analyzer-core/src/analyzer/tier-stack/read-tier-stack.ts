@@ -1,6 +1,9 @@
+import * as buffer from 'buffer';
 import { execFile } from 'child_process';
 import * as path from 'path';
 import { promisify } from 'util';
+
+import { readInterned } from './read-interned';
 
 const run = promisify(execFile);
 
@@ -50,10 +53,18 @@ export interface TierStackExitPoint {
   line: number;
 }
 
+export type TierStackDeclaration = 'type' | 'foreign key' | 'decorator' | 'call';
+
 export interface TierStackReference {
   field: string;
   entity: string;
   many?: boolean;
+  declared_by: TierStackDeclaration;
+}
+
+export interface TierStackField {
+  name: string;
+  declared_as?: string;
 }
 
 export interface TierStackEntity {
@@ -61,7 +72,7 @@ export interface TierStackEntity {
   declared_as: string;
   name?: string;
   description?: string;
-  named_fields?: string[];
+  named_fields?: TierStackField[];
   declared_in?: string;
   fields: number;
   addressed_by: number;
@@ -69,6 +80,23 @@ export interface TierStackEntity {
   read_by: string[];
   references?: TierStackReference[];
   project?: string;
+}
+
+export interface TierStackCapability {
+  id: string;
+  name?: string;
+  description?: string;
+  audience?: string;
+  records?: string[];
+  changes?: string[];
+  flows?: string[];
+  surfaces?: string[];
+}
+
+export interface TierStackStep {
+  unit: string;
+  depth: number;
+  leaves?: string[];
 }
 
 export interface TierStackFlow {
@@ -80,9 +108,11 @@ export interface TierStackFlow {
   standing: string;
   name?: string;
   description?: string;
-  steps?: Array<{ unit?: string; operation?: string }>;
+  steps?: TierStackStep[];
   writes?: string[];
   reads?: string[];
+  changes?: string[];
+  leads_into?: string[];
 }
 
 export interface TierStackIndex {
@@ -105,7 +135,7 @@ export interface TierStackIndex {
   };
   architecture?: { shape?: string; routes?: number };
   comprehension?: {
-    capabilities?: Array<{ id: string; name: string; description?: string }>;
+    capabilities?: TierStackCapability[];
     flows?: TierStackFlow[];
     entities?: TierStackEntity[];
   };
@@ -118,37 +148,10 @@ export function indexerPath(): string {
   );
 }
 
-export const READABLE_BYTES = 0x1fffffe8;
-
 export async function readTierStack(projectPath: string): Promise<TierStackIndex> {
-  let stdout: Buffer;
-  try {
-    ({ stdout } = await run(indexerPath(), [projectPath, '--json'], {
-      maxBuffer: READABLE_BYTES,
-      encoding: 'buffer',
-    }));
-  } catch (held) {
-    if (outgrewText(held)) {
-      throw new Error(tooLarge(projectPath));
-    }
-    throw held;
-  }
-  if (stdout.length >= READABLE_BYTES) {
-    throw new Error(tooLarge(projectPath, stdout.length));
-  }
-  return JSON.parse(stdout.toString('utf8')) as TierStackIndex;
-}
-
-export function outgrewText(held: unknown): boolean {
-  const said = held instanceof Error ? held.message : String(held);
-  return said.includes('maxBuffer') || said.includes('string longer than');
-}
-
-export function tooLarge(projectPath: string, bytes?: number): string {
-  const size = bytes === undefined ? 'more' : `${(bytes / 1e9).toFixed(2)} GB`;
-  return (
-    `The tier stack described ${projectPath} in ${size} JSON than a string in this runtime `
-    + `can hold (${(READABLE_BYTES / 1e9).toFixed(2)} GB). Reading the index in its own binary `
-    + 'form would carry it; reading it as JSON cannot.'
-  );
+  const { stdout } = await run(indexerPath(), [projectPath], {
+    maxBuffer: buffer.constants.MAX_LENGTH,
+    encoding: 'buffer',
+  });
+  return readInterned(stdout) as TierStackIndex;
 }

@@ -3,6 +3,8 @@ import * as path from 'path';
 
 import {
   CAS_VERSION,
+  type FlowICELOTContract,
+  type FlowStep,
   type CASDataEntity,
   type CASEdge,
   type CASEntryPoint,
@@ -11,7 +13,21 @@ import {
   type CASOutput,
   type CASSystem,
 } from '../../types/cas.types';
-import type { TierStackIndex, TierStackNode } from './read-tier-stack';
+import type {
+  TierStackDeclaration,
+  TierStackFlow,
+  TierStackIndex,
+  TierStackNode,
+} from './read-tier-stack';
+
+const EVIDENCE: Record<TierStackDeclaration, CASRelationEvidence> = {
+  type: 'typed-composition',
+  'foreign key': 'orm-declaration',
+  decorator: 'orm-edge',
+  call: 'orm-edge',
+};
+
+type CASRelationEvidence = 'orm-edge' | 'orm-declaration' | 'typed-composition' | 'structural-edge';
 
 const NODE_TYPES: Record<string, string> = {
   module: 'file',
@@ -59,12 +75,31 @@ function sourceOf(index: TierStackIndex, node: TierStackNode): CASNode['source']
   };
 }
 
+function depths(nodes: TierStackNode[]): Map<string, number> {
+  const held = new Map(nodes.map(node => [node.id, node]));
+  const found = new Map<string, number>();
+  const depthOf = (node: TierStackNode, climbed: Set<string>): number => {
+    const known = found.get(node.id);
+    if (known !== undefined) return known;
+    if (climbed.has(node.id)) return 1;
+    climbed.add(node.id);
+    const above = node.parent === undefined ? undefined : held.get(node.parent);
+    const depth = above === undefined ? 1 : depthOf(above, climbed) + 1;
+    found.set(node.id, depth);
+    return depth;
+  };
+  for (const node of nodes) depthOf(node, new Set());
+  return found;
+}
+
 function nodesOf(index: TierStackIndex): CASNode[] {
+  const depth = depths(index.nodes);
   return index.nodes.map(node => ({
     id: node.id,
     name: node.name,
     type: NODE_TYPES[node.kind] ?? node.kind,
     parent: node.parent,
+    level: depth.get(node.id),
     description: node.documentation,
     description_source: node.documentation ? ('deterministic' as const) : undefined,
     analyzers: [TIER_STACK_ANALYZER],
@@ -105,6 +140,32 @@ function exitPointsOf(index: TierStackIndex): CASExitPoint[] {
   })) as CASExitPoint[];
 }
 
+function contractOf(flow: TierStackFlow): FlowICELOTContract {
+  return {
+    input: flow.reads ?? [],
+    logic: flow.operation,
+    side_effects: {
+      state_changes: flow.writes ?? [],
+      external_integrations: flow.changes ?? [],
+    },
+    output: flow.leads_into ?? [],
+    constraints: [],
+  };
+}
+
+function stepsOf(flow: TierStackFlow): FlowStep[] {
+  return (flow.steps ?? []).map((step, at) => ({
+    step_id: `${flow.id}:${at}`,
+    order: at + 1,
+    name: step.unit,
+    description: `${flow.operation} reaches ${step.unit}`,
+    description_source: 'deterministic-label' as const,
+    contract: contractOf(flow),
+    functions: [{ function_id: step.unit }],
+    entities: step.leaves ?? [],
+  }));
+}
+
 function flowsOf(index: TierStackIndex): CASOutput['flows'] {
   return (index.comprehension?.flows ?? []).map(flow => ({
     flow_id: flow.id,
@@ -113,27 +174,79 @@ function flowsOf(index: TierStackIndex): CASOutput['flows'] {
     description: flow.description,
     entry_point: flow.entry_point,
     entities: [...(flow.writes ?? []), ...(flow.reads ?? [])],
-    contract: {} as never,
-    steps: [],
-  })) as CASOutput['flows'];
+    contract: contractOf(flow),
+    steps: stepsOf(flow),
+  }));
 }
 
 function entitiesOf(index: TierStackIndex): CASDataEntity[] {
   return (index.comprehension?.entities ?? []).map(entity => ({
     id: entity.id,
     name: entity.name ?? entity.declared_as,
+    schema_source: entity.declared_in,
+    description: entity.description,
+    description_source: entity.description ? ('ai' as const) : undefined,
+    fields: (entity.named_fields ?? []).map(field => ({
+      name: field.name,
+      type: field.declared_as ?? '',
+      is_sensitive: false,
+      is_relation: (entity.references ?? []).some(held => held.field === field.name),
+    })),
+    relations: (entity.references ?? []).map(reference => ({
+      target_name: reference.entity,
+      relation_type: 'references',
+      kind: 'data' as const,
+      cardinality: reference.many ? ('1:N' as const) : ('N:1' as const),
+      field: reference.field,
+      evidence_source: EVIDENCE[reference.declared_by],
+      evidence: `${entity.declared_as}.${reference.field} names ${reference.entity} by ${reference.declared_by}`,
+    })),
     lifecycle: {
       created_by: entity.written_by,
       read_by: entity.read_by,
+      updated_by: entity.written_by,
+      deleted_by: [],
     },
-    description: entity.description,
-    fields: (entity.named_fields ?? []).map(named => ({ name: named })),
-    relationships: (entity.references ?? []).map(reference => ({
-      field: reference.field,
-      entity: reference.entity,
-      cardinality: reference.many ? 'many' : 'one',
+  }));
+}
+
+function capabilitiesOf(index: TierStackIndex): CASOutput['capabilities'] {
+  const reached = new Map((index.entry_points ?? []).map(entry => [entry.id, entry]));
+  const operationsOf = (surfaces: string[]) =>
+    surfaces.flatMap(surface => {
+      const entry = reached.get(surface);
+      return entry === undefined
+        ? []
+        : [{
+            entry_point_id: entry.id,
+            entry_point_type: entry.kind,
+            action: entry.name,
+            path_or_command: entry.path,
+            trigger: { method: entry.method, path: entry.path },
+          }];
+    });
+  return (index.comprehension?.capabilities ?? []).map(capability => ({
+    id: capability.id,
+    name: capability.name ?? capability.id,
+    description: capability.description ?? '',
+    category: 'core' as const,
+    operations: operationsOf(capability.surfaces ?? []),
+    related_entities: capability.records ?? [],
+    related_domains: capability.audience === undefined ? [] : [capability.audience],
+    criticality: (capability.changes ?? []).length > 0 ? ('high' as const) : ('medium' as const),
+    criticality_factors: (capability.changes ?? []).map(held => `changes ${held}`),
+  }));
+}
+
+function levelsOf(nodes: CASNode[]): CASOutput['progressive_levels'] {
+  const deepest = nodes.reduce((held, node) => Math.max(held, node.level ?? 0), 0);
+  return {
+    total_levels: deepest,
+    level_definitions: Array.from({ length: deepest }, (_, at) => ({
+      level: at + 1,
+      node_count: nodes.filter(node => node.level === at + 1).length,
     })),
-  })) as unknown as CASDataEntity[];
+  };
 }
 
 function dependenciesOf(index: TierStackIndex): CASOutput['dependencies'] {
@@ -172,7 +285,7 @@ export function tierStackToCas(index: TierStackIndex, displayName?: string): CAS
     entry_points,
     exit_points: exitPointsOf(index),
     entities: entitiesOf(index),
-    capabilities: (index.comprehension?.capabilities ?? []) as CASOutput['capabilities'],
+    capabilities: capabilitiesOf(index),
     flows: flowsOf(index),
     dependencies: dependenciesOf(index),
     analyzer_contributions: [
@@ -184,6 +297,6 @@ export function tierStackToCas(index: TierStackIndex, displayName?: string): CAS
         edges_created: edges.length,
       },
     ],
-    progressive_levels: { total_levels: 0 },
+    progressive_levels: levelsOf(nodes),
   };
 }

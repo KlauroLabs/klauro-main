@@ -25,6 +25,20 @@ impl Strings {
     }
 }
 
+struct Symbol(i64);
+
+impl Symbol {
+    fn of(strings: &RefCell<Strings>, value: &str) -> Self {
+        Symbol(-1 - i64::from(strings.borrow_mut().symbol(value)))
+    }
+}
+
+impl Serialize for Symbol {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_i64(self.0)
+    }
+}
+
 pub struct Interned<'a, T: ?Sized> {
     value: &'a T,
     strings: &'a RefCell<Strings>,
@@ -88,40 +102,31 @@ compound! {
     SerializeTupleVariant { serialize_field },
 }
 
-impl<S: ser::SerializeMap> ser::SerializeStruct for Compound<'_, S> {
-    type Ok = S::Ok;
-    type Error = S::Error;
+macro_rules! named {
+    ($($trait:ident,)*) => {
+        $(impl<S: ser::SerializeMap> ser::$trait for Compound<'_, S> {
+            type Ok = S::Ok;
+            type Error = S::Error;
 
-    fn serialize_field<T: ?Sized + Serialize>(
-        &mut self,
-        key: &'static str,
-        value: &T,
-    ) -> Result<(), S::Error> {
-        let symbol = self.strings.borrow_mut().symbol(key);
-        self.inner.serialize_entry(&symbol, &Interned::new(value, self.strings))
-    }
+            fn serialize_field<T: ?Sized + Serialize>(
+                &mut self,
+                key: &'static str,
+                value: &T,
+            ) -> Result<(), S::Error> {
+                self.inner
+                    .serialize_entry(&Symbol::of(self.strings, key), &Interned::new(value, self.strings))
+            }
 
-    fn end(self) -> Result<S::Ok, S::Error> {
-        self.inner.end()
-    }
+            fn end(self) -> Result<S::Ok, S::Error> {
+                self.inner.end()
+            }
+        })*
+    };
 }
 
-impl<S: ser::SerializeMap> ser::SerializeStructVariant for Compound<'_, S> {
-    type Ok = S::Ok;
-    type Error = S::Error;
-
-    fn serialize_field<T: ?Sized + Serialize>(
-        &mut self,
-        key: &'static str,
-        value: &T,
-    ) -> Result<(), S::Error> {
-        let symbol = self.strings.borrow_mut().symbol(key);
-        self.inner.serialize_entry(&symbol, &Interned::new(value, self.strings))
-    }
-
-    fn end(self) -> Result<S::Ok, S::Error> {
-        self.inner.end()
-    }
+named! {
+    SerializeStruct,
+    SerializeStructVariant,
 }
 
 impl<S: ser::SerializeMap> ser::SerializeMap for Compound<'_, S> {
@@ -154,10 +159,6 @@ impl<'a, S: Serializer> Serializer for Interning<'a, S> {
 
     forward! {
         serialize_bool(bool),
-        serialize_i8(i8),
-        serialize_i16(i16),
-        serialize_i32(i32),
-        serialize_i64(i64),
         serialize_u8(u8),
         serialize_u16(u16),
         serialize_u32(u32),
@@ -168,9 +169,27 @@ impl<'a, S: Serializer> Serializer for Interning<'a, S> {
         serialize_bytes(&[u8]),
     }
 
+    fn serialize_i8(self, value: i8) -> Result<S::Ok, S::Error> {
+        self.serialize_i64(i64::from(value))
+    }
+
+    fn serialize_i16(self, value: i16) -> Result<S::Ok, S::Error> {
+        self.serialize_i64(i64::from(value))
+    }
+
+    fn serialize_i32(self, value: i32) -> Result<S::Ok, S::Error> {
+        self.serialize_i64(i64::from(value))
+    }
+
+    fn serialize_i64(self, value: i64) -> Result<S::Ok, S::Error> {
+        match value < 0 {
+            true => self.inner.serialize_f64(value as f64),
+            false => self.inner.serialize_u64(value as u64),
+        }
+    }
+
     fn serialize_str(self, value: &str) -> Result<S::Ok, S::Error> {
-        let symbol = self.strings.borrow_mut().symbol(value);
-        self.inner.serialize_u32(symbol)
+        Symbol::of(self.strings, value).serialize(self.inner)
     }
 
     fn serialize_none(self) -> Result<S::Ok, S::Error> {
@@ -195,8 +214,7 @@ impl<'a, S: Serializer> Serializer for Interning<'a, S> {
         _index: u32,
         variant: &'static str,
     ) -> Result<S::Ok, S::Error> {
-        let symbol = self.strings.borrow_mut().symbol(variant);
-        self.inner.serialize_u32(symbol)
+        Symbol::of(self.strings, variant).serialize(self.inner)
     }
 
     fn serialize_newtype_struct<T: ?Sized + Serialize>(

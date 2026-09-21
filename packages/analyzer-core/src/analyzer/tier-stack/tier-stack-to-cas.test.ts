@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { tierStackToCas } from './tier-stack-to-cas';
 import { tierStackRequested } from './index';
-import { outgrewText, READABLE_BYTES, tooLarge, type TierStackIndex } from './read-tier-stack';
+import type { TierStackIndex } from './read-tier-stack';
 
 const INDEX: TierStackIndex = {
   root: '/tmp/shop',
@@ -47,14 +47,18 @@ const INDEX: TierStackIndex = {
         id: 'entity:Order',
         declared_as: 'Order',
         name: 'Order',
-        named_fields: ['id', 'customerId', 'total'],
+        named_fields: [
+          { name: 'id', declared_as: 'uuid' },
+          { name: 'customerId', declared_as: 'uuid' },
+          { name: 'total', declared_as: 'numeric' },
+        ],
         fields: 3,
         addressed_by: 2,
         written_by: ['src/order.ts:function:place:12'],
         read_by: [],
         references: [
-          { field: 'customerId', entity: 'Customer' },
-          { field: 'lines', entity: 'OrderLine', many: true },
+          { field: 'customerId', entity: 'Customer', declared_by: 'foreign key' },
+          { field: 'lines', entity: 'OrderLine', many: true, declared_by: 'type' },
         ],
       },
     ],
@@ -96,6 +100,17 @@ test('a declaration keeps its kind, its place and what it says of itself', () =>
   assert.equal(order?.metadata?.language, 'typescript');
 });
 
+test('a declaration sits at the depth its holders put it', () => {
+  const cas = tierStackToCas(INDEX);
+  assert.equal(cas.nodes.find(node => node.name === 'order.ts')?.level, 1);
+  assert.equal(cas.nodes.find(node => node.name === 'Order')?.level, 2);
+  assert.equal(cas.progressive_levels.total_levels, 2);
+  assert.deepEqual(
+    cas.progressive_levels.level_definitions?.map(held => [held.level, held.node_count]),
+    [[1, 1], [2, 1]]
+  );
+});
+
 test('an edge keeps the relation it stands for', () => {
   const cas = tierStackToCas(INDEX);
   assert.deepEqual(
@@ -114,17 +129,23 @@ test('a surface and the call that leaves keep their names', () => {
 
 test('a record keeps its fields and the records it points at', () => {
   const cas = tierStackToCas(INDEX);
-  const order = cas.entities?.[0] as unknown as {
-    name: string;
-    fields: Array<{ name: string }>;
-    relationships: Array<{ field: string; entity: string; cardinality: string }>;
-  };
-  assert.equal(order.name, 'Order');
-  assert.deepEqual(order.fields.map(field => field.name), ['id', 'customerId', 'total']);
-  assert.deepEqual(order.relationships, [
-    { field: 'customerId', entity: 'Customer', cardinality: 'one' },
-    { field: 'lines', entity: 'OrderLine', cardinality: 'many' },
+  const order = cas.entities?.[0];
+  assert.equal(order?.name, 'Order');
+  assert.deepEqual(order?.fields?.map(field => [field.name, field.type, field.is_relation]), [
+    ['id', 'uuid', false],
+    ['customerId', 'uuid', true],
+    ['total', 'numeric', false],
   ]);
+  assert.deepEqual(order?.relations?.map(relation => [
+    relation.field,
+    relation.target_name,
+    relation.cardinality,
+    relation.evidence_source,
+  ]), [
+    ['customerId', 'Customer', 'N:1', 'orm-declaration'],
+    ['lines', 'OrderLine', '1:N', 'typed-composition'],
+  ]);
+  assert.deepEqual(order?.lifecycle.created_by, ['src/order.ts:function:place:12']);
 });
 
 test('a flow keeps the surface it starts from and the records it touches', () => {
@@ -134,21 +155,14 @@ test('a flow keeps the surface it starts from and the records it touches', () =>
   assert.equal(flow?.name, 'place an order');
   assert.equal(flow?.entry_point, 'entry:place');
   assert.deepEqual(flow?.entities, ['Order', 'Customer']);
+  assert.deepEqual(flow?.contract.input, ['Customer']);
+  assert.deepEqual(flow?.contract.side_effects.state_changes, ['Order']);
+  assert.equal(flow?.contract.logic, 'place an order');
 });
 
 test('a declared package is carried across', () => {
   const cas = tierStackToCas(INDEX);
   assert.deepEqual(cas.dependencies?.packages, [{ name: 'express', version: '', direct: true }]);
-});
-
-test('an index too large to read as text says so plainly', () => {
-  const said = tooLarge('/tmp/vast', 2_655_095_873);
-  assert.match(said, /2\.66 GB/);
-  assert.match(said, /binary form/);
-  assert.ok(READABLE_BYTES > 0);
-  assert.ok(outgrewText(new Error('stdout maxBuffer length exceeded')));
-  assert.ok(outgrewText(new Error('Cannot create a string longer than 0x1fffffe8 characters')));
-  assert.ok(!outgrewText(new Error('no such file')));
 });
 
 test('the tier stack is asked for only when it is asked for', () => {
