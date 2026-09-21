@@ -88,9 +88,9 @@ test('layered job persists structural layers and reports disabled comprehension 
     onPhase: (event) => { events.push(event); },
   });
 
-  assert.deepEqual(events.map(e => e.phase), ['l0', 'rest', 'enrichment']);
-  assert.deepEqual(events.map(event => event.status), ['succeeded', 'failed']);
-  assert.ok(events[2].error);
+  assert.deepEqual(events.map(e => e.phase), ['l0', 'rest']);
+  assert.deepEqual(events.map(event => event.status), ['succeeded', 'succeeded']);
+  assert.deepEqual(summary.failedLayers.map(layer => layer.layer), ['L4', 'L5']);
 
   // The function's own resolved value is a small counts summary, never the
   // CASOutput itself.
@@ -126,8 +126,8 @@ test('in-process layered analysis also reports rejected enrichment as failed', a
     assert.deepEqual(summary.failedLayers.map(layer => layer.layer), ['L4', 'L5']);
     const indexed = await getAnalysisEntry(fixtureProject);
     assert.deepEqual(indexed?.layers_ready?.layers.filter(layer => layer.status === 'error').map(layer => layer.layer), ['L4', 'L5']);
-    assert.deepEqual(events.map(event => event.status), ['succeeded', 'succeeded', 'failed']);
-    assert.match(events[2].error!, /L5:/);
+    assert.deepEqual(events.map(event => event.status), ['succeeded', 'succeeded']);
+    assert.match(summary.failedLayers.find(layer => layer.layer === 'L5')?.error || '', /comprehension/i);
   } finally {
     if (previous === undefined) delete process.env.KLAURO_ANALYSIS_IN_PROCESS;
     else process.env.KLAURO_ANALYSIS_IN_PROCESS = previous;

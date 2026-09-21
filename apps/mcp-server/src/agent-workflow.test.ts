@@ -1686,7 +1686,7 @@ test('readiness rejects completed comprehension with no published product capabi
 test('readiness refuses agent context when canonical comprehension is unavailable', async () => {
   await withWorkspace(async workspace => {
     const cas = fixtureCas();
-    cas.layers_ready = { layers: [{ layer: 'L5', name: 'comprehension', status: 'error', error: 'comprehension unavailable' }] } as never;
+    cas.layers_ready = { layers: [{ layer: 'L5', name: 'comprehension', status: 'not_loaded' }] } as never;
     cas.capabilities = [];
     cas.flow_graph = {
       ...(cas.flow_graph || {} as any),

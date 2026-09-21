@@ -25,6 +25,7 @@ const NON_TOOL_TOKENS = new Set<string>([
   'top_capabilities',
   // CAS field / response-shape keys referenced in prose
   'interpreted_by',
+  'layers_ready',
   'entry_points',
   'exit_points',
   'node_metrics',

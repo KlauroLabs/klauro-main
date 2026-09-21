@@ -1585,6 +1585,8 @@ export async function analyzeProjectIncremental(
   displayName?: string,
 ): Promise<IncrementalAnalysisResult> {
   const previous = await loadAnalysis(projectPath, { preferCache: true }).catch(() => null);
+  const entry = await getAnalysisEntry(projectPath).catch(() => null);
+  if (entry) await guardAgainstDoomedVersionRebuild(projectPath, describeAnalysisVersion(entry.cas_version));
   const previousCasVersion = previous ? getAnalysisVersionInfo(previous).stored_version : undefined;
   const output = await analyzeProject(projectPath, displayName);
   return {
