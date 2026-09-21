@@ -194,7 +194,14 @@ pub fn named(request: &str) -> String {
     format!("{:016x}-{}", hasher.finish(), request.len())
 }
 
+pub fn afresh() -> bool {
+    std::env::var("KLAURO_FORCE_AI_REFRESH").is_ok_and(|held| held != "0")
+}
+
 pub fn remembered(request: &str) -> Option<String> {
+    if afresh() {
+        return None;
+    }
     let held = std::fs::read_to_string(kept()?.join(named(request))).ok()?;
     let (asked, answered) = held.split_once('\u{0}')?;
     (asked == request).then(|| answered.to_string())
