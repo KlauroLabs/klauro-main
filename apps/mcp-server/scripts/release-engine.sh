@@ -48,6 +48,7 @@ zstd -19 -q -o "$ARTIFACT" "$BINARY"
 
 digest() { shasum -a 256 "$1" 2>/dev/null | awk '{print $1}' || sha256sum "$1" | awk '{print $1}'; }
 size() { wc -c < "$1" | tr -d ' '; }
+ARTIFACT_SHA="$(digest "$ARTIFACT")"
 
 cat > "$STAGE/artifact.json" <<JSON
 {
@@ -56,7 +57,7 @@ cat > "$STAGE/artifact.json" <<JSON
   "path": "engine/$VERSION/$PLATFORM/klauro-engine.zst",
   "encoding": "zstd",
   "size": $(size "$ARTIFACT"),
-  "sha256": "$(digest "$ARTIFACT")",
+  "sha256": "$ARTIFACT_SHA",
   "decompressedSize": $(size "$BINARY"),
   "decompressedSha256": "$(digest "$BINARY")",
   "publishedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -80,6 +81,21 @@ export SSHPASS="$VPS_PASSWORD"
 SSH="sshpass -e ssh -o StrictHostKeyChecking=no -o ConnectTimeout=25"
 DEST="$VPS_USER@$VPS_HOST"
 REMOTE="/opt/klauro/downloads/engine/$VERSION/$PLATFORM"
+
+PUBLISHED="$($SSH "$DEST" "cat '$REMOTE/artifact.json' 2>/dev/null" || true)"
+if [ -n "$PUBLISHED" ]; then
+  WAS="$(printf '%s' "$PUBLISHED" | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).sha256" 2>/dev/null || true)"
+  if [ "$WAS" = "$ARTIFACT_SHA" ]; then
+    echo "==> $VERSION/$PLATFORM is already published with these exact bytes — nothing to do."
+    exit 0
+  fi
+  echo "ERROR: klauro-engine $VERSION is already published for $PLATFORM with different bytes." >&2
+  echo "       published sha256: ${WAS:-unreadable}" >&2
+  echo "       this build's     : $ARTIFACT_SHA" >&2
+  echo "       A published version is immutable — whoever downloaded $VERSION verified the old" >&2
+  echo "       digest, and replacing it breaks them. Bump the version and release that instead." >&2
+  exit 1
+fi
 
 echo "==> Publishing to $DEST:$REMOTE"
 $SSH "$DEST" "mkdir -p '$REMOTE'"
