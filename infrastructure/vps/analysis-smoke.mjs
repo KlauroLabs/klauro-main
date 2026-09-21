@@ -43,10 +43,9 @@ try {
     ].join('\n'),
   );
 
-  const { analyzeProjectDeferred } = await import(APP);
+  const { analyzeProject } = await import(APP);
   const started = Date.now();
-  const result = await analyzeProjectDeferred(dir, 'klauro-deploy-smoke');
-  const output = result?.output ?? result;
+  const output = await analyzeProject(dir, 'klauro-deploy-smoke');
   const nodes = (output?.nodes || []).length;
   const elapsed = Date.now() - started;
 
