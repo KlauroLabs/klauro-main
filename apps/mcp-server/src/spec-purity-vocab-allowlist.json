@@ -257,6 +257,60 @@
       "name": "<inline:1omqc0sngnwg>",
       "category": "linguistic-noise",
       "reason": "English auxiliary and question words; a README feature bullet starting with one is a question or usage example, not an authored outcome. Closed grammar, no product vocabulary."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/callback-node-identity.ts",
+      "name": "CONTROL_FLOW_CALLBACK_CALLEES",
+      "category": "closed-language-taxonomy",
+      "reason": "JavaScript control-flow and scheduling callees whose callback argument is plumbing, not a registration; naming a callback after them would attribute a surface to the language's own idioms."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/callback-node-identity.ts",
+      "name": "OPTION_CHAIN_CALLEES",
+      "category": "closed-framework-taxonomy",
+      "reason": "The commander option-builder chain; its callees continue one command declaration rather than declaring separate surfaces."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/change-risk-evidence.ts",
+      "name": "RISKABLE_NODE_TYPES",
+      "category": "closed-cas-taxonomy",
+      "reason": "The CAS node types that can carry change risk, drawn from the emitted node taxonomy rather than from any domain vocabulary."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/source-discovery.ts",
+      "name": "SKIPPED_DIRECTORY_NAMES",
+      "category": "closed-technical-taxonomy",
+      "reason": "Dependency, build-output and tool-cache directory names that hold no authored source; generated from the registry and never used to classify a product."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/source-discovery.ts",
+      "name": "CONFIG_EXTENSIONS",
+      "category": "closed-technical-taxonomy",
+      "reason": "File extensions that mark a configuration document, used to route a file to the structured reader."
+    },
+    {
+      "file": "packages/analyzer-core/src/analyzer/core/source-discovery.ts",
+      "name": "MEDIA_EXTENSIONS",
+      "category": "closed-technical-taxonomy",
+      "reason": "File extensions that mark binary media, used to skip reading a file that declares nothing."
+    },
+    {
+      "file": "apps/mcp-server/src/account-workspace-analysis.ts",
+      "name": "WORKSPACE_MEMBER_FIELDS",
+      "category": "closed-cas-taxonomy",
+      "reason": "CAS field names a workspace member carries; our own output schema, not a vocabulary that decides a classification."
+    },
+    {
+      "file": "apps/mcp-server/src/account-workspace-analysis.ts",
+      "name": "WORKSPACE_MEMBER_OMITTED_FIELDS",
+      "category": "closed-cas-taxonomy",
+      "reason": "CAS field names a workspace member deliberately omits, so a workspace projection stays small; our own output schema."
+    },
+    {
+      "file": "apps/mcp-server/src/workspace-member-reference.ts",
+      "name": "WORKSPACE_MEMBER_REFERENCE_FIELDS",
+      "category": "closed-cas-taxonomy",
+      "reason": "CAS field names an honest member reference keeps; our own output schema."
     }
   ]
 }

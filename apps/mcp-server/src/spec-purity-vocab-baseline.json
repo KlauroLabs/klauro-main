@@ -1052,10 +1052,6 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "RISKABLE_NODE_TYPES"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
       "name": "SOURCE_EXT"
     },
     {
