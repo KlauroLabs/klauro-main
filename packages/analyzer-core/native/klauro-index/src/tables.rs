@@ -1,4 +1,3 @@
-/// A file that only describes a codebase, never declares its tables.
 fn only_prose(path: &str) -> bool {
     let lowered = path.to_ascii_lowercase();
     [".md", ".mdx", ".markdown", ".rst", ".txt", ".adoc"]
@@ -6,8 +5,6 @@ fn only_prose(path: &str) -> bool {
         .any(|extension| lowered.ends_with(extension))
 }
 
-/// The tables a file declares, read from the statements it holds, wherever they are written:
-/// in the schema itself, in a migration's string, in the argument of a call.
 pub fn declared(source: &[u8], path: &str, file: u32) -> Vec<Table> {
     if only_prose(path) || !holds_a_creation(source) {
         return Vec::new();
@@ -22,20 +19,16 @@ pub fn declared(source: &[u8], path: &str, file: u32) -> Vec<Table> {
     found
 }
 
-/// Whether a file is worth reading for declarations at all.
 fn holds_a_creation(source: &[u8]) -> bool {
     source
         .windows(11)
         .any(|held| held.eq_ignore_ascii_case(b"reate table"))
 }
 
-/// A table a statement creates, wherever that statement is written: in a schema file, or
-/// inside the string a migration hands to the database.
 #[derive(Debug)]
 pub struct Table {
     pub named: String,
     pub columns: Vec<String>,
-    /// The column that points, and the table it points at.
     pub points_at: Vec<(String, String)>,
     pub file: u32,
     pub line: u32,
@@ -65,7 +58,6 @@ fn spoken(word: &str) -> Option<String> {
     (plain && !RESERVED.contains(&word.to_ascii_lowercase().as_str())).then(|| word.to_string())
 }
 
-/// The table a column definition points at, when it says so.
 fn pointing(segment: &str) -> Option<String> {
     let lowered = segment.to_ascii_lowercase();
     let at = lowered.find("references")?;
@@ -76,7 +68,6 @@ fn pointing(segment: &str) -> Option<String> {
     spoken(&rest[..end])
 }
 
-/// The column a table-level foreign key constrains.
 fn constrained(segment: &str) -> Option<String> {
     let lowered = segment.to_ascii_lowercase();
     let at = lowered.find("foreign key")?;
@@ -127,7 +118,6 @@ fn leading(segment: &str) -> Option<String> {
     spoken(segment.trim().split_whitespace().next()?)
 }
 
-/// The tables a statement creates, read from the statement itself.
 pub fn creating(statement: &str) -> Vec<Table> {
     let lowered = statement.to_ascii_lowercase();
     let mut found = Vec::new();

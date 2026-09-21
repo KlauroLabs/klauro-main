@@ -100,7 +100,6 @@ pub struct Entity {
     pub addressed_by: u32,
     pub written_by: Vec<String>,
     pub read_by: Vec<String>,
-    /// The records this one points at, and the field that points.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub references: Vec<Reference>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -769,8 +768,6 @@ pub fn derive(
         }
     }
 
-    /// A surface carries a name someone could ask for. A keystroke a reader binds, a topic
-    /// left unnamed, a timer known only by its handle: each is a registration and no more.
     fn names_a_surface(entry: &EntryPoint) -> bool {
         if entry.kind == "schedule" && !crate::entry_exit::recurring(&entry.registrar) {
             return false;
@@ -1008,30 +1005,40 @@ fn addressed<'a>(
     }
 }
 
-/// The names a declaration mentions, for matching against the records a codebase keeps.
 fn naming(held: &str) -> Vec<&str> {
     held.split(|letter: char| !letter.is_alphanumeric() && letter != '_')
         .filter(|word| word.len() > 1 && word.starts_with(|letter: char| letter.is_alphabetic()))
         .collect()
 }
 
-/// The record a field's type names, and whether the field holds many of them.
+static HOLDS_MANY: &[&str] = &[
+    "array", "arraylist", "btreemap", "collection", "deque", "dictionary", "enumerable", "flow",
+    "flux", "hashmap", "hashset", "icollection", "idictionary", "ienumerable", "ilist", "iterable",
+    "iterator", "linkedlist", "list", "map", "observable", "publisher", "queue", "seq", "sequence",
+    "set", "stream", "vec", "vector",
+];
+
 fn points_at(annotation: &str) -> Option<(String, bool)> {
     let mut held = annotation.trim();
-    let many = held.contains("[]");
+    let mut many = held.contains("[]");
     loop {
-        let trimmed = held
-            .trim_end_matches(['?', '!', ' '])
-            .trim_start_matches(['?', ' ']);
-        let trimmed = trimmed.strip_suffix("[]").unwrap_or(trimmed);
-        let trimmed = match (trimmed.find('<'), trimmed.rfind('>')) {
-            (Some(open), Some(close)) if close > open + 1 => &trimmed[open + 1..close],
+        let trimmed = held.trim_matches(['?', '!', ' ']);
+        let trimmed = trimmed.strip_suffix("[]").unwrap_or(trimmed).trim_end();
+        let within = match (trimmed.find('<'), trimmed.rfind('>')) {
+            (Some(open), Some(close)) if close > open + 1 => {
+                let wrapper = trimmed[..open].rsplit(['.', ':']).next().unwrap_or("");
+                many = many
+                    || HOLDS_MANY
+                        .binary_search(&wrapper.to_ascii_lowercase().as_str())
+                        .is_ok();
+                trimmed[open + 1..close].rsplit(',').next().unwrap_or("").trim()
+            }
             _ => trimmed,
         };
-        if trimmed == held {
+        if within == held {
             break;
         }
-        held = trimmed;
+        held = within;
     }
     let held = held.rsplit(['.', ':']).next()?.trim();
     let named = held
@@ -1041,7 +1048,6 @@ fn points_at(annotation: &str) -> Option<(String, bool)> {
     (!named.is_empty()).then_some((named, many))
 }
 
-/// A file that configures a codebase rather than declaring anything in it.
 fn a_setting(path: &str) -> bool {
     let lowered = path.to_ascii_lowercase();
     [".yml", ".yaml", ".json", ".toml", ".ini", ".cfg", ".conf", ".properties", ".xml"]
@@ -1049,7 +1055,6 @@ fn a_setting(path: &str) -> bool {
         .any(|extension| lowered.ends_with(extension))
 }
 
-/// Whether two shapes describe the same record, told by the fields they share.
 fn the_same_record(left: &[String], right: &[String]) -> bool {
     let smaller = left.len().min(right.len());
     if smaller < 4 {
@@ -1063,7 +1068,6 @@ fn the_same_record(left: &[String], right: &[String]) -> bool {
     shared * 5 >= smaller * 4
 }
 
-/// A file whose whole purpose is to declare the shape of stored data.
 fn a_schema(path: &str) -> bool {
     let lowered = path.to_ascii_lowercase();
     lowered.ends_with(".prisma") || lowered.ends_with(".sql")
@@ -1113,7 +1117,6 @@ fn entities(
             }
         }
     }
-    // A record's own method may declare a relation by naming the record it reaches.
     for call in calls {
         let Some(caller) = call.caller.as_deref().and_then(|id| node_of.get(id)) else { continue };
         let Some(owner) = caller.parent.as_deref().and_then(|id| node_of.get(id)) else { continue };
@@ -1331,6 +1334,28 @@ fn entities(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_containers_are_sorted() {
+        assert!(super::HOLDS_MANY.windows(2).all(|held| held[0] < held[1]));
+    }
+
+    #[test]
+    fn a_field_holds_many_when_its_container_says_so() {
+        use super::points_at;
+        assert_eq!(points_at("User"), Some(("User".to_string(), false)));
+        assert_eq!(points_at("User?"), Some(("User".to_string(), false)));
+        assert_eq!(points_at("Post[]"), Some(("Post".to_string(), true)));
+        assert_eq!(points_at("List<User>"), Some(("User".to_string(), true)));
+        assert_eq!(points_at("Vec<Episode>"), Some(("Episode".to_string(), true)));
+        assert_eq!(points_at("Option<User>"), Some(("User".to_string(), false)));
+        assert_eq!(points_at("Map<String, Album>"), Some(("Album".to_string(), true)));
+        assert_eq!(
+            points_at("java.util.List<com.tivi.Show>"),
+            Some(("Show".to_string(), true))
+        );
+        assert_eq!(points_at("Flow<List<Season>>"), Some(("Season".to_string(), true)));
+    }
+
     use super::*;
 
     #[test]

@@ -61,7 +61,6 @@ static TEST_REGISTRARS: &[&str] = &["bench", "describe", "it", "suite", "test"];
 static SCHEDULE_REGISTRARS: &[&str] = &["cron", "schedule", "setInterval", "setTimeout"];
 static RECURRING: &[&str] = &["cron", "schedule", "setInterval"];
 
-/// Whether a timer runs its work again and again, or hands it back once after a delay.
 pub fn recurring(registrar: &str) -> bool {
     RECURRING.binary_search(&names::leaf(registrar)).is_ok()
 }
@@ -70,7 +69,6 @@ static COMMAND_REGISTRARS: &[&str] = &["action", "command", "handler"];
 static IPC_REGISTRARS: &[&str] = &["handle", "handleOnce", "invoke"];
 static PROCEDURE_REGISTRARS: &[&str] = &["mutation", "query", "subscription"];
 
-/// A loop nobody named is known by what holds it: the unit it runs inside.
 fn running_within<'a>(node: &'a IndexNode, named_of: &HashMap<&str, &'a IndexNode>) -> Option<&'a str> {
     let runs = |held: &IndexNode| {
         matches!(

@@ -1378,7 +1378,6 @@ pub fn wraps_script(id: &str) -> bool {
     matches!(id, "svelte" | "vue")
 }
 
-/// Whether this extractor reads declarations out of a language, whatever its file holds.
 pub fn reads(id: &str) -> bool {
     matches!(id, "typescript" | "javascript" | "svelte" | "vue")
 }
