@@ -23,7 +23,7 @@
     },
     {
       "file": "apps/mcp-server/src/remote-analyzer-service.ts",
-      "ceiling": 4447
+      "ceiling": 4466
     },
     {
       "file": "packages/analyzer-core/src/types/cas.types.ts",

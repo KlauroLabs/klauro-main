@@ -24,6 +24,16 @@ export async function publishedEngines(): Promise<EngineManifest> {
   }
 }
 
+const ARTIFACT_ROUTE = new RegExp(
+  `^/engine/(\\d+(?:\\.\\d+)*)/(${ENGINE_PLATFORMS.join('|')})/klauro-engine\\.zst$`
+);
+
+export function engineArtifactPath(route: string): string | null {
+  const asked = ARTIFACT_ROUTE.exec(route);
+  if (!asked) return null;
+  return path.join(engineDownloadsRoot(), 'engine', asked[1], asked[2], 'klauro-engine.zst');
+}
+
 export async function engineReleaseAsked(
   route: string,
   query: URLSearchParams,

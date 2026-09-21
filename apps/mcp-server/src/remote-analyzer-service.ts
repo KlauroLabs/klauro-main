@@ -1,4 +1,4 @@
-import { engineReleaseAsked } from './engine-release-routes';
+import { engineArtifactPath, engineReleaseAsked } from './engine-release-routes';
 import * as crypto from 'node:crypto';
 import * as http from 'node:http';
 import * as fs from 'fs-extra';
@@ -254,7 +254,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
       }
 
       if ((request.method === 'GET' || request.method === 'HEAD') && route.startsWith('/engine/')) {
-        await serveTarball(response, route.slice('/'.length));
+        await serveEngineArtifact(response, engineArtifactPath(route));
         return;
       }
 
@@ -4011,6 +4011,25 @@ async function serveInstallPowershell(response: http.ServerResponse): Promise<vo
   const body = await fs.readFile(scriptPath, 'utf8');
 
   writeText(response, 200, 'text/plain; charset=utf-8', body);
+}
+
+async function serveEngineArtifact(
+  response: http.ServerResponse,
+  artifact: string | null
+): Promise<void> {
+  let stat: fs.Stats | null = null;
+  if (artifact) stat = await fs.stat(artifact).catch(() => null);
+  if (!stat?.isFile()) {
+    writeText(response, 404, 'text/plain; charset=utf-8', 'no such engine artifact');
+    return;
+  }
+  response.writeHead(200, corsHeaders({
+    'content-type': 'application/zstd',
+    'content-length': String(stat.size),
+    'content-disposition': `attachment; filename="${path.basename(artifact as string)}"`,
+    'cache-control': 'public, max-age=31536000, immutable',
+  }));
+  createReadStream(artifact as string).pipe(response);
 }
 
 async function serveTarball(response: http.ServerResponse, requested: string): Promise<void> {
