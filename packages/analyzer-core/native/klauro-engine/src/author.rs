@@ -57,11 +57,15 @@ fn key() -> Option<String> {
 
 pub fn asked() -> bool {
     std::env::var("KLAURO_ENRICH").map(|held| held != "0").unwrap_or(true)
-        && (spoken_to().is_some() || key().is_some())
+        && (spoken_to().is_some() || addressed().is_some() || key().is_some())
+}
+
+fn addressed() -> Option<String> {
+    std::env::var("KLAURO_AUTHOR_ENDPOINT").ok().filter(|held| !held.is_empty())
 }
 
 fn endpoint() -> String {
-    std::env::var("KLAURO_AUTHOR_ENDPOINT").unwrap_or_else(|_| ENDPOINT.to_string())
+    addressed().unwrap_or_else(|| ENDPOINT.to_string())
 }
 
 fn model() -> String {
@@ -513,6 +517,10 @@ impl Grounding {
         self.supported >= GROUNDED && self.invented < GROUNDED
     }
 
+    pub fn fabricated(&self) -> bool {
+        self.invented >= GROUNDED
+    }
+
 }
 
 pub fn written_name(written: &Written) -> (&str, &str) {
@@ -668,8 +676,9 @@ fn spoken(command: &str, prompt: &str) -> Option<String> {
 }
 
 fn ask(request: &str) -> crate::reach::Answer {
-    match key() {
-        Some(key) => crate::reach::asking(&endpoint(), &key, request),
-        None => crate::reach::Answer::Refused,
+    match (key(), addressed()) {
+        (Some(key), _) => crate::reach::asking(&endpoint(), &key, request),
+        (None, Some(endpoint)) => crate::reach::asking(&endpoint, "", request),
+        (None, None) => crate::reach::Answer::Refused,
     }
 }

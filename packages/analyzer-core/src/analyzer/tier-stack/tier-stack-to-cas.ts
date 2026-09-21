@@ -17,6 +17,7 @@ import {
   type CASSystem,
 } from '../../types/cas.types';
 import type {
+  TierStackCapability,
   TierStackDeclaration,
   TierStackFlow,
   TierStackIndex,
@@ -233,17 +234,76 @@ function capabilitiesOf(index: TierStackIndex): CASOutput['capabilities'] {
             trigger: { method: entry.method, path: entry.path },
           }];
     });
-  return (index.comprehension?.capabilities ?? []).map(capability => ({
-    id: capability.id,
-    name: capability.name ?? capability.id,
-    description: capability.description ?? '',
-    category: 'core' as const,
-    operations: operationsOf(capability.surfaces ?? []),
-    related_entities: capability.records ?? [],
-    related_domains: capability.audience === undefined ? [] : [capability.audience],
-    criticality: (capability.changes ?? []).length > 0 ? ('high' as const) : ('medium' as const),
-    criticality_factors: (capability.changes ?? []).map(held => `changes ${held}`),
-  }));
+  return (index.comprehension?.capabilities ?? []).map(capability => {
+    const published = capability.standing !== 'provisional';
+    return {
+      id: capability.id,
+      name: capability.name ?? capability.id,
+      name_source: 'ai' as const,
+      description: capability.description ?? '',
+      description_source: 'ai' as const,
+      category: published ? ('core' as const) : ('supporting' as const),
+      operations: operationsOf(capability.surfaces ?? []),
+      related_entities: capability.records ?? [],
+      related_domains: capability.audience === undefined ? [] : [capability.audience],
+      criticality: (capability.changes ?? []).length > 0 ? ('high' as const) : ('medium' as const),
+      criticality_factors: (capability.changes ?? []).map(held => `changes ${held}`),
+      evidence_role: published ? ('product-outcome' as const) : ('supporting-mechanism' as const),
+      evidence_role_reasons: reasonsFor(capability),
+    };
+  });
+}
+
+function reasonsFor(capability: TierStackCapability): string[] {
+  const grounding = capability.grounding;
+  if (grounding === undefined) return [];
+  const reasons = [
+    `supported ${grounding.supported.toFixed(2)}`,
+    `invented ${grounding.invented.toFixed(2)}`,
+    `reads as an outcome ${grounding.outcome.toFixed(2)}`,
+  ];
+  if (grounding.universal !== undefined) {
+    reasons.push(`true of most systems ${grounding.universal.toFixed(2)}`);
+  }
+  return reasons;
+}
+
+function purposeOf(index: TierStackIndex): CASOutput['enhanced_system_purpose'] {
+  const comprehension = index.comprehension;
+  if (comprehension === undefined) return undefined;
+  const capabilities = comprehension.capabilities ?? [];
+  const published = capabilities.filter(capability => capability.standing !== 'provisional').length;
+  const provisional = capabilities.length - published;
+  const product = (comprehension.products ?? [])[0];
+  return {
+    primary_type: 'application',
+    primary_domain: '',
+    confidence: product?.grounding.supported ?? 0,
+    evidence: capabilities.map(capability => capability.name ?? capability.id),
+    inferred_description: product?.description ?? '',
+    description_source: 'ai',
+    core_concepts: (comprehension.entities ?? [])
+      .map(entity => entity.name)
+      .filter((name): name is string => name !== undefined),
+    supporting_workflow_ids: capabilities.flatMap(capability => capability.flows ?? []),
+    capability_catalog_coverage: {
+      evidence_families: capabilities.length,
+      published_capabilities: capabilities.length,
+      actual_publishable_capabilities: published,
+      status: coverageStatus(capabilities.length, published),
+      ...(provisional > 0
+        ? { reason: `${provisional} of ${capabilities.length} read as a mechanism rather than an outcome` }
+        : {}),
+    },
+  };
+}
+
+function coverageStatus(
+  total: number,
+  published: number,
+): NonNullable<NonNullable<CASOutput['enhanced_system_purpose']>['capability_catalog_coverage']>['status'] {
+  if (total === 0) return 'unavailable';
+  return published > 0 ? 'accepted' : 'partial';
 }
 
 function levelsOf(nodes: CASNode[]): CASOutput['progressive_levels'] {
@@ -372,6 +432,7 @@ export function tierStackToCas(index: TierStackIndex, displayName?: string): CAS
     exit_points: exitPointsOf(index),
     entities: entitiesOf(index),
     capabilities: capabilitiesOf(index),
+    enhanced_system_purpose: purposeOf(index),
     flows: flowsOf(index),
     dependencies: dependenciesOf(index),
     analyzer_contributions: [contributionOf(index, nodes, edges, entry_points)],

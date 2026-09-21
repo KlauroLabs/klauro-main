@@ -120,6 +120,7 @@ pub struct Capability {
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub grounding: Option<crate::author::Grounding>,
+    pub standing: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -163,6 +164,9 @@ fn changes(exit: &ExitPoint) -> bool {
 }
 
 const ASSIGNED: f64 = 0.6;
+const PUBLISHED: &str = "published";
+const PROVISIONAL: &str = "provisional";
+const CARRIES: f64 = 0.85;
 const TESTED: f64 = 0.5;
 
 fn spoken_for(root: &std::path::Path, nodes: &[IndexNode], files: &[String]) -> String {
@@ -363,6 +367,10 @@ fn test_capabilities(capabilities: &mut Vec<Capability>, spoken: &str) {
     capabilities.retain_mut(|capability| {
         let Some(grounding) = judged.get(&capability.id).copied() else { return false };
         capability.grounding = Some(grounding);
+        capability.standing = match grounding.stands() {
+            true => PUBLISHED,
+            false => PROVISIONAL,
+        };
         if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
             eprintln!(
                 "capability {:<44} supported {:.2} invented {:.2} outcome {:.2} universal {:.2} -> {}",
@@ -371,10 +379,10 @@ fn test_capabilities(capabilities: &mut Vec<Capability>, spoken: &str) {
                 grounding.invented,
                 grounding.outcome,
                 grounding.universal.unwrap_or(1.0),
-                grounding.stands()
+                capability.standing
             );
         }
-        grounding.stands()
+        !grounding.fabricated()
     });
 }
 
@@ -474,7 +482,7 @@ fn form_capabilities(held: &Comprehension, spoken: &str) -> Vec<Capability> {
     let by_id: HashMap<&str, &Flow> = held.flows.iter().map(|flow| (flow.id.as_str(), flow)).collect();
     for (at, (id, _)) in candidates.iter().enumerate() {
         let Some(answer) = answers.get(&format!("f{at}")) else { continue };
-        let Some(chosen) = answer.held(ASSIGNED) else { continue };
+        let Some(chosen) = answer.chosen() else { continue };
         let Some(outcome) = chosen.strip_prefix('o').and_then(|at| at.parse::<usize>().ok()) else {
             continue;
         };
@@ -490,7 +498,7 @@ fn form_capabilities(held: &Comprehension, spoken: &str) -> Vec<Capability> {
             .iter()
             .enumerate()
             .filter(|(at, _)| {
-                answers.get(&format!("f{at}")).and_then(|held| held.held(ASSIGNED)).is_some()
+                answers.get(&format!("f{at}")).and_then(|held| held.chosen()).is_some()
             })
             .count();
         eprintln!(
@@ -531,9 +539,10 @@ fn form_capabilities(held: &Comprehension, spoken: &str) -> Vec<Capability> {
                 .iter()
                 .map(|(flow, settled)| Delivery {
                     flow: flow.id.clone(),
-                    role: match *settled >= 0.85 {
-                        true => "primary",
-                        false => "supporting",
+                    role: match *settled {
+                        settled if settled >= CARRIES => "primary",
+                        settled if settled >= ASSIGNED => "supporting",
+                        _ => "tentative",
                     },
                     rationale: format!(
                         "{} {} and it was placed here with confidence {:.2}",
@@ -562,6 +571,7 @@ fn form_capabilities(held: &Comprehension, spoken: &str) -> Vec<Capability> {
                 name: Some(outcome.name.clone()),
                 description: Some(outcome.description.clone()),
                 grounding: None,
+                standing: PUBLISHED,
             })
         })
         .collect();

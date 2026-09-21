@@ -83,6 +83,14 @@ export interface TierStackEntity {
   project?: string;
 }
 
+export interface TierStackGrounding {
+  supported: number;
+  invented: number;
+  specific: number;
+  outcome: number;
+  universal?: number;
+}
+
 export interface TierStackCapability {
   id: string;
   name?: string;
@@ -92,6 +100,14 @@ export interface TierStackCapability {
   changes?: string[];
   flows?: string[];
   surfaces?: string[];
+  standing?: 'published' | 'provisional';
+  grounding?: TierStackGrounding;
+}
+
+export interface TierStackProduct {
+  project?: string;
+  description: string;
+  grounding: TierStackGrounding;
 }
 
 export interface TierStackStep {
@@ -137,6 +153,7 @@ export interface TierStackIndex {
   architecture?: { shape?: string; routes?: number; serving?: number };
   roles?: { roles?: Array<{ node: string; role: string }> };
   comprehension?: {
+    products?: TierStackProduct[];
     capabilities?: TierStackCapability[];
     flows?: TierStackFlow[];
     entities?: TierStackEntity[];
