@@ -1,3 +1,12 @@
+import {
+  artifactFor,
+  ENGINE_PLATFORMS,
+  isEnginePlatform,
+  latestFor,
+  released,
+  versionsOf,
+  type EngineManifest,
+} from './engine-release';
 import * as crypto from 'node:crypto';
 import * as http from 'node:http';
 import * as fs from 'fs-extra';
@@ -243,6 +252,16 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
 
       if ((request.method === 'GET' || request.method === 'HEAD') && route === '/install.ps1') {
         await serveInstallPowershell(response);
+        return;
+      }
+
+      if ((request.method === 'GET' || request.method === 'HEAD') && route.startsWith('/api/engine/')) {
+        await serveEngineRelease(request, response, route, requestUrl.searchParams);
+        return;
+      }
+
+      if ((request.method === 'GET' || request.method === 'HEAD') && route.startsWith('/engine/')) {
+        await serveTarball(response, route.slice('/'.length));
         return;
       }
 
@@ -4051,6 +4070,56 @@ async function serveTarball(response: http.ServerResponse, requested: string): P
     response.destroy();
   });
   stream.pipe(response);
+}
+
+function downloadsRoot(): string {
+  return process.env.KLAURO_DOWNLOADS_DIR || '/opt/klauro/downloads';
+}
+
+async function engineManifest(): Promise<EngineManifest> {
+  try {
+    return JSON.parse(await fs.readFile(path.join(downloadsRoot(), 'engine', 'manifest.json'), 'utf8'));
+  } catch {
+    return { artifacts: [] };
+  }
+}
+
+async function serveEngineRelease(
+  request: http.IncomingMessage,
+  response: http.ServerResponse,
+  route: string,
+  query: URLSearchParams
+): Promise<void> {
+  const manifest = await engineManifest();
+  const asked = route.slice('/api/engine/'.length);
+
+  if (asked === 'versions') {
+    writeJson(response, 200, { name: 'klauro-engine', versions: versionsOf(manifest) });
+    return;
+  }
+
+  const platform = query.get('platform') || undefined;
+  if (!isEnginePlatform(platform)) {
+    writeJson(response, 400, {
+      error: 'unknown_platform',
+      message: `platform must be one of ${ENGINE_PLATFORMS.join(', ')}`,
+      platforms: ENGINE_PLATFORMS,
+    });
+    return;
+  }
+
+  const artifact = asked === 'latest'
+    ? latestFor(manifest, platform)
+    : artifactFor(manifest, asked, platform);
+  if (!artifact) {
+    writeJson(response, 404, {
+      error: 'no_artifact',
+      message: `no klauro-engine build is published for ${platform} at ${asked}`,
+      platforms: versionsOf(manifest),
+    });
+    return;
+  }
+  writeJson(response, 200, released(artifact, publicBaseUrl(request)));
 }
 
 async function serveLatestManifest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
