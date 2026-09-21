@@ -269,7 +269,8 @@ function contributionOf(
   edges: CASEdge[],
   entry_points: CASEntryPoint[]
 ): CASAnalyzerContribution {
-  const read = index.files.filter(file => file.extracted === true).length;
+  const eligible = index.files.filter(file => file.language !== undefined && file.generated !== true);
+  const read = eligible.filter(file => file.extracted === true).length;
   return {
     analyzer_id: TIER_STACK_ANALYZER,
     analyzer_name: 'Tier stack',
@@ -280,11 +281,11 @@ function contributionOf(
     contributed_exit_points: (index.exit_points ?? []).length,
     analysis_scope: {
       applicability: 'file-coverage',
-      files_eligible: index.files.length,
+      files_eligible: eligible.length,
       files_analyzed: read,
-      files_skipped: index.files.length - read,
+      files_skipped: eligible.length - read,
       files_partial: 0,
-      complete: read === index.files.length,
+      complete: read === eligible.length,
     },
   };
 }

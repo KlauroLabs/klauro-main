@@ -118,7 +118,7 @@ export interface TierStackFlow {
 
 export interface TierStackIndex {
   root: string;
-  files: Array<{ path: string; kind: string; language?: string; extracted?: boolean }>;
+  files: Array<{ path: string; kind: string; language?: string; extracted?: boolean; generated?: boolean }>;
   nodes: TierStackNode[];
   edges: TierStackEdge[];
   entry_points?: TierStackEntryPoint[];
