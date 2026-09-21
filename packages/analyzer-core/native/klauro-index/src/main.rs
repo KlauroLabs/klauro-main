@@ -225,7 +225,11 @@ fn report_first_error(path: &str, source: &[u8], tree: &tree_sitter::Tree) {
 }
 
 fn main() {
-    let root = std::env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    let root = std::env::args()
+        .skip(1)
+        .find(|held| !held.starts_with("--"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
     let started = Instant::now();
     let found = discovery::discover(&root);
     let discovered = started.elapsed();
@@ -843,6 +847,12 @@ fn main() {
     index.comprehension = Some(comprehension);
 
     let emit_started = Instant::now();
+    if std::env::args().any(|held| held == "--json") {
+        let serialized = serde_json::to_vec(&index).unwrap();
+        std::io::stdout().write_all(&serialized).unwrap();
+        eprintln!("emit {:?} | {} bytes", emit_started.elapsed(), serialized.len());
+        return;
+    }
     let strings = std::cell::RefCell::new(wire::Strings::default());
     let body = rmp_serde::to_vec(&wire::Interned::new(&index, &strings)).unwrap();
     let mut serialized = rmp_serde::to_vec(&strings.into_inner().into_values()).unwrap();

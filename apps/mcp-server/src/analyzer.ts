@@ -64,6 +64,7 @@ import { getPgPool, resolvePgConnectionString } from './pg-pool';
 import { applyStoredElementDescriptions, validateDescription } from './description-enrichment';
 import { isLanguageBuiltinName } from '../../../packages/analyzer-core/src/analyzer/core/language-builtins';
 import { TEST_FRAMEWORK_DETECTION_FILES } from './test-framework-detection';
+import { analyzeWithTierStack, tierStackRequested } from '../../../packages/analyzer-core/src/analyzer/tier-stack';
 
 let orchestrator: AnalyzerOrchestrator | null = null;
 
@@ -976,6 +977,10 @@ export async function analyzeProject(projectPath: string, displayName?: string, 
       throw new Error(`Project path does not exist: ${projectPath}`);
     }
 
+
+  if (tierStackRequested()) {
+    return analyzeWithTierStack(projectPath, displayName);
+  }
 
   const sizeHint = await estimateProjectSizeHint(projectPath);
   return withProjectAnalysisLock(projectPath, () => withAnalysisLane(async (orch) => {
