@@ -180,8 +180,10 @@ fn ask(request: &str) -> Option<Answered> {
 }
 
 pub fn kept() -> Option<PathBuf> {
-    let home = std::env::var("HOME").ok()?;
-    let folder = PathBuf::from(home).join(".klauro/model-answers");
+    let folder = match std::env::var("KLAURO_AI_CACHE_PATH").ok().filter(|held| !held.is_empty()) {
+        Some(held) => PathBuf::from(held).join("model-answers"),
+        None => PathBuf::from(std::env::var("HOME").ok()?).join(".klauro/model-answers"),
+    };
     std::fs::create_dir_all(&folder).ok()?;
     Some(folder)
 }
