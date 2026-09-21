@@ -207,7 +207,7 @@ test('warnIfSessionExpiringSoon: warns once the session is within TOKEN_EXPIRY_W
   assert.match(writes[0], /klauro login/);
 });
 
-test('warnIfSessionExpiringSoon: past the TTL uses "very likely expired" wording, distinct from the approaching-TTL warning', () => {
+test('warnIfSessionExpiringSoon: past the TTL reports the age without claiming the session is dead', () => {
   resetSessionWarningStateForTests();
   const writes: string[] = [];
   const stderr = { write: (chunk: string) => { writes.push(chunk); return true; } };
@@ -216,7 +216,8 @@ test('warnIfSessionExpiringSoon: past the TTL uses "very likely expired" wording
   warnIfSessionExpiringSoon('https://example.test', { token: 't', email: 'a@b.com', updated_at: updatedAt }, now, stderr);
   assert.equal(writes.length, 1);
   assert.match(writes[0], /past the .* TTL/);
-  assert.match(writes[0], /very likely expired/);
+  assert.match(writes[0], /comes back unauthorized/);
+  assert.doesNotMatch(writes[0], /expired/);
 });
 
 test('warnIfSessionExpiringSoon: at most once per process (the latch)', () => {

@@ -293,7 +293,13 @@ async function main() {
 
   if ((SELF_UPDATE_COMMANDS as readonly string[]).includes(command)) {
     const auth = loadStoredConnectorAuth();
-    const serverUrl = normalizeServerUrl(value('--server-url') || auth.defaultServerUrl || process.env.KLAURO_URL);
+    const bound = await loadKlauroConfig(process.cwd()).then(
+      loaded => loaded.config.analyzer.serverUrl,
+      () => undefined,
+    );
+    const serverUrl = normalizeServerUrl(
+      value('--server-url') || bound || process.env.KLAURO_URL || auth.defaultServerUrl,
+    );
     await runSelfUpdate({
       serverUrl,
       checkOnly: process.argv.includes('--check'),

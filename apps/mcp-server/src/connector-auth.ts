@@ -148,9 +148,9 @@ export function warnIfSessionExpiringSoon(
   warnedThisProcess = true;
   const who = account.email ? ` as ${account.email}` : '';
   if (ageDays >= SESSION_TOKEN_TTL_DAYS) {
-    stderr.write(`Klauro: your session${who} on ${serverUrl} is ${ageDays.toFixed(1)} days old, past the ${SESSION_TOKEN_TTL_DAYS}-day TTL — it has very likely expired. Run \`klauro login\` to refresh.\n`);
+    stderr.write(`Klauro: your session${who} on ${serverUrl} is ${ageDays.toFixed(1)} days old, past the ${SESSION_TOKEN_TTL_DAYS}-day TTL. If a request comes back unauthorized, run \`klauro login\` to refresh.\n`);
   } else {
-    stderr.write(`Klauro: your session${who} on ${serverUrl} is ${ageDays.toFixed(1)} days old and will expire around day ${SESSION_TOKEN_TTL_DAYS}. Run \`klauro login\` soon to avoid an interruption.\n`);
+    stderr.write(`Klauro: your session${who} on ${serverUrl} is ${ageDays.toFixed(1)} days old and is expected to expire around day ${SESSION_TOKEN_TTL_DAYS}. Run \`klauro login\` before then to avoid an interruption.\n`);
   }
 }
 
@@ -560,15 +560,20 @@ export function switchStoredAccount(serverUrl: string | undefined, email: string
   const auth = loadStoredConnectorAuth();
   const normalized = normalizeServerUrl(serverUrl || auth.defaultServerUrl);
   const roster = auth.accountsByServer?.[normalized];
-  const account = roster?.[email];
+  const active = auth.accounts[normalized];
+  const account = roster?.[email] ?? (active?.email === email ? active : undefined);
   if (!account) {
-    const known = roster ? Object.keys(roster) : [];
+    const known = new Set(roster ? Object.keys(roster) : []);
+    if (active?.email) known.add(active.email);
     throw new Error(
-      known.length > 0
-        ? `No stored session for ${email} on ${normalized}. Known accounts: ${known.join(', ')}. Run \`klauro login --email ${email}\` to add it.`
+      known.size > 0
+        ? `No stored session for ${email} on ${normalized}. Known accounts: ${[...known].join(', ')}. Run \`klauro login --email ${email}\` to add it.`
         : `No stored accounts for ${normalized} yet. Run \`klauro login --email ${email}\` first.`,
     );
   }
+  auth.accountsByServer = auth.accountsByServer || {};
+  auth.accountsByServer[normalized] = auth.accountsByServer[normalized] || {};
+  auth.accountsByServer[normalized][email] = account;
   auth.accounts[normalized] = account;
   auth.defaultServerUrl = normalized;
   const file = persistAuth(auth);
