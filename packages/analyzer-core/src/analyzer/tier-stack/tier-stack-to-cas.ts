@@ -128,8 +128,13 @@ function entryPointsOf(index: TierStackIndex): CASEntryPoint[] {
     source_analyzer: TIER_STACK_ANALYZER,
     type: entry.kind,
     name: entry.name,
-    trigger: entry.registrar,
-    metadata: { method: entry.method, path: entry.path },
+    trigger: {
+      method: entry.method,
+      path: entry.path,
+      ...(entry.kind === 'event' ? { event: entry.name } : {}),
+      ...(entry.kind === 'schedule' ? { schedule: entry.name } : {}),
+    },
+    metadata: { registrar: entry.registrar },
   })) as CASEntryPoint[];
 }
 

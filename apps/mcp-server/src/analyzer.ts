@@ -24,6 +24,13 @@ import {
 import { resolveAnalysisHeapMb, type AnalysisHeapResolution } from './analysis-heap';
 import { readContainerMemory } from './analysis-memory';
 import { recorded } from './analysis-run-record';
+import {
+  AnalysisLoopBreakerError,
+  readRebuildAttempt,
+  recordingRebuild,
+  type RebuildAttempt,
+} from './analysis-rebuild-attempt';
+export { AnalysisLoopBreakerError } from './analysis-rebuild-attempt';
 import { changesBetween } from './analysis-change-report';
 import { analysisWorkerExecArgv, resolveAnalysisWorkerEntry } from './analysis-worker-channel';
 export { analysisWorkerExecArgv } from './analysis-worker-channel';
@@ -1326,53 +1333,6 @@ function getAnalysisStallMs(): number {
 
 
 
-interface InternalRebuildAttemptRecord {
-  state: 'in-progress' | 'succeeded' | 'failed';
-  trigger: 'version-rebuild';
-  started_at: string;
-  finished_at?: string;
-  duration_ms?: number;
-  reason?: string;
-
-
-
-
-
-
-  stored_version?: string;
-  current_version?: string;
-}
-
-function internalRebuildAttemptPath(projectPath: string): string {
-  return path.join(projectPath, '.reanalyze-attempt.json');
-}
-
-
-async function readInternalRebuildAttempt(projectPath: string): Promise<InternalRebuildAttemptRecord | null> {
-  try {
-    if (!nodeFs.existsSync(internalRebuildAttemptPath(projectPath))) return null;
-    return await fs.readJson(internalRebuildAttemptPath(projectPath));
-  } catch {
-    return null;
-  }
-}
-
-
-
-
-
-
-
-
-
-
-export class AnalysisLoopBreakerError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'AnalysisLoopBreakerError';
-  }
-}
-
 function isDoomedRebuildReason(reason: string | undefined): boolean {
   if (!reason) return false;
   return /worker-oom|analysis-stalled|reached heap limit|javascript heap out of memory|fatal error|killed by signal|exhausting its heap/i.test(reason);
@@ -1383,7 +1343,7 @@ async function guardAgainstDoomedVersionRebuild(
   versionInfo: { stored_version?: string; current_version: string },
 ): Promise<void> {
   if (!versionInfo.stored_version || versionInfo.stored_version === versionInfo.current_version) return;
-  const previousAttempt = await readInternalRebuildAttempt(projectPath);
+  const previousAttempt = await readRebuildAttempt(projectPath);
   if (
     previousAttempt?.state === 'failed' &&
     previousAttempt.stored_version === versionInfo.stored_version &&
@@ -1564,8 +1524,8 @@ export function __withOuterWorkerWatchdogForTests(
 
 
 
-export async function __readInternalRebuildAttemptForTests(projectPath: string): Promise<InternalRebuildAttemptRecord | null> {
-  return readInternalRebuildAttempt(projectPath);
+export async function __readInternalRebuildAttemptForTests(projectPath: string): Promise<RebuildAttempt | null> {
+  return readRebuildAttempt(projectPath);
 }
 
 
@@ -1586,9 +1546,14 @@ export async function analyzeProjectIncremental(
 ): Promise<IncrementalAnalysisResult> {
   const previous = await loadAnalysis(projectPath, { preferCache: true }).catch(() => null);
   const entry = await getAnalysisEntry(projectPath).catch(() => null);
-  if (entry) await guardAgainstDoomedVersionRebuild(projectPath, describeAnalysisVersion(entry.cas_version));
+  const version = entry ? describeAnalysisVersion(entry.cas_version) : null;
+  const rebuilding = version !== null && version.stored_version !== version.current_version;
+  if (version) await guardAgainstDoomedVersionRebuild(projectPath, version);
   const previousCasVersion = previous ? getAnalysisVersionInfo(previous).stored_version : undefined;
-  const output = await analyzeProject(projectPath, displayName);
+  const analyze = () => analyzeProject(projectPath, displayName);
+  const output = rebuilding && version
+    ? await recordingRebuild(projectPath, version, analyze)
+    : await analyze();
   return {
     output,
     state: await loadIncrementalState(projectPath) ?? {

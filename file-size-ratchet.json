@@ -51,7 +51,7 @@
     },
     {
       "file": "apps/mcp-server/src/analyzer.ts",
-      "ceiling": 2351
+      "ceiling": 2316
     },
     {
       "file": "packages/analyzer-core/src/analyzer/languages/rust-analyzer.ts",
