@@ -71,6 +71,6 @@ ${languageByExtension.map(([extension, id]) => `    (${JSON.stringify(extension)
 ];
 `;
 
-const target = path.join(root, 'native/klauro-index/src/language_tables.rs');
+const target = path.join(root, 'native/klauro-engine/src/language_tables.rs');
 fs.writeFileSync(target, generated);
 process.stdout.write(`${extensions.length} extensions, ${manifestNames.length} manifests, ${skipped.length} skipped directories\n`);

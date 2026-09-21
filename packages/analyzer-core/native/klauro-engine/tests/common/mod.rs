@@ -13,7 +13,7 @@ pub fn rehydrate_stream(stdout: &[u8]) -> Value {
 
 pub fn read(fixture: &str) -> Value {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(fixture);
-    let binary = PathBuf::from(env!("CARGO_BIN_EXE_klauro-index"));
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_klauro-engine"));
     let output = Command::new(binary).arg(&root).output().expect("index runs");
     rehydrate_stream(&output.stdout)
 }

@@ -143,27 +143,27 @@ export interface TierStackIndex {
   };
 }
 
-export function resolveIndexer(directory = __dirname): string | null {
+export function resolveEngine(directory = __dirname): string | null {
   const candidates = [
-    path.join(directory, 'native', 'klauro-index'),
-    path.resolve(directory, '../../../native/klauro-index/target/release/klauro-index'),
+    path.join(directory, 'native', 'klauro-engine'),
+    path.resolve(directory, '../../../native/klauro-engine/target/release/klauro-engine'),
   ];
   return candidates.find(candidate => fs.existsSync(candidate)) ?? null;
 }
 
-export function indexerPath(): string {
-  const found = process.env.KLAURO_INDEXER ?? resolveIndexer();
+export function enginePath(): string {
+  const found = process.env.KLAURO_ENGINE ?? resolveEngine();
   if (!found) {
     throw new Error(
-      'The analyzer binary is not installed beside this build. Set KLAURO_INDEXER, or build '
-      + 'packages/analyzer-core/native/klauro-index for this platform.'
+      'The analyzer binary is not installed beside this build. Set KLAURO_ENGINE, or build '
+      + 'packages/analyzer-core/native/klauro-engine for this platform.'
     );
   }
   return found;
 }
 
 export async function readTierStack(projectPath: string): Promise<TierStackIndex> {
-  const { stdout } = await run(indexerPath(), [projectPath], {
+  const { stdout } = await run(enginePath(), [projectPath], {
     maxBuffer: buffer.constants.MAX_LENGTH,
     encoding: 'buffer',
   });

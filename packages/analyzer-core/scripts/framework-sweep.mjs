@@ -3,10 +3,10 @@ import { readdirSync, existsSync, statSync } from 'node:fs';
 import * as path from 'node:path';
 
 const CORPUS = process.argv[2] || path.join(process.env.HOME, 'dev', 'corpus');
-const INDEXER = path.resolve('native/klauro-index/target/release/klauro-index');
+const INDEXER = path.resolve('native/klauro-engine/target/release/klauro-engine');
 
 const claimed = () => {
-  const source = spawnSync('grep', ['-oE', 'known\\("[^"]+", "framework"', 'native/klauro-index/src/dependencies.rs'], { encoding: 'utf8' });
+  const source = spawnSync('grep', ['-oE', 'known\\("[^"]+", "framework"', 'native/klauro-engine/src/dependencies.rs'], { encoding: 'utf8' });
   return [...new Set(String(source.stdout).split('\n').filter(Boolean).map(line => /known\("([^"]+)"/.exec(line)[1]))].sort();
 };
 

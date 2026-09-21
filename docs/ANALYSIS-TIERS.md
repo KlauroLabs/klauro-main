@@ -84,7 +84,7 @@ specification places ICELOT at code-unit, step and flow granularity within this 
 registrations, span creation — which is not the same thing as O1.
 
 **Measured today: 1.2 s** — discover 23 ms, parse 533 ms, resolve 266 ms, entry and exit 76 ms,
-ICELOT 51 ms, graph 234 ms — in `native/klauro-index`, against a budget of 4 s.
+ICELOT 51 ms, graph 234 ms — in `native/klauro-engine`, against a budget of 4 s.
 
 A file is routed to an extractor before it is read, from its size and whether its language declares
 anything. Code that declares gets 8 MiB, so a large generated module still indexes; markup and data
@@ -141,7 +141,7 @@ sharing one parameterised container are eight projects and eight deployables. Th
 what the repository declares about itself; shipping is recorded beside it, never as its gate.
 
 **Measured today: 73 ms.** Ship and run detection, roll-up and assignment run over T1 in
-`native/klauro-index/src/scope.rs`. A container's root is its build context rather than the
+`native/klauro-engine/src/scope.rs`. A container's root is its build context rather than the
 directory holding its Dockerfile, so packaging variants of one product are one unit; a compose
 service that pulls an image ships none of this repository's code. A compose file that names
 several services declares several units even where they build from one context, because a named
@@ -191,7 +191,7 @@ From T1, scoped by T2. Deterministic.
 | 3.3 Architecture | Route table, architectural paradigm, dependency roles | 0.2 s |
 | | **Tier total** | **1 s** |
 
-**Measured today: 4–93 ms** across the corpus, against a 1 s budget — in `native/klauro-index`,
+**Measured today: 4–93 ms** across the corpus, against a 1 s budget — in `native/klauro-engine`,
 per sub-project. Querying T1 is the whole difference: the analyzers re-read files, and none of
 this does.
 
@@ -249,7 +249,7 @@ From T1, scoped by T2. Deterministic.
 | | **Tier total** | **0.5 s** |
 
 **Measured today: under 30 ms on most repositories, 0.6 s on the largest** — in
-`native/klauro-index`. This is selection over T1, not discovery.
+`native/klauro-engine`. This is selection over T1, not discovery.
 
 A test case is an entry point T1 already found, told from a suite by the registrar that declared
 it. Three facts are added: what it checks, counted from the assertion vocabulary it calls and the
@@ -297,7 +297,7 @@ T1 through T4 say what the system is. T5 says how well it holds together. That d
 character is why these stages never sat anywhere comfortably.
 
 **Measured today: 25–190 ms** — conventions 4–22 ms, history 15–155 ms, health 5–30 ms — in
-`native/klauro-index`. 5.3 is real I/O against the commit log and is the tier's floor.
+`native/klauro-engine`. 5.3 is real I/O against the commit log and is the tier's floor.
 
 A convention is the shape most of a population takes, recorded as a count rather than a rule: how
 a language's files are named, where tests sit, whether a served surface carries a guard, whether a

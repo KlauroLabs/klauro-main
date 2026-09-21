@@ -59,7 +59,7 @@ fn the_commit_log_is_read_where_a_repository_holds_one() {
     git(&["add", "."]);
     git(&["commit", "--quiet", "-m", "second"]);
 
-    let binary = std::path::PathBuf::from(env!("CARGO_BIN_EXE_klauro-index"));
+    let binary = std::path::PathBuf::from(env!("CARGO_BIN_EXE_klauro-engine"));
     let output = Command::new(binary).arg(&root).output().expect("index runs");
     assert!(output.status.success());
     let index = common::rehydrate_stream(&output.stdout);

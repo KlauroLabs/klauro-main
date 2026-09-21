@@ -9,14 +9,14 @@ RUN mkdir src && printf 'fn main() {}\n' > src/main.rs && cargo build --release 
 COPY packages/analyzer-core/native/klauro-parse/src ./src
 RUN touch src/main.rs && cargo build --release
 
-FROM rust:1.93-bookworm AS native-index-builder
+FROM rust:1.93-bookworm AS native-engine-builder
 
-WORKDIR /build/klauro-index
+WORKDIR /build/klauro-engine
 
-COPY packages/analyzer-core/native/klauro-index/Cargo.toml packages/analyzer-core/native/klauro-index/Cargo.lock ./
-COPY packages/analyzer-core/native/klauro-index/build.rs ./build.rs
-COPY packages/analyzer-core/native/klauro-index/grammars ./grammars
-COPY packages/analyzer-core/native/klauro-index/src ./src
+COPY packages/analyzer-core/native/klauro-engine/Cargo.toml packages/analyzer-core/native/klauro-engine/Cargo.lock ./
+COPY packages/analyzer-core/native/klauro-engine/build.rs ./build.rs
+COPY packages/analyzer-core/native/klauro-engine/grammars ./grammars
+COPY packages/analyzer-core/native/klauro-engine/src ./src
 RUN cargo build --release --locked
 
 FROM node:${NODE_VERSION}-bookworm-slim AS runtime
@@ -61,7 +61,7 @@ COPY apps/api ./apps/api
 COPY apps/mcp-server ./apps/mcp-server
 COPY packages/analyzer-core ./packages/analyzer-core
 COPY --from=native-parser-builder /build/klauro-parse/target/release/klauro-parse /app/packages/analyzer-core/native/klauro-parse/target/release/klauro-parse
-COPY --from=native-index-builder /build/klauro-index/target/release/klauro-index /app/packages/analyzer-core/native/klauro-index/target/release/klauro-index
+COPY --from=native-engine-builder /build/klauro-engine/target/release/klauro-engine /app/packages/analyzer-core/native/klauro-engine/target/release/klauro-engine
 # @klauro/telemetry SDK is imported by relative path (self-telemetry.ts, env-gated);
 # zero runtime deps, run from source via tsx — just needs to be present in the image.
 COPY packages/klauro-sdk-js ./packages/klauro-sdk-js

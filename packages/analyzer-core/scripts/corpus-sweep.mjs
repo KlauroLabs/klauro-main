@@ -4,7 +4,7 @@ import { readdirSync, statSync } from 'node:fs';
 import * as path from 'node:path';
 
 const CORPUS = process.argv[2] || path.join(process.env.HOME, 'dev', 'corpus');
-const INDEXER = path.resolve('native/klauro-index/target/release/klauro-index');
+const INDEXER = path.resolve('native/klauro-engine/target/release/klauro-engine');
 const COVERAGE_FLOOR = 95;
 const STARTING_MILLISECONDS = 45;
 const MILLISECONDS_PER_FILE = 1.5;

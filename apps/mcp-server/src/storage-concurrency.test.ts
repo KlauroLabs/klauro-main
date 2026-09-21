@@ -65,7 +65,7 @@ async function findDeadPid(): Promise<number> {
 }
 
 test('concurrent index writes from two real processes do not lose entries', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-index-lock-'));
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-engine-lock-'));
   const storageDir = path.join(root, 'storage');
   const helperPath = path.join(root, 'index-writer.ts');
   await fs.writeFile(
