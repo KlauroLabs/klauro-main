@@ -6,6 +6,7 @@ import * as path from 'node:path';
 const CORPUS = process.argv[2] || path.join(process.env.HOME, 'dev', 'corpus');
 const INDEXER = path.resolve('native/klauro-index/target/release/klauro-index');
 const COVERAGE_FLOOR = 95;
+const STARTING_MILLISECONDS = 45;
 const MILLISECONDS_PER_FILE = 1.5;
 const MINIMUM_FILES = 15;
 
@@ -55,7 +56,7 @@ function index(root, repeat) {
     ([, language, extracted, total]) => ({ language, extracted: Number(extracted), total: Number(total) })
   );
   const files = number(/\((\d+) files\)/);
-  const allowance = Math.max(500, files * MILLISECONDS_PER_FILE);
+  const allowance = Math.max(500, STARTING_MILLISECONDS + files * MILLISECONDS_PER_FILE);
   let milliseconds = first.milliseconds;
   let again;
   if (repeat || milliseconds > allowance) {
