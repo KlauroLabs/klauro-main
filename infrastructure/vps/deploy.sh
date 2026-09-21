@@ -128,6 +128,9 @@ SOURCE_SYNC_EXCLUDES=(
   --exclude .proof-output
   --exclude '.klauro-*'
   --exclude .customer-package
+  --exclude .gstack
+  --exclude .remote-edit
+  --exclude .agents
 )
 
 if ! git -C "$APP_DIR" show "$DEPLOY_SHA_FULL:infrastructure/vps/docker-compose.yml" | grep -q '/opt/klauro/downloads'; then

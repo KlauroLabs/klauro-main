@@ -74,3 +74,7 @@ apps/mcp-server/src/gauntlet/scorecard-out/
 
 # esbuild output for the hosted analyzer bundles (build artifact, never committed)
 apps/mcp-server/dist-hosted/
+
+# agent tooling scratch: browser-session logs and a peer agent's edit staging area
+.gstack/
+.remote-edit/
