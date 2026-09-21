@@ -19,13 +19,18 @@ fn holding(path: &str) -> &str {
 }
 
 fn under(path: &str, root: &str) -> bool {
-    root.is_empty() || path == root || path.starts_with(&format!("{root}/"))
+    if root.is_empty() || path == root {
+        return true;
+    }
+    path.len() > root.len()
+        && path.starts_with(root)
+        && path.as_bytes()[root.len()] == b'/'
 }
 
 fn within(path: &str, root: &str, folder: &str) -> bool {
     let inside = match root.is_empty() {
         true => path,
-        false => match path.strip_prefix(&format!("{root}/")) {
+        false => match path.strip_prefix(root).and_then(|held| held.strip_prefix('/')) {
             Some(held) => held,
             None => return false,
         },
@@ -105,39 +110,52 @@ pub fn published(
         .map(|unit| Publishes { root: unit.root.as_str() })
         .collect();
 
-    let mut found = Vec::new();
-    for held in &publishing {
-        let names = manifest_files(files, &children, held.root);
-        let mut kept: Vec<&IndexNode> = Vec::new();
-        for node in nodes {
-            if !node.kind.is_declaration() || node.parent.is_none() {
-                continue;
-            }
-            let path = &files[node.file as usize];
-            if is_test(path) || !under(path, held.root) {
-                continue;
-            }
-            let owner = node.parent.as_deref().unwrap_or("");
-            if !owner.ends_with(path.as_str()) {
-                continue;
-            }
-            let language = extension(path);
-            let open = match language {
-                "go" => upper(&node.name),
-                "py" => spoken_for(&node.name) && within(path, held.root, "src"),
-                held_as if HEADERS.contains(&held_as) => {
-                    within(path, held.root, "include")
-                        || within(path, held.root, "single_include")
-                }
-                _ => {
-                    node.modifiers.exported
-                        || names.iter().any(|named| named == path)
-                }
-            };
-            if open {
-                kept.push(node);
-            }
+    if publishing.is_empty() {
+        return Vec::new();
+    }
+    let manifests: Vec<Vec<String>> =
+        publishing.iter().map(|held| manifest_files(files, &children, held.root)).collect();
+    let mut innermost: Vec<usize> = (0..publishing.len()).collect();
+    innermost.sort_by_key(|at| std::cmp::Reverse(publishing[*at].root.len()));
+    let holds: Vec<Option<usize>> = files
+        .iter()
+        .map(|path| {
+            innermost.iter().copied().find(|at| under(path, publishing[*at].root))
+        })
+        .collect();
+
+    let mut kept: Vec<Vec<&IndexNode>> = vec![Vec::new(); publishing.len()];
+    for node in nodes {
+        if !node.kind.is_declaration() || node.parent.is_none() {
+            continue;
         }
+        let Some(at) = holds.get(node.file as usize).copied().flatten() else { continue };
+        let path = &files[node.file as usize];
+        if is_test(path) {
+            continue;
+        }
+        let owner = node.parent.as_deref().unwrap_or("");
+        if !owner.ends_with(path.as_str()) {
+            continue;
+        }
+        let held = &publishing[at];
+        let language = extension(path);
+        let open = match language {
+            "go" => upper(&node.name),
+            "py" => spoken_for(&node.name) && within(path, held.root, "src"),
+            held_as if HEADERS.contains(&held_as) => {
+                within(path, held.root, "include") || within(path, held.root, "single_include")
+            }
+            _ => node.modifiers.exported || manifests[at].iter().any(|named| named == path),
+        };
+        if open {
+            kept[at].push(node);
+        }
+    }
+
+    let mut found = Vec::new();
+    for (at, mut kept) in kept.into_iter().enumerate() {
+        let names = &manifests[at];
         kept.sort_by(|left, right| {
             names
                 .iter()
