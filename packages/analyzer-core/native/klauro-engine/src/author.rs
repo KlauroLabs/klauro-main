@@ -42,6 +42,8 @@ pub struct Written {
     #[serde(default)]
     pub name: String,
     pub description: String,
+    #[serde(default)]
+    pub audience: String,
 }
 
 fn spoken_to() -> Option<String> {
@@ -214,6 +216,57 @@ pub fn name_them(
         .collect();
     for batch in batches {
         named.extend(batch);
+    }
+    named
+}
+
+pub fn name_capabilities(
+    spoken_for: &str,
+    grouped: &BTreeMap<String, String>,
+) -> BTreeMap<String, Written> {
+    let mut named = BTreeMap::new();
+    if !asked() || grouped.is_empty() {
+        return named;
+    }
+    let listed: Vec<String> = grouped
+        .iter()
+        .map(|(id, facts)| format!("- id: {id}\n{facts}"))
+        .collect();
+    let batches: Vec<BTreeMap<String, Written>> = listed
+        .par_chunks(named_per_call())
+        .map(|batch| name_capability_batch(spoken_for, batch))
+        .collect();
+    for batch in batches {
+        named.extend(batch);
+    }
+    named
+}
+
+fn name_capability_batch(spoken_for: &str, listed: &[String]) -> BTreeMap<String, Written> {
+    let mut named = BTreeMap::new();
+    let prompt = format!(
+        "A software system describes itself like this:\n{spoken_for}\n\n\
+         Each group below is a set of paths through the system that the evidence already placed \
+         together — they share the records they write, the surface they are reached through, or \
+         the effect they end in.\n\n\
+         Name the capability each group delivers, by these rules:\n{RULES}\n\n\
+         Name the audience for each one — an end user, an operator, an administrator, a developer, \
+         an analyst or an agent. Take your words from the operations and the self-description, \
+         never from the storage or the framework. A group that only reads can still deliver a \
+         capability; what its paths do at the end tells you what it is for, not whether it counts.\n\n\
+         For each group give a name of 2-6 words, one sentence saying what someone gets, and the \
+         audience it is for. Echo each id back exactly as given.\n\
+         Return JSON only: {{\"items\":[{{\"id\":\"...\",\"name\":\"...\",\"description\":\"...\",\"audience\":\"...\"}}]}}\n\n\
+         The groups:\n{}",
+        listed.join("\n\n")
+    );
+    let Some(written) = answered::<serde_json::Value>(&prompt, 3000, &asking_of_models(model()), "items") else { return named };
+    for item in written["items"].as_array().into_iter().flatten() {
+        let Ok(held) = serde_json::from_value::<Written>(item.clone()) else { continue };
+        if held.name.trim().is_empty() || held.description.trim().is_empty() {
+            continue;
+        }
+        named.insert(held.id.clone(), held);
     }
     named
 }

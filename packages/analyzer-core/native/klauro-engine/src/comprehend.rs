@@ -163,11 +163,8 @@ fn changes(exit: &ExitPoint) -> bool {
     }
 }
 
-const ASSIGNED: f64 = 0.6;
 const PUBLISHED: &str = "published";
 const PROVISIONAL: &str = "provisional";
-const CARRIES: f64 = 0.85;
-const TESTED: f64 = 0.5;
 
 fn spoken_for(root: &std::path::Path, nodes: &[IndexNode], files: &[String]) -> String {
     let mut said = Vec::new();
@@ -327,10 +324,10 @@ fn describe_one(
             grounding.supported,
             grounding.invented,
             grounding.outcome,
-            grounding.holds() && grounding.outcome >= TESTED
+            !grounding.fabricated()
         );
     }
-    (grounding.holds() && grounding.outcome >= TESTED).then(|| Product {
+    (!grounding.fabricated()).then(|| Product {
         project: project.map(str::to_string),
         description,
         grounding,
@@ -387,196 +384,174 @@ fn test_capabilities(capabilities: &mut Vec<Capability>, spoken: &str) {
 }
 
 fn form_capabilities(held: &Comprehension, spoken: &str) -> Vec<Capability> {
-    if !crate::author::asked() || !crate::jev::asked() {
+    if !crate::author::asked() {
         return Vec::new();
     }
-    let mut ranked: Vec<&Flow> = held.flows.iter().collect();
-    ranked.sort_by_key(|flow| match flow.standing {
-        "terminal" => 0,
-        "proximal" => 1,
-        _ => 2,
-    });
-    let mut lanes: BTreeMap<Option<&str>, Vec<&Flow>> = BTreeMap::new();
-    for flow in ranked {
-        lanes.entry(flow.project.as_deref()).or_default().push(flow);
+    let mut grouped: BTreeMap<Family, Vec<&Flow>> = BTreeMap::new();
+    for flow in held.flows.iter() {
+        grouped.entry(family_of(flow)).or_default().push(flow);
     }
-    let mut lanes: Vec<Vec<&Flow>> = lanes.into_values().collect();
-    for lane in &mut lanes {
-        let mut seen: HashSet<String> = HashSet::new();
-        lane.retain(|flow| {
-            seen.insert(format!(
-                "{}|{}|{}|{}",
-                flow.operation,
-                flow.standing,
-                flow.writes.join(","),
-                flow.changes.join(",")
-            ))
-        });
+    for lane in grouped.values_mut() {
+        lane.sort_by(|left, right| left.id.cmp(&right.id));
     }
-    let ranked: Vec<&Flow> = lanes.into_iter().flatten().collect();
-    let candidates: Vec<(&str, String)> = ranked
-        .into_iter()
-        .map(|flow| {
-            (
-                flow.id.as_str(),
-                format!(
-                    "{}{} ({}), {}{}",
-                    flow.method.as_deref().map(|held| format!("{held} ")).unwrap_or_default(),
-                    flow.operation,
-                    flow.kind,
-                    match flow.standing {
-                        "terminal" => "changes",
-                        "proximal" => "leads on",
-                        _ => "reads",
-                    },
-                    match (flow.writes.is_empty(), flow.reads.is_empty()) {
-                        (true, true) => String::new(),
-                        (true, false) => format!(" reads {}", flow.reads.join("/")),
-                        (false, true) => format!(" {}", flow.writes.join("/")),
-                        (false, false) => {
-                            format!(" {} reads {}", flow.writes.join("/"), flow.reads.join("/"))
-                        }
-                    }
-                ),
-            )
-        })
-        .collect();
-    let outcomes = crate::author::propose_outcomes(
-        &candidates.iter().map(|(_, facts)| facts.clone()).collect::<Vec<_>>(),
-        spoken,
-    );
-    if outcomes.is_empty() {
-        return Vec::new();
-    }
-    let mut criteria: std::collections::BTreeMap<String, String> = outcomes
+    let told: BTreeMap<String, String> = grouped
         .iter()
-        .enumerate()
-        .map(|(at, outcome)| (format!("o{at}"), outcome.name.clone()))
+        .map(|(family, flows)| (family.key.clone(), facts_of(flows)))
         .collect();
-    criteria.insert("none".to_string(), "This path serves none of these".to_string());
-    let questions: std::collections::BTreeMap<String, crate::jev::Question> = candidates
-        .iter()
-        .enumerate()
-        .map(|(at, (_, facts))| {
-            (
-                format!("f{at}"),
-                crate::jev::Question {
-                    kind: "choice",
-                    instructions: format!("Which outcome does this path serve? {facts}"),
-                    criteria: criteria.clone().into(),
-                },
-            )
-        })
-        .collect();
-    let state = format!(
-        "Outcomes of this system: {}",
-        outcomes
-            .iter()
-            .enumerate()
-            .map(|(at, outcome)| format!("o{at} {}", outcome.name))
-            .collect::<Vec<_>>()
-            .join("; ")
-    );
-    let answers = crate::jev::decide(&state, questions);
-    let mut grouped: HashMap<usize, Vec<(&Flow, f64)>> = HashMap::new();
-    let by_id: HashMap<&str, &Flow> = held.flows.iter().map(|flow| (flow.id.as_str(), flow)).collect();
-    for (at, (id, _)) in candidates.iter().enumerate() {
-        let Some(answer) = answers.get(&format!("f{at}")) else { continue };
-        let Some(chosen) = answer.chosen() else { continue };
-        let Some(outcome) = chosen.strip_prefix('o').and_then(|at| at.parse::<usize>().ok()) else {
-            continue;
-        };
-        if let Some(flow) = by_id.get(id) {
-            grouped
-                .entry(outcome)
-                .or_default()
-                .push((flow, answer.confidence.unwrap_or(0.0)));
-        }
-    }
+    let written = crate::author::name_capabilities(spoken, &told);
     if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
-        let settled = candidates
-            .iter()
-            .enumerate()
-            .filter(|(at, _)| {
-                answers.get(&format!("f{at}")).and_then(|held| held.chosen()).is_some()
-            })
-            .count();
         eprintln!(
-            "  author proposed {} outcomes, answered {} of {} paths, settled {}, grouped {}",
-            outcomes.len(),
-            answers.len(),
-            candidates.len(),
-            settled,
-            grouped.len()
+            "  author grouped {} paths into {} families, named {}",
+            held.flows.len(),
+            grouped.len(),
+            written.len()
         );
     }
-    let mut capabilities: Vec<Capability> = grouped
-        .into_iter()
-        .filter_map(|(at, flows)| {
-            let outcome = outcomes.get(at)?;
-            let mut surfaces: Vec<String> = flows
-                .iter()
-                .map(|(flow, _)| match flow.method.as_deref() {
-                    Some(method) => format!("{method} {}", flow.operation),
-                    None => flow.operation.clone(),
-                })
-                .collect();
-            surfaces.sort();
-            surfaces.dedup();
-            let mut records: Vec<String> = flows
-                .iter()
-                .flat_map(|(flow, _)| flow.writes.iter().cloned())
-                .collect();
-            records.sort();
-            records.dedup();
-            let mut changes: Vec<String> = flows
-                .iter()
-                .flat_map(|(flow, _)| flow.changes.iter().cloned())
-                .collect();
-            changes.sort();
-            changes.dedup();
-            let mut delivered: Vec<Delivery> = flows
-                .iter()
-                .map(|(flow, settled)| Delivery {
-                    flow: flow.id.clone(),
-                    role: match *settled {
-                        settled if settled >= CARRIES => "primary",
-                        settled if settled >= ASSIGNED => "supporting",
-                        _ => "tentative",
-                    },
-                    rationale: format!(
-                        "{} {} and it was placed here with confidence {:.2}",
-                        flow.operation,
-                        match flow.changes.is_empty() {
-                            true => "leads into other paths".to_string(),
-                            false => format!("ends by {}", flow.changes.join(", ")),
-                        },
-                        settled
-                    ),
-                })
-                .collect();
-            delivered.sort_by(|left, right| left.flow.cmp(&right.flow));
-            Some(Capability {
-                id: format!("capability:{}", outcome.name.to_ascii_lowercase().replace(' ', "-")),
-                records,
-                changes,
-                flows: delivered.iter().map(|held| held.flow.clone()).collect(),
-                delivered,
-                surfaces,
-                project: flows.first().and_then(|(flow, _)| flow.project.clone()),
-                audience: match outcome.audience.is_empty() {
-                    true => None,
-                    false => Some(outcome.audience.clone()),
+    let mut capabilities: BTreeMap<String, Capability> = BTreeMap::new();
+    for (family, flows) in grouped.iter() {
+        let Some(named) = written.get(&family.key) else { continue };
+        let id = format!("capability:{}", carved_name(&named.name));
+        let entry = capabilities.entry(id.clone()).or_insert_with(|| Capability {
+            id,
+            audience: match named.audience.trim().is_empty() {
+                true => None,
+                false => Some(named.audience.trim().to_ascii_lowercase()),
+            },
+            delivered: Vec::new(),
+            records: Vec::new(),
+            changes: Vec::new(),
+            flows: Vec::new(),
+            surfaces: Vec::new(),
+            project: flows.first().and_then(|flow| flow.project.clone()),
+            name: Some(named.name.trim().to_string()),
+            description: Some(named.description.trim().to_string()),
+            grounding: None,
+            standing: PUBLISHED,
+        });
+        for flow in flows {
+            entry.delivered.push(Delivery {
+                flow: flow.id.clone(),
+                role: match flow.standing {
+                    "terminal" | "proximal" => "primary",
+                    _ => "supporting",
                 },
-                name: Some(outcome.name.clone()),
-                description: Some(outcome.description.clone()),
-                grounding: None,
-                standing: PUBLISHED,
-            })
+                rationale: format!("{} belongs here by {}", flow.operation, family.basis),
+            });
+            entry.surfaces.push(match flow.method.as_deref() {
+                Some(method) => format!("{method} {}", flow.operation),
+                None => flow.operation.clone(),
+            });
+            entry.records.extend(flow.writes.iter().cloned());
+            entry.changes.extend(flow.changes.iter().cloned());
+        }
+    }
+    let mut formed: Vec<Capability> = capabilities.into_values().collect();
+    for capability in formed.iter_mut() {
+        capability.delivered.sort_by(|left, right| left.flow.cmp(&right.flow));
+        capability.flows = capability.delivered.iter().map(|held| held.flow.clone()).collect();
+        settle(&mut capability.surfaces);
+        settle(&mut capability.records);
+        settle(&mut capability.changes);
+    }
+    formed.sort_by(|left, right| left.id.cmp(&right.id));
+    formed
+}
+
+fn settle(held: &mut Vec<String>) {
+    held.sort();
+    held.dedup();
+}
+
+fn carved_name(name: &str) -> String {
+    let held: String = name
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .map(|letter| match letter.is_ascii_alphanumeric() {
+            true => letter,
+            false => '-',
         })
         .collect();
-    capabilities.sort_by(|left, right| left.id.cmp(&right.id));
-    capabilities
+    held.split('-').filter(|part| !part.is_empty()).collect::<Vec<_>>().join("-")
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct Family {
+    key: String,
+    basis: &'static str,
+}
+
+fn family_of(flow: &Flow) -> Family {
+    if !flow.writes.is_empty() {
+        let mut held = flow.writes.clone();
+        settle(&mut held);
+        return Family { key: format!("records:{}", held.join(",")), basis: "the records it writes" };
+    }
+    if let Some(surface) = surface_family(flow) {
+        return Family {
+            key: format!("surface:{surface}"),
+            basis: "the surface it is reached through",
+        };
+    }
+    if !flow.changes.is_empty() {
+        let mut held: Vec<String> = flow
+            .changes
+            .iter()
+            .map(|change| change.split(':').next().unwrap_or(change).to_string())
+            .collect();
+        settle(&mut held);
+        return Family { key: format!("effect:{}", held.join(",")), basis: "the effect it ends in" };
+    }
+    Family { key: format!("trigger:{}", flow.kind), basis: "how it is triggered" }
+}
+
+fn surface_family(flow: &Flow) -> Option<String> {
+    let operation = flow.operation.as_str();
+    if !operation.starts_with('/') {
+        return None;
+    }
+    let named = operation
+        .split('/')
+        .find(|segment| !segment.is_empty() && !addressed_by_version(segment) && !segment.starts_with(':'))?;
+    let held: String = named
+        .chars()
+        .take_while(|letter| letter.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect();
+    (!held.is_empty()).then_some(held)
+}
+
+fn addressed_by_version(segment: &str) -> bool {
+    segment == "api"
+        || (segment.starts_with('v') && segment[1..].chars().all(|letter| letter.is_ascii_digit()))
+}
+
+fn facts_of(flows: &[&Flow]) -> String {
+    let mut surfaces: Vec<String> = flows
+        .iter()
+        .map(|flow| match flow.method.as_deref() {
+            Some(method) => format!("{method} {}", flow.operation),
+            None => flow.operation.clone(),
+        })
+        .collect();
+    settle(&mut surfaces);
+    let mut records: Vec<String> = flows.iter().flat_map(|flow| flow.writes.iter().cloned()).collect();
+    settle(&mut records);
+    let mut changes: Vec<String> = flows.iter().flat_map(|flow| flow.changes.iter().cloned()).collect();
+    settle(&mut changes);
+    format!(
+        "  reached through: {}\n  it writes these records: {}\n  it ends by: {}\n  paths in this group: {}",
+        surfaces.join(", "),
+        match records.is_empty() {
+            true => "none named".to_string(),
+            false => records.join(", "),
+        },
+        match changes.is_empty() {
+            true => "leading into other paths".to_string(),
+            false => changes.join(", "),
+        },
+        flows.len()
+    )
 }
 
 pub fn author(
