@@ -26,6 +26,7 @@ pub fn extract(source: &str, file: u32, path: &str) -> FileFacts {
         registration_label: None,
     });
     let mut required = false;
+    let mut declared_requirements = false;
     for (offset, text) in source.lines().enumerate() {
         let line = offset as u32 + 1;
         if let Some(module) = directive(text, "module") {
@@ -46,7 +47,8 @@ pub fn extract(source: &str, file: u32, path: &str) -> FileFacts {
             if let Some(single) = directive(trimmed, "require") {
                 require(&mut facts, single, file, path, line);
             }
-            if required {
+            if required && !declared_requirements {
+                declared_requirements = true;
                 facts.nodes.push(declaration(
                     format!("{path}:section:require"),
                     "require".to_string(),

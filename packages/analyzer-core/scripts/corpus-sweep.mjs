@@ -56,6 +56,8 @@ function index(root, repeat) {
     ([, language, extracted, total]) => ({ language, extracted: Number(extracted), total: Number(total) })
   );
   const files = number(/\((\d+) files\)/);
+  const repeated = number(/repeated declarations (\d+)/);
+  const unattached = number(/unattached edges (\d+)/);
   const allowance = Math.max(500, STARTING_MILLISECONDS + files * MILLISECONDS_PER_FILE);
   let milliseconds = first.milliseconds;
   let again;
@@ -68,6 +70,8 @@ function index(root, repeat) {
   }
   return {
     again,
+    repeated,
+    unattached,
     allowance,
     digest: createHash('sha1').update(first.stdout).digest('hex').slice(0, 12),
     files,
@@ -204,6 +208,12 @@ for (const repo of repos) {
   }
   if (measured.unpartitioned > 0) {
     failures.push(`${repo} left ${measured.unpartitioned} declarations in no project`);
+  }
+  if (measured.repeated > 0) {
+    failures.push(`${repo} declared ${measured.repeated} node ids more than once`);
+  }
+  if (measured.unattached > 0) {
+    failures.push(`${repo} left ${measured.unattached} edges attached to nothing`);
   }
   if (measured.milliseconds > measured.allowance) {
     failures.push(

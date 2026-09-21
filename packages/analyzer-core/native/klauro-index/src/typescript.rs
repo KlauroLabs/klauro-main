@@ -92,7 +92,14 @@ impl<'a> Extractor<'a> {
     }
 
     fn id(&self, kind: &str, name: &str, node: Node) -> String {
-        format!("{}:{}:{}:{}", self.module_id, kind, name, line_of(node))
+        format!(
+            "{}:{}:{}:{}:{}",
+            self.module_id,
+            kind,
+            name,
+            line_of(node),
+            node.start_position().column + 1
+        )
     }
 
     fn push_edge(&mut self, source: &str, target: &str, kind: EdgeKind) {

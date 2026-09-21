@@ -138,6 +138,46 @@ fn extract(
     }
 }
 
+use crate::model::{IndexNode, Modifiers, NodeKind, Span};
+
+fn close_graph(index: &mut Index) {
+    let declared: std::collections::HashSet<&str> =
+        index.nodes.iter().map(|node| node.id.as_str()).collect();
+    let known: std::collections::HashMap<&str, u32> = index
+        .files
+        .iter()
+        .enumerate()
+        .map(|(at, file)| (file.path.as_str(), at as u32))
+        .collect();
+    let mut standing: Vec<(String, u32)> = index
+        .edges
+        .iter()
+        .flat_map(|edge| [edge.source.as_str(), edge.target.as_str()])
+        .filter(|held| !declared.contains(held))
+        .filter_map(|held| known.get(held).map(|file| (held.to_string(), *file)))
+        .collect();
+    standing.sort();
+    standing.dedup();
+    for (path, file) in standing {
+        index.nodes.push(IndexNode {
+            id: path.clone(),
+            name: paths::basename(&path).to_string(),
+            kind: NodeKind::Module,
+            file,
+            span: Span { line: 1, column: 1, end_line: 1, end_column: 1 },
+            parent: None,
+            signature: None,
+            modifiers: Modifiers::default(),
+            decorators: Vec::new(),
+            type_annotation: None,
+            documentation: None,
+            project: None,
+            callback_of: None,
+            registration_label: None,
+        });
+    }
+}
+
 fn read(
     path: &str,
     source: &mut Vec<u8>,
@@ -388,6 +428,8 @@ fn main() {
             node.parent = Some(owner.clone());
         }
     }
+
+    close_graph(&mut index);
 
     eprintln!(
         "resolve {:?} | edges {} | imported files {} | package {} | runtime {} | indirect {} | dynamic {} | unresolved {} | no caller {}",
@@ -841,6 +883,36 @@ fn main() {
         reach::asked()
     );
     index.comprehension = Some(comprehension);
+
+    if std::env::var("KLAURO_REPORT_COVERAGE").is_ok() {
+        let mut seen = std::collections::HashSet::with_capacity(index.nodes.len());
+        let mut repeated = 0usize;
+        let mut first: Option<&str> = None;
+        for node in &index.nodes {
+            if !seen.insert(node.id.as_str()) {
+                repeated += 1;
+                first.get_or_insert(node.id.as_str());
+            }
+        }
+        match first {
+            Some(id) => eprintln!("  repeated declarations {repeated} first {id}"),
+            None => eprintln!("  repeated declarations {repeated}"),
+        }
+        let mut standing: Option<&str> = None;
+        let dangling = index
+            .edges
+            .iter()
+            .flat_map(|edge| [edge.source.as_str(), edge.target.as_str()])
+            .filter(|held| !seen.contains(held))
+            .inspect(|held| {
+                standing.get_or_insert(held);
+            })
+            .count();
+        match standing {
+            Some(id) => eprintln!("  unattached edges {dangling} first {id}"),
+            None => eprintln!("  unattached edges {dangling}"),
+        }
+    }
 
     let emit_started = Instant::now();
     let strings = std::cell::RefCell::new(wire::Strings::default());

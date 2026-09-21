@@ -239,9 +239,10 @@ impl<'a> Extractor<'a> {
 
     fn id(&self, kind: &str, name: &str, node: Node) -> String {
         format!(
-            "{}:{kind}:{name}:{}",
+            "{}:{kind}:{name}:{}:{}",
             self.module_id,
-            node.start_position().row + 1
+            node.start_position().row + 1,
+            node.start_position().column + 1
         )
     }
 
@@ -606,6 +607,9 @@ impl<'a> Extractor<'a> {
     }
 
     fn visit(&mut self, node: Node, scope: &Scope) {
+        if !node.is_named() {
+            return;
+        }
         let kind = node.kind();
 
         if let Some(extended) = self.extended_type(node) {
@@ -1372,6 +1376,10 @@ impl<'a> Extractor<'a> {
         let registrar = scope.registrar.clone().unwrap_or_else(|| "lambda".to_string());
         let name = format!("{registrar}#{}", node.start_position().row + 1);
         let id = self.id("callback", &name, node);
+        if scope.callable.as_deref() == Some(id.as_str()) {
+            self.walk(node, scope);
+            return;
+        }
         self.facts.nodes.push(IndexNode {
             id: id.clone(),
             name,

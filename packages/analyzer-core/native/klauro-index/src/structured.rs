@@ -266,10 +266,11 @@ impl<'a> Extractor<'a> {
         edge: EdgeKind,
     ) -> String {
         let id = format!(
-            "{}:{}:{name}:{}",
+            "{}:{}:{name}:{}:{}",
             self.module_id,
             if kind == NodeKind::Class { "section" } else { "key" },
-            node.start_position().row + 1
+            node.start_position().row + 1,
+            node.start_position().column + 1
         );
         self.facts.nodes.push(IndexNode {
             id: id.clone(),
