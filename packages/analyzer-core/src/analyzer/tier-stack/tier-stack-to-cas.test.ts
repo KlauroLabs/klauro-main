@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { tierStackToCas } from './tier-stack-to-cas';
 import { tierStackRequested } from './index';
-import { READABLE_BYTES, tooLarge, type TierStackIndex } from './read-tier-stack';
+import { outgrewText, READABLE_BYTES, tooLarge, type TierStackIndex } from './read-tier-stack';
 
 const INDEX: TierStackIndex = {
   root: '/tmp/shop',
@@ -143,9 +143,12 @@ test('a declared package is carried across', () => {
 
 test('an index too large to read as text says so plainly', () => {
   const said = tooLarge('/tmp/vast', 2_655_095_873);
-  assert.match(said, /2\.66 GB of JSON/);
+  assert.match(said, /2\.66 GB/);
   assert.match(said, /binary form/);
   assert.ok(READABLE_BYTES > 0);
+  assert.ok(outgrewText(new Error('stdout maxBuffer length exceeded')));
+  assert.ok(outgrewText(new Error('Cannot create a string longer than 0x1fffffe8 characters')));
+  assert.ok(!outgrewText(new Error('no such file')));
 });
 
 test('the tier stack is asked for only when it is asked for', () => {

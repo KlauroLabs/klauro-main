@@ -121,21 +121,34 @@ export function indexerPath(): string {
 export const READABLE_BYTES = 0x1fffffe8;
 
 export async function readTierStack(projectPath: string): Promise<TierStackIndex> {
-  const { stdout } = await run(indexerPath(), [projectPath, '--json'], {
-    maxBuffer: READABLE_BYTES,
-    encoding: 'buffer',
-  });
+  let stdout: Buffer;
+  try {
+    ({ stdout } = await run(indexerPath(), [projectPath, '--json'], {
+      maxBuffer: READABLE_BYTES,
+      encoding: 'buffer',
+    }));
+  } catch (held) {
+    if (outgrewText(held)) {
+      throw new Error(tooLarge(projectPath));
+    }
+    throw held;
+  }
   if (stdout.length >= READABLE_BYTES) {
     throw new Error(tooLarge(projectPath, stdout.length));
   }
   return JSON.parse(stdout.toString('utf8')) as TierStackIndex;
 }
 
-export function tooLarge(projectPath: string, bytes: number): string {
-  const gigabytes = (bytes / 1e9).toFixed(2);
+export function outgrewText(held: unknown): boolean {
+  const said = held instanceof Error ? held.message : String(held);
+  return said.includes('maxBuffer') || said.includes('string longer than');
+}
+
+export function tooLarge(projectPath: string, bytes?: number): string {
+  const size = bytes === undefined ? 'more' : `${(bytes / 1e9).toFixed(2)} GB`;
   return (
-    `The tier stack described ${projectPath} in ${gigabytes} GB of JSON, and a string in this `
-    + `runtime stops at ${(READABLE_BYTES / 1e9).toFixed(2)} GB. Reading the index in its own `
-    + 'binary form would carry it; reading it as JSON cannot.'
+    `The tier stack described ${projectPath} in ${size} JSON than a string in this runtime `
+    + `can hold (${(READABLE_BYTES / 1e9).toFixed(2)} GB). Reading the index in its own binary `
+    + 'form would carry it; reading it as JSON cannot.'
   );
 }
