@@ -5,37 +5,10 @@ use serde::Serialize;
 
 use crate::entry_exit::{EntryPoint, ExitPoint};
 use crate::model::*;
-use crate::tables::Table;
+use crate::tables::{Column, Table};
 
 const STEPS_KEPT: usize = 16;
 const REACHING_AT_ONCE: usize = 24;
-
-fn shared<T>(lanes: &[Vec<T>], budget: usize) -> Vec<usize> {
-    let offered: usize = lanes.iter().map(Vec::len).sum();
-    let mut shares: Vec<usize> = lanes
-        .iter()
-        .map(|lane| match offered <= budget {
-            true => lane.len(),
-            false => (budget * lane.len() / offered).max(1).min(lane.len()),
-        })
-        .collect();
-    let mut spent: usize = shares.iter().sum();
-    let mut order: Vec<usize> = (0..lanes.len()).collect();
-    order.sort_by_key(|at| std::cmp::Reverse(lanes[*at].len()));
-    while spent > budget {
-        let Some(at) = order.iter().rev().find(|at| shares[**at] > 1).copied() else { break };
-        shares[at] -= 1;
-        spent -= 1;
-    }
-    while spent < budget {
-        let Some(at) = order.iter().find(|at| shares[**at] < lanes[**at].len()).copied() else {
-            break;
-        };
-        shares[at] += 1;
-        spent += 1;
-    }
-    shares
-}
 
 #[derive(Debug, Serialize)]
 pub struct Step {
@@ -74,12 +47,26 @@ pub struct Flow {
     pub project: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct Field {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub declared_as: Option<String>,
+}
+
+impl From<Column> for Field {
+    fn from(column: Column) -> Self {
+        Field { name: column.named, declared_as: column.declared_as }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct Reference {
     pub field: String,
     pub entity: String,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub many: bool,
+    pub declared_by: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -87,7 +74,7 @@ pub struct Entity {
     pub id: String,
     pub declared_as: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub named_fields: Vec<String>,
+    pub named_fields: Vec<Field>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -621,7 +608,12 @@ pub fn author(
                 },
                 match entity.named_fields.is_empty() {
                     true => format!("{} unnamed", entity.fields),
-                    false => entity.named_fields.join(", "),
+                    false => entity
+                        .named_fields
+                        .iter()
+                        .map(|field| field.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
                 },
                 entity.written_by.len(),
                 entity.read_by.len()
@@ -1055,15 +1047,15 @@ fn a_setting(path: &str) -> bool {
         .any(|extension| lowered.ends_with(extension))
 }
 
-fn the_same_record(left: &[String], right: &[String]) -> bool {
+fn the_same_record(left: &[Column], right: &[Field]) -> bool {
     let smaller = left.len().min(right.len());
     if smaller < 4 {
         return false;
     }
-    let held: HashSet<String> = right.iter().map(|field| field.to_ascii_lowercase()).collect();
+    let held: HashSet<String> = right.iter().map(|field| field.name.to_ascii_lowercase()).collect();
     let shared = left
         .iter()
-        .filter(|field| held.contains(&field.to_ascii_lowercase()))
+        .filter(|column| held.contains(&column.named.to_ascii_lowercase()))
         .count();
     shared * 5 >= smaller * 4
 }
@@ -1085,7 +1077,7 @@ fn entities(
     let node_of: HashMap<&str, &IndexNode> =
         nodes.iter().map(|node| (node.id.as_str(), node)).collect();
     let mut fields: HashMap<&str, u32> = HashMap::new();
-    let mut named_fields: HashMap<&str, Vec<String>> = HashMap::new();
+    let mut named_fields: HashMap<&str, Vec<Field>> = HashMap::new();
     let mut pointing: HashMap<&str, Vec<Reference>> = HashMap::new();
     for edge in edges {
         if edge.kind == EdgeKind::HasField {
@@ -1094,12 +1086,20 @@ fn entities(
             if let Some(field) = node_of.get(edge.target.as_str())
                 && !tells_of_itself(&field.name)
             {
-                held.push(field.name.clone());
+                held.push(Field {
+                    name: field.name.clone(),
+                    declared_as: field.type_annotation.clone(),
+                });
                 let held = pointing.entry(edge.source.as_str()).or_default();
                 if let Some(annotation) = field.type_annotation.as_deref()
                     && let Some((entity, many)) = points_at(annotation)
                 {
-                    held.push(Reference { field: field.name.clone(), entity, many });
+                    held.push(Reference {
+                        field: field.name.clone(),
+                        entity,
+                        many,
+                        declared_by: "type",
+                    });
                 }
                 for named in field
                     .decorators
@@ -1112,6 +1112,7 @@ fn entities(
                         field: field.name.clone(),
                         entity: named.to_string(),
                         many: false,
+                        declared_by: "decorator",
                     });
                 }
             }
@@ -1130,6 +1131,7 @@ fn entities(
                 field: caller.name.clone(),
                 entity: held.to_string(),
                 many,
+                declared_by: "call",
             });
         }
     }
@@ -1214,7 +1216,7 @@ fn entities(
             held.push(edge.source.clone());
         }
     }
-    let mut entities: Vec<Entity> = nodes
+    let entities: Vec<Entity> = nodes
         .iter()
         .filter(|node| node.kind.is_type())
         .filter(|node| files.get(node.file as usize).is_none_or(|path| !a_setting(path)))
@@ -1273,7 +1275,7 @@ fn entities(
         entities.push(Entity {
             id: format!("record:{named}"),
             fields: columns.len() as u32,
-            named_fields: columns,
+            named_fields: columns.into_iter().map(Field::from).collect(),
             declared_as: named,
             name: None,
             description: None,
@@ -1291,7 +1293,7 @@ fn entities(
             id: format!("record:{named}"),
             declared_as: table.named,
             fields: table.columns.len() as u32,
-            named_fields: table.columns,
+            named_fields: table.columns.into_iter().map(Field::from).collect(),
             name: None,
             description: None,
             grounding: None,
@@ -1302,7 +1304,12 @@ fn entities(
             references: table
                 .points_at
                 .into_iter()
-                .map(|(field, entity)| Reference { field, entity, many: false })
+                .map(|(field, entity)| Reference {
+                    field,
+                    entity,
+                    many: false,
+                    declared_by: "foreign key",
+                })
                 .collect(),
             project: None,
         });
