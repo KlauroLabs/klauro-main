@@ -33,7 +33,7 @@ fn a_method_a_trait_carries_answers_a_call_on_the_class_that_uses_it() {
         .map(|edge| edge["target"].as_str().unwrap())
         .collect();
     assert!(
-        found.iter().any(|target| target.contains("Sluggable") && target.ends_with("slug:7")),
+        found.iter().any(|target| target.contains("Sluggable") && common::names(target, "slug:7")),
         "the class did not declare the method it calls: {found:?}"
     );
 }

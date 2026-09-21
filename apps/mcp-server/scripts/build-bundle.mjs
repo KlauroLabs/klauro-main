@@ -1,5 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -83,6 +84,16 @@ if (hostedBuild) {
   if (nativeProbe.error || !nativeProbe.t) {
     throw new Error('Hosted build native parser did not return a valid syntax tree.');
   }
+  const nativeIndexer = path.join(analyzerCoreRoot, 'native', 'klauro-index', 'target', 'release', 'klauro-index');
+  if (!existsSync(nativeIndexer) || !statSync(nativeIndexer).isFile()) {
+    throw new Error('Hosted build requires the exact-platform native indexer; build packages/analyzer-core/native/klauro-index first.');
+  }
+  const indexerProbe = execFileSync(nativeIndexer, [mkdtempSync(path.join(tmpdir(), 'klauro-indexer-probe-'))], {
+    timeout: 30_000, maxBuffer: 1 << 20,
+  });
+  if (indexerProbe.length === 0) {
+    throw new Error('Hosted build native indexer did not emit an index.');
+  }
   const output = path.join(packageRoot, 'dist-hosted');
   rmSync(output, { recursive: true, force: true });
   mkdirSync(output, { recursive: true });
@@ -103,6 +114,8 @@ if (hostedBuild) {
   mkdirSync(path.join(output, 'native'), { recursive: true });
   cpSync(nativeParser, path.join(output, 'native', 'klauro-parse'));
   chmodSync(path.join(output, 'native', 'klauro-parse'), 0o755);
+  cpSync(nativeIndexer, path.join(output, 'native', 'klauro-index'));
+  chmodSync(path.join(output, 'native', 'klauro-index'), 0o755);
   console.log(`Built hosted analyzer artifacts in ${output}; these are never included in the customer package.`);
   process.exit(0);
 }

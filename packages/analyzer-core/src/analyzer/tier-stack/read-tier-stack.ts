@@ -1,5 +1,6 @@
 import * as buffer from 'buffer';
 import { execFile } from 'child_process';
+import * as fs from 'fs';
 import * as path from 'path';
 import { promisify } from 'util';
 
@@ -142,11 +143,23 @@ export interface TierStackIndex {
   };
 }
 
+export function resolveIndexer(directory = __dirname): string | null {
+  const candidates = [
+    path.join(directory, 'native', 'klauro-index'),
+    path.resolve(directory, '../../../native/klauro-index/target/release/klauro-index'),
+  ];
+  return candidates.find(candidate => fs.existsSync(candidate)) ?? null;
+}
+
 export function indexerPath(): string {
-  return (
-    process.env.KLAURO_INDEXER
-    ?? path.resolve(__dirname, '../../../native/klauro-index/target/release/klauro-index')
-  );
+  const found = process.env.KLAURO_INDEXER ?? resolveIndexer();
+  if (!found) {
+    throw new Error(
+      'The analyzer binary is not installed beside this build. Set KLAURO_INDEXER, or build '
+      + 'packages/analyzer-core/native/klauro-index for this platform.'
+    );
+  }
+  return found;
 }
 
 export async function readTierStack(projectPath: string): Promise<TierStackIndex> {

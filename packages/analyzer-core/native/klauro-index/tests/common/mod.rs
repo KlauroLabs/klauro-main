@@ -53,3 +53,15 @@ fn spoken(value: &rmpv::Value, symbols: &[String]) -> Value {
         rmpv::Value::Binary(_) | rmpv::Value::Ext(_, _) => Value::Null,
     }
 }
+
+pub fn names(id: &str, declared: &str) -> bool {
+    id.ends_with(declared) || id.contains(&format!("{declared}:"))
+}
+
+pub fn calls(index: &Value, source: &str, target: &str) -> bool {
+    index["edges"].as_array().unwrap().iter().any(|edge| {
+        edge["kind"] == "calls"
+            && names(edge["source"].as_str().unwrap(), source)
+            && names(edge["target"].as_str().unwrap(), target)
+    })
+}

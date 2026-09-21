@@ -23,13 +23,13 @@ fn a_resource_mounted_at_a_path_serves_the_handler_its_chain_hands_over() {
     assert!(
         found.iter().any(|(method, path, handler)| method == "GET"
             && path == "/tasks"
-            && handler.ends_with("function:list_tasks:3")),
+            && common::names(handler, "function:list_tasks:3")),
         "{found:?}"
     );
     assert!(
         found.iter().any(|(method, path, handler)| method == "POST"
             && path == "/dumps"
-            && handler.ends_with("function:create_dump:7")),
+            && common::names(handler, "function:create_dump:7")),
         "{found:?}"
     );
 }

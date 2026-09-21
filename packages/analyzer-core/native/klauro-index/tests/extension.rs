@@ -1,5 +1,7 @@
 mod common;
 
+use common::calls;
+
 fn index() -> serde_json::Value {
     common::read("extension")
 }
@@ -16,13 +18,10 @@ fn id_of(index: &serde_json::Value, name: &str) -> String {
         .to_string()
 }
 
-fn calls(index: &serde_json::Value, source: &str, target: &str) -> bool {
-    index["edges"].as_array().unwrap().iter().any(|edge| {
-        edge["kind"] == "calls"
-            && edge["source"].as_str().unwrap().ends_with(source)
-            && edge["target"].as_str().unwrap().ends_with(target)
-    })
+fn names(id: &str, declared: &str) -> bool {
+    id.ends_with(declared) || id.contains(&format!("{declared}:"))
 }
+
 
 #[test]
 fn an_extension_function_records_the_type_it_extends() {

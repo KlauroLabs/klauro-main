@@ -1,5 +1,7 @@
 mod common;
 
+use common::calls;
+
 fn index() -> serde_json::Value {
     common::read("module")
 }
