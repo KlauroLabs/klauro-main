@@ -757,10 +757,13 @@ pub fn derive(
         }
     }
 
-    /// A message names a surface when someone could ask for it by that name. A keystroke
-    /// a reader binds, or a topic left unnamed, is a registration and nothing more.
+    /// A surface carries a name someone could ask for. A keystroke a reader binds, a topic
+    /// left unnamed, a timer known only by its handle: each is a registration and no more.
     fn names_a_surface(entry: &EntryPoint) -> bool {
-        if !matches!(entry.kind, "event" | "message") {
+        if entry.kind == "schedule" && !crate::entry_exit::recurring(&entry.registrar) {
+            return false;
+        }
+        if !matches!(entry.kind, "event" | "message" | "schedule") {
             return true;
         }
         entry

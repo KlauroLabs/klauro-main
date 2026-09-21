@@ -59,10 +59,36 @@ static PATH_REGISTRARS: &[&str] = &[
 static EVENT_REGISTRARS: &[&str] = &["addEventListener", "on", "once", "prependListener"];
 static TEST_REGISTRARS: &[&str] = &["bench", "describe", "it", "suite", "test"];
 static SCHEDULE_REGISTRARS: &[&str] = &["cron", "schedule", "setInterval", "setTimeout"];
+static RECURRING: &[&str] = &["cron", "schedule", "setInterval"];
+
+/// Whether a timer runs its work again and again, or hands it back once after a delay.
+pub fn recurring(registrar: &str) -> bool {
+    RECURRING.binary_search(&names::leaf(registrar)).is_ok()
+}
 static MESSAGE_REGISTRARS: &[&str] = &["consume", "process", "subscribe", "worker"];
 static COMMAND_REGISTRARS: &[&str] = &["action", "command", "handler"];
 static IPC_REGISTRARS: &[&str] = &["handle", "handleOnce", "invoke"];
 static PROCEDURE_REGISTRARS: &[&str] = &["mutation", "query", "subscription"];
+
+/// A loop nobody named is known by what holds it: the unit it runs inside.
+fn running_within<'a>(node: &'a IndexNode, named_of: &HashMap<&str, &'a IndexNode>) -> Option<&'a str> {
+    let runs = |held: &IndexNode| {
+        matches!(
+            held.kind,
+            NodeKind::Function | NodeKind::Method | NodeKind::Constructor | NodeKind::Class
+        ) && !held.name.contains('#')
+    };
+    let mut climbed: HashSet<&str> = HashSet::from([node.id.as_str()]);
+    let mut holder = node;
+    while !runs(holder) {
+        let above = named_of.get(holder.parent.as_deref()?)?;
+        if !climbed.insert(above.id.as_str()) {
+            return None;
+        }
+        holder = above;
+    }
+    (!holder.name.is_empty()).then_some(holder.name.as_str())
+}
 
 fn declared_by_a_command(registrar: &str) -> bool {
     let Some((held, _)) = registrar.rsplit_once('.') else { return false };
@@ -626,15 +652,24 @@ pub fn derive(
         }
     }
 
+    let named_of: HashMap<&str, &IndexNode> =
+        nodes.iter().map(|node| (node.id.as_str(), node)).collect();
     for node in nodes {
         if let Some(registrar) = &node.callback_of {
             let label = node.registration_label.as_deref();
             if let Some(kind) = classify_registration(registrar, label) {
                 let verb = names::leaf(registrar);
+                let spoken = match (label, kind) {
+                    (_, "schedule") => running_within(node, &named_of)
+                        .unwrap_or(registrar.as_str())
+                        .to_string(),
+                    (Some(label), _) => label.to_string(),
+                    (None, _) => registrar.clone(),
+                };
                 entry_points.push(EntryPoint {
                     id: format!("entry:{}", node.id),
                     kind,
-                    name: label.unwrap_or(registrar).to_string(),
+                    name: spoken,
                     method: if kind == "http" {
                         Some(verb.to_ascii_uppercase())
                     } else {
@@ -829,10 +864,18 @@ pub fn derive(
         }
         let verb = names::leaf(&registration.registrar);
         let (label_method, path) = split_label(&registration.label);
+        let spoken = match kind == "schedule" {
+            true => named_of
+                .get(handler.as_str())
+                .and_then(|node| running_within(node, &named_of))
+                .unwrap_or(registration.label.as_str())
+                .to_string(),
+            false => registration.label.clone(),
+        };
         entry_points.push(EntryPoint {
             id: format!("entry:{handler}:{}", registration.label),
             kind,
-            name: registration.label.clone(),
+            name: spoken,
             method: match kind == "http" {
                 true => label_method
                     .or_else(|| mapped_method(verb))
@@ -1051,6 +1094,7 @@ mod tests {
             ("CHANGING_OPERATIONS", CHANGING_OPERATIONS),
             ("KEPT_OPERATIONS", KEPT_OPERATIONS),
             ("PROCEDURE_REGISTRARS", PROCEDURE_REGISTRARS),
+            ("RECURRING", RECURRING),
             ("SCHEDULE_REGISTRARS", SCHEDULE_REGISTRARS),
             ("SESSION_OPERATIONS", SESSION_OPERATIONS),
             ("TEST_REGISTRARS", TEST_REGISTRARS),
