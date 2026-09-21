@@ -118,10 +118,24 @@ export function indexerPath(): string {
   );
 }
 
+export const READABLE_BYTES = 0x1fffffe8;
+
 export async function readTierStack(projectPath: string): Promise<TierStackIndex> {
   const { stdout } = await run(indexerPath(), [projectPath, '--json'], {
-    maxBuffer: 1024 * 1024 * 1024,
+    maxBuffer: READABLE_BYTES,
     encoding: 'buffer',
   });
+  if (stdout.length >= READABLE_BYTES) {
+    throw new Error(tooLarge(projectPath, stdout.length));
+  }
   return JSON.parse(stdout.toString('utf8')) as TierStackIndex;
+}
+
+export function tooLarge(projectPath: string, bytes: number): string {
+  const gigabytes = (bytes / 1e9).toFixed(2);
+  return (
+    `The tier stack described ${projectPath} in ${gigabytes} GB of JSON, and a string in this `
+    + `runtime stops at ${(READABLE_BYTES / 1e9).toFixed(2)} GB. Reading the index in its own `
+    + 'binary form would carry it; reading it as JSON cannot.'
+  );
 }

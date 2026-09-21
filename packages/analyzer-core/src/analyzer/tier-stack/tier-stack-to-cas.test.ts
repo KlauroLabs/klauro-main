@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { tierStackToCas } from './tier-stack-to-cas';
 import { tierStackRequested } from './index';
-import type { TierStackIndex } from './read-tier-stack';
+import { READABLE_BYTES, tooLarge, type TierStackIndex } from './read-tier-stack';
 
 const INDEX: TierStackIndex = {
   root: '/tmp/shop',
@@ -139,6 +139,13 @@ test('a flow keeps the surface it starts from and the records it touches', () =>
 test('a declared package is carried across', () => {
   const cas = tierStackToCas(INDEX);
   assert.deepEqual(cas.dependencies?.packages, [{ name: 'express', version: '', direct: true }]);
+});
+
+test('an index too large to read as text says so plainly', () => {
+  const said = tooLarge('/tmp/vast', 2_655_095_873);
+  assert.match(said, /2\.66 GB of JSON/);
+  assert.match(said, /binary form/);
+  assert.ok(READABLE_BYTES > 0);
 });
 
 test('the tier stack is asked for only when it is asked for', () => {
