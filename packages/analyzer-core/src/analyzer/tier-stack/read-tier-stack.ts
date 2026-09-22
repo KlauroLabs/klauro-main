@@ -102,6 +102,7 @@ export interface TierStackCapability {
   surfaces?: string[];
   standing?: 'published' | 'provisional';
   touches?: string[];
+  project?: string;
   grounding?: TierStackGrounding;
   delivered?: Array<{ flow: string; role: string; rationale: string }>;
 }
@@ -110,6 +111,17 @@ export interface TierStackShipDeclaration {
   declares: 'ship' | 'run' | 'identity';
   kind: string;
   at: string;
+}
+
+export interface TierStackSubProject {
+  id: string;
+  name: string;
+  root: string;
+  files?: number;
+  entry_points?: number;
+  imports_crossing?: number;
+  ship_backed?: boolean;
+  runnable?: boolean;
 }
 
 export interface TierStackDeployable {
@@ -153,6 +165,7 @@ export interface TierStackFlow {
   reads?: string[];
   changes?: string[];
   leads_into?: string[];
+  project?: string;
 }
 
 export interface TierStackIndex {
@@ -176,6 +189,7 @@ export interface TierStackIndex {
   architecture?: { shape?: string; routes?: number; serving?: number };
   roles?: { roles?: Array<{ node: string; role: string }> };
   scope?: { deployables?: TierStackDeployable[] };
+  partition?: { sub_projects?: TierStackSubProject[] };
   comprehension?: {
     products?: TierStackProduct[];
     capabilities?: TierStackCapability[];

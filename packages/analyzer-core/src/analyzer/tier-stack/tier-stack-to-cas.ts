@@ -459,7 +459,48 @@ function architectureOf(index: TierStackIndex, nodes: CASNode[]): CASArchitectur
   };
 }
 
+function within(index: TierStackIndex, project: string): TierStackIndex {
+  const nodes = index.nodes.filter(node => node.project === project);
+  const held = new Set(nodes.map(node => node.id));
+  const comprehension = index.comprehension;
+  return {
+    ...index,
+    nodes,
+    edges: (index.edges ?? []).filter(edge => held.has(edge.source) && held.has(edge.target)),
+    entry_points: (index.entry_points ?? []).filter(entry => held.has(entry.handler)),
+    exit_points: (index.exit_points ?? []).filter(exit => held.has(exit.source)),
+    ...(comprehension === undefined ? {} : {
+      comprehension: {
+        ...comprehension,
+        products: (comprehension.products ?? []).filter(held => held.project === project),
+        capabilities: (comprehension.capabilities ?? []).filter(held => held.project === project),
+        flows: (comprehension.flows ?? []).filter(held => held.project === project),
+        entities: (comprehension.entities ?? []).filter(held => held.project === project),
+      },
+    }),
+  };
+}
+
+function borneBy(index: TierStackIndex): CASOutput[] {
+  const parts = index.partition?.sub_projects ?? [];
+  if (parts.length < 2) return [];
+  return parts
+    .map(part => ({ part, held: within(index, part.id) }))
+    .filter(({ held }) => held.nodes.length > 0)
+    .map(({ part, held }) => {
+      const child = casOf(held, part.name);
+      child.system.root_path = part.root === '' ? index.root : `${index.root}/${part.root}`;
+      return child;
+    });
+}
+
 export function tierStackToCas(index: TierStackIndex, displayName?: string): CASOutput {
+  const whole = casOf(index, displayName ?? path.basename(index.root));
+  const borne = borneBy(index);
+  return borne.length < 2 ? whole : { ...whole, children: borne };
+}
+
+function casOf(index: TierStackIndex, displayName?: string): CASOutput {
   const name = displayName ?? path.basename(index.root);
   const nodes = nodesOf(index);
   const edges = edgesOf(index);

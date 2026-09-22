@@ -320,9 +320,10 @@ fn describe_whole(
     );
     let description = crate::author::describe_system(&format!(
         "{facts}\n\nWrite the description of the whole from its parts. Lead with the parts that \
-         carry most of what the system does, and give every part its place in proportion to what \
-         it carries. Name them all: a part carrying little earns a clause, not a sentence, and \
-         never the subject. Describe the thing the parts add up to, not the list of parts."
+         carry most of what the system does, and give every part room in proportion to what it \
+         carries. Name them all. The heaviest part is what the description is about; a lighter \
+         part appears as what it contributes to that, never as the subject. Describe the thing \
+         the parts add up to, not the list of parts."
     ))?;
     let grounding = crate::author::test_description(&format!(
         "{facts}\n\nPROPOSED DESCRIPTION: {description}"
