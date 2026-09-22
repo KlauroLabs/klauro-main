@@ -92,6 +92,7 @@ pub fn derive(
 ) -> Roles {
     let named: HashMap<&str, &IndexNode> = nodes.iter().map(|node| (node.id.as_str(), node)).collect();
     let mut roles: Vec<Role> = Vec::new();
+    let mut inherits: Vec<(String, String, String)> = Vec::new();
     let mut seen: std::collections::HashSet<(String, &'static str)> =
         std::collections::HashSet::new();
 
@@ -125,6 +126,7 @@ pub fn derive(
         if let Some(role) = inherited_role(&target.name) {
             record(source, role, format!("inherits:{}", target.name));
         }
+        inherits.push((source.id.clone(), target.id.clone(), target.name.clone()));
     }
 
     for fact in type_references {
@@ -159,6 +161,35 @@ pub fn derive(
         }
         if let Some(role) = named_role(&node.name) {
             record(node, role, format!("name:{}", node.name));
+        }
+    }
+
+    let mut modelled: std::collections::HashSet<String> = roles
+        .iter()
+        .filter(|role| role.role == "model")
+        .map(|role| role.node.clone())
+        .collect();
+    loop {
+        let carried: Vec<(String, String)> = inherits
+            .iter()
+            .filter(|(source, target, _)| {
+                modelled.contains(target) && !modelled.contains(source)
+            })
+            .map(|(source, _, from)| (source.clone(), from.clone()))
+            .collect();
+        if carried.is_empty() {
+            break;
+        }
+        for (source, from) in carried {
+            if seen.insert((source.clone(), "model")) {
+                roles.push(Role {
+                    node: source.clone(),
+                    role: "model",
+                    from: format!("inherits:{from}"),
+                    project: named.get(source.as_str()).and_then(|node| node.project.clone()),
+                });
+            }
+            modelled.insert(source);
         }
     }
 

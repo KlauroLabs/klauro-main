@@ -466,6 +466,48 @@ fn classify_reached(
     None
 }
 
+static ROUTER_CONSTRUCTORS: &[&str] = &["APIRouter", "Blueprint", "Router"];
+
+fn constructs_a_router(callee: &str) -> bool {
+    ROUTER_CONSTRUCTORS.contains(&names::leaf(callee))
+}
+
+fn mounts_at(literal: &str) -> Option<&str> {
+    let held = literal.trim();
+    let value = match held.split_once('=') {
+        Some((named, value)) => {
+            matches!(named.trim(), "prefix" | "url_prefix").then_some(value)?
+        }
+        None => held,
+    };
+    let value = value.trim().trim_matches(|held| held == '"' || held == '\'');
+    looks_like_route(value).then_some(value)
+}
+
+fn mounted_under(calls: &[CallFact]) -> HashMap<u32, String> {
+    let mut held: HashMap<u32, Vec<&str>> = HashMap::new();
+    for call in calls {
+        if !constructs_a_router(&call.callee) {
+            continue;
+        }
+        for literal in &call.literals {
+            if let Some(under) = mounts_at(literal) {
+                held.entry(call.file).or_default().push(under);
+            }
+        }
+    }
+    held.into_iter()
+        .filter_map(|(file, mut under)| {
+            under.sort_unstable();
+            under.dedup();
+            match under.as_slice() {
+                [only] => Some((file, (*only).to_string())),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
 fn join_paths(base: &str, path: &str) -> String {
     let base = base.trim_end_matches('/');
     let path = path.trim_start_matches('/');
@@ -631,6 +673,7 @@ pub fn derive(
         }
     }
     let mut entry_points = Vec::new();
+    let mounted = mounted_under(calls);
     let mut base_paths: HashMap<&str, String> = HashMap::new();
     for node in nodes {
         if !matches!(node.kind, NodeKind::Class | NodeKind::Interface) {
@@ -668,7 +711,14 @@ pub fn derive(
                         None
                     },
                     path: if kind == "http" {
-                        label.map(str::to_string)
+                        let base = registered_on_a_router(registrar)
+                            .then(|| mounted.get(&node.file))
+                            .flatten();
+                        match (base, label) {
+                            (Some(base), Some(label)) => Some(join_paths(base, label)),
+                            (Some(base), None) => Some(base.clone()),
+                            (None, label) => label.map(str::to_string),
+                        }
                     } else {
                         None
                     },
@@ -687,7 +737,12 @@ pub fn derive(
                 let base = node
                     .parent
                     .as_deref()
-                    .and_then(|parent| base_paths.get(parent));
+                    .and_then(|parent| base_paths.get(parent))
+                    .or_else(|| {
+                        registered_on_a_router(&decorator.name)
+                            .then(|| mounted.get(&node.file))
+                            .flatten()
+                    });
                 let path = match (base, path) {
                     (Some(base), Some(path)) => Some(join_paths(base, &path)),
                     (Some(base), None) => Some(base.clone()),
@@ -856,6 +911,23 @@ pub fn derive(
         }
         let verb = names::leaf(&registration.registrar);
         let (label_method, path) = split_label(&registration.label);
+        let path = match registered_on_a_router(&registration.registrar)
+            .then(|| mounted.get(&registration.file))
+            .flatten()
+        {
+            Some(base) => join_paths(base, &path),
+            None => path,
+        };
+        if kind == "http" && handler == files[registration.file as usize] {
+            let stands_for_itself = entry_points.iter().any(|entry| {
+                entry.kind == "http"
+                    && entry.file == registration.file
+                    && entry.path.as_deref() == Some(path.as_str())
+            });
+            if stands_for_itself {
+                continue;
+            }
+        }
         let spoken = match kind == "schedule" {
             true => named_of
                 .get(handler.as_str())

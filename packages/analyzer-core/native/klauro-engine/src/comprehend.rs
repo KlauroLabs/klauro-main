@@ -148,8 +148,8 @@ static GENERIC: &[&str] = &[
 ];
 
 static CHANGING: &[&str] = &[
-    "create", "delete", "dispatch", "emit", "enqueue", "insert", "patch", "post", "publish", "put",
-    "remove", "save", "send", "set", "store", "update", "upsert", "write",
+    "add", "commit", "create", "delete", "dispatch", "emit", "enqueue", "insert", "patch", "post",
+    "publish", "put", "remove", "save", "send", "set", "store", "update", "upsert", "write",
 ];
 
 fn changes(exit: &ExitPoint) -> bool {
@@ -693,6 +693,7 @@ pub fn derive(
     roles: &crate::roles::Roles,
     declared_tables: &[crate::tables::Table],
     calls: &[CallFact],
+    type_references: &[crate::model::TypeReferenceFact],
 ) -> Comprehension {
     let position_of: HashMap<&str, u32> = nodes
         .iter()
@@ -728,20 +729,34 @@ pub fn derive(
         .collect();
     let mut entity_of: HashMap<&str, Vec<&str>> = HashMap::new();
     let mut read_of: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut named_within: HashMap<&str, Vec<&str>> = HashMap::new();
+    for reference in type_references {
+        let Some(named) = held.get(reference.name.as_str()) else { continue };
+        let holding = named_within.entry(reference.source.as_str()).or_default();
+        if !holding.contains(named) {
+            holding.push(named);
+        }
+    }
     for exit in exit_points {
         if exit.kind != "database" {
             continue;
         }
         let named = crate::names::root(&exit.target);
-        if !held.contains(named) {
+        let touching: Vec<&str> = match held.contains(named) {
+            true => vec![named],
+            false => named_within.get(exit.source.as_str()).cloned().unwrap_or_default(),
+        };
+        if touching.is_empty() {
             continue;
         }
-        let touching = match changes(exit) {
+        let holding = match changes(exit) {
             true => entity_of.entry(exit.source.as_str()).or_default(),
             false => read_of.entry(exit.source.as_str()).or_default(),
         };
-        if !touching.contains(&named) {
-            touching.push(named);
+        for named in touching {
+            if !holding.contains(&named) {
+                holding.push(named);
+            }
         }
     }
 

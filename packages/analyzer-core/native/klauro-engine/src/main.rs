@@ -828,6 +828,7 @@ fn main() {
         index.roles.as_ref().expect("roles precede comprehension"),
         &declared_tables,
         &index.calls,
+        &index.type_references,
     );
     let mut comprehension = comprehension;
     let mut spoken_languages: std::collections::BTreeMap<&str, u32> =
