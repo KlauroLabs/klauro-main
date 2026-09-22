@@ -572,9 +572,37 @@ static SESSION_OPERATIONS: &[&str] = &[
     "merge", "query", "refresh", "rollback", "scalar", "scalars",
 ];
 
+static REPOSITORY_OPERATIONS: &[&str] = &[
+    "aggregate", "all", "delete", "delete_all", "get", "get_by", "insert", "insert_all",
+    "insert_or_update", "one", "preload", "reload", "stream", "transaction", "update",
+    "update_all",
+];
+
+fn addressed_through(dotted: &str) -> Option<(&str, &str)> {
+    let mut held = dotted.rsplit('.');
+    let verb = held.next()?;
+    let owner = held.next()?;
+    Some((owner, verb))
+}
+
+fn kept_by_a_repository(owner: &str, verb: &str) -> bool {
+    owner.eq_ignore_ascii_case("repo")
+        && REPOSITORY_OPERATIONS
+            .binary_search(&verb.trim_end_matches(['!', '?']).to_ascii_lowercase().as_str())
+            .is_ok()
+}
+
 fn manager_exit(receiver: &str, operation: &str) -> Option<&'static str> {
     let manager = names::leaf(receiver).trim();
     if manager == "objects" {
+        return Some("database");
+    }
+    if kept_by_a_repository(manager, operation) {
+        return Some("database");
+    }
+    if let Some((owner, verb)) = addressed_through(receiver)
+        && kept_by_a_repository(owner, verb)
+    {
         return Some("database");
     }
     if manager.len() > "Queries".len() && manager.ends_with("Queries") {
