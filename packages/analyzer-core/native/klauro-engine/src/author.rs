@@ -568,16 +568,18 @@ pub fn same_outcome(spoken_for: &str, listed: &BTreeMap<String, String>) -> Vec<
     }
     let prompt = format!(
         "A software system describes itself like this:\n{spoken_for}\n\n\
-         Below is every capability read from it, each with the part it was found in and the \
-         surfaces it is reached through. They were read one part at a time, so the same outcome \
-         may appear more than once: reached from a page and from the route behind it, from a \
-         phone and from a command line, or split into steps of one thing.\n\n\
+         Below are capabilities read from it that already look like they may be one outcome — \
+         they were read one part at a time, so the same thing appears more than once: reached \
+         from a page and from the route behind it, from a phone and from a command line, or \
+         split into steps of one thing. They are in front of you together because they might be \
+         one; expect to put most of them together.\n\n\
          Put together the ones that are the same outcome, by these rules:\n{RULES}\n\n\
          Two are the same outcome when a person would say they did one thing, however many ways \
-         in the system offers. Browsing an album and browsing a trash folder are both browsing; \
-         sharing by link and sharing with a partner are both sharing. Two are NOT the same when \
-         someone would come for one and not the other. Leave a capability by itself if nothing \
-         else matches it — most groups are of one.\n\n\
+         in the system offers. Browsing an album, a trash folder, a timeline and a favourite are \
+         all browsing; sharing by link, with a partner, and seeing what is shared with you are \
+         all sharing; reading a photo's metadata and its statistics are both reading about it. \
+         Keep two apart only when someone would come for one and not the other — a different \
+         thing to do, not a different way to do it.\n\n\
          For each group give the name of the outcome in 2-6 words, one sentence saying what \
          someone gets, and the audience it is for. Name what the person ends up with, never the \
          way in and never what it is built on: a group reached through web routes is not called \

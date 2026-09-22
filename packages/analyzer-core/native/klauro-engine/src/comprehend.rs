@@ -760,6 +760,59 @@ fn form_capabilities(
 /// comprehended in its own right and keeps what it found; this says which of
 /// those are one outcome reached from several places, and belongs to the whole
 /// rather than to any part of it.
+/// Words that say nothing about what someone gets, so two capabilities sharing
+/// one of them are not thereby about the same thing.
+static SAYS_NOTHING: &[&str] = &[
+    "a", "access", "an", "and", "application", "control", "data", "for", "handling", "in",
+    "management", "managing", "of", "operations", "or", "service", "services", "support",
+    "system", "the", "to", "with",
+];
+
+/// What a name is about, shortened so that sharing and shared, memory and
+/// memories, arrive at the same word.
+fn about(name: &str) -> Vec<String> {
+    name.split(|letter: char| !letter.is_ascii_alphanumeric())
+        .map(|word| word.to_ascii_lowercase())
+        .filter(|word| word.len() > 2 && !SAYS_NOTHING.contains(&word.as_str()))
+        .map(|word| word.chars().take(4).collect())
+        .collect()
+}
+
+/// Which capabilities are worth asking about together. Asking one question of a
+/// hundred unrelated things is answered differently every time it is asked; this
+/// puts the ones that might be one outcome in front of each other and leaves
+/// everything else alone.
+fn worth_asking_together(capabilities: &[Capability]) -> Vec<Vec<usize>> {
+    let mut owner: Vec<usize> = (0..capabilities.len()).collect();
+    fn root(owner: &mut Vec<usize>, mut at: usize) -> usize {
+        while owner[at] != at {
+            owner[at] = owner[owner[at]];
+            at = owner[at];
+        }
+        at
+    }
+    let mut by_word: HashMap<String, usize> = HashMap::new();
+    for (at, capability) in capabilities.iter().enumerate() {
+        for word in about(capability.name.as_deref().unwrap_or("")) {
+            match by_word.get(&word).copied() {
+                Some(other) => {
+                    let (left, right) = (root(&mut owner, at), root(&mut owner, other));
+                    owner[left] = right;
+                }
+                None => {
+                    by_word.insert(word, at);
+                }
+            }
+        }
+    }
+    let mut held: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for at in 0..capabilities.len() {
+        let of = root(&mut owner, at);
+        held.entry(of).or_default().push(at);
+    }
+    held.into_values().collect()
+}
+
 fn reconciled(capabilities: &[Capability], spoken: &str) -> Vec<Capability> {
     if capabilities.len() < 2 {
         return Vec::new();
@@ -787,7 +840,22 @@ fn reconciled(capabilities: &[Capability], spoken: &str) -> Vec<Capability> {
             )
         })
         .collect();
-    let groups = crate::author::same_outcome(spoken, &listed);
+    // Each cluster is its own question, so they are asked at the same time and
+    // each is asked about few enough things to be answered the same way twice.
+    let groups: Vec<crate::author::Same> = worth_asking_together(capabilities)
+        .par_iter()
+        .filter(|cluster| cluster.len() > 1)
+        .flat_map(|cluster| {
+            let asking: BTreeMap<String, String> = cluster
+                .iter()
+                .filter_map(|at| {
+                    let key = format!("c{at}");
+                    listed.get(&key).map(|told| (key, told.clone()))
+                })
+                .collect();
+            crate::author::same_outcome(spoken, &asking)
+        })
+        .collect();
     let mut placed: Vec<Option<usize>> = vec![None; capabilities.len()];
     let mut named: Vec<&crate::author::Same> = Vec::new();
     for group in groups.iter() {
