@@ -24,18 +24,25 @@ pub fn reaching_at_once(over_a_network: usize) -> usize {
 /// Zero until something has been asked.
 static WRITTEN_PER_SECOND: AtomicU64 = AtomicU64::new(0);
 
-/// A batch is as slow as the one stream that writes it, so its size is however
-/// much answer fits in the time we are willing to wait for a single call.
-/// Placing a call costs about a second and the backend serves calls at the same
-/// time, so when it writes slowly the work belongs in more, smaller calls, and
-/// when it writes quickly it belongs in fewer, larger ones.
-const ANSWER_SECONDS: u64 = 20;
-const ANSWER_PER_ITEM: u64 = 200;
-const NAMED_PER_CALL_UNMEASURED: usize = 6;
+/// Answers that did not carry what was asked for, and so had to be asked again.
+/// This should stay at zero: an answer that has to be chased is a question that
+/// was put badly, not a backend that needs another go.
+static ASKED_AGAIN: AtomicU64 = AtomicU64::new(0);
+
+pub fn asked_again() -> u64 {
+    ASKED_AGAIN.load(Ordering::Relaxed)
+}
+
+/// Measured: a backend asked for one thing at a time answers in the wrong shape
+/// far more often than one asked for a list, and serving many calls at once
+/// divides a fixed pipe rather than widening it. Small batches were slower and
+/// lost groups; the batch stays whole. The rate is still measured, because how
+/// fast the backend writes is worth seeing even when nothing steers by it.
+const ANSWER_WORTH_TIMING: usize = 200;
 
 fn measured(answer: &str, took: std::time::Duration) {
     let seconds = took.as_secs_f64();
-    if seconds < 0.5 || answer.len() < ANSWER_PER_ITEM as usize {
+    if seconds < 0.5 || answer.len() < ANSWER_WORTH_TIMING {
         return;
     }
     let rate = (answer.len() as f64 / seconds).round() as u64;
@@ -52,12 +59,14 @@ pub fn writing_rate() -> u64 {
 }
 
 fn named_per_call() -> usize {
-    if spoken_to().is_some() {
-        return NAMED_PER_SPOKEN_CALL;
+    if let Ok(held) = std::env::var("KLAURO_NAMED_PER_CALL")
+        && let Ok(held) = held.parse::<usize>()
+    {
+        return held.max(1);
     }
-    match WRITTEN_PER_SECOND.load(Ordering::Relaxed) {
-        0 => NAMED_PER_CALL_UNMEASURED,
-        rate => ((rate * ANSWER_SECONDS / ANSWER_PER_ITEM) as usize).clamp(1, NAMED_PER_CALL),
+    match spoken_to().is_some() {
+        true => NAMED_PER_SPOKEN_CALL,
+        false => NAMED_PER_CALL,
     }
 }
 const PATHS_PER_PROPOSAL: usize = 500;
@@ -259,9 +268,25 @@ pub fn name_them(
     named
 }
 
+/// How many groups to put in one call, given how many there are altogether.
+/// The backend answers several callers at once and writes each answer with one
+/// stream, so the work belongs spread across the callers it can serve — but a
+/// call carrying too few groups is answered in the wrong shape more often than
+/// one carrying a list, so the batch has a floor.
+pub fn per_call_for(groups: usize) -> usize {
+    if spoken_to().is_some() {
+        return NAMED_PER_SPOKEN_CALL;
+    }
+    groups.div_ceil(CALLS_AT_ONCE).clamp(LEAST_PER_CALL, NAMED_PER_CALL)
+}
+
+const CALLS_AT_ONCE: usize = 12;
+const LEAST_PER_CALL: usize = 6;
+
 pub fn name_capabilities(
     spoken_for: &str,
     grouped: &BTreeMap<String, String>,
+    per_call: usize,
 ) -> BTreeMap<String, Written> {
     let mut named = BTreeMap::new();
     if !asked() || grouped.is_empty() {
@@ -272,7 +297,7 @@ pub fn name_capabilities(
         .map(|(id, facts)| format!("- id: {id}\n{facts}"))
         .collect();
     let batches: Vec<BTreeMap<String, Written>> = listed
-        .par_chunks(named_per_call())
+        .par_chunks(per_call.max(1))
         .map(|batch| name_capability_batch(spoken_for, batch))
         .collect();
     for batch in batches {
@@ -796,6 +821,7 @@ fn answered<T: serde::de::DeserializeOwned>(
                         held = Some((value, text, request));
                         break 'asking;
                     }
+                    ASKED_AGAIN.fetch_add(1, Ordering::Relaxed);
                     std::thread::sleep(std::time::Duration::from_millis(500 << attempt))
                 }
                 crate::reach::Answer::Refused => break,

@@ -576,16 +576,24 @@ fn test_capabilities(capabilities: &mut Vec<Capability>, spoken: &str) {
     });
 }
 
-fn form_capabilities(flows: &[&Flow], spoken: &str) -> Vec<Capability> {
-    if !crate::author::asked() {
-        return Vec::new();
-    }
-    let mut grouped: BTreeMap<Family, Vec<&Flow>> = BTreeMap::new();
+fn families_of<'a>(flows: &[&'a Flow]) -> BTreeMap<Family, Vec<&'a Flow>> {
+    let mut grouped: BTreeMap<Family, Vec<&'a Flow>> = BTreeMap::new();
     for flow in flows.iter() {
         grouped.entry(family_of(flow)).or_default().push(flow);
     }
     for lane in grouped.values_mut() {
         lane.sort_by(|left, right| left.id.cmp(&right.id));
+    }
+    grouped
+}
+
+fn form_capabilities(
+    grouped: BTreeMap<Family, Vec<&Flow>>,
+    spoken: &str,
+    per_call: usize,
+) -> Vec<Capability> {
+    if !crate::author::asked() {
+        return Vec::new();
     }
     // The key is ours, not the system's: naming a group after it hands the
     // author the interface or the folder we grouped by and gets it echoed back
@@ -597,12 +605,13 @@ fn form_capabilities(flows: &[&Flow], spoken: &str) -> Vec<Capability> {
         .enumerate()
         .map(|(at, (family, flows))| (format!("g{at}"), facts_of(flows, family)))
         .collect();
-    let written = crate::author::name_capabilities(spoken, &told);
+    let written = crate::author::name_capabilities(spoken, &told, per_call);
     if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
         eprintln!(
-            "  author grouped {} paths into {} families, named {}",
-            flows.len(),
+            "  author grouped {} paths into {} families in calls of {}, named {}",
+            held.iter().map(|(_, flows)| flows.len()).sum::<usize>(),
             grouped.len(),
+            per_call,
             written.len()
         );
     }
@@ -846,13 +855,27 @@ pub fn author(
                 held.flows.iter().map(|flow| flow.project.clone()).collect();
             parts.sort();
             parts.dedup();
-            let mut capabilities: Vec<Capability> = parts
+            // Grouping is deterministic and costs nothing, so every part is
+            // grouped before anything is asked. The backend answers several
+            // callers at once and one call is written by one stream, so the
+            // repository's groups are split across the calls it can serve
+            // rather than bundled per part, where a repository of one part
+            // would keep a single stream busy and the rest of them idle.
+            let grouped: Vec<(Option<String>, BTreeMap<Family, Vec<&Flow>>)> = parts
                 .par_iter()
-                .flat_map(|part| {
+                .map(|part| {
                     let flows: Vec<&Flow> =
                         held.flows.iter().filter(|flow| &flow.project == part).collect();
+                    (part.clone(), families_of(&flows))
+                })
+                .collect();
+            let families: usize = grouped.iter().map(|(_, held)| held.len()).sum();
+            let per_call = crate::author::per_call_for(families);
+            let mut capabilities: Vec<Capability> = grouped
+                .into_par_iter()
+                .flat_map(|(part, families)| {
                     let said = spoken_within(&spoken, part.as_deref());
-                    let mut found = form_capabilities(&flows, &said);
+                    let mut found = form_capabilities(families, &said, per_call);
                     test_capabilities(&mut found, &said);
                     found
                 })
@@ -862,10 +885,11 @@ pub fn author(
             let products =
                 describe_product(&capabilities, &held.entities, &held.flows, &spoken, told);
             eprintln!(
-                "  author form {formed:?} across {} parts | describe {:?} | backend writes {} bytes/s",
+                "  author form {formed:?} across {} parts | describe {:?} | backend writes {} bytes/s | asked again {}",
                 parts.len(),
                 started.elapsed() - formed,
-                crate::author::writing_rate()
+                crate::author::writing_rate(),
+                crate::author::asked_again()
             );
             (capabilities, products)
         },
