@@ -183,10 +183,33 @@ impl<'a> Symbols<'a> {
     }
 
     fn member_type(&self, owner: u32, name: &str) -> Option<&'a str> {
-        let member = &self.nodes[self.member(owner, name)? as usize];
-        member.type_annotation.as_deref().or_else(|| {
-            member.signature.as_ref()?.return_type.as_deref().filter(|returns| !returns.is_empty())
-        })
+        if let Some(at) = self.member(owner, name) {
+            let member = &self.nodes[at as usize];
+            let held = member.type_annotation.as_deref().or_else(|| {
+                member.signature.as_ref()?.return_type.as_deref().filter(|held| !held.is_empty())
+            });
+            if held.is_some() {
+                return held;
+            }
+        }
+        self.handed_in(owner, name)
+    }
+
+    fn handed_in(&self, owner: u32, name: &str) -> Option<&'a str> {
+        for built in ["constructor", "__init__", "new"] {
+            let Some(at) = self.member(owner, built) else { continue };
+            let held = self.nodes[at as usize]
+                .signature
+                .as_ref()
+                .and_then(|signature| {
+                    signature.parameters.iter().find(|parameter| parameter.name == name)
+                })
+                .and_then(|parameter| parameter.type_annotation.as_deref());
+            if held.is_some() {
+                return held;
+            }
+        }
+        None
     }
 }
 
