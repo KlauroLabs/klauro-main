@@ -396,7 +396,7 @@ fn head(text: &str, separator: char, keep: usize) -> &str {
         if index == keep {
             break;
         }
-        end += part.len() + usize::from(index > 0);
+        end += part.len() + if index > 0 { separator.len_utf8() } else { 0 };
     }
     &text[..end.min(text.len())]
 }
@@ -459,7 +459,7 @@ fn catalog_prefix(specifier: &str) -> Option<&'static str> {
 
 fn named_as(package: &str, prefix: &str) -> bool {
     package.len() >= prefix.len()
-        && package[..prefix.len()].eq_ignore_ascii_case(prefix)
+        && package.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
         && bounded(package, prefix)
 }
 
@@ -709,4 +709,22 @@ pub fn file_project(assignment: &[(String, String)]) -> HashMap<&str, &str> {
         .iter()
         .map(|(path, project)| (path.as_str(), project.as_str()))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_package_whose_name_runs_past_ascii_is_read_whole() {
+        assert!(!super::named_as("—dash", "re"));
+        assert!(!super::named_as("—", "react"));
+        assert!(super::named_as("React", "react"));
+        assert!(super::classify("—hyphen/thing").is_none());
+        assert_eq!(super::package_of("—dash/inner"), Some("—dash"));
+    }
+
+    #[test]
+    fn a_head_counts_the_separator_it_split_on() {
+        assert_eq!(super::head("a/b/c", '/', 2), "a/b");
+        assert_eq!(super::head("x—a—b", '—', 2), "x—a");
+    }
 }
