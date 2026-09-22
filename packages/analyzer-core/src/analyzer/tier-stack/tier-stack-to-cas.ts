@@ -193,9 +193,15 @@ function flowsOf(index: TierStackIndex): CASOutput['flows'] {
   }));
 }
 
+function whatTheSystemDelivers(index: TierStackIndex) {
+  const held = index.comprehension?.capabilities ?? [];
+  const whole = held.filter(capability => capability.project === undefined || capability.project === null);
+  return whole.length > 0 ? whole : held;
+}
+
 function servingByFlow(index: TierStackIndex): Map<string, CapabilityFlowRelationship[]> {
   const serving = new Map<string, CapabilityFlowRelationship[]>();
-  for (const capability of index.comprehension?.capabilities ?? []) {
+  for (const capability of whatTheSystemDelivers(index)) {
     for (const delivery of capability.delivered ?? []) {
       const held = serving.get(delivery.flow) ?? [];
       held.push({
@@ -255,7 +261,7 @@ function capabilitiesOf(index: TierStackIndex): CASOutput['capabilities'] {
             trigger: { method: entry.method, path: entry.path },
           }];
     });
-  return (index.comprehension?.capabilities ?? []).map(capability => {
+  return whatTheSystemDelivers(index).map(capability => {
     const published = capability.standing !== 'provisional';
     return {
       id: capability.id,
