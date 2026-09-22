@@ -179,14 +179,18 @@ fn spoken_within(spoken: &str, part: Option<&str>) -> String {
     }
 }
 
+/// A readme opens with badges and a list of parts, and says what the thing is
+/// and who it is for further down. Reading only the top keeps the advertising
+/// and cuts the meaning, so the budget is the document, not its first screen.
+const SAID_OF_ITSELF: usize = 8000;
+
 fn spoken_for(root: &std::path::Path, nodes: &[IndexNode], files: &[String]) -> String {
     let mut said = Vec::new();
     for (at, path) in files.iter().enumerate() {
         let basename = crate::paths::basename(path).to_ascii_lowercase();
         if basename.starts_with("readme") && path.matches('/').count() == 0 {
             if let Ok(text) = std::fs::read_to_string(root.join(path)) {
-                let opening: String = text.lines().take(24).collect::<Vec<_>>().join("\n");
-                said.push(opening.chars().take(1600).collect::<String>());
+                said.push(text.chars().take(SAID_OF_ITSELF).collect::<String>());
             }
             let _ = at;
             break;
