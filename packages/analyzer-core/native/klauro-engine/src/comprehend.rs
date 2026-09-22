@@ -126,6 +126,12 @@ pub struct Capability {
     /// not belong to one part; it has a home where most of it lives.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub also_in: Vec<String>,
+    /// What this is to the product: terminal when someone would name it as a
+    /// reason the product exists, proximal when it delivers one, supporting
+    /// when it is there so the others can happen. Held only where the whole is
+    /// spoken of, since a part's own capabilities are its own point.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub place: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -674,6 +680,7 @@ fn form_capabilities(
             surfaces: Vec::new(),
             project: flows.first().and_then(|flow| flow.project.clone()),
             also_in: Vec::new(),
+            place: None,
             name: Some(named.name.trim().to_string()),
             description: Some(named.description.trim().to_string()),
             grounding: None,
@@ -810,7 +817,36 @@ fn reconciled(capabilities: &[Capability], spoken: &str) -> Vec<Capability> {
         capability.also_in.dedup();
     }
     held.sort_by(|left, right| left.id.cmp(&right.id));
+    say_what_each_is_for(&mut held, spoken);
     held
+}
+
+/// A product is what someone came for, not everything it can do. Both are kept.
+fn say_what_each_is_for(held: &mut [Capability], spoken: &str) {
+    let listed: BTreeMap<String, String> = held
+        .iter()
+        .enumerate()
+        .map(|(at, capability)| {
+            (
+                format!("p{at}"),
+                format!(
+                    "  it is called: {}\n  for: {}\n  what someone gets: {}",
+                    capability.name.as_deref().unwrap_or(""),
+                    capability.audience.as_deref().unwrap_or("someone"),
+                    capability.description.as_deref().unwrap_or("")
+                ),
+            )
+        })
+        .collect();
+    let said = crate::author::what_it_is_for(spoken, &listed);
+    for (at, capability) in held.iter_mut().enumerate() {
+        capability.place = match said.get(&format!("p{at}")).map(String::as_str) {
+            Some("terminal") => Some("terminal"),
+            Some("proximal") => Some("proximal"),
+            Some("supporting") => Some("supporting"),
+            _ => None,
+        };
+    }
 }
 
 /// Two readings of one outcome become one, keeping everything either reached.

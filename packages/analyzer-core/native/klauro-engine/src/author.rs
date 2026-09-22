@@ -482,6 +482,50 @@ fn written_of(told: &str) -> BTreeMap<&'static str, crate::jev::Question> {
     ])
 }
 
+/// Which capabilities say what the product is, and which are there so those
+/// can happen. Both are capabilities; only one of them is the product.
+pub fn what_it_is_for(spoken_for: &str, listed: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    let mut held = BTreeMap::new();
+    if !asked() || listed.is_empty() {
+        return held;
+    }
+    let prompt = format!(
+        "A software system describes itself like this:\n{spoken_for}\n\n\
+         Below is everything it can do. Some of it is what someone came for. The rest is there so \
+         that can happen: signing in, administering it, keeping it running, moving its data \
+         about. Both are real, and neither is being thrown away — this only says which is which.\n\n\
+         Mark each one:\n\
+         - \"terminal\" if someone would name it as a reason the product exists\n\
+         - \"proximal\" if it is not the reason itself but is what immediately delivers one\n\
+         - \"supporting\" if it exists so the others can happen, and nobody arrives wanting it\n\n\
+         Managing accounts supports what the accounts are for. Administering a system supports \
+         whatever the system does. Storing and moving data supports whatever the data is for. A \
+         product whose whole point is accounts, or administration, is the exception, so read what \
+         it says about itself before deciding.\n\n\
+         Return JSON only: {{\"placed\":[{{\"id\":\"...\",\"place\":\"terminal|proximal|supporting\"}}]}}\n\n\
+         What it can do:\n{}",
+        listed.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect::<Vec<_>>().join("\n")
+    );
+    let Some(answer) =
+        answered::<serde_json::Value>(&prompt, 1500, &asking_of_models(model()), "placed", 1)
+    else {
+        return held;
+    };
+    for item in answer["placed"].as_array().into_iter().flatten() {
+        let (Some(id), Some(place)) = (item["id"].as_str(), item["place"].as_str()) else {
+            continue;
+        };
+        let place = match place.trim().to_ascii_lowercase().as_str() {
+            "terminal" => "terminal",
+            "proximal" => "proximal",
+            "supporting" => "supporting",
+            _ => continue,
+        };
+        held.insert(id.to_string(), place.to_string());
+    }
+    held
+}
+
 #[derive(Debug, Deserialize)]
 pub struct Same {
     #[serde(default)]
