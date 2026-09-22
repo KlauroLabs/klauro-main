@@ -141,7 +141,13 @@ pub fn published(
             // their grammar never needed answers no every time, so what a
             // library declares at its top level is read as its surface unless
             // the language did say otherwise.
-            "rb" | "ex" | "exs" | "jl" | "kt" | "kts" | "lua" => {
+            // a julia package keeps its code in src/, as a python one does
+            "jl" => {
+                spoken_for(&node.name)
+                    && within(path, held.root, "src")
+                    && !node.modifiers.private_member
+            }
+            "rb" | "ex" | "exs" | "kt" | "kts" | "lua" => {
                 spoken_for(&node.name)
                     && !node.modifiers.private_member
                     && !node.modifiers.protected_member

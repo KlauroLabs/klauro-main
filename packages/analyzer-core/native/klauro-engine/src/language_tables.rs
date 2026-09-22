@@ -362,6 +362,7 @@ pub static MANIFEST_EXTENSIONS: &[&str] = &[
     "cabal",
     "csproj",
     "fsproj",
+    "gemspec",
     "sln",
     "vbproj",
 ];

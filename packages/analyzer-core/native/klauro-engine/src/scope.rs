@@ -263,14 +263,26 @@ static MODULE_MANIFESTS: &[&str] = &[
     "setup.py",
 ];
 
-fn module_manifest(path: &str, runnable: &HashSet<&str>) -> Option<Candidate> {
+/// A manifest that names no package is not one: several ecosystems use the
+/// same file to pin the dependencies of a folder that only runs something,
+/// such as documentation or benchmarks, and those ship nothing of their own.
+fn names_a_package(files: &Files, path: &str, basename: &str) -> bool {
+    if basename != "project.toml" {
+        return true;
+    }
+    files
+        .of(path)
+        .is_some_and(|document| document.iter().any(|node| node.name == "name"))
+}
+
+fn module_manifest(files: &Files, path: &str, runnable: &HashSet<&str>) -> Option<Candidate> {
     let basename = path.rsplit('/').next()?.to_ascii_lowercase();
     let known = MODULE_MANIFESTS.binary_search(&basename.as_str()).is_ok()
         || basename.ends_with(".csproj")
         || basename.ends_with(".fsproj")
         || basename.ends_with(".cabal")
         || basename.ends_with(".gemspec");
-    if !known {
+    if !known || !names_a_package(files, path, &basename) {
         return None;
     }
     let root = directory_of(path).to_string();
@@ -605,7 +617,7 @@ pub fn derive(
             candidates.push(found);
             continue;
         }
-        if let Some(mut found) = module_manifest(path, &runnable) {
+        if let Some(mut found) = module_manifest(&index, path, &runnable) {
             if let Some(kind) = build_target(&index, path, calls, at as u32) {
                 found.declarations.push(Declaration {
                     declares: Declares::Ship,
