@@ -30,6 +30,10 @@ pub struct Flow {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub method: Option<String>,
     pub operation: String,
+    /// The surface this is reached through: a route's path, or the module a
+    /// published name is offered from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub surface: Option<String>,
     pub standing: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -666,6 +670,14 @@ fn family_of(flow: &Flow) -> Family {
             basis: "the surface it is reached through",
         };
     }
+    if flow.kind == "export"
+        && let Some(offered) = flow.surface.as_deref().filter(|held| !held.is_empty())
+    {
+        return Family {
+            key: format!("surface:{offered}"),
+            basis: "the module that publishes it",
+        };
+    }
     let mut handled = flow.writes.clone();
     handled.extend(flow.reads.iter().cloned());
     settle(&mut handled);
@@ -1115,6 +1127,12 @@ pub fn derive(
             kind: entry.kind,
             method: entry.method.clone(),
             operation: named,
+            surface: match entry.kind {
+                "export" => files
+                    .get(entry.file as usize)
+                    .map(|path| crate::published::offered_from(path).to_string()),
+                _ => entry.path.clone(),
+            },
             name: None,
             description: None,
             grounding: None,

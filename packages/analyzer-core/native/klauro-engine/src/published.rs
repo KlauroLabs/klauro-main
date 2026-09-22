@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 use crate::entry_exit::EntryPoint;
 use crate::model::*;
@@ -8,14 +8,6 @@ static HEADERS: &[&str] = &["h", "h++", "hh", "hpp", "hxx"];
 
 fn extension(path: &str) -> &str {
     crate::paths::basename(path).rsplit_once('.').map(|(_, held)| held).unwrap_or("")
-}
-
-fn holding(path: &str) -> &str {
-    let folder = path.rsplit_once('/').map(|(held, _)| held).unwrap_or("");
-    match folder.rsplit_once("/src") {
-        Some((held, rest)) if rest.is_empty() || rest.starts_with('/') => held,
-        _ => folder,
-    }
 }
 
 fn under(path: &str, root: &str) -> bool {
@@ -163,29 +155,31 @@ pub fn published(
                 .cmp(&names.iter().any(|named| named == &files[left.file as usize]))
                 .then(left.id.cmp(&right.id))
         });
-        let mut offered: BTreeMap<&str, Vec<&IndexNode>> = BTreeMap::new();
+        // A route is one way in and is counted one at a time; a published name is
+        // one way in too. Joining a package's names into a single offer loses every
+        // one of them, so each published declaration stands on its own.
         for node in kept {
-            offered.entry(holding(&files[node.file as usize])).or_default().push(node);
-        }
-        for (module, nodes) in offered {
-            let Some(first) = nodes.first() else { continue };
-            let mut names: Vec<&str> = nodes.iter().map(|node| node.name.as_str()).collect();
-            names.sort();
-            names.dedup();
             found.push(EntryPoint {
-                id: format!("entry:{module}:published"),
+                id: format!("entry:{}:published", node.id),
                 kind: "export",
-                name: format!("{module}, publishing {}", names.join(", ")),
+                name: node.name.clone(),
                 method: None,
                 path: None,
-                handler: first.id.clone(),
-                file: first.file,
-                line: first.span.line,
+                handler: node.id.clone(),
+                file: node.file,
+                line: node.span.line,
                 registrar: "published".to_string(),
             });
         }
     }
     found
+}
+
+/// The module a published name is offered from: what a library's own author
+/// grouped it with, which is the nearest thing it has to a route's surface.
+pub fn offered_from(path: &str) -> &str {
+    let held = path.rsplit_once('.').map(|(held, _)| held).unwrap_or(path);
+    held.strip_suffix("/mod").or_else(|| held.strip_suffix("/index")).unwrap_or(held)
 }
 
 #[cfg(test)]
@@ -198,6 +192,14 @@ mod tests {
         assert!(!upper("marshal"));
         assert!(spoken_for("parse"));
         assert!(!spoken_for("_parse"));
+    }
+
+    #[test]
+    fn a_name_is_offered_from_the_module_that_declares_it() {
+        assert_eq!(offered_from("middleware/cors.go"), "middleware/cors");
+        assert_eq!(offered_from("bind.go"), "bind");
+        assert_eq!(offered_from("src/router/mod.rs"), "src/router");
+        assert_eq!(offered_from("lib/parse/index.ts"), "lib/parse");
     }
 
     #[test]
