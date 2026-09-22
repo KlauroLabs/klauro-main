@@ -101,14 +101,14 @@ pub struct Entity {
     pub project: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct Delivery {
     pub flow: String,
     pub role: &'static str,
     pub rationale: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct Capability {
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -678,12 +678,13 @@ fn form_capabilities(
     formed
 }
 
-/// Every capability was read inside one part and named without sight of the
-/// others, so the same outcome arrives several times over. This is the first
-/// point at which they can all be seen together.
-fn reconciled(capabilities: Vec<Capability>, spoken: &str) -> Vec<Capability> {
+/// What the whole delivers, read from what its parts deliver. Each part was
+/// comprehended in its own right and keeps what it found; this says which of
+/// those are one outcome reached from several places, and belongs to the whole
+/// rather than to any part of it.
+fn reconciled(capabilities: &[Capability], spoken: &str) -> Vec<Capability> {
     if capabilities.len() < 2 {
-        return capabilities;
+        return Vec::new();
     }
     let listed: BTreeMap<String, String> = capabilities
         .iter()
@@ -729,10 +730,10 @@ fn reconciled(capabilities: Vec<Capability>, spoken: &str) -> Vec<Capability> {
     let mut gathered: Vec<Vec<Capability>> =
         (0..named.len()).map(|_| Vec::new()).collect();
     let mut alone: Vec<Capability> = Vec::new();
-    for (at, capability) in capabilities.into_iter().enumerate() {
+    for (at, capability) in capabilities.iter().enumerate() {
         match placed[at] {
-            Some(which) => gathered[which].push(capability),
-            None => alone.push(capability),
+            Some(which) => gathered[which].push(capability.clone()),
+            None => alone.push(capability.clone()),
         }
     }
     let mut held: Vec<Capability> = alone;
@@ -743,7 +744,8 @@ fn reconciled(capabilities: Vec<Capability>, spoken: &str) -> Vec<Capability> {
         members.sort_by_key(|capability| std::cmp::Reverse(capability.delivered.len()));
         let mut together = members.remove(0);
         if members.is_empty() {
-            continue_with(&mut together, group);
+            // Nothing was joined to it, so nothing new is known about it. The
+            // pass merges; it does not get to rename what it left alone.
             held.push(together);
             continue;
         }
@@ -771,8 +773,16 @@ fn reconciled(capabilities: Vec<Capability>, spoken: &str) -> Vec<Capability> {
         settle(&mut together.changes);
         settle(&mut together.surfaces);
         settle(&mut together.touches);
-        together.also_in.sort();
         held.push(together);
+    }
+    for capability in held.iter_mut() {
+        if let Some(part) = capability.project.take()
+            && !capability.also_in.contains(&part)
+        {
+            capability.also_in.push(part);
+        }
+        capability.also_in.sort();
+        capability.also_in.dedup();
     }
     held.sort_by(|left, right| left.id.cmp(&right.id));
     held
@@ -1001,11 +1011,17 @@ pub fn author(
                 })
                 .collect();
             capabilities.sort_by(|left, right| left.id.cmp(&right.id));
-            let apart = capabilities.len();
-            let mut capabilities = reconciled(capabilities, &spoken);
+            // Each part keeps what it found. What the whole delivers is read
+            // from them and added beside them, never in place of them.
+            let whole = reconciled(&capabilities, &spoken);
+            eprintln!(
+                "  author read {} capabilities across the parts into {} for the whole",
+                capabilities.len(),
+                whole.len()
+            );
+            capabilities.extend(whole);
             capabilities.sort_by(|left, right| left.id.cmp(&right.id));
             let formed = started.elapsed();
-            eprintln!("  author reconciled {apart} capabilities into {}", capabilities.len());
             let products =
                 describe_product(&capabilities, &held.entities, &held.flows, &spoken, told);
             eprintln!(

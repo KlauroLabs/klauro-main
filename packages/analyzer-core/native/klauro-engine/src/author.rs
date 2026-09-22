@@ -510,7 +510,11 @@ pub fn same_outcome(spoken_for: &str, listed: &BTreeMap<String, String>) -> Vec<
          someone would come for one and not the other. Leave a capability by itself if nothing \
          else matches it — most groups are of one.\n\n\
          For each group give the name of the outcome in 2-6 words, one sentence saying what \
-         someone gets, and the audience it is for. Every id below must appear in exactly one \
+         someone gets, and the audience it is for. Name what the person ends up with, never the \
+         way in and never what it is built on: a group reached through web routes is not called \
+         an API, one reached through pages is not called a web interface, and one that stores \
+         things is not called a database. If the ones you put together were already called \
+         something between them that says the outcome, keep saying it that way. Every id below must appear in exactly one \
          group, and no id may appear that is not below.\n\
          Return JSON only: {{\"groups\":[{{\"of\":[\"...\"],\"name\":\"...\",\"description\":\"...\",\"audience\":\"...\"}}]}}\n\n\
          The capabilities:\n{}",
