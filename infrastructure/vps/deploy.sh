@@ -250,6 +250,22 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
 done
 if [ "$API_HEALTHY" = "1" ]; then
   $SSH "$DEST" 'cd /opt/klauro && docker compose restart caddy'
+  CADDY_UP=0
+  for i in 1 2 3 4 5 6; do
+    RUNNING="$($SSH "$DEST" 'docker inspect -f "{{.State.Running}}" klauro-caddy-1 2>/dev/null' || echo "")"
+    if [ "$RUNNING" = "true" ]; then CADDY_UP=1; break; fi
+    echo "    (caddy running: ${RUNNING:-unknown}, retry $i/6)"; sleep 5
+  done
+  if [ "$CADDY_UP" = "0" ]; then
+    echo "    !! caddy did not come back from the restart — bringing it up" >&2
+    $SSH "$DEST" 'cd /opt/klauro && docker compose up -d caddy'
+    RUNNING="$($SSH "$DEST" 'docker inspect -f "{{.State.Running}}" klauro-caddy-1 2>/dev/null' || echo "")"
+    if [ "$RUNNING" != "true" ]; then
+      echo "ERROR: caddy is not running, so every surface is unreachable however healthy the api is." >&2
+      exit 1
+    fi
+    echo "    caddy is up again."
+  fi
 else
   echo "    !! api never reported healthy — restarting caddy anyway is pointless, skipping." >&2
   echo "    !! Check 'docker compose logs api' on the VPS; the smoke/verify steps below will fail loud." >&2

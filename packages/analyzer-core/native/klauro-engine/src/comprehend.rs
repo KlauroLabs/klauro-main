@@ -219,6 +219,7 @@ pub struct Telling<'a> {
     pub routes: u32,
     pub shipped: u32,
     pub projects: usize,
+    pub within: Vec<String>,
     pub languages: Vec<(String, u32)>,
     pub frameworks: Vec<String>,
 }
@@ -257,7 +258,13 @@ fn describe_product(
     if projects.len() < 2 {
         return describe_one(capabilities, entities, spoken, told, None).into_iter().collect();
     }
-    let named: Vec<&str> = projects.iter().filter_map(|held| held.as_deref()).collect();
+    let mut named: Vec<&str> = projects.iter().filter_map(|held| held.as_deref()).collect();
+    for part in told.within.iter() {
+        if !named.contains(&part.as_str()) {
+            named.push(part.as_str());
+        }
+    }
+    named.sort();
     let mut parts: Vec<Product> = projects
         .par_iter()
         .filter_map(|project| describe_one(capabilities, entities, spoken, told, project.as_deref()))

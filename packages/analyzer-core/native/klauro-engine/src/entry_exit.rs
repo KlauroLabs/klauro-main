@@ -306,10 +306,11 @@ static NETWORK_OPERATIONS: &[&str] = &[
     "postform", "put", "putasync", "request", "send", "send_async", "sendasync",
 ];
 static DATABASE_OPERATIONS: &[&str] = &[
-    "aggregate", "begin", "begintx", "deletemany", "deleteone", "exec", "execcontext",
-    "execute", "findmany", "findone", "insertmany", "insertone", "prepare", "preparecontext",
-    "query", "querycontext", "queryrow", "queryrowcontext", "transaction", "updatemany",
-    "updateone", "upsert",
+    "aggregate", "begin", "begintx", "createquerybuilder", "deletefrom", "deletemany",
+    "deleteone", "exec", "execcontext", "execute", "executetakefirst",
+    "executetakefirstorthrow", "findmany", "findone", "insertinto", "insertmany", "insertone",
+    "prepare", "preparecontext", "query", "querycontext", "queryrow", "queryrowcontext",
+    "selectfrom", "transaction", "updatemany", "updateone", "updatetable", "upsert",
 ];
 static MESSAGE_OPERATIONS: &[&str] = &[
     "broadcast", "emit", "produce", "publish", "sendmessage",
@@ -577,6 +578,15 @@ static REPOSITORY_OPERATIONS: &[&str] = &[
     "insert_or_update", "one", "preload", "reload", "stream", "transaction", "update",
     "update_all",
 ];
+
+static STORE_OPERATIONS: &[&str] = &[
+    "createquerybuilder", "deletefrom", "executetakefirst", "executetakefirstorthrow",
+    "insertinto", "selectfrom", "updatetable",
+];
+
+fn names_a_store(operation: &str) -> bool {
+    STORE_OPERATIONS.binary_search(&operation.to_ascii_lowercase().as_str()).is_ok()
+}
 
 fn addressed_through(dotted: &str) -> Option<(&str, &str)> {
     let mut held = dotted.rsplit('.');
@@ -1099,7 +1109,9 @@ pub fn derive(
         if receiver.contains('.') && reads_a_data_member(receiver) {
             continue;
         }
-        if let Some(kind) = manager_exit(receiver, names::leaf(&call.callee)) {
+        if let Some(kind) = manager_exit(receiver, names::leaf(&call.callee))
+            .or_else(|| names_a_store(names::leaf(&call.callee)).then_some("database"))
+        {
             let operation = names::leaf(&call.callee);
             reached_through.push(receiver.to_string());
             exit_points.push(ExitPoint {

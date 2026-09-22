@@ -868,6 +868,11 @@ fn main() {
             })
             .unwrap_or(0),
         projects: index.partition.as_ref().map(|split| split.sub_projects.len()).unwrap_or(1),
+        within: index
+            .partition
+            .as_ref()
+            .map(|split| split.sub_projects.iter().map(|part| part.id.clone()).collect())
+            .unwrap_or_default(),
         languages,
         frameworks,
     };
