@@ -477,6 +477,58 @@ fn written_of(told: &str) -> BTreeMap<&'static str, crate::jev::Question> {
     ])
 }
 
+#[derive(Debug, Deserialize)]
+pub struct Same {
+    #[serde(default)]
+    pub of: Vec<String>,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub audience: String,
+}
+
+/// An outcome does not belong to a part. The same one is reached from a page
+/// and from the route behind it, from a phone and from a command line, and each
+/// of those was read on its own and named on its own. Nothing until here has
+/// been in a position to see two of them together.
+pub fn same_outcome(spoken_for: &str, listed: &BTreeMap<String, String>) -> Vec<Same> {
+    if !asked() || listed.is_empty() {
+        return Vec::new();
+    }
+    let prompt = format!(
+        "A software system describes itself like this:\n{spoken_for}\n\n\
+         Below is every capability read from it, each with the part it was found in and the \
+         surfaces it is reached through. They were read one part at a time, so the same outcome \
+         may appear more than once: reached from a page and from the route behind it, from a \
+         phone and from a command line, or split into steps of one thing.\n\n\
+         Put together the ones that are the same outcome, by these rules:\n{RULES}\n\n\
+         Two are the same outcome when a person would say they did one thing, however many ways \
+         in the system offers. Browsing an album and browsing a trash folder are both browsing; \
+         sharing by link and sharing with a partner are both sharing. Two are NOT the same when \
+         someone would come for one and not the other. Leave a capability by itself if nothing \
+         else matches it — most groups are of one.\n\n\
+         For each group give the name of the outcome in 2-6 words, one sentence saying what \
+         someone gets, and the audience it is for. Every id below must appear in exactly one \
+         group, and no id may appear that is not below.\n\
+         Return JSON only: {{\"groups\":[{{\"of\":[\"...\"],\"name\":\"...\",\"description\":\"...\",\"audience\":\"...\"}}]}}\n\n\
+         The capabilities:\n{}",
+        listed.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect::<Vec<_>>().join("\n")
+    );
+    let Some(held) = answered::<serde_json::Value>(&prompt, 4000, &asking_of_models(model()), "groups", 1)
+    else {
+        return Vec::new();
+    };
+    held["groups"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|group| serde_json::from_value::<Same>(group.clone()).ok())
+        .filter(|group| !group.of.is_empty() && !group.name.trim().is_empty())
+        .collect()
+}
+
 pub const RULES: &str = "A capability is an outcome someone gets from the system. It is judged by \
 two tests. The audience test, which is audience-relative: would this product's own audience \
 recognise it as something they came for? Not would a passer-by nod — that rejects every correct \

@@ -122,6 +122,10 @@ pub struct Capability {
     pub surfaces: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
+    /// The other parts this same outcome is also reached from. An outcome does
+    /// not belong to one part; it has a home where most of it lives.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub also_in: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -372,7 +376,10 @@ fn describe_whole(
             let named = named.rsplit(':').next().unwrap_or(named);
             let doing: Vec<&str> = capabilities
                 .iter()
-                .filter(|capability| capability.project.as_deref() == *held)
+                .filter(|capability| {
+                    capability.project.as_deref() == *held
+                        || held.is_some_and(|part| capability.also_in.iter().any(|in_| in_ == part))
+                })
                 .filter_map(|capability| capability.name.as_deref())
                 .collect();
             format!(
@@ -438,11 +445,12 @@ fn describe_one(
     told: &Telling<'_>,
     project: Option<&str>,
 ) -> Option<Product> {
-    let its = |held: Option<&String>| project.is_none() || held.map(String::as_str) == project;
-    let capabilities: Vec<&Capability> = held
-        .iter()
-        .filter(|capability| its(capability.project.as_ref()))
-        .collect();
+    let its = |capability: &Capability| {
+        project.is_none()
+            || capability.project.as_deref() == project
+            || project.is_some_and(|part| capability.also_in.iter().any(|held| held == part))
+    };
+    let capabilities: Vec<&Capability> = held.iter().filter(|capability| its(capability)).collect();
     if capabilities.is_empty() {
         return None;
     }
@@ -631,6 +639,7 @@ fn form_capabilities(
             flows: Vec::new(),
             surfaces: Vec::new(),
             project: flows.first().and_then(|flow| flow.project.clone()),
+            also_in: Vec::new(),
             name: Some(named.name.trim().to_string()),
             description: Some(named.description.trim().to_string()),
             grounding: None,
@@ -667,6 +676,117 @@ fn form_capabilities(
     }
     formed.sort_by(|left, right| left.id.cmp(&right.id));
     formed
+}
+
+/// Every capability was read inside one part and named without sight of the
+/// others, so the same outcome arrives several times over. This is the first
+/// point at which they can all be seen together.
+fn reconciled(capabilities: Vec<Capability>, spoken: &str) -> Vec<Capability> {
+    if capabilities.len() < 2 {
+        return capabilities;
+    }
+    let listed: BTreeMap<String, String> = capabilities
+        .iter()
+        .enumerate()
+        .map(|(at, capability)| {
+            let mut surfaces = capability.surfaces.clone();
+            surfaces.truncate(6);
+            (
+                format!("c{at}"),
+                format!(
+                    "  it is called: {}\n  for: {}\n  found in the part: {}\n  reached through: {}\n  paths: {}",
+                    capability.name.as_deref().unwrap_or(""),
+                    capability.audience.as_deref().unwrap_or("someone"),
+                    capability.project.as_deref().map(within_of).unwrap_or("the repository root"),
+                    surfaces.join(", "),
+                    capability.delivered.len()
+                ),
+            )
+        })
+        .collect();
+    let groups = crate::author::same_outcome(spoken, &listed);
+    let mut placed: Vec<Option<usize>> = vec![None; capabilities.len()];
+    let mut named: Vec<&crate::author::Same> = Vec::new();
+    for group in groups.iter() {
+        let at = named.len();
+        let mut held = false;
+        for id in group.of.iter() {
+            let Some(which) = id.trim().strip_prefix('c').and_then(|held| held.parse::<usize>().ok())
+            else {
+                continue;
+            };
+            if let Some(slot) = placed.get_mut(which)
+                && slot.is_none()
+            {
+                *slot = Some(at);
+                held = true;
+            }
+        }
+        if held {
+            named.push(group);
+        }
+    }
+    let mut gathered: Vec<Vec<Capability>> =
+        (0..named.len()).map(|_| Vec::new()).collect();
+    let mut alone: Vec<Capability> = Vec::new();
+    for (at, capability) in capabilities.into_iter().enumerate() {
+        match placed[at] {
+            Some(which) => gathered[which].push(capability),
+            None => alone.push(capability),
+        }
+    }
+    let mut held: Vec<Capability> = alone;
+    for (group, mut members) in named.into_iter().zip(gathered) {
+        if members.is_empty() {
+            continue;
+        }
+        members.sort_by_key(|capability| std::cmp::Reverse(capability.delivered.len()));
+        let mut together = members.remove(0);
+        if members.is_empty() {
+            continue_with(&mut together, group);
+            held.push(together);
+            continue;
+        }
+        for other in members {
+            if let Some(part) = other.project.clone()
+                && Some(&part) != together.project.as_ref()
+                && !together.also_in.contains(&part)
+            {
+                together.also_in.push(part);
+            }
+            together.delivered.extend(other.delivered);
+            together.records.extend(other.records);
+            together.changes.extend(other.changes);
+            together.surfaces.extend(other.surfaces);
+            together.touches.extend(other.touches);
+            if other.standing == PUBLISHED {
+                together.standing = PUBLISHED;
+            }
+        }
+        continue_with(&mut together, group);
+        together.delivered.sort_by(|left, right| left.flow.cmp(&right.flow));
+        together.delivered.dedup_by(|left, right| left.flow == right.flow);
+        together.flows = together.delivered.iter().map(|held| held.flow.clone()).collect();
+        settle(&mut together.records);
+        settle(&mut together.changes);
+        settle(&mut together.surfaces);
+        settle(&mut together.touches);
+        together.also_in.sort();
+        held.push(together);
+    }
+    held.sort_by(|left, right| left.id.cmp(&right.id));
+    held
+}
+
+fn continue_with(held: &mut Capability, group: &crate::author::Same) {
+    held.id = format!("capability:{}", carved_name(&group.name));
+    held.name = Some(group.name.trim().to_string());
+    if !group.description.trim().is_empty() {
+        held.description = Some(group.description.trim().to_string());
+    }
+    if !group.audience.trim().is_empty() {
+        held.audience = Some(group.audience.trim().to_ascii_lowercase());
+    }
 }
 
 fn settle(held: &mut Vec<String>) {
@@ -881,7 +1001,11 @@ pub fn author(
                 })
                 .collect();
             capabilities.sort_by(|left, right| left.id.cmp(&right.id));
+            let apart = capabilities.len();
+            let mut capabilities = reconciled(capabilities, &spoken);
+            capabilities.sort_by(|left, right| left.id.cmp(&right.id));
             let formed = started.elapsed();
+            eprintln!("  author reconciled {apart} capabilities into {}", capabilities.len());
             let products =
                 describe_product(&capabilities, &held.entities, &held.flows, &spoken, told);
             eprintln!(
