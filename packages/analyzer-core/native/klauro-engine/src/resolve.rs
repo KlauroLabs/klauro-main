@@ -810,6 +810,23 @@ fn own_module(from: &str) -> String {
     }
 }
 
+fn module_beneath(files: &[String], dotted: &str) -> Option<u32> {
+    let rest = dotted.replace('.', "/");
+    let beneath = format!("/{rest}");
+    let mut found = None;
+    for (at, path) in files.iter().enumerate() {
+        let base = strip_extension(path);
+        if base != rest && !base.ends_with(&beneath) {
+            continue;
+        }
+        if found.is_some() {
+            return None;
+        }
+        found = Some(at as u32);
+    }
+    found
+}
+
 fn module_file(files: &HashMap<&str, u32>, path: &str) -> Option<u32> {
     if let Some(found) = files.get(path) {
         return Some(*found);
@@ -1011,6 +1028,16 @@ pub fn resolve(index: &Index) -> Resolution {
                     bindings.imported.insert((fact.file, name.local.as_str()), found);
                     continue;
                 }
+                if let Some(found) =
+                    module_beneath(&index.files, &format!("{}.{}", fact.specifier, wanted))
+                    && index.files[found as usize] != from
+                {
+                    internal_specifiers.insert(fact.specifier.clone());
+                    bindings
+                        .through
+                        .insert((fact.file, name.local.as_str()), index.files[found as usize].as_str());
+                    continue;
+                }
                 bindings
                     .modules
                     .insert((fact.file, name.local.as_str()), fact.specifier.as_str());
@@ -1021,7 +1048,12 @@ pub fn resolve(index: &Index) -> Resolution {
         if let Some(first) = reached.first() {
             let holding = index.files[*first as usize].as_str();
             for name in &fact.names {
-                bindings.through.insert((fact.file, name.local.as_str()), holding);
+                let wanted = name.imported.as_deref().unwrap_or(name.local.as_str());
+                let within =
+                    module_beneath(&index.files, &format!("{}.{}", fact.specifier, wanted))
+                        .map(|found| index.files[found as usize].as_str())
+                        .unwrap_or(holding);
+                bindings.through.insert((fact.file, name.local.as_str()), within);
             }
         }
         for target in &reached {

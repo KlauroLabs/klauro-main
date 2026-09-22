@@ -1317,6 +1317,24 @@ impl<'a> Extractor<'a> {
                 default_import: false,
             });
         }
+        let mut cursor = node.walk();
+        for child in node.children_by_field_name("name", &mut cursor) {
+            let held = self.text(child).trim();
+            let (imported, local) = match held.split_once(" as ") {
+                Some((imported, alias)) => (imported.trim(), alias.trim()),
+                None => (held, held),
+            };
+            let local = local.rsplit('.').next().unwrap_or(local).trim().to_string();
+            if local.is_empty() || names.iter().any(|name| name.local == local) {
+                continue;
+            }
+            names.push(ImportSpecifier {
+                local,
+                imported: Some(imported.to_string()),
+                namespace: false,
+                default_import: false,
+            });
+        }
         self.facts.imports.push(ImportFact {
             file: self.file,
             specifier,
