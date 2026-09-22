@@ -15,10 +15,12 @@ import {
   type CASNode,
   type CASOutput,
   type CASRouteTableEntry,
+  type DeployableEvidence,
   type CASSystem,
 } from '../../types/cas.types';
 import type {
   TierStackCapability,
+  TierStackShipDeclaration,
   TierStackDeclaration,
   TierStackFlow,
   TierStackIndex,
@@ -287,6 +289,40 @@ function reasonsFor(capability: TierStackCapability): string[] {
   return reasons;
 }
 
+const SHIPS_AS: Record<string, { tier: 1 | 2 | 3; kind: DeployableEvidence['kind'] }> = {
+  'container': { tier: 1, kind: 'container' },
+  'compose-service': { tier: 1, kind: 'compose-service' },
+  'installer': { tier: 1, kind: 'installer' },
+  'package-bin': { tier: 2, kind: 'bin' },
+  'cargo-bin': { tier: 2, kind: 'bin' },
+  'start-script': { tier: 2, kind: 'bin' },
+  'runnable-module': { tier: 2, kind: 'server-entry' },
+  'package-identity': { tier: 3, kind: 'package' },
+};
+
+function shipsAs(declared: TierStackShipDeclaration): { tier: 1 | 2 | 3; kind: DeployableEvidence['kind'] } {
+  return SHIPS_AS[declared.kind] ?? { tier: 3, kind: 'package' };
+}
+
+function deployablesOf(index: TierStackIndex): DeployableEvidence[] {
+  return (index.scope?.deployables ?? []).flatMap(deployable => {
+    const declarations = deployable.declarations ?? [];
+    const strongest = declarations
+      .map(shipsAs)
+      .sort((left, right) => left.tier - right.tier)[0];
+    if (strongest === undefined) return [];
+    return [{
+      root_path: deployable.root,
+      name: deployable.name,
+      tier: strongest.tier,
+      kind: strongest.kind,
+      evidence: declarations.map(declared => `${declared.declares} ${declared.kind} at ${declared.at}`),
+      ...(deployable.ships?.length ? { ships_paths: deployable.ships } : {}),
+      ...(deployable.bundled_into ? { bundled_into: deployable.bundled_into } : {}),
+    }];
+  });
+}
+
 function purposeOf(index: TierStackIndex): CASOutput['enhanced_system_purpose'] {
   const comprehension = index.comprehension;
   if (comprehension === undefined) return undefined;
@@ -451,6 +487,7 @@ export function tierStackToCas(index: TierStackIndex, displayName?: string): CAS
     exit_points: exitPointsOf(index),
     entities: entitiesOf(index),
     capabilities: capabilitiesOf(index),
+    deployable_evidence: deployablesOf(index),
     enhanced_system_purpose: purposeOf(index),
     flows: flowsOf(index),
     dependencies: dependenciesOf(index),

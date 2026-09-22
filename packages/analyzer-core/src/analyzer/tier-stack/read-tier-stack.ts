@@ -106,6 +106,26 @@ export interface TierStackCapability {
   delivered?: Array<{ flow: string; role: string; rationale: string }>;
 }
 
+export interface TierStackShipDeclaration {
+  declares: 'ship' | 'run' | 'identity';
+  kind: string;
+  at: string;
+}
+
+export interface TierStackDeployable {
+  id: string;
+  name: string;
+  root: string;
+  category: 'shipped' | 'runnable' | 'library';
+  declarations?: TierStackShipDeclaration[];
+  ships?: string[];
+  runs?: string;
+  members?: string[];
+  bundled_into?: string;
+  units?: number;
+  entry_points?: number;
+}
+
 export interface TierStackProduct {
   project?: string;
   description: string;
@@ -154,6 +174,7 @@ export interface TierStackIndex {
   };
   architecture?: { shape?: string; routes?: number; serving?: number };
   roles?: { roles?: Array<{ node: string; role: string }> };
+  scope?: { deployables?: TierStackDeployable[] };
   comprehension?: {
     products?: TierStackProduct[];
     capabilities?: TierStackCapability[];
