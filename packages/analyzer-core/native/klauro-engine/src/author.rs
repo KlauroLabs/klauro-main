@@ -184,7 +184,7 @@ fn consolidate(outcomes: &[Outcome], spoken_for: &str) -> Vec<Outcome> {
             .collect::<Vec<_>>()
             .join("\n")
     );
-    let Some(held) = answered::<Proposed>(&prompt, 4000, &proposing(), "outcomes") else {
+    let Some(held) = answered::<Proposed>(&prompt, 4000, &proposing(), "outcomes", 1) else {
         return outcomes.to_vec();
     };
     let mut folded: Vec<Outcome> = held
@@ -221,7 +221,7 @@ fn propose_batch(evidence: &[String], spoken_for: &str) -> Vec<Outcome> {
          Return JSON only: {{\"outcomes\":[{{\"name\":\"...\",\"description\":\"...\",\"audience\":\"...\"}}]}}",
         evidence.join("\n")
     );
-    let Some(held) = answered::<Proposed>(&prompt, 3000, &proposing(), "outcomes") else { return Vec::new() };
+    let Some(held) = answered::<Proposed>(&prompt, 3000, &proposing(), "outcomes", 1) else { return Vec::new() };
     held.outcomes
         .into_iter()
         .map(|mut outcome| {
@@ -281,30 +281,6 @@ pub fn name_capabilities(
     // A batch that comes back empty takes its groups with it, and a group that
     // is never named is a capability that silently stops existing. Ask again
     // for whatever is still unnamed, in smaller pieces, while it is still there.
-    // Each round is another wait on the backend, so ask once more and no more:
-    // a group that two askings cannot name is reported, not chased.
-    for attempt in 0..1 {
-        let missing: Vec<String> = grouped
-            .iter()
-            .filter(|(id, _)| !named.contains_key(*id))
-            .map(|(id, facts)| format!("- id: {id}\n{facts}"))
-            .collect();
-        if missing.is_empty() {
-            break;
-        }
-        let held = (named_per_call() >> (attempt + 1)).max(1);
-        let again: Vec<BTreeMap<String, Written>> = missing
-            .par_chunks(held)
-            .map(|batch| name_capability_batch(spoken_for, batch))
-            .collect();
-        let before = named.len();
-        for batch in again {
-            named.extend(batch);
-        }
-        if named.len() == before {
-            break;
-        }
-    }
     let unnamed = grouped.len() - named.len();
     if unnamed > 0 {
         eprintln!("  author left {unnamed} of {} groups unnamed", grouped.len());
@@ -330,13 +306,36 @@ fn name_capability_batch(spoken_for: &str, listed: &[String]) -> BTreeMap<String
          The groups:\n{}",
         listed.join("\n\n")
     );
-    let Some(written) = answered::<serde_json::Value>(&prompt, 3000, &asking_of_models(model()), "items") else { return named };
+    let Some(written) = answered::<serde_json::Value>(&prompt, 3000, &asking_of_models(model()), "items", listed.len()) else {
+        if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
+            eprintln!("    batch of {} got no answer at all", listed.len());
+        }
+        return named;
+    };
+    let mut refused: Vec<String> = Vec::new();
     for item in written["items"].as_array().into_iter().flatten() {
-        let Ok(held) = serde_json::from_value::<Written>(item.clone()) else { continue };
+        let Ok(held) = serde_json::from_value::<Written>(item.clone()) else {
+            refused.push(format!("unreadable {item}"));
+            continue;
+        };
         if held.name.trim().is_empty() || held.description.trim().is_empty() {
+            refused.push(format!("empty {}", held.id));
             continue;
         }
         named.insert(held.id.clone(), held);
+    }
+    if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() && named.len() < listed.len() {
+        let asked: Vec<&str> = listed
+            .iter()
+            .filter_map(|held| held.lines().next())
+            .map(|line| line.trim_start_matches("- id: "))
+            .collect();
+        let back: Vec<&str> = named.keys().map(String::as_str).collect();
+        eprintln!(
+            "    batch asked {} got {} | asked {asked:?} | back {back:?} | dropped {refused:?}",
+            listed.len(),
+            named.len()
+        );
     }
     named
 }
@@ -355,7 +354,7 @@ fn name_batch(member: &str, spoken_for: &str, listed: &[String]) -> BTreeMap<Str
          The {member}:\n{}",
         listed.join("\n\n")
     );
-    let Some(written) = answered::<serde_json::Value>(&prompt, 1200, &asking_of_models(model()), "items") else { return named };
+    let Some(written) = answered::<serde_json::Value>(&prompt, 1200, &asking_of_models(model()), "items", listed.len()) else { return named };
     for item in written["items"].as_array().into_iter().flatten() {
         let Ok(held) = serde_json::from_value::<Written>(item.clone()) else { continue };
         named.insert(held.id.clone(), held);
@@ -484,7 +483,7 @@ pub fn describe_system(facts: &str) -> Option<String> {
          analysis, the repository or the code layout — describe the thing the code is.\n\n\
          Return JSON only: {{\"description\":\"...\"}}"
     );
-    let told: Told = answered(&prompt, 1200, &proposing(), "description")?;
+    let told: Told = answered(&prompt, 1200, &proposing(), "description", 1)?;
     let described = told.description.trim().to_string();
     (!described.is_empty()).then_some(described)
 }
@@ -748,12 +747,30 @@ fn answered<T: serde::de::DeserializeOwned>(
     most: u32,
     models: &[String],
     of: &str,
+    at_least: usize,
 ) -> Option<T> {
     let spoken_to = spoken_to();
-    let read = |text: &str| -> Option<T> { match &spoken_to {
-        Some(_) => serde_json::from_str::<T>(carved(text)).ok(),
-        None => spoken_content(text).and_then(|held| serde_json::from_str::<T>(carved(&held)).ok()),
-    } };
+    // Anything well-formed parses as a Value, so a reply carrying an empty list
+    // used to count as an answer and nothing was ever asked again. What was
+    // asked for has to be in there for this to be an answer at all.
+    let carries = |held: &str| -> bool {
+        if of.is_empty() {
+            return true;
+        }
+        serde_json::from_str::<serde_json::Value>(held).is_ok_and(|value| match value.get(of) {
+            Some(serde_json::Value::Array(held)) => held.len() >= at_least.max(1),
+            Some(serde_json::Value::String(held)) => !held.trim().is_empty(),
+            Some(serde_json::Value::Null) | None => false,
+            Some(_) => true,
+        })
+    };
+    let read = |text: &str| -> Option<T> {
+        let held = match &spoken_to {
+            Some(_) => carved(text).to_string(),
+            None => carved(&spoken_content(text)?).to_string(),
+        };
+        carries(&held).then(|| serde_json::from_str::<T>(&held).ok())?
+    };
     let mut held = None;
     'asking: for model in models {
         let request = match &spoken_to {
@@ -779,7 +796,7 @@ fn answered<T: serde::de::DeserializeOwned>(
                         held = Some((value, text, request));
                         break 'asking;
                     }
-                    break;
+                    std::thread::sleep(std::time::Duration::from_millis(500 << attempt))
                 }
                 crate::reach::Answer::Refused => break,
                 crate::reach::Answer::Missed => {
