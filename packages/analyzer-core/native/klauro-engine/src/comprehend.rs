@@ -929,11 +929,20 @@ fn family_of(flow: &Flow) -> Family {
     Family { key: format!("trigger:{}", flow.kind), basis: "how it is triggered" }
 }
 
+/// The surface a path names. A flow that is reached over http carries the path
+/// it is reached at, so that is read rather than guessed at: asking whether a
+/// string starts with a slash asks about punctuation, and a framework that
+/// spells its routes without one used to answer no to every route it had and
+/// fall, silently, into the heap of things with nothing in common.
 fn surface_family(flow: &Flow) -> Option<String> {
-    let operation = flow.operation.as_str();
-    if !operation.starts_with('/') {
+    let held = match flow.kind {
+        "http" => flow.surface.as_deref().unwrap_or(flow.operation.as_str()),
+        _ => flow.operation.as_str(),
+    };
+    if flow.kind != "http" && !held.starts_with('/') {
         return None;
     }
+    let operation = held;
     let named = operation
         .split('/')
         .find(|segment| !segment.is_empty() && !addressed_by_version(segment) && !segment.starts_with(':'))?;
