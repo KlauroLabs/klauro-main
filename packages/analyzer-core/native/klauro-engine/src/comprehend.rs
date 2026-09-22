@@ -589,6 +589,14 @@ fn families_of<'a>(flows: &[&'a Flow]) -> BTreeMap<Family, Vec<&'a Flow>> {
     for flow in flows.iter() {
         grouped.entry(family_of(flow)).or_default().push(flow);
     }
+    // Grouping by how something was triggered is what is left when it shares
+    // no surface, no records and no effect with anything: a mousedown beside a
+    // stream's end, together only in having been called. That is not an outcome
+    // anyone gets. It is only leftover if something remains to be left over
+    // from, so where a part has nothing else, what it has still speaks.
+    if grouped.keys().any(|family| !family.key.starts_with("trigger:")) {
+        grouped.retain(|family, _| !family.key.starts_with("trigger:"));
+    }
     for lane in grouped.values_mut() {
         lane.sort_by(|left, right| left.id.cmp(&right.id));
     }
