@@ -264,7 +264,23 @@ fn report_first_error(path: &str, source: &[u8], tree: &tree_sitter::Tree) {
     }
 }
 
+const ROOM_TO_DESCEND: usize = 256 << 20;
+
 fn main() {
+    rayon::ThreadPoolBuilder::new()
+        .stack_size(ROOM_TO_DESCEND)
+        .build_global()
+        .ok();
+    let held = std::thread::Builder::new()
+        .stack_size(ROOM_TO_DESCEND)
+        .spawn(read_it)
+        .expect("a thread to read on");
+    if held.join().is_err() {
+        std::process::exit(1);
+    }
+}
+
+fn read_it() {
     let root = std::env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
     let started = Instant::now();
     let found = discovery::discover(&root);
