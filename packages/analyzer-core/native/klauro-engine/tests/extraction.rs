@@ -497,9 +497,9 @@ fn routes(index: &serde_json::Value) -> Vec<(String, String)> {
 fn a_route_path_is_composed_from_the_prefix_its_type_declares() {
     let index = index("routes");
     let found = routes(&index);
-    assert!(found.contains(&("GET".to_string(), "users".to_string())), "{found:?}");
-    assert!(found.contains(&("DELETE".to_string(), "users/:id".to_string())), "{found:?}");
-    assert!(found.contains(&("GET".to_string(), "Items/Entries".to_string())), "{found:?}");
+    assert!(found.contains(&("GET".to_string(), "/users".to_string())), "{found:?}");
+    assert!(found.contains(&("DELETE".to_string(), "/users/:id".to_string())), "{found:?}");
+    assert!(found.contains(&("GET".to_string(), "/Items/Entries".to_string())), "{found:?}");
 }
 
 #[test]
@@ -551,14 +551,14 @@ fn a_call_through_a_client_is_not_a_route() {
 fn a_url_pattern_django_declares_is_a_route() {
     let index = index("routes");
     let found = routes(&index);
-    assert!(found.iter().any(|(_, path)| path == "about/"), "{found:?}");
+    assert!(found.iter().any(|(_, path)| path == "/about/"), "{found:?}");
 }
 
 #[test]
 fn a_value_read_from_an_object_is_not_a_route() {
     let index = index("routes");
     let found = routes(&index);
-    assert!(!found.iter().any(|(_, path)| path == "amount"), "{found:?}");
+    assert!(!found.iter().any(|(_, path)| path == "amount" || path == "/amount"), "{found:?}");
 }
 
 #[test]

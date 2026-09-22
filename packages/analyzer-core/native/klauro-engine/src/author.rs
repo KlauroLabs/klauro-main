@@ -84,7 +84,7 @@ pub struct Grounding {
     pub graded: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct Written {
     pub id: String,
     #[serde(default)]
@@ -325,6 +325,11 @@ fn name_capability_batch(spoken_for: &str, listed: &[String]) -> BTreeMap<String
          an analyst or an agent. Take your words from the operations and the self-description, \
          never from the storage or the framework. A group that only reads can still deliver a \
          capability; what its paths do at the end tells you what it is for, not whether it counts.\n\n\
+         Name what the person ends up with, never the way in and never what it is built on: a \
+         group reached through web routes is not called an API, one reached through pages is not \
+         called a web interface, and one that keeps records is not called a database. The paths \
+         in a group may be reached from more than one part of the system; that is one outcome \
+         offered in several places, not a capability called after the places.\n\n\
          For each group give a name of 2-6 words, one sentence saying what someone gets, and the \
          audience it is for. Echo each id back exactly as given.\n\
          Return JSON only: {{\"items\":[{{\"id\":\"...\",\"name\":\"...\",\"description\":\"...\",\"audience\":\"...\"}}]}}\n\n\

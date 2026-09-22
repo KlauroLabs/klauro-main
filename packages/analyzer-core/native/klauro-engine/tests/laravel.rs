@@ -15,7 +15,8 @@ fn a_router_vouches_for_a_path_written_without_a_leading_slash() {
     let index = index();
     let found = entries(&index);
     let paths: Vec<&str> = found.iter().map(|e| e["path"].as_str().unwrap_or("")).collect();
-    assert!(paths.contains(&"addresses"), "Route::get('addresses', ...) is a route: {paths:?}");
+    // written without one, read as the path it is
+    assert!(paths.contains(&"/addresses"), "Route::get('addresses', ...) is a route: {paths:?}");
     assert_eq!(found.len(), 2, "the two routes, and nothing else: {paths:?}");
 }
 

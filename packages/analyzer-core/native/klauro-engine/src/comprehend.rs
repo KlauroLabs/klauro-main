@@ -595,37 +595,63 @@ fn families_of<'a>(flows: &[&'a Flow]) -> BTreeMap<Family, Vec<&'a Flow>> {
     grouped
 }
 
-fn form_capabilities(
-    grouped: BTreeMap<Family, Vec<&Flow>>,
+/// One naming for each distinct group, however many parts reach it. The same
+/// surface read from a page and from the route behind it is one outcome, and
+/// asking twice would both cost twice and invite two names for one thing.
+fn name_families(
+    grouped: &[(Option<String>, BTreeMap<Family, Vec<&Flow>>)],
     spoken: &str,
-    per_call: usize,
-) -> Vec<Capability> {
-    if !crate::author::asked() {
-        return Vec::new();
+) -> BTreeMap<String, crate::author::Written> {
+    let mut pooled: BTreeMap<&str, (&Family, Vec<&Flow>)> = BTreeMap::new();
+    for (_, families) in grouped.iter() {
+        for (family, flows) in families.iter() {
+            let held = pooled
+                .entry(family.key.as_str())
+                .or_insert_with(|| (family, Vec::new()));
+            held.1.extend(flows.iter().copied());
+        }
     }
+    let keys: Vec<&str> = pooled.keys().copied().collect();
     // The key is ours, not the system's: naming a group after it hands the
     // author the interface or the folder we grouped by and gets it echoed back
     // as the capability. Every group is put to the author as a ticket, so the
     // name can only come from the evidence.
-    let held: Vec<(&Family, &Vec<&Flow>)> = grouped.iter().collect();
-    let told: BTreeMap<String, String> = held
+    let told: BTreeMap<String, String> = keys
         .iter()
         .enumerate()
-        .map(|(at, (family, flows))| (format!("g{at}"), facts_of(flows, family)))
+        .filter_map(|(at, key)| {
+            let (family, flows) = pooled.get(key)?;
+            Some((format!("g{at}"), facts_of(flows, family)))
+        })
         .collect();
+    let per_call = crate::author::per_call_for(told.len());
     let written = crate::author::name_capabilities(spoken, &told, per_call);
     if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
         eprintln!(
-            "  author grouped {} paths into {} families in calls of {}, named {}",
-            held.iter().map(|(_, flows)| flows.len()).sum::<usize>(),
+            "  author pooled {} groups across {} parts in calls of {}, named {}",
+            told.len(),
             grouped.len(),
             per_call,
             written.len()
         );
     }
+    keys.into_iter()
+        .enumerate()
+        .filter_map(|(at, key)| Some((key.to_string(), written.get(&format!("g{at}"))?.clone())))
+        .collect()
+}
+
+fn form_capabilities(
+    grouped: BTreeMap<Family, Vec<&Flow>>,
+    named_by_key: &BTreeMap<String, crate::author::Written>,
+) -> Vec<Capability> {
+    if !crate::author::asked() {
+        return Vec::new();
+    }
+    let held: Vec<(&Family, &Vec<&Flow>)> = grouped.iter().collect();
     let mut capabilities: BTreeMap<String, Capability> = BTreeMap::new();
-    for (at, (family, flows)) in held.iter().enumerate() {
-        let Some(named) = written.get(&format!("g{at}")) else { continue };
+    for (family, flows) in held.iter() {
+        let Some(named) = named_by_key.get(&family.key) else { continue };
         let id = format!("capability:{}", carved_name(&named.name));
         let entry = capabilities.entry(id.clone()).or_insert_with(|| Capability {
             id,
@@ -685,6 +711,10 @@ fn form_capabilities(
 fn reconciled(capabilities: &[Capability], spoken: &str) -> Vec<Capability> {
     if capabilities.len() < 2 {
         return Vec::new();
+    }
+    let capabilities = &gathered_by_name(capabilities)[..];
+    if capabilities.len() < 2 {
+        return capabilities.to_vec();
     }
     let listed: BTreeMap<String, String> = capabilities
         .iter()
@@ -750,20 +780,7 @@ fn reconciled(capabilities: &[Capability], spoken: &str) -> Vec<Capability> {
             continue;
         }
         for other in members {
-            if let Some(part) = other.project.clone()
-                && Some(&part) != together.project.as_ref()
-                && !together.also_in.contains(&part)
-            {
-                together.also_in.push(part);
-            }
-            together.delivered.extend(other.delivered);
-            together.records.extend(other.records);
-            together.changes.extend(other.changes);
-            together.surfaces.extend(other.surfaces);
-            together.touches.extend(other.touches);
-            if other.standing == PUBLISHED {
-                together.standing = PUBLISHED;
-            }
+            joined(&mut together, other);
         }
         continue_with(&mut together, group);
         together.delivered.sort_by(|left, right| left.flow.cmp(&right.flow));
@@ -786,6 +803,51 @@ fn reconciled(capabilities: &[Capability], spoken: &str) -> Vec<Capability> {
     }
     held.sort_by(|left, right| left.id.cmp(&right.id));
     held
+}
+
+/// Two readings of one outcome become one, keeping everything either reached.
+fn joined(into: &mut Capability, other: Capability) {
+    if let Some(part) = other.project
+        && Some(&part) != into.project.as_ref()
+        && !into.also_in.contains(&part)
+    {
+        into.also_in.push(part);
+    }
+    for part in other.also_in {
+        if Some(&part) != into.project.as_ref() && !into.also_in.contains(&part) {
+            into.also_in.push(part);
+        }
+    }
+    into.delivered.extend(other.delivered);
+    into.records.extend(other.records);
+    into.changes.extend(other.changes);
+    into.surfaces.extend(other.surfaces);
+    into.touches.extend(other.touches);
+    if other.standing == PUBLISHED {
+        into.standing = PUBLISHED;
+    }
+    into.delivered.sort_by(|left, right| left.flow.cmp(&right.flow));
+    into.delivered.dedup_by(|left, right| left.flow == right.flow);
+    into.flows = into.delivered.iter().map(|held| held.flow.clone()).collect();
+    settle(&mut into.records);
+    settle(&mut into.changes);
+    settle(&mut into.surfaces);
+    settle(&mut into.touches);
+    into.also_in.sort();
+    into.also_in.dedup();
+}
+
+/// Parts that named the same group arrive with the same name, and a name is an
+/// outcome: those need no asking to be put together.
+fn gathered_by_name(capabilities: &[Capability]) -> Vec<Capability> {
+    let mut by: Vec<Capability> = Vec::new();
+    for capability in capabilities {
+        match by.iter_mut().find(|held| held.id == capability.id) {
+            Some(held) => joined(held, capability.clone()),
+            None => by.push(capability.clone()),
+        }
+    }
+    by
 }
 
 fn continue_with(held: &mut Capability, group: &crate::author::Same) {
@@ -999,13 +1061,12 @@ pub fn author(
                     (part.clone(), families_of(&flows))
                 })
                 .collect();
-            let families: usize = grouped.iter().map(|(_, held)| held.len()).sum();
-            let per_call = crate::author::per_call_for(families);
+            let named_by_key = name_families(&grouped, &spoken);
             let mut capabilities: Vec<Capability> = grouped
                 .into_par_iter()
                 .flat_map(|(part, families)| {
                     let said = spoken_within(&spoken, part.as_deref());
-                    let mut found = form_capabilities(families, &said, per_call);
+                    let mut found = form_capabilities(families, &named_by_key);
                     test_capabilities(&mut found, &said);
                     found
                 })
