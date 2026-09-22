@@ -34,6 +34,10 @@ pub struct Flow {
     /// published name is offered from.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub surface: Option<String>,
+    /// The role its unit says it plays, where the language lets it say so.
+    /// Many units playing one role are variants of one thing, not many things.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plays: Option<String>,
     pub standing: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -682,6 +686,14 @@ fn family_of(flow: &Flow) -> Family {
         };
     }
     if flow.kind == "export"
+        && let Some(role) = flow.plays.as_deref().filter(|held| !held.is_empty())
+    {
+        return Family {
+            key: format!("role:{role}"),
+            basis: "the role it plays, which it shares with the others like it",
+        };
+    }
+    if flow.kind == "export"
         && let Some(offered) = flow.surface.as_deref().filter(|held| !held.is_empty())
     {
         return Family {
@@ -919,6 +931,14 @@ pub fn derive(
         .enumerate()
         .map(|(at, node)| (node.id.as_str(), at as u32))
         .collect();
+    // the first role a unit declares is the one its author put first
+    let mut played: HashMap<&str, &str> = HashMap::new();
+    for held in type_references {
+        if held.kind != EdgeKind::Implements {
+            continue;
+        }
+        played.entry(held.source.as_str()).or_insert(held.name.as_str());
+    }
     let mut next: HashMap<u32, Vec<u32>> = HashMap::new();
     let mut members: HashMap<u32, Vec<u32>> = HashMap::new();
     for edge in edges {
@@ -1138,6 +1158,9 @@ pub fn derive(
             kind: entry.kind,
             method: entry.method.clone(),
             operation: named,
+            plays: played
+                .get(nodes[start as usize].id.as_str())
+                .map(|held| (*held).to_string()),
             surface: match entry.kind {
                 "export" => files
                     .get(entry.file as usize)

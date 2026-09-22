@@ -71,6 +71,17 @@ pub struct Keywords {
     pub functions: &'static [&'static str],
 }
 
+/// The words by which a language says a declaration plays a role someone else
+/// defined. Not every language writes this as a heritage clause: Elixir states
+/// it with an attribute that parses as an ordinary call, so it is named here
+/// rather than in `heritage_kinds`, which would never match it.
+pub fn role_keywords(id: &str) -> &'static [&'static str] {
+    match id {
+        "elixir" => &["behaviour"],
+        _ => &[],
+    }
+}
+
 pub struct LanguageSpec {
     pub id: &'static str,
     pub declares: Declares,

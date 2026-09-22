@@ -242,6 +242,35 @@ pub fn name_capabilities(
     for batch in batches {
         named.extend(batch);
     }
+    // A batch that comes back empty takes its groups with it, and a group that
+    // is never named is a capability that silently stops existing. Ask again
+    // for whatever is still unnamed, in smaller pieces, while it is still there.
+    for attempt in 0..2 {
+        let missing: Vec<String> = grouped
+            .iter()
+            .filter(|(id, _)| !named.contains_key(*id))
+            .map(|(id, facts)| format!("- id: {id}\n{facts}"))
+            .collect();
+        if missing.is_empty() {
+            break;
+        }
+        let held = (named_per_call() >> (attempt + 1)).max(1);
+        let again: Vec<BTreeMap<String, Written>> = missing
+            .par_chunks(held)
+            .map(|batch| name_capability_batch(spoken_for, batch))
+            .collect();
+        let before = named.len();
+        for batch in again {
+            named.extend(batch);
+        }
+        if named.len() == before {
+            break;
+        }
+    }
+    let unnamed = grouped.len() - named.len();
+    if unnamed > 0 {
+        eprintln!("  author left {unnamed} of {} groups unnamed", grouped.len());
+    }
     named
 }
 

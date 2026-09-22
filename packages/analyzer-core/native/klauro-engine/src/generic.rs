@@ -677,6 +677,10 @@ impl<'a> Extractor<'a> {
                 .or_else(|| node.named_child(0))
                 .map(|target| self.text(target).trim().to_string())
                 .unwrap_or_default();
+            if crate::language::role_keywords(self.spec.id).contains(&keyword.as_str()) {
+                self.declare_role(node, scope);
+                return;
+            }
             if self.spec.keywords.types.contains(&keyword.as_str()) {
                 self.keyword_declaration(node, scope, NodeKind::Class);
                 return;
@@ -1342,6 +1346,36 @@ impl<'a> Extractor<'a> {
             type_only: false,
             names,
         });
+    }
+
+    /// A declaration that says it plays a role names the thing that defines it,
+    /// which is what tells one implementation of something from another.
+    fn declare_role(&mut self, node: Node, scope: &Scope) {
+        let Some(owner) = scope.owner.clone() else { return };
+        let arguments = node.child_by_field_name("arguments").or_else(|| {
+            let mut cursor = node.walk();
+            node.named_children(&mut cursor).find(|child| child.kind() == "arguments")
+        });
+        let mut cursor = node.walk();
+        let held: Vec<Node> = match arguments {
+            Some(arguments) => {
+                let mut inner = arguments.walk();
+                arguments.named_children(&mut inner).collect()
+            }
+            None => node.named_children(&mut cursor).skip(1).collect(),
+        };
+        for argument in held {
+            let name = base_name(self.text(argument)).trim().to_string();
+            if name.is_empty() {
+                continue;
+            }
+            self.facts.type_references.push(TypeReferenceFact {
+                file: self.file,
+                source: owner.clone(),
+                name,
+                kind: EdgeKind::Implements,
+            });
+        }
     }
 
     fn declare_command(&mut self, node: Node, scope: &Scope) {
