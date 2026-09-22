@@ -257,29 +257,70 @@ fn describe_product(
     if projects.len() < 2 {
         return describe_one(capabilities, entities, spoken, told, None).into_iter().collect();
     }
+    let named: Vec<&str> = projects.iter().filter_map(|held| held.as_deref()).collect();
     let mut parts: Vec<Product> = projects
         .par_iter()
         .filter_map(|project| describe_one(capabilities, entities, spoken, told, project.as_deref()))
         .collect();
     parts.sort_by(|left, right| left.project.cmp(&right.project));
-    let mut written = describe_whole(&parts, capabilities, entities, flows, told)
-        .into_iter()
-        .collect::<Vec<_>>();
+
+    let mut deepest: Vec<&str> = named.clone();
+    deepest.sort_by_key(|held| std::cmp::Reverse(within_of(held).matches('/').count()));
+    for project in deepest {
+        let beneath: Vec<&Product> = parts
+            .iter()
+            .filter(|part| part.project.as_deref().is_some_and(|held| held_within(held, project)))
+            .collect();
+        if beneath.is_empty() {
+            continue;
+        }
+        let Some(recomposed) =
+            describe_whole(&beneath, capabilities, entities, flows, told, Some(project))
+        else {
+            continue;
+        };
+        if let Some(held) = parts.iter_mut().find(|part| part.project.as_deref() == Some(project)) {
+            *held = recomposed;
+        } else {
+            parts.push(recomposed);
+        }
+    }
+
+    let top: Vec<&Product> = parts
+        .iter()
+        .filter(|part| {
+            part.project
+                .as_deref()
+                .is_some_and(|held| !named.iter().any(|other| held_within(held, other)))
+        })
+        .collect();
+    let whole = describe_whole(&top, capabilities, entities, flows, told, None);
+    let mut written: Vec<Product> = whole.into_iter().collect();
     written.extend(parts);
     written.sort_by(|left, right| left.project.cmp(&right.project));
     written
 }
 
+fn within_of(project: &str) -> &str {
+    project.strip_prefix("subproject:").unwrap_or(project)
+}
+
+fn held_within(held: &str, owner: &str) -> bool {
+    let (held, owner) = (within_of(held), within_of(owner));
+    !owner.is_empty() && held != owner && held.starts_with(&format!("{owner}/"))
+}
+
 fn describe_whole(
-    parts: &[Product],
+    parts: &[&Product],
     capabilities: &[Capability],
     entities: &[Entity],
     flows: &[Flow],
     told: &Telling<'_>,
+    owner: Option<&str>,
 ) -> Option<Product> {
     let weighed: Vec<(&Product, f64)> = parts
         .iter()
-        .map(|part| (part, carries(part.project.as_deref(), flows, entities)))
+        .map(|part| (*part, carries(part.project.as_deref(), flows, entities)))
         .collect();
     let whole: f64 = weighed.iter().map(|(_, held)| held).sum::<f64>().max(1.0);
     let mut ranked: Vec<(&Product, f64)> = weighed
@@ -318,9 +359,16 @@ fn describe_whole(
         "This repository is made of parts that have each already been read on their own.\n\n         {said}\n\n         How it is put together: {} across {} serving surfaces, {} routes, {} shipped units.",
         told.shape, told.serving, told.routes, told.shipped
     );
+    let speaking = match owner {
+        Some(owner) => format!(
+            "These parts all sit inside {}, so describe that, not the repository around it.\n\n",
+            within_of(owner)
+        ),
+        None => String::new(),
+    };
     let description = crate::author::describe_system(&format!(
-        "{facts}\n\nWrite the description of the whole from its parts. Lead with the parts that \
-         carry most of what the system does, and give every part room in proportion to what it \
+        "{facts}\n\n{speaking}Write the description of the whole from its parts. Lead with the \
+         parts that carry most of what it does, and give every part room in proportion to what it \
          carries. Name them all. The heaviest part is what the description is about; a lighter \
          part appears as what it contributes to that, never as the subject. Describe the thing \
          the parts add up to, not the list of parts."
@@ -328,7 +376,11 @@ fn describe_whole(
     let grounding = crate::author::test_description(&format!(
         "{facts}\n\nPROPOSED DESCRIPTION: {description}"
     ));
-    (!grounding.fabricated()).then(|| Product { project: None, description, grounding })
+    (!grounding.fabricated()).then(|| Product {
+        project: owner.map(str::to_string),
+        description,
+        grounding,
+    })
 }
 
 fn describe_one(

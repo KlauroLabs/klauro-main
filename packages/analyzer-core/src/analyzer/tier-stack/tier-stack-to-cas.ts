@@ -481,17 +481,35 @@ function within(index: TierStackIndex, project: string): TierStackIndex {
   };
 }
 
+function heldWithin(held: string, owner: string): boolean {
+  return owner !== '' && held !== owner && held.startsWith(`${owner}/`);
+}
+
 function borneBy(index: TierStackIndex): CASOutput[] {
   const parts = index.partition?.sub_projects ?? [];
   if (parts.length < 2) return [];
-  return parts
-    .map(part => ({ part, held: within(index, part.id) }))
-    .filter(({ held }) => held.nodes.length > 0)
-    .map(({ part, held }) => {
-      const child = casOf(held, part.name);
-      child.system.root_path = part.root === '' ? index.root : `${index.root}/${part.root}`;
-      return child;
-    });
+  const built = new Map<string, CASOutput>();
+  for (const part of parts) {
+    const held = within(index, part.id);
+    if (held.nodes.length === 0) continue;
+    const child = casOf(held, part.name);
+    child.system.root_path = part.root === '' ? index.root : `${index.root}/${part.root}`;
+    built.set(part.root, child);
+  }
+  const roots = [...built.keys()];
+  const borne: CASOutput[] = [];
+  for (const [root, child] of built) {
+    const owner = roots
+      .filter(other => heldWithin(root, other))
+      .sort((left, right) => right.length - left.length)[0];
+    const holder = owner === undefined ? undefined : built.get(owner);
+    if (holder === undefined) {
+      borne.push(child);
+      continue;
+    }
+    holder.children = [...(holder.children ?? []), child];
+  }
+  return borne;
 }
 
 export function tierStackToCas(index: TierStackIndex, displayName?: string): CASOutput {
