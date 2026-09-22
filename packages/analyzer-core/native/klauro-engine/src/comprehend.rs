@@ -168,6 +168,17 @@ fn changes(exit: &ExitPoint) -> bool {
 const PUBLISHED: &str = "published";
 const PROVISIONAL: &str = "provisional";
 
+fn spoken_within(spoken: &str, part: Option<&str>) -> String {
+    match part {
+        Some(part) => format!(
+            "{spoken}\n\nThese facts are about one part of that repository, the part called {}. \
+             Read them as that part alone, not as the repository around it.",
+            part.rsplit(':').next().unwrap_or(part)
+        ),
+        None => spoken.to_string(),
+    }
+}
+
 fn spoken_for(root: &std::path::Path, nodes: &[IndexNode], files: &[String]) -> String {
     let mut said = Vec::new();
     for (at, path) in files.iter().enumerate() {
@@ -212,9 +223,25 @@ pub struct Telling<'a> {
     pub frameworks: Vec<String>,
 }
 
+fn carries(project: Option<&str>, flows: &[Flow], entities: &[Entity]) -> f64 {
+    let within = |held: Option<&String>| held.map(String::as_str) == project;
+    let doing: f64 = flows
+        .iter()
+        .filter(|flow| within(flow.project.as_ref()))
+        .map(|flow| match flow.standing {
+            "terminal" => 3.0,
+            "proximal" => 2.0,
+            _ => 1.0,
+        })
+        .sum();
+    let kept = entities.iter().filter(|entity| within(entity.project.as_ref())).count();
+    doing + 2.0 * kept as f64
+}
+
 fn describe_product(
     capabilities: &[Capability],
     entities: &[Entity],
+    flows: &[Flow],
     spoken: &str,
     told: &Telling<'_>,
 ) -> Vec<Product> {
@@ -227,17 +254,80 @@ fn describe_product(
         .collect();
     projects.sort();
     projects.dedup();
-    let mut wanted: Vec<Option<&str>> = Vec::new();
-    if projects.len() > 1 {
-        wanted.extend(projects.iter().map(|project| project.as_deref()));
+    if projects.len() < 2 {
+        return describe_one(capabilities, entities, spoken, told, None).into_iter().collect();
     }
-    wanted.push(None);
-    let mut written: Vec<Product> = wanted
-        .into_par_iter()
-        .filter_map(|project| describe_one(capabilities, entities, spoken, told, project))
+    let mut parts: Vec<Product> = projects
+        .par_iter()
+        .filter_map(|project| describe_one(capabilities, entities, spoken, told, project.as_deref()))
         .collect();
+    parts.sort_by(|left, right| left.project.cmp(&right.project));
+    let mut written = describe_whole(&parts, capabilities, entities, flows, told)
+        .into_iter()
+        .collect::<Vec<_>>();
+    written.extend(parts);
     written.sort_by(|left, right| left.project.cmp(&right.project));
     written
+}
+
+fn describe_whole(
+    parts: &[Product],
+    capabilities: &[Capability],
+    entities: &[Entity],
+    flows: &[Flow],
+    told: &Telling<'_>,
+) -> Option<Product> {
+    let weighed: Vec<(&Product, f64)> = parts
+        .iter()
+        .map(|part| (part, carries(part.project.as_deref(), flows, entities)))
+        .collect();
+    let whole: f64 = weighed.iter().map(|(_, held)| held).sum::<f64>().max(1.0);
+    let mut ranked: Vec<(&Product, f64)> = weighed
+        .into_iter()
+        .map(|(part, held)| (part, 100.0 * held / whole))
+        .collect();
+    ranked.sort_by(|left, right| right.1.total_cmp(&left.1));
+    if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
+        for (part, share) in ranked.iter() {
+            let named = part.project.as_deref().unwrap_or("root");
+            eprintln!("  carries {share:5.1}%  {}", named.rsplit(':').next().unwrap_or(named));
+        }
+    }
+    let said = ranked
+        .iter()
+        .map(|(part, share)| {
+            let named = part.project.as_deref().unwrap_or("the repository root");
+            let named = named.rsplit(':').next().unwrap_or(named);
+            let doing: Vec<&str> = capabilities
+                .iter()
+                .filter(|capability| capability.project.as_deref() == part.project.as_deref())
+                .filter_map(|capability| capability.name.as_deref())
+                .collect();
+            format!(
+                "- {named} carries {share:.0}% of what this system does\n  it is: {}\n  what someone can do with it: {}",
+                part.description,
+                match doing.is_empty() {
+                    true => "nothing this reading could name".to_string(),
+                    false => doing.join(", "),
+                }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let facts = format!(
+        "This repository is made of parts that have each already been read on their own.\n\n         {said}\n\n         How it is put together: {} across {} serving surfaces, {} routes, {} shipped units.",
+        told.shape, told.serving, told.routes, told.shipped
+    );
+    let description = crate::author::describe_system(&format!(
+        "{facts}\n\nWrite the description of the whole from its parts. Lead with the parts that \
+         carry most of what the system does, and give every part its place in proportion to what \
+         it carries. Name them all: a part carrying little earns a clause, not a sentence, and \
+         never the subject. Describe the thing the parts add up to, not the list of parts."
+    ))?;
+    let grounding = crate::author::test_description(&format!(
+        "{facts}\n\nPROPOSED DESCRIPTION: {description}"
+    ));
+    (!grounding.fabricated()).then(|| Product { project: None, description, grounding })
 }
 
 fn describe_one(
@@ -385,12 +475,12 @@ fn test_capabilities(capabilities: &mut Vec<Capability>, spoken: &str) {
     });
 }
 
-fn form_capabilities(held: &Comprehension, spoken: &str) -> Vec<Capability> {
+fn form_capabilities(flows: &[&Flow], spoken: &str) -> Vec<Capability> {
     if !crate::author::asked() {
         return Vec::new();
     }
     let mut grouped: BTreeMap<Family, Vec<&Flow>> = BTreeMap::new();
-    for flow in held.flows.iter() {
+    for flow in flows.iter() {
         grouped.entry(family_of(flow)).or_default().push(flow);
     }
     for lane in grouped.values_mut() {
@@ -404,7 +494,7 @@ fn form_capabilities(held: &Comprehension, spoken: &str) -> Vec<Capability> {
     if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
         eprintln!(
             "  author grouped {} paths into {} families, named {}",
-            held.flows.len(),
+            flows.len(),
             grouped.len(),
             written.len()
         );
@@ -622,15 +712,29 @@ pub fn author(
         .ok();
     let work = || rayon::join(
         || {
-            let mut capabilities = form_capabilities(held, &spoken);
+            let mut parts: Vec<Option<String>> =
+                held.flows.iter().map(|flow| flow.project.clone()).collect();
+            parts.sort();
+            parts.dedup();
+            let mut capabilities: Vec<Capability> = parts
+                .par_iter()
+                .flat_map(|part| {
+                    let flows: Vec<&Flow> =
+                        held.flows.iter().filter(|flow| &flow.project == part).collect();
+                    let said = spoken_within(&spoken, part.as_deref());
+                    let mut found = form_capabilities(&flows, &said);
+                    test_capabilities(&mut found, &said);
+                    found
+                })
+                .collect();
+            capabilities.sort_by(|left, right| left.id.cmp(&right.id));
             let formed = started.elapsed();
-            test_capabilities(&mut capabilities, &spoken);
-            let tested = started.elapsed();
-            let products = describe_product(&capabilities, &held.entities, &spoken, told);
+            let products =
+                describe_product(&capabilities, &held.entities, &held.flows, &spoken, told);
             eprintln!(
-                "  author form {formed:?} | test {:?} | describe {:?}",
-                tested - formed,
-                started.elapsed() - tested
+                "  author form {formed:?} across {} parts | describe {:?}",
+                parts.len(),
+                started.elapsed() - formed
             );
             (capabilities, products)
         },
