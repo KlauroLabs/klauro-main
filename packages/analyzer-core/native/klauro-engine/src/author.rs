@@ -34,6 +34,9 @@ pub struct Grounding {
     pub outcome: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub universal: Option<f64>,
+    /// False when no grader was reachable, so these readings are what an
+    /// ungraded description is given, not what one earned.
+    pub graded: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -320,7 +323,7 @@ pub fn ground(
                 answers
                     .get(&format!("w{at}-{named}"))
                     .map(crate::jev::Decision::settled)
-                    .unwrap_or(fallback)
+                    .unwrap_or_else(|| unanswered(fallback))
             };
             (
                 (*id).clone(),
@@ -329,11 +332,12 @@ pub fn ground(
                     invented: settled("invented", 1.0),
                     outcome: settled("outcome", 0.0),
                     universal: None,
+                    graded: crate::jev::asked(),
                     specific: answers
                         .get(&format!("w{at}-specific"))
                         .and_then(|held| held.score)
                         .map(|score| (score * 10.0).round() / 10.0)
-                        .unwrap_or(0.0),
+                        .unwrap_or_else(|| unanswered(0.0)),
                 },
             )
         })
@@ -403,9 +407,12 @@ pub fn describe_system(facts: &str) -> Option<String> {
     }
     let prompt = format!(
         "These are the facts a reader extracted from one software repository.\n\n{facts}\n\n\
-         Write the paragraph that tells someone what this is. Four to six sentences, in this \
-         order: what it is and who it is for; what someone can do with it; what it keeps; and how \
-         it is put together and shipped. Use only the facts given and the product's own words. \
+         Write the paragraph that tells someone what this is, the way its own README would open \
+         if it were honest. It must leave the reader knowing what this is and who it is for, what \
+         someone can do with it, what it holds onto, and what it is made of — but let the thing \
+         itself decide the order and the shape of that, and never answer those four in a row like \
+         a form. Two sentences are enough if two will do. Use only the facts given and the \
+         product's own words. \
          Never name a product, vendor or technology the facts do not name. Do not describe the \
          analysis, the repository or the code layout — describe the thing the code is.\n\n\
          Return JSON only: {{\"description\":\"...\"}}"
@@ -458,18 +465,19 @@ pub fn test_description(facts: &str) -> Grounding {
     ]);
     let answers = crate::jev::decide(facts, questions);
     let settled = |named: &str, fallback: f64| {
-        answers.get(named).map(crate::jev::Decision::settled).unwrap_or(fallback)
+        answers.get(named).map(crate::jev::Decision::settled).unwrap_or_else(|| unanswered(fallback))
     };
     Grounding {
         supported: settled("supported", 0.0),
         invented: settled("invented", 1.0),
         outcome: settled("outcome", 0.0),
         universal: None,
+        graded: crate::jev::asked(),
         specific: answers
             .get("specific")
             .and_then(|held| held.score)
             .map(|score| (score * 10.0).round() / 10.0)
-            .unwrap_or(0.0),
+            .unwrap_or_else(|| unanswered(0.0)),
     }
 }
 
@@ -538,7 +546,7 @@ pub fn test_capabilities(spoken: &str, held: &[(String, String)]) -> BTreeMap<St
                 answers
                     .get(&format!("c{at}-{named}"))
                     .map(crate::jev::Decision::settled)
-                    .unwrap_or(fallback)
+                    .unwrap_or_else(|| unanswered(fallback))
             };
             (
                 id.clone(),
@@ -547,15 +555,26 @@ pub fn test_capabilities(spoken: &str, held: &[(String, String)]) -> BTreeMap<St
                     invented: settled("invented", 1.0),
                     outcome: settled("outcome", 0.0),
                     universal: Some(settled("universal", 1.0)),
+                    graded: crate::jev::asked(),
                     specific: answers
                         .get(&format!("c{at}-specific"))
                         .and_then(|held| held.score)
                         .map(|score| (score * 10.0).round() / 10.0)
-                        .unwrap_or(0.0),
+                        .unwrap_or_else(|| unanswered(0.0)),
                 },
             )
         })
         .collect()
+}
+
+/// What a score reads as when no answer came back. A grader that is up and
+/// declined to answer is a signal, so its silence still condemns; no grader at
+/// all is not a verdict, so the reading degrades in confidence, not existence.
+fn unanswered(strict: f64) -> f64 {
+    match crate::jev::asked() {
+        true => strict,
+        false => 1.0 - strict,
+    }
 }
 
 impl Grounding {

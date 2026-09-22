@@ -274,15 +274,20 @@ fn describe_product(
     let mut deepest: Vec<&str> = named.clone();
     deepest.sort_by_key(|held| std::cmp::Reverse(within_of(held).matches('/').count()));
     for project in deepest {
+        let under: Vec<Option<&str>> = named
+            .iter()
+            .filter(|held| held_within(held, project))
+            .map(|held| Some(*held))
+            .collect();
+        if under.is_empty() {
+            continue;
+        }
         let beneath: Vec<&Product> = parts
             .iter()
             .filter(|part| part.project.as_deref().is_some_and(|held| held_within(held, project)))
             .collect();
-        if beneath.is_empty() {
-            continue;
-        }
         let Some(recomposed) =
-            describe_whole(&beneath, capabilities, entities, flows, told, Some(project))
+            describe_whole(&under, &beneath, capabilities, entities, flows, told, Some(project))
         else {
             continue;
         };
@@ -293,15 +298,13 @@ fn describe_product(
         }
     }
 
-    let top: Vec<&Product> = parts
+    let standing: Vec<Option<&str>> = named
         .iter()
-        .filter(|part| {
-            part.project
-                .as_deref()
-                .is_some_and(|held| !named.iter().any(|other| held_within(held, other)))
-        })
+        .filter(|held| !named.iter().any(|other| held_within(held, other)))
+        .map(|held| Some(*held))
         .collect();
-    let whole = describe_whole(&top, capabilities, entities, flows, told, None);
+    let top: Vec<&Product> = parts.iter().collect();
+    let whole = describe_whole(&standing, &top, capabilities, entities, flows, told, None);
     let mut written: Vec<Product> = whole.into_iter().collect();
     written.extend(parts);
     written.sort_by(|left, right| left.project.cmp(&right.project));
@@ -318,6 +321,7 @@ fn held_within(held: &str, owner: &str) -> bool {
 }
 
 fn describe_whole(
+    speaking: &[Option<&str>],
     parts: &[&Product],
     capabilities: &[Capability],
     entities: &[Entity],
@@ -325,35 +329,45 @@ fn describe_whole(
     told: &Telling<'_>,
     owner: Option<&str>,
 ) -> Option<Product> {
-    let weighed: Vec<(&Product, f64)> = parts
+    let weighed: Vec<(Option<&str>, Option<&Product>, f64)> = speaking
         .iter()
-        .map(|part| (*part, carries(part.project.as_deref(), flows, entities)))
+        .map(|held| {
+            let part = parts.iter().find(|part| part.project.as_deref() == *held).copied();
+            (*held, part, carries(*held, flows, entities))
+        })
         .collect();
-    let whole: f64 = weighed.iter().map(|(_, held)| held).sum::<f64>().max(1.0);
-    let mut ranked: Vec<(&Product, f64)> = weighed
+    let whole: f64 = weighed.iter().map(|(_, _, held)| held).sum::<f64>().max(1.0);
+    let mut ranked: Vec<(Option<&str>, Option<&Product>, f64)> = weighed
         .into_iter()
-        .map(|(part, held)| (part, 100.0 * held / whole))
+        .map(|(named, part, held)| (named, part, 100.0 * held / whole))
         .collect();
-    ranked.sort_by(|left, right| right.1.total_cmp(&left.1));
+    ranked.sort_by(|left, right| right.2.total_cmp(&left.2));
     if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
-        for (part, share) in ranked.iter() {
-            let named = part.project.as_deref().unwrap_or("root");
-            eprintln!("  carries {share:5.1}%  {}", named.rsplit(':').next().unwrap_or(named));
+        for (named, part, share) in ranked.iter() {
+            let named = named.unwrap_or("root");
+            let told = match part {
+                Some(_) => "",
+                None => "  (no description held)",
+            };
+            eprintln!("  carries {share:5.1}%  {}{told}", named.rsplit(':').next().unwrap_or(named));
         }
     }
     let said = ranked
         .iter()
-        .map(|(part, share)| {
-            let named = part.project.as_deref().unwrap_or("the repository root");
+        .map(|(held, part, share)| {
+            let named = held.unwrap_or("the repository root");
             let named = named.rsplit(':').next().unwrap_or(named);
             let doing: Vec<&str> = capabilities
                 .iter()
-                .filter(|capability| capability.project.as_deref() == part.project.as_deref())
+                .filter(|capability| capability.project.as_deref() == *held)
                 .filter_map(|capability| capability.name.as_deref())
                 .collect();
             format!(
                 "- {named} carries {share:.0}% of what this system does\n  it is: {}\n  what someone can do with it: {}",
-                part.description,
+                match part {
+                    Some(part) => part.description.as_str(),
+                    None => "not described on its own; read it from what someone can do with it",
+                },
                 match doing.is_empty() {
                     true => "nothing this reading could name".to_string(),
                     false => doing.join(", "),
@@ -374,11 +388,15 @@ fn describe_whole(
         None => String::new(),
     };
     let description = crate::author::describe_system(&format!(
-        "{facts}\n\n{speaking}Write the description of the whole from its parts. Lead with the \
-         parts that carry most of what it does, and give every part room in proportion to what it \
-         carries. Name them all. The heaviest part is what the description is about; a lighter \
-         part appears as what it contributes to that, never as the subject. Describe the thing \
-         the parts add up to, not the list of parts."
+        "{facts}\n\n{speaking}Write what this is, as one thing. The parts above are evidence of \
+         what it does, not an outline to follow: do not walk them in order, do not give each one \
+         a clause of its own, and do not write a sentence shaped like \"A does this; B does that; \
+         C does the other\". Someone who uses this should recognise it from the first sentence. \
+         The share each part carries tells you how much of the thing it accounts for, so what the \
+         heaviest parts do is simply what this is; name a part only where naming it tells the \
+         reader something they would otherwise get wrong, and let the lighter ones show up in \
+         what the product can do rather than as components. Never call it a repository, a \
+         monorepo, a codebase or a collection of parts."
     ))?;
     let grounding = crate::author::test_description(&format!(
         "{facts}\n\nPROPOSED DESCRIPTION: {description}"
@@ -721,7 +739,7 @@ pub fn author(
     files: &[String],
     told: &Telling<'_>,
 ) -> u32 {
-    if !crate::author::asked() || !crate::jev::asked() {
+    if !crate::author::asked() {
         return 0;
     }
     let spoken = spoken_for(root, nodes, files);

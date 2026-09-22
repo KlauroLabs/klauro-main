@@ -11,6 +11,7 @@ enum Family {
     Nuxt,
     Astro,
     Remix,
+    TanStack,
 }
 
 static CONFIGURED: &[(&str, Family)] = &[
@@ -19,6 +20,7 @@ static CONFIGURED: &[(&str, Family)] = &[
     ("nuxt.config", Family::Nuxt),
     ("react-router.config", Family::Remix),
     ("remix.config", Family::Remix),
+    ("routeTree.gen", Family::TanStack),
     ("svelte.config", Family::Svelte),
 ];
 
@@ -248,6 +250,32 @@ fn remix_routing(parts: &[&str], name: &str) -> Option<Routing> {
     Some(Routing { path: route(&spoken), members: Members::Named(REMIX_ROUTE) })
 }
 
+fn tanstack_routing(parts: &[&str], name: &str) -> Option<Routing> {
+    let under = opened(parts, &["routes"])?;
+    if !scripted(name) {
+        return None;
+    }
+    let leaf = base(name);
+    let spoken: Vec<&str> = leaf.split('.').collect();
+    if spoken.iter().all(|part| part.starts_with('_')) {
+        return None;
+    }
+    let mut held: Vec<String> =
+        under[..under.len() - 1].iter().map(|part| (*part).to_string()).collect();
+    held.extend(spoken.into_iter().map(str::to_string));
+    let spoken: Vec<String> = held
+        .into_iter()
+        .filter(|part| !part.starts_with('_') && part != "index")
+        .map(|part| match part.strip_prefix('$') {
+            Some("") => "*".to_string(),
+            Some(named) => format!(":{named}"),
+            None => part,
+        })
+        .collect();
+    let spoken: Vec<&str> = spoken.iter().map(String::as_str).collect();
+    Some(Routing { path: route(&spoken), members: Members::Whole("GET".to_string()) })
+}
+
 pub fn conventional(
     nodes: &[IndexNode],
     files: &[String],
@@ -317,6 +345,7 @@ pub fn conventional(
             Family::Nuxt => nuxt_routing(&parts, name),
             Family::Astro => astro_routing(&parts, name),
             Family::Remix => remix_routing(&parts, name),
+            Family::TanStack => tanstack_routing(&parts, name),
         }) else {
             continue;
         };
@@ -404,6 +433,7 @@ mod tests {
             Family::Nuxt => nuxt_routing(parts, name),
             Family::Astro => astro_routing(parts, name),
             Family::Remix => remix_routing(parts, name),
+            Family::TanStack => tanstack_routing(parts, name),
         }?;
         Some(routing.path)
     }
@@ -465,6 +495,33 @@ mod tests {
         assert_eq!(spoken_method("event.ts"), None);
         assert_eq!(stem("event.get.ts"), "event");
         assert_eq!(stem("[...permalink].vue"), "[...permalink]");
+    }
+
+    #[test]
+    fn a_pathless_layout_names_no_segment_and_is_not_itself_a_page() {
+        assert_eq!(
+            path_of(&["routes", "_layout", "items.tsx"], "items.tsx", Family::TanStack).as_deref(),
+            Some("/items")
+        );
+        assert_eq!(
+            path_of(&["routes", "_layout", "index.tsx"], "index.tsx", Family::TanStack).as_deref(),
+            Some("/")
+        );
+        assert_eq!(path_of(&["routes", "_layout.tsx"], "_layout.tsx", Family::TanStack), None);
+        assert_eq!(path_of(&["routes", "__root.tsx"], "__root.tsx", Family::TanStack), None);
+    }
+
+    #[test]
+    fn a_tanstack_route_reads_its_dots_as_folders_and_its_dollars_as_parameters() {
+        assert_eq!(
+            path_of(&["routes", "_layout.items.$itemId.tsx"], "_layout.items.$itemId.tsx", Family::TanStack)
+                .as_deref(),
+            Some("/items/:itemId")
+        );
+        assert_eq!(
+            path_of(&["routes", "posts", "$postId", "edit.tsx"], "edit.tsx", Family::TanStack).as_deref(),
+            Some("/posts/:postId/edit")
+        );
     }
 
     #[test]
