@@ -124,6 +124,7 @@ export interface TierStackDeployable {
   bundled_into?: string;
   units?: number;
   entry_points?: number;
+  entered_at?: string[];
 }
 
 export interface TierStackProduct {

@@ -317,6 +317,7 @@ function deployablesOf(index: TierStackIndex): DeployableEvidence[] {
       tier: strongest.tier,
       kind: strongest.kind,
       evidence: declarations.map(declared => `${declared.declares} ${declared.kind} at ${declared.at}`),
+      ...(deployable.entered_at?.length ? { entry_files: deployable.entered_at } : {}),
       ...(deployable.ships?.length ? { ships_paths: deployable.ships } : {}),
       ...(deployable.bundled_into ? { bundled_into: deployable.bundled_into } : {}),
     }];

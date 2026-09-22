@@ -51,6 +51,8 @@ pub struct Deployable {
     pub units: u32,
     pub entry_points: u32,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub entered_at: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub reaches: Vec<String>,
 }
 
@@ -745,6 +747,7 @@ fn consolidate(
             bundled_into: None,
             units: 0,
             entry_points: 0,
+            entered_at: Vec::new(),
             reaches: Vec::new(),
         });
     }
@@ -857,7 +860,14 @@ fn consolidate(
     for entry in entry_points {
         if let Some(at) = territory.owner(file_of(&entry.handler)) {
             deployables[at].entry_points += 1;
+            let held = file_of(&entry.handler).to_string();
+            if !deployables[at].entered_at.contains(&held) {
+                deployables[at].entered_at.push(held);
+            }
         }
+    }
+    for unit in deployables.iter_mut() {
+        unit.entered_at.sort();
     }
 
     deployables.sort_by(|left, right| left.id.cmp(&right.id));
