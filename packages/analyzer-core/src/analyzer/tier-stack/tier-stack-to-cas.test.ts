@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { tierStackToCas } from './tier-stack-to-cas';
 import type { TierStackIndex } from './read-tier-stack';
+import { validateCasTree } from '../../types/cas-tree-validation';
 
 const INDEX: TierStackIndex = {
   root: '/tmp/shop',
@@ -162,4 +163,32 @@ test('a flow keeps the surface it starts from and the records it touches', () =>
 test('a declared package is carried across', () => {
   const cas = tierStackToCas(INDEX);
   assert.deepEqual(cas.dependencies?.packages, [{ name: 'express', version: '', direct: true }]);
+});
+
+test('a repository of several parts composes a CAS tree that conforms', () => {
+  const parted: TierStackIndex = {
+    ...INDEX,
+    files: [
+      { path: 'api/order.ts', kind: 'source', language: 'typescript', extracted: true },
+      { path: 'web/cart.ts', kind: 'source', language: 'typescript', extracted: true },
+    ],
+    nodes: [
+      { id: 'api/order.ts', name: 'order.ts', kind: 'module', file: 0, span: { line: 1 }, project: 'subproject:api' },
+      { id: 'web/cart.ts', name: 'cart.ts', kind: 'module', file: 1, span: { line: 1 }, project: 'subproject:web' },
+    ],
+    edges: [],
+    partition: {
+      sub_projects: [
+        { id: 'subproject:api', name: 'api', root: 'api' },
+        { id: 'subproject:web', name: 'web', root: 'web' },
+      ],
+    },
+  } as TierStackIndex;
+  const tree = tierStackToCas(parted, 'shop');
+  const seen = validateCasTree(tree);
+  assert.deepEqual(seen.issues, [], 'a composed tree carries its ids, its parents and how it was composed');
+  assert.equal(seen.valid, true);
+  assert.equal(tree.composition_mode, 'derived');
+  assert.equal(tree.parent_id, null);
+  for (const child of tree.children ?? []) assert.equal(child.parent_id, tree.id);
 });

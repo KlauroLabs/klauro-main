@@ -491,7 +491,11 @@ function heldWithin(held: string, owner: string): boolean {
   return owner !== '' && held !== owner && held.startsWith(`${owner}/`);
 }
 
-function borneBy(index: TierStackIndex): CASOutput[] {
+function casIdOf(name: string, root?: string): string {
+  return root === undefined || root === '' ? `cas:${name}` : `cas:${name}:${root}`;
+}
+
+function borneBy(index: TierStackIndex, name: string): CASOutput[] {
   const parts = index.partition?.sub_projects ?? [];
   if (parts.length < 2) return [];
   const built = new Map<string, CASOutput>();
@@ -500,6 +504,7 @@ function borneBy(index: TierStackIndex): CASOutput[] {
     if (held.nodes.length === 0) continue;
     const child = casOf(held, part.name);
     child.system.root_path = part.root === '' ? index.root : `${index.root}/${part.root}`;
+    child.id = casIdOf(name, part.root);
     built.set(part.root, child);
   }
   const roots = [...built.keys()];
@@ -513,15 +518,22 @@ function borneBy(index: TierStackIndex): CASOutput[] {
       borne.push(child);
       continue;
     }
+    child.parent_id = holder.id;
     holder.children = [...(holder.children ?? []), child];
+    holder.composition_mode = 'derived';
   }
   return borne;
 }
 
 export function tierStackToCas(index: TierStackIndex, displayName?: string): CASOutput {
-  const whole = casOf(index, displayName ?? path.basename(index.root));
-  const borne = borneBy(index);
-  return borne.length < 2 ? whole : { ...whole, children: borne };
+  const name = displayName ?? path.basename(index.root);
+  const whole = casOf(index, name);
+  whole.id = casIdOf(name);
+  whole.parent_id = null;
+  const borne = borneBy(index, name);
+  if (borne.length < 2) return whole;
+  for (const child of borne) child.parent_id = whole.id;
+  return { ...whole, children: borne, composition_mode: 'derived' };
 }
 
 function casOf(index: TierStackIndex, displayName?: string): CASOutput {
