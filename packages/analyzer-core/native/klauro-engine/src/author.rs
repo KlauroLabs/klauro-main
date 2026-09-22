@@ -3,6 +3,8 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 use rayon::prelude::*;
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use serde::{Deserialize, Serialize};
 
 const ENDPOINT: &str = "https://api.deepinfra.com/v1/openai/chat/completions";
@@ -18,10 +20,44 @@ pub fn reaching_at_once(over_a_network: usize) -> usize {
     }
 }
 
+/// How fast the backend writes, in bytes of answer per second, as last seen.
+/// Zero until something has been asked.
+static WRITTEN_PER_SECOND: AtomicU64 = AtomicU64::new(0);
+
+/// A batch is as slow as the one stream that writes it, so its size is however
+/// much answer fits in the time we are willing to wait for a single call.
+/// Placing a call costs about a second and the backend serves calls at the same
+/// time, so when it writes slowly the work belongs in more, smaller calls, and
+/// when it writes quickly it belongs in fewer, larger ones.
+const ANSWER_SECONDS: u64 = 20;
+const ANSWER_PER_ITEM: u64 = 200;
+const NAMED_PER_CALL_UNMEASURED: usize = 6;
+
+fn measured(answer: &str, took: std::time::Duration) {
+    let seconds = took.as_secs_f64();
+    if seconds < 0.5 || answer.len() < ANSWER_PER_ITEM as usize {
+        return;
+    }
+    let rate = (answer.len() as f64 / seconds).round() as u64;
+    let held = WRITTEN_PER_SECOND.load(Ordering::Relaxed);
+    let held = match held {
+        0 => rate,
+        held => (held * 3 + rate) / 4,
+    };
+    WRITTEN_PER_SECOND.store(held.max(1), Ordering::Relaxed);
+}
+
+pub fn writing_rate() -> u64 {
+    WRITTEN_PER_SECOND.load(Ordering::Relaxed)
+}
+
 fn named_per_call() -> usize {
-    match spoken_to().is_some() {
-        true => NAMED_PER_SPOKEN_CALL,
-        false => NAMED_PER_CALL,
+    if spoken_to().is_some() {
+        return NAMED_PER_SPOKEN_CALL;
+    }
+    match WRITTEN_PER_SECOND.load(Ordering::Relaxed) {
+        0 => NAMED_PER_CALL_UNMEASURED,
+        rate => ((rate * ANSWER_SECONDS / ANSWER_PER_ITEM) as usize).clamp(1, NAMED_PER_CALL),
     }
 }
 const PATHS_PER_PROPOSAL: usize = 500;
@@ -245,7 +281,9 @@ pub fn name_capabilities(
     // A batch that comes back empty takes its groups with it, and a group that
     // is never named is a capability that silently stops existing. Ask again
     // for whatever is still unnamed, in smaller pieces, while it is still there.
-    for attempt in 0..2 {
+    // Each round is another wait on the backend, so ask once more and no more:
+    // a group that two askings cannot name is reported, not chased.
+    for attempt in 0..1 {
         let missing: Vec<String> = grouped
             .iter()
             .filter(|(id, _)| !named.contains_key(*id))
@@ -777,9 +815,14 @@ fn spoken(command: &str, prompt: &str) -> Option<String> {
 }
 
 fn ask(request: &str) -> crate::reach::Answer {
-    match (key(), addressed()) {
+    let started = std::time::Instant::now();
+    let answer = match (key(), addressed()) {
         (Some(key), _) => crate::reach::asking(&endpoint(), &key, request),
         (None, Some(endpoint)) => crate::reach::asking(&endpoint, "", request),
         (None, None) => crate::reach::Answer::Refused,
+    };
+    if let crate::reach::Answer::Held(held) = &answer {
+        measured(held, started.elapsed());
     }
+    answer
 }

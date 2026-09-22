@@ -862,9 +862,10 @@ pub fn author(
             let products =
                 describe_product(&capabilities, &held.entities, &held.flows, &spoken, told);
             eprintln!(
-                "  author form {formed:?} across {} parts | describe {:?}",
+                "  author form {formed:?} across {} parts | describe {:?} | backend writes {} bytes/s",
                 parts.len(),
-                started.elapsed() - formed
+                started.elapsed() - formed,
+                crate::author::writing_rate()
             );
             (capabilities, products)
         },
