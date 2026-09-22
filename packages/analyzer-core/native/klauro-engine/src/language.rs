@@ -4599,7 +4599,7 @@ static SPECS: &[LanguageSpec] = &[
         declares: Declares {
             type_kinds: &[("class_definition", NodeKind::Class)],
             function_kinds: &[("function_definition", NodeKind::Function)],
-            field_kinds: &[],
+            field_kinds: &["assignment"],
             import_kinds: &["import_statement", "import_from_statement"],
             namespace_kinds: &[],
             constructor_kinds: &["__init__"],

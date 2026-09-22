@@ -739,11 +739,22 @@ pub fn derive(
         .collect();
     let mut entity_of: HashMap<&str, Vec<&str>> = HashMap::new();
     let mut read_of: HashMap<&str, Vec<&str>> = HashMap::new();
+    let spoken_of: HashMap<&str, &str> =
+        nodes.iter().map(|node| (node.id.as_str(), node.name.as_str())).collect();
+    let stored: HashSet<&str> = type_references
+        .iter()
+        .filter(|reference| declares_a_table(&reference.name))
+        .filter_map(|reference| spoken_of.get(reference.source.as_str()).copied())
+        .filter_map(|named| held.get(named).copied())
+        .collect();
+    let keeps = |named: &&str| stored.is_empty() || stored.contains(named);
     let mut named_within: HashMap<&str, Vec<&str>> = HashMap::new();
     for reference in type_references {
-        let Some(named) = held.get(reference.name.as_str()) else { continue };
+        let Some(named) = held.get(reference.name.as_str()).copied().filter(keeps) else {
+            continue;
+        };
         let holding = named_within.entry(reference.source.as_str()).or_default();
-        if !holding.contains(named) {
+        if !holding.contains(&named) {
             holding.push(named);
         }
     }
@@ -754,9 +765,9 @@ pub fn derive(
             .chain(call.receiver.as_deref().map(crate::names::root))
             .chain(call.literals.iter().map(|literal| crate::names::root(literal)));
         for named in spoken {
-            let Some(named) = held.get(named) else { continue };
+            let Some(named) = held.get(named).copied().filter(keeps) else { continue };
             let holding = named_within.entry(unit).or_default();
-            if !holding.contains(named) {
+            if !holding.contains(&named) {
                 holding.push(named);
             }
         }
@@ -931,7 +942,32 @@ pub fn derive(
     }
     flows.sort_by(|left, right| left.id.cmp(&right.id));
 
-    let entities = entities_first;
+    let touching = |holding: &HashMap<&str, Vec<&str>>| -> BTreeMap<String, Vec<String>> {
+        let mut found: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (unit, records) in holding {
+            for record in records {
+                found.entry((*record).to_string()).or_default().push((*unit).to_string());
+            }
+        }
+        for units in found.values_mut() {
+            units.sort();
+            units.dedup();
+            units.truncate(8);
+        }
+        found
+    };
+    let writers = touching(&entity_of);
+    let readers = touching(&read_of);
+
+    let mut entities = entities_first;
+    for entity in entities.iter_mut() {
+        if entity.written_by.is_empty() {
+            entity.written_by = writers.get(&entity.declared_as).cloned().unwrap_or_default();
+        }
+        if entity.read_by.is_empty() {
+            entity.read_by = readers.get(&entity.declared_as).cloned().unwrap_or_default();
+        }
+    }
     let terminal = flows.iter().filter(|flow| flow.standing == "terminal").count() as u32;
     let chained = flows.iter().filter(|flow| !flow.leads_into.is_empty()).count() as u32;
     Comprehension { products: Vec::new(), capabilities: Vec::new(), flows, entities, terminal, chained }
@@ -1034,22 +1070,37 @@ static HOLDS_MANY: &[&str] = &[
     "set", "stream", "vec", "vector",
 ];
 
+fn beside_nothing(annotation: &str) -> &str {
+    annotation
+        .split('|')
+        .map(str::trim)
+        .find(|part| !matches!(part.to_ascii_lowercase().as_str(), "none" | "null" | "undefined"))
+        .unwrap_or(annotation)
+}
+
 fn points_at(annotation: &str) -> Option<(String, bool)> {
-    let mut held = annotation.trim();
+    let mut held = beside_nothing(annotation.trim()).trim();
     let mut many = held.contains("[]");
     loop {
-        let trimmed = held.trim_matches(['?', '!', ' ']);
+        let trimmed = beside_nothing(held).trim_matches(['?', '!', ' ']);
         let trimmed = trimmed.strip_suffix("[]").unwrap_or(trimmed).trim_end();
-        let within = match (trimmed.find('<'), trimmed.rfind('>')) {
-            (Some(open), Some(close)) if close > open + 1 => {
+        let wrapped = match (trimmed.find('<'), trimmed.rfind('>')) {
+            (Some(open), Some(close)) if close > open + 1 => Some((open, close)),
+            _ => match (trimmed.find('['), trimmed.rfind(']')) {
+                (Some(open), Some(close)) if close > open + 1 && open > 0 => Some((open, close)),
+                _ => None,
+            },
+        };
+        let within = match wrapped {
+            Some((open, close)) => {
                 let wrapper = trimmed[..open].rsplit(['.', ':']).next().unwrap_or("");
                 many = many
                     || HOLDS_MANY
                         .binary_search(&wrapper.to_ascii_lowercase().as_str())
                         .is_ok();
-                trimmed[open + 1..close].rsplit(',').next().unwrap_or("").trim()
+                beside_nothing(trimmed[open + 1..close].rsplit(',').next().unwrap_or("")).trim()
             }
-            _ => trimmed,
+            None => trimmed,
         };
         if within == held {
             break;
@@ -1062,6 +1113,11 @@ fn points_at(annotation: &str) -> Option<(String, bool)> {
         .all(|letter| letter.is_alphanumeric() || letter == '_')
         .then(|| held.to_string())?;
     (!named.is_empty()).then_some((named, many))
+}
+
+fn declares_a_table(name: &str) -> bool {
+    let held: String = name.chars().filter(|held| !held.is_whitespace()).collect();
+    held.eq_ignore_ascii_case("table=true")
 }
 
 fn a_setting(path: &str) -> bool {
