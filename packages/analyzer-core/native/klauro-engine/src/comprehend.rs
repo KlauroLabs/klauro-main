@@ -587,9 +587,15 @@ fn form_capabilities(flows: &[&Flow], spoken: &str) -> Vec<Capability> {
     for lane in grouped.values_mut() {
         lane.sort_by(|left, right| left.id.cmp(&right.id));
     }
-    let told: BTreeMap<String, String> = grouped
+    // The key is ours, not the system's: naming a group after it hands the
+    // author the interface or the folder we grouped by and gets it echoed back
+    // as the capability. Every group is put to the author as a ticket, so the
+    // name can only come from the evidence.
+    let held: Vec<(&Family, &Vec<&Flow>)> = grouped.iter().collect();
+    let told: BTreeMap<String, String> = held
         .iter()
-        .map(|(family, flows)| (family.key.clone(), facts_of(flows)))
+        .enumerate()
+        .map(|(at, (family, flows))| (format!("g{at}"), facts_of(flows, family)))
         .collect();
     let written = crate::author::name_capabilities(spoken, &told);
     if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
@@ -601,8 +607,8 @@ fn form_capabilities(flows: &[&Flow], spoken: &str) -> Vec<Capability> {
         );
     }
     let mut capabilities: BTreeMap<String, Capability> = BTreeMap::new();
-    for (family, flows) in grouped.iter() {
-        let Some(named) = written.get(&family.key) else { continue };
+    for (at, (family, flows)) in held.iter().enumerate() {
+        let Some(named) = written.get(&format!("g{at}")) else { continue };
         let id = format!("capability:{}", carved_name(&named.name));
         let entry = capabilities.entry(id.clone()).or_insert_with(|| Capability {
             id,
@@ -622,7 +628,7 @@ fn form_capabilities(flows: &[&Flow], spoken: &str) -> Vec<Capability> {
             standing: PUBLISHED,
             touches: Vec::new(),
         });
-        for flow in flows {
+        for flow in flows.iter() {
             entry.delivered.push(Delivery {
                 flow: flow.id.clone(),
                 role: match flow.standing {
@@ -743,7 +749,7 @@ fn addressed_by_version(segment: &str) -> bool {
         || (segment.starts_with('v') && segment[1..].chars().all(|letter| letter.is_ascii_digit()))
 }
 
-fn facts_of(flows: &[&Flow]) -> String {
+fn facts_of(flows: &[&Flow], family: &Family) -> String {
     let mut surfaces: Vec<String> = flows
         .iter()
         .map(|flow| match flow.method.as_deref() {
@@ -757,7 +763,14 @@ fn facts_of(flows: &[&Flow]) -> String {
     let mut changes: Vec<String> = flows.iter().flat_map(|flow| flow.changes.iter().cloned()).collect();
     settle(&mut changes);
     format!(
-        "  reached through: {}\n  it writes these records: {}\n  it ends by: {}\n  paths in this group: {}",
+        "  these belong together by {}\n{}  reached through: {}\n  it writes these records: {}\n  \
+         it ends by: {}\n  paths in this group: {}",
+        family.basis,
+        match flows.len() > 1 && family.key.starts_with("role:") {
+            true => "  they are interchangeable ways of doing one thing, so name the one thing \
+                     they are all for, never the interface they share\n",
+            false => "",
+        },
         surfaces.join(", "),
         match records.is_empty() {
             true => "none named".to_string(),
