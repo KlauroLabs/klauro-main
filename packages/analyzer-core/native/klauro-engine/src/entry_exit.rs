@@ -1208,10 +1208,6 @@ pub fn derive(
 
     exit_points.sort_by(|left, right| left.id.cmp(&right.id));
     entry_points.retain(|entry| entry.kind != "http" || !is_test(&files[entry.file as usize]));
-    // A route is a path whether or not the framework made anyone write the
-    // leading slash. Controllers that name themselves "albums" describe the
-    // same surface as a file that sits at "/albums", and reading one of them as
-    // pathless puts every route a system has into one nameless heap.
     for entry in entry_points.iter_mut() {
         if entry.kind != "http" {
             continue;

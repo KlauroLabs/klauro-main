@@ -263,9 +263,6 @@ static MODULE_MANIFESTS: &[&str] = &[
     "setup.py",
 ];
 
-/// A manifest that names no package is not one: several ecosystems use the
-/// same file to pin the dependencies of a folder that only runs something,
-/// such as documentation or benchmarks, and those ship nothing of their own.
 fn names_a_package(files: &Files, path: &str, basename: &str) -> bool {
     if basename != "project.toml" {
         return true;

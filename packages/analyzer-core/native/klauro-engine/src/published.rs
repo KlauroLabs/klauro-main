@@ -136,12 +136,6 @@ pub fn published(
             "go" => upper(&node.name),
             "py" => spoken_for(&node.name) && within(path, held.root, "src"),
             "dart" => spoken_for(&node.name),
-            // Some languages write no keyword for the ordinary case because
-            // public is what they already are. Asking them for a mark that
-            // their grammar never needed answers no every time, so what a
-            // library declares at its top level is read as its surface unless
-            // the language did say otherwise.
-            // a julia package keeps its code in src/, as a python one does
             "jl" => {
                 spoken_for(&node.name)
                     && within(path, held.root, "src")
@@ -172,9 +166,6 @@ pub fn published(
                 .cmp(&names.iter().any(|named| named == &files[left.file as usize]))
                 .then(left.id.cmp(&right.id))
         });
-        // A route is one way in and is counted one at a time; a published name is
-        // one way in too. Joining a package's names into a single offer loses every
-        // one of them, so each published declaration stands on its own.
         for node in kept {
             found.push(EntryPoint {
                 id: format!("entry:{}:published", node.id),
@@ -192,8 +183,6 @@ pub fn published(
     found
 }
 
-/// The module a published name is offered from: what a library's own author
-/// grouped it with, which is the nearest thing it has to a route's surface.
 pub fn offered_from(path: &str) -> &str {
     let held = path.rsplit_once('.').map(|(held, _)| held).unwrap_or(path);
     held.strip_suffix("/mod").or_else(|| held.strip_suffix("/index")).unwrap_or(held)
@@ -213,7 +202,6 @@ mod tests {
 
     #[test]
     fn a_language_that_writes_no_keyword_is_not_read_as_publishing_nothing() {
-        // the mark these languages never write is not a refusal to publish
         assert!(spoken_for("Bumblebee.Audio"));
         assert!(spoken_for("Jekyll::Renderer"));
         assert!(!spoken_for("_internal"));

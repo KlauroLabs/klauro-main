@@ -20,24 +20,14 @@ pub fn reaching_at_once(over_a_network: usize) -> usize {
     }
 }
 
-/// How fast the backend writes, in bytes of answer per second, as last seen.
-/// Zero until something has been asked.
 static WRITTEN_PER_SECOND: AtomicU64 = AtomicU64::new(0);
 
-/// Answers that did not carry what was asked for, and so had to be asked again.
-/// This should stay at zero: an answer that has to be chased is a question that
-/// was put badly, not a backend that needs another go.
 static ASKED_AGAIN: AtomicU64 = AtomicU64::new(0);
 
 pub fn asked_again() -> u64 {
     ASKED_AGAIN.load(Ordering::Relaxed)
 }
 
-/// Measured: a backend asked for one thing at a time answers in the wrong shape
-/// far more often than one asked for a list, and serving many calls at once
-/// divides a fixed pipe rather than widening it. Small batches were slower and
-/// lost groups; the batch stays whole. The rate is still measured, because how
-/// fast the backend writes is worth seeing even when nothing steers by it.
 const ANSWER_WORTH_TIMING: usize = 200;
 
 fn measured(answer: &str, took: std::time::Duration) {
@@ -79,8 +69,6 @@ pub struct Grounding {
     pub outcome: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub universal: Option<f64>,
-    /// False when no grader was reachable, so these readings are what an
-    /// ungraded description is given, not what one earned.
     pub graded: bool,
 }
 
@@ -268,11 +256,6 @@ pub fn name_them(
     named
 }
 
-/// How many groups to put in one call, given how many there are altogether.
-/// The backend answers several callers at once and writes each answer with one
-/// stream, so the work belongs spread across the callers it can serve — but a
-/// call carrying too few groups is answered in the wrong shape more often than
-/// one carrying a list, so the batch has a floor.
 pub fn per_call_for(groups: usize) -> usize {
     if spoken_to().is_some() {
         return NAMED_PER_SPOKEN_CALL;
@@ -281,10 +264,6 @@ pub fn per_call_for(groups: usize) -> usize {
 }
 
 const CALLS_AT_ONCE: usize = 12;
-/// A call carrying one group is answered in the wrong shape far more often than
-/// one carrying a list, so a batch has a floor. Lowering it fills more of the
-/// backend at once, but groups named in separate calls are named without sight
-/// of each other and then agree less, and what agrees is what merges.
 const LEAST_PER_CALL: usize = 6;
 
 pub fn name_capabilities(
@@ -307,9 +286,6 @@ pub fn name_capabilities(
     for batch in batches {
         named.extend(batch);
     }
-    // A batch that comes back empty takes its groups with it, and a group that
-    // is never named is a capability that silently stops existing. Ask again
-    // for whatever is still unnamed, in smaller pieces, while it is still there.
     let unnamed = grouped.len() - named.len();
     if unnamed > 0 {
         eprintln!("  author left {unnamed} of {} groups unnamed", grouped.len());
@@ -486,14 +462,10 @@ fn written_of(told: &str) -> BTreeMap<&'static str, crate::jev::Question> {
     ])
 }
 
-/// Which capabilities say what the product is, and which are there so those
-/// can happen. Both are capabilities; only one of them is the product.
 pub fn what_it_is_for(spoken_for: &str, listed: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     if !asked() || listed.is_empty() {
         return BTreeMap::new();
     }
-    // Each one is placed on its own evidence, so this is one question asked of
-    // many at once rather than one long answer written by a single stream.
     let listed: Vec<(&String, &String)> = listed.iter().collect();
     let per_call = per_call_for(listed.len());
     listed
@@ -558,10 +530,6 @@ pub struct Same {
     pub audience: String,
 }
 
-/// An outcome does not belong to a part. The same one is reached from a page
-/// and from the route behind it, from a phone and from a command line, and each
-/// of those was read on its own and named on its own. Nothing until here has
-/// been in a position to see two of them together.
 pub fn same_outcome(spoken_for: &str, listed: &BTreeMap<String, String>) -> Vec<Same> {
     if !asked() || listed.is_empty() {
         return Vec::new();
@@ -785,9 +753,6 @@ pub fn test_capabilities(spoken: &str, held: &[(String, String)]) -> BTreeMap<St
         .collect()
 }
 
-/// What a score reads as when no answer came back. A grader that is up and
-/// declined to answer is a signal, so its silence still condemns; no grader at
-/// all is not a verdict, so the reading degrades in confidence, not existence.
 fn unanswered(strict: f64) -> f64 {
     match crate::jev::asked() {
         true => strict,
@@ -902,9 +867,6 @@ fn answered<T: serde::de::DeserializeOwned>(
     at_least: usize,
 ) -> Option<T> {
     let spoken_to = spoken_to();
-    // Anything well-formed parses as a Value, so a reply carrying an empty list
-    // used to count as an answer and nothing was ever asked again. What was
-    // asked for has to be in there for this to be an answer at all.
     let carries = |held: &str| -> bool {
         if of.is_empty() {
             return true;

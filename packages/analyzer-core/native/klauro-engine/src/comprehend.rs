@@ -30,12 +30,8 @@ pub struct Flow {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub method: Option<String>,
     pub operation: String,
-    /// The surface this is reached through: a route's path, or the module a
-    /// published name is offered from.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub surface: Option<String>,
-    /// The role its unit says it plays, where the language lets it say so.
-    /// Many units playing one role are variants of one thing, not many things.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plays: Option<String>,
     pub standing: &'static str,
@@ -122,14 +118,8 @@ pub struct Capability {
     pub surfaces: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
-    /// The other parts this same outcome is also reached from. An outcome does
-    /// not belong to one part; it has a home where most of it lives.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub also_in: Vec<String>,
-    /// What this is to the product: terminal when someone would name it as a
-    /// reason the product exists, proximal when it delivers one, supporting
-    /// when it is there so the others can happen. Held only where the whole is
-    /// spoken of, since a part's own capabilities are its own point.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub place: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -197,9 +187,6 @@ fn spoken_within(spoken: &str, part: Option<&str>) -> String {
     }
 }
 
-/// A readme opens with badges and a list of parts, and says what the thing is
-/// and who it is for further down. Reading only the top keeps the advertising
-/// and cuts the meaning, so the budget is the document, not its first screen.
 const SAID_OF_ITSELF: usize = 8000;
 
 fn spoken_for(root: &std::path::Path, nodes: &[IndexNode], files: &[String]) -> String {
@@ -261,8 +248,6 @@ fn carries(project: Option<&str>, flows: &[Flow], entities: &[Entity]) -> f64 {
     doing + 2.0 * kept as f64
 }
 
-/// The parts of a repository, as its capabilities name them. What the whole
-/// delivers belongs to no part and is composed from these afterwards.
 fn parts_of(capabilities: &[Capability]) -> Vec<String> {
     let mut held: Vec<String> =
         capabilities.iter().filter_map(|capability| capability.project.clone()).collect();
@@ -271,8 +256,6 @@ fn parts_of(capabilities: &[Capability]) -> Vec<String> {
     held
 }
 
-/// Each part read on its own. This needs nothing from the whole, so it is done
-/// while the whole is still being worked out rather than waiting behind it.
 fn describe_parts(
     capabilities: &[Capability],
     entities: &[Entity],
@@ -315,10 +298,6 @@ fn describe_product(
     named.sort();
     let mut parts = described;
 
-    // A part is composed from what sits inside it, so a deeper one is settled
-    // before the one above it. Two at the same depth hold nothing of each
-    // other's, and the backend answers several callers at once, so they are
-    // composed together rather than one after another.
     let mut by_depth: BTreeMap<std::cmp::Reverse<usize>, Vec<&str>> = BTreeMap::new();
     for project in named.iter() {
         by_depth
@@ -632,11 +611,6 @@ fn families_of<'a>(flows: &[&'a Flow]) -> BTreeMap<Family, Vec<&'a Flow>> {
     for flow in flows.iter() {
         grouped.entry(family_of(flow)).or_default().push(flow);
     }
-    // Grouping by how something was triggered is what is left when it shares
-    // no surface, no records and no effect with anything: a mousedown beside a
-    // stream's end, together only in having been called. That is not an outcome
-    // anyone gets. It is only leftover if something remains to be left over
-    // from, so where a part has nothing else, what it has still speaks.
     if grouped.keys().any(|family| !family.key.starts_with("trigger:")) {
         grouped.retain(|family, _| !family.key.starts_with("trigger:"));
     }
@@ -646,9 +620,6 @@ fn families_of<'a>(flows: &[&'a Flow]) -> BTreeMap<Family, Vec<&'a Flow>> {
     grouped
 }
 
-/// One naming for each distinct group, however many parts reach it. The same
-/// surface read from a page and from the route behind it is one outcome, and
-/// asking twice would both cost twice and invite two names for one thing.
 fn name_families(
     grouped: &[(Option<String>, BTreeMap<Family, Vec<&Flow>>)],
     spoken: &str,
@@ -663,10 +634,6 @@ fn name_families(
         }
     }
     let keys: Vec<&str> = pooled.keys().copied().collect();
-    // The key is ours, not the system's: naming a group after it hands the
-    // author the interface or the folder we grouped by and gets it echoed back
-    // as the capability. Every group is put to the author as a ticket, so the
-    // name can only come from the evidence.
     let told: BTreeMap<String, String> = keys
         .iter()
         .enumerate()
@@ -756,20 +723,12 @@ fn form_capabilities(
     formed
 }
 
-/// What the whole delivers, read from what its parts deliver. Each part was
-/// comprehended in its own right and keeps what it found; this says which of
-/// those are one outcome reached from several places, and belongs to the whole
-/// rather than to any part of it.
-/// Words that say nothing about what someone gets, so two capabilities sharing
-/// one of them are not thereby about the same thing.
 static SAYS_NOTHING: &[&str] = &[
     "a", "access", "an", "and", "application", "control", "data", "for", "handling", "in",
     "management", "managing", "of", "operations", "or", "service", "services", "support",
     "system", "the", "to", "with",
 ];
 
-/// What a name is about, shortened so that sharing and shared, memory and
-/// memories, arrive at the same word.
 fn about(name: &str) -> Vec<String> {
     name.split(|letter: char| !letter.is_ascii_alphanumeric())
         .map(|word| word.to_ascii_lowercase())
@@ -778,10 +737,6 @@ fn about(name: &str) -> Vec<String> {
         .collect()
 }
 
-/// Which capabilities are worth asking about together. Asking one question of a
-/// hundred unrelated things is answered differently every time it is asked; this
-/// puts the ones that might be one outcome in front of each other and leaves
-/// everything else alone.
 fn worth_asking_together(capabilities: &[Capability]) -> Vec<Vec<usize>> {
     let mut owner: Vec<usize> = (0..capabilities.len()).collect();
     fn root(owner: &mut Vec<usize>, mut at: usize) -> usize {
@@ -840,8 +795,6 @@ fn reconciled(capabilities: &[Capability], spoken: &str) -> Vec<Capability> {
             )
         })
         .collect();
-    // Each cluster is its own question, so they are asked at the same time and
-    // each is asked about few enough things to be answered the same way twice.
     let groups: Vec<crate::author::Same> = worth_asking_together(capabilities)
         .par_iter()
         .filter(|cluster| cluster.len() > 1)
@@ -894,8 +847,6 @@ fn reconciled(capabilities: &[Capability], spoken: &str) -> Vec<Capability> {
         members.sort_by_key(|capability| std::cmp::Reverse(capability.delivered.len()));
         let mut together = members.remove(0);
         if members.is_empty() {
-            // Nothing was joined to it, so nothing new is known about it. The
-            // pass merges; it does not get to rename what it left alone.
             held.push(together);
             continue;
         }
@@ -926,7 +877,6 @@ fn reconciled(capabilities: &[Capability], spoken: &str) -> Vec<Capability> {
     held
 }
 
-/// A product is what someone came for, not everything it can do. Both are kept.
 fn say_what_each_is_for(held: &mut [Capability], spoken: &str) {
     let listed: BTreeMap<String, String> = held
         .iter()
@@ -954,7 +904,6 @@ fn say_what_each_is_for(held: &mut [Capability], spoken: &str) {
     }
 }
 
-/// Two readings of one outcome become one, keeping everything either reached.
 fn joined(into: &mut Capability, other: Capability) {
     if let Some(part) = other.project
         && Some(&part) != into.project.as_ref()
@@ -986,8 +935,6 @@ fn joined(into: &mut Capability, other: Capability) {
     into.also_in.dedup();
 }
 
-/// Parts that named the same group arrive with the same name, and a name is an
-/// outcome: those need no asking to be put together.
 fn gathered_by_name(capabilities: &[Capability]) -> Vec<Capability> {
     let mut by: Vec<Capability> = Vec::new();
     for capability in capabilities {
@@ -1081,11 +1028,6 @@ fn family_of(flow: &Flow) -> Family {
     Family { key: format!("trigger:{}", flow.kind), basis: "how it is triggered" }
 }
 
-/// The surface a path names. A flow that is reached over http carries the path
-/// it is reached at, so that is read rather than guessed at: asking whether a
-/// string starts with a slash asks about punctuation, and a framework that
-/// spells its routes without one used to answer no to every route it had and
-/// fall, silently, into the heap of things with nothing in common.
 fn surface_family(flow: &Flow) -> Option<String> {
     let held = match flow.kind {
         "http" => flow.surface.as_deref().unwrap_or(flow.operation.as_str()),
@@ -1208,12 +1150,6 @@ pub fn author(
                 held.flows.iter().map(|flow| flow.project.clone()).collect();
             parts.sort();
             parts.dedup();
-            // Grouping is deterministic and costs nothing, so every part is
-            // grouped before anything is asked. The backend answers several
-            // callers at once and one call is written by one stream, so the
-            // repository's groups are split across the calls it can serve
-            // rather than bundled per part, where a repository of one part
-            // would keep a single stream busy and the rest of them idle.
             let grouped: Vec<(Option<String>, BTreeMap<Family, Vec<&Flow>>)> = parts
                 .par_iter()
                 .map(|part| {
@@ -1233,10 +1169,6 @@ pub fn author(
                 })
                 .collect();
             capabilities.sort_by(|left, right| left.id.cmp(&right.id));
-            // Each part keeps what it found. What the whole delivers is read
-            // from them and added beside them, never in place of them. Reading
-            // the whole needs nothing from the parts' own descriptions and they
-            // need nothing from it, so neither waits on the other.
             let (whole, described) = rayon::join(
                 || reconciled(&capabilities, &spoken),
                 || describe_parts(&capabilities, &held.entities, &spoken, told),
@@ -1342,7 +1274,6 @@ pub fn derive(
         .enumerate()
         .map(|(at, node)| (node.id.as_str(), at as u32))
         .collect();
-    // the first role a unit declares is the one its author put first
     let mut played: HashMap<&str, &str> = HashMap::new();
     for held in type_references {
         if held.kind != EdgeKind::Implements {

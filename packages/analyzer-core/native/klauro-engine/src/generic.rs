@@ -1348,8 +1348,6 @@ impl<'a> Extractor<'a> {
         });
     }
 
-    /// A declaration that says it plays a role names the thing that defines it,
-    /// which is what tells one implementation of something from another.
     fn declare_role(&mut self, node: Node, scope: &Scope) {
         let Some(owner) = scope.owner.clone() else { return };
         let arguments = node.child_by_field_name("arguments").or_else(|| {
