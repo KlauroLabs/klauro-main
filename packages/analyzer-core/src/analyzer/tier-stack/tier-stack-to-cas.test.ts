@@ -174,13 +174,13 @@ test('a repository of several parts composes a CAS tree that conforms', () => {
     ],
     nodes: [
       { id: 'api/order.ts', name: 'order.ts', kind: 'module', file: 0, span: { line: 1 }, project: 'subproject:api' },
-      { id: 'web/cart.ts', name: 'cart.ts', kind: 'module', file: 1, span: { line: 1 }, project: 'subproject:web' },
+      { id: 'web/cart.ts', name: 'cart.ts', kind: 'module', file: 1, span: { line: 1 }, project: 'subproject:root' },
     ],
     edges: [],
     partition: {
       sub_projects: [
         { id: 'subproject:api', name: 'api', root: 'api' },
-        { id: 'subproject:web', name: 'web', root: 'web' },
+        { id: 'subproject:root', name: 'shop', root: '' },
       ],
     },
   } as TierStackIndex;
@@ -191,4 +191,6 @@ test('a repository of several parts composes a CAS tree that conforms', () => {
   assert.equal(tree.composition_mode, 'derived');
   assert.equal(tree.parent_id, null);
   for (const child of tree.children ?? []) assert.equal(child.parent_id, tree.id);
+  const ids = [tree.id, ...(tree.children ?? []).map(child => child.id)];
+  assert.equal(new Set(ids).size, ids.length, 'a part rooted at the repository root is not the repository');
 });

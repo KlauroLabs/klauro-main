@@ -491,8 +491,8 @@ function heldWithin(held: string, owner: string): boolean {
   return owner !== '' && held !== owner && held.startsWith(`${owner}/`);
 }
 
-function casIdOf(name: string, root?: string): string {
-  return root === undefined || root === '' ? `cas:${name}` : `cas:${name}:${root}`;
+function casIdOf(name: string, part?: string): string {
+  return part === undefined ? `cas:${name}` : `cas:${name}:${part}`;
 }
 
 function borneBy(index: TierStackIndex, name: string): CASOutput[] {
@@ -504,7 +504,7 @@ function borneBy(index: TierStackIndex, name: string): CASOutput[] {
     if (held.nodes.length === 0) continue;
     const child = casOf(held, part.name);
     child.system.root_path = part.root === '' ? index.root : `${index.root}/${part.root}`;
-    child.id = casIdOf(name, part.root);
+    child.id = casIdOf(name, part.id);
     built.set(part.root, child);
   }
   const roots = [...built.keys()];
