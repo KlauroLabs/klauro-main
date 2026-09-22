@@ -281,6 +281,10 @@ pub fn per_call_for(groups: usize) -> usize {
 }
 
 const CALLS_AT_ONCE: usize = 12;
+/// A call carrying one group is answered in the wrong shape far more often than
+/// one carrying a list, so a batch has a floor. Lowering it fills more of the
+/// backend at once, but groups named in separate calls are named without sight
+/// of each other and then agree less, and what agrees is what merges.
 const LEAST_PER_CALL: usize = 6;
 
 pub fn name_capabilities(
@@ -485,10 +489,26 @@ fn written_of(told: &str) -> BTreeMap<&'static str, crate::jev::Question> {
 /// Which capabilities say what the product is, and which are there so those
 /// can happen. Both are capabilities; only one of them is the product.
 pub fn what_it_is_for(spoken_for: &str, listed: &BTreeMap<String, String>) -> BTreeMap<String, String> {
-    let mut held = BTreeMap::new();
     if !asked() || listed.is_empty() {
-        return held;
+        return BTreeMap::new();
     }
+    // Each one is placed on its own evidence, so this is one question asked of
+    // many at once rather than one long answer written by a single stream.
+    let listed: Vec<(&String, &String)> = listed.iter().collect();
+    let per_call = per_call_for(listed.len());
+    listed
+        .par_chunks(per_call.max(1))
+        .map(|chunk| {
+            place_a_batch(spoken_for, &chunk.iter().map(|(id, told)| ((*id).clone(), (*told).clone())).collect())
+        })
+        .reduce(BTreeMap::new, |mut into, held| {
+            into.extend(held);
+            into
+        })
+}
+
+fn place_a_batch(spoken_for: &str, listed: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    let mut held = BTreeMap::new();
     let prompt = format!(
         "A software system describes itself like this:\n{spoken_for}\n\n\
          Below is everything it can do. Some of it is what someone came for. The rest is there so \
@@ -507,7 +527,7 @@ pub fn what_it_is_for(spoken_for: &str, listed: &BTreeMap<String, String>) -> BT
         listed.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect::<Vec<_>>().join("\n")
     );
     let Some(answer) =
-        answered::<serde_json::Value>(&prompt, 1500, &asking_of_models(model()), "placed", 1)
+        answered::<serde_json::Value>(&prompt, 1500, &asking_of_models(model()), "placed", listed.len())
     else {
         return held;
     };
@@ -561,8 +581,8 @@ pub fn same_outcome(spoken_for: &str, listed: &BTreeMap<String, String>) -> Vec<
          For each group give the name of the outcome in 2-6 words, one sentence saying what \
          someone gets, and the audience it is for. Name what the person ends up with, never the \
          way in and never what it is built on: a group reached through web routes is not called \
-         an API, one reached through pages is not called a web interface, and one that stores \
-         things is not called a database. If the ones you put together were already called \
+         an API, one reached through pages is not called a web interface, and one that keeps \
+         records is not called a database. Where the ones you put together were already called \
          something between them that says the outcome, keep saying it that way. Every id below must appear in exactly one \
          group, and no id may appear that is not below.\n\
          Return JSON only: {{\"groups\":[{{\"of\":[\"...\"],\"name\":\"...\",\"description\":\"...\",\"audience\":\"...\"}}]}}\n\n\

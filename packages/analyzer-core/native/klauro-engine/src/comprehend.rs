@@ -261,62 +261,99 @@ fn carries(project: Option<&str>, flows: &[Flow], entities: &[Entity]) -> f64 {
     doing + 2.0 * kept as f64
 }
 
+/// The parts of a repository, as its capabilities name them. What the whole
+/// delivers belongs to no part and is composed from these afterwards.
+fn parts_of(capabilities: &[Capability]) -> Vec<String> {
+    let mut held: Vec<String> =
+        capabilities.iter().filter_map(|capability| capability.project.clone()).collect();
+    held.sort();
+    held.dedup();
+    held
+}
+
+/// Each part read on its own. This needs nothing from the whole, so it is done
+/// while the whole is still being worked out rather than waiting behind it.
+fn describe_parts(
+    capabilities: &[Capability],
+    entities: &[Entity],
+    spoken: &str,
+    told: &Telling<'_>,
+) -> Vec<Product> {
+    let parts = parts_of(capabilities);
+    if parts.len() < 2 {
+        return Vec::new();
+    }
+    let mut held: Vec<Product> = parts
+        .par_iter()
+        .filter_map(|project| describe_one(capabilities, entities, spoken, told, Some(project)))
+        .collect();
+    held.sort_by(|left, right| left.project.cmp(&right.project));
+    held
+}
+
 fn describe_product(
     capabilities: &[Capability],
     entities: &[Entity],
     flows: &[Flow],
     spoken: &str,
     told: &Telling<'_>,
+    described: Vec<Product>,
 ) -> Vec<Product> {
     if capabilities.is_empty() {
         return Vec::new();
     }
-    let mut projects: Vec<Option<String>> = capabilities
-        .iter()
-        .map(|capability| capability.project.clone())
-        .collect();
-    projects.sort();
-    projects.dedup();
+    let projects = parts_of(capabilities);
     if projects.len() < 2 {
         return describe_one(capabilities, entities, spoken, told, None).into_iter().collect();
     }
-    let mut named: Vec<&str> = projects.iter().filter_map(|held| held.as_deref()).collect();
+    let mut named: Vec<&str> = projects.iter().map(String::as_str).collect();
     for part in told.within.iter() {
         if !named.contains(&part.as_str()) {
             named.push(part.as_str());
         }
     }
     named.sort();
-    let mut parts: Vec<Product> = projects
-        .par_iter()
-        .filter_map(|project| describe_one(capabilities, entities, spoken, told, project.as_deref()))
-        .collect();
-    parts.sort_by(|left, right| left.project.cmp(&right.project));
+    let mut parts = described;
 
-    let mut deepest: Vec<&str> = named.clone();
-    deepest.sort_by_key(|held| std::cmp::Reverse(within_of(held).matches('/').count()));
-    for project in deepest {
-        let under: Vec<Option<&str>> = named
-            .iter()
-            .filter(|held| held_within(held, project))
-            .map(|held| Some(*held))
+    // A part is composed from what sits inside it, so a deeper one is settled
+    // before the one above it. Two at the same depth hold nothing of each
+    // other's, and the backend answers several callers at once, so they are
+    // composed together rather than one after another.
+    let mut by_depth: BTreeMap<std::cmp::Reverse<usize>, Vec<&str>> = BTreeMap::new();
+    for project in named.iter() {
+        by_depth
+            .entry(std::cmp::Reverse(within_of(project).matches('/').count()))
+            .or_default()
+            .push(project);
+    }
+    for (_, alongside) in by_depth {
+        let recomposed: Vec<Product> = alongside
+            .par_iter()
+            .filter_map(|project| {
+                let under: Vec<Option<&str>> = named
+                    .iter()
+                    .filter(|held| held_within(held, project))
+                    .map(|held| Some(*held))
+                    .collect();
+                if under.is_empty() {
+                    return None;
+                }
+                let beneath: Vec<&Product> = parts
+                    .iter()
+                    .filter(|part| {
+                        part.project.as_deref().is_some_and(|held| held_within(held, project))
+                    })
+                    .collect();
+                describe_whole(
+                    &under, &beneath, capabilities, entities, flows, spoken, told, Some(project),
+                )
+            })
             .collect();
-        if under.is_empty() {
-            continue;
-        }
-        let beneath: Vec<&Product> = parts
-            .iter()
-            .filter(|part| part.project.as_deref().is_some_and(|held| held_within(held, project)))
-            .collect();
-        let Some(recomposed) =
-            describe_whole(&under, &beneath, capabilities, entities, flows, spoken, told, Some(project))
-        else {
-            continue;
-        };
-        if let Some(held) = parts.iter_mut().find(|part| part.project.as_deref() == Some(project)) {
-            *held = recomposed;
-        } else {
-            parts.push(recomposed);
+        for held in recomposed {
+            match parts.iter_mut().find(|part| part.project == held.project) {
+                Some(there) => *there = held,
+                None => parts.push(held),
+            }
         }
     }
 
@@ -895,6 +932,9 @@ fn gathered_by_name(capabilities: &[Capability]) -> Vec<Capability> {
 }
 
 fn continue_with(held: &mut Capability, group: &crate::author::Same) {
+    if group.name.trim().is_empty() {
+        return;
+    }
     held.id = format!("capability:{}", carved_name(&group.name));
     held.name = Some(group.name.trim().to_string());
     if !group.description.trim().is_empty() {
@@ -1126,8 +1166,13 @@ pub fn author(
                 .collect();
             capabilities.sort_by(|left, right| left.id.cmp(&right.id));
             // Each part keeps what it found. What the whole delivers is read
-            // from them and added beside them, never in place of them.
-            let whole = reconciled(&capabilities, &spoken);
+            // from them and added beside them, never in place of them. Reading
+            // the whole needs nothing from the parts' own descriptions and they
+            // need nothing from it, so neither waits on the other.
+            let (whole, described) = rayon::join(
+                || reconciled(&capabilities, &spoken),
+                || describe_parts(&capabilities, &held.entities, &spoken, told),
+            );
             eprintln!(
                 "  author read {} capabilities across the parts into {} for the whole",
                 capabilities.len(),
@@ -1136,8 +1181,14 @@ pub fn author(
             capabilities.extend(whole);
             capabilities.sort_by(|left, right| left.id.cmp(&right.id));
             let formed = started.elapsed();
-            let products =
-                describe_product(&capabilities, &held.entities, &held.flows, &spoken, told);
+            let products = describe_product(
+                &capabilities,
+                &held.entities,
+                &held.flows,
+                &spoken,
+                told,
+                described,
+            );
             eprintln!(
                 "  author form {formed:?} across {} parts | describe {:?} | backend writes {} bytes/s | asked again {}",
                 parts.len(),
