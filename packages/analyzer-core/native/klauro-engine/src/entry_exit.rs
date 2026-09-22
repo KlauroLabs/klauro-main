@@ -898,6 +898,42 @@ pub fn derive(
         .filter(|node| node.kind.is_type() || matches!(node.kind, NodeKind::Function | NodeKind::Method))
         .flat_map(|node| [node.name.as_str(), names::leaf(&node.name)])
         .collect();
+    let mut owning: HashMap<(u32, u32), &str> = HashMap::new();
+    let mut acting: HashMap<(u32, u32), &str> = HashMap::new();
+    for registration in registrations {
+        let at = (registration.file, registration.line);
+        match registration.handler.strip_prefix(':') {
+            Some(action) if !action.is_empty() => {
+                acting.insert(at, action);
+            }
+            _ if registration
+                .handler
+                .chars()
+                .next()
+                .is_some_and(|held| held.is_ascii_uppercase()) =>
+            {
+                owning.insert(at, registration.handler.as_str());
+            }
+            _ => {}
+        }
+    }
+    let acted: HashMap<(u32, u32), String> = acting
+        .into_iter()
+        .filter_map(|(at, action)| {
+            let owner = owning.get(&at)?;
+            let owner = names::leaf(owner);
+            let held = members.get(
+                nodes
+                    .iter()
+                    .find(|node| node.kind.is_type() && names::leaf(&node.name) == owner)?
+                    .id
+                    .as_str(),
+            )?;
+            let member = held.iter().find(|member| member.name == action)?;
+            Some((at, member.id.clone()))
+        })
+        .collect();
+
     let mut registered: HashSet<(u32, u32)> = HashSet::new();
     for registration in registrations {
         let Some(kind) = classify_registration(&registration.registrar, Some(&registration.label))
@@ -909,9 +945,12 @@ pub fn derive(
             .rsplit('.')
             .next()
             .unwrap_or(&registration.handler);
-        let Some(handler) = known
+        let Some(handler) = acted
+            .get(&(registration.file, registration.line))
+            .cloned()
+            .or_else(|| known
             .contains(registration.handler.as_str())
-            .then(|| registration.handler.clone())
+            .then(|| registration.handler.clone()))
             .or_else(|| local
             .get(&(registration.file, registration.handler.clone()))
             .or_else(|| local.get(&(registration.file, leaf.to_string())))
