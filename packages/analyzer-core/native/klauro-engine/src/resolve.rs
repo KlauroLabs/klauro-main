@@ -40,6 +40,7 @@ enum Origin<'a> {
     Declared(u32),
     Runtime(&'a str),
     Package(&'a str),
+    Module(u32),
     Indirect,
     Unknown,
 }
@@ -61,6 +62,7 @@ struct Symbols<'a> {
 
 struct Bindings<'a> {
     imported: HashMap<(u32, &'a str), u32>,
+    module_files: HashMap<(u32, &'a str), u32>,
     through: HashMap<(u32, &'a str), &'a str>,
     modules: HashMap<(u32, &'a str), &'a str>,
     locals: HashMap<(&'a str, &'a str), &'a str>,
@@ -416,6 +418,9 @@ impl<'a> Resolver<'a> {
             if let Some(annotation) = node.type_annotation.as_deref() {
                 return self.annotated(node.file, annotation);
             }
+        }
+        if let Some(found) = self.bindings.module_files.get(&(file, name)) {
+            return Origin::Module(*found);
         }
         if let Some(specifier) = self.bindings.modules.get(&(file, name)) {
             return Origin::Package(specifier);
@@ -810,13 +815,22 @@ fn own_module(from: &str) -> String {
     }
 }
 
+fn without_suffix(path: &str) -> &str {
+    let after = path.rfind('/').map_or(0, |slash| slash + 1);
+    match path[after..].rfind('.') {
+        Some(dot) => &path[..after + dot],
+        None => path,
+    }
+}
+
 fn module_beneath(files: &[String], dotted: &str) -> Option<u32> {
     let rest = dotted.replace('.', "/");
     let beneath = format!("/{rest}");
+    let within = format!("/{rest}/__init__");
     let mut found = None;
     for (at, path) in files.iter().enumerate() {
-        let base = strip_extension(path);
-        if base != rest && !base.ends_with(&beneath) {
+        let base = without_suffix(path);
+        if base != rest && !base.ends_with(&beneath) && !base.ends_with(&within) {
             continue;
         }
         if found.is_some() {
@@ -959,6 +973,7 @@ pub fn resolve(index: &Index) -> Resolution {
     let aliases = crate::alias::Aliases::read(index.files, index.nodes);
     let mut bindings = Bindings {
         imported: HashMap::new(),
+        module_files: HashMap::new(),
         through: HashMap::new(),
         modules: HashMap::new(),
         locals: HashMap::new(),
@@ -1033,6 +1048,7 @@ pub fn resolve(index: &Index) -> Resolution {
                     && index.files[found as usize] != from
                 {
                     internal_specifiers.insert(fact.specifier.clone());
+                    bindings.module_files.insert((fact.file, name.local.as_str()), found);
                     bindings
                         .through
                         .insert((fact.file, name.local.as_str()), index.files[found as usize].as_str());
@@ -1049,10 +1065,14 @@ pub fn resolve(index: &Index) -> Resolution {
             let holding = index.files[*first as usize].as_str();
             for name in &fact.names {
                 let wanted = name.imported.as_deref().unwrap_or(name.local.as_str());
-                let within =
-                    module_beneath(&index.files, &format!("{}.{}", fact.specifier, wanted))
-                        .map(|found| index.files[found as usize].as_str())
-                        .unwrap_or(holding);
+                let beneath =
+                    module_beneath(&index.files, &format!("{}.{}", fact.specifier, wanted));
+                if let Some(found) = beneath {
+                    bindings.module_files.insert((fact.file, name.local.as_str()), found);
+                }
+                let within = beneath
+                    .map(|found| index.files[found as usize].as_str())
+                    .unwrap_or(holding);
                 bindings.through.insert((fact.file, name.local.as_str()), within);
             }
         }
@@ -1307,6 +1327,14 @@ pub fn resolve(index: &Index) -> Resolution {
             (Origin::Declared(found), None) => {
                 emit(symbols.nodes[found as usize].id.clone());
                 continue;
+            }
+            (Origin::Module(held), Some(_)) => {
+                if let Some(found) =
+                    symbols.file_scope.get(&(held, fact.callee.as_str())).copied()
+                {
+                    emit(symbols.nodes[found as usize].id.clone());
+                    continue;
+                }
             }
             (Origin::Indirect, None) => {
                 indirect_calls += 1;
