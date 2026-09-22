@@ -333,7 +333,7 @@ function deployablesOf(index: TierStackIndex): DeployableEvidence[] {
 function purposeOf(index: TierStackIndex): CASOutput['enhanced_system_purpose'] {
   const comprehension = index.comprehension;
   if (comprehension === undefined) return undefined;
-  const capabilities = comprehension.capabilities ?? [];
+  const capabilities = whatTheSystemDelivers(index);
   const published = capabilities.filter(capability => capability.standing !== 'provisional').length;
   const provisional = capabilities.length - published;
   const product = (comprehension.products ?? [])[0];
