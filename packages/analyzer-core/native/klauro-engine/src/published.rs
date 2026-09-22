@@ -135,6 +135,17 @@ pub fn published(
         let open = match language {
             "go" => upper(&node.name),
             "py" => spoken_for(&node.name) && within(path, held.root, "src"),
+            "dart" => spoken_for(&node.name),
+            // Some languages write no keyword for the ordinary case because
+            // public is what they already are. Asking them for a mark that
+            // their grammar never needed answers no every time, so what a
+            // library declares at its top level is read as its surface unless
+            // the language did say otherwise.
+            "rb" | "ex" | "exs" | "jl" | "kt" | "kts" | "lua" => {
+                spoken_for(&node.name)
+                    && !node.modifiers.private_member
+                    && !node.modifiers.protected_member
+            }
             held_as if HEADERS.contains(&held_as) => {
                 within(path, held.root, "include") || within(path, held.root, "single_include")
             }
@@ -192,6 +203,14 @@ mod tests {
         assert!(!upper("marshal"));
         assert!(spoken_for("parse"));
         assert!(!spoken_for("_parse"));
+    }
+
+    #[test]
+    fn a_language_that_writes_no_keyword_is_not_read_as_publishing_nothing() {
+        // the mark these languages never write is not a refusal to publish
+        assert!(spoken_for("Bumblebee.Audio"));
+        assert!(spoken_for("Jekyll::Renderer"));
+        assert!(!spoken_for("_internal"));
     }
 
     #[test]
