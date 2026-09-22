@@ -568,8 +568,8 @@ pub fn kept_by_a_model(
 }
 
 static SESSION_OPERATIONS: &[&str] = &[
-    "add", "add_all", "bulk_save_objects", "commit", "delete", "execute", "flush", "merge",
-    "query", "refresh", "rollback", "scalar", "scalars",
+    "add", "add_all", "bulk_save_objects", "commit", "delete", "exec", "execute", "flush", "get",
+    "merge", "query", "refresh", "rollback", "scalar", "scalars",
 ];
 
 fn manager_exit(receiver: &str, operation: &str) -> Option<&'static str> {

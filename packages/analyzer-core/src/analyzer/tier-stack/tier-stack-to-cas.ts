@@ -263,7 +263,7 @@ function capabilitiesOf(index: TierStackIndex): CASOutput['capabilities'] {
       description_source: 'ai' as const,
       category: published ? ('core' as const) : ('supporting' as const),
       operations: operationsOf(capability.surfaces ?? []),
-      related_entities: capability.records ?? [],
+      related_entities: capability.touches ?? capability.records ?? [],
       related_domains: capability.audience === undefined ? [] : [capability.audience],
       criticality: (capability.changes ?? []).length > 0 ? ('high' as const) : ('medium' as const),
       criticality_factors: (capability.changes ?? []).map(held => `changes ${held}`),

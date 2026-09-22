@@ -101,6 +101,7 @@ export interface TierStackCapability {
   flows?: string[];
   surfaces?: string[];
   standing?: 'published' | 'provisional';
+  touches?: string[];
   grounding?: TierStackGrounding;
   delivered?: Array<{ flow: string; role: string; rationale: string }>;
 }

@@ -121,6 +121,8 @@ pub struct Capability {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub grounding: Option<crate::author::Grounding>,
     pub standing: &'static str,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub touches: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -427,6 +429,7 @@ fn form_capabilities(held: &Comprehension, spoken: &str) -> Vec<Capability> {
             description: Some(named.description.trim().to_string()),
             grounding: None,
             standing: PUBLISHED,
+            touches: Vec::new(),
         });
         for flow in flows {
             entry.delivered.push(Delivery {
@@ -442,6 +445,8 @@ fn form_capabilities(held: &Comprehension, spoken: &str) -> Vec<Capability> {
                 None => flow.operation.clone(),
             });
             entry.records.extend(flow.writes.iter().cloned());
+            entry.touches.extend(flow.writes.iter().cloned());
+            entry.touches.extend(flow.reads.iter().cloned());
             entry.changes.extend(flow.changes.iter().cloned());
         }
     }
@@ -451,6 +456,7 @@ fn form_capabilities(held: &Comprehension, spoken: &str) -> Vec<Capability> {
         capability.flows = capability.delivered.iter().map(|held| held.flow.clone()).collect();
         settle(&mut capability.surfaces);
         settle(&mut capability.records);
+        settle(&mut capability.touches);
         settle(&mut capability.changes);
     }
     formed.sort_by(|left, right| left.id.cmp(&right.id));
@@ -482,15 +488,19 @@ struct Family {
 }
 
 fn family_of(flow: &Flow) -> Family {
-    if !flow.writes.is_empty() {
-        let mut held = flow.writes.clone();
-        settle(&mut held);
-        return Family { key: format!("records:{}", held.join(",")), basis: "the records it writes" };
-    }
     if let Some(surface) = surface_family(flow) {
         return Family {
             key: format!("surface:{surface}"),
             basis: "the surface it is reached through",
+        };
+    }
+    let mut handled = flow.writes.clone();
+    handled.extend(flow.reads.iter().cloned());
+    settle(&mut handled);
+    if !handled.is_empty() {
+        return Family {
+            key: format!("records:{}", handled.join(",")),
+            basis: "the records it handles",
         };
     }
     if !flow.changes.is_empty() {
@@ -735,6 +745,20 @@ pub fn derive(
         let holding = named_within.entry(reference.source.as_str()).or_default();
         if !holding.contains(named) {
             holding.push(named);
+        }
+    }
+    for call in calls {
+        let Some(unit) = call.caller.as_deref() else { continue };
+        let spoken = [crate::names::root(&call.callee)]
+            .into_iter()
+            .chain(call.receiver.as_deref().map(crate::names::root))
+            .chain(call.literals.iter().map(|literal| crate::names::root(literal)));
+        for named in spoken {
+            let Some(named) = held.get(named) else { continue };
+            let holding = named_within.entry(unit).or_default();
+            if !holding.contains(named) {
+                holding.push(named);
+            }
         }
     }
     for exit in exit_points {
