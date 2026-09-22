@@ -295,7 +295,7 @@ fn describe_product(
             .filter(|part| part.project.as_deref().is_some_and(|held| held_within(held, project)))
             .collect();
         let Some(recomposed) =
-            describe_whole(&under, &beneath, capabilities, entities, flows, told, Some(project))
+            describe_whole(&under, &beneath, capabilities, entities, flows, spoken, told, Some(project))
         else {
             continue;
         };
@@ -312,7 +312,7 @@ fn describe_product(
         .map(|held| Some(*held))
         .collect();
     let top: Vec<&Product> = parts.iter().collect();
-    let whole = describe_whole(&standing, &top, capabilities, entities, flows, told, None);
+    let whole = describe_whole(&standing, &top, capabilities, entities, flows, spoken, told, None);
     let mut written: Vec<Product> = whole.into_iter().collect();
     written.extend(parts);
     written.sort_by(|left, right| left.project.cmp(&right.project));
@@ -334,6 +334,7 @@ fn describe_whole(
     capabilities: &[Capability],
     entities: &[Entity],
     flows: &[Flow],
+    spoken: &str,
     told: &Telling<'_>,
     owner: Option<&str>,
 ) -> Option<Product> {
@@ -385,8 +386,14 @@ fn describe_whole(
         .collect::<Vec<_>>()
         .join("\n\n");
     let facts = format!(
-        "This repository is made of parts that have each already been read on their own.\n\n         {said}\n\n         How it is put together: {} across {} serving surfaces, {} routes, {} shipped units.",
-        told.shape, told.serving, told.routes, told.shipped
+        "It says this about itself:\n{}\n\nIt is made of parts that have each already been read \
+         on their own.\n\n{said}\n\nHow it is put together: {} across {} serving surfaces, \
+         {} routes, {} shipped units.",
+        spoken_within(spoken, owner),
+        told.shape,
+        told.serving,
+        told.routes,
+        told.shipped
     );
     let speaking = match owner {
         Some(owner) => format!(
@@ -401,10 +408,14 @@ fn describe_whole(
          a clause of its own, and do not write a sentence shaped like \"A does this; B does that; \
          C does the other\". Someone who uses this should recognise it from the first sentence. \
          The share each part carries tells you how much of the thing it accounts for, so what the \
-         heaviest parts do is simply what this is; name a part only where naming it tells the \
-         reader something they would otherwise get wrong, and let the lighter ones show up in \
-         what the product can do rather than as components. Never call it a repository, a \
-         monorepo, a codebase or a collection of parts."
+         heaviest parts do is most of what it does, so weigh your emphasis that way. But what a \
+         thing IS does not follow from which part has the most code in it: a demonstration can be \
+         the largest part of something whose purpose is to be started from, and a small part can \
+         be the whole reason the rest exists. Settle what it is from what it says about itself and \
+         what it ships, then let the shares decide what gets the room. Name a part only where \
+         naming it tells the reader something they would otherwise get wrong, and let the lighter \
+         ones show up in what the product can do rather than as components. Never call it a \
+         repository, a monorepo, a codebase or a collection of parts."
     ))?;
     let grounding = crate::author::test_description(&format!(
         "{facts}\n\nPROPOSED DESCRIPTION: {description}"
