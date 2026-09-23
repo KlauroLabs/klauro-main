@@ -228,6 +228,15 @@ struct Level {
     nested: Vec<String>,
 }
 
+fn is_built_output(absolute: &Path) -> bool {
+    if let Ok(held) = std::fs::read(absolute.join("CACHEDIR.TAG"))
+        && held.starts_with(b"Signature: 8a477f597d28d172789f06886806bc55")
+    {
+        return true;
+    }
+    absolute.join(".rustc_info.json").is_file()
+}
+
 fn read_directory(absolute: &Path, relative: &str) -> Level {
     let mut level = Level {
         files: Vec::new(),
@@ -251,7 +260,7 @@ fn read_directory(absolute: &Path, relative: &str) -> Level {
             if name == ".git" && !relative.is_empty() {
                 level.nested.push(relative.to_string());
             }
-            if is_skipped_directory(name) {
+            if is_skipped_directory(name) || is_built_output(&entry.path()) {
                 level.skipped.push(child_relative);
                 continue;
             }
