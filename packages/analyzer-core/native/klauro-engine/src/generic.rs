@@ -690,6 +690,9 @@ impl<'a> Extractor<'a> {
                 return;
             }
         }
+        if crate::language::taken_apart_kinds(self.spec.id).contains(&kind) {
+            self.declare_taken_apart(node, scope);
+        }
         if self.spec.declares.binding_kinds.contains(&kind) {
             if !self.declare_binding(node, scope) {
                 self.walk(node, scope);
@@ -1459,6 +1462,72 @@ impl<'a> Extractor<'a> {
         self.walk(node, &inner);
     }
 
+    fn bound_by(&self, pattern: Node) -> Vec<String> {
+        let held = self.text(pattern).trim();
+        if !held.contains(['(', ')', '{', '}', ',', '[']) {
+            return vec![held.to_string()];
+        }
+        let mut names = Vec::new();
+        let mut pending = vec![pattern];
+        while let Some(held) = pending.pop() {
+            let mut cursor = held.walk();
+            let children: Vec<Node> = held.named_children(&mut cursor).collect();
+            if children.is_empty() {
+                let word = self.text(held).trim();
+                if !word.is_empty()
+                    && word != "_"
+                    && word.chars().all(|letter| letter.is_alphanumeric() || letter == '_')
+                    && word.chars().next().is_some_and(|letter| !letter.is_uppercase())
+                {
+                    names.push(word.to_string());
+                }
+                continue;
+            }
+            pending.extend(children);
+        }
+        names.sort();
+        names.dedup();
+        names
+    }
+
+    fn declare_taken_apart(&mut self, node: Node, scope: &Scope) {
+        let Some(value) = node.child_by_field_name(self.spec.declares.binding_value_field) else {
+            return;
+        };
+        let from_call = self
+            .spec
+            .calls
+            .kinds
+            .contains(&value.kind())
+            .then(|| self.called_name(value))
+            .flatten();
+        if from_call.is_none() {
+            return;
+        }
+        let mut pending: Vec<Node> = vec![node];
+        while let Some(held) = pending.pop() {
+            let mut cursor = held.walk();
+            for child in held.named_children(&mut cursor) {
+                if let Some(pattern) = child.child_by_field_name("pattern") {
+                    for name in self.bound_by(pattern) {
+                        self.facts.locals.push(LocalBinding {
+                            file: self.file,
+                            unit: scope.callable.clone().unwrap_or_default(),
+                            name,
+                            annotation: None,
+                            constructed: None,
+                            from_call: from_call.clone(),
+                        });
+                    }
+                    continue;
+                }
+                if child.id() != value.id() {
+                    pending.push(child);
+                }
+            }
+        }
+    }
+
     fn declare_binding(&mut self, node: Node, scope: &Scope) -> bool {
         let declarator = node.child_by_field_name(self.spec.declares.binding_name_field);
         let name = match declarator {
@@ -1468,7 +1537,11 @@ impl<'a> Extractor<'a> {
             }
             None => self.name_of(node).unwrap_or_default(),
         };
-        if name.is_empty() || name.contains(char::is_whitespace) {
+        let taken_apart = match declarator {
+            Some(declarator) if name.contains(['(', '{', ',']) => self.bound_by(declarator),
+            _ => Vec::new(),
+        };
+        if taken_apart.is_empty() && (name.is_empty() || name.contains(char::is_whitespace)) {
             return false;
         }
         let annotation = node
@@ -1496,6 +1569,19 @@ impl<'a> Extractor<'a> {
             .filter(|value| self.spec.calls.kinds.contains(&value.kind()))
             .and_then(|value| self.called_name(value));
         if annotation.is_none() && constructed.is_none() && from_call.is_none() {
+            return false;
+        }
+        for held in taken_apart.iter() {
+            self.facts.locals.push(LocalBinding {
+                file: self.file,
+                unit: scope.callable.clone().unwrap_or_default(),
+                name: held.clone(),
+                annotation: annotation.clone(),
+                constructed: constructed.clone(),
+                from_call: from_call.clone(),
+            });
+        }
+        if !taken_apart.is_empty() {
             return false;
         }
         self.facts.locals.push(LocalBinding {

@@ -71,6 +71,16 @@ pub struct Keywords {
     pub functions: &'static [&'static str],
 }
 
+/// Kinds that hand one value to several patterns: the value is stated once and
+/// each arm names part of it, so the binding and what produced it sit on
+/// different nodes.
+pub fn taken_apart_kinds(id: &str) -> &'static [&'static str] {
+    match id {
+        "rust" => &["match_expression"],
+        _ => &[],
+    }
+}
+
 pub fn role_keywords(id: &str) -> &'static [&'static str] {
     match id {
         "elixir" => &["behaviour"],
@@ -4905,7 +4915,7 @@ static SPECS: &[LanguageSpec] = &[
             impl_type_field: "type",
             heritage_kinds: &["trait"],
             lambda_kinds: &["closure_expression"],
-            binding_kinds: &["let_declaration"],
+            binding_kinds: &["let_declaration", "let_condition"],
             binding_name_field: "pattern",
             binding_type_field: "type",
             binding_value_field: "value",
