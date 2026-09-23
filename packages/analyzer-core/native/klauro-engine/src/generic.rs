@@ -1856,14 +1856,28 @@ impl<'a> Extractor<'a> {
     }
 }
 
+fn string_prefix(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    let prefix = bytes
+        .iter()
+        .take(2)
+        .take_while(|letter| letter.is_ascii_alphabetic() || matches!(letter, b'$' | b'@'))
+        .count();
+    match bytes.get(prefix) {
+        Some(b'"' | b'\'' | b'`') => prefix,
+        _ => 0,
+    }
+}
+
 fn trim_quotes(text: &str) -> &str {
     let trimmed = text.trim();
-    let bytes = trimmed.as_bytes();
+    let unprefixed = &trimmed[string_prefix(trimmed)..];
+    let bytes = unprefixed.as_bytes();
     if bytes.len() >= 2
         && matches!(bytes[0], b'"' | b'\'' | b'`')
         && bytes[bytes.len() - 1] == bytes[0]
     {
-        return &trimmed[1..trimmed.len() - 1];
+        return &unprefixed[1..unprefixed.len() - 1];
     }
     trimmed
 }
@@ -1983,11 +1997,12 @@ fn configures_the_call(kind: &str) -> bool {
 }
 
 fn written_as_text(raw: &str) -> bool {
-    let Some(opened) = raw.chars().next().filter(|letter| matches!(letter, '"' | '\'' | '`'))
+    let unprefixed = &raw[string_prefix(raw)..];
+    let Some(opened) = unprefixed.chars().next().filter(|letter| matches!(letter, '"' | '\'' | '`'))
     else {
         return false;
     };
-    raw.chars().count() > 1 && raw.ends_with(opened)
+    unprefixed.chars().count() > 1 && unprefixed.ends_with(opened)
 }
 
 fn string_literals(text: &str) -> Vec<String> {
