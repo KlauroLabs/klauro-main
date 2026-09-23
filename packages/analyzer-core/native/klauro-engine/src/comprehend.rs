@@ -1366,10 +1366,30 @@ pub fn derive(
             carried_by(&mut carries, unit, held);
         }
     }
+    let served_shapes: Vec<(Vec<String>, &str)> = entry_points
+        .iter()
+        .filter(|entry| entry.kind == "http")
+        .filter_map(|entry| entry.path.as_deref().map(|path| (route_shape(path), entry.id.as_str())))
+        .filter(|(shape, _)| said_plainly_in(shape) > 0)
+        .collect();
     let mut served_at: HashMap<&str, &str> = HashMap::new();
-    for entry in entry_points.iter().filter(|entry| entry.kind == "http") {
-        if let Some(path) = entry.path.as_deref() {
-            served_at.entry(path).or_insert(entry.id.as_str());
+    for exit in exit_points {
+        let Some(addressed) = exit.addressed.as_deref() else { continue };
+        if served_at.contains_key(addressed) {
+            continue;
+        }
+        let asked = route_shape(addressed);
+        let found = served_shapes
+            .iter()
+            .find(|(shape, _)| same_shape(&asked, shape))
+            .or_else(|| {
+                served_shapes
+                    .iter()
+                    .filter(|(shape, _)| mounted_under(&asked, shape))
+                    .max_by_key(|(shape, _)| shape.len())
+            });
+        if let Some((_, served)) = found {
+            served_at.insert(addressed, served);
         }
     }
 
@@ -1680,6 +1700,49 @@ pub struct Shared {
     pub family: &'static str,
     pub name: String,
     pub role: &'static str,
+}
+
+const MOUNTED_WITH_AT_LEAST: usize = 2;
+
+fn route_shape(path: &str) -> Vec<String> {
+    let bare = path.split(['?', '#']).next().unwrap_or_default();
+    let bare = match bare.find("://") {
+        Some(at) => bare[at + 3..].find('/').map(|slash| &bare[at + 3 + slash..]).unwrap_or(""),
+        None => bare,
+    };
+    bare.split('/')
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| match stands_for_a_value(segment) {
+            true => "*".to_string(),
+            false => segment.to_ascii_lowercase(),
+        })
+        .collect()
+}
+
+fn stands_for_a_value(segment: &str) -> bool {
+    segment == "*"
+        || segment.starts_with([':', '{', '[', '<'])
+        || segment.ends_with(['}', ']', '>'])
+        || segment.contains("${")
+}
+
+fn said_plainly_in(shape: &[String]) -> usize {
+    shape.iter().filter(|segment| *segment != "*").count()
+}
+
+fn same_shape(asked: &[String], served: &[String]) -> bool {
+    asked.len() == served.len()
+        && said_plainly_in(served) > 0
+        && asked
+            .iter()
+            .zip(served)
+            .all(|(left, right)| left == right || left == "*" || right == "*")
+}
+
+fn mounted_under(asked: &[String], served: &[String]) -> bool {
+    served.len() < asked.len()
+        && said_plainly_in(served) >= MOUNTED_WITH_AT_LEAST
+        && same_shape(&asked[asked.len() - served.len()..], served)
 }
 
 fn carried_by<'a>(carries: &mut HashMap<&'a str, Vec<Shared>>, unit: &'a str, held: Shared) {
@@ -2467,6 +2530,26 @@ mod tests {
         );
         assert_eq!(agreed("on", Some("element"), "mouseup"), None);
         assert_eq!(agreed("Handle", None, "cancellationToken"), None);
+    }
+
+    #[test]
+    fn a_route_is_matched_by_its_shape_not_its_spelling() {
+        use super::{route_shape, same_shape};
+        let served = route_shape("/assets/:assetId/history");
+        assert!(same_shape(&route_shape("/assets/${assetId}/history?limit=${limit}"), &served));
+        assert!(same_shape(&route_shape("https://host.example/assets/42/history"), &served));
+        assert!(same_shape(&route_shape("/assets/{asset_id}/history"), &served));
+        assert!(!same_shape(&route_shape("/assets/42/prices"), &served));
+        assert!(!same_shape(&route_shape("/"), &route_shape("/")));
+    }
+
+    #[test]
+    fn a_route_can_be_served_under_a_prefix_the_caller_names() {
+        use super::{mounted_under, route_shape};
+        let served = route_shape("/opportunity-candidates/:id/evaluate");
+        assert!(mounted_under(&route_shape("/api/v2/capital/opportunity-candidates/7/evaluate"), &served));
+        assert!(!mounted_under(&route_shape("/search.json"), &route_shape("/price/address/:address")));
+        assert!(!mounted_under(&route_shape("/api/users/7"), &route_shape("/users/:id")));
     }
 
     #[test]

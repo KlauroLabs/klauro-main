@@ -952,7 +952,11 @@ impl<'a> Extractor<'a> {
                         .filter(|value| value.kind() == "new_expression")
                         .and_then(|value| value.child_by_field_name("constructor"))
                         .map(|found| self.text_owned(found))
-                        .or_else(|| initializer.and_then(|value| literal_type(value.kind())))
+                        .or_else(|| {
+                            initializer
+                                .filter(|value| value.kind() != "object")
+                                .and_then(|value| literal_type(value.kind()))
+                        })
                         ;
                     let from_call = initializer
                         .filter(|value| value.kind() == "call_expression")
@@ -1025,6 +1029,7 @@ impl<'a> Extractor<'a> {
                 self.push_edge(owner, &id, EdgeKind::Contains);
             }
 
+            let held_by = id.clone();
             let inner = scope.child(Some(id.clone()), Some(id));
             match callable {
                 Some(callable) => {
@@ -1035,12 +1040,65 @@ impl<'a> Extractor<'a> {
                         self.parameter_initializers(parameters, &inner);
                     }
                 }
-                None => {
-                    if let Some(value) = value {
-                        self.visit(value, &inner);
+                None => match value.map(unwrap_value).filter(|held| held.kind() == "object") {
+                    Some(object) => self.object_members(object, &inner, &held_by),
+                    None => {
+                        if let Some(value) = value {
+                            self.visit(value, &inner);
+                        }
                     }
-                }
+                },
             }
+        }
+    }
+
+    fn object_members(&mut self, object: Node, scope: &Scope, owner: &str) {
+        let mut cursor = object.walk();
+        for member in object.named_children(&mut cursor) {
+            match member.kind() {
+                "method_definition" => self.method(member, scope, owner),
+                "pair" => match member.child_by_field_name("value").filter(|held| {
+                    matches!(held.kind(), "arrow_function" | "function_expression" | "function")
+                }) {
+                    Some(callable) => self.member_function(member, callable, scope, owner),
+                    None => self.visit(member, scope),
+                },
+                _ => self.visit(member, scope),
+            }
+        }
+    }
+
+    fn member_function(&mut self, pair: Node, callable: Node, scope: &Scope, owner: &str) {
+        let Some(key) = pair.child_by_field_name("key") else { return };
+        let name = trim_quotes(self.text(key)).to_string();
+        let id = self.id("method", &name, pair);
+        let modifiers = Modifiers {
+            is_async: callable.children(&mut callable.walk()).any(|child| child.kind() == "async"),
+            ..Modifiers::default()
+        };
+        self.facts.nodes.push(IndexNode {
+            id: id.clone(),
+            name,
+            kind: NodeKind::Method,
+            file: self.file,
+            span: span_of(pair),
+            parent: Some(owner.to_string()),
+            signature: Some(self.signature_of(callable)),
+            modifiers,
+            decorators: Vec::new(),
+            type_annotation: None,
+            documentation: self.documentation_of(pair),
+            project: None,
+            callback_of: None,
+            registration_label: None,
+        });
+        self.push_edge(owner, &id, EdgeKind::HasMethod);
+        let inner = scope.child(Some(id.clone()), Some(id));
+        if let Some(body) = callable.child_by_field_name("body") {
+            self.walk(body, &inner);
+        }
+        if let Some(parameters) = callable.child_by_field_name("parameters") {
+            self.parameter_initializers(parameters, &inner);
         }
     }
 

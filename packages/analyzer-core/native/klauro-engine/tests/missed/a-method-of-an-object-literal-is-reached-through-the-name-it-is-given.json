@@ -1,0 +1,8 @@
+{
+  "class": "a-method-of-an-object-literal-is-reached-through-the-name-it-is-given",
+  "claim": "a method written inside an object given a name is a method of that name, so a call through the name reaches it",
+  "kind": "entry",
+  "state": "accepted",
+  "found_in": "services exported as an object of methods, called from the screens that use them",
+  "expect": { "at": "nodes", "has": { "kind": "method", "name": "remove" } }
+}

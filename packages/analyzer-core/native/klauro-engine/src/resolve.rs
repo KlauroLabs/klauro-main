@@ -109,7 +109,7 @@ impl<'a> Symbols<'a> {
             }
             if let Some(parent) = node.parent.as_deref()
                 && let Some(owner) = symbols.position.get(parent).copied()
-                && nodes[owner as usize].kind.is_type()
+                && holds_members(&nodes[owner as usize], node)
             {
                 symbols.members.entry((owner, node.name.as_str())).or_insert(at);
                 symbols.declared_members.insert(node.name.as_str());
@@ -217,6 +217,10 @@ struct RuntimeMember {
     name: &'static str,
     owner: &'static str,
     returns: &'static str,
+}
+
+fn holds_members(owner: &IndexNode, held: &IndexNode) -> bool {
+    owner.kind.is_type() || (owner.kind == NodeKind::Variable && held.kind.is_unit())
 }
 
 const fn member(name: &'static str, owner: &'static str, returns: &'static str) -> RuntimeMember {
