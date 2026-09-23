@@ -850,22 +850,42 @@ fn without_suffix(path: &str) -> &str {
     }
 }
 
-fn module_beneath(files: &[String], dotted: &str) -> Option<u32> {
-    let rest = dotted.replace('.', "/");
-    let beneath = format!("/{rest}");
-    let within = format!("/{rest}/__init__");
-    let mut found = None;
-    for (at, path) in files.iter().enumerate() {
-        let base = without_suffix(path);
-        if base != rest && !base.ends_with(&beneath) && !base.ends_with(&within) {
-            continue;
+struct Beneath {
+    held: HashMap<String, Option<u32>>,
+}
+
+fn noted(held: &mut HashMap<String, Option<u32>>, key: &str, at: u32) {
+    match held.get_mut(key) {
+        None => {
+            held.insert(key.to_string(), Some(at));
         }
-        if found.is_some() {
-            return None;
-        }
-        found = Some(at as u32);
+        Some(found) if *found != Some(at) => *found = None,
+        Some(_) => {}
     }
-    found
+}
+
+impl Beneath {
+    fn over(files: &[String]) -> Beneath {
+        let mut held: HashMap<String, Option<u32>> = HashMap::new();
+        for (at, path) in files.iter().enumerate() {
+            let at = at as u32;
+            let base = without_suffix(path);
+            noted(&mut held, base, at);
+            for (slash, _) in base.match_indices('/') {
+                noted(&mut held, &base[slash + 1..], at);
+            }
+            if let Some(package) = base.strip_suffix("/__init__") {
+                for (slash, _) in package.match_indices('/') {
+                    noted(&mut held, &package[slash + 1..], at);
+                }
+            }
+        }
+        Beneath { held }
+    }
+
+    fn find(&self, dotted: &str) -> Option<u32> {
+        self.held.get(&dotted.replace('.', "/")).copied().flatten()
+    }
 }
 
 fn module_file(files: &HashMap<&str, u32>, path: &str) -> Option<u32> {
@@ -1007,6 +1027,7 @@ pub fn resolve(index: &Index) -> Resolution {
         file_locals: HashMap::new(),
     };
 
+    let beneath = Beneath::over(index.files);
     for fact in index.imports {
         let from = index.files[fact.file as usize].as_str();
         let language = index.languages[fact.file as usize];
@@ -1071,7 +1092,7 @@ pub fn resolve(index: &Index) -> Resolution {
                     continue;
                 }
                 if let Some(found) =
-                    module_beneath(&index.files, &format!("{}.{}", fact.specifier, wanted))
+                    beneath.find(&format!("{}.{}", fact.specifier, wanted))
                     && index.files[found as usize] != from
                 {
                     internal_specifiers.insert(fact.specifier.clone());
@@ -1093,7 +1114,7 @@ pub fn resolve(index: &Index) -> Resolution {
             for name in &fact.names {
                 let wanted = name.imported.as_deref().unwrap_or(name.local.as_str());
                 let beneath =
-                    module_beneath(&index.files, &format!("{}.{}", fact.specifier, wanted));
+                    beneath.find(&format!("{}.{}", fact.specifier, wanted));
                 if let Some(found) = beneath {
                     bindings.module_files.insert((fact.file, name.local.as_str()), found);
                 }
@@ -1578,4 +1599,52 @@ fn parent_of(edges: &[IndexEdge], owner: &str) -> Option<String> {
         .iter()
         .find(|edge| edge.kind == EdgeKind::Extends && edge.source == owner)
         .map(|edge| edge.target.clone())
+}
+
+#[cfg(test)]
+mod beneath {
+    use super::{Beneath, without_suffix};
+
+    fn scanned(files: &[String], dotted: &str) -> Option<u32> {
+        let rest = dotted.replace('.', "/");
+        let beneath = format!("/{rest}");
+        let within = format!("/{rest}/__init__");
+        let mut found = None;
+        for (at, path) in files.iter().enumerate() {
+            let base = without_suffix(path);
+            if base != rest && !base.ends_with(&beneath) && !base.ends_with(&within) {
+                continue;
+            }
+            if found.is_some() {
+                return None;
+            }
+            found = Some(at as u32);
+        }
+        found
+    }
+
+    #[test]
+    fn a_module_is_found_beneath_the_same_way_it_was_searched_for() {
+        let files: Vec<String> = [
+            "app/models/user.py",
+            "app/models/__init__.py",
+            "app/views/user.py",
+            "lib/core/__init__.py",
+            "lib/core/engine.py",
+            "top.py",
+            "pkg/__init__.py",
+            "src/utils/helpers.ts",
+        ]
+        .iter()
+        .map(|held| held.to_string())
+        .collect();
+        let indexed = Beneath::over(&files);
+        for dotted in [
+            "user", "models.user", "app.models.user", "views.user", "models", "app.models",
+            "core", "lib.core", "core.engine", "engine", "top", "pkg", "helpers", "utils.helpers",
+            "missing", "app", "__init__", "models.__init__",
+        ] {
+            assert_eq!(indexed.find(dotted), scanned(&files, dotted), "{dotted}");
+        }
+    }
 }
