@@ -472,7 +472,11 @@ fn describe_one(
             || capability.project.as_deref() == project
             || project.is_some_and(|part| capability.also_in.iter().any(|held| held == part))
     };
-    let capabilities: Vec<&Capability> = held.iter().filter(|capability| its(capability)).collect();
+    let capabilities: Vec<&Capability> = held
+        .iter()
+        .filter(|capability| its(capability))
+        .filter(|capability| capability.place != Some("supporting"))
+        .collect();
     if capabilities.is_empty() {
         return None;
     }
@@ -1150,6 +1154,7 @@ pub fn author(
                     let said = spoken_within(&spoken, part.as_deref());
                     let mut found = form_capabilities(families, &named_by_key);
                     test_capabilities(&mut found, &said);
+                    say_what_each_is_for(&mut found, &said);
                     found
                 })
                 .collect();
