@@ -272,6 +272,39 @@ fn names_a_package(files: &Files, path: &str, basename: &str) -> bool {
         .is_some_and(|document| document.iter().any(|node| node.name == "name"))
 }
 
+fn beside(root: &str, held: &str) -> String {
+    let mut parts: Vec<&str> = match root.is_empty() {
+        true => Vec::new(),
+        false => root.split('/').collect(),
+    };
+    for step in held.split('/') {
+        match step {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            held => parts.push(held),
+        }
+    }
+    parts.join("/")
+}
+
+fn built_into(files: &Files, manifest: &str, root: &str) -> Vec<String> {
+    let mut held = Vec::new();
+    for node in files.descendants(manifest) {
+        let Some(path) = files.child(&node.id, "path") else { continue };
+        let Some(value) = path.type_annotation.as_deref() else { continue };
+        let value = value.trim_matches('"');
+        if value.is_empty() {
+            continue;
+        }
+        held.push(beside(root, value));
+    }
+    held.sort();
+    held.dedup();
+    held
+}
+
 fn module_manifest(files: &Files, path: &str, runnable: &HashSet<&str>) -> Option<Candidate> {
     let basename = path.rsplit('/').next()?.to_ascii_lowercase();
     let known = MODULE_MANIFESTS.binary_search(&basename.as_str()).is_ok()
@@ -647,7 +680,7 @@ pub fn derive(
     }
 
     separate_containers(&mut candidates);
-    consolidate(candidates, nodes, edges, entry_points, code)
+    consolidate(candidates, &index, nodes, edges, entry_points, code)
 }
 
 fn separate_containers(candidates: &mut [Candidate]) {
@@ -685,6 +718,7 @@ fn separate_containers(candidates: &mut [Candidate]) {
 
 fn consolidate(
     mut candidates: Vec<Candidate>,
+    index: &Files,
     nodes: &[IndexNode],
     edges: &[IndexEdge],
     entry_points: &[EntryPoint],
@@ -792,6 +826,46 @@ fn consolidate(
             deployables[at].bundled_into = Some(owner_id);
             deployables[*owner].members.push(member_id);
         }
+    }
+
+    let declared_at: Vec<Vec<String>> = deployables
+        .iter()
+        .map(|unit| {
+            let mut held: Vec<String> = unit.declarations.iter().map(|at| at.at.clone()).collect();
+            for named in ["Cargo.toml", "package.json", "pyproject.toml", "go.mod"] {
+                held.push(match unit.root.is_empty() {
+                    true => named.to_string(),
+                    false => format!("{}/{named}", unit.root),
+                });
+            }
+            held.sort();
+            held.dedup();
+            held
+        })
+        .collect();
+    let where_of: HashMap<&str, usize> =
+        deployables.iter().enumerate().map(|(at, unit)| (unit.root.as_str(), at)).collect();
+    let mut carried: Vec<(usize, usize)> = Vec::new();
+    for at in 0..deployables.len() {
+        let root = deployables[at].root.clone();
+        for manifest in declared_at[at].iter() {
+            for held in built_into(index, manifest, &root) {
+                let Some(other) = where_of.get(held.as_str()).copied() else { continue };
+                if other == at || deployables[other].shipped || deployables[other].runs.is_some() {
+                    continue;
+                }
+                carried.push((other, at));
+            }
+        }
+    }
+    for (member, owner) in carried {
+        if deployables[member].bundled_into.is_some() {
+            continue;
+        }
+        let owner_id = deployables[owner].id.clone();
+        let member_id = deployables[member].id.clone();
+        deployables[member].bundled_into = Some(owner_id);
+        deployables[owner].members.push(member_id);
     }
 
     let territory = Territory::of(

@@ -175,6 +175,12 @@ pub fn derive(
     let mut declared: Vec<Declared> = Vec::new();
     let mut claimed: HashSet<String> = HashSet::new();
 
+    for unit in deployables.iter().filter(|unit| {
+        unit.bundled_into.is_some() && unit.category == "library" && unit.runs.is_none()
+    }) {
+        claimed.insert(unit.root.clone());
+    }
+
     for (at, pattern) in &patterns {
         for (root, manifest) in &manifests {
             if claimed.contains(root) || !matches_pattern(pattern, root) {
@@ -191,14 +197,7 @@ pub fn derive(
     }
 
     for root in nested {
-        if claimed.insert(root.clone()) {
-            declared.push(Declared {
-                name: display_name(root),
-                root: root.clone(),
-                declared_by: "repository",
-                at: format!("{root}/.git"),
-            });
-        }
+        claimed.insert(root.clone());
     }
 
     for (root, manifest) in &manifests {
