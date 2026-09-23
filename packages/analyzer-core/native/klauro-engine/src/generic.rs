@@ -1528,9 +1528,8 @@ impl<'a> Extractor<'a> {
             .child_by_field_name("function")
             .or_else(|| node.child_by_field_name("name"))
             .or_else(|| node.named_child(0))?;
-        let text = base_name(self.text(function));
-        let leaf = text.rsplit(['.', ':']).next().unwrap_or(text).trim();
-        (!leaf.is_empty()).then(|| leaf.to_string())
+        let text = base_name(self.text(function)).trim();
+        (!text.is_empty()).then(|| text.to_string())
     }
 
     fn record_call(&mut self, node: Node, scope: &Scope) -> Option<String> {

@@ -1150,13 +1150,24 @@ pub fn resolve(index: &Index) -> Resolution {
         }
     }
 
+    let mut made_by: Vec<(String, String, String)> = Vec::new();
+    for binding in index.locals.iter() {
+        let Some(from) = binding.from_call.as_deref() else { continue };
+        let root = from.split("::").next().unwrap_or(from);
+        let root = root.split('.').next().unwrap_or(root);
+        if root.is_empty() || root == from {
+            continue;
+        }
+        made_by.push((binding.unit.clone(), binding.name.to_string(), root.to_string()));
+    }
+
     for binding in index.locals {
         let annotation = binding
             .annotation
             .as_deref()
             .or(binding.constructed.as_deref())
             .or_else(|| {
-                let callee = binding.from_call.as_deref()?;
+                let callee = crate::names::leaf(binding.from_call.as_deref()?);
                 match symbols.unique_unit.get(callee) {
                     Some(unit) => index.nodes[*unit as usize]
                         .signature
@@ -1276,6 +1287,9 @@ pub fn resolve(index: &Index) -> Resolution {
 
     let mut unresolved_names: HashMap<String, u32> = HashMap::new();
     let mut call_origins: HashMap<(String, String), String> = HashMap::new();
+    for (unit, name, root) in made_by {
+        call_origins.entry((unit, name)).or_insert(root);
+    }
     let mut package_calls = 0;
     let mut runtime_calls = 0;
     let mut indirect_calls = 0;
