@@ -1,0 +1,8 @@
+{
+  "class": "a-cookie-read-by-name-is-read-from-the-browser",
+  "claim": "a cookie read by name is read from storage the browser keeps",
+  "kind": "exit",
+  "state": "accepted",
+  "found_in": "a component that remembers its own state between visits (vetted by the grader on the VPS)",
+  "expect": { "at": "exit_points", "has": { "kind": "client_storage", "operation": "read", "target": "cookie" } }
+}

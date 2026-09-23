@@ -1,0 +1,8 @@
+{
+  "class": "a-value-assigned-to-a-cookie-is-written-to-the-browser",
+  "claim": "a value assigned to a cookie is written to storage the browser keeps",
+  "kind": "exit",
+  "state": "accepted",
+  "found_in": "a component that remembers its own state between visits (vetted by the grader on the VPS)",
+  "expect": { "at": "exit_points", "has": { "kind": "client_storage", "operation": "write", "target": "cookie" } }
+}

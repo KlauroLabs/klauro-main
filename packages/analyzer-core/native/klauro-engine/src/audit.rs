@@ -215,6 +215,22 @@ mod tests {
     }
 
     #[test]
+    fn every_kind_that_may_be_named_says_what_it_means() {
+        for (at, kinds) in [("exit_points", super::EXIT_KINDS), ("entry_points", super::ENTRY_KINDS)] {
+            for kind in kinds {
+                let expect = crate::author::Expectation {
+                    at: at.to_string(),
+                    has: [("kind".to_string(), kind.to_string())].into_iter().collect(),
+                };
+                assert!(
+                    !crate::author::what_it_means(&expect).contains(" of kind "),
+                    "{at} {kind} has no meaning to be judged against"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn an_expectation_must_be_spelled_the_way_the_index_is() {
         use crate::author::Expectation;
         let held = |at: &str, has: [(&str, &str); 2]| Expectation {

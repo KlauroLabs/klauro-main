@@ -213,6 +213,7 @@ impl<'a> Extractor<'a> {
             "assignment_expression" | "augmented_assignment_expression" => {
                 if let Some(left) = node.child_by_field_name("left") {
                     let target = self.text_owned(left);
+                    self.keep(&target, true, left, scope);
                     if let Some(member) = member_of_this(&target)
                         && let Some(unit) = self.unit(scope)
                     {
@@ -223,6 +224,17 @@ impl<'a> Extractor<'a> {
             }
             "member_expression" => {
                 let target = self.text_owned(node);
+                let written = node.parent().is_some_and(|parent| {
+                    matches!(parent.kind(), "assignment_expression" | "augmented_assignment_expression")
+                        && parent.child_by_field_name("left") == Some(node)
+                });
+                let called = node.parent().is_some_and(|parent| {
+                    parent.kind() == "call_expression"
+                        && parent.child_by_field_name("function") == Some(node)
+                });
+                if !written && !called {
+                    self.keep(&target, false, node, scope);
+                }
                 if let Some(member) = member_of_this(&target)
                     && let Some(unit) = self.unit(scope)
                 {
@@ -1052,6 +1064,18 @@ impl<'a> Extractor<'a> {
         }
     }
 
+    fn keep(&mut self, target: &str, writes: bool, node: Node, scope: &Scope) {
+        let Some(place) = kept_by_the_browser(target) else { return };
+        let Some(unit) = scope.enclosing_callable.clone() else { return };
+        self.facts.kept.push(crate::model::Kept {
+            file: self.file,
+            unit,
+            place: place.to_string(),
+            writes,
+            line: span_of(node).line,
+        });
+    }
+
     fn object_members(&mut self, object: Node, scope: &Scope, owner: &str) {
         let mut cursor = object.walk();
         for member in object.named_children(&mut cursor) {
@@ -1312,6 +1336,17 @@ impl<'a> Extractor<'a> {
         }
         None
     }
+}
+
+static KEPT_BY_THE_BROWSER: &[&str] = &["localStorage", "sessionStorage"];
+
+fn kept_by_the_browser(target: &str) -> Option<&'static str> {
+    let bare = target.strip_prefix("window.").unwrap_or(target);
+    if bare == "document.cookie" {
+        return Some("cookie");
+    }
+    let (held, _) = bare.split_once(['.', '['])?;
+    KEPT_BY_THE_BROWSER.iter().find(|place| **place == held).copied()
 }
 
 fn literal_type(kind: &str) -> Option<String> {

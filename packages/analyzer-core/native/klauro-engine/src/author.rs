@@ -1025,7 +1025,19 @@ pub fn vet(missed: &Missed) -> bool {
          that shows it:\n{}\n\nWhere the fact belongs: {} carrying {:?}",
         missed.what, missed.smallest, missed.expect.at, missed.expect.has
     );
+    let meant = what_it_means(&missed.expect);
     let questions = BTreeMap::from([
+        (
+            "means".to_string(),
+            crate::jev::Question {
+                kind: "noul",
+                instructions: format!(
+                    "In the smallest file, the construct really is this, and not merely something \
+                     that shares a word with it: {meant}"
+                ),
+                criteria: BTreeMap::new().into(),
+            },
+        ),
         (
             "ordinary".to_string(),
             crate::jev::Question {
@@ -1058,9 +1070,39 @@ pub fn vet(missed: &Missed) -> bool {
         ),
     ]);
     let answered = crate::jev::decide(&state, questions);
-    ["ordinary", "readable", "unnamed"]
+    ["means", "ordinary", "readable", "unnamed"]
         .iter()
         .all(|asked| answered.get(*asked).map(|held| held.settled() >= VETTED).unwrap_or(false))
 }
 
 const VETTED: f64 = 0.6;
+
+static WHAT_A_KIND_MEANS: &[(&str, &str, &str)] = &[
+    ("comprehension.entities", "", "a kind of record the program keeps in storage and reads back later, not a collection or helper type it uses while running"),
+    ("entry_points", "cli", "a command someone runs from a terminal"),
+    ("entry_points", "event", "a handler the program registers for an event something else raises"),
+    ("entry_points", "export", "something a package offers for other code to use, not something it takes from elsewhere"),
+    ("entry_points", "http", "a route the program serves to requests arriving over a network"),
+    ("entry_points", "ipc", "a request arriving from another process on the same machine"),
+    ("entry_points", "lifecycle", "a hook the runtime calls when the program starts or stops"),
+    ("entry_points", "message", "a consumer of messages arriving on a queue or bus"),
+    ("entry_points", "schedule", "work the program runs on a timer"),
+    ("entry_points", "test", "a test case that exercises the program"),
+    ("exit_points", "api", "a request sent over a network to another system"),
+    ("exit_points", "cache", "a value written to or read from a cache that outlives one call"),
+    ("exit_points", "client_storage", "a value written to or read from storage the browser keeps, such as a cookie or local storage"),
+    ("exit_points", "database", "a read from or write to a database"),
+    ("exit_points", "file", "a file on disk being read or written while the program runs, not a module being imported"),
+    ("exit_points", "message", "a message published to or taken from a queue or bus, not an error being raised"),
+    ("exit_points", "network", "a connection opened to another machine"),
+    ("exit_points", "process", "another program being started, not a function being called"),
+];
+
+pub fn what_it_means(expect: &Expectation) -> String {
+    let kind = expect.has.get("kind").map(String::as_str).unwrap_or_default();
+    WHAT_A_KIND_MEANS
+        .iter()
+        .find(|(at, named, _)| *at == expect.at && (named.is_empty() || *named == kind))
+        .map(|(_, _, meant)| (*meant).to_string())
+        .unwrap_or_else(|| format!("{} of kind {kind}", expect.at))
+}

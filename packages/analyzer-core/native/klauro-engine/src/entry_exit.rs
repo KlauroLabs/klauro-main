@@ -791,6 +791,27 @@ fn bare_exit(call: &CallFact, modules: &HashMap<(u32, String), String>) -> Optio
     }
 }
 
+pub fn kept_by_the_browser(kept: &[crate::model::Kept], files: &[String]) -> Vec<ExitPoint> {
+    kept.iter()
+        .enumerate()
+        .map(|(position, held)| {
+            let operation = if held.writes { "write" } else { "read" };
+            ExitPoint {
+                id: format!("exit:{}:{}:kept", files[held.file as usize], position),
+                kind: "client_storage",
+                name: format!("{operation} {}", held.place),
+                source: held.unit.clone(),
+                target: held.place.clone(),
+                operation: operation.to_string(),
+                file: held.file,
+                line: held.line,
+                awaited: false,
+                addressed: None,
+            }
+        })
+        .collect()
+}
+
 pub struct Derived {
     pub entry_points: Vec<EntryPoint>,
     pub exit_points: Vec<ExitPoint>,

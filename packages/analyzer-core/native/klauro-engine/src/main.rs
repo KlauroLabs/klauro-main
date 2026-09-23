@@ -78,6 +78,8 @@ struct Index {
     type_references: Vec<model::TypeReferenceFact>,
     metrics: Vec<model::UnitMetricsEntry>,
     registrations: Vec<model::RegistrationFact>,
+    #[serde(skip)]
+    kept: Vec<model::Kept>,
     locals: Vec<model::LocalBinding>,
     entry_points: Vec<entry_exit::EntryPoint>,
     exit_points: Vec<entry_exit::ExitPoint>,
@@ -333,6 +335,7 @@ fn read_it() {
         type_references: Vec::new(),
         metrics: Vec::new(),
         registrations: Vec::new(),
+        kept: Vec::new(),
         locals: Vec::new(),
         entry_points: Vec::new(),
         exit_points: Vec::new(),
@@ -370,6 +373,7 @@ fn read_it() {
         index.type_references.extend(file.type_references);
         index.metrics.extend(file.metrics);
         index.registrations.extend(file.registrations);
+        index.kept.extend(file.kept);
         index.locals.extend(file.locals);
         declared_tables.extend(file.tables);
         parse_errors += file.parse_errors;
@@ -471,6 +475,7 @@ fn read_it() {
         &resolution,
     );
     let mut derived = derived;
+    derived.exit_points.extend(entry_exit::kept_by_the_browser(&index.kept, &paths));
     derived
         .entry_points
         .extend(convention::conventional(&index.nodes, &paths, &index.exports));

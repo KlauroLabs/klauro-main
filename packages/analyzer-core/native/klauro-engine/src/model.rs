@@ -309,6 +309,15 @@ pub struct UnitMetricsEntry {
     pub metrics: UnitMetrics,
 }
 
+#[derive(Debug, Clone)]
+pub struct Kept {
+    pub file: u32,
+    pub unit: String,
+    pub place: String,
+    pub writes: bool,
+    pub line: u32,
+}
+
 #[derive(Debug, Default, Serialize)]
 pub struct FileFacts {
     pub nodes: Vec<IndexNode>,
@@ -322,6 +331,8 @@ pub struct FileFacts {
     pub locals: Vec<LocalBinding>,
     #[serde(skip)]
     pub tables: Vec<crate::tables::Table>,
+    #[serde(skip)]
+    pub kept: Vec<Kept>,
     pub lines: u32,
     pub parse_errors: u32,
     pub namespace: Option<String>,
