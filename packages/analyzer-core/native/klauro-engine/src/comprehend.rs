@@ -1292,6 +1292,12 @@ pub fn derive(
     for exit in exit_points {
         leaving.entry(exit.source.as_str()).or_default().push(exit);
     }
+    let mut served_at: HashMap<&str, &str> = HashMap::new();
+    for entry in entry_points.iter().filter(|entry| entry.kind == "http") {
+        if let Some(path) = entry.path.as_deref() {
+            served_at.entry(path).or_insert(entry.id.as_str());
+        }
+    }
 
     let entities_first = entities(nodes, files, edges, exit_points, roles, declared_tables, calls);
     let held: HashSet<&str> = entities_first
@@ -1424,6 +1430,13 @@ pub fn derive(
                 && *other != entry.id
             {
                 into.push((*other).to_string());
+            }
+            for exit in leaving.get(unit).into_iter().flatten() {
+                let Some(addressed) = exit.addressed.as_deref() else { continue };
+                let Some(other) = served_at.get(addressed).copied() else { continue };
+                if other != entry.id {
+                    into.push(other.to_string());
+                }
             }
             if steps.len() < STEPS_KEPT {
                 steps.push(Step { unit: unit.to_string(), depth, leaves });

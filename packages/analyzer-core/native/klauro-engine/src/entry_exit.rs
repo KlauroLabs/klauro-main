@@ -692,6 +692,12 @@ fn addressed_at(call: &CallFact) -> Option<String> {
         if a_path(held) && held.len() > 1 {
             return Some(held.to_string());
         }
+        if let Some(at) = held.find("}/") {
+            let path = &held[at + 1..];
+            if path.len() > 1 && path.matches('/').count() >= 1 {
+                return Some(path.to_string());
+            }
+        }
     }
     None
 }
