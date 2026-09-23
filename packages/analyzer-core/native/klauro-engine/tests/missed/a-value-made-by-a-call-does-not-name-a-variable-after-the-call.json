@@ -1,0 +1,14 @@
+{
+  "class": "a-value-made-by-a-call-does-not-name-a-variable-after-the-call",
+  "claim": "a value made by a call names only the variable that holds it, not the thing it was made by",
+  "kind": "exit",
+  "state": "accepted",
+  "found_in": "the gauntlet: a C++ library lost 926 calls against the released engine",
+  "expect": {
+    "at": "edges",
+    "has": {
+      "kind": "calls",
+      "target": "package:shelf/box.hpp:box"
+    }
+  }
+}

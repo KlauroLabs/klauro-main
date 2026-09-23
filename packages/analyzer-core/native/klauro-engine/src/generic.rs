@@ -1593,8 +1593,14 @@ impl<'a> Extractor<'a> {
             }
             None => self.name_of(node).unwrap_or_default(),
         };
-        let taken_apart = match declarator {
-            Some(declarator) if name.contains(['(', '{', ',']) => self.bound_by(declarator),
+        let pattern =
+            declarator.and_then(|held| without_its_value(held, self.spec.declares.binding_value_field));
+        let taken_apart = match pattern {
+            Some(pattern)
+                if self.text(pattern).contains(['(', '{', ',']) && !signs_for_a_call(pattern) =>
+            {
+                self.bound_by(pattern)
+            }
             _ => Vec::new(),
         };
         if taken_apart.is_empty() && (name.is_empty() || name.contains(char::is_whitespace)) {
@@ -1942,6 +1948,28 @@ fn written_arguments(text: &str) -> Vec<DecoratorArgument> {
     }
     found.truncate(ARGUMENTS_AT_MOST);
     found
+}
+
+fn without_its_value<'t>(held: Node<'t>, value_field: &str) -> Option<Node<'t>> {
+    let valued = held.child_by_field_name(value_field).is_some()
+        || held.child_by_field_name("value").is_some();
+    if !valued {
+        return Some(held);
+    }
+    ["declarator", "name", "pattern"]
+        .into_iter()
+        .find_map(|field| held.child_by_field_name(field))
+}
+
+fn signs_for_a_call(declarator: Node) -> bool {
+    let mut held = Some(declarator);
+    while let Some(found) = held {
+        if found.kind().contains("function") || found.child_by_field_name("parameters").is_some() {
+            return true;
+        }
+        held = found.child_by_field_name("declarator");
+    }
+    false
 }
 
 const WORD_AT_MOST: usize = 200;

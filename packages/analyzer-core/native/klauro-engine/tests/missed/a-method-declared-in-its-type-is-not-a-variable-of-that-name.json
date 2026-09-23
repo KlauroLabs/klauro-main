@@ -1,0 +1,14 @@
+{
+  "class": "a-method-declared-in-its-type-is-not-a-variable-of-that-name",
+  "claim": "a method declared inside its type is a method, not a variable, so a call to it still reaches it when another thing shares its name",
+  "kind": "exit",
+  "state": "accepted",
+  "found_in": "the gauntlet: a C++ library lost 926 calls against the released engine",
+  "expect": {
+    "at": "edges",
+    "has": {
+      "kind": "calls",
+      "target": "shown.cpp:function:step:6:33"
+    }
+  }
+}
