@@ -34,6 +34,8 @@ pub struct ExitPoint {
     pub line: u32,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub awaited: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub addressed: Option<String>,
 }
 
 static HTTP_METHODS: &[&str] = &[
@@ -566,6 +568,7 @@ pub fn kept_by_a_model(
             file: call.file,
             line: call.line,
             awaited: call.context.awaited,
+            addressed: addressed_at(call),
         });
     }
     found
@@ -663,6 +666,34 @@ fn is_network_origin(origin: &str) -> bool {
         || origin.contains("undici")
         || origin.contains("got")
         || origin.contains("node-fetch")
+}
+
+fn a_path(held: &str) -> bool {
+    held.starts_with('/') && !held.starts_with("//")
+}
+
+fn plainly_written(held: &str) -> &str {
+    let held = held.trim().trim_matches(['"', '\'']);
+    let end = held.find(['"', '\'', ' ', ')', ',']).unwrap_or(held.len());
+    held[..end].trim_end_matches('/')
+}
+
+fn addressed_at(call: &CallFact) -> Option<String> {
+    for held in call.literals.iter() {
+        let held = plainly_written(held);
+        if let Some(at) = held.find("://") {
+            let rest = &held[at + 3..];
+            let path = rest.find('/').map(|at| &rest[at..])?;
+            if path.len() > 1 {
+                return Some(path.to_string());
+            }
+            continue;
+        }
+        if a_path(held) && held.len() > 1 {
+            return Some(held.to_string());
+        }
+    }
+    None
 }
 
 fn bare_exit(call: &CallFact, modules: &HashMap<(u32, String), String>) -> Option<&'static str> {
@@ -1105,6 +1136,7 @@ pub fn derive(
                 file: call.file,
                 line: call.line,
                 awaited: call.context.awaited,
+            addressed: addressed_at(call),
             });
             continue;
         };
@@ -1127,6 +1159,7 @@ pub fn derive(
                 file: call.file,
                 line: call.line,
                 awaited: call.context.awaited,
+            addressed: addressed_at(call),
             });
             continue;
         }
@@ -1157,6 +1190,7 @@ pub fn derive(
                         file: call.file,
                         line: call.line,
                         awaited: call.context.awaited,
+            addressed: addressed_at(call),
                     });
                     continue;
                 }
@@ -1181,6 +1215,7 @@ pub fn derive(
             file: call.file,
             line: call.line,
             awaited: call.context.awaited,
+            addressed: addressed_at(call),
         });
     }
 
