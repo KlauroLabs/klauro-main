@@ -855,6 +855,7 @@ fn reconciled(capabilities: &[Capability], spoken: &str) -> Vec<Capability> {
     }
     held.sort_by(|left, right| left.id.cmp(&right.id));
     say_what_each_is_for(&mut held, spoken);
+    held.retain(|capability| capability.place != Some("supporting"));
     held
 }
 
