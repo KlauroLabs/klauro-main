@@ -1501,6 +1501,14 @@ pub fn derive(
             if seen.insert(*member) {
                 queue.push((*member, 0));
             }
+            if nodes[*member as usize].kind != crate::model::NodeKind::Variable {
+                continue;
+            }
+            for held in members.get(member).into_iter().flatten() {
+                if seen.insert(*held) {
+                    queue.push((*held, 0));
+                }
+            }
         }
         let mut steps = Vec::new();
         let mut changing: Vec<String> = Vec::new();

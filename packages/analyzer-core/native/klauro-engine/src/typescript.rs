@@ -661,6 +661,11 @@ impl<'a> Extractor<'a> {
             registration_label: None,
         });
         self.push_edge(owner, &id, EdgeKind::HasMethod);
+        if kind == NodeKind::Constructor
+            && let Some(parameters) = node.child_by_field_name("parameters")
+        {
+            self.fields_it_is_given(parameters, owner);
+        }
 
         let mut inner = scope.child(Some(id.clone()), Some(id));
         inner.class_name = scope.class_name.clone();
@@ -765,6 +770,46 @@ impl<'a> Extractor<'a> {
             });
         }
         found
+    }
+
+    fn fields_it_is_given(&mut self, parameters: Node, owner: &str) {
+        let mut cursor = parameters.walk();
+        for parameter in parameters.named_children(&mut cursor) {
+            let mut inner = parameter.walk();
+            let kept = parameter
+                .children(&mut inner)
+                .any(|held| matches!(held.kind(), "accessibility_modifier" | "readonly" | "override_modifier"));
+            if !kept {
+                continue;
+            }
+            let Some(named) = parameter.child_by_field_name("pattern") else { continue };
+            if named.kind() != "identifier" {
+                continue;
+            }
+            let name = self.text_owned(named);
+            let id = self.id("property", &name, parameter);
+            let annotation = parameter
+                .child_by_field_name("type")
+                .and_then(|annotation| annotation.named_child(0))
+                .map(|annotation| self.text_owned(annotation));
+            self.facts.nodes.push(IndexNode {
+                id: id.clone(),
+                name,
+                kind: NodeKind::Property,
+                file: self.file,
+                span: span_of(parameter),
+                parent: Some(owner.to_string()),
+                signature: None,
+                modifiers: self.member_modifiers(parameter),
+                decorators: self.decorators_of(parameter),
+                type_annotation: annotation,
+                documentation: None,
+                project: None,
+                callback_of: None,
+                registration_label: None,
+            });
+            self.push_edge(owner, &id, EdgeKind::HasField);
+        }
     }
 
     fn parameter_initializers(&mut self, parameters: Node, scope: &Scope) {

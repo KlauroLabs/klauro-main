@@ -1,0 +1,8 @@
+{
+  "class": "a-client-handed-to-a-constructor-is-the-field-that-reaches-with-it",
+  "claim": "a client handed to a constructor as a field is that field, so a request made through it is a request",
+  "kind": "exit",
+  "state": "accepted",
+  "found_in": "the gauntlet: outbound HTTP the grader vetted in two RealWorld apps",
+  "expect": { "at": "exit_points", "has": {"kind":"api","operation":"post","addressed":"/accounts"} }
+}

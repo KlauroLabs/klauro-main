@@ -376,6 +376,9 @@ impl<'a> Resolver<'a> {
         {
             return Origin::Package(specifier);
         }
+        if let Some(specifier) = self.bindings.modules.get(&(file, name)) {
+            return Origin::Package(specifier);
+        }
         Origin::Unknown
     }
 
@@ -1117,6 +1120,9 @@ pub fn resolve(index: &Index) -> Resolution {
                     beneath.find(&format!("{}.{}", fact.specifier, wanted));
                 if let Some(found) = beneath {
                     bindings.module_files.insert((fact.file, name.local.as_str()), found);
+                }
+                if beneath.is_none() && name.namespace {
+                    bindings.module_files.insert((fact.file, name.local.as_str()), *first);
                 }
                 let within = beneath
                     .map(|found| index.files[found as usize].as_str())

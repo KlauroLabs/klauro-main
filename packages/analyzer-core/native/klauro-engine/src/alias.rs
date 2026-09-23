@@ -117,6 +117,14 @@ impl Aliases {
                     mapped_modules(&children, &mapped.id, home, &mut entries);
                 }
             }
+            if name == "package.json" && depends_on(&children, path, "@sveltejs/kit") {
+                entries.push(Entry {
+                    scope: home.to_string(),
+                    prefix: "$lib".to_string(),
+                    wildcard: true,
+                    target: join(home, "src/lib"),
+                });
+            }
             if name.starts_with("svelte.config.") {
                 entries.push(Entry {
                     scope: home.to_string(),
@@ -426,6 +434,18 @@ fn section<'a>(
         .iter()
         .find(|node| node.name == name && node.kind == NodeKind::Class)
         .copied()
+}
+
+fn depends_on(children: &HashMap<&str, Vec<&IndexNode>>, manifest: &str, package: &str) -> bool {
+    ["dependencies", "devDependencies", "peerDependencies"].iter().any(|held| {
+        section(children, manifest, held).is_some_and(|found| {
+            children
+                .get(found.id.as_str())
+                .into_iter()
+                .flatten()
+                .any(|node| node.name.trim_matches('"') == package)
+        })
+    })
 }
 
 fn value_of(children: &HashMap<&str, Vec<&IndexNode>>, parent: &str, name: &str) -> Option<String> {

@@ -1,0 +1,8 @@
+{
+  "class": "a-framework-names-its-own-library-folder-without-being-told",
+  "claim": "a framework that keeps its library in a folder of its own names it there without being told",
+  "kind": "exit",
+  "state": "accepted",
+  "found_in": "the gauntlet: outbound HTTP the grader vetted in two RealWorld apps",
+  "expect": { "at": "edges", "has": {"kind":"calls","source":"src/routes/items/+page.server.js:function:keep:3:8","target":"src/lib/store.js:function:save:1:8"} }
+}
