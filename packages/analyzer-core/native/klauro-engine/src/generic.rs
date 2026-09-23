@@ -67,6 +67,7 @@ pub struct Extractor<'a> {
     facts: FileFacts,
     metrics: HashMap<String, UnitMetrics>,
     types_by_name: HashMap<String, String>,
+    remembered: HashMap<String, String>,
 }
 
 #[derive(Clone)]
@@ -104,6 +105,7 @@ impl<'a> Extractor<'a> {
             facts: FileFacts::default(),
             metrics: HashMap::new(),
             types_by_name: HashMap::new(),
+            remembered: HashMap::new(),
         }
     }
 
@@ -1136,9 +1138,12 @@ impl<'a> Extractor<'a> {
                 }
                 match written_as_text(raw) {
                     true => (value.len() <= TEXT_AT_MOST).then(|| value.to_string()),
-                    false => (value.len() <= WORD_AT_MOST
-                        && !value.contains(char::is_whitespace))
-                    .then(|| value.to_string()),
+                    false => match self.remembered.get(value) {
+                        Some(written) => Some(written.clone()),
+                        None => (value.len() <= WORD_AT_MOST
+                            && !value.contains(char::is_whitespace))
+                        .then(|| value.to_string()),
+                    },
                 }
             })
             .take(4)
@@ -1603,6 +1608,14 @@ impl<'a> Extractor<'a> {
             .child_by_field_name(self.spec.declares.binding_value_field)
             .or_else(|| declarator.and_then(|d| d.child_by_field_name(self.spec.declares.binding_value_field)))
             .or_else(|| self.assigned_child(node));
+        if let Some(written) = value
+            .map(|held| self.text(held).trim())
+            .filter(|raw| written_as_text(raw))
+            .map(|raw| trim_quotes(raw).trim().to_string())
+            .filter(|written: &String| !written.is_empty() && written.len() <= TEXT_AT_MOST)
+        {
+            self.remembered.insert(name.clone(), written);
+        }
         if let Some(value) = value
             && let Some((_, kind)) = self
                 .spec

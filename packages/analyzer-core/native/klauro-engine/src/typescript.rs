@@ -4,12 +4,15 @@ use crate::model::*;
 
 const LITERAL_LIMIT: usize = 4;
 
+const TEXT_REMEMBERED: usize = 400;
+
 pub struct Extractor<'a> {
     source: &'a [u8],
     file: u32,
     module_id: String,
     facts: FileFacts,
     metrics: std::collections::HashMap<String, UnitMetrics>,
+    remembered: std::collections::HashMap<String, String>,
 }
 
 struct Scope {
@@ -75,6 +78,7 @@ impl<'a> Extractor<'a> {
             module_id,
             facts: FileFacts::default(),
             metrics: std::collections::HashMap::new(),
+            remembered: std::collections::HashMap::new(),
         }
     }
 
@@ -925,6 +929,13 @@ impl<'a> Extractor<'a> {
             };
             let name = self.text_owned(name_node);
             let value = declarator.child_by_field_name("value");
+            if let Some(written) = value
+                .filter(|value| matches!(value.kind(), "string" | "template_string"))
+                .map(|value| trim_quotes(self.text(value)).trim().to_string())
+                .filter(|written| !written.is_empty() && written.len() <= TEXT_REMEMBERED)
+            {
+                self.remembered.insert(name.clone(), written);
+            }
             let callable = value.filter(|value| {
                 matches!(value.kind(), "arrow_function" | "function_expression" | "function")
             });
@@ -1215,11 +1226,14 @@ impl<'a> Extractor<'a> {
         arguments
             .named_children(&mut cursor)
             .filter(|argument| {
-                matches!(argument.kind(), "string" | "template_string" | "number")
+                matches!(argument.kind(), "string" | "template_string" | "number" | "identifier")
             })
             .take(LITERAL_LIMIT)
-            .map(|argument| trim_quotes(self.text(argument)).to_string())
-            .filter(|value| !value.is_empty() && value.len() <= 200)
+            .filter_map(|argument| match argument.kind() {
+                "identifier" => self.remembered.get(self.text(argument)).cloned(),
+                _ => Some(trim_quotes(self.text(argument)).to_string()),
+            })
+            .filter(|value| !value.is_empty() && value.len() <= TEXT_REMEMBERED)
             .collect()
     }
 
