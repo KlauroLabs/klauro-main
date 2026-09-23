@@ -233,7 +233,36 @@ pub struct Telling<'a> {
     pub frameworks: Vec<String>,
 }
 
-fn carries(project: Option<&str>, flows: &[Flow], entities: &[Entity]) -> f64 {
+const CARRIED_BY_A_SEAM: f64 = 0.25;
+
+fn talks_to<'a>(flows: &'a [Flow]) -> HashMap<&'a str, HashSet<&'a str>> {
+    let of: HashMap<&str, &str> = flows
+        .iter()
+        .filter_map(|flow| {
+            flow.project.as_deref().map(|part| (flow.entry_point.as_str(), part))
+        })
+        .collect();
+    let mut found: HashMap<&str, HashSet<&str>> = HashMap::new();
+    for flow in flows {
+        let Some(part) = flow.project.as_deref() else { continue };
+        for into in flow.leads_into.iter() {
+            let Some(other) = of.get(into.as_str()).copied() else { continue };
+            if other == part {
+                continue;
+            }
+            found.entry(part).or_default().insert(other);
+            found.entry(other).or_default().insert(part);
+        }
+    }
+    found
+}
+
+fn carries(
+    project: Option<&str>,
+    flows: &[Flow],
+    entities: &[Entity],
+    talking: &HashMap<&str, HashSet<&str>>,
+) -> f64 {
     let within = |held: Option<&String>| held.map(String::as_str) == project;
     let doing: f64 = flows
         .iter()
@@ -245,7 +274,11 @@ fn carries(project: Option<&str>, flows: &[Flow], entities: &[Entity]) -> f64 {
         })
         .sum();
     let kept = entities.iter().filter(|entity| within(entity.project.as_ref())).count();
-    doing + 2.0 * kept as f64
+    let spoken = project
+        .and_then(|part| talking.get(part))
+        .map(HashSet::len)
+        .unwrap_or_default() as f64;
+    (doing + 2.0 * kept as f64) * (1.0 + CARRIED_BY_A_SEAM * spoken)
 }
 
 fn parts_of(capabilities: &[Capability]) -> Vec<String> {
@@ -368,11 +401,12 @@ fn describe_whole(
     told: &Telling<'_>,
     owner: Option<&str>,
 ) -> Option<Product> {
+    let talking = talks_to(flows);
     let weighed: Vec<(Option<&str>, Option<&Product>, f64)> = speaking
         .iter()
         .map(|held| {
             let part = parts.iter().find(|part| part.project.as_deref() == *held).copied();
-            (*held, part, carries(*held, flows, entities))
+            (*held, part, carries(*held, flows, entities, &talking))
         })
         .collect();
     let whole: f64 = weighed.iter().map(|(_, _, held)| held).sum::<f64>().max(1.0);
@@ -1292,6 +1326,35 @@ pub fn derive(
     for exit in exit_points {
         leaving.entry(exit.source.as_str()).or_default().push(exit);
     }
+    let mut carried_names: HashSet<&str> = HashSet::new();
+    for node in nodes.iter().filter(|node| node.kind.is_type()) {
+        if node.decorators.iter().any(over_a_wire) {
+            carried_names.insert(node.name.as_str());
+        }
+    }
+    let mut carries: HashMap<&str, Vec<&str>> = HashMap::new();
+    for reference in type_references {
+        let Some(named) = carried_names.get(reference.name.as_str()).copied() else { continue };
+        carried_by(&mut carries, reference.source.as_str(), named);
+    }
+    for node in nodes.iter().filter(|node| node.type_annotation.is_some()) {
+        let Some(spoken) = node.type_annotation.as_deref() else { continue };
+        for word in spoken.split(|letter: char| !letter.is_alphanumeric() && letter != '_') {
+            let Some(named) = carried_names.get(word).copied() else { continue };
+            carried_by(&mut carries, node.parent.as_deref().unwrap_or(node.id.as_str()), named);
+        }
+    }
+    for call in calls {
+        let Some(unit) = call.caller.as_deref() else { continue };
+        let spoken = [call.callee.as_str()]
+            .into_iter()
+            .chain(call.receiver.as_deref())
+            .flat_map(|held| held.split(|letter: char| !letter.is_alphanumeric() && letter != '_'));
+        for word in spoken {
+            let Some(named) = carried_names.get(word).copied() else { continue };
+            carried_by(&mut carries, unit, named);
+        }
+    }
     let mut served_at: HashMap<&str, &str> = HashMap::new();
     for entry in entry_points.iter().filter(|entry| entry.kind == "http") {
         if let Some(path) = entry.path.as_deref() {
@@ -1398,6 +1461,7 @@ pub fn derive(
     let named_of: HashMap<&str, &IndexNode> =
         nodes.iter().map(|node| (node.id.as_str(), node)).collect();
     let mut flows = Vec::with_capacity(served.len());
+    let mut carried: HashMap<String, Vec<Shared>> = HashMap::new();
     for entry in &served {
         let Some(start) = position_of.get(entry.handler.as_str()).copied() else { continue };
         let mut seen: HashSet<u32> = HashSet::from([start]);
@@ -1410,6 +1474,7 @@ pub fn derive(
         let mut steps = Vec::new();
         let mut changing: Vec<String> = Vec::new();
         let mut into: Vec<String> = Vec::new();
+        let mut carrying: Vec<(&'static str, String)> = Vec::new();
         let mut head = 0;
         while head < queue.len() {
             let (current, depth) = queue[head];
@@ -1431,6 +1496,16 @@ pub fn derive(
             {
                 into.push((*other).to_string());
             }
+            for named in carries.get(unit).into_iter().flatten() {
+                carrying.push(("contract", (*named).to_string()));
+            }
+            for exit in leaving.get(unit).into_iter().flatten() {
+                let Some(family) = shared_family(&exit.kind) else { continue };
+                let named = exit.addressed.as_deref().unwrap_or(exit.target.as_str());
+                if named.len() > 1 {
+                    carrying.push((family, named.to_string()));
+                }
+            }
             for exit in leaving.get(unit).into_iter().flatten() {
                 let Some(addressed) = exit.addressed.as_deref() else { continue };
                 let Some(other) = served_at.get(addressed).copied() else { continue };
@@ -1451,6 +1526,21 @@ pub fn derive(
         changing.dedup();
         into.sort();
         into.dedup();
+        carrying.sort();
+        carrying.dedup();
+        if !carrying.is_empty() {
+            carried.insert(
+                entry.id.clone(),
+                carrying
+                    .iter()
+                    .map(|(family, named)| Shared {
+                        family,
+                        name: named.clone(),
+                        role: "mentions",
+                    })
+                    .collect(),
+            );
+        }
         let standing = match (!changing.is_empty(), !into.is_empty()) {
             (true, _) => "terminal",
             (false, true) => "proximal",
@@ -1524,6 +1614,7 @@ pub fn derive(
         });
     }
     flows.sort_by(|left, right| left.id.cmp(&right.id));
+    link_across_parts(&mut flows, &carried);
 
     let touching = |holding: &HashMap<&str, Vec<&str>>| -> BTreeMap<String, Vec<String>> {
         let mut found: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -1554,6 +1645,120 @@ pub fn derive(
     let terminal = flows.iter().filter(|flow| flow.standing == "terminal").count() as u32;
     let chained = flows.iter().filter(|flow| !flow.leads_into.is_empty()).count() as u32;
     Comprehension { products: Vec::new(), capabilities: Vec::new(), flows, entities, terminal, chained }
+}
+
+static OVER_A_WIRE: &[&str] = &[
+    "datacontract",
+    "decodable",
+    "decode",
+    "deserialize",
+    "encodable",
+    "encode",
+    "jsonserializable",
+    "messagepackobject",
+    "protobuf",
+    "serializable",
+    "serialize",
+];
+
+const LINKED_AT_MOST: usize = 8;
+const SHARED_BY_AT_MOST: usize = 8;
+
+pub struct Shared {
+    pub family: &'static str,
+    pub name: String,
+    pub role: &'static str,
+}
+
+fn carried_by<'a>(carries: &mut HashMap<&'a str, Vec<&'a str>>, unit: &'a str, named: &'a str) {
+    let holding = carries.entry(unit).or_default();
+    if !holding.contains(&named) {
+        holding.push(named);
+    }
+}
+
+fn over_a_wire(decorator: &crate::model::Decorator) -> bool {
+    let spoken = |named: &str| {
+        OVER_A_WIRE.contains(&crate::names::leaf(named).to_ascii_lowercase().as_str())
+    };
+    spoken(&decorator.name)
+        || decorator
+            .arguments
+            .iter()
+            .any(|argument| !argument.literal && spoken(&argument.value))
+}
+
+fn link_across_parts(
+    flows: &mut [Flow],
+    shared: &HashMap<String, Vec<Shared>>,
+) {
+    let mut speaking: HashMap<(&str, &str), Vec<(usize, Option<&str>, &'static str)>> =
+        HashMap::new();
+    let stores: Vec<Vec<Shared>> = flows
+        .iter()
+        .map(|flow| {
+            let mut held: Vec<Shared> = Vec::new();
+            for named in flow.writes.iter() {
+                held.push(Shared { family: "store", name: named.clone(), role: "writes" });
+            }
+            for named in flow.reads.iter() {
+                held.push(Shared { family: "store", name: named.clone(), role: "reads" });
+            }
+            held
+        })
+        .collect();
+    for (at, flow) in flows.iter().enumerate() {
+        for holding in shared.get(&flow.entry_point).into_iter().flatten().chain(stores[at].iter()) {
+            speaking
+                .entry((holding.family, holding.name.as_str()))
+                .or_default()
+                .push((at, flow.project.as_deref(), holding.role));
+        }
+    }
+    let mut linked: Vec<Vec<String>> = vec![Vec::new(); flows.len()];
+    for holding in speaking.values() {
+        let parts: HashSet<Option<&str>> = holding.iter().map(|(_, part, _)| *part).collect();
+        if parts.len() < 2 || parts.len() > SHARED_BY_AT_MOST {
+            continue;
+        }
+        for (at, part, role) in holding {
+            for (other, elsewhere, played) in holding {
+                if elsewhere == part || !answering(role, played) {
+                    continue;
+                }
+                linked[*at].push(flows[*other].entry_point.clone());
+            }
+        }
+    }
+    for (at, flow) in flows.iter_mut().enumerate() {
+        if linked[at].is_empty() {
+            continue;
+        }
+        flow.leads_into.append(&mut linked[at]);
+        flow.leads_into.sort();
+        flow.leads_into.dedup();
+        flow.leads_into.truncate(LINKED_AT_MOST);
+        if flow.standing == "reading" {
+            flow.standing = "proximal";
+        }
+    }
+}
+
+fn shared_family(kind: &str) -> Option<&'static str> {
+    match kind {
+        "message" | "queue" | "event" | "stream" => Some("topic"),
+        "file" | "blob" => Some("artifact"),
+        "process" => Some("command"),
+        _ => None,
+    }
+}
+
+fn answering(role: &str, played: &str) -> bool {
+    match (role, played) {
+        ("writes", "reads") | ("reads", "writes") => true,
+        ("writes", "writes") | ("reads", "reads") => false,
+        _ => role == played,
+    }
 }
 
 static DECLARED_OF: &[&str] = &[
@@ -2098,6 +2303,45 @@ fn entities(
 
 #[cfg(test)]
 mod tests {
+    use crate::model::{Decorator, DecoratorArgument};
+
+    fn derived(traits: &[&str]) -> Decorator {
+        Decorator {
+            name: "derive".to_string(),
+            arguments: traits
+                .iter()
+                .map(|named| DecoratorArgument {
+                    value: (*named).to_string(),
+                    literal: false,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_type_crosses_a_wire_whichever_codec_encodes_it() {
+        use super::over_a_wire;
+        assert!(over_a_wire(&derived(&["Debug", "Clone", "Encode", "Decode"])));
+        assert!(over_a_wire(&derived(&["Serialize", "Deserialize"])));
+        assert!(over_a_wire(&derived(&["serde::Serialize"])));
+        assert!(!over_a_wire(&derived(&["Debug", "Clone", "Default"])));
+        assert!(over_a_wire(&Decorator {
+            name: "Serializable".to_string(),
+            arguments: Vec::new(),
+        }));
+    }
+
+    #[test]
+    fn a_store_seams_a_writer_to_a_reader_and_not_to_another_writer() {
+        use super::answering;
+        assert!(answering("writes", "reads"));
+        assert!(answering("reads", "writes"));
+        assert!(!answering("writes", "writes"));
+        assert!(!answering("reads", "reads"));
+        assert!(answering("mentions", "mentions"));
+        assert!(!answering("mentions", "writes"));
+    }
+
     #[test]
     fn the_containers_are_sorted() {
         assert!(super::HOLDS_MANY.windows(2).all(|held| held[0] < held[1]));

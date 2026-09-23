@@ -832,13 +832,9 @@ impl<'a> Extractor<'a> {
             .trim_start_matches(['@', '#', '['])
             .trim_start();
         let name_end = name.find(['(', ' ', '\n', ']']).unwrap_or(name.len());
-        let mut arguments = Vec::new();
-        for literal in string_literals(text) {
-            arguments.push(DecoratorArgument { value: literal, literal: true });
-        }
         Decorator {
             name: name[..name_end].trim().to_string(),
-            arguments,
+            arguments: written_arguments(text),
         }
     }
 
@@ -1841,6 +1837,91 @@ fn trim_quotes(text: &str) -> &str {
     trimmed
 }
 
+const ARGUMENTS_AT_MOST: usize = 16;
+const ARGUMENT_AT_LONGEST: usize = 64;
+
+fn inside_call(text: &str) -> Option<&str> {
+    let open = text.find('(')?;
+    let mut depth = 0usize;
+    let mut quote: Option<char> = None;
+    for (at, letter) in text[open..].char_indices() {
+        if let Some(mark) = quote {
+            if letter == mark {
+                quote = None;
+            }
+            continue;
+        }
+        match letter {
+            '"' | '\'' => quote = Some(letter),
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&text[open + 1..open + at]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn by_comma(text: &str) -> Vec<&str> {
+    let mut found = Vec::new();
+    let mut depth = 0i32;
+    let mut quote: Option<char> = None;
+    let mut start = 0usize;
+    for (at, letter) in text.char_indices() {
+        if let Some(mark) = quote {
+            if letter == mark {
+                quote = None;
+            }
+            continue;
+        }
+        match letter {
+            '"' | '\'' => quote = Some(letter),
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            ',' if depth == 0 => {
+                found.push(&text[start..at]);
+                start = at + 1;
+            }
+            _ => {}
+        }
+    }
+    found.push(&text[start..]);
+    found
+}
+
+fn written_arguments(text: &str) -> Vec<DecoratorArgument> {
+    let Some(spoken) = inside_call(text) else {
+        return string_literals(text)
+            .into_iter()
+            .map(|value| DecoratorArgument { value, literal: true })
+            .collect();
+    };
+    let mut found = Vec::new();
+    for piece in by_comma(spoken) {
+        let quoted = string_literals(piece);
+        if !quoted.is_empty() {
+            for value in quoted {
+                found.push(DecoratorArgument { value, literal: true });
+            }
+            continue;
+        }
+        let piece = piece.trim();
+        if piece.is_empty()
+            || piece.len() > ARGUMENT_AT_LONGEST
+            || !piece.contains(|letter: char| letter.is_alphabetic())
+        {
+            continue;
+        }
+        found.push(DecoratorArgument { value: piece.to_string(), literal: false });
+    }
+    found.truncate(ARGUMENTS_AT_MOST);
+    found
+}
+
 fn string_literals(text: &str) -> Vec<String> {
     let mut found = Vec::new();
     let bytes = text.as_bytes();
@@ -1964,5 +2045,34 @@ fn import_specifier(text: &str) -> String {
     match specifier.starts_with(['{', '(']) {
         true => String::new(),
         false => specifier.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod arguments {
+    use super::written_arguments;
+
+    #[test]
+    fn a_derive_names_the_traits_it_carries() {
+        let found = written_arguments("#[derive(Debug, Clone, Encode, Decode)]");
+        let held: Vec<&str> = found.iter().map(|argument| argument.value.as_str()).collect();
+        assert_eq!(held, vec!["Debug", "Clone", "Encode", "Decode"]);
+        assert!(found.iter().all(|argument| !argument.literal));
+    }
+
+    #[test]
+    fn a_route_still_reads_as_the_path_it_serves() {
+        let found = written_arguments("@app.route(\"/users/:id\", methods=[\"GET\"])");
+        let held: Vec<(&str, bool)> = found
+            .iter()
+            .map(|argument| (argument.value.as_str(), argument.literal))
+            .collect();
+        assert_eq!(held, vec![("/users/:id", true), ("GET", true)]);
+    }
+
+    #[test]
+    fn a_decorator_with_nothing_in_parentheses_names_nothing() {
+        assert!(written_arguments("@property").is_empty());
+        assert!(written_arguments("#[test]").is_empty());
     }
 }
