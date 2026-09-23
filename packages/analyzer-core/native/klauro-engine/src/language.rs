@@ -71,9 +71,6 @@ pub struct Keywords {
     pub functions: &'static [&'static str],
 }
 
-/// Kinds that hand one value to several patterns: the value is stated once and
-/// each arm names part of it, so the binding and what produced it sit on
-/// different nodes.
 pub fn taken_apart_kinds(id: &str) -> &'static [&'static str] {
     match id {
         "rust" => &["match_expression"],
