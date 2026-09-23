@@ -738,32 +738,13 @@ fn about(name: &str) -> Vec<String> {
 }
 
 fn worth_asking_together(capabilities: &[Capability]) -> Vec<Vec<usize>> {
-    let mut owner: Vec<usize> = (0..capabilities.len()).collect();
-    fn root(owner: &mut Vec<usize>, mut at: usize) -> usize {
-        while owner[at] != at {
-            owner[at] = owner[owner[at]];
-            at = owner[at];
-        }
-        at
-    }
-    let mut by_word: HashMap<String, usize> = HashMap::new();
+    let mut held: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (at, capability) in capabilities.iter().enumerate() {
-        for word in about(capability.name.as_deref().unwrap_or("")) {
-            match by_word.get(&word).copied() {
-                Some(other) => {
-                    let (left, right) = (root(&mut owner, at), root(&mut owner, other));
-                    owner[left] = right;
-                }
-                None => {
-                    by_word.insert(word, at);
-                }
-            }
-        }
-    }
-    let mut held: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-    for at in 0..capabilities.len() {
-        let of = root(&mut owner, at);
-        held.entry(of).or_default().push(at);
+        let word = about(capability.name.as_deref().unwrap_or(""))
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| format!("~{at}"));
+        held.entry(word).or_default().push(at);
     }
     held.into_values().collect()
 }
