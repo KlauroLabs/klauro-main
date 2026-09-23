@@ -1205,7 +1205,6 @@ pub fn derive(
                 awaited: call.context.awaited,
                 addressed: None,
             });
-            continue;
         }
         let Some(receiver) = call.receiver.as_deref() else {
             let Some(kind) = bare_exit(call, modules) else { continue };

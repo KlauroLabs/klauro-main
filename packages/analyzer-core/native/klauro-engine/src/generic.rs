@@ -1128,9 +1128,18 @@ impl<'a> Extractor<'a> {
     fn literals_of<'t>(&self, arguments: impl Iterator<Item = Node<'t>>) -> Vec<String> {
         arguments
             .take(8)
-            .map(|argument| trim_quotes(self.text(argument)).trim().to_string())
-            .filter(|value| {
-                !value.is_empty() && value.len() <= 200 && !value.contains(char::is_whitespace)
+            .filter_map(|argument| {
+                let raw = self.text(argument).trim();
+                let value = trim_quotes(raw).trim();
+                if value.is_empty() {
+                    return None;
+                }
+                match written_as_text(raw) {
+                    true => (value.len() <= TEXT_AT_MOST).then(|| value.to_string()),
+                    false => (value.len() <= WORD_AT_MOST
+                        && !value.contains(char::is_whitespace))
+                    .then(|| value.to_string()),
+                }
             })
             .take(4)
             .collect()
@@ -1920,6 +1929,17 @@ fn written_arguments(text: &str) -> Vec<DecoratorArgument> {
     }
     found.truncate(ARGUMENTS_AT_MOST);
     found
+}
+
+const WORD_AT_MOST: usize = 200;
+const TEXT_AT_MOST: usize = 400;
+
+fn written_as_text(raw: &str) -> bool {
+    let Some(opened) = raw.chars().next().filter(|letter| matches!(letter, '"' | '\'' | '`'))
+    else {
+        return false;
+    };
+    raw.chars().count() > 1 && raw.ends_with(opened)
 }
 
 fn string_literals(text: &str) -> Vec<String> {

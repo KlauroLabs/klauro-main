@@ -40,6 +40,19 @@ fn carries(held: &Value, has: &Value) -> bool {
     })
 }
 
+fn instead(class: &str, expect: &Value) -> String {
+    let Some(dotted) = expect.get("at").and_then(Value::as_str) else { return String::new() };
+    let index = common::read(&format!("missed/{class}"));
+    let Some(held) = at(&index, dotted) else {
+        return format!("{dotted} is not in the index at all");
+    };
+    if held.is_empty() {
+        return format!("{dotted} is empty");
+    }
+    let shown: Vec<String> = held.iter().take(4).map(|found| found.to_string()).collect();
+    format!("{dotted} holds {}", shown.join(", "))
+}
+
 fn holds(class: &str, expect: &Value) -> bool {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/missed").join(class);
     if !Path::new(&root).exists() {
@@ -82,11 +95,16 @@ fn what_is_still_missed_is_reported_and_what_is_no_longer_missed_is_ready() {
         let found_in = manifest.get("found_in").and_then(Value::as_str).unwrap_or("");
         match holds(&class, expect) {
             true => ready.push(format!("{class}: {claim}")),
-            false => missing.push(format!("{class}: {claim}  (seen at {found_in})")),
+            false => missing.push(format!(
+                "{class}\n    claim:    {claim}\n    seen at:  {found_in}\n    wanted:   {} carrying {}\n    instead:  {}\n    fixture:  tests/fixtures/missed/{class}",
+                expect.get("at").and_then(Value::as_str).unwrap_or(""),
+                expect.get("has").map(|has| has.to_string()).unwrap_or_default(),
+                instead(&class, expect)
+            )),
         }
     }
     if !missing.is_empty() {
-        println!("still missed, waiting on the engine:\n  {}", missing.join("\n  "));
+        println!("still missed, waiting on the engine:\n  {}\n", missing.join("\n  "));
     }
     if !ready.is_empty() {
         println!("no longer missed, promote to accepted:\n  {}", ready.join("\n  "));
