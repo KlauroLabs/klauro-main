@@ -487,7 +487,10 @@ fn describe_one(
         match project {
             Some(named) => format!(
                 "These facts are about one part of a larger repository, the part called {named}. \
-                 Describe that part, not the repository around it.\n\n"
+                 Describe that part, not the repository around it. It has only what is here, so \
+                 say what it does with that and nothing further: it cannot know what the rest of \
+                 the system needs, avoids, replaces or does without, and a thing it does nothing \
+                 with is not a thing it can speak about.\n\n"
             ),
             None => String::new(),
         },
