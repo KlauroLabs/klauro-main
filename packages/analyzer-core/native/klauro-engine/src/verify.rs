@@ -126,18 +126,25 @@ fn requested(fact: &CallFact) -> Option<(String, String)> {
         .iter()
         .find(|known| callee.starts_with(*known) && ends_as_request(&callee, known))?;
     let path = fact.literals.iter().find_map(|literal| path_asked(literal))?;
-    Some((verb.to_ascii_uppercase(), path.to_string()))
+    Some((verb.to_ascii_uppercase(), path))
 }
 
-fn path_asked(literal: &str) -> Option<&str> {
+fn path_asked(literal: &str) -> Option<String> {
     let mut rest = literal;
     loop {
         if rest.starts_with('/') {
-            return Some(rest);
+            return Some(rest.to_string());
         }
-        let opened = rest.strip_prefix('$').unwrap_or(rest).strip_prefix('{')?;
-        rest = &opened[opened.find('}')? + 1..];
+        match rest.strip_prefix('$').unwrap_or(rest).strip_prefix('{') {
+            Some(opened) => rest = &opened[opened.find('}')? + 1..],
+            None => break,
+        }
     }
+    let relative = rest.contains('/')
+        && !rest.contains("://")
+        && !rest.contains(char::is_whitespace)
+        && rest.starts_with(|letter: char| letter.is_alphanumeric());
+    relative.then(|| format!("/{rest}"))
 }
 
 fn ends_as_request(callee: &str, verb: &str) -> bool {

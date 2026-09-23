@@ -845,6 +845,74 @@ fn a_cookie_kept(call: &CallFact) -> Option<&'static str> {
     READS_A_COOKIE.contains(&spoken.as_str()).then_some("read")
 }
 
+static GATHERS_ROUTES: &[&str] = &["basepath", "group", "mapgroup", "prefix"];
+
+type Groups<'a> = HashMap<(u32, &'a str, &'a str), (String, Option<&'a str>)>;
+
+fn a_route_prefix(literal: &str) -> Option<String> {
+    let bare = literal.trim().trim_end_matches('/');
+    let spoken = bare
+        .chars()
+        .all(|letter| letter.is_alphanumeric() || matches!(letter, '/' | '-' | '_' | '.' | '{' | '}' | ':'));
+    (spoken && !bare.is_empty()).then(|| match bare.starts_with('/') {
+        true => bare.to_string(),
+        false => format!("/{bare}"),
+    })
+}
+
+fn groups_of<'a>(calls: &'a [CallFact], locals: &'a [crate::model::LocalBinding]) -> Groups<'a> {
+    let mut on_line: HashMap<(u32, u32), Vec<&CallFact>> = HashMap::new();
+    for call in calls {
+        if GATHERS_ROUTES.contains(&names::leaf(&call.callee).to_ascii_lowercase().as_str()) {
+            on_line.entry((call.file, call.line)).or_default().push(call);
+        }
+    }
+    let mut groups: Groups = HashMap::new();
+    for held in locals {
+        let Some(found) = on_line.get(&(held.file, held.line)) else { continue };
+        let Some((call, prefix)) = found
+            .iter()
+            .find_map(|call| call.literals.iter().find_map(|literal| a_route_prefix(literal)).map(|prefix| (call, prefix)))
+        else {
+            continue;
+        };
+        let within = call.receiver.as_deref().map(names::root);
+        groups.insert((held.file, held.unit.as_str(), held.name.as_str()), (prefix, within));
+    }
+    groups
+}
+
+fn prefix_of(groups: &Groups, file: u32, unit: &str, name: &str, depth: u8) -> Option<String> {
+    let (prefix, within) = groups.get(&(file, unit, name))?;
+    let above = match (within, depth) {
+        (Some(parent), 0..8) => prefix_of(groups, file, unit, parent, depth + 1),
+        _ => None,
+    };
+    Some(match above {
+        Some(above) => join_paths(&above, prefix),
+        None => prefix.clone(),
+    })
+}
+
+type CallsByLine<'a> = HashMap<(u32, u32, String), &'a CallFact>;
+
+fn calls_by_line(calls: &[CallFact]) -> CallsByLine<'_> {
+    let mut held: CallsByLine = HashMap::new();
+    for call in calls {
+        held.entry((call.file, call.line, names::leaf(&call.callee).to_ascii_lowercase()))
+            .or_insert(call);
+    }
+    held
+}
+
+fn grouped_under(registration: &RegistrationFact, by_line: &CallsByLine, groups: &Groups) -> Option<String> {
+    let verb = names::leaf(&registration.registrar).to_ascii_lowercase();
+    let call = by_line.get(&(registration.file, registration.line, verb))?;
+    let unit = call.caller.as_deref()?;
+    let receiver = names::root(call.receiver.as_deref()?);
+    prefix_of(groups, registration.file, unit, receiver, 0)
+}
+
 static OPENS_A_CONNECTION: &[&str] = &["EventSource", "WebSocket"];
 static SAID_OVER_A_CONNECTION: &[&str] = &["close", "send"];
 
@@ -1333,6 +1401,8 @@ pub fn derive(
         })
         .collect();
 
+    let groups = groups_of(calls, locals);
+    let by_line = if groups.is_empty() { HashMap::new() } else { calls_by_line(calls) };
     let mut registered: HashSet<(u32, u32)> = HashSet::new();
     for registration in registrations {
         let Some(kind) = classify_registration(&registration.registrar, Some(&registration.label))
@@ -1377,6 +1447,10 @@ pub fn derive(
         }
         let verb = names::leaf(&registration.registrar);
         let (label_method, path) = split_label(&registration.label);
+        let path = match grouped_under(registration, &by_line, &groups) {
+            Some(prefix) => join_paths(&prefix, &path),
+            None => path,
+        };
         let path = match registered_on_a_router(&registration.registrar)
             .then(|| mounted.get(&registration.file))
             .flatten()

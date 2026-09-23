@@ -53,7 +53,7 @@ fn settled(receiver: &str) -> Option<String> {
 }
 
 fn unwrapped(node: Node) -> Node {
-    match node.kind() == "argument" && node.named_child_count() == 1 {
+    match matches!(node.kind(), "argument" | "expression_list") && node.named_child_count() == 1 {
         true => node.named_child(0).unwrap_or(node),
         false => node,
     }
@@ -1576,6 +1576,7 @@ impl<'a> Extractor<'a> {
                             annotation: None,
                             constructed: None,
                             from_call: from_call.clone(),
+                            line: node.start_position().row as u32 + 1,
                         });
                     }
                     continue;
@@ -1616,7 +1617,8 @@ impl<'a> Extractor<'a> {
         let value = node
             .child_by_field_name(self.spec.declares.binding_value_field)
             .or_else(|| declarator.and_then(|d| d.child_by_field_name(self.spec.declares.binding_value_field)))
-            .or_else(|| self.assigned_child(node));
+            .or_else(|| self.assigned_child(node))
+            .map(unwrapped);
         if let Some(written) = value
             .map(|held| self.text(held).trim())
             .filter(|raw| written_as_text(raw))
@@ -1652,6 +1654,7 @@ impl<'a> Extractor<'a> {
                 annotation: annotation.clone(),
                 constructed: constructed.clone(),
                 from_call: from_call.clone(),
+                line: node.start_position().row as u32 + 1,
             });
         }
         if !taken_apart.is_empty() {
@@ -1664,6 +1667,7 @@ impl<'a> Extractor<'a> {
             annotation,
             constructed,
             from_call,
+            line: node.start_position().row as u32 + 1,
         });
         false
     }

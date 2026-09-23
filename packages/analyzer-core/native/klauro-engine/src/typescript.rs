@@ -1032,6 +1032,7 @@ impl<'a> Extractor<'a> {
                             annotation,
                             constructed,
                             from_call,
+                            line: node.start_position().row as u32 + 1,
                         });
                     }
                 }

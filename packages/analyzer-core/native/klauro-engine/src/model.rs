@@ -278,6 +278,8 @@ pub struct LocalBinding {
     pub constructed: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub from_call: Option<String>,
+    #[serde(skip)]
+    pub line: u32,
 }
 
 #[derive(Debug, Serialize)]
