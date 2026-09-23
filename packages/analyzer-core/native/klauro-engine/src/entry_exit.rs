@@ -19,7 +19,16 @@ pub struct EntryPoint {
     pub handler: String,
     pub file: u32,
     pub line: u32,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub guards: Vec<Guard>,
     pub registrar: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Guard {
+    pub name: String,
+    pub kind: &'static str,
+    pub via: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -893,6 +902,144 @@ fn bare_exit(
     }
 }
 
+fn words_of(written: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut held = String::new();
+    let mut before: Option<char> = None;
+    for letter in written.chars() {
+        let starts = letter.is_uppercase() && before.is_some_and(|was| was.is_lowercase());
+        if !letter.is_alphanumeric() || starts {
+            if !held.is_empty() {
+                words.push(std::mem::take(&mut held));
+            }
+        }
+        if letter.is_alphanumeric() {
+            held.push(letter.to_ascii_lowercase());
+        }
+        before = Some(letter);
+    }
+    if !held.is_empty() {
+        words.push(held);
+    }
+    words
+}
+
+static SAYS_WHO_YOU_ARE: &[&str] = &[
+    "auth", "authed", "authenticate", "authenticated", "authentication", "authorize", "authorized", "jwt",
+    "login", "oauth", "signin",
+];
+static SAYS_WHAT_YOU_MAY_DO: &[&str] = &[
+    "acl", "admin", "authorization", "granted", "permission", "permissions", "policies", "policy",
+    "preauthorize", "rbac", "role", "roles", "rolesallowed", "secured", "superuser",
+];
+static SAYS_HOW_OFTEN: &[&str] = &["limiter", "ratelimit", "throttle", "throttled", "throttler"];
+static LETS_ANYONE_IN: &[&str] = &["allowanonymous", "anonymous", "public", "skipauth"];
+
+fn guarding(written: &str) -> Option<&'static str> {
+    let words = words_of(written);
+    let has = |held: &[&str]| words.iter().any(|word| held.contains(&word.as_str()));
+    let pair = |first: &str, second: &str| words.windows(2).any(|two| two[0] == first && two[1] == second);
+    if has(SAYS_WHAT_YOU_MAY_DO) {
+        return Some("authorization");
+    }
+    if has(SAYS_WHO_YOU_ARE) || pair("current", "user") || pair("logged", "in") || pair("signed", "in") {
+        return Some("authentication");
+    }
+    if has(SAYS_HOW_OFTEN) || pair("rate", "limit") {
+        return Some("rate_limiting");
+    }
+    None
+}
+
+static CARRIES_GUARDS: &[&str] = &["middleware", "useguards", "useinterceptors", "usemiddleware"];
+static HANDS_OVER_A_GUARD: &[&str] = &["dependencies", "depends", "security"];
+
+static NAMES_THE_PRINCIPAL: &[&str] = &["auth", "authed", "authenticated", "claims", "principal"];
+
+fn names_the_principal(written: &str) -> bool {
+    let words = words_of(written);
+    words.iter().any(|word| NAMES_THE_PRINCIPAL.contains(&word.as_str()))
+        || words.windows(2).any(|two| two[0] == "current" && matches!(two[1].as_str(), "user" | "account"))
+}
+
+fn declares_it_open(written: &str) -> bool {
+    let words = words_of(written);
+    words.windows(2).any(|two| two[0] == "public" && two[1] == "true")
+        || words.iter().any(|word| LETS_ANYONE_IN.contains(&word.as_str()) && word != "public")
+}
+
+fn carries_guards(named: &str) -> bool {
+    let spoken = names::leaf(named).to_ascii_lowercase();
+    CARRIES_GUARDS.contains(&spoken.as_str())
+}
+
+fn hands_over_a_guard(written: &str) -> bool {
+    words_of(written).first().is_some_and(|first| HANDS_OVER_A_GUARD.contains(&first.as_str()))
+}
+
+fn guards_written_on(node: &IndexNode, via: &'static str, found: &mut Vec<Guard>) {
+    for decorator in &node.decorators {
+        if decorator.arguments.iter().any(|held| declares_it_open(&held.value)) {
+            continue;
+        }
+        let carries = guarding(&decorator.name).is_some() || carries_guards(&decorator.name);
+        let mut spoken: Vec<&str> = vec![decorator.name.as_str()];
+        spoken.extend(
+            decorator
+                .arguments
+                .iter()
+                .filter(|held| carries || (!held.literal && hands_over_a_guard(&held.value)))
+                .map(|held| held.value.as_str()),
+        );
+        for written in spoken {
+            if let Some(kind) = guarding(written) {
+                found.push(Guard { name: written.to_string(), kind, via });
+            }
+        }
+    }
+    let Some(signature) = node.signature.as_ref() else { return };
+    for parameter in &signature.parameters {
+        if let Some(written) = parameter.type_annotation.as_deref()
+            && names_the_principal(written)
+        {
+            found.push(Guard { name: written.to_string(), kind: "authentication", via: "parameter" });
+        }
+        if let Some(written) = parameter.default_value.as_deref().filter(|held| hands_over_a_guard(held))
+            && let Some(kind) = guarding(written)
+        {
+            found.push(Guard { name: written.to_string(), kind, via: "parameter" });
+        }
+    }
+}
+
+fn lets_anyone_in(node: &IndexNode) -> bool {
+    node.decorators.iter().any(|decorator| {
+        let spoken = decorator.name.to_ascii_lowercase().replace(['_', '-'], "");
+        LETS_ANYONE_IN.iter().any(|open| names::leaf(&spoken) == *open)
+    })
+}
+
+pub fn guard(entry_points: &mut [EntryPoint], nodes: &[IndexNode]) {
+    let by_id: HashMap<&str, &IndexNode> = nodes.iter().map(|node| (node.id.as_str(), node)).collect();
+    for entry in entry_points.iter_mut() {
+        let Some(handler) = by_id.get(entry.handler.as_str()) else { continue };
+        let mut found = Vec::new();
+        guards_written_on(handler, "decorator", &mut found);
+        if let Some(owner) = handler.parent.as_deref().and_then(|parent| by_id.get(parent))
+            && owner.kind.is_type()
+        {
+            let mut inherited = Vec::new();
+            guards_written_on(owner, "owner", &mut inherited);
+            if lets_anyone_in(handler) {
+                inherited.retain(|held| held.kind == "rate_limiting");
+            }
+            found.extend(inherited);
+        }
+        found.dedup();
+        entry.guards = found;
+    }
+}
+
 pub fn kept_by_the_browser(kept: &[crate::model::Kept], files: &[String]) -> Vec<ExitPoint> {
     kept.iter()
         .enumerate()
@@ -1001,6 +1148,7 @@ pub fn derive(
                     handler: node.id.clone(),
                     file: node.file,
                     line: node.span.line,
+                    guards: Vec::new(),
                     registrar: registrar.clone(),
                 });
             }
@@ -1036,6 +1184,7 @@ pub fn derive(
                     handler: node.id.clone(),
                     file: node.file,
                     line: node.span.line,
+                    guards: Vec::new(),
                     registrar: decorator.name.clone(),
                 });
             }
@@ -1119,6 +1268,7 @@ pub fn derive(
                 handler: node.id.clone(),
                 file: node.file,
                 line: node.span.line,
+                guards: Vec::new(),
                 registrar: found.base.to_string(),
             });
             continue;
@@ -1136,6 +1286,7 @@ pub fn derive(
                 handler: member.id.clone(),
                 file: member.file,
                 line: member.span.line,
+                guards: Vec::new(),
                 registrar: found.base.to_string(),
             });
         }
@@ -1270,6 +1421,7 @@ pub fn derive(
             handler,
             file: registration.file,
             line: registration.line,
+            guards: Vec::new(),
             registrar: registration.registrar.clone(),
         });
     }
@@ -1294,6 +1446,7 @@ pub fn derive(
                 handler: node.id.clone(),
                 file: node.file,
                 line: node.span.line,
+                guards: Vec::new(),
                 registrar: node.name.clone(),
             });
         }
@@ -1315,6 +1468,7 @@ pub fn derive(
             handler: node.id.clone(),
             file: node.file,
             line: node.span.line,
+            guards: Vec::new(),
             registrar: node.name.clone(),
         });
     }

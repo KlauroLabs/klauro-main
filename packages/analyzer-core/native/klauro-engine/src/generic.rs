@@ -149,12 +149,15 @@ impl<'a> Extractor<'a> {
     fn handed_over<'b>(&self, node: Node<'b>, found: &mut Vec<(String, Node<'b>)>) {
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
-            if child.kind().contains("string") {
+            if child.kind().contains("string") || configures_the_call(child.kind()) {
                 continue;
             }
             if matches!(child.kind(), "arguments" | "argument_list") {
                 let mut inner = child.walk();
                 for argument in child.named_children(&mut inner) {
+                    if configures_the_call(argument.kind()) {
+                        continue;
+                    }
                     for handler in self.referenced_names(unwrapped(argument), 0) {
                         found.push((handler, argument));
                     }
@@ -1786,7 +1789,7 @@ impl<'a> Extractor<'a> {
                 };
                 let mut handlers: Vec<(String, Node)> = Vec::new();
                 for argument in children.iter() {
-                    if argument.kind().contains("string") {
+                    if argument.kind().contains("string") || configures_the_call(argument.kind()) {
                         continue;
                     }
                     for handler in self.referenced_names(*argument, 0) {
@@ -1974,6 +1977,10 @@ fn signs_for_a_call(declarator: Node) -> bool {
 
 const WORD_AT_MOST: usize = 200;
 const TEXT_AT_MOST: usize = 400;
+
+fn configures_the_call(kind: &str) -> bool {
+    matches!(kind, "keyword_argument" | "named_argument" | "value_argument_label" | "labeled_argument")
+}
 
 fn written_as_text(raw: &str) -> bool {
     let Some(opened) = raw.chars().next().filter(|letter| matches!(letter, '"' | '\'' | '`'))

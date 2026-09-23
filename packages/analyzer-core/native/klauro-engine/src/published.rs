@@ -178,6 +178,7 @@ pub fn published(
                 handler: node.id.clone(),
                 file: node.file,
                 line: node.span.line,
+                guards: Vec::new(),
                 registrar: "published".to_string(),
             });
         }

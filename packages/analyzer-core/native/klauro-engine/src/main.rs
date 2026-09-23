@@ -481,6 +481,7 @@ fn read_it() {
         .entry_points
         .extend(convention::conventional(&index.nodes, &paths, &index.exports));
     derived.entry_points.sort_by(|left, right| left.id.cmp(&right.id));
+    entry_exit::guard(&mut derived.entry_points, &index.nodes);
     derived.entry_points.dedup_by(|left, right| left.id == right.id);
     let derived = derived;
     let derived_elapsed = derive_started.elapsed();

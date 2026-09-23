@@ -373,6 +373,7 @@ pub fn conventional(
                 handler: handler.id.clone(),
                 file: at,
                 line: handler.span.line,
+                guards: Vec::new(),
                 registrar: "convention".to_string(),
             });
         };
