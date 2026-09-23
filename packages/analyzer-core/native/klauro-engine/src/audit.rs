@@ -20,6 +20,18 @@ fn into() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from(".klauro/audit"))
 }
 
+fn numbered(source: &str) -> String {
+    let mut shown = String::new();
+    for (at, line) in source.lines().enumerate() {
+        let written = format!("{:>5}| {line}\n", at + 1);
+        if shown.len() + written.len() > SOURCE_AT_MOST {
+            break;
+        }
+        shown.push_str(&written);
+    }
+    shown
+}
+
 fn slugged(what: &str) -> String {
     let mut held = String::new();
     for letter in what.chars() {
@@ -176,7 +188,7 @@ pub fn look(
     for file in worth_asking_about(files, nodes, entries, exits) {
         let Some(path) = files.get(file as usize).map(|held| held.path.as_str()) else { continue };
         let Ok(source) = std::fs::read_to_string(Path::new(root).join(path)) else { continue };
-        let shown: String = source.chars().take(SOURCE_AT_MOST).collect();
+        let shown = numbered(&source);
         let recorded = recorded_for(file, entries, exits, nodes);
         looked.asked += 1;
         for missed in crate::author::look_for_missed(path, &shown, &recorded) {
@@ -241,6 +253,14 @@ mod tests {
         assert!(!super::well_formed(&held("exit_points", [("kind", "storage"), ("target", "cookies")])));
         assert!(!super::well_formed(&held("comprehension.entities", [("type", "foreign_key"), ("references", "user.id")])));
         assert!(!super::well_formed(&held("whatever", [("kind", "database"), ("target", "a")])));
+    }
+
+    #[test]
+    fn the_source_shown_says_which_line_is_which() {
+        let shown = super::numbered("first\nsecond\n\nfourth");
+        assert!(shown.contains("    2| second"));
+        assert!(shown.contains("    4| fourth"));
+        assert!(super::numbered(&"x\n".repeat(100_000)).len() <= super::SOURCE_AT_MOST);
     }
 
     #[test]

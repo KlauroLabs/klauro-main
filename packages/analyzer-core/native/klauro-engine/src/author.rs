@@ -986,7 +986,7 @@ pub fn look_for_missed(path: &str, source: &str, recorded: &str) -> Vec<Missed> 
     }
     let prompt = format!(
         "A reader that works only from the text of a file has already been over this one.\n\n\
-         FILE: {path}\n\n{source}\n\n\
+         FILE: {path} (each line begins with its number)\n\n{source}\n\n\
          What that reader recorded for this file:\n{recorded}\n\n\
          Name only what this file plainly does that the reader did not record: a surface it \
          serves, something it reaches outside itself, a table or collection it reads or writes, \
@@ -998,6 +998,8 @@ pub fn look_for_missed(path: &str, source: &str, recorded: &str) -> Vec<Missed> 
          construct, with nothing else in it, naming nothing from this product: no product name, \
          no vendor, no brand, no word particular to this domain. The reader must be able to see \
          the construct in that file alone.\n\n\
+         `line` is the number the line begins with, of the line where the thing happens, not \
+         of a comment about it.\n\
          `at` names where the fact belongs, and only these words may be used:\n\
          - exit_points, carrying kind, target, operation. kind is one of api, cache, \
          client_storage, database, file, message, network, process.\n\
