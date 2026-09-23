@@ -1701,15 +1701,10 @@ fn agreed_in_a_schema(path: &str) -> bool {
     AGREED_IN_A_SCHEMA.binary_search(&spoken).is_ok()
 }
 
-static PUBLISHES: &[&str] = &[
-    "broadcast", "dispatch", "emit", "enqueue", "fire", "notify", "postmessage", "produce",
-    "publish", "send", "sendmessage", "trigger",
-];
+static PUBLISHES: &[&str] =
+    &["broadcast", "enqueue", "postmessage", "produce", "publish", "sendmessage"];
 
-static SUBSCRIBES: &[&str] = &[
-    "addeventlistener", "consume", "dequeue", "handle", "listen", "on", "once", "receive",
-    "subscribe",
-];
+static SUBSCRIBES: &[&str] = &["consume", "dequeue", "subscribe"];
 
 static READS_A_KEY: &[&str] = &["get", "getex", "hget", "hgetall", "lrange", "mget", "smembers"];
 
@@ -1727,6 +1722,11 @@ fn said_plainly(callee: &str) -> String {
     let lowered = callee.to_ascii_lowercase();
     let spoken = lowered.strip_suffix("async").unwrap_or(&lowered);
     spoken.trim_end_matches('_').to_string()
+}
+
+fn a_topic_is_named(named: &str) -> bool {
+    named.contains(['.', ':', '/', '_', '-'])
+        || named.chars().any(|letter| letter.is_ascii_uppercase())
 }
 
 fn agreed_by_hand(call: &CallFact) -> Vec<Shared> {
@@ -1748,6 +1748,9 @@ fn agreed_by_hand(call: &CallFact) -> Vec<Shared> {
         if NAMES_AN_ADDRESS.iter().any(|ending| lowered.ends_with(ending)) {
             return vec![Shared { family: "address", name: lowered, role: "mentions" }];
         }
+        return Vec::new();
+    }
+    if !a_topic_is_named(named) {
         return Vec::new();
     }
     if PUBLISHES.contains(&spoken.as_str()) {
@@ -1776,21 +1779,8 @@ fn link_across_parts(
 ) {
     let mut speaking: HashMap<(&str, &str), Vec<(usize, Option<&str>, &'static str)>> =
         HashMap::new();
-    let stores: Vec<Vec<Shared>> = flows
-        .iter()
-        .map(|flow| {
-            let mut held: Vec<Shared> = Vec::new();
-            for named in flow.writes.iter() {
-                held.push(Shared { family: "store", name: named.clone(), role: "writes" });
-            }
-            for named in flow.reads.iter() {
-                held.push(Shared { family: "store", name: named.clone(), role: "reads" });
-            }
-            held
-        })
-        .collect();
     for (at, flow) in flows.iter().enumerate() {
-        for holding in shared.get(&flow.entry_point).into_iter().flatten().chain(stores[at].iter()) {
+        for holding in shared.get(&flow.entry_point).into_iter().flatten() {
             speaking
                 .entry((holding.family, holding.name.as_str()))
                 .or_default()
@@ -2464,7 +2454,7 @@ mod tests {
     #[test]
     fn a_publisher_seams_to_a_subscriber_of_the_same_topic() {
         assert_eq!(
-            agreed("emit", Some("bus"), "order.placed"),
+            agreed("publish", Some("bus"), "order.placed"),
             Some(("topic".to_string(), "writes".to_string()))
         );
         assert_eq!(
@@ -2475,6 +2465,20 @@ mod tests {
             agreed("PublishAsync", Some("bus"), "order.placed"),
             Some(("topic".to_string(), "writes".to_string()))
         );
+        assert_eq!(agreed("on", Some("element"), "mouseup"), None);
+        assert_eq!(agreed("Handle", None, "cancellationToken"), None);
+    }
+
+    #[test]
+    fn a_topic_is_a_name_agreed_on_not_a_thing_the_screen_does() {
+        use super::a_topic_is_named;
+        assert!(a_topic_is_named("order.placed"));
+        assert!(a_topic_is_named("user:created"));
+        assert!(a_topic_is_named("JOB_DONE"));
+        assert!(a_topic_is_named("bookingConfirmed"));
+        assert!(!a_topic_is_named("mouseup"));
+        assert!(!a_topic_is_named("resize"));
+        assert!(!a_topic_is_named("error"));
     }
 
     #[test]
