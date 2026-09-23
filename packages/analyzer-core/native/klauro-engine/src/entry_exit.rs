@@ -768,6 +768,96 @@ fn addressed_at(call: &CallFact) -> Option<String> {
     None
 }
 
+static BUILT_INTO_PHP: &[(&str, &str)] = &[
+    ("copy", "file"),
+    ("exec", "process"),
+    ("fgets", "file"),
+    ("file", "file"),
+    ("file_exists", "file"),
+    ("file_get_contents", "file"),
+    ("file_put_contents", "file"),
+    ("fopen", "file"),
+    ("fputs", "file"),
+    ("fread", "file"),
+    ("fwrite", "file"),
+    ("glob", "file"),
+    ("is_dir", "file"),
+    ("is_file", "file"),
+    ("mkdir", "file"),
+    ("move_uploaded_file", "file"),
+    ("parse_ini_file", "file"),
+    ("passthru", "process"),
+    ("popen", "process"),
+    ("proc_open", "process"),
+    ("readfile", "file"),
+    ("rename", "file"),
+    ("rmdir", "file"),
+    ("scandir", "file"),
+    ("shell_exec", "process"),
+    ("system", "process"),
+    ("touch", "file"),
+    ("unlink", "file"),
+];
+
+fn built_into_the_language(call: &CallFact, path: &str) -> Option<&'static str> {
+    if !path.ends_with(".php") {
+        return None;
+    }
+    let spoken = call.callee.trim_start_matches('\\');
+    BUILT_INTO_PHP
+        .binary_search_by(|(named, _)| named.cmp(&spoken))
+        .ok()
+        .map(|at| BUILT_INTO_PHP[at].1)
+}
+
+static WRITES_A_COOKIE: &[&str] = &["clearcookie", "cookie", "deletecookie", "setcookie"];
+static READS_A_COOKIE: &[&str] = &["getcookie", "getcookies"];
+static ASKED_OF_THE_COOKIES: &[(&str, &str)] =
+    &[("delete", "write"), ("get", "read"), ("getall", "read"), ("remove", "write"), ("set", "write")];
+
+fn a_cookie_kept(call: &CallFact) -> Option<&'static str> {
+    let spoken = names::leaf(&call.callee).to_ascii_lowercase();
+    let held = call.receiver.as_deref().map(|within| names::leaf(within).to_ascii_lowercase());
+    if held.as_deref() == Some("cookies") {
+        return ASKED_OF_THE_COOKIES
+            .iter()
+            .find(|(asked, _)| *asked == spoken)
+            .map(|(_, operation)| *operation);
+    }
+    let answering = held.as_deref().is_none_or(|within| {
+        matches!(within, "res" | "response" | "reply" | "ctx" | "context" | "c" | "event")
+    });
+    if !answering || call.literals.is_empty() && call.argument_count == 0 {
+        return None;
+    }
+    if WRITES_A_COOKIE.contains(&spoken.as_str()) && (spoken != "cookie" || held.is_some()) {
+        return Some("write");
+    }
+    READS_A_COOKIE.contains(&spoken.as_str()).then_some("read")
+}
+
+static OPENS_A_CONNECTION: &[&str] = &["EventSource", "WebSocket"];
+static SAID_OVER_A_CONNECTION: &[&str] = &["close", "send"];
+
+fn opens_a_connection(named: &str) -> bool {
+    OPENS_A_CONNECTION.contains(&named)
+}
+
+fn over_a_connection<'a>(
+    call: &'a CallFact,
+    source: &str,
+    connected: &HashMap<(u32, &str, &str), &'a str>,
+) -> Option<(&'static str, &'a str)> {
+    let within = call.receiver.as_deref().map(|held| held.strip_prefix("window.").unwrap_or(held));
+    let opened = names::leaf(&call.callee);
+    if opens_a_connection(opened) && within.is_none_or(|held| held == "window") {
+        return Some(("connect", opened));
+    }
+    let over = *connected.get(&(call.file, source, names::root(within?)))?;
+    let said = SAID_OVER_A_CONNECTION.iter().find(|said| **said == call.callee)?;
+    Some((said, over))
+}
+
 fn bare_exit(call: &CallFact, modules: &HashMap<(u32, String), String>) -> Option<&'static str> {
     if call.callee == "fetch" {
         return Some("api");
@@ -824,7 +914,16 @@ pub fn derive(
     registrations: &[RegistrationFact],
     type_references: &[TypeReferenceFact],
     resolution: &Resolution,
+    locals: &[crate::model::LocalBinding],
 ) -> Derived {
+    let connected: HashMap<(u32, &str, &str), &str> = locals
+        .iter()
+        .filter_map(|held| {
+            let built = names::leaf(held.constructed.as_deref()?);
+            opens_a_connection(built)
+                .then_some(((held.file, held.unit.as_str(), held.name.as_str()), built))
+        })
+        .collect();
     let Resolution { modules, local, unique_units, call_origins, through, .. } = resolution;
     let known: HashSet<&str> = nodes.iter().map(|node| node.id.as_str()).collect();
     let mut stands_in: HashMap<&str, Vec<&'static str>> = HashMap::new();
@@ -1227,8 +1326,44 @@ pub fn derive(
                 addressed: None,
             });
         }
+        if let Some(operation) = a_cookie_kept(call) {
+            reached_through.push(call.receiver.clone().unwrap_or_default());
+            exit_points.push(ExitPoint {
+                id: format!("exit:{}:{}:cookie", files[call.file as usize], position),
+                kind: "client_storage",
+                name: format!("{operation} cookie"),
+                source: source.clone(),
+                target: "cookie".to_string(),
+                operation: operation.to_string(),
+                file: call.file,
+                line: call.line,
+                awaited: call.context.awaited,
+                addressed: None,
+            });
+            continue;
+        }
+        if let Some((operation, over)) = over_a_connection(call, source, &connected) {
+            reached_through.push(call.receiver.clone().unwrap_or_default());
+            exit_points.push(ExitPoint {
+                id: format!("exit:{}:{}:connection", files[call.file as usize], position),
+                kind: "network",
+                name: format!("{operation} {}", call.callee),
+                source: source.clone(),
+                target: over.to_string(),
+                operation: operation.to_string(),
+                file: call.file,
+                line: call.line,
+                awaited: call.context.awaited,
+                addressed: addressed_at(call),
+            });
+            continue;
+        }
         let Some(receiver) = call.receiver.as_deref() else {
-            let Some(kind) = bare_exit(call, modules) else { continue };
+            let Some(kind) = bare_exit(call, modules)
+                .or_else(|| built_into_the_language(call, &files[call.file as usize]))
+            else {
+                continue;
+            };
             let origin = modules
                 .get(&(call.file, call.callee.clone()))
                 .cloned()
@@ -1240,7 +1375,7 @@ pub fn derive(
                 name: call.callee.clone(),
                 source: source.clone(),
                 target: origin,
-                operation: call.callee.clone(),
+                operation: call.callee.trim_start_matches('\\').to_string(),
                 file: call.file,
                 line: call.line,
                 awaited: call.context.awaited,
@@ -1439,6 +1574,11 @@ mod tests {
             classify_reached("prisma", "packages/prisma/index.ts", "format", Some(DATABASE)),
             None
         );
+    }
+
+    #[test]
+    fn what_php_builds_in_is_sorted() {
+        assert!(super::BUILT_INTO_PHP.windows(2).all(|held| held[0].0 < held[1].0));
     }
 
     #[test]

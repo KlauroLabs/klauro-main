@@ -473,6 +473,7 @@ fn read_it() {
         &index.registrations,
         &index.type_references,
         &resolution,
+        &index.locals,
     );
     let mut derived = derived;
     derived.exit_points.extend(entry_exit::kept_by_the_browser(&index.kept, &paths));

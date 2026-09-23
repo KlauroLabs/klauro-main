@@ -1,0 +1,8 @@
+{
+  "class": "a-message-sent-over-a-socket-is-sent-to-another-machine",
+  "claim": "a message sent over a socket the code opened is sent to another machine",
+  "kind": "exit",
+  "state": "accepted",
+  "found_in": "the gauntlet: livereload and a dashboard's socket were never read as reaching anything",
+  "expect": { "at": "exit_points", "has": {"kind":"network","operation":"send","target":"WebSocket"} }
+}

@@ -158,8 +158,9 @@ static GENERIC: &[&str] = &[
 ];
 
 static CHANGING: &[&str] = &[
-    "add", "commit", "create", "delete", "dispatch", "emit", "enqueue", "insert", "patch", "post",
-    "publish", "put", "remove", "save", "send", "set", "store", "update", "upsert", "write",
+    "add", "commit", "create", "delete", "dispatch", "emit", "enqueue", "insert", "mkdir", "patch",
+    "post", "publish", "put", "remove", "rename", "save", "send", "set", "store", "unlink", "update",
+    "upsert", "write",
 ];
 
 fn changes(exit: &ExitPoint) -> bool {

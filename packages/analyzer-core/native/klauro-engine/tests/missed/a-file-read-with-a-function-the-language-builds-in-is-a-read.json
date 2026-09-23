@@ -1,0 +1,8 @@
+{
+  "class": "a-file-read-with-a-function-the-language-builds-in-is-a-read",
+  "claim": "a file read with a function the language builds in is a read of the filesystem",
+  "kind": "exit",
+  "state": "accepted",
+  "found_in": "the gauntlet: PHP read and wrote files through its own functions unseen",
+  "expect": { "at": "exit_points", "has": { "kind": "file", "operation": "file_get_contents" } }
+}

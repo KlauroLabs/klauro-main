@@ -1,0 +1,8 @@
+{
+  "class": "a-cookie-set-in-answer-to-a-request-is-kept-by-the-browser",
+  "claim": "a cookie set in answer to a request is written to storage the browser keeps",
+  "kind": "exit",
+  "state": "accepted",
+  "found_in": "the gauntlet: form actions that sign a user in set a cookie the reader never saw",
+  "expect": { "at": "exit_points", "has": { "kind": "client_storage", "operation": "write", "target": "cookie" } }
+}

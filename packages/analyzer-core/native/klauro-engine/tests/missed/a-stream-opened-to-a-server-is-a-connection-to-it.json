@@ -1,0 +1,8 @@
+{
+  "class": "a-stream-opened-to-a-server-is-a-connection-to-it",
+  "claim": "a stream the code opens to a server is a connection to it",
+  "kind": "exit",
+  "state": "accepted",
+  "found_in": "the gauntlet: a realtime example's event stream was never read as reaching anything",
+  "expect": { "at": "exit_points", "has": {"kind":"network","operation":"connect","target":"EventSource"} }
+}
