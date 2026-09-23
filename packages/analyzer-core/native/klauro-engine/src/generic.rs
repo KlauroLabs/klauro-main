@@ -692,6 +692,7 @@ impl<'a> Extractor<'a> {
         }
         if crate::language::taken_apart_kinds(self.spec.id).contains(&kind) {
             self.declare_taken_apart(node, scope);
+            self.declare_routed_by_hand(node, scope);
         }
         if self.spec.declares.binding_kinds.contains(&kind) {
             if !self.declare_binding(node, scope) {
@@ -1488,6 +1489,51 @@ impl<'a> Extractor<'a> {
         names.sort();
         names.dedup();
         names
+    }
+
+    fn declare_routed_by_hand(&mut self, node: Node, scope: &Scope) {
+        static SPOKEN_METHODS: &[&str] =
+            &["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"];
+        let Some(handler) = scope.callable.clone().or_else(|| scope.owner.clone()) else {
+            return;
+        };
+        let mut pending: Vec<Node> = vec![node];
+        while let Some(held) = pending.pop() {
+            let mut cursor = held.walk();
+            for child in held.named_children(&mut cursor) {
+                let Some(pattern) = child.child_by_field_name("pattern") else {
+                    pending.push(child);
+                    continue;
+                };
+                let mut spoken: Vec<String> = Vec::new();
+                let mut inner = vec![pattern];
+                while let Some(part) = inner.pop() {
+                    if part.kind().contains("string") {
+                        spoken.push(trim_quotes(self.text(part)).trim().to_string());
+                    }
+                    let mut walk = part.walk();
+                    inner.extend(part.named_children(&mut walk));
+                }
+                let method = spoken
+                    .iter()
+                    .find(|held| SPOKEN_METHODS.contains(&held.as_str()))
+                    .cloned();
+                let Some(path) = spoken.iter().find(|held| held.starts_with('/')).cloned() else {
+                    continue;
+                };
+                let label = match method {
+                    Some(method) => format!("{method} {path}"),
+                    None => path,
+                };
+                self.facts.registrations.push(RegistrationFact {
+                    file: self.file,
+                    registrar: "route".to_string(),
+                    label,
+                    handler: handler.clone(),
+                    line: child.start_position().row as u32 + 1,
+                });
+            }
+        }
     }
 
     fn declare_taken_apart(&mut self, node: Node, scope: &Scope) {
