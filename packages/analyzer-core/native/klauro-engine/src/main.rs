@@ -1,6 +1,7 @@
 mod alias;
 mod architecture;
 mod builtins;
+mod audit;
 mod author;
 mod comprehend;
 mod conform;
@@ -50,11 +51,11 @@ use serde::Serialize;
 use model::FileFacts;
 
 #[derive(Serialize)]
-struct IndexedFile {
-    path: String,
+pub struct IndexedFile {
+    pub path: String,
     kind: discovery::FileKind,
     #[serde(skip_serializing_if = "Option::is_none")]
-    language: Option<&'static str>,
+    pub language: Option<&'static str>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     extracted: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -846,6 +847,26 @@ fn read_it() {
         &index.calls,
         &index.type_references,
     );
+    if audit::asked() {
+        let looked = audit::look(
+            root.to_str().unwrap_or_default(),
+            &index.files,
+            &index.nodes,
+            &index.entry_points,
+            &index.exit_points,
+        );
+        eprintln!(
+            "audit | asked about {} files | offered {} | malformed {} | written {}{}",
+            looked.asked,
+            looked.offered,
+            looked.malformed,
+            looked.written,
+            match looked.graded {
+                true => "",
+                false => " | no grader, nothing kept",
+            }
+        );
+    }
     let mut comprehension = comprehension;
     let mut spoken_languages: std::collections::BTreeMap<&str, u32> =
         std::collections::BTreeMap::new();

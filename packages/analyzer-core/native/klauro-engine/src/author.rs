@@ -958,3 +958,109 @@ fn ask(request: &str) -> crate::reach::Answer {
     }
     answer
 }
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct Expectation {
+    pub at: String,
+    pub has: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct Missed {
+    pub kind: String,
+    pub what: String,
+    #[serde(default)]
+    pub line: u32,
+    pub expect: Expectation,
+    pub smallest: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct Missing {
+    missed: Vec<Missed>,
+}
+
+pub fn look_for_missed(path: &str, source: &str, recorded: &str) -> Vec<Missed> {
+    if !asked() {
+        return Vec::new();
+    }
+    let prompt = format!(
+        "A reader that works only from the text of a file has already been over this one.\n\n\
+         FILE: {path}\n\n{source}\n\n\
+         What that reader recorded for this file:\n{recorded}\n\n\
+         Name only what this file plainly does that the reader did not record: a surface it \
+         serves, something it reaches outside itself, a table or collection it reads or writes, \
+         a message it sends or waits for. Judge only from the text above, never from what a file \
+         with this name usually does. Say nothing about anything already recorded, nothing about \
+         style or quality, and nothing you would have to run the code to know. If the reader \
+         recorded everything this file does, return an empty list.\n\n\
+         For each one, give the smallest file in the same language that shows the same \
+         construct, with nothing else in it, naming nothing from this product: no product name, \
+         no vendor, no brand, no word particular to this domain. The reader must be able to see \
+         the construct in that file alone.\n\n\
+         `at` names where the fact belongs, and only these words may be used:\n\
+         - exit_points, carrying kind, target, operation. kind is one of api, cache, \
+         client_storage, database, file, message, network, process.\n\
+         - entry_points, carrying kind, method, path, name. kind is one of cli, event, export, \
+         http, ipc, lifecycle, message, schedule, test.\n\
+         - comprehension.entities, carrying declared_as.\n\
+         Use no other place and no other field. Spell the values as they would be for your \
+         smallest file, not for this one. If what you found does not fit those words, leave it \
+         out.\n\n\
+         Return JSON only: {{\"missed\":[{{\"kind\":\"entry|exit|entity|route\",\"what\":\"one \
+         sentence, no product words\",\"line\":0,\"expect\":{{\"at\":\"exit_points\",\"has\":\
+         {{\"kind\":\"database\",\"target\":\"a_table\"}}}},\"smallest\":\"...\"}}]}}"
+    );
+    answered::<Missing>(&prompt, 2000, &proposing(), "", 0)
+        .map(|held| held.missed)
+        .unwrap_or_default()
+}
+
+pub fn vet(missed: &Missed) -> bool {
+    if !crate::jev::asked() {
+        return false;
+    }
+    let state = format!(
+        "A reader of source code missed something.\n\nWhat it missed: {}\n\nThe smallest file \
+         that shows it:\n{}\n\nWhere the fact belongs: {} carrying {:?}",
+        missed.what, missed.smallest, missed.expect.at, missed.expect.has
+    );
+    let questions = BTreeMap::from([
+        (
+            "ordinary".to_string(),
+            crate::jev::Question {
+                kind: "noul",
+                instructions: "The construct named here appears in many codebases, so teaching a \
+                               reader to see it would help on repositories other than this one"
+                    .to_string(),
+                criteria: BTreeMap::new().into(),
+            },
+        ),
+        (
+            "readable".to_string(),
+            crate::jev::Question {
+                kind: "noul",
+                instructions: "The smallest file alone shows the construct, so the claim can be \
+                               settled by reading that file and nothing else"
+                    .to_string(),
+                criteria: BTreeMap::new().into(),
+            },
+        ),
+        (
+            "unnamed".to_string(),
+            crate::jev::Question {
+                kind: "noul",
+                instructions: "The smallest file and the sentence name no product, vendor, brand \
+                               or word particular to one domain"
+                    .to_string(),
+                criteria: BTreeMap::new().into(),
+            },
+        ),
+    ]);
+    let answered = crate::jev::decide(&state, questions);
+    ["ordinary", "readable", "unnamed"]
+        .iter()
+        .all(|asked| answered.get(*asked).map(|held| held.settled() >= VETTED).unwrap_or(false))
+}
+
+const VETTED: f64 = 0.6;

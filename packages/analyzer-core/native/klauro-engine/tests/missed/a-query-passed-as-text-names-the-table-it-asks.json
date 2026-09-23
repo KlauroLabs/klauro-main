@@ -1,0 +1,8 @@
+{
+  "class": "a-query-passed-as-text-names-the-table-it-asks",
+  "claim": "a query handed to a connection as text names the table it asks of, whoever holds the connection",
+  "kind": "exit",
+  "state": "accepted",
+  "found_in": "a repository that writes its own SQL through a pool",
+  "expect": { "at": "exit_points", "has": { "kind": "database", "target": "a_table", "operation": "select" } }
+}

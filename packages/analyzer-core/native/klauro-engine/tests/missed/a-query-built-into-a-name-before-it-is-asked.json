@@ -1,0 +1,8 @@
+{
+  "class": "a-query-built-into-a-name-before-it-is-asked",
+  "claim": "a query put into a name and then handed to a connection still names the table it asks of",
+  "kind": "exit",
+  "state": "pending",
+  "found_in": "a repository that writes its own SQL through a pool",
+  "expect": { "at": "exit_points", "has": { "kind": "database", "target": "b_table", "operation": "select" } }
+}
