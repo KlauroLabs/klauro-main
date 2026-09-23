@@ -47,6 +47,8 @@ pub struct Deployable {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bundled_into: Option<String>,
     #[serde(skip)]
+    pub offered_to_others: bool,
+    #[serde(skip)]
     pub shipped: bool,
     pub units: u32,
     pub entry_points: u32,
@@ -262,6 +264,42 @@ static MODULE_MANIFESTS: &[&str] = &[
     "pyproject.toml",
     "setup.py",
 ];
+
+static A_REGISTRY_ASKS_FOR: &[(&str, &[&[&str]])] =
+    &[("Cargo.toml", &[&["description"], &["license", "license-file"]])];
+
+fn ready_to_be_published(files: &Files, manifest: &str) -> bool {
+    let within: Vec<&IndexNode> = files
+        .descendants(manifest)
+        .into_iter()
+        .filter(|node| {
+            node.parent
+                .as_deref()
+                .is_none_or(|parent| parent == manifest || parent.contains(":section:package:"))
+        })
+        .collect();
+    fn said(node: &IndexNode) -> &str {
+        node.type_annotation.as_deref().unwrap_or_default().trim()
+    }
+    let kept_back = within.iter().any(|node| match node.name.as_str() {
+        "publish" => matches!(said(node), "false" | "[]"),
+        "private" => said(node) == "true",
+        _ => false,
+    });
+    if kept_back {
+        return false;
+    }
+    let carries = |key: &str| {
+        within.iter().any(|node| {
+            node.name == key || node.name.strip_prefix(key).is_some_and(|rest| rest.starts_with('.'))
+        })
+    };
+    let basename = manifest.rsplit('/').next().unwrap_or(manifest);
+    A_REGISTRY_ASKS_FOR
+        .iter()
+        .find(|(named, _)| *named == basename)
+        .is_none_or(|(_, asked)| asked.iter().all(|any_of| any_of.iter().any(|key| carries(key))))
+}
 
 fn names_a_package(files: &Files, path: &str, basename: &str) -> bool {
     if basename != "project.toml" {
@@ -788,6 +826,7 @@ fn consolidate(
             runs: candidate.runs,
             members: Vec::new(),
             bundled_into: None,
+            offered_to_others: false,
             units: 0,
             entry_points: 0,
             entered_at: Vec::new(),
@@ -801,6 +840,11 @@ fn consolidate(
         unit.declarations.dedup_by(|left, right| left.at == right.at && left.kind == right.kind);
         unit.ships.sort();
         unit.ships.dedup();
+        unit.offered_to_others = unit
+            .declarations
+            .iter()
+            .filter(|found| found.kind == "package-identity")
+            .any(|found| ready_to_be_published(&index, &found.at));
     }
 
     let shipped: Vec<(usize, Vec<String>)> = deployables
@@ -981,5 +1025,16 @@ impl Territory {
             .iter()
             .find(|(root, _)| contains(root, path))
             .map(|(_, at)| *at)
+    }
+}
+
+#[cfg(test)]
+mod ready {
+    #[test]
+    fn what_a_registry_asks_for_is_named_by_the_manifest_it_reads() {
+        for (named, asked) in super::A_REGISTRY_ASKS_FOR {
+            assert!(named.contains('.'), "{named}");
+            assert!(asked.iter().all(|any_of| !any_of.is_empty()));
+        }
     }
 }
