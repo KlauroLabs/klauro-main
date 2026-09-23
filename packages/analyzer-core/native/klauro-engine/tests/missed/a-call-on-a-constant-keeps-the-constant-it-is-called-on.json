@@ -1,0 +1,8 @@
+{
+  "class": "a-call-on-a-constant-keeps-the-constant-it-is-called-on",
+  "claim": "a call made on a constant keeps the constant, so a read through the file library is a read",
+  "kind": "exit",
+  "state": "accepted",
+  "found_in": "the gauntlet: every Ruby call had lost its receiver, so File.read was a bare read",
+  "expect": { "at": "exit_points", "has": {"kind":"file","operation":"read","target":"File"} }
+}

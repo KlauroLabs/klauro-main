@@ -1,0 +1,8 @@
+{
+  "class": "a-java-call-keeps-the-object-it-is-made-on",
+  "claim": "a Java call keeps the object it is made on, so a read through the files library is a read",
+  "kind": "exit",
+  "state": "accepted",
+  "found_in": "the gauntlet: every Java call had lost its receiver",
+  "expect": { "at": "exit_points", "has": {"kind":"file","operation":"readAllLines","target":"java.nio.file.Files"} }
+}

@@ -4796,7 +4796,7 @@ static SPECS: &[LanguageSpec] = &[
         calls: Calls {
             kinds: &["method_invocation", "object_creation_expression"],
             receiver_fields: &["object"],
-            call_receiver_fields: &[],
+            call_receiver_fields: &["object"],
             receiver_type_field: "",
         },
         flow: Flow {
@@ -5010,7 +5010,7 @@ static SPECS: &[LanguageSpec] = &[
         calls: Calls {
             kinds: &["call"],
             receiver_fields: &["receiver"],
-            call_receiver_fields: &[],
+            call_receiver_fields: &["receiver"],
             receiver_type_field: "",
         },
         flow: Flow {
