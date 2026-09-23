@@ -858,9 +858,21 @@ fn over_a_connection<'a>(
     Some((said, over))
 }
 
-fn bare_exit(call: &CallFact, modules: &HashMap<(u32, String), String>) -> Option<&'static str> {
+static WHERE_FETCH_IS_THE_WEB: &[&str] =
+    &["astro", "cjs", "cts", "js", "jsx", "mjs", "mts", "svelte", "ts", "tsx", "vue"];
+
+fn fetch_is_the_web(path: &str) -> bool {
+    path.rsplit_once('.')
+        .is_some_and(|(_, spoken)| WHERE_FETCH_IS_THE_WEB.binary_search(&spoken).is_ok())
+}
+
+fn bare_exit(
+    call: &CallFact,
+    modules: &HashMap<(u32, String), String>,
+    path: &str,
+) -> Option<&'static str> {
     if call.callee == "fetch" {
-        return Some("api");
+        return fetch_is_the_web(path).then_some("api");
     }
     if let Some(specifier) = modules.get(&(call.file, call.callee.clone())) {
         return classify_exit(&call.callee, specifier, &call.callee);
@@ -1359,7 +1371,7 @@ pub fn derive(
             continue;
         }
         let Some(receiver) = call.receiver.as_deref() else {
-            let Some(kind) = bare_exit(call, modules)
+            let Some(kind) = bare_exit(call, modules, &files[call.file as usize])
                 .or_else(|| built_into_the_language(call, &files[call.file as usize]))
             else {
                 continue;
@@ -1574,6 +1586,15 @@ mod tests {
             classify_reached("prisma", "packages/prisma/index.ts", "format", Some(DATABASE)),
             None
         );
+    }
+
+    #[test]
+    fn fetch_is_the_web_only_where_the_web_is_written() {
+        assert!(super::WHERE_FETCH_IS_THE_WEB.windows(2).all(|held| held[0] < held[1]));
+        assert!(super::fetch_is_the_web("src/api.ts"));
+        assert!(super::fetch_is_the_web("app/components/Feed.svelte"));
+        assert!(!super::fetch_is_the_web("app/models/account.rb"));
+        assert!(!super::fetch_is_the_web("lib/client.py"));
     }
 
     #[test]
