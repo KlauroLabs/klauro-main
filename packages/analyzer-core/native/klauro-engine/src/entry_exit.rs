@@ -420,6 +420,8 @@ fn classify_exit(binding: &str, origin: &str, member: &str) -> Option<&'static s
     classify_reached(binding, origin, member, None)
 }
 
+static SAID_BY_THE_MODULE: &[&str] = &["read", "write"];
+
 fn reaching(kinds: &[&'static str], operation: &str) -> Option<&'static str> {
     kinds.iter().copied().find(|kind| {
         let operations = match *kind {
@@ -429,6 +431,7 @@ fn reaching(kinds: &[&'static str], operation: &str) -> Option<&'static str> {
             _ => DATABASE_OPERATIONS,
         };
         operations.binary_search(&operation).is_ok()
+            || (*kind == "file" && SAID_BY_THE_MODULE.contains(&operation))
     })
 }
 

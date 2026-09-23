@@ -202,8 +202,8 @@ mod tests {
 
     #[test]
     fn a_language_that_writes_no_keyword_is_not_read_as_publishing_nothing() {
-        assert!(spoken_for("Bumblebee.Audio"));
-        assert!(spoken_for("Jekyll::Renderer"));
+        assert!(spoken_for("Acoustics.Playback"));
+        assert!(spoken_for("Pages::Renderer"));
         assert!(!spoken_for("_internal"));
     }
 

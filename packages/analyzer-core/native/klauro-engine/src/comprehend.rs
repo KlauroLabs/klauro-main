@@ -1736,13 +1736,25 @@ static NOT_A_RECORD: &[&str] = &[
     "result", "self", "str", "string", "vec",
 ];
 
+static CARRIES_ANOTHER: &[&str] = &["arc", "box", "option", "rc", "result", "vec"];
+
 fn plainly(held: &str) -> &str {
-    let held = held.trim().trim_start_matches('&').trim_start_matches("mut ").trim();
+    let mut held = held.trim().trim_start_matches('&').trim_start_matches("mut ").trim();
     if held.starts_with("impl ") || held.starts_with("dyn ") {
         return "";
     }
-    let held = held.split('<').next().unwrap_or(held).trim();
-    held.rsplit("::").next().unwrap_or(held)
+    loop {
+        let Some(at) = held.find('<') else { break };
+        let outer = held[..at].rsplit("::").next().unwrap_or(&held[..at]);
+        if !CARRIES_ANOTHER.contains(&outer.to_ascii_lowercase().as_str()) {
+            held = &held[..at];
+            break;
+        }
+        held = held[at + 1..].trim_end_matches('>').trim();
+        held = held.split(',').next().unwrap_or(held).trim();
+        held = held.trim_start_matches('&').trim_start_matches("mut ").trim();
+    }
+    held.rsplit("::").next().unwrap_or(held).trim()
 }
 
 fn a_record(held: &str) -> bool {
@@ -1753,29 +1765,43 @@ fn a_record(held: &str) -> bool {
 
 fn named_by(node: &IndexNode, holder: Option<&IndexNode>) -> Vec<String> {
     let mut held: Vec<String> = Vec::new();
+    let mut returned = None;
     if let Some(signature) = node.signature.as_ref() {
         for parameter in signature.parameters.iter() {
             if let Some(annotation) = parameter.type_annotation.as_deref() {
                 held.push(plainly(annotation).to_string());
             }
         }
-        if let Some(returned) = signature.return_type.as_deref() {
-            held.push(plainly(returned).to_string());
+        if let Some(gives) = signature.return_type.as_deref() {
+            returned = Some(plainly(gives).to_string());
+            held.push(plainly(gives).to_string());
         }
     }
     if let Some(holder) = holder.filter(|held| held.kind.is_type()) {
-        held.push(holder.name.clone());
+        let itself = returned
+            .as_deref()
+            .is_some_and(|gives| gives == "Self" || gives == holder.name);
+        if itself {
+            held.push(holder.name.clone());
+        }
     }
-    held.retain(|held| a_record(held));
+    held.retain(|held| a_record(held) && held != "Self");
     held
 }
 
-fn kept_in_a_file(nodes: &[IndexNode], exit_points: &[ExitPoint]) -> HashSet<String> {
+fn kept_in_a_file(
+    nodes: &[IndexNode],
+    files: &[String],
+    exit_points: &[ExitPoint],
+) -> HashSet<String> {
     let node_of: HashMap<&str, &IndexNode> =
         nodes.iter().map(|node| (node.id.as_str(), node)).collect();
     let mut written: HashSet<String> = HashSet::new();
     let mut read: HashSet<String> = HashSet::new();
     for exit in exit_points.iter().filter(|exit| exit.kind == "file") {
+        if files.get(exit.file as usize).is_some_and(|path| crate::paths::is_test(path)) {
+            continue;
+        }
         let verb = crate::names::leaf(&exit.operation).to_ascii_lowercase();
         let held = if WRITING_A_RECORD.contains(&verb.as_str()) {
             &mut written
@@ -1942,7 +1968,7 @@ fn entities(
             held.push(edge.source.clone());
         }
     }
-    let kept_on_disk = kept_in_a_file(nodes, exit_points);
+    let kept_on_disk = kept_in_a_file(nodes, files, exit_points);
     let entities: Vec<Entity> = nodes
         .iter()
         .filter(|node| node.kind.is_type())
