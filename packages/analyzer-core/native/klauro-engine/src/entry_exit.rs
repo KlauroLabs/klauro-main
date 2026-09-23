@@ -208,6 +208,72 @@ fn looks_like_route(value: &str) -> bool {
     !value.is_empty() && !value.contains(' ') && (value.contains('/') || !value.contains('.'))
 }
 
+fn asked_of_a_table(call: &CallFact) -> Option<(String, String)> {
+    call.literals.iter().find_map(|held| a_statement_about(held))
+}
+
+static SAID_BY_A_CLAUSE: &[&str] = &[
+    "group", "having", "join", "limit", "on", "order", "returning", "set", "using", "values",
+    "where",
+];
+
+fn reads_like_sql(held: &str, spoken: &[&str]) -> bool {
+    held.contains([',', '(', '*', ';', '=', '$', '?'])
+        || spoken.iter().any(|word| {
+            SAID_BY_A_CLAUSE.binary_search(&word.to_ascii_lowercase().as_str()).is_ok()
+        })
+}
+
+fn a_statement_about(held: &str) -> Option<(String, String)> {
+    let spoken: Vec<&str> = held.split_whitespace().collect();
+    if !reads_like_sql(held, &spoken) {
+        return None;
+    }
+    let verb = spoken.first()?.trim_matches(['(', '"']).to_ascii_lowercase();
+    let (clause, follows) = match verb.as_str() {
+        "select" | "with" | "delete" => ("from", "from"),
+        "insert" => ("into", "into"),
+        "update" => ("set", ""),
+        _ => return None,
+    };
+    if !spoken.iter().any(|held| held.eq_ignore_ascii_case(clause)) {
+        return None;
+    }
+    let named = match follows.is_empty() {
+        true => spoken.get(1).copied().and_then(plainly_a_table),
+        false => named_after(&spoken, follows),
+    }?;
+    Some((verb, named))
+}
+
+fn named_after(spoken: &[&str], word: &str) -> Option<String> {
+    spoken
+        .iter()
+        .enumerate()
+        .filter(|(_, held)| held.eq_ignore_ascii_case(word))
+        .find_map(|(at, _)| spoken.get(at + 1).copied().and_then(plainly_a_table))
+}
+
+static NEVER_A_TABLE: &[&str] = &[
+    "a", "all", "an", "and", "any", "as", "by", "case", "distinct", "each", "else", "end", "every",
+    "from", "group", "having", "insert", "into", "it", "join", "lateral", "limit", "not", "offset",
+    "on", "or", "order", "select", "set", "some", "that", "the", "then", "these", "this", "those",
+    "union", "unnest", "update", "values", "when", "where", "with",
+];
+
+fn plainly_a_table(held: &str) -> Option<String> {
+    let spoken = held.trim_matches(|letter: char| !letter.is_alphanumeric() && letter != '_' && letter != '.');
+    if spoken.contains('$') || spoken.contains('{') {
+        return None;
+    }
+    let named = spoken.rsplit('.').next()?;
+    let spoken = named.len() > 1
+        && named.starts_with(|letter: char| letter.is_ascii_alphabetic() || letter == '_')
+        && named.chars().all(|letter| letter.is_ascii_alphanumeric() || letter == '_')
+        && NEVER_A_TABLE.binary_search(&named.to_ascii_lowercase().as_str()).is_err();
+    spoken.then(|| named.to_string())
+}
+
 fn owner_path(path: &str, owner: &str) -> String {
     path.replace("[controller]", owner.strip_suffix("Controller").unwrap_or(owner))
 }
@@ -1125,6 +1191,22 @@ pub fn derive(
     let mut reached_through: Vec<String> = Vec::new();
     for (position, call) in calls.iter().enumerate() {
         let Some(source) = &call.caller else { continue };
+        if let Some((operation, table)) = asked_of_a_table(call) {
+            reached_through.push(call.receiver.clone().unwrap_or_default());
+            exit_points.push(ExitPoint {
+                id: format!("exit:{}:{}:sql", files[call.file as usize], position),
+                kind: "database",
+                name: format!("{operation} {table}"),
+                source: source.clone(),
+                target: table,
+                operation,
+                file: call.file,
+                line: call.line,
+                awaited: call.context.awaited,
+                addressed: None,
+            });
+            continue;
+        }
         let Some(receiver) = call.receiver.as_deref() else {
             let Some(kind) = bare_exit(call, modules) else { continue };
             let origin = modules
@@ -1337,5 +1419,57 @@ mod tests {
             classify_reached("prisma", "packages/prisma/index.ts", "format", Some(DATABASE)),
             None
         );
+    }
+
+    #[test]
+    fn what_is_never_a_table_is_sorted() {
+        assert!(super::NEVER_A_TABLE.windows(2).all(|held| held[0] < held[1]));
+        assert!(super::SAID_BY_A_CLAUSE.windows(2).all(|held| held[0] < held[1]));
+    }
+
+    #[test]
+    fn a_sentence_that_opens_like_sql_is_not_sql() {
+        use super::a_statement_about;
+        assert_eq!(a_statement_about("Update the user profile before saving"), None);
+        assert_eq!(a_statement_about("Select a table from FCC filings"), None);
+        assert_eq!(a_statement_about("Delete this row"), None);
+    }
+
+    #[test]
+    fn a_statement_names_the_table_it_asks_of() {
+        use super::a_statement_about;
+        let said = |held: &str| a_statement_about(held).map(|(verb, named)| (verb, named));
+        assert_eq!(
+            said("SELECT id, name FROM token_metrics WHERE id = $1"),
+            Some(("select".to_string(), "token_metrics".to_string()))
+        );
+        assert_eq!(
+            said("INSERT INTO public.chat_sessions (id) VALUES ($1)"),
+            Some(("insert".to_string(), "chat_sessions".to_string()))
+        );
+        assert_eq!(
+            said("UPDATE sync_status SET ran_at = now()"),
+            Some(("update".to_string(), "sync_status".to_string()))
+        );
+        assert_eq!(
+            said("DELETE FROM whale_transactions WHERE id = $1"),
+            Some(("delete".to_string(), "whale_transactions".to_string()))
+        );
+        assert_eq!(
+            said("SELECT row_to_json(x)\n  FROM\n  discovered_tokens x"),
+            Some(("select".to_string(), "discovered_tokens".to_string()))
+        );
+    }
+
+    #[test]
+    fn a_statement_reads_past_what_it_cannot_name() {
+        use super::a_statement_about;
+        assert_eq!(a_statement_about("SELECT 1 FROM public.${table} LIMIT 1"), None);
+        assert_eq!(
+            a_statement_about("SELECT count(*) FROM (SELECT 1 FROM orders) t"),
+            Some(("select".to_string(), "orders".to_string()))
+        );
+        assert_eq!(a_statement_about("node"), None);
+        assert_eq!(a_statement_about("https://api.example.com/v1/prices"), None);
     }
 }
