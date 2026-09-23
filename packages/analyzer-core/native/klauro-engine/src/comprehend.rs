@@ -1725,6 +1725,72 @@ fn a_schema(path: &str) -> bool {
     lowered.ends_with(".prisma") || lowered.ends_with(".sql")
 }
 
+static WRITING_A_RECORD: &[&str] = &[
+    "create", "to_writer", "write", "write_all", "writealltext", "writefile", "writeall",
+];
+static READING_A_RECORD: &[&str] = &[
+    "from_reader", "open", "read", "read_to_end", "read_to_string", "readalltext", "readfile",
+];
+static NOT_A_RECORD: &[&str] = &[
+    "arc", "bool", "box", "duration", "hashmap", "instant", "option", "path", "pathbuf", "rc",
+    "result", "self", "str", "string", "vec",
+];
+
+fn plainly(held: &str) -> &str {
+    let held = held.trim().trim_start_matches('&').trim_start_matches("mut ").trim();
+    if held.starts_with("impl ") || held.starts_with("dyn ") {
+        return "";
+    }
+    let held = held.split('<').next().unwrap_or(held).trim();
+    held.rsplit("::").next().unwrap_or(held)
+}
+
+fn a_record(held: &str) -> bool {
+    !held.is_empty()
+        && held.chars().next().is_some_and(char::is_uppercase)
+        && !NOT_A_RECORD.contains(&held.to_ascii_lowercase().as_str())
+}
+
+fn named_by(node: &IndexNode, holder: Option<&IndexNode>) -> Vec<String> {
+    let mut held: Vec<String> = Vec::new();
+    if let Some(signature) = node.signature.as_ref() {
+        for parameter in signature.parameters.iter() {
+            if let Some(annotation) = parameter.type_annotation.as_deref() {
+                held.push(plainly(annotation).to_string());
+            }
+        }
+        if let Some(returned) = signature.return_type.as_deref() {
+            held.push(plainly(returned).to_string());
+        }
+    }
+    if let Some(holder) = holder.filter(|held| held.kind.is_type()) {
+        held.push(holder.name.clone());
+    }
+    held.retain(|held| a_record(held));
+    held
+}
+
+fn kept_in_a_file(nodes: &[IndexNode], exit_points: &[ExitPoint]) -> HashSet<String> {
+    let node_of: HashMap<&str, &IndexNode> =
+        nodes.iter().map(|node| (node.id.as_str(), node)).collect();
+    let mut written: HashSet<String> = HashSet::new();
+    let mut read: HashSet<String> = HashSet::new();
+    for exit in exit_points.iter().filter(|exit| exit.kind == "file") {
+        let verb = crate::names::leaf(&exit.operation).to_ascii_lowercase();
+        let held = if WRITING_A_RECORD.contains(&verb.as_str()) {
+            &mut written
+        } else if READING_A_RECORD.contains(&verb.as_str()) {
+            &mut read
+        } else {
+            continue;
+        };
+        let Some(node) = node_of.get(exit.source.as_str()).copied() else { continue };
+        let holder = node.parent.as_deref().and_then(|at| node_of.get(at).copied());
+        held.extend(named_by(node, holder));
+    }
+    written.intersection(&read).cloned().collect()
+}
+
 fn entities(
     nodes: &[IndexNode],
     files: &[String],
@@ -1876,12 +1942,14 @@ fn entities(
             held.push(edge.source.clone());
         }
     }
+    let kept_on_disk = kept_in_a_file(nodes, exit_points);
     let entities: Vec<Entity> = nodes
         .iter()
         .filter(|node| node.kind.is_type())
         .filter(|node| files.get(node.file as usize).is_none_or(|path| !a_setting(path)))
         .filter(|node| {
-            modelled.contains(node.id.as_str())
+            kept_on_disk.contains(node.name.as_str())
+                || modelled.contains(node.id.as_str())
                 || files.get(node.file as usize).is_some_and(|path| a_schema(path))
                 || handled.contains(node.name.as_str())
                 || (stored.contains(node.name.to_ascii_lowercase().as_str())
