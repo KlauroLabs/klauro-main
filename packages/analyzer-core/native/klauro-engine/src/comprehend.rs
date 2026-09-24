@@ -1136,9 +1136,8 @@ pub fn author(
         })
         .collect();
     for flow in held.flows.iter_mut() {
-        if let Some((name, description)) = spoken_of.get(&flow.id) {
+        if let Some((name, _)) = spoken_of.get(&flow.id) {
             flow.name = Some(name.clone());
-            flow.description = Some(description.clone());
         }
     }
     say_what_happens(held, &spoken);
