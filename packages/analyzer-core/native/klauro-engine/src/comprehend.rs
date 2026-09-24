@@ -1394,7 +1394,16 @@ pub fn derive(
         }
     }
 
-    let entities_first = entities(nodes, files, edges, exit_points, roles, declared_tables, calls);
+    let entities_first = entities(
+        nodes,
+        files,
+        edges,
+        exit_points,
+        roles,
+        declared_tables,
+        calls,
+        type_references,
+    );
     let held: HashSet<&str> = entities_first
         .iter()
         .map(|entity| entity.declared_as.as_str())
@@ -2069,9 +2078,16 @@ fn declares_a_table(name: &str) -> bool {
     held.eq_ignore_ascii_case("table=true")
 }
 
-fn a_setting(path: &str) -> bool {
+fn unquoted(name: &str) -> &str {
+    name.trim_matches(['`', '"', '[', ']', '\''])
+}
+
+fn declares_no_records(path: &str) -> bool {
     let lowered = path.to_ascii_lowercase();
-    [".yml", ".yaml", ".json", ".toml", ".ini", ".cfg", ".conf", ".properties", ".xml"]
+    [
+        ".yml", ".yaml", ".json", ".toml", ".ini", ".cfg", ".conf", ".properties", ".xml", ".css",
+        ".scss", ".sass", ".less", ".styl",
+    ]
         .iter()
         .any(|extension| lowered.ends_with(extension))
 }
@@ -2162,28 +2178,225 @@ fn kept_in_a_file(
     nodes: &[IndexNode],
     files: &[String],
     exit_points: &[ExitPoint],
-) -> HashSet<String> {
+) -> Vec<(String, u32)> {
     let node_of: HashMap<&str, &IndexNode> =
         nodes.iter().map(|node| (node.id.as_str(), node)).collect();
-    let mut written: HashSet<String> = HashSet::new();
+    let mut written: HashMap<String, u32> = HashMap::new();
     let mut read: HashSet<String> = HashSet::new();
     for exit in exit_points.iter().filter(|exit| exit.kind == "file") {
         if files.get(exit.file as usize).is_some_and(|path| crate::paths::is_test(path)) {
             continue;
         }
         let verb = crate::names::leaf(&exit.operation).to_ascii_lowercase();
-        let held = if WRITING_A_RECORD.contains(&verb.as_str()) {
-            &mut written
-        } else if READING_A_RECORD.contains(&verb.as_str()) {
-            &mut read
-        } else {
+        let writing = WRITING_A_RECORD.contains(&verb.as_str());
+        if !writing && !READING_A_RECORD.contains(&verb.as_str()) {
             continue;
-        };
+        }
         let Some(node) = node_of.get(exit.source.as_str()).copied() else { continue };
         let holder = node.parent.as_deref().and_then(|at| node_of.get(at).copied());
-        held.extend(named_by(node, holder));
+        for named in named_by(node, holder) {
+            match writing {
+                true => {
+                    written.entry(named).or_insert(exit.file);
+                }
+                false => {
+                    read.insert(named);
+                }
+            }
+        }
     }
-    written.intersection(&read).cloned().collect()
+    let mut kept: Vec<(String, u32)> =
+        written.into_iter().filter(|(named, _)| read.contains(named)).collect();
+    kept.sort();
+    kept
+}
+
+struct Denoting<'a> {
+    by_name: HashMap<String, Vec<&'a IndexNode>>,
+    by_table: HashMap<String, Vec<&'a IndexNode>>,
+    reaches: HashSet<(&'a str, &'a str)>,
+    project_of_file: HashMap<u32, &'a str>,
+    files: &'a [String],
+    naming_its_table: HashSet<&'a str>,
+    kind_of: HashMap<&'a str, NodeKind>,
+    members: HashMap<&'a str, u32>,
+}
+
+static SPOKEN_ALIKE: &[(&str, &str)] = &[
+    ("cjs", "js"), ("cts", "js"), ("js", "js"), ("jsx", "js"), ("mjs", "js"), ("mts", "js"),
+    ("ts", "js"), ("tsx", "js"), ("vue", "js"), ("svelte", "js"),
+];
+
+static NAMES_ITS_TABLE: &[&str] = &["__tablename__", "_table_name", "table_name"];
+
+fn written_in(path: &str) -> Option<&str> {
+    let (_, extension) = path.rsplit_once('.')?;
+    let lowered = extension.to_ascii_lowercase();
+    match SPOKEN_ALIKE.iter().find(|(known, _)| *known == lowered) {
+        Some((_, family)) => Some(family),
+        None => Some(extension),
+    }
+}
+
+impl<'a> Denoting<'a> {
+    fn new(
+        candidates: &[&'a IndexNode],
+        nodes: &'a [IndexNode],
+        edges: &'a [IndexEdge],
+        files: &'a [String],
+    ) -> Self {
+        let node_of: HashMap<&str, &IndexNode> =
+            nodes.iter().map(|node| (node.id.as_str(), node)).collect();
+        let naming_its_table = edges
+            .iter()
+            .filter(|edge| edge.kind == EdgeKind::HasField)
+            .filter(|edge| {
+                node_of
+                    .get(edge.target.as_str())
+                    .is_some_and(|field| NAMES_ITS_TABLE.contains(&field.name.as_str()))
+            })
+            .map(|edge| edge.source.as_str())
+            .collect();
+        let mut by_name: HashMap<String, Vec<&IndexNode>> = HashMap::new();
+        let mut by_table: HashMap<String, Vec<&IndexNode>> = HashMap::new();
+        for node in candidates {
+            by_name.entry(node.name.to_ascii_lowercase()).or_default().push(node);
+            let holds_rows = !matches!(node.kind, NodeKind::Interface | NodeKind::Enum);
+            for key in tables_named_for(&node.name).into_iter().filter(|_| holds_rows) {
+                let held = by_table.entry(key).or_default();
+                if !held.iter().any(|known| known.id == node.id) {
+                    held.push(node);
+                }
+            }
+        }
+        let reaches = edges
+            .iter()
+            .filter(|edge| edge.kind != EdgeKind::Contains)
+            .filter_map(|edge| {
+                let from = node_of.get(edge.source.as_str())?.project.as_deref()?;
+                let to = node_of.get(edge.target.as_str())?.project.as_deref()?;
+                (from != to).then_some((from, to))
+            })
+            .collect();
+        let project_of_file = nodes
+            .iter()
+            .filter(|node| node.kind == NodeKind::Module)
+            .filter_map(|node| Some((node.file, node.project.as_deref()?)))
+            .collect();
+        let kind_of = nodes.iter().map(|node| (node.id.as_str(), node.kind)).collect();
+        let mut members: HashMap<&str, u32> = HashMap::new();
+        for edge in edges.iter().filter(|edge| matches!(edge.kind, EdgeKind::HasField | EdgeKind::HasMethod)) {
+            *members.entry(edge.source.as_str()).or_insert(0) += 1;
+        }
+        Denoting {
+            by_name,
+            by_table,
+            reaches,
+            project_of_file,
+            files,
+            naming_its_table,
+            kind_of,
+            members,
+        }
+    }
+
+    fn named(&self, name: &str, site: u32) -> Vec<&'a str> {
+        self.pick(self.by_name.get(&name.to_ascii_lowercase()), site)
+    }
+
+    fn tabled(&self, table: &str, site: u32) -> Vec<&'a str> {
+        self.pick(self.by_table.get(&table.to_ascii_lowercase()), site)
+    }
+
+    fn spoken_alike(&self, site: u32, node: &IndexNode) -> bool {
+        let Some(site) = self.files.get(site as usize) else { return true };
+        if a_schema(site) {
+            return true;
+        }
+        let declared = self.files.get(node.file as usize).and_then(|path| written_in(path));
+        written_in(site) == declared
+    }
+
+    fn pick(&self, candidates: Option<&Vec<&'a IndexNode>>, site: u32) -> Vec<&'a str> {
+        let Some(candidates) = candidates else { return Vec::new() };
+        let spoken: Vec<&'a IndexNode> = candidates
+            .iter()
+            .copied()
+            .filter(|node| self.spoken_alike(site, node))
+            .collect();
+        let named: Vec<&'a IndexNode> = spoken
+            .iter()
+            .copied()
+            .filter(|node| self.naming_its_table.contains(node.id.as_str()))
+            .collect();
+        let spoken = match named.is_empty() {
+            true => spoken,
+            false => named,
+        };
+        let outermost: Vec<&'a IndexNode> = spoken
+            .iter()
+            .copied()
+            .filter(|node| {
+                node.parent
+                    .as_deref()
+                    .and_then(|parent| self.kind_of.get(parent))
+                    .is_none_or(|kind| *kind == NodeKind::Module)
+            })
+            .collect();
+        let spoken = match outermost.is_empty() {
+            true => spoken,
+            false => outermost,
+        };
+        let mut once: Vec<&'a IndexNode> = Vec::new();
+        for node in spoken {
+            let reopened = once.iter().position(|held| {
+                held.project == node.project && held.name.eq_ignore_ascii_case(&node.name)
+            });
+            match reopened {
+                None => once.push(node),
+                Some(at) => {
+                    let fuller = self.members.get(node.id.as_str()).copied().unwrap_or(0)
+                        > self.members.get(once[at].id.as_str()).copied().unwrap_or(0);
+                    if fuller {
+                        once[at] = node;
+                    }
+                }
+            }
+        }
+        let candidates = &once;
+        let from = self.project_of_file.get(&site).copied();
+        let ids = |held: Vec<&&'a IndexNode>| held.into_iter().map(|node| node.id.as_str()).collect();
+        let alongside: Vec<&&IndexNode> =
+            candidates.iter().filter(|node| node.project.as_deref() == from).collect();
+        if !alongside.is_empty() {
+            return ids(alongside);
+        }
+        let reached: Vec<&&IndexNode> = candidates
+            .iter()
+            .filter(|node| {
+                from.zip(node.project.as_deref())
+                    .is_some_and(|(from, to)| self.reaches.contains(&(from, to)))
+            })
+            .collect();
+        if !reached.is_empty() {
+            return ids(reached);
+        }
+        Vec::new()
+    }
+}
+
+fn tables_named_for(name: &str) -> Vec<String> {
+    let named = name.to_ascii_lowercase();
+    let spoken: String = crate::names::spoken_as(name).to_ascii_lowercase().replace(' ', "_");
+    let mut held: Vec<String> = [named.clone(), spoken.clone()]
+        .iter()
+        .flat_map(|held: &String| [held.clone(), format!("{held}s"), format!("{held}es")])
+        .chain(named.strip_suffix('y').map(|held| format!("{held}ies")))
+        .chain(spoken.strip_suffix('y').map(|held| format!("{held}ies")))
+        .collect();
+    held.sort();
+    held.dedup();
+    held
 }
 
 fn entities(
@@ -2194,6 +2407,7 @@ fn entities(
     roles: &crate::roles::Roles,
     declared_tables: &[crate::tables::Table],
     calls: &[CallFact],
+    type_references: &[crate::model::TypeReferenceFact],
 ) -> Vec<Entity> {
     let node_of: HashMap<&str, &IndexNode> =
         nodes.iter().map(|node| (node.id.as_str(), node)).collect();
@@ -2263,10 +2477,21 @@ fn entities(
         .filter(|role| role.role == "model" && !role.from.starts_with("name:"))
         .map(|role| role.node.as_str())
         .collect();
-    let handled: HashSet<&str> = nodes
+    let declared_persisted: HashSet<&str> = roles
+        .roles
         .iter()
-        .filter_map(|node| node.type_annotation.as_deref())
-        .filter_map(held_by_a_handle)
+        .filter(|role| role.role == "model" && role.from.starts_with("annotation:"))
+        .map(|role| role.node.as_str())
+        .chain(
+            type_references
+                .iter()
+                .filter(|reference| declares_a_table(&reference.name))
+                .map(|reference| reference.source.as_str()),
+        )
+        .collect();
+    let handled: Vec<(&str, u32)> = nodes
+        .iter()
+        .filter_map(|node| Some((held_by_a_handle(node.type_annotation.as_deref()?)?, node.file)))
         .collect();
     let modelled_names: HashSet<&str> = nodes
         .iter()
@@ -2275,6 +2500,9 @@ fn entities(
         .collect();
     let mut created: BTreeMap<String, Table> = BTreeMap::new();
     for table in declared_tables {
+        if files.get(table.file as usize).is_some_and(|path| crate::paths::is_test(path)) {
+            continue;
+        }
         let key = table.named.to_ascii_lowercase();
         let fuller = created
             .get(&key)
@@ -2288,20 +2516,58 @@ fn entities(
                     points_at: table.points_at.clone(),
                     file: table.file,
                     line: table.line,
+                    declared_by: table.declared_by.clone(),
+                    change: table.change.clone(),
                 },
             );
         }
     }
+    let where_tables_are_made: HashSet<&str> = declared_tables
+        .iter()
+        .filter(|table| table.declared_by.is_none())
+        .filter_map(|table| files.get(table.file as usize))
+        .filter(|path| !a_schema(path))
+        .map(|path| path.rsplit_once('/').map(|(directory, _)| directory).unwrap_or(""))
+        .collect();
+    let directory_of = |path: &'_ str| -> String {
+        path.rsplit_once('/').map(|(directory, _)| directory).unwrap_or("").to_string()
+    };
+    let declaring_types: HashSet<String> = nodes
+        .iter()
+        .filter(|node| node.kind.is_type())
+        .filter_map(|node| files.get(node.file as usize))
+        .map(|path| directory_of(path))
+        .collect();
+    let history: Vec<String> = where_tables_are_made
+        .iter()
+        .flat_map(|made| {
+            let above = made.rsplit_once('/').map(|(above, _)| above.to_string());
+            std::iter::once(made.to_string())
+                .chain(above.filter(|above| !declaring_types.contains(above)))
+        })
+        .collect();
+    let in_the_history = |path: &str| {
+        history.iter().any(|root| {
+            path.strip_prefix(root.as_str()).is_some_and(|rest| rest.starts_with('/'))
+        })
+    };
     let declared_names: HashSet<String> = nodes
         .iter()
         .filter(|node| node.kind.is_type())
-        .filter(|node| files.get(node.file as usize).is_none_or(|path| !a_setting(path)))
+        .filter(|node| files.get(node.file as usize).is_none_or(|path| !declares_no_records(path)))
         .map(|node| node.name.to_ascii_lowercase())
         .chain(created.keys().cloned())
         .collect();
     let mut kept: BTreeMap<String, (Vec<String>, Vec<String>, u32)> = BTreeMap::new();
+    let mut stored_at: Vec<(String, u32)> = Vec::new();
     for exit in exit_points.iter().filter(|exit| exit.kind == "database") {
         let Some(named) = addressed(receiver_of(exit), &modelled_names, &declared_names) else { continue };
+        let managed = receiver_of(exit)
+            .split('.')
+            .any(|segment| MANAGERS.binary_search(&segment).is_ok());
+        if managed {
+            stored_at.push((named.to_ascii_lowercase(), exit.file));
+        }
         let held = kept.entry(named.to_ascii_lowercase()).or_default();
         held.2 += 1;
         let reaching = match changes(exit) {
@@ -2312,7 +2578,6 @@ fn entities(
             reaching.push(exit.source.clone());
         }
     }
-    let stored: HashSet<&str> = kept.keys().map(String::as_str).collect();
     let storing: HashSet<&str> = exit_points
         .iter()
         .filter(|exit| matches!(exit.kind, "database" | "file" | "client_storage"))
@@ -2337,26 +2602,86 @@ fn entities(
             held.push(edge.source.clone());
         }
     }
-    let kept_on_disk = kept_in_a_file(nodes, files, exit_points);
-    let entities: Vec<Entity> = nodes
+    let candidates: Vec<&IndexNode> = nodes
         .iter()
-        .filter(|node| node.kind.is_type())
-        .filter(|node| files.get(node.file as usize).is_none_or(|path| !a_setting(path)))
-        .filter(|node| {
-            kept_on_disk.contains(node.name.as_str())
-                || modelled.contains(node.id.as_str())
-                || files.get(node.file as usize).is_some_and(|path| a_schema(path))
-                || handled.contains(node.name.as_str())
-                || (stored.contains(node.name.to_ascii_lowercase().as_str())
-                    && fields.get(node.id.as_str()).copied().unwrap_or(0) >= 1)
-        })
+        .filter(|node| node.kind.is_type() && node.kind != NodeKind::Enum)
+        .filter(|node| files.get(node.file as usize).is_none_or(|path| !declares_no_records(path)))
+        .filter(|node| files.get(node.file as usize).is_none_or(|path| !in_the_history(path)))
+        .filter(|node| files.get(node.file as usize).is_none_or(|path| !crate::paths::is_test(path)))
+        .collect();
+    let denoting = Denoting::new(&candidates, nodes, edges, files);
+    let claimed: HashSet<String> = declared_tables
+        .iter()
+        .filter(|table| table.declared_by.is_some())
+        .map(|table| table.named.to_ascii_lowercase())
+        .collect();
+    let mut admitted: HashSet<&str> = declared_persisted;
+    admitted.extend(
+        candidates
+            .iter()
+            .filter(|node| files.get(node.file as usize).is_some_and(|path| a_schema(path)))
+            .filter(|node| {
+                files.get(node.file as usize).is_some_and(|path| !path.to_ascii_lowercase().ends_with(".sql"))
+                    || (created.contains_key(&unquoted(&node.name).to_ascii_lowercase())
+                        && !claimed.contains(&unquoted(&node.name).to_ascii_lowercase()))
+            })
+            .map(|node| node.id.as_str()),
+    );
+    for (named, site) in kept_in_a_file(nodes, files, exit_points) {
+        admitted.extend(denoting.named(&named, site));
+    }
+    for (named, site) in handled {
+        admitted.extend(denoting.named(named, site));
+    }
+    for (named, site) in &stored_at {
+        admitted.extend(
+            denoting
+                .named(named, *site)
+                .into_iter()
+                .filter(|id| fields.get(id).copied().unwrap_or(0) >= 1),
+        );
+    }
+    let mut tabled: HashMap<&str, String> = HashMap::new();
+    let mut accounted: HashSet<String> = HashSet::new();
+    let candidate_ids: HashSet<&str> = candidates.iter().map(|node| node.id.as_str()).collect();
+    let mut declaring: HashMap<&str, Vec<&str>> = HashMap::new();
+    for table in declared_tables {
+        let Some(by) = table.declared_by.as_deref() else { continue };
+        let by = match node_of.get(by) {
+            Some(inner) if inner.name == "Meta" => inner.parent.as_deref().unwrap_or(by),
+            _ => by,
+        };
+        if candidate_ids.contains(by) {
+            declaring.entry(table.named.as_str()).or_default().push(by);
+        }
+    }
+    for (key, table) in &created {
+        if let Some(by) = declaring.get(key.as_str()) {
+            let mut by = by.clone();
+            by.sort();
+            if let Some(first) = by.first() {
+                tabled.insert(first, key.clone());
+            }
+            accounted.extend(by.iter().skip(1).map(|_| key.clone()));
+            admitted.extend(by);
+            continue;
+        }
+        let denoted = denoting.tabled(key, table.file);
+        if let [only] = denoted.as_slice() {
+            tabled.insert(*only, key.clone());
+        }
+        admitted.extend(denoted);
+    }
+    let entities: Vec<Entity> = candidates
+        .iter()
+        .filter(|node| admitted.contains(node.id.as_str()))
         .map(|node| Entity {
             id: format!("entity:{}", node.id),
             addressed_by: kept
                 .get(&node.name.to_ascii_lowercase())
                 .map(|held| held.2)
                 .unwrap_or(0),
-            declared_as: node.name.clone(),
+            declared_as: unquoted(&node.name).to_string(),
             named_fields: named_fields.get(node.id.as_str()).cloned().unwrap_or_default(),
             name: None,
             description: None,
@@ -2369,23 +2694,48 @@ fn entities(
             project: node.project.clone(),
         })
         .collect();
-    let mut richest: BTreeMap<String, Entity> = BTreeMap::new();
+    let mut richest: BTreeMap<(String, String), Entity> = BTreeMap::new();
     for entity in entities {
-        match richest.entry(entity.declared_as.to_ascii_lowercase()) {
+        let key = (entity.project.clone().unwrap_or_default(), entity.declared_as.to_ascii_lowercase());
+        match richest.entry(key) {
             std::collections::btree_map::Entry::Vacant(held) => {
                 held.insert(entity);
             }
             std::collections::btree_map::Entry::Occupied(mut held) => {
-                if entity.fields > held.get().fields {
+                let in_sql = |entity: &Entity| {
+                    entity.declared_in.as_deref().is_some_and(|at| {
+                        at.split(':').next().is_some_and(|path| path.to_ascii_lowercase().ends_with(".sql"))
+                    })
+                };
+                let plainer = in_sql(held.get()) && !in_sql(&entity);
+                let fuller = in_sql(held.get()) == in_sql(&entity) && entity.fields > held.get().fields;
+                if plainer || fuller {
                     held.insert(entity);
                 }
             }
         }
     }
-    let written_down: HashSet<String> = richest.keys().cloned().collect();
+    let written_down: HashSet<String> = richest.keys().map(|(_, named)| named.clone()).collect();
     let mut entities: Vec<Entity> = richest.into_values().collect();
+    for entity in entities.iter_mut() {
+        let Some(key) = entity.declared_in.as_deref().and_then(|at| tabled.get(at)) else {
+            continue;
+        };
+        let Some(table) = created.remove(key) else { continue };
+        if entity.named_fields.is_empty() {
+            entity.fields = table.columns.len() as u32;
+            entity.named_fields = table.columns.into_iter().map(Field::from).collect();
+        }
+        entity.references.extend(table.points_at.into_iter().map(|(field, pointed)| Reference {
+            field,
+            entity: pointed,
+            many: false,
+            declared_by: "foreign key",
+        }));
+    }
     created.retain(|key, table| {
-        !written_down.contains(key)
+        !accounted.contains(key)
+            && !written_down.contains(key)
             && !entities
                 .iter()
                 .any(|entity| the_same_record(&table.columns, &entity.named_fields))

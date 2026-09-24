@@ -309,6 +309,12 @@ impl<'a> Extractor<'a> {
             return Some(self.text(node).to_string());
         }
         if !self.spec.names.descend.contains(&node.kind()) {
+            if let Some(named) = node.child_by_field_name("name")
+                && self.spec.names.leaf_kinds.contains(&named.kind())
+                && !self.skipped_word(named)
+            {
+                return Some(self.text(named).to_string());
+            }
             let mut cursor = node.walk();
             for child in node.named_children(&mut cursor) {
                 if self.spec.names.leaf_kinds.contains(&child.kind()) && !self.skipped_word(child) {
@@ -670,6 +676,10 @@ impl<'a> Extractor<'a> {
         }
         if self.spec.declares.field_kinds.contains(&kind) && scope.type_owner.is_some() {
             self.declare_field(node, scope);
+            self.declare_its_table(node, scope);
+            for value in self.given_to_a_field(node) {
+                self.visit(value, scope);
+            }
             return;
         }
         if self.spec.declares.import_kinds.contains(&kind) {
@@ -1135,6 +1145,9 @@ impl<'a> Extractor<'a> {
             .take(8)
             .filter_map(|argument| {
                 let raw = self.text(argument).trim();
+                if let Some((named, written)) = named_as_text(raw) {
+                    return (written.len() <= TEXT_AT_MOST).then(|| format!("{named}={written}"));
+                }
                 let value = trim_quotes(raw).trim();
                 if value.is_empty() {
                     return None;
@@ -1234,6 +1247,46 @@ impl<'a> Extractor<'a> {
             waiting.extend(held.named_children(&mut cursor));
         }
         None
+    }
+
+    fn declare_its_table(&mut self, node: Node, scope: &Scope) {
+        let Some(owner) = scope.type_owner.clone() else { return };
+        let Some(name) = self.name_of(node) else { return };
+        if !crate::tables::NAMES_ITS_TABLE.contains(&name.as_str()) {
+            return;
+        }
+        let Some(written) = self
+            .given_to_a_field(node)
+            .into_iter()
+            .map(|value| self.text(value).trim().to_string())
+            .find(|value| written_as_text(value))
+        else {
+            return;
+        };
+        let named = trim_quotes(&written).trim().to_string();
+        if named.is_empty() || named.contains(char::is_whitespace) {
+            return;
+        }
+        self.facts.tables.push(crate::tables::Table {
+            named: named.to_ascii_lowercase(),
+            columns: Vec::new(),
+            points_at: Vec::new(),
+            file: self.file,
+            line: node.start_position().row as u32 + 1,
+            declared_by: Some(owner),
+            change: crate::tables::Change::Created,
+        });
+    }
+
+    fn given_to_a_field<'t>(&self, node: Node<'t>) -> Vec<Node<'t>> {
+        let declarators = std::iter::once(node).chain(node.child_by_field_name("declarator"));
+        declarators
+            .flat_map(|held| {
+                ["right", "value", "default_value"]
+                    .into_iter()
+                    .filter_map(move |field| held.child_by_field_name(field))
+            })
+            .collect()
     }
 
     fn declare_field(&mut self, node: Node, scope: &Scope) {
@@ -1998,6 +2051,15 @@ const TEXT_AT_MOST: usize = 400;
 
 fn configures_the_call(kind: &str) -> bool {
     matches!(kind, "keyword_argument" | "named_argument" | "value_argument_label" | "labeled_argument")
+}
+
+fn named_as_text(raw: &str) -> Option<(&str, &str)> {
+    let (named, written) = raw.split_once(':')?;
+    let named = named.trim();
+    let written = written.trim();
+    let plainly = !named.is_empty()
+        && named.chars().all(|letter| letter.is_alphanumeric() || letter == '_');
+    (plainly && written_as_text(written)).then_some((named, written))
 }
 
 fn written_as_text(raw: &str) -> bool {

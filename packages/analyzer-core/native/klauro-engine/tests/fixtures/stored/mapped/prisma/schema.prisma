@@ -1,0 +1,11 @@
+model User {
+  id    Int     @id
+  email String? @map("email_address")
+
+  @@map(name: "users")
+}
+
+enum Status {
+  ACCEPTED @map("accepted")
+  PENDING  @map("pending")
+}

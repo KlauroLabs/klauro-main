@@ -198,7 +198,7 @@ fn read(
         let tree = parser.parse(&source, None)?;
         report_first_error(path, source, &tree);
         let mut facts = typescript::Extractor::new(source, file, path).run(&tree, path, lines(source));
-        facts.tables = tables::declared(source, path, file);
+        facts.tables.extend(tables::declared(source, path, file));
         if bundler::is_config(path) {
             facts.nodes.extend(bundler::declared_aliases(&tree, source, file, path));
         }
@@ -222,7 +222,7 @@ fn read(
     {
         let tree = parser.parse(&source, None)?;
         let mut facts = structured::Extractor::new(source, file, path, spec).run(&tree, path, lines(source));
-        facts.tables = tables::declared(source, path, file);
+        facts.tables.extend(tables::declared(source, path, file));
         return Some(facts);
     }
     let (language, spec) = language::language_for(declared?)?;
@@ -230,7 +230,7 @@ fn read(
     parser.set_language(&language).ok()?;
     let tree = parser.parse(&source, None)?;
     let mut facts = generic::Extractor::new(source, file, path, spec).run(&tree, path, lines(source));
-    facts.tables = tables::declared(source, path, file);
+    facts.tables.extend(tables::declared(source, path, file));
     Some(facts)
 }
 
@@ -379,6 +379,9 @@ fn read_it() {
         parse_errors += file.parse_errors;
     }
 
+    let spelled_paths: Vec<&str> = index.files.iter().map(|file| file.path.as_str()).collect();
+    declared_tables.extend(tables::created_by_calls(&index.calls, &index.nodes, &index.locals, &spelled_paths));
+    let declared_tables = tables::standing(declared_tables, &spelled_paths);
     for (position, file) in index.files.iter_mut().enumerate() {
         file.extracted = extracted_files.contains(&(position as u32));
         file.generated = generated_files.contains(&(position as u32));
@@ -932,6 +935,18 @@ fn read_it() {
         named,
         reach::asked()
     );
+    if std::env::var("KLAURO_REPORT_ENTITIES").is_ok() {
+        for entity in &comprehension.entities {
+            eprintln!(
+                "  entity {} | written {} | read {} | addressed {} | {}",
+                entity.declared_as,
+                entity.written_by.len(),
+                entity.read_by.len(),
+                entity.addressed_by,
+                entity.declared_in.as_deref().unwrap_or("")
+            );
+        }
+    }
     index.comprehension = Some(comprehension);
 
     if std::env::var("KLAURO_REPORT_COVERAGE").is_ok() {
