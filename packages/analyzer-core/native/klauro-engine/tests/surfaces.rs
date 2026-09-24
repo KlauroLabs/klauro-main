@@ -25,6 +25,7 @@ fn every_way_a_dotnet_app_is_entered_is_an_entry() {
             "http GET /Account/Profile",
             "http GET /api/hooks",
             "http GET /cart",
+            "http GET /items/{id}",
             "http POST /Account/Login",
             "http POST /api/hooks/received",
             "rpc - /Basket/GetBasket",

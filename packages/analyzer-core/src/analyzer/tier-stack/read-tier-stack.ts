@@ -151,6 +151,30 @@ export interface TierStackStep {
   leaves?: string[];
 }
 
+export interface TierStackRegion {
+  unit: string;
+  file: number;
+  start_line: number;
+  end_line: number;
+}
+
+export interface TierStackLogicalStep {
+  id: string;
+  kind: string;
+  label: string;
+  object?: string;
+  doing?: string;
+  when: string;
+  regions: TierStackRegion[];
+  description?: string;
+}
+
+export interface TierStackStepEdge {
+  from: string;
+  to: string;
+  kind: string;
+}
+
 export interface TierStackFlow {
   id: string;
   entry_point: string;
@@ -160,7 +184,9 @@ export interface TierStackFlow {
   standing: string;
   name?: string;
   description?: string;
-  steps?: TierStackStep[];
+  path?: TierStackStep[];
+  steps?: TierStackLogicalStep[];
+  step_edges?: TierStackStepEdge[];
   writes?: string[];
   reads?: string[];
   changes?: string[];

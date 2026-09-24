@@ -67,7 +67,7 @@ fn evidence_of(flows: &[&Flow], family: &Family) -> String {
     settle(&mut reaches);
     let mut doing: Vec<String> = flows
         .iter()
-        .flat_map(|flow| flow.steps.iter().take(STEPS_SHOWN))
+        .flat_map(|flow| flow.path.iter().take(STEPS_SHOWN))
         .filter(|step| !step.unit.starts_with("package:") && !step.unit.starts_with("runtime:"))
         .filter_map(|step| {
             let named = step.unit.rsplit(':').nth(2)?;

@@ -45,7 +45,10 @@ pub struct Flow {
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub grounding: Option<crate::author::Grounding>,
-    pub steps: Vec<Step>,
+    pub path: Vec<Step>,
+    pub steps: Vec<crate::steps::LogicalStep>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub step_edges: Vec<crate::steps::StepEdge>,
     pub units: u32,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub changes: Vec<String>,
@@ -166,6 +169,10 @@ static CHANGING: &[&str] = &[
     "post", "publish", "put", "remove", "rename", "save", "send", "set", "store", "unlink", "update",
     "upsert", "write",
 ];
+
+pub(crate) fn changes_something(exit: &ExitPoint) -> bool {
+    changes(exit)
+}
 
 fn changes(exit: &ExitPoint) -> bool {
     let operation = exit.operation.to_ascii_lowercase();
@@ -1078,6 +1085,9 @@ pub fn derive(
     declared_tables: &[crate::tables::Table],
     calls: &[CallFact],
     type_references: &[crate::model::TypeReferenceFact],
+    metrics: &[crate::model::UnitMetricsEntry],
+    events: &HashSet<&str>,
+    guessed: &HashSet<(String, String)>,
 ) -> Comprehension {
     let position_of: HashMap<&str, u32> = nodes
         .iter()
@@ -1101,7 +1111,11 @@ pub fn derive(
             continue;
         };
         match edge.kind {
-            EdgeKind::Calls | EdgeKind::Instantiates => next.entry(source).or_default().push(target),
+            EdgeKind::Calls | EdgeKind::Instantiates
+                if !guessed.contains(&(edge.source.clone(), edge.target.clone())) =>
+            {
+                next.entry(source).or_default().push(target)
+            }
             EdgeKind::Contains | EdgeKind::HasMethod => {
                 members.entry(source).or_default().push(target)
             }
@@ -1222,18 +1236,63 @@ pub fn derive(
             }
         }
     }
+    let mut handled_by: HashMap<String, &str> = HashMap::default();
+    for node in nodes {
+        let Some(annotation) = node.type_annotation.as_deref() else { continue };
+        let Some(record) = held_by_a_handle(annotation).and_then(|record| held.get(record).copied()) else {
+            continue;
+        };
+        handled_by.entry(node.name.to_ascii_lowercase()).or_insert(record);
+    }
+    let lowered_records: HashMap<String, &str> =
+        held.iter().map(|record| (record.to_ascii_lowercase(), *record)).collect();
+    let through_a_handle = |exit: &ExitPoint| -> Option<&str> {
+        receiver_of(exit)
+            .split('.')
+            .map(|segment| {
+                let segment = segment.trim();
+                let end = segment.find(|letter: char| !(letter.is_alphanumeric() || letter == '_')).unwrap_or(segment.len());
+                segment[..end].trim_start_matches('_').to_ascii_lowercase()
+            })
+            .filter(|segment| !segment.is_empty())
+            .find_map(|segment| handled_by.get(&segment).or_else(|| lowered_records.get(&segment)).copied())
+    };
+    let mut exit_records: HashMap<&str, Vec<&str>> = HashMap::default();
+    let mut typed_at: HashMap<(&str, u32), &str> = HashMap::default();
+    for call in calls {
+        let Some(caller) = call.caller.as_deref() else { continue };
+        if let Some(record) = call.literals.iter().find_map(|literal| {
+            let bare = literal.rsplit('=').next().unwrap_or(literal).trim().trim_matches(['"', '\'', '`']);
+            let bare = bare.split([' ', '.']).next().unwrap_or(bare);
+            lowered_records.get(&bare.to_ascii_lowercase()).copied()
+        }) {
+            typed_at.entry((caller, call.line)).or_insert(record);
+        }
+        if let Some(record) = call
+            .type_arguments
+            .iter()
+            .find_map(|argument| held.get(crate::names::leaf(argument.trim())).copied())
+        {
+            typed_at.entry((caller, call.line)).or_insert(record);
+        }
+    }
     for exit in exit_points {
         if exit.kind != "database" {
             continue;
         }
         let named = crate::names::root(&exit.target);
-        let touching: Vec<&str> = match held.contains(named) {
-            true => vec![named],
-            false => named_within.get(exit.source.as_str()).cloned().unwrap_or_default(),
+        let touching: Vec<&str> = match (held.contains(named), through_a_handle(exit)) {
+            (true, _) => vec![named],
+            (false, Some(record)) => vec![record],
+            (false, None) => match typed_at.get(&(exit.source.as_str(), exit.line)) {
+                Some(record) => vec![*record],
+                None => named_within.get(exit.source.as_str()).cloned().unwrap_or_default(),
+            },
         };
         if touching.is_empty() {
             continue;
         }
+        exit_records.insert(exit.id.as_str(), touching.clone());
         let holding = match changes(exit) {
             true => entity_of.entry(exit.source.as_str()).or_default(),
             false => read_of.entry(exit.source.as_str()).or_default(),
@@ -1280,6 +1339,7 @@ pub fn derive(
 
     let named_of: HashMap<&str, &IndexNode> =
         nodes.iter().map(|node| (node.id.as_str(), node)).collect();
+    let reader = crate::steps::Reader::new(nodes, &position_of, &next, calls, exit_points, &exit_records, &held, metrics, events);
     let mut flows = Vec::with_capacity(served.len());
     let mut carried: HashMap<String, Vec<Shared>> = HashMap::default();
     for entry in &served {
@@ -1420,8 +1480,35 @@ pub fn derive(
         reads.sort();
         reads.dedup();
         reaching.sort();
+        let (logical, step_edges) = reader.read(entry);
+        let stores_something = logical
+            .iter()
+            .any(|step| matches!(step.kind, "change" | "remove") && step.doing.is_none());
+        for step in &logical {
+            let Some(object) = step.object.as_deref().filter(|object| held.contains(object)) else { continue };
+            let in_memory = step.doing.is_some() || step.kind == "create";
+            match step.kind {
+                "change" | "create" | "remove" if !in_memory || stores_something => {
+                    if !writes.iter().any(|held| held == object) {
+                        writes.push(object.to_string());
+                    }
+                }
+                "read" => {
+                    if !reads.iter().any(|held| held == object) && !writes.iter().any(|held| held == object) {
+                        reads.push(object.to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+        writes.sort();
+        reads.retain(|held| !writes.contains(held));
+        reads.sort();
         let summary = summarised(entry, &named, &writes, &reads, &reaching);
         flows.push(Flow {
+            path: steps,
+            steps: logical,
+            step_edges,
             reaches: reaching,
             summary,
             writes,
@@ -1444,7 +1531,6 @@ pub fn derive(
             description: None,
             grounding: None,
             standing,
-            steps,
             units: seen.len() as u32,
             changes: changing,
             leads_into: into,

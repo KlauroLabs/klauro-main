@@ -303,7 +303,10 @@ fn decorator_entry(decorator: &Decorator) -> Option<(&'static str, String, Optio
                 && (!qualified || argument.value.contains('/'))
         })
         .map(|argument| argument.value.clone());
-    if matches!(lowered.as_str(), "controller" | "request" | "route") {
+    if lowered == "path" && (verb != "Path" || (qualified && !decorator.name.contains("ws.rs"))) {
+        return None;
+    }
+    if matches!(lowered.as_str(), "controller" | "path" | "request" | "route") {
         return Some(("http", "ANY".to_string(), path));
     }
     if HTTP_METHODS.binary_search(&lowered.as_str()).is_ok() {
@@ -627,7 +630,8 @@ fn classify_exit(binding: &str, origin: &str, member: &str) -> Option<&'static s
 static SAID_BY_THE_MODULE: &[&str] = &["read", "write"];
 
 static NEVER_REACHES_THE_SERVICE: &[&str] = &[
-    "addlistener", "configure", "init", "off", "on", "once", "removealllisteners", "removelistener", "setup",
+    "addlistener", "configure", "createbatch", "createclient", "createcommand", "createconnection", "getcollection",
+    "getdatabase", "init", "off", "on", "once", "removealllisteners", "removelistener", "setup",
 ];
 
 fn reaching(kinds: &[&'static str], operation: &str) -> Option<&'static str> {
@@ -879,9 +883,20 @@ pub fn kept_by_a_store(
         None
     };
     let mut typed_member: HashMap<(&str, &str), &str> = HashMap::default();
+    let mut typed_member_of: HashMap<(&str, &str), &str> = HashMap::default();
     for node in nodes.iter().filter(|node| node.kind == NodeKind::Property) {
         if let (Some(parent), Some(annotation)) = (node.parent.as_deref(), node.type_annotation.as_deref()) {
             typed_member.insert((parent, node.name.as_str()), plain_type(annotation));
+            if let Some(owner) = position.get(parent).map(|at| nodes[*at].name.as_str()) {
+                typed_member_of.insert((owner, node.name.as_str()), plain_type(annotation));
+            }
+        }
+    }
+    for node in nodes.iter().filter(|node| node.kind.is_type()) {
+        for parameter in node.signature.iter().flat_map(|signature| signature.parameters.iter()) {
+            if let Some(annotation) = parameter.type_annotation.as_deref() {
+                typed_member.entry((node.id.as_str(), parameter.name.as_str())).or_insert(plain_type(annotation));
+            }
         }
     }
     let mut typed_local: HashMap<(&str, &str), &str> = HashMap::default();
@@ -911,7 +926,22 @@ pub fn kept_by_a_store(
                 })
             })
             .or_else(|| owner.and_then(|owner| typed_member.get(&(owner, held)).copied()));
-        let Some(base) = typed.and_then(|typed| store_of(typed)) else { continue };
+        let mut reached = typed.and_then(|typed| store_of(typed));
+        if reached.is_none()
+            && let Some(mut current) = typed
+        {
+            for segment in receiver.split('.').skip(1).take(3) {
+                let segment = segment.trim();
+                let end = segment.find(|letter: char| !(letter.is_alphanumeric() || letter == '_')).unwrap_or(segment.len());
+                let Some(next) = typed_member_of.get(&(current, &segment[..end])).copied() else { break };
+                current = next;
+                if let Some(base) = store_of(current) {
+                    reached = Some(base);
+                    break;
+                }
+            }
+        }
+        let Some(base) = reached else { continue };
         let operation = names::leaf(&call.callee);
         let lowered = operation.to_ascii_lowercase();
         if !base.every_call && EXECUTES_AGAINST_A_STORE.binary_search(&lowered.as_str()).is_err() {
@@ -1520,11 +1550,26 @@ pub fn derive(
                 });
             }
         }
+        let names_its_path = |decorator: &Decorator| normalize_annotation(&decorator.name) == "path";
+        let own_path: Option<String> = node.decorators.iter().filter(|decorator| names_its_path(decorator)).find_map(|decorator| {
+            decorator.arguments.iter().find(|argument| argument.literal).map(|argument| argument.value.clone())
+        });
+        let has_a_verb = node
+            .decorators
+            .iter()
+            .any(|decorator| matches!(decorator_entry(decorator), Some(("http", method, _)) if method != "ANY"));
         for decorator in &node.decorators {
+            if has_a_verb && names_its_path(decorator) {
+                continue;
+            }
             if let Some((kind, method, path)) = decorator_entry(decorator) {
                 if method == "ANY" && matches!(node.kind, NodeKind::Class | NodeKind::Interface) {
                     continue;
                 }
+                let path = match (kind, path) {
+                    ("http", None) => own_path.clone(),
+                    (_, path) => path,
+                };
                 let base = node
                     .parent
                     .as_deref()
@@ -1569,6 +1614,13 @@ pub fn derive(
         entry_points.extend(found.into_iter().filter(|entry| spoken_as_dotnet(entry.file)));
     }
     entry_points.extend(served_over_grpc(nodes, type_references, files));
+    let drawn = crate::rails_routes::derive(nodes, calls, files);
+    if !drawn.is_empty() {
+        entry_points.retain(|entry| {
+            entry.kind != "http" || !crate::rails_routes::draws_routes(entry.handler.split(':').next().unwrap_or_default())
+        });
+        entry_points.extend(drawn);
+    }
     lap("decorated entries");
     let mut by_name: HashMap<&str, Vec<&IndexNode>> = HashMap::default();
     let mut above: HashMap<&str, Vec<&str>> = HashMap::default();

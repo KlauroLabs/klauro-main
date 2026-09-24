@@ -6,6 +6,8 @@ import {
   type CapabilityFlowRelationship,
   type FlowICELOTContract,
   type FlowStep,
+  type FlowStepEdge,
+  type FlowStepGraph,
   type CASDataEntity,
   type CASEdge,
   type CASEntryPoint,
@@ -167,15 +169,33 @@ function contractOf(flow: TierStackFlow): FlowICELOTContract {
 
 function stepsOf(flow: TierStackFlow): FlowStep[] {
   return (flow.steps ?? []).map((step, at) => ({
-    step_id: `${flow.id}:${at}`,
+    step_id: `${flow.id}:${step.id}`,
     order: at + 1,
-    name: step.unit,
-    description: `${flow.operation} reaches ${step.unit}`,
-    description_source: 'deterministic-label' as const,
+    name: step.label,
+    description: step.description ?? step.label,
+    description_source: step.description === undefined ? ('deterministic-label' as const) : ('ai' as const),
     contract: contractOf(flow),
-    functions: [{ function_id: step.unit }],
-    entities: step.leaves ?? [],
+    functions: step.regions.map(region => ({
+      function_id: region.unit,
+      section: { start_line: region.start_line, end_line: region.end_line, label: step.kind },
+    })),
+    entities: step.object === undefined ? [] : [step.object],
   }));
+}
+
+const STEP_EDGE_KINDS: Record<string, FlowStepEdge['kind']> = {
+  then: 'sequence',
+  when: 'branch',
+  on_failure: 'error',
+};
+
+function stepGraphOf(flow: TierStackFlow): FlowStepGraph | undefined {
+  const edges = (flow.step_edges ?? []).map(edge => ({
+    from_step_id: `${flow.id}:${edge.from}`,
+    to_step_id: `${flow.id}:${edge.to}`,
+    kind: STEP_EDGE_KINDS[edge.kind] ?? 'sequence',
+  }));
+  return edges.length === 0 ? undefined : { edges };
 }
 
 function flowsOf(index: TierStackIndex): CASOutput['flows'] {
@@ -189,6 +209,7 @@ function flowsOf(index: TierStackIndex): CASOutput['flows'] {
     entities: [...(flow.writes ?? []), ...(flow.reads ?? [])],
     contract: contractOf(flow),
     steps: stepsOf(flow),
+    step_graph: stepGraphOf(flow),
     capability_relationships: serving.get(flow.id) ?? [],
   }));
 }

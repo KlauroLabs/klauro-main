@@ -44,6 +44,8 @@ mod service_catalog;
 mod services;
 mod tables;
 mod source_rewrite;
+mod steps;
+mod rails_routes;
 mod structured;
 mod subproject;
 mod typescript;
@@ -512,6 +514,7 @@ fn read_it() {
         .iter()
         .filter(|edge| matches!(edge.kind, model::EdgeKind::Imports))
         .count();
+    let guessed = std::mem::take(&mut resolution.guessed);
     index.edges.extend(std::mem::take(&mut resolution.edges));
     index.nodes.extend(std::mem::take(&mut resolution.external_nodes));
     for node in index.nodes.iter_mut() {
@@ -1069,6 +1072,15 @@ fn read_it() {
         &declared_tables,
         &index.calls,
         &index.type_references,
+        &index.metrics,
+        &index
+            .patterns
+            .as_ref()
+            .map(|found| {
+                found.messages.iter().filter(|message| message.kind == "event").map(|message| message.message.as_str()).collect()
+            })
+            .unwrap_or_default(),
+        &guessed,
     );
     if audit::asked() {
         let looked = audit::look(

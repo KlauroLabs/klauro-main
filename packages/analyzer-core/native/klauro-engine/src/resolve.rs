@@ -34,6 +34,7 @@ pub struct Resolution {
     pub unresolved_calls: u32,
     pub no_caller: u32,
     pub unresolved_names: HashMap<String, u32>,
+    pub guessed: HashSet<(String, String)>,
 }
 
 #[derive(Clone, Copy)]
@@ -481,6 +482,13 @@ impl<'a> Resolver<'a> {
     }
 
     fn origin(&self, unit: u32, file: u32, path: &'a str) -> Origin<'a> {
+        let bare = path.trim().trim_start_matches('(').trim_end_matches(')').trim();
+        if let Some(built) = bare.strip_prefix("new ") {
+            let named = built.split(['(', ')', ' ', '<', '{']).next().unwrap_or(built).trim();
+            if !named.is_empty() {
+                return self.annotated(file, named);
+            }
+        }
         let mut parts = segments(path);
         let Some(first) = parts.next() else {
             return Origin::Unknown;
@@ -982,6 +990,7 @@ enum Resolved {
     Indirect,
     Unresolved(String),
     Edge(String, EdgeKind),
+    Guessed(String, EdgeKind),
     External {
         space: &'static str,
         owner: String,
@@ -1436,6 +1445,7 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         index.nodes.iter().map(|node| node.name.as_str()).collect();
 
     let mut unresolved_names: HashMap<String, u32> = HashMap::default();
+    let mut guessed: HashSet<(String, String)> = HashSet::default();
     let mut call_origins: HashMap<(String, String), String> = HashMap::default();
     for (unit, name, root) in made_by {
         call_origins.entry((unit, name)).or_insert(root);
@@ -1572,10 +1582,24 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
             let built = symbols.member(found, "constructor").unwrap_or(found);
             return Resolved::Edge(symbols.nodes[built as usize].id.clone(), EdgeKind::Instantiates);
         }
-        if fact.receiver.is_some()
+        if let Some(receiver) = fact.receiver.as_deref()
             && let Some(found) = symbols.unique_member.get(fact.callee.as_str()).copied()
         {
-            return Resolved::Edge(symbols.nodes[found as usize].id.clone(), kind);
+            let target = symbols.nodes[found as usize].id.clone();
+            let spoken = receiver
+                .rsplit(['.', '>', ':'])
+                .next()
+                .unwrap_or(receiver)
+                .trim_start_matches(['$', '@', '_'])
+                .to_ascii_lowercase();
+            let names_its_owner = symbols.owning_type(found).is_some_and(|owner| {
+                let owner = symbols.nodes[owner as usize].name.to_ascii_lowercase();
+                owner.len() >= 3 && spoken.contains(owner.trim_start_matches('i'))
+            });
+            return match names_its_owner {
+                true => Resolved::Edge(target, kind),
+                false => Resolved::Guessed(target, kind),
+            };
         }
         if let Some(receiver) = fact.receiver.as_deref() {
             let extended = match origin {
@@ -1649,6 +1673,10 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
                 unresolved_calls += 1;
             }
             Resolved::Edge(target, kind) => edges.push(IndexEdge { source: caller.to_string(), target, kind }),
+            Resolved::Guessed(target, kind) => {
+                guessed.insert((caller.to_string(), target.clone()));
+                edges.push(IndexEdge { source: caller.to_string(), target, kind });
+            }
             Resolved::External { space, owner, member, kind, origin } => {
                 if let Some(origin) = origin {
                     call_origins.insert(origin, owner.clone());
@@ -1688,6 +1716,7 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
             .map(|(name, at)| ((*name).to_string(), symbols.nodes[*at as usize].id.clone()))
             .collect(),
         call_origins,
+        guessed,
         method_owners: owners,
         internal_specifiers,
         through,

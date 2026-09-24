@@ -745,6 +745,14 @@ impl<'a> Extractor<'a> {
             self.declare_callback(node, scope);
             return;
         }
+        if ASSIGNS.contains(&kind) {
+            let left = node.child_by_field_name("left").or_else(|| node.named_child(0));
+            if let Some(member) = left.and_then(|left| own_member(self.text(left))) {
+                if let Some(unit) = self.unit(scope) {
+                    unit.writes.push(member);
+                }
+            }
+        }
         if self.spec.flow.branch_kinds.contains(&kind) {
             if let Some(unit) = self.unit(scope) {
                 unit.branches += 1;
@@ -1163,6 +1171,9 @@ impl<'a> Extractor<'a> {
             .take(8)
             .filter_map(|argument| {
                 let raw = self.text(argument).trim();
+                if let Some(keyed) = keyed_symbols(raw) {
+                    return Some(keyed);
+                }
                 if let Some((named, written)) = named_as_text(raw) {
                     return (written.len() <= TEXT_AT_MOST).then(|| format!("{named}={written}"));
                 }
@@ -1848,6 +1859,24 @@ impl<'a> Extractor<'a> {
         (!text.is_empty()).then(|| text.to_string())
     }
 
+    fn mutating_its_own(&mut self, node: Node, scope: &Scope) {
+        let Some(function) = node.child_by_field_name("function").or_else(|| node.child_by_field_name("method")) else {
+            return;
+        };
+        let text = self.text(function).trim().to_string();
+        let Some((receiver, verb)) = text.rsplit_once(['.', '>']) else { return };
+        let verb = verb.split('<').next().unwrap_or(verb).to_ascii_lowercase();
+        if !MUTATES_A_COLLECTION.contains(&verb.as_str()) {
+            return;
+        }
+        let receiver = receiver.trim_end_matches('-');
+        if let Some(member) = own_member(receiver)
+            && let Some(unit) = self.unit(scope)
+        {
+            unit.writes.push(member);
+        }
+    }
+
     fn type_arguments_of(&self, node: Node, function: Option<Node>) -> Vec<String> {
         let named = function.map(|function| {
             function
@@ -1873,6 +1902,7 @@ impl<'a> Extractor<'a> {
     }
 
     fn record_call(&mut self, node: Node, scope: &Scope) -> Option<String> {
+        self.mutating_its_own(node, scope);
         let function = node
             .child_by_field_name("function")
             .or_else(|| node.child_by_field_name("name"))
@@ -1979,6 +2009,25 @@ impl<'a> Extractor<'a> {
                     }
                     for handler in self.referenced_names(*argument, 0) {
                         handlers.push((handler, *argument));
+                    }
+                    if argument.kind().contains("array") || argument.kind() == "list" {
+                        let mut cursor = argument.walk();
+                        let named: Vec<Node> = argument
+                            .named_children(&mut cursor)
+                            .map(unwrapped)
+                            .map(|element| match element.kind() {
+                                "array_element_initializer" | "element" | "list_element" => element.named_child(0).unwrap_or(element),
+                                _ => element,
+                            })
+                            .collect();
+                        let action = named
+                            .iter()
+                            .find(|element| element.kind().contains("string"))
+                            .map(|element| trim_quotes(self.text(*element)).trim().to_string())
+                            .filter(|action| !action.is_empty() && action.chars().all(|letter| letter.is_alphanumeric() || letter == '_'));
+                        if let Some(action) = action.filter(|_| named.len() == 2) {
+                            handlers.push((format!(":{action}"), *argument));
+                        }
                     }
                 }
                 if nested.is_some() {
@@ -2381,4 +2430,70 @@ mod arguments {
         assert!(written_arguments("@property").is_empty());
         assert!(written_arguments("#[test]").is_empty());
     }
+}
+
+static ASSIGNS: &[&str] = &[
+    "assignment",
+    "assignment_expression",
+    "assignment_statement",
+    "augmented_assignment",
+    "augmented_assignment_expression",
+    "compound_assignment_expr",
+    "operator_assignment",
+];
+
+static MUTATES_A_COLLECTION: &[&str] = &[
+    "add", "addrange", "append", "clear", "delete", "extend", "insert", "push", "put", "remove", "removeall",
+    "removeat", "removerange", "set", "unshift",
+];
+
+fn own_member(written: &str) -> Option<String> {
+    let written = written.trim();
+    let (bare, owned) = match ["this.", "self.", "$this->", "this->", "@"].iter().find_map(|prefix| written.strip_prefix(prefix)) {
+        Some(rest) => (rest, true),
+        None => (written, false),
+    };
+    let plain = !bare.is_empty()
+        && bare.chars().all(|letter| letter.is_alphanumeric() || letter == '_')
+        && bare.chars().next().is_some_and(|letter| letter.is_alphabetic() || letter == '_');
+    if !plain {
+        return None;
+    }
+    let looks_like_a_member = owned || bare.starts_with('_') && bare.len() > 1
+        || bare.chars().next().is_some_and(char::is_uppercase) && bare.chars().any(char::is_lowercase);
+    looks_like_a_member.then(|| bare.trim_start_matches('_').to_string())
+}
+
+fn keyed_symbols(raw: &str) -> Option<String> {
+    let (named, value) = match raw.split_once("=>") {
+        Some((named, value)) => (named.trim().trim_start_matches(':'), value.trim()),
+        None => {
+            let (named, value) = raw.split_once(':')?;
+            (named.trim(), value.trim())
+        }
+    };
+    if named.is_empty() || !named.chars().all(|letter| letter.is_alphanumeric() || letter == '_') || value.is_empty() {
+        return None;
+    }
+    let listed = value
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .map(|inner| inner.split(',').map(str::trim).collect::<Vec<_>>())
+        .or_else(|| {
+            ["%i[", "%w[", "%i(", "%w("].iter().find_map(|opened| {
+                let inner = value.strip_prefix(opened)?;
+                let inner = inner.strip_suffix([']', ')'])?;
+                Some(inner.split_whitespace().collect::<Vec<_>>())
+            })
+        })
+        .unwrap_or_else(|| vec![value]);
+    let words: Vec<&str> = listed
+        .iter()
+        .map(|word| word.trim_start_matches(':').trim_matches(['"', '\'']))
+        .collect();
+    let plain = words.iter().all(|word| {
+        !word.is_empty() && word.len() <= 64 && word.chars().all(|letter| letter.is_alphanumeric() || matches!(letter, '_' | '#' | '/' | '-' | ':' | '.' | '@' | '?' | '!'))
+    });
+    let symbolic = value.starts_with([':', '[', '%']) || written_as_text(value);
+    (plain && symbolic).then(|| format!("{named}={}", words.join(",")))
 }
