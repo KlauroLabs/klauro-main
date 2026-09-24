@@ -299,24 +299,6 @@ fn parts_of(capabilities: &[Capability]) -> Vec<String> {
     held
 }
 
-fn describe_parts(
-    capabilities: &[Capability],
-    entities: &[Entity],
-    spoken: &str,
-    told: &Telling<'_>,
-) -> Vec<Product> {
-    let parts = parts_of(capabilities);
-    if parts.len() < 2 {
-        return Vec::new();
-    }
-    let mut held: Vec<Product> = parts
-        .par_iter()
-        .filter_map(|project| describe_one(capabilities, entities, spoken, told, Some(project)))
-        .collect();
-    held.sort_by(|left, right| left.project.cmp(&right.project));
-    held
-}
-
 fn describe_product(
     capabilities: &[Capability],
     entities: &[Entity],
@@ -948,27 +930,38 @@ pub fn author(
                 held.flows.iter().map(|flow| flow.project.clone()).collect();
             parts.sort();
             parts.dedup();
-            let mut capabilities: Vec<Capability> = parts
+            let several = parts.iter().filter(|part| part.is_some()).count() > 1;
+            let read: Vec<(Vec<Capability>, Option<Product>)> = parts
                 .par_iter()
-                .flat_map(|part| {
+                .map(|part| {
                     let flows: Vec<&Flow> = held.flows.iter().filter(|flow| &flow.project == part).collect();
                     let said = spoken_within(&spoken, part.as_deref());
                     let remembered_as = format!("{}\u{1}{}", told.scope, part.as_deref().unwrap_or(""));
                     let mut found = crate::capabilities::of_a_part(&flows, &said, &remembered_as);
                     test_capabilities(&mut found, &said);
                     say_what_each_is_for(&mut found, &said);
-                    found
+                    let described = match (several, part.as_deref()) {
+                        (true, Some(named)) if !found.is_empty() => {
+                            describe_one(&found, &held.entities, &spoken, told, Some(named))
+                        }
+                        _ => None,
+                    };
+                    (found, described)
                 })
                 .collect();
+            let mut described: Vec<Product> = Vec::new();
+            let mut capabilities: Vec<Capability> = Vec::new();
+            for (found, product) in read {
+                capabilities.extend(found);
+                described.extend(product);
+            }
+            if parts_of(&capabilities).len() < 2 {
+                described.clear();
+            }
+            described.sort_by(|left, right| left.project.cmp(&right.project));
             capabilities.sort_by(|left, right| left.id.cmp(&right.id));
-            let (whole, described) = rayon::join(
-                || {
-                    let mut whole = crate::capabilities::of_the_whole(&capabilities, &spoken, told.scope);
-                    say_what_each_is_for(&mut whole, &spoken);
-                    whole
-                },
-                || describe_parts(&capabilities, &held.entities, &spoken, told),
-            );
+            let mut whole = crate::capabilities::of_the_whole(&capabilities, &spoken, told.scope);
+            say_what_each_is_for(&mut whole, &spoken);
             eprintln!(
                 "  author read {} capabilities across the parts into {} for the whole",
                 capabilities.len(),

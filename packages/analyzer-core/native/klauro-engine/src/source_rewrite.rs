@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 const TYPE_ARGUMENT_MARKER: &[u8] = b"typeof import(";
 const QUALIFIER_MARKER: &[u8] = b"import(";
 
@@ -141,6 +142,87 @@ pub fn component_script(source: &mut [u8]) {
     }
 }
 
+pub const RENDERS: &str = "BuildRenderTree";
+
+static LIFECYCLE: &[&str] = &["OnInitializedAsync", "OnInitialized", "OnParametersSetAsync", "OnParametersSet"];
+
+static NOT_A_MEMBER: &[&str] = &[
+    "if", "else", "foreach", "for", "while", "switch", "using", "code", "functions", "inject", "page",
+    "attribute", "bind", "key", "ref", "typeof", "nameof", "await", "new", "default", "true", "false", "null",
+];
+
+fn called_in(code: &str, named: &str) -> bool {
+    code.match_indices(named).any(|(at, _)| {
+        let before = code[..at].chars().next_back();
+        let after = code[at + named.len()..].trim_start().chars().next();
+        !before.is_some_and(|letter| letter.is_alphanumeric() || letter == '_' || letter == '.') && after == Some('(')
+    })
+}
+
+fn identifiers_called(value: &str, into: &mut BTreeSet<String>) {
+    let value = value.trim().trim_start_matches('@').trim_start_matches('(').trim_end_matches(')');
+    if !value.is_empty() && value.chars().all(|letter| letter.is_alphanumeric() || letter == '_') {
+        if value.starts_with(char::is_alphabetic) && !NOT_A_MEMBER.contains(&value) {
+            into.insert(value.to_string());
+        }
+        return;
+    }
+    let letters: Vec<char> = value.chars().collect();
+    let mut at = 0;
+    while at < letters.len() {
+        if letters[at].is_alphabetic() && (at == 0 || !(letters[at - 1].is_alphanumeric() || letters[at - 1] == '_' || letters[at - 1] == '.')) {
+            let start = at;
+            while at < letters.len() && (letters[at].is_alphanumeric() || letters[at] == '_') {
+                at += 1;
+            }
+            let named: String = letters[start..at].iter().collect();
+            let mut next = at;
+            while next < letters.len() && letters[next] == ' ' {
+                next += 1;
+            }
+            if next < letters.len() && letters[next] == '(' && !NOT_A_MEMBER.contains(&named.as_str()) {
+                into.insert(named);
+            }
+            continue;
+        }
+        at += 1;
+    }
+}
+
+fn bound_in_markup(line: &str, into: &mut BTreeSet<String>) {
+    let mut rest = line;
+    while let Some(at) = rest.find('=') {
+        let before = &rest[..at];
+        let attribute = before.rsplit(|letter: char| letter.is_whitespace() || letter == '<').next().unwrap_or("");
+        let after = &rest[at + 1..];
+        let quoted = after.strip_prefix('"').and_then(|held| held.find('"').map(|end| &held[..end]));
+        if let Some(value) = quoted {
+            let handler = attribute.strip_prefix("@on").is_some_and(|event| !event.contains(':'))
+                || attribute.strip_prefix("On").is_some_and(|event| event.starts_with(char::is_uppercase));
+            if handler {
+                identifiers_called(value, into);
+            }
+        }
+        rest = after;
+    }
+    let letters: Vec<char> = line.chars().collect();
+    for (at, letter) in letters.iter().enumerate() {
+        if *letter == '<' && letters.get(at + 1).is_some_and(|next| next.is_uppercase()) {
+            let named: String =
+                letters[at + 1..].iter().take_while(|next| next.is_alphanumeric() || **next == '_').collect();
+            into.insert(named);
+        }
+        if *letter == '@' && letters.get(at + 1).is_some_and(|next| next.is_alphabetic()) {
+            let named: String =
+                letters[at + 1..].iter().take_while(|next| next.is_alphanumeric() || **next == '_').collect();
+            let next = letters.get(at + 1 + named.chars().count());
+            if next == Some(&'(') && !NOT_A_MEMBER.contains(&named.as_str()) {
+                into.insert(named);
+            }
+        }
+    }
+}
+
 pub struct Component {
     pub source: Vec<u8>,
     pub named: String,
@@ -166,6 +248,7 @@ pub fn razor_component(source: &[u8], path: &str) -> Option<Component> {
     let mut attributes: Vec<String> = Vec::new();
     let mut kept: Vec<String> = Vec::new();
     let mut depth: Option<i64> = None;
+    let mut rendered: BTreeSet<String> = BTreeSet::new();
     for line in text.split('\n') {
         let line = line.strip_suffix('\r').unwrap_or(line);
         if let Some(held) = depth {
@@ -226,11 +309,26 @@ pub fn razor_component(source: &[u8], path: &str) -> Option<Component> {
             }
             continue;
         }
+        bound_in_markup(line, &mut rendered);
         kept.push(String::new());
     }
+    let code = kept.join("\n");
+    let mut renders: Vec<String> = LIFECYCLE
+        .iter()
+        .filter(|named| called_in(&code, named))
+        .map(|named| format!("{named}();"))
+        .collect();
+    renders.extend(rendered.iter().filter(|named| called_in(&code, named)).map(|named| format!("{named}();")));
+    renders.extend(
+        rendered
+            .iter()
+            .filter(|named| named.starts_with(char::is_uppercase) && !called_in(&code, named))
+            .filter(|child| **child != named)
+            .map(|child| format!("{child}.{RENDERS}();")),
+    );
     let mut rewritten = format!("{} class {named} : ComponentBase {{ ", attributes.join(" "));
-    rewritten.push_str(&kept.join("\n"));
-    rewritten.push_str("\n}\n");
+    rewritten.push_str(&code);
+    rewritten.push_str(&format!("\nvoid {RENDERS}() {{ {} }}\n}}\n", renders.join(" ")));
     Some(Component { source: rewritten.into_bytes(), named, routes })
 }
 
@@ -248,5 +346,19 @@ mod razor {
         assert!(text.starts_with("[Authorize] class Catalog : ComponentBase { \nCatalogService Catalog;\n"), "{text}");
         assert!(text.contains("protected override async Task OnInitializedAsync()"), "{text}");
         assert_eq!(text.lines().position(|line| line.contains("OnInitializedAsync")), Some(4));
+        assert!(text.contains("void BuildRenderTree() { OnInitializedAsync(); }"), "{text}");
+    }
+
+    #[test]
+    fn what_the_markup_binds_and_renders_is_what_the_page_does() {
+        let page = "@page \"/add\"\n<form @onsubmit=\"RegisterAsync\" @onsubmit:preventDefault=\"true\">\n<button @onclick=\"() => Remove(item)\">x</button>\n<EditForm OnValidSubmit=\"@Save\"></EditForm>\n<CartSummary Items=\"@items\" />\n<p>@Format(total)</p>\n@code {\n    void RegisterAsync() { }\n    void Remove(int item) { }\n    void Save() { }\n    string Format(int held) => \"\";\n}\n";
+        let held = razor_component(page.as_bytes(), "src/Pages/Add.razor").unwrap();
+        let text = String::from_utf8(held.source).unwrap();
+        let renders = text.lines().find(|line| line.contains("void BuildRenderTree()")).unwrap();
+        for called in ["RegisterAsync();", "Remove();", "Save();", "Format();", "CartSummary.BuildRenderTree();"] {
+            assert!(renders.contains(called), "{called} in {renders}");
+        }
+        assert!(!renders.contains("EditForm();"), "{renders}");
+        assert!(!renders.contains("true"), "{renders}");
     }
 }

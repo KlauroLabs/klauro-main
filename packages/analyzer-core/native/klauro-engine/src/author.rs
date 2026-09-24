@@ -24,6 +24,8 @@ static WRITTEN_PER_SECOND: AtomicU64 = AtomicU64::new(0);
 
 static ASKED_AGAIN: AtomicU64 = AtomicU64::new(0);
 
+static BEGAN: std::sync::LazyLock<std::time::Instant> = std::sync::LazyLock::new(std::time::Instant::now);
+
 pub fn asked_again() -> u64 {
     ASKED_AGAIN.load(Ordering::Relaxed)
 }
@@ -941,6 +943,19 @@ fn ask(request: &str) -> crate::reach::Answer {
     };
     if let crate::reach::Answer::Held(held) = &answer {
         measured(held, started.elapsed());
+        if std::env::var("KLAURO_AUTHOR_TRACE").is_ok() {
+            let kind = held
+                .split('"')
+                .find(|word| word.len() > 2 && word.chars().all(|letter| letter.is_ascii_lowercase()))
+                .unwrap_or("?");
+            eprintln!(
+                "ask at {:>7}ms took {:>6}ms in {:>6} out {:>6} {kind}",
+                (started - *BEGAN).as_millis(),
+                started.elapsed().as_millis(),
+                request.len(),
+                held.len()
+            );
+        }
     }
     answer
 }
@@ -1067,6 +1082,7 @@ const VETTED: f64 = 0.6;
 
 static WHAT_A_KIND_MEANS: &[(&str, &str, &str)] = &[
     ("comprehension.entities", "", "a kind of record the program keeps in storage and reads back later, not a collection or helper type it uses while running"),
+    ("entry_points", "background", "work a host keeps running in the background once it has started"),
     ("entry_points", "cli", "a command someone runs from a terminal"),
     ("entry_points", "event", "a handler the program registers for an event something else raises"),
     ("entry_points", "export", "something a package offers for other code to use, not something it takes from elsewhere"),

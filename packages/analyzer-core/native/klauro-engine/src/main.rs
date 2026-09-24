@@ -261,7 +261,7 @@ fn read(
     Some(facts)
 }
 
-static LOADS_A_PAGE: &[&str] = &["OnInitializedAsync", "OnInitialized", "OnParametersSetAsync", "OnParametersSet"];
+static LOADS_A_PAGE: &[&str] = &[source_rewrite::RENDERS];
 
 fn routed_as_a_page(facts: &mut FileFacts, component: &source_rewrite::Component) {
     let Some(owner) = facts

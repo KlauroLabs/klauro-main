@@ -467,10 +467,12 @@ static CASE_MEMBERS: &[&str] = &["it_*", "should_*", "test*"];
 static ENTRY_BASES: &[EntryBase] = &[
     base("AppCompatActivity", "lifecycle", &[]),
     base("Application", "lifecycle", &[]),
+    base("BackgroundService", "background", &["ExecuteAsync"]),
     base("BaseCommand", "cli", COMMAND_MEMBERS),
     base("BroadcastReceiver", "lifecycle", &[]),
     base("ComponentActivity", "lifecycle", &[]),
     base("Fragment", "lifecycle", &[]),
+    base("IHostedService", "background", &["StartAsync"]),
     base("Mutation", "graphql", GRAPHQL_MEMBERS),
     base("ObjectType", "graphql", GRAPHQL_MEMBERS),
     base("Subscription", "graphql", GRAPHQL_MEMBERS),
@@ -1493,7 +1495,7 @@ pub fn derive(
                     kind,
                     name: spoken,
                     method: if kind == "http" {
-                        Some(verb.to_ascii_uppercase())
+                        Some(mapped_method(verb).unwrap_or_else(|| verb.to_ascii_uppercase()))
                     } else {
                         None
                     },
@@ -1501,10 +1503,11 @@ pub fn derive(
                         let base = registered_on_a_router(registrar)
                             .then(|| mounted.get(&node.file))
                             .flatten();
+                        let label = label.map(|held| split_label(held).1);
                         match (base, label) {
-                            (Some(base), Some(label)) => Some(join_paths(base, label)),
+                            (Some(base), Some(label)) => Some(join_paths(base, &label)),
                             (Some(base), None) => Some(base.clone()),
-                            (None, label) => label.map(str::to_string),
+                            (None, label) => label,
                         }
                     } else {
                         None

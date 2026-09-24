@@ -68,6 +68,7 @@ pub struct Extractor<'a> {
     metrics: HashMap<String, UnitMetrics>,
     types_by_name: HashMap<String, String>,
     remembered: HashMap<String, String>,
+    labelled: HashMap<usize, (String, String)>,
 }
 
 #[derive(Clone)]
@@ -106,6 +107,7 @@ impl<'a> Extractor<'a> {
             metrics: HashMap::default(),
             types_by_name: HashMap::default(),
             remembered: HashMap::default(),
+            labelled: HashMap::default(),
         }
     }
 
@@ -1538,6 +1540,29 @@ impl<'a> Extractor<'a> {
         });
     }
 
+    fn handled_inline<'t>(&self, argument: Node<'t>) -> Option<Node<'t>> {
+        let lambdas = self.spec.declares.lambda_kinds;
+        if lambdas.contains(&argument.kind()) {
+            return Some(argument);
+        }
+        let mut found: Vec<Node<'t>> = Vec::new();
+        let mut frontier: Vec<(Node<'t>, u8)> = vec![(argument, 0)];
+        while let Some((node, depth)) = frontier.pop() {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                if lambdas.contains(&child.kind()) {
+                    found.push(child);
+                } else if depth < 4 {
+                    frontier.push((child, depth + 1));
+                }
+            }
+            if found.len() > 1 {
+                return None;
+            }
+        }
+        found.pop()
+    }
+
     fn declare_callback(&mut self, node: Node, scope: &Scope) {
         let registrar = scope.registrar.clone().unwrap_or_else(|| "lambda".to_string());
         let name = format!("{registrar}#{}", node.start_position().row + 1);
@@ -1562,6 +1587,15 @@ impl<'a> Extractor<'a> {
             callback_of: scope.registrar.clone(),
             registration_label: None,
         });
+        if let Some((registrar, label)) = self.labelled.remove(&node.id()) {
+            self.facts.registrations.push(RegistrationFact {
+                file: self.file,
+                registrar,
+                label,
+                handler: id.clone(),
+                line: node.start_position().row as u32 + 1,
+            });
+        }
         if let Some(owner) = scope.callable.clone().or_else(|| scope.owner.clone()) {
             self.facts.edges.push(IndexEdge {
                 source: owner,
@@ -1907,6 +1941,10 @@ impl<'a> Extractor<'a> {
                 let mut handlers: Vec<(String, Node)> = Vec::new();
                 for argument in children.iter() {
                     if argument.kind().contains("string") || configures_the_call(argument.kind()) {
+                        continue;
+                    }
+                    if let Some(handler) = self.handled_inline(*argument) {
+                        self.labelled.insert(handler.id(), (registrar.clone(), label.clone()));
                         continue;
                     }
                     for handler in self.referenced_names(*argument, 0) {

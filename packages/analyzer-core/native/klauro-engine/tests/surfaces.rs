@@ -23,8 +23,10 @@ fn every_way_a_dotnet_app_is_entered_is_an_entry() {
         vec![
             "http GET /Account/Login",
             "http GET /Account/Profile",
+            "http GET /api/hooks",
             "http GET /cart",
             "http POST /Account/Login",
+            "http POST /api/hooks/received",
             "rpc - /Basket/GetBasket",
         ]
     );
@@ -35,4 +37,31 @@ fn every_way_a_dotnet_app_is_entered_is_an_entry() {
         .find(|entry| entry["path"] == "/cart")
         .unwrap();
     assert_eq!(cart["guards"][0]["name"], "Authorize");
+}
+
+#[test]
+fn a_hosted_background_service_is_entered_when_the_host_starts() {
+    let index = common::read("surfaces");
+    let started: Vec<&str> = index["entry_points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["kind"] == "background")
+        .filter_map(|entry| entry["handler"].as_str())
+        .collect();
+    assert!(started.iter().any(|handler| handler.contains("ExecuteAsync")), "{started:?}");
+}
+
+#[test]
+fn a_route_handled_inline_is_handled_by_its_own_lambda() {
+    let index = common::read("surfaces");
+    let handlers: Vec<&str> = index["entry_points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["path"].as_str().is_some_and(|path| path.starts_with("/api/hooks")))
+        .filter_map(|entry| entry["handler"].as_str())
+        .collect();
+    assert_eq!(handlers.len(), 2, "{handlers:?}");
+    assert!(handlers.iter().all(|handler| handler.contains(":callback:")), "{handlers:?}");
 }
