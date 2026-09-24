@@ -573,6 +573,65 @@ fn standing_of(capability: &Capability) -> String {
     ))
 }
 
+fn continued_together(
+    groups: &mut Vec<crate::author::Same>,
+    continues: &[BTreeSet<usize>],
+    told: &BTreeMap<String, String>,
+    spoken: &str,
+) {
+    let mut questions: BTreeMap<String, crate::jev::Question> = BTreeMap::new();
+    let mut pairs: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    for (first, onward) in continues.iter().enumerate() {
+        for second in onward {
+            let (Some(using), Some(reached)) = (told.get(&format!("c{first}")), told.get(&format!("c{second}"))) else {
+                continue;
+            };
+            let key = format!("p{first}-{second}");
+            questions.insert(
+                key.clone(),
+                crate::jev::Question {
+                    kind: "noul",
+                    instructions: format!(
+                        "FIRST:\n{using}\n\nSECOND:\n{reached}\n\nSomeone using the first is getting the second done through it: they are one outcome for the same person, reached two ways, rather than two things someone would come for separately"
+                    ),
+                    criteria: BTreeMap::new().into(),
+                },
+            );
+            pairs.insert(key, (first, *second));
+        }
+    }
+    if questions.is_empty() {
+        return;
+    }
+    let answers = crate::jev::decide(&format!("A software system describes itself like this:\n{spoken}"), questions);
+    let at_of = |groups: &Vec<crate::author::Same>, member: usize| {
+        let id = format!("c{member}");
+        groups.iter().position(|group| group.of.iter().any(|held| held.trim() == id))
+    };
+    for (key, (first, second)) in pairs {
+        let together = answers.get(&key).map(crate::jev::Decision::settled).is_some_and(|held| held >= 0.5);
+        if !together {
+            continue;
+        }
+        match (at_of(groups, first), at_of(groups, second)) {
+            (Some(left), Some(right)) if left != right => {
+                let moved = groups[right].of.clone();
+                groups[left].of.extend(moved);
+                groups.remove(right);
+            }
+            (Some(_), Some(_)) => {}
+            (Some(left), None) => groups[left].of.push(format!("c{second}")),
+            (None, Some(right)) => groups[right].of.push(format!("c{first}")),
+            (None, None) => groups.push(crate::author::Same {
+                of: vec![format!("c{first}"), format!("c{second}")],
+                name: String::new(),
+                description: String::new(),
+                audience: String::new(),
+            }),
+        }
+    }
+}
+
 fn asked_afresh(listed: BTreeMap<String, String>, spoken: &str) -> Vec<crate::author::Same> {
     let chunks: Vec<BTreeMap<String, String>> = listed
         .into_iter()
@@ -744,7 +803,9 @@ pub(crate) fn of_the_whole(parts: &[Capability], spoken: &str, scope: &str, flow
             )
         })
         .collect();
-    let groups = grouped(parts, listed, spoken, scope);
+    let told_of = listed.clone();
+    let mut groups = grouped(parts, listed, spoken, scope);
+    continued_together(&mut groups, &continues, &told_of, spoken);
     let mut taken = vec![false; parts.len()];
     let mut whole: Vec<Capability> = Vec::new();
     for group in groups {
