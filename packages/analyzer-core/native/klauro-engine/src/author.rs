@@ -60,7 +60,7 @@ fn named_per_call() -> usize {
     }
 }
 
-#[derive(Debug, Serialize, Clone, Copy)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
 pub struct Grounding {
     pub supported: f64,
     pub invented: f64,

@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 
 use crate::author::{Placed, Proposal, Proposed};
 use crate::comprehend::{carved_name, families_of, settle, Capability, Delivery, Family, Flow, PUBLISHED};
@@ -16,6 +17,30 @@ struct Held {
     description: String,
     audience: String,
     families: BTreeSet<String>,
+}
+
+#[derive(Serialize, Deserialize, Default)]
+struct Remembered {
+    digest: String,
+    capabilities: Vec<RememberedCapability>,
+    plumbing: BTreeSet<String>,
+    families: BTreeMap<String, String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct RememberedCapability {
+    name: String,
+    description: String,
+    audience: String,
+    families: BTreeSet<String>,
+}
+
+fn recalled(key: &str) -> Option<Remembered> {
+    crate::memory::recalled("capabilities", key)
+}
+
+fn keep_in_memory(key: &str, remembered: &Remembered) {
+    crate::memory::keep("capabilities", key, remembered);
 }
 
 fn evidence_of(flows: &[&Flow], family: &Family) -> String {
@@ -178,7 +203,7 @@ fn consolidate_within(said: &str, held: Vec<Held>) -> Vec<Held> {
     joined
 }
 
-pub(crate) fn of_a_part(flows: &[&Flow], said: &str) -> Vec<Capability> {
+pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str) -> Vec<Capability> {
     if !crate::author::asked() || flows.is_empty() {
         return Vec::new();
     }
@@ -193,18 +218,70 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str) -> Vec<Capability> {
     let told: BTreeMap<String, String> =
         keyed.iter().map(|(id, family, lane)| (id.clone(), evidence_of(lane, family))).collect();
     let known: BTreeSet<String> = told.keys().cloned().collect();
-    let listed: Vec<(String, String)> = told.iter().map(|(id, evidence)| (id.clone(), evidence.clone())).collect();
-    let proposals: Vec<Proposal> = listed
-        .par_chunks(FAMILIES_PER_PROPOSAL)
-        .map(|chunk| crate::author::propose_capabilities(said, chunk))
+    let key_of: BTreeMap<&str, &str> =
+        keyed.iter().map(|(id, family, _)| (id.as_str(), family.key.as_str())).collect();
+    let id_of: BTreeMap<&str, &str> = key_of.iter().map(|(id, key)| (*key, *id)).collect();
+    let evidence_of_key: BTreeMap<String, String> = told
+        .iter()
+        .map(|(id, evidence)| (key_of[id.as_str()].to_string(), crate::jev::named(&format!("{said}\u{1}{evidence}"))))
         .collect();
-    let chunked = proposals.len() > 1;
-    let mut held: Vec<Held> = Vec::new();
-    let mut plumbing: BTreeSet<String> = BTreeSet::new();
-    gather(proposals, &mut held, &mut plumbing, &known);
-    place(said, &told, &mut held, &mut plumbing);
-    if chunked {
-        held = consolidate_within(said, held);
+    let digest = crate::jev::named(&format!("{said}\u{1}{:?}", evidence_of_key));
+    if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
+        for (id, evidence) in &told {
+            eprintln!("evidence {} {}\n{evidence}", remembered_as.replace('\u{1}', "/"), key_of[id.as_str()]);
+        }
+    }
+    let memory = recalled(remembered_as);
+    let (mut held, mut plumbing) = match memory {
+        Some(memory) if memory.digest == digest => recollected(&memory, &id_of, |_| true),
+        Some(memory) => {
+            let (mut held, mut plumbing) = recollected(&memory, &id_of, |key| {
+                memory.families.get(key).is_some_and(|was| evidence_of_key.get(key) == Some(was))
+            });
+            place(said, &told, &mut held, &mut plumbing);
+            (held, plumbing)
+        }
+        None => {
+            let listed: Vec<(String, String)> =
+                told.iter().map(|(id, evidence)| (id.clone(), evidence.clone())).collect();
+            let proposals: Vec<Proposal> = listed
+                .par_chunks(FAMILIES_PER_PROPOSAL)
+                .map(|chunk| crate::author::propose_capabilities(said, chunk))
+                .collect();
+            let chunked = proposals.len() > 1;
+            let mut held: Vec<Held> = Vec::new();
+            let mut plumbing: BTreeSet<String> = BTreeSet::new();
+            gather(proposals, &mut held, &mut plumbing, &known);
+            place(said, &told, &mut held, &mut plumbing);
+            if chunked {
+                held = consolidate_within(said, held);
+            }
+            (held, plumbing)
+        }
+    };
+    held.retain(|other| !other.families.is_empty());
+    plumbing.retain(|id| known.contains(id));
+    let settled_every_family = told.keys().all(|id| {
+        plumbing.contains(id) || held.iter().any(|other| other.families.contains(id))
+    });
+    if crate::author::asked() && settled_every_family {
+        keep_in_memory(
+            remembered_as,
+            &Remembered {
+                digest,
+                capabilities: held
+                    .iter()
+                    .map(|other| RememberedCapability {
+                        name: other.name.clone(),
+                        description: other.description.clone(),
+                        audience: other.audience.clone(),
+                        families: other.families.iter().map(|id| key_of[id.as_str()].to_string()).collect(),
+                    })
+                    .collect(),
+                plumbing: plumbing.iter().map(|id| key_of[id.as_str()].to_string()).collect(),
+                families: evidence_of_key.clone(),
+            },
+        );
     }
     let lanes: BTreeMap<&str, (&Family, &Vec<&Flow>)> =
         keyed.iter().map(|(id, family, lane)| (id.as_str(), (*family, *lane))).collect();
@@ -214,6 +291,35 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str) -> Vec<Capability> {
         .collect();
     formed.sort_by(|left, right| left.id.cmp(&right.id));
     formed
+}
+
+fn recollected(
+    memory: &Remembered,
+    id_of: &BTreeMap<&str, &str>,
+    still_holds: impl Fn(&str) -> bool,
+) -> (Vec<Held>, BTreeSet<String>) {
+    let held = memory
+        .capabilities
+        .iter()
+        .map(|was| Held {
+            name: was.name.clone(),
+            description: was.description.clone(),
+            audience: was.audience.clone(),
+            families: was
+                .families
+                .iter()
+                .filter(|key| still_holds(key))
+                .filter_map(|key| id_of.get(key.as_str()).map(|id| id.to_string()))
+                .collect(),
+        })
+        .collect();
+    let plumbing = memory
+        .plumbing
+        .iter()
+        .filter(|key| still_holds(key))
+        .filter_map(|key| id_of.get(key.as_str()).map(|id| id.to_string()))
+        .collect();
+    (held, plumbing)
 }
 
 fn built(held: Held, lanes: &BTreeMap<&str, (&Family, &Vec<&Flow>)>) -> Option<Capability> {
@@ -273,7 +379,150 @@ fn built(held: Held, lanes: &BTreeMap<&str, (&Family, &Vec<&Flow>)>) -> Option<C
     Some(capability)
 }
 
-pub(crate) fn of_the_whole(parts: &[Capability], spoken: &str) -> Vec<Capability> {
+#[derive(Serialize, Deserialize)]
+struct Whole {
+    groups: Vec<WholeGroup>,
+    seen: BTreeSet<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct WholeGroup {
+    name: String,
+    description: String,
+    audience: String,
+    members: BTreeSet<String>,
+}
+
+fn standing_of(capability: &Capability) -> String {
+    crate::jev::named(&format!(
+        "{:?}\u{1}{}\u{1}{}\u{1}{}",
+        capability.project,
+        capability.name.as_deref().unwrap_or(""),
+        capability.audience.as_deref().unwrap_or(""),
+        capability.description.as_deref().unwrap_or("")
+    ))
+}
+
+fn asked_afresh(listed: BTreeMap<String, String>, spoken: &str) -> Vec<crate::author::Same> {
+    let chunks: Vec<BTreeMap<String, String>> = listed
+        .into_iter()
+        .collect::<Vec<_>>()
+        .chunks(CAPABILITIES_CONSOLIDATED_AT_ONCE)
+        .map(|chunk| chunk.iter().cloned().collect())
+        .collect();
+    chunks.par_iter().flat_map(|chunk| crate::author::same_outcome(spoken, chunk)).collect()
+}
+
+fn grouped(
+    parts: &[Capability],
+    listed: BTreeMap<String, String>,
+    spoken: &str,
+    scope: &str,
+) -> Vec<crate::author::Same> {
+    let standing: Vec<String> = parts.iter().map(standing_of).collect();
+    let at_of: BTreeMap<&str, usize> = standing.iter().enumerate().map(|(at, key)| (key.as_str(), at)).collect();
+    let at_in = |id: &str| id.trim().strip_prefix('c')?.parse::<usize>().ok().filter(|at| *at < parts.len());
+    let groups = match crate::memory::recalled::<Whole>("whole", scope) {
+        None => asked_afresh(listed, spoken),
+        Some(memory) => {
+            let mut groups: Vec<crate::author::Same> = memory
+                .groups
+                .iter()
+                .map(|group| crate::author::Same {
+                    of: group
+                        .members
+                        .iter()
+                        .filter_map(|key| at_of.get(key.as_str()))
+                        .map(|at| format!("c{at}"))
+                        .collect(),
+                    name: group.name.clone(),
+                    description: group.description.clone(),
+                    audience: group.audience.clone(),
+                })
+                .filter(|group| !group.of.is_empty())
+                .collect();
+            let newcomers: BTreeSet<usize> =
+                (0..parts.len()).filter(|at| !memory.seen.contains(&standing[*at])).collect();
+            if !newcomers.is_empty() {
+                let in_a_group: BTreeSet<usize> =
+                    groups.iter().flat_map(|group| group.of.iter().filter_map(|id| at_in(id))).collect();
+                let mut offered: BTreeMap<String, String> = groups
+                    .iter()
+                    .enumerate()
+                    .map(|(at, group)| {
+                        (
+                            format!("g{at}"),
+                            format!(
+                                "  it is called: {}\n  for: {}\n  what someone gets: {}",
+                                group.name, group.audience, group.description
+                            ),
+                        )
+                    })
+                    .collect();
+                offered.extend(
+                    listed.iter().filter(|(id, _)| at_in(id).is_some_and(|at| !in_a_group.contains(&at))).map(
+                        |(id, told)| (id.clone(), told.clone()),
+                    ),
+                );
+                for same in crate::author::same_outcome(spoken, &offered) {
+                    let joining: Vec<String> = same
+                        .of
+                        .iter()
+                        .filter(|id| at_in(id).is_some_and(|at| newcomers.contains(&at)))
+                        .map(|id| id.trim().to_string())
+                        .collect();
+                    if joining.is_empty() {
+                        continue;
+                    }
+                    let into = same
+                        .of
+                        .iter()
+                        .find_map(|id| id.trim().strip_prefix('g')?.parse::<usize>().ok())
+                        .filter(|at| *at < groups.len());
+                    match into {
+                        Some(at) => groups[at].of.extend(joining),
+                        None => groups.push(crate::author::Same {
+                            of: same
+                                .of
+                                .iter()
+                                .filter(|id| at_in(id).is_some_and(|at| !in_a_group.contains(&at)))
+                                .map(|id| id.trim().to_string())
+                                .collect(),
+                            ..same
+                        }),
+                    }
+                }
+            }
+            groups
+        }
+    };
+    if crate::author::asked() && !groups.is_empty() {
+        crate::memory::keep(
+            "whole",
+            scope,
+            &Whole {
+                groups: groups
+                    .iter()
+                    .map(|group| WholeGroup {
+                        name: group.name.clone(),
+                        description: group.description.clone(),
+                        audience: group.audience.clone(),
+                        members: group
+                            .of
+                            .iter()
+                            .filter_map(|id| at_in(id))
+                            .map(|at| standing[at].clone())
+                            .collect(),
+                    })
+                    .collect(),
+                seen: standing.iter().cloned().collect(),
+            },
+        );
+    }
+    groups
+}
+
+pub(crate) fn of_the_whole(parts: &[Capability], spoken: &str, scope: &str) -> Vec<Capability> {
     if parts.len() < 2 {
         return Vec::new();
     }
@@ -296,14 +545,7 @@ pub(crate) fn of_the_whole(parts: &[Capability], spoken: &str) -> Vec<Capability
             )
         })
         .collect();
-    let chunks: Vec<BTreeMap<String, String>> = listed
-        .into_iter()
-        .collect::<Vec<_>>()
-        .chunks(CAPABILITIES_CONSOLIDATED_AT_ONCE)
-        .map(|chunk| chunk.iter().cloned().collect())
-        .collect();
-    let groups: Vec<crate::author::Same> =
-        chunks.par_iter().flat_map(|chunk| crate::author::same_outcome(spoken, chunk)).collect();
+    let groups = grouped(parts, listed, spoken, scope);
     let mut taken = vec![false; parts.len()];
     let mut whole: Vec<Capability> = Vec::new();
     for group in groups {

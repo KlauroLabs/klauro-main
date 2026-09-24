@@ -33,6 +33,7 @@ mod resolve;
 mod roles;
 mod route;
 mod layers;
+mod memory;
 mod design_patterns;
 mod patterns;
 mod practices;
@@ -1111,7 +1112,9 @@ fn read_it() {
             leading.iter().take(10).map(|dependency| dependency.name.clone()).collect()
         })
         .unwrap_or_default();
+    let scope = root.file_name().map(|named| named.to_string_lossy().into_owned()).unwrap_or_default();
     let told = comprehend::Telling {
+        scope: &scope,
         shape: index.architecture.as_ref().map(|shaped| shaped.shape).unwrap_or("unknown"),
         serving: index.architecture.as_ref().map(|shaped| shaped.serving_projects).unwrap_or(0),
         routes: index.architecture.as_ref().map(|shaped| shaped.routes).unwrap_or(0),

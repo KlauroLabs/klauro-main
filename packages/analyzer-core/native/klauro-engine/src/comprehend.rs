@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use rayon::prelude::*;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::entry_exit::{EntryPoint, ExitPoint};
 use crate::model::*;
@@ -135,7 +135,7 @@ pub struct Capability {
     pub touches: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Product {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
@@ -226,6 +226,7 @@ fn spoken_for(root: &std::path::Path, nodes: &[IndexNode], files: &[String]) -> 
 }
 
 pub struct Telling<'a> {
+    pub scope: &'a str,
     pub shape: &'a str,
     pub serving: u32,
     pub routes: u32,
@@ -461,6 +462,25 @@ fn describe_whole(
         })
         .collect::<Vec<_>>()
         .join("\n\n");
+    let digest = crate::jev::named(&format!(
+        "{owner:?}\u{1}{spoken}\u{1}{}\u{1}{}",
+        ranked
+            .iter()
+            .map(|(held, part, _)| {
+                let doing: Vec<&str> = capabilities
+                    .iter()
+                    .filter(|capability| {
+                        capability.project.as_deref() == *held
+                            || held.is_some_and(|part| capability.also_in.iter().any(|in_| in_ == part))
+                    })
+                    .filter_map(|capability| capability.name.as_deref())
+                    .collect();
+                format!("{held:?}:{}:{}", part.map(|part| part.description.as_str()).unwrap_or(""), doing.join(","))
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        told.shape
+    ));
     let facts = format!(
         "It says this about itself:\n{}\n\nIt is made of parts that have each already been read \
          on their own.\n\n{said}\n\nHow it is put together: {} across {} serving surfaces, \
@@ -478,28 +498,31 @@ fn describe_whole(
         ),
         None => String::new(),
     };
-    let description = crate::author::describe_system(&format!(
-        "{facts}\n\n{speaking}Write what this is, as one thing. The parts above are evidence of \
-         what it does, not an outline to follow: do not walk them in order, do not give each one \
-         a clause of its own, and do not write a sentence shaped like \"A does this; B does that; \
-         C does the other\". Someone who uses this should recognise it from the first sentence. \
-         The share each part carries tells you how much of the thing it accounts for, so what the \
-         heaviest parts do is most of what it does, so weigh your emphasis that way. But what a \
-         thing IS does not follow from which part has the most code in it: a demonstration can be \
-         the largest part of something whose purpose is to be started from, and a small part can \
-         be the whole reason the rest exists. Settle what it is from what it says about itself and \
-         what it ships, then let the shares decide what gets the room. Name a part only where \
-         naming it tells the reader something they would otherwise get wrong, and let the lighter \
-         ones show up in what the product can do rather than as components. Never call it a \
-         repository, a monorepo, a codebase or a collection of parts."
-    ))?;
-    let grounding = crate::author::test_description(&format!(
-        "{facts}\n\nPROPOSED DESCRIPTION: {description}"
-    ));
-    (!grounding.fabricated()).then(|| Product {
-        project: owner.map(str::to_string),
-        description,
-        grounding,
+    let key = format!("{}\u{1}whole\u{1}{}", told.scope, owner.unwrap_or(""));
+    crate::memory::unless_changed("products", &key, &digest, || {
+        let description = crate::author::describe_system(&format!(
+            "{facts}\n\n{speaking}Write what this is, as one thing. The parts above are evidence of \
+             what it does, not an outline to follow: do not walk them in order, do not give each one \
+             a clause of its own, and do not write a sentence shaped like \"A does this; B does that; \
+             C does the other\". Someone who uses this should recognise it from the first sentence. \
+             The share each part carries tells you how much of the thing it accounts for, so what the \
+             heaviest parts do is most of what it does, so weigh your emphasis that way. But what a \
+             thing IS does not follow from which part has the most code in it: a demonstration can be \
+             the largest part of something whose purpose is to be started from, and a small part can \
+             be the whole reason the rest exists. Settle what it is from what it says about itself and \
+             what it ships, then let the shares decide what gets the room. Name a part only where \
+             naming it tells the reader something they would otherwise get wrong, and let the lighter \
+             ones show up in what the product can do rather than as components. Never call it a \
+             repository, a monorepo, a codebase or a collection of parts."
+        ))?;
+        let grounding = crate::author::test_description(&format!(
+            "{facts}\n\nPROPOSED DESCRIPTION: {description}"
+        ));
+        (!grounding.fabricated()).then(|| Product {
+            project: owner.map(str::to_string),
+            description,
+            grounding,
+        })
     })
 }
 
@@ -523,6 +546,35 @@ fn describe_one(
     if capabilities.is_empty() {
         return None;
     }
+    let listed = capabilities
+        .iter()
+        .map(|capability| format!(
+            "- {} (for {}): {}",
+            capability.name.as_deref().unwrap_or(""),
+            capability.audience.as_deref().unwrap_or("someone"),
+            capability.description.as_deref().unwrap_or("")
+        ))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let kept = {
+            let mut kept: Vec<&str> = match project {
+                Some(_) => capabilities
+                    .iter()
+                    .flat_map(|capability| capability.records.iter().map(String::as_str))
+                    .collect(),
+                None => entities.iter().map(|entity| entity.declared_as.as_str()).collect(),
+            };
+            kept.dedup();
+            match kept.is_empty() {
+                true => "no named records".to_string(),
+                false => kept.join(", "),
+            }
+        };
+    let digest = crate::jev::named(&format!(
+        "{project:?}\u{1}{spoken}\u{1}{listed}\u{1}{kept}\u{1}{}\u{1}{}",
+        told.shape,
+        told.frameworks.join(",")
+    ));
     let facts = format!(
         "{}The product says this about itself:\n{spoken}\n\n\
          What someone can do with it, read from the code, with the audience each is for:\n{}\n\n\
@@ -541,30 +593,8 @@ fn describe_one(
             ),
             None => String::new(),
         },
-        capabilities
-            .iter()
-            .map(|capability| format!(
-                "- {} (for {}): {}",
-                capability.name.as_deref().unwrap_or(""),
-                capability.audience.as_deref().unwrap_or("someone"),
-                capability.description.as_deref().unwrap_or("")
-            ))
-            .collect::<Vec<_>>()
-            .join("\n"),
-        {
-            let mut kept: Vec<&str> = match project {
-                Some(_) => capabilities
-                    .iter()
-                    .flat_map(|capability| capability.records.iter().map(String::as_str))
-                    .collect(),
-                None => entities.iter().map(|entity| entity.declared_as.as_str()).collect(),
-            };
-            kept.dedup();
-            match kept.is_empty() {
-                true => "no named records".to_string(),
-                false => kept.join(", "),
-            }
-        },
+        listed,
+        kept,
         match project.is_some() {
             true => "These last counts are the whole repository's, not this part's, and belong in a \
                      description of this part only where they are plainly true of it:\n",
@@ -586,24 +616,27 @@ fn describe_one(
             false => told.frameworks.join(", "),
         }
     );
-    let description = crate::author::describe_system(&facts)?;
-    let grounding = crate::author::test_description(&format!(
-        "{facts}\n\nPROPOSED DESCRIPTION: {description}"
-    ));
-    if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
-        eprintln!(
-            "product {:<34} supported {:.2} invented {:.2} outcome {:.2} -> {}",
-            project.unwrap_or("the whole system"),
-            grounding.supported,
-            grounding.invented,
-            grounding.outcome,
-            !grounding.fabricated()
-        );
-    }
-    (!grounding.fabricated()).then(|| Product {
-        project: project.map(str::to_string),
-        description,
-        grounding,
+    let key = format!("{}\u{1}{}", told.scope, project.unwrap_or(""));
+    crate::memory::unless_changed("products", &key, &digest, || {
+        let description = crate::author::describe_system(&facts)?;
+        let grounding = crate::author::test_description(&format!(
+            "{facts}\n\nPROPOSED DESCRIPTION: {description}"
+        ));
+        if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
+            eprintln!(
+                "product {:<34} supported {:.2} invented {:.2} outcome {:.2} -> {}",
+                project.unwrap_or("the whole system"),
+                grounding.supported,
+                grounding.invented,
+                grounding.outcome,
+                !grounding.fabricated()
+            );
+        }
+        (!grounding.fabricated()).then(|| Product {
+            project: project.map(str::to_string),
+            description,
+            grounding,
+        })
     })
 }
 
@@ -630,10 +663,10 @@ fn test_capabilities(capabilities: &mut Vec<Capability>, spoken: &str) {
             (capability.id.clone(), facts)
         })
         .collect();
-    let judged = crate::author::test_capabilities(
-        &format!("A software system describes itself like this:\n{spoken}"),
-        &tests,
-    );
+    let context = format!("A software system describes itself like this:\n{spoken}");
+    let judged = crate::memory::each("judged", &context, &tests, |missing| {
+        crate::author::test_capabilities(&context, missing)
+    });
     capabilities.retain_mut(|capability| {
         let Some(grounding) = judged.get(&capability.id).copied() else { return false };
         capability.grounding = Some(grounding);
@@ -692,7 +725,10 @@ fn say_what_each_is_for(held: &mut [Capability], spoken: &str) {
             )
         })
         .collect();
-    let said = crate::author::what_it_is_for(spoken, &listed);
+    let listed: Vec<(String, String)> = listed.into_iter().collect();
+    let said = crate::memory::each("placed", spoken, &listed, |missing| {
+        crate::author::what_it_is_for(spoken, &missing.iter().cloned().collect())
+    });
     for (at, capability) in held.iter_mut().enumerate() {
         capability.place = match said.get(&format!("p{at}")).map(String::as_str) {
             Some("terminal") => Some("terminal"),
@@ -917,7 +953,8 @@ pub fn author(
                 .flat_map(|part| {
                     let flows: Vec<&Flow> = held.flows.iter().filter(|flow| &flow.project == part).collect();
                     let said = spoken_within(&spoken, part.as_deref());
-                    let mut found = crate::capabilities::of_a_part(&flows, &said);
+                    let remembered_as = format!("{}\u{1}{}", told.scope, part.as_deref().unwrap_or(""));
+                    let mut found = crate::capabilities::of_a_part(&flows, &said, &remembered_as);
                     test_capabilities(&mut found, &said);
                     say_what_each_is_for(&mut found, &said);
                     found
@@ -926,7 +963,7 @@ pub fn author(
             capabilities.sort_by(|left, right| left.id.cmp(&right.id));
             let (whole, described) = rayon::join(
                 || {
-                    let mut whole = crate::capabilities::of_the_whole(&capabilities, &spoken);
+                    let mut whole = crate::capabilities::of_the_whole(&capabilities, &spoken, told.scope);
                     say_what_each_is_for(&mut whole, &spoken);
                     whole
                 },
