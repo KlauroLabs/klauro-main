@@ -1,3 +1,4 @@
+use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 
 use serde::Serialize;
@@ -1105,7 +1106,7 @@ fn fetch_is_the_web(path: &str) -> bool {
 
 fn bare_exit(
     call: &CallFact,
-    modules: &HashMap<(u32, String), String>,
+    modules: &rustc_hash::FxHashMap<(u32, String), String>,
     path: &str,
 ) -> Option<&'static str> {
     if call.callee == "fetch" {
@@ -1304,6 +1305,13 @@ pub fn derive(
     resolution: &Resolution,
     locals: &[crate::model::LocalBinding],
 ) -> Derived {
+    let timing = std::env::var("KLAURO_TIME_EXITS").is_ok();
+    let started = std::time::Instant::now();
+    let lap = |label: &str| {
+        if timing {
+            eprintln!("    entry and exit {label} {:?}", started.elapsed());
+        }
+    };
     let connected: HashMap<(u32, &str, &str), &str> = locals
         .iter()
         .filter_map(|held| {
@@ -1324,6 +1332,7 @@ pub fn derive(
             }
         }
     }
+    lap("setup");
     let mut entry_points = Vec::new();
     let mounted = mounted_under(calls);
     let mut base_paths: HashMap<&str, String> = HashMap::new();
@@ -1420,6 +1429,7 @@ pub fn derive(
         }
     }
 
+    lap("decorated entries");
     let mut by_name: HashMap<&str, Vec<&IndexNode>> = HashMap::new();
     let mut above: HashMap<&str, Vec<&str>> = HashMap::new();
     for node in nodes {
@@ -1521,6 +1531,7 @@ pub fn derive(
         }
     }
 
+    lap("inherited entries");
     let declared: HashSet<&str> = nodes
         .iter()
         .filter(|node| node.kind.is_type() || matches!(node.kind, NodeKind::Function | NodeKind::Method))
@@ -1562,6 +1573,7 @@ pub fn derive(
         })
         .collect();
 
+    lap("registrations owned");
     let groups = groups_of(calls, locals);
     let by_line = if groups.is_empty() { HashMap::new() } else { calls_by_line(calls) };
     let mut registered: HashSet<(u32, u32)> = HashSet::new();
@@ -1661,6 +1673,7 @@ pub fn derive(
         });
     }
 
+    lap("registered routes");
     let declared_cases: HashSet<String> = entry_points
         .iter()
         .filter(|entry| entry.kind == "test")
@@ -1708,13 +1721,14 @@ pub fn derive(
         });
     }
 
-    let mut exit_points = Vec::new();
-    let mut reached_through: Vec<String> = Vec::new();
-    for (position, call) in calls.iter().enumerate() {
-        let Some(source) = &call.caller else { continue };
+    lap("conventional entries");
+    let exits_of = |(position, call): (usize, &CallFact)| -> (Vec<ExitPoint>, Vec<String>) {
+        let mut found: Vec<ExitPoint> = Vec::new();
+        let mut reach: Vec<String> = Vec::new();
+        let Some(source) = &call.caller else { return (found, reach) };
         if let Some((operation, table)) = asked_of_a_table(call) {
-            reached_through.push(call.receiver.clone().unwrap_or_default());
-            exit_points.push(ExitPoint {
+            reach.push(call.receiver.clone().unwrap_or_default());
+            found.push(ExitPoint {
                 id: format!("exit:{}:{}:sql", files[call.file as usize], position),
                 kind: "database",
                 name: format!("{operation} {table}"),
@@ -1729,8 +1743,8 @@ pub fn derive(
             });
         }
         if let Some(operation) = a_cookie_kept(call) {
-            reached_through.push(call.receiver.clone().unwrap_or_default());
-            exit_points.push(ExitPoint {
+            reach.push(call.receiver.clone().unwrap_or_default());
+            found.push(ExitPoint {
                 id: format!("exit:{}:{}:cookie", files[call.file as usize], position),
                 kind: "client_storage",
                 name: format!("{operation} cookie"),
@@ -1743,11 +1757,11 @@ pub fn derive(
                 addressed: None,
                 service: None,
             });
-            continue;
+            return (found, reach);
         }
         if let Some((operation, over)) = over_a_connection(call, source, &connected) {
-            reached_through.push(call.receiver.clone().unwrap_or_default());
-            exit_points.push(ExitPoint {
+            reach.push(call.receiver.clone().unwrap_or_default());
+            found.push(ExitPoint {
                 id: format!("exit:{}:{}:connection", files[call.file as usize], position),
                 kind: "network",
                 name: format!("{operation} {}", call.callee),
@@ -1760,20 +1774,20 @@ pub fn derive(
                 addressed: addressed_at(call),
                 service: None,
             });
-            continue;
+            return (found, reach);
         }
         let Some(receiver) = call.receiver.as_deref() else {
             let Some(kind) = bare_exit(call, modules, &files[call.file as usize])
                 .or_else(|| built_into_the_language(call, &files[call.file as usize]))
             else {
-                continue;
+                return (found, reach);
             };
             let origin = modules
                 .get(&(call.file, call.callee.clone()))
                 .cloned()
                 .unwrap_or_else(|| call.callee.clone());
-            reached_through.push(String::new());
-            exit_points.push(ExitPoint {
+            reach.push(String::new());
+            found.push(ExitPoint {
                 id: format!("exit:{}:{}", files[call.file as usize], position),
                 kind,
                 name: call.callee.clone(),
@@ -1786,18 +1800,18 @@ pub fn derive(
             addressed: addressed_at(call),
             service: None,
             });
-            continue;
+            return (found, reach);
         };
         let binding = names::root(receiver);
         if receiver.contains('.') && reads_a_data_member(receiver) {
-            continue;
+            return (found, reach);
         }
         if let Some(kind) = manager_exit(receiver, names::leaf(&call.callee))
             .or_else(|| names_a_store(names::leaf(&call.callee)).then_some("database"))
         {
             let operation = names::leaf(&call.callee);
-            reached_through.push(receiver.to_string());
-            exit_points.push(ExitPoint {
+            reach.push(receiver.to_string());
+            found.push(ExitPoint {
                 id: format!("exit:{}:{}", files[call.file as usize], position),
                 kind,
                 name: format!("{receiver}.{operation}"),
@@ -1810,7 +1824,7 @@ pub fn derive(
             addressed: addressed_at(call),
             service: None,
             });
-            continue;
+            return (found, reach);
         }
         let origin = match call_origins
             .get(&(source.clone(), receiver.to_string()))
@@ -1828,8 +1842,8 @@ pub fn derive(
             {
                 Some(kind) => {
                     let operation = names::leaf(&call.callee);
-                    reached_through.push(receiver.to_string());
-                    exit_points.push(ExitPoint {
+                    reach.push(receiver.to_string());
+                    found.push(ExitPoint {
                         id: format!("exit:{}:{}", files[call.file as usize], position),
                         kind,
                         name: format!("{receiver}.{operation}"),
@@ -1842,20 +1856,20 @@ pub fn derive(
             addressed: addressed_at(call),
             service: None,
                     });
-                    continue;
+                    return (found, reach);
                 }
-                None => continue,
+                None => return (found, reach),
             },
         };
         let Some(kind) =
             classify_reached(binding, origin, &call.callee, stands_in.get(origin).map(Vec::as_slice))
         else {
-            continue;
+            return (found, reach);
         };
         let receiver = receiver.to_string();
         let operation = names::leaf(&call.callee);
-        reached_through.push(receiver.to_string());
-        exit_points.push(ExitPoint {
+        reach.push(receiver.to_string());
+        found.push(ExitPoint {
             id: format!("exit:{}:{}", files[call.file as usize], position),
             kind,
             name: format!("{receiver}.{operation}"),
@@ -1868,8 +1882,15 @@ pub fn derive(
             addressed: addressed_at(call),
             service: None,
         });
+            (found, reach)
+    };
+    let mut exit_points = Vec::new();
+    let mut reached_through: Vec<String> = Vec::new();
+    let classified: Vec<(Vec<ExitPoint>, Vec<String>)> = calls.par_iter().enumerate().map(exits_of).collect();
+    for (found, reach) in classified {
+        exit_points.extend(found);
+        reached_through.extend(reach);
     }
-
     entry_points.sort_by(|left, right| left.id.cmp(&right.id));
     entry_points.dedup_by(|left, right| left.id == right.id);
     let mut at_site: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
@@ -1910,6 +1931,7 @@ pub fn derive(
             entry.name.insert(0, '/');
         }
     }
+    lap("exits");
     Derived { entry_points, exit_points }
 }
 
