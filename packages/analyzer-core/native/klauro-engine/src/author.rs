@@ -77,8 +77,6 @@ pub struct Written {
     #[serde(default)]
     pub name: String,
     pub description: String,
-    #[serde(default)]
-    pub audience: String,
 }
 
 fn spoken_to() -> Option<String> {
@@ -165,89 +163,7 @@ pub fn per_call_for(groups: usize) -> usize {
 const CALLS_AT_ONCE: usize = 12;
 const LEAST_PER_CALL: usize = 6;
 
-pub fn name_capabilities(
-    spoken_for: &str,
-    grouped: &BTreeMap<String, String>,
-    per_call: usize,
-) -> BTreeMap<String, Written> {
-    let mut named = BTreeMap::new();
-    if !asked() || grouped.is_empty() {
-        return named;
-    }
-    let listed: Vec<String> = grouped
-        .iter()
-        .map(|(id, facts)| format!("- id: {id}\n{facts}"))
-        .collect();
-    let batches: Vec<BTreeMap<String, Written>> = listed
-        .par_chunks(per_call.max(1))
-        .map(|batch| name_capability_batch(spoken_for, batch))
-        .collect();
-    for batch in batches {
-        named.extend(batch);
-    }
-    let unnamed = grouped.len() - named.len();
-    if unnamed > 0 {
-        eprintln!("  author left {unnamed} of {} groups unnamed", grouped.len());
-    }
-    named
-}
 
-fn name_capability_batch(spoken_for: &str, listed: &[String]) -> BTreeMap<String, Written> {
-    let mut named = BTreeMap::new();
-    let prompt = format!(
-        "A software system describes itself like this:\n{spoken_for}\n\n\
-         Each group below is a set of paths through the system that the evidence already placed \
-         together — they share the records they write, the surface they are reached through, or \
-         the effect they end in.\n\n\
-         Name the capability each group delivers, by these rules:\n{RULES}\n\n\
-         Name the audience for each one — an end user, an operator, an administrator, a developer, \
-         an analyst or an agent. Take your words from the operations and the self-description, \
-         never from the storage or the framework. A group that only reads can still deliver a \
-         capability; what its paths do at the end tells you what it is for, not whether it counts.\n\n\
-         Name what the person ends up with, never the way in and never what it is built on: a \
-         group reached through web routes is not called an API, one reached through pages is not \
-         called a web interface, and one that keeps records is not called a database. The paths \
-         in a group may be reached from more than one part of the system; that is one outcome \
-         offered in several places, not a capability called after the places.\n\n\
-         For each group give a name of 2-6 words, one sentence saying what someone gets, and the \
-         audience it is for. Echo each id back exactly as given.\n\
-         Return JSON only: {{\"items\":[{{\"id\":\"...\",\"name\":\"...\",\"description\":\"...\",\"audience\":\"...\"}}]}}\n\n\
-         The groups:\n{}",
-        listed.join("\n\n")
-    );
-    let Some(written) = answered::<serde_json::Value>(&prompt, 3000, &asking_of_models(model()), "items", listed.len()) else {
-        if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
-            eprintln!("    batch of {} got no answer at all", listed.len());
-        }
-        return named;
-    };
-    let mut refused: Vec<String> = Vec::new();
-    for item in written["items"].as_array().into_iter().flatten() {
-        let Ok(held) = serde_json::from_value::<Written>(item.clone()) else {
-            refused.push(format!("unreadable {item}"));
-            continue;
-        };
-        if held.name.trim().is_empty() || held.description.trim().is_empty() {
-            refused.push(format!("empty {}", held.id));
-            continue;
-        }
-        named.insert(held.id.clone(), held);
-    }
-    if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() && named.len() < listed.len() {
-        let asked: Vec<&str> = listed
-            .iter()
-            .filter_map(|held| held.lines().next())
-            .map(|line| line.trim_start_matches("- id: "))
-            .collect();
-        let back: Vec<&str> = named.keys().map(String::as_str).collect();
-        eprintln!(
-            "    batch asked {} got {} | asked {asked:?} | back {back:?} | dropped {refused:?}",
-            listed.len(),
-            named.len()
-        );
-    }
-    named
-}
 
 fn name_batch(member: &str, spoken_for: &str, listed: &[String]) -> BTreeMap<String, Written> {
     let mut named = BTreeMap::new();
@@ -468,6 +384,121 @@ pub fn same_outcome(spoken_for: &str, listed: &BTreeMap<String, String>) -> Vec<
         .flatten()
         .filter_map(|group| serde_json::from_value::<Same>(group.clone()).ok())
         .filter(|group| !group.of.is_empty() && !group.name.trim().is_empty())
+        .collect()
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct Proposed {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub audience: String,
+    #[serde(default)]
+    pub families: Vec<String>,
+}
+
+#[derive(Debug, Default)]
+pub struct Proposal {
+    pub capabilities: Vec<Proposed>,
+    pub plumbing: Vec<String>,
+}
+
+pub fn propose_capabilities(spoken_for: &str, families: &[(String, String)]) -> Proposal {
+    if !asked() || families.is_empty() {
+        return Proposal::default();
+    }
+    let prompt = format!(
+        "A software system describes itself like this:\n{spoken_for}\n\n\
+         Below is every group of paths through one part of it. The evidence placed each group \
+         together — the route it is reached through, the records it keeps, the effect it ends \
+         in — but it did not decide what anyone gets from them. You see all of them at once so \
+         you can.\n\n\
+         Read them as a whole and say which capabilities this part delivers, by these rules:\n{RULES}\n\n\
+         Put groups together when a person would say they did one thing, however many ways in \
+         the system offers: resetting a password is one capability whether it is the form, the \
+         request, the email or the new password. Keep two apart only when someone would come for \
+         one and not the other. Name what the person ends up with, never the way in and never \
+         what it is built on: a group reached through web routes is not called an API, one \
+         reached through pages is not called a web interface, one that keeps records is not \
+         called a database.\n\n\
+         Some groups deliver nothing on their own: checking health, serving files, building \
+         blocks of a page, glue between parts. List those as plumbing instead of inventing a \
+         capability for them.\n\n\
+         For each capability give a name of 2-6 words, one sentence saying what someone gets, \
+         the audience it is for, and the ids of the groups that deliver it. Every id below must \
+         appear exactly once, either in one capability or in plumbing, and no other id may \
+         appear.\n\
+         Return JSON only: {{\"capabilities\":[{{\"name\":\"...\",\"description\":\"...\",\"audience\":\"...\",\"families\":[\"...\"]}}],\"plumbing\":[\"...\"]}}\n\n\
+         The groups:\n{}",
+        families.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect::<Vec<_>>().join("\n")
+    );
+    let Some(held) =
+        answered::<serde_json::Value>(&prompt, 8000, &asking_of_models(model()), "capabilities", 0)
+    else {
+        return Proposal::default();
+    };
+    Proposal {
+        capabilities: held["capabilities"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|item| serde_json::from_value::<Proposed>(item.clone()).ok())
+            .filter(|item| !item.name.trim().is_empty() && !item.families.is_empty())
+            .collect(),
+        plumbing: held["plumbing"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|item| item.as_str().map(str::to_string))
+            .collect(),
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct Placed {
+    #[serde(default)]
+    pub family: String,
+    #[serde(default)]
+    pub capability: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub audience: String,
+}
+
+pub fn place_families(
+    spoken_for: &str,
+    standing: &[(String, String)],
+    unplaced: &[(String, String)],
+) -> Vec<Placed> {
+    if !asked() || unplaced.is_empty() {
+        return Vec::new();
+    }
+    let prompt = format!(
+        "A software system describes itself like this:\n{spoken_for}\n\n\
+         These capabilities were already read from it:\n{}\n\n\
+         These groups of paths were not placed yet. For each, say which capability above it \
+         delivers, by its exact name; or give a new capability name of 2-6 words with one \
+         sentence saying what someone gets and its audience when none fits; or say plumbing when \
+         it delivers nothing on its own. By these rules:\n{RULES}\n\n\
+         Echo each group id back exactly as given.\n\
+         Return JSON only: {{\"assigned\":[{{\"family\":\"...\",\"capability\":\"...\",\"description\":\"...\",\"audience\":\"...\"}}]}}\n\n\
+         The groups:\n{}",
+        standing.iter().map(|(name, told)| format!("- {name}: {told}")).collect::<Vec<_>>().join("\n"),
+        unplaced.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect::<Vec<_>>().join("\n")
+    );
+    let Some(held) = answered::<serde_json::Value>(&prompt, 3000, &asking_of_models(model()), "assigned", 1)
+    else {
+        return Vec::new();
+    };
+    held["assigned"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| serde_json::from_value::<Placed>(item.clone()).ok())
+        .filter(|item| !item.family.trim().is_empty() && !item.capability.trim().is_empty())
         .collect()
 }
 
@@ -713,10 +744,59 @@ fn shaped(of: &str) -> serde_json::Value {
             "type": "object",
             "properties": {"items": {"type": "array", "items": {
                 "type": "object",
-                "properties": {"id": text, "description": text},
+                "properties": {"id": text, "name": text, "description": text, "audience": text},
                 "required": ["id", "description"],
             }}},
             "required": ["items"],
+        }),
+        "capabilities" => serde_json::json!({
+            "type": "object",
+            "properties": {
+                "capabilities": {"type": "array", "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": text,
+                        "description": text,
+                        "audience": text,
+                        "families": {"type": "array", "items": text},
+                    },
+                    "required": ["name", "description", "audience", "families"],
+                }},
+                "plumbing": {"type": "array", "items": text},
+            },
+            "required": ["capabilities", "plumbing"],
+        }),
+        "placed" => serde_json::json!({
+            "type": "object",
+            "properties": {"placed": {"type": "array", "items": {
+                "type": "object",
+                "properties": {"id": text, "place": {"type": "string", "enum": ["terminal", "proximal", "supporting"]}},
+                "required": ["id", "place"],
+            }}},
+            "required": ["placed"],
+        }),
+        "assigned" => serde_json::json!({
+            "type": "object",
+            "properties": {"assigned": {"type": "array", "items": {
+                "type": "object",
+                "properties": {"family": text, "capability": text, "description": text, "audience": text},
+                "required": ["family", "capability", "description", "audience"],
+            }}},
+            "required": ["assigned"],
+        }),
+        "groups" => serde_json::json!({
+            "type": "object",
+            "properties": {"groups": {"type": "array", "items": {
+                "type": "object",
+                "properties": {
+                    "of": {"type": "array", "items": text},
+                    "name": text,
+                    "description": text,
+                    "audience": text,
+                },
+                "required": ["of", "name", "description", "audience"],
+            }}},
+            "required": ["groups"],
         }),
         _ => serde_json::json!({
             "type": "object",
@@ -771,7 +851,7 @@ fn answered<T: serde::de::DeserializeOwned>(
             return true;
         }
         serde_json::from_str::<serde_json::Value>(held).is_ok_and(|value| match value.get(of) {
-            Some(serde_json::Value::Array(held)) => held.len() >= at_least.max(1),
+            Some(serde_json::Value::Array(held)) => held.len() >= at_least,
             Some(serde_json::Value::String(held)) => !held.trim().is_empty(),
             Some(serde_json::Value::Null) | None => false,
             Some(_) => true,
@@ -810,6 +890,10 @@ fn answered<T: serde::de::DeserializeOwned>(
                         break 'asking;
                     }
                     ASKED_AGAIN.fetch_add(1, Ordering::Relaxed);
+                    if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
+                        let shown: String = text.chars().take(600).collect();
+                        eprintln!("    rejected answer ({} bytes): {shown}", text.len());
+                    }
                     std::thread::sleep(std::time::Duration::from_millis(500 << attempt))
                 }
                 crate::reach::Answer::Refused => break,
@@ -1006,4 +1090,24 @@ pub fn what_it_means(expect: &Expectation) -> String {
         .find(|(at, named, _)| *at == expect.at && (named.is_empty() || *named == kind))
         .map(|(_, _, meant)| (*meant).to_string())
         .unwrap_or_else(|| format!("{} of kind {kind}", expect.at))
+}
+
+#[cfg(test)]
+mod shapes {
+    #[test]
+    fn every_answer_asked_for_is_given_the_shape_it_is_read_back_in() {
+        let source = include_str!("author.rs");
+        let asked: std::collections::BTreeSet<&str> = source
+            .match_indices("&asking_of_models(model()), \"")
+            .chain(source.match_indices("&proposing(), \""))
+            .filter_map(|(at, found)| source[at + found.len()..].split('"').next())
+            .filter(|key| !key.is_empty() && *key != "description")
+            .collect();
+        assert!(asked.contains("capabilities") && asked.contains("groups"), "{asked:?}");
+        for key in asked {
+            let shape = super::shaped(key);
+            let required = shape["required"].as_array().cloned().unwrap_or_default();
+            assert!(required.iter().any(|held| held == key), "{key} is asked for but shaped as {shape}");
+        }
+    }
 }

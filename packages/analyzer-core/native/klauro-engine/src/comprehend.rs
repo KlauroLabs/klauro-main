@@ -21,6 +21,7 @@ pub struct Step {
 
 #[derive(Debug, Serialize)]
 pub struct Flow {
+    pub summary: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub writes: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -175,7 +176,7 @@ fn changes(exit: &ExitPoint) -> bool {
     }
 }
 
-const PUBLISHED: &str = "published";
+pub(crate) const PUBLISHED: &str = "published";
 const PROVISIONAL: &str = "provisional";
 
 fn spoken_within(spoken: &str, part: Option<&str>) -> String {
@@ -655,7 +656,7 @@ fn test_capabilities(capabilities: &mut Vec<Capability>, spoken: &str) {
     });
 }
 
-fn families_of<'a>(flows: &[&'a Flow]) -> BTreeMap<Family, Vec<&'a Flow>> {
+pub(crate) fn families_of<'a>(flows: &[&'a Flow]) -> BTreeMap<Family, Vec<&'a Flow>> {
     let mut grouped: BTreeMap<Family, Vec<&'a Flow>> = BTreeMap::new();
     for flow in flows.iter() {
         grouped.entry(family_of(flow)).or_default().push(flow);
@@ -669,244 +670,11 @@ fn families_of<'a>(flows: &[&'a Flow]) -> BTreeMap<Family, Vec<&'a Flow>> {
     grouped
 }
 
-fn name_families(
-    grouped: &[(Option<String>, BTreeMap<Family, Vec<&Flow>>)],
-    spoken: &str,
-) -> BTreeMap<String, crate::author::Written> {
-    let mut pooled: BTreeMap<&str, (&Family, Vec<&Flow>)> = BTreeMap::new();
-    for (_, families) in grouped.iter() {
-        for (family, flows) in families.iter() {
-            let held = pooled
-                .entry(family.key.as_str())
-                .or_insert_with(|| (family, Vec::new()));
-            held.1.extend(flows.iter().copied());
-        }
-    }
-    let keys: Vec<&str> = pooled.keys().copied().collect();
-    let told: BTreeMap<String, String> = keys
-        .iter()
-        .enumerate()
-        .filter_map(|(at, key)| {
-            let (family, flows) = pooled.get(key)?;
-            Some((format!("g{at}"), facts_of(flows, family)))
-        })
-        .collect();
-    let per_call = crate::author::per_call_for(told.len());
-    let written = crate::author::name_capabilities(spoken, &told, per_call);
-    if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
-        eprintln!(
-            "  author pooled {} groups across {} parts in calls of {}, named {}",
-            told.len(),
-            grouped.len(),
-            per_call,
-            written.len()
-        );
-    }
-    keys.into_iter()
-        .enumerate()
-        .filter_map(|(at, key)| Some((key.to_string(), written.get(&format!("g{at}"))?.clone())))
-        .collect()
-}
 
-fn form_capabilities(
-    grouped: BTreeMap<Family, Vec<&Flow>>,
-    named_by_key: &BTreeMap<String, crate::author::Written>,
-) -> Vec<Capability> {
-    if !crate::author::asked() {
-        return Vec::new();
-    }
-    let held: Vec<(&Family, &Vec<&Flow>)> = grouped.iter().collect();
-    let mut capabilities: BTreeMap<String, Capability> = BTreeMap::new();
-    for (family, flows) in held.iter() {
-        let Some(named) = named_by_key.get(&family.key) else { continue };
-        let id = format!("capability:{}", carved_name(&named.name));
-        let entry = capabilities.entry(id.clone()).or_insert_with(|| Capability {
-            id,
-            audience: match named.audience.trim().is_empty() {
-                true => None,
-                false => Some(named.audience.trim().to_ascii_lowercase()),
-            },
-            delivered: Vec::new(),
-            records: Vec::new(),
-            changes: Vec::new(),
-            flows: Vec::new(),
-            surfaces: Vec::new(),
-            project: flows.first().and_then(|flow| flow.project.clone()),
-            also_in: Vec::new(),
-            place: None,
-            name: Some(named.name.trim().to_string()),
-            description: Some(named.description.trim().to_string()),
-            grounding: None,
-            standing: PUBLISHED,
-            touches: Vec::new(),
-        });
-        for flow in flows.iter() {
-            entry.delivered.push(Delivery {
-                flow: flow.id.clone(),
-                role: match flow.standing {
-                    "terminal" | "proximal" => "primary",
-                    _ => "supporting",
-                },
-                rationale: format!("{} belongs here by {}", flow.operation, family.basis),
-            });
-            entry.surfaces.push(match flow.method.as_deref() {
-                Some(method) => format!("{method} {}", flow.operation),
-                None => flow.operation.clone(),
-            });
-            entry.records.extend(flow.writes.iter().cloned());
-            entry.touches.extend(flow.writes.iter().cloned());
-            entry.touches.extend(flow.reads.iter().cloned());
-            entry.changes.extend(flow.changes.iter().cloned());
-        }
-    }
-    let mut formed: Vec<Capability> = capabilities.into_values().collect();
-    for capability in formed.iter_mut() {
-        capability.delivered.sort_by(|left, right| left.flow.cmp(&right.flow));
-        capability.flows = capability.delivered.iter().map(|held| held.flow.clone()).collect();
-        settle(&mut capability.surfaces);
-        settle(&mut capability.records);
-        settle(&mut capability.touches);
-        settle(&mut capability.changes);
-    }
-    formed.sort_by(|left, right| left.id.cmp(&right.id));
-    formed
-}
 
-static SAYS_NOTHING: &[&str] = &[
-    "a", "access", "an", "and", "application", "control", "data", "for", "handling", "in",
-    "management", "managing", "of", "operations", "or", "service", "services", "support",
-    "system", "the", "to", "with",
-];
 
-fn about(name: &str) -> Vec<String> {
-    name.split(|letter: char| !letter.is_ascii_alphanumeric())
-        .map(|word| word.to_ascii_lowercase())
-        .filter(|word| word.len() > 2 && !SAYS_NOTHING.contains(&word.as_str()))
-        .map(|word| word.chars().take(4).collect())
-        .collect()
-}
 
-fn worth_asking_together(capabilities: &[Capability]) -> Vec<Vec<usize>> {
-    let mut held: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-    for (at, capability) in capabilities.iter().enumerate() {
-        let word = about(capability.name.as_deref().unwrap_or(""))
-            .into_iter()
-            .next()
-            .unwrap_or_else(|| format!("~{at}"));
-        held.entry(word).or_default().push(at);
-    }
-    held.into_values().collect()
-}
 
-fn reconciled(capabilities: &[Capability], spoken: &str) -> Vec<Capability> {
-    if capabilities.len() < 2 {
-        return Vec::new();
-    }
-    let capabilities = &gathered_by_name(capabilities)[..];
-    if capabilities.len() < 2 {
-        return capabilities.to_vec();
-    }
-    let listed: BTreeMap<String, String> = capabilities
-        .iter()
-        .enumerate()
-        .map(|(at, capability)| {
-            let mut surfaces = capability.surfaces.clone();
-            surfaces.truncate(6);
-            (
-                format!("c{at}"),
-                format!(
-                    "  it is called: {}\n  for: {}\n  found in the part: {}\n  reached through: {}\n  paths: {}",
-                    capability.name.as_deref().unwrap_or(""),
-                    capability.audience.as_deref().unwrap_or("someone"),
-                    capability.project.as_deref().map(within_of).unwrap_or("the repository root"),
-                    surfaces.join(", "),
-                    capability.delivered.len()
-                ),
-            )
-        })
-        .collect();
-    let groups: Vec<crate::author::Same> = worth_asking_together(capabilities)
-        .par_iter()
-        .filter(|cluster| cluster.len() > 1)
-        .flat_map(|cluster| {
-            let asking: BTreeMap<String, String> = cluster
-                .iter()
-                .filter_map(|at| {
-                    let key = format!("c{at}");
-                    listed.get(&key).map(|told| (key, told.clone()))
-                })
-                .collect();
-            crate::author::same_outcome(spoken, &asking)
-        })
-        .collect();
-    let mut placed: Vec<Option<usize>> = vec![None; capabilities.len()];
-    let mut named: Vec<&crate::author::Same> = Vec::new();
-    for group in groups.iter() {
-        let at = named.len();
-        let mut held = false;
-        for id in group.of.iter() {
-            let Some(which) = id.trim().strip_prefix('c').and_then(|held| held.parse::<usize>().ok())
-            else {
-                continue;
-            };
-            if let Some(slot) = placed.get_mut(which)
-                && slot.is_none()
-            {
-                *slot = Some(at);
-                held = true;
-            }
-        }
-        if held {
-            named.push(group);
-        }
-    }
-    let mut gathered: Vec<Vec<Capability>> =
-        (0..named.len()).map(|_| Vec::new()).collect();
-    let mut alone: Vec<Capability> = Vec::new();
-    for (at, capability) in capabilities.iter().enumerate() {
-        match placed[at] {
-            Some(which) => gathered[which].push(capability.clone()),
-            None => alone.push(capability.clone()),
-        }
-    }
-    let mut held: Vec<Capability> = alone;
-    for (group, mut members) in named.into_iter().zip(gathered) {
-        if members.is_empty() {
-            continue;
-        }
-        members.sort_by_key(|capability| std::cmp::Reverse(capability.delivered.len()));
-        let mut together = members.remove(0);
-        if members.is_empty() {
-            held.push(together);
-            continue;
-        }
-        for other in members {
-            joined(&mut together, other);
-        }
-        continue_with(&mut together, group);
-        together.delivered.sort_by(|left, right| left.flow.cmp(&right.flow));
-        together.delivered.dedup_by(|left, right| left.flow == right.flow);
-        together.flows = together.delivered.iter().map(|held| held.flow.clone()).collect();
-        settle(&mut together.records);
-        settle(&mut together.changes);
-        settle(&mut together.surfaces);
-        settle(&mut together.touches);
-        held.push(together);
-    }
-    for capability in held.iter_mut() {
-        if let Some(part) = capability.project.take()
-            && !capability.also_in.contains(&part)
-        {
-            capability.also_in.push(part);
-        }
-        capability.also_in.sort();
-        capability.also_in.dedup();
-    }
-    held.sort_by(|left, right| left.id.cmp(&right.id));
-    say_what_each_is_for(&mut held, spoken);
-    held.retain(|capability| capability.place != Some("supporting"));
-    held
-}
 
 fn say_what_each_is_for(held: &mut [Capability], spoken: &str) {
     let listed: BTreeMap<String, String> = held
@@ -935,7 +703,7 @@ fn say_what_each_is_for(held: &mut [Capability], spoken: &str) {
     }
 }
 
-fn joined(into: &mut Capability, other: Capability) {
+pub(crate) fn joined(into: &mut Capability, other: Capability) {
     if let Some(part) = other.project
         && Some(&part) != into.project.as_ref()
         && !into.also_in.contains(&part)
@@ -966,37 +734,33 @@ fn joined(into: &mut Capability, other: Capability) {
     into.also_in.dedup();
 }
 
-fn gathered_by_name(capabilities: &[Capability]) -> Vec<Capability> {
-    let mut by: Vec<Capability> = Vec::new();
-    for capability in capabilities {
-        match by.iter_mut().find(|held| held.id == capability.id) {
-            Some(held) => joined(held, capability.clone()),
-            None => by.push(capability.clone()),
-        }
+
+
+fn summarised(entry: &EntryPoint, named: &str, writes: &[String], reads: &[String], reaching: &[String]) -> String {
+    let entered = match (entry.kind, entry.method.as_deref()) {
+        ("http", Some(method)) => format!("{method} {named}"),
+        ("export", _) => format!("uses {named}"),
+        (kind, _) => format!("{kind} {named}"),
+    };
+    let mut said = vec![entered];
+    if !writes.is_empty() {
+        said.push(format!("writes {}", writes.join(", ")));
     }
-    by
+    if !reads.is_empty() {
+        said.push(format!("reads {}", reads.join(", ")));
+    }
+    if !reaching.is_empty() {
+        said.push(format!("reaches {}", reaching.join(", ")));
+    }
+    said.join("; ")
 }
 
-fn continue_with(held: &mut Capability, group: &crate::author::Same) {
-    if group.name.trim().is_empty() {
-        return;
-    }
-    held.id = format!("capability:{}", carved_name(&group.name));
-    held.name = Some(group.name.trim().to_string());
-    if !group.description.trim().is_empty() {
-        held.description = Some(group.description.trim().to_string());
-    }
-    if !group.audience.trim().is_empty() {
-        held.audience = Some(group.audience.trim().to_ascii_lowercase());
-    }
-}
-
-fn settle(held: &mut Vec<String>) {
+pub(crate) fn settle(held: &mut Vec<String>) {
     held.sort();
     held.dedup();
 }
 
-fn carved_name(name: &str) -> String {
+pub(crate) fn carved_name(name: &str) -> String {
     let held: String = name
         .trim()
         .to_ascii_lowercase()
@@ -1010,9 +774,9 @@ fn carved_name(name: &str) -> String {
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
-struct Family {
-    key: String,
-    basis: &'static str,
+pub(crate) struct Family {
+    pub(crate) key: String,
+    pub(crate) basis: &'static str,
 }
 
 fn family_of(flow: &Flow) -> Family {
@@ -1084,40 +848,6 @@ fn addressed_by_version(segment: &str) -> bool {
         || (segment.starts_with('v') && segment[1..].chars().all(|letter| letter.is_ascii_digit()))
 }
 
-fn facts_of(flows: &[&Flow], family: &Family) -> String {
-    let mut surfaces: Vec<String> = flows
-        .iter()
-        .map(|flow| match flow.method.as_deref() {
-            Some(method) => format!("{method} {}", flow.operation),
-            None => flow.operation.clone(),
-        })
-        .collect();
-    settle(&mut surfaces);
-    let mut records: Vec<String> = flows.iter().flat_map(|flow| flow.writes.iter().cloned()).collect();
-    settle(&mut records);
-    let mut changes: Vec<String> = flows.iter().flat_map(|flow| flow.changes.iter().cloned()).collect();
-    settle(&mut changes);
-    format!(
-        "  these belong together by {}\n{}  reached through: {}\n  it writes these records: {}\n  \
-         it ends by: {}\n  paths in this group: {}",
-        family.basis,
-        match flows.len() > 1 && family.key.starts_with("role:") {
-            true => "  they are interchangeable ways of doing one thing, so name the one thing \
-                     they are all for, never the interface they share\n",
-            false => "",
-        },
-        surfaces.join(", "),
-        match records.is_empty() {
-            true => "none named".to_string(),
-            false => records.join(", "),
-        },
-        match changes.is_empty() {
-            true => "leading into other paths".to_string(),
-            false => changes.join(", "),
-        },
-        flows.len()
-    )
-}
 
 pub fn author(
     held: &mut Comprehension,
@@ -1181,20 +911,12 @@ pub fn author(
                 held.flows.iter().map(|flow| flow.project.clone()).collect();
             parts.sort();
             parts.dedup();
-            let grouped: Vec<(Option<String>, BTreeMap<Family, Vec<&Flow>>)> = parts
+            let mut capabilities: Vec<Capability> = parts
                 .par_iter()
-                .map(|part| {
-                    let flows: Vec<&Flow> =
-                        held.flows.iter().filter(|flow| &flow.project == part).collect();
-                    (part.clone(), families_of(&flows))
-                })
-                .collect();
-            let named_by_key = name_families(&grouped, &spoken);
-            let mut capabilities: Vec<Capability> = grouped
-                .into_par_iter()
-                .flat_map(|(part, families)| {
+                .flat_map(|part| {
+                    let flows: Vec<&Flow> = held.flows.iter().filter(|flow| &flow.project == part).collect();
                     let said = spoken_within(&spoken, part.as_deref());
-                    let mut found = form_capabilities(families, &named_by_key);
+                    let mut found = crate::capabilities::of_a_part(&flows, &said);
                     test_capabilities(&mut found, &said);
                     say_what_each_is_for(&mut found, &said);
                     found
@@ -1202,7 +924,11 @@ pub fn author(
                 .collect();
             capabilities.sort_by(|left, right| left.id.cmp(&right.id));
             let (whole, described) = rayon::join(
-                || reconciled(&capabilities, &spoken),
+                || {
+                    let mut whole = crate::capabilities::of_the_whole(&capabilities, &spoken);
+                    say_what_each_is_for(&mut whole, &spoken);
+                    whole
+                },
                 || describe_parts(&capabilities, &held.entities, &spoken, told),
             );
             eprintln!(
@@ -1525,6 +1251,7 @@ pub fn derive(
         let mut changing: Vec<String> = Vec::new();
         let mut into: Vec<String> = Vec::new();
         let mut carrying: Vec<Shared> = Vec::new();
+        let mut reaching: Vec<String> = Vec::new();
         let mut head = 0;
         while head < queue.len() {
             let (current, depth) = queue[head];
@@ -1539,6 +1266,11 @@ pub fn derive(
             for exit in leaving.get(unit).into_iter().flatten() {
                 if changes(exit) {
                     changing.push(format!("{}:{}", exit.kind, exit.operation));
+                }
+                if let Some(service) = exit.service.as_deref()
+                    && !reaching.iter().any(|held| held == service)
+                {
+                    reaching.push(service.to_string());
                 }
             }
             if let Some(other) = handlers.get(unit)
@@ -1635,7 +1367,10 @@ pub fn derive(
             .collect();
         reads.sort();
         reads.dedup();
+        reaching.sort();
+        let summary = summarised(entry, &named, &writes, &reads, &reaching);
         flows.push(Flow {
+            summary,
             writes,
             reads,
             id: format!("flow:{}", entry.id),

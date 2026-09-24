@@ -184,7 +184,7 @@ pub static SERVICES: &[Known] = &[
         &["BREVO_", "SENDINBLUE_"]),
     known("Mailjet", "email", &["node-mailjet", "mailjet_rest"], &["mailjet.com"], &[], &[], &["MAILJET_"]),
     known("SMTP server", "email",
-        &["nodemailer", "smtplib", "aiosmtplib", "net/smtp", "System.Net.Mail", "MailKit", "javax.mail",
+        &["nodemailer", "smtplib", "aiosmtplib", "emails", "net/smtp", "System.Net.Mail", "MailKit", "javax.mail",
           "jakarta.mail", "lettre"],
         &[], &["smtp", "smtps"], &["mailhog/mailhog", "axllent/mailpit", "namshi/smtp"],
         &["SMTP_", "EMAIL_HOST", "MAIL_HOST"]),

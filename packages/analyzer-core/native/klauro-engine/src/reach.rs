@@ -12,7 +12,7 @@ pub fn asked() -> usize {
 fn agent() -> &'static ureq::Agent {
     HELD.get_or_init(|| {
         ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(120)))
+            .timeout_global(Some(Duration::from_secs(300)))
             .max_idle_connections(64)
             .max_idle_connections_per_host(64)
             .build()
