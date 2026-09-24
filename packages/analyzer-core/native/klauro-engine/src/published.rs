@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use crate::entry_exit::EntryPoint;
 use crate::model::*;
@@ -43,7 +43,7 @@ struct Publishes<'a> {
 }
 
 fn held_by(nodes: &[IndexNode]) -> HashMap<&str, Vec<&IndexNode>> {
-    let mut children: HashMap<&str, Vec<&IndexNode>> = HashMap::new();
+    let mut children: HashMap<&str, Vec<&IndexNode>> = HashMap::default();
     for node in nodes {
         if let Some(parent) = node.parent.as_deref() {
             children.entry(parent).or_default().push(node);

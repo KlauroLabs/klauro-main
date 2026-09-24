@@ -1,5 +1,5 @@
 use rayon::prelude::*;
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use serde::Serialize;
 
@@ -90,7 +90,7 @@ fn running_within<'a>(node: &'a IndexNode, named_of: &HashMap<&str, &'a IndexNod
             NodeKind::Function | NodeKind::Method | NodeKind::Constructor | NodeKind::Class
         ) && !held.name.contains('#')
     };
-    let mut climbed: HashSet<&str> = HashSet::from([node.id.as_str()]);
+    let mut climbed: HashSet<&str> = HashSet::from_iter([node.id.as_str()]);
     let mut holder = node;
     while !runs(holder) {
         let above = named_of.get(holder.parent.as_deref()?)?;
@@ -578,7 +578,7 @@ fn mounts_at(literal: &str) -> Option<&str> {
 }
 
 fn mounted_under(calls: &[CallFact]) -> HashMap<u32, String> {
-    let mut held: HashMap<u32, Vec<&str>> = HashMap::new();
+    let mut held: HashMap<u32, Vec<&str>> = HashMap::default();
     for call in calls {
         if !constructs_a_router(&call.callee) {
             continue;
@@ -727,7 +727,7 @@ pub fn kept_by_a_store(
 ) -> Vec<ExitPoint> {
     let position: HashMap<&str, usize> =
         nodes.iter().enumerate().map(|(at, node)| (node.id.as_str(), at)).collect();
-    let mut bases_of: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut bases_of: HashMap<&str, Vec<&str>> = HashMap::default();
     for edge in edges.iter().filter(|edge| matches!(edge.kind, EdgeKind::Extends | EdgeKind::Implements)) {
         if let Some(target) = position.get(edge.target.as_str()) {
             bases_of.entry(nodes[position[edge.source.as_str()]].name.as_str())
@@ -741,7 +741,7 @@ pub fn kept_by_a_store(
         }
     }
     let store_of = |named: &str| -> Option<&'static StoreBase> {
-        let mut seen: HashSet<&str> = HashSet::new();
+        let mut seen: HashSet<&str> = HashSet::default();
         let mut frontier = vec![named];
         while let Some(current) = frontier.pop() {
             if !seen.insert(current) {
@@ -754,13 +754,13 @@ pub fn kept_by_a_store(
         }
         None
     };
-    let mut typed_member: HashMap<(&str, &str), &str> = HashMap::new();
+    let mut typed_member: HashMap<(&str, &str), &str> = HashMap::default();
     for node in nodes.iter().filter(|node| node.kind == NodeKind::Property) {
         if let (Some(parent), Some(annotation)) = (node.parent.as_deref(), node.type_annotation.as_deref()) {
             typed_member.insert((parent, node.name.as_str()), plain_type(annotation));
         }
     }
-    let mut typed_local: HashMap<(&str, &str), &str> = HashMap::new();
+    let mut typed_local: HashMap<(&str, &str), &str> = HashMap::default();
     for local in locals {
         if let Some(annotation) = local.annotation.as_deref().or(local.constructed.as_deref()) {
             typed_local.insert((local.unit.as_str(), local.name.as_str()), plain_type(annotation));
@@ -1022,13 +1022,13 @@ fn a_route_prefix(literal: &str) -> Option<String> {
 }
 
 fn groups_of<'a>(calls: &'a [CallFact], locals: &'a [crate::model::LocalBinding]) -> Groups<'a> {
-    let mut on_line: HashMap<(u32, u32), Vec<&CallFact>> = HashMap::new();
+    let mut on_line: HashMap<(u32, u32), Vec<&CallFact>> = HashMap::default();
     for call in calls {
         if GATHERS_ROUTES.contains(&names::leaf(&call.callee).to_ascii_lowercase().as_str()) {
             on_line.entry((call.file, call.line)).or_default().push(call);
         }
     }
-    let mut groups: Groups = HashMap::new();
+    let mut groups: Groups = HashMap::default();
     for held in locals {
         let Some(found) = on_line.get(&(held.file, held.line)) else { continue };
         let Some((call, prefix)) = found
@@ -1058,7 +1058,7 @@ fn prefix_of(groups: &Groups, file: u32, unit: &str, name: &str, depth: u8) -> O
 type CallsByLine<'a> = HashMap<(u32, u32, String), &'a CallFact>;
 
 fn calls_by_line(calls: &[CallFact]) -> CallsByLine<'_> {
-    let mut held: CallsByLine = HashMap::new();
+    let mut held: CallsByLine = HashMap::default();
     for call in calls {
         held.entry((call.file, call.line, names::leaf(&call.callee).to_ascii_lowercase()))
             .or_insert(call);
@@ -1322,7 +1322,7 @@ pub fn derive(
         .collect();
     let Resolution { modules, local, unique_units, call_origins, through, .. } = resolution;
     let known: HashSet<&str> = nodes.iter().map(|node| node.id.as_str()).collect();
-    let mut stands_in: HashMap<&str, Vec<&'static str>> = HashMap::new();
+    let mut stands_in: HashMap<&str, Vec<&'static str>> = HashMap::default();
     for ((file, _), specifier) in modules {
         let Some(kinds) = module_kind(specifier) else { continue };
         let holding = stands_in.entry(files[*file as usize].as_str()).or_default();
@@ -1335,7 +1335,7 @@ pub fn derive(
     lap("setup");
     let mut entry_points = Vec::new();
     let mounted = mounted_under(calls);
-    let mut base_paths: HashMap<&str, String> = HashMap::new();
+    let mut base_paths: HashMap<&str, String> = HashMap::default();
     for node in nodes {
         if !matches!(node.kind, NodeKind::Class | NodeKind::Interface) {
             continue;
@@ -1430,8 +1430,8 @@ pub fn derive(
     }
 
     lap("decorated entries");
-    let mut by_name: HashMap<&str, Vec<&IndexNode>> = HashMap::new();
-    let mut above: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut by_name: HashMap<&str, Vec<&IndexNode>> = HashMap::default();
+    let mut above: HashMap<&str, Vec<&str>> = HashMap::default();
     for node in nodes {
         if node.kind.is_type() {
             by_name.entry(node.name.as_str()).or_default().push(node);
@@ -1455,7 +1455,7 @@ pub fn derive(
         entry_base(name)
             .or_else(|| reaches.get(names::leaf(name)).copied())
     }
-    let mut reaches: HashMap<&str, &'static EntryBase> = HashMap::new();
+    let mut reaches: HashMap<&str, &'static EntryBase> = HashMap::default();
     loop {
         let mut settled = false;
         for node in nodes {
@@ -1484,7 +1484,7 @@ pub fn derive(
             .find_map(|name| supertype_base(name, &reaches))
     };
 
-    let mut members: HashMap<&str, Vec<&IndexNode>> = HashMap::new();
+    let mut members: HashMap<&str, Vec<&IndexNode>> = HashMap::default();
     for node in nodes {
         if let Some(parent) = node.parent.as_deref()
             && matches!(node.kind, NodeKind::Method | NodeKind::Function)
@@ -1537,8 +1537,8 @@ pub fn derive(
         .filter(|node| node.kind.is_type() || matches!(node.kind, NodeKind::Function | NodeKind::Method))
         .flat_map(|node| [node.name.as_str(), names::leaf(&node.name)])
         .collect();
-    let mut owning: HashMap<(u32, u32), &str> = HashMap::new();
-    let mut acting: HashMap<(u32, u32), &str> = HashMap::new();
+    let mut owning: HashMap<(u32, u32), &str> = HashMap::default();
+    let mut acting: HashMap<(u32, u32), &str> = HashMap::default();
     for registration in registrations {
         let at = (registration.file, registration.line);
         match registration.handler.strip_prefix(':') {
@@ -1575,8 +1575,8 @@ pub fn derive(
 
     lap("registrations owned");
     let groups = groups_of(calls, locals);
-    let by_line = if groups.is_empty() { HashMap::new() } else { calls_by_line(calls) };
-    let mut registered: HashSet<(u32, u32)> = HashSet::new();
+    let by_line = if groups.is_empty() { HashMap::default() } else { calls_by_line(calls) };
+    let mut registered: HashSet<(u32, u32)> = HashSet::default();
     for registration in registrations {
         let Some(kind) = classify_registration(&registration.registrar, Some(&registration.label))
         else {
@@ -1893,7 +1893,7 @@ pub fn derive(
     }
     entry_points.sort_by(|left, right| left.id.cmp(&right.id));
     entry_points.dedup_by(|left, right| left.id == right.id);
-    let mut at_site: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+    let mut at_site: HashMap<(u32, u32), Vec<usize>> = HashMap::default();
     for (at, exit) in exit_points.iter().enumerate() {
         at_site.entry((exit.file, exit.line)).or_default().push(at);
     }

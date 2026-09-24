@@ -11,8 +11,15 @@ pub struct Extractor<'a> {
     file: u32,
     module_id: String,
     facts: FileFacts,
-    metrics: std::collections::HashMap<String, UnitMetrics>,
-    remembered: std::collections::HashMap<String, String>,
+    metrics: rustc_hash::FxHashMap<String, UnitMetrics>,
+    remembered: rustc_hash::FxHashMap<String, String>,
+    placed: Option<Placed>,
+}
+
+#[derive(Clone, Copy)]
+struct Placed {
+    written: bool,
+    called: bool,
 }
 
 struct Scope {
@@ -77,8 +84,9 @@ impl<'a> Extractor<'a> {
             file,
             module_id,
             facts: FileFacts::default(),
-            metrics: std::collections::HashMap::new(),
-            remembered: std::collections::HashMap::new(),
+            metrics: rustc_hash::FxHashMap::default(),
+            remembered: rustc_hash::FxHashMap::default(),
+            placed: None,
         }
     }
 
@@ -158,8 +166,23 @@ impl<'a> Extractor<'a> {
         if !cursor.goto_first_child() {
             return;
         }
+        let assigned = match node.kind() {
+            "assignment_expression" | "augmented_assignment_expression" => {
+                node.child_by_field_name("left").map(|left| left.id())
+            }
+            _ => None,
+        };
+        let invoked = match node.kind() {
+            "call_expression" => node.child_by_field_name("function").map(|function| function.id()),
+            _ => None,
+        };
         loop {
-            self.visit(cursor.node(), scope);
+            let child = cursor.node();
+            self.placed = Some(Placed {
+                written: assigned == Some(child.id()),
+                called: invoked == Some(child.id()),
+            });
+            self.visit(child, scope);
             if !cursor.goto_next_sibling() {
                 break;
             }
@@ -167,6 +190,7 @@ impl<'a> Extractor<'a> {
     }
 
     fn visit(&mut self, node: Node, scope: &Scope) {
+        let placed = self.placed.take();
         match node.kind() {
             "import_statement" => self.import_statement(node),
             "export_statement" => self.export_statement(node, scope),
@@ -224,14 +248,21 @@ impl<'a> Extractor<'a> {
             }
             "member_expression" => {
                 let target = self.text_owned(node);
-                let written = node.parent().is_some_and(|parent| {
-                    matches!(parent.kind(), "assignment_expression" | "augmented_assignment_expression")
-                        && parent.child_by_field_name("left") == Some(node)
-                });
-                let called = node.parent().is_some_and(|parent| {
-                    parent.kind() == "call_expression"
-                        && parent.child_by_field_name("function") == Some(node)
-                });
+                let (written, called) = match placed {
+                    Some(placed) => (placed.written, placed.called),
+                    None => {
+                        let parent = node.parent();
+                        let written = parent.is_some_and(|parent| {
+                            matches!(parent.kind(), "assignment_expression" | "augmented_assignment_expression")
+                                && parent.child_by_field_name("left") == Some(node)
+                        });
+                        let called = parent.is_some_and(|parent| {
+                            parent.kind() == "call_expression"
+                                && parent.child_by_field_name("function") == Some(node)
+                        });
+                        (written, called)
+                    }
+                };
                 if !written && !called {
                     self.keep(&target, false, node, scope);
                     self.read_a_setting(&target, node, scope);

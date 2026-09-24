@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::BTreeMap;
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use serde::Serialize;
 
@@ -212,7 +213,7 @@ pub fn derive<'a>(
     for ((project, from, to), held) in counted {
         by_project.entry(project).or_default().push(((from, to), held));
     }
-    let mut travelled: HashMap<Option<&str>, BTreeMap<Vec<String>, u32>> = HashMap::new();
+    let mut travelled: HashMap<Option<&str>, BTreeMap<Vec<String>, u32>> = HashMap::default();
     for entry in entry_points.iter().filter(|entry| !NOT_AN_ARRIVAL.contains(&entry.kind)) {
         let Some(start) = position.get(entry.handler.as_str()).copied() else { continue };
         if tested(&nodes[start]) {

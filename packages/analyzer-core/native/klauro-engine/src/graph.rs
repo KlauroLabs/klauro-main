@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use serde::Serialize;
 
@@ -96,7 +96,7 @@ pub fn derive(
     }
     let adjacency = build_adjacency(nodes.len(), &mut pairs);
 
-    let mut members: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut members: HashMap<u32, Vec<u32>> = HashMap::default();
     for edge in edges {
         if !matches!(edge.kind, EdgeKind::HasMethod) {
             continue;

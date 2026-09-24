@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use serde::Serialize;
 
@@ -198,19 +199,19 @@ pub fn derive(sources: &Sources) -> Derived {
     }
 
     lap("handlers");
-    let mut constructed_at: HashMap<(u32, u32), Vec<&str>> = HashMap::new();
+    let mut constructed_at: HashMap<(u32, u32), Vec<&str>> = HashMap::default();
     for call in sources.calls.iter().filter(|call| call.constructs) {
         constructed_at.entry((call.file, call.line)).or_default().push(plain(&call.callee));
     }
-    let mut typed_local: HashMap<(&str, &str), &str> = HashMap::new();
-    let mut bound_at: HashMap<(&str, &str), (u32, u32)> = HashMap::new();
+    let mut typed_local: HashMap<(&str, &str), &str> = HashMap::default();
+    let mut bound_at: HashMap<(&str, &str), (u32, u32)> = HashMap::default();
     for local in sources.locals {
         if let Some(typed) = local.constructed.as_deref().or(local.annotation.as_deref()) {
             typed_local.insert((local.unit.as_str(), local.name.as_str()), plain(typed));
         }
         bound_at.insert((local.unit.as_str(), local.name.as_str()), (local.file, local.line));
     }
-    let mut constructing_at: HashMap<(u32, u32), Vec<&CallFact>> = HashMap::new();
+    let mut constructing_at: HashMap<(u32, u32), Vec<&CallFact>> = HashMap::default();
     for call in sources.calls.iter().filter(|call| call.constructs) {
         constructing_at.entry((call.file, call.line)).or_default().push(call);
     }

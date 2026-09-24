@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::path::Path;
 
 use serde::Serialize;
@@ -261,7 +262,7 @@ pub fn derive(sources: &Sources) -> Found {
         }
     }
 
-    let mut exits_at: HashMap<(u32, u32), Vec<&ExitPoint>> = HashMap::new();
+    let mut exits_at: HashMap<(u32, u32), Vec<&ExitPoint>> = HashMap::default();
     for exit in sources.exits.iter().filter(|exit| !tested(exit.file)) {
         exits_at.entry((exit.file, exit.line)).or_default().push(exit);
         if let Some(known) = service_catalog::by_package(&exit.target) {
@@ -421,7 +422,7 @@ pub fn derive(sources: &Sources) -> Found {
         held.reached_by.extend(through.iter().map(|exit| exit.id.clone()));
     }
 
-    let mut serving: HashMap<String, String> = HashMap::new();
+    let mut serving: HashMap<String, String> = HashMap::default();
     for (name, held) in &gathering.held {
         for exit in &held.reached_by {
             serving.entry(exit.clone()).or_insert_with(|| name.clone());

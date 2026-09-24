@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use serde::Serialize;
 
@@ -57,8 +57,8 @@ pub fn derive(
     files: &[String],
     project_of: &HashMap<&str, &str>,
 ) -> Architecture {
-    let mut entry_kinds: HashMap<&str, HashMap<&str, u32>> = HashMap::new();
-    let mut routes: HashMap<&str, Vec<Route>> = HashMap::new();
+    let mut entry_kinds: HashMap<&str, HashMap<&str, u32>> = HashMap::default();
+    let mut routes: HashMap<&str, Vec<Route>> = HashMap::default();
     for entry in entry_points {
         let Some(project) = files
             .get(entry.file as usize)
@@ -82,7 +82,7 @@ pub fn derive(
         }
     }
 
-    let mut project_roles: HashMap<&str, HashMap<&str, u32>> = HashMap::new();
+    let mut project_roles: HashMap<&str, HashMap<&str, u32>> = HashMap::default();
     for role in &roles.roles {
         let Some(project) = role.project.as_deref() else { continue };
         *project_roles
@@ -92,7 +92,7 @@ pub fn derive(
             .or_insert(0) += 1;
     }
 
-    let mut categories: HashMap<&str, HashSet<&str>> = HashMap::new();
+    let mut categories: HashMap<&str, HashSet<&str>> = HashMap::default();
     for dependency in &dependencies.dependencies {
         if dependency.category.is_empty() {
             continue;

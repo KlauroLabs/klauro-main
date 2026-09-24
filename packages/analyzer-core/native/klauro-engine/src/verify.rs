@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use serde::Serialize;
 
@@ -193,7 +193,7 @@ fn guard_of(node: &IndexNode) -> Option<&str> {
 fn guarded(nodes: &[IndexNode], entry_points: &[EntryPoint]) -> Vec<Invariant> {
     let by_id: HashMap<&str, &IndexNode> = nodes.iter().map(|node| (node.id.as_str(), node)).collect();
     let mut holders: HashMap<(&str, String), (Vec<String>, Vec<String>, Option<String>)> =
-        HashMap::new();
+        HashMap::default();
     for entry in entry_points {
         if entry.kind == "test" {
             continue;
@@ -254,8 +254,8 @@ pub fn derive(
     routes: &[&crate::architecture::Route],
 ) -> Verification {
     let by_id: HashMap<&str, &IndexNode> = nodes.iter().map(|node| (node.id.as_str(), node)).collect();
-    let mut asserted: HashMap<&str, u32> = HashMap::new();
-    let mut standing: HashMap<&str, Vec<String>> = HashMap::new();
+    let mut asserted: HashMap<&str, u32> = HashMap::default();
+    let mut standing: HashMap<&str, Vec<String>> = HashMap::default();
     for fact in calls {
         let Some(caller) = fact.caller.as_deref() else { continue };
         if asserts(fact) {
@@ -279,7 +279,7 @@ pub fn derive(
     }
 
     let mut cases = Vec::new();
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     for entry in entry_points {
         if entry.kind != "test" || !seen.insert(entry.handler.as_str()) {
             continue;
@@ -335,7 +335,7 @@ pub fn derive(
             });
         }
     }
-    let mut counts: HashMap<&str, u32> = HashMap::new();
+    let mut counts: HashMap<&str, u32> = HashMap::default();
     for gap in &gaps {
         *counts.entry(gap.gap).or_insert(0) += 1;
     }
@@ -382,7 +382,7 @@ fn asked_handlers<'a>(
     routes: &[&'a crate::architecture::Route],
     requests: &[(String, String)],
 ) -> HashSet<&'a str> {
-    let mut asked = HashSet::new();
+    let mut asked = HashSet::default();
     for route in routes {
         if requests.iter().any(|(method, path)| {
             (route.method == "ANY" || route.method.eq_ignore_ascii_case(method))
@@ -422,7 +422,7 @@ fn missing(
         })
         .map(|node| node.id.as_str())
         .collect();
-    let mut reaching: HashSet<&str> = HashSet::new();
+    let mut reaching: HashSet<&str> = HashSet::default();
     for edge in edges {
         if matches!(edge.kind, EdgeKind::Calls | EdgeKind::Instantiates)
             && product.contains(edge.target.as_str())
@@ -519,7 +519,7 @@ fn measure(
         .enumerate()
         .map(|(position, node)| (node.id.as_str(), position))
         .collect();
-    let mut asked: HashSet<&str> = HashSet::new();
+    let mut asked: HashSet<&str> = HashSet::default();
     for route in routes {
         if requests.iter().any(|(method, path)| {
             (route.method == "ANY" || route.method.eq_ignore_ascii_case(method))

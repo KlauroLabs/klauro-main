@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use serde::Serialize;
 
@@ -93,8 +93,8 @@ pub fn derive(
     let named: HashMap<&str, &IndexNode> = nodes.iter().map(|node| (node.id.as_str(), node)).collect();
     let mut roles: Vec<Role> = Vec::new();
     let mut inherits: Vec<(String, String, String)> = Vec::new();
-    let mut seen: std::collections::HashSet<(String, &'static str)> =
-        std::collections::HashSet::new();
+    let mut seen: rustc_hash::FxHashSet<(String, &'static str)> =
+        rustc_hash::FxHashSet::default();
 
     let mut record = |node: &IndexNode, role: &'static str, from: String| {
         if seen.insert((node.id.clone(), role)) {
@@ -164,7 +164,7 @@ pub fn derive(
         }
     }
 
-    let mut modelled: std::collections::HashSet<String> = roles
+    let mut modelled: rustc_hash::FxHashSet<String> = roles
         .iter()
         .filter(|role| role.role == "model")
         .map(|role| role.node.clone())
@@ -195,7 +195,7 @@ pub fn derive(
 
     roles.sort_by(|left, right| left.node.cmp(&right.node).then(left.role.cmp(right.role)));
 
-    let mut counts: HashMap<&str, u32> = HashMap::new();
+    let mut counts: HashMap<&str, u32> = HashMap::default();
     for role in &roles {
         *counts.entry(role.role).or_insert(0) += 1;
     }

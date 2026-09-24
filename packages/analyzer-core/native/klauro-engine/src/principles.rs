@@ -1,4 +1,5 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::BTreeSet;
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use serde::Serialize;
 
@@ -85,7 +86,7 @@ pub fn derive(sources: &Sources) -> Principles {
 
     let mut solid = Vec::new();
 
-    let mut concerns: HashMap<usize, BTreeSet<String>> = HashMap::new();
+    let mut concerns: HashMap<usize, BTreeSet<String>> = HashMap::default();
     for exit in sources.exit_points {
         let Some(unit) = position.get(exit.source.as_str()).copied() else { continue };
         if tested[unit] {
@@ -303,7 +304,7 @@ pub fn derive(sources: &Sources) -> Principles {
     for owner in &types {
         let mut depth = 0usize;
         let mut current = *owner;
-        let mut seen: HashSet<usize> = HashSet::from([current]);
+        let mut seen: HashSet<usize> = HashSet::from_iter([current]);
         while let Some(parent) = graph.extends_parent[current] {
             if !seen.insert(parent) {
                 break;
@@ -347,7 +348,7 @@ pub fn derive(sources: &Sources) -> Principles {
 
 fn cycles(sources: &Sources, position: &rustc_hash::FxHashMap<&str, usize>) -> Vec<String> {
     let nodes = sources.nodes;
-    let mut files_of: HashMap<u32, usize> = HashMap::new();
+    let mut files_of: HashMap<u32, usize> = HashMap::default();
     let mut graph: Vec<Vec<usize>> = Vec::new();
     let mut named: Vec<u32> = Vec::new();
     let mut slot = |file: u32, graph: &mut Vec<Vec<usize>>, named: &mut Vec<u32>| -> usize {

@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
+use rustc_hash::FxHashMap as HashMap;
 use std::sync::LazyLock;
 
 use crate::entry_exit::{EntryPoint, ExitPoint};
@@ -108,7 +109,7 @@ static PRACTICES: &[Practice] = &[
 ];
 
 static PRACTICE_INDEX: LazyLock<HashMap<String, Vec<(usize, bool)>>> = LazyLock::new(|| {
-    let mut held: HashMap<String, Vec<(usize, bool)>> = HashMap::new();
+    let mut held: HashMap<String, Vec<(usize, bool)>> = HashMap::default();
     for (at, practice) in PRACTICES.iter().enumerate() {
         for package in practice.packages {
             let spans_segments = package.starts_with('@') || package.contains(['.', '/']);

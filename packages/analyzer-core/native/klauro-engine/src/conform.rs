@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use serde::Serialize;
 
@@ -85,7 +85,7 @@ fn convention(
 }
 
 fn sprawling(dependencies: &crate::dependencies::Dependencies) -> Vec<Sprawl> {
-    let mut by_category: HashMap<(&str, &str), Vec<String>> = HashMap::new();
+    let mut by_category: HashMap<(&str, &str), Vec<String>> = HashMap::default();
     for dependency in &dependencies.dependencies {
         if dependency.role != "framework" || dependency.category.is_empty() {
             continue;
@@ -129,7 +129,7 @@ pub fn derive(
 ) -> Conformance {
     let mut conventions = Vec::new();
 
-    let mut naming: HashMap<&str, HashMap<&str, Vec<String>>> = HashMap::new();
+    let mut naming: HashMap<&str, HashMap<&str, Vec<String>>> = HashMap::default();
     for (at, path) in files.iter().enumerate() {
         let language = languages.get(at).copied().unwrap_or_default();
         if language.is_empty() || crate::paths::is_test(path) {
@@ -151,7 +151,7 @@ pub fn derive(
         }
     }
 
-    let mut placement: HashMap<&str, Vec<String>> = HashMap::new();
+    let mut placement: HashMap<&str, Vec<String>> = HashMap::default();
     for case in &verification.cases {
         let Some(path) = files.get(case.file as usize) else { continue };
         let shape = match path.split('/').any(|step| {
@@ -164,8 +164,8 @@ pub fn derive(
     }
     conventions.extend(convention("test-placement", placement, None));
 
-    let mut guarding: HashMap<&str, Vec<String>> = HashMap::new();
-    let guarded: std::collections::HashSet<&str> = verification
+    let mut guarding: HashMap<&str, Vec<String>> = HashMap::default();
+    let guarded: rustc_hash::FxHashSet<&str> = verification
         .invariants
         .iter()
         .flat_map(|invariant| invariant.holds.iter())
@@ -183,8 +183,8 @@ pub fn derive(
     }
     conventions.extend(convention("surface-guarding", guarding, None));
 
-    let mut holding: HashMap<&str, Vec<String>> = HashMap::new();
-    let leaving: std::collections::HashSet<(&str, u32)> = exit_points
+    let mut holding: HashMap<&str, Vec<String>> = HashMap::default();
+    let leaving: rustc_hash::FxHashSet<(&str, u32)> = exit_points
         .iter()
         .map(|exit| (exit.source.as_str(), exit.line))
         .collect();
@@ -201,7 +201,7 @@ pub fn derive(
     }
     conventions.extend(convention("exit-handling", holding, None));
 
-    let mut documented: HashMap<&str, Vec<String>> = HashMap::new();
+    let mut documented: HashMap<&str, Vec<String>> = HashMap::default();
     for node in nodes {
         if !node.kind.is_unit() || !node.modifiers.exported {
             continue;

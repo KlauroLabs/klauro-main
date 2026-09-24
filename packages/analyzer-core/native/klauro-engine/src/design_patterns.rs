@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use crate::model::*;
 use crate::patterns::Found;
@@ -241,7 +242,7 @@ pub fn derive(graph: &crate::shared::Graph, edges: &[IndexEdge]) -> Vec<Found> {
         }
     }
 
-    let mut held_as: HashMap<&str, HashSet<usize>> = HashMap::new();
+    let mut held_as: HashMap<&str, HashSet<usize>> = HashMap::default();
     for (at, node) in nodes.iter().enumerate() {
         if node.kind != NodeKind::Property || shape.tested(at) {
             continue;

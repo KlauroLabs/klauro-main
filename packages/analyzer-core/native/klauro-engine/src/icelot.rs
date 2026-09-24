@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use serde::Serialize;
 
@@ -121,7 +121,7 @@ pub fn derive(
     exits: &[ExitPoint],
     external: &HashMap<String, ()>,
 ) -> Vec<Icelot> {
-    let mut integrations: HashMap<&str, Vec<String>> = HashMap::new();
+    let mut integrations: HashMap<&str, Vec<String>> = HashMap::default();
     for edge in edges {
         if !matches!(edge.kind, EdgeKind::Calls | EdgeKind::Instantiates) {
             continue;
@@ -147,8 +147,8 @@ pub fn derive(
         .map(|entry| (entry.unit.as_str(), &entry.metrics))
         .collect();
 
-    let mut call_counts: HashMap<&str, (u16, u16)> = HashMap::new();
-    let mut telemetry: HashMap<&str, Vec<TelemetrySite>> = HashMap::new();
+    let mut call_counts: HashMap<&str, (u16, u16)> = HashMap::default();
+    let mut telemetry: HashMap<&str, Vec<TelemetrySite>> = HashMap::default();
     for call in calls {
         let Some(caller) = call.caller.as_deref() else { continue };
         let entry = call_counts.entry(caller).or_insert((0, 0));
@@ -168,7 +168,7 @@ pub fn derive(
         }
     }
 
-    let mut exits_by_unit: HashMap<&str, Vec<String>> = HashMap::new();
+    let mut exits_by_unit: HashMap<&str, Vec<String>> = HashMap::default();
     for exit in exits {
         exits_by_unit
             .entry(exit.source.as_str())

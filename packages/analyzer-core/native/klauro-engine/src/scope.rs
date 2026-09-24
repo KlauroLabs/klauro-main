@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use serde::Serialize;
 
@@ -119,7 +119,7 @@ struct Files<'a> {
 
 impl<'a> Files<'a> {
     fn build(files: &'a [String], nodes: &'a [IndexNode]) -> Self {
-        let mut children: HashMap<&str, Vec<&IndexNode>> = HashMap::new();
+        let mut children: HashMap<&str, Vec<&IndexNode>> = HashMap::default();
         for node in nodes {
             if let Some(parent) = node.parent.as_deref() {
                 children.entry(parent).or_default().push(node);
@@ -607,7 +607,7 @@ fn runnable_roots<'a>(files: &'a [String], entry_points: &[EntryPoint]) -> HashS
         .filter(|entry| entry.kind == "lifecycle" || entry.kind == "http")
         .map(|entry| file_of(&entry.handler))
         .collect();
-    let mut roots = HashSet::new();
+    let mut roots = HashSet::default();
     for path in files {
         if !lifecycle.contains(path.as_str()) {
             continue;
@@ -733,7 +733,7 @@ fn separate_containers(candidates: &mut [Candidate]) {
     if containers.len() < 2 {
         return;
     }
-    let mut shared: HashMap<String, u32> = HashMap::new();
+    let mut shared: HashMap<String, u32> = HashMap::default();
     for at in &containers {
         for path in &candidates[*at].ships {
             *shared.entry(path.clone()).or_insert(0) += 1;
@@ -770,7 +770,7 @@ fn consolidate(
     });
 
     let mut deployables: Vec<Deployable> = Vec::new();
-    let mut by_root: HashMap<String, usize> = HashMap::new();
+    let mut by_root: HashMap<String, usize> = HashMap::default();
     for candidate in candidates {
         let declares = candidate.strongest();
         let shipped = declares == Declares::Ship;
@@ -921,7 +921,7 @@ fn consolidate(
             .collect(),
     );
 
-    let mut imports: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut imports: HashMap<&str, Vec<&str>> = HashMap::default();
     for edge in edges {
         if edge.kind == EdgeKind::Imports {
             imports
@@ -946,7 +946,7 @@ fn consolidate(
         })
         .collect();
 
-    let mut reach: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut reach: HashMap<&str, Vec<usize>> = HashMap::default();
     for (at, unit) in deployables.iter().enumerate() {
         if unit.bundled_into.is_some() {
             continue;

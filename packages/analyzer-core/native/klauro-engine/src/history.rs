@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::path::Path;
 use std::process::Command;
 
@@ -72,8 +72,8 @@ pub fn read(root: &Path, files: &[String]) -> Option<History> {
     let text = String::from_utf8_lossy(&log.stdout);
 
     let mut commits = 0;
-    let mut touched: HashMap<&str, (u32, HashSet<&str>, i64)> = HashMap::new();
-    let mut together: HashMap<(&str, &str), u32> = HashMap::new();
+    let mut touched: HashMap<&str, (u32, HashSet<&str>, i64)> = HashMap::default();
+    let mut together: HashMap<(&str, &str), u32> = HashMap::default();
     let mut when = 0;
     let mut author = "";
     let mut pending: Vec<&str> = Vec::new();
@@ -92,7 +92,7 @@ pub fn read(root: &Path, files: &[String]) -> Option<History> {
             continue;
         }
         let Some(held) = held.get(path) else { continue };
-        let entry = touched.entry(held).or_insert((0, HashSet::new(), 0));
+        let entry = touched.entry(held).or_insert((0, HashSet::default(), 0));
         entry.0 += 1;
         entry.1.insert(author);
         entry.2 = entry.2.max(when);

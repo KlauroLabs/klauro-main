@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use crate::model::{IndexNode, NodeKind};
 use crate::paths::{basename, contains, directory_of, join, normalize};
@@ -16,13 +16,13 @@ struct Entry {
 
 impl Aliases {
     pub fn read(files: &[String], nodes: &[IndexNode]) -> Aliases {
-        let mut children: HashMap<&str, Vec<&IndexNode>> = HashMap::new();
+        let mut children: HashMap<&str, Vec<&IndexNode>> = HashMap::default();
         for node in nodes {
             if let Some(parent) = node.parent.as_deref() {
                 children.entry(parent).or_default().push(node);
             }
         }
-        let mut packages: HashMap<String, String> = HashMap::new();
+        let mut packages: HashMap<String, String> = HashMap::default();
         for path in files {
             if basename(path) == "package.json"
                 && let Some(name) = value_of(&children, path, "name")
@@ -175,7 +175,7 @@ impl Aliases {
 }
 
 fn holdings(files: &[String]) -> HashSet<&str> {
-    let mut held = HashSet::new();
+    let mut held = HashSet::default();
     for path in files {
         held.insert(path.as_str());
         let mut folder = directory_of(path);
@@ -224,7 +224,7 @@ fn declared_paths(
     entries: &mut Vec<Entry>,
 ) {
     let mut read = vec![path.to_string()];
-    let mut seen: HashSet<String> = HashSet::new();
+    let mut seen: HashSet<String> = HashSet::default();
     while let Some(config) = read.pop() {
         if !seen.insert(config.clone()) {
             continue;

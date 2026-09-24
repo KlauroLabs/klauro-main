@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use serde::Serialize;
 
@@ -158,7 +158,7 @@ pub fn derive(
     code: &[bool],
     deployables: &[Deployable],
 ) -> Partition {
-    let mut children: HashMap<&str, Vec<&IndexNode>> = HashMap::new();
+    let mut children: HashMap<&str, Vec<&IndexNode>> = HashMap::default();
     for node in nodes {
         if let Some(parent) = node.parent.as_deref() {
             children.entry(parent).or_default().push(node);
@@ -173,7 +173,7 @@ pub fn derive(
 
     let patterns = workspace_patterns(files, &children);
     let mut declared: Vec<Declared> = Vec::new();
-    let mut claimed: HashSet<String> = HashSet::new();
+    let mut claimed: HashSet<String> = HashSet::default();
 
     for unit in deployables.iter().filter(|unit| {
         unit.bundled_into.is_some() && unit.category == "library" && unit.runs.is_none()
@@ -251,7 +251,7 @@ const COHESION_FLOOR: f32 = 0.8;
 const COHESION_MINIMUM_FILES: usize = 3;
 
 fn cohesive_roots(files: &[String], edges: &[IndexEdge]) -> Vec<Declared> {
-    let mut candidates: HashMap<&str, usize> = HashMap::new();
+    let mut candidates: HashMap<&str, usize> = HashMap::default();
     for path in files {
         let directory = directory_of(path);
         if directory.is_empty() {
@@ -265,8 +265,8 @@ fn cohesive_roots(files: &[String], edges: &[IndexEdge]) -> Vec<Declared> {
         return Vec::new();
     }
 
-    let mut within: HashMap<&str, u32> = HashMap::new();
-    let mut crossing: HashMap<&str, u32> = HashMap::new();
+    let mut within: HashMap<&str, u32> = HashMap::default();
+    let mut crossing: HashMap<&str, u32> = HashMap::default();
     let top_of = |path: &str| -> Option<&str> {
         let top = path.split('/').next()?;
         candidates.get_key_value(top).map(|(key, _)| *key)
@@ -401,7 +401,7 @@ fn partition(
         }
     }
 
-    let mut imports: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut imports: HashMap<&str, Vec<&str>> = HashMap::default();
     for edge in edges {
         if edge.kind != EdgeKind::Imports {
             continue;
@@ -427,7 +427,7 @@ fn partition(
     }
 
     let reach: HashMap<&str, Vec<usize>> = {
-        let mut found: HashMap<&str, Vec<usize>> = HashMap::new();
+        let mut found: HashMap<&str, Vec<usize>> = HashMap::default();
         for (at, project) in sub_projects.iter().enumerate() {
             let mut seen: HashSet<&str> = files
                 .iter()

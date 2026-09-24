@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use tree_sitter::{Node, Tree};
 
@@ -103,9 +103,9 @@ impl<'a> Extractor<'a> {
             module_id: path.to_string(),
             spec,
             facts: FileFacts::default(),
-            metrics: HashMap::new(),
-            types_by_name: HashMap::new(),
-            remembered: HashMap::new(),
+            metrics: HashMap::default(),
+            types_by_name: HashMap::default(),
+            remembered: HashMap::default(),
         }
     }
 

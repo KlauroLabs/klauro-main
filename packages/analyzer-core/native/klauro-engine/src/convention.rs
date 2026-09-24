@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use crate::entry_exit::EntryPoint;
 use crate::model::*;
@@ -299,16 +299,16 @@ pub fn conventional(
     roots.sort();
     roots.dedup();
 
-    let mut exported: HashMap<u32, Vec<&ExportFact>> = HashMap::new();
+    let mut exported: HashMap<u32, Vec<&ExportFact>> = HashMap::default();
     for export in exports {
         exported.entry(export.file).or_default().push(export);
     }
-    let mut declared: HashMap<u32, Vec<&IndexNode>> = HashMap::new();
+    let mut declared: HashMap<u32, Vec<&IndexNode>> = HashMap::default();
     for node in nodes {
         declared.entry(node.file).or_default().push(node);
     }
 
-    let held_paths: std::collections::HashSet<&str> =
+    let held_paths: rustc_hash::FxHashSet<&str> =
         files.iter().map(String::as_str).collect();
     let mut found = Vec::new();
     for (at, path) in files.iter().enumerate() {

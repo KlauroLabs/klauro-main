@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use serde::Serialize;
 
@@ -62,14 +62,14 @@ pub fn manifested(
     nodes: &[IndexNode],
     calls: &[CallFact],
 ) -> Vec<(String, Option<String>)> {
-    let mut children: HashMap<&str, Vec<&IndexNode>> = HashMap::new();
+    let mut children: HashMap<&str, Vec<&IndexNode>> = HashMap::default();
     for node in nodes {
         if let Some(parent) = node.parent.as_deref() {
             children.entry(parent).or_default().push(node);
         }
     }
     let mut found = Vec::new();
-    let mut asking: HashMap<u32, &'static [&'static str]> = HashMap::new();
+    let mut asking: HashMap<u32, &'static [&'static str]> = HashMap::default();
     for (at, path) in files.iter().enumerate() {
         if let Some(verbs) = required_by_a_call(&crate::paths::basename(path).to_ascii_lowercase())
         {
@@ -481,7 +481,7 @@ pub fn derive(
     exit_points: &[crate::entry_exit::ExitPoint],
     project_of: &HashMap<&str, &str>,
 ) -> Dependencies {
-    let mut found: HashMap<&str, Dependency> = HashMap::new();
+    let mut found: HashMap<&str, Dependency> = HashMap::default();
 
     for fact in imports {
         let Some(package) = package_of(&fact.specifier) else { continue };

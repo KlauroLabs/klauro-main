@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::BTreeMap;
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use rayon::prelude::*;
 
 use serde::Serialize;
@@ -250,7 +251,7 @@ fn talks_to<'a>(flows: &'a [Flow]) -> HashMap<&'a str, Talking<'a>> {
             flow.project.as_deref().map(|part| (flow.entry_point.as_str(), part))
         })
         .collect();
-    let mut found: HashMap<&str, Talking> = HashMap::new();
+    let mut found: HashMap<&str, Talking> = HashMap::default();
     for flow in flows {
         let Some(part) = flow.project.as_deref() else { continue };
         for into in flow.leads_into.iter() {
@@ -1305,15 +1306,15 @@ pub fn derive(
         .enumerate()
         .map(|(at, node)| (node.id.as_str(), at as u32))
         .collect();
-    let mut played: HashMap<&str, &str> = HashMap::new();
+    let mut played: HashMap<&str, &str> = HashMap::default();
     for held in type_references {
         if held.kind != EdgeKind::Implements {
             continue;
         }
         played.entry(held.source.as_str()).or_insert(held.name.as_str());
     }
-    let mut next: HashMap<u32, Vec<u32>> = HashMap::new();
-    let mut members: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut next: HashMap<u32, Vec<u32>> = HashMap::default();
+    let mut members: HashMap<u32, Vec<u32>> = HashMap::default();
     for edge in edges {
         let (Some(source), Some(target)) = (
             position_of.get(edge.source.as_str()).copied(),
@@ -1329,18 +1330,18 @@ pub fn derive(
             _ => {}
         }
     }
-    let mut leaving: HashMap<&str, Vec<&ExitPoint>> = HashMap::new();
+    let mut leaving: HashMap<&str, Vec<&ExitPoint>> = HashMap::default();
     for exit in exit_points {
         leaving.entry(exit.source.as_str()).or_default().push(exit);
     }
-    let mut carried_names: HashSet<&str> = HashSet::new();
+    let mut carried_names: HashSet<&str> = HashSet::default();
     for node in nodes.iter().filter(|node| node.kind.is_type()) {
         let declared = files.get(node.file as usize).map(String::as_str).unwrap_or_default();
         if node.decorators.iter().any(over_a_wire) || agreed_in_a_schema(declared) {
             carried_names.insert(node.name.as_str());
         }
     }
-    let mut carries: HashMap<&str, Vec<Shared>> = HashMap::new();
+    let mut carries: HashMap<&str, Vec<Shared>> = HashMap::default();
     for reference in type_references {
         let Some(named) = carried_names.get(reference.name.as_str()).copied() else { continue };
         carried_by(&mut carries, reference.source.as_str(), contract(named));
@@ -1373,7 +1374,7 @@ pub fn derive(
         .filter_map(|entry| entry.path.as_deref().map(|path| (route_shape(path), entry.id.as_str())))
         .filter(|(shape, _)| said_plainly_in(shape) > 0)
         .collect();
-    let mut served_at: HashMap<&str, &str> = HashMap::new();
+    let mut served_at: HashMap<&str, &str> = HashMap::default();
     for exit in exit_points {
         let Some(addressed) = exit.addressed.as_deref() else { continue };
         if served_at.contains_key(addressed) {
@@ -1408,8 +1409,8 @@ pub fn derive(
         .iter()
         .map(|entity| entity.declared_as.as_str())
         .collect();
-    let mut entity_of: HashMap<&str, Vec<&str>> = HashMap::new();
-    let mut read_of: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut entity_of: HashMap<&str, Vec<&str>> = HashMap::default();
+    let mut read_of: HashMap<&str, Vec<&str>> = HashMap::default();
     let spoken_of: HashMap<&str, &str> =
         nodes.iter().map(|node| (node.id.as_str(), node.name.as_str())).collect();
     let stored: HashSet<&str> = type_references
@@ -1419,7 +1420,7 @@ pub fn derive(
         .filter_map(|named| held.get(named).copied())
         .collect();
     let keeps = |named: &&str| stored.is_empty() || stored.contains(named);
-    let mut named_within: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut named_within: HashMap<&str, Vec<&str>> = HashMap::default();
     for reference in type_references {
         let Some(named) = held.get(reference.name.as_str()).copied().filter(keeps) else {
             continue;
@@ -1502,10 +1503,10 @@ pub fn derive(
     let named_of: HashMap<&str, &IndexNode> =
         nodes.iter().map(|node| (node.id.as_str(), node)).collect();
     let mut flows = Vec::with_capacity(served.len());
-    let mut carried: HashMap<String, Vec<Shared>> = HashMap::new();
+    let mut carried: HashMap<String, Vec<Shared>> = HashMap::default();
     for entry in &served {
         let Some(start) = position_of.get(entry.handler.as_str()).copied() else { continue };
-        let mut seen: HashSet<u32> = HashSet::from([start]);
+        let mut seen: HashSet<u32> = HashSet::from_iter([start]);
         let mut queue: Vec<(u32, u32)> = vec![(start, 0)];
         for member in members.get(&start).into_iter().flatten() {
             if seen.insert(*member) {
@@ -1859,7 +1860,7 @@ fn link_across_parts(
     shared: &HashMap<String, Vec<Shared>>,
 ) {
     let mut speaking: HashMap<(&str, &str), Vec<(usize, Option<&str>, &'static str)>> =
-        HashMap::new();
+        HashMap::default();
     for (at, flow) in flows.iter().enumerate() {
         for holding in shared.get(&flow.entry_point).into_iter().flatten() {
             speaking
@@ -2181,8 +2182,8 @@ fn kept_in_a_file(
 ) -> Vec<(String, u32)> {
     let node_of: HashMap<&str, &IndexNode> =
         nodes.iter().map(|node| (node.id.as_str(), node)).collect();
-    let mut written: HashMap<String, u32> = HashMap::new();
-    let mut read: HashSet<String> = HashSet::new();
+    let mut written: HashMap<String, u32> = HashMap::default();
+    let mut read: HashSet<String> = HashSet::default();
     for exit in exit_points.iter().filter(|exit| exit.kind == "file") {
         if files.get(exit.file as usize).is_some_and(|path| crate::paths::is_test(path)) {
             continue;
@@ -2257,8 +2258,8 @@ impl<'a> Denoting<'a> {
             })
             .map(|edge| edge.source.as_str())
             .collect();
-        let mut by_name: HashMap<String, Vec<&IndexNode>> = HashMap::new();
-        let mut by_table: HashMap<String, Vec<&IndexNode>> = HashMap::new();
+        let mut by_name: HashMap<String, Vec<&IndexNode>> = HashMap::default();
+        let mut by_table: HashMap<String, Vec<&IndexNode>> = HashMap::default();
         for node in candidates {
             by_name.entry(node.name.to_ascii_lowercase()).or_default().push(node);
             let holds_rows = !matches!(node.kind, NodeKind::Interface | NodeKind::Enum);
@@ -2284,7 +2285,7 @@ impl<'a> Denoting<'a> {
             .filter_map(|node| Some((node.file, node.project.as_deref()?)))
             .collect();
         let kind_of = nodes.iter().map(|node| (node.id.as_str(), node.kind)).collect();
-        let mut members: HashMap<&str, u32> = HashMap::new();
+        let mut members: HashMap<&str, u32> = HashMap::default();
         for edge in edges.iter().filter(|edge| matches!(edge.kind, EdgeKind::HasField | EdgeKind::HasMethod)) {
             *members.entry(edge.source.as_str()).or_insert(0) += 1;
         }
@@ -2411,9 +2412,9 @@ fn entities(
 ) -> Vec<Entity> {
     let node_of: HashMap<&str, &IndexNode> =
         nodes.iter().map(|node| (node.id.as_str(), node)).collect();
-    let mut fields: HashMap<&str, u32> = HashMap::new();
-    let mut named_fields: HashMap<&str, Vec<Field>> = HashMap::new();
-    let mut pointing: HashMap<&str, Vec<Reference>> = HashMap::new();
+    let mut fields: HashMap<&str, u32> = HashMap::default();
+    let mut named_fields: HashMap<&str, Vec<Field>> = HashMap::default();
+    let mut pointing: HashMap<&str, Vec<Reference>> = HashMap::default();
     for edge in edges {
         if edge.kind == EdgeKind::HasField {
             *fields.entry(edge.source.as_str()).or_insert(0) += 1;
@@ -2589,8 +2590,8 @@ fn entities(
         .iter()
         .filter_map(|node| Some((node.id.as_str(), node.parent.as_deref()?)))
         .collect();
-    let mut written: HashMap<&str, Vec<String>> = HashMap::new();
-    let mut read: HashMap<&str, Vec<String>> = HashMap::new();
+    let mut written: HashMap<&str, Vec<String>> = HashMap::default();
+    let mut read: HashMap<&str, Vec<String>> = HashMap::default();
     for edge in edges {
         if !matches!(edge.kind, EdgeKind::Instantiates | EdgeKind::Calls) {
             continue;
@@ -2632,7 +2633,7 @@ fn entities(
     for (named, site) in kept_in_a_file(nodes, files, exit_points) {
         admitted.extend(denoting.named(&named, site));
     }
-    let mut handled_as: HashMap<String, &str> = HashMap::new();
+    let mut handled_as: HashMap<String, &str> = HashMap::default();
     for (named, site, handle) in &handled {
         let denoted = denoting.named(named, *site);
         if let [only] = denoted.as_slice() {
@@ -2648,10 +2649,10 @@ fn entities(
                 .filter(|id| fields.get(id).copied().unwrap_or(0) >= 1),
         );
     }
-    let mut tabled: HashMap<&str, String> = HashMap::new();
-    let mut accounted: HashSet<String> = HashSet::new();
+    let mut tabled: HashMap<&str, String> = HashMap::default();
+    let mut accounted: HashSet<String> = HashSet::default();
     let candidate_ids: HashSet<&str> = candidates.iter().map(|node| node.id.as_str()).collect();
-    let mut declaring: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut declaring: HashMap<&str, Vec<&str>> = HashMap::default();
     for table in declared_tables {
         let Some(by) = table.declared_by.as_deref() else { continue };
         let by = match node_of.get(by) {
@@ -3013,8 +3014,8 @@ mod tests {
 
     #[test]
     fn a_database_call_names_the_record_it_addresses() {
-        let modelled = HashSet::from(["Booking"]);
-        let declared = HashSet::from(["booking".to_string()]);
+        let modelled = HashSet::from_iter(["Booking"]);
+        let declared = HashSet::from_iter(["booking".to_string()]);
         assert_eq!(addressed("prisma.booking", &modelled, &declared), Some("booking"));
         assert_eq!(addressed("this.prisma.booking", &modelled, &declared), Some("booking"));
         assert_eq!(addressed("Booking.objects", &modelled, &declared), Some("Booking"));

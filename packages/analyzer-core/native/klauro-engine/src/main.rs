@@ -159,9 +159,9 @@ fn extract(
 use crate::model::{IndexNode, Modifiers, NodeKind, Span};
 
 fn close_graph(index: &mut Index) {
-    let declared: std::collections::HashSet<&str> =
+    let declared: rustc_hash::FxHashSet<&str> =
         index.nodes.iter().map(|node| node.id.as_str()).collect();
-    let known: std::collections::HashMap<&str, u32> = index
+    let known: rustc_hash::FxHashMap<&str, u32> = index
         .files
         .iter()
         .enumerate()
@@ -311,10 +311,20 @@ fn read_it() {
         .enumerate()
         .filter(|(_, entry)| route::readable(entry))
         .map(|(file, entry)| {
-            (file as u32, extract(&entry.path, &entry.absolute, file as u32, entry.language))
+            let began = Instant::now();
+            let read = extract(&entry.path, &entry.absolute, file as u32, entry.language);
+            (file as u32, read, began.elapsed())
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .map(|(file, read, took)| {
+            if std::env::var("KLAURO_TIME_FILES").is_ok() && took.as_millis() > 200 {
+                eprintln!("    slow file {:?} {}", took, found.files[file as usize].path);
+            }
+            (file, read)
         })
         .collect();
-    let mut generated_files = std::collections::HashSet::new();
+    let mut generated_files = rustc_hash::FxHashSet::default();
     let mut facts = Vec::with_capacity(reads.len());
     for (file, read) in reads {
         match read {
@@ -376,7 +386,7 @@ fn read_it() {
     };
     let mut declared_tables: Vec<tables::Table> = Vec::new();
     let mut parse_errors = 0;
-    let mut extracted_files = std::collections::HashSet::new();
+    let mut extracted_files = rustc_hash::FxHashSet::default();
     let report_errors = std::env::var("KLAURO_REPORT_PARSE_ERRORS").is_ok();
     for file in facts {
         if report_errors && file.parse_errors > 0 {
@@ -521,7 +531,7 @@ fn read_it() {
     index.exit_points = derived.exit_points;
 
     let icelot_started = Instant::now();
-    let external: std::collections::HashMap<String, ()> = resolution
+    let external: rustc_hash::FxHashMap<String, ()> = resolution
         .modules
         .iter()
         .map(|((_, name), _)| (name.clone(), ()))
@@ -615,7 +625,7 @@ fn read_it() {
         &code,
         index.scope.as_ref().map(|scope| scope.deployables.as_slice()).unwrap_or(&[]),
     );
-    let project_of: std::collections::HashMap<&str, &str> = partition
+    let project_of: rustc_hash::FxHashMap<&str, &str> = partition
         .assignment
         .iter()
         .map(|(path, id)| (path.as_str(), id.as_str()))
@@ -643,7 +653,7 @@ fn read_it() {
         .as_ref()
         .map(|partition| partition.assignment.as_slice())
         .unwrap_or(&[]);
-    let own: std::collections::HashSet<&str> = index
+    let own: rustc_hash::FxHashSet<&str> = index
         .scope
         .iter()
         .flat_map(|scope| scope.deployables.iter())
@@ -669,7 +679,7 @@ fn read_it() {
         .files
         .iter()
         .filter_map(|file| file.language)
-        .fold(std::collections::HashMap::new(), |mut counted, language| {
+        .fold(rustc_hash::FxHashMap::default(), |mut counted, language| {
             *counted.entry(language).or_insert(0u32) += 1;
             counted
         })
@@ -903,7 +913,7 @@ fn read_it() {
 
 
     let graph_started = Instant::now();
-    let mut exits_by_unit: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    let mut exits_by_unit: rustc_hash::FxHashMap<String, u32> = rustc_hash::FxHashMap::default();
     for exit in &index.exit_points {
         *exits_by_unit.entry(exit.source.clone()).or_insert(0) += 1;
     }
@@ -1113,7 +1123,7 @@ fn read_it() {
     index.comprehension = Some(comprehension);
 
     if std::env::var("KLAURO_REPORT_COVERAGE").is_ok() {
-        let mut seen = std::collections::HashSet::with_capacity(index.nodes.len());
+        let mut seen = rustc_hash::FxHashSet::with_capacity_and_hasher(index.nodes.len(), Default::default());
         let mut repeated = 0usize;
         let mut first: Option<&str> = None;
         for node in &index.nodes {

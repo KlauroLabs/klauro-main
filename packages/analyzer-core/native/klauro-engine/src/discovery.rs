@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use rustc_hash::FxHashSet as HashSet;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};

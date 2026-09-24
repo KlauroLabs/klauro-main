@@ -369,7 +369,7 @@ pub fn created_by_calls(
     locals: &[crate::model::LocalBinding],
     paths: &[&str],
 ) -> Vec<Table> {
-    let mut bound: std::collections::HashSet<(&str, &str)> = locals
+    let mut bound: rustc_hash::FxHashSet<(&str, &str)> = locals
         .iter()
         .map(|local| (local.unit.as_str(), local.name.as_str()))
         .collect();
@@ -381,7 +381,7 @@ pub fn created_by_calls(
     let written = |call: &crate::model::CallFact, literal: &str| {
         call.caller.as_deref().is_none_or(|caller| !bound.contains(&(caller, literal)))
     };
-    let placed: std::collections::HashMap<&str, (u32, &str)> = nodes
+    let placed: rustc_hash::FxHashMap<&str, (u32, &str)> = nodes
         .iter()
         .filter_map(|node| Some((node.id.as_str(), (node.span.line, node.parent.as_deref()?))))
         .collect();
@@ -410,8 +410,8 @@ pub fn created_by_calls(
             ))
         })
         .collect();
-    let mut following: std::collections::HashMap<(u32, &str), Vec<(u32, usize)>> =
-        std::collections::HashMap::new();
+    let mut following: rustc_hash::FxHashMap<(u32, &str), Vec<(u32, usize)>> =
+        rustc_hash::FxHashMap::default();
     for (held, (at, table)) in creations.iter().enumerate() {
         if let Some(caller) = calls[*at].caller.as_deref() {
             following.entry((table.file, caller)).or_default().push((table.line, held));
@@ -420,12 +420,12 @@ pub fn created_by_calls(
     for held in following.values_mut() {
         held.sort();
     }
-    let fields_on: std::collections::HashSet<(&str, u32)> = nodes
+    let fields_on: rustc_hash::FxHashSet<(&str, u32)> = nodes
         .iter()
         .filter(|node| node.kind == crate::model::NodeKind::Property)
         .filter_map(|node| Some((node.parent.as_deref()?, node.span.line)))
         .collect();
-    let holding_rows: std::collections::HashSet<&str> = nodes
+    let holding_rows: rustc_hash::FxHashSet<&str> = nodes
         .iter()
         .filter(|node| node.kind == crate::model::NodeKind::Class)
         .map(|node| node.id.as_str())

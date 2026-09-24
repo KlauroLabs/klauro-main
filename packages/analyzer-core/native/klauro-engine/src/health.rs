@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use serde::Serialize;
 
@@ -41,7 +41,7 @@ pub fn derive(
     verification: &crate::verify::Verification,
     history: Option<&crate::history::History>,
 ) -> Health {
-    let mut held: HashMap<&str, ProjectHealth> = HashMap::new();
+    let mut held: HashMap<&str, ProjectHealth> = HashMap::default();
     let of = |project: Option<&str>| project.unwrap_or("subproject:root").to_string();
     for (position, node) in nodes.iter().enumerate() {
         if !node.kind.is_unit()

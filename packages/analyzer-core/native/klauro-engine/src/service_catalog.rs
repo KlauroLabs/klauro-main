@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::sync::LazyLock;
 
 pub struct Known {
@@ -322,10 +322,10 @@ struct Indexes {
 
 static INDEXES: LazyLock<Indexes> = LazyLock::new(|| {
     let mut indexes = Indexes {
-        packages: HashMap::new(),
-        hosts: HashMap::new(),
-        images: HashMap::new(),
-        settings: HashMap::new(),
+        packages: HashMap::default(),
+        hosts: HashMap::default(),
+        images: HashMap::default(),
+        settings: HashMap::default(),
     };
     for known in SERVICES {
         for package in known.packages {
