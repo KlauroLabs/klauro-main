@@ -895,17 +895,25 @@ pub fn author(
         evidence.insert(
             key,
             format!(
-                "  kind: data entity\n  {}\n  it holds these fields: {}\n  written by {} units, read by {} units",
+                "  kind: data entity\n  {}{}\n  it holds these fields: {}\n  {}",
                 match entity.declared_in.as_deref() {
                     Some(held) => format!(
                         "declared as: {} in {}",
                         entity.declared_as,
                         held.split(':').next().unwrap_or("")
                     ),
+                    None if entity.addressed_by == 0 => format!(
+                        "kept as the table {}, which its schema creates and the code never names",
+                        entity.declared_as
+                    ),
                     None => format!(
-                        "never declared; the database is addressed by the name {} in {} places",
+                        "kept as the table {}, which the code addresses by name in {} places",
                         entity.declared_as, entity.addressed_by
                     ),
+                },
+                match entity.project.as_deref() {
+                    Some(part) => format!("\n  kept by the part: {}", part.rsplit(['/', ':']).next().unwrap_or(part)),
+                    None => String::new(),
                 },
                 match entity.named_fields.is_empty() {
                     true => format!("{} unnamed", entity.fields),
@@ -916,8 +924,10 @@ pub fn author(
                         .collect::<Vec<_>>()
                         .join(", "),
                 },
-                entity.written_by.len(),
-                entity.read_by.len()
+                match (entity.written_by.len(), entity.read_by.len()) {
+                    (0, 0) => "no code here reads or writes it by name".to_string(),
+                    (written, read) => format!("written by {written} units, read by {read} units"),
+                }
             ),
         );
     }
@@ -1040,6 +1050,15 @@ pub fn author(
         entity.name = Some(crate::names::spoken_as(&entity.declared_as));
         let Some((held, grounding)) = by_id.get(&entity.id).copied() else { continue };
         let (_, description) = crate::author::written_name(held);
+        if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
+            eprintln!(
+                "entity {:<28} supported {:.2} invented {:.2} -> {} | {description}",
+                entity.declared_as,
+                grounding.supported,
+                grounding.invented,
+                grounding.holds()
+            );
+        }
         entity.grounding = Some(grounding);
         if grounding.holds() {
             entity.description = Some(description.to_string());

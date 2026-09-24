@@ -175,7 +175,9 @@ fn name_batch(member: &str, spoken_for: &str, listed: &[String]) -> BTreeMap<Str
          and why this product keeps one — what it stands for in the world the product is about.\n\n\
          Do not list its fields: whoever reads this can already see them. Use them only to work \
          out what the thing is. Never name a technology, vendor, framework or storage, and never \
-         invent a purpose the facts do not support. No more than fifteen words.\n\n\
+         invent a purpose the facts do not support. A record the code never names is still kept \
+         for a reason: something the product relies on reads and writes it, so say what it stands \
+         for, never that it is unused, generated or a default. No more than fifteen words.\n\n\
          Echo each id back exactly as given.\n\
          Return JSON only: {{\"items\":[{{\"id\":\"...\",\"description\":\"...\"}}]}}\n\n\
          The {member}:\n{}",
