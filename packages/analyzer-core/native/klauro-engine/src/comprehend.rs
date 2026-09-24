@@ -661,8 +661,23 @@ fn test_capabilities(capabilities: &mut Vec<Capability>, spoken: &str, level: &s
     let judged = crate::memory::each("judged", &context, &tests, |missing| {
         crate::author::test_capabilities(context.split('\u{1}').next().unwrap_or_default(), missing, level)
     });
+    let facts_of: HashMap<String, String> = tests.iter().cloned().collect();
     capabilities.retain_mut(|capability| {
         let Some(grounding) = judged.get(&capability.id).copied() else { return false };
+        crate::dataset::record(
+            "capability",
+            serde_json::json!({
+                "level": level,
+                "context": spoken,
+                "facts": facts_of.get(&capability.id),
+                "name": capability.name,
+                "description": capability.description,
+                "audience": capability.audience,
+                "terminality": capability.terminality,
+                "grounding": grounding,
+                "delivered": grounding.delivers(),
+            }),
+        );
         capability.grounding = Some(grounding);
         capability.standing = match grounding.stands() {
             true => PUBLISHED,
@@ -1075,6 +1090,16 @@ pub fn author(
         entity.name = Some(crate::names::spoken_as(&entity.declared_as));
         let Some((held, grounding)) = by_id.get(&entity.id).copied() else { continue };
         let (_, description) = crate::author::written_name(held);
+        crate::dataset::record(
+            "entity",
+            serde_json::json!({
+                "declared_as": entity.declared_as,
+                "fields": entity.named_fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
+                "description": description,
+                "grounding": grounding,
+                "holds": grounding.holds(),
+            }),
+        );
         if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
             eprintln!(
                 "entity {:<28} supported {:.2} invented {:.2} -> {} | {description}",

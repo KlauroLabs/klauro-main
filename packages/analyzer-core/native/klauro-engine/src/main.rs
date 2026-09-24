@@ -45,6 +45,7 @@ mod services;
 mod tables;
 mod source_rewrite;
 mod steps;
+mod dataset;
 mod rails_routes;
 mod structured;
 mod subproject;
