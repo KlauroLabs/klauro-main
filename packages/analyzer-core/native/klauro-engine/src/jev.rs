@@ -169,7 +169,11 @@ fn ask(request: &str) -> Option<Answered> {
         return serde_json::from_str(&held).ok();
     }
     let key = std::env::var("TYPESAFE_API_KEY").ok()?;
+    let started = std::time::Instant::now();
     let text = crate::reach::post(ENDPOINT, &key, request)?;
+    if std::env::var("KLAURO_AUTHOR_TRACE").is_ok() {
+        eprintln!("jev took {:>6}ms in {:>6} out {:>6}", started.elapsed().as_millis(), request.len(), text.len());
+    }
     let held: Answered = serde_json::from_str(&text).ok()?;
     remember(request, &text);
     Some(held)

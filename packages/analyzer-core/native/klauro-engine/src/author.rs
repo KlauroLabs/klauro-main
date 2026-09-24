@@ -75,8 +75,6 @@ pub struct Grounding {
     pub mechanism: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub topic: Option<f64>,
     pub graded: bool,
 }
 
@@ -236,7 +234,6 @@ pub fn ground(
                     universal: None,
                     mechanism: None,
                     scope: None,
-                    topic: None,
                     graded: crate::jev::asked(),
                     specific: answers
                         .get(&format!("w{at}-specific"))
@@ -615,7 +612,6 @@ pub fn test_description(facts: &str) -> Grounding {
         universal: None,
         mechanism: None,
         scope: None,
-        topic: None,
         graded: crate::jev::asked(),
         specific: answers
             .get("specific")
@@ -648,14 +644,6 @@ fn asking_of(facts: &str) -> BTreeMap<&'static str, crate::jev::Question> {
             crate::jev::Question {
                 kind: "noul",
                 instructions: format!("{facts}\n\nBy the rules above, this passes the audience test: this product's own audience would recognise it as something they came for, and it would appear in a product description, a user objective, a business offering or an operational responsibility"),
-                criteria: BTreeMap::new().into(),
-            },
-        ),
-        (
-            "topic",
-            crate::jev::Question {
-                kind: "noul",
-                instructions: format!("{facts}\n\nThe proposed capability is named as a topic or a category — a single noun or a heading like \"Media\", \"Discovery\" or \"Order management\" — rather than as what someone gets done"),
                 criteria: BTreeMap::new().into(),
             },
         ),
@@ -727,7 +715,6 @@ pub fn test_capabilities(spoken: &str, held: &[(String, String)], level: &str) -
                     universal: Some(settled("universal", 1.0)),
                     mechanism: Some(settled("mechanism", 0.0)),
                     scope: Some(settled("scope", 0.0)),
-                    topic: Some(settled("topic", 0.0)),
                     graded: crate::jev::asked(),
                     specific: answers
                         .get(&format!("c{at}-specific"))

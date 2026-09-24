@@ -641,7 +641,7 @@ fn test_capabilities(capabilities: &mut Vec<Capability>, spoken: &str, level: &s
     let tests: Vec<(String, String)> = capabilities
         .iter()
         .map(|capability| {
-            let told: String = capability.evidence.chars().take(EVIDENCE_HELD).collect();
+            let told: String = capability.evidence.chars().take(EVIDENCE_TESTED).collect();
             let facts = format!(
                 "FACTS read from the code about what it delivers:\n{}\n\n\
                  PROPOSED CAPABILITY: {}\nPROPOSED DESCRIPTION: {}\nFOR: {}",
@@ -738,6 +738,7 @@ fn say_what_each_is_for(held: &mut [Capability], spoken: &str) {
 }
 
 const EVIDENCE_HELD: usize = 6000;
+const EVIDENCE_TESTED: usize = 2500;
 
 pub(crate) fn joined(into: &mut Capability, other: Capability) {
     if let Some(part) = other.project
