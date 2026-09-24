@@ -1037,7 +1037,8 @@ impl<'a> Extractor<'a> {
             let mut names = child.walk();
             let mut found = false;
             for entry in child.named_children(&mut names) {
-                let name = base_name(self.text(entry));
+                let written = self.text(entry);
+                let name = base_name(written);
                 if name.is_empty() {
                     continue;
                 }
@@ -1047,16 +1048,19 @@ impl<'a> Extractor<'a> {
                     source: owner.to_string(),
                     name: name.to_string(),
                     kind: EdgeKind::Extends,
+                    arguments: crate::model::type_arguments(written),
                 });
             }
             if !found {
-                let name = base_name(self.text(child));
+                let written = self.text(child);
+                let name = base_name(written);
                 if !name.is_empty() {
                     self.facts.type_references.push(TypeReferenceFact {
                         file: self.file,
                         source: owner.to_string(),
                         name: name.to_string(),
                         kind: EdgeKind::Extends,
+                        arguments: crate::model::type_arguments(written),
                     });
                 }
             }
@@ -1141,6 +1145,7 @@ impl<'a> Extractor<'a> {
                 source: id.clone(),
                 name,
                 kind: EdgeKind::HasMethod,
+                arguments: Vec::new(),
             });
         }
 
@@ -1472,7 +1477,8 @@ impl<'a> Extractor<'a> {
             None => node.named_children(&mut cursor).skip(1).collect(),
         };
         for argument in held {
-            let name = base_name(self.text(argument)).trim().to_string();
+            let written = self.text(argument);
+            let name = base_name(written).trim().to_string();
             if name.is_empty() {
                 continue;
             }
@@ -1481,6 +1487,7 @@ impl<'a> Extractor<'a> {
                 source: owner.clone(),
                 name,
                 kind: EdgeKind::Implements,
+                arguments: crate::model::type_arguments(written),
             });
         }
     }
@@ -1705,11 +1712,18 @@ impl<'a> Extractor<'a> {
         let annotation = node
             .child_by_field_name(self.spec.declares.binding_type_field)
             .or_else(|| self.typed_child(node))
-            .and_then(|found| bare_type(self.text(found)));
+            .and_then(|found| bare_type(self.text(found)))
+            .filter(|written| !INFERS_ITS_TYPE.contains(&written.as_str()));
         let value = node
             .child_by_field_name(self.spec.declares.binding_value_field)
             .or_else(|| declarator.and_then(|d| d.child_by_field_name(self.spec.declares.binding_value_field)))
             .or_else(|| self.assigned_child(node))
+            .or_else(|| declarator.and_then(|d| self.assigned_child(d)))
+            .or_else(|| {
+                let mut cursor = node.walk();
+                let named = node.named_children(&mut cursor).find(|child| NAMES_A_VARIABLE.contains(&child.kind()));
+                named.and_then(|held| self.assigned_child(held))
+            })
             .map(unwrapped);
         if let Some(written) = value
             .map(|held| self.text(held).trim())
@@ -1731,7 +1745,13 @@ impl<'a> Extractor<'a> {
         }
         let constructed = value
             .filter(|value| self.spec.declares.constructor_kinds.contains(&value.kind()))
-            .and_then(|value| self.name_of(value));
+            .and_then(|value| self.name_of(value))
+            .or_else(|| {
+                value
+                    .filter(|value| CONSTRUCTS_A_VALUE.contains(&value.kind()))
+                    .and_then(|value| value.child_by_field_name("type").or_else(|| value.child_by_field_name("constructor")))
+                    .and_then(|typed| bare_type(self.text(typed)))
+            });
         let from_call = value
             .filter(|value| self.spec.calls.kinds.contains(&value.kind()))
             .and_then(|value| self.called_name(value));
@@ -1775,6 +1795,7 @@ impl<'a> Extractor<'a> {
         node.named_children(&mut cursor).find(|child| {
             self.spec.calls.kinds.contains(&child.kind())
                 || self.spec.declares.constructor_kinds.contains(&child.kind())
+                || CONSTRUCTS_A_VALUE.contains(&child.kind())
         })
     }
 
@@ -2093,6 +2114,8 @@ fn configures_the_call(kind: &str) -> bool {
 }
 
 static DECLARES_VARIABLES: &[&str] = &["variable_declaration"];
+static INFERS_ITS_TYPE: &[&str] = &["auto", "dynamic", "let", "val", "var"];
+static CONSTRUCTS_A_VALUE: &[&str] = &["new_expression", "object_creation_expression"];
 static NAMES_A_VARIABLE: &[&str] = &["variable_declarator"];
 
 static INDEXES_A_HOLDER: &[&str] =

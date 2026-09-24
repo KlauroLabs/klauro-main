@@ -59,7 +59,6 @@ fn named_per_call() -> usize {
         false => NAMED_PER_CALL,
     }
 }
-const PATHS_PER_PROPOSAL: usize = 500;
 
 #[derive(Debug, Serialize, Clone, Copy)]
 pub struct Grounding {
@@ -131,106 +130,6 @@ fn proposing() -> Vec<String> {
             .or_else(|_| std::env::var("KLAURO_AUTHOR_MODEL"))
             .unwrap_or_else(|_| model()),
     )
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct Outcome {
-    pub name: String,
-    pub description: String,
-    #[serde(default)]
-    pub audience: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct Proposed {
-    outcomes: Vec<Outcome>,
-}
-
-pub fn propose_outcomes(evidence: &[String], spoken_for: &str) -> Vec<Outcome> {
-    if !asked() || evidence.is_empty() {
-        return Vec::new();
-    }
-    let mut outcomes: Vec<Outcome> = evidence
-        .par_chunks(PATHS_PER_PROPOSAL)
-        .flat_map(|batch| propose_batch(batch, spoken_for))
-        .collect();
-    outcomes.sort_by(|left, right| left.name.cmp(&right.name));
-    outcomes.dedup_by(|left, right| left.name.eq_ignore_ascii_case(&right.name));
-    match evidence.len() > PATHS_PER_PROPOSAL {
-        true => consolidate(&outcomes, spoken_for),
-        false => outcomes,
-    }
-}
-
-fn consolidate(outcomes: &[Outcome], spoken_for: &str) -> Vec<Outcome> {
-    if outcomes.len() < 2 {
-        return outcomes.to_vec();
-    }
-    let prompt = format!(
-        "A software system describes itself like this:\n{spoken_for}\n\n\
-         Readers each looked at one part of it and proposed the outcomes it delivers. Their \
-         lists overlap, because the same outcome is reached from many parts.\n\n{}\n\n\
-         Give the one list the whole system delivers, by these rules:\n{RULES}\n\n\
-         Fold together the ones that name the same outcome, keeping the clearer wording. Keep \
-         every outcome that is genuinely its own. Do not invent one nobody proposed, and do not \
-         drop one because it was proposed only once.\n\n\
-         Return JSON only: {{\"outcomes\":[{{\"name\":\"...\",\"description\":\"...\",\"audience\":\"...\"}}]}}",
-        outcomes
-            .iter()
-            .map(|outcome| format!("- {} (for {}): {}", outcome.name, outcome.audience, outcome.description))
-            .collect::<Vec<_>>()
-            .join("\n")
-    );
-    let Some(held) = answered::<Proposed>(&prompt, 4000, &proposing(), "outcomes", 1) else {
-        return outcomes.to_vec();
-    };
-    let mut folded: Vec<Outcome> = held
-        .outcomes
-        .into_iter()
-        .map(|mut outcome| {
-            outcome.name = outcome.name.trim().to_string();
-            outcome.description = outcome.description.trim().to_string();
-            outcome.audience = outcome.audience.trim().to_ascii_lowercase();
-            outcome
-        })
-        .filter(|outcome| !outcome.name.is_empty() && !outcome.description.is_empty())
-        .collect();
-    folded.sort_by(|left, right| left.name.cmp(&right.name));
-    folded.dedup_by(|left, right| left.name.eq_ignore_ascii_case(&right.name));
-    match folded.is_empty() {
-        true => outcomes.to_vec(),
-        false => folded,
-    }
-}
-
-fn propose_batch(evidence: &[String], spoken_for: &str) -> Vec<Outcome> {
-    let prompt = format!(
-        "A software system describes itself like this:\n{spoken_for}\n\n\
-         These are the paths through it that change something, each named as the code names the \
-         operation it serves, with the records it writes:\n{}\n\n\
-         Name the capabilities of this system, by these rules:\n{RULES}\n\n\
-         Name the audience for each one — an end user, an operator, an administrator, a developer, \
-         an analyst or an agent. Take your words from the operations and the self-description, \
-         never from the storage or the framework. A path that only reads can still deliver a \
-         capability; what a path does at the end tells you what it is for, not whether it counts.\n\n\
-         For each, give a name of 2-6 words, one sentence saying what someone gets, and the \
-         audience it is for.\n\n\
-         Return JSON only: {{\"outcomes\":[{{\"name\":\"...\",\"description\":\"...\",\"audience\":\"...\"}}]}}",
-        evidence.join("\n")
-    );
-    let Some(held) = answered::<Proposed>(&prompt, 3000, &proposing(), "outcomes", 1) else { return Vec::new() };
-    held.outcomes
-        .into_iter()
-        .map(|mut outcome| {
-            outcome.name = outcome.name.trim().to_string();
-            outcome.description = outcome.description.trim().to_string();
-            outcome.audience = outcome.audience.trim().to_ascii_lowercase();
-            outcome
-        })
-        .filter(|outcome| {
-            !outcome.name.is_empty() && outcome.name.len() < 70 && !outcome.description.is_empty()
-        })
-        .collect()
 }
 
 pub fn name_them(

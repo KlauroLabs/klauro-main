@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::io::Cursor;
 use std::path::PathBuf;
 use std::process::Command;

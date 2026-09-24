@@ -75,35 +75,35 @@ fn rank_of(label: &str) -> u32 {
 }
 
 pub fn derive<'a>(
-    nodes: &'a [IndexNode],
+    graph: &crate::shared::Graph<'a>,
     edges: &[IndexEdge],
+    dispatched: &[IndexEdge],
     roles: &Roles,
     entry_points: &[EntryPoint],
     exit_points: &[ExitPoint],
-    paths: &[&str],
 ) -> Vec<Layering> {
-    let position: HashMap<&str, usize> =
-        nodes.iter().enumerate().map(|(at, node)| (node.id.as_str(), at)).collect();
-    let tested = |node: &IndexNode| paths.get(node.file as usize).is_some_and(|path| crate::paths::is_test(path));
+    let nodes: &'a [IndexNode] = graph.nodes;
+    let position = &graph.position;
+    let tested = |node: &IndexNode| graph.file_tested(node.file);
 
-    let mut role_of: HashMap<&str, &'static str> = HashMap::new();
+    let mut role_of: Vec<Option<&'static str>> = vec![None; nodes.len()];
+    let preferred = |candidate: &str| BY_CLASS_FIRST.iter().position(|role| *role == candidate).unwrap_or(99);
     for role in &roles.roles {
         if role.role == "test" {
             continue;
         }
-        let held = role_of.entry(role.node.as_str()).or_insert(role.role);
-        let preferred = |candidate: &str| BY_CLASS_FIRST.iter().position(|role| *role == candidate).unwrap_or(99);
+        let Some(at) = graph.at(role.node.as_str()) else { continue };
+        let held = role_of[at].get_or_insert(role.role);
         if preferred(role.role) < preferred(held) {
             *held = role.role;
         }
     }
     let label_of = |at: usize| -> Option<&'static str> {
-        let node = &nodes[at];
-        if tested(node) {
+        if graph.tested[at] {
             return None;
         }
-        let holder = node.parent.as_deref().and_then(|parent| role_of.get(parent).copied());
-        let own = role_of.get(node.id.as_str()).copied();
+        let holder = graph.owner[at].and_then(|owner| role_of[owner]);
+        let own = role_of[at];
         match (holder, own) {
             (Some(held), _) if BY_CLASS_FIRST.contains(&held) => Some(held),
             (_, Some(own)) => Some(own),
@@ -113,9 +113,9 @@ pub fn derive<'a>(
     };
     let labels: Vec<Option<&'static str>> = (0..nodes.len()).map(label_of).collect();
 
-    let overriding = overridden_by(nodes, edges, &position);
+    let overriding = overridden_by(graph);
     let mut callees: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
-    for edge in edges.iter().filter(|edge| matches!(edge.kind, EdgeKind::Calls | EdgeKind::Instantiates)) {
+    for edge in edges.iter().chain(dispatched).filter(|edge| matches!(edge.kind, EdgeKind::Calls | EdgeKind::Instantiates)) {
         let (Some(from), Some(to)) = (position.get(edge.source.as_str()), position.get(edge.target.as_str())) else {
             continue;
         };
@@ -129,17 +129,32 @@ pub fn derive<'a>(
             }
         }
     }
-    let mut sinks: Vec<Vec<String>> = vec![Vec::new(); nodes.len()];
+    let mut spoken: Vec<String> = Vec::new();
+    let mut spoken_at: rustc_hash::FxHashMap<String, usize> = rustc_hash::FxHashMap::default();
+    let mut speak = |label: String, spoken: &mut Vec<String>| -> usize {
+        *spoken_at.entry(label.clone()).or_insert_with(|| {
+            spoken.push(label);
+            spoken.len() - 1
+        })
+    };
+    let unit_label: Vec<Option<usize>> = labels
+        .iter()
+        .map(|label| label.map(|label| speak(label.to_string(), &mut spoken)))
+        .collect();
+    let mut sinks: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
     for exit in exit_points {
         let Some(at) = position.get(exit.source.as_str()) else { continue };
         let label = match exit.service.as_deref() {
             Some(named) => format!("{}: {named}", exit.kind),
             None => format!("{}:", exit.kind),
         };
+        let label = speak(label, &mut spoken);
         if !sinks[*at].contains(&label) {
             sinks[*at].push(label);
         }
     }
+    let mut stamp: Vec<u32> = vec![0; nodes.len()];
+    let mut generation = 0u32;
 
     let mut counted: BTreeMap<(Option<&str>, String, String), (u32, usize, usize)> = BTreeMap::new();
     let mut note = |project: Option<&'a str>, from: String, to: String, caller: usize, callee: usize| {
@@ -149,9 +164,10 @@ pub fn derive<'a>(
 
     for (start, label) in labels.iter().enumerate() {
         let Some(label) = label else { continue };
-        let mut seen: HashSet<usize> = HashSet::from([start]);
+        generation += 1;
+        stamp[start] = generation;
         let mut frontier: Vec<(usize, u32)> = vec![(start, 0)];
-        let mut reached_labels: HashSet<(String, usize)> = HashSet::new();
+        let mut reached: Vec<(usize, usize)> = Vec::new();
         let mut walked = 0usize;
         while let Some((current, hops)) = frontier.pop() {
             walked += 1;
@@ -159,26 +175,28 @@ pub fn derive<'a>(
                 break;
             }
             for sink in &sinks[current] {
-                reached_labels.insert((sink.clone(), current));
+                if !reached.iter().any(|(held, _)| held == sink) {
+                    reached.push((*sink, current));
+                }
             }
             for callee in &callees[current] {
-                if !seen.insert(*callee) {
+                if stamp[*callee] == generation {
                     continue;
                 }
-                match labels[*callee] {
-                    Some(reached) => {
-                        reached_labels.insert((reached.to_string(), *callee));
+                stamp[*callee] = generation;
+                match unit_label[*callee] {
+                    Some(found) => {
+                        if !reached.iter().any(|(held, _)| *held == found) {
+                            reached.push((found, *callee));
+                        }
                     }
                     None if hops < HOPS_THROUGH_HELPERS => frontier.push((*callee, hops + 1)),
                     None => {}
                 }
             }
         }
-        let mut once: HashSet<String> = HashSet::new();
-        for (reached, callee) in reached_labels {
-            if once.insert(reached.clone()) {
-                note(project_of(start), label.to_string(), reached, start, callee);
-            }
+        for (found, callee) in reached {
+            note(project_of(start), label.to_string(), spoken[found].clone(), start, callee);
         }
     }
     for entry in entry_points {
@@ -200,18 +218,19 @@ pub fn derive<'a>(
         if tested(&nodes[start]) {
             continue;
         }
-        let mut layers: Vec<(u32, usize, String)> = Vec::new();
-        let mut seen: HashSet<usize> = HashSet::from([start]);
+        let mut layers: Vec<(u32, usize, usize)> = Vec::new();
+        generation += 1;
+        stamp[start] = generation;
+        let mut walked = 1usize;
         let mut frontier: std::collections::VecDeque<(usize, u32)> = std::collections::VecDeque::from([(start, 0)]);
         let mut order = 0usize;
         while let Some((current, depth)) = frontier.pop_front() {
-            if seen.len() > WALKED_PER_ARRIVAL {
+            if walked > WALKED_PER_ARRIVAL {
                 break;
             }
-            let found = labels[current].map(str::to_string).into_iter().chain(sinks[current].iter().cloned());
-            for label in found {
-                if !layers.iter().any(|(_, _, held)| *held == label) {
-                    layers.push((rank_of(&label), order, label));
+            for found in unit_label[current].iter().chain(sinks[current].iter()) {
+                if !layers.iter().any(|(_, _, held)| held == found) {
+                    layers.push((rank_of(&spoken[*found]), order, *found));
                     order += 1;
                 }
             }
@@ -219,14 +238,16 @@ pub fn derive<'a>(
                 continue;
             }
             for callee in &callees[current] {
-                if seen.insert(*callee) {
+                if stamp[*callee] != generation {
+                    stamp[*callee] = generation;
+                    walked += 1;
                     frontier.push_back((*callee, depth + 1));
                 }
             }
         }
         layers.sort();
         let mut path = vec![format!("{} entry", entry.kind)];
-        path.extend(layers.into_iter().map(|(_, _, label)| label));
+        path.extend(layers.into_iter().map(|(_, _, label)| spoken[label].clone()));
         *travelled.entry(project_of(start)).or_default().entry(path).or_insert(0) += 1;
     }
     by_project
@@ -282,39 +303,29 @@ pub fn derive<'a>(
         .collect()
 }
 
-fn overridden_by(
-    nodes: &[IndexNode],
-    edges: &[IndexEdge],
-    position: &HashMap<&str, usize>,
-) -> HashMap<usize, Vec<usize>> {
-    let mut implementors: HashMap<usize, Vec<usize>> = HashMap::new();
-    for edge in edges.iter().filter(|edge| matches!(edge.kind, EdgeKind::Implements | EdgeKind::Extends)) {
-        if let (Some(child), Some(parent)) = (position.get(edge.source.as_str()), position.get(edge.target.as_str())) {
-            implementors.entry(*parent).or_default().push(*child);
-        }
-    }
-    let mut member: HashMap<(usize, &str), usize> = HashMap::new();
+fn overridden_by(graph: &crate::shared::Graph) -> rustc_hash::FxHashMap<usize, Vec<usize>> {
+    let nodes = graph.nodes;
+    let mut overriding: rustc_hash::FxHashMap<usize, Vec<usize>> = rustc_hash::FxHashMap::default();
     for (at, node) in nodes.iter().enumerate() {
         if !node.kind.is_unit() {
             continue;
         }
-        if let Some(parent) = node.parent.as_deref().and_then(|parent| position.get(parent)) {
-            member.entry((*parent, node.name.as_str())).or_insert(at);
-        }
-    }
-    let mut overriding: HashMap<usize, Vec<usize>> = HashMap::new();
-    for (at, node) in nodes.iter().enumerate() {
-        let Some(owner) = node.parent.as_deref().and_then(|parent| position.get(parent)) else { continue };
-        let mut below: Vec<usize> = implementors.get(owner).cloned().unwrap_or_default();
-        let mut visited: HashSet<usize> = HashSet::new();
+        let Some(owner) = graph.type_owner(at) else { continue };
+        let Some(implementing) = graph.implementors.get(nodes[owner].name.as_str()) else { continue };
+        let mut below: Vec<usize> = implementing.clone();
+        let mut visited: rustc_hash::FxHashSet<usize> = rustc_hash::FxHashSet::default();
         while let Some(implementor) = below.pop() {
-            if !visited.insert(implementor) {
+            if !visited.insert(implementor) || implementor == owner {
                 continue;
             }
-            if let Some(implementation) = member.get(&(implementor, node.name.as_str())) {
-                overriding.entry(at).or_default().push(*implementation);
+            if let Some(implementation) = graph.members[implementor]
+                .iter()
+                .copied()
+                .find(|member| nodes[*member].kind.is_unit() && nodes[*member].name == node.name)
+            {
+                overriding.entry(at).or_default().push(implementation);
             }
-            below.extend(implementors.get(&implementor).into_iter().flatten().copied());
+            below.extend(graph.implementors.get(nodes[implementor].name.as_str()).into_iter().flatten().copied());
         }
     }
     overriding

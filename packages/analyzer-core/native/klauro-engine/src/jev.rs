@@ -82,10 +82,6 @@ impl Decision {
         (self.confidence.unwrap_or(0.0) >= floor).then_some(choice)
     }
 
-    pub fn chosen(&self) -> Option<&str> {
-        self.choice.as_deref()
-    }
-
     pub fn settled(&self) -> f64 {
         match (self.noul, self.confidence) {
             (Some(noul), _) => (noul * 100.0).round() / 100.0,

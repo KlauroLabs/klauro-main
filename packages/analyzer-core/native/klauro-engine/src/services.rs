@@ -230,10 +230,21 @@ pub fn derive(sources: &Sources) -> Found {
         .filter_map(|node| Some((node.file, node.project.as_deref()?)))
         .collect();
     let mut gathering = Gathering { held: BTreeMap::new(), project_of_file };
-    let tested = |file: u32| {
-        sources.not_ours.get(file as usize).copied().unwrap_or(false)
-            || sources.paths.get(file as usize).is_some_and(|path| crate::paths::is_test(path))
-    };
+    let set_aside: Vec<bool> = sources
+        .paths
+        .iter()
+        .enumerate()
+        .map(|(at, path)| sources.not_ours.get(at).copied().unwrap_or(false) || crate::paths::is_test(path))
+        .collect();
+    let structured: Vec<bool> = sources
+        .paths
+        .iter()
+        .map(|path| {
+            let lowered = path.to_ascii_lowercase();
+            [".yml", ".yaml", ".json", ".toml"].iter().any(|ending| lowered.ends_with(ending))
+        })
+        .collect();
+    let tested = |file: u32| set_aside.get(file as usize).copied().unwrap_or(true);
 
     if let Some(dependencies) = sources.dependencies {
         for dependency in &dependencies.dependencies {
@@ -318,14 +329,11 @@ pub fn derive(sources: &Sources) -> Found {
     let children_named: HashSet<(&str, &str)> = sources
         .nodes
         .iter()
+        .filter(|node| node.name == "build" && structured.get(node.file as usize).copied().unwrap_or(false))
         .filter_map(|node| Some((node.parent.as_deref()?, node.name.as_str())))
         .collect();
-    for node in sources.nodes.iter().filter(|node| !tested(node.file)) {
-        let Some(path) = sources.paths.get(node.file as usize) else { continue };
-        let lowered = path.to_ascii_lowercase();
-        if !(lowered.ends_with(".yml") || lowered.ends_with(".yaml") || lowered.ends_with(".json")
-            || lowered.ends_with(".toml"))
-        {
+    for node in sources.nodes.iter() {
+        if tested(node.file) || !structured.get(node.file as usize).copied().unwrap_or(false) {
             continue;
         }
         let value = node.type_annotation.as_deref().unwrap_or("").trim().trim_matches(['"', '\'']);

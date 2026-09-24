@@ -32,7 +32,12 @@ mod resolve;
 mod roles;
 mod route;
 mod layers;
+mod design_patterns;
+mod patterns;
+mod practices;
+mod principles;
 mod scope;
+mod shared;
 mod service_catalog;
 mod services;
 mod tables;
@@ -92,6 +97,10 @@ struct Index {
     dependencies: Option<dependencies::Dependencies>,
     services: Vec<services::Service>,
     layering: Vec<layers::Layering>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    patterns: Option<patterns::Patterns>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    principles: Option<principles::Principles>,
     roles: Option<roles::Roles>,
     #[serde(skip_serializing_if = "Option::is_none")]
     verification: Option<verify::Verification>,
@@ -351,6 +360,8 @@ fn read_it() {
         dependencies: None,
         services: Vec::new(),
         layering: Vec::new(),
+        patterns: None,
+        principles: None,
         roles: None,
         verification: None,
         conformance: None,
@@ -762,6 +773,53 @@ fn read_it() {
         index.exit_points.dedup_by(|left, right| left.id == right.id);
     }
 
+    let patterns_started = Instant::now();
+    let pattern_paths: Vec<&str> = index.files.iter().map(|file| file.path.as_str()).collect();
+    let declared_packages: Vec<&str> = index
+        .dependencies
+        .as_ref()
+        .map(|found| found.dependencies.iter().map(|dependency| dependency.name.as_str()).collect())
+        .unwrap_or_default();
+    let pattern_graph = shared::Graph::new(
+        &index.nodes,
+        &index.edges,
+        &index.type_references,
+        index.roles.as_ref().expect("roles precede the patterns"),
+        &pattern_paths,
+    );
+    let derived = patterns::derive(&patterns::Sources {
+        graph: &pattern_graph,
+        nodes: &index.nodes,
+        edges: &index.edges,
+        calls: &index.calls,
+        type_references: &index.type_references,
+        locals: &index.locals,
+        entry_points: &index.entry_points,
+        exit_points: &index.exit_points,
+        roles: index.roles.as_ref().expect("roles precede the patterns"),
+        paths: &pattern_paths,
+        imports: &index.imports,
+        declared: &declared_packages,
+        serving_projects: index.architecture.as_ref().map(|architecture| architecture.serving_projects).unwrap_or(0),
+    });
+    drop(pattern_paths);
+    drop(declared_packages);
+    eprintln!(
+        "patterns {:?} | found {} | messages {} | dispatched {} | topics {}",
+        patterns_started.elapsed(),
+        derived.patterns.found.len(),
+        derived.patterns.messages.len(),
+        derived.dispatched.len(),
+        derived.patterns.topics.len()
+    );
+    if std::env::var("KLAURO_REPORT_PATTERNS").is_ok() {
+        for found in &derived.patterns.found {
+            eprintln!("  pattern {} | {} | {}", found.pattern, found.count, found.evidence);
+        }
+    }
+    let dispatched = derived.dispatched;
+    index.patterns = Some(derived.patterns);
+
     let services_started = Instant::now();
     let service_paths: Vec<&str> = index.files.iter().map(|file| file.path.as_str()).collect();
     let not_ours: Vec<bool> = index.files.iter().map(|file| file.generated || file.oversize).collect();
@@ -802,19 +860,47 @@ fn read_it() {
         index.services.iter().filter(|service| !service.known).count(),
     );
 
+    let principles_started = Instant::now();
+    let principle_paths: Vec<&str> = index.files.iter().map(|file| file.path.as_str()).collect();
+    let principles = principles::derive(&principles::Sources {
+        graph: &pattern_graph,
+        nodes: &index.nodes,
+        edges: &index.edges,
+        calls: &index.calls,
+        metrics: &index.metrics,
+        exit_points: &index.exit_points,
+        paths: &principle_paths,
+    });
+    drop(principle_paths);
+    eprintln!(
+        "principles {:?} | anti-patterns {}",
+        principles_started.elapsed(),
+        principles.anti_patterns.len()
+    );
+    if std::env::var("KLAURO_REPORT_PATTERNS").is_ok() {
+        for principle in &principles.solid {
+            eprintln!("  principle {} | {} of {}", principle.principle, principle.following, principle.population);
+        }
+        for anti in &principles.anti_patterns {
+            eprintln!("  anti-pattern {} | {}", anti.anti_pattern, anti.count);
+        }
+    }
+    index.principles = Some(principles);
+
     let layers_started = Instant::now();
-    let layer_paths: Vec<&str> = index.files.iter().map(|file| file.path.as_str()).collect();
     let layering = layers::derive(
-        &index.nodes,
+        &pattern_graph,
         &index.edges,
+        &dispatched,
         index.roles.as_ref().expect("roles precede the layering"),
         &index.entry_points,
         &index.exit_points,
-        &layer_paths,
     );
-    drop(layer_paths);
     eprintln!("layers {:?} | projects {}", layers_started.elapsed(), layering.len());
     index.layering = layering;
+    drop(pattern_graph);
+    index.edges.extend(dispatched);
+
 
     let graph_started = Instant::now();
     let mut exits_by_unit: std::collections::HashMap<String, u32> = std::collections::HashMap::new();

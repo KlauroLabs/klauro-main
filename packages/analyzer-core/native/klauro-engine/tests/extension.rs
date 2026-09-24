@@ -18,10 +18,6 @@ fn id_of(index: &serde_json::Value, name: &str) -> String {
         .to_string()
 }
 
-fn names(id: &str, declared: &str) -> bool {
-    id.ends_with(declared) || id.contains(&format!("{declared}:"))
-}
-
 
 #[test]
 fn an_extension_function_records_the_type_it_extends() {

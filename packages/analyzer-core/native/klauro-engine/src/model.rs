@@ -265,6 +265,40 @@ pub struct TypeReferenceFact {
     pub source: String,
     pub name: String,
     pub kind: EdgeKind,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub arguments: Vec<String>,
+}
+
+pub fn type_arguments(written: &str) -> Vec<String> {
+    let Some(opened) = written.find('<') else { return Vec::new() };
+    let Some(closed) = written.rfind('>') else { return Vec::new() };
+    if closed <= opened {
+        return Vec::new();
+    }
+    let mut depth = 0i32;
+    let mut held = Vec::new();
+    let mut from = opened + 1;
+    for (at, letter) in written[opened + 1..closed].char_indices() {
+        let at = at + opened + 1;
+        match letter {
+            '<' | '[' | '(' => depth += 1,
+            '>' | ']' | ')' => depth -= 1,
+            ',' if depth == 0 => {
+                held.push(&written[from..at]);
+                from = at + 1;
+            }
+            _ => {}
+        }
+    }
+    held.push(&written[from..closed]);
+    held.into_iter()
+        .map(|argument| {
+            let argument = argument.trim();
+            let argument = argument.split('<').next().unwrap_or(argument).trim();
+            crate::names::leaf(argument).trim_end_matches('?').to_string()
+        })
+        .filter(|argument| !argument.is_empty())
+        .collect()
 }
 
 #[derive(Debug, Serialize)]

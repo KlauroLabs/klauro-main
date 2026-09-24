@@ -587,11 +587,16 @@ impl<'a> Extractor<'a> {
             if name.is_empty() {
                 continue;
             }
+            let written = match entry.next_named_sibling().filter(|next| next.kind() == "type_arguments") {
+                Some(arguments) => format!("{}{}", self.text(entry), self.text(arguments)),
+                None => self.text(entry).to_string(),
+            };
             self.facts.type_references.push(TypeReferenceFact {
                 file: self.file,
                 source: owner.to_string(),
                 name: name.to_string(),
                 kind,
+                arguments: crate::model::type_arguments(&written),
             });
         }
     }
