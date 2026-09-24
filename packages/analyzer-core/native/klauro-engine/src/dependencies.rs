@@ -432,7 +432,7 @@ pub fn package_of(specifier: &str) -> Option<&str> {
     Some(head(trimmed, '/', 1))
 }
 
-fn resolves_within(specifier: &str, internal: &HashSet<String>) -> bool {
+fn resolves_within(specifier: &str, internal: &rustc_hash::FxHashSet<String>) -> bool {
     internal.contains(specifier)
 }
 
@@ -473,7 +473,7 @@ fn classify(package: &str) -> Option<&'static Known> {
 pub fn derive(
     imports: &[ImportFact],
     manifested: &[(String, Option<String>)],
-    internal: &HashSet<String>,
+    internal: &rustc_hash::FxHashSet<String>,
     own: &HashSet<&str>,
     files: &[String],
     languages: &[&str],

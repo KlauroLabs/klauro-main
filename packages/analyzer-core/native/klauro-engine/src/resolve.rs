@@ -1,5 +1,5 @@
 use rayon::prelude::*;
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use crate::externals;
 use crate::language_tables::SOURCE_EXTENSIONS;
@@ -82,26 +82,26 @@ impl<'a> Symbols<'a> {
     fn build(nodes: &'a [IndexNode]) -> Self {
         let mut symbols = Symbols {
             nodes,
-            position: HashMap::with_capacity(nodes.len()),
-            file_scope: HashMap::new(),
-            exported: HashMap::new(),
-            members: HashMap::new(),
-            unique_type: HashMap::new(),
-            unique_unit: HashMap::new(),
-            unique_member: HashMap::new(),
-            unique_extension: HashMap::new(),
-            extension: HashMap::new(),
-            declared_members: HashSet::new(),
+            position: HashMap::with_capacity_and_hasher(nodes.len(), Default::default()),
+            file_scope: HashMap::default(),
+            exported: HashMap::default(),
+            members: HashMap::default(),
+            unique_type: HashMap::default(),
+            unique_unit: HashMap::default(),
+            unique_member: HashMap::default(),
+            unique_extension: HashMap::default(),
+            extension: HashMap::default(),
+            declared_members: HashSet::default(),
             owner: vec![None; nodes.len()],
         };
         for (at, node) in nodes.iter().enumerate() {
             symbols.position.insert(node.id.as_str(), at as u32);
         }
 
-        let mut types: HashMap<&str, (u32, u32)> = HashMap::new();
-        let mut units: HashMap<&str, (u32, u32)> = HashMap::new();
-        let mut member_names: HashMap<&str, (u32, u32)> = HashMap::new();
-        let mut extension_names: HashMap<&str, (u32, u32)> = HashMap::new();
+        let mut types: HashMap<&str, (u32, u32)> = HashMap::default();
+        let mut units: HashMap<&str, (u32, u32)> = HashMap::default();
+        let mut member_names: HashMap<&str, (u32, u32)> = HashMap::default();
+        let mut extension_names: HashMap<&str, (u32, u32)> = HashMap::default();
 
         for (at, node) in nodes.iter().enumerate() {
             let at = at as u32;
@@ -599,11 +599,12 @@ struct Modules {
 
 impl Modules {
     fn build(files: &[String], languages: &[&str]) -> Modules {
-        let mut declaring: HashMap<String, Option<u32>> = HashMap::new();
-        let mut condensed: HashMap<String, Option<u32>> = HashMap::new();
-        let mut holding = HashSet::new();
-        let mut rooted = HashSet::new();
-        let mut packaged: HashMap<String, Vec<u32>> = HashMap::new();
+        let mut declaring: HashMap<String, Option<u32>> = HashMap::default();
+        let mut condensed: HashMap<String, Option<u32>> = HashMap::default();
+        let mut holding = HashSet::default();
+        let mut rooted = HashSet::default();
+        let mut packaged: HashMap<String, Vec<u32>> = HashMap::default();
+        let mut walked: HashSet<(&str, String)> = HashSet::default();
         for (at, path) in files.iter().enumerate() {
             let language = family(languages[at]);
             packaged
@@ -636,6 +637,9 @@ impl Modules {
                 }
                 let mut folder = key.rsplit_once('/').map(|(folder, _)| folder);
                 while let Some(tail) = folder {
+                    if !walked.insert((language, tail.to_string())) {
+                        break;
+                    }
                     for at in tail.match_indices('/').map(|(at, _)| at + 1).chain([0]) {
                         holding.insert(format!("{language}\u{1}{}", &tail[at..]));
                     }
@@ -733,7 +737,7 @@ fn file_index(files: &HashMap<&str, u32>, from: &str, specifier: &str) -> Option
 }
 
 fn namespaces(index: &Index) -> HashMap<String, Vec<u32>> {
-    let mut declared: HashMap<String, Vec<u32>> = HashMap::new();
+    let mut declared: HashMap<String, Vec<u32>> = HashMap::default();
     for (at, namespace) in index.namespaces.iter().enumerate() {
         if namespace.is_empty() {
             continue;
@@ -744,6 +748,11 @@ fn namespaces(index: &Index) -> HashMap<String, Vec<u32>> {
             .push(at as u32);
     }
     declared
+}
+
+fn namespace_is_declared(declared: &HashMap<String, Vec<u32>>, language: &str, specifier: &str) -> bool {
+    let Some(key) = module_path(specifier) else { return false };
+    declared.contains_key(&format!("{}\u{1}{key}", family(language)))
 }
 
 fn namespace_members(
@@ -870,7 +879,7 @@ fn noted(held: &mut HashMap<String, Option<u32>>, key: &str, at: u32) {
 
 impl Beneath {
     fn over(files: &[String]) -> Beneath {
-        let mut held: HashMap<String, Option<u32>> = HashMap::new();
+        let mut held: HashMap<String, Option<u32>> = HashMap::default();
         for (at, path) in files.iter().enumerate() {
             let at = at as u32;
             let base = without_suffix(path);
@@ -972,7 +981,15 @@ enum Resolved {
 }
 
 pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
+    let timing = std::env::var("KLAURO_TIME_RESOLVE").is_ok();
+    let started = std::time::Instant::now();
+    let lap = |label: &str| {
+        if timing {
+            eprintln!("    resolve {label} {:?}", started.elapsed());
+        }
+    };
     let mut symbols = Symbols::build(index.nodes);
+    lap("symbols");
     let by_path: HashMap<&str, u32> = index
         .files
         .iter()
@@ -981,9 +998,12 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         .collect();
 
     let mut edges = Vec::new();
-    let mut internal_specifiers: HashSet<String> = HashSet::new();
+    let mut internal_specifiers: HashSet<String> = HashSet::default();
+    lap("paths");
     let by_module = Modules::build(index.files, index.languages);
+    lap("modules");
     let by_namespace = namespaces(index);
+    lap("namespaces");
     let mut named: HashSet<(u32, String)> = symbols
         .file_scope
         .keys()
@@ -1000,54 +1020,85 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
             })
             .map(|node| (node.file, node.name.to_ascii_lowercase())),
     );
-    let mut declared_by: HashMap<String, Vec<u32>> = HashMap::new();
+    lap("named");
+    let mut declared_by: HashMap<String, Vec<u32>> = HashMap::default();
     for (file, name) in &named {
         declared_by.entry(name.clone()).or_default().push(*file);
     }
-    let mut referenced: HashMap<u32, HashSet<String>> = HashMap::new();
-    for fact in index.type_references {
-        referenced
-            .entry(fact.file)
-            .or_default()
-            .insert(base_type_name(&fact.name).to_ascii_lowercase());
-    }
-    for fact in index.calls {
-        let entry = referenced.entry(fact.file).or_default();
-        entry.insert(crate::names::leaf(&fact.callee).to_ascii_lowercase());
-        if let Some(receiver) = fact.receiver.as_deref() {
-            entry.insert(crate::names::root(receiver).to_ascii_lowercase());
+    lap("declared by");
+    let mut types_of: Vec<Vec<u32>> = vec![Vec::new(); index.files.len()];
+    for (at, fact) in index.type_references.iter().enumerate() {
+        if let Some(held) = types_of.get_mut(fact.file as usize) {
+            held.push(at as u32);
         }
     }
-    for node in index.nodes {
-        let entry = referenced.entry(node.file).or_default();
-        for named in node
-            .type_annotation
-            .iter()
-            .chain(node.signature.iter().flat_map(|signature| {
-                signature
-                    .return_type
-                    .iter()
-                    .chain(signature.parameters.iter().filter_map(|p| p.type_annotation.as_ref()))
-            }))
-        {
-            entry.insert(base_type_name(named).to_ascii_lowercase());
-        }
-        for decorator in &node.decorators {
-            entry.insert(crate::names::leaf(&decorator.name).to_ascii_lowercase());
+    let mut calls_of: Vec<Vec<u32>> = vec![Vec::new(); index.files.len()];
+    for (at, fact) in index.calls.iter().enumerate() {
+        if let Some(held) = calls_of.get_mut(fact.file as usize) {
+            held.push(at as u32);
         }
     }
+    let mut nodes_of: Vec<Vec<u32>> = vec![Vec::new(); index.files.len()];
+    for (at, node) in index.nodes.iter().enumerate() {
+        if let Some(held) = nodes_of.get_mut(node.file as usize) {
+            held.push(at as u32);
+        }
+    }
+    let referenced_in = |file: u32| -> HashSet<String> {
+        let mut held: HashSet<String> = HashSet::default();
+        for at in types_of.get(file as usize).into_iter().flatten() {
+            held.insert(base_type_name(&index.type_references[*at as usize].name).to_ascii_lowercase());
+        }
+        for at in calls_of.get(file as usize).into_iter().flatten() {
+            let fact = &index.calls[*at as usize];
+            held.insert(crate::names::leaf(&fact.callee).to_ascii_lowercase());
+            if let Some(receiver) = fact.receiver.as_deref() {
+                held.insert(crate::names::root(receiver).to_ascii_lowercase());
+            }
+        }
+        for at in nodes_of.get(file as usize).into_iter().flatten() {
+            let node = &index.nodes[*at as usize];
+            for named in node
+                .type_annotation
+                .iter()
+                .chain(node.signature.iter().flat_map(|signature| {
+                    signature
+                        .return_type
+                        .iter()
+                        .chain(signature.parameters.iter().filter_map(|p| p.type_annotation.as_ref()))
+                }))
+            {
+                held.insert(base_type_name(named).to_ascii_lowercase());
+            }
+            for decorator in &node.decorators {
+                held.insert(crate::names::leaf(&decorator.name).to_ascii_lowercase());
+            }
+        }
+        held
+    };
+    lap("referenced");
     let aliases = crate::alias::Aliases::read(index.files, index.nodes);
     let mut bindings = Bindings {
-        imported: HashMap::new(),
-        module_files: HashMap::new(),
-        through: HashMap::new(),
-        modules: HashMap::new(),
-        locals: HashMap::new(),
-        file_locals: HashMap::new(),
+        imported: HashMap::default(),
+        module_files: HashMap::default(),
+        through: HashMap::default(),
+        modules: HashMap::default(),
+        locals: HashMap::default(),
+        file_locals: HashMap::default(),
     };
 
+    lap("aliases");
     let beneath = Beneath::over(index.files);
-    for fact in index.imports {
+    let needing: HashSet<u32> = index
+        .imports
+        .iter()
+        .filter(|fact| namespace_is_declared(&by_namespace, index.languages[fact.file as usize], &fact.specifier))
+        .map(|fact| fact.file)
+        .collect();
+    let needing: Vec<u32> = needing.into_iter().collect();
+    let referenced: HashMap<u32, HashSet<String>> =
+        needing.par_iter().map(|file| (*file, referenced_in(*file))).collect();
+    let reach_of = |fact: &ImportFact| -> Vec<u32> {
         let from = index.files[fact.file as usize].as_str();
         let language = index.languages[fact.file as usize];
         let declared = file_index(&by_path, from, &fact.specifier)
@@ -1088,10 +1139,12 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
                     .collect()
             }
         };
-        let reached: Vec<u32> = reached
-            .into_iter()
-            .filter(|found| index.files[*found as usize] != from)
-            .collect();
+        reached.into_iter().filter(|found| index.files[*found as usize] != from).collect()
+    };
+    let reached_by_import: Vec<Vec<u32>> = index.imports.par_iter().map(reach_of).collect();
+    for (fact, reached) in index.imports.iter().zip(reached_by_import) {
+        let from = index.files[fact.file as usize].as_str();
+        let language = index.languages[fact.file as usize];
         if reached.is_empty() {
             if aliases.declares(from, &fact.specifier) || by_module.held(language, &fact.specifier) {
                 internal_specifiers.insert(fact.specifier.clone());
@@ -1167,7 +1220,8 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         }
     }
 
-    let mut owners: HashMap<String, String> = HashMap::new();
+    let mut owners: HashMap<String, String> = HashMap::default();
+    lap("imports");
     for fact in index.type_references {
         if fact.kind != EdgeKind::HasMethod {
             continue;
@@ -1243,6 +1297,7 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         .iter()
         .map(|((file, name), held)| ((*file, (*name).to_string()), (*held).to_string()))
         .collect();
+    lap("type references and locals");
     let resolver = Resolver {
         symbols,
         bindings,
@@ -1250,9 +1305,9 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
     };
     let symbols = &resolver.symbols;
 
-    let mut external_nodes: HashMap<String, IndexNode> = HashMap::new();
+    let mut external_nodes: HashMap<String, IndexNode> = HashMap::default();
 
-    let mut supertypes: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut supertypes: HashMap<u32, Vec<u32>> = HashMap::default();
     for fact in index.type_references {
         if !matches!(fact.kind, EdgeKind::Extends | EdgeKind::Implements) {
             continue;
@@ -1268,7 +1323,7 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
     }
 
     let inherited = |owner: u32, name: &str| -> Option<u32> {
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         let mut pending = vec![owner];
         while let Some(at) = pending.pop() {
             if !seen.insert(at) {
@@ -1313,7 +1368,7 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         }
     }
 
-    let mut sole_package: HashMap<u32, &str> = HashMap::new();
+    let mut sole_package: HashMap<u32, &str> = HashMap::default();
     for fact in index.imports {
         let Some(package) = crate::dependencies::package_of(&fact.specifier) else {
             continue;
@@ -1332,8 +1387,8 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
     let declared_anywhere: HashSet<&str> =
         index.nodes.iter().map(|node| node.name.as_str()).collect();
 
-    let mut unresolved_names: HashMap<String, u32> = HashMap::new();
-    let mut call_origins: HashMap<(String, String), String> = HashMap::new();
+    let mut unresolved_names: HashMap<String, u32> = HashMap::default();
+    let mut call_origins: HashMap<(String, String), String> = HashMap::default();
     for (unit, name, root) in made_by {
         call_origins.entry((unit, name)).or_insert(root);
     }
@@ -1344,6 +1399,7 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
     let mut unresolved_calls = 0;
     let mut no_caller = 0;
 
+    lap("before calls");
     let settled_edges = &edges;
     let resolve_call = |fact: &'a CallFact| -> Resolved {
         let Some(caller) = fact.caller.as_deref() else {
@@ -1533,6 +1589,7 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         Resolved::Unresolved(member)
     };
     let resolved: Vec<Resolved> = index.calls.par_iter().map(resolve_call).collect();
+    lap("calls resolved");
     for (fact, outcome) in index.calls.iter().zip(resolved) {
         let caller = fact.caller.as_deref().unwrap_or_default();
         match outcome {
