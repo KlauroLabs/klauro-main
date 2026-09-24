@@ -1,3 +1,4 @@
+use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 
 use crate::externals;
@@ -955,7 +956,22 @@ fn external_node(id: &str, name: &str, origin: &str) -> IndexNode {
     }
 }
 
-pub fn resolve(index: &Index) -> Resolution {
+enum Resolved {
+    NoCaller,
+    Dynamic,
+    Indirect,
+    Unresolved(String),
+    Edge(String, EdgeKind),
+    External {
+        space: &'static str,
+        owner: String,
+        member: String,
+        kind: EdgeKind,
+        origin: Option<(String, String)>,
+    },
+}
+
+pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
     let mut symbols = Symbols::build(index.nodes);
     let by_path: HashMap<&str, u32> = index
         .files
@@ -1328,14 +1344,13 @@ pub fn resolve(index: &Index) -> Resolution {
     let mut unresolved_calls = 0;
     let mut no_caller = 0;
 
-    for fact in index.calls {
+    let settled_edges = &edges;
+    let resolve_call = |fact: &'a CallFact| -> Resolved {
         let Some(caller) = fact.caller.as_deref() else {
-            no_caller += 1;
-            continue;
+            return Resolved::NoCaller;
         };
         let Some(unit) = symbols.position.get(caller).copied() else {
-            no_caller += 1;
-            continue;
+            return Resolved::NoCaller;
         };
         let kind = if fact.constructs {
             EdgeKind::Instantiates
@@ -1344,24 +1359,18 @@ pub fn resolve(index: &Index) -> Resolution {
         };
 
         if fact.receiver.is_none() && fact.callee == "import" {
-            dynamic_calls += 1;
-            continue;
+            return Resolved::Dynamic;
         }
         if fact.receiver.is_none() && fact.callee == "super"
             && let Some(parent) = symbols
                 .owning_type(unit)
-                .and_then(|owner| parent_of(&edges, &symbols.nodes[owner as usize].id))
+                .and_then(|owner| parent_of(settled_edges, &symbols.nodes[owner as usize].id))
                 .and_then(|parent| symbols.position.get(parent.as_str()).copied())
             {
                 let target = symbols
                     .member(parent, "constructor")
                     .unwrap_or(parent);
-                edges.push(IndexEdge {
-                    source: caller.to_string(),
-                    target: symbols.nodes[target as usize].id.clone(),
-                    kind,
-                });
-                continue;
+                return Resolved::Edge(symbols.nodes[target as usize].id.clone(), kind);
             }
 
         let origin = match fact.receiver.as_deref() {
@@ -1369,44 +1378,31 @@ pub fn resolve(index: &Index) -> Resolution {
             None => resolver.root(unit, fact.file, &fact.callee),
         };
 
-        let mut emit = |target: String| {
-            edges.push(IndexEdge {
-                source: caller.to_string(),
-                target,
-                kind,
-            })
-        };
-
         match (origin, fact.receiver.as_deref()) {
             (Origin::Declared(found), Some(_)) => {
                 let node = &symbols.nodes[found as usize];
                 match inherited(found, &fact.callee) {
                     Some(member) => {
-                        emit(symbols.nodes[member as usize].id.clone());
-                        continue;
+                        return Resolved::Edge(symbols.nodes[member as usize].id.clone(), kind);
                     }
                     None if node.kind.is_unit() => {
-                        emit(node.id.clone());
-                        continue;
+                        return Resolved::Edge(node.id.clone(), kind);
                     }
                     None => {}
                 }
             }
             (Origin::Declared(found), None) => {
-                emit(symbols.nodes[found as usize].id.clone());
-                continue;
+                return Resolved::Edge(symbols.nodes[found as usize].id.clone(), kind);
             }
             (Origin::Module(held), Some(_)) => {
                 if let Some(found) =
                     symbols.file_scope.get(&(held, fact.callee.as_str())).copied()
                 {
-                    emit(symbols.nodes[found as usize].id.clone());
-                    continue;
+                    return Resolved::Edge(symbols.nodes[found as usize].id.clone(), kind);
                 }
             }
             (Origin::Indirect, None) => {
-                indirect_calls += 1;
-                continue;
+                return Resolved::Indirect;
             }
             _ => {}
         }
@@ -1429,8 +1425,7 @@ pub fn resolve(index: &Index) -> Resolution {
                         .is_some_and(|signature| signature.receiver.is_some())
                 })
         {
-            emit(symbols.nodes[found as usize].id.clone());
-            continue;
+            return Resolved::Edge(symbols.nodes[found as usize].id.clone(), kind);
         }
 
         let external = match origin {
@@ -1455,42 +1450,28 @@ pub fn resolve(index: &Index) -> Resolution {
         };
 
         if let Some((space, owner, member)) = external {
-            if space == "package"
-                && let Some(receiver) = fact.receiver.as_deref()
-            {
-                call_origins.insert((caller.to_string(), receiver.to_string()), owner.clone());
-            }
-            emit(declare_external(&mut external_nodes, space, &owner, &member));
-            if space == "package" {
-                package_calls += 1;
-            } else {
-                runtime_calls += 1;
-            }
-            continue;
+            let origin = (space == "package")
+                .then(|| fact.receiver.as_deref())
+                .flatten()
+                .map(|receiver| (caller.to_string(), receiver.to_string()));
+            return Resolved::External { space, owner, member, kind, origin };
         }
 
         if fact.receiver.is_none()
             && let Some(found) = symbols.unique_unit.get(fact.callee.as_str()).copied()
         {
-            emit(symbols.nodes[found as usize].id.clone());
-            continue;
+            return Resolved::Edge(symbols.nodes[found as usize].id.clone(), kind);
         }
         if fact.receiver.is_none()
             && let Some(found) = symbols.unique_type.get(fact.callee.as_str()).copied()
         {
             let built = symbols.member(found, "constructor").unwrap_or(found);
-            edges.push(IndexEdge {
-                source: caller.to_string(),
-                target: symbols.nodes[built as usize].id.clone(),
-                kind: EdgeKind::Instantiates,
-            });
-            continue;
+            return Resolved::Edge(symbols.nodes[built as usize].id.clone(), EdgeKind::Instantiates);
         }
         if fact.receiver.is_some()
             && let Some(found) = symbols.unique_member.get(fact.callee.as_str()).copied()
         {
-            emit(symbols.nodes[found as usize].id.clone());
-            continue;
+            return Resolved::Edge(symbols.nodes[found as usize].id.clone(), kind);
         }
         if let Some(receiver) = fact.receiver.as_deref() {
             let extended = match origin {
@@ -1518,44 +1499,63 @@ pub fn resolve(index: &Index) -> Resolution {
                 symbols.unique_extension.get(fact.callee.as_str()).copied()
             });
             if let Some(found) = found {
-                emit(symbols.nodes[found as usize].id.clone());
-                continue;
+                return Resolved::Edge(symbols.nodes[found as usize].id.clone(), kind);
             }
             if let Some(specifier) = imported {
-                emit(declare_external(
-                    &mut external_nodes,
-                    "package",
-                    specifier,
-                    &format!("{specifier}.{}", fact.callee),
-                ));
-                package_calls += 1;
-                continue;
+                return Resolved::External {
+                    space: "package",
+                    owner: specifier.to_string(),
+                    member: format!("{specifier}.{}", fact.callee),
+                    kind,
+                    origin: None,
+                };
             }
         }
 
         let language = index.languages.get(fact.file as usize).copied().unwrap_or("");
         if fact.receiver.is_none() && crate::builtins::is_builtin(language, &fact.callee) {
-            emit(declare_external(
-                &mut external_nodes,
-                "runtime",
-                language,
-                &format!("{language}.{}", fact.callee),
-            ));
-            runtime_calls += 1;
-            continue;
+            return Resolved::External {
+                space: "runtime",
+                owner: language.to_string(),
+                member: format!("{language}.{}", fact.callee),
+                kind,
+                origin: None,
+            };
         }
         if !crate::builtins::is_builtin(language, &fact.callee)
             && !declared_anywhere.contains(fact.callee.as_str())
             && let Some(specifier) = sole_package.get(&fact.file).copied()
             && !specifier.is_empty()
         {
-            emit(declare_external(&mut external_nodes, "package", specifier, &member));
-            package_calls += 1;
-            continue;
+            return Resolved::External { space: "package", owner: specifier.to_string(), member, kind, origin: None };
         }
 
-        *unresolved_names.entry(member).or_insert(0) += 1;
-        unresolved_calls += 1;
+        Resolved::Unresolved(member)
+    };
+    let resolved: Vec<Resolved> = index.calls.par_iter().map(resolve_call).collect();
+    for (fact, outcome) in index.calls.iter().zip(resolved) {
+        let caller = fact.caller.as_deref().unwrap_or_default();
+        match outcome {
+            Resolved::NoCaller => no_caller += 1,
+            Resolved::Dynamic => dynamic_calls += 1,
+            Resolved::Indirect => indirect_calls += 1,
+            Resolved::Unresolved(member) => {
+                *unresolved_names.entry(member).or_insert(0) += 1;
+                unresolved_calls += 1;
+            }
+            Resolved::Edge(target, kind) => edges.push(IndexEdge { source: caller.to_string(), target, kind }),
+            Resolved::External { space, owner, member, kind, origin } => {
+                if let Some(origin) = origin {
+                    call_origins.insert(origin, owner.clone());
+                }
+                let target = declare_external(&mut external_nodes, space, &owner, &member);
+                edges.push(IndexEdge { source: caller.to_string(), target, kind });
+                match space {
+                    "package" => package_calls += 1,
+                    _ => runtime_calls += 1,
+                }
+            }
+        }
     }
 
     let mut external_nodes: Vec<IndexNode> = external_nodes.into_values().collect();
