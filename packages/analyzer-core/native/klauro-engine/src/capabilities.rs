@@ -277,6 +277,44 @@ fn place(
     }
 }
 
+const HELD_TOGETHER: f64 = 0.5;
+
+fn hold_together(said: &str, told: &BTreeMap<String, String>, held: &mut [Held]) {
+    let mut questions: BTreeMap<String, crate::jev::Question> = BTreeMap::new();
+    let mut asked_of: BTreeMap<String, (usize, String)> = BTreeMap::new();
+    for (at, other) in held.iter().enumerate() {
+        if other.families.len() < 2 {
+            continue;
+        }
+        for family in &other.families {
+            let Some(evidence) = told.get(family) else { continue };
+            let key = format!("h{at}-{family}");
+            questions.insert(
+                key.clone(),
+                crate::jev::Question {
+                    kind: "noul",
+                    instructions: format!(
+                        "CAPABILITY: {}, for {}: {}\n\nOUTCOME read from the code:\n{evidence}\n\nSomeone who comes for the capability above comes for this outcome as part of the same thing, rather than for a different reason or as a different person",
+                        other.name, other.audience, other.description
+                    ),
+                    criteria: BTreeMap::new().into(),
+                },
+            );
+            asked_of.insert(key, (at, family.clone()));
+        }
+    }
+    if questions.is_empty() {
+        return;
+    }
+    let answers = crate::jev::decide(&format!("A software system describes itself like this:\n{said}"), questions);
+    for (key, (at, family)) in asked_of {
+        let apart = answers.get(&key).map(crate::jev::Decision::settled).is_some_and(|held| held < HELD_TOGETHER);
+        if apart && held[at].families.len() > 1 {
+            held[at].families.remove(&family);
+        }
+    }
+}
+
 fn consolidate_within(said: &str, held: Vec<Held>) -> Vec<Held> {
     if held.len() < 2 {
         return held;
@@ -375,10 +413,11 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str) -> Vec
             let mut held: Vec<Held> = Vec::new();
             let mut plumbing: BTreeSet<String> = BTreeSet::new();
             gather(proposals, &mut held, &mut plumbing, &known);
-            place(said, &told, &mut held, &mut plumbing);
             if chunked {
                 held = consolidate_within(said, held);
             }
+            hold_together(said, &told, &mut held);
+            place(said, &told, &mut held, &mut plumbing);
             (held, plumbing)
         }
     };

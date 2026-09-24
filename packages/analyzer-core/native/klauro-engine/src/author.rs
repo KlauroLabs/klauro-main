@@ -474,8 +474,9 @@ pub fn propose_capabilities(spoken_for: &str, families: &[(String, String)]) -> 
          Read them as a whole and say which capabilities this part delivers, by these rules:\n{RULES}\n\n\
          A capability is what someone ends up with. Put outcomes together when a person would \
          say they did one thing: placing an order is one capability whether it creates the \
-         order, reserves its items or hands the order on. Split one outcome when its paths serve \
-         different people for different reasons. Name the capability for what the person gets, \
+         order, reserves its items or hands the order on. Keep outcomes apart, and split one, when \
+         different people come for them: a shopper checking out and a merchant fulfilling orders \
+         are two capabilities even though both change orders. Name the capability for what the person gets, \
          never for the way in or what it is built on: nothing is called an API, a page, an \
          endpoint, a screen, a form, a database or a table.\n\n\
          Work the system does without being asked — on a timer, in the background, or when a \

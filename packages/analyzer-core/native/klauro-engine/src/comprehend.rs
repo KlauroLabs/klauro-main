@@ -1076,7 +1076,18 @@ pub fn author(
             }
             described.sort_by(|left, right| left.project.cmp(&right.project));
             capabilities.sort_by(|left, right| left.id.cmp(&right.id));
-            let mut whole = crate::capabilities::of_the_whole(&capabilities, &spoken, told.scope, &held.flows);
+            let offered_only: HashSet<&str> = held
+                .flows
+                .iter()
+                .filter(|flow| flow.kind == "export")
+                .map(|flow| flow.id.as_str())
+                .collect();
+            let served: Vec<Capability> = capabilities
+                .iter()
+                .filter(|capability| capability.flows.iter().any(|flow| !offered_only.contains(flow.as_str())))
+                .cloned()
+                .collect();
+            let mut whole = crate::capabilities::of_the_whole(&served, &spoken, told.scope, &held.flows);
             test_capabilities(&mut whole, &spoken, "this system as a whole");
             eprintln!(
                 "  author read {} capabilities across the parts into {} for the whole",
