@@ -327,6 +327,128 @@ fn decorator_entry(decorator: &Decorator) -> Option<(&'static str, String, Optio
     }
 }
 
+static ROUTES_BY_CONVENTION: &[&str] = &[
+    "MapControllerRoute", "MapDefaultControllerRoute", "MapRoute", "UseMvcWithDefaultRoute",
+];
+static RETURNS_AN_ACTION: &[&str] = &["ActionResult", "IActionResult", "ViewResult", "RedirectResult"];
+
+fn controller_stem(node: &IndexNode, named_of: &HashMap<&str, &IndexNode>) -> Option<String> {
+    let owner = node.parent.as_deref().and_then(|parent| named_of.get(parent))?;
+    let stem = owner.name.strip_suffix("Controller").filter(|stem| !stem.is_empty())?;
+    Some(stem.to_string())
+}
+
+fn conventional_path(node: &IndexNode, named_of: &HashMap<&str, &IndexNode>) -> Option<String> {
+    let stem = controller_stem(node, named_of)?;
+    let action = node
+        .decorators
+        .iter()
+        .find(|decorator| names::leaf(&decorator.name) == "ActionName")
+        .and_then(|decorator| decorator.arguments.first())
+        .map(|argument| argument.value.clone())
+        .unwrap_or_else(|| node.name.trim_end_matches("Async").to_string());
+    Some(format!("/{stem}/{action}"))
+}
+
+fn conventional_actions(
+    nodes: &[IndexNode],
+    named_of: &HashMap<&str, &IndexNode>,
+    found: &[EntryPoint],
+) -> Vec<EntryPoint> {
+    let served: HashSet<&str> = found.iter().map(|entry| entry.handler.as_str()).collect();
+    nodes
+        .iter()
+        .filter(|node| node.kind == NodeKind::Method && node.modifiers.exported && !node.modifiers.is_static)
+        .filter(|node| !served.contains(node.id.as_str()))
+        .filter(|node| !node.decorators.iter().any(|decorator| names::leaf(&decorator.name) == "NonAction"))
+        .filter(|node| {
+            node.signature
+                .as_ref()
+                .and_then(|signature| signature.return_type.as_deref())
+                .is_some_and(|returned| RETURNS_AN_ACTION.iter().any(|action| returned.contains(action)))
+        })
+        .filter_map(|node| {
+            let path = conventional_path(node, named_of)?;
+            Some(EntryPoint {
+                id: format!("entry:{}:convention", node.id),
+                kind: "http",
+                name: path.clone(),
+                method: Some("GET".to_string()),
+                path: Some(path),
+                handler: node.id.clone(),
+                file: node.file,
+                line: node.span.line,
+                guards: Vec::new(),
+                registrar: "convention".to_string(),
+            })
+        })
+        .collect()
+}
+
+fn implements_a_generated_service<'n>(base: &'n str) -> Option<&'n str> {
+    let base = names::leaf(base);
+    base.strip_prefix("Unimplemented")
+        .and_then(|held| held.strip_suffix("Server"))
+        .or_else(|| base.strip_suffix("ImplBase"))
+        .or_else(|| base.strip_suffix("Servicer"))
+        .or_else(|| base.strip_suffix("Base"))
+        .filter(|held| !held.is_empty())
+}
+
+fn served_over_grpc(nodes: &[IndexNode], type_references: &[TypeReferenceFact], files: &[String]) -> Vec<EntryPoint> {
+    let mut declared: HashMap<&str, HashSet<String>> = HashMap::default();
+    let mut members: HashMap<&str, Vec<&IndexNode>> = HashMap::default();
+    for node in nodes {
+        if let Some(parent) = node.parent.as_deref() {
+            members.entry(parent).or_default().push(node);
+        }
+    }
+    for node in nodes {
+        let in_a_contract = files.get(node.file as usize).is_some_and(|path| path.ends_with(".proto"));
+        if !in_a_contract || node.kind != NodeKind::Interface {
+            continue;
+        }
+        let rpcs = members
+            .get(node.id.as_str())
+            .into_iter()
+            .flatten()
+            .map(|member| member.name.to_ascii_lowercase())
+            .collect();
+        declared.insert(node.name.as_str(), rpcs);
+    }
+    if declared.is_empty() {
+        return Vec::new();
+    }
+    let mut found = Vec::new();
+    for reference in type_references.iter().filter(|reference| matches!(reference.kind, EdgeKind::Extends | EdgeKind::Implements)) {
+        let Some(service) = implements_a_generated_service(&reference.name) else { continue };
+        let Some(rpcs) = declared.get(service) else { continue };
+        for member in members.get(reference.source.as_str()).into_iter().flatten() {
+            if !member.kind.is_unit() {
+                continue;
+            }
+            let spoken = member.name.trim_end_matches("Async").to_ascii_lowercase();
+            if !rpcs.contains(&spoken) {
+                continue;
+            }
+            let path = format!("/{service}/{}", member.name.trim_end_matches("Async"));
+            found.push(EntryPoint {
+                id: format!("entry:{}:grpc", member.id),
+                kind: "rpc",
+                name: path.clone(),
+                method: None,
+                path: Some(path),
+                handler: member.id.clone(),
+                file: member.file,
+                line: member.span.line,
+                guards: Vec::new(),
+                registrar: reference.name.clone(),
+            });
+        }
+    }
+    found
+}
+
 struct EntryBase {
     base: &'static str,
     kind: &'static str,
@@ -1350,6 +1472,10 @@ pub fn derive(
 
     let named_of: HashMap<&str, &IndexNode> =
         nodes.iter().map(|node| (node.id.as_str(), node)).collect();
+    let spoken_as_dotnet = |file: u32| files.get(file as usize).is_some_and(|path| path.ends_with(".cs"));
+    let routed_by_convention = calls
+        .iter()
+        .any(|call| spoken_as_dotnet(call.file) && ROUTES_BY_CONVENTION.contains(&names::leaf(&call.callee)));
     for node in nodes {
         if let Some(registrar) = &node.callback_of {
             let label = node.registration_label.as_deref();
@@ -1410,6 +1536,12 @@ pub fn derive(
                     (Some(base), None) => Some(base.clone()),
                     (None, path) => path,
                 };
+                let path = match (kind, path) {
+                    ("http", None) if routed_by_convention && spoken_as_dotnet(node.file) => {
+                        conventional_path(node, &named_of)
+                    }
+                    (_, path) => path,
+                };
                 if kind == "http" && path.is_none() {
                     continue;
                 }
@@ -1429,6 +1561,11 @@ pub fn derive(
         }
     }
 
+    if routed_by_convention {
+        let found = conventional_actions(nodes, &named_of, &entry_points);
+        entry_points.extend(found.into_iter().filter(|entry| spoken_as_dotnet(entry.file)));
+    }
+    entry_points.extend(served_over_grpc(nodes, type_references, files));
     lap("decorated entries");
     let mut by_name: HashMap<&str, Vec<&IndexNode>> = HashMap::default();
     let mut above: HashMap<&str, Vec<&str>> = HashMap::default();

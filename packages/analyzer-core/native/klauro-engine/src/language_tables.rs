@@ -189,6 +189,7 @@ pub static SOURCE_EXTENSIONS: &[&str] = &[
     "qll",
     "r",
     "rake",
+    "razor",
     "rb",
     "re",
     "rego",

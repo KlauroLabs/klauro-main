@@ -1,6 +1,7 @@
 mod alias;
 mod architecture;
 mod builtins;
+mod capabilities;
 mod audit;
 mod author;
 mod comprehend;
@@ -231,6 +232,16 @@ fn read(
         let text = std::str::from_utf8(source).ok()?;
         return Some(gomod::extract(text, file, path));
     }
+    if path.to_ascii_lowercase().ends_with(".razor") {
+        let component = source_rewrite::razor_component(source, path)?;
+        let (language, spec) = language::language_for("csharp")?;
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&language).ok()?;
+        let tree = parser.parse(&component.source, None)?;
+        let mut facts = generic::Extractor::new(&component.source, file, path, spec).run(&tree, path, lines(source));
+        routed_as_a_page(&mut facts, &component);
+        return Some(facts);
+    }
     let declared = language_id.or_else(|| language_of(path));
     if let Some(id) = declared
         && let Some((mut parser, spec)) = structured::parser_for(id)
@@ -247,6 +258,30 @@ fn read(
     let mut facts = generic::Extractor::new(source, file, path, spec).run(&tree, path, lines(source));
     facts.tables.extend(tables::declared(source, path, file));
     Some(facts)
+}
+
+static LOADS_A_PAGE: &[&str] = &["OnInitializedAsync", "OnInitialized", "OnParametersSetAsync", "OnParametersSet"];
+
+fn routed_as_a_page(facts: &mut FileFacts, component: &source_rewrite::Component) {
+    let Some(owner) = facts
+        .nodes
+        .iter()
+        .find(|node| node.kind.is_type() && node.name == component.named)
+        .map(|node| node.id.clone())
+    else {
+        return;
+    };
+    let Some(loads) = LOADS_A_PAGE.iter().find_map(|named| {
+        facts.nodes.iter().position(|node| node.parent.as_deref() == Some(owner.as_str()) && node.name == *named)
+    }) else {
+        return;
+    };
+    for route in &component.routes {
+        facts.nodes[loads].decorators.push(model::Decorator {
+            name: "HttpGet".to_string(),
+            arguments: vec![model::DecoratorArgument { value: route.clone(), literal: true }],
+        });
+    }
 }
 
 fn language_of(path: &str) -> Option<&'static str> {

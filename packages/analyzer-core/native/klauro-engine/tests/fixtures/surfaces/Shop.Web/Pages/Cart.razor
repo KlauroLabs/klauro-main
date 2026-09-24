@@ -1,0 +1,12 @@
+﻿@page "/cart"
+@inject BasketState Basket
+@attribute [Authorize]
+
+<h1>Cart</h1>
+
+@code {
+    protected override async Task OnInitializedAsync()
+    {
+        items = await Basket.GetItemsAsync();
+    }
+}
