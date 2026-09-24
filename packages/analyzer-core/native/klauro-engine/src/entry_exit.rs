@@ -45,6 +45,8 @@ pub struct ExitPoint {
     pub awaited: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub addressed: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
 }
 
 static HTTP_METHODS: &[&str] = &[
@@ -499,6 +501,10 @@ fn classify_exit(binding: &str, origin: &str, member: &str) -> Option<&'static s
 
 static SAID_BY_THE_MODULE: &[&str] = &["read", "write"];
 
+static NEVER_REACHES_THE_SERVICE: &[&str] = &[
+    "addlistener", "configure", "init", "off", "on", "once", "removealllisteners", "removelistener", "setup",
+];
+
 fn reaching(kinds: &[&'static str], operation: &str) -> Option<&'static str> {
     kinds.iter().copied().find(|kind| {
         let operations = match *kind {
@@ -525,6 +531,11 @@ fn classify_reached(
     }
     if let Some(reaches) = module_kind(origin) {
         return reaching(reaches, operation);
+    }
+    if let Some(known) = crate::service_catalog::by_package(origin) {
+        let constructs_the_client = operation.eq_ignore_ascii_case(binding);
+        let reaches = !constructs_the_client && !NEVER_REACHES_THE_SERVICE.contains(&operation);
+        return reaches.then(|| known.reached_as());
     }
     if let Some(reaches) = standing {
         return reaching(reaches, operation);
@@ -610,12 +621,13 @@ pub fn kept_by_a_model(
     nodes: &[IndexNode],
     roles: &crate::roles::Roles,
 ) -> Vec<ExitPoint> {
+    let named_of: HashMap<&str, &str> =
+        nodes.iter().map(|node| (node.id.as_str(), node.name.as_str())).collect();
     let modelled: HashSet<&str> = roles
         .roles
         .iter()
         .filter(|role| role.role == "model" && !role.from.starts_with("name:"))
-        .filter_map(|role| nodes.iter().find(|node| node.id == role.node))
-        .map(|node| node.name.as_str())
+        .filter_map(|role| named_of.get(role.node.as_str()).copied())
         .collect();
     if modelled.is_empty() {
         return Vec::new();
@@ -644,6 +656,154 @@ pub fn kept_by_a_model(
             line: call.line,
             awaited: call.context.awaited,
             addressed: addressed_at(call),
+            service: None,
+        });
+    }
+    found
+}
+
+struct StoreBase {
+    named: &'static str,
+    every_call: bool,
+}
+
+const fn store(named: &'static str, every_call: bool) -> StoreBase {
+    StoreBase { named, every_call }
+}
+
+static STORE_BASES: &[StoreBase] = &[
+    store("CrudRepository", true),
+    store("DbConnection", false),
+    store("DbContext", false),
+    store("DbSet", false),
+    store("DocumentClient", false),
+    store("ElasticsearchRepository", true),
+    store("EntityManager", false),
+    store("IDbConnection", false),
+    store("IdentityDbContext", false),
+    store("JdbcTemplate", false),
+    store("JpaRepository", true),
+    store("ListCrudRepository", true),
+    store("MongoRepository", true),
+    store("MongoTemplate", false),
+    store("NamedParameterJdbcTemplate", false),
+    store("ObjectContext", false),
+    store("PagingAndSortingRepository", true),
+    store("R2dbcRepository", true),
+    store("ReactiveCrudRepository", true),
+    store("ReactiveMongoRepository", true),
+    store("SqlConnection", false),
+];
+
+static EXECUTES_AGAINST_A_STORE: &[&str] = &[
+    "add", "addasync", "addrange", "addrangeasync", "all", "allasync", "any", "anyasync", "attach", "average",
+    "averageasync", "batchupdate", "contains", "containsasync", "count", "countasync", "createquery", "delete",
+    "execute", "executeasync", "executedelete", "executedeleteasync", "executenonquery", "executenonqueryasync",
+    "executereader", "executereaderasync", "executescalar", "executescalarasync", "executesqlinterpolated",
+    "executesqlinterpolatedasync", "executesqlraw", "executesqlrawasync", "executeupdate", "executeupdateasync",
+    "find", "findasync", "first", "firstasync", "firstordefault", "firstordefaultasync", "fromsql",
+    "fromsqlinterpolated", "fromsqlraw", "insert", "last", "lastasync", "lastordefault", "lastordefaultasync",
+    "load", "loadasync", "longcount", "longcountasync", "max", "maxasync", "merge", "min", "minasync", "persist",
+    "query", "queryasync", "queryfirst", "queryfirstordefault", "queryforlist", "queryforobject", "querysingle",
+    "remove", "removerange", "save", "savechanges", "savechangesasync", "single", "singleasync",
+    "singleordefault", "singleordefaultasync", "sum", "sumasync", "toarray", "toarrayasync", "todictionary",
+    "todictionaryasync", "tolist", "tolistasync", "update", "updaterange",
+];
+
+fn plain_type(annotation: &str) -> &str {
+    let annotation = annotation.trim().trim_end_matches('?');
+    let annotation = annotation.split('<').next().unwrap_or(annotation);
+    names::leaf(annotation.trim())
+}
+
+pub fn kept_by_a_store(
+    calls: &[CallFact],
+    files: &[String],
+    nodes: &[IndexNode],
+    edges: &[IndexEdge],
+    type_references: &[TypeReferenceFact],
+    locals: &[LocalBinding],
+) -> Vec<ExitPoint> {
+    let position: HashMap<&str, usize> =
+        nodes.iter().enumerate().map(|(at, node)| (node.id.as_str(), at)).collect();
+    let mut bases_of: HashMap<&str, Vec<&str>> = HashMap::new();
+    for edge in edges.iter().filter(|edge| matches!(edge.kind, EdgeKind::Extends | EdgeKind::Implements)) {
+        if let Some(target) = position.get(edge.target.as_str()) {
+            bases_of.entry(nodes[position[edge.source.as_str()]].name.as_str())
+                .or_default()
+                .push(nodes[*target].name.as_str());
+        }
+    }
+    for reference in type_references.iter().filter(|reference| matches!(reference.kind, EdgeKind::Extends | EdgeKind::Implements)) {
+        if let Some(source) = position.get(reference.source.as_str()) {
+            bases_of.entry(nodes[*source].name.as_str()).or_default().push(plain_type(&reference.name));
+        }
+    }
+    let store_of = |named: &str| -> Option<&'static StoreBase> {
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut frontier = vec![named];
+        while let Some(current) = frontier.pop() {
+            if !seen.insert(current) {
+                continue;
+            }
+            if let Some(base) = STORE_BASES.iter().find(|base| base.named == current) {
+                return Some(base);
+            }
+            frontier.extend(bases_of.get(current).into_iter().flatten().copied());
+        }
+        None
+    };
+    let mut typed_member: HashMap<(&str, &str), &str> = HashMap::new();
+    for node in nodes.iter().filter(|node| node.kind == NodeKind::Property) {
+        if let (Some(parent), Some(annotation)) = (node.parent.as_deref(), node.type_annotation.as_deref()) {
+            typed_member.insert((parent, node.name.as_str()), plain_type(annotation));
+        }
+    }
+    let mut typed_local: HashMap<(&str, &str), &str> = HashMap::new();
+    for local in locals {
+        if let Some(annotation) = local.annotation.as_deref().or(local.constructed.as_deref()) {
+            typed_local.insert((local.unit.as_str(), local.name.as_str()), plain_type(annotation));
+        }
+    }
+    let mut found = Vec::new();
+    for (at, call) in calls.iter().enumerate() {
+        let (Some(receiver), Some(caller)) = (call.receiver.as_deref(), call.caller.as_deref()) else { continue };
+        let Some(unit) = position.get(caller).map(|at| &nodes[*at]) else { continue };
+        let rooted = names::root(receiver);
+        let rooted = rooted.strip_prefix("this.").unwrap_or(rooted);
+        let held = match rooted {
+            "this" | "self" => receiver.strip_prefix("this.").or_else(|| receiver.strip_prefix("self.")).map(names::root),
+            _ => Some(rooted),
+        };
+        let Some(held) = held.map(|held| held.trim_start_matches('$')) else { continue };
+        let owner = unit.parent.as_deref();
+        let typed = typed_local
+            .get(&(caller, held))
+            .copied()
+            .or_else(|| {
+                unit.signature.iter().flat_map(|signature| signature.parameters.iter()).find_map(|parameter| {
+                    (parameter.name == held).then(|| parameter.type_annotation.as_deref().map(plain_type)).flatten()
+                })
+            })
+            .or_else(|| owner.and_then(|owner| typed_member.get(&(owner, held)).copied()));
+        let Some(base) = typed.and_then(|typed| store_of(typed)) else { continue };
+        let operation = names::leaf(&call.callee);
+        let lowered = operation.to_ascii_lowercase();
+        if !base.every_call && EXECUTES_AGAINST_A_STORE.binary_search(&lowered.as_str()).is_err() {
+            continue;
+        }
+        found.push(ExitPoint {
+            id: format!("exit:{}:{}:store", files[call.file as usize], at),
+            kind: "database",
+            name: format!("{receiver}.{operation}"),
+            source: caller.to_string(),
+            target: base.named.to_string(),
+            operation: operation.to_string(),
+            file: call.file,
+            line: call.line,
+            awaited: call.context.awaited,
+            addressed: addressed_at(call),
+            service: None,
         });
     }
     found
@@ -1124,6 +1284,7 @@ pub fn kept_by_the_browser(kept: &[crate::model::Kept], files: &[String]) -> Vec
                 line: held.line,
                 awaited: false,
                 addressed: None,
+                service: None,
             }
         })
         .collect()
@@ -1564,6 +1725,7 @@ pub fn derive(
                 line: call.line,
                 awaited: call.context.awaited,
                 addressed: None,
+                service: None,
             });
         }
         if let Some(operation) = a_cookie_kept(call) {
@@ -1579,6 +1741,7 @@ pub fn derive(
                 line: call.line,
                 awaited: call.context.awaited,
                 addressed: None,
+                service: None,
             });
             continue;
         }
@@ -1595,6 +1758,7 @@ pub fn derive(
                 line: call.line,
                 awaited: call.context.awaited,
                 addressed: addressed_at(call),
+                service: None,
             });
             continue;
         }
@@ -1620,6 +1784,7 @@ pub fn derive(
                 line: call.line,
                 awaited: call.context.awaited,
             addressed: addressed_at(call),
+            service: None,
             });
             continue;
         };
@@ -1643,6 +1808,7 @@ pub fn derive(
                 line: call.line,
                 awaited: call.context.awaited,
             addressed: addressed_at(call),
+            service: None,
             });
             continue;
         }
@@ -1674,6 +1840,7 @@ pub fn derive(
                         line: call.line,
                         awaited: call.context.awaited,
             addressed: addressed_at(call),
+            service: None,
                     });
                     continue;
                 }
@@ -1699,6 +1866,7 @@ pub fn derive(
             line: call.line,
             awaited: call.context.awaited,
             addressed: addressed_at(call),
+            service: None,
         });
     }
 
@@ -1785,6 +1953,12 @@ mod tests {
         assert_eq!(classify_exit("os", "os", "execute"), Some("process"));
         assert_eq!(classify_exit("os", "os", "readfile"), Some("file"));
         assert_eq!(classify_exit("os", "os", "getenv"), None);
+        assert_eq!(classify_exit("stripe", "stripe", "subscriptions.expire"), Some("api"));
+        assert_eq!(classify_exit("posthog", "posthog-node", "capture"), Some("api"));
+        assert_eq!(classify_exit("redis", "ioredis", "get"), Some("cache"));
+        assert_eq!(classify_exit("redis", "ioredis", "on"), None);
+        assert_eq!(classify_exit("Sentry", "@sentry/node", "init"), None);
+        assert_eq!(classify_exit("Stripe", "stripe", "Stripe"), None);
         assert_eq!(classify_exit("subprocess", "subprocess", "check_output"), Some("process"));
     }
 

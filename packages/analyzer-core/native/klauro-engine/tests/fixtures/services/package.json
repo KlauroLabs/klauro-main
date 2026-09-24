@@ -1,0 +1,9 @@
+{
+  "name": "shop",
+  "version": "1.0.0",
+  "dependencies": {
+    "stripe": "^14.0.0",
+    "posthog-node": "^4.0.0",
+    "express": "^4.19.0"
+  }
+}

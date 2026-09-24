@@ -234,6 +234,7 @@ impl<'a> Extractor<'a> {
                 });
                 if !written && !called {
                     self.keep(&target, false, node, scope);
+                    self.read_a_setting(&target, node, scope);
                 }
                 if let Some(member) = member_of_this(&target)
                     && let Some(unit) = self.unit(scope)
@@ -268,6 +269,11 @@ impl<'a> Extractor<'a> {
                 inner.context.awaited = true;
                 inner.enclosing_callable = scope.enclosing_callable.clone();
                 self.walk(node, &inner);
+            }
+            "subscript_expression" => {
+                let target = self.text_owned(node);
+                self.read_a_setting(&target, node, scope);
+                self.walk(node, scope);
             }
             _ => self.walk(node, scope),
         }
@@ -1122,6 +1128,16 @@ impl<'a> Extractor<'a> {
         });
     }
 
+    fn read_a_setting(&mut self, target: &str, node: Node, scope: &Scope) {
+        let Some(named) = crate::model::a_setting_read(target) else { return };
+        self.facts.settings.push(crate::model::SettingRead {
+            file: self.file,
+            unit: scope.enclosing_callable.clone(),
+            name: named.to_string(),
+            line: span_of(node).line,
+        });
+    }
+
     fn object_members(&mut self, object: Node, scope: &Scope, owner: &str) {
         let mut cursor = object.walk();
         for member in object.named_children(&mut cursor) {
@@ -1354,15 +1370,31 @@ impl<'a> Extractor<'a> {
         arguments
             .named_children(&mut cursor)
             .filter(|argument| {
-                matches!(argument.kind(), "string" | "template_string" | "number" | "identifier")
+                matches!(
+                    argument.kind(),
+                    "string" | "template_string" | "number" | "identifier" | "binary_expression"
+                )
             })
             .take(LITERAL_LIMIT)
             .filter_map(|argument| match argument.kind() {
                 "identifier" => self.remembered.get(self.text(argument)).cloned(),
+                "binary_expression" => self.text_it_begins_with(argument).map(|begins| format!("{begins}${{}}")),
                 _ => Some(trim_quotes(self.text(argument)).to_string()),
             })
             .filter(|value| !value.is_empty() && value.len() <= TEXT_REMEMBERED)
             .collect()
+    }
+
+    fn text_it_begins_with(&self, joined: Node) -> Option<String> {
+        let mut held = joined;
+        while held.kind() == "binary_expression" {
+            let operator = held.child_by_field_name("operator").map(|found| self.text(found));
+            if operator != Some("+") {
+                return None;
+            }
+            held = held.child_by_field_name("left")?;
+        }
+        matches!(held.kind(), "string" | "template_string").then(|| trim_quotes(self.text(held)).to_string())
     }
 
     fn documentation_of(&self, node: Node) -> Option<String> {

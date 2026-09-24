@@ -320,6 +320,55 @@ pub struct Kept {
     pub line: u32,
 }
 
+#[derive(Debug, Serialize)]
+pub struct SettingRead {
+    pub file: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    pub name: String,
+    pub line: u32,
+}
+
+static READ_FROM_THE_ENVIRONMENT: &[&str] = &[
+    "$_ENV", "$_SERVER", "ENV", "Deno.env", "Environment", "import.meta.env", "os.environ", "process.env",
+];
+
+pub fn a_setting_read(target: &str) -> Option<&str> {
+    let target = target.trim();
+    let (holder, named) = match target.strip_suffix(']') {
+        Some(indexed) => {
+            let (holder, inner) = indexed.split_once('[')?;
+            let inner = inner.trim();
+            let quoted = inner.len() > 2
+                && ['"', '\'', '`'].iter().any(|quote| inner.starts_with(*quote) && inner.ends_with(*quote));
+            if !quoted {
+                return None;
+            }
+            (holder.trim(), &inner[1..inner.len() - 1])
+        }
+        None => target.rsplit_once('.')?,
+    };
+    let named_plainly = !named.is_empty()
+        && named.chars().all(|letter| letter.is_ascii_alphanumeric() || letter == '_');
+    (named_plainly && READ_FROM_THE_ENVIRONMENT.contains(&holder)).then_some(named)
+}
+
+#[cfg(test)]
+mod settings {
+    use super::a_setting_read;
+
+    #[test]
+    fn a_setting_is_read_however_the_language_spells_the_environment() {
+        assert_eq!(a_setting_read("process.env.STRIPE_KEY"), Some("STRIPE_KEY"));
+        assert_eq!(a_setting_read("import.meta.env.VITE_API_URL"), Some("VITE_API_URL"));
+        assert_eq!(a_setting_read("os.environ[\"DATABASE_URL\"]"), Some("DATABASE_URL"));
+        assert_eq!(a_setting_read("ENV['REDIS_URL']"), Some("REDIS_URL"));
+        assert_eq!(a_setting_read("process.env[name]"), None);
+        assert_eq!(a_setting_read("process.env"), None);
+        assert_eq!(a_setting_read("config.env.KEY"), None);
+    }
+}
+
 #[derive(Debug, Default, Serialize)]
 pub struct FileFacts {
     pub nodes: Vec<IndexNode>,
@@ -335,6 +384,8 @@ pub struct FileFacts {
     pub tables: Vec<crate::tables::Table>,
     #[serde(skip)]
     pub kept: Vec<Kept>,
+    #[serde(skip)]
+    pub settings: Vec<SettingRead>,
     pub lines: u32,
     pub parse_errors: u32,
     pub namespace: Option<String>,

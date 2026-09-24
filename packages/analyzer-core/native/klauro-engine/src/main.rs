@@ -31,7 +31,10 @@ mod published;
 mod resolve;
 mod roles;
 mod route;
+mod layers;
 mod scope;
+mod service_catalog;
+mod services;
 mod tables;
 mod source_rewrite;
 mod structured;
@@ -80,12 +83,15 @@ struct Index {
     registrations: Vec<model::RegistrationFact>,
     #[serde(skip)]
     kept: Vec<model::Kept>,
+    settings: Vec<model::SettingRead>,
     locals: Vec<model::LocalBinding>,
     entry_points: Vec<entry_exit::EntryPoint>,
     exit_points: Vec<entry_exit::ExitPoint>,
     icelot: Vec<icelot::Icelot>,
     graph: Option<graph::GraphFacts>,
     dependencies: Option<dependencies::Dependencies>,
+    services: Vec<services::Service>,
+    layering: Vec<layers::Layering>,
     roles: Option<roles::Roles>,
     #[serde(skip_serializing_if = "Option::is_none")]
     verification: Option<verify::Verification>,
@@ -336,12 +342,15 @@ fn read_it() {
         metrics: Vec::new(),
         registrations: Vec::new(),
         kept: Vec::new(),
+        settings: Vec::new(),
         locals: Vec::new(),
         entry_points: Vec::new(),
         exit_points: Vec::new(),
         icelot: Vec::new(),
         graph: None,
         dependencies: None,
+        services: Vec::new(),
+        layering: Vec::new(),
         roles: None,
         verification: None,
         conformance: None,
@@ -374,6 +383,7 @@ fn read_it() {
         index.metrics.extend(file.metrics);
         index.registrations.extend(file.registrations);
         index.kept.extend(file.kept);
+        index.settings.extend(file.settings);
         index.locals.extend(file.locals);
         declared_tables.extend(file.tables);
         parse_errors += file.parse_errors;
@@ -681,6 +691,7 @@ fn read_it() {
     }
     index.dependencies = Some(found);
 
+
     let roles_started = Instant::now();
     let declared: Vec<bool> = index
         .files
@@ -732,12 +743,78 @@ fn read_it() {
         &index.nodes,
         index.roles.as_ref().expect("roles precede what a model keeps"),
     );
+    let kept_in_stores = entry_exit::kept_by_a_store(
+        &index.calls,
+        &paths,
+        &index.nodes,
+        &index.edges,
+        &index.type_references,
+        &index.locals,
+    );
+    if !kept_in_stores.is_empty() {
+        eprintln!("kept by a store | exits {}", kept_in_stores.len());
+    }
+    let kept: Vec<entry_exit::ExitPoint> = kept.into_iter().chain(kept_in_stores).collect();
     if !kept.is_empty() {
         eprintln!("kept by a model | exits {}", kept.len());
         index.exit_points.extend(kept);
         index.exit_points.sort_by(|left, right| left.id.cmp(&right.id));
         index.exit_points.dedup_by(|left, right| left.id == right.id);
     }
+
+    let services_started = Instant::now();
+    let service_paths: Vec<&str> = index.files.iter().map(|file| file.path.as_str()).collect();
+    let not_ours: Vec<bool> = index.files.iter().map(|file| file.generated || file.oversize).collect();
+    let found_services = services::derive(&services::Sources {
+        root: &root,
+        paths: &service_paths,
+        not_ours: &not_ours,
+        dependencies: index.dependencies.as_ref(),
+        imports: &index.imports,
+        calls: &index.calls,
+        exits: &index.exit_points,
+        nodes: &index.nodes,
+        settings: &index.settings,
+    });
+    drop(service_paths);
+    let services::Found { services: found_services, serving } = found_services;
+    for exit in index.exit_points.iter_mut() {
+        exit.service = serving.get(&exit.id).cloned();
+    }
+    if std::env::var("KLAURO_REPORT_SERVICES").is_ok() {
+        for service in &found_services {
+            let evidenced: Vec<String> =
+                service.evidenced.iter().map(|(how, count)| format!("{how} {count}")).collect();
+            eprintln!(
+                "  service {} | {} | reached {} | {}",
+                service.name,
+                service.kind,
+                service.reached,
+                evidenced.join(", ")
+            );
+        }
+    }
+    index.services = found_services;
+    eprintln!(
+        "services {:?} | {} known | {} unclassified",
+        services_started.elapsed(),
+        index.services.iter().filter(|service| service.known).count(),
+        index.services.iter().filter(|service| !service.known).count(),
+    );
+
+    let layers_started = Instant::now();
+    let layer_paths: Vec<&str> = index.files.iter().map(|file| file.path.as_str()).collect();
+    let layering = layers::derive(
+        &index.nodes,
+        &index.edges,
+        index.roles.as_ref().expect("roles precede the layering"),
+        &index.entry_points,
+        &index.exit_points,
+        &layer_paths,
+    );
+    drop(layer_paths);
+    eprintln!("layers {:?} | projects {}", layers_started.elapsed(), layering.len());
+    index.layering = layering;
 
     let graph_started = Instant::now();
     let mut exits_by_unit: std::collections::HashMap<String, u32> = std::collections::HashMap::new();

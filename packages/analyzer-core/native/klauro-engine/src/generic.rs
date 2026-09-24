@@ -721,6 +721,17 @@ impl<'a> Extractor<'a> {
         {
             self.declare_command(node, scope);
         }
+        if INDEXES_A_HOLDER.contains(&kind) {
+            let target = self.text(node).to_string();
+            if let Some(named) = crate::model::a_setting_read(&target) {
+                self.facts.settings.push(crate::model::SettingRead {
+                    file: self.file,
+                    unit: scope.callable.clone(),
+                    name: named.to_string(),
+                    line: node.start_position().row as u32 + 1,
+                });
+            }
+        }
         if self.spec.calls.kinds.contains(&kind) {
             let registrar = self.record_call(node, scope);
             let mut inner = scope.clone();
@@ -1148,6 +1159,9 @@ impl<'a> Extractor<'a> {
                 if let Some((named, written)) = named_as_text(raw) {
                     return (written.len() <= TEXT_AT_MOST).then(|| format!("{named}={written}"));
                 }
+                if let Some(begins) = text_it_begins_with(raw) {
+                    return (begins.len() <= TEXT_AT_MOST).then(|| format!("{begins}${{}}"));
+                }
                 let value = trim_quotes(raw).trim();
                 if value.is_empty() {
                     return None;
@@ -1289,13 +1303,38 @@ impl<'a> Extractor<'a> {
             .collect()
     }
 
+    fn declared_through<'t>(&self, node: Node<'t>) -> Option<(Node<'t>, Option<Node<'t>>)> {
+        let mut cursor = node.walk();
+        let declaration = node
+            .named_children(&mut cursor)
+            .find(|child| DECLARES_VARIABLES.contains(&child.kind()))?;
+        let mut cursor = declaration.walk();
+        let declarator = declaration
+            .named_children(&mut cursor)
+            .find(|child| NAMES_A_VARIABLE.contains(&child.kind()))?;
+        let named = declarator.child_by_field_name("name").or_else(|| {
+            let mut cursor = declarator.walk();
+            declarator
+                .named_children(&mut cursor)
+                .find(|child| self.spec.names.leaf_kinds.contains(&child.kind()))
+        })?;
+        Some((named, declaration.child_by_field_name("type")))
+    }
+
     fn declare_field(&mut self, node: Node, scope: &Scope) {
         let Some(owner) = scope.type_owner.clone() else { return };
-        let Some(name) = self.name_of(node) else { return };
+        let through = self.declared_through(node);
+        let Some(name) = through
+            .map(|(named, _)| self.text(named).to_string())
+            .or_else(|| self.name_of(node))
+        else {
+            return;
+        };
         let held = name.clone();
         let id = self.id("field", &name, node);
-        let type_annotation = node
-            .child_by_field_name("type")
+        let type_annotation = through
+            .and_then(|(_, typed)| typed)
+            .or_else(|| node.child_by_field_name("type"))
             .or_else(|| self.typed_child(node))
             .map(|annotation| self.text(annotation).trim().to_string())
             .or_else(|| self.text_content(node));
@@ -2051,6 +2090,21 @@ const TEXT_AT_MOST: usize = 400;
 
 fn configures_the_call(kind: &str) -> bool {
     matches!(kind, "keyword_argument" | "named_argument" | "value_argument_label" | "labeled_argument")
+}
+
+static DECLARES_VARIABLES: &[&str] = &["variable_declaration"];
+static NAMES_A_VARIABLE: &[&str] = &["variable_declarator"];
+
+static INDEXES_A_HOLDER: &[&str] =
+    &["element_access_expression", "element_reference", "index_expression", "subscript", "subscript_expression"];
+
+fn text_it_begins_with(raw: &str) -> Option<&str> {
+    let unprefixed = &raw[string_prefix(raw)..];
+    let opened = unprefixed.chars().next().filter(|letter| matches!(letter, '"' | '\''))?;
+    let closes = unprefixed[1..].find(opened)? + 1;
+    let after = unprefixed[closes + 1..].trim_start();
+    let joined = after.starts_with('+') || after.starts_with('.') && !after.starts_with("..") || after.starts_with("..");
+    (joined && !unprefixed[1..closes].contains('\\')).then(|| &unprefixed[1..closes])
 }
 
 fn named_as_text(raw: &str) -> Option<(&str, &str)> {

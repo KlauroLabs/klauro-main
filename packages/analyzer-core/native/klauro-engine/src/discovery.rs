@@ -174,6 +174,9 @@ pub fn classify(basename: &str, absolute: &Path) -> Option<FileKind> {
     {
         return Some(FileKind::Config);
     }
+    if lower == ".env" || lower.starts_with(".env.") {
+        return Some(FileKind::Config);
+    }
     if extension.is_empty() && starts_with_shebang(absolute) {
         return Some(FileKind::Script);
     }

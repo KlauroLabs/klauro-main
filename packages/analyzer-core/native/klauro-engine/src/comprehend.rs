@@ -2489,9 +2489,11 @@ fn entities(
                 .map(|reference| reference.source.as_str()),
         )
         .collect();
-    let handled: Vec<(&str, u32)> = nodes
+    let handled: Vec<(&str, u32, &str)> = nodes
         .iter()
-        .filter_map(|node| Some((held_by_a_handle(node.type_annotation.as_deref()?)?, node.file)))
+        .filter_map(|node| {
+            Some((held_by_a_handle(node.type_annotation.as_deref()?)?, node.file, node.name.as_str()))
+        })
         .collect();
     let modelled_names: HashSet<&str> = nodes
         .iter()
@@ -2630,8 +2632,13 @@ fn entities(
     for (named, site) in kept_in_a_file(nodes, files, exit_points) {
         admitted.extend(denoting.named(&named, site));
     }
-    for (named, site) in handled {
-        admitted.extend(denoting.named(named, site));
+    let mut handled_as: HashMap<String, &str> = HashMap::new();
+    for (named, site, handle) in &handled {
+        let denoted = denoting.named(named, *site);
+        if let [only] = denoted.as_slice() {
+            handled_as.entry(handle.to_ascii_lowercase()).or_insert(only);
+        }
+        admitted.extend(denoted);
     }
     for (named, site) in &stored_at {
         admitted.extend(
@@ -2664,6 +2671,10 @@ fn entities(
             }
             accounted.extend(by.iter().skip(1).map(|_| key.clone()));
             admitted.extend(by);
+            continue;
+        }
+        if let Some(by) = handled_as.get(key.as_str()) {
+            tabled.insert(by, key.clone());
             continue;
         }
         let denoted = denoting.tabled(key, table.file);
@@ -2717,7 +2728,27 @@ fn entities(
     }
     let written_down: HashSet<String> = richest.keys().map(|(_, named)| named.clone()).collect();
     let mut entities: Vec<Entity> = richest.into_values().collect();
+    let bound_as: HashMap<&str, &str> = tabled
+        .iter()
+        .map(|(by, key)| (key.as_str(), *by))
+        .chain(handled_as.iter().map(|(handle, by)| (handle.as_str(), *by)))
+        .collect();
     for entity in entities.iter_mut() {
+        let Some(at) = entity.declared_in.as_deref() else { continue };
+        for (addressed, by) in &bound_as {
+            if *by != at {
+                continue;
+            }
+            let Some((written_by, read_by, addressed_by)) = kept.remove(*addressed) else { continue };
+            entity.addressed_by += addressed_by;
+            for (held, more) in [(&mut entity.written_by, written_by), (&mut entity.read_by, read_by)] {
+                for source in more {
+                    if held.len() < 8 && !held.contains(&source) {
+                        held.push(source);
+                    }
+                }
+            }
+        }
         let Some(key) = entity.declared_in.as_deref().and_then(|at| tabled.get(at)) else {
             continue;
         };
