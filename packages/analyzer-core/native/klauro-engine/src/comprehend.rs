@@ -637,6 +637,71 @@ fn describe_one(
     })
 }
 
+const PRIMARY_PATHS_TOLD: usize = 4;
+
+fn say_what_happens(held: &mut Comprehension, spoken: &str) {
+    let asked_for: Option<Vec<String>> = std::env::var("KLAURO_DESCRIBE_FLOWS")
+        .ok()
+        .filter(|held| !held.is_empty())
+        .map(|held| held.split(',').map(|id| id.trim().to_string()).collect());
+    let everything = asked_for.as_ref().is_some_and(|ids| ids.iter().any(|id| id == "all"));
+    let mut chosen: HashSet<String> = HashSet::default();
+    match (&asked_for, everything) {
+        (Some(ids), false) => chosen.extend(ids.iter().cloned()),
+        (_, true) => chosen.extend(held.flows.iter().filter(|flow| !flow.steps.is_empty()).map(|flow| flow.id.clone())),
+        (None, _) => {
+            for capability in held.capabilities.iter().filter(|capability| capability.project.is_some()) {
+                chosen.extend(
+                    capability
+                        .delivered
+                        .iter()
+                        .filter(|delivery| delivery.role == "primary")
+                        .take(PRIMARY_PATHS_TOLD)
+                        .map(|delivery| delivery.flow.clone()),
+                );
+            }
+        }
+    }
+    let told: Vec<(String, String)> = held
+        .flows
+        .iter()
+        .filter(|flow| chosen.contains(&flow.id) && !flow.steps.is_empty())
+        .map(|flow| {
+            (
+                flow.id.clone(),
+                format!(
+                    "  reached through: {}\n  steps: {}",
+                    crate::capabilities::surface_of(flow),
+                    crate::capabilities::told_steps(flow)
+                ),
+            )
+        })
+        .collect();
+    if told.is_empty() {
+        return;
+    }
+    let said = crate::memory::each("what happens", spoken, &told, |missing| {
+        let written = crate::author::what_happens(spoken, missing);
+        let evidence: BTreeMap<String, String> = missing.iter().cloned().collect();
+        let proposed: BTreeMap<String, crate::author::Written> = written
+            .iter()
+            .map(|(id, description)| {
+                (id.clone(), crate::author::Written { id: id.clone(), name: String::new(), description: description.clone() })
+            })
+            .collect();
+        let grounded = crate::author::ground(&proposed, &evidence);
+        written
+            .into_iter()
+            .filter(|(id, _)| grounded.get(id).is_some_and(|grounding| grounding.holds()))
+            .collect()
+    });
+    for flow in held.flows.iter_mut() {
+        if let Some(description) = said.get(&flow.id) {
+            flow.description = Some(description.clone());
+        }
+    }
+}
+
 fn test_capabilities(capabilities: &mut Vec<Capability>, spoken: &str, level: &str) {
     let tests: Vec<(String, String)> = capabilities
         .iter()
@@ -1013,23 +1078,21 @@ pub fn author(
             capabilities.sort_by(|left, right| left.id.cmp(&right.id));
             let mut whole = crate::capabilities::of_the_whole(&capabilities, &spoken, told.scope, &held.flows);
             test_capabilities(&mut whole, &spoken, "this system as a whole");
-            say_what_each_is_for(&mut whole, &spoken);
             eprintln!(
                 "  author read {} capabilities across the parts into {} for the whole",
                 capabilities.len(),
                 whole.len()
             );
+            let mut together = capabilities.clone();
+            together.extend(whole.iter().cloned());
+            together.sort_by(|left, right| left.id.cmp(&right.id));
+            let formed = started.elapsed();
+            let ((), products) = rayon::join(
+                || say_what_each_is_for(&mut whole, &spoken),
+                || describe_product(&together, &held.entities, &held.flows, &spoken, told, described),
+            );
             capabilities.extend(whole);
             capabilities.sort_by(|left, right| left.id.cmp(&right.id));
-            let formed = started.elapsed();
-            let products = describe_product(
-                &capabilities,
-                &held.entities,
-                &held.flows,
-                &spoken,
-                told,
-                described,
-            );
             eprintln!(
                 "  author form {formed:?} across {} parts | describe {:?} | backend writes {} bytes/s | asked again {}",
                 parts.len(),
@@ -1078,6 +1141,7 @@ pub fn author(
             flow.description = Some(description.clone());
         }
     }
+    say_what_happens(held, &spoken);
     let by_id: std::collections::BTreeMap<String, (&crate::author::Written, crate::author::Grounding)> =
         owner
             .iter()

@@ -305,6 +305,47 @@ pub fn what_it_is_for(spoken_for: &str, listed: &BTreeMap<String, String>) -> BT
         })
 }
 
+const PATHS_PER_CALL: usize = 12;
+
+pub fn what_happens(spoken_for: &str, listed: &[(String, String)]) -> BTreeMap<String, String> {
+    if !asked() || listed.is_empty() {
+        return BTreeMap::new();
+    }
+    listed
+        .par_chunks(PATHS_PER_CALL)
+        .map(|chunk| tell_a_batch(spoken_for, chunk))
+        .reduce(BTreeMap::new, |mut into, held| {
+            into.extend(held);
+            into
+        })
+}
+
+fn tell_a_batch(spoken_for: &str, listed: &[(String, String)]) -> BTreeMap<String, String> {
+    let prompt = format!(
+        "A software system describes itself like this:\n{spoken_for}\n\n\
+         Below are paths through it, each with the steps its code takes, in order, read from the \
+         code. For each, say in one sentence of at most 25 words what happens when it runs: what \
+         it checks, what it changes, what it hands on and what the caller gets back, the way a \
+         person would say it rather than step by step. Use only what the steps show, and never \
+         name a framework, library or storage technology.\n\n\
+         Echo each id back exactly as given.\n\
+         Return JSON only: {{\"items\":[{{\"id\":\"...\",\"description\":\"...\"}}]}}\n\n\
+         The paths:\n{}",
+        listed.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect::<Vec<_>>().join("\n")
+    );
+    let mut held = BTreeMap::new();
+    let Some(answer) = answered::<serde_json::Value>(&prompt, 3000, &asking_of_models(model()), "items", listed.len()) else {
+        return held;
+    };
+    for item in answer["items"].as_array().into_iter().flatten() {
+        let (Some(id), Some(description)) = (item["id"].as_str(), item["description"].as_str()) else { continue };
+        if !description.trim().is_empty() {
+            held.insert(id.to_string(), description.trim().to_string());
+        }
+    }
+    held
+}
+
 fn place_a_batch(spoken_for: &str, listed: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     let mut held = BTreeMap::new();
     let prompt = format!(

@@ -101,6 +101,24 @@ fn singular(word: &str) -> String {
     word.strip_suffix('s').filter(|stem| !stem.ends_with('s')).unwrap_or(word).to_string()
 }
 
+static ACTS_THROUGH_A_LIBRARY: &[&str] = &[
+    "accept", "approve", "authenticate", "cancel", "challenge", "charge", "confirm", "consent", "create", "decline",
+    "deny", "enqueue", "export", "grant", "import", "invite", "issue", "login", "logout", "notify", "pay", "publish",
+    "redeem", "refund", "register", "reject", "reset", "revoke", "schedule", "send", "sign", "subscribe", "unsubscribe",
+    "upload",
+];
+
+fn acted_through_a_library(member: &str) -> Option<String> {
+    let bare = member.split('<').next().unwrap_or(member).trim_end_matches("Async");
+    let said = spoken(bare);
+    let lowered = said.to_ascii_lowercase();
+    let first = lowered.split_whitespace().next()?;
+    let acting = ACTS_THROUGH_A_LIBRARY.iter().any(|verb| {
+        lowered.split_whitespace().any(|word| word == *verb || word.strip_suffix("in") == Some(verb) || word == format!("{verb}s"))
+    });
+    (acting && !matches!(first, "get" | "is" | "has" | "to" | "try" | "find" | "on" | "log")).then_some(said)
+}
+
 static CHECKS_BY_NAME: &[&str] = &["assert", "authorize", "check", "guard", "validate", "verify"];
 
 fn a_check(callee: &str) -> bool {
@@ -399,6 +417,7 @@ impl<'a> Reader<'a> {
         }
         let mut handing_on: Vec<&CallFact> = Vec::new();
         let mut class_calls: Vec<(u32, u32, &'static str, &'a str)> = Vec::new();
+        let mut library_calls: Vec<(u32, u32, String)> = Vec::new();
         for call in calls {
             let named = crate::names::leaf(&call.callee).split('<').next().unwrap_or_default();
             if let Some(at) = targets.iter().position(|target| self.nodes[*target as usize].name == named) {
@@ -411,6 +430,13 @@ impl<'a> Reader<'a> {
             } else if let Some((kind, record)) = self.on_a_record_class(call) {
                 at_line.push((call.line, call.column, None, when_of(&call.context), None, Some(call)));
                 class_calls.push((call.line, call.column, kind, record));
+            } else if depth <= 2
+                && call.receiver.is_some()
+                && !exits.iter().any(|exit| exit.line == call.line)
+                && let Some(doing) = acted_through_a_library(named)
+            {
+                at_line.push((call.line, call.column, None, when_of(&call.context), None, Some(call)));
+                library_calls.push((call.line, call.column, doing));
             }
         }
         for call in handing_on {
@@ -435,6 +461,14 @@ impl<'a> Reader<'a> {
             }
             match target {
                 Some(target) => {
+                    let reached = &self.nodes[target as usize];
+                    if depth <= 3
+                        && reached.id.starts_with("package:")
+                        && let Some(doing) = acted_through_a_library(crate::names::leaf(&reached.name))
+                    {
+                        actions.push(Action { kind: "do", object: None, doing: Some(doing), when: context, unit, line: shown_line(line) });
+                        continue;
+                    }
                     if let Some(action) = self.operating_on_a_record(target, context, shown_line(line), unit) {
                         actions.push(action);
                     }
@@ -473,6 +507,12 @@ impl<'a> Reader<'a> {
                 }
                 None => {
                     if let Some(call) = call {
+                        if let Some((_, _, doing)) =
+                            library_calls.iter().find(|(held_line, held_column, _)| *held_line == call.line && *held_column == call.column)
+                        {
+                            actions.push(Action { kind: "do", object: None, doing: Some(doing.clone()), when: context, unit, line: shown_line(line) });
+                            continue;
+                        }
                         if let Some((_, _, kind, record)) =
                             class_calls.iter().find(|(held_line, held_column, ..)| *held_line == call.line && *held_column == call.column)
                         {
@@ -580,5 +620,20 @@ impl<'a> Reader<'a> {
             })
             .collect();
         (steps, edges)
+    }
+}
+
+#[cfg(test)]
+mod reading {
+    use super::acted_through_a_library;
+
+    #[test]
+    fn an_action_taken_through_a_library_is_a_step_and_a_lookup_is_not() {
+        assert_eq!(acted_through_a_library("PasswordSignInAsync").as_deref(), Some("Password sign in"));
+        assert_eq!(acted_through_a_library("GrantConsentAsync").as_deref(), Some("Grant consent"));
+        assert_eq!(acted_through_a_library("RevokeUserConsentAsync").as_deref(), Some("Revoke user consent"));
+        assert_eq!(acted_through_a_library("GetAuthorizationContextAsync"), None);
+        assert_eq!(acted_through_a_library("ToString"), None);
+        assert_eq!(acted_through_a_library("LogInformation"), None);
     }
 }

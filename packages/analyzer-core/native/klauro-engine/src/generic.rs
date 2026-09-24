@@ -1349,6 +1349,15 @@ impl<'a> Extractor<'a> {
             return;
         };
         let held = name.clone();
+        if let Some((_, assigned)) = self.text(node).split_once('=') {
+            let raw = assigned.trim().trim_end_matches(';').trim();
+            if written_as_text(raw) {
+                let written = trim_quotes(raw).trim().to_string();
+                if !written.is_empty() && written.len() <= TEXT_AT_MOST {
+                    self.remembered.insert(name.clone(), written);
+                }
+            }
+        }
         let id = self.id("field", &name, node);
         let type_annotation = through
             .and_then(|(_, typed)| typed)

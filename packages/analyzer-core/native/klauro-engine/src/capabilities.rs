@@ -90,6 +90,11 @@ fn outcome_of(flow: &Flow, bookkeeping: &BTreeSet<&str>) -> Family {
     if let Some(record) = changes_in(flow).next() {
         return Family { key: format!("changes:{record}"), basis: "the record it changes" };
     }
+    let acted: Option<&str> =
+        flow.steps.iter().rev().filter(|step| step.kind == "do").find_map(|step| step.doing.as_deref());
+    if let Some(acted) = acted {
+        return Family { key: format!("acts:{acted}"), basis: "the action it takes" };
+    }
     let called: Option<&str> =
         flow.steps.iter().rev().filter(|step| step.kind == "call").find_map(|step| step.object.as_deref());
     if let Some(called) = called.filter(|_| flow.standing == "terminal") {
@@ -123,7 +128,7 @@ pub(crate) fn outcomes_of<'a>(flows: &[&'a Flow]) -> BTreeMap<Family, Vec<&'a Fl
     grouped
 }
 
-fn told_steps(flow: &Flow) -> String {
+pub(crate) fn told_steps(flow: &Flow) -> String {
     let mut said: Vec<&str> = Vec::new();
     for step in &flow.steps {
         if step.kind == "respond" && step.object.is_none() {
@@ -145,7 +150,7 @@ fn told_steps(flow: &Flow) -> String {
     told
 }
 
-fn surface_of(flow: &Flow) -> String {
+pub(crate) fn surface_of(flow: &Flow) -> String {
     match flow.method.as_deref() {
         Some(method) => format!("{method} {}", flow.operation),
         None => format!("{} {}", flow.kind, flow.operation),
@@ -154,7 +159,7 @@ fn surface_of(flow: &Flow) -> String {
 
 pub(crate) fn terminality_of(family: &Family) -> &'static str {
     match family.key.split(':').next().unwrap_or_default() {
-        "changes" | "hands on" | "calls" => "terminal",
+        "changes" | "hands on" | "calls" | "acts" => "terminal",
         _ => "proximal",
     }
 }
