@@ -1112,7 +1112,9 @@ fn read_it() {
             leading.iter().take(10).map(|dependency| dependency.name.clone()).collect()
         })
         .unwrap_or_default();
-    let scope = root.file_name().map(|named| named.to_string_lossy().into_owned()).unwrap_or_default();
+    let scope = std::env::var("KLAURO_PROJECT_SCOPE").ok().filter(|held| !held.is_empty()).unwrap_or_else(|| {
+        std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone()).display().to_string()
+    });
     let told = comprehend::Telling {
         scope: &scope,
         shape: index.architecture.as_ref().map(|shaped| shaped.shape).unwrap_or("unknown"),
