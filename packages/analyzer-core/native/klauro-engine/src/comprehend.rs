@@ -102,6 +102,8 @@ pub struct Entity {
     pub references: Vec<Reference>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminality: Option<&'static str>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -138,6 +140,10 @@ pub struct Capability {
     pub standing: &'static str,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub touches: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminality: Option<&'static str>,
+    #[serde(skip)]
+    pub evidence: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -631,32 +637,29 @@ fn describe_one(
     })
 }
 
-fn test_capabilities(capabilities: &mut Vec<Capability>, spoken: &str) {
+fn test_capabilities(capabilities: &mut Vec<Capability>, spoken: &str, level: &str) {
     let tests: Vec<(String, String)> = capabilities
         .iter()
         .map(|capability| {
+            let told: String = capability.evidence.chars().take(EVIDENCE_HELD).collect();
             let facts = format!(
-                "FACTS about one part of it:\n  reached through these surfaces: {}\n  \
-                 it writes these records: {}\n  it ends by: {}\n\n\
-                 PROPOSED CAPABILITY: {}\nPROPOSED DESCRIPTION: {}",
-                capability.surfaces.join(", "),
-                match capability.records.is_empty() {
-                    true => "none named".to_string(),
-                    false => capability.records.join(", "),
-                },
-                match capability.changes.is_empty() {
-                    true => "leading into other paths".to_string(),
-                    false => capability.changes.join(", "),
+                "FACTS read from the code about what it delivers:\n{}\n\n\
+                 PROPOSED CAPABILITY: {}\nPROPOSED DESCRIPTION: {}\nFOR: {}",
+                match told.is_empty() {
+                    true => format!("  reached through: {}\n  writes: {}", capability.surfaces.join(", "), capability.records.join(", ")),
+                    false => told,
                 },
                 capability.name.as_deref().unwrap_or(""),
-                capability.description.as_deref().unwrap_or("")
+                capability.description.as_deref().unwrap_or(""),
+                capability.audience.as_deref().unwrap_or("someone")
             );
             (capability.id.clone(), facts)
         })
         .collect();
     let context = format!("A software system describes itself like this:\n{spoken}");
+    let context = format!("{context}\n\u{1}{level}");
     let judged = crate::memory::each("judged", &context, &tests, |missing| {
-        crate::author::test_capabilities(&context, missing)
+        crate::author::test_capabilities(context.split('\u{1}').next().unwrap_or_default(), missing, level)
     });
     capabilities.retain_mut(|capability| {
         let Some(grounding) = judged.get(&capability.id).copied() else { return false };
@@ -665,18 +668,22 @@ fn test_capabilities(capabilities: &mut Vec<Capability>, spoken: &str) {
             true => PUBLISHED,
             false => PROVISIONAL,
         };
+        let delivers = grounding.delivers();
         if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
             eprintln!(
-                "capability {:<44} supported {:.2} invented {:.2} outcome {:.2} universal {:.2} -> {}",
+                "capability {:<44} supported {:.2} invented {:.2} outcome {:.2} scope {:.2} universal {:.2} mechanism {:.2} -> {} {}",
                 capability.name.as_deref().unwrap_or(""),
                 grounding.supported,
                 grounding.invented,
                 grounding.outcome,
+                grounding.scope.unwrap_or(0.0),
                 grounding.universal.unwrap_or(1.0),
-                capability.standing
+                grounding.mechanism.unwrap_or(0.0),
+                capability.standing,
+                if delivers { "kept" } else { "absent" }
             );
         }
-        !grounding.fabricated()
+        delivers
     });
 }
 
@@ -730,6 +737,8 @@ fn say_what_each_is_for(held: &mut [Capability], spoken: &str) {
     }
 }
 
+const EVIDENCE_HELD: usize = 6000;
+
 pub(crate) fn joined(into: &mut Capability, other: Capability) {
     if let Some(part) = other.project
         && Some(&part) != into.project.as_ref()
@@ -747,6 +756,13 @@ pub(crate) fn joined(into: &mut Capability, other: Capability) {
     into.changes.extend(other.changes);
     into.surfaces.extend(other.surfaces);
     into.touches.extend(other.touches);
+    if other.terminality == Some("terminal") || into.terminality.is_none() {
+        into.terminality = other.terminality.or(into.terminality);
+    }
+    if !other.evidence.is_empty() && into.evidence.len() < EVIDENCE_HELD {
+        into.evidence.push('\n');
+        into.evidence.push_str(&other.evidence);
+    }
     if other.standing == PUBLISHED {
         into.standing = PUBLISHED;
     }
@@ -807,7 +823,7 @@ pub(crate) struct Family {
     pub(crate) basis: &'static str,
 }
 
-fn family_of(flow: &Flow) -> Family {
+pub(crate) fn family_of(flow: &Flow) -> Family {
     if let Some(surface) = surface_family(flow) {
         return Family {
             key: format!("surface:{surface}"),
@@ -957,7 +973,7 @@ pub fn author(
                     let said = spoken_within(&spoken, part.as_deref());
                     let remembered_as = format!("{}\u{1}{}", told.scope, part.as_deref().unwrap_or(""));
                     let mut found = crate::capabilities::of_a_part(&flows, &said, &remembered_as);
-                    test_capabilities(&mut found, &said);
+                    test_capabilities(&mut found, &said, if part.is_some() { "this part of the system" } else { "this system" });
                     say_what_each_is_for(&mut found, &said);
                     let described = match (several, part.as_deref()) {
                         (true, Some(named)) if !found.is_empty() => {
@@ -979,7 +995,8 @@ pub fn author(
             }
             described.sort_by(|left, right| left.project.cmp(&right.project));
             capabilities.sort_by(|left, right| left.id.cmp(&right.id));
-            let mut whole = crate::capabilities::of_the_whole(&capabilities, &spoken, told.scope);
+            let mut whole = crate::capabilities::of_the_whole(&capabilities, &spoken, told.scope, &held.flows);
+            test_capabilities(&mut whole, &spoken, "this system as a whole");
             say_what_each_is_for(&mut whole, &spoken);
             eprintln!(
                 "  author read {} capabilities across the parts into {} for the whole",
@@ -1264,7 +1281,11 @@ pub fn derive(
         if let Some(record) = call.literals.iter().find_map(|literal| {
             let bare = literal.rsplit('=').next().unwrap_or(literal).trim().trim_matches(['"', '\'', '`']);
             let bare = bare.split([' ', '.']).next().unwrap_or(bare);
-            lowered_records.get(&bare.to_ascii_lowercase()).copied()
+            lowered_records.get(&bare.to_ascii_lowercase()).copied().or_else(|| {
+                bare.split('_')
+                    .filter(|word| word.len() > 2)
+                    .find_map(|word| lowered_records.get(&word.to_ascii_lowercase()).copied())
+            })
         }) {
             typed_at.entry((caller, call.line)).or_insert(record);
         }
@@ -1435,11 +1456,6 @@ pub fn derive(
         if !carrying.is_empty() {
             carried.insert(entry.id.clone(), carrying);
         }
-        let standing = match (!changing.is_empty(), !into.is_empty()) {
-            (true, _) => "terminal",
-            (false, true) => "proximal",
-            (false, false) => "reading",
-        };
         let named = entry
             .path
             .as_deref()
@@ -1505,6 +1521,12 @@ pub fn derive(
         reads.retain(|held| !writes.contains(held));
         reads.sort();
         let summary = summarised(entry, &named, &writes, &reads, &reaching);
+        let hands_on = logical.iter().any(|step| matches!(step.kind, "raise" | "hand_off"));
+        let standing = match (!changing.is_empty() || !writes.is_empty() || hands_on, !into.is_empty()) {
+            (true, _) => "terminal",
+            (false, true) => "proximal",
+            (false, false) => "reading",
+        };
         flows.push(Flow {
             path: steps,
             steps: logical,
@@ -1539,6 +1561,26 @@ pub fn derive(
     }
     flows.sort_by(|left, right| left.id.cmp(&right.id));
     link_across_parts(&mut flows, &carried);
+    let mut received: HashMap<&str, Vec<String>> = HashMap::default();
+    for entry in entry_points.iter().filter(|entry| matches!(entry.kind, "message" | "event")) {
+        received.entry(entry.name.as_str()).or_default().push(entry.id.clone());
+    }
+    for flow in flows.iter_mut() {
+        let handed: Vec<String> = flow
+            .steps
+            .iter()
+            .filter(|step| matches!(step.kind, "raise" | "hand_off"))
+            .filter_map(|step| step.object.as_deref())
+            .flat_map(|object| received.get(object).into_iter().flatten().cloned())
+            .filter(|entry| *entry != flow.entry_point)
+            .collect();
+        for entry in handed {
+            if !flow.leads_into.contains(&entry) {
+                flow.leads_into.push(entry);
+            }
+        }
+        flow.leads_into.sort();
+    }
 
     let touching = |holding: &HashMap<&str, Vec<&str>>| -> BTreeMap<String, Vec<String>> {
         let mut found: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -1565,6 +1607,17 @@ pub fn derive(
         if entity.read_by.is_empty() {
             entity.read_by = readers.get(&entity.declared_as).cloned().unwrap_or_default();
         }
+    }
+    for entity in entities.iter_mut() {
+        let named = entity.declared_as.as_str();
+        entity.terminality = match (
+            flows.iter().any(|flow| flow.writes.iter().any(|held| held == named)),
+            flows.iter().any(|flow| flow.reads.iter().any(|held| held == named)),
+        ) {
+            (true, _) => Some("terminal"),
+            (false, true) => Some("proximal"),
+            _ => None,
+        };
     }
     let terminal = flows.iter().filter(|flow| flow.standing == "terminal").count() as u32;
     let chained = flows.iter().filter(|flow| !flow.leads_into.is_empty()).count() as u32;
@@ -2578,6 +2631,7 @@ fn entities(
             read_by: read.get(node.id.as_str()).cloned().unwrap_or_default(),
             references: pointing.remove(node.id.as_str()).unwrap_or_default(),
             project: node.project.clone(),
+            terminality: None,
         })
         .collect();
     let mut richest: BTreeMap<(String, String), Entity> = BTreeMap::new();
@@ -2665,6 +2719,7 @@ fn entities(
             read_by,
             references: Vec::new(),
             project: None,
+            terminality: None,
         });
     }
     for (named, table) in created {
@@ -2691,6 +2746,7 @@ fn entities(
                 })
                 .collect(),
             project: None,
+            terminality: None,
         });
     }
     let known: HashMap<String, String> = entities

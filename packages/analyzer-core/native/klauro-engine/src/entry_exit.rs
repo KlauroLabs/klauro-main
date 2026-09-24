@@ -824,6 +824,18 @@ static STORE_BASES: &[StoreBase] = &[
     store("SqlConnection", false),
 ];
 
+static SPEAKS_HTTP: &[&str] = &[
+    "AsyncClient", "ClientSession", "HttpClient", "IHttpClientFactory", "OkHttpClient", "RestClient", "RestTemplate",
+    "WebClient",
+];
+
+static SENDS_A_REQUEST: &[&str] = &[
+    "delete", "deleteasync", "deleteforentity", "exchange", "execute", "executeasync", "get", "getasync",
+    "getbytearrayasync", "getforentity", "getforobject", "getfromjsonasync", "getstreamasync", "getstringasync",
+    "patch", "patchasjsonasync", "patchasync", "post", "postasjsonasync", "postasync", "postforentity",
+    "postforobject", "put", "putasjsonasync", "putasync", "request", "send", "sendasync",
+];
+
 static EXECUTES_AGAINST_A_STORE: &[&str] = &[
     "add", "addasync", "addrange", "addrangeasync", "all", "allasync", "any", "anyasync", "attach", "average",
     "averageasync", "batchupdate", "contains", "containsasync", "count", "countasync", "createquery", "delete",
@@ -940,6 +952,28 @@ pub fn kept_by_a_store(
                     break;
                 }
             }
+        }
+        if reached.is_none()
+            && let Some(client) = typed.filter(|typed| SPEAKS_HTTP.contains(typed))
+        {
+            let operation = names::leaf(&call.callee);
+            let verb = operation.split('<').next().unwrap_or(operation).to_ascii_lowercase();
+            if SENDS_A_REQUEST.iter().any(|held| verb == *held) {
+                found.push(ExitPoint {
+                    id: format!("exit:{}:{}:http", files[call.file as usize], at),
+                    kind: "api",
+                    name: format!("{receiver}.{operation}"),
+                    source: caller.to_string(),
+                    target: client.to_string(),
+                    operation: operation.to_string(),
+                    file: call.file,
+                    line: call.line,
+                    awaited: call.context.awaited,
+                    addressed: addressed_at(call),
+                    service: None,
+                });
+            }
+            continue;
         }
         let Some(base) = reached else { continue };
         let operation = names::leaf(&call.callee);

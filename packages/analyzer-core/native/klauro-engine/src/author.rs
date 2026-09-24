@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 const ENDPOINT: &str = "https://api.deepinfra.com/v1/openai/chat/completions";
 const GROUNDED: f64 = 0.5;
+const CLAIMED_BY_ITS_OWN_WORDS: f64 = 0.75;
 const TRIES: usize = 5;
 const NAMED_PER_CALL: usize = 24;
 const NAMED_PER_SPOKEN_CALL: usize = 40;
@@ -70,6 +71,12 @@ pub struct Grounding {
     pub outcome: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub universal: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mechanism: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<f64>,
     pub graded: bool,
 }
 
@@ -227,6 +234,9 @@ pub fn ground(
                     invented: settled("invented", 1.0),
                     outcome: settled("outcome", 0.0),
                     universal: None,
+                    mechanism: None,
+                    scope: None,
+                    topic: None,
                     graded: crate::jev::asked(),
                     specific: answers
                         .get(&format!("w{at}-specific"))
@@ -360,14 +370,16 @@ pub fn same_outcome(spoken_for: &str, listed: &BTreeMap<String, String>) -> Vec<
          from a page and from the route behind it, from a phone and from a command line, or \
          split into steps of one thing. They are in front of you together because they might be \
          one; expect to put most of them together.\n\n\
-         Put together the ones that are the same outcome, by these rules:\n{RULES}\n\n\
+         When one capability's paths continue into another's, a person using the first is \
+         using the second without seeing it, so they are one outcome unless someone comes to \
+         each on its own. Put together the ones that are the same outcome, by these rules:\n{RULES}\n\n\
          Two are the same outcome when a person would say they did one thing, however many ways \
          in the system offers. Browsing an album, a trash folder, a timeline and a favourite are \
          all browsing; sharing by link, with a partner, and seeing what is shared with you are \
          all sharing; reading a photo's metadata and its statistics are both reading about it. \
          Keep two apart only when someone would come for one and not the other — a different \
          thing to do, not a different way to do it.\n\n\
-         For each group give the name of the outcome in 2-6 words, one sentence saying what \
+         For each group give the name of the outcome in 2-6 words — a verb and what it acts on, like \"Share posts with followers\", never a topic like \"Posting\" — one sentence saying what \
          someone gets, and the audience it is for. Name what the person ends up with, never the \
          way in and never what it is built on: a group reached through web routes is not called \
          an API, one reached through pages is not called a web interface, and one that keeps \
@@ -415,33 +427,34 @@ pub fn propose_capabilities(spoken_for: &str, families: &[(String, String)]) -> 
     }
     let prompt = format!(
         "A software system describes itself like this:\n{spoken_for}\n\n\
-         Below is every group of paths through one part of it. The evidence placed each group \
-         together — the route it is reached through, the records it keeps, the effect it ends \
-         in — but it did not decide what anyone gets from them. You see all of them at once so \
-         you can.\n\n\
+         Below is every outcome one part of it delivers, read from the code: the record a path \
+         changes, what it hands on to another part, the service it acts through, or what it \
+         shows someone. Each outcome lists the paths that end in it and the steps each path \
+         takes. Outcomes that change something are terminal; outcomes that only show something \
+         are one step short of terminal, and are just as real: seeing your orders is something \
+         you come for.\n\n\
          Read them as a whole and say which capabilities this part delivers, by these rules:\n{RULES}\n\n\
-         Put groups together when a person would say they did one thing, however many ways in \
-         the system offers: resetting a password is one capability whether it is the form, the \
-         request, the email or the new password. Keep two apart only when someone would come for \
-         one and not the other. Name what the person ends up with, never the way in and never \
-         what it is built on: a group reached through web routes is not called an API, one \
-         reached through pages is not called a web interface, one that keeps records is not \
-         called a database.\n\n\
-         A few groups deliver nothing on their own: checking health, serving static files, the \
-         building blocks a page is made of, glue between parts. List only those as plumbing. \
-         Anything a person or another system does on purpose — signing in, giving consent, \
-         cancelling or shipping an order, revoking access — is a capability even when the \
-         evidence names no records, because its routes and what it does already say what it is \
-         for. So is work the system does without being asked — on a timer, in the background, or \
-         when a message from another part arrives — whenever it moves forward something someone \
-         relies on: settling a payment, advancing an order, renewing a subscription, sending a \
-         reminder. Its audience is whoever relies on it.\n\n\
-         For each capability give a name of 2-6 words, one sentence saying what someone gets, \
-         the audience it is for, and the ids of the groups that deliver it. Every id below must \
-         appear exactly once, either in one capability or in plumbing, and no other id may \
+         A capability is what someone ends up with. Put outcomes together when a person would \
+         say they did one thing: placing an order is one capability whether it creates the \
+         order, reserves its items or hands the order on. Split one outcome when its paths serve \
+         different people for different reasons. Name the capability for what the person gets, \
+         never for the way in or what it is built on: nothing is called an API, a page, an \
+         endpoint, a screen, a form, a database or a table.\n\n\
+         Work the system does without being asked — on a timer, in the background, or when a \
+         message from another part arrives — is a capability whenever it moves forward something \
+         someone relies on: settling a payment, advancing an order, renewing a subscription. Its \
+         audience is whoever relies on it.\n\n\
+         A few outcomes are the system keeping track of itself: a record of requests already \
+         handled, a log of messages sent, health, static files, the building blocks of a page. \
+         List only those as plumbing.\n\n\
+         For each capability give a name of 2-6 words that says what someone gets done — a verb and \
+         what it acts on, like \"Share posts with followers\" or \"Track an order\", never a topic or a \
+         category like \"Posting\", \"Orders\" or \"Engagement\" —, one sentence saying what someone gets, \
+         the audience it is for, and the ids of the outcomes that deliver it. Every id below \
+         must appear exactly once, either in one capability or in plumbing, and no other id may \
          appear.\n\
          Return JSON only: {{\"capabilities\":[{{\"name\":\"...\",\"description\":\"...\",\"audience\":\"...\",\"families\":[\"...\"]}}],\"plumbing\":[\"...\"]}}\n\n\
-         The groups:\n{}",
+         The outcomes:\n{}",
         families.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect::<Vec<_>>().join("\n")
     );
     let Some(held) =
@@ -489,8 +502,8 @@ pub fn place_families(
     let prompt = format!(
         "A software system describes itself like this:\n{spoken_for}\n\n\
          These capabilities were already read from it:\n{}\n\n\
-         These groups of paths were not placed yet. For each, say which capability above it \
-         delivers, by its exact name; or give a new capability name of 2-6 words with one \
+         These outcomes were not placed yet. For each, say which capability above it \
+         delivers, by its exact name; or give a new capability name of 2-6 words — a verb and what it acts on, like \"Share posts with followers\", never a topic like \"Posting\" — with one \
          sentence saying what someone gets and its audience when none fits; or say plumbing when \
          it delivers nothing on its own. Work the system does by itself — on a timer, in the \
          background, or when a message arrives — is not plumbing when it moves forward something \
@@ -600,6 +613,9 @@ pub fn test_description(facts: &str) -> Grounding {
         invented: settled("invented", 1.0),
         outcome: settled("outcome", 0.0),
         universal: None,
+        mechanism: None,
+        scope: None,
+        topic: None,
         graded: crate::jev::asked(),
         specific: answers
             .get("specific")
@@ -636,6 +652,22 @@ fn asking_of(facts: &str) -> BTreeMap<&'static str, crate::jev::Question> {
             },
         ),
         (
+            "topic",
+            crate::jev::Question {
+                kind: "noul",
+                instructions: format!("{facts}\n\nThe proposed capability is named as a topic or a category — a single noun or a heading like \"Media\", \"Discovery\" or \"Order management\" — rather than as what someone gets done"),
+                criteria: BTreeMap::new().into(),
+            },
+        ),
+        (
+            "mechanism",
+            crate::jev::Question {
+                kind: "noul",
+                instructions: format!("{facts}\n\nThe proposed capability is named for how it is reached or what it is built from — a page, a screen, a route, an API, a form, an endpoint, a webhook, a job, a record kept for the system's own bookkeeping — rather than for what someone ends up with"),
+                criteria: BTreeMap::new().into(),
+            },
+        ),
+        (
             "universal",
             crate::jev::Question {
                 kind: "noul",
@@ -659,12 +691,22 @@ fn asking_of(facts: &str) -> BTreeMap<&'static str, crate::jev::Question> {
     ])
 }
 
-pub fn test_capabilities(spoken: &str, held: &[(String, String)]) -> BTreeMap<String, Grounding> {
+pub fn test_capabilities(spoken: &str, held: &[(String, String)], level: &str) -> BTreeMap<String, Grounding> {
     let mut questions: BTreeMap<String, crate::jev::Question> = BTreeMap::new();
     for (at, (_, facts)) in held.iter().enumerate() {
         for (named, question) in asking_of(facts) {
             questions.insert(format!("c{at}-{named}"), question);
         }
+        questions.insert(
+            format!("c{at}-scope"),
+            crate::jev::Question {
+                kind: "noul",
+                instructions: format!(
+                    "{facts}\n\nSomeone saying what {level} is for would name this among the reasons it exists — something its audience comes for, or relies on it to do for them — and not something that only makes another of its capabilities possible, such as signing in or out, permissions, settings, or looking up reference data"
+                ),
+                criteria: BTreeMap::new().into(),
+            },
+        );
     }
     let answers = crate::jev::decide(&format!("{RULES}\n\n{spoken}"), questions);
     held.iter()
@@ -683,6 +725,9 @@ pub fn test_capabilities(spoken: &str, held: &[(String, String)]) -> BTreeMap<St
                     invented: settled("invented", 1.0),
                     outcome: settled("outcome", 0.0),
                     universal: Some(settled("universal", 1.0)),
+                    mechanism: Some(settled("mechanism", 0.0)),
+                    scope: Some(settled("scope", 0.0)),
+                    topic: Some(settled("topic", 0.0)),
                     graded: crate::jev::asked(),
                     specific: answers
                         .get(&format!("c{at}-specific"))
@@ -708,6 +753,14 @@ impl Grounding {
             && self.invented < GROUNDED
             && self.outcome >= GROUNDED
             && self.universal.unwrap_or(1.0) < GROUNDED
+    }
+
+    pub fn delivers(&self) -> bool {
+        let scope = self.scope.unwrap_or(self.outcome);
+        !self.fabricated()
+            && scope >= GROUNDED
+            && (self.universal.unwrap_or(0.0) < GROUNDED || scope >= CLAIMED_BY_ITS_OWN_WORDS)
+            && self.mechanism.unwrap_or(0.0) < GROUNDED
     }
 
     pub fn holds(&self) -> bool {

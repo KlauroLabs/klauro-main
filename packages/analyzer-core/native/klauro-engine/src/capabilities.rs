@@ -4,12 +4,10 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::author::{Placed, Proposal, Proposed};
-use crate::comprehend::{carved_name, families_of, settle, Capability, Delivery, Family, Flow, PUBLISHED};
+use crate::comprehend::{carved_name, settle, Capability, Delivery, Family, Flow, PUBLISHED};
 
 const FAMILIES_PER_PROPOSAL: usize = 60;
 const SURFACES_SHOWN: usize = 6;
-const STEPS_SHOWN: usize = 6;
-const DOINGS_SHOWN: usize = 10;
 const CAPABILITIES_CONSOLIDATED_AT_ONCE: usize = 160;
 
 struct Held {
@@ -43,14 +41,126 @@ fn keep_in_memory(key: &str, remembered: &Remembered) {
     crate::memory::keep("capabilities", key, remembered);
 }
 
-fn evidence_of(flows: &[&Flow], family: &Family) -> String {
-    let mut surfaces: Vec<String> = flows
+const PATHS_SHOWN: usize = 5;
+const STEPS_TOLD: usize = 7;
+
+fn changes_in(flow: &Flow) -> impl Iterator<Item = &str> {
+    flow.steps
         .iter()
-        .map(|flow| match flow.method.as_deref() {
-            Some(method) => format!("{method} {}", flow.operation),
-            None => flow.operation.clone(),
-        })
-        .collect();
+        .rev()
+        .filter(|step| matches!(step.kind, "change" | "remove" | "create"))
+        .filter_map(|step| step.object.as_deref())
+        .filter(|object| flow.writes.iter().any(|held| held == object))
+}
+
+fn kept_for_itself<'a>(flows: &[&'a Flow]) -> BTreeSet<&'a str> {
+    let mut changed_by: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
+    for flow in flows {
+        for record in &flow.writes {
+            let held = changed_by.entry(record.as_str()).or_default();
+            held.0 += 1;
+            if flow.writes.len() == 1 {
+                held.1 += 1;
+            }
+        }
+    }
+    changed_by
+        .into_iter()
+        .filter(|(_, (changing, alone))| *changing >= 3 && *alone == 0)
+        .map(|(record, _)| record)
+        .collect()
+}
+
+fn outcome_of(flow: &Flow, bookkeeping: &BTreeSet<&str>) -> Family {
+    if flow.kind == "export" {
+        return crate::comprehend::family_of(flow);
+    }
+    if let Some(record) = changes_in(flow).find(|record| !bookkeeping.contains(record)) {
+        return Family { key: format!("changes:{record}"), basis: "the record it changes" };
+    }
+    let handed: Option<&str> = flow
+        .steps
+        .iter()
+        .rev()
+        .filter(|step| matches!(step.kind, "raise" | "hand_off"))
+        .find_map(|step| step.object.as_deref());
+    if let Some(handed) = handed {
+        return Family { key: format!("hands on:{handed}"), basis: "what it hands on to another part" };
+    }
+    if let Some(record) = changes_in(flow).next() {
+        return Family { key: format!("changes:{record}"), basis: "the record it changes" };
+    }
+    let called: Option<&str> =
+        flow.steps.iter().rev().filter(|step| step.kind == "call").find_map(|step| step.object.as_deref());
+    if let Some(called) = called.filter(|_| flow.standing == "terminal") {
+        return Family { key: format!("calls:{called}"), basis: "the service it acts through" };
+    }
+    let shown: Option<&str> = flow
+        .steps
+        .iter()
+        .rev()
+        .filter(|step| step.kind == "read")
+        .find_map(|step| step.object.as_deref().filter(|object| flow.reads.iter().any(|held| held == object)))
+        .or_else(|| flow.reads.first().map(String::as_str));
+    if let Some(shown) = shown {
+        return Family { key: format!("shows:{shown}"), basis: "what it shows someone" };
+    }
+    crate::comprehend::family_of(flow)
+}
+
+pub(crate) fn outcomes_of<'a>(flows: &[&'a Flow]) -> BTreeMap<Family, Vec<&'a Flow>> {
+    let bookkeeping = kept_for_itself(flows);
+    let mut grouped: BTreeMap<Family, Vec<&'a Flow>> = BTreeMap::new();
+    for flow in flows {
+        grouped.entry(outcome_of(flow, &bookkeeping)).or_default().push(flow);
+    }
+    if grouped.keys().any(|family| !family.key.starts_with("trigger:")) {
+        grouped.retain(|family, _| !family.key.starts_with("trigger:"));
+    }
+    for lane in grouped.values_mut() {
+        lane.sort_by(|left, right| left.id.cmp(&right.id));
+    }
+    grouped
+}
+
+fn told_steps(flow: &Flow) -> String {
+    let mut said: Vec<&str> = Vec::new();
+    for step in &flow.steps {
+        if step.kind == "respond" && step.object.is_none() {
+            continue;
+        }
+        if said.last() != Some(&step.label.as_str()) {
+            said.push(step.label.as_str());
+        }
+    }
+    let more = said.len().saturating_sub(STEPS_TOLD);
+    said.truncate(STEPS_TOLD);
+    let mut told = said.join(" -> ");
+    if more > 0 {
+        told.push_str(&format!(" -> and {more} more"));
+    }
+    if told.is_empty() {
+        told = "no steps read".to_string();
+    }
+    told
+}
+
+fn surface_of(flow: &Flow) -> String {
+    match flow.method.as_deref() {
+        Some(method) => format!("{method} {}", flow.operation),
+        None => format!("{} {}", flow.kind, flow.operation),
+    }
+}
+
+pub(crate) fn terminality_of(family: &Family) -> &'static str {
+    match family.key.split(':').next().unwrap_or_default() {
+        "changes" | "hands on" | "calls" => "terminal",
+        _ => "proximal",
+    }
+}
+
+fn evidence_of(flows: &[&Flow], family: &Family) -> String {
+    let mut surfaces: Vec<String> = flows.iter().map(|flow| surface_of(flow)).collect();
     settle(&mut surfaces);
     let more = surfaces.len().saturating_sub(SURFACES_SHOWN);
     surfaces.truncate(SURFACES_SHOWN);
@@ -61,27 +171,28 @@ fn evidence_of(flows: &[&Flow], family: &Family) -> String {
     let mut reads: Vec<String> = flows.iter().flat_map(|flow| flow.reads.iter().cloned()).collect();
     settle(&mut reads);
     reads.retain(|held| !writes.contains(held));
-    let mut changes: Vec<String> = flows.iter().flat_map(|flow| flow.changes.iter().cloned()).collect();
-    settle(&mut changes);
     let mut reaches: Vec<String> = flows.iter().flat_map(|flow| flow.reaches.iter().cloned()).collect();
     settle(&mut reaches);
-    let mut doing: Vec<String> = flows
+    let mut guarded: Vec<String> = flows
         .iter()
-        .flat_map(|flow| flow.path.iter().take(STEPS_SHOWN))
-        .filter(|step| !step.unit.starts_with("package:") && !step.unit.starts_with("runtime:"))
-        .filter_map(|step| {
-            let named = step.unit.rsplit(':').nth(2)?;
-            named.chars().next().is_some_and(char::is_alphabetic).then(|| named.to_string())
-        })
+        .flat_map(|flow| flow.steps.iter().filter(|step| step.kind == "check").take(1))
+        .filter_map(|step| step.object.clone())
         .collect();
-    settle(&mut doing);
-    doing.truncate(DOINGS_SHOWN);
+    settle(&mut guarded);
+    guarded.truncate(4);
+    let mut shown: Vec<&&Flow> = flows.iter().collect();
+    shown.sort_by_key(|flow| std::cmp::Reverse(flow.steps.len()));
+    shown.truncate(PATHS_SHOWN);
+    shown.sort_by(|left, right| left.id.cmp(&right.id));
     let listed = |held: &[String]| match held.is_empty() {
         true => "none".to_string(),
         false => held.join(", "),
     };
+    let (_, object) = family.key.split_once(':').unwrap_or(("", family.key.as_str()));
     format!(
-        "  belong together by {}\n  entered as: {}\n  reached through: {}{}\n  does: {}\n  writes: {}\n  reads: {}\n  ends by: {}\n  reaches: {}\n  paths: {}",
+        "  outcome ({}): {}, which is {}\n  entered as: {}\n  reached through: {}{}\n  guarded by: {}\n  what its paths do:\n{}\n  writes: {}\n  reads: {}\n  reaches: {}\n  paths: {}",
+        terminality_of(family),
+        object,
         family.basis,
         kinds.join(", "),
         surfaces.join(", "),
@@ -89,10 +200,14 @@ fn evidence_of(flows: &[&Flow], family: &Family) -> String {
             0 => String::new(),
             more => format!(" and {more} more"),
         },
-        listed(&doing),
+        listed(&guarded),
+        shown
+            .iter()
+            .map(|flow| format!("    - {}: {}", surface_of(flow), told_steps(flow)))
+            .collect::<Vec<_>>()
+            .join("\n"),
         listed(&writes),
         listed(&reads),
-        listed(&changes),
         listed(&reaches),
         flows.len()
     )
@@ -212,7 +327,7 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str) -> Vec
     }
     let served = flows.iter().any(|flow| flow.kind != "export");
     let kept: Vec<&Flow> = flows.iter().copied().filter(|flow| !served || flow.kind != "export").collect();
-    let families = families_of(&kept);
+    let families = outcomes_of(&kept);
     let keyed: Vec<(String, &Family, &Vec<&Flow>)> = families
         .iter()
         .enumerate()
@@ -346,9 +461,16 @@ fn built(held: Held, lanes: &BTreeMap<&str, (&Family, &Vec<&Flow>)>) -> Option<C
         grounding: None,
         standing: PUBLISHED,
         touches: Vec::new(),
+        terminality: None,
+        evidence: String::new(),
     };
+    let mut told: Vec<String> = Vec::new();
     for family_id in &held.families {
         let Some((family, lane)) = lanes.get(family_id.as_str()) else { continue };
+        told.push(evidence_of(lane, family));
+        if terminality_of(family) == "terminal" || capability.terminality.is_none() {
+            capability.terminality = Some(terminality_of(family));
+        }
         for flow in lane.iter() {
             capability.project = capability.project.take().or_else(|| flow.project.clone());
             capability.delivered.push(Delivery {
@@ -372,6 +494,7 @@ fn built(held: Held, lanes: &BTreeMap<&str, (&Family, &Vec<&Flow>)>) -> Option<C
     if capability.delivered.is_empty() {
         return None;
     }
+    capability.evidence = told.join("\n");
     capability.delivered.sort_by(|left, right| left.flow.cmp(&right.flow));
     capability.delivered.dedup_by(|left, right| left.flow == right.flow);
     capability.flows = capability.delivered.iter().map(|held| held.flow.clone()).collect();
@@ -525,10 +648,32 @@ fn grouped(
     groups
 }
 
-pub(crate) fn of_the_whole(parts: &[Capability], spoken: &str, scope: &str) -> Vec<Capability> {
-    if parts.len() < 2 {
+pub(crate) fn of_the_whole(parts: &[Capability], spoken: &str, scope: &str, flows: &[Flow]) -> Vec<Capability> {
+    let projects: BTreeSet<Option<&str>> = parts.iter().map(|capability| capability.project.as_deref()).collect();
+    if parts.len() < 2 || projects.len() < 2 {
         return Vec::new();
     }
+    let mut holding: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    for (at, capability) in parts.iter().enumerate() {
+        for flow in &capability.flows {
+            holding.entry(flow.as_str()).or_default().push(at);
+        }
+    }
+    let flow_of: BTreeMap<&str, &Flow> = flows.iter().map(|flow| (flow.id.as_str(), flow)).collect();
+    let continues: Vec<BTreeSet<usize>> = parts
+        .iter()
+        .enumerate()
+        .map(|(at, capability)| {
+            capability
+                .flows
+                .iter()
+                .filter_map(|flow| flow_of.get(flow.as_str()))
+                .flat_map(|flow| flow.leads_into.iter())
+                .flat_map(|entry| holding.get(format!("flow:{entry}").as_str()).cloned().unwrap_or_default())
+                .filter(|other| *other != at && parts[*other].project != capability.project)
+                .collect()
+        })
+        .collect();
     let listed: BTreeMap<String, String> = parts
         .iter()
         .enumerate()
@@ -538,12 +683,19 @@ pub(crate) fn of_the_whole(parts: &[Capability], spoken: &str, scope: &str) -> V
             (
                 format!("c{at}"),
                 format!(
-                    "  it is called: {}\n  for: {}\n  what someone gets: {}\n  found in the part: {}\n  reached through: {}",
+                    "  it is called: {}\n  for: {}\n  what someone gets: {}\n  found in the part: {}\n  reached through: {}{}",
                     capability.name.as_deref().unwrap_or(""),
                     capability.audience.as_deref().unwrap_or("someone"),
                     capability.description.as_deref().unwrap_or(""),
                     capability.project.as_deref().unwrap_or("the repository root"),
-                    surfaces.join(", ")
+                    surfaces.join(", "),
+                    match continues[at].is_empty() {
+                        true => String::new(),
+                        false => format!(
+                            "\n  its paths continue into: {}",
+                            continues[at].iter().map(|other| format!("c{other}")).collect::<Vec<_>>().join(", ")
+                        ),
+                    }
                 ),
             )
         })

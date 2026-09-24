@@ -278,6 +278,9 @@ impl<'a> Extractor<'a> {
                 if let Some(unit) = self.unit(scope) {
                     unit.branches += 1;
                 }
+                if node.kind() == "if_statement" && self.routed_branch(node, scope) {
+                    return;
+                }
                 let mut inner = scope.child(None, None);
                 inner.context.conditional_depth = scope.context.conditional_depth + 1;
                 inner.enclosing_callable = scope.enclosing_callable.clone();
@@ -308,6 +311,48 @@ impl<'a> Extractor<'a> {
             }
             _ => self.walk(node, scope),
         }
+    }
+
+    fn routed_branch(&mut self, node: Node, scope: &Scope) -> bool {
+        let (Some(condition), Some(consequence)) =
+            (node.child_by_field_name("condition"), node.child_by_field_name("consequence"))
+        else {
+            return false;
+        };
+        let asked = self.text_owned(condition);
+        let Some((method, path)) = dispatched_on(&asked) else { return false };
+        let name = format!("{method} {path}#{}", line_of(node));
+        let id = self.id("callback", &name, consequence);
+        let registrar = format!("route.{}", method.to_ascii_lowercase());
+        self.facts.nodes.push(IndexNode {
+            id: id.clone(),
+            name,
+            kind: NodeKind::Function,
+            file: self.file,
+            span: span_of(consequence),
+            parent: scope.enclosing_callable.clone().or_else(|| scope.owner.clone()),
+            signature: None,
+            modifiers: Modifiers::default(),
+            decorators: Vec::new(),
+            type_annotation: None,
+            documentation: None,
+            project: None,
+            callback_of: Some(registrar),
+            registration_label: Some(path),
+        });
+        if let Some(owner) = scope.enclosing_callable.clone().or_else(|| scope.owner.clone()) {
+            self.push_edge(&owner, &id, EdgeKind::Contains);
+        }
+        let mut conditioned = scope.child(None, None);
+        conditioned.enclosing_callable = scope.enclosing_callable.clone();
+        conditioned.context.conditional_depth = scope.context.conditional_depth + 1;
+        self.visit(condition, &conditioned);
+        let inner = scope.child(Some(id.clone()), Some(id));
+        self.visit(consequence, &inner);
+        if let Some(alternative) = node.child_by_field_name("alternative") {
+            self.visit(alternative, &conditioned);
+        }
+        true
     }
 
     fn try_statement(&mut self, node: Node, scope: &Scope) {
@@ -1640,4 +1685,39 @@ pub fn parser_for(path: &str) -> Option<Parser> {
     let mut parser = Parser::new();
     parser.set_language(&language).ok()?;
     Some(parser)
+}
+
+static ASKED_METHODS: &[&str] = &["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"];
+
+fn quoted_after(text: &str, at: usize) -> Option<&str> {
+    let rest = text[at..].trim_start();
+    let quote = rest.chars().next().filter(|held| matches!(held, '\'' | '"' | '`'))?;
+    let inner = &rest[1..];
+    let end = inner.find(quote)?;
+    Some(&inner[..end])
+}
+
+fn dispatched_on(condition: &str) -> Option<(String, String)> {
+    let method = condition.match_indices("method").find_map(|(at, _)| {
+        let rest = &condition[at + "method".len()..];
+        let rest = rest.trim_start().strip_prefix("===").or_else(|| rest.trim_start().strip_prefix("=="))?;
+        let asked = quoted_after(rest, 0)?;
+        ASKED_METHODS.contains(&asked).then(|| asked.to_string())
+    })?;
+    let mut path: Option<String> = None;
+    for (at, _) in condition.match_indices("===") {
+        if let Some(held) = quoted_after(condition, at + 3).filter(|held| held.starts_with('/')) {
+            path = Some(held.to_string());
+            break;
+        }
+    }
+    if path.is_none() {
+        for (at, _) in condition.match_indices("startsWith(") {
+            if let Some(held) = quoted_after(condition, at + "startsWith(".len()).filter(|held| held.starts_with('/')) {
+                path = Some(format!("{}*", held.trim_end_matches('*')));
+                break;
+            }
+        }
+    }
+    Some((method, path?))
 }

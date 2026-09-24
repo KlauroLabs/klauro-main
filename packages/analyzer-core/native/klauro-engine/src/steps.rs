@@ -101,7 +101,7 @@ fn singular(word: &str) -> String {
     word.strip_suffix('s').filter(|stem| !stem.ends_with('s')).unwrap_or(word).to_string()
 }
 
-static CHECKS_BY_NAME: &[&str] = &["assert", "authorize", "check", "ensure", "guard", "require", "validate", "verify"];
+static CHECKS_BY_NAME: &[&str] = &["assert", "authorize", "check", "guard", "validate", "verify"];
 
 fn a_check(callee: &str) -> bool {
     let named = crate::names::leaf(callee).split('<').next().unwrap_or_default().to_ascii_lowercase();
@@ -187,6 +187,7 @@ fn labelled(kind: &str, object: Option<&str>) -> String {
         _ => "Do",
     };
     match object {
+        Some(object) if kind == "check" && a_check(object.split_whitespace().next().unwrap_or_default()) => object.to_string(),
         Some(object) => format!("{verb} {object}"),
         None => match kind {
             "respond" => "Respond".to_string(),
@@ -440,16 +441,26 @@ impl<'a> Reader<'a> {
                     if visited.insert(target) {
                         let shared = self.callers.get(&target).copied().unwrap_or(0) >= SHARED_BY;
                         let named = self.nodes[target as usize].name.as_str();
-                        if shared && a_check(named) {
+                        if shared {
                             let mut within: Vec<Action> = Vec::new();
                             self.walk(target, depth + 1, context, visited, &mut within);
-                            let changes = within.iter().any(|action| !matches!(action.kind, "read" | "check"));
-                            match changes {
-                                true => actions.extend(within),
-                                false => actions.push(Action {
-                                    kind: "check",
-                                    object: Some(spoken(named)),
-                                    doing: None,
+                            let checking = a_check(named);
+                            let matters = within.iter().any(|action| match action.kind {
+                                "hand_off" | "raise" => true,
+                                "change" | "remove" | "create" => {
+                                    action.object.as_deref().is_some_and(|object| self.held.contains(object))
+                                }
+                                "call" => true,
+                                "read" | "check" => false,
+                                _ => false,
+                            });
+                            match (matters, within.is_empty()) {
+                                (true, _) => actions.extend(within),
+                                (false, true) => {}
+                                (false, false) => actions.push(Action {
+                                    kind: if checking { "check" } else { "do" },
+                                    object: checking.then(|| spoken(named)),
+                                    doing: (!checking).then(|| spoken(named)),
                                     when: context,
                                     unit,
                                     line: shown_line(line),
@@ -546,6 +557,7 @@ impl<'a> Reader<'a> {
                 kind: action.kind,
                 label: match (&action.doing, &action.object) {
                     (Some(doing), Some(object)) => format!("{object}: {doing}"),
+                    (Some(doing), None) => doing.clone(),
                     _ => labelled(action.kind, action.object.as_deref()),
                 },
                 object: action.object,
