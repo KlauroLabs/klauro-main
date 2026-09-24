@@ -65,3 +65,19 @@ fn a_route_handled_inline_is_handled_by_its_own_lambda() {
     assert_eq!(handlers.len(), 2, "{handlers:?}");
     assert!(handlers.iter().all(|handler| handler.contains(":callback:")), "{handlers:?}");
 }
+
+#[test]
+fn a_handler_subscribed_to_a_bus_is_entered_by_the_messages_it_receives() {
+    let index = common::read("surfaces");
+    let received: Vec<(String, String)> = index["entry_points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["kind"] == "message")
+        .map(|entry| (entry["name"].as_str().unwrap().to_string(), entry["handler"].as_str().unwrap().to_string()))
+        .collect();
+    assert!(
+        received.iter().any(|(name, handler)| name == "OrderPaid" && handler.contains("Payments.cs:function:Handle")),
+        "{received:?}"
+    );
+}

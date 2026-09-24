@@ -389,6 +389,7 @@ impl<'a> Extractor<'a> {
             specifier,
             line: line_of(node),
             type_only,
+            everywhere: false,
             names,
         });
     }
@@ -1309,6 +1310,7 @@ impl<'a> Extractor<'a> {
             argument_count,
             literals,
             constructs,
+            type_arguments: Vec::new(),
             context: CallContext {
                 in_try: scope.context.in_try,
                 in_catch: scope.context.in_catch,

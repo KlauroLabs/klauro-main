@@ -1455,11 +1455,17 @@ impl<'a> Extractor<'a> {
                 default_import: false,
             });
         }
+        let everywhere = {
+            let mut cursor = node.walk();
+            let global = node.children(&mut cursor).any(|child| child.kind() == "global");
+            global
+        };
         self.facts.imports.push(ImportFact {
             file: self.file,
             specifier,
             line: node.start_position().row as u32 + 1,
             type_only: false,
+            everywhere,
             names,
         });
     }
@@ -1842,6 +1848,30 @@ impl<'a> Extractor<'a> {
         (!text.is_empty()).then(|| text.to_string())
     }
 
+    fn type_arguments_of(&self, node: Node, function: Option<Node>) -> Vec<String> {
+        let named = function.map(|function| {
+            function
+                .child_by_field_name("name")
+                .or_else(|| function.child_by_field_name("field"))
+                .or_else(|| function.child_by_field_name("property"))
+                .unwrap_or(function)
+        });
+        let mut frontier: Vec<(Node, u8)> = Vec::new();
+        frontier.extend(node.child_by_field_name("type_arguments").map(|found| (found, 0)));
+        frontier.extend(named.map(|found| (found, 0)));
+        while let Some((at, depth)) = frontier.pop() {
+            if matches!(at.kind(), "type_argument_list" | "type_arguments") {
+                let mut cursor = at.walk();
+                return at.named_children(&mut cursor).map(|held| self.text(held).trim().to_string()).collect();
+            }
+            if depth < 2 {
+                let mut cursor = at.walk();
+                frontier.extend(at.named_children(&mut cursor).map(|child| (child, depth + 1)));
+            }
+        }
+        Vec::new()
+    }
+
     fn record_call(&mut self, node: Node, scope: &Scope) -> Option<String> {
         let function = node
             .child_by_field_name("function")
@@ -1997,6 +2027,7 @@ impl<'a> Extractor<'a> {
             argument_count,
             literals,
             constructs: node.kind().contains("new") || node.kind().contains("creation"),
+            type_arguments: self.type_arguments_of(node, function),
             context: CallContext {
                 in_try: scope.in_try,
                 in_catch: scope.in_catch,
@@ -2270,7 +2301,7 @@ fn import_alias(text: &str) -> Option<String> {
 }
 
 static IMPORT_WORDS: &[&str] = &[
-    "#include", "const", "extern", "from", "function", "import", "pub", "qualified", "static",
+    "#include", "const", "extern", "from", "function", "global", "import", "pub", "qualified", "static",
     "type", "use", "using",
 ];
 

@@ -190,6 +190,8 @@ pub struct ImportFact {
     pub line: u32,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub type_only: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub everywhere: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub names: Vec<ImportSpecifier>,
 }
@@ -255,6 +257,8 @@ pub struct CallFact {
     pub literals: Vec<String>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub constructs: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub type_arguments: Vec<String>,
     #[serde(skip_serializing_if = "CallContext::is_empty")]
     pub context: CallContext,
 }

@@ -127,6 +127,7 @@ pub fn extract(source: &str, file: u32, path: &str) -> FileFacts {
                     specifier: instruction.argument.split_whitespace().next().unwrap_or("").to_string(),
                     line: instruction.line,
                     type_only: false,
+                    everywhere: false,
                     names: Vec::new(),
                 });
             }

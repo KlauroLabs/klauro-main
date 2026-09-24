@@ -483,3 +483,39 @@ mod tests {
         assert_eq!(named(by_setting_exactly("resend_confirmation")), None);
     }
 }
+
+static CLIENTS: &[(&str, &[&str])] = &[
+    ("Amazon S3", &["AmazonS3Client", "IAmazonS3", "S3Client"]),
+    ("Azure Blob Storage", &["BlobClient", "BlobContainerClient", "BlobServiceClient"]),
+    ("Azure Service Bus", &["ServiceBusClient", "ServiceBusProcessor", "ServiceBusReceiver", "ServiceBusSender"]),
+    ("Elasticsearch", &["ElasticClient", "ElasticsearchClient", "IElasticClient", "RestHighLevelClient"]),
+    ("Kafka", &["ConsumerBuilder", "IAdminClient", "IConsumer", "IProducer", "KafkaConsumer", "KafkaProducer", "ProducerBuilder"]),
+    ("MongoDB", &["IMongoClient", "IMongoCollection", "IMongoDatabase", "MongoClient", "MongoCollection", "MongoDatabase"]),
+    ("RabbitMQ", &["AsyncEventingBasicConsumer", "ConnectionFactory", "EventingBasicConsumer", "IChannel", "IConnection", "IConnectionFactory", "IModel"]),
+    ("Redis", &["ConnectionMultiplexer", "IConnectionMultiplexer", "IDatabase", "IDatabaseAsync", "IServer", "ISubscriber", "Jedis", "JedisPool", "RedisTemplate"]),
+];
+
+pub fn a_client_of(specifier: &str, type_name: &str) -> bool {
+    let Some(known) = by_package(specifier) else { return false };
+    if CLIENTS.iter().any(|(service, types)| *service == known.name && types.contains(&type_name)) {
+        return true;
+    }
+    let first = specifier.split(['.', '/', ':']).next().unwrap_or(specifier);
+    first.len() >= 4
+        && type_name.strip_prefix(first).is_some_and(|rest| rest.starts_with(char::is_uppercase))
+}
+
+#[cfg(test)]
+mod clients {
+    use super::a_client_of;
+
+    #[test]
+    fn a_type_is_a_client_of_the_service_its_namespace_reaches() {
+        assert!(a_client_of("Npgsql", "NpgsqlDataSource"));
+        assert!(a_client_of("RabbitMQ.Client", "IChannel"));
+        assert!(a_client_of("StackExchange.Redis", "IDatabase"));
+        assert!(!a_client_of("RabbitMQ.Client", "IDatabase"));
+        assert!(!a_client_of("Polly", "IChannel"));
+        assert!(!a_client_of("Npgsql", "Npgsqlish"));
+    }
+}

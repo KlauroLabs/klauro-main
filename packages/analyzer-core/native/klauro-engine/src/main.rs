@@ -863,6 +863,10 @@ fn read_it() {
             eprintln!("  pattern {} | {} | {}", found.pattern, found.count, found.evidence);
         }
     }
+    let delivered = patterns::subscribed(&derived.patterns.messages, &index.calls, &pattern_graph);
+    let handled: rustc_hash::FxHashSet<(String, &'static str)> =
+        index.entry_points.iter().map(|entry| (entry.handler.clone(), entry.kind)).collect();
+    index.entry_points.extend(delivered.into_iter().filter(|entry| !handled.contains(&(entry.handler.clone(), entry.kind))));
     let dispatched = derived.dispatched;
     index.patterns = Some(derived.patterns);
 

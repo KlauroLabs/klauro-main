@@ -26,6 +26,8 @@ pub struct Flow {
     pub writes: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub reads: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reaches: Vec<String>,
     pub id: String,
     pub entry_point: String,
     pub kind: &'static str,
@@ -1401,6 +1403,7 @@ pub fn derive(
         reaching.sort();
         let summary = summarised(entry, &named, &writes, &reads, &reaching);
         flows.push(Flow {
+            reaches: reaching,
             summary,
             writes,
             reads,
@@ -2651,6 +2654,7 @@ mod tests {
             argument_count: 1,
             literals: vec![literal.to_string()],
             constructs: false,
+            type_arguments: Vec::new(),
             context: crate::model::CallContext::default(),
         }
     }

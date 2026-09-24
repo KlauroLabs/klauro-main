@@ -68,6 +68,7 @@ struct Bindings<'a> {
     modules: HashMap<(u32, &'a str), &'a str>,
     locals: HashMap<(&'a str, &'a str), &'a str>,
     file_locals: HashMap<(u32, &'a str), &'a str>,
+    opened: HashMap<u32, Vec<&'a str>>,
 }
 
 fn unique(counts: HashMap<&str, (u32, u32)>) -> HashMap<&str, u32> {
@@ -380,6 +381,13 @@ impl<'a> Resolver<'a> {
         if let Some(specifier) = self.bindings.modules.get(&(file, name)) {
             return Origin::Package(specifier);
         }
+        if let Some(opened) = self.bindings.opened.get(&file) {
+            let mut claiming =
+                opened.iter().copied().filter(|specifier| crate::service_catalog::a_client_of(specifier, name));
+            if let (Some(only), None) = (claiming.next(), claiming.next()) {
+                return Origin::Package(only);
+            }
+        }
         Origin::Unknown
     }
 
@@ -429,9 +437,12 @@ impl<'a> Resolver<'a> {
             let held = &self.symbols.nodes[member as usize];
             if !held.kind.is_type()
                 && let Some(annotation) = held.type_annotation.as_deref()
-                && let Origin::Declared(found) = self.annotated(held.file, annotation)
             {
-                return Origin::Declared(found);
+                match self.annotated(held.file, annotation) {
+                    Origin::Declared(found) => return Origin::Declared(found),
+                    Origin::Package(specifier) => return Origin::Package(specifier),
+                    _ => {}
+                }
             }
             return Origin::Declared(member);
         }
@@ -1085,6 +1096,7 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         modules: HashMap::default(),
         locals: HashMap::default(),
         file_locals: HashMap::default(),
+        opened: HashMap::default(),
     };
 
     lap("aliases");
@@ -1146,7 +1158,11 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         let from = index.files[fact.file as usize].as_str();
         let language = index.languages[fact.file as usize];
         if reached.is_empty() {
-            if aliases.declares(from, &fact.specifier) || by_module.held(language, &fact.specifier) {
+            let ours = aliases.declares(from, &fact.specifier) || by_module.held(language, &fact.specifier);
+            if !ours && fact.names.iter().all(|name| name.namespace) {
+                bindings.opened.entry(fact.file).or_default().push(fact.specifier.as_str());
+            }
+            if ours {
                 internal_specifiers.insert(fact.specifier.clone());
             }
             for name in &fact.names {
@@ -1216,6 +1232,38 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
                     .copied()
             }) {
                 bindings.imported.insert((fact.file, name.local.as_str()), found);
+            }
+        }
+    }
+
+    let everywhere: Vec<&ImportFact> = index
+        .imports
+        .iter()
+        .filter(|fact| fact.everywhere && !internal_specifiers.contains(&fact.specifier))
+        .collect();
+    if !everywhere.is_empty() {
+        let projects: Vec<&str> = index
+            .files
+            .iter()
+            .filter(|path| path.ends_with("proj"))
+            .map(|path| path.rsplit_once('/').map(|(folder, _)| folder).unwrap_or(""))
+            .collect();
+        let project_of = |path: &str| -> Option<usize> {
+            projects
+                .iter()
+                .enumerate()
+                .filter(|(_, folder)| folder.is_empty() || path.starts_with(&format!("{folder}/")))
+                .max_by_key(|(_, folder)| folder.len())
+                .map(|(at, _)| at)
+        };
+        let owning: Vec<Option<usize>> = index.files.iter().map(|path| project_of(path)).collect();
+        for fact in everywhere {
+            let Some(project) = owning[fact.file as usize] else { continue };
+            let language = index.languages[fact.file as usize];
+            for (file, held) in owning.iter().enumerate() {
+                if *held == Some(project) && index.languages[file] == language && file as u32 != fact.file {
+                    bindings.opened.entry(file as u32).or_default().push(fact.specifier.as_str());
+                }
             }
         }
     }

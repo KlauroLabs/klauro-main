@@ -499,3 +499,54 @@ mod tests {
         assert_eq!(kind_of("Ping", "IRequestHandler"), "message");
     }
 }
+
+static SUBSCRIBES: &[&str] = &["addconsumer", "addsubscription", "subscribe", "subscribeasync"];
+
+pub fn subscribed(messages: &[Message], calls: &[CallFact], graph: &crate::shared::Graph) -> Vec<crate::entry_exit::EntryPoint> {
+    let mut named: HashSet<&str> = HashSet::default();
+    let mut by: HashMap<&str, &str> = HashMap::default();
+    for call in calls {
+        if call.type_arguments.is_empty() {
+            continue;
+        }
+        let verb = crate::names::leaf(&call.callee);
+        let verb = verb.split('<').next().unwrap_or(verb);
+        if !SUBSCRIBES.contains(&verb.to_ascii_lowercase().as_str()) {
+            continue;
+        }
+        for argument in &call.type_arguments {
+            let held = crate::names::leaf(argument.trim());
+            named.insert(held);
+            by.entry(held).or_insert(verb);
+        }
+    }
+    if named.is_empty() {
+        return Vec::new();
+    }
+    let mut found = Vec::new();
+    for message in messages.iter().filter(|message| named.contains(message.message.as_str())) {
+        for handler in &message.handlers {
+            let Some(at) = graph.at(handler) else { continue };
+            let owned_by_a_subscriber = graph
+                .type_owner(at)
+                .is_some_and(|owner| named.contains(graph.nodes[owner].name.as_str()));
+            if !owned_by_a_subscriber {
+                continue;
+            }
+            let node = &graph.nodes[at];
+            found.push(crate::entry_exit::EntryPoint {
+                id: format!("entry:{handler}:message"),
+                kind: "message",
+                name: message.message.clone(),
+                method: None,
+                path: None,
+                handler: handler.clone(),
+                file: node.file,
+                line: node.span.line,
+                guards: Vec::new(),
+                registrar: by.get(message.message.as_str()).copied().unwrap_or("subscribe").to_string(),
+            });
+        }
+    }
+    found
+}

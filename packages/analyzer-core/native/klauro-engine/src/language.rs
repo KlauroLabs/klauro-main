@@ -4864,7 +4864,7 @@ static SPECS: &[LanguageSpec] = &[
             return_fields: &["returns", "type"],
             return_child_kinds: &[],
             body_fields: &["body"],
-            constructor_parameter_path: &[],
+            constructor_parameter_path: &["parameter_list"],
             extension_receiver_kinds: &[],
             extension_parameter_word: "this",
             extension_container_kinds: &[],

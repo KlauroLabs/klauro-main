@@ -63,6 +63,8 @@ fn evidence_of(flows: &[&Flow], family: &Family) -> String {
     reads.retain(|held| !writes.contains(held));
     let mut changes: Vec<String> = flows.iter().flat_map(|flow| flow.changes.iter().cloned()).collect();
     settle(&mut changes);
+    let mut reaches: Vec<String> = flows.iter().flat_map(|flow| flow.reaches.iter().cloned()).collect();
+    settle(&mut reaches);
     let mut doing: Vec<String> = flows
         .iter()
         .flat_map(|flow| flow.steps.iter().take(STEPS_SHOWN))
@@ -79,7 +81,7 @@ fn evidence_of(flows: &[&Flow], family: &Family) -> String {
         false => held.join(", "),
     };
     format!(
-        "  belong together by {}\n  entered as: {}\n  reached through: {}{}\n  does: {}\n  writes: {}\n  reads: {}\n  ends by: {}\n  paths: {}",
+        "  belong together by {}\n  entered as: {}\n  reached through: {}{}\n  does: {}\n  writes: {}\n  reads: {}\n  ends by: {}\n  reaches: {}\n  paths: {}",
         family.basis,
         kinds.join(", "),
         surfaces.join(", "),
@@ -91,6 +93,7 @@ fn evidence_of(flows: &[&Flow], family: &Family) -> String {
         listed(&writes),
         listed(&reads),
         listed(&changes),
+        listed(&reaches),
         flows.len()
     )
 }
