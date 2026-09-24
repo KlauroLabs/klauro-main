@@ -423,9 +423,12 @@ pub fn propose_capabilities(spoken_for: &str, families: &[(String, String)]) -> 
          what it is built on: a group reached through web routes is not called an API, one \
          reached through pages is not called a web interface, one that keeps records is not \
          called a database.\n\n\
-         Some groups deliver nothing on their own: checking health, serving files, building \
-         blocks of a page, glue between parts. List those as plumbing instead of inventing a \
-         capability for them.\n\n\
+         A few groups deliver nothing on their own: checking health, serving static files, the \
+         building blocks a page is made of, glue between parts. List only those as plumbing. \
+         Anything a person or another system does on purpose — signing in, giving consent, \
+         cancelling or shipping an order, revoking access — is a capability even when the \
+         evidence names no records, because its routes and what it does already say what it is \
+         for.\n\n\
          For each capability give a name of 2-6 words, one sentence saying what someone gets, \
          the audience it is for, and the ids of the groups that deliver it. Every id below must \
          appear exactly once, either in one capability or in plumbing, and no other id may \

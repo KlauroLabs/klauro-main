@@ -114,7 +114,7 @@ pub fn derive<'a>(
     };
     let labels: Vec<Option<&'static str>> = (0..nodes.len()).map(label_of).collect();
 
-    let overriding = overridden_by(graph);
+    let overriding = graph.overriding();
     let mut callees: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
     for edge in edges.iter().chain(dispatched).filter(|edge| matches!(edge.kind, EdgeKind::Calls | EdgeKind::Instantiates)) {
         let (Some(from), Some(to)) = (position.get(edge.source.as_str()), position.get(edge.target.as_str())) else {
@@ -304,30 +304,3 @@ pub fn derive<'a>(
         .collect()
 }
 
-fn overridden_by(graph: &crate::shared::Graph) -> rustc_hash::FxHashMap<usize, Vec<usize>> {
-    let nodes = graph.nodes;
-    let mut overriding: rustc_hash::FxHashMap<usize, Vec<usize>> = rustc_hash::FxHashMap::default();
-    for (at, node) in nodes.iter().enumerate() {
-        if !node.kind.is_unit() {
-            continue;
-        }
-        let Some(owner) = graph.type_owner(at) else { continue };
-        let Some(implementing) = graph.implementors.get(nodes[owner].name.as_str()) else { continue };
-        let mut below: Vec<usize> = implementing.clone();
-        let mut visited: rustc_hash::FxHashSet<usize> = rustc_hash::FxHashSet::default();
-        while let Some(implementor) = below.pop() {
-            if !visited.insert(implementor) || implementor == owner {
-                continue;
-            }
-            if let Some(implementation) = graph.members[implementor]
-                .iter()
-                .copied()
-                .find(|member| nodes[*member].kind.is_unit() && nodes[*member].name == node.name)
-            {
-                overriding.entry(at).or_default().push(implementation);
-            }
-            below.extend(graph.implementors.get(nodes[implementor].name.as_str()).into_iter().flatten().copied());
-        }
-    }
-    overriding
-}

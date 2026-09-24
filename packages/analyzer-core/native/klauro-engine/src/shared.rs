@@ -119,4 +119,32 @@ impl<'a> Graph<'a> {
     pub fn type_owner(&self, unit: usize) -> Option<usize> {
         self.owner[unit].filter(|at| self.nodes[*at].kind.is_type())
     }
+
+    pub fn overriding(&self) -> HashMap<usize, Vec<usize>> {
+        let nodes = self.nodes;
+        let mut overriding: HashMap<usize, Vec<usize>> = HashMap::default();
+        for (at, node) in nodes.iter().enumerate() {
+            if !node.kind.is_unit() {
+                continue;
+            }
+            let Some(owner) = self.type_owner(at) else { continue };
+            let Some(implementing) = self.implementors.get(nodes[owner].name.as_str()) else { continue };
+            let mut below: Vec<usize> = implementing.clone();
+            let mut visited: HashSet<usize> = HashSet::default();
+            while let Some(implementor) = below.pop() {
+                if !visited.insert(implementor) || implementor == owner {
+                    continue;
+                }
+                if let Some(implementation) = self.members[implementor]
+                    .iter()
+                    .copied()
+                    .find(|member| nodes[*member].kind.is_unit() && nodes[*member].name == node.name)
+                {
+                    overriding.entry(at).or_default().push(implementation);
+                }
+                below.extend(self.implementors.get(nodes[implementor].name.as_str()).into_iter().flatten().copied());
+            }
+        }
+        overriding
+    }
 }

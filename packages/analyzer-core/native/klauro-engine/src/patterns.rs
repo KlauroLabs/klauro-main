@@ -266,6 +266,15 @@ pub fn derive(sources: &Sources) -> Derived {
             }
         }
     }
+    for (declared, implementations) in graph.overriding() {
+        for implementation in implementations {
+            dispatched.push(IndexEdge {
+                source: nodes[declared].id.clone(),
+                target: nodes[implementation].id.clone(),
+                kind: EdgeKind::Calls,
+            });
+        }
+    }
     dispatched.sort_by(|left, right| (&left.source, &left.target).cmp(&(&right.source, &right.target)));
     dispatched.dedup_by(|left, right| left.source == right.source && left.target == right.target);
 

@@ -737,10 +737,11 @@ pub(crate) fn joined(into: &mut Capability, other: Capability) {
 
 
 fn summarised(entry: &EntryPoint, named: &str, writes: &[String], reads: &[String], reaching: &[String]) -> String {
-    let entered = match (entry.kind, entry.method.as_deref()) {
-        ("http", Some(method)) => format!("{method} {named}"),
-        ("export", _) => format!("uses {named}"),
-        (kind, _) => format!("{kind} {named}"),
+    let entered = match (entry.kind, entry.method.as_deref(), entry.path.as_deref()) {
+        ("http", Some(method), _) => format!("{method} {named}"),
+        ("export", _, _) => format!("uses {named}"),
+        (kind, _, Some(path)) => format!("{kind} {path}"),
+        (kind, _, None) => format!("{kind} {named}"),
     };
     let mut said = vec![entered];
     if !writes.is_empty() {

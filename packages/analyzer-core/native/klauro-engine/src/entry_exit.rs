@@ -1713,6 +1713,10 @@ pub fn derive(
     lap("registrations owned");
     let groups = groups_of(calls, locals);
     let by_line = if groups.is_empty() { HashMap::default() } else { calls_by_line(calls) };
+    let mut units_in_file: HashMap<(u32, &str), Vec<&str>> = HashMap::default();
+    for node in nodes.iter().filter(|node| node.kind.is_unit()) {
+        units_in_file.entry((node.file, node.name.as_str())).or_default().push(node.id.as_str());
+    }
     let mut registered: HashSet<(u32, u32)> = HashSet::default();
     for registration in registrations {
         let Some(kind) = classify_registration(&registration.registrar, Some(&registration.label))
@@ -1733,7 +1737,12 @@ pub fn derive(
             .or_else(|| local
             .get(&(registration.file, registration.handler.clone()))
             .or_else(|| local.get(&(registration.file, leaf.to_string())))
-            .or_else(|| unique_units.get(leaf))
+            .cloned())
+            .or_else(|| match units_in_file.get(&(registration.file, leaf)).map(Vec::as_slice) {
+                Some([only]) => Some((*only).to_string()),
+                _ => None,
+            })
+            .or_else(|| unique_units.get(leaf)
             .cloned()
             .or_else(|| {
                 unique_type

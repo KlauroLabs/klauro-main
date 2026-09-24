@@ -7,6 +7,8 @@ use crate::comprehend::{carved_name, families_of, settle, Capability, Delivery, 
 
 const FAMILIES_PER_PROPOSAL: usize = 60;
 const SURFACES_SHOWN: usize = 6;
+const STEPS_SHOWN: usize = 6;
+const DOINGS_SHOWN: usize = 10;
 const CAPABILITIES_CONSOLIDATED_AT_ONCE: usize = 160;
 
 struct Held {
@@ -36,12 +38,23 @@ fn evidence_of(flows: &[&Flow], family: &Family) -> String {
     reads.retain(|held| !writes.contains(held));
     let mut changes: Vec<String> = flows.iter().flat_map(|flow| flow.changes.iter().cloned()).collect();
     settle(&mut changes);
+    let mut doing: Vec<String> = flows
+        .iter()
+        .flat_map(|flow| flow.steps.iter().take(STEPS_SHOWN))
+        .filter(|step| !step.unit.starts_with("package:") && !step.unit.starts_with("runtime:"))
+        .filter_map(|step| {
+            let named = step.unit.rsplit(':').nth(2)?;
+            named.chars().next().is_some_and(char::is_alphabetic).then(|| named.to_string())
+        })
+        .collect();
+    settle(&mut doing);
+    doing.truncate(DOINGS_SHOWN);
     let listed = |held: &[String]| match held.is_empty() {
         true => "none".to_string(),
         false => held.join(", "),
     };
     format!(
-        "  belong together by {}\n  entered as: {}\n  reached through: {}{}\n  writes: {}\n  reads: {}\n  ends by: {}\n  paths: {}",
+        "  belong together by {}\n  entered as: {}\n  reached through: {}{}\n  does: {}\n  writes: {}\n  reads: {}\n  ends by: {}\n  paths: {}",
         family.basis,
         kinds.join(", "),
         surfaces.join(", "),
@@ -49,6 +62,7 @@ fn evidence_of(flows: &[&Flow], family: &Family) -> String {
             0 => String::new(),
             more => format!(" and {more} more"),
         },
+        listed(&doing),
         listed(&writes),
         listed(&reads),
         listed(&changes),
