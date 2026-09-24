@@ -121,3 +121,10 @@ fn a_model_mapped_onto_a_table_is_that_table() {
     let held: Vec<String> = entities("stored/mapped").into_iter().map(|(name, _)| name).collect();
     assert_eq!(held, vec!["User"]);
 }
+
+#[test]
+fn a_table_an_ef_migration_creates_holds_the_columns_its_members_name() {
+    let held = entities("stored/efidentity");
+    assert_eq!(named(&held), vec!["aspnetroles"]);
+    assert_eq!(fields_of(&held, "aspnetroles"), &["id", "name", "concurrencystamp"]);
+}

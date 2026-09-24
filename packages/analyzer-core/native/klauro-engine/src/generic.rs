@@ -2015,6 +2015,17 @@ impl<'a> Extractor<'a> {
                 self.literals_of(direct.into_iter())
             }
         };
+        let mut literals = literals;
+        let member_named = node.prev_named_sibling().and_then(|held| match held.kind() {
+            "name_equals" => held.named_child(0),
+            "identifier" if node.parent().is_some_and(|parent| parent.kind() == "anonymous_object_creation_expression") => {
+                Some(held)
+            }
+            _ => None,
+        });
+        if let Some(named) = member_named {
+            literals.insert(0, format!("name={}", self.text(named).trim()));
+        }
 
         let registrar = callee.clone();
         self.facts.calls.push(CallFact {

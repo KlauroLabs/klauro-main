@@ -430,7 +430,10 @@ pub fn propose_capabilities(spoken_for: &str, families: &[(String, String)]) -> 
          Anything a person or another system does on purpose — signing in, giving consent, \
          cancelling or shipping an order, revoking access — is a capability even when the \
          evidence names no records, because its routes and what it does already say what it is \
-         for.\n\n\
+         for. So is work the system does without being asked — on a timer, in the background, or \
+         when a message from another part arrives — whenever it moves forward something someone \
+         relies on: settling a payment, advancing an order, renewing a subscription, sending a \
+         reminder. Its audience is whoever relies on it.\n\n\
          For each capability give a name of 2-6 words, one sentence saying what someone gets, \
          the audience it is for, and the ids of the groups that deliver it. Every id below must \
          appear exactly once, either in one capability or in plumbing, and no other id may \
@@ -487,7 +490,9 @@ pub fn place_families(
          These groups of paths were not placed yet. For each, say which capability above it \
          delivers, by its exact name; or give a new capability name of 2-6 words with one \
          sentence saying what someone gets and its audience when none fits; or say plumbing when \
-         it delivers nothing on its own. By these rules:\n{RULES}\n\n\
+         it delivers nothing on its own. Work the system does by itself — on a timer, in the \
+         background, or when a message arrives — is not plumbing when it moves forward something \
+         someone relies on. By these rules:\n{RULES}\n\n\
          Echo each group id back exactly as given.\n\
          Return JSON only: {{\"assigned\":[{{\"family\":\"...\",\"capability\":\"...\",\"description\":\"...\",\"audience\":\"...\"}}]}}\n\n\
          The groups:\n{}",
