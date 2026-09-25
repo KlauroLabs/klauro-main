@@ -363,6 +363,50 @@ fn tell_a_batch(spoken_for: &str, listed: &[(String, String)]) -> BTreeMap<Strin
     held
 }
 
+pub fn assign_paths(spoken_for: &str, choices: &[(String, String)], paths: &[(String, String)]) -> BTreeMap<String, Vec<String>> {
+    if !asked() || paths.is_empty() || choices.len() < 2 {
+        return BTreeMap::new();
+    }
+    let offered = choices.iter().map(|(name, description)| format!("- {name}: {description}")).collect::<Vec<_>>().join("\n");
+    paths
+        .par_chunks(PATHS_PER_CALL)
+        .map(|chunk| {
+            let prompt = format!(
+                "A software system describes itself like this:\n{spoken_for}\n\n\
+                 These capabilities share the same record, so which one a path delivers has to be read from the path itself:\n{offered}\n\n\
+                 For each path below, say which of the capabilities above it delivers, by their exact names, from what the path does. \
+                 A path can deliver more than one; name every one it delivers and none it does not. \
+                 Echo each id back exactly as given.\n\
+                 Return JSON only: {{\"items\":[{{\"id\":\"...\",\"capabilities\":[\"...\"]}}]}}\n\n\
+                 The paths:\n{}",
+                chunk.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect::<Vec<_>>().join("\n")
+            );
+            let mut held = BTreeMap::new();
+            let Some(answer) = answered::<serde_json::Value>(&prompt, 2000, &asking_of_models(model()), "items", chunk.len()) else {
+                return held;
+            };
+            for item in answer["items"].as_array().into_iter().flatten() {
+                let Some(id) = item["id"].as_str() else { continue };
+                let named: Vec<String> = item["capabilities"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|held| held.as_str())
+                    .filter_map(|said| choices.iter().find(|(name, _)| name.trim().eq_ignore_ascii_case(said.trim())))
+                    .map(|(name, _)| name.clone())
+                    .collect();
+                if !named.is_empty() {
+                    held.insert(id.to_string(), named);
+                }
+            }
+            held
+        })
+        .reduce(BTreeMap::new, |mut into, held| {
+            into.extend(held);
+            into
+        })
+}
+
 fn place_a_batch(spoken_for: &str, listed: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     let mut held = BTreeMap::new();
     let prompt = format!(

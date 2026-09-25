@@ -37,7 +37,7 @@ pub(crate) type Fields = BTreeMap<String, String>;
 
 const RECORDS_DESCRIBED: usize = 4;
 
-const SERVED_AT_LEAST: usize = 3;
+static SERVED_KINDS: &[&str] = &["background", "cli", "event", "graphql", "http", "message", "rpc", "schedule", "websocket"];
 
 pub(crate) const RECORDS_HOLD: &str = "what the records it touches hold:";
 
@@ -468,12 +468,13 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
     if !crate::author::asked() || flows.is_empty() {
         return Vec::new();
     }
-    let served = flows
+    let served = flows.iter().any(|flow| SERVED_KINDS.contains(&flow.kind));
+    let kept: Vec<&Flow> = flows
         .iter()
-        .filter(|flow| !matches!(flow.kind, "export" | "test") && matches!(flow.standing, "terminal" | "proximal"))
-        .count()
-        >= SERVED_AT_LEAST;
-    let kept: Vec<&Flow> = flows.iter().copied().filter(|flow| !served || flow.kind != "export").collect();
+        .copied()
+        .filter(|flow| !served || flow.kind != "export")
+        .filter(|flow| !only_moves_the_screen(flow))
+        .collect();
     let families = outcomes_of(&kept);
     let keyed: Vec<(String, &Family, &Vec<&Flow>)> = families
         .iter()
@@ -555,9 +556,15 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
     }
     let lanes: BTreeMap<&str, (&Family, &Vec<&Flow>)> =
         keyed.iter().map(|(id, family, lane)| (id.as_str(), (*family, *lane))).collect();
+    let assigned = split_shared(said, &held, &lanes);
     let mut formed: Vec<Capability> = held
         .into_iter()
-        .filter_map(|other| built(other, &lanes, fields))
+        .filter_map(|other| {
+            let name = other.name.clone();
+            built(other, &lanes, fields, |family, flow| {
+                assigned.get(family).and_then(|by_flow| by_flow.get(flow)).is_none_or(|owners| owners.contains(&name))
+            })
+        })
         .collect();
     formed.sort_by(|left, right| left.id.cmp(&right.id));
     formed
@@ -592,7 +599,53 @@ fn recollected(
     (held, plumbing)
 }
 
-fn built(held: Held, lanes: &BTreeMap<&str, (&Family, &Vec<&Flow>)>, fields: &Fields) -> Option<Capability> {
+static SCREEN_EVENTS: &[&str] = &[
+    "blur", "change", "click", "contextmenu", "dblclick", "domcontentloaded", "focus", "input", "keydown", "keypress",
+    "keyup", "load", "mousedown", "mouseenter", "mouseleave", "mousemove", "mouseout", "mouseover", "mouseup",
+    "pointerdown", "pointerenter", "pointerleave", "pointermove", "pointerout", "pointerover", "pointerup", "resize",
+    "scroll", "touchend", "touchmove", "touchstart", "visibilitychange", "wheel",
+];
+
+fn only_moves_the_screen(flow: &Flow) -> bool {
+    flow.kind == "event"
+        && SCREEN_EVENTS.contains(&flow.operation.to_ascii_lowercase().as_str())
+        && flow.writes.is_empty()
+        && !flow.steps.iter().any(|step| matches!(step.kind, "call" | "hand_off" | "raise" | "change" | "create" | "remove"))
+}
+
+fn split_shared(said: &str, held: &[Held], lanes: &BTreeMap<&str, (&Family, &Vec<&Flow>)>) -> BTreeMap<String, BTreeMap<String, Vec<String>>> {
+    let mut claimed: BTreeMap<&str, Vec<&Held>> = BTreeMap::new();
+    for other in held {
+        for family in &other.families {
+            claimed.entry(family.as_str()).or_default().push(other);
+        }
+    }
+    let mut assigned: BTreeMap<String, BTreeMap<String, Vec<String>>> = BTreeMap::new();
+    for (family, claimants) in claimed.into_iter().filter(|(_, claimants)| claimants.len() > 1) {
+        let Some((_, lane)) = lanes.get(family) else { continue };
+        let choices: Vec<(String, String)> =
+            claimants.iter().map(|other| (other.name.trim().to_string(), other.description.trim().to_string())).collect();
+        let paths: Vec<(String, String)> = lane
+            .iter()
+            .map(|flow| (flow.id.clone(), format!("  reached through: {}\n  steps: {}", surface_of(flow), told_steps(flow))))
+            .collect();
+        let context = format!(
+            "{said}\u{1}{}",
+            choices.iter().map(|(name, description)| format!("{name}: {description}")).collect::<Vec<_>>().join("\n")
+        );
+        let by_flow: BTreeMap<String, Vec<String>> =
+            crate::memory::each("delivered by", &context, &paths, |missing| crate::author::assign_paths(said, &choices, missing));
+        assigned.insert(family.to_string(), by_flow);
+    }
+    assigned
+}
+
+fn built(
+    held: Held,
+    lanes: &BTreeMap<&str, (&Family, &Vec<&Flow>)>,
+    fields: &Fields,
+    delivers: impl Fn(&str, &str) -> bool,
+) -> Option<Capability> {
     let name = held.name.trim().to_string();
     if name.is_empty() {
         return None;
@@ -624,7 +677,7 @@ fn built(held: Held, lanes: &BTreeMap<&str, (&Family, &Vec<&Flow>)>, fields: &Fi
         if terminality_of(family) == "terminal" || capability.terminality.is_none() {
             capability.terminality = Some(terminality_of(family));
         }
-        for flow in lane.iter() {
+        for flow in lane.iter().filter(|flow| delivers(family_id, &flow.id)) {
             capability.project = capability.project.take().or_else(|| flow.project.clone());
             capability.delivered.push(Delivery {
                 flow: flow.id.clone(),
