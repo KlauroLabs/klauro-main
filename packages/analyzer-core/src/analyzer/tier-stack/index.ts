@@ -9,9 +9,10 @@ export { tierStackToCas, TIER_STACK_ANALYZER } from './tier-stack-to-cas';
 
 export async function analyzeWithTierStack(
   projectPath: string,
-  displayName?: string
+  displayName?: string,
+  options: { enrich?: boolean } = {}
 ): Promise<CASOutput> {
-  const cas = tierStackToCas(await readTierStack(projectPath), displayName);
+  const cas = tierStackToCas(await readTierStack(projectPath, options), displayName);
   cas.analyzer_build = getBuildIdentity().version;
   return cas;
 }

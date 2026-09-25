@@ -51,6 +51,7 @@ import {
   withProjectAnalysisLockIfAvailable,
 } from './storage';
 import { clearFreshnessSummaryCache } from './freshness';
+import { publishStructuralLayer } from './structural-layer';
 import { describeAnalysisVersion } from './analysis-version';
 import { applyStoredElementDescriptions, validateDescription } from './description-enrichment';
 import { isLanguageBuiltinName } from '../../../packages/analyzer-core/src/analyzer/core/language-builtins';
@@ -886,10 +887,6 @@ export async function analyzeProject(projectPath: string, displayName?: string, 
 
 
 
-
-
-
-
 export interface LayeredAnalysisResult {
   l0: Promise<CASOutput>;
   rest: Promise<CASOutput>;
@@ -968,6 +965,7 @@ export async function analyzeProjectLayered(
     const hasCompletePrevious = !forceFullRebuild && Boolean(
       previous && previous.layers_ready?.complete === true && (previous.nodes?.length ?? 0) > 0
     );
+    await publishStructuralLayer(projectPath, displayName);
     const analyzed = hasCompletePrevious
       ? await analyzeProjectIncremental(projectPath, displayName)
           .then(incremental => incremental.output)

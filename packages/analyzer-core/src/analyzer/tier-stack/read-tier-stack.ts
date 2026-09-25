@@ -267,10 +267,11 @@ export function enginePath(): string {
   return found;
 }
 
-export async function readTierStack(projectPath: string): Promise<TierStackIndex> {
+export async function readTierStack(projectPath: string, options: { enrich?: boolean } = {}): Promise<TierStackIndex> {
   const { stdout } = await run(enginePath(), [projectPath], {
     maxBuffer: buffer.constants.MAX_LENGTH,
     encoding: 'buffer',
+    env: options.enrich === false ? { ...process.env, KLAURO_ENRICH: '0' } : process.env,
   });
   return readInterned(stdout) as TierStackIndex;
 }

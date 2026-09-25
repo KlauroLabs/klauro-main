@@ -287,6 +287,14 @@ export function buildCompletedAnalysisLayersReady(output: CASOutput): CASLayersR
 
 
 
+export function buildStructuralLayersReady(output: CASOutput): CASLayersReady {
+  const completed = buildCompletedAnalysisLayersReady(output);
+  const layers = completed.layers.map(layer => layer.layer === 'L4' || layer.layer === 'L5'
+    ? { layer: layer.layer, name: layer.name, status: 'pending' as const, fields: layer.fields }
+    : layer);
+  return { ...completed, layers, complete: false };
+}
+
 export function buildL0OnlyCas(projectPath: string, displayName: string | undefined, l0: L0Index): CASOutput {
   const systemName = displayName || path.basename(projectPath);
   const now = new Date().toISOString();

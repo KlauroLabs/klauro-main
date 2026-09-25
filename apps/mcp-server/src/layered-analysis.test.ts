@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
-import { buildCompletedAnalysisLayersReady, computeL0Index } from './layered-analysis';
+import { buildCompletedAnalysisLayersReady, buildStructuralLayersReady, computeL0Index } from './layered-analysis';
 
 import * as fs from 'fs-extra';
 import * as os from 'os';
@@ -253,4 +253,11 @@ test('fails when accepted coverage disagrees with the canonical catalog count', 
   assert.equal(layer(output, 'L4')?.status, 'error');
   assert.match(layer(output, 'L4')?.error || '', /reports 1 published capabilities.*contains 0/);
   assert.equal(layer(output, 'L5')?.status, 'error');
+});
+
+test('a structural analysis is served with comprehension still pending', () => {
+  const ready = buildStructuralLayersReady(outputWithCatalog('unavailable', 0));
+  assert.equal(ready.complete, false);
+  assert.deepEqual(ready.layers.map(each => each.status), ['ready', 'ready', 'ready', 'ready', 'pending', 'pending']);
+  assert.equal(ready.layers.some(each => 'error' in each), false);
 });
