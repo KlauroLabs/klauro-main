@@ -303,6 +303,12 @@ function servingByFlow(index: TierStackIndex): Map<string, CapabilityFlowRelatio
   return serving;
 }
 
+const SENSITIVE = /(password|passwd|passcode|passphrase|secret|token|api_?key|private_?key|ssn|social_?security|card_?number|cardnum|cvv|cvc|security_?(number|code)|iban|account_?number|routing_?number|(^|_)pin($|_)|(^|_)dob($|_)|date_?of_?birth)/i;
+
+function isSensitive(name: string): boolean {
+  return SENSITIVE.test(name.replace(/^_+/, ''));
+}
+
 function entitiesOf(index: TierStackIndex): CASDataEntity[] {
   return (index.comprehension?.entities ?? []).map(entity => ({
     id: entity.id,
@@ -313,7 +319,7 @@ function entitiesOf(index: TierStackIndex): CASDataEntity[] {
     fields: (entity.named_fields ?? []).map(field => ({
       name: field.name,
       type: field.declared_as ?? '',
-      is_sensitive: false,
+      is_sensitive: isSensitive(field.name),
       is_relation: (entity.references ?? []).some(held => held.field === field.name),
     })),
     relations: (entity.references ?? []).map(reference => ({
