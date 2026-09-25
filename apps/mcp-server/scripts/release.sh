@@ -134,7 +134,7 @@ echo "==> Staging release $VERSION+$RELEASE_SHA on the VPS"
 bash "$REPO_ROOT/infrastructure/vps/sync-gate-candidate.sh" --commit "$RELEASE_SHA_FULL"
 
 export SSHPASS="$VPS_PASSWORD"
-SSHOPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=20 -o ControlMaster=auto -o ControlPath=/tmp/klauro-rel-%C -o ControlPersist=180"
+SSHOPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=20 -o ControlMaster=auto -o ControlPath=/tmp/klauro-cm-%C -o ControlPersist=900"
 SSH="sshpass -e ssh $SSHOPTS"
 DEST="$VPS_USER@$VPS_HOST"
 

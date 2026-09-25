@@ -45,7 +45,7 @@ trap 'rm -rf "$STAGE"' EXIT
 git archive --format=tar "$CANDIDATE_SHA" | tar -x -C "$STAGE"
 
 export SSHPASS="$VPS_PASSWORD"
-SSH="sshpass -e ssh -o StrictHostKeyChecking=no -o ConnectTimeout=25 -o ControlMaster=auto -o ControlPath=/tmp/klauro-cm-%C -o ControlPersist=120"
+SSH="sshpass -e ssh -o StrictHostKeyChecking=no -o ConnectTimeout=25 -o ControlMaster=auto -o ControlPath=/tmp/klauro-cm-%C -o ControlPersist=900"
 DEST="$VPS_USER@$VPS_HOST"
 EXCLUDES=(
   --exclude node_modules

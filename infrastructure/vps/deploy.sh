@@ -113,7 +113,7 @@ if [ -z "${VPS_HOST:-}" ] || [ -z "${VPS_USER:-}" ] || [ -z "${VPS_PASSWORD:-}" 
   exit 1
 fi
 command -v sshpass >/dev/null || { echo "ERROR: sshpass not installed." >&2; exit 1; }
-CM_OPTS="-o ControlMaster=auto -o ControlPath=/tmp/klauro-cm-%C -o ControlPersist=120"
+CM_OPTS="-o ControlMaster=auto -o ControlPath=/tmp/klauro-cm-%C -o ControlPersist=900"
 export SSHPASS="$VPS_PASSWORD"
 SSH="sshpass -e ssh -o StrictHostKeyChecking=no -o ConnectTimeout=25 $CM_OPTS"
 DEST="$VPS_USER@$VPS_HOST"
