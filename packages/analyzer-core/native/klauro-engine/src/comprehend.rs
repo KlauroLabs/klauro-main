@@ -217,6 +217,28 @@ fn with_inherited(named: &HashMap<&str, Vec<Field>>, extending: &HashMap<&str, V
     held
 }
 
+fn same_record(named: &str) -> String {
+    let whole: String = named.to_ascii_lowercase().chars().filter(|letter| letter.is_alphanumeric()).collect();
+    let bare = match whole.strip_suffix("table").filter(|stem| stem.len() > 2) {
+        Some(stem) => stem.to_string(),
+        None => whole,
+    };
+    if let Some(stem) = bare.strip_suffix("ies") {
+        return format!("{stem}y");
+    }
+    if let Some(stem) = bare.strip_suffix("ses").filter(|stem| stem.ends_with('s') || stem.ends_with("ss")) {
+        return format!("{stem}s");
+    }
+    match bare.strip_suffix('s').filter(|stem| !stem.ends_with('s') && stem.len() > 2) {
+        Some(stem) => stem.to_string(),
+        None => bare,
+    }
+}
+
+fn tabled_name(named: &str) -> bool {
+    named.len() > 5 && named.to_ascii_lowercase().ends_with("table")
+}
+
 static BOOKKEEPING_FIELDS: &[&str] = &["domainevents", "requestedhashcode"];
 
 fn changes(exit: &ExitPoint) -> bool {
@@ -499,7 +521,8 @@ fn describe_whole(
         .collect::<Vec<_>>()
         .join("\n\n");
     let digest = crate::jev::named(&format!(
-        "{owner:?}\u{1}{spoken}\u{1}{}\u{1}{}",
+        "{owner:?}\u{1}{}\u{1}{spoken}\u{1}{}\u{1}{}",
+        crate::author::DESCRIBING,
         ranked
             .iter()
             .map(|(held, part, _)| {
@@ -606,7 +629,8 @@ fn describe_one(
             }
         };
     let digest = crate::jev::named(&format!(
-        "{project:?}\u{1}{spoken}\u{1}{listed}\u{1}{kept}\u{1}{}\u{1}{}",
+        "{project:?}\u{1}{}\u{1}{spoken}\u{1}{listed}\u{1}{kept}\u{1}{}\u{1}{}",
+        crate::author::DESCRIBING,
         told.shape,
         told.frameworks.join(",")
     ));
@@ -725,7 +749,8 @@ fn say_what_happens(held: &mut Comprehension, spoken: &str) {
     if told.is_empty() {
         return;
     }
-    let said = crate::memory::each("what happens, named", spoken, &told, |missing| {
+    let context = format!("{spoken}\u{1}{}", crate::author::NAMING);
+    let said = crate::memory::each("what happens, named", &context, &told, |missing| {
         let written = crate::author::what_happens(spoken, missing);
         let evidence: BTreeMap<String, String> = missing.iter().cloned().collect();
         let grounded = crate::author::ground(&written, &evidence);
@@ -2798,7 +2823,7 @@ fn entities(
         .collect();
     let mut richest: BTreeMap<(String, String), Entity> = BTreeMap::new();
     for entity in entities {
-        let key = (entity.project.clone().unwrap_or_default(), entity.declared_as.to_ascii_lowercase());
+        let key = (entity.project.clone().unwrap_or_default(), same_record(&entity.declared_as));
         match richest.entry(key) {
             std::collections::btree_map::Entry::Vacant(held) => {
                 held.insert(entity);
@@ -2812,13 +2837,20 @@ fn entities(
                 let plainer = in_sql(held.get()) && !in_sql(&entity);
                 let fuller = in_sql(held.get()) == in_sql(&entity) && entity.fields > held.get().fields;
                 if plainer || fuller {
+                    let named_as = held.get().declared_as.clone();
+                    let mut entity = entity;
+                    if tabled_name(&entity.declared_as) && !tabled_name(&named_as) {
+                        entity.declared_as = named_as;
+                    }
                     held.insert(entity);
+                } else if tabled_name(&held.get().declared_as) && !tabled_name(&entity.declared_as) {
+                    held.get_mut().declared_as = entity.declared_as;
                 }
             }
         }
     }
-    let written_down: HashSet<String> = richest.keys().map(|(_, named)| named.clone()).collect();
     let mut entities: Vec<Entity> = richest.into_values().collect();
+    let written_down: HashSet<String> = entities.iter().map(|entity| same_record(&entity.declared_as)).collect();
     let bound_as: HashMap<&str, &str> = tabled
         .iter()
         .map(|(by, key)| (key.as_str(), *by))
@@ -2857,13 +2889,13 @@ fn entities(
     }
     created.retain(|key, table| {
         !accounted.contains(key)
-            && !written_down.contains(key)
+            && !written_down.contains(&same_record(key))
             && !entities
                 .iter()
                 .any(|entity| the_same_record(&table.columns, &entity.named_fields))
     });
     for (named, (written_by, read_by, addressed_by)) in kept {
-        if written_down.contains(&named) {
+        if written_down.contains(&same_record(&named)) {
             continue;
         }
         let columns = created.remove(&named).map(|table| table.columns).unwrap_or_default();
@@ -3104,6 +3136,13 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_table_declaration_is_the_same_record_as_its_type() {
+        assert_eq!(same_record("AlbumTable"), same_record("Album"));
+        assert_eq!(same_record("albums"), same_record("Album"));
+        assert_eq!(same_record("Table"), "table");
+    }
 
     #[test]
     fn a_database_call_names_the_record_it_addresses() {

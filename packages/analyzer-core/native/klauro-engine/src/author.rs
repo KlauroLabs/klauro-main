@@ -315,6 +315,10 @@ pub fn what_it_is_for(spoken_for: &str, listed: &BTreeMap<String, String>) -> BT
 
 const PATHS_PER_CALL: usize = 12;
 
+pub const NAMING: &str = "Also give it a name of 2-5 words that says what someone gets done on this path, a verb and what it acts on, like \"Cancel an order\", \
+    never a route, a function name or a topic. What a path is reached through says what it does as much as its steps do: \
+    one reached through a delete removes something, a create adds one, an update changes one, so its name says that even when the steps only show a read.";
+
 pub fn what_happens(spoken_for: &str, listed: &[(String, String)]) -> BTreeMap<String, Written> {
     if !asked() || listed.is_empty() {
         return BTreeMap::new();
@@ -334,9 +338,8 @@ fn tell_a_batch(spoken_for: &str, listed: &[(String, String)]) -> BTreeMap<Strin
          Below are paths through it, each with the steps its code takes, in order, read from the \
          code. For each, say in one sentence of at most 25 words what happens when it runs: what \
          it checks, what it changes, what it hands on and what the caller gets back, the way a \
-         person would say it rather than step by step. Also give it a name of 2-5 words that says \
-         what someone gets done on this path, a verb and what it acts on, like \"Cancel an order\", \
-         never a route, a function name or a topic. Use only what the steps show, and never \
+         person would say it rather than step by step. {NAMING} \
+         Use only what the path and its steps show, and never \
          name a framework, library or storage technology.\n\n\
          Echo each id back exactly as given.\n\
          Return JSON only: {{\"items\":[{{\"id\":\"...\",\"name\":\"...\",\"description\":\"...\"}}]}}\n\n\
@@ -642,20 +645,21 @@ struct Told {
     description: String,
 }
 
+pub const DESCRIBING: &str = "Write the paragraph that tells someone what this is, the way its own README would open if it were honest. \
+    It must leave the reader knowing what this is and who it is for, what someone can do with it, what it holds onto, and what it is made of — \
+    but let the thing itself decide the order and the shape of that, and never answer those four in a row like a form. \
+    Two sentences are enough if two will do. Use only the facts given and the product's own words. \
+    Never quote counts of routes, files, projects or surfaces, and never say what it does not do or does not keep — a reader wants what it is, not a tally. \
+    Never name a product, vendor or technology the facts do not name. \
+    Do not describe the analysis, the repository or the code layout — describe the thing the code is.";
+
 pub fn describe_system(facts: &str) -> Option<String> {
     if !asked() {
         return None;
     }
     let prompt = format!(
         "These are the facts a reader extracted from one software repository.\n\n{facts}\n\n\
-         Write the paragraph that tells someone what this is, the way its own README would open \
-         if it were honest. It must leave the reader knowing what this is and who it is for, what \
-         someone can do with it, what it holds onto, and what it is made of — but let the thing \
-         itself decide the order and the shape of that, and never answer those four in a row like \
-         a form. Two sentences are enough if two will do. Use only the facts given and the \
-         product's own words. \
-         Never name a product, vendor or technology the facts do not name. Do not describe the \
-         analysis, the repository or the code layout — describe the thing the code is.\n\n\
+         {DESCRIBING}\n\n\
          Return JSON only: {{\"description\":\"...\"}}"
     );
     let told: Told = answered(&prompt, 1200, &proposing(), "description", 1)?;

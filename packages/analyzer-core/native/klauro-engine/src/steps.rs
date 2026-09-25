@@ -128,7 +128,7 @@ static TECHNICAL_OBJECTS: &[&str] = &[
     "writer",
 ];
 
-static CHECKS_BY_NAME: &[&str] = &["assert", "authorize", "check", "guard", "validate", "verify"];
+static CHECKS_BY_NAME: &[&str] = &["authorize", "check", "guard", "validate", "verify"];
 
 fn a_check(callee: &str) -> bool {
     let named = crate::names::leaf(callee).split('<').next().unwrap_or_default().to_ascii_lowercase();

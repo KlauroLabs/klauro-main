@@ -1131,6 +1131,22 @@ fn toucan_model(call: &CallFact) -> Option<String> {
     call.literals.iter().find_map(|held| held.trim().strip_prefix(":model/").map(str::to_string))
 }
 
+fn spoken_label(label: &str) -> String {
+    if let Some(at) = label.find(".command(") {
+        let rest = &label[at + ".command(".len()..];
+        let quoted = rest.trim_start();
+        if let Some(quote) = quoted.chars().next().filter(|letter| matches!(letter, '\'' | '"' | '`')) {
+            if let Some(end) = quoted[1..].find(quote) {
+                let command = quoted[1..1 + end].split_whitespace().next().unwrap_or_default();
+                if !command.is_empty() {
+                    return command.to_string();
+                }
+            }
+        }
+    }
+    label.lines().next().unwrap_or(label).trim().to_string()
+}
+
 static REQUEST_VERBS: &[&str] = &["delete", "get", "head", "patch", "post", "put", "request"];
 
 static ADDRESS_KEYS: &[&str] = &["endpoint", "path", "url"];
@@ -1605,7 +1621,7 @@ pub fn derive(
                     (_, "schedule") => running_within(node, &named_of)
                         .unwrap_or(registrar.as_str())
                         .to_string(),
-                    (Some(label), _) => label.to_string(),
+                    (Some(label), _) => spoken_label(label),
                     (None, _) => registrar.clone(),
                 };
                 entry_points.push(EntryPoint {

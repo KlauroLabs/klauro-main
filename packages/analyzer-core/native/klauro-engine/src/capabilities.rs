@@ -775,9 +775,18 @@ fn continued_together(
         let id = format!("c{member}");
         groups.iter().position(|group| group.of.iter().any(|held| held.trim() == id))
     };
-    for (key, (first, second)) in pairs {
-        let together = answers.get(&key).map(crate::jev::Decision::settled).is_some_and(|held| held >= 0.5);
-        if !together {
+    let together: Vec<(usize, usize)> = pairs
+        .into_iter()
+        .filter(|(key, _)| answers.get(key).map(crate::jev::Decision::settled).is_some_and(|held| held >= 0.5))
+        .map(|(_, pair)| pair)
+        .collect();
+    let mut reaching: BTreeMap<usize, BTreeSet<String>> = BTreeMap::new();
+    for (first, second) in &together {
+        let landing = at_of(groups, *second).map(|at| format!("g{at}")).unwrap_or_else(|| format!("c{second}"));
+        reaching.entry(*first).or_default().insert(landing);
+    }
+    for (first, second) in together {
+        if reaching.get(&first).is_some_and(|landings| landings.len() > 1) {
             continue;
         }
         match (at_of(groups, first), at_of(groups, second)) {
