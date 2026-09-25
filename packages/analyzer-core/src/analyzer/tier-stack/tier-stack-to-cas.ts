@@ -307,38 +307,32 @@ function capabilitiesOf(index: TierStackIndex): CASOutput['capabilities'] {
           }];
     });
   return whatTheSystemDelivers(index).map(capability => {
-    const published = capability.standing !== 'provisional';
     return {
       id: capability.id,
       name: capability.name ?? capability.id,
       name_source: 'ai' as const,
       description: capability.description ?? '',
       description_source: 'ai' as const,
-      category: (capability.terminality === undefined ? published : capability.terminality === 'terminal') ? ('core' as const) : ('supporting' as const),
+      category: capability.terminality === 'proximal' ? ('supporting' as const) : ('core' as const),
       operations: operationsOf(capability.surfaces ?? []),
       related_entities: capability.touches ?? capability.records ?? [],
       related_domains: capability.audience === undefined ? [] : [capability.audience],
       criticality: (capability.changes ?? []).length > 0 ? ('high' as const) : ('medium' as const),
       criticality_factors: (capability.changes ?? []).map(held => `changes ${held}`),
-      evidence_role: published ? ('product-outcome' as const) : ('supporting-mechanism' as const),
+      evidence_role: 'product-outcome' as const,
       evidence_role_reasons: reasonsFor(capability),
     };
   });
 }
 
 function reasonsFor(capability: TierStackCapability): string[] {
-  const grounding = capability.grounding;
-  if (grounding === undefined) return [];
-  const reasons = [
-    `supported ${grounding.supported.toFixed(2)}`,
-    `invented ${grounding.invented.toFixed(2)}`,
-    `reads as an outcome ${grounding.outcome.toFixed(2)}`,
+  return [
+    ...(capability.changes ?? []).map(record => `changes ${record}`),
+    ...(capability.surfaces ?? []).slice(0, REASONS_SURFACES).map(surface => `reached through ${surface}`),
   ];
-  if (grounding.universal !== undefined) {
-    reasons.push(`true of most systems ${grounding.universal.toFixed(2)}`);
-  }
-  return reasons;
 }
+
+const REASONS_SURFACES = 3;
 
 const SHIPS_AS: Record<string, { tier: 1 | 2 | 3; kind: DeployableEvidence['kind'] }> = {
   'container': { tier: 1, kind: 'container' },
@@ -383,8 +377,6 @@ function purposeOf(index: TierStackIndex): CASOutput['enhanced_system_purpose'] 
   const comprehension = index.comprehension;
   if (comprehension === undefined) return undefined;
   const capabilities = whatTheSystemDelivers(index);
-  const published = capabilities.filter(capability => capability.standing !== 'provisional').length;
-  const provisional = capabilities.length - published;
   const product = (comprehension.products ?? [])[0];
   return {
     primary_type: 'application',
@@ -400,21 +392,10 @@ function purposeOf(index: TierStackIndex): CASOutput['enhanced_system_purpose'] 
     capability_catalog_coverage: {
       evidence_families: capabilities.length,
       published_capabilities: capabilities.length,
-      actual_publishable_capabilities: published,
-      status: coverageStatus(capabilities.length, published),
-      ...(provisional > 0
-        ? { reason: `${provisional} of ${capabilities.length} read as a mechanism rather than an outcome` }
-        : {}),
+      actual_publishable_capabilities: capabilities.length,
+      status: capabilities.length === 0 ? 'unavailable' : 'accepted',
     },
   };
-}
-
-function coverageStatus(
-  total: number,
-  published: number,
-): NonNullable<NonNullable<CASOutput['enhanced_system_purpose']>['capability_catalog_coverage']>['status'] {
-  if (total === 0) return 'unavailable';
-  return published > 0 ? 'accepted' : 'partial';
 }
 
 function levelsOf(nodes: CASNode[]): CASOutput['progressive_levels'] {

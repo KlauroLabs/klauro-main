@@ -505,7 +505,6 @@ export function classifyEntityRole(
 
   const created = entity.lifecycle?.created_by?.length || 0;
   const updated = entity.lifecycle?.updated_by?.length || 0;
-  const read = entity.lifecycle?.read_by?.length || 0;
   const writers = created + updated;
   const singleOwnerWrite = writers > 0 && writers <= 2;
 
@@ -516,7 +515,6 @@ export function classifyEntityRole(
     }
     return { role: conceptHit.role, role_evidence: evidence };
   }
-  evidence.push(`no domain-concept or relation-shape evidence; lifecycle has ${writers} writer and ${read} reader reference(s)`);
   return { role_evidence: evidence };
 }
 
@@ -563,11 +561,21 @@ const PRODUCT_TERMINUS_KINDS = new Set(['api', 'database', 'cache', 'event', 'we
 
 
 export function classifyFlowRole(
-  flow: { name?: string; intent?: string; entry_point?: string; entities?: string[] },
+  flow: {
+    name?: string;
+    intent?: string;
+    entry_point?: string;
+    entities?: string[];
+    capability_relationships?: Array<{ capability_id: string; role: string }>;
+  },
   index: DomainConceptIndex,
   structural?: FlowRoleStructuralEvidence
 ): RoleClassification {
   const evidence: string[] = [];
+  const delivers = (flow.capability_relationships || []).find(relationship => relationship.role === 'primary');
+  if (delivers && !isScriptEntryFile(structural?.entry_file)) {
+    return { role: 'core', role_evidence: [`delivers ${delivers.capability_id.replace(/^capability:/, '')}`] };
+  }
 
 
 
@@ -613,6 +621,5 @@ export function classifyFlowRole(
     }
     return { role: conceptRole, role_evidence: evidence };
   }
-  evidence.push('no structural terminus or domain-concept evidence');
   return { role_evidence: evidence };
 }
