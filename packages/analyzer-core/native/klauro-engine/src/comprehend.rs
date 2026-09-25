@@ -184,6 +184,8 @@ pub(crate) fn changes_something(exit: &ExitPoint) -> bool {
 
 const FIELDS_TOLD: usize = 10;
 
+const SERVED_PATHS_TOLD: usize = 120;
+
 const INHERITED_AT_MOST: usize = 4;
 
 fn with_inherited(named: &HashMap<&str, Vec<Field>>, extending: &HashMap<&str, Vec<&str>>, id: &str) -> Vec<Field> {
@@ -696,6 +698,13 @@ fn say_what_happens(held: &mut Comprehension, spoken: &str) {
                         .map(|delivery| delivery.flow.clone()),
                 );
             }
+            let mut served: Vec<&Flow> = held
+                .flows
+                .iter()
+                .filter(|flow| !matches!(flow.kind, "export" | "test") && !flow.steps.is_empty() && !chosen.contains(&flow.id))
+                .collect();
+            served.sort_by_key(|flow| (std::cmp::Reverse(flow.steps.len()), flow.id.clone()));
+            chosen.extend(served.into_iter().take(SERVED_PATHS_TOLD).map(|flow| flow.id.clone()));
         }
     }
     let told: Vec<(String, String)> = held
