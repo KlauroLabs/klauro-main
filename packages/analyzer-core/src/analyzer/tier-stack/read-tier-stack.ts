@@ -223,6 +223,7 @@ export interface TierStackIndex {
     declared?: number;
   };
   architecture?: { shape?: string; routes?: number; serving?: number };
+  services?: Array<{ name: string; kind: string; projects?: string[] }>;
   roles?: { roles?: Array<{ node: string; role: string }> };
   scope?: { deployables?: TierStackDeployable[] };
   partition?: { sub_projects?: TierStackSubProject[] };

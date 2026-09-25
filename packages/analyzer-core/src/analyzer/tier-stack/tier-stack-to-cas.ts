@@ -513,19 +513,38 @@ function routesOf(index: TierStackIndex): CASRouteTableEntry[] {
     }));
 }
 
-function technologiesOf(index: TierStackIndex): CASSystem['technologies'] {
+const NOT_BUILT_WITH = new Set(['test', 'observability', 'standard']);
+
+const BUILT_WITH_SHOWN = 12;
+
+function builtWith(index: TierStackIndex, displayName?: string): Array<{ name: string }> {
+  const own = displayName ? `${displayName.toLowerCase()}.` : undefined;
+  const candidates = (index.dependencies?.dependencies ?? [])
+    .filter(held => held.role === 'framework' || (held.role === 'library' && (held.imports ?? 0) > 0 && !NOT_BUILT_WITH.has(held.category ?? '')))
+    .filter(held => own === undefined || !held.name.toLowerCase().startsWith(own))
+    .sort((left, right) => (right.role === 'framework' ? 1 : 0) - (left.role === 'framework' ? 1 : 0) || (right.imports ?? 0) - (left.imports ?? 0) || left.name.length - right.name.length);
+  const kept: string[] = [];
+  for (const held of candidates) {
+    if (kept.some(name => held.name.startsWith(`${name}.`))) continue;
+    kept.push(held.name);
+  }
+  return kept.slice(0, BUILT_WITH_SHOWN).map(name => ({ name }));
+}
+
+function technologiesOf(index: TierStackIndex, displayName?: string): CASSystem['technologies'] {
   const counted = new Map<string, number>();
   for (const file of index.files) {
     if (file.language === undefined) continue;
     counted.set(file.language, (counted.get(file.language) ?? 0) + 1);
   }
+  const services = index.services ?? [];
   return {
     languages: [...counted]
       .sort(([, left], [, right]) => right - left)
       .map(([name, files]) => ({ name, files })),
-    frameworks: (index.dependencies?.dependencies ?? [])
-      .filter(held => held.role === 'framework')
-      .map(held => ({ name: held.name })),
+    frameworks: builtWith(index, displayName),
+    databases: services.filter(held => held.kind === 'database').map(held => held.name),
+    infrastructure: services.filter(held => held.kind !== 'database').map(held => held.name),
   };
 }
 
@@ -546,9 +565,16 @@ function within(index: TierStackIndex, project: string): TierStackIndex {
   const nodes = index.nodes.filter(node => node.project === project);
   const held = new Set(nodes.map(node => node.id));
   const comprehension = index.comprehension;
+  const ownFiles = new Set(nodes.map(node => node.file));
   return {
     ...index,
+    files: index.files.map((file, at) => (ownFiles.has(at) ? file : { ...file, language: undefined })),
     nodes,
+    dependencies: index.dependencies === undefined ? undefined : {
+      ...index.dependencies,
+      dependencies: (index.dependencies.dependencies ?? []).filter(held => (held.projects ?? []).includes(project)),
+    },
+    services: (index.services ?? []).filter(held => (held.projects ?? []).includes(project)),
     edges: (index.edges ?? []).filter(edge => held.has(edge.source) && held.has(edge.target)),
     entry_points: (index.entry_points ?? []).filter(entry => held.has(entry.handler)),
     exit_points: (index.exit_points ?? []).filter(exit => held.has(exit.source)),
@@ -633,7 +659,7 @@ function casOf(index: TierStackIndex, displayName?: string): CASOutput {
       name,
       type: shapeOf(index),
       root_path: index.root,
-      technologies: technologiesOf(index),
+      technologies: technologiesOf(index, path.basename(index.root)),
     },
     architecture_summary: architectureOf(index, nodes),
     route_table: routesOf(index),
