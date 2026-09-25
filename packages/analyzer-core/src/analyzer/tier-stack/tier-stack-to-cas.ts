@@ -26,6 +26,7 @@ import type {
   TierStackDeclaration,
   TierStackFlow,
   TierStackIndex,
+  TierStackLogicalStep,
   TierStackNode,
 } from './read-tier-stack';
 
@@ -167,6 +168,29 @@ function contractOf(flow: TierStackFlow): FlowICELOTContract {
   };
 }
 
+const STEP_CHANGES = new Set(['change', 'create', 'remove']);
+const STEP_REACHES_OUT = new Set(['call', 'hand_off', 'raise', 'keep']);
+
+function stepContractOf(step: TierStackLogicalStep): FlowICELOTContract {
+  const object = step.object === undefined ? [] : [step.object];
+  return {
+    input: step.kind === 'read' ? object : [],
+    logic: step.doing ?? step.label,
+    side_effects: {
+      state_changes: STEP_CHANGES.has(step.kind) ? object : [],
+      external_integrations: STEP_REACHES_OUT.has(step.kind) ? object : [],
+    },
+    output: step.kind === 'respond' ? object : [],
+    constraints: step.kind === 'check'
+      ? step.regions.slice(0, 1).map(region => ({
+          kind: 'validation' as const,
+          rule: step.label,
+          evidence: `${region.unit}:${region.start_line}`,
+        }))
+      : [],
+  };
+}
+
 function stepsOf(flow: TierStackFlow): FlowStep[] {
   return (flow.steps ?? []).map((step, at) => ({
     step_id: `${flow.id}:${step.id}`,
@@ -174,7 +198,7 @@ function stepsOf(flow: TierStackFlow): FlowStep[] {
     name: step.label,
     description: step.description ?? step.label,
     description_source: step.description === undefined ? ('deterministic-label' as const) : ('ai' as const),
-    contract: contractOf(flow),
+    contract: stepContractOf(step),
     functions: step.regions.map(region => ({
       function_id: region.unit,
       section: { start_line: region.start_line, end_line: region.end_line, label: step.kind },
@@ -290,7 +314,7 @@ function capabilitiesOf(index: TierStackIndex): CASOutput['capabilities'] {
       name_source: 'ai' as const,
       description: capability.description ?? '',
       description_source: 'ai' as const,
-      category: published ? ('core' as const) : ('supporting' as const),
+      category: (capability.terminality === undefined ? published : capability.terminality === 'terminal') ? ('core' as const) : ('supporting' as const),
       operations: operationsOf(capability.surfaces ?? []),
       related_entities: capability.touches ?? capability.records ?? [],
       related_domains: capability.audience === undefined ? [] : [capability.audience],
@@ -323,6 +347,10 @@ const SHIPS_AS: Record<string, { tier: 1 | 2 | 3; kind: DeployableEvidence['kind
   'package-bin': { tier: 2, kind: 'bin' },
   'cargo-bin': { tier: 2, kind: 'bin' },
   'start-script': { tier: 2, kind: 'bin' },
+  'dotnet-executable': { tier: 2, kind: 'bin' },
+  'gradle-application': { tier: 2, kind: 'bin' },
+  'maven-artifact': { tier: 2, kind: 'bin' },
+  'android-application': { tier: 2, kind: 'bin' },
   'runnable-module': { tier: 2, kind: 'server-entry' },
   'package-identity': { tier: 3, kind: 'package' },
 };
