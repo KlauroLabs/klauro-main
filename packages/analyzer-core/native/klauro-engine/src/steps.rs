@@ -214,6 +214,21 @@ fn labelled(kind: &str, object: Option<&str>) -> String {
     }
 }
 
+static COMMITS: &[&str] = &["commit", "commitasync", "flush", "save", "savechanges", "savechangesasync", "saveentitiesasync", "save_changes"];
+
+static REFRESHES: &[&str] = &["refresh", "reload", "refresh_from_db"];
+
+fn guard_named(written: &str) -> String {
+    let Some(at) = written.find("Depends(") else { return written.to_string() };
+    let inner: String = written[at + "Depends(".len()..].chars().take_while(|letter| letter.is_alphanumeric() || *letter == '_' || *letter == '.').collect();
+    let inner = crate::names::leaf(&inner);
+    let inner = inner.strip_prefix("get_").unwrap_or(inner);
+    match inner.is_empty() {
+        true => written.to_string(),
+        false => spoken(inner).to_lowercase(),
+    }
+}
+
 static REMOVES: &[&str] = &["delete", "destroy", "drop", "purge", "remove", "unlink"];
 
 impl<'a> Reader<'a> {
@@ -274,9 +289,19 @@ impl<'a> Reader<'a> {
             return Some(named.to_string());
         }
         let typed = || {
-            self.calls_of.get(exit.source.as_str())?.iter().find(|call| call.line == exit.line).and_then(|call| {
-                call.type_arguments.first().map(|argument| crate::names::leaf(argument.trim()).to_string())
-            })
+            let calls = self.calls_of.get(exit.source.as_str())?;
+            calls
+                .iter()
+                .find(|call| call.line == exit.line)
+                .and_then(|call| call.type_arguments.first().map(|argument| crate::names::leaf(argument.trim()).to_string()))
+                .or_else(|| {
+                    calls
+                        .iter()
+                        .filter(|call| call.constructs && call.line <= exit.line)
+                        .map(|call| crate::names::leaf(&call.callee))
+                        .find(|made| self.held.contains(made))
+                        .map(str::to_string)
+                })
         };
         let Some(within) = self.exit_records.get(exit.id.as_str()) else { return typed() };
         match within.as_slice() {
@@ -454,6 +479,15 @@ impl<'a> Reader<'a> {
         for (line, _, target, context, exit, call) in at_line {
             let context = inherited(when, context);
             if let Some(exit) = exit {
+                let operation = crate::names::leaf(&exit.operation).to_ascii_lowercase();
+                if REFRESHES.contains(&operation.as_str()) {
+                    continue;
+                }
+                if COMMITS.contains(&operation.as_str())
+                    && actions.iter().rev().take_while(|held| held.unit == unit).any(|held| matches!(held.kind, "change" | "create" | "remove"))
+                {
+                    continue;
+                }
                 if let Some((kind, object)) = self.action_of(exit) {
                     actions.push(Action { kind, object, doing: None, when: context, unit, line: shown_line(line) });
                 }
@@ -488,9 +522,20 @@ impl<'a> Reader<'a> {
                                 "read" | "check" => false,
                                 _ => false,
                             });
+                            let looked_up = within.iter().find_map(|action| {
+                                (action.kind == "read").then_some(action.object.as_deref()).flatten().filter(|object| self.held.contains(object)).map(str::to_string)
+                            });
                             match (matters, within.is_empty()) {
                                 (true, _) => actions.extend(within),
                                 (false, true) => {}
+                                (false, false) if !checking && looked_up.is_some() => actions.push(Action {
+                                    kind: "read",
+                                    object: looked_up,
+                                    doing: None,
+                                    when: context,
+                                    unit,
+                                    line: shown_line(line),
+                                }),
                                 (false, false) => actions.push(Action {
                                     kind: if checking { "check" } else { "do" },
                                     object: checking.then(|| spoken(named)),
@@ -536,7 +581,7 @@ impl<'a> Reader<'a> {
         let mut actions: Vec<Action> = Vec::new();
         let first_line = self.nodes[start as usize].span.line;
         if !entry.guards.is_empty() {
-            let guarded: Vec<&str> = entry.guards.iter().map(|guard| guard.name.as_str()).collect();
+            let guarded: Vec<String> = entry.guards.iter().map(|guard| guard_named(&guard.name)).collect();
             actions.push(Action {
                 kind: "check",
                 object: Some(guarded.join(", ")),

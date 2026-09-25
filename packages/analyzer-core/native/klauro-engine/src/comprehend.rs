@@ -1455,6 +1455,7 @@ pub fn derive(
     let served: Vec<&EntryPoint> = by_project.into_values().flatten().collect();
     let handlers: HashMap<&str, &str> = served
         .iter()
+        .filter(|entry| !matches!(entry.kind, "export" | "test"))
         .map(|entry| (entry.handler.as_str(), entry.id.as_str()))
         .collect();
 

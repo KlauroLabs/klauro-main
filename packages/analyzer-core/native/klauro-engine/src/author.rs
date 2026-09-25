@@ -99,6 +99,7 @@ fn key() -> Option<String> {
 
 pub fn asked() -> bool {
     std::env::var("KLAURO_ENRICH").map(|held| held != "0").unwrap_or(true)
+        && std::env::var("KLAURO_AI_INTERPRETATION").map(|held| held != "false").unwrap_or(true)
         && (spoken_to().is_some() || addressed().is_some() || key().is_some())
 }
 
