@@ -195,6 +195,22 @@ test('warnIfSessionExpiringSoon: silent when the session is fresh', () => {
   assert.deepEqual(writes, []);
 });
 
+test('warnIfSessionExpiringSoon: a session the server accepted recently is not stale however old the login', () => {
+  resetSessionWarningStateForTests();
+  const writes: string[] = [];
+  const stderr = { write: (chunk: string) => { writes.push(chunk); return true; } };
+  const now = new Date('2026-08-08T00:00:00Z');
+  const day = 24 * 60 * 60 * 1000;
+  const account = {
+    token: 't',
+    email: 'a@b.com',
+    updated_at: new Date(now.getTime() - (SESSION_TOKEN_TTL_DAYS + 6) * day).toISOString(),
+    verified_at: new Date(now.getTime() - day).toISOString(),
+  };
+  warnIfSessionExpiringSoon('https://example.test', account, now, stderr);
+  assert.deepEqual(writes, []);
+});
+
 test('warnIfSessionExpiringSoon: warns once the session is within TOKEN_EXPIRY_WARN_DAYS of the TTL', () => {
   resetSessionWarningStateForTests();
   const writes: string[] = [];

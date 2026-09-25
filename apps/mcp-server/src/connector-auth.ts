@@ -23,6 +23,7 @@ export interface StoredConnectorAccount {
   token: string;
   email?: string;
   updated_at: string;
+  verified_at?: string;
 }
 
 
@@ -123,6 +124,32 @@ export function describeSessionAge(updatedAt: string | undefined, now: Date = ne
 
 let warnedThisProcess = false;
 
+const ACCEPTANCE_NOTED_EVERY_MS = 60 * 60 * 1000;
+
+export function lastAcceptedAt(account: StoredConnectorAccount): string {
+  const verified = account.verified_at ? Date.parse(account.verified_at) : NaN;
+  const updated = Date.parse(account.updated_at);
+  return !Number.isNaN(verified) && (Number.isNaN(updated) || verified > updated) ? account.verified_at! : account.updated_at;
+}
+
+export function noteSessionAccepted(serverUrl: string, token: string, now: Date = new Date()): void {
+  try {
+    const auth = loadStoredConnectorAuth();
+    const account = auth.accounts[serverUrl];
+    if (!account || account.token !== token) return;
+    const last = Date.parse(lastAcceptedAt(account));
+    if (!Number.isNaN(last) && now.getTime() - last < ACCEPTANCE_NOTED_EVERY_MS) return;
+    const verified_at = now.toISOString();
+    account.verified_at = verified_at;
+    for (const held of Object.values(auth.accountsByServer?.[serverUrl] ?? {})) {
+      if (held.token === token) held.verified_at = verified_at;
+    }
+    persistAuth(auth);
+  } catch {
+    return;
+  }
+}
+
 
 export function resetSessionWarningStateForTests(): void {
   warnedThisProcess = false;
@@ -143,7 +170,7 @@ export function warnIfSessionExpiringSoon(
   stderr: { write: (chunk: string) => unknown } = process.stderr,
 ): void {
   if (!account || warnedThisProcess) return;
-  const { ageDays } = describeSessionAge(account.updated_at, now);
+  const { ageDays } = describeSessionAge(lastAcceptedAt(account), now);
   if (ageDays === null || ageDays < TOKEN_EXPIRY_WARN_DAYS) return;
   warnedThisProcess = true;
   const who = account.email ? ` as ${account.email}` : '';
@@ -204,7 +231,7 @@ export async function resolveAuthStatus(input: {
     };
   }
 
-  const { ageDays, daysRemaining } = describeSessionAge(account.updated_at);
+  const { ageDays, daysRemaining } = describeSessionAge(lastAcceptedAt(account));
 
   let response: Response;
   try {
@@ -255,6 +282,7 @@ export async function resolveAuthStatus(input: {
   }
 
   const email = payload?.user?.email || account.email;
+  if (response.ok) noteSessionAccepted(serverUrl, account.token);
   return {
     state: 'signed-in',
     server_url: serverUrl,
@@ -305,7 +333,6 @@ export async function requireConnectorEntitlement(input: {
 
 
 
-  warnIfSessionExpiringSoon(serverUrl, loadStoredConnectorAuth().accounts[serverUrl]);
   const token = connectorToken(input.token, input.serverUrl);
   if (!token) {
 
@@ -337,6 +364,7 @@ export async function requireConnectorEntitlement(input: {
     throw new Error(payload?.error || `Klauro account check failed with HTTP ${response.status}`);
   }
 
+  noteSessionAccepted(serverUrl, token);
   const entitlement = normalizeEntitlement(payload?.entitlement);
   if (entitlement.status !== 'active' && entitlement.status !== 'trialing') {
     throw new Error(`Klauro subscription required. Current entitlement: ${entitlement.status}`);

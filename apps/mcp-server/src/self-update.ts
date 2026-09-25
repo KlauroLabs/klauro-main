@@ -475,8 +475,8 @@ async function runBinarySelfUpdate(options: {
   const binaryEntry = manifest?.binaries?.[platformId];
   if (!binaryEntry) {
     throw new Error(
-      `Cannot self-update: the release manifest at ${serverUrl}/dist/latest.json does not list a binary for ${platformId} ` +
-      `(server may predate the self-contained binary release, or the current release manifest omitted it — check with support-bundle / doctor).`,
+      `Cannot self-update this binary: the current release publishes no self-contained binary for ${platformId}; ` +
+      `this platform installs through npm now. Run the installer, which installs the current release and replaces this binary: ${KLAURO_INSTALL_ONELINER}`,
     );
   }
 

@@ -162,11 +162,26 @@ install_via_npm_fallback() {
   echo "  Installing @klauro/mcp-server globally via npm..."
   if npm install -g "${NPM_TARBALL}"; then
     rm -rf "${NPM_TMP_DIR}"
+    repoint_stale_install_dir_binary
   else
     NPM_STATUS=$?
     rm -rf "${NPM_TMP_DIR}"
     echo "Error: npm install failed. Existing installation may still be active; no unverified package was installed."
     return "${NPM_STATUS}"
+  fi
+}
+
+repoint_stale_install_dir_binary() {
+  STALE_BIN="${INSTALL_DIR}/klauro"
+  [ -e "${STALE_BIN}" ] || [ -L "${STALE_BIN}" ] || return 0
+  NPM_BIN="$(npm prefix -g 2>/dev/null)/bin/klauro"
+  [ -x "${NPM_BIN}" ] || return 0
+  [ "$(_klauro_canon "${STALE_BIN}")" = "$(_klauro_canon "${NPM_BIN}")" ] && return 0
+  STALE_VERSION="$(_klauro_version_of "${STALE_BIN}")"
+  if ln -sf "${NPM_BIN}" "${STALE_BIN}" 2>/dev/null; then
+    echo "  Repointed ${STALE_BIN}${STALE_VERSION:+ (was ${STALE_VERSION})} to the npm install at ${NPM_BIN}."
+  else
+    echo "  Warning: ${STALE_BIN}${STALE_VERSION:+ (${STALE_VERSION})} is an older Klauro install and could not be replaced. Remove it: rm \"${STALE_BIN}\""
   fi
 }
 

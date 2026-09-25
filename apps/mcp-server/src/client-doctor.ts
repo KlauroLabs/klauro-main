@@ -59,7 +59,7 @@ export function evaluateAuthState(
       'Run `klauro login --email you@example.com --register` (or `--register` omitted if you already have an account).',
     );
   }
-  const updatedAt = new Date(account.updated_at);
+  const updatedAt = new Date(account.verified_at && Date.parse(account.verified_at) > Date.parse(account.updated_at) ? account.verified_at : account.updated_at);
   const ageDays = Number.isNaN(updatedAt.getTime())
     ? null
     : (now.getTime() - updatedAt.getTime()) / (24 * 60 * 60 * 1000);

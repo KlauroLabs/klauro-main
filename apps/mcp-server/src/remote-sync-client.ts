@@ -147,7 +147,7 @@ async function assertUploadTargetIsReachable(loaded: LoadedKlauroConfig, serverU
     throw new Error(
       'This repo is not connected to a hosted Klauro project (no project.id in .klaurorc — `klauro init` has never run here, or an older CLI left it unbound). ' +
       'Uploading now would be accepted and stored under an orphaned, path-hashed id that appears in no workspace — refusing instead of accepting work that would be silently dropped. ' +
-      'Run `klauro init` first (from this directory: `klauro init --path .`), then retry.'
+      'Run `klauro init` first (from this directory: `klauro init .`), then retry.'
     );
   }
   if (!serverUrl) return;
