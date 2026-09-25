@@ -1,6 +1,7 @@
 import type { CASOutput } from '../../types/cas.types';
 import { readTierStack } from './read-tier-stack';
 import { tierStackToCas } from './tier-stack-to-cas';
+import { getBuildIdentity } from '../core/build-identity';
 
 export { enginePath, readTierStack, resolveEngine, type TierStackIndex } from './read-tier-stack';
 export { readInterned } from './read-interned';
@@ -10,5 +11,7 @@ export async function analyzeWithTierStack(
   projectPath: string,
   displayName?: string
 ): Promise<CASOutput> {
-  return tierStackToCas(await readTierStack(projectPath), displayName);
+  const cas = tierStackToCas(await readTierStack(projectPath), displayName);
+  cas.analyzer_build = getBuildIdentity().version;
+  return cas;
 }
