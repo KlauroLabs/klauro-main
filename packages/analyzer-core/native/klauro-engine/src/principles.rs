@@ -240,8 +240,12 @@ pub fn derive(sources: &Sources) -> Principles {
         }
     };
 
+    let written_by_hand = |at: usize| {
+        sources.paths.get(nodes[at].file as usize).is_some_and(|path| crate::paths::is_hand_written_code(path))
+    };
     let mut gods: Vec<(usize, usize, u32)> = types
         .iter()
+        .filter(|at| written_by_hand(**at))
         .map(|at| (*at, graph.members[*at].len(), lines_of(&nodes[*at])))
         .filter(|(_, size, lines)| *size > MEMBERS_OF_A_GOD_CLASS || *lines > LINES_OF_A_GOD_CLASS)
         .collect();
@@ -251,7 +255,7 @@ pub fn derive(sources: &Sources) -> Principles {
     let mut long: Vec<(usize, u32)> = nodes
         .iter()
         .enumerate()
-        .filter(|(at, node)| node.kind.is_unit() && !tested[*at])
+        .filter(|(at, node)| node.kind.is_unit() && !tested[*at] && written_by_hand(*at))
         .map(|(at, node)| (at, lines_of(node)))
         .filter(|(_, lines)| *lines > LINES_OF_A_LONG_METHOD)
         .collect();
@@ -261,7 +265,7 @@ pub fn derive(sources: &Sources) -> Principles {
     let many_parameters: Vec<String> = nodes
         .iter()
         .enumerate()
-        .filter(|(at, node)| node.kind.is_unit() && !tested[*at])
+        .filter(|(at, node)| node.kind.is_unit() && !tested[*at] && written_by_hand(*at))
         .filter_map(|(_, node)| {
             let count = node.signature.as_ref()?.parameters.len();
             (count > PARAMETERS_AT_MOST).then(|| format!("{} ({count} parameters)", node.id))

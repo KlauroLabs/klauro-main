@@ -37,6 +37,8 @@ pub(crate) type Fields = BTreeMap<String, String>;
 
 const RECORDS_DESCRIBED: usize = 4;
 
+const SERVED_AT_LEAST: usize = 3;
+
 pub(crate) const RECORDS_HOLD: &str = "what the records it touches hold:";
 
 fn recalled(key: &str) -> Option<Remembered> {
@@ -466,7 +468,11 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
     if !crate::author::asked() || flows.is_empty() {
         return Vec::new();
     }
-    let served = flows.iter().any(|flow| flow.kind != "export");
+    let served = flows
+        .iter()
+        .filter(|flow| !matches!(flow.kind, "export" | "test") && matches!(flow.standing, "terminal" | "proximal"))
+        .count()
+        >= SERVED_AT_LEAST;
     let kept: Vec<&Flow> = flows.iter().copied().filter(|flow| !served || flow.kind != "export").collect();
     let families = outcomes_of(&kept);
     let keyed: Vec<(String, &Family, &Vec<&Flow>)> = families
@@ -608,6 +614,7 @@ fn built(held: Held, lanes: &BTreeMap<&str, (&Family, &Vec<&Flow>)>, fields: &Fi
         standing: PUBLISHED,
         touches: Vec::new(),
         terminality: None,
+        confidence: None,
         evidence: String::new(),
     };
     let mut told: Vec<String> = Vec::new();

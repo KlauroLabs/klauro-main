@@ -69,6 +69,20 @@ pub fn is_test(path: &str) -> bool {
         || name.contains(".spec.")
 }
 
+static NOT_PROGRAM_CODE: &[&str] = &["css", "scss", "sass", "less", "html", "htm", "json", "yaml", "yml", "toml", "xml", "md", "svg", "editorconfig", "ini", "cfg", "conf", "env", "properties", "gitignore", "gitattributes", "lock", "csv", "txt"];
+
+pub fn is_schema_migration(path: &str) -> bool {
+    let lowered = path.to_ascii_lowercase();
+    let name = basename(&lowered);
+    let stamped = name.chars().take_while(|letter| letter.is_ascii_digit()).count() >= 4;
+    (lowered.contains("/migrations/") || lowered.contains("/migrate/") || lowered.starts_with("migrations/")) && stamped
+}
+
+pub fn is_hand_written_code(path: &str) -> bool {
+    let extension = basename(path).rsplit_once('.').map(|(_, extension)| extension.to_ascii_lowercase()).unwrap_or_default();
+    !is_test(path) && !is_schema_migration(path) && !NOT_PROGRAM_CODE.contains(&extension.as_str())
+}
+
 pub fn is_continuous_integration(path: &str) -> bool {
     static DIRECTORIES: &[&str] =
         &[".azure/", ".buildkite/", ".circleci/", ".github/", ".gitlab/", ".woodpecker/", "ci/"];

@@ -142,6 +142,8 @@ pub struct Capability {
     pub touches: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terminality: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f64>,
     #[serde(skip)]
     pub evidence: String,
 }
@@ -771,6 +773,7 @@ fn test_capabilities(capabilities: &mut Vec<Capability>, spoken: &str, level: &s
                 "delivered": grounding.delivers(),
             }),
         );
+        capability.confidence = Some(grounding.confidence());
         capability.grounding = Some(grounding);
         capability.standing = match grounding.stands() {
             true => PUBLISHED,

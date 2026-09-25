@@ -11,6 +11,8 @@ const ENDPOINT: &str = "https://api.deepinfra.com/v1/openai/chat/completions";
 const GROUNDED: f64 = 0.5;
 const ONLY_STORED: f64 = 1.5;
 
+const ONLY_MECHANISM: f64 = 1.5;
+
 const CLAIMED_BY_ITS_OWN_WORDS: f64 = 0.75;
 const TRIES: usize = 5;
 const NAMED_PER_CALL: usize = 24;
@@ -689,6 +691,11 @@ fn asking_of(facts: &str) -> BTreeMap<&'static str, crate::jev::Question> {
         .find_map(|line| line.strip_prefix("PROPOSED CAPABILITY:"))
         .map(str::trim)
         .unwrap_or_default();
+    let described = facts
+        .lines()
+        .find_map(|line| line.strip_prefix("PROPOSED DESCRIPTION:"))
+        .map(str::trim)
+        .unwrap_or_default();
     BTreeMap::from([
         (
             "supported",
@@ -730,9 +737,14 @@ fn asking_of(facts: &str) -> BTreeMap<&'static str, crate::jev::Question> {
         (
             "mechanism",
             crate::jev::Question {
-                kind: "noul",
-                instructions: format!("{facts}\n\nThe proposed capability is named for how it is reached or what it is built from — a page, a screen, a route, an API, a form, an endpoint, a webhook, a job, a record kept for the system's own bookkeeping rather than for what someone ends up with"),
-                criteria: BTreeMap::new().into(),
+                kind: "score",
+                instructions: format!("A capability is named \"{named}\" and described as: {described}. What it names"),
+                criteria: vec![
+                    "Something a person or another system gets done or gets from the product, such as placing an order, reading articles, backing up photos or getting paid".to_string(),
+                    "A supporting ability that makes those possible, such as signing in, permissions or settings".to_string(),
+                    "How the software itself works rather than anything someone gets, such as serving or routing requests, request headers, TLS, retries, idempotency, lifecycle hooks, dependency injection, validation rules, build or release scripts, or the tests".to_string(),
+                ]
+                .into(),
             },
         ),
         (
@@ -793,7 +805,7 @@ pub fn test_capabilities(spoken: &str, held: &[(String, String)], level: &str) -
                     invented: settled("invented", 1.0),
                     outcome: settled("outcome", 0.0),
                     universal: Some(settled("universal", 1.0)),
-                    mechanism: Some(settled("mechanism", 0.0)),
+                    mechanism: answers.get(&format!("c{at}-mechanism")).and_then(|held| held.score),
                     hollow: answers.get(&format!("c{at}-hollow")).and_then(|held| held.score),
                     scope: Some(settled("scope", 0.0)),
                     graded: crate::jev::asked(),
@@ -823,12 +835,25 @@ impl Grounding {
             && self.universal.unwrap_or(1.0) < GROUNDED
     }
 
+    pub fn confidence(&self) -> f64 {
+        let held = [
+            self.supported,
+            self.outcome,
+            self.scope.unwrap_or(self.outcome),
+            1.0 - self.invented,
+            1.0 - self.mechanism.unwrap_or(0.0) / 2.0,
+            1.0 - self.hollow.unwrap_or(0.0) / 2.0,
+        ];
+        let mean = held.iter().map(|value| value.clamp(0.0, 1.0)).sum::<f64>() / held.len() as f64;
+        (mean * 100.0).round() / 100.0
+    }
+
     pub fn delivers(&self) -> bool {
         let scope = self.scope.unwrap_or(self.outcome);
         !self.fabricated()
             && scope >= GROUNDED
             && (self.universal.unwrap_or(0.0) < GROUNDED || scope >= CLAIMED_BY_ITS_OWN_WORDS)
-            && self.mechanism.unwrap_or(0.0) < GROUNDED
+            && self.mechanism.unwrap_or(0.0) < ONLY_MECHANISM
             && self.hollow.unwrap_or(0.0) < ONLY_STORED
     }
 
