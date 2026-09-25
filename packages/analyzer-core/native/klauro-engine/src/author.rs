@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 
 const ENDPOINT: &str = "https://api.deepinfra.com/v1/openai/chat/completions";
 const GROUNDED: f64 = 0.5;
+const ONLY_STORED: f64 = 1.5;
+
 const CLAIMED_BY_ITS_OWN_WORDS: f64 = 0.75;
 const TRIES: usize = 5;
 const NAMED_PER_CALL: usize = 24;
@@ -673,6 +675,11 @@ pub fn questions_asked() -> String {
 }
 
 fn asking_of(facts: &str) -> BTreeMap<&'static str, crate::jev::Question> {
+    let named = facts
+        .lines()
+        .find_map(|line| line.strip_prefix("PROPOSED CAPABILITY:"))
+        .map(str::trim)
+        .unwrap_or_default();
     BTreeMap::from([
         (
             "supported",
@@ -701,9 +708,14 @@ fn asking_of(facts: &str) -> BTreeMap<&'static str, crate::jev::Question> {
         (
             "hollow",
             crate::jev::Question {
-                kind: "noul",
-                instructions: format!("{facts}\n\nWhat the proposed capability's name acts on is a word that only says something is stored — items, records, entries, objects, resources, things — rather than a word for what that thing is, such as an order, a gift card, a post or a booking"),
-                criteria: BTreeMap::new().into(),
+                kind: "score",
+                instructions: format!("A capability is named \"{named}\". What the name acts on"),
+                criteria: vec![
+                    "A particular kind of thing in the product, such as a product, an order, a basket, a gift card, a post, a user or a booking, or an aspect of one, like its details or history".to_string(),
+                    "A broad area of the product, such as content, media, messages or settings".to_string(),
+                    "Only a generic word that could name any stored thing in any product, such as items, records, entries, objects, resources or data".to_string(),
+                ]
+                .into(),
             },
         ),
         (
@@ -773,7 +785,7 @@ pub fn test_capabilities(spoken: &str, held: &[(String, String)], level: &str) -
                     outcome: settled("outcome", 0.0),
                     universal: Some(settled("universal", 1.0)),
                     mechanism: Some(settled("mechanism", 0.0)),
-                    hollow: Some(settled("hollow", 0.0)),
+                    hollow: answers.get(&format!("c{at}-hollow")).and_then(|held| held.score),
                     scope: Some(settled("scope", 0.0)),
                     graded: crate::jev::asked(),
                     specific: answers
@@ -808,7 +820,7 @@ impl Grounding {
             && scope >= GROUNDED
             && (self.universal.unwrap_or(0.0) < GROUNDED || scope >= CLAIMED_BY_ITS_OWN_WORDS)
             && self.mechanism.unwrap_or(0.0) < GROUNDED
-            && self.hollow.unwrap_or(0.0) < GROUNDED
+            && self.hollow.unwrap_or(0.0) < ONLY_STORED
     }
 
     pub fn holds(&self) -> bool {
