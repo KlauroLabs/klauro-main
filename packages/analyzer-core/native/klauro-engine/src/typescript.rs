@@ -1455,17 +1455,33 @@ impl<'a> Extractor<'a> {
             .filter(|argument| {
                 matches!(
                     argument.kind(),
-                    "string" | "template_string" | "number" | "identifier" | "binary_expression"
+                    "string" | "template_string" | "number" | "identifier" | "binary_expression" | "object"
                 )
             })
             .take(LITERAL_LIMIT)
             .filter_map(|argument| match argument.kind() {
+                "object" => self.addressed_in(argument),
                 "identifier" => self.remembered.get(self.text(argument)).cloned(),
                 "binary_expression" => self.text_it_begins_with(argument).map(|begins| format!("{begins}${{}}")),
                 _ => Some(trim_quotes(self.text(argument)).to_string()),
             })
             .filter(|value| !value.is_empty() && value.len() <= TEXT_REMEMBERED)
             .collect()
+    }
+
+    fn addressed_in(&self, object: Node) -> Option<String> {
+        let mut cursor = object.walk();
+        object.named_children(&mut cursor).filter(|pair| pair.kind() == "pair").find_map(|pair| {
+            let key = trim_quotes(self.text(pair.child_by_field_name("key")?)).to_string();
+            if !matches!(key.as_str(), "url" | "path" | "endpoint") {
+                return None;
+            }
+            let value = pair.child_by_field_name("value")?;
+            matches!(value.kind(), "string" | "template_string")
+                .then(|| trim_quotes(self.text(value)).to_string())
+                .filter(|written| written.starts_with('/'))
+                .map(|written| format!("{key}={written}"))
+        })
     }
 
     fn text_it_begins_with(&self, joined: Node) -> Option<String> {

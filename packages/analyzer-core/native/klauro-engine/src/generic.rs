@@ -1174,6 +1174,9 @@ impl<'a> Extractor<'a> {
                 if let Some(keyed) = keyed_symbols(raw) {
                     return Some(keyed);
                 }
+                if let Some(addressed) = addressed_in_an_object(raw) {
+                    return Some(addressed);
+                }
                 if let Some((named, written)) = named_as_text(raw) {
                     return (written.len() <= TEXT_AT_MOST).then(|| format!("{named}={written}"));
                 }
@@ -2471,6 +2474,31 @@ fn own_member(written: &str) -> Option<String> {
     let looks_like_a_member = owned || bare.starts_with('_') && bare.len() > 1
         || bare.chars().next().is_some_and(char::is_uppercase) && bare.chars().any(char::is_lowercase);
     looks_like_a_member.then(|| bare.trim_start_matches('_').to_string())
+}
+
+fn addressed_in_an_object(raw: &str) -> Option<String> {
+    let inner = raw.strip_prefix('{')?.trim_start();
+    for key in ["url", "path", "endpoint"] {
+        let mut rest = inner;
+        while let Some(at) = rest.find(key) {
+            let before = rest[..at].chars().last();
+            let after = rest[at + key.len()..].trim_start();
+            rest = &rest[at + key.len()..];
+            if before.is_some_and(|letter| letter.is_alphanumeric() || letter == '_') {
+                continue;
+            }
+            let Some(value) = after.strip_prefix(':') else { continue };
+            let value = value.trim_start();
+            let Some(quote) = value.chars().next().filter(|letter| matches!(letter, '\'' | '"' | '`')) else { continue };
+            let body = &value[1..];
+            let end = body.find(quote)?;
+            let written = &body[..end];
+            if written.starts_with('/') && written.len() <= TEXT_AT_MOST {
+                return Some(format!("{key}={written}"));
+            }
+        }
+    }
+    None
 }
 
 fn keyed_symbols(raw: &str) -> Option<String> {

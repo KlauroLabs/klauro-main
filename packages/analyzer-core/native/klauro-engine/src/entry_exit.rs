@@ -1102,9 +1102,25 @@ fn plainly_written(held: &str) -> &str {
     held[..end].trim_end_matches('/')
 }
 
+static REQUEST_VERBS: &[&str] = &["delete", "get", "head", "patch", "post", "put", "request"];
+
+static ADDRESS_KEYS: &[&str] = &["endpoint", "path", "url"];
+
+fn keyed_address(held: &str) -> Option<&str> {
+    let (key, value) = held.split_once('=')?;
+    ADDRESS_KEYS.contains(&key.trim()).then(|| value.trim())
+}
+
+fn requested_by_url(call: &CallFact) -> Option<&'static str> {
+    let verb = names::leaf(&call.callee).to_ascii_lowercase();
+    (REQUEST_VERBS.contains(&verb.as_str())
+        && call.literals.iter().any(|held| keyed_address(held).is_some_and(|value| a_path(plainly_written(value)))))
+    .then_some("api")
+}
+
 fn addressed_at(call: &CallFact) -> Option<String> {
     for held in call.literals.iter() {
-        let held = plainly_written(held);
+        let held = plainly_written(keyed_address(held).unwrap_or(held));
         if let Some(at) = held.find("://") {
             let rest = &held[at + 3..];
             let path = rest.find('/').map(|at| &rest[at..])?;
@@ -2011,9 +2027,29 @@ pub fn derive(
             });
             return (found, reach);
         }
+        if call.receiver.is_some()
+            && let Some(kind) = requested_by_url(call)
+        {
+            reach.push(String::new());
+            found.push(ExitPoint {
+                id: format!("exit:{}:{}", files[call.file as usize], position),
+                kind,
+                name: call.callee.clone(),
+                source: source.clone(),
+                target: call.receiver.clone().unwrap_or_default(),
+                operation: call.callee.clone(),
+                file: call.file,
+                line: call.line,
+                awaited: call.context.awaited,
+                addressed: addressed_at(call),
+                service: None,
+            });
+            return (found, reach);
+        }
         let Some(receiver) = call.receiver.as_deref() else {
             let Some(kind) = bare_exit(call, modules, &files[call.file as usize])
                 .or_else(|| built_into_the_language(call, &files[call.file as usize]))
+                .or_else(|| requested_by_url(call))
             else {
                 return (found, reach);
             };
