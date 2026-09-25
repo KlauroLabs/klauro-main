@@ -10,7 +10,8 @@ import { ensurePrivateDataRoot, restrictProcessFileCreation } from './hosted-sto
 import { analyzeProjectIncremental, analyzeProject, checkDoomedVersionRebuild, getAnalysis, prewarmAnalysisWorker, runAnalysis, runLayeredAnalysis } from './analyzer';
 import { REMOTE_ANALYSIS_PROTOCOL_VERSION, clientUpgradeRequiredMessage, type AccountActivityEvent, type RemoteAnalyzeDiffRequest, type RemoteAnalyzeRequest, type RemoteAnalyzeResponse, type RemoteGreenfieldPreviewRequest, type RemoteProjectRevision, type RemoteProjectRevisionsResponse, type RemoteProposalPreviewRequest, type RemoteSyncRequest, syncResponseCasNodeBound } from './remote-analyzer-protocol';
 import { buildSourceSnapshot, type BranchDiffContext, type RemoteFileChange, type RepoFacts, type SourceManifest } from './remote-source';
-import type { CapabilityFlowRole, CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
+import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
+import { flowEdgesByCapability, flowTotalsByCapability } from './capability-flow-links';
 import { previewCodebaseIteration, previewGreenfieldCodebase } from './proposal-preview';
 import { isDirectCliInvocation } from './cli-invocation';
 import { AccountHttpError, AccountStore, type AccountProject } from './account-store';
@@ -3169,25 +3170,16 @@ async function handleAccountApi(
       const architectural = getArchitecturalConflicts(cas, { limit: 25 });
       const paradigms = getParadigmConformance(cas);
       const perspectives = getPerspectives(cas);
-      const flowEdgesByCapability = new Map<string, Array<{ flow_id: string; role: CapabilityFlowRole; rationale: string }>>();
-      for (const flow of (flowConcepts.flows || []) as Array<{
-        flow_id: string;
-        capability_relationships?: Array<{ capability_id: string; role: CapabilityFlowRole; rationale: string }>;
-      }>) {
-        for (const rel of flow.capability_relationships || []) {
-          const list = flowEdgesByCapability.get(rel.capability_id) || [];
-          list.push({ flow_id: flow.flow_id, role: rel.role, rationale: rel.rationale });
-          flowEdgesByCapability.set(rel.capability_id, list);
-        }
-      }
+      const flowEdgesOfCapability = flowEdgesByCapability((flowConcepts.flows || []) as Parameters<typeof flowEdgesByCapability>[0]);
+      const flowTotalsOfCapability = flowTotalsByCapability(cas.flows || []);
       const allCapabilities = (cas.capabilities || []).map(capability => ({
         id: capability.id,
         name: capability.name,
         ...conceptualDescriptionFields(capability),
         category: capability.category,
         criticality: capability.criticality,
-        related_flow_total: capability.related_flows?.length || flowEdgesByCapability.get(capability.id)?.length || 0,
-        related_flows: flowEdgesByCapability.get(capability.id) || [],
+        related_flow_total: capability.related_flows?.length || flowTotalsOfCapability.get(capability.id) || flowEdgesOfCapability.get(capability.id)?.length || 0,
+        related_flows: flowEdgesOfCapability.get(capability.id) || [],
       }));
       const allBehaviorSurfaces = (cas.behavior_surfaces || []).map(surface => ({
         id: surface.id,
@@ -3196,8 +3188,8 @@ async function handleAccountApi(
         category: surface.category,
         evidence_kind: surface.evidence_kind,
         entry_points: surface.operations?.length || 0,
-        related_flow_total: surface.related_flows?.length || flowEdgesByCapability.get(surface.id)?.length || 0,
-        related_flows: flowEdgesByCapability.get(surface.id) || [],
+        related_flow_total: surface.related_flows?.length || flowTotalsOfCapability.get(surface.id) || flowEdgesOfCapability.get(surface.id)?.length || 0,
+        related_flows: flowEdgesOfCapability.get(surface.id) || [],
       }));
       const catalog = paginateConceptualCatalog(allCapabilities, allBehaviorSurfaces, catalogPage);
       const capabilityReconciliation = paginateCapabilityReconciliation(cas.enhanced_system_purpose?.capability_reconciliation, catalogPage);

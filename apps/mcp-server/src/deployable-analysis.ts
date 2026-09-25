@@ -18,6 +18,7 @@ import {
 import { reachabilityEdgePairs } from '../../../packages/analyzer-core/src/analyzer/core/reachability-index';
 import { assertValidCasTree } from '../../../packages/analyzer-core/src/analyzer/core/recursive-cas';
 import { buildCasTerminality } from '../../../packages/analyzer-core/src/analyzer/core/terminality';
+import { partBornAt } from './engine-part';
 import { deployableAnalysisCache } from './deployable-analysis-cache';
 import { projectCasChild, type CASChildProjectedValues } from './cas-child-projection';
 
@@ -155,6 +156,8 @@ export function tierQualifiedShipUnits(evidence: DeployableEvidence[] | undefine
 
 
 const PROMOTION_THRESHOLD = 2;
+
+const SEED_BASIS_SHOWN = 12;
 
 export function shouldPromote(cas: Pick<CASOutput, 'deployable_evidence'>): boolean {
   return tierQualifiedShipUnits(cas.deployable_evidence).length >= PROMOTION_THRESHOLD;
@@ -1072,6 +1075,7 @@ export interface SubCasNodeIndexEntry {
 
 
   owned_shared_node_count: number;
+  capabilities?: string[];
   entry_point_count: number;
   exit_point_count: number;
 
@@ -1080,6 +1084,7 @@ export interface SubCasNodeIndexEntry {
 
   seed_node_count: number;
   seed_basis: string[];
+  seed_basis_total?: number;
   boundary_evidence: string[];
 }
 
@@ -1289,6 +1294,8 @@ export function sliceDeployableAnalysis(cas: CASOutput, deployable: DeployableEv
   const containedFlowIds = comprehensionFlows.length > 0
     ? new Set(comprehensionFlows.map(flow => flow.flow_id))
     : scopedFlowGraph.flowIds;
+  const bornHere = partBornAt(cas, deployable.root_path);
+  const ownFlows = bornHere?.capabilities?.length && bornHere.flows?.length ? bornHere.flows : comprehensionFlows;
   const methodCalls = (cas.method_calls || []).filter(call => reachable.has(call.caller_node));
   const callChains = (cas.call_chains || []).filter(chain =>
     reachable.has(chain.entry_point.node_id) || chain.call_path.some(segment => reachable.has(segment.node_id)),
@@ -1317,7 +1324,7 @@ export function sliceDeployableAnalysis(cas: CASOutput, deployable: DeployableEv
     exit_points: seedExitPoints,
     entities: dataEntities,
     data_lineage: filterDataLineage(cas.data_lineage, reachableFiles),
-    capabilities: scopeCapabilitiesToSlice(
+    capabilities: bornHere?.capabilities?.length ? bornHere.capabilities : scopeCapabilitiesToSlice(
       filterCapabilities(cas.capabilities, includedEntryPointIds),
       includedEntryPointIds,
       containedFlowIds,
@@ -1327,8 +1334,8 @@ export function sliceDeployableAnalysis(cas: CASOutput, deployable: DeployableEv
       includedEntryPointIds,
       containedFlowIds,
     ),
-    flows: comprehensionFlows.length > 0 ? comprehensionFlows : undefined,
-    steps: comprehensionFlows.length > 0 ? comprehensionFlows.flatMap(flow => flow.steps) : undefined,
+    flows: ownFlows.length > 0 ? ownFlows : undefined,
+    steps: ownFlows.length > 0 ? ownFlows.flatMap(flow => flow.steps) : undefined,
     flow_graph: scopedFlowGraph.graph,
     user_journeys: undefined,
     communication_seams: filterCommunicationSeams(cas.communication_seams, includedEntryPointIds, includedExitPointIds, includedEntityIds),
@@ -1721,10 +1728,12 @@ export function buildDeployableAnalyses(cas: CASOutput): BuildDeployableAnalyses
       exclusive_node_count: perUnitCounts[i].exclusive,
       shared_node_count: perUnitCounts[i].shared,
       owned_shared_node_count: perUnitCounts[i].ownedShared,
+      capabilities: (units[i].slice.capabilities || []).map(capability => capability.name),
       entry_point_count: (units[i].slice.entry_points || []).length,
       exit_point_count: (units[i].slice.exit_points || []).length,
       seed_node_count: units[i].seed_node_count,
-      seed_basis: units[i].seed_basis,
+      seed_basis: units[i].seed_basis.slice(0, SEED_BASIS_SHOWN),
+      ...(units[i].seed_basis.length > SEED_BASIS_SHOWN ? { seed_basis_total: units[i].seed_basis.length } : {}),
       boundary_evidence: unit.evidence,
     })),
     qualified_unit_count: qualified.length,
