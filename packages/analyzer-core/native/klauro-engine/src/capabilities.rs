@@ -490,7 +490,10 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
             eprintln!("evidence {} {}\n{evidence}", remembered_as.replace('\u{1}', "/"), key_of[id.as_str()]);
         }
     }
-    let memory = recalled(remembered_as);
+    let memory = recalled(remembered_as).filter(|memory| !memory.capabilities.is_empty()).filter(|memory| {
+        let carried = evidence_of_key.iter().filter(|(key, evidence)| memory.families.get(*key) == Some(*evidence)).count();
+        carried * 2 >= evidence_of_key.len()
+    });
     let (mut held, mut plumbing) = match memory {
         Some(memory) if memory.digest == digest => recollected(&memory, &id_of, |_| true),
         Some(memory) => {
@@ -525,7 +528,7 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
     let settled_every_family = told.keys().all(|id| {
         plumbing.contains(id) || held.iter().any(|other| other.families.contains(id))
     });
-    if crate::author::asked() && settled_every_family {
+    if crate::author::asked() && settled_every_family && !held.is_empty() {
         keep_in_memory(
             remembered_as,
             &Remembered {

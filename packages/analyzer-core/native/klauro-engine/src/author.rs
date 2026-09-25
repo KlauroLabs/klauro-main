@@ -512,7 +512,7 @@ pub fn propose_capabilities(spoken_for: &str, families: &[(String, String)]) -> 
         families.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect::<Vec<_>>().join("\n")
     );
     let Some(held) =
-        answered::<serde_json::Value>(&prompt, 8000, &asking_of_models(model()), "capabilities", 0)
+        answered::<serde_json::Value>(&prompt, 8000, &asking_of_models(model()), "capabilities", 1)
     else {
         return Proposal::default();
     };
