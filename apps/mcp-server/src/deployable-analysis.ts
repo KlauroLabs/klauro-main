@@ -1728,7 +1728,7 @@ export function buildDeployableAnalyses(cas: CASOutput): BuildDeployableAnalyses
       exclusive_node_count: perUnitCounts[i].exclusive,
       shared_node_count: perUnitCounts[i].shared,
       owned_shared_node_count: perUnitCounts[i].ownedShared,
-      capabilities: (units[i].slice.capabilities || []).map(capability => capability.name),
+      capabilities: unit.capabilities?.length ? unit.capabilities : (units[i].slice.capabilities || []).map(capability => capability.name),
       entry_point_count: (units[i].slice.entry_points || []).length,
       exit_point_count: (units[i].slice.exit_points || []).length,
       seed_node_count: units[i].seed_node_count,

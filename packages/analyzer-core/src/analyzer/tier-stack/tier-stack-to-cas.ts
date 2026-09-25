@@ -354,6 +354,10 @@ function shipsAs(declared: TierStackShipDeclaration): { tier: 1 | 2 | 3; kind: D
 }
 
 function deployablesOf(index: TierStackIndex): DeployableEvidence[] {
+  const partAt = new Map((index.partition?.sub_projects ?? []).map(part => [part.root, part.id]));
+  const offeredBy = (root: string) => (index.comprehension?.capabilities ?? [])
+    .filter(capability => capability.project !== undefined && capability.project === partAt.get(root))
+    .map(capability => capability.name ?? capability.id);
   return (index.scope?.deployables ?? []).flatMap(deployable => {
     const declarations = deployable.declarations ?? [];
     const strongest = declarations
@@ -369,6 +373,7 @@ function deployablesOf(index: TierStackIndex): DeployableEvidence[] {
       ...(deployable.entered_at?.length ? { entry_files: deployable.entered_at } : {}),
       ...(deployable.ships?.length ? { ships_paths: deployable.ships } : {}),
       ...(deployable.bundled_into ? { bundled_into: deployable.bundled_into } : {}),
+      ...(offeredBy(deployable.root).length ? { capabilities: offeredBy(deployable.root) } : {}),
     }];
   });
 }
