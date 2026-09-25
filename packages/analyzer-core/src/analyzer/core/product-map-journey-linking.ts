@@ -33,6 +33,7 @@ export function linkJourneysToCapability(
 ): CASUserJourney[] {
   const entryPointIds = new Set(capability.operations.map(operation => operation.entry_point_id));
   const capabilityEntities = new Set(capabilityEntityNames.map(normalizeProductMapEntityName));
+  const linkedByComprehension = journeys.some(journey => (journey.capability_relationships?.length ?? 0) > 0);
 
   return journeys.filter(journey => {
     if (journey.capability_relationships?.some(rel =>
@@ -40,7 +41,7 @@ export function linkJourneysToCapability(
       (rel.role === 'primary' || rel.evidence === 'operation' || rel.evidence === 'route')
     )) return true;
     if (entryPointIds.has(journey.entry_point_id)) return true;
-    if (exclusivelyOwnedEntityNames.size === 0) return false;
+    if (linkedByComprehension || exclusivelyOwnedEntityNames.size === 0) return false;
     const primaryNames = primaryNamesByJourney.get(journey.id);
     return Boolean(primaryNames && [...primaryNames].some(name =>
       capabilityEntities.has(name) && exclusivelyOwnedEntityNames.has(name)));

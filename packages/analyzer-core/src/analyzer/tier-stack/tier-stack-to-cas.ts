@@ -17,6 +17,9 @@ import {
   type CASNode,
   type CASOutput,
   type CASRouteTableEntry,
+  type CASTestCase,
+  type CASTestSuite,
+  type CASTestSummary,
   type DeployableEvidence,
   type CASSystem,
 } from '../../types/cas.types';
@@ -220,6 +223,45 @@ function stepGraphOf(flow: TierStackFlow): FlowStepGraph | undefined {
     kind: STEP_EDGE_KINDS[edge.kind] ?? 'sequence',
   }));
   return edges.length === 0 ? undefined : { edges };
+}
+
+const END_TO_END = /(^|\/)(e2e|playwright|cypress)(\/|\.|$)/i;
+
+function testSuitesOf(index: TierStackIndex): CASTestSuite[] {
+  const byFile = new Map<string, CASTestCase[]>();
+  for (const held of index.verification?.cases ?? []) {
+    const file = index.files[held.file]?.path ?? '';
+    const cases = byFile.get(file) ?? [];
+    cases.push({
+      id: held.id,
+      name: held.name,
+      test_type: END_TO_END.test(file) ? 'e2e' : 'unit',
+      status: { skipped: false, focused: false, flaky: false },
+    });
+    byFile.set(file, cases);
+  }
+  return [...byFile].map(([file, tests]) => ({
+    id: `suite:${file}`,
+    name: path.basename(file),
+    file_path: file,
+    test_type: END_TO_END.test(file) ? 'e2e' : 'unit',
+    framework: '',
+    tests,
+  }));
+}
+
+function testSummaryOf(suites: CASTestSuite[]): CASTestSummary {
+  const cases = suites.flatMap(suite => suite.tests);
+  const endToEnd = cases.filter(held => held.test_type === 'e2e').length;
+  return {
+    total_tests: cases.length,
+    by_type: { unit: cases.length - endToEnd, integration: 0, e2e: endToEnd, acceptance: 0, bdd: 0, other: 0 },
+    by_status: { passing: 0, failing: 0, skipped: 0, flaky: 0, unknown: cases.length },
+    execution: { status: 'not-run', source: 'static-analysis', observed_tests: 0 },
+    coverage: { status: 'not-measured' },
+    mocks: { total: 0 },
+    fixtures: { total: 0 },
+  };
 }
 
 function flowsOf(index: TierStackIndex): CASOutput['flows'] {
@@ -576,6 +618,7 @@ function casOf(index: TierStackIndex, displayName?: string): CASOutput {
   const nodes = nodesOf(index);
   const edges = edgesOf(index);
   const entry_points = entryPointsOf(index);
+  const suites = testSuitesOf(index);
   const analysis_id = createHash('sha256')
     .update(`${index.root}:${nodes.length}:${edges.length}`)
     .digest('hex')
@@ -603,6 +646,8 @@ function casOf(index: TierStackIndex, displayName?: string): CASOutput {
     deployable_evidence: deployablesOf(index),
     enhanced_system_purpose: purposeOf(index),
     flows: flowsOf(index),
+    test_suites: suites,
+    test_summary: testSummaryOf(suites),
     dependencies: dependenciesOf(index),
     analyzer_contributions: [contributionOf(index, nodes, edges, entry_points)],
     progressive_levels: levelsOf(nodes),

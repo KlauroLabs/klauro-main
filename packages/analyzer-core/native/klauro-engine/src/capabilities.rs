@@ -637,6 +637,11 @@ fn built(held: Held, lanes: &BTreeMap<&str, (&Family, &Vec<&Flow>)>, fields: &Fi
     if capability.delivered.is_empty() {
         return None;
     }
+    if capability.delivered.iter().all(|held| held.role != "primary") {
+        for held in capability.delivered.iter_mut() {
+            held.role = "primary";
+        }
+    }
     capability.evidence = told.join("\n");
     capability.delivered.sort_by(|left, right| left.flow.cmp(&right.flow));
     capability.delivered.dedup_by(|left, right| left.flow == right.flow);

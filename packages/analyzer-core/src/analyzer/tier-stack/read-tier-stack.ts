@@ -114,6 +114,15 @@ export interface TierStackShipDeclaration {
   at: string;
 }
 
+export interface TierStackTestCase {
+  id: string;
+  name: string;
+  file: number;
+  shape?: string;
+  assertions?: number;
+  project?: string;
+}
+
 export interface TierStackSubProject {
   id: string;
   name: string;
@@ -217,6 +226,7 @@ export interface TierStackIndex {
   roles?: { roles?: Array<{ node: string; role: string }> };
   scope?: { deployables?: TierStackDeployable[] };
   partition?: { sub_projects?: TierStackSubProject[] };
+  verification?: { cases?: TierStackTestCase[] };
   comprehension?: {
     products?: TierStackProduct[];
     capabilities?: TierStackCapability[];
