@@ -2075,12 +2075,18 @@ export function rankMaterializedFlows(cas: CASOutput): FlowConcept[] {
 export function computeFlowConcepts(cas: CASOutput, opts: ComputeFlowConceptsOptions = {}): FlowConcept[] {
   if (cas.flows) {
     const target = String(opts.target || '').trim().toLowerCase();
+    const capabilityNames = new Map((cas.capabilities || []).map(capability => [capability.id, capability.name]));
+    const routed = /^([\w/]+)#(\w+)$/.exec(target);
     const matching = target
-      ? cas.flows.filter(flow => [
+      ? cas.flows.filter(flow => (routed !== null && flow.entry_point.toLowerCase().includes(`${routed[1]}_controller.rb:function:${routed[2]}:`)) || [
           flow.flow_id,
           flow.name,
           flow.intent,
           flow.entry_point,
+          ...(flow.capability_relationships || []).flatMap(relationship => [
+            relationship.capability_id,
+            capabilityNames.get(relationship.capability_id),
+          ]),
           ...flow.entities,
           ...flow.steps.flatMap(step => [
             step.step_id,

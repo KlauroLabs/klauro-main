@@ -63,7 +63,7 @@ test('conceptual + semantic-coverage responses are cached byte-identical and inv
   git(repo, ['init', '-b', 'main']);
   git(repo, ['config', 'user.email', 'test@example.com']);
   git(repo, ['config', 'user.name', 'Test User']);
-  fs.writeFileSync(path.join(repo, 'app.py'), 'def create_order(order):\n    return save_order(order)\n\n\ndef save_order(order):\n    return order\n');
+  fs.writeFileSync(path.join(repo, 'app.py'), 'from fastapi import FastAPI\n\napp = FastAPI()\n\n\n@app.post("/orders")\ndef create_order(order: dict):\n    return save_order(order)\n\n\ndef save_order(order):\n    return order\n');
   git(repo, ['add', '.']);
   git(repo, ['commit', '-m', 'initial commit']);
 
