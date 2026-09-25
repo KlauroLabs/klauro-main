@@ -1503,6 +1503,7 @@ pub fn derive(
             }
             if let Some(other) = handlers.get(unit)
                 && *other != entry.id
+                && !matches!(entry.kind, "export" | "test")
             {
                 into.push((*other).to_string());
             }
@@ -1664,6 +1665,9 @@ pub fn derive(
         received.entry(entry.name.as_str()).or_default().push(entry.id.clone());
     }
     for flow in flows.iter_mut() {
+        if matches!(flow.kind, "export" | "test") {
+            continue;
+        }
         let handed: Vec<String> = flow
             .steps
             .iter()
@@ -1912,14 +1916,17 @@ fn link_across_parts(
                 .join(" | ")
         );
     }
-    for holding in speaking.values() {
+    for ((family, _), holding) in speaking.iter() {
         let parts: HashSet<Option<&str>> = holding.iter().map(|(_, part, _)| *part).collect();
         if parts.len() < 2 || parts.len() > SHARED_BY_AT_MOST {
             continue;
         }
         for (at, part, role) in holding {
+            if !sends(&flows[*at]) {
+                continue;
+            }
             for (other, elsewhere, played) in holding {
-                if elsewhere == part || !answering(role, played) {
+                if elsewhere == part || !answering(role, played) || !receives(&flows[*other], family) {
                     continue;
                 }
                 linked[*at].push(flows[*other].entry_point.clone());
@@ -1937,6 +1944,22 @@ fn link_across_parts(
         if flow.standing == "reading" {
             flow.standing = "proximal";
         }
+    }
+}
+
+fn receives(flow: &Flow, family: &str) -> bool {
+    match (family, flow.kind) {
+        (_, "export" | "test") => false,
+        ("contract", kind) => matches!(kind, "rpc" | "graphql"),
+        _ => true,
+    }
+}
+
+fn sends(flow: &Flow) -> bool {
+    match flow.kind {
+        "test" => false,
+        "export" => flow.steps.iter().any(|step| matches!(step.kind, "call" | "hand_off" | "raise")),
+        _ => true,
     }
 }
 

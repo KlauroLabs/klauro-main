@@ -520,10 +520,33 @@ pub fn subscribed(messages: &[Message], calls: &[CallFact], graph: &crate::share
             by.entry(held).or_insert(verb);
         }
     }
-    if named.is_empty() {
-        return Vec::new();
-    }
+    let raised: HashSet<&str> = calls
+        .iter()
+        .filter(|call| call.constructs)
+        .map(|call| crate::names::leaf(&call.callee))
+        .collect();
     let mut found = Vec::new();
+    for message in messages.iter().filter(|message| !named.contains(message.message.as_str()) && (raised.contains(message.message.as_str()) || !message.senders.is_empty())) {
+        for handler in &message.handlers {
+            let Some(at) = graph.at(handler) else { continue };
+            let node = &graph.nodes[at];
+            found.push(crate::entry_exit::EntryPoint {
+                id: format!("entry:{handler}:event"),
+                kind: "event",
+                name: message.message.clone(),
+                method: None,
+                path: None,
+                handler: handler.clone(),
+                file: node.file,
+                line: node.span.line,
+                guards: Vec::new(),
+                registrar: "raised in process".to_string(),
+            });
+        }
+    }
+    if named.is_empty() {
+        return found;
+    }
     for message in messages.iter().filter(|message| named.contains(message.message.as_str())) {
         for handler in &message.handlers {
             let Some(at) = graph.at(handler) else { continue };

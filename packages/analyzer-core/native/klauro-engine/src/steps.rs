@@ -408,7 +408,7 @@ impl<'a> Reader<'a> {
 
     fn operating_on_a_record(&self, target: u32, when: &'static str, line: u32, unit: u32) -> Option<Action> {
         let node = &self.nodes[target as usize];
-        if node.kind.is_type() && self.events.contains(node.name.as_str()) {
+        if self.events.contains(node.name.as_str()) && (node.kind.is_type() || self.record_owning(target).is_none()) {
             return Some(Action { kind: "raise", object: Some(node.name.clone()), doing: None, when, unit, line });
         }
         if node.kind.is_type() {
@@ -452,6 +452,9 @@ impl<'a> Reader<'a> {
                 at_line.push((call.line, call.column, None, when_of(&call.context), None, Some(call)));
             } else if HANDS_ON.contains(&named.to_ascii_lowercase().as_str()) {
                 handing_on.push(call);
+            } else if call.constructs && let Some(event) = self.events.get(named).copied() {
+                at_line.push((call.line, call.column, None, when_of(&call.context), None, Some(call)));
+                class_calls.push((call.line, call.column, "raise", event));
             } else if let Some((kind, record)) = self.on_a_record_class(call) {
                 at_line.push((call.line, call.column, None, when_of(&call.context), None, Some(call)));
                 class_calls.push((call.line, call.column, kind, record));
