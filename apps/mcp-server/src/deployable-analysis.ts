@@ -18,7 +18,7 @@ import {
 import { reachabilityEdgePairs } from '../../../packages/analyzer-core/src/analyzer/core/reachability-index';
 import { assertValidCasTree } from '../../../packages/analyzer-core/src/analyzer/core/recursive-cas';
 import { buildCasTerminality } from '../../../packages/analyzer-core/src/analyzer/core/terminality';
-import { partBornAt } from './engine-part';
+import { linkedCapabilities, partBornAt } from './engine-part';
 import { deployableAnalysisCache } from './deployable-analysis-cache';
 import { projectCasChild, type CASChildProjectedValues } from './cas-child-projection';
 
@@ -1325,7 +1325,7 @@ export function sliceDeployableAnalysis(cas: CASOutput, deployable: DeployableEv
     entities: dataEntities,
     data_lineage: filterDataLineage(cas.data_lineage, reachableFiles),
     capabilities: bornHere?.capabilities?.length ? bornHere.capabilities : scopeCapabilitiesToSlice(
-      filterCapabilities(cas.capabilities, includedEntryPointIds),
+      linkedCapabilities(cas, ownFlows) ?? filterCapabilities(cas.capabilities, includedEntryPointIds),
       includedEntryPointIds,
       containedFlowIds,
     ),

@@ -11,3 +11,9 @@ export function partBornAt(cas: CASOutput, root: string): CASOutput | undefined 
   }
   return undefined;
 }
+
+export function linkedCapabilities(cas: CASOutput, flows: NonNullable<CASOutput['flows']>): CASOutput['capabilities'] | undefined {
+  const linked = new Set(flows.flatMap(flow => (flow.capability_relationships || []).map(relationship => relationship.capability_id)));
+  const held = (cas.capabilities || []).filter(capability => linked.has(capability.id));
+  return held.length > 0 ? held : undefined;
+}

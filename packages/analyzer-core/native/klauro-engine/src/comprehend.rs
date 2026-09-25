@@ -559,11 +559,10 @@ fn describe_one(
             || capability.project.as_deref() == project
             || project.is_some_and(|part| capability.also_in.iter().any(|held| held == part))
     };
-    let capabilities: Vec<&Capability> = held
-        .iter()
-        .filter(|capability| its(capability))
-        .filter(|capability| capability.place != Some("supporting"))
-        .collect();
+    let mine: Vec<&Capability> = held.iter().filter(|capability| its(capability)).collect();
+    let leading: Vec<&Capability> =
+        mine.iter().copied().filter(|capability| capability.place != Some("supporting")).collect();
+    let capabilities = if leading.is_empty() { mine } else { leading };
     if capabilities.is_empty() {
         return None;
     }
