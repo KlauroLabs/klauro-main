@@ -315,6 +315,91 @@ fn hold_together(said: &str, told: &BTreeMap<String, String>, held: &mut [Held])
     }
 }
 
+fn object_of(family: &str) -> &str {
+    family.split_once(':').map(|(_, object)| object).unwrap_or(family)
+}
+
+fn terminal_first(family: &str) -> bool {
+    matches!(family.split(':').next().unwrap_or_default(), "changes" | "hands on" | "calls" | "acts")
+}
+
+fn join_the_same(said: &str, held: &mut Vec<Held>) {
+    let mut questions: BTreeMap<String, crate::jev::Question> = BTreeMap::new();
+    let mut pairs: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    for first in 0..held.len() {
+        for second in first + 1..held.len() {
+            let shared = held[first]
+                .families
+                .iter()
+                .any(|family| held[second].families.iter().any(|other| object_of(other) == object_of(family)));
+            if !shared {
+                continue;
+            }
+            let key = format!("j{first}-{second}");
+            let told = |other: &Held| format!("{}, for {}: {}", other.name, other.audience, other.description);
+            questions.insert(
+                key.clone(),
+                crate::jev::Question {
+                    kind: "noul",
+                    instructions: format!(
+                        "FIRST: {}\nSECOND: {}\n\nThese are one outcome for the same person: someone who comes for one of them would say they came for the other, rather than for a different reason",
+                        told(&held[first]),
+                        told(&held[second])
+                    ),
+                    criteria: BTreeMap::new().into(),
+                },
+            );
+            pairs.insert(key, (first, second));
+        }
+    }
+    if questions.is_empty() {
+        return;
+    }
+    let answers = crate::jev::decide(&format!("A software system describes itself like this:\n{said}"), questions);
+    let mut into: Vec<usize> = (0..held.len()).collect();
+    let root = |into: &Vec<usize>, mut at: usize| {
+        while into[at] != at {
+            at = into[at];
+        }
+        at
+    };
+    for (key, (first, second)) in pairs {
+        if answers.get(&key).map(crate::jev::Decision::settled).is_some_and(|held| held >= HELD_TOGETHER) {
+            let (left, right) = (root(&into, first), root(&into, second));
+            if left != right {
+                let keeper = match held[right].families.iter().any(|family| terminal_first(family))
+                    && !held[left].families.iter().any(|family| terminal_first(family))
+                {
+                    true => right,
+                    false => left,
+                };
+                let other = if keeper == left { right } else { left };
+                into[other] = keeper;
+            }
+        }
+    }
+    let mut kept: Vec<Held> = Vec::new();
+    let mut slot_of: BTreeMap<usize, usize> = BTreeMap::new();
+    let taken: Vec<Held> = std::mem::take(held);
+    let roots: Vec<usize> = (0..taken.len()).map(|at| root(&into, at)).collect();
+    let mut pending: Vec<(usize, Held)> = Vec::new();
+    for (at, other) in taken.into_iter().enumerate() {
+        match roots[at] == at {
+            true => {
+                slot_of.insert(at, kept.len());
+                kept.push(other);
+            }
+            false => pending.push((roots[at], other)),
+        }
+    }
+    for (keeper, other) in pending {
+        if let Some(slot) = slot_of.get(&keeper) {
+            kept[*slot].families.extend(other.families);
+        }
+    }
+    *held = kept;
+}
+
 fn consolidate_within(said: &str, held: Vec<Held>) -> Vec<Held> {
     if held.len() < 2 {
         return held;
@@ -418,6 +503,7 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str) -> Vec
             }
             hold_together(said, &told, &mut held);
             place(said, &told, &mut held, &mut plumbing);
+            join_the_same(said, &mut held);
             (held, plumbing)
         }
     };
