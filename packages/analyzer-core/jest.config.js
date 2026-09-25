@@ -118,7 +118,7 @@ module.exports = {
   maxWorkers: '50%',
   
   // Cache directory
-  cacheDirectory: '<rootDir>/node_modules/.cache/jest',
+  cacheDirectory: require('path').join(require('os').tmpdir(), 'klauro-jest-cache'),
   
   // Ignore patterns
   testPathIgnorePatterns: [
