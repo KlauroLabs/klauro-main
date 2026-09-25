@@ -83,17 +83,6 @@ export interface CASOutput extends CASSourceInputCatalog {
   behavior_surfaces?: SystemCapability[];
   system_purpose?: SystemPurpose;
 
-
-
-
-
-
-
-
-
-
-
-
   user_journeys?: CASUserJourney[];
   user_journey_summary?: CASUserJourneySummary;
   data_lineage?: CASEntityLineage[];
@@ -1124,7 +1113,8 @@ export type CASParadigmDeviationKind =
   | 'direct-data-access'
   | 'layer-skipping-call'
   | 'unguarded-entry-point'
-  | 'parallel-implementation';
+  | 'parallel-implementation'
+  | 'convention-departure';
 
 export interface CASParadigmDeviation {
   file: string;
@@ -1247,6 +1237,7 @@ export interface CASProductMapCapability {
   journeys: Array<{ id: string; name: string }>;
   entities: string[];
   tests_present: boolean;
+  confidence?: number;
   risk_level: 'low' | 'medium' | 'high';
 }
 
@@ -3622,6 +3613,7 @@ export interface SystemCapability {
   related_domains: string[];
   criticality: 'critical' | 'high' | 'medium' | 'low';
   criticality_factors: string[];
+  confidence?: number;
   composition_provenance?: CASComposedClaimProvenance[];
 
 

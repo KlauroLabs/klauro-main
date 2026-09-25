@@ -3178,6 +3178,7 @@ async function handleAccountApi(
         ...conceptualDescriptionFields(capability),
         category: capability.category,
         criticality: capability.criticality,
+        ...(capability.confidence === undefined ? {} : { confidence: capability.confidence }),
         related_flow_total: capability.related_flows?.length || flowTotalsOfCapability.get(capability.id) || flowEdgesOfCapability.get(capability.id)?.length || 0,
         related_flows: flowEdgesOfCapability.get(capability.id) || [],
       }));

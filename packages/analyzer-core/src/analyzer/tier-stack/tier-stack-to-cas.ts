@@ -1,4 +1,5 @@
 import { createHash } from 'crypto';
+import { conformanceOf, patternsOf, projectsOfFound, violationsOf } from './tier-stack-structure';
 import * as path from 'path';
 
 import {
@@ -361,6 +362,7 @@ function capabilitiesOf(index: TierStackIndex): CASOutput['capabilities'] {
       related_domains: capability.audience === undefined ? [] : [capability.audience],
       criticality: (capability.changes ?? []).length > 0 ? ('high' as const) : ('medium' as const),
       criticality_factors: (capability.changes ?? []).map(held => `changes ${held}`),
+      ...(capability.confidence === undefined ? {} : { confidence: capability.confidence }),
       evidence_role: 'product-outcome' as const,
       evidence_role_reasons: reasonsFor(capability),
     };
@@ -575,6 +577,18 @@ function within(index: TierStackIndex, project: string): TierStackIndex {
       dependencies: (index.dependencies.dependencies ?? []).filter(held => (held.projects ?? []).includes(project)),
     },
     services: (index.services ?? []).filter(held => (held.projects ?? []).includes(project)),
+    patterns: {
+      found: (index.patterns?.found ?? []).filter(found => projectsOfFound(found, index).has(project)),
+      conformance: (index.patterns?.conformance ?? []).filter(held => held.project === project),
+    },
+    principles: {
+      solid: [],
+      anti_patterns: (index.principles?.anti_patterns ?? []).map(anti => ({
+        ...anti,
+        examples: (anti.examples ?? []).filter(example => held.has(example.split(' (')[0].trim())),
+      })),
+    },
+    conformance: { conventions: [] },
     edges: (index.edges ?? []).filter(edge => held.has(edge.source) && held.has(edge.target)),
     entry_points: (index.entry_points ?? []).filter(entry => held.has(entry.handler)),
     exit_points: (index.exit_points ?? []).filter(exit => held.has(exit.source)),
@@ -661,7 +675,9 @@ function casOf(index: TierStackIndex, displayName?: string): CASOutput {
       root_path: index.root,
       technologies: technologiesOf(index, path.basename(index.root)),
     },
-    architecture_summary: architectureOf(index, nodes),
+    architecture_summary: { ...architectureOf(index, nodes), architectural_patterns: patternsOf(index) },
+    paradigm_conformance: conformanceOf(index),
+    principle_violations: violationsOf(index),
     route_table: routesOf(index),
     nodes,
     edges,

@@ -171,6 +171,7 @@ function buildCapabilities(cas: CASOutput, journeys: CASUserJourney[]): CASProdu
       entities: [...new Set(entityNames)].sort((a, b) => a.localeCompare(b)),
       tests_present: testsPresent,
       risk_level: capabilityRiskLevel(capability, linked, testsPresent),
+      ...(capability.confidence === undefined ? {} : { confidence: capability.confidence }),
     } satisfies CASProductMapCapability;
   });
 

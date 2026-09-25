@@ -105,6 +105,7 @@ export interface TierStackCapability {
   touches?: string[];
   project?: string;
   grounding?: TierStackGrounding;
+  confidence?: number;
   delivered?: Array<{ flow: string; role: string; rationale: string }>;
 }
 
@@ -224,6 +225,17 @@ export interface TierStackIndex {
   };
   architecture?: { shape?: string; routes?: number; serving?: number };
   services?: Array<{ name: string; kind: string; projects?: string[] }>;
+  patterns?: {
+    found?: Array<{ pattern: string; family: string; evidence: string; count: number; examples?: string[]; projects?: string[] }>;
+    conformance?: Array<{ paradigm: string; project?: string; population: number; following: number; departing?: string[] }>;
+  };
+  principles?: {
+    solid?: Array<{ principle: string; reads_as: string; population: number; following: number; departing?: string[] }>;
+    anti_patterns?: Array<{ anti_pattern: string; reads_as: string; count: number; examples?: string[] }>;
+  };
+  conformance?: {
+    conventions?: Array<{ convention: string; shape: string; population: number; following: number; departing?: string[] }>;
+  };
   roles?: { roles?: Array<{ node: string; role: string }> };
   scope?: { deployables?: TierStackDeployable[] };
   partition?: { sub_projects?: TierStackSubProject[] };
