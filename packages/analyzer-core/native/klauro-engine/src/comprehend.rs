@@ -180,6 +180,30 @@ pub(crate) fn changes_something(exit: &ExitPoint) -> bool {
     changes(exit)
 }
 
+const FIELDS_TOLD: usize = 10;
+
+const INHERITED_AT_MOST: usize = 4;
+
+fn with_inherited(named: &HashMap<&str, Vec<Field>>, extending: &HashMap<&str, Vec<&str>>, id: &str) -> Vec<Field> {
+    let mut held: Vec<Field> = Vec::new();
+    let mut seen: HashSet<&str> = HashSet::default();
+    let mut pending: Vec<(&str, usize)> = vec![(id, 0)];
+    while let Some((at, depth)) = pending.pop() {
+        if !seen.insert(at) {
+            continue;
+        }
+        for field in named.get(at).into_iter().flatten() {
+            if !held.iter().any(|kept| kept.name == field.name) {
+                held.push(field.clone());
+            }
+        }
+        if depth < INHERITED_AT_MOST {
+            pending.extend(extending.get(at).into_iter().flatten().map(|base| (*base, depth + 1)));
+        }
+    }
+    held
+}
+
 fn changes(exit: &ExitPoint) -> bool {
     let operation = exit.operation.to_ascii_lowercase();
     match exit.kind {
@@ -706,7 +730,15 @@ fn test_capabilities(capabilities: &mut Vec<Capability>, spoken: &str, level: &s
     let tests: Vec<(String, String)> = capabilities
         .iter()
         .map(|capability| {
-            let told: String = capability.evidence.chars().take(EVIDENCE_TESTED).collect();
+            let told: String = capability
+                .evidence
+                .lines()
+                .filter(|line| !line.trim_start().starts_with(crate::capabilities::RECORDS_HOLD))
+                .collect::<Vec<_>>()
+                .join("\n")
+                .chars()
+                .take(EVIDENCE_TESTED)
+                .collect();
             let facts = format!(
                 "FACTS read from the code about what it delivers:\n{}\n\n\
                  PROPOSED CAPABILITY: {}\nPROPOSED DESCRIPTION: {}\nFOR: {}",
@@ -722,7 +754,7 @@ fn test_capabilities(capabilities: &mut Vec<Capability>, spoken: &str, level: &s
         })
         .collect();
     let context = format!("A software system describes itself like this:\n{spoken}");
-    let context = format!("{context}\n\u{1}{level}");
+    let context = format!("{context}\n\u{1}{level}\u{1}{}", crate::author::questions_asked());
     let judged = crate::memory::each("judged", &context, &tests, |missing| {
         crate::author::test_capabilities(context.split('\u{1}').next().unwrap_or_default(), missing, level)
     });
@@ -751,7 +783,7 @@ fn test_capabilities(capabilities: &mut Vec<Capability>, spoken: &str, level: &s
         let delivers = grounding.delivers();
         if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
             eprintln!(
-                "capability {:<44} supported {:.2} invented {:.2} outcome {:.2} scope {:.2} universal {:.2} mechanism {:.2} -> {} {}",
+                "capability {:<44} supported {:.2} invented {:.2} outcome {:.2} scope {:.2} universal {:.2} mechanism {:.2} hollow {:.2} -> {} {}",
                 capability.name.as_deref().unwrap_or(""),
                 grounding.supported,
                 grounding.invented,
@@ -759,6 +791,7 @@ fn test_capabilities(capabilities: &mut Vec<Capability>, spoken: &str, level: &s
                 grounding.scope.unwrap_or(0.0),
                 grounding.universal.unwrap_or(1.0),
                 grounding.mechanism.unwrap_or(0.0),
+                grounding.hollow.unwrap_or(0.0),
                 capability.standing,
                 if delivers { "kept" } else { "absent" }
             );
@@ -1035,6 +1068,15 @@ pub fn author(
             ),
         );
     }
+    let fields: crate::capabilities::Fields = held
+        .entities
+        .iter()
+        .filter(|entity| !entity.named_fields.is_empty())
+        .map(|entity| {
+            let named: Vec<&str> = entity.named_fields.iter().map(|field| field.name.as_str()).take(FIELDS_TOLD).collect();
+            (entity.declared_as.clone(), named.join(", "))
+        })
+        .collect();
     let started = std::time::Instant::now();
     let reaching = rayon::ThreadPoolBuilder::new()
         .num_threads(crate::author::reaching_at_once(REACHING_AT_ONCE))
@@ -1053,7 +1095,7 @@ pub fn author(
                     let flows: Vec<&Flow> = held.flows.iter().filter(|flow| &flow.project == part).collect();
                     let said = spoken_within(&spoken, part.as_deref());
                     let remembered_as = format!("{}\u{1}{}", told.scope, part.as_deref().unwrap_or(""));
-                    let mut found = crate::capabilities::of_a_part(&flows, &said, &remembered_as);
+                    let mut found = crate::capabilities::of_a_part(&flows, &said, &remembered_as, &fields);
                     test_capabilities(&mut found, &said, if part.is_some() { "this part of the system" } else { "this system" });
                     say_what_each_is_for(&mut found, &said);
                     let described = match (several, part.as_deref()) {
@@ -2443,6 +2485,10 @@ fn entities(
     let mut fields: HashMap<&str, u32> = HashMap::default();
     let mut named_fields: HashMap<&str, Vec<Field>> = HashMap::default();
     let mut pointing: HashMap<&str, Vec<Reference>> = HashMap::default();
+    let mut extending: HashMap<&str, Vec<&str>> = HashMap::default();
+    for edge in edges.iter().filter(|edge| edge.kind == EdgeKind::Extends) {
+        extending.entry(edge.source.as_str()).or_default().push(edge.target.as_str());
+    }
     for edge in edges {
         if edge.kind == EdgeKind::HasField {
             *fields.entry(edge.source.as_str()).or_insert(0) += 1;
@@ -2722,7 +2768,7 @@ fn entities(
                 .map(|held| held.2)
                 .unwrap_or(0),
             declared_as: unquoted(&node.name).to_string(),
-            named_fields: named_fields.get(node.id.as_str()).cloned().unwrap_or_default(),
+            named_fields: with_inherited(&named_fields, &extending, node.id.as_str()),
             name: None,
             description: None,
             grounding: None,

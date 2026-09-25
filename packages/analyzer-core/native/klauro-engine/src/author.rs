@@ -75,6 +75,8 @@ pub struct Grounding {
     pub mechanism: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hollow: Option<f64>,
     pub graded: bool,
 }
 
@@ -234,6 +236,7 @@ pub fn ground(
                     outcome: settled("outcome", 0.0),
                     universal: None,
                     mechanism: None,
+                    hollow: None,
                     scope: None,
                     graded: crate::jev::asked(),
                     specific: answers
@@ -654,6 +657,7 @@ pub fn test_description(facts: &str) -> Grounding {
         outcome: settled("outcome", 0.0),
         universal: None,
         mechanism: None,
+        hollow: None,
         scope: None,
         graded: crate::jev::asked(),
         specific: answers
@@ -662,6 +666,10 @@ pub fn test_description(facts: &str) -> Grounding {
             .map(|score| (score * 10.0).round() / 10.0)
             .unwrap_or_else(|| unanswered(0.0)),
     }
+}
+
+pub fn questions_asked() -> String {
+    asking_of("").into_iter().map(|(named, question)| format!("{named}:{}", question.instructions)).collect::<Vec<_>>().join("\n")
 }
 
 fn asking_of(facts: &str) -> BTreeMap<&'static str, crate::jev::Question> {
@@ -691,10 +699,18 @@ fn asking_of(facts: &str) -> BTreeMap<&'static str, crate::jev::Question> {
             },
         ),
         (
+            "hollow",
+            crate::jev::Question {
+                kind: "noul",
+                instructions: format!("{facts}\n\nWhat the proposed capability's name acts on is a word that only says something is stored — items, records, entries, objects, resources, things — rather than a word for what that thing is, such as an order, a gift card, a post or a booking"),
+                criteria: BTreeMap::new().into(),
+            },
+        ),
+        (
             "mechanism",
             crate::jev::Question {
                 kind: "noul",
-                instructions: format!("{facts}\n\nThe proposed capability is named for how it is reached or what it is built from — a page, a screen, a route, an API, a form, an endpoint, a webhook, a job, a record kept for the system's own bookkeeping — rather than for what someone ends up with"),
+                instructions: format!("{facts}\n\nThe proposed capability is named for how it is reached or what it is built from — a page, a screen, a route, an API, a form, an endpoint, a webhook, a job, a record kept for the system's own bookkeeping rather than for what someone ends up with"),
                 criteria: BTreeMap::new().into(),
             },
         ),
@@ -757,6 +773,7 @@ pub fn test_capabilities(spoken: &str, held: &[(String, String)], level: &str) -
                     outcome: settled("outcome", 0.0),
                     universal: Some(settled("universal", 1.0)),
                     mechanism: Some(settled("mechanism", 0.0)),
+                    hollow: Some(settled("hollow", 0.0)),
                     scope: Some(settled("scope", 0.0)),
                     graded: crate::jev::asked(),
                     specific: answers
@@ -791,6 +808,7 @@ impl Grounding {
             && scope >= GROUNDED
             && (self.universal.unwrap_or(0.0) < GROUNDED || scope >= CLAIMED_BY_ITS_OWN_WORDS)
             && self.mechanism.unwrap_or(0.0) < GROUNDED
+            && self.hollow.unwrap_or(0.0) < GROUNDED
     }
 
     pub fn holds(&self) -> bool {

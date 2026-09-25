@@ -33,6 +33,12 @@ struct RememberedCapability {
     families: BTreeSet<String>,
 }
 
+pub(crate) type Fields = BTreeMap<String, String>;
+
+const RECORDS_DESCRIBED: usize = 4;
+
+pub(crate) const RECORDS_HOLD: &str = "what the records it touches hold:";
+
 fn recalled(key: &str) -> Option<Remembered> {
     crate::memory::recalled("capabilities", key)
 }
@@ -164,7 +170,7 @@ pub(crate) fn terminality_of(family: &Family) -> &'static str {
     }
 }
 
-fn evidence_of(flows: &[&Flow], family: &Family) -> String {
+fn evidence_of(flows: &[&Flow], family: &Family, fields: &Fields) -> String {
     let mut surfaces: Vec<String> = flows.iter().map(|flow| surface_of(flow)).collect();
     settle(&mut surfaces);
     let more = surfaces.len().saturating_sub(SURFACES_SHOWN);
@@ -194,11 +200,18 @@ fn evidence_of(flows: &[&Flow], family: &Family) -> String {
         false => held.join(", "),
     };
     let (_, object) = family.key.split_once(':').unwrap_or(("", family.key.as_str()));
+    let kept: Vec<String> = writes
+        .iter()
+        .chain(reads.iter())
+        .filter_map(|record| fields.get(record).map(|held| format!("{record} ({held})")))
+        .take(RECORDS_DESCRIBED)
+        .collect();
     format!(
-        "  outcome ({}): {}, which is {}\n  entered as: {}\n  reached through: {}{}\n  guarded by: {}\n  what its paths do:\n{}\n  writes: {}\n  reads: {}\n  reaches: {}\n  paths: {}",
+        "  outcome ({}): {}, which is {}\n  {RECORDS_HOLD} {}\n  entered as: {}\n  reached through: {}{}\n  guarded by: {}\n  what its paths do:\n{}\n  writes: {}\n  reads: {}\n  reaches: {}\n  paths: {}",
         terminality_of(family),
         object,
         family.basis,
+        listed(&kept),
         kinds.join(", "),
         surfaces.join(", "),
         match more {
@@ -449,7 +462,7 @@ fn consolidate_within(said: &str, held: Vec<Held>) -> Vec<Held> {
     joined
 }
 
-pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str) -> Vec<Capability> {
+pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields: &Fields) -> Vec<Capability> {
     if !crate::author::asked() || flows.is_empty() {
         return Vec::new();
     }
@@ -462,7 +475,7 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str) -> Vec
         .map(|(at, (family, lane))| (format!("f{at}"), family, lane))
         .collect();
     let told: BTreeMap<String, String> =
-        keyed.iter().map(|(id, family, lane)| (id.clone(), evidence_of(lane, family))).collect();
+        keyed.iter().map(|(id, family, lane)| (id.clone(), evidence_of(lane, family, fields))).collect();
     let known: BTreeSet<String> = told.keys().cloned().collect();
     let key_of: BTreeMap<&str, &str> =
         keyed.iter().map(|(id, family, _)| (id.as_str(), family.key.as_str())).collect();
@@ -535,7 +548,7 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str) -> Vec
         keyed.iter().map(|(id, family, lane)| (id.as_str(), (*family, *lane))).collect();
     let mut formed: Vec<Capability> = held
         .into_iter()
-        .filter_map(|other| built(other, &lanes))
+        .filter_map(|other| built(other, &lanes, fields))
         .collect();
     formed.sort_by(|left, right| left.id.cmp(&right.id));
     formed
@@ -570,7 +583,7 @@ fn recollected(
     (held, plumbing)
 }
 
-fn built(held: Held, lanes: &BTreeMap<&str, (&Family, &Vec<&Flow>)>) -> Option<Capability> {
+fn built(held: Held, lanes: &BTreeMap<&str, (&Family, &Vec<&Flow>)>, fields: &Fields) -> Option<Capability> {
     let name = held.name.trim().to_string();
     if name.is_empty() {
         return None;
@@ -597,7 +610,7 @@ fn built(held: Held, lanes: &BTreeMap<&str, (&Family, &Vec<&Flow>)>) -> Option<C
     let mut told: Vec<String> = Vec::new();
     for family_id in &held.families {
         let Some((family, lane)) = lanes.get(family_id.as_str()) else { continue };
-        told.push(evidence_of(lane, family));
+        told.push(evidence_of(lane, family, fields));
         if terminality_of(family) == "terminal" || capability.terminality.is_none() {
             capability.terminality = Some(terminality_of(family));
         }
