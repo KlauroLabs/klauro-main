@@ -1119,6 +1119,18 @@ fn plainly_written(held: &str) -> &str {
     held[..end].trim_end_matches('/')
 }
 
+static TOUCAN_NAMESPACES: &[&str] = &["t2", "toucan2.core"];
+
+fn kept_by_toucan(call: &CallFact) -> Option<&'static str> {
+    let (space, operation) = call.callee.rsplit_once('/')?;
+    (TOUCAN_NAMESPACES.contains(&space) && !operation.is_empty() && operation != "table-name").then_some("database")
+}
+
+fn toucan_model(call: &CallFact) -> Option<String> {
+    kept_by_toucan(call)?;
+    call.literals.iter().find_map(|held| held.trim().strip_prefix(":model/").map(str::to_string))
+}
+
 static REQUEST_VERBS: &[&str] = &["delete", "get", "head", "patch", "post", "put", "request"];
 
 static ADDRESS_KEYS: &[&str] = &["endpoint", "path", "url"];
@@ -2076,6 +2088,7 @@ pub fn derive(
             let Some(kind) = bare_exit(call, modules, &files[call.file as usize])
                 .or_else(|| built_into_the_language(call, &files[call.file as usize]))
                 .or_else(|| requested_by_url(call))
+                .or_else(|| kept_by_toucan(call))
             else {
                 return (found, reach);
             };
@@ -2094,7 +2107,7 @@ pub fn derive(
                 file: call.file,
                 line: call.line,
                 awaited: call.context.awaited,
-            addressed: addressed_at(call),
+            addressed: toucan_model(call).or_else(|| addressed_at(call)),
             service: None,
             });
             return (found, reach);

@@ -702,6 +702,12 @@ impl<'a> Extractor<'a> {
                 self.keyword_declaration(node, scope, NodeKind::Class);
                 return;
             }
+            if keyword.rsplit('/').next() == Some("defendpoint")
+                && let Some((verb, path)) = self.endpoint_declared(node)
+            {
+                self.declare_endpoint(node, scope, verb, path);
+                return;
+            }
             if self.spec.keywords.functions.contains(&keyword.as_str()) {
                 self.keyword_declaration(node, scope, NodeKind::Function);
                 return;
@@ -894,6 +900,50 @@ impl<'a> Extractor<'a> {
                 .map(|target| self.text(target).trim().to_string());
         }
         Some(self.text(first).trim().to_string())
+    }
+
+    fn endpoint_declared(&self, node: Node) -> Option<(String, String)> {
+        let mut cursor = node.walk();
+        let parts: Vec<Node> = node.named_children(&mut cursor).skip(1).take(3).collect();
+        let verb = parts
+            .iter()
+            .map(|part| self.text(*part).trim().trim_start_matches(':').to_ascii_uppercase())
+            .find(|word| matches!(word.as_str(), "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS"))?;
+        let path = parts
+            .iter()
+            .map(|part| trim_quotes(self.text(*part).trim()).to_string())
+            .find(|written| written.starts_with('/'))?;
+        Some((verb, path))
+    }
+
+    fn declare_endpoint(&mut self, node: Node, scope: &Scope, verb: String, path: String) {
+        let name = format!("{verb} {path}");
+        let id = self.id("function", &name, node);
+        let owner = scope.type_owner.clone().or_else(|| scope.owner.clone());
+        self.facts.nodes.push(IndexNode {
+            id: id.clone(),
+            name,
+            kind: NodeKind::Function,
+            file: self.file,
+            span: span_of(node),
+            parent: owner.clone(),
+            signature: Some(self.keyword_signature(node)),
+            modifiers: self.published(node),
+            decorators: Vec::new(),
+            type_annotation: None,
+            documentation: None,
+            project: None,
+            callback_of: Some(format!("defendpoint.{}", verb.to_ascii_lowercase())),
+            registration_label: Some(path),
+        });
+        if let Some(owner) = owner.as_deref() {
+            self.facts.edges.push(IndexEdge { source: owner.to_string(), target: id.clone(), kind: EdgeKind::Contains });
+        }
+        let mut inner = scope.clone();
+        inner.owner = Some(id.clone());
+        inner.callable = Some(id);
+        inner.type_owner = None;
+        self.walk(node, &inner);
     }
 
     fn keyword_declaration(&mut self, node: Node, scope: &Scope, kind: NodeKind) {
