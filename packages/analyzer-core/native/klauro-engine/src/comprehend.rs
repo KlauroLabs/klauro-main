@@ -703,24 +703,21 @@ fn say_what_happens(held: &mut Comprehension, spoken: &str) {
     if told.is_empty() {
         return;
     }
-    let said = crate::memory::each("what happens", spoken, &told, |missing| {
+    let said = crate::memory::each("what happens, named", spoken, &told, |missing| {
         let written = crate::author::what_happens(spoken, missing);
         let evidence: BTreeMap<String, String> = missing.iter().cloned().collect();
-        let proposed: BTreeMap<String, crate::author::Written> = written
-            .iter()
-            .map(|(id, description)| {
-                (id.clone(), crate::author::Written { id: id.clone(), name: String::new(), description: description.clone() })
-            })
-            .collect();
-        let grounded = crate::author::ground(&proposed, &evidence);
+        let grounded = crate::author::ground(&written, &evidence);
         written
             .into_iter()
             .filter(|(id, _)| grounded.get(id).is_some_and(|grounding| grounding.holds()))
             .collect()
     });
     for flow in held.flows.iter_mut() {
-        if let Some(description) = said.get(&flow.id) {
-            flow.description = Some(description.clone());
+        if let Some(written) = said.get(&flow.id) {
+            flow.description = Some(written.description.clone());
+            if !written.name.is_empty() {
+                flow.name = Some(written.name.clone());
+            }
         }
     }
 }
@@ -798,26 +795,6 @@ fn test_capabilities(capabilities: &mut Vec<Capability>, spoken: &str, level: &s
         delivers
     });
 }
-
-pub(crate) fn families_of<'a>(flows: &[&'a Flow]) -> BTreeMap<Family, Vec<&'a Flow>> {
-    let mut grouped: BTreeMap<Family, Vec<&'a Flow>> = BTreeMap::new();
-    for flow in flows.iter() {
-        grouped.entry(family_of(flow)).or_default().push(flow);
-    }
-    if grouped.keys().any(|family| !family.key.starts_with("trigger:")) {
-        grouped.retain(|family, _| !family.key.starts_with("trigger:"));
-    }
-    for lane in grouped.values_mut() {
-        lane.sort_by(|left, right| left.id.cmp(&right.id));
-    }
-    grouped
-}
-
-
-
-
-
-
 
 fn say_what_each_is_for(held: &mut [Capability], spoken: &str) {
     let listed: BTreeMap<String, String> = held
@@ -1168,30 +1145,6 @@ pub fn author(
     };
     held.capabilities = capabilities;
     held.products = products;
-    let delivered: HashMap<&str, (&str, &str)> = held
-        .capabilities
-        .iter()
-        .flat_map(|capability| {
-            let told = (
-                capability.name.as_deref().unwrap_or_default(),
-                capability.description.as_deref().unwrap_or_default(),
-            );
-            capability.flows.iter().map(move |flow| (flow.as_str(), told))
-        })
-        .collect();
-    let spoken_of: HashMap<String, (String, String)> = held
-        .flows
-        .iter()
-        .filter_map(|flow| {
-            let (name, description) = delivered.get(flow.id.as_str())?;
-            Some((flow.id.clone(), ((*name).to_string(), (*description).to_string())))
-        })
-        .collect();
-    for flow in held.flows.iter_mut() {
-        if let Some((name, _)) = spoken_of.get(&flow.id) {
-            flow.name = Some(name.clone());
-        }
-    }
     say_what_happens(held, &spoken);
     let by_id: std::collections::BTreeMap<String, (&crate::author::Written, crate::author::Grounding)> =
         owner
@@ -1611,7 +1564,10 @@ pub fn derive(
                     .filter(|owner| owner.kind.is_type())
                     .map(|owner| owner.name.as_str())
                     .filter(|named| !GENERIC.contains(named))
-                    .map(str::to_string)
+                    .map(|owner| match (entry.kind, named_of.get(entry.handler.as_str())) {
+                        ("rpc" | "graphql", Some(method)) => format!("{owner}.{}", method.name),
+                        _ => owner.to_string(),
+                    })
                     .or_else(|| {
                         GENERIC.contains(&entry.name.as_str()).then(|| {
                             let path = crate::paths::basename(&files[entry.file as usize]);

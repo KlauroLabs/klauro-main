@@ -82,7 +82,7 @@ pub struct Grounding {
     pub graded: bool,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Written {
     pub id: String,
     #[serde(default)]
@@ -313,7 +313,7 @@ pub fn what_it_is_for(spoken_for: &str, listed: &BTreeMap<String, String>) -> BT
 
 const PATHS_PER_CALL: usize = 12;
 
-pub fn what_happens(spoken_for: &str, listed: &[(String, String)]) -> BTreeMap<String, String> {
+pub fn what_happens(spoken_for: &str, listed: &[(String, String)]) -> BTreeMap<String, Written> {
     if !asked() || listed.is_empty() {
         return BTreeMap::new();
     }
@@ -326,16 +326,18 @@ pub fn what_happens(spoken_for: &str, listed: &[(String, String)]) -> BTreeMap<S
         })
 }
 
-fn tell_a_batch(spoken_for: &str, listed: &[(String, String)]) -> BTreeMap<String, String> {
+fn tell_a_batch(spoken_for: &str, listed: &[(String, String)]) -> BTreeMap<String, Written> {
     let prompt = format!(
         "A software system describes itself like this:\n{spoken_for}\n\n\
          Below are paths through it, each with the steps its code takes, in order, read from the \
          code. For each, say in one sentence of at most 25 words what happens when it runs: what \
          it checks, what it changes, what it hands on and what the caller gets back, the way a \
-         person would say it rather than step by step. Use only what the steps show, and never \
+         person would say it rather than step by step. Also give it a name of 2-5 words that says \
+         what someone gets done on this path, a verb and what it acts on, like \"Cancel an order\", \
+         never a route, a function name or a topic. Use only what the steps show, and never \
          name a framework, library or storage technology.\n\n\
          Echo each id back exactly as given.\n\
-         Return JSON only: {{\"items\":[{{\"id\":\"...\",\"description\":\"...\"}}]}}\n\n\
+         Return JSON only: {{\"items\":[{{\"id\":\"...\",\"name\":\"...\",\"description\":\"...\"}}]}}\n\n\
          The paths:\n{}",
         listed.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect::<Vec<_>>().join("\n")
     );
@@ -346,7 +348,14 @@ fn tell_a_batch(spoken_for: &str, listed: &[(String, String)]) -> BTreeMap<Strin
     for item in answer["items"].as_array().into_iter().flatten() {
         let (Some(id), Some(description)) = (item["id"].as_str(), item["description"].as_str()) else { continue };
         if !description.trim().is_empty() {
-            held.insert(id.to_string(), description.trim().to_string());
+            held.insert(
+                id.to_string(),
+                Written {
+                    id: id.to_string(),
+                    name: item["name"].as_str().unwrap_or_default().trim().to_string(),
+                    description: description.trim().to_string(),
+                },
+            );
         }
     }
     held
