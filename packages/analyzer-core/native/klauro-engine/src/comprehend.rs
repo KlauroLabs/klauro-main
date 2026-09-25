@@ -203,8 +203,19 @@ fn with_inherited(named: &HashMap<&str, Vec<Field>>, extending: &HashMap<&str, V
             pending.extend(extending.get(at).into_iter().flatten().map(|base| (*base, depth + 1)));
         }
     }
+    let spoken: HashSet<String> = held
+        .iter()
+        .filter(|field| !field.name.starts_with('_'))
+        .map(|field| field.name.to_ascii_lowercase())
+        .collect();
+    held.retain(|field| {
+        let bare = field.name.trim_start_matches('_').to_ascii_lowercase();
+        !BOOKKEEPING_FIELDS.contains(&bare.as_str()) && (!field.name.starts_with('_') || !spoken.contains(&bare))
+    });
     held
 }
+
+static BOOKKEEPING_FIELDS: &[&str] = &["domainevents", "requestedhashcode"];
 
 fn changes(exit: &ExitPoint) -> bool {
     let operation = exit.operation.to_ascii_lowercase();
@@ -2757,9 +2768,23 @@ fn entities(
             fields: fields.get(node.id.as_str()).copied().unwrap_or(0),
             written_by: written.get(node.id.as_str()).cloned().unwrap_or_default(),
             read_by: read.get(node.id.as_str()).cloned().unwrap_or_default(),
-            references: pointing.remove(node.id.as_str()).unwrap_or_default(),
+            references: {
+                let mut held = pointing.remove(node.id.as_str()).unwrap_or_default();
+                held.sort_by(|left, right| (left.field.as_str(), left.entity.as_str()).cmp(&(right.field.as_str(), right.entity.as_str())));
+                held.dedup_by(|left, right| left.field == right.field && left.entity == right.entity);
+                held
+            },
             project: node.project.clone(),
             terminality: None,
+        })
+        .map(|mut entity| {
+            let kept: HashSet<&str> = entity.named_fields.iter().map(|field| field.name.as_str()).collect();
+            let still: Vec<Reference> = std::mem::take(&mut entity.references)
+                .into_iter()
+                .filter(|reference| kept.contains(reference.field.as_str()))
+                .collect();
+            entity.references = still;
+            entity
         })
         .collect();
     let mut richest: BTreeMap<(String, String), Entity> = BTreeMap::new();

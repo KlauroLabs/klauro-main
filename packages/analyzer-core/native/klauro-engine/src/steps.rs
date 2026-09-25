@@ -116,8 +116,17 @@ fn acted_through_a_library(member: &str) -> Option<String> {
     let acting = ACTS_THROUGH_A_LIBRARY.iter().any(|verb| {
         lowered.split_whitespace().any(|word| word == *verb || word.strip_suffix("in") == Some(verb) || word == format!("{verb}s"))
     });
-    (acting && !matches!(first, "get" | "is" | "has" | "to" | "try" | "find" | "on" | "log")).then_some(said)
+    let object: Vec<&str> = lowered.split_whitespace().skip(1).collect();
+    let plumbing = object.iter().any(|word| TECHNICAL_OBJECTS.contains(word));
+    (acting && !object.is_empty() && !plumbing && !matches!(first, "get" | "is" | "has" | "to" | "try" | "find" | "on" | "log"))
+        .then_some(said)
 }
+
+static TECHNICAL_OBJECTS: &[&str] = &[
+    "builder", "callback", "channel", "client", "command", "connection", "context", "factory", "handler", "listener",
+    "logger", "pool", "provider", "reader", "scope", "session", "socket", "stream", "task", "thread", "token", "transaction",
+    "writer",
+];
 
 static CHECKS_BY_NAME: &[&str] = &["assert", "authorize", "check", "guard", "validate", "verify"];
 
