@@ -1357,7 +1357,17 @@ impl<'a> Extractor<'a> {
             if written_as_text(raw) {
                 let written = trim_quotes(raw).trim().to_string();
                 if !written.is_empty() && written.len() <= TEXT_AT_MOST {
-                    self.remembered.insert(name.clone(), written);
+                    self.remembered.insert(name.clone(), written.clone());
+                    self.facts.locals.push(LocalBinding {
+                        file: self.file,
+                        unit: owner.clone(),
+                        name: name.clone(),
+                        annotation: None,
+                        constructed: None,
+                        from_call: None,
+                        written: Some(written),
+                        line: node.start_position().row as u32 + 1,
+                    });
                 }
             }
         }
@@ -1738,6 +1748,7 @@ impl<'a> Extractor<'a> {
                             annotation: None,
                             constructed: None,
                             from_call: from_call.clone(),
+                            written: None,
                             line: node.start_position().row as u32 + 1,
                         });
                     }
@@ -1788,12 +1799,12 @@ impl<'a> Extractor<'a> {
                 named.and_then(|held| self.assigned_child(held))
             })
             .map(unwrapped);
-        if let Some(written) = value
+        let written_value = value
             .map(|held| self.text(held).trim())
             .filter(|raw| written_as_text(raw))
             .map(|raw| trim_quotes(raw).trim().to_string())
-            .filter(|written: &String| !written.is_empty() && written.len() <= TEXT_AT_MOST)
-        {
+            .filter(|written: &String| !written.is_empty() && written.len() <= TEXT_AT_MOST);
+        if let Some(written) = written_value.clone() {
             self.remembered.insert(name.clone(), written);
         }
         if let Some(value) = value
@@ -1818,7 +1829,7 @@ impl<'a> Extractor<'a> {
         let from_call = value
             .filter(|value| self.spec.calls.kinds.contains(&value.kind()))
             .and_then(|value| self.called_name(value));
-        if annotation.is_none() && constructed.is_none() && from_call.is_none() {
+        if annotation.is_none() && constructed.is_none() && from_call.is_none() && written_value.is_none() {
             return false;
         }
         for held in taken_apart.iter() {
@@ -1829,6 +1840,7 @@ impl<'a> Extractor<'a> {
                 annotation: annotation.clone(),
                 constructed: constructed.clone(),
                 from_call: from_call.clone(),
+                written: None,
                 line: node.start_position().row as u32 + 1,
             });
         }
@@ -1842,6 +1854,7 @@ impl<'a> Extractor<'a> {
             annotation,
             constructed,
             from_call,
+            written: written_value,
             line: node.start_position().row as u32 + 1,
         });
         false

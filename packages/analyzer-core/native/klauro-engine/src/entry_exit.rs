@@ -309,6 +309,15 @@ fn decorator_entry(decorator: &Decorator) -> Option<(&'static str, String, Optio
     if matches!(lowered.as_str(), "controller" | "path" | "request" | "route") {
         return Some(("http", "ANY".to_string(), path));
     }
+    if verb == "expose" {
+        let method = decorator
+            .arguments
+            .iter()
+            .map(|argument| argument.value.trim().trim_matches(['"', '\'']).to_ascii_uppercase())
+            .find(|value| HTTP_METHODS.binary_search(&value.to_ascii_lowercase().as_str()).is_ok())
+            .unwrap_or_else(|| "GET".to_string());
+        return path.map(|path| ("http", method, Some(path)));
+    }
     if HTTP_METHODS.binary_search(&lowered.as_str()).is_ok() {
         if !qualified && verb.starts_with(char::is_lowercase) {
             return None;
@@ -328,6 +337,14 @@ fn decorator_entry(decorator: &Decorator) -> Option<(&'static str, String, Optio
         | "benchmark" => Some(("test", lowered, None)),
         _ => None,
     }
+}
+
+fn exposed_under(class: &IndexNode, written_in: &HashMap<&str, Vec<&crate::model::LocalBinding>>) -> Option<String> {
+    let held = written_in.get(class.id.as_str())?;
+    let named = |wanted: &str| held.iter().find(|local| local.name == wanted).and_then(|local| local.written.clone());
+    named("route_base")
+        .filter(|base| base.starts_with('/'))
+        .or_else(|| named("resource_name").map(|resource| format!("/api/v1/{resource}")))
 }
 
 static ROUTES_BY_CONVENTION: &[&str] = &[
@@ -1540,6 +1557,10 @@ pub fn derive(
     let mut entry_points = Vec::new();
     let mounted = mounted_under(calls);
     let mut base_paths: HashMap<&str, String> = HashMap::default();
+    let mut written_in: HashMap<&str, Vec<&crate::model::LocalBinding>> = HashMap::default();
+    for local in locals.iter().filter(|local| local.written.is_some() && !local.unit.is_empty()) {
+        written_in.entry(local.unit.as_str()).or_default().push(local);
+    }
     for node in nodes {
         if !matches!(node.kind, NodeKind::Class | NodeKind::Interface) {
             continue;
@@ -1549,6 +1570,11 @@ pub fn derive(
                 base_paths.insert(node.id.as_str(), owner_path(&path, &node.name));
                 break;
             }
+        }
+        if !base_paths.contains_key(node.id.as_str())
+            && let Some(base) = exposed_under(node, &written_in)
+        {
+            base_paths.insert(node.id.as_str(), base);
         }
     }
 
