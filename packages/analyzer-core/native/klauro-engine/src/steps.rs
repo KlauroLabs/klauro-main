@@ -484,7 +484,12 @@ impl<'a> Reader<'a> {
             at_line.push((call.line, call.column, Some(target), when_of(&call.context), None, Some(call)));
         }
         for target in targets {
-            at_line.push((u32::MAX, 0, Some(target), "always", None, None));
+            let inner = &self.nodes[target as usize];
+            let line = match inner.id.contains(":callback:") && inner.file == node.file {
+                true => inner.span.line,
+                false => u32::MAX,
+            };
+            at_line.push((line, 0, Some(target), "always", None, None));
         }
         at_line.sort_by_key(|(line, column, ..)| (*line, *column));
         let shown_line = |line: u32| if line == u32::MAX { node.span.end_line } else { line };

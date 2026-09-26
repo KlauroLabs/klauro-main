@@ -488,6 +488,7 @@ static GRAPHQL_MEMBERS: &[&str] = &["resolve_*", "mutate", "mutate_and_get_paylo
 static COMMAND_MEMBERS: &[&str] = &["execute", "handle"];
 
 static CASE_MEMBERS: &[&str] = &["it_*", "should_*", "test*"];
+static WORK_MEMBERS: &[&str] = &["createWork", "doWork"];
 
 static ENTRY_BASES: &[EntryBase] = &[
     base("AppCompatActivity", "lifecycle", &[]),
@@ -496,13 +497,16 @@ static ENTRY_BASES: &[EntryBase] = &[
     base("BaseCommand", "cli", COMMAND_MEMBERS),
     base("BroadcastReceiver", "lifecycle", &[]),
     base("ComponentActivity", "lifecycle", &[]),
+    base("CoroutineWorker", "background", WORK_MEMBERS),
     base("Fragment", "lifecycle", &[]),
     base("IHostedService", "background", &["StartAsync"]),
+    base("ListenableWorker", "background", WORK_MEMBERS),
     base("Mutation", "graphql", GRAPHQL_MEMBERS),
     base("ObjectType", "graphql", GRAPHQL_MEMBERS),
+    base("RxWorker", "background", WORK_MEMBERS),
     base("Subscription", "graphql", GRAPHQL_MEMBERS),
     base("TestCase", "test", CASE_MEMBERS),
-    base("Worker", "lifecycle", &[]),
+    base("Worker", "background", WORK_MEMBERS),
 ];
 
 fn matches_member(pattern: &str, name: &str) -> bool {

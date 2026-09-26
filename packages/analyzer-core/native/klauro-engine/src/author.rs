@@ -581,10 +581,15 @@ pub fn propose_capabilities(spoken_for: &str, families: &[(String, String)]) -> 
         families.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect::<Vec<_>>().join("\n")
     );
     let Some(held) =
-        answered::<serde_json::Value>(&prompt, 8000, &asking_of_models(model()), "capabilities", 1)
+        answered::<serde_json::Value>(&prompt, 8000, &asking_of_models(model()), "capabilities", 0)
     else {
         return Proposal::default();
     };
+    let named_nothing = held["capabilities"].as_array().is_none_or(Vec::is_empty);
+    let all_plumbing = held["plumbing"].as_array().is_some_and(|plumbing| plumbing.len() >= families.len());
+    if named_nothing && !all_plumbing {
+        return Proposal::default();
+    }
     Proposal {
         capabilities: held["capabilities"]
             .as_array()

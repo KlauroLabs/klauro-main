@@ -1607,6 +1607,12 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
                     None if node.kind.is_unit() => {
                         return Resolved::Edge(node.id.clone(), kind);
                     }
+                    None if node.kind.is_type() && HOLDER_ACCESSORS.contains(&fact.callee.as_str()) => {
+                        if let Some(called) = CALLED_AS_A_FUNCTION.iter().find_map(|named| inherited(found, named)) {
+                            let target = overridden_within(called, found).unwrap_or(called);
+                            return Resolved::Edge(symbols.nodes[target as usize].id.clone(), kind);
+                        }
+                    }
                     None => {}
                 }
             }

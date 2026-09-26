@@ -79,6 +79,17 @@ fn kept_for_itself<'a>(flows: &[&'a Flow]) -> BTreeSet<&'a str> {
         .collect()
 }
 
+static SAID_OF_AN_EVENT: &[&str] = &["UiEvent", "UIEvent", "ViewEvent", "Event", "Intent", "Action"];
+
+fn screen_of(flow: &Flow) -> Option<String> {
+    if flow.kind != "ui" {
+        return None;
+    }
+    let (family, _) = flow.operation.split_once('.')?;
+    let screen = SAID_OF_AN_EVENT.iter().find_map(|suffix| family.strip_suffix(suffix)).unwrap_or(family);
+    (!screen.is_empty()).then(|| screen.to_string())
+}
+
 fn outcome_of(flow: &Flow, bookkeeping: &BTreeSet<&str>) -> Family {
     if flow.kind == "export" {
         return crate::comprehend::family_of(flow);
@@ -107,6 +118,9 @@ fn outcome_of(flow: &Flow, bookkeeping: &BTreeSet<&str>) -> Family {
         flow.steps.iter().rev().filter(|step| step.kind == "call").find_map(|step| step.object.as_deref());
     if let Some(called) = called.filter(|_| flow.standing == "terminal") {
         return Family { key: format!("calls:{called}"), basis: "the service it acts through" };
+    }
+    if let Some(screen) = screen_of(flow) {
+        return Family { key: format!("screen:{screen}"), basis: "the screen a person acts on" };
     }
     let shown: Option<&str> = flow
         .steps
@@ -476,6 +490,9 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
         .filter(|flow| !only_moves_the_screen(flow))
         .collect();
     let families = outcomes_of(&kept);
+    if families.keys().all(|family| family.key.starts_with("trigger:")) {
+        return Vec::new();
+    }
     let keyed: Vec<(String, &Family, &Vec<&Flow>)> = families
         .iter()
         .enumerate()

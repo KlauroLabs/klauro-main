@@ -1508,7 +1508,15 @@ pub fn derive(
 
     let named_of: HashMap<&str, &IndexNode> =
         nodes.iter().map(|node| (node.id.as_str(), node)).collect();
-    let reader = crate::steps::Reader::new(nodes, &position_of, &next, calls, exit_points, &exit_records, &held, metrics, events);
+    let mut stepping = next.clone();
+    for (holder, inner) in members.iter() {
+        for held in inner {
+            if nodes[*held as usize].id.contains(":callback:") && !handlers.contains_key(nodes[*held as usize].id.as_str()) {
+                stepping.entry(*holder).or_default().push(*held);
+            }
+        }
+    }
+    let reader = crate::steps::Reader::new(nodes, &position_of, &stepping, calls, exit_points, &exit_records, &held, metrics, events);
     let mut flows = Vec::with_capacity(served.len());
     let mut carried: HashMap<String, Vec<Shared>> = HashMap::default();
     for entry in &served {
