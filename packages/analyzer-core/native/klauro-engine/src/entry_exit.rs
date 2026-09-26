@@ -2012,10 +2012,10 @@ pub fn derive(
     }
 
     for node in nodes {
-        if !matches!(node.kind, NodeKind::Function | NodeKind::Method) {
-            continue;
-        }
-        if LIFECYCLE_NAMES.binary_search(&node.name.as_str()).is_err() {
+        let named_main = matches!(node.kind, NodeKind::Function | NodeKind::Method)
+            && LIFECYCLE_NAMES.binary_search(&node.name.as_str()).is_ok();
+        let marked_main = node.kind.is_type() && node.decorators.iter().any(|held| held.name == "main");
+        if !named_main && !marked_main {
             continue;
         }
         entry_points.push(EntryPoint {

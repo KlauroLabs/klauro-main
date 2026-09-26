@@ -88,6 +88,17 @@ test('the tier stack answers with an analysis the product can read', () => {
   assert.equal(cas.analyzer_contributions[0].nodes_created, 2);
 });
 
+test('an app that serves nothing but ships to a device is an application, not a library', () => {
+  const served = (shape: string, category: 'shipped' | 'library') =>
+    tierStackToCas({
+      ...INDEX,
+      architecture: { shape },
+      scope: { deployables: [{ id: 'deployable:app', name: 'app', root: 'app', category, declarations: [] }] },
+    }).system.type;
+  assert.equal(served('no served surface', 'shipped'), 'application');
+  assert.equal(served('no served surface', 'library'), 'library');
+});
+
 test('a declaration keeps its kind, its place and what it says of itself', () => {
   const cas = tierStackToCas(INDEX);
   const order = cas.nodes.find(node => node.name === 'Order');

@@ -485,6 +485,22 @@ static EXECUTABLE_SDKS: &[&str] =
     &["Aspire.AppHost.Sdk", "Microsoft.NET.Sdk.Web", "Microsoft.NET.Sdk.Worker"];
 static EXECUTABLE_OUTPUTS: &[&str] = &["Exe", "WinExe"];
 static EXECUTABLE_PLUGINS: &[&str] = &["application", "com.android.application"];
+static APPLICATION_BLOCKS: &[&str] = &["application", "nativeDistributions"];
+
+fn plugin_named(value: &str) -> &str {
+    unquote(value.trim().trim_start_matches('(').trim_end_matches(')').trim())
+}
+
+fn applies_plugin(calls: &[CallFact], file: u32, suffix: &str) -> bool {
+    calls.iter().any(|call| {
+        call.file == file
+            && call.callee == "id"
+            && call.literals.iter().any(|value| {
+                let plugin = plugin_named(value);
+                plugin == suffix || plugin.ends_with(&format!(".{suffix}")) || plugin.ends_with(&format!("-{suffix}"))
+            })
+    })
+}
 static PACKAGED_ARTIFACTS: &[&str] = &["ear", "war"];
 
 fn build_target(files: &Files, path: &str, calls: &[CallFact], file: u32) -> Option<&'static str> {
@@ -516,16 +532,15 @@ fn build_target(files: &Files, path: &str, calls: &[CallFact], file: u32) -> Opt
         return (sdk || output).then_some("dotnet-executable");
     }
     if basename.starts_with("build.gradle") {
-        return calls
+        let plugin = calls.iter().any(|call| {
+            call.file == file
+                && call.callee == "id"
+                && call.literals.iter().any(|value| EXECUTABLE_PLUGINS.contains(&plugin_named(value)))
+        });
+        let block = calls
             .iter()
-            .any(|call| {
-                call.file == file
-                    && call.callee == "id"
-                    && call.literals.iter().any(|value| {
-                        EXECUTABLE_PLUGINS.contains(&unquote(value))
-                    })
-            })
-            .then_some("gradle-application");
+            .any(|call| call.file == file && APPLICATION_BLOCKS.contains(&call.callee.as_str()));
+        return (plugin || block || applies_plugin(calls, file, "application")).then_some("gradle-application");
     }
     if basename == "pom.xml" {
         let document = files.descendants(path);
@@ -579,6 +594,47 @@ fn installer(
             at: path.to_string(),
         }],
         ships,
+        runs: None,
+    })
+}
+
+fn apple_application(files: &Files, path: &str, runnable: &HashSet<&str>) -> Option<Candidate> {
+    let bundle = directory_of(path);
+    if crate::paths::is_test(path) || !runnable.contains(bundle) {
+        return None;
+    }
+    let mut root = None;
+    let mut climbing = Some(bundle);
+    while let Some(directory) = climbing {
+        let project = files.paths.iter().any(|other| {
+            let within = match directory.is_empty() {
+                true => Some(&other[..]),
+                false => other.strip_prefix(directory).and_then(|rest| rest.strip_prefix('/')),
+            };
+            within
+                .and_then(|rest| rest.split('/').next())
+                .is_some_and(|first| first.ends_with(".xcodeproj"))
+        });
+        if project {
+            root = Some(directory);
+            break;
+        }
+        climbing = match directory.rfind('/') {
+            Some(at) => Some(&directory[..at]),
+            None if !directory.is_empty() => Some(""),
+            None => None,
+        };
+    }
+    let root = root?;
+    Some(Candidate {
+        name: display_name(root),
+        root: root.to_string(),
+        declarations: vec![Declaration {
+            declares: Declares::Ship,
+            kind: "apple-application",
+            at: path.to_string(),
+        }],
+        ships: Vec::new(),
         runs: None,
     })
 }
@@ -681,11 +737,18 @@ pub fn derive(
             candidates.extend(cargo_manifest(&index, path));
             continue;
         }
+        if basename == "info.plist" {
+            candidates.extend(apple_application(&index, path, &runnable));
+            continue;
+        }
         if let Some(found) = installer(&index, path, calls, at as u32) {
             candidates.push(found);
             continue;
         }
         if let Some(mut found) = module_manifest(&index, path, &runnable) {
+            if basename.starts_with("build.gradle") && applies_plugin(calls, at as u32, "library") {
+                found.declarations.retain(|held| held.declares != Declares::Run);
+            }
             if let Some(kind) = build_target(&index, path, calls, at as u32) {
                 found.declarations.push(Declaration {
                     declares: Declares::Ship,

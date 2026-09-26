@@ -76,7 +76,8 @@ export const TIER_STACK_ANALYZER = 'tier-stack';
 function shapeOf(index: TierStackIndex): CASSystem['type'] {
   const shape = index.architecture?.shape ?? '';
   if (shape.includes('monorepo')) return 'monorepo';
-  if (shape.includes('no served surface')) return 'library';
+  const launched = (index.scope?.deployables ?? []).some(held => held.category !== 'library');
+  if (shape.includes('no served surface') && !launched) return 'library';
   return 'application';
 }
 
