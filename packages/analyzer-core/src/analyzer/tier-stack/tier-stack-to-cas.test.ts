@@ -194,3 +194,42 @@ test('a repository of several parts composes a CAS tree that conforms', () => {
   const ids = [tree.id, ...(tree.children ?? []).map(child => child.id)];
   assert.equal(new Set(ids).size, ids.length, 'a part rooted at the repository root is not the repository');
 });
+
+test('a flow in one part that reaches a flow in another part is a seam between them', () => {
+  const linked = {
+    ...INDEX,
+    partition: {
+      sub_projects: [
+        { id: 'subproject:orders', name: 'Ordering.API', root: 'orders' },
+        { id: 'subproject:payments', name: 'PaymentProcessor', root: 'payments' },
+      ],
+    },
+    comprehension: {
+      flows: [
+        {
+          id: 'flow:confirm',
+          entry_point: 'entry:confirm',
+          kind: 'event',
+          operation: 'OrderStockConfirmed',
+          standing: 'terminal',
+          project: 'subproject:orders',
+          leads_into: ['entry:pay'],
+        },
+        {
+          id: 'flow:pay',
+          entry_point: 'entry:pay',
+          kind: 'message',
+          operation: 'OrderStatusChangedToStockConfirmedIntegrationEvent',
+          standing: 'terminal',
+          project: 'subproject:payments',
+        },
+      ],
+    },
+  } as unknown as TierStackIndex;
+  const seams = tierStackToCas(linked, 'shop').communication_seams;
+  assert.equal(seams?.seams.length, 1);
+  assert.equal(seams?.seams[0].source, 'Ordering.API');
+  assert.equal(seams?.seams[0].target, 'PaymentProcessor');
+  assert.equal(seams?.seams[0].modality, 'async');
+  assert.equal(seams?.inventory.counts.async, 1);
+});

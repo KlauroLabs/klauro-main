@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import { conformanceOf, patternsOf, projectsOfFound, violationsOf } from './tier-stack-structure';
 import * as path from 'path';
+import { seamsOf } from './tier-stack-seams';
 
 import {
   CAS_VERSION,
@@ -694,6 +695,7 @@ function casOf(index: TierStackIndex, displayName?: string): CASOutput {
     deployable_evidence: deployablesOf(index),
     enhanced_system_purpose: purposeOf(index),
     flows: flowsOf(index),
+    communication_seams: seamsOf(index),
     test_suites: suites,
     test_summary: testSummaryOf(suites),
     dependencies: dependenciesOf(index),
