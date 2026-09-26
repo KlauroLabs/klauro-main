@@ -356,6 +356,8 @@ struct Resolver<'a> {
     symbols: Symbols<'a>,
     bindings: Bindings<'a>,
     runtime: Vec<&'static str>,
+    visible: crate::visibility::Visibility,
+    types_named: HashMap<&'a str, Vec<u32>>,
 }
 
 impl<'a> Resolver<'a> {
@@ -370,7 +372,21 @@ impl<'a> Resolver<'a> {
             .or_else(|| self.symbols.file_scope.get(&(file, name)))
             .copied()
             .or_else(|| self.symbols.unique_type.get(name).copied())
+            .or_else(|| self.seen_from(file, name))
             .filter(|found| self.symbols.nodes[*found as usize].kind.is_type())
+    }
+
+    fn seen_from(&self, file: u32, name: &str) -> Option<u32> {
+        let mut seen = self
+            .types_named
+            .get(name)?
+            .iter()
+            .copied()
+            .filter(|found| self.visible.can_see(file, self.symbols.nodes[*found as usize].file));
+        match (seen.next(), seen.next()) {
+            (Some(only), None) => Some(only),
+            _ => None,
+        }
     }
 
     fn annotated(&self, file: u32, annotation: &'a str) -> Origin<'a> {
@@ -1430,10 +1446,16 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         .map(|((file, name), held)| ((*file, (*name).to_string()), (*held).to_string()))
         .collect();
     lap("type references and locals");
+    let mut types_named: HashMap<&str, Vec<u32>> = HashMap::default();
+    for (at, node) in index.nodes.iter().enumerate().filter(|(_, node)| node.kind.is_type()) {
+        types_named.entry(node.name.as_str()).or_default().push(at as u32);
+    }
     let resolver = Resolver {
         symbols,
         bindings,
         runtime: externals::sorted_runtime_globals(),
+        visible: crate::visibility::Visibility::build(index.files, index.nodes),
+        types_named,
     };
     let symbols = &resolver.symbols;
 
@@ -1822,19 +1844,26 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
             implemented_by.entry(*held).or_default().push(*below);
         }
     }
-    let carried_out = |target: &str| -> Option<String> {
+    let visible = &resolver.visible;
+    let carried_out = |target: &str, from_file: u32| -> Option<String> {
         let at = symbols.position.get(target).copied()?;
         let member = &symbols.nodes[at as usize];
         let owner = symbols.owning_type(at).filter(|owner| *owner != at)?;
-        match implemented_by.get(&owner).map(Vec::as_slice) {
-            Some([only]) => symbols.member(*only, &member.name).map(|found| symbols.nodes[found as usize].id.clone()),
+        let seen: Vec<u32> = implemented_by
+            .get(&owner)?
+            .iter()
+            .copied()
+            .filter(|below| visible.can_see(from_file, symbols.nodes[*below as usize].file))
+            .collect();
+        match seen.as_slice() {
+            [only] => symbols.member(*only, &member.name).map(|found| symbols.nodes[found as usize].id.clone()),
             _ => None,
         }
     };
     for (fact, outcome) in index.calls.iter().zip(resolved) {
         let caller = fact.caller.as_deref().unwrap_or_default();
         let outcome = match outcome {
-            Resolved::Edge(target, kind) => match carried_out(&target) {
+            Resolved::Edge(target, kind) => match carried_out(&target, fact.file) {
                 Some(carried) => Resolved::Edge(carried, kind),
                 None => Resolved::Edge(target, kind),
             },

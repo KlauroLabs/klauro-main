@@ -1,4 +1,5 @@
 mod alias;
+mod addresses;
 mod architecture;
 mod arms;
 mod builtins;
@@ -55,6 +56,7 @@ mod structured;
 mod subproject;
 mod typescript;
 mod verify;
+mod visibility;
 mod vendored;
 mod wire;
 
@@ -851,6 +853,7 @@ fn read_it() {
         index.exit_points.sort_by(|left, right| left.id.cmp(&right.id));
         index.exit_points.dedup_by(|left, right| left.id == right.id);
     }
+    addresses::fold(&mut index.exit_points, &index.calls, &index.locals, &index.nodes);
 
     let patterns_started = Instant::now();
     let pattern_paths: Vec<&str> = index.files.iter().map(|file| file.path.as_str()).collect();

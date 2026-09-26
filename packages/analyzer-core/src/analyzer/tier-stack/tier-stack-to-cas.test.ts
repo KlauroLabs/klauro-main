@@ -244,3 +244,21 @@ test('a flow in one part that reaches a flow in another part is a seam between t
   assert.equal(seams?.seams[0].modality, 'async');
   assert.equal(seams?.inventory.counts.async, 1);
 });
+
+test('a part whose flows reach an outside service has a seam to that service', () => {
+  const reaching = {
+    ...INDEX,
+    partition: { sub_projects: [{ id: 'subproject:app', name: 'app', root: 'app' }] },
+    comprehension: {
+      flows: [
+        { id: 'flow:sync', entry_point: 'entry:sync', kind: 'background', operation: 'Sync', standing: 'terminal', project: 'subproject:app', reaches: ['weather'] },
+        { id: 'flow:refresh', entry_point: 'entry:refresh', kind: 'ui', operation: 'Refresh', standing: 'terminal', project: 'subproject:app', reaches: ['weather'] },
+      ],
+    },
+  } as unknown as TierStackIndex;
+  const seams = tierStackToCas(reaching, 'shop').communication_seams;
+  assert.equal(seams?.seams.length, 1);
+  assert.equal(seams?.seams[0].source, 'app');
+  assert.equal(seams?.seams[0].target, 'weather');
+  assert.equal(seams?.seams[0].modality, 'sync');
+});

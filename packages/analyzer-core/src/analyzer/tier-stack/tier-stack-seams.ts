@@ -44,6 +44,26 @@ export function seamsOf(index: TierStackIndex): CommunicationSeamsResult | undef
       });
     }
   }
+  for (const flow of flows) {
+    if (!flow.project) continue;
+    const source = named.get(flow.project) ?? flow.project;
+    for (const service of flow.reaches ?? []) {
+      const key = `${source}\u0001${service}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      seams.push({
+        id: `seam_service_${seams.length + 1}`,
+        modality: 'sync',
+        confidence: LINKED_CONFIDENCE,
+        kind: 'exit_point',
+        source,
+        target: service,
+        evidence: `${spoken(flow)} reaches ${service}`,
+        summary: `${source} calls ${service}`,
+        metadata: { contract: service, from_flow: flow.id, external: true },
+      });
+    }
+  }
   if (seams.length === 0) return undefined;
   const inventory = buildSeamInventory(seams, 'deployable');
   return { seams, inventory, deployable_inventory: inventory };

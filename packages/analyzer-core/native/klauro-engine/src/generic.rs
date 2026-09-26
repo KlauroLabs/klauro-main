@@ -1878,7 +1878,12 @@ impl<'a> Extractor<'a> {
             .or_else(|| {
                 let mut cursor = node.walk();
                 let named = node.named_children(&mut cursor).find(|child| NAMES_A_VARIABLE.contains(&child.kind()));
-                named.and_then(|held| self.assigned_child(held))
+                named.and_then(|held| {
+                    self.assigned_child(held).or_else(|| {
+                        let mut inner = held.walk();
+                        held.named_children(&mut inner).find(|child| child.kind().contains("string"))
+                    })
+                })
             })
             .map(unwrapped);
         let written_value = value

@@ -202,6 +202,7 @@ export interface TierStackFlow {
   reads?: string[];
   changes?: string[];
   leads_into?: string[];
+  reaches?: string[];
   project?: string;
 }
 
