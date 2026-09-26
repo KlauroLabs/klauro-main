@@ -81,12 +81,16 @@ fn kept_for_itself<'a>(flows: &[&'a Flow]) -> BTreeSet<&'a str> {
 
 static SAID_OF_AN_EVENT: &[&str] = &["UiEvent", "UIEvent", "ViewEvent", "Event", "Intent", "Action"];
 
+static KEEPS_A_SCREEN: &[&str] = &["Presenter", "ViewModel", "Reducer", "Feature"];
+
 fn screen_of(flow: &Flow) -> Option<String> {
     if flow.kind != "ui" {
         return None;
     }
-    let (family, _) = flow.operation.split_once('.')?;
-    let screen = SAID_OF_AN_EVENT.iter().find_map(|suffix| family.strip_suffix(suffix)).unwrap_or(family);
+    let screen = match flow.operation.split_once('.') {
+        Some((family, _)) => SAID_OF_AN_EVENT.iter().find_map(|suffix| family.strip_suffix(suffix)).unwrap_or(family),
+        None => KEEPS_A_SCREEN.iter().find_map(|suffix| flow.operation.strip_suffix(suffix))?,
+    };
     (!screen.is_empty()).then(|| screen.to_string())
 }
 
@@ -510,6 +514,7 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
         .collect();
     let digest = crate::jev::named(&format!("{said}\u{1}{:?}", evidence_of_key));
     if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
+        eprintln!("said of {}: {said}", remembered_as.replace('\u{1}', "/"));
         for (id, evidence) in &told {
             eprintln!("evidence {} {}\n{evidence}", remembered_as.replace('\u{1}', "/"), key_of[id.as_str()]);
         }
@@ -537,7 +542,11 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
             let chunked = proposals.len() > 1;
             let mut held: Vec<Held> = Vec::new();
             let mut plumbing: BTreeSet<String> = BTreeSet::new();
+            let proposed: usize = proposals.iter().map(|proposal| proposal.capabilities.len()).sum();
             gather(proposals, &mut held, &mut plumbing, &known);
+            if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
+                eprintln!("  proposed {proposed} capabilities, {} held after gathering, {} plumbing", held.len(), plumbing.len());
+            }
             if chunked {
                 held = consolidate_within(said, held);
             }
@@ -549,6 +558,9 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
     };
     held.retain(|other| !other.families.is_empty());
     plumbing.retain(|id| known.contains(id));
+    if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
+        eprintln!("  settled {} capabilities and {} plumbing of {} outcomes", held.len(), plumbing.len(), told.len());
+    }
     let settled_every_family = told.keys().all(|id| {
         plumbing.contains(id) || held.iter().any(|other| other.families.contains(id))
     });

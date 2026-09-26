@@ -175,12 +175,38 @@ pub fn derive(
     let mut declared: Vec<Declared> = Vec::new();
     let mut claimed: HashSet<String> = HashSet::default();
 
-    let shared_of: HashMap<&str, bool> =
-        deployables.iter().map(|unit| (unit.id.as_str(), unit.consumers >= SHARED_BY)).collect();
+    let unit_named: HashMap<&str, &Deployable> = deployables.iter().map(|unit| (unit.id.as_str(), unit)).collect();
+    let shared = |unit: &Deployable| unit.consumers >= SHARED_BY;
+    let tops_what_is_shared = |unit: &Deployable| {
+        shared(unit)
+            && unit.bundled_into.as_deref().and_then(|above| unit_named.get(above)).is_some_and(|above| !shared(above))
+    };
+    let chain_of = |unit| bundled_chain(unit, &unit_named);
+    let mut beneath: HashMap<&str, usize> = HashMap::default();
+    for unit in deployables {
+        for held in chain_of(unit) {
+            *beneath.entry(held.id.as_str()).or_default() += 1;
+        }
+    }
+    let mut leading: HashMap<&str, (&Deployable, usize)> = HashMap::default();
+    for unit in deployables.iter().filter(|unit| shared(unit)) {
+        let chain = chain_of(unit);
+        let Some(depth) = chain.iter().position(|held| tops_what_is_shared(held)) else { continue };
+        let top = chain[depth];
+        let covers = beneath.get(unit.id.as_str()).copied().unwrap_or(0) * FUNNEL_SHARE_DENOMINATOR
+            >= beneath.get(top.id.as_str()).copied().unwrap_or(0) * FUNNEL_SHARE_NUMERATOR;
+        if !covers {
+            continue;
+        }
+        let best = leading.entry(top.id.as_str()).or_insert((top, 0));
+        if depth > best.1 {
+            *best = (unit, depth);
+        }
+    }
+    let leading: HashMap<&str, &Deployable> = leading.into_iter().map(|(top, (unit, _))| (top, unit)).collect();
+    let heads: HashSet<&str> = leading.values().map(|unit| unit.id.as_str()).collect();
     for unit in deployables.iter().filter(|unit| {
-        let heads_what_is_shared = unit.consumers >= SHARED_BY
-            && unit.bundled_into.as_deref().is_some_and(|above| !shared_of.get(above).copied().unwrap_or(false));
-        unit.bundled_into.is_some() && unit.category == "library" && unit.runs.is_none() && !heads_what_is_shared
+        unit.bundled_into.is_some() && unit.category == "library" && unit.runs.is_none() && !heads.contains(unit.id.as_str())
     }) {
         claimed.insert(unit.root.clone());
     }
@@ -247,6 +273,19 @@ pub fn derive(
 }
 
 const SHARED_BY: u32 = 2;
+
+fn bundled_chain<'d>(unit: &'d Deployable, named: &HashMap<&str, &'d Deployable>) -> Vec<&'d Deployable> {
+    let mut chain = vec![unit];
+    let mut current = unit;
+    for _ in 0..32 {
+        let Some(above) = current.bundled_into.as_deref().and_then(|above| named.get(above).copied()) else { break };
+        chain.push(above);
+        current = above;
+    }
+    chain
+}
+const FUNNEL_SHARE_NUMERATOR: usize = 9;
+const FUNNEL_SHARE_DENOMINATOR: usize = 10;
 
 fn declares_workspace(children: &HashMap<&str, Vec<&IndexNode>>, manifest: &str) -> bool {
     let name = basename(manifest).to_ascii_lowercase();

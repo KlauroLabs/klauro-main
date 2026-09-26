@@ -506,7 +506,7 @@ static ENTRY_BASES: &[EntryBase] = &[
     base("RxWorker", "background", WORK_MEMBERS),
     base("Subscription", "graphql", GRAPHQL_MEMBERS),
     base("TestCase", "test", CASE_MEMBERS),
-    base("Worker", "background", WORK_MEMBERS),
+    base("Worker", "lifecycle", &[]),
 ];
 
 fn matches_member(pattern: &str, name: &str) -> bool {
@@ -2038,6 +2038,37 @@ pub fn derive(
             line: node.span.line,
             guards: Vec::new(),
             registrar: node.name.clone(),
+        });
+    }
+
+    let held_at: HashMap<&str, &IndexNode> = nodes.iter().map(|node| (node.id.as_str(), node)).collect();
+    let mut opened: HashSet<&str> = HashSet::default();
+    for arm in nodes.iter().filter(|node| node.callback_of.as_deref() == Some("dispatch:ui")) {
+        let Some(family) = arm.registration_label.as_deref().and_then(|label| label.split_once('.')).map(|(family, _)| family) else {
+            continue;
+        };
+        let mut holder = arm.parent.as_deref().and_then(|parent| held_at.get(parent).copied());
+        for _ in 0..8 {
+            match holder {
+                Some(held) if held.id.contains(":callback:") => holder = held.parent.as_deref().and_then(|parent| held_at.get(parent).copied()),
+                _ => break,
+            }
+        }
+        let Some(screen) = holder.filter(|held| held.kind.is_unit()) else { continue };
+        if !opened.insert(screen.id.as_str()) {
+            continue;
+        }
+        entry_points.push(EntryPoint {
+            id: format!("entry:{}:opened", screen.id),
+            kind: "ui",
+            name: format!("{family}.Open"),
+            method: None,
+            path: None,
+            handler: screen.id.clone(),
+            file: screen.file,
+            line: screen.span.line,
+            guards: Vec::new(),
+            registrar: "dispatch:ui".to_string(),
         });
     }
 

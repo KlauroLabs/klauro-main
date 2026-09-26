@@ -183,6 +183,8 @@ fn name_batch(member: &str, spoken_for: &str, listed: &[String], again: bool) ->
     let mut named = BTreeMap::new();
     let prompt = format!(
         "A software system describes itself like this:\n{spoken_for}\n\n\
+         That description may speak of the project rather than the software, such as its status, history or \
+         whether it is still maintained; what the software does is read from the code below, and that decides.\n\n\
          Describe the {member} of that system. For each one, say in a single clause what it is \
          and why this product keeps one — what it stands for in the world the product is about.\n\n\
          Do not list its fields: whoever reads this can already see them. Use them only to work \
@@ -351,6 +353,8 @@ pub fn what_happens(spoken_for: &str, listed: &[(String, String)]) -> BTreeMap<S
 fn tell_a_batch(spoken_for: &str, listed: &[(String, String)], again: bool) -> BTreeMap<String, Written> {
     let prompt = format!(
         "A software system describes itself like this:\n{spoken_for}\n\n\
+         That description may speak of the project rather than the software, such as its status, history or \
+         whether it is still maintained; what the software does is read from the code below, and that decides.\n\n\
          Below are paths through it, each with the steps its code takes, in order, read from the \
          code. For each, say in one sentence of at most 25 words what happens when it runs: what \
          it checks, what it changes, what it hands on and what the caller gets back, the way a \
@@ -396,6 +400,8 @@ pub fn assign_paths(spoken_for: &str, choices: &[(String, String)], paths: &[(St
         .map(|chunk| {
             let prompt = format!(
                 "A software system describes itself like this:\n{spoken_for}\n\n\
+         That description may speak of the project rather than the software, such as its status, history or \
+         whether it is still maintained; what the software does is read from the code below, and that decides.\n\n\
                  These capabilities share the same record, so which one a path delivers has to be read from the path itself:\n{offered}\n\n\
                  For each path below, say which of the capabilities above it delivers, by their exact names, from what the path does. \
                  A path can deliver more than one; name every one it delivers and none it does not. \
@@ -434,6 +440,8 @@ fn place_a_batch(spoken_for: &str, listed: &BTreeMap<String, String>) -> BTreeMa
     let mut held = BTreeMap::new();
     let prompt = format!(
         "A software system describes itself like this:\n{spoken_for}\n\n\
+         That description may speak of the project rather than the software, such as its status, history or \
+         whether it is still maintained; what the software does is read from the code below, and that decides.\n\n\
          Below is everything it can do. Some of it is what someone came for. The rest is there so \
          that can happen: signing in, administering it, keeping it running, moving its data \
          about. Both are real, and neither is being thrown away — this only says which is which.\n\n\
@@ -487,6 +495,8 @@ pub fn same_outcome(spoken_for: &str, listed: &BTreeMap<String, String>) -> Vec<
     }
     let prompt = format!(
         "A software system describes itself like this:\n{spoken_for}\n\n\
+         That description may speak of the project rather than the software, such as its status, history or \
+         whether it is still maintained; what the software does is read from the code below, and that decides.\n\n\
          Below are capabilities read from it that already look like they may be one outcome — \
          they were read one part at a time, so the same thing appears more than once: reached \
          from a page and from the route behind it, from a phone and from a command line, or \
@@ -549,6 +559,8 @@ pub fn propose_capabilities(spoken_for: &str, families: &[(String, String)]) -> 
     }
     let prompt = format!(
         "A software system describes itself like this:\n{spoken_for}\n\n\
+         That description may speak of the project rather than the software, such as its status, history or \
+         whether it is still maintained; what the software does is read from the code below, and that decides.\n\n\
          Below is every outcome one part of it delivers, read from the code: the record a path \
          changes, what it hands on to another part, the service it acts through, or what it \
          shows someone. Each outcome lists the paths that end in it and the steps each path \
@@ -629,6 +641,8 @@ pub fn place_families(
     }
     let prompt = format!(
         "A software system describes itself like this:\n{spoken_for}\n\n\
+         That description may speak of the project rather than the software, such as its status, history or \
+         whether it is still maintained; what the software does is read from the code below, and that decides.\n\n\
          These capabilities were already read from it:\n{}\n\n\
          These outcomes were not placed yet. For each, say which capability above it \
          delivers, by its exact name; or give a new capability name of 2-6 words — a verb and what it acts on, like \"Share posts with followers\", never a topic like \"Posting\" — with one \
@@ -1134,6 +1148,11 @@ fn answered<T: serde::de::DeserializeOwned>(
                 }
             }
         }
+    }
+    if let Ok(folder) = std::env::var("KLAURO_AUTHOR_DUMP") {
+        let named = crate::jev::named(prompt);
+        let answer = held.as_ref().map(|(_, text, _)| text.as_str()).unwrap_or("");
+        let _ = std::fs::write(format!("{folder}/{of}-{named}.txt"), format!("{prompt}\n\n=====\n\n{answer}"));
     }
     let Some((value, text, request)) = held else {
         eprintln!("  author no answer to a prompt of {} bytes", prompt.len());

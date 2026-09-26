@@ -1487,14 +1487,28 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         }
         called_within.entry(caller).or_default().push(call.callee.as_str());
     }
-    let overridden_within = |called: u32, owner: u32| -> Option<u32> {
-        if symbols.owning_type(called) == Some(owner) {
-            return None;
+    let mut hooks_of: HashMap<&str, Vec<&str>> = HashMap::default();
+    for node in symbols.nodes.iter().filter(|node| node.kind.is_unit() && !matches!(node.kind, NodeKind::Constructor)) {
+        if let Some(parent) = node.parent.as_deref() {
+            hooks_of.entry(parent).or_default().push(node.name.as_str());
         }
-        called_within
-            .get(symbols.nodes[called as usize].id.as_str())?
-            .iter()
-            .find_map(|named| symbols.member(owner, named))
+    }
+    let overridden_within = |called: u32, owner: u32| -> Option<u32> {
+        let base = symbols.owning_type(called).filter(|base| *base != owner)?;
+        let dispatched = called_within
+            .get(symbols.nodes[called as usize].id.as_str())
+            .and_then(|named| named.iter().find_map(|named| symbols.member(owner, named)));
+        dispatched.or_else(|| {
+            let mut hooked = hooks_of
+                .get(symbols.nodes[base as usize].id.as_str())?
+                .iter()
+                .filter(|named| **named != symbols.nodes[called as usize].name && !matches!(**named, "constructor" | "__init__" | "init"))
+                .filter_map(|named| symbols.member(owner, named));
+            match (hooked.next(), hooked.next()) {
+                (Some(only), None) => Some(only),
+                _ => None,
+            }
+        })
     };
 
     for fact in index.type_references {
