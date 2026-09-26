@@ -290,11 +290,42 @@ fn read_directory(absolute: &Path, relative: &str) -> Level {
     level
 }
 
+fn ignored_by_git(root: &Path) -> rustc_hash::FxHashSet<String> {
+    if std::env::var("KLAURO_RESPECT_GITIGNORE").is_ok_and(|held| held == "0") {
+        return rustc_hash::FxHashSet::default();
+    }
+    let Ok(listed) = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"])
+        .stderr(std::process::Stdio::null())
+        .output()
+    else {
+        return rustc_hash::FxHashSet::default();
+    };
+    if !listed.status.success() {
+        return rustc_hash::FxHashSet::default();
+    }
+    String::from_utf8_lossy(&listed.stdout)
+        .split('\0')
+        .filter(|held| !held.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn git_ignores(ignored: &rustc_hash::FxHashSet<String>, relative: &str) -> bool {
+    !ignored.is_empty()
+        && (ignored.contains(relative)
+            || ignored.contains(&format!("{relative}/"))
+            || relative.match_indices('/').any(|(at, _)| ignored.contains(&relative[..=at])))
+}
+
 pub fn discover(root: &Path) -> Discovery {
     let mut files = Vec::new();
     let mut skipped_directories = Vec::new();
     let mut nested_repositories = Vec::new();
     let mut frontier = vec![(root.to_path_buf(), String::new())];
+    let ignored = ignored_by_git(root);
 
     while !frontier.is_empty() {
         let levels: Vec<Level> = frontier
@@ -306,8 +337,16 @@ pub fn discover(root: &Path) -> Discovery {
             files.extend(level.files);
             skipped_directories.extend(level.skipped);
             nested_repositories.extend(level.nested);
-            frontier.extend(level.directories);
+            for (absolute, relative) in level.directories {
+                match git_ignores(&ignored, &relative) {
+                    true => skipped_directories.push(relative),
+                    false => frontier.push((absolute, relative)),
+                }
+            }
         }
+    }
+    if !ignored.is_empty() {
+        files.retain(|file| !git_ignores(&ignored, &file.path));
     }
 
     nested_repositories.sort();
