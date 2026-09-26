@@ -7,6 +7,7 @@ import { detectRemoteProvider, type RemoteProviderInfo } from './remote-provider
 import { isRegisteredManifest, isRegisteredSourceExtension } from '../../../packages/analyzer-core/src/analyzer/core/language-registry';
 import { appendDerivedLocalPackageContext, appendDerivedStreamingLocalPackageContext } from './source-snapshot-package-context';
 import { assertSourceTotalBytes } from './source-upload-limits';
+import { isGitIgnored } from './git-ignored';
 
 export interface RemoteSourceFile {
   path: string;
@@ -890,6 +891,11 @@ async function walkSourceFiles(
         continue;
       }
     }
+    if (entry.isDirectory() && isGitIgnored(relativePath, loaded.gitIgnored)) {
+      exclusions.push({ path: `${relativePath}/`, reason: 'excluded by .gitignore' });
+      recordExclusion(diagnostics, `.gitignore: ${relativePath}/`);
+      continue;
+    }
     if (entry.isDirectory()) {
       const matchedDirPattern = findMatchingPattern(relativePath, allExcludePatterns(loaded));
       if (matchedDirPattern) {
@@ -963,6 +969,7 @@ async function shouldIncludeRelativePathVerbose(
   if (/^\.env\./.test(base)) return { included: false, reason: 'default file exclusion: .env.*' };
   if (/\.lockb$/.test(base)) return { included: false, reason: 'default file exclusion: *.lockb' };
 
+  if (isGitIgnored(normalized, loaded.gitIgnored)) return { included: false, reason: '.gitignore' };
   const matchedIgnorePattern = findMatchingPattern(normalized, loaded.ignorePatterns || []);
   if (matchedIgnorePattern) return { included: false, reason: `.klauroignore pattern "${matchedIgnorePattern}"` };
   const matchedExcludePattern = findMatchingPattern(normalized, loaded.config.source.exclude || []);

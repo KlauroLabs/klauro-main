@@ -2,6 +2,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { DEFAULT_KLAURO_CLOUD_URL } from './defaults';
 import { resolveManifestProjectName } from '../../../packages/analyzer-core/src/analyzer/core/deployable-evidence/util';
+import { gitIgnoredPaths } from './git-ignored';
 
 export interface KlauroConfig {
   version: number;
@@ -33,6 +34,7 @@ export interface KlauroConfig {
     maxFileBytes: number;
     maxTotalBytes: number;
     followSymlinks: boolean;
+    respectGitignore?: boolean;
   };
   upload: {
     mode: 'full' | 'diff-only' | 'manifest-only';
@@ -242,6 +244,7 @@ export interface LoadedKlauroConfig {
   configPath?: string;
   ignorePath?: string;
   ignorePatterns: string[];
+  gitIgnored?: Set<string>;
 }
 
 const CONFIG_FILES = ['.klaurorc', '.klaurorc.json'];
@@ -273,6 +276,7 @@ export function defaultKlauroConfig(projectPath: string): KlauroConfig {
       maxFileBytes: 0,
       maxTotalBytes: 512 * 1024 * 1024,
       followSymlinks: false,
+      respectGitignore: true,
     },
     upload: {
       mode: 'full',
@@ -328,11 +332,15 @@ export async function loadKlauroConfig(projectPath: string): Promise<LoadedKlaur
   const ignorePath = await findFirstExisting(root, ['.klauroignore']);
   const ignorePatterns = ignorePath ? parseIgnorePatterns(await fs.readFile(ignorePath, 'utf8')) : [];
 
+  const config = mergeConfig(defaults, userConfig);
+  const gitIgnored = config.source.respectGitignore === false ? undefined : await gitIgnoredPaths(root);
+
   return {
-    config: mergeConfig(defaults, userConfig),
+    config,
     configPath,
     ignorePath,
     ignorePatterns,
+    gitIgnored,
   };
 }
 
