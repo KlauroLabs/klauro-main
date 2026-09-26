@@ -223,6 +223,23 @@ pub struct Found {
     pub serving: HashMap<String, String>,
 }
 
+static PIPELINES: &[&str] = &[
+    ".gitlab-ci.yml", ".travis.yml", "appveyor.yml", "azure-pipelines.yml", "bitbucket-pipelines.yml", "ci.yml",
+    "cloudbuild.yaml", "cloudbuild.yml", "codemagic.yaml", "jenkinsfile",
+];
+
+fn builds_the_repository(path: &str) -> bool {
+    let lowered = path.to_ascii_lowercase();
+    let named = lowered.rsplit('/').next().unwrap_or(&lowered);
+    lowered.starts_with(".github/")
+        || lowered.contains("/.github/")
+        || lowered.starts_with(".circleci/")
+        || lowered.starts_with(".buildkite/")
+        || lowered.starts_with("eng/pipelines/")
+        || PIPELINES.contains(&named)
+        || (named.starts_with("azure-pipelines") && (named.ends_with(".yml") || named.ends_with(".yaml")))
+}
+
 pub fn derive(sources: &Sources) -> Found {
     let project_of_file: HashMap<u32, &str> = sources
         .nodes
@@ -235,7 +252,7 @@ pub fn derive(sources: &Sources) -> Found {
         .paths
         .iter()
         .enumerate()
-        .map(|(at, path)| sources.not_ours.get(at).copied().unwrap_or(false) || crate::paths::is_test(path))
+        .map(|(at, path)| sources.not_ours.get(at).copied().unwrap_or(false) || crate::paths::is_test(path) || builds_the_repository(path))
         .collect();
     let structured: Vec<bool> = sources
         .paths
@@ -268,6 +285,9 @@ pub fn derive(sources: &Sources) -> Found {
         if let Some(known) = service_catalog::by_package(&exit.target) {
             gathering.note(known, "call", &exit.name, Some(exit.file), exit.line);
             gathering.held.get_mut(known.name).expect("noted").reached_by.insert(exit.id.clone());
+        } else if let Some(named) = exit.service.as_deref().filter(|_| exit.kind == "api") {
+            gathering.note_unknown(named, "sdk", &exit.target, Some(exit.file), exit.line);
+            gathering.held.get_mut(named).expect("noted").reached_by.insert(exit.id.clone());
         }
     }
 
@@ -454,6 +474,15 @@ pub fn derive(sources: &Sources) -> Found {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_pipeline_that_builds_the_repository_says_nothing_of_what_the_system_uses() {
+        assert!(super::builds_the_repository(".github/workflows/test.yml"));
+        assert!(super::builds_the_repository("ci.yml"));
+        assert!(super::builds_the_repository("azure-pipelines-pr.yaml"));
+        assert!(!super::builds_the_repository("deploy/docker-compose.yml"));
+        assert!(!super::builds_the_repository("src/config/settings.yml"));
+    }
+
     use super::*;
 
     #[test]

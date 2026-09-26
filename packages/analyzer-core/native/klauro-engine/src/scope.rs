@@ -331,6 +331,16 @@ fn beside(root: &str, held: &str) -> String {
 
 fn built_into(files: &Files, manifest: &str, root: &str) -> Vec<String> {
     let mut held = Vec::new();
+    for node in files.descendants(manifest).into_iter().filter(|node| node.name == "ProjectReference") {
+        let Some(included) = files.child(&node.id, "Include").and_then(|found| found.type_annotation.as_deref()) else {
+            continue;
+        };
+        let included = included.trim_matches('"').replace('\\', "/");
+        let project = directory_of(&included);
+        if !project.is_empty() {
+            held.push(beside(directory_of(manifest), project));
+        }
+    }
     for node in files.descendants(manifest) {
         let Some(path) = files.child(&node.id, "path") else { continue };
         let Some(value) = path.type_annotation.as_deref() else { continue };
@@ -346,6 +356,14 @@ fn built_into(files: &Files, manifest: &str, root: &str) -> Vec<String> {
 }
 
 static GRADLE_PUBLISHING: &[&str] = &["mavenPublishing", "publishing"];
+static PACKED_FOR_OTHERS: &[&str] = &["GeneratePackageOnBuild", "IsPackable", "PackageId"];
+
+fn packed_for_others(files: &Files, manifest: &str) -> bool {
+    files.descendants(manifest).iter().any(|node| {
+        PACKED_FOR_OTHERS.contains(&node.name.as_str())
+            && node.type_annotation.as_deref().is_none_or(|said| !said.trim().eq_ignore_ascii_case("false"))
+    })
+}
 
 fn gradle_publishes(calls: &[CallFact], file: u32) -> bool {
     calls.iter().any(|call| call.file == file && GRADLE_PUBLISHING.contains(&call.callee.as_str()))
@@ -982,6 +1000,7 @@ fn consolidate(
             .filter(|found| found.kind == "package-identity")
             .any(|found| match found.at.rsplit('/').next().is_some_and(|named| named.starts_with("build.gradle")) {
                 true => file_at.get(found.at.as_str()).is_some_and(|file| gradle_publishes(calls, *file)),
+                false if found.at.ends_with(".csproj") || found.at.ends_with(".fsproj") => packed_for_others(index, &found.at),
                 false => ready_to_be_published(index, &found.at),
             });
     }
@@ -1052,6 +1071,10 @@ fn consolidate(
     }
     let mut consumed_by: HashMap<usize, Vec<usize>> = HashMap::default();
     for (member, owner) in carried {
+        let named = deployables[owner].root.rsplit('/').next().unwrap_or_default();
+        if crate::paths::is_test(&format!("{}/", deployables[owner].root)) || named.ends_with("Tests") || named.ends_with("Test") {
+            continue;
+        }
         consumed_by.entry(member).or_default().push(owner);
     }
     for at in 0..deployables.len() {

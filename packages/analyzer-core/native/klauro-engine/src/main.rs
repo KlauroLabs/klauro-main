@@ -42,6 +42,7 @@ mod patterns;
 mod practices;
 mod principles;
 mod scope;
+mod sdk;
 mod shared;
 mod service_catalog;
 mod services;
@@ -577,6 +578,8 @@ fn read_it() {
     );
     let mut derived = derived;
     derived.exit_points.extend(entry_exit::kept_by_the_browser(&index.kept, &paths));
+    let namespaces: Vec<&str> = index.files.iter().filter_map(|file| file.namespace.as_deref()).collect();
+    derived.exit_points.extend(sdk::reached(&index.edges, &index.nodes, &paths, &namespaces));
     derived
         .entry_points
         .extend(convention::conventional(&index.nodes, &paths, &index.exports));
