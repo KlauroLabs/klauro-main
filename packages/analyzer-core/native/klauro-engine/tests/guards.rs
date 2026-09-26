@@ -18,25 +18,25 @@ fn guards_at(index: &Value, handler: &str) -> Vec<String> {
 #[test]
 fn a_route_that_needs_whoever_is_calling_is_guarded_by_them() {
     let index = common::read("guards");
-    assert_eq!(guards_at(&index, ":function:create_item:"), vec!["authentication"]);
-    assert_eq!(guards_at(&index, ":function:delete_item:"), vec!["authorization"]);
+    assert_eq!(guards_at(&index, ":function:create_item"), vec!["authentication"]);
+    assert_eq!(guards_at(&index, ":function:delete_item"), vec!["authorization"]);
 }
 
 #[test]
 fn taking_a_login_is_not_requiring_one() {
     let index = common::read("guards");
-    assert!(guards_at(&index, "items.py:function:login:").is_empty());
-    assert!(guards_at(&index, "orders.controller.ts:method:login:").is_empty());
+    assert!(guards_at(&index, "items.py:function:login").is_empty());
+    assert!(guards_at(&index, "orders.controller.ts:method:login").is_empty());
 }
 
 #[test]
 fn a_guard_on_the_controller_guards_every_route_but_those_that_open_themselves() {
     let index = common::read("guards");
-    assert_eq!(guards_at(&index, ":method:list:"), vec!["authentication"]);
-    assert!(guards_at(&index, ":method:receive:").is_empty());
-    assert_eq!(guards_at(&index, ":List:"), vec!["authentication"]);
-    assert!(guards_at(&index, ":Register:").is_empty());
-    assert_eq!(guards_at(&index, ":Remove:"), vec!["authentication", "authorization", "authentication"]);
+    assert_eq!(guards_at(&index, ":method:list"), vec!["authentication"]);
+    assert!(guards_at(&index, ":method:receive").is_empty());
+    assert_eq!(guards_at(&index, ":List"), vec!["authentication"]);
+    assert!(guards_at(&index, ":Register").is_empty());
+    assert_eq!(guards_at(&index, ":Remove"), vec!["authentication", "authorization", "authentication"]);
 }
 
 #[test]

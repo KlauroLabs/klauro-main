@@ -57,7 +57,11 @@ fn spoken(value: &rmpv::Value, symbols: &[String]) -> Value {
 }
 
 pub fn names(id: &str, declared: &str) -> bool {
-    id.ends_with(declared) || id.contains(&format!("{declared}:"))
+    let declared = match declared.rsplit_once(':') {
+        Some((named, line)) if !line.is_empty() && line.chars().all(|held| held.is_ascii_digit()) => named,
+        _ => declared,
+    };
+    id.ends_with(declared) || id.contains(&format!("{declared}@")) || id.contains(&format!("{declared}#"))
 }
 
 pub fn calls(index: &Value, source: &str, target: &str) -> bool {

@@ -120,13 +120,13 @@ pub fn standing(mut tables: Vec<Table>, paths: &[&str]) -> Vec<Table> {
     held
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Column {
     pub named: String,
     pub declared_as: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Table {
     pub named: String,
     pub columns: Vec<Column>,
@@ -137,7 +137,7 @@ pub struct Table {
     pub change: Change,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Change {
     Created,
     Dropped,

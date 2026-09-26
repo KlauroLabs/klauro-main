@@ -8,7 +8,7 @@
     "at": "edges",
     "has": {
       "kind": "calls",
-      "target": "shown.cpp:function:step:6:33"
+      "target": "shown.cpp:function:step"
     }
   }
 }

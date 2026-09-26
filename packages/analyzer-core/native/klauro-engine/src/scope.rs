@@ -275,7 +275,7 @@ fn ready_to_be_published(files: &Files, manifest: &str) -> bool {
         .filter(|node| {
             node.parent
                 .as_deref()
-                .is_none_or(|parent| parent == manifest || parent.contains(":section:package:"))
+                .is_none_or(|parent| parent == manifest || crate::stable_ids::names(parent, "section", "package"))
         })
         .collect();
     fn said(node: &IndexNode) -> &str {

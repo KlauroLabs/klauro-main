@@ -32,8 +32,8 @@ fn a_request_sent_through_a_mediator_reaches_its_one_handler() {
     assert!(patterns.contains(&"mediator") && patterns.contains(&"CQRS"), "{patterns:?}");
     let dispatched = index["edges"].as_array().unwrap().iter().any(|edge| {
         edge["kind"] == "calls"
-            && edge["source"].as_str().unwrap().contains(":function:Create:")
-            && edge["target"].as_str().unwrap().ends_with(":function:Handle:11:5")
+            && edge["source"].as_str().unwrap().contains(":function:Create")
+            && edge["target"].as_str().unwrap().contains(":function:Handle")
     });
     assert!(dispatched);
 }

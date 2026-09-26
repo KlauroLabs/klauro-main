@@ -73,7 +73,7 @@ fn a_stored_record_is_the_one_its_own_code_can_see_not_a_namesake_elsewhere() {
         .iter()
         .filter_map(|entity| entity["declared_in"].as_str())
         .collect();
-    assert_eq!(declared, vec!["Ordering.Domain/Order.cs:type:Order:3:1"]);
+    assert_eq!(declared, vec!["Ordering.Domain/Order.cs:type:Order"]);
 }
 
 #[test]
@@ -107,7 +107,7 @@ fn the_schema_is_what_the_migrations_leave_standing_and_an_enum_is_never_a_recor
         .collect();
     assert_eq!(held, vec!["user"]);
     let index = common::read("stored/replayed");
-    assert_eq!(index["comprehension"]["entities"][0]["declared_in"], "prisma/schema.prisma:type:User:1:1");
+    assert_eq!(index["comprehension"]["entities"][0]["declared_in"], "prisma/schema.prisma:type:User");
 }
 
 #[test]

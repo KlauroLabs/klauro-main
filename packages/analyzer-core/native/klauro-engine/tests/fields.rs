@@ -45,7 +45,7 @@ fn a_field_is_named_for_itself_and_typed_by_its_declaration() {
 #[test]
 fn a_call_through_a_typed_field_reaches_the_member_it_names() {
     let reached = reached_from("fields/csharp", "Handle");
-    assert!(reached.iter().any(|target| target.ends_with(":function:Add:5:5")), "{reached:?}");
+    assert!(reached.iter().any(|target| target.ends_with(":function:Add")), "{reached:?}");
     let reached = reached_from("fields/java", "handle");
-    assert!(reached.iter().any(|target| target.ends_with(":function:add:4:5")), "{reached:?}");
+    assert!(reached.iter().any(|target| target.ends_with(":function:add")), "{reached:?}");
 }

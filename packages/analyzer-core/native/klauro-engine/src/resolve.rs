@@ -6,6 +6,8 @@ use crate::language_tables::SOURCE_EXTENSIONS;
 use crate::model::*;
 use crate::paths::{directory_of, join, normalize};
 
+const FORWARDED_AT_MOST: u8 = 6;
+
 pub struct Index<'a> {
     pub files: &'a [String],
     pub languages: &'a [&'a str],
@@ -15,6 +17,7 @@ pub struct Index<'a> {
     pub calls: &'a [CallFact],
     pub type_references: &'a [TypeReferenceFact],
     pub locals: &'a [LocalBinding],
+    pub forwards: &'a [crate::model::Forward],
 }
 
 pub struct Resolution {
@@ -1163,6 +1166,57 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         reached.into_iter().filter(|found| index.files[*found as usize] != from).collect()
     };
     let reached_by_import: Vec<Vec<u32>> = index.imports.par_iter().map(reach_of).collect();
+    let forwarded_through: Vec<ImportFact> = index
+        .forwards
+        .iter()
+        .map(|forward| ImportFact {
+            file: forward.file,
+            specifier: forward.from.clone(),
+            line: 0,
+            type_only: false,
+            everywhere: false,
+            names: Vec::new(),
+        })
+        .collect();
+    let forwarded_to: Vec<Vec<u32>> = forwarded_through.par_iter().map(reach_of).collect();
+    let mut named_forwards: HashMap<(u32, &str), Vec<(&str, &[u32])>> = HashMap::default();
+    let mut every_forward: HashMap<u32, Vec<&[u32]>> = HashMap::default();
+    for (forward, reached) in index.forwards.iter().zip(&forwarded_to) {
+        match forward.name.as_str() {
+            "*" => every_forward.entry(forward.file).or_default().push(reached.as_slice()),
+            named => named_forwards
+                .entry((forward.file, named))
+                .or_default()
+                .push((forward.original.as_str(), reached.as_slice())),
+        }
+    }
+    let declared_through = |target: u32, wanted: &str| -> Option<u32> {
+        let mut pending: Vec<(u32, &str, u8)> = vec![(target, wanted, 0)];
+        let mut visited: HashSet<(u32, &str)> = HashSet::default();
+        while let Some((file, name, depth)) = pending.pop() {
+            if !visited.insert((file, name)) {
+                continue;
+            }
+            if let Some(found) = symbols
+                .exported
+                .get(&(file, name))
+                .or_else(|| symbols.file_scope.get(&(file, name)))
+                .copied()
+            {
+                return Some(found);
+            }
+            if depth >= FORWARDED_AT_MOST {
+                continue;
+            }
+            for (original, reached) in named_forwards.get(&(file, name)).into_iter().flatten() {
+                pending.extend(reached.iter().map(|next| (*next, *original, depth + 1)));
+            }
+            for reached in every_forward.get(&file).into_iter().flatten() {
+                pending.extend(reached.iter().map(|next| (*next, name, depth + 1)));
+            }
+        }
+        None
+    };
     for (fact, reached) in index.imports.iter().zip(reached_by_import) {
         let from = index.files[fact.file as usize].as_str();
         let language = index.languages[fact.file as usize];
@@ -1233,13 +1287,7 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         }
         for name in &fact.names {
             let wanted = name.imported.as_deref().unwrap_or(name.local.as_str());
-            if let Some(found) = reached.iter().find_map(|target| {
-                symbols
-                    .exported
-                    .get(&(*target, wanted))
-                    .or_else(|| symbols.file_scope.get(&(*target, wanted)))
-                    .copied()
-            }) {
+            if let Some(found) = reached.iter().find_map(|target| declared_through(*target, wanted)) {
                 bindings.imported.insert((fact.file, name.local.as_str()), found);
             }
         }
@@ -1662,6 +1710,23 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
     };
     let resolved: Vec<Resolved> = index.calls.par_iter().map(resolve_call).collect();
     lap("calls resolved");
+    let mut ours: HashMap<&str, u32> = HashMap::default();
+    for (fact, outcome) in index.calls.iter().zip(&resolved) {
+        if matches!(outcome, Resolved::Unresolved(_))
+            && declared_anywhere.contains(fact.callee.as_str())
+            && !crate::paths::is_test(&index.files[fact.file as usize])
+        {
+            *ours.entry(fact.callee.as_str()).or_insert(0) += 1;
+        }
+    }
+    eprintln!("  unresolved naming something declared here {} in hand-written code", ours.values().sum::<u32>());
+    if std::env::var("KLAURO_REPORT_UNRESOLVED").is_ok() {
+        let mut ranked: Vec<(&str, u32)> = ours.iter().map(|(name, count)| (*name, *count)).collect();
+        ranked.sort_by(|left, right| right.1.cmp(&left.1).then(left.0.cmp(right.0)));
+        for (name, count) in ranked.iter().take(40) {
+            eprintln!("  unresolved ours {count:6} {name}");
+        }
+    }
     for (fact, outcome) in index.calls.iter().zip(resolved) {
         let caller = fact.caller.as_deref().unwrap_or_default();
         match outcome {

@@ -20,6 +20,8 @@ mod jev;
 mod gomod;
 mod generic;
 mod externals;
+mod facts_cache;
+mod stable_ids;
 mod graph;
 mod health;
 mod language;
@@ -93,6 +95,8 @@ struct Index {
     registrations: Vec<model::RegistrationFact>,
     #[serde(skip)]
     kept: Vec<model::Kept>,
+    #[serde(skip)]
+    forwards: Vec<model::Forward>,
     settings: Vec<model::SettingRead>,
     locals: Vec<model::LocalBinding>,
     entry_points: Vec<entry_exit::EntryPoint>,
@@ -145,19 +149,28 @@ fn extract(
     absolute: &std::path::Path,
     file: u32,
     language_id: Option<&str>,
-) -> Read {
+    remembered: &facts_cache::Remembered,
+) -> (Read, Option<facts_cache::Entry>) {
     let Ok(mut source) = std::fs::read(absolute) else {
-        return Read::Unreadable;
+        return (Read::Unreadable, None);
     };
     if is_binary(&source) {
-        return Read::Binary;
+        return (Read::Binary, None);
     }
     if generated::is_generated(&source) {
-        return Read::Generated;
+        return (Read::Generated, None);
+    }
+    let key = remembered.key(path, language_id, &source);
+    if let Some(facts) = remembered.recall(path, key, file) {
+        return (Read::Facts(Box::new(facts)), None);
     }
     match read(path, &mut source, file, language_id) {
-        Some(facts) => Read::Facts(Box::new(facts)),
-        None => Read::Unreadable,
+        Some(mut facts) => {
+            stable_ids::stabilize(&mut facts);
+            let entry = facts_cache::Remembered::entry(key, file, &facts);
+            (Read::Facts(Box::new(facts)), entry)
+        }
+        None => (Read::Unreadable, None),
     }
 }
 
@@ -344,6 +357,8 @@ fn read_it() {
     let discovered = started.elapsed();
 
     let parse_started = Instant::now();
+    let remembered = facts_cache::open(&root);
+    let mut fresh: Vec<(String, facts_cache::Entry)> = Vec::new();
     let reads: Vec<(u32, Read)> = found
         .files
         .par_iter()
@@ -351,18 +366,24 @@ fn read_it() {
         .filter(|(_, entry)| route::readable(entry))
         .map(|(file, entry)| {
             let began = Instant::now();
-            let read = extract(&entry.path, &entry.absolute, file as u32, entry.language);
-            (file as u32, read, began.elapsed())
+            let (read, kept) = extract(&entry.path, &entry.absolute, file as u32, entry.language, &remembered);
+            (file as u32, read, kept, began.elapsed())
         })
         .collect::<Vec<_>>()
         .into_iter()
-        .map(|(file, read, took)| {
+        .map(|(file, read, kept, took)| {
             if std::env::var("KLAURO_TIME_FILES").is_ok() && took.as_millis() > 200 {
                 eprintln!("    slow file {:?} {}", took, found.files[file as usize].path);
+            }
+            if let Some(kept) = kept {
+                fresh.push((found.files[file as usize].path.clone(), kept));
             }
             (file, read)
         })
         .collect();
+    let recomputed = fresh.len();
+    let present: rustc_hash::FxHashSet<&str> = found.files.iter().map(|file| file.path.as_str()).collect();
+    remembered.keep(fresh, &present);
     let mut generated_files = rustc_hash::FxHashSet::default();
     let mut facts = Vec::with_capacity(reads.len());
     for (file, read) in reads {
@@ -375,6 +396,7 @@ fn read_it() {
         }
     }
     let parsed = parse_started.elapsed();
+    eprintln!("  extraction read afresh {recomputed} of {} files", facts.len());
 
     let mut index = Index {
         root: root.to_string_lossy().to_string(),
@@ -400,6 +422,7 @@ fn read_it() {
         metrics: Vec::new(),
         registrations: Vec::new(),
         kept: Vec::new(),
+        forwards: Vec::new(),
         settings: Vec::new(),
         locals: Vec::new(),
         entry_points: Vec::new(),
@@ -443,6 +466,7 @@ fn read_it() {
         index.metrics.extend(file.metrics);
         index.registrations.extend(file.registrations);
         index.kept.extend(file.kept);
+        index.forwards.extend(file.forwards);
         index.settings.extend(file.settings);
         index.locals.extend(file.locals);
         declared_tables.extend(file.tables);
@@ -506,6 +530,7 @@ fn read_it() {
         calls: &index.calls,
         type_references: &index.type_references,
         locals: &index.locals,
+        forwards: &index.forwards,
     });
     let internal_specifiers = std::mem::take(&mut resolution.internal_specifiers);
     let resolved = resolve_started.elapsed();

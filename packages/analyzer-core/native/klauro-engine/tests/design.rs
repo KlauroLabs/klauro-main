@@ -11,7 +11,7 @@ fn a_design_pattern_is_recognised_by_its_shape_not_its_name() {
         .map(|found| {
             let examples = found["examples"]
                 .as_array()
-                .map(|held| held.iter().map(|example| example.as_str().unwrap().rsplit(':').nth(2).unwrap().to_string()).collect())
+                .map(|held| held.iter().map(|example| example.as_str().unwrap().rsplit(':').next().unwrap().to_string()).collect())
                 .unwrap_or_default();
             (found["pattern"].as_str().unwrap().to_string(), examples)
         })

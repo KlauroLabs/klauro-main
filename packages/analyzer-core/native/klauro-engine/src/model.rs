@@ -1,6 +1,6 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeKind {
     Module,
@@ -42,7 +42,7 @@ impl NodeKind {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EdgeKind {
     Contains,
@@ -55,50 +55,50 @@ pub enum EdgeKind {
     Instantiates,
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Parameter {
     pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "crate::facts_cache::none")]
     pub type_annotation: Option<String>,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(skip_serializing_if = "crate::facts_cache::not")]
     pub optional: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "crate::facts_cache::none")]
     pub default_value: Option<String>,
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Signature {
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "crate::facts_cache::empty")]
     pub parameters: Vec<Parameter>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "crate::facts_cache::none")]
     pub return_type: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "crate::facts_cache::empty")]
     pub type_parameters: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "crate::facts_cache::none")]
     pub receiver: Option<String>,
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Modifiers {
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(skip_serializing_if = "crate::facts_cache::not")]
     pub exported: bool,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(skip_serializing_if = "crate::facts_cache::not")]
     pub default_export: bool,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(skip_serializing_if = "crate::facts_cache::not")]
     pub is_async: bool,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(skip_serializing_if = "crate::facts_cache::not")]
     pub generator: bool,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(skip_serializing_if = "crate::facts_cache::not")]
     pub is_static: bool,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(skip_serializing_if = "crate::facts_cache::not")]
     pub abstract_member: bool,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(skip_serializing_if = "crate::facts_cache::not")]
     pub readonly: bool,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(skip_serializing_if = "crate::facts_cache::not")]
     pub optional: bool,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(skip_serializing_if = "crate::facts_cache::not")]
     pub private_member: bool,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(skip_serializing_if = "crate::facts_cache::not")]
     pub protected_member: bool,
 }
 
@@ -117,20 +117,20 @@ impl Modifiers {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DecoratorArgument {
     pub value: String,
     pub literal: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Decorator {
     pub name: String,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "crate::facts_cache::empty")]
     pub arguments: Vec<DecoratorArgument>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Span {
     pub line: u32,
     pub column: u32,
@@ -138,99 +138,95 @@ pub struct Span {
     pub end_column: u32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct IndexNode {
     pub id: String,
     pub name: String,
     pub kind: NodeKind,
     pub file: u32,
     pub span: Span,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "crate::facts_cache::none")]
     pub parent: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "crate::facts_cache::none")]
     pub signature: Option<Signature>,
-    #[serde(skip_serializing_if = "Modifiers::is_default")]
+    #[serde(skip_serializing_if = "crate::facts_cache::default_modifiers")]
     pub modifiers: Modifiers,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "crate::facts_cache::empty")]
     pub decorators: Vec<Decorator>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "crate::facts_cache::none")]
     pub type_annotation: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "crate::facts_cache::none")]
     pub documentation: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "crate::facts_cache::none")]
     pub project: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "crate::facts_cache::none")]
     pub callback_of: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "crate::facts_cache::none")]
     pub registration_label: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct IndexEdge {
     pub source: String,
     pub target: String,
     pub kind: EdgeKind,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ImportSpecifier {
     pub local: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "crate::facts_cache::none")]
     pub imported: Option<String>,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(skip_serializing_if = "crate::facts_cache::not")]
     pub namespace: bool,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(skip_serializing_if = "crate::facts_cache::not")]
     pub default_import: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ImportFact {
     pub file: u32,
     pub specifier: String,
     pub line: u32,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(skip_serializing_if = "crate::facts_cache::not")]
     pub type_only: bool,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(skip_serializing_if = "crate::facts_cache::not")]
     pub everywhere: bool,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "crate::facts_cache::empty")]
     pub names: Vec<ImportSpecifier>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ExportFact {
     pub file: u32,
     pub name: String,
     pub line: u32,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(skip_serializing_if = "crate::facts_cache::not")]
     pub default_export: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "crate::facts_cache::none")]
     pub reexport_from: Option<String>,
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct CallContext {
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(skip_serializing_if = "crate::facts_cache::not")]
     pub in_try: bool,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(skip_serializing_if = "crate::facts_cache::not")]
     pub in_catch: bool,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(skip_serializing_if = "crate::facts_cache::not")]
     pub in_finally: bool,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(skip_serializing_if = "crate::facts_cache::not")]
     pub awaited: bool,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(skip_serializing_if = "crate::facts_cache::not")]
     pub optional_chained: bool,
-    #[serde(skip_serializing_if = "is_zero")]
+    #[serde(skip_serializing_if = "crate::facts_cache::zero")]
     pub conditional_depth: u16,
-    #[serde(skip_serializing_if = "is_zero")]
+    #[serde(skip_serializing_if = "crate::facts_cache::zero")]
     pub loop_depth: u16,
 }
 
-fn is_zero(value: &u16) -> bool {
-    *value == 0
-}
-
 impl CallContext {
-    fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         !self.in_try
             && !self.in_catch
             && !self.in_finally
@@ -241,35 +237,35 @@ impl CallContext {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CallFact {
     pub file: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "crate::facts_cache::none")]
     pub caller: Option<String>,
     pub callee: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "crate::facts_cache::none")]
     pub receiver: Option<String>,
     pub line: u32,
     pub column: u32,
-    #[serde(skip_serializing_if = "is_zero")]
+    #[serde(skip_serializing_if = "crate::facts_cache::zero")]
     pub argument_count: u16,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "crate::facts_cache::empty")]
     pub literals: Vec<String>,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(skip_serializing_if = "crate::facts_cache::not")]
     pub constructs: bool,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "crate::facts_cache::empty")]
     pub type_arguments: Vec<String>,
-    #[serde(skip_serializing_if = "CallContext::is_empty")]
+    #[serde(skip_serializing_if = "crate::facts_cache::empty_context")]
     pub context: CallContext,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct TypeReferenceFact {
     pub file: u32,
     pub source: String,
     pub name: String,
     pub kind: EdgeKind,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "crate::facts_cache::empty")]
     pub arguments: Vec<String>,
 }
 
@@ -305,24 +301,24 @@ pub fn type_arguments(written: &str) -> Vec<String> {
         .collect()
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct LocalBinding {
     pub file: u32,
     pub unit: String,
     pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "crate::facts_cache::none")]
     pub annotation: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "crate::facts_cache::none")]
     pub constructed: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "crate::facts_cache::none")]
     pub from_call: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "crate::facts_cache::none")]
     pub written: Option<String>,
-    #[serde(skip)]
+    #[serde(default, skip_serializing_if = "crate::facts_cache::hidden")]
     pub line: u32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RegistrationFact {
     pub file: u32,
     pub registrar: String,
@@ -331,10 +327,10 @@ pub struct RegistrationFact {
     pub line: u32,
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct UnitMetrics {
     pub branches: u16,
-    #[serde(skip_serializing_if = "is_zero")]
+    #[serde(skip_serializing_if = "crate::facts_cache::zero")]
     pub asserts: u16,
     pub loops: u16,
     pub returns: u16,
@@ -344,14 +340,14 @@ pub struct UnitMetrics {
     pub writes: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct UnitMetricsEntry {
     pub unit: String,
     #[serde(flatten)]
     pub metrics: UnitMetrics,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Kept {
     pub file: u32,
     pub unit: String,
@@ -360,10 +356,10 @@ pub struct Kept {
     pub line: u32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SettingRead {
     pub file: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "crate::facts_cache::none")]
     pub unit: Option<String>,
     pub name: String,
     pub line: u32,
@@ -409,7 +405,7 @@ mod settings {
     }
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct FileFacts {
     pub nodes: Vec<IndexNode>,
     pub edges: Vec<IndexEdge>,
@@ -420,13 +416,39 @@ pub struct FileFacts {
     pub metrics: Vec<UnitMetricsEntry>,
     pub registrations: Vec<RegistrationFact>,
     pub locals: Vec<LocalBinding>,
-    #[serde(skip)]
+    #[serde(default, skip_serializing_if = "crate::facts_cache::hidden")]
     pub tables: Vec<crate::tables::Table>,
-    #[serde(skip)]
+    #[serde(default, skip_serializing_if = "crate::facts_cache::hidden")]
     pub kept: Vec<Kept>,
-    #[serde(skip)]
+    #[serde(default, skip_serializing_if = "crate::facts_cache::hidden")]
     pub settings: Vec<SettingRead>,
     pub lines: u32,
     pub parse_errors: u32,
     pub namespace: Option<String>,
+    #[serde(default, skip_serializing_if = "crate::facts_cache::hidden")]
+    pub forwards: Vec<Forward>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Forward {
+    pub file: u32,
+    pub name: String,
+    pub original: String,
+    pub from: String,
+}
+
+impl FileFacts {
+    pub fn refile(&mut self, file: u32) {
+        self.nodes.iter_mut().for_each(|held| held.file = file);
+        self.imports.iter_mut().for_each(|held| held.file = file);
+        self.exports.iter_mut().for_each(|held| held.file = file);
+        self.calls.iter_mut().for_each(|held| held.file = file);
+        self.type_references.iter_mut().for_each(|held| held.file = file);
+        self.locals.iter_mut().for_each(|held| held.file = file);
+        self.registrations.iter_mut().for_each(|held| held.file = file);
+        self.kept.iter_mut().for_each(|held| held.file = file);
+        self.settings.iter_mut().for_each(|held| held.file = file);
+        self.tables.iter_mut().for_each(|held| held.file = file);
+        self.forwards.iter_mut().for_each(|held| held.file = file);
+    }
 }

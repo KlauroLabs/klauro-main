@@ -4,5 +4,5 @@
   "kind": "exit",
   "state": "accepted",
   "found_in": "the gauntlet: outbound HTTP the grader vetted in two RealWorld apps",
-  "expect": { "at": "edges", "has": {"kind":"calls","source":"page.js:function:keep:3:8","target":"store.js:function:save:1:8"} }
+  "expect": { "at": "edges", "has": {"kind":"calls","source":"page.js:function:keep","target":"store.js:function:save"} }
 }

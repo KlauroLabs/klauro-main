@@ -476,6 +476,14 @@ impl<'a> Extractor<'a> {
                     continue;
                 };
                 let alias = entry.child_by_field_name("alias");
+                if let Some(from) = reexport.as_ref() {
+                    self.facts.forwards.push(crate::model::Forward {
+                        file: self.file,
+                        name: self.text_owned(alias.unwrap_or(name)),
+                        original: self.text_owned(name),
+                        from: from.clone(),
+                    });
+                }
                 self.facts.exports.push(ExportFact {
                     file: self.file,
                     name: self.text_owned(alias.unwrap_or(name)),
@@ -485,6 +493,17 @@ impl<'a> Extractor<'a> {
                 });
                 recorded = true;
             }
+        }
+        if !recorded && !default_export
+            && let Some(from) = reexport.as_ref()
+            && !node.named_children(&mut node.walk()).any(|child| child.kind() == "namespace_export")
+        {
+            self.facts.forwards.push(crate::model::Forward {
+                file: self.file,
+                name: "*".to_string(),
+                original: "*".to_string(),
+                from: from.clone(),
+            });
         }
         if !recorded && default_export {
             self.facts.exports.push(ExportFact {

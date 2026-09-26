@@ -11,7 +11,7 @@ fn an_override_that_refuses_its_base_departs_from_substitution() {
     let index = common::read("principles");
     let held = principle(&index, "substitutable implementations");
     assert_eq!((held["following"].as_u64(), held["population"].as_u64()), (Some(1), Some(2)));
-    assert!(held["departing"][0].as_str().unwrap().starts_with("app/shapes.py:function:scale:16:5"));
+    assert!(held["departing"][0].as_str().unwrap().starts_with("app/shapes.py:function:scale"));
 }
 
 #[test]

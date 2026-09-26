@@ -13,7 +13,7 @@ fn served(fixture: &str) -> Vec<(String, String, String)> {
             (
                 entry["method"].as_str().unwrap_or("-").to_string(),
                 entry["path"].as_str().unwrap_or("-").to_string(),
-                format!("{}#{}", named[0].rsplit('/').next().unwrap(), named.get(named.len().saturating_sub(3)).unwrap_or(&"")),
+                format!("{}#{}", named[0].rsplit('/').next().unwrap(), named.last().and_then(|last| last.split(['@', '#']).next()).unwrap_or("")),
             )
         })
         .collect();
