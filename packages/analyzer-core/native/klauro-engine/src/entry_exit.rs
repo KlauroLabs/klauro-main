@@ -1121,6 +1121,12 @@ fn plainly_written(held: &str) -> &str {
 
 static TOUCAN_NAMESPACES: &[&str] = &["t2", "toucan2.core"];
 
+fn sqldelight_queries(receiver: &str) -> Option<&str> {
+    let held = receiver.rsplit('.').next().unwrap_or(receiver);
+    held.strip_suffix("Queries")
+        .filter(|stem| stem.chars().next().is_some_and(|letter| letter.is_ascii_lowercase()))
+}
+
 fn kept_by_toucan(call: &CallFact) -> Option<&'static str> {
     let (space, operation) = call.callee.rsplit_once('/')?;
     (TOUCAN_NAMESPACES.contains(&space) && !operation.is_empty() && operation != "table-name").then_some("database")
@@ -2147,7 +2153,7 @@ pub fn derive(
                 file: call.file,
                 line: call.line,
                 awaited: call.context.awaited,
-            addressed: addressed_at(call),
+            addressed: addressed_at(call).or_else(|| sqldelight_queries(receiver).map(str::to_string)),
             service: None,
             });
             return (found, reach);

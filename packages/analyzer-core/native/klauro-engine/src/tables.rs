@@ -92,6 +92,32 @@ fn retiring(statement: &str) -> Vec<Table> {
     found
 }
 
+static FRAMEWORK_BOOKKEEPING: &[&str] = &[
+    "__diesel_schema_migrations",
+    "__efmigrationshistory",
+    "_prisma_migrations",
+    "alembic_version",
+    "android_metadata",
+    "ar_internal_metadata",
+    "django_migrations",
+    "doctrine_migration_versions",
+    "flyway_schema_history",
+    "goose_db_version",
+    "gorp_migrations",
+    "knex_migrations",
+    "knex_migrations_lock",
+    "room_master_table",
+    "schema_migrations",
+    "seaql_migrations",
+    "sequelizemeta",
+    "sqlite_sequence",
+    "typeorm_metadata",
+];
+
+fn keeps_the_framework_itself(named: &str) -> bool {
+    named.is_empty() || named.contains(['$', '{', '}']) || FRAMEWORK_BOOKKEEPING.binary_search(&named).is_ok()
+}
+
 pub fn standing(mut tables: Vec<Table>, paths: &[&str]) -> Vec<Table> {
     tables.sort_by(|left, right| {
         let placed = |table: &Table| (paths.get(table.file as usize).copied().unwrap_or(""), table.line);
@@ -101,6 +127,9 @@ pub fn standing(mut tables: Vec<Table>, paths: &[&str]) -> Vec<Table> {
     let key = |named: &str| named.trim_matches(['"', '`', '[', ']']).to_ascii_lowercase();
     for table in tables {
         let named = key(&table.named);
+        if keeps_the_framework_itself(&named) {
+            continue;
+        }
         let replayed = table.declared_by.is_none();
         match table.change.clone() {
             Change::Created => held.push(table),
@@ -363,6 +392,13 @@ fn named_in(literal: &str) -> Option<String> {
     plainly.then(|| held.rsplit('.').next().unwrap_or(held).to_string())
 }
 
+fn spells_the_call(call: &crate::model::CallFact, literal: &str) -> bool {
+    let held = literal.trim();
+    held == call.callee
+        || held.ends_with(&format!(".{}", call.callee))
+        || call.receiver.as_deref().is_some_and(|receiver| held.starts_with(receiver))
+}
+
 pub fn created_by_calls(
     calls: &[crate::model::CallFact],
     nodes: &[crate::model::IndexNode],
@@ -395,6 +431,7 @@ pub fn created_by_calls(
                 .literals
                 .iter()
                 .filter(|literal| written(call, literal))
+                .filter(|literal| !spells_the_call(call, literal))
                 .find_map(|literal| named_in(literal))?;
             Some((
                 at,

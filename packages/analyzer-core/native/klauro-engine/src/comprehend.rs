@@ -2664,7 +2664,23 @@ fn entities(
     let mut kept: BTreeMap<String, (Vec<String>, Vec<String>, u32)> = BTreeMap::new();
     let mut stored_at: Vec<(String, u32)> = Vec::new();
     for exit in exit_points.iter().filter(|exit| exit.kind == "database") {
-        let Some(named) = addressed(receiver_of(exit), &modelled_names, &declared_names) else { continue };
+        let Some(named) = exit
+            .addressed
+            .as_deref()
+            .and_then(|held| {
+                let lowered = held.to_ascii_lowercase();
+                match declared_names.contains(&lowered) {
+                    true => Some(held.to_string()),
+                    false => declared_names
+                        .iter()
+                        .find(|declared| same_record(unquoted(declared)) == same_record(&lowered))
+                        .map(|declared| unquoted(declared).to_string()),
+                }
+            })
+            .or_else(|| addressed(receiver_of(exit), &modelled_names, &declared_names).map(str::to_string))
+        else {
+            continue;
+        };
         let managed = receiver_of(exit)
             .split('.')
             .any(|segment| MANAGERS.binary_search(&segment).is_ok());

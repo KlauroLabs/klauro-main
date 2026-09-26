@@ -1,10 +1,20 @@
 use rustc_hash::FxHashMap;
 
-use crate::model::FileFacts;
+use crate::model::{FileFacts, NodeKind};
 
 fn positioned<'a>(id: &'a str, line: u32, column: u32) -> Option<&'a str> {
     id.strip_suffix(&format!(":{line}:{}", column + 1))
         .or_else(|| id.strip_suffix(&format!(":{line}:{column}")))
+}
+
+fn unnumbered(base: &str) -> String {
+    if !base.contains(":callback:") {
+        return base.to_string();
+    }
+    match base.rsplit_once('#') {
+        Some((named, line)) if !line.is_empty() && line.chars().all(|held| held.is_ascii_digit()) => named.to_string(),
+        _ => base.to_string(),
+    }
 }
 
 pub fn names(id: &str, kind: &str, name: &str) -> bool {
@@ -18,13 +28,17 @@ pub fn stabilize(facts: &mut FileFacts) {
     let bases: Vec<Option<String>> = facts
         .nodes
         .iter()
-        .map(|node| positioned(&node.id, node.span.line, node.span.column).map(str::to_string))
+        .map(|node| positioned(&node.id, node.span.line, node.span.column).map(unnumbered))
         .collect();
     if bases.iter().all(Option::is_none) {
         return;
     }
-    let name_of: FxHashMap<&str, &str> =
-        facts.nodes.iter().map(|node| (node.id.as_str(), node.name.as_str())).collect();
+    let name_of: FxHashMap<&str, &str> = facts
+        .nodes
+        .iter()
+        .filter(|node| node.kind != NodeKind::Module)
+        .map(|node| (node.id.as_str(), node.name.as_str()))
+        .collect();
     let mut seen: FxHashMap<&str, usize> = FxHashMap::default();
     for base in bases.iter().flatten() {
         *seen.entry(base.as_str()).or_default() += 1;
@@ -116,7 +130,7 @@ pub fn stabilize(facts: &mut FileFacts) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{IndexEdge, IndexNode, Modifiers, NodeKind, Span, EdgeKind};
+    use crate::model::{IndexEdge, IndexNode, Modifiers, Span, EdgeKind};
 
     fn node(id: &str, name: &str, line: u32, parent: Option<&str>) -> IndexNode {
         IndexNode {
@@ -152,8 +166,8 @@ mod tests {
         facts.nodes.push(node("a.ts:type:Cart:9:5", "Cart", 9, None));
         facts.nodes.push(node("a.ts:method:render:3:5", "render", 3, Some("a.ts:type:Shop:1:5")));
         facts.nodes.push(node("a.ts:method:render:11:5", "render", 11, Some("a.ts:type:Cart:9:5")));
-        facts.nodes.push(node("a.ts:callback:handler:20:5", "handler", 20, None));
-        facts.nodes.push(node("a.ts:callback:handler:25:5", "handler", 25, None));
+        facts.nodes.push(node("a.ts:callback:test#20:20:5", "test#20", 20, None));
+        facts.nodes.push(node("a.ts:callback:test#25:25:5", "test#25", 25, None));
         facts.edges.push(IndexEdge {
             source: "a.ts:type:Shop:1:5".to_string(),
             target: "a.ts:method:render:3:5".to_string(),
@@ -168,8 +182,8 @@ mod tests {
                 "a.ts:type:Cart",
                 "a.ts:method:render@Shop",
                 "a.ts:method:render@Cart",
-                "a.ts:callback:handler@#1",
-                "a.ts:callback:handler@#2",
+                "a.ts:callback:test@#1",
+                "a.ts:callback:test@#2",
             ]
         );
         assert_eq!(facts.nodes[2].parent.as_deref(), Some("a.ts:type:Shop"));

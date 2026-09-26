@@ -159,7 +159,7 @@ pub fn name_them(
         .collect();
     let batches: Vec<BTreeMap<String, Written>> = listed
         .par_chunks(named_per_call())
-        .map(|batch| name_batch(member, spoken_for, batch))
+        .map(|batch| name_batch(member, spoken_for, batch, true))
         .collect();
     for batch in batches {
         named.extend(batch);
@@ -179,7 +179,7 @@ const LEAST_PER_CALL: usize = 6;
 
 
 
-fn name_batch(member: &str, spoken_for: &str, listed: &[String]) -> BTreeMap<String, Written> {
+fn name_batch(member: &str, spoken_for: &str, listed: &[String], again: bool) -> BTreeMap<String, Written> {
     let mut named = BTreeMap::new();
     let prompt = format!(
         "A software system describes itself like this:\n{spoken_for}\n\n\
@@ -195,12 +195,28 @@ fn name_batch(member: &str, spoken_for: &str, listed: &[String]) -> BTreeMap<Str
          The {member}:\n{}",
         listed.join("\n\n")
     );
-    let Some(written) = answered::<serde_json::Value>(&prompt, 1200, &asking_of_models(model()), "items", listed.len()) else { return named };
+    let Some(written) = answered::<serde_json::Value>(&prompt, 1200, &asking_of_models(model()), "items", most_of(listed.len())) else { return named };
     for item in written["items"].as_array().into_iter().flatten() {
         let Ok(held) = serde_json::from_value::<Written>(item.clone()) else { continue };
         named.insert(held.id.clone(), held);
     }
+    let missing: Vec<String> = listed
+        .iter()
+        .filter(|told| listed_id(told).is_some_and(|id| !named.contains_key(id)))
+        .cloned()
+        .collect();
+    if again && !missing.is_empty() {
+        named.extend(name_batch(member, spoken_for, &missing, false));
+    }
     named
+}
+
+fn listed_id(told: &str) -> Option<&str> {
+    told.strip_prefix("- id: ")?.lines().next().map(str::trim)
+}
+
+fn most_of(listed: usize) -> usize {
+    listed.div_ceil(2)
 }
 
 pub fn ground(
@@ -325,14 +341,14 @@ pub fn what_happens(spoken_for: &str, listed: &[(String, String)]) -> BTreeMap<S
     }
     listed
         .par_chunks(PATHS_PER_CALL)
-        .map(|chunk| tell_a_batch(spoken_for, chunk))
+        .map(|chunk| tell_a_batch(spoken_for, chunk, true))
         .reduce(BTreeMap::new, |mut into, held| {
             into.extend(held);
             into
         })
 }
 
-fn tell_a_batch(spoken_for: &str, listed: &[(String, String)]) -> BTreeMap<String, Written> {
+fn tell_a_batch(spoken_for: &str, listed: &[(String, String)], again: bool) -> BTreeMap<String, Written> {
     let prompt = format!(
         "A software system describes itself like this:\n{spoken_for}\n\n\
          Below are paths through it, each with the steps its code takes, in order, read from the \
@@ -347,7 +363,7 @@ fn tell_a_batch(spoken_for: &str, listed: &[(String, String)]) -> BTreeMap<Strin
         listed.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect::<Vec<_>>().join("\n")
     );
     let mut held = BTreeMap::new();
-    let Some(answer) = answered::<serde_json::Value>(&prompt, 3000, &asking_of_models(model()), "items", listed.len()) else {
+    let Some(answer) = answered::<serde_json::Value>(&prompt, 3000, &asking_of_models(model()), "items", most_of(listed.len())) else {
         return held;
     };
     for item in answer["items"].as_array().into_iter().flatten() {
@@ -362,6 +378,10 @@ fn tell_a_batch(spoken_for: &str, listed: &[(String, String)]) -> BTreeMap<Strin
                 },
             );
         }
+    }
+    let missing: Vec<(String, String)> = listed.iter().filter(|(id, _)| !held.contains_key(id)).cloned().collect();
+    if again && !missing.is_empty() {
+        held.extend(tell_a_batch(spoken_for, &missing, false));
     }
     held
 }
@@ -1330,5 +1350,17 @@ mod shapes {
             let required = shape["required"].as_array().cloned().unwrap_or_default();
             assert!(required.iter().any(|held| held == key), "{key} is asked for but shaped as {shape}");
         }
+    }
+}
+
+#[cfg(test)]
+mod batches {
+    use super::*;
+
+    #[test]
+    fn an_item_is_found_by_the_id_it_was_listed_under() {
+        assert_eq!(listed_id("- id: m4\n  fields: a, b"), Some("m4"));
+        assert_eq!(listed_id("fields"), None);
+        assert_eq!(most_of(5), 3);
     }
 }

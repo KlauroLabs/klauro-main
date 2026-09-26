@@ -1287,7 +1287,14 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         }
         for name in &fact.names {
             let wanted = name.imported.as_deref().unwrap_or(name.local.as_str());
-            if let Some(found) = reached.iter().find_map(|target| declared_through(*target, wanted)) {
+            let declared = reached.iter().find_map(|target| {
+                symbols
+                    .exported
+                    .get(&(*target, wanted))
+                    .or_else(|| symbols.file_scope.get(&(*target, wanted)))
+                    .copied()
+            });
+            if let Some(found) = declared.or_else(|| reached.iter().find_map(|target| declared_through(*target, wanted))) {
                 bindings.imported.insert((fact.file, name.local.as_str()), found);
             }
         }
