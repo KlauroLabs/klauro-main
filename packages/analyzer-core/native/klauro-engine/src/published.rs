@@ -6,6 +6,8 @@ use crate::paths::is_test;
 
 static HEADERS: &[&str] = &["h", "h++", "hh", "hpp", "hxx"];
 
+static BUILD_SCRIPTS: &[&str] = &[".gradle", ".gradle.kts"];
+
 fn extension(path: &str) -> &str {
     crate::paths::basename(path).rsplit_once('.').map(|(_, held)| held).unwrap_or("")
 }
@@ -103,6 +105,8 @@ pub fn published(
         })
         .map(|unit| Publishes { root: unit.root.as_str() })
         .collect();
+    let mut every: Vec<&str> = scope.deployables.iter().map(|unit| unit.root.as_str()).collect();
+    every.sort_by_key(|root| std::cmp::Reverse(root.len()));
 
     if publishing.is_empty() {
         return Vec::new();
@@ -114,7 +118,12 @@ pub fn published(
     let holds: Vec<Option<usize>> = files
         .iter()
         .map(|path| {
-            innermost.iter().copied().find(|at| under(path, publishing[*at].root))
+            let nearest = every.iter().find(|root| under(path, root))?;
+            innermost
+                .iter()
+                .copied()
+                .find(|at| under(path, publishing[*at].root))
+                .filter(|at| publishing[*at].root.len() >= nearest.len())
         })
         .collect();
 
@@ -125,7 +134,7 @@ pub fn published(
         }
         let Some(at) = holds.get(node.file as usize).copied().flatten() else { continue };
         let path = &files[node.file as usize];
-        if is_test(path) {
+        if is_test(path) || BUILD_SCRIPTS.iter().any(|ending| path.ends_with(ending)) {
             continue;
         }
         let owner = node.parent.as_deref().unwrap_or("");

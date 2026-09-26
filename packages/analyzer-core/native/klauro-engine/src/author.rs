@@ -1314,6 +1314,7 @@ static WHAT_A_KIND_MEANS: &[(&str, &str, &str)] = &[
     ("entry_points", "message", "a consumer of messages arriving on a queue or bus"),
     ("entry_points", "schedule", "work the program runs on a timer"),
     ("entry_points", "test", "a test case that exercises the program"),
+    ("entry_points", "ui", "an action a person takes in the program's interface, such as tapping a button or submitting a form"),
     ("exit_points", "api", "a request sent over a network to another system"),
     ("exit_points", "cache", "a value written to or read from a cache that outlives one call"),
     ("exit_points", "client_storage", "a value written to or read from storage the browser keeps, such as a cookie or local storage"),

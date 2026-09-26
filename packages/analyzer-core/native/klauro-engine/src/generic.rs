@@ -747,6 +747,10 @@ impl<'a> Extractor<'a> {
             self.walk(node, &inner);
             return;
         }
+        if let Some(arm) = crate::arms::dispatched(self.spec.id, node, |held| self.text(held)) {
+            self.declare_arm(node, scope, arm);
+            return;
+        }
         if self.spec.declares.lambda_kinds.contains(&kind) {
             self.declare_callback(node, scope);
             return;
@@ -1691,6 +1695,34 @@ impl<'a> Extractor<'a> {
                 target: id.clone(),
                 kind: EdgeKind::Contains,
             });
+        }
+        let mut inner = scope.clone();
+        inner.callable = Some(id);
+        inner.registrar = None;
+        self.walk(node, &inner);
+    }
+
+    fn declare_arm(&mut self, node: Node, scope: &Scope, arm: crate::arms::Dispatched) {
+        let id = self.id("callback", &arm.case, node);
+        let holder = scope.callable.clone().or_else(|| scope.owner.clone());
+        self.facts.nodes.push(IndexNode {
+            id: id.clone(),
+            name: arm.case,
+            kind: NodeKind::Function,
+            file: self.file,
+            span: span_of(node),
+            parent: holder.clone(),
+            signature: None,
+            modifiers: Modifiers::default(),
+            decorators: Vec::new(),
+            type_annotation: None,
+            documentation: None,
+            project: None,
+            callback_of: Some(format!("dispatch:{}", arm.kind)),
+            registration_label: Some(arm.label),
+        });
+        if let Some(owner) = holder {
+            self.facts.edges.push(IndexEdge { source: owner, target: id.clone(), kind: EdgeKind::Contains });
         }
         let mut inner = scope.clone();
         inner.callable = Some(id);

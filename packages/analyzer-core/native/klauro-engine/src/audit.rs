@@ -121,7 +121,7 @@ static EXIT_KINDS: &[&str] = &[
     "api", "cache", "client_storage", "database", "file", "message", "network", "process",
 ];
 static ENTRY_KINDS: &[&str] =
-    &["background", "cli", "event", "export", "http", "ipc", "lifecycle", "message", "schedule", "test"];
+    &["background", "cli", "event", "export", "http", "ipc", "lifecycle", "message", "schedule", "test", "ui"];
 
 fn well_formed(expect: &crate::author::Expectation) -> bool {
     let (fields, kinds) = match expect.at.as_str() {

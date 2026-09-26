@@ -49,6 +49,8 @@ pub struct Deployable {
     #[serde(skip)]
     pub offered_to_others: bool,
     #[serde(skip)]
+    pub consumers: u32,
+    #[serde(skip)]
     pub shipped: bool,
     pub units: u32,
     pub entry_points: u32,
@@ -337,6 +339,73 @@ fn built_into(files: &Files, manifest: &str, root: &str) -> Vec<String> {
             continue;
         }
         held.push(beside(root, value));
+    }
+    held.sort();
+    held.dedup();
+    held
+}
+
+static GRADLE_PUBLISHING: &[&str] = &["mavenPublishing", "publishing"];
+
+fn gradle_publishes(calls: &[CallFact], file: u32) -> bool {
+    calls.iter().any(|call| call.file == file && GRADLE_PUBLISHING.contains(&call.callee.as_str()))
+        || applies_plugin(calls, file, "publish")
+        || applies_plugin(calls, file, "maven-publish")
+}
+
+fn gradle_key(path: &str) -> String {
+    path.split('/')
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| segment.chars().filter(|held| *held != '-' && *held != '_').collect::<String>().to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn gradle_build_root<'a>(files: &Files, manifest: &'a str) -> &'a str {
+    let mut directory = directory_of(manifest);
+    loop {
+        let settles = ["settings.gradle", "settings.gradle.kts"].iter().any(|named| {
+            let held = match directory.is_empty() {
+                true => named.to_string(),
+                false => format!("{directory}/{named}"),
+            };
+            files.holds(&held)
+        });
+        if settles {
+            return directory;
+        }
+        match directory.rfind('/') {
+            Some(at) => directory = &directory[..at],
+            None if !directory.is_empty() => directory = "",
+            None => return directory,
+        }
+    }
+}
+
+fn gradle_projects(files: &Files, manifest: &str, file: u32, calls: &[CallFact]) -> Vec<String> {
+    if !manifest.rsplit('/').next().is_some_and(|named| named.starts_with("build.gradle")) {
+        return Vec::new();
+    }
+    let build_root = gradle_build_root(files, manifest);
+    let mut held = Vec::new();
+    for call in calls.iter().filter(|call| call.file == file) {
+        for literal in &call.literals {
+            let written = literal.trim().trim_start_matches('(').trim_end_matches(')').trim();
+            let relative = match written.strip_prefix("projects.") {
+                Some(accessor) => Some(accessor.replace('.', "/")),
+                None if call.callee == "project" => {
+                    let named = unquote(written);
+                    named.strip_prefix(':').map(|path| path.replace(':', "/"))
+                }
+                None => None,
+            };
+            let Some(relative) = relative else { continue };
+            let joined = match build_root.is_empty() {
+                true => relative,
+                false => format!("{build_root}/{relative}"),
+            };
+            held.push(gradle_key(&joined));
+        }
     }
     held.sort();
     held.dedup();
@@ -781,7 +850,7 @@ pub fn derive(
     }
 
     separate_containers(&mut candidates);
-    consolidate(candidates, &index, nodes, edges, entry_points, code)
+    consolidate(candidates, &index, nodes, edges, entry_points, code, calls)
 }
 
 fn separate_containers(candidates: &mut [Candidate]) {
@@ -824,6 +893,7 @@ fn consolidate(
     edges: &[IndexEdge],
     entry_points: &[EntryPoint],
     code: &[bool],
+    calls: &[CallFact],
 ) -> Scope {
     candidates.sort_by(|left, right| {
         right
@@ -890,12 +960,15 @@ fn consolidate(
             members: Vec::new(),
             bundled_into: None,
             offered_to_others: false,
+            consumers: 0,
             units: 0,
             entry_points: 0,
             entered_at: Vec::new(),
             reaches: Vec::new(),
         });
     }
+    let file_at: HashMap<&str, u32> =
+        index.paths.iter().enumerate().map(|(at, path)| (*path, at as u32)).collect();
     for unit in deployables.iter_mut() {
         unit.declarations.sort_by(|left, right| {
             right.declares.cmp(&left.declares).then(left.at.cmp(&right.at))
@@ -907,7 +980,10 @@ fn consolidate(
             .declarations
             .iter()
             .filter(|found| found.kind == "package-identity")
-            .any(|found| ready_to_be_published(&index, &found.at));
+            .any(|found| match found.at.rsplit('/').next().is_some_and(|named| named.starts_with("build.gradle")) {
+                true => file_at.get(found.at.as_str()).is_some_and(|file| gradle_publishes(calls, *file)),
+                false => ready_to_be_published(index, &found.at),
+            });
     }
 
     let shipped: Vec<(usize, Vec<String>)> = deployables
@@ -952,12 +1028,21 @@ fn consolidate(
         .collect();
     let where_of: HashMap<&str, usize> =
         deployables.iter().enumerate().map(|(at, unit)| (unit.root.as_str(), at)).collect();
+    let gradle_of: HashMap<String, usize> =
+        deployables.iter().enumerate().map(|(at, unit)| (gradle_key(&unit.root), at)).collect();
     let mut carried: Vec<(usize, usize)> = Vec::new();
     for at in 0..deployables.len() {
         let root = deployables[at].root.clone();
         for manifest in declared_at[at].iter() {
-            for held in built_into(index, manifest, &root) {
-                let Some(other) = where_of.get(held.as_str()).copied() else { continue };
+            let projects = file_at
+                .get(manifest.as_str())
+                .map(|file| gradle_projects(index, manifest, *file, calls))
+                .unwrap_or_default();
+            let named = built_into(index, manifest, &root)
+                .into_iter()
+                .filter_map(|held| where_of.get(held.as_str()).copied())
+                .chain(projects.iter().filter_map(|key| gradle_of.get(key).copied()));
+            for other in named {
                 if other == at || deployables[other].shipped || deployables[other].runs.is_some() {
                     continue;
                 }
@@ -965,16 +1050,43 @@ fn consolidate(
             }
         }
     }
+    let mut consumed_by: HashMap<usize, Vec<usize>> = HashMap::default();
     for (member, owner) in carried {
-        if deployables[member].bundled_into.is_some() {
+        consumed_by.entry(member).or_default().push(owner);
+    }
+    for at in 0..deployables.len() {
+        let mut seen: HashSet<usize> = HashSet::from_iter([at]);
+        let mut pending = vec![at];
+        let mut tops: HashSet<usize> = HashSet::default();
+        while let Some(current) = pending.pop() {
+            match consumed_by.get(&current) {
+                Some(owners) => {
+                    for owner in owners {
+                        if seen.insert(*owner) {
+                            pending.push(*owner);
+                        }
+                    }
+                }
+                None if current != at => {
+                    tops.insert(current);
+                }
+                None => {}
+            }
+        }
+        deployables[at].consumers = tops.len() as u32;
+    }
+    for (member, owners) in consumed_by.iter() {
+        let Some(best) = owners.iter().copied().max_by_key(|owner| (deployables[*owner].consumers, std::cmp::Reverse(*owner))) else {
+            continue;
+        };
+        if deployables[*member].bundled_into.is_some() {
             continue;
         }
-        let owner_id = deployables[owner].id.clone();
-        let member_id = deployables[member].id.clone();
-        deployables[member].bundled_into = Some(owner_id);
-        deployables[owner].members.push(member_id);
+        let owner_id = deployables[best].id.clone();
+        let member_id = deployables[*member].id.clone();
+        deployables[*member].bundled_into = Some(owner_id);
+        deployables[best].members.push(member_id);
     }
-
     let territory = Territory::of(
         deployables
             .iter()

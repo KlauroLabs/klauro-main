@@ -175,8 +175,12 @@ pub fn derive(
     let mut declared: Vec<Declared> = Vec::new();
     let mut claimed: HashSet<String> = HashSet::default();
 
+    let shared_of: HashMap<&str, bool> =
+        deployables.iter().map(|unit| (unit.id.as_str(), unit.consumers >= SHARED_BY)).collect();
     for unit in deployables.iter().filter(|unit| {
-        unit.bundled_into.is_some() && unit.category == "library" && unit.runs.is_none()
+        let heads_what_is_shared = unit.consumers >= SHARED_BY
+            && unit.bundled_into.as_deref().is_some_and(|above| !shared_of.get(above).copied().unwrap_or(false));
+        unit.bundled_into.is_some() && unit.category == "library" && unit.runs.is_none() && !heads_what_is_shared
     }) {
         claimed.insert(unit.root.clone());
     }
@@ -213,6 +217,20 @@ pub fn derive(
         });
     }
 
+    for unit in deployables.iter().filter(|unit| {
+        !unit.root.is_empty() && unit.declarations.iter().any(|held| held.kind == "apple-application")
+    }) {
+        if !claimed.insert(unit.root.clone()) {
+            continue;
+        }
+        declared.push(Declared {
+            name: unit.name.clone(),
+            root: unit.root.clone(),
+            declared_by: "ship-declaration",
+            at: unit.declarations.first().map(|held| held.at.clone()).unwrap_or_default(),
+        });
+    }
+
     if declared.is_empty() {
         declared = cohesive_roots(files, edges);
     }
@@ -227,6 +245,8 @@ pub fn derive(
 
     partition(declared, files, nodes, edges, entry_points, code, deployables)
 }
+
+const SHARED_BY: u32 = 2;
 
 fn declares_workspace(children: &HashMap<&str, Vec<&IndexNode>>, manifest: &str) -> bool {
     let name = basename(manifest).to_ascii_lowercase();
@@ -361,11 +381,39 @@ fn partition(
     let mut order: Vec<usize> = (0..declared.len()).collect();
     order.sort_by_key(|at| std::cmp::Reverse(declared[*at].root.len()));
 
-    let owner = |path: &str| -> Option<usize> {
+    let declared_at: HashMap<&str, usize> =
+        declared.iter().enumerate().map(|(at, found)| (found.root.as_str(), at)).collect();
+    let unit_of: HashMap<&str, &Deployable> =
+        deployables.iter().map(|unit| (unit.id.as_str(), unit)).collect();
+    let mut bundled: Vec<&Deployable> = deployables
+        .iter()
+        .filter(|unit| unit.bundled_into.is_some() && !unit.root.is_empty() && !declared_at.contains_key(unit.root.as_str()))
+        .collect();
+    bundled.sort_by_key(|unit| std::cmp::Reverse(unit.root.len()));
+    let carried_to = |unit: &Deployable| -> Option<usize> {
+        let mut current = unit;
+        for _ in 0..32 {
+            let above = unit_of.get(current.bundled_into.as_deref()?).copied()?;
+            if let Some(at) = declared_at.get(above.root.as_str()).filter(|_| !above.root.is_empty()) {
+                return Some(*at);
+            }
+            current = above;
+        }
+        None
+    };
+    let nearest = |path: &str| -> Option<usize> {
         order
             .iter()
             .copied()
             .find(|at| contains(&declared[*at].root, path))
+    };
+    let owner = |path: &str| -> Option<usize> {
+        let found = nearest(path)?;
+        let inner = bundled.iter().find(|unit| contains(&unit.root, path));
+        match inner {
+            Some(unit) if unit.root.len() > declared[found].root.len() => carried_to(unit).or(Some(found)),
+            _ => Some(found),
+        }
     };
 
     let mut sub_projects: Vec<SubProject> = declared

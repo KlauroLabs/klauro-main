@@ -1,5 +1,6 @@
 mod alias;
 mod architecture;
+mod arms;
 mod builtins;
 mod capabilities;
 mod audit;

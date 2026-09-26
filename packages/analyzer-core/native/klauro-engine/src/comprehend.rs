@@ -1444,7 +1444,12 @@ pub fn derive(
             continue;
         }
         let named = crate::names::root(&exit.target);
+        let addressed = exit.addressed.as_deref().and_then(|addressed| {
+            let wanted = same_record(unquoted(addressed));
+            held.iter().copied().find(|record| same_record(unquoted(record)) == wanted)
+        });
         let touching: Vec<&str> = match (held.contains(named), through_a_handle(exit)) {
+            _ if addressed.is_some() => addressed.into_iter().collect(),
             (true, _) => vec![named],
             (false, Some(record)) => vec![record],
             (false, None) => match typed_at.get(&(exit.source.as_str(), exit.line)) {
@@ -1584,6 +1589,12 @@ pub fn derive(
             for target in next.get(&current).into_iter().flatten() {
                 if seen.insert(*target) {
                     queue.push((*target, depth + 1));
+                }
+            }
+            for inner in members.get(&current).into_iter().flatten() {
+                let held = nodes[*inner as usize].id.as_str();
+                if held.contains(":callback:") && !handlers.contains_key(held) && seen.insert(*inner) {
+                    queue.push((*inner, depth));
                 }
             }
         }

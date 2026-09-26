@@ -304,6 +304,10 @@ fn sole_type_argument(annotation: &str) -> Option<&str> {
     (!inside.is_empty()).then_some(inside)
 }
 
+static HOLDERS: &[&str] = &["Lazy", "Provider"];
+static HOLDER_ACCESSORS: &[&str] = &["get", "value"];
+static CALLED_AS_A_FUNCTION: &[&str] = &["__call__", "callAsFunction", "invoke"];
+
 fn base_type_name(annotation: &str) -> &str {
     let annotation = annotation.trim().trim_start_matches(['&', '*']);
     let end = annotation
@@ -370,6 +374,11 @@ impl<'a> Resolver<'a> {
     }
 
     fn annotated(&self, file: u32, annotation: &'a str) -> Origin<'a> {
+        if HOLDERS.contains(&base_type_name(annotation))
+            && let Some(held) = sole_type_argument(annotation)
+        {
+            return self.annotated(file, held);
+        }
         if let Some(found) = self.named_type(file, annotation) {
             return Origin::Declared(found);
         }
@@ -501,6 +510,17 @@ impl<'a> Resolver<'a> {
         for part in parts {
             origin = match origin {
                 Origin::Declared(owner) if self.symbols.nodes[owner as usize].kind.is_type() => {
+                    let unwrapped = held
+                        .filter(|annotation| HOLDERS.contains(&base_type_name(annotation)))
+                        .filter(|_| HOLDER_ACCESSORS.contains(&part))
+                        .and_then(sole_type_argument);
+                    if let Some(inner) = unwrapped
+                        && self.symbols.member_type(owner, part).is_none()
+                    {
+                        held = Some(inner);
+                        origin = Origin::Declared(owner);
+                        continue;
+                    }
                     held = self.symbols.member_type(owner, part);
                     match held {
                         Some(annotation) => {
@@ -1451,6 +1471,32 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         None
     };
 
+    let mut called_within: HashMap<&str, Vec<&str>> = HashMap::default();
+    for call in index.calls.iter() {
+        let spoken_to_itself = call.receiver.as_deref().is_none_or(|receiver| matches!(receiver, "this" | "self"));
+        let Some(mut caller) = call.caller.as_deref() else { continue };
+        if !spoken_to_itself {
+            continue;
+        }
+        for _ in 0..8 {
+            let Some(held) = symbols.position.get(caller).map(|at| &symbols.nodes[*at as usize]) else { break };
+            match (held.id.contains(":callback:"), held.parent.as_deref()) {
+                (true, Some(parent)) => caller = parent,
+                _ => break,
+            }
+        }
+        called_within.entry(caller).or_default().push(call.callee.as_str());
+    }
+    let overridden_within = |called: u32, owner: u32| -> Option<u32> {
+        if symbols.owning_type(called) == Some(owner) {
+            return None;
+        }
+        called_within
+            .get(symbols.nodes[called as usize].id.as_str())?
+            .iter()
+            .find_map(|named| symbols.member(owner, named))
+    };
+
     for fact in index.type_references {
         if fact.kind == EdgeKind::HasMethod {
             continue;
@@ -1552,7 +1598,11 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
                 let node = &symbols.nodes[found as usize];
                 match inherited(found, &fact.callee) {
                     Some(member) => {
-                        return Resolved::Edge(symbols.nodes[member as usize].id.clone(), kind);
+                        let target = match node.kind.is_type() {
+                            true => overridden_within(member, found).unwrap_or(member),
+                            false => member,
+                        };
+                        return Resolved::Edge(symbols.nodes[target as usize].id.clone(), kind);
                     }
                     None if node.kind.is_unit() => {
                         return Resolved::Edge(node.id.clone(), kind);
@@ -1561,7 +1611,15 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
                 }
             }
             (Origin::Declared(found), None) => {
-                return Resolved::Edge(symbols.nodes[found as usize].id.clone(), kind);
+                let node = &symbols.nodes[found as usize];
+                let through_a_value = node.kind.is_type() && !fact.constructs && node.name != fact.callee;
+                if through_a_value
+                    && let Some(called) = CALLED_AS_A_FUNCTION.iter().find_map(|named| inherited(found, named))
+                {
+                    let target = overridden_within(called, found).unwrap_or(called);
+                    return Resolved::Edge(symbols.nodes[target as usize].id.clone(), kind);
+                }
+                return Resolved::Edge(node.id.clone(), kind);
             }
             (Origin::Module(held), Some(_)) => {
                 if let Some(found) =
@@ -1734,8 +1792,34 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
             eprintln!("  unresolved ours {count:6} {name}");
         }
     }
+    let mut implemented_by: HashMap<u32, Vec<u32>> = HashMap::default();
+    for (below, above) in supertypes.iter() {
+        let path = index.files.get(symbols.nodes[*below as usize].file as usize).map(String::as_str).unwrap_or("");
+        if crate::paths::is_test(path) {
+            continue;
+        }
+        for held in above {
+            implemented_by.entry(*held).or_default().push(*below);
+        }
+    }
+    let carried_out = |target: &str| -> Option<String> {
+        let at = symbols.position.get(target).copied()?;
+        let member = &symbols.nodes[at as usize];
+        let owner = symbols.owning_type(at).filter(|owner| *owner != at)?;
+        match implemented_by.get(&owner).map(Vec::as_slice) {
+            Some([only]) => symbols.member(*only, &member.name).map(|found| symbols.nodes[found as usize].id.clone()),
+            _ => None,
+        }
+    };
     for (fact, outcome) in index.calls.iter().zip(resolved) {
         let caller = fact.caller.as_deref().unwrap_or_default();
+        let outcome = match outcome {
+            Resolved::Edge(target, kind) => match carried_out(&target) {
+                Some(carried) => Resolved::Edge(carried, kind),
+                None => Resolved::Edge(target, kind),
+            },
+            other => other,
+        };
         match outcome {
             Resolved::NoCaller => no_caller += 1,
             Resolved::Dynamic => dynamic_calls += 1,

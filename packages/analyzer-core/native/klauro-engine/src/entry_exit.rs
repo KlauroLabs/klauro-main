@@ -128,6 +128,11 @@ fn split_label(label: &str) -> (Option<String>, String) {
 }
 
 fn classify_registration(registrar: &str, label: Option<&str>) -> Option<&'static str> {
+    match registrar.strip_prefix("dispatch:") {
+        Some("ui") => return Some("ui"),
+        Some("event") => return Some("event"),
+        _ => {}
+    }
     let verb = names::leaf(registrar);
     let lowered = verb.to_ascii_lowercase();
     if PATH_REGISTRARS.binary_search(&lowered.as_str()).is_ok()
