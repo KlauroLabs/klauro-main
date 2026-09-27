@@ -7,6 +7,40 @@ use crate::author::{Placed, Proposal, Proposed};
 use crate::comprehend::{carved_name, settle, Capability, Delivery, Family, Flow, PUBLISHED};
 
 const FAMILIES_PER_PROPOSAL: usize = 60;
+const READINGS: usize = 3;
+
+fn most_detailed_reading(said: &str, listed: &[(String, String)]) -> Proposal {
+    let orders: Vec<Vec<(String, String)>> = (0..READINGS)
+        .map(|at| {
+            let mut ordered = listed.to_vec();
+            match at {
+                0 => {}
+                1 => ordered.reverse(),
+                _ => ordered.rotate_left(listed.len() / 2),
+            }
+            ordered
+        })
+        .collect();
+    let readings: Vec<Proposal> = orders
+        .par_iter()
+        .map(|ordered| crate::author::propose_capabilities(said, ordered))
+        .collect();
+    let settled = |reading: &Proposal| {
+        let named: BTreeSet<&str> = reading
+            .capabilities
+            .iter()
+            .flat_map(|held| held.families.iter().map(String::as_str))
+            .chain(reading.plumbing.iter().map(String::as_str))
+            .collect();
+        listed.iter().filter(|(id, _)| named.contains(id.as_str())).count()
+    };
+    readings
+        .into_iter()
+        .enumerate()
+        .max_by_key(|(at, reading)| (settled(reading), reading.capabilities.len(), std::cmp::Reverse(*at)))
+        .map(|(_, reading)| reading)
+        .unwrap_or_default()
+}
 const SURFACES_SHOWN: usize = 6;
 const CAPABILITIES_CONSOLIDATED_AT_ONCE: usize = 160;
 
@@ -539,10 +573,13 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
         None => {
             let listed: Vec<(String, String)> =
                 told.iter().map(|(id, evidence)| (id.clone(), evidence.clone())).collect();
-            let proposals: Vec<Proposal> = listed
-                .par_chunks(FAMILIES_PER_PROPOSAL)
-                .map(|chunk| crate::author::propose_capabilities(said, chunk))
-                .collect();
+            let proposals: Vec<Proposal> = match listed.len() <= FAMILIES_PER_PROPOSAL {
+                true => vec![most_detailed_reading(said, &listed)],
+                false => listed
+                    .par_chunks(FAMILIES_PER_PROPOSAL)
+                    .map(|chunk| crate::author::propose_capabilities(said, chunk))
+                    .collect(),
+            };
             let chunked = proposals.len() > 1;
             let mut held: Vec<Held> = Vec::new();
             let mut plumbing: BTreeSet<String> = BTreeSet::new();
