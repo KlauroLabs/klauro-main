@@ -1153,8 +1153,17 @@ pub fn author(
                 .filter(|capability| capability.flows.iter().any(|flow| !offered_only.contains(flow.as_str())))
                 .cloned()
                 .collect();
-            let mut whole = crate::capabilities::of_the_whole(&served, &spoken, told.scope, &held.flows);
+            let judged_in_a_part: HashSet<&str> = served
+                .iter()
+                .filter(|capability| capability.grounding.is_some())
+                .map(|capability| capability.id.as_str())
+                .collect();
+            let (carried, mut whole): (Vec<Capability>, Vec<Capability>) = crate::capabilities::of_the_whole(&served, &spoken, told.scope, &held.flows)
+                .into_iter()
+                .partition(|capability| judged_in_a_part.contains(capability.id.as_str()) && capability.also_in.len() <= 1);
             test_capabilities(&mut whole, &spoken, "this system as a whole");
+            whole.extend(carried);
+            whole.sort_by(|left, right| left.id.cmp(&right.id));
             eprintln!(
                 "  author read {} capabilities across the parts into {} for the whole",
                 capabilities.len(),

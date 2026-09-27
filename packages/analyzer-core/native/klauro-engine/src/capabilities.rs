@@ -1055,11 +1055,13 @@ pub(crate) fn of_the_whole(parts: &[Capability], spoken: &str, scope: &str, flow
     let mut taken = vec![false; parts.len()];
     let mut whole: Vec<Capability> = Vec::new();
     for group in groups {
+        let mut from_parts: BTreeSet<Option<&str>> = BTreeSet::new();
         let members: Vec<usize> = group
             .of
             .iter()
             .filter_map(|id| id.trim().strip_prefix('c')?.parse::<usize>().ok())
             .filter(|at| *at < parts.len() && !taken[*at])
+            .filter(|at| from_parts.insert(parts[*at].project.as_deref()))
             .collect();
         let Some(first) = members.first().copied() else { continue };
         let mut together = parts[first].clone();
