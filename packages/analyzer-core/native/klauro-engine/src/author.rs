@@ -497,26 +497,31 @@ pub fn same_outcome(spoken_for: &str, listed: &BTreeMap<String, String>) -> Vec<
         "A software system describes itself like this:\n{spoken_for}\n\n\
          That description may speak of the project rather than the software, such as its status, history or \
          whether it is still maintained; what the software does is read from the code below, and that decides.\n\n\
-         Below are capabilities read from it that already look like they may be one outcome — \
-         they were read one part at a time, so the same thing appears more than once: reached \
-         from a page and from the route behind it, from a phone and from a command line, or \
-         split into steps of one thing. They are in front of you together because they might be \
-         one; expect to put most of them together.\n\n\
+         Below are capabilities read from it one part at a time, so the same thing can appear \
+         more than once: reached from a page and from the route behind it, from a phone and from \
+         a command line, or split into steps of one thing. Find those repeats and put each set \
+         together; leave everything else on its own.\n\n\
          When one capability's paths continue into another's, a person using the first is \
          using the second without seeing it, so they are one outcome unless someone comes to \
          each on its own. Put together the ones that are the same outcome, by these rules:\n{RULES}\n\n\
-         Two are the same outcome when a person would say they did one thing, however many ways \
-         in the system offers. Browsing an album, a trash folder, a timeline and a favourite are \
-         all browsing; sharing by link, with a partner, and seeing what is shared with you are \
-         all sharing; reading a photo's metadata and its statistics are both reading about it. \
-         Keep two apart only when someone would come for one and not the other — a different \
-         thing to do, not a different way to do it.\n\n\
+         Two are the same outcome when a person would say they did the same thing, just reached \
+         a different way: placing an order from the web shop and from the phone app is one \
+         outcome; reading a photo's metadata and its statistics are both reading about it. Keep \
+         two apart whenever someone would name them as different things to do, even when they \
+         touch the same records or sit on the same screen: saving a post for later, following \
+         a tag, muting an account and reporting it are four capabilities, not one. A group \
+         whose name needs \"and\" to cover what its members do is two groups. Stages of one process \
+         are the exception: handlers that each move the same record one stage along, such as \
+         checking stock, taking payment and advancing a status, are one outcome together.\n\n\
          For each group give the name of the outcome in 2-6 words — a verb and what it acts on, like \"Share posts with followers\", never a topic like \"Posting\" — one sentence saying what \
          someone gets, and the audience it is for. Name what the person ends up with, never the \
          way in and never what it is built on: a group reached through web routes is not called \
          an API, one reached through pages is not called a web interface, and one that keeps \
          records is not called a database. Where the ones you put together were already called \
-         something between them that says the outcome, keep saying it that way. Every id below must appear in exactly one \
+         something between them that says the outcome, keep saying it that way. The name and the sentence say only what the code shown does: never an option, filter, step \
+         or result it does not show. When it only checks, simulates or records something, say it \
+         checks, simulates or records it rather than that it does it. \
+         Every id below must appear in exactly one \
          group, and no id may appear that is not below.\n\
          Return JSON only: {{\"groups\":[{{\"of\":[\"...\"],\"name\":\"...\",\"description\":\"...\",\"audience\":\"...\"}}]}}\n\n\
          The capabilities:\n{}",
@@ -575,6 +580,10 @@ pub fn propose_capabilities(spoken_for: &str, families: &[(String, String)]) -> 
          are two capabilities even though both change orders. Keep them apart too when the same person \
          comes for different reasons: searching for one thing and browsing what is popular are two \
          capabilities, and so are signing in, changing preferences and managing what you have saved. \
+         A capability whose name needs \"and\" to cover what it does is two capabilities. \
+         The opposite holds for stages of one process: several handlers that each move the same record \
+         one stage along — checking stock, taking payment, advancing a status — make up one capability, \
+         the process someone relies on, named for what it gets done for them. \
          Name the capability for what the person gets, \
          never for the way in or what it is built on: nothing is called an API, a page, an \
          endpoint, a screen, a form, a database or a table.\n\n\
@@ -588,7 +597,10 @@ pub fn propose_capabilities(spoken_for: &str, families: &[(String, String)]) -> 
          For each capability give a name of 2-6 words that says what someone gets done — a verb and \
          what it acts on, like \"Share posts with followers\" or \"Track an order\", never a topic or a \
          category like \"Posting\", \"Orders\" or \"Engagement\" —, one sentence saying what someone gets, \
-         the audience it is for, and the ids of the outcomes that deliver it. Every id below \
+         the audience it is for, and the ids of the outcomes that deliver it. The name and the sentence say only what the code shown does: never an option, filter, step \
+         or result it does not show. When it only checks, simulates or records something, say it \
+         checks, simulates or records it rather than that it does it. \
+         Every id below \
          must appear exactly once, either in one capability or in plumbing, and no other id may \
          appear.\n\
          Return JSON only: {{\"capabilities\":[{{\"name\":\"...\",\"description\":\"...\",\"audience\":\"...\",\"families\":[\"...\"]}}],\"plumbing\":[\"...\"]}}\n\n\
@@ -859,6 +871,59 @@ fn asking_of(facts: &str) -> BTreeMap<&'static str, crate::jev::Question> {
             },
         ),
     ])
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Tightened {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+}
+
+const CLAIMS_PER_ASK: usize = 10;
+
+pub fn tighten_claims(spoken: &str, held: &[(String, String)]) -> Vec<Tightened> {
+    if !asked() || held.is_empty() {
+        return Vec::new();
+    }
+    held.par_chunks(CLAIMS_PER_ASK)
+        .flat_map(|chunk| {
+            let listed: Vec<String> = chunk.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect();
+            let prompt = format!(
+                "A software system describes itself like this:\n{spoken}\n\n\
+                 That description may speak of the project rather than the software; the facts below decide.\n\n\
+                 Each item below is a capability someone proposed, with the facts read from the code about what \
+                 delivers it. A careful reviewer will read the code and mark a capability wrong when its name or \
+                 sentence claims more than the code does. For each item, give the name (2-6 words, a verb and \
+                 what it acts on) and one sentence that say exactly what the facts show someone gets:\n\
+                 - drop any option, filter, step, provider or result the facts do not show;\n\
+                 - when the code only checks, simulates, records or shows something, say that rather than that \
+                 it does it;\n\
+                 - when the code where it starts shows it is a stub, a sample, a switch set in configuration, or \
+                 wired to nothing configured, say exactly that;\n\
+                 - when the name covers two different things to do, name the one the facts show most and leave \
+                 the other out;\n\
+                 - when the proposal is already exact, return it unchanged.\n\
+                 Return JSON only: {{\"items\":[{{\"id\":\"...\",\"name\":\"...\",\"description\":\"...\"}}]}}\n\n\
+                 The items:\n{}",
+                listed.join("\n")
+            );
+            answered::<serde_json::Value>(&prompt, 6000, &asking_of_models(model()), "items", 1)
+                .map(|held| {
+                    held["items"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|item| serde_json::from_value::<Tightened>(item.clone()).ok())
+                        .filter(|item| !item.name.trim().is_empty())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        })
+        .collect()
 }
 
 pub fn test_capabilities(spoken: &str, held: &[(String, String)], level: &str) -> BTreeMap<String, Grounding> {

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::author::{Placed, Proposal, Proposed};
 use crate::comprehend::{carved_name, settle, Capability, Delivery, Family, Flow, PUBLISHED};
 
-const FAMILIES_PER_PROPOSAL: usize = 60;
+const FAMILIES_PER_PROPOSAL: usize = 40;
 const READINGS: usize = 3;
 
 fn most_detailed_reading(said: &str, listed: &[(String, String)]) -> Proposal {
@@ -37,7 +37,9 @@ fn most_detailed_reading(said: &str, listed: &[(String, String)]) -> Proposal {
     readings
         .into_iter()
         .enumerate()
-        .max_by_key(|(at, reading)| (settled(reading), reading.capabilities.len(), std::cmp::Reverse(*at)))
+        .max_by_key(|(at, reading)| {
+            (settled(reading), reading.capabilities.len(), std::cmp::Reverse(reading.plumbing.len()), std::cmp::Reverse(*at))
+        })
         .map(|(_, reading)| reading)
         .unwrap_or_default()
 }
@@ -309,6 +311,60 @@ fn gather(proposals: Vec<Proposal>, held: &mut Vec<Held>, plumbing: &mut BTreeSe
     }
 }
 
+fn lumped(name: &str) -> bool {
+    let lowered = format!(" {} ", name.to_ascii_lowercase());
+    [" and ", " & ", ", "].iter().any(|joins| lowered.contains(joins))
+}
+
+fn split_what_was_lumped(said: &str, told: &BTreeMap<String, String>, held: &mut Vec<Held>) {
+    let lumps: Vec<usize> = held
+        .iter()
+        .enumerate()
+        .filter(|(_, other)| lumped(&other.name) && other.families.len() > 1)
+        .map(|(at, _)| at)
+        .collect();
+    let splits: Vec<(usize, Proposal)> = lumps
+        .par_iter()
+        .map(|at| {
+            let families: Vec<(String, String)> = held[*at]
+                .families
+                .iter()
+                .filter_map(|id| told.get(id).map(|evidence| (id.clone(), evidence.clone())))
+                .collect();
+            (*at, crate::author::propose_capabilities(said, &families))
+        })
+        .collect();
+    let mut replaced: BTreeSet<usize> = BTreeSet::new();
+    let mut added: Vec<Held> = Vec::new();
+    for (at, proposal) in splits {
+        let within = &held[at].families;
+        let parts: Vec<Held> = proposal
+            .capabilities
+            .into_iter()
+            .map(|Proposed { name, description, audience, families }| Held {
+                name,
+                description,
+                audience,
+                families: families.into_iter().filter(|id| within.contains(id)).collect(),
+            })
+            .filter(|part| !part.families.is_empty())
+            .collect();
+        let covered: BTreeSet<&String> = parts.iter().flat_map(|part| part.families.iter()).collect();
+        if parts.len() < 2 || covered.len() < within.len() {
+            continue;
+        }
+        replaced.insert(at);
+        added.extend(parts);
+    }
+    let mut at = 0;
+    held.retain(|_| {
+        let keep = !replaced.contains(&at);
+        at += 1;
+        keep
+    });
+    held.extend(added);
+}
+
 fn place(
     said: &str,
     told: &BTreeMap<String, String>,
@@ -577,7 +633,7 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
                 true => vec![most_detailed_reading(said, &listed)],
                 false => listed
                     .par_chunks(FAMILIES_PER_PROPOSAL)
-                    .map(|chunk| crate::author::propose_capabilities(said, chunk))
+                    .map(|chunk| most_detailed_reading(said, chunk))
                     .collect(),
             };
             let chunked = proposals.len() > 1;
@@ -588,12 +644,23 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
             if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
                 eprintln!("  proposed {proposed} capabilities, {} held after gathering, {} plumbing", held.len(), plumbing.len());
             }
+            let counted = |step: &str, held: &Vec<Held>| {
+                if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
+                    eprintln!("  after {step}: {} capabilities", held.len());
+                }
+            };
             if chunked {
                 held = consolidate_within(said, held);
+                counted("consolidating", &held);
             }
             hold_together(said, &told, &mut held);
+            counted("holding together", &held);
             place(said, &told, &mut held, &mut plumbing);
+            counted("placing", &held);
             join_the_same(said, &mut held);
+            counted("joining the same", &held);
+            split_what_was_lumped(said, &told, &mut held);
+            counted("splitting", &held);
             (held, plumbing)
         }
     };

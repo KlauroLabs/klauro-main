@@ -301,6 +301,9 @@ fn spoken_for(root: &std::path::Path, nodes: &[IndexNode], files: &[String]) -> 
     }
 }
 
+const EXCERPTS_SHOWN: usize = 2;
+const EXCERPT_LINES: usize = 30;
+
 pub struct Telling<'a> {
     pub scope: &'a str,
     pub shape: &'a str,
@@ -769,7 +772,7 @@ fn say_what_happens(held: &mut Comprehension, spoken: &str) {
     }
 }
 
-fn test_capabilities(capabilities: &mut Vec<Capability>, spoken: &str, level: &str) {
+fn test_capabilities(capabilities: &mut Vec<Capability>, spoken: &str, level: &str, excerpt: &(dyn Fn(&Capability) -> String + Sync)) {
     let tests: Vec<(String, String)> = capabilities
         .iter()
         .map(|capability| {
@@ -842,6 +845,27 @@ fn test_capabilities(capabilities: &mut Vec<Capability>, spoken: &str, level: &s
         }
         delivers
     });
+    let told: Vec<(String, String)> = capabilities
+        .iter()
+        .map(|capability| {
+            let facts = facts_of.get(&capability.id).cloned().unwrap_or_default();
+            let facts = facts.replacen("PROPOSED CAPABILITY", "  proposed name", 1).replacen("PROPOSED DESCRIPTION", "  proposed sentence", 1);
+            let code = excerpt(capability);
+            let told = match code.is_empty() {
+                true => facts,
+                false => format!("{facts}\n  the code where it starts:\n{code}"),
+            };
+            (capability.id.clone(), told)
+        })
+        .collect();
+    for tightened in crate::author::tighten_claims(spoken, &told) {
+        if let Some(capability) = capabilities.iter_mut().find(|capability| capability.id == tightened.id) {
+            capability.name = Some(tightened.name.trim().to_string());
+            if !tightened.description.trim().is_empty() {
+                capability.description = Some(tightened.description.trim().to_string());
+            }
+        }
+    }
 }
 
 fn say_what_each_is_for(held: &mut [Capability], spoken: &str) {
@@ -1042,6 +1066,31 @@ pub fn author(
         return 0;
     }
     let spoken = spoken_for(root, nodes, files);
+    let node_at: HashMap<&str, &IndexNode> = nodes.iter().map(|node| (node.id.as_str(), node)).collect();
+    let flow_at: HashMap<String, (String, u32, u32)> = held
+        .flows
+        .iter()
+        .filter_map(|flow| {
+            let start = node_at.get(flow.path.first()?.unit.as_str())?;
+            Some((flow.id.clone(), (files.get(start.file as usize)?.clone(), start.span.line, start.span.end_line)))
+        })
+        .collect();
+    let excerpt = |capability: &Capability| -> String {
+        capability
+            .flows
+            .iter()
+            .filter_map(|flow| flow_at.get(flow))
+            .take(EXCERPTS_SHOWN)
+            .filter_map(|(path, line, end)| {
+                let text = std::fs::read_to_string(root.join(path)).ok()?;
+                let from = line.saturating_sub(1) as usize;
+                let to = (*end as usize).min(from + EXCERPT_LINES);
+                let shown: Vec<&str> = text.lines().skip(from).take(to.saturating_sub(from).max(1)).collect();
+                Some(format!("    {path}:{line}\n{}", shown.iter().map(|held| format!("    | {held}")).collect::<Vec<_>>().join("\n")))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
     let mut evidence = std::collections::BTreeMap::new();
     let mut owner: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
     let mut ticket = 0;
@@ -1120,7 +1169,7 @@ pub fn author(
                     let said = spoken_within(&spoken, part.as_deref());
                     let remembered_as = format!("{}\u{1}{}", told.scope, part.as_deref().unwrap_or(""));
                     let mut found = crate::capabilities::of_a_part(&flows, &said, &remembered_as, &fields);
-                    test_capabilities(&mut found, &said, if part.is_some() { "this part of the system" } else { "this system" });
+                    test_capabilities(&mut found, &said, if part.is_some() { "this part of the system" } else { "this system" }, &excerpt);
                     say_what_each_is_for(&mut found, &said);
                     let described = match (several, part.as_deref()) {
                         (true, Some(named)) if !found.is_empty() => {
@@ -1161,7 +1210,7 @@ pub fn author(
             let (carried, mut whole): (Vec<Capability>, Vec<Capability>) = crate::capabilities::of_the_whole(&served, &spoken, told.scope, &held.flows)
                 .into_iter()
                 .partition(|capability| judged_in_a_part.contains(capability.id.as_str()) && capability.also_in.len() <= 1);
-            test_capabilities(&mut whole, &spoken, "this system as a whole");
+            test_capabilities(&mut whole, &spoken, "this system as a whole", &excerpt);
             whole.extend(carried);
             whole.sort_by(|left, right| left.id.cmp(&right.id));
             eprintln!(
