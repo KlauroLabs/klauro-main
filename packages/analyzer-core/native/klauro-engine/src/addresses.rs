@@ -104,11 +104,11 @@ mod tests {
     #[test]
     fn a_path_built_from_a_base_field_folds_into_the_route_it_asks_for() {
         let known = |named: &str| match named {
-            "remoteServiceBaseUrl" => Some("api/catalog/".to_string()),
+            "remoteServiceBaseUrl" => Some("api/library/".to_string()),
             _ => None,
         };
-        assert_eq!(as_a_path(&folded("{remoteServiceBaseUrl}items/{id}", &known)).as_deref(), Some("/api/catalog/items/{id}"));
-        assert_eq!(as_a_path(&folded("{remoteServiceBaseUrl}items/by?ids={ids}", &known)).as_deref(), Some("/api/catalog/items/by"));
+        assert_eq!(as_a_path(&folded("{remoteServiceBaseUrl}items/{id}", &known)).as_deref(), Some("/api/library/items/{id}"));
+        assert_eq!(as_a_path(&folded("{remoteServiceBaseUrl}items/by?ids={ids}", &known)).as_deref(), Some("/api/library/items/by"));
         assert_eq!(as_a_path(&folded("{unknown}", &known)), None);
     }
 }
