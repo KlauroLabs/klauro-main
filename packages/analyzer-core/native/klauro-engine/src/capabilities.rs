@@ -527,50 +527,98 @@ fn join_the_same(said: &str, held: &mut Vec<Held>) {
     *held = kept;
 }
 
-fn consolidate_within(said: &str, held: Vec<Held>) -> Vec<Held> {
+fn record_key(family: &str) -> String {
+    let object = object_of(family).to_ascii_lowercase();
+    object.strip_suffix('s').filter(|stem| stem.len() > 2).map(str::to_string).unwrap_or(object)
+}
+
+fn could_repeat(held: &[Held], key_of: &BTreeMap<&str, &str>) -> Vec<Vec<usize>> {
+    let mut leader: Vec<usize> = (0..held.len()).collect();
+    fn found(leader: &mut [usize], at: usize) -> usize {
+        let mut current = at;
+        while leader[current] != current {
+            leader[current] = leader[leader[current]];
+            current = leader[current];
+        }
+        current
+    }
+    let mut first_with: BTreeMap<String, usize> = BTreeMap::new();
+    for (at, other) in held.iter().enumerate() {
+        for family in &other.families {
+            let key = record_key(key_of.get(family.as_str()).copied().unwrap_or(family.as_str()));
+            match first_with.get(&key).copied() {
+                Some(earlier) => {
+                    let (left, right) = (found(&mut leader, earlier), found(&mut leader, at));
+                    if left != right {
+                        leader[right] = left;
+                    }
+                }
+                None => {
+                    first_with.insert(key, at);
+                }
+            }
+        }
+    }
+    let mut clusters: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for at in 0..held.len() {
+        let root = found(&mut leader, at);
+        clusters.entry(root).or_default().push(at);
+    }
+    clusters.into_values().filter(|cluster| cluster.len() > 1).collect()
+}
+
+fn consolidate_within(said: &str, held: Vec<Held>, key_of: &BTreeMap<&str, &str>) -> Vec<Held> {
     if held.len() < 2 {
         return held;
     }
-    let listed: BTreeMap<String, String> = held
-        .iter()
-        .enumerate()
-        .map(|(at, other)| {
-            (
-                format!("c{at}"),
-                format!(
-                    "  it is called: {}\n  for: {}\n  what someone gets: {}",
-                    other.name, other.audience, other.description
-                ),
-            )
+    let clusters = could_repeat(&held, key_of);
+    let answers: Vec<(Vec<usize>, Vec<crate::author::Same>)> = clusters
+        .par_iter()
+        .map(|cluster| {
+            let listed: BTreeMap<String, String> = cluster
+                .iter()
+                .map(|at| {
+                    let other = &held[*at];
+                    (
+                        format!("c{at}"),
+                        format!(
+                            "  it is called: {}\n  for: {}\n  what someone gets: {}",
+                            other.name, other.audience, other.description
+                        ),
+                    )
+                })
+                .collect();
+            (cluster.clone(), crate::author::same_outcome(said, &listed))
         })
         .collect();
-    let groups = crate::author::same_outcome(said, &listed);
     let mut taken: Vec<bool> = vec![false; held.len()];
     let mut slots: Vec<Option<Held>> = held.into_iter().map(Some).collect();
     let mut joined: Vec<Held> = Vec::new();
-    for group in groups {
-        let members: Vec<usize> = group
-            .of
-            .iter()
-            .filter_map(|id| id.trim().strip_prefix('c')?.parse::<usize>().ok())
-            .filter(|at| *at < taken.len() && !taken[*at])
-            .collect();
-        if members.is_empty() {
-            continue;
-        }
-        let mut families = BTreeSet::new();
-        for at in &members {
-            taken[*at] = true;
-            if let Some(other) = slots[*at].take() {
-                families.extend(other.families);
+    for (cluster, groups) in answers {
+        for group in groups {
+            let members: Vec<usize> = group
+                .of
+                .iter()
+                .filter_map(|id| id.trim().strip_prefix('c')?.parse::<usize>().ok())
+                .filter(|at| cluster.contains(at) && !taken[*at])
+                .collect();
+            if members.len() < 2 {
+                continue;
             }
+            let mut families = BTreeSet::new();
+            for at in &members {
+                taken[*at] = true;
+                if let Some(other) = slots[*at].take() {
+                    families.extend(other.families);
+                }
+            }
+            joined.push(Held {
+                name: group.name.trim().to_string(),
+                description: group.description.trim().to_string(),
+                audience: group.audience.trim().to_string(),
+                families,
+            });
         }
-        joined.push(Held {
-            name: group.name.trim().to_string(),
-            description: group.description.trim().to_string(),
-            audience: group.audience.trim().to_string(),
-            families,
-        });
     }
     joined.extend(slots.into_iter().flatten());
     joined
@@ -629,6 +677,7 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
         None => {
             let listed: Vec<(String, String)> =
                 told.iter().map(|(id, evidence)| (id.clone(), evidence.clone())).collect();
+            let proposing = std::time::Instant::now();
             let proposals: Vec<Proposal> = match listed.len() <= FAMILIES_PER_PROPOSAL {
                 true => vec![most_detailed_reading(said, &listed)],
                 false => listed
@@ -639,18 +688,22 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
             let chunked = proposals.len() > 1;
             let mut held: Vec<Held> = Vec::new();
             let mut plumbing: BTreeSet<String> = BTreeSet::new();
+            if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
+                eprintln!("  proposing {} outcomes took {:?}", listed.len(), proposing.elapsed());
+            }
             let proposed: usize = proposals.iter().map(|proposal| proposal.capabilities.len()).sum();
             gather(proposals, &mut held, &mut plumbing, &known);
             if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
                 eprintln!("  proposed {proposed} capabilities, {} held after gathering, {} plumbing", held.len(), plumbing.len());
             }
+            let clock = std::time::Instant::now();
             let counted = |step: &str, held: &Vec<Held>| {
                 if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
-                    eprintln!("  after {step}: {} capabilities", held.len());
+                    eprintln!("  after {step}: {} capabilities at {:?}", held.len(), clock.elapsed());
                 }
             };
             if chunked {
-                held = consolidate_within(said, held);
+                held = consolidate_within(said, held, &key_of);
                 counted("consolidating", &held);
             }
             hold_together(said, &told, &mut held);

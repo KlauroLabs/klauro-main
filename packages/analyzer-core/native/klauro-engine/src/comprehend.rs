@@ -785,39 +785,6 @@ fn say_what_happens(held: &mut Comprehension, spoken: &str) {
     }
 }
 
-fn reword_against_the_code(capabilities: &mut Vec<Capability>, spoken: &str, excerpt: &(dyn Fn(&Capability) -> String + Sync)) {
-    let told: Vec<(String, String)> = capabilities
-        .iter()
-        .map(|capability| {
-            let facts = format!(
-                "  proposed name: {}\n  proposed sentence: {}\n  for: {}\n  reached through: {}\n  writes: {}",
-                capability.name.as_deref().unwrap_or(""),
-                capability.description.as_deref().unwrap_or(""),
-                capability.audience.as_deref().unwrap_or("someone"),
-                capability.surfaces.join(", "),
-                capability.records.join(", ")
-            );
-            let code = excerpt(capability);
-            let told = match code.is_empty() {
-                true => facts,
-                false => format!("{facts}\n  the code where it starts:\n{code}"),
-            };
-            (capability.id.clone(), told)
-        })
-        .collect();
-    let tightened = crate::author::tighten_claims(spoken, &told);
-    let dropped: HashSet<&str> = tightened.iter().filter(|held| held.drop).map(|held| held.id.as_str()).collect();
-    capabilities.retain(|capability| !dropped.contains(capability.id.as_str()));
-    for held in tightened.iter().filter(|held| !held.drop) {
-        if let Some(capability) = capabilities.iter_mut().find(|capability| capability.id == held.id) {
-            capability.name = Some(held.name.trim().to_string());
-            if !held.description.trim().is_empty() {
-                capability.description = Some(held.description.trim().to_string());
-            }
-        }
-    }
-}
-
 fn test_capabilities(capabilities: &mut Vec<Capability>, spoken: &str, level: &str, excerpt: &(dyn Fn(&Capability) -> String + Sync)) {
     let tests: Vec<(String, String)> = capabilities
         .iter()
@@ -847,6 +814,7 @@ fn test_capabilities(capabilities: &mut Vec<Capability>, spoken: &str, level: &s
         .collect();
     let context = format!("A software system describes itself like this:\n{spoken}");
     let context = format!("{context}\n\u{1}{level}\u{1}{}", crate::author::questions_asked());
+    let clock = std::time::Instant::now();
     let judged = crate::memory::each("judged", &context, &tests, |missing| {
         crate::author::test_capabilities(context.split('\u{1}').next().unwrap_or_default(), missing, level)
     });
@@ -904,7 +872,14 @@ fn test_capabilities(capabilities: &mut Vec<Capability>, spoken: &str, level: &s
             (capability.id.clone(), told)
         })
         .collect();
+    if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
+        eprintln!("  judged {} capabilities for {level} in {:?}", told.len(), clock.elapsed());
+    }
+    let clock = std::time::Instant::now();
     let tightened_all = crate::author::tighten_claims(spoken, &told);
+    if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
+        eprintln!("  reworded {} capabilities for {level} in {:?}", told.len(), clock.elapsed());
+    }
     let dropped: HashSet<&str> = tightened_all.iter().filter(|held| held.drop).map(|held| held.id.as_str()).collect();
     capabilities.retain(|capability| !dropped.contains(capability.id.as_str()));
     for tightened in tightened_all.iter().filter(|held| !held.drop) {
@@ -1311,8 +1286,6 @@ pub fn author(
                 .into_iter()
                 .partition(|capability| judged_in_a_part.contains(capability.id.as_str()) && capability.also_in.len() <= 1);
             test_capabilities(&mut whole, &spoken, "this system as a whole", &excerpt);
-            let mut carried = carried;
-            reword_against_the_code(&mut carried, &spoken, &excerpt);
             whole.extend(carried);
             whole.sort_by(|left, right| left.id.cmp(&right.id));
             eprintln!(
