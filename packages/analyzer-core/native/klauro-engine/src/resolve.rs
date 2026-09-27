@@ -73,6 +73,7 @@ struct Bindings<'a> {
     locals: HashMap<(&'a str, &'a str), &'a str>,
     file_locals: HashMap<(u32, &'a str), &'a str>,
     opened: HashMap<u32, Vec<&'a str>>,
+    stands_for: HashMap<(&'a str, &'a str), &'a str>,
 }
 
 fn unique(counts: HashMap<&str, (u32, u32)>) -> HashMap<&str, u32> {
@@ -398,6 +399,21 @@ impl<'a> Resolver<'a> {
         None
     }
 
+    fn stood_for(&self, unit: u32, name: &str) -> Option<&'a str> {
+        let mut current = unit;
+        for _ in 0..8 {
+            let node = &self.symbols.nodes[current as usize];
+            if let Some(expression) = self.bindings.stands_for.get(&(node.id.as_str(), name)) {
+                return Some(expression);
+            }
+            if !node.id.contains(":callback:") {
+                return None;
+            }
+            current = self.symbols.position.get(node.parent.as_deref()?).copied()?;
+        }
+        None
+    }
+
     fn member_within_reach(&self, owner: u32, name: &str, bare: &str) -> Option<u32> {
         let mut holder = owner;
         for _ in 0..OUTER_TYPES_AT_MOST {
@@ -475,6 +491,9 @@ impl<'a> Resolver<'a> {
                 },
                 None => Origin::Indirect,
             };
+        }
+        if let Some(expression) = self.stood_for(unit, name) {
+            return self.origin(unit, file, expression);
         }
         if let Some(annotation) = self
             .bindings
@@ -1176,6 +1195,7 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         locals: HashMap::default(),
         file_locals: HashMap::default(),
         opened: HashMap::default(),
+        stands_for: HashMap::default(),
     };
 
     lap("aliases");
@@ -1442,6 +1462,11 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
     }
 
     for binding in index.locals {
+        if let Some(expression) = binding.stands_for.as_deref()
+            && expression.split('.').next() != Some(binding.name.as_str())
+        {
+            bindings.stands_for.insert((binding.unit.as_str(), binding.name.as_str()), expression);
+        }
         let annotation = binding
             .annotation
             .as_deref()

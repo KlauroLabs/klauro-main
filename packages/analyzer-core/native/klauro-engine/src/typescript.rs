@@ -1140,6 +1140,7 @@ impl<'a> Extractor<'a> {
                             constructed,
                             from_call,
                             written: None,
+                stands_for: None,
                             line: node.start_position().row as u32 + 1,
                         });
                     }

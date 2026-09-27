@@ -314,6 +314,8 @@ pub struct LocalBinding {
     pub from_call: Option<String>,
     #[serde(skip_serializing_if = "crate::facts_cache::none")]
     pub written: Option<String>,
+    #[serde(default, skip_serializing_if = "crate::facts_cache::none")]
+    pub stands_for: Option<String>,
     #[serde(default, skip_serializing_if = "crate::facts_cache::hidden")]
     pub line: u32,
 }

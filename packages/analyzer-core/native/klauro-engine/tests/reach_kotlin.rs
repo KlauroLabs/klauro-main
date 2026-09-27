@@ -33,3 +33,9 @@ fn a_call_through_a_typed_property_reaches_an_extension_and_its_receiver() {
     assert!(calls(&index, "Screen.kt:callback", "Screen.kt:function:toggle"));
     assert!(calls(&index, "Screen.kt:function:toggle", "Screen.kt:function:set"));
 }
+
+#[test]
+fn a_value_kept_by_a_scope_function_stands_for_what_its_lambda_returns() {
+    let index = common::read("reach_kotlin");
+    assert!(calls(&index, "Paged.kt:function:present", "Paged.kt:function:load"));
+}

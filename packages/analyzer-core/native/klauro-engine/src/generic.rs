@@ -1427,6 +1427,7 @@ impl<'a> Extractor<'a> {
                         constructed: None,
                         from_call: None,
                         written: Some(written),
+                stands_for: None,
                         line: node.start_position().row as u32 + 1,
                     });
                 }
@@ -1838,6 +1839,7 @@ impl<'a> Extractor<'a> {
                             constructed: None,
                             from_call: from_call.clone(),
                             written: None,
+                stands_for: None,
                             line: node.start_position().row as u32 + 1,
                         });
                     }
@@ -1935,12 +1937,16 @@ impl<'a> Extractor<'a> {
                 constructed: constructed.clone(),
                 from_call: from_call.clone(),
                 written: None,
+                stands_for: None,
                 line: node.start_position().row as u32 + 1,
             });
         }
         if !taken_apart.is_empty() {
             return false;
         }
+        let stands_for = value
+            .filter(|_| from_call.as_deref().is_some_and(|called| KEEPS_WHAT_IT_RETURNS.contains(&crate::names::leaf(called))))
+            .and_then(|value| self.returned_by_its_lambda(value));
         self.facts.locals.push(LocalBinding {
             file: self.file,
             unit: scope.callable.clone().unwrap_or_default(),
@@ -1949,9 +1955,29 @@ impl<'a> Extractor<'a> {
             constructed,
             from_call,
             written: written_value,
+                stands_for,
             line: node.start_position().row as u32 + 1,
         });
         false
+    }
+
+    fn returned_by_its_lambda(&self, call: Node) -> Option<String> {
+        let mut pending = vec![call];
+        let mut lambda = None;
+        while let Some(held) = pending.pop() {
+            if self.spec.declares.lambda_kinds.contains(&held.kind()) && held.id() != call.id() {
+                lambda = Some(held);
+                break;
+            }
+            let mut cursor = held.walk();
+            pending.extend(held.named_children(&mut cursor));
+        }
+        let text = self.text(lambda?).trim();
+        let body = text.strip_prefix('{')?.strip_suffix('}')?;
+        let body = body.split_once("->").map(|(_, rest)| rest).unwrap_or(body);
+        let last = body.lines().map(str::trim).filter(|line| !line.is_empty()).last()?;
+        let plain = last.chars().all(|held| held.is_alphanumeric() || matches!(held, '_' | '.'));
+        (plain && !last.is_empty()).then(|| last.to_string())
     }
 
     fn typed_child<'t>(&self, node: Node<'t>) -> Option<Node<'t>> {
@@ -2397,6 +2423,10 @@ fn configures_the_call(kind: &str) -> bool {
 }
 
 static DECLARES_VARIABLES: &[&str] = &["variable_declaration"];
+static KEEPS_WHAT_IT_RETURNS: &[&str] = &[
+    "coroutineScope", "lazy", "remember", "rememberRetained", "rememberSaveable", "run", "runBlocking", "synchronized",
+    "with", "withContext",
+];
 static INFERS_ITS_TYPE: &[&str] = &["auto", "dynamic", "let", "val", "var"];
 static CONSTRUCTS_A_VALUE: &[&str] = &["new_expression", "object_creation_expression"];
 static NAMES_A_VARIABLE: &[&str] = &["variable_declarator"];
