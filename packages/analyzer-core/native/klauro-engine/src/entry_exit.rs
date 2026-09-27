@@ -558,6 +558,24 @@ static CACHE_OPERATIONS: &[&str] = &[
 ];
 
 static CLIENT_STORAGE_GLOBALS: &[&str] = &["localStorage", "sessionStorage"];
+static KEPT_ON_THE_DEVICE: &[&str] = &[
+    "AsyncStorage", "DataStore", "FlowSettings", "NSUserDefaults", "ObservableSettings", "SharedPreferences",
+    "SuspendSettings", "UserDefaults",
+];
+static KEEPS_A_VALUE: &[&str] = &["apply", "clear", "commit", "edit", "put", "remove", "removeitem", "removeobject", "set", "setitem", "setvalue"];
+
+static DEVICE_STORAGE_PACKAGES: &[&str] = &[
+    "@react-native-async-storage/async-storage", "android.content.SharedPreferences", "androidx.datastore",
+    "androidx.preference", "com.russhwolf.settings", "shared_preferences",
+];
+
+fn kept_on_the_device(origin: &str, operation: &str) -> bool {
+    let typed = origin.rsplit(['.', '/', ':']).next().unwrap_or(origin);
+    let stored = KEPT_ON_THE_DEVICE.contains(&typed)
+        || DEVICE_STORAGE_PACKAGES.iter().any(|package| origin == *package || origin.starts_with(&format!("{package}.")) || origin.starts_with(&format!("{package}/")));
+    stored
+        && (KEEPS_A_VALUE.contains(&operation) || operation.starts_with("put") || operation.starts_with("set") || operation.starts_with("get"))
+}
 static IO_GLOBALS: &[&str] = &["fetch", "localStorage", "process", "sessionStorage"];
 
 struct IoModule {
@@ -681,7 +699,7 @@ fn classify_reached(
 ) -> Option<&'static str> {
     let operation = names::leaf(member).to_ascii_lowercase();
     let operation = operation.as_str();
-    if CLIENT_STORAGE_GLOBALS.binary_search(&binding).is_ok() {
+    if CLIENT_STORAGE_GLOBALS.binary_search(&binding).is_ok() || kept_on_the_device(origin, operation) {
         return Some("client_storage");
     }
     if let Some(reaches) = module_kind(origin) {

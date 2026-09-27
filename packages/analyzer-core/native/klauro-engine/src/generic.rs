@@ -757,6 +757,9 @@ impl<'a> Extractor<'a> {
         }
         if ASSIGNS.contains(&kind) {
             let left = node.child_by_field_name("left").or_else(|| node.named_child(0));
+            if let Some(indexed) = left.filter(|left| INDEXES_A_HOLDER.contains(&left.kind())) {
+                self.record_an_indexed_write(indexed, node, scope);
+            }
             if let Some(member) = left.and_then(|left| own_member(self.text(left))) {
                 if let Some(unit) = self.unit(scope) {
                     unit.writes.push(member);
@@ -1386,14 +1389,18 @@ impl<'a> Extractor<'a> {
         let mut cursor = declaration.walk();
         let declarator = declaration
             .named_children(&mut cursor)
-            .find(|child| NAMES_A_VARIABLE.contains(&child.kind()))?;
+            .find(|child| NAMES_A_VARIABLE.contains(&child.kind()))
+            .unwrap_or(declaration);
         let named = declarator.child_by_field_name("name").or_else(|| {
             let mut cursor = declarator.walk();
             declarator
                 .named_children(&mut cursor)
                 .find(|child| self.spec.names.leaf_kinds.contains(&child.kind()))
         })?;
-        Some((named, declaration.child_by_field_name("type")))
+        let typed = declaration
+            .child_by_field_name("type")
+            .or_else(|| (declarator.id() == declaration.id()).then(|| self.typed_child(declaration)).flatten());
+        Some((named, typed))
     }
 
     fn declare_field(&mut self, node: Node, scope: &Scope) {
@@ -2013,6 +2020,37 @@ impl<'a> Extractor<'a> {
         Vec::new()
     }
 
+    fn record_an_indexed_write(&mut self, indexed: Node, assignment: Node, scope: &Scope) {
+        let written = self.text(indexed);
+        let Some(open) = written.find('[') else { return };
+        let holder = written[..open].trim();
+        if holder.is_empty() || !holder.chars().all(|held| held.is_alphanumeric() || matches!(held, '_' | '.' | '$')) {
+            return;
+        }
+        let key = written[open + 1..].trim_end_matches(']').trim();
+        self.facts.calls.push(CallFact {
+            file: self.file,
+            caller: scope.callable.clone().or_else(|| scope.owner.clone()),
+            callee: "set".to_string(),
+            receiver: Some(holder.to_string()),
+            line: assignment.start_position().row as u32 + 1,
+            column: assignment.start_position().column as u32,
+            argument_count: 2,
+            literals: vec![trim_quotes(key).to_string()],
+            constructs: false,
+            type_arguments: Vec::new(),
+            context: CallContext {
+                in_try: scope.in_try,
+                in_catch: scope.in_catch,
+                in_finally: scope.in_finally,
+                awaited: scope.awaited,
+                optional_chained: false,
+                conditional_depth: scope.conditional_depth,
+                loop_depth: scope.loop_depth,
+            },
+        });
+    }
+
     fn record_call(&mut self, node: Node, scope: &Scope) -> Option<String> {
         self.mutating_its_own(node, scope);
         let function = node
@@ -2058,6 +2096,10 @@ impl<'a> Extractor<'a> {
                     None => return None,
                 }
             }
+        };
+        let callee = match callee.strip_prefix(['!', '~']) {
+            Some(bare) if !bare.is_empty() => bare.to_string(),
+            _ => callee,
         };
         let callee = base_name(&callee).to_string();
         if callee.is_empty() || STATEMENT_KEYWORDS.binary_search(&callee.as_str()).is_ok() {

@@ -305,6 +305,7 @@ fn sole_type_argument(annotation: &str) -> Option<&str> {
 }
 
 static HOLDERS: &[&str] = &["Lazy", "Provider"];
+const OUTER_TYPES_AT_MOST: usize = 3;
 static HOLDER_ACCESSORS: &[&str] = &["get", "value"];
 static CALLED_AS_A_FUNCTION: &[&str] = &["__call__", "callAsFunction", "invoke"];
 
@@ -374,6 +375,40 @@ impl<'a> Resolver<'a> {
             .or_else(|| self.symbols.unique_type.get(name).copied())
             .or_else(|| self.seen_from(file, name))
             .filter(|found| self.symbols.nodes[*found as usize].kind.is_type())
+    }
+
+    fn handed_to_an_enclosing_type(&self, owner: u32, name: &str, bare: &str) -> Option<&'a str> {
+        let mut holder = owner;
+        for _ in 0..OUTER_TYPES_AT_MOST {
+            let held = self.symbols.nodes[holder as usize]
+                .signature
+                .as_ref()
+                .and_then(|signature| signature.parameters.iter().find(|p| p.name == name || p.name == bare))
+                .and_then(|parameter| parameter.type_annotation.as_deref());
+            if held.is_some() {
+                return held;
+            }
+            if self.symbols.member(holder, name).or_else(|| self.symbols.member(holder, bare)).is_some() {
+                return None;
+            }
+            let outer = self.symbols.nodes[holder as usize].parent.as_deref()?;
+            let outer = self.symbols.position.get(outer).copied()?;
+            holder = self.symbols.owning_type(outer).filter(|found| *found != holder)?;
+        }
+        None
+    }
+
+    fn member_within_reach(&self, owner: u32, name: &str, bare: &str) -> Option<u32> {
+        let mut holder = owner;
+        for _ in 0..OUTER_TYPES_AT_MOST {
+            if let Some(found) = self.symbols.member(holder, name).or_else(|| self.symbols.member(holder, bare)) {
+                return Some(found);
+            }
+            let outer = self.symbols.nodes[holder as usize].parent.as_deref()?;
+            let outer = self.symbols.position.get(outer).copied()?;
+            holder = self.symbols.owning_type(outer).filter(|found| *found != holder)?;
+        }
+        None
     }
 
     fn seen_from(&self, file: u32, name: &str) -> Option<u32> {
@@ -449,10 +484,7 @@ impl<'a> Resolver<'a> {
             return self.annotated(file, annotation);
         }
         if let Some(owner) = self.symbols.owning_type(unit)
-            && let Some(signature) = self.symbols.nodes[owner as usize].signature.as_ref()
-            && let Some(parameter) =
-                signature.parameters.iter().find(|p| p.name == name || p.name == bare)
-            && let Some(annotation) = parameter.type_annotation.as_deref()
+            && let Some(annotation) = self.handed_to_an_enclosing_type(owner, name, bare)
         {
             return match self.annotated(file, annotation) {
                 Origin::Unknown => Origin::Indirect,
@@ -460,8 +492,7 @@ impl<'a> Resolver<'a> {
             };
         }
         if let Some(owner) = self.symbols.owning_type(unit)
-            && let Some(member) =
-                self.symbols.member(owner, name).or_else(|| self.symbols.member(owner, bare))
+            && let Some(member) = self.member_within_reach(owner, name, bare)
         {
             let held = &self.symbols.nodes[member as usize];
             if !held.kind.is_type()
@@ -1509,6 +1540,20 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         }
         called_within.entry(caller).or_default().push(call.callee.as_str());
     }
+    let extended_by = |unit: u32| -> Option<u32> {
+        let mut current = unit;
+        for _ in 0..8 {
+            let node = &symbols.nodes[current as usize];
+            if let Some(receiver) = node.signature.as_ref().and_then(|signature| signature.receiver.as_deref()) {
+                return resolver.named_type(node.file, receiver);
+            }
+            if !node.id.contains(":callback:") {
+                return None;
+            }
+            current = symbols.position.get(node.parent.as_deref()?).copied()?;
+        }
+        None
+    };
     let mut hooks_of: HashMap<&str, Vec<&str>> = HashMap::default();
     for node in symbols.nodes.iter().filter(|node| node.kind.is_unit() && !matches!(node.kind, NodeKind::Constructor)) {
         if let Some(parent) = node.parent.as_deref() {
@@ -1726,6 +1771,12 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
             return Resolved::External { space, owner, member, kind, origin };
         }
 
+        if fact.receiver.is_none()
+            && let Some(extended) = extended_by(unit)
+            && let Some(member) = inherited(extended, &fact.callee)
+        {
+            return Resolved::Edge(symbols.nodes[member as usize].id.clone(), kind);
+        }
         if fact.receiver.is_none()
             && let Some(found) = symbols.unique_unit.get(fact.callee.as_str()).copied()
         {

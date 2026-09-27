@@ -249,6 +249,10 @@ pub static SERVICES: &[Known] = &[
         &["HUGGINGFACE_", "HF_TOKEN"]),
     known("Replicate", "ai", &["replicate"], &["replicate.com"], &[], &[], &["REPLICATE_"]),
     known("Ollama", "ai", &["ollama"], &[], &[], &["ollama/ollama"], &["OLLAMA_"]),
+    known("Language model", "ai",
+        &["Microsoft.Extensions.AI", "Microsoft.SemanticKernel", "@langchain", "langchain", "langchain_core",
+          "llama_index", "dev.langchain4j", "org.springframework.ai", "ai", "@ai-sdk"],
+        &[], &[], &[], &[]),
     known("Amazon Bedrock", "ai", &["@aws-sdk/client-bedrock-runtime", "@ai-sdk/amazon-bedrock"], &[], &[], &[],
         &["BEDROCK_"]),
     known("Deepgram", "ai", &["@deepgram"], &["deepgram.com"], &[], &[], &["DEEPGRAM_"]),
@@ -486,6 +490,7 @@ mod tests {
 
 static CLIENTS: &[(&str, &[&str])] = &[
     ("Amazon S3", &["AmazonS3Client", "IAmazonS3", "S3Client"]),
+    ("Language model", &["ChatClient", "ChatLanguageModel", "ChatModel", "EmbeddingModel", "IChatClient", "IChatCompletionService", "IEmbeddingGenerator", "Kernel"]),
     ("Azure Blob Storage", &["BlobClient", "BlobContainerClient", "BlobServiceClient"]),
     ("Azure Service Bus", &["ServiceBusClient", "ServiceBusProcessor", "ServiceBusReceiver", "ServiceBusSender"]),
     ("Elasticsearch", &["ElasticClient", "ElasticsearchClient", "IElasticClient", "RestHighLevelClient"]),
