@@ -1624,6 +1624,7 @@ pub fn derive(
             .as_deref()
             .filter(|_| entry.kind == "http")
             .map(str::to_string)
+            .or_else(|| (entry.kind == "ui" && entry.name.contains('.')).then(|| entry.name.clone()))
             .or_else(|| {
                 named_of
                     .get(entry.handler.as_str())

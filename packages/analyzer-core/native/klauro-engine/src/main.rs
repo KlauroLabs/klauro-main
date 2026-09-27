@@ -261,6 +261,7 @@ fn read(
         let tree = parser.parse(&component.source, None)?;
         let mut facts = generic::Extractor::new(&component.source, file, path, spec).run(&tree, path, lines(source));
         routed_as_a_page(&mut facts, &component);
+        taken_by_hand(&mut facts, &component);
         return Some(facts);
     }
     let declared = language_id.or_else(|| language_of(path));
@@ -282,6 +283,27 @@ fn read(
 }
 
 static LOADS_A_PAGE: &[&str] = &[source_rewrite::RENDERS];
+
+fn taken_by_hand(facts: &mut FileFacts, component: &source_rewrite::Component) {
+    let Some(owner) = facts
+        .nodes
+        .iter()
+        .find(|node| node.kind.is_type() && node.name == component.named)
+        .map(|node| node.id.clone())
+    else {
+        return;
+    };
+    for node in facts.nodes.iter_mut() {
+        if node.parent.as_deref() == Some(owner.as_str())
+            && node.kind.is_unit()
+            && node.callback_of.is_none()
+            && component.handlers.iter().any(|named| *named == node.name)
+        {
+            node.callback_of = Some("dispatch:ui".to_string());
+            node.registration_label = Some(format!("{}.{}", component.named, node.name));
+        }
+    }
+}
 
 fn routed_as_a_page(facts: &mut FileFacts, component: &source_rewrite::Component) {
     let Some(owner) = facts

@@ -189,7 +189,7 @@ fn identifiers_called(value: &str, into: &mut BTreeSet<String>) {
     }
 }
 
-fn bound_in_markup(line: &str, into: &mut BTreeSet<String>) {
+fn bound_in_markup(line: &str, into: &mut BTreeSet<String>, handlers: &mut BTreeSet<String>) {
     let mut rest = line;
     while let Some(at) = rest.find('=') {
         let before = &rest[..at];
@@ -201,6 +201,9 @@ fn bound_in_markup(line: &str, into: &mut BTreeSet<String>) {
                 || attribute.strip_prefix("On").is_some_and(|event| event.starts_with(char::is_uppercase));
             if handler {
                 identifiers_called(value, into);
+                if attribute.starts_with("@on") {
+                    identifiers_called(value, handlers);
+                }
             }
         }
         rest = after;
@@ -227,6 +230,7 @@ pub struct Component {
     pub source: Vec<u8>,
     pub named: String,
     pub routes: Vec<String>,
+    pub handlers: Vec<String>,
 }
 
 static KEEPS_CODE: &[&str] = &["@code", "@functions"];
@@ -249,6 +253,7 @@ pub fn razor_component(source: &[u8], path: &str) -> Option<Component> {
     let mut kept: Vec<String> = Vec::new();
     let mut depth: Option<i64> = None;
     let mut rendered: BTreeSet<String> = BTreeSet::new();
+    let mut handlers: BTreeSet<String> = BTreeSet::new();
     for line in text.split('\n') {
         let line = line.strip_suffix('\r').unwrap_or(line);
         if let Some(held) = depth {
@@ -309,7 +314,7 @@ pub fn razor_component(source: &[u8], path: &str) -> Option<Component> {
             }
             continue;
         }
-        bound_in_markup(line, &mut rendered);
+        bound_in_markup(line, &mut rendered, &mut handlers);
         kept.push(String::new());
     }
     let code = kept.join("\n");
@@ -329,7 +334,8 @@ pub fn razor_component(source: &[u8], path: &str) -> Option<Component> {
     let mut rewritten = format!("{} class {named} : ComponentBase {{ ", attributes.join(" "));
     rewritten.push_str(&code);
     rewritten.push_str(&format!("\nvoid {RENDERS}() {{ {} }}\n}}\n", renders.join(" ")));
-    Some(Component { source: rewritten.into_bytes(), named, routes })
+    let handlers: Vec<String> = handlers.into_iter().filter(|named| called_in(&code, named) || code.contains(&format!(" {named}("))).collect();
+    Some(Component { source: rewritten.into_bytes(), named, routes, handlers })
 }
 
 #[cfg(test)]
