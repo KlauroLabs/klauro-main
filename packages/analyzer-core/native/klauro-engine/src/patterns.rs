@@ -267,7 +267,7 @@ pub fn derive(sources: &Sources) -> Derived {
         }
     }
     for (declared, implementations) in graph.overriding() {
-        for implementation in implementations {
+        for implementation in implementations.into_iter().filter(|held| !tested(nodes[*held].file)) {
             dispatched.push(IndexEdge {
                 source: nodes[declared].id.clone(),
                 target: nodes[implementation].id.clone(),
