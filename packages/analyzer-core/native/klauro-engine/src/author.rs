@@ -14,6 +14,7 @@ const ONLY_STORED: f64 = 1.5;
 const ONLY_MECHANISM: f64 = 1.5;
 
 const CLAIMED_BY_ITS_OWN_WORDS: f64 = 0.75;
+const ONLY_THIS_PRODUCT: f64 = 0.25;
 const TRIES: usize = 5;
 const NAMED_PER_CALL: usize = 24;
 const NAMED_PER_SPOKEN_CALL: usize = 40;
@@ -881,6 +882,8 @@ pub struct Tightened {
     pub name: String,
     #[serde(default)]
     pub description: String,
+    #[serde(default)]
+    pub drop: bool,
 }
 
 const CLAIMS_PER_ASK: usize = 10;
@@ -899,15 +902,20 @@ pub fn tighten_claims(spoken: &str, held: &[(String, String)]) -> Vec<Tightened>
                  delivers it. A careful reviewer will read the code and mark a capability wrong when its name or \
                  sentence claims more than the code does. For each item, give the name (2-6 words, a verb and \
                  what it acts on) and one sentence that say exactly what the facts show someone gets:\n\
-                 - drop any option, filter, step, provider or result the facts do not show;\n\
+                 - drop any option, filter, step, provider or result the facts do not show, and any adjective, \
+                 example or attribute they do not name (detailed, specifications, categories, recommendations);\n\
+                 - a name joined by \"and\" names only the part the facts show most;\n\
                  - when the code only checks, simulates, records or shows something, say that rather than that \
                  it does it;\n\
                  - when the code where it starts shows it is a stub, a sample, a switch set in configuration, or \
                  wired to nothing configured, say exactly that;\n\
                  - when the name covers two different things to do, name the one the facts show most and leave \
                  the other out;\n\
+                 - when the code and the part's setup show it can never be reached — no client, provider or \
+                 route for it exists anywhere — nobody gets it: set drop to true. A feature that switches on \
+                 once an outside service or key is configured is real: keep it and say what it needs;\n\
                  - when the proposal is already exact, return it unchanged.\n\
-                 Return JSON only: {{\"items\":[{{\"id\":\"...\",\"name\":\"...\",\"description\":\"...\"}}]}}\n\n\
+                 Return JSON only: {{\"items\":[{{\"id\":\"...\",\"name\":\"...\",\"description\":\"...\",\"drop\":false}}]}}\n\n\
                  The items:\n{}",
                 listed.join("\n")
             );
@@ -918,7 +926,7 @@ pub fn tighten_claims(spoken: &str, held: &[(String, String)]) -> Vec<Tightened>
                         .into_iter()
                         .flatten()
                         .filter_map(|item| serde_json::from_value::<Tightened>(item.clone()).ok())
-                        .filter(|item| !item.name.trim().is_empty())
+                        .filter(|item| item.drop || !item.name.trim().is_empty())
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default()
@@ -937,7 +945,7 @@ pub fn test_capabilities(spoken: &str, held: &[(String, String)], level: &str) -
             crate::jev::Question {
                 kind: "noul",
                 instructions: format!(
-                    "{facts}\n\nSomeone saying what {level} is for would name this among the reasons it exists — something its audience comes for, or relies on it to do for them — and not something that only makes another of its capabilities possible, such as signing in or out, permissions, settings, or looking up reference data"
+                    "{facts}\n\nSomeone saying what {level} is for would name this among the reasons it exists — something its audience comes for, or relies on it to do for them — and not something that only makes another of its capabilities possible, such as signing in or out, permissions, settings, or looking up reference data, unless providing that is what {level} exists for"
                 ),
                 criteria: BTreeMap::new().into(),
             },
@@ -1005,8 +1013,9 @@ impl Grounding {
 
     pub fn delivers(&self) -> bool {
         let scope = self.scope.unwrap_or(self.outcome);
+        let particular = self.universal.unwrap_or(1.0) < ONLY_THIS_PRODUCT;
         !self.fabricated()
-            && scope >= GROUNDED
+            && (scope >= GROUNDED || particular)
             && (self.universal.unwrap_or(0.0) < GROUNDED || scope >= CLAIMED_BY_ITS_OWN_WORDS)
             && self.mechanism.unwrap_or(0.0) < ONLY_MECHANISM
             && self.hollow.unwrap_or(0.0) < ONLY_STORED

@@ -302,6 +302,19 @@ fn spoken_for(root: &std::path::Path, nodes: &[IndexNode], files: &[String]) -> 
 }
 
 const EXCERPTS_SHOWN: usize = 2;
+const DISTINCT_WORD: usize = 5;
+const SETTING_LINES_SHOWN: usize = 12;
+static SAID_OF_ANY_CAPABILITY: &[&str] = &[
+    "access", "account", "create", "delete", "detail", "details", "handle", "items", "manage", "orders", "process",
+    "receive", "update", "users", "using", "their", "through", "with",
+];
+static SETS_UP: &[&str] = &["appsettings", "config", "configuration", "program", "settings", "setup", "startup"];
+
+fn sets_up_a_part(path: &str) -> bool {
+    let named = crate::paths::basename(path).to_ascii_lowercase();
+    let stem = named.split('.').next().unwrap_or(&named);
+    !crate::paths::is_test(path) && SETS_UP.iter().any(|word| stem == *word || stem.ends_with(word) || stem.starts_with(word))
+}
 const EXCERPT_LINES: usize = 30;
 
 pub struct Telling<'a> {
@@ -772,6 +785,39 @@ fn say_what_happens(held: &mut Comprehension, spoken: &str) {
     }
 }
 
+fn reword_against_the_code(capabilities: &mut Vec<Capability>, spoken: &str, excerpt: &(dyn Fn(&Capability) -> String + Sync)) {
+    let told: Vec<(String, String)> = capabilities
+        .iter()
+        .map(|capability| {
+            let facts = format!(
+                "  proposed name: {}\n  proposed sentence: {}\n  for: {}\n  reached through: {}\n  writes: {}",
+                capability.name.as_deref().unwrap_or(""),
+                capability.description.as_deref().unwrap_or(""),
+                capability.audience.as_deref().unwrap_or("someone"),
+                capability.surfaces.join(", "),
+                capability.records.join(", ")
+            );
+            let code = excerpt(capability);
+            let told = match code.is_empty() {
+                true => facts,
+                false => format!("{facts}\n  the code where it starts:\n{code}"),
+            };
+            (capability.id.clone(), told)
+        })
+        .collect();
+    let tightened = crate::author::tighten_claims(spoken, &told);
+    let dropped: HashSet<&str> = tightened.iter().filter(|held| held.drop).map(|held| held.id.as_str()).collect();
+    capabilities.retain(|capability| !dropped.contains(capability.id.as_str()));
+    for held in tightened.iter().filter(|held| !held.drop) {
+        if let Some(capability) = capabilities.iter_mut().find(|capability| capability.id == held.id) {
+            capability.name = Some(held.name.trim().to_string());
+            if !held.description.trim().is_empty() {
+                capability.description = Some(held.description.trim().to_string());
+            }
+        }
+    }
+}
+
 fn test_capabilities(capabilities: &mut Vec<Capability>, spoken: &str, level: &str, excerpt: &(dyn Fn(&Capability) -> String + Sync)) {
     let tests: Vec<(String, String)> = capabilities
         .iter()
@@ -858,7 +904,10 @@ fn test_capabilities(capabilities: &mut Vec<Capability>, spoken: &str, level: &s
             (capability.id.clone(), told)
         })
         .collect();
-    for tightened in crate::author::tighten_claims(spoken, &told) {
+    let tightened_all = crate::author::tighten_claims(spoken, &told);
+    let dropped: HashSet<&str> = tightened_all.iter().filter(|held| held.drop).map(|held| held.id.as_str()).collect();
+    capabilities.retain(|capability| !dropped.contains(capability.id.as_str()));
+    for tightened in tightened_all.iter().filter(|held| !held.drop) {
         if let Some(capability) = capabilities.iter_mut().find(|capability| capability.id == tightened.id) {
             capability.name = Some(tightened.name.trim().to_string());
             if !tightened.description.trim().is_empty() {
@@ -1066,6 +1115,7 @@ pub fn author(
         return 0;
     }
     let spoken = spoken_for(root, nodes, files);
+    let root_path = root;
     let node_at: HashMap<&str, &IndexNode> = nodes.iter().map(|node| (node.id.as_str(), node)).collect();
     let flow_at: HashMap<String, (String, u32, u32)> = held
         .flows
@@ -1075,8 +1125,54 @@ pub fn author(
             Some((flow.id.clone(), (files.get(start.file as usize)?.clone(), start.span.line, start.span.end_line)))
         })
         .collect();
+    let configured_in: HashMap<&str, Vec<&str>> = {
+        let mut held_in: HashMap<&str, Vec<&str>> = HashMap::default();
+        for path in files.iter().filter(|path| sets_up_a_part(path)) {
+            held_in.entry(crate::paths::directory_of(path)).or_default().push(path.as_str());
+        }
+        held_in
+    };
+    let configuration = |capability: &Capability| -> String {
+        let Some(root) = capability.project.as_deref().or(capability.also_in.first().map(String::as_str)).and_then(|part| part.strip_prefix("subproject:")) else {
+            return String::new();
+        };
+        let words: Vec<String> = capability
+            .name
+            .as_deref()
+            .unwrap_or_default()
+            .split(|held: char| !held.is_alphanumeric())
+            .map(str::to_ascii_lowercase)
+            .filter(|word| word.len() >= DISTINCT_WORD && !SAID_OF_ANY_CAPABILITY.contains(&word.as_str()))
+            .collect();
+        if words.is_empty() {
+            return String::new();
+        }
+        let setting_files: Vec<&str> = configured_in
+            .iter()
+            .filter(|(directory, _)| crate::paths::contains(root, directory))
+            .flat_map(|(_, held)| held.iter().copied())
+            .collect();
+        if setting_files.is_empty() {
+            return String::new();
+        }
+        let mut matched: Vec<String> = Vec::new();
+        for path in &setting_files {
+            let Ok(text) = std::fs::read_to_string(root_path.join(path)) else { continue };
+            for (at, line) in text.lines().enumerate() {
+                let lowered = line.to_ascii_lowercase();
+                if words.iter().any(|word| lowered.contains(word.as_str())) && matched.len() < SETTING_LINES_SHOWN {
+                    matched.push(format!("    {path}:{} | {}", at + 1, line.trim()));
+                }
+            }
+        }
+        match matched.is_empty() {
+            true => format!("  the part's setup ({}) mentions none of: {}", setting_files.join(", "), words.join(", ")),
+            false => format!("  where the part's setup mentions it:\n{}", matched.join("\n")),
+        }
+    };
     let excerpt = |capability: &Capability| -> String {
-        capability
+        let setup = configuration(capability);
+        let code = capability
             .flows
             .iter()
             .filter_map(|flow| flow_at.get(flow))
@@ -1089,7 +1185,11 @@ pub fn author(
                 Some(format!("    {path}:{line}\n{}", shown.iter().map(|held| format!("    | {held}")).collect::<Vec<_>>().join("\n")))
             })
             .collect::<Vec<_>>()
-            .join("\n")
+            .join("\n");
+        match setup.is_empty() {
+            true => code,
+            false => format!("{code}\n{setup}"),
+        }
     };
     let mut evidence = std::collections::BTreeMap::new();
     let mut owner: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
@@ -1211,6 +1311,8 @@ pub fn author(
                 .into_iter()
                 .partition(|capability| judged_in_a_part.contains(capability.id.as_str()) && capability.also_in.len() <= 1);
             test_capabilities(&mut whole, &spoken, "this system as a whole", &excerpt);
+            let mut carried = carried;
+            reword_against_the_code(&mut carried, &spoken, &excerpt);
             whole.extend(carried);
             whole.sort_by(|left, right| left.id.cmp(&right.id));
             eprintln!(
