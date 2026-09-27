@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::author::{Placed, Proposal, Proposed};
 use crate::comprehend::{carved_name, settle, Capability, Delivery, Family, Flow, PUBLISHED};
 
-const FAMILIES_PER_PROPOSAL: usize = 40;
+const FAMILIES_PER_PROPOSAL: usize = 20;
 const READINGS: usize = 3;
 
 fn most_detailed_reading(said: &str, listed: &[(String, String)]) -> Proposal {

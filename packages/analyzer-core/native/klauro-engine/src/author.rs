@@ -21,7 +21,7 @@ const NAMED_PER_SPOKEN_CALL: usize = 40;
 
 pub fn reaching_at_once(over_a_network: usize) -> usize {
     match spoken_to().is_some() {
-        true => 6,
+        true => 12,
         false => over_a_network,
     }
 }
@@ -886,7 +886,7 @@ pub struct Tightened {
     pub drop: bool,
 }
 
-const CLAIMS_PER_ASK: usize = 10;
+const CLAIMS_PER_ASK: usize = 5;
 
 pub fn tighten_claims(spoken: &str, held: &[(String, String)]) -> Vec<Tightened> {
     if !asked() || held.is_empty() {
@@ -1129,8 +1129,18 @@ fn shaped(of: &str) -> serde_json::Value {
     }
 }
 
+const TERSE: &str = "Answer with the JSON alone, minified on one line: no code fence, no indentation, no words before or after it.";
+
 fn bodied(prompt: &str, most: u32, model: &str, of: &str) -> Option<String> {
     let shape = shaped(of);
+    let terse;
+    let prompt = match of.is_empty() {
+        true => prompt,
+        false => {
+            terse = format!("{prompt}\n\n{TERSE}");
+            terse.as_str()
+        }
+    };
     let held = match speaks_of_chat() {
         true => serde_json::json!({
             "model": model,
