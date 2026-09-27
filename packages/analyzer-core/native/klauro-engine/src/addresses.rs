@@ -72,6 +72,10 @@ pub fn fold(exits: &mut [ExitPoint], calls: &[CallFact], locals: &[LocalBinding]
     for call in calls {
         calls_at.entry((call.file, call.line)).or_default().push(call);
     }
+    let mut built_at: HashMap<(&str, &str), (u32, u32)> = HashMap::default();
+    for local in locals.iter().filter(|local| local.constructed.is_some()) {
+        built_at.entry((local.unit.as_str(), local.name.as_str())).or_insert((local.file, local.line));
+    }
     for exit in exits.iter_mut().filter(|exit| exit.kind == "api" && exit.addressed.is_none()) {
         let unit = exit.source.as_str();
         let owner = owner_of(unit, &node_of);
@@ -85,14 +89,21 @@ pub fn fold(exits: &mut [ExitPoint], calls: &[CallFact], locals: &[LocalBinding]
             })
         };
         let Some(called) = calls_at.get(&(exit.file, exit.line)) else { continue };
-        let addressed = called
+        let named: Vec<&String> = called
             .iter()
             .filter(|call| crate::names::leaf(&call.callee).split('<').next() == exit.operation.split('<').next())
             .flat_map(|call| call.literals.iter())
-            .find_map(|literal| {
-                let template = known(literal.trim()).unwrap_or_else(|| literal.clone());
-                as_a_path(&folded(&template, &known))
-            });
+            .collect();
+        let built: Vec<&String> = named
+            .iter()
+            .filter_map(|literal| built_at.get(&(unit, literal.trim())))
+            .filter_map(|at| calls_at.get(at))
+            .flat_map(|held| held.iter().filter(|call| call.constructs).flat_map(|call| call.literals.iter()))
+            .collect();
+        let addressed = named.into_iter().chain(built).find_map(|literal| {
+            let template = known(literal.trim()).unwrap_or_else(|| literal.clone());
+            as_a_path(&folded(&template, &known))
+        });
         exit.addressed = addressed;
     }
 }

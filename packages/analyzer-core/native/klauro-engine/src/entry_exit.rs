@@ -675,7 +675,7 @@ static SAID_BY_THE_MODULE: &[&str] = &["read", "write"];
 
 static NEVER_REACHES_THE_SERVICE: &[&str] = &[
     "addlistener", "configure", "createbatch", "createclient", "createcommand", "createconnection", "getcollection",
-    "getdatabase", "init", "off", "on", "once", "removealllisteners", "removelistener", "setup",
+    "getdatabase", "getservice", "init", "off", "on", "once", "removealllisteners", "removelistener", "setup",
 ];
 
 fn reaching(kinds: &[&'static str], operation: &str) -> Option<&'static str> {
