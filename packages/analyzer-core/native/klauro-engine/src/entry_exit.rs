@@ -489,9 +489,13 @@ static COMMAND_MEMBERS: &[&str] = &["execute", "handle"];
 
 static CASE_MEMBERS: &[&str] = &["it_*", "should_*", "test*"];
 static WORK_MEMBERS: &[&str] = &["createWork", "doWork"];
+static JOB_MEMBERS: &[&str] = &["perform"];
+static MIXES_IN: &[&str] = &["extend", "include", "prepend"];
 
 static ENTRY_BASES: &[EntryBase] = &[
+    base("ActiveJob::Base", "background", JOB_MEMBERS),
     base("AppCompatActivity", "lifecycle", &[]),
+    base("ApplicationJob", "background", JOB_MEMBERS),
     base("Application", "lifecycle", &[]),
     base("BackgroundService", "background", &["ExecuteAsync"]),
     base("BaseCommand", "cli", COMMAND_MEMBERS),
@@ -504,6 +508,8 @@ static ENTRY_BASES: &[EntryBase] = &[
     base("Mutation", "graphql", GRAPHQL_MEMBERS),
     base("ObjectType", "graphql", GRAPHQL_MEMBERS),
     base("RxWorker", "background", WORK_MEMBERS),
+    base("Sidekiq::Job", "background", JOB_MEMBERS),
+    base("Sidekiq::Worker", "background", JOB_MEMBERS),
     base("Subscription", "graphql", GRAPHQL_MEMBERS),
     base("TestCase", "test", CASE_MEMBERS),
     base("Worker", "lifecycle", &[]),
@@ -517,8 +523,12 @@ fn matches_member(pattern: &str, name: &str) -> bool {
 }
 
 fn entry_base(name: &str) -> Option<&'static EntryBase> {
+    let written = name.trim().replace('=', "::");
+    if let Some(found) = ENTRY_BASES.iter().find(|entry| entry.base.contains("::") && entry.base == written) {
+        return Some(found);
+    }
     let leaf = names::leaf(name);
-    ENTRY_BASES.iter().find(|entry| entry.base == leaf)
+    ENTRY_BASES.iter().find(|entry| !entry.base.contains("::") && entry.base == leaf)
 }
 
 static FILE_OPERATIONS: &[&str] = &[
@@ -1776,6 +1786,13 @@ pub fn derive(
             continue;
         }
         above.entry(fact.source.as_str()).or_default().push(fact.name.as_str());
+    }
+    let type_ids: HashSet<&str> = nodes.iter().filter(|node| node.kind.is_type()).map(|node| node.id.as_str()).collect();
+    for call in calls.iter().filter(|call| call.receiver.is_none() && MIXES_IN.contains(&call.callee.as_str())) {
+        let Some(caller) = call.caller.as_deref().filter(|caller| type_ids.contains(caller)) else { continue };
+        for literal in &call.literals {
+            above.entry(caller).or_default().push(literal.as_str());
+        }
     }
     fn supertype_base(
         name: &str,

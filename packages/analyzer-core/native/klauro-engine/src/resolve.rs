@@ -472,6 +472,12 @@ impl<'a> Resolver<'a> {
     }
 
     fn root(&self, unit: u32, file: u32, name: &'a str) -> Origin<'a> {
+        if let Some((_, leaf)) = name.rsplit_once("::")
+            && leaf.starts_with(char::is_uppercase)
+            && let Some(found) = self.named_type(file, leaf)
+        {
+            return Origin::Declared(found);
+        }
         let bare = name.strip_prefix('$').unwrap_or(name);
         if bare == "this" || bare == "self" {
             return match self.symbols.owning_type(unit) {
@@ -575,6 +581,9 @@ impl<'a> Resolver<'a> {
         let mut held = self.held(unit, file, first);
         for part in parts {
             origin = match origin {
+                Origin::Declared(owner) if self.symbols.nodes[owner as usize].kind.is_type() && part == "new" => {
+                    Origin::Declared(owner)
+                }
                 Origin::Declared(owner) if self.symbols.nodes[owner as usize].kind.is_type() => {
                     let unwrapped = held
                         .filter(|annotation| HOLDERS.contains(&base_type_name(annotation)))
