@@ -572,7 +572,10 @@ pub fn propose_capabilities(spoken_for: &str, families: &[(String, String)]) -> 
          say they did one thing: placing an order is one capability whether it creates the \
          order, reserves its items or hands the order on. Keep outcomes apart, and split one, when \
          different people come for them: a shopper checking out and a merchant fulfilling orders \
-         are two capabilities even though both change orders. Name the capability for what the person gets, \
+         are two capabilities even though both change orders. Keep them apart too when the same person \
+         comes for different reasons: searching for one thing and browsing what is popular are two \
+         capabilities, and so are signing in, changing preferences and managing what you have saved. \
+         Name the capability for what the person gets, \
          never for the way in or what it is built on: nothing is called an API, a page, an \
          endpoint, a screen, a form, a database or a table.\n\n\
          Work the system does without being asked — on a timer, in the background, or when a \

@@ -101,6 +101,10 @@ fn outcome_of(flow: &Flow, bookkeeping: &BTreeSet<&str>) -> Family {
     if let Some(record) = changes_in(flow).find(|record| !bookkeeping.contains(record)) {
         return Family { key: format!("changes:{record}"), basis: "the record it changes" };
     }
+    if flow.changes.iter().any(|change| change.starts_with("client_storage:")) {
+        let kept = screen_of(flow).unwrap_or_else(|| flow.operation.clone());
+        return Family { key: format!("keeps:{kept}"), basis: "what it keeps on the person's device" };
+    }
     let handed: Option<&str> = flow
         .steps
         .iter()
@@ -185,7 +189,7 @@ pub(crate) fn surface_of(flow: &Flow) -> String {
 
 pub(crate) fn terminality_of(family: &Family) -> &'static str {
     match family.key.split(':').next().unwrap_or_default() {
-        "changes" | "hands on" | "calls" | "acts" => "terminal",
+        "changes" | "hands on" | "calls" | "acts" | "keeps" => "terminal",
         _ => "proximal",
     }
 }
