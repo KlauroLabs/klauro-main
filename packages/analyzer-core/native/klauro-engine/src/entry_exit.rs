@@ -334,6 +334,8 @@ fn decorator_entry(decorator: &Decorator) -> Option<(&'static str, String, Optio
         | "rabbitlistener" | "streamlistener" => Some(("event", lowered, None)),
         "messagepattern" | "jmslistener" | "sqslistener" => Some(("message", lowered, None)),
         "cron" | "interval" | "timeout" | "scheduled" => Some(("schedule", lowered, None)),
+        "sharedtask" | "shared_task" | "periodictask" | "periodic_task" => Some(("background", lowered, None)),
+        "task" | "actor" if qualified => Some(("background", lowered, None)),
         "resolvefield" | "schemamapping" | "querymapping" | "mutationmapping"
         | "subscriptionmapping" => Some(("graphql", lowered, None)),
         "grpcmethod" | "grpcstreammethod" | "grpcservice" => Some(("rpc", lowered, None)),

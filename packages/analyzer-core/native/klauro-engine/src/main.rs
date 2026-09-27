@@ -607,6 +607,9 @@ fn read_it() {
     derived
         .entry_points
         .extend(convention::conventional(&index.nodes, &paths, &index.exports));
+    derived.entry_points.retain(|entry| {
+        paths.get(entry.file as usize).is_none_or(|path| !path.split('/').any(|segment| segment.starts_with('.') && segment.len() > 1 && segment != ".well-known"))
+    });
     derived.entry_points.sort_by(|left, right| left.id.cmp(&right.id));
     entry_exit::guard(&mut derived.entry_points, &index.nodes);
     derived.entry_points.dedup_by(|left, right| left.id == right.id);
