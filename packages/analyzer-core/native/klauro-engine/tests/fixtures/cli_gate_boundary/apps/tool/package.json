@@ -1,0 +1,1 @@
+{ "name": "app", "bin": "src/cli.ts" }

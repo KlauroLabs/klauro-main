@@ -329,6 +329,14 @@ pub struct RegistrationFact {
     pub line: u32,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BundlerBuild {
+    pub file: u32,
+    pub entries: Vec<String>,
+    pub output: String,
+    pub output_is_dir: bool,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct UnitMetrics {
     pub branches: u16,
@@ -429,6 +437,8 @@ pub struct FileFacts {
     pub namespace: Option<String>,
     #[serde(default, skip_serializing_if = "crate::facts_cache::hidden")]
     pub forwards: Vec<Forward>,
+    #[serde(default, skip_serializing_if = "crate::facts_cache::hidden")]
+    pub bundler_builds: Vec<BundlerBuild>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -452,5 +462,6 @@ impl FileFacts {
         self.settings.iter_mut().for_each(|held| held.file = file);
         self.tables.iter_mut().for_each(|held| held.file = file);
         self.forwards.iter_mut().for_each(|held| held.file = file);
+        self.bundler_builds.iter_mut().for_each(|held| held.file = file);
     }
 }

@@ -181,3 +181,167 @@ fn text<'a>(source: &'a [u8], node: Node) -> &'a str {
 fn unquoted(value: &str) -> &str {
     value.trim().trim_matches(['"', '\'', '`'])
 }
+
+static ENTRY_KEYS: &[&str] = &["entry", "entryPoints", "input"];
+
+pub fn declared_builds(tree: &Tree, source: &[u8], file: u32) -> Vec<BundlerBuild> {
+    let mut found = Vec::new();
+    let mut pending = vec![tree.root_node()];
+    while let Some(node) = pending.pop() {
+        if node.kind() == "object"
+            && let Some(build) = build_from_object(source, node, file)
+        {
+            found.push(build);
+        }
+        let mut cursor = node.walk();
+        pending.extend(node.named_children(&mut cursor));
+    }
+    found
+}
+
+fn string_or_array(source: &[u8], value: Node) -> Vec<String> {
+    if value.kind().contains("string") {
+        return vec![unquoted(text(source, value)).to_string()];
+    }
+    if value.kind() == "array" {
+        let mut cursor = value.walk();
+        return value
+            .named_children(&mut cursor)
+            .filter(|element| element.kind().contains("string"))
+            .map(|element| unquoted(text(source, element)).to_string())
+            .collect();
+    }
+    Vec::new()
+}
+
+fn output_from_object(source: &[u8], object: Node) -> Option<(String, bool)> {
+    let mut file_value = None;
+    let mut dir_value = None;
+    let mut path_value = None;
+    let mut filename_value = None;
+    let mut cursor = object.walk();
+    for pair in object.named_children(&mut cursor) {
+        if pair.kind() != "pair" {
+            continue;
+        }
+        let (Some(key), Some(value)) = (pair.child_by_field_name("key"), pair.child_by_field_name("value")) else {
+            continue;
+        };
+        if !value.kind().contains("string") {
+            continue;
+        }
+        match unquoted(text(source, key)) {
+            "file" => file_value = Some(unquoted(text(source, value)).to_string()),
+            "dir" => dir_value = Some(unquoted(text(source, value)).to_string()),
+            "path" => path_value = Some(unquoted(text(source, value)).to_string()),
+            "filename" => filename_value = Some(unquoted(text(source, value)).to_string()),
+            _ => {}
+        }
+    }
+    if let Some(named) = file_value {
+        return Some((named, false));
+    }
+    if let (Some(path), Some(filename)) = (&path_value, &filename_value) {
+        return Some((format!("{path}/{filename}"), false));
+    }
+    if let Some(named) = dir_value.or(path_value) {
+        return Some((named, true));
+    }
+    None
+}
+
+fn first_output_from_value(source: &[u8], value: Node) -> Option<(String, bool)> {
+    if value.kind() == "object" {
+        return output_from_object(source, value);
+    }
+    if value.kind() == "array" {
+        let mut cursor = value.walk();
+        for element in value.named_children(&mut cursor) {
+            if element.kind() == "object"
+                && let Some(resolved) = output_from_object(source, element)
+            {
+                return Some(resolved);
+            }
+        }
+    }
+    None
+}
+
+fn child_object<'t>(source: &[u8], object: Node<'t>, key: &str) -> Option<Node<'t>> {
+    let mut cursor = object.walk();
+    for pair in object.named_children(&mut cursor) {
+        if pair.kind() != "pair" {
+            continue;
+        }
+        let (Some(pair_key), Some(value)) = (pair.child_by_field_name("key"), pair.child_by_field_name("value")) else {
+            continue;
+        };
+        if unquoted(text(source, pair_key)) == key && value.kind() == "object" {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn build_from_object(source: &[u8], object: Node, file: u32) -> Option<BundlerBuild> {
+    let mut entries = Vec::new();
+    let mut output: Option<(String, bool)> = None;
+    let mut cursor = object.walk();
+    for pair in object.named_children(&mut cursor) {
+        if pair.kind() != "pair" {
+            continue;
+        }
+        let (Some(key), Some(value)) = (pair.child_by_field_name("key"), pair.child_by_field_name("value")) else {
+            continue;
+        };
+        let named = unquoted(text(source, key));
+        if ENTRY_KEYS.contains(&named) {
+            let held = string_or_array(source, value);
+            if !held.is_empty() {
+                entries = held;
+            }
+            continue;
+        }
+        match named {
+            "outfile" if value.kind().contains("string") => {
+                output = Some((unquoted(text(source, value)).to_string(), false));
+            }
+            "outdir" if value.kind().contains("string") => {
+                output = Some((unquoted(text(source, value)).to_string(), true));
+            }
+            "output" => {
+                output = first_output_from_value(source, value).or(output);
+            }
+            "build" if value.kind() == "object" => {
+                if let Some(lib) = child_object(source, value, "lib") {
+                    let mut lib_cursor = lib.walk();
+                    for lib_pair in lib.named_children(&mut lib_cursor) {
+                        if lib_pair.kind() != "pair" {
+                            continue;
+                        }
+                        let (Some(lib_key), Some(lib_value)) =
+                            (lib_pair.child_by_field_name("key"), lib_pair.child_by_field_name("value"))
+                        else {
+                            continue;
+                        };
+                        match unquoted(text(source, lib_key)) {
+                            "entry" => {
+                                let held = string_or_array(source, lib_value);
+                                if !held.is_empty() {
+                                    entries = held;
+                                }
+                            }
+                            "fileName" if lib_value.kind().contains("string") => {
+                                output = Some((unquoted(text(source, lib_value)).to_string(), false));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let (output, output_is_dir) = output?;
+    (!entries.is_empty()).then_some(BundlerBuild { file, entries, output, output_is_dir })
+}
