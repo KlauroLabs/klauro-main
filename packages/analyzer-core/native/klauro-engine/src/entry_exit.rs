@@ -127,10 +127,13 @@ fn split_label(label: &str) -> (Option<String>, String) {
     (None, trimmed.to_string())
 }
 
+pub(crate) const DISPATCH_CONST_MARKER: &str = "\u{1}const:";
+
 fn classify_registration(registrar: &str, label: Option<&str>) -> Option<&'static str> {
     match registrar.strip_prefix("dispatch:") {
         Some("ui") => return Some("ui"),
         Some("event") => return Some("event"),
+        Some("ipc") => return Some("ipc"),
         _ => {}
     }
     let verb = names::leaf(registrar);
@@ -334,6 +337,9 @@ fn decorator_entry(decorator: &Decorator) -> Option<(&'static str, String, Optio
             return None;
         }
         return Some(("http", lowered.to_ascii_uppercase(), path));
+    }
+    if lowered == "command" && decorator.name.to_ascii_lowercase().contains("tauri") {
+        return Some(("ipc", "IPC".to_string(), None));
     }
     match lowered.as_str() {
         "eventpattern" | "onevent" | "subscribe" | "eventlistener" | "kafkalistener"
@@ -1935,9 +1941,20 @@ pub fn derive(
         units_in_file.entry((node.file, node.name.as_str())).or_default().push(node.id.as_str());
     }
     let mut registered: HashSet<(u32, u32)> = HashSet::default();
+    let const_values: HashMap<&str, &str> = locals
+        .iter()
+        .filter(|local| local.unit.is_empty())
+        .filter_map(|local| Some((local.name.as_str(), local.written.as_deref()?)))
+        .collect();
     for registration in registrations {
-        let Some(kind) = classify_registration(&registration.registrar, Some(&registration.label))
-        else {
+        let label: std::borrow::Cow<str> = match registration.label.strip_prefix(DISPATCH_CONST_MARKER) {
+            Some(leaf) => match const_values.get(leaf) {
+                Some(value) => std::borrow::Cow::Borrowed(*value),
+                None => continue,
+            },
+            None => std::borrow::Cow::Borrowed(registration.label.as_str()),
+        };
+        let Some(kind) = classify_registration(&registration.registrar, Some(&label)) else {
             continue;
         };
         let leaf = registration
@@ -1982,7 +1999,7 @@ pub fn derive(
             continue;
         }
         let verb = names::leaf(&registration.registrar);
-        let (label_method, path) = split_label(&registration.label);
+        let (label_method, path) = split_label(&label);
         let path = match grouped_under(registration, &by_line, &groups) {
             Some(prefix) => join_paths(&prefix, &path),
             None => path,
@@ -2008,12 +2025,12 @@ pub fn derive(
             true => named_of
                 .get(handler.as_str())
                 .and_then(|node| running_within(node, &named_of))
-                .unwrap_or(registration.label.as_str())
+                .unwrap_or(label.as_ref())
                 .to_string(),
-            false => registration.label.clone(),
+            false => label.to_string(),
         };
         entry_points.push(EntryPoint {
-            id: format!("entry:{handler}:{}", registration.label),
+            id: format!("entry:{handler}:{}", label),
             kind,
             name: spoken,
             method: match kind == "http" {
