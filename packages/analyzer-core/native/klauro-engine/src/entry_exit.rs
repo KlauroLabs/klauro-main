@@ -216,6 +216,7 @@ fn classify_registration(registrar: &str, label: Option<&str>, speaks_the_mcp_sd
         Some("event") => return Some("event"),
         Some("ipc") => return Some("ipc"),
         Some("tool") => return Some("tool"),
+        Some("cli") => return Some("cli"),
         _ => {}
     }
     if speaks_the_mcp_sdk && MCP_TOOL_REGISTRARS.contains(&names::leaf(registrar).to_ascii_lowercase().as_str()) {
@@ -275,6 +276,7 @@ fn classify_registration(registrar: &str, label: Option<&str>, speaks_the_mcp_sd
 }
 
 pub(crate) const HAND_ROLLED_DISPATCH_REGISTRAR: &str = "dispatch:ipc";
+pub(crate) const HAND_ROLLED_CLI_REGISTRAR: &str = "dispatch:cli";
 
 fn rust_module_of(path: &str) -> &str {
     let mut segments: Vec<&str> = path.split('/').collect();

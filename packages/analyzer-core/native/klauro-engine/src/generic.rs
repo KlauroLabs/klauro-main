@@ -114,6 +114,7 @@ struct Scope {
     loop_depth: u16,
     awaited: bool,
     dispatch_param: Option<String>,
+    argv_param: Option<String>,
 }
 
 fn span_of(node: Node) -> Span {
@@ -667,6 +668,7 @@ impl<'a> Extractor<'a> {
             loop_depth: 0,
             awaited: false,
             dispatch_param: None,
+            argv_param: None,
         };
         self.walk(root, &scope);
 
@@ -803,6 +805,9 @@ impl<'a> Extractor<'a> {
         }
         if self.spec.id == "rust" && kind == "if_expression" && scope.dispatch_param.is_some() {
             self.declare_channel_dispatch_if(node, scope);
+        }
+        if kind.starts_with("if_") && scope.argv_param.is_some() {
+            self.declare_cli_dispatch_if(node, scope);
         }
         if self.spec.id == "rust" && kind == "const_item" {
             self.declare_rust_const(node, scope);
@@ -1308,7 +1313,52 @@ impl<'a> Extractor<'a> {
         inner.callable = Some(id);
         inner.type_owner = None;
         inner.dispatch_param = (self.spec.id == "rust").then(|| self.dispatch_parameter(node)).flatten();
+        inner.argv_param = self.argv_local(node);
         self.walk(node, &inner);
+    }
+
+    fn argv_local(&self, node: Node) -> Option<String> {
+        fn looks_like_argv(text: &str) -> bool {
+            let held = text.trim();
+            let lowered = held.to_ascii_lowercase();
+            if !(lowered.contains("argv") || lowered.contains("args") || held.contains("flag.Arg")) {
+                return false;
+            }
+            let numeric_after = |probe: &str| {
+                held.find(probe).is_some_and(|at| {
+                    held[at + probe.len()..].trim_start().chars().next().is_some_and(|held| held.is_ascii_digit())
+                })
+            };
+            numeric_after("[") || numeric_after(".nth(") || numeric_after(".get(") || numeric_after("flag.Arg(")
+        }
+        let body = self.spec.signature.body_fields.iter().find_map(|field| node.child_by_field_name(field))?;
+        let statements = match body.named_child_count() {
+            1 => body.named_child(0).unwrap_or(body),
+            _ => body,
+        };
+        let mut cursor = statements.walk();
+        for statement in statements.named_children(&mut cursor) {
+            let child = if self.spec.declares.binding_kinds.contains(&statement.kind()) {
+                statement
+            } else if statement.named_child_count() == 1
+                && let Some(only) = statement.named_child(0)
+                && self.spec.declares.binding_kinds.contains(&only.kind())
+            {
+                only
+            } else {
+                continue;
+            };
+            let Some(value) = child.child_by_field_name(self.spec.declares.binding_value_field) else { continue };
+            if !looks_like_argv(self.text(value)) {
+                continue;
+            }
+            let Some(name_node) = child.child_by_field_name(self.spec.declares.binding_name_field) else { continue };
+            let name = self.text(name_node).trim();
+            if !name.is_empty() && name.chars().all(|held| held.is_alphanumeric() || held == '_') {
+                return Some(name.to_string());
+            }
+        }
+        None
     }
 
     fn dispatch_parameter(&self, node: Node) -> Option<String> {
@@ -1950,6 +2000,17 @@ impl<'a> Extractor<'a> {
     }
 
     fn declare_dispatch_arm(&mut self, handler: &str, label: &str, site: Node, body: Node) -> String {
+        self.declare_dispatch_arm_registered_as(handler, label, site, body, crate::entry_exit::HAND_ROLLED_DISPATCH_REGISTRAR)
+    }
+
+    fn declare_dispatch_arm_registered_as(
+        &mut self,
+        handler: &str,
+        label: &str,
+        site: Node,
+        body: Node,
+        registrar: &str,
+    ) -> String {
         let name = format!("{label}#{}", site.start_position().row + 1);
         let id = self.id("callback", &name, body);
         self.facts.nodes.push(IndexNode {
@@ -1975,7 +2036,7 @@ impl<'a> Extractor<'a> {
         });
         self.facts.registrations.push(RegistrationFact {
             file: self.file,
-            registrar: crate::entry_exit::HAND_ROLLED_DISPATCH_REGISTRAR.to_string(),
+            registrar: registrar.to_string(),
             label: label.to_string(),
             handler: id.clone(),
             line: site.start_position().row as u32 + 1,
@@ -2043,6 +2104,76 @@ impl<'a> Extractor<'a> {
             return;
         };
         let id = self.declare_dispatch_arm(&handler, &label, site, consequence);
+        let mut inner = scope.clone();
+        inner.callable = Some(id.clone());
+        inner.owner = Some(id);
+        inner.registrar = None;
+        self.visit(consequence, &inner);
+    }
+
+    fn leading_quoted_literal(text: &str) -> Option<String> {
+        let mut chars = text.chars();
+        let quote = chars.next()?;
+        if !matches!(quote, '\'' | '"' | '`') {
+            return None;
+        }
+        let rest = &text[quote.len_utf8()..];
+        let end = rest.find(quote)?;
+        Some(rest[..end].to_string())
+    }
+
+    fn trailing_quoted_literal(text: &str) -> Option<String> {
+        let quote = text.chars().last()?;
+        if !matches!(quote, '\'' | '"' | '`') {
+            return None;
+        }
+        let without_end = &text[..text.len() - quote.len_utf8()];
+        let start = without_end.rfind(quote)?;
+        Some(without_end[start + quote.len_utf8()..].to_string())
+    }
+
+    fn argv_compared_literal(condition_text: &str, param: &str) -> Option<String> {
+        let is_ident = |held: char| held.is_alphanumeric() || held == '_';
+        for (at, _) in condition_text.match_indices(param) {
+            let before_ok = condition_text[..at].chars().next_back().is_none_or(|held| !is_ident(held));
+            let after_at = at + param.len();
+            let after_ok = condition_text[after_at..].chars().next().is_none_or(|held| !is_ident(held));
+            if !before_ok || !after_ok {
+                continue;
+            }
+            let after = condition_text[after_at..].trim_start();
+            if let Some(stripped) = after.strip_prefix("==")
+                && let Some(label) = Self::leading_quoted_literal(stripped.trim_start())
+            {
+                return Some(label);
+            }
+            let before = condition_text[..at].trim_end();
+            if let Some(stripped) = before.strip_suffix("==")
+                && let Some(label) = Self::trailing_quoted_literal(stripped.trim_end())
+            {
+                return Some(label);
+            }
+        }
+        None
+    }
+
+    fn declare_cli_dispatch_if(&mut self, node: Node, scope: &Scope) {
+        let Some(argv_param) = scope.argv_param.as_deref() else { return };
+        let Some(handler) = scope.callable.clone().or_else(|| scope.owner.clone()) else {
+            return;
+        };
+        let Some(condition) = node.child_by_field_name("condition") else { return };
+        let Some(consequence) = node.child_by_field_name("consequence") else { return };
+        let Some(label) = Self::argv_compared_literal(self.text(condition), argv_param) else {
+            return;
+        };
+        let id = self.declare_dispatch_arm_registered_as(
+            &handler,
+            &label,
+            condition,
+            consequence,
+            crate::entry_exit::HAND_ROLLED_CLI_REGISTRAR,
+        );
         let mut inner = scope.clone();
         inner.callable = Some(id.clone());
         inner.owner = Some(id);
