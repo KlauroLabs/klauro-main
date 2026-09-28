@@ -101,6 +101,8 @@ struct Index {
     kept: Vec<model::Kept>,
     #[serde(skip)]
     forwards: Vec<model::Forward>,
+    #[serde(skip)]
+    bundler_builds: Vec<model::BundlerBuild>,
     settings: Vec<model::SettingRead>,
     locals: Vec<model::LocalBinding>,
     entry_points: Vec<entry_exit::EntryPoint>,
@@ -239,6 +241,7 @@ fn read(
         if bundler::is_config(path) {
             facts.nodes.extend(bundler::declared_aliases(&tree, source, file, path));
         }
+        facts.bundler_builds.extend(bundler::declared_builds(&tree, source, file));
         return Some(facts);
     }
     if dockerfile::is_dockerfile(path) {
@@ -449,6 +452,7 @@ fn read_it() {
         registrations: Vec::new(),
         kept: Vec::new(),
         forwards: Vec::new(),
+        bundler_builds: Vec::new(),
         settings: Vec::new(),
         locals: Vec::new(),
         entry_points: Vec::new(),
@@ -493,6 +497,7 @@ fn read_it() {
         index.registrations.extend(file.registrations);
         index.kept.extend(file.kept);
         index.forwards.extend(file.forwards);
+        index.bundler_builds.extend(file.bundler_builds);
         index.settings.extend(file.settings);
         index.locals.extend(file.locals);
         declared_tables.extend(file.tables);
@@ -681,6 +686,8 @@ fn read_it() {
         &index.edges,
         &index.entry_points,
         &index.calls,
+        &index.bundler_builds,
+        &index.imports,
     );
     eprintln!(
         "scope {:?} | projects {} | library {} runnable {} shipped {} | assigned {} shared {} unscoped {}",
@@ -698,7 +705,7 @@ fn read_it() {
             return true;
         }
         let path = &paths[entry.file as usize];
-        if entry.kind == "lifecycle" {
+        if matches!(entry.kind, "lifecycle" | "cli") {
             if paths::is_cargo_build_script(path) {
                 return false;
             }

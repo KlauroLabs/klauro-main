@@ -4,7 +4,7 @@ use serde::Serialize;
 
 use crate::entry_exit::EntryPoint;
 use crate::model::*;
-use crate::paths::{contains, directory_of, display_name, file_of, join};
+use crate::paths::{contains, directory_of, display_name, file_of, join, normalize};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -66,6 +66,14 @@ pub struct Scope {
     pub assigned_nodes: u32,
     pub shared_nodes: u32,
     pub unassigned_nodes: u32,
+    #[serde(skip)]
+    bundled_entries: Vec<BundledEntry>,
+}
+
+#[derive(Debug)]
+struct BundledEntry {
+    entry: String,
+    output: String,
 }
 
 impl Scope {
@@ -82,6 +90,13 @@ impl Scope {
         if self.ships_file(path) {
             return true;
         }
+        if self
+            .bundled_entries
+            .iter()
+            .any(|bundled| bundled.entry == path && self.ships_file(&bundled.output))
+        {
+            return true;
+        }
         self.deployables.iter().any(|unit| {
             let targets = unit.runs.as_deref().map(|runs| join(&unit.root, unquote(runs))).into_iter().chain(unit.ships.iter().cloned());
             targets.into_iter().any(|target| mirrors_a_built_source(&unit.root, &target, path))
@@ -90,9 +105,14 @@ impl Scope {
 
     pub fn part_has_shipping_evidence(&self, path: &str) -> bool {
         self.deployables.iter().any(|unit| {
-            !unit.root.is_empty()
-                && contains(&unit.root, path)
-                && (unit.runs.is_some() || !unit.ships.is_empty())
+            if unit.root.is_empty() || !contains(&unit.root, path) {
+                return false;
+            }
+            let confidently_named = unit
+                .runs
+                .as_deref()
+                .is_some_and(|runs| crate::paths::is_shipping_evidence_mappable(&join(&unit.root, unquote(runs))));
+            confidently_named || unit.ships.iter().any(|shipped| crate::paths::is_shipping_evidence_mappable(shipped))
         })
     }
 }
@@ -238,6 +258,24 @@ impl<'a> Files<'a> {
             .iter()
             .find(|node| node.name == name)
             .copied()
+    }
+
+    fn exists(&self, path: &str) -> bool {
+        self.paths.contains(&path)
+    }
+
+    fn nearest_package_root(&self, path: &str) -> Option<String> {
+        let mut at = directory_of(path);
+        loop {
+            let candidate = join(at, "package.json");
+            if self.exists(&candidate) {
+                return Some(at.to_string());
+            }
+            if at.is_empty() {
+                return None;
+            }
+            at = directory_of(at);
+        }
     }
 }
 
@@ -949,6 +987,8 @@ pub fn derive(
     edges: &[IndexEdge],
     entry_points: &[EntryPoint],
     calls: &[CallFact],
+    bundler_builds: &[BundlerBuild],
+    imports: &[ImportFact],
 ) -> Scope {
     let index = Files::build(files, nodes);
     let runnable = runnable_roots(files, entry_points);
@@ -1027,7 +1067,45 @@ pub fn derive(
     }
 
     separate_containers(&mut candidates);
-    consolidate(candidates, &index, nodes, edges, entry_points, code, calls)
+    let mut scope = consolidate(candidates, &index, nodes, edges, entry_points, code, calls);
+    scope.bundled_entries = bundler_builds
+        .iter()
+        .filter_map(|build| {
+            let calling_path = files.get(build.file as usize)?;
+            let root = index.nearest_package_root(calling_path)?;
+            Some((root, build))
+        })
+        .flat_map(|(root, build)| {
+            let output = join(&root, &build.output);
+            build
+                .entries
+                .iter()
+                .map(move |entry| BundledEntry { entry: join(&root, entry), output: output.clone() })
+        })
+        .collect();
+    for unit in scope.deployables.iter_mut() {
+        let mut carried = Vec::new();
+        let targets = unit.runs.as_deref().map(|runs| join(&unit.root, unquote(runs))).into_iter().chain(unit.ships.iter().cloned());
+        for target in targets {
+            if let Some(carried_to) = follow_a_relative_import(files, nodes, imports, &target) {
+                carried.push(carried_to);
+            }
+        }
+        unit.ships.extend(carried);
+        unit.ships.sort();
+        unit.ships.dedup();
+    }
+    scope
+}
+
+fn follow_a_relative_import(files: &[String], nodes: &[IndexNode], imports: &[ImportFact], target: &str) -> Option<String> {
+    let at = files.iter().position(|path| path == target)? as u32;
+    let declares_nothing_of_its_own = !nodes.iter().any(|node| node.file == at && !matches!(node.kind, NodeKind::Module));
+    if !declares_nothing_of_its_own {
+        return None;
+    }
+    let specifier = &imports.iter().find(|import| import.file == at && import.specifier.starts_with('.'))?.specifier;
+    Some(normalize(&format!("{}/{}", directory_of(target), specifier)))
 }
 
 fn separate_containers(candidates: &mut [Candidate]) {
@@ -1360,6 +1438,7 @@ fn consolidate(
         assigned_nodes: assigned,
         shared_nodes: shared,
         unassigned_nodes: unassigned,
+        bundled_entries: Vec::new(),
     }
 }
 
