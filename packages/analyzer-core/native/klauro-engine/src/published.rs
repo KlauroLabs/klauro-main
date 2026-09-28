@@ -2,7 +2,7 @@ use rustc_hash::FxHashMap as HashMap;
 
 use crate::entry_exit::EntryPoint;
 use crate::model::*;
-use crate::paths::is_test;
+use crate::paths::{is_not_shipped, is_test};
 
 static HEADERS: &[&str] = &["h", "h++", "hh", "hpp", "hxx"];
 
@@ -132,7 +132,7 @@ pub fn published(
         }
         let Some(at) = holds.get(node.file as usize).copied().flatten() else { continue };
         let path = &files[node.file as usize];
-        if is_test(path) || BUILD_SCRIPTS.iter().any(|ending| path.ends_with(ending)) {
+        if is_test(path) || is_not_shipped(path) || BUILD_SCRIPTS.iter().any(|ending| path.ends_with(ending)) {
             continue;
         }
         let owner = node.parent.as_deref().unwrap_or("");

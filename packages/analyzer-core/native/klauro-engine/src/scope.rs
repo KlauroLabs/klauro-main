@@ -68,6 +68,17 @@ pub struct Scope {
     pub unassigned_nodes: u32,
 }
 
+impl Scope {
+    pub fn ships_file(&self, path: &str) -> bool {
+        self.deployables.iter().any(|unit| {
+            unit.runs
+                .as_deref()
+                .is_some_and(|runs| join(&unit.root, unquote(runs)) == path)
+                || unit.ships.iter().any(|shipped| shipped == path || contains(shipped, path))
+        })
+    }
+}
+
 struct Candidate {
     name: String,
     root: String,
@@ -599,19 +610,26 @@ fn cargo_manifest(files: &Files, path: &str) -> Option<Candidate> {
         .unwrap_or_else(|| display_name(&root));
 
     let mut declarations = Vec::new();
+    let mut ships = Vec::new();
     for binary in document.iter().filter(|node| node.name == "bin") {
         declarations.push(Declaration {
             declares: Declares::Run,
             kind: "cargo-bin",
             at: format!("{path}:{}", binary.span.line),
         });
+        if let Some(at) = files
+            .child(&binary.id, "path")
+            .and_then(|node| node.type_annotation.as_deref())
+        {
+            ships.push(join(&root, unquote(at)));
+        }
     }
     declarations.push(Declaration {
         declares: Declares::Identity,
         kind: "package-identity",
         at: path.to_string(),
     });
-    Some(Candidate { name: named, root, declarations, ships: Vec::new(), runs: None })
+    Some(Candidate { name: named, root, declarations, ships, runs: None })
 }
 
 static LAUNCHER: &str = "android.intent.category.LAUNCHER";

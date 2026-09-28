@@ -692,6 +692,12 @@ fn read_it() {
         scope.shared_nodes,
         scope.unassigned_nodes
     );
+    index.entry_points.retain(|entry| {
+        entry.kind == "test" || {
+            let path = &paths[entry.file as usize];
+            !paths::is_developer_script(path) || scope.ships_file(path)
+        }
+    });
     index.scope = Some(scope);
 
     let published_started = Instant::now();

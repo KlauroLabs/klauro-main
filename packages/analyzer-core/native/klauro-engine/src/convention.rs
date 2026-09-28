@@ -2,7 +2,7 @@ use rustc_hash::FxHashMap as HashMap;
 
 use crate::entry_exit::EntryPoint;
 use crate::model::*;
-use crate::paths::is_test;
+use crate::paths::{is_not_shipped, is_test};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Family {
@@ -312,7 +312,7 @@ pub fn conventional(
         files.iter().map(String::as_str).collect();
     let mut found = Vec::new();
     for (at, path) in files.iter().enumerate() {
-        if is_test(path) {
+        if is_test(path) || is_not_shipped(path) {
             continue;
         }
         let at = at as u32;
