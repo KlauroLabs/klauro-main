@@ -114,6 +114,36 @@ pub fn is_developer_script(path: &str) -> bool {
     path.starts_with("scripts/") || path.contains("/scripts/")
 }
 
+fn stem_words(stem: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut previous_was_lower_or_digit = false;
+    for letter in stem.chars() {
+        if letter.is_alphanumeric() {
+            if letter.is_uppercase() && previous_was_lower_or_digit && !current.is_empty() {
+                words.push(std::mem::take(&mut current));
+            }
+            current.push(letter.to_ascii_lowercase());
+            previous_was_lower_or_digit = letter.is_lowercase() || letter.is_numeric();
+        } else {
+            if !current.is_empty() {
+                words.push(std::mem::take(&mut current));
+            }
+            previous_was_lower_or_digit = false;
+        }
+    }
+    if !current.is_empty() {
+        words.push(current);
+    }
+    words
+}
+
+pub fn is_benchmark_named(path: &str) -> bool {
+    let name = basename(path);
+    let stem = name.split('.').next().unwrap_or(name);
+    stem_words(stem).iter().any(|word| word == "bench" || word == "benchmark")
+}
+
 pub fn is_continuous_integration(path: &str) -> bool {
     static DIRECTORIES: &[&str] =
         &[".azure/", ".buildkite/", ".circleci/", ".github/", ".gitlab/", ".woodpecker/", "ci/"];

@@ -83,6 +83,49 @@ static COMMAND_REGISTRARS: &[&str] = &["action", "command", "handler"];
 static IPC_REGISTRARS: &[&str] = &["handle", "handleOnce", "invoke"];
 static PROCEDURE_REGISTRARS: &[&str] = &["mutation", "query", "subscription"];
 
+static STARTS_A_CONTINUATION: &[&str] = &[
+    "connect",
+    "create_subprocess_exec",
+    "create_subprocess_shell",
+    "createconnection",
+    "createreadstream",
+    "createwritestream",
+    "eventsource",
+    "execfile",
+    "execfilesync",
+    "fork",
+    "open_connection",
+    "popen",
+    "request",
+    "spawn",
+    "spawnsync",
+    "websocket",
+    "worker",
+];
+
+fn starts_a_continuation(named: &str) -> bool {
+    STARTS_A_CONTINUATION.binary_search(&names::leaf(named).to_ascii_lowercase().as_str()).is_ok()
+}
+
+fn continues_a_started_operation(
+    registrar: &str,
+    file: u32,
+    unit: &str,
+    locals_by_unit: &HashMap<(u32, &str, &str), &crate::model::LocalBinding>,
+) -> bool {
+    let Some(at) = registrar.rfind('.') else { return false };
+    let receiver = &registrar[..at];
+    let root = names::root(receiver);
+    let called_inline = root.len() < receiver.len() && receiver[root.len()..].starts_with('(');
+    if called_inline && starts_a_continuation(root) {
+        return true;
+    }
+    locals_by_unit
+        .get(&(file, unit, root))
+        .and_then(|local| local.from_call.as_deref().or(local.constructed.as_deref()))
+        .is_some_and(starts_a_continuation)
+}
+
 fn running_within<'a>(node: &'a IndexNode, named_of: &HashMap<&str, &'a IndexNode>) -> Option<&'a str> {
     let runs = |held: &IndexNode| {
         matches!(
@@ -1789,6 +1832,10 @@ pub fn derive(
                 .then_some(((held.file, held.unit.as_str(), held.name.as_str()), built))
         })
         .collect();
+    let locals_by_unit: HashMap<(u32, &str, &str), &crate::model::LocalBinding> = locals
+        .iter()
+        .map(|held| ((held.file, held.unit.as_str(), held.name.as_str()), held))
+        .collect();
     let Resolution { modules, local, unique_units, call_origins, through, .. } = resolution;
     let known: HashSet<&str> = nodes.iter().map(|node| node.id.as_str()).collect();
     let mut stands_in: HashMap<&str, Vec<&'static str>> = HashMap::default();
@@ -1836,7 +1883,14 @@ pub fn derive(
     for node in nodes {
         if let Some(registrar) = &node.callback_of {
             let label = node.registration_label.as_deref();
-            if let Some(kind) = classify_registration(registrar, label, mcp_files.contains(&node.file)) {
+            let continuation = classify_registration(registrar, label, mcp_files.contains(&node.file)) == Some("event")
+                && continues_a_started_operation(
+                    registrar,
+                    node.file,
+                    node.parent.as_deref().unwrap_or(""),
+                    &locals_by_unit,
+                );
+            if let Some(kind) = classify_registration(registrar, label, mcp_files.contains(&node.file)).filter(|_| !continuation) {
                 let verb = names::leaf(registrar);
                 let spoken = match (label, kind) {
                     (_, "schedule") => running_within(node, &named_of)
@@ -2542,10 +2596,11 @@ pub fn derive(
         if is_not_shipped(path) {
             return false;
         }
-        match entry.kind {
+        let survives_test_screen = match entry.kind {
             "http" => !is_test(path),
             _ => !is_unambiguously_test(path),
-        }
+        };
+        survives_test_screen && (entry.kind != "schedule" || recurring(&entry.registrar))
     });
     for entry in entry_points.iter_mut() {
         if entry.kind != "http" {
@@ -2592,6 +2647,7 @@ mod tests {
             ("RECURRING", RECURRING),
             ("SCHEDULE_REGISTRARS", SCHEDULE_REGISTRARS),
             ("SESSION_OPERATIONS", SESSION_OPERATIONS),
+            ("STARTS_A_CONTINUATION", STARTS_A_CONTINUATION),
             ("TEST_REGISTRARS", TEST_REGISTRARS),
         ];
         for (name, table) in tables {
