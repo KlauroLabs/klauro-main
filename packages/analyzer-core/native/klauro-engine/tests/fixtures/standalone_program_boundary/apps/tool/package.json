@@ -1,0 +1,5 @@
+{
+  "name": "tool",
+  "bin": { "tool": "dist/cli.cjs" },
+  "scripts": { "start": "tsx src/index.ts" }
+}
