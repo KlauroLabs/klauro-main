@@ -1117,7 +1117,7 @@ pub fn author(
     files: &[String],
     told: &Telling<'_>,
 ) -> u32 {
-    if !crate::author::asked() {
+    if !crate::author::asked() && std::env::var("KLAURO_FAMILY_DUMP").is_err() {
         return 0;
     }
     let spoken = spoken_for(root, nodes, files);

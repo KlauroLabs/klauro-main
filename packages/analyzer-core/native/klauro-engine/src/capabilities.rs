@@ -130,9 +130,23 @@ fn screen_of(flow: &Flow) -> Option<String> {
     (!screen.is_empty()).then(|| screen.to_string())
 }
 
+static NAMED_COMMAND_KINDS: &[&str] = &["ipc", "cli", "tool"];
+
+fn asked_for_by_name(flow: &Flow) -> Option<&str> {
+    let named_kind = NAMED_COMMAND_KINDS.contains(&flow.kind)
+        || (flow.kind == "http" && flow.method.is_none() && !flow.operation.starts_with('/'));
+    (named_kind && !flow.operation.is_empty()).then(|| flow.operation.as_str())
+}
+
 fn outcome_of(flow: &Flow, bookkeeping: &BTreeSet<&str>) -> Family {
     if flow.kind == "export" {
         return crate::comprehend::family_of(flow);
+    }
+    if let Some(named) = asked_for_by_name(flow) {
+        return Family {
+            key: format!("asks:{named}"),
+            basis: "the command someone explicitly asked it to run",
+        };
     }
     if let Some(record) = changes_in(flow).find(|record| !bookkeeping.contains(record)) {
         return Family { key: format!("changes:{record}"), basis: "the record it changes" };
@@ -225,7 +239,7 @@ pub(crate) fn surface_of(flow: &Flow) -> String {
 
 pub(crate) fn terminality_of(family: &Family) -> &'static str {
     match family.key.split(':').next().unwrap_or_default() {
-        "changes" | "hands on" | "calls" | "acts" | "keeps" => "terminal",
+        "changes" | "hands on" | "calls" | "acts" | "keeps" | "asks" => "terminal",
         _ => "proximal",
     }
 }
@@ -443,11 +457,15 @@ fn hold_together(said: &str, told: &BTreeMap<String, String>, held: &mut [Held])
 }
 
 fn object_of(family: &str) -> &str {
-    family.split_once(':').map(|(_, object)| object).unwrap_or(family)
+    let (prefix, object) = family.split_once(':').unwrap_or(("", family));
+    match prefix {
+        "asks" => object.split_once(':').map(|(namespace, _)| namespace).unwrap_or(object),
+        _ => object,
+    }
 }
 
 fn terminal_first(family: &str) -> bool {
-    matches!(family.split(':').next().unwrap_or_default(), "changes" | "hands on" | "calls" | "acts")
+    matches!(family.split(':').next().unwrap_or_default(), "changes" | "hands on" | "calls" | "acts" | "asks")
 }
 
 fn join_the_same(said: &str, held: &mut Vec<Held>) {
@@ -625,7 +643,7 @@ fn consolidate_within(said: &str, held: Vec<Held>, key_of: &BTreeMap<&str, &str>
 }
 
 pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields: &Fields) -> Vec<Capability> {
-    if !crate::author::asked() || flows.is_empty() {
+    if flows.is_empty() {
         return Vec::new();
     }
     let served = flows.iter().any(|flow| SERVED_KINDS.contains(&flow.kind));
@@ -635,6 +653,14 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
         .filter(|flow| !served || flow.kind != "export")
         .filter(|flow| !only_moves_the_screen(flow))
         .collect();
+    if std::env::var("KLAURO_FAMILY_DUMP").is_ok() {
+        for family in outcomes_of(&kept).keys() {
+            eprintln!("family[{remembered_as}]: {}", family.key);
+        }
+    }
+    if !crate::author::asked() {
+        return Vec::new();
+    }
     let families = outcomes_of(&kept);
     if families.keys().all(|family| family.key.starts_with("trigger:")) {
         return Vec::new();
@@ -1226,4 +1252,80 @@ pub(crate) fn of_the_whole(parts: &[Capability], spoken: &str, scope: &str, flow
     }
     merged.sort_by(|left, right| left.id.cmp(&right.id));
     merged
+}
+
+#[cfg(test)]
+mod command_family_tests {
+    use super::*;
+
+    fn flow(id: &str, kind: &'static str, method: Option<&str>, operation: &str, writes: &[&str], reads: &[&str]) -> Flow {
+        Flow {
+            summary: String::new(),
+            writes: writes.iter().map(|held| held.to_string()).collect(),
+            reads: reads.iter().map(|held| held.to_string()).collect(),
+            reaches: Vec::new(),
+            id: id.to_string(),
+            entry_point: format!("entry:{id}"),
+            kind,
+            method: method.map(str::to_string),
+            operation: operation.to_string(),
+            surface: None,
+            plays: None,
+            standing: "terminal",
+            name: None,
+            description: None,
+            grounding: None,
+            path: Vec::new(),
+            steps: Vec::new(),
+            step_edges: Vec::new(),
+            units: 1,
+            changes: Vec::new(),
+            leads_into: Vec::new(),
+            project: None,
+        }
+    }
+
+    #[test]
+    fn two_ipc_commands_ending_in_a_file_write_stay_two_families() {
+        let run = flow("flow:1", "ipc", None, "chat:run", &["file"], &[]);
+        let rename = flow("flow:2", "ipc", None, "archive:rename", &["file"], &[]);
+        let flows = vec![&run, &rename];
+        let grouped = outcomes_of(&flows);
+        let keys: BTreeSet<&str> = grouped.keys().map(|family| family.key.as_str()).collect();
+        assert_eq!(keys, BTreeSet::from(["asks:chat:run", "asks:archive:rename"]));
+        assert_eq!(grouped.len(), 2, "each named command must be its own family: {keys:?}");
+    }
+
+    #[test]
+    fn a_cli_and_a_tool_command_are_also_named_by_themselves() {
+        let cli = flow("flow:3", "cli", None, "deploy", &["release"], &[]);
+        let tool = flow("flow:4", "tool", None, "find_tests", &["release"], &[]);
+        let flows = vec![&cli, &tool];
+        let grouped = outcomes_of(&flows);
+        let keys: BTreeSet<&str> = grouped.keys().map(|family| family.key.as_str()).collect();
+        assert_eq!(keys, BTreeSet::from(["asks:deploy", "asks:find_tests"]));
+    }
+
+    #[test]
+    fn an_http_route_family_is_unchanged() {
+        let route = flow("flow:5", "http", Some("GET"), "/orders", &[], &["orders"]);
+        let flows = vec![&route];
+        let grouped = outcomes_of(&flows);
+        let keys: Vec<&str> = grouped.keys().map(|family| family.key.as_str()).collect();
+        assert_eq!(keys, vec!["shows:orders"], "an http framework route must not be keyed by name");
+    }
+
+    #[test]
+    fn command_namespaces_share_an_object_for_join_the_same() {
+        assert_eq!(object_of("asks:archive:rename"), "archive");
+        assert_eq!(object_of("asks:archive:delete"), "archive");
+        assert_ne!(object_of("asks:archive:rename"), object_of("asks:chat:run"));
+        assert_eq!(object_of("changes:orders"), "orders");
+    }
+
+    #[test]
+    fn a_named_command_is_terminal() {
+        let family = Family { key: "asks:chat:run".to_string(), basis: "the command someone explicitly asked it to run" };
+        assert_eq!(terminality_of(&family), "terminal");
+    }
 }

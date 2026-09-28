@@ -568,11 +568,13 @@ pub fn propose_capabilities(spoken_for: &str, families: &[(String, String)]) -> 
          That description may speak of the project rather than the software, such as its status, history or \
          whether it is still maintained; what the software does is read from the code below, and that decides.\n\n\
          Below is every outcome one part of it delivers, read from the code: the record a path \
-         changes, what it hands on to another part, the service it acts through, or what it \
-         shows someone. Each outcome lists the paths that end in it and the steps each path \
-         takes. Outcomes that change something are terminal; outcomes that only show something \
-         are one step short of terminal, and are just as real: seeing your orders is something \
-         you come for.\n\n\
+         changes, what it hands on to another part, the service it acts through, the command a \
+         person or another program explicitly asked it to run, or what it shows someone. When an \
+         outcome is a named command, the name is what was asked for; take it at face value as the \
+         reason someone reaches this part, over whatever it happens to do underneath. Each \
+         outcome lists the paths that end in it and the steps each path takes. Outcomes that \
+         change something are terminal; outcomes that only show something are one step short of \
+         terminal, and are just as real: seeing your orders is something you come for.\n\n\
          Read them as a whole and say which capabilities this part delivers, by these rules:\n{RULES}\n\n\
          A capability is what someone ends up with. Put outcomes together when a person would \
          say they did one thing: placing an order is one capability whether it creates the \
