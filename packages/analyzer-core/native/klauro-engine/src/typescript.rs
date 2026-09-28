@@ -31,6 +31,7 @@ struct Scope {
     inside_callable: bool,
     context: CallContext,
     dispatches_mcp_tools: bool,
+    argv_param: Option<String>,
 }
 
 impl Scope {
@@ -43,6 +44,7 @@ impl Scope {
             inside_callable: false,
             context: CallContext::default(),
             dispatches_mcp_tools: false,
+            argv_param: None,
         }
     }
 
@@ -54,6 +56,7 @@ impl Scope {
             class_name: self.class_name.clone(),
             exported: false,
             dispatches_mcp_tools: self.dispatches_mcp_tools,
+            argv_param: self.argv_param.clone(),
             context: CallContext {
                 in_try: self.context.in_try,
                 in_catch: self.context.in_catch,
@@ -286,10 +289,16 @@ impl<'a> Extractor<'a> {
                 if node.kind() == "if_statement" && self.routed_branch(node, scope) {
                     return;
                 }
+                if node.kind() == "if_statement" && self.cli_routed_branch(node, scope) {
+                    return;
+                }
                 if node.kind() == "switch_statement"
                     && scope.dispatches_mcp_tools
                     && self.mcp_tool_switch(node, scope)
                 {
+                    return;
+                }
+                if node.kind() == "switch_statement" && scope.argv_param.is_some() && self.cli_switch(node, scope) {
                     return;
                 }
                 let mut inner = scope.child(None, None);
@@ -376,6 +385,57 @@ impl<'a> Extractor<'a> {
         matched
     }
 
+    fn cli_switch(&mut self, node: Node, scope: &Scope) -> bool {
+        let Some(argv_param) = scope.argv_param.as_deref() else { return false };
+        let Some(value) = node.child_by_field_name("value") else { return false };
+        let discriminant = value.named_child(0).unwrap_or(value);
+        if self.text(discriminant).trim() != argv_param {
+            return false;
+        }
+        let Some(body) = node.child_by_field_name("body") else { return false };
+        let mut matched = false;
+        let mut cases = body.walk();
+        for case in body.named_children(&mut cases) {
+            if case.kind() != "switch_case" {
+                continue;
+            }
+            let Some(case_value) = case.child_by_field_name("value") else { continue };
+            if case_value.kind() != "string" {
+                continue;
+            }
+            let label = trim_quotes(self.text(case_value)).to_string();
+            matched = true;
+            let name = format!("{label}#{}", line_of(case));
+            let id = self.id("callback", &name, case);
+            let holder = scope.enclosing_callable.clone().or_else(|| scope.owner.clone());
+            self.facts.nodes.push(IndexNode {
+                id: id.clone(),
+                name,
+                kind: NodeKind::Function,
+                file: self.file,
+                span: span_of(case),
+                parent: holder.clone(),
+                signature: None,
+                modifiers: Modifiers::default(),
+                decorators: Vec::new(),
+                type_annotation: None,
+                documentation: None,
+                project: None,
+                callback_of: Some("dispatch:cli".to_string()),
+                registration_label: Some(label),
+            });
+            if let Some(owner) = holder.as_deref() {
+                self.push_edge(owner, &id, EdgeKind::Contains);
+            }
+            let inner = scope.child(Some(id.clone()), Some(id));
+            let mut statements = case.walk();
+            for statement in case.children_by_field_name("body", &mut statements) {
+                self.visit(statement, &inner);
+            }
+        }
+        matched
+    }
+
     fn routed_branch(&mut self, node: Node, scope: &Scope) -> bool {
         let (Some(condition), Some(consequence)) =
             (node.child_by_field_name("condition"), node.child_by_field_name("consequence"))
@@ -402,6 +462,47 @@ impl<'a> Extractor<'a> {
             project: None,
             callback_of: Some(registrar),
             registration_label: Some(path),
+        });
+        if let Some(owner) = scope.enclosing_callable.clone().or_else(|| scope.owner.clone()) {
+            self.push_edge(&owner, &id, EdgeKind::Contains);
+        }
+        let mut conditioned = scope.child(None, None);
+        conditioned.enclosing_callable = scope.enclosing_callable.clone();
+        conditioned.context.conditional_depth = scope.context.conditional_depth + 1;
+        self.visit(condition, &conditioned);
+        let inner = scope.child(Some(id.clone()), Some(id));
+        self.visit(consequence, &inner);
+        if let Some(alternative) = node.child_by_field_name("alternative") {
+            self.visit(alternative, &conditioned);
+        }
+        true
+    }
+
+    fn cli_routed_branch(&mut self, node: Node, scope: &Scope) -> bool {
+        let (Some(condition), Some(consequence)) =
+            (node.child_by_field_name("condition"), node.child_by_field_name("consequence"))
+        else {
+            return false;
+        };
+        let asked = self.text_owned(condition);
+        let Some(label) = cli_dispatched_on(&asked, scope.argv_param.as_deref()) else { return false };
+        let name = format!("{label}#{}", line_of(node));
+        let id = self.id("callback", &name, consequence);
+        self.facts.nodes.push(IndexNode {
+            id: id.clone(),
+            name,
+            kind: NodeKind::Function,
+            file: self.file,
+            span: span_of(consequence),
+            parent: scope.enclosing_callable.clone().or_else(|| scope.owner.clone()),
+            signature: None,
+            modifiers: Modifiers::default(),
+            decorators: Vec::new(),
+            type_annotation: None,
+            documentation: None,
+            project: None,
+            callback_of: Some("dispatch:cli".to_string()),
+            registration_label: Some(label),
         });
         if let Some(owner) = scope.enclosing_callable.clone().or_else(|| scope.owner.clone()) {
             self.push_edge(&owner, &id, EdgeKind::Contains);
@@ -1139,13 +1240,63 @@ impl<'a> Extractor<'a> {
             self.push_edge(owner, &id, EdgeKind::Contains);
         }
 
-        let inner = scope.child(Some(id.clone()), Some(id));
+        let mut inner = scope.child(Some(id.clone()), Some(id));
         if let Some(body) = node.child_by_field_name("body") {
+            inner.argv_param = self.argv_local(body);
             self.walk(body, &inner);
         }
         if let Some(parameters) = node.child_by_field_name("parameters") {
             self.parameter_initializers(parameters, &inner);
         }
+    }
+
+    fn argv_local(&self, body: Node) -> Option<String> {
+        fn looks_like_argv(text: &str) -> bool {
+            let held = text.trim();
+            if !held.contains("argv") {
+                return false;
+            }
+            let numeric_index = held
+                .find('[')
+                .is_some_and(|at| held[at + 1..].trim_start().chars().next().is_some_and(|held| held.is_ascii_digit()));
+            numeric_index || held.contains(".slice(")
+        }
+        let mut cursor = body.walk();
+        for statement in body.named_children(&mut cursor) {
+            if !matches!(statement.kind(), "lexical_declaration" | "variable_declaration") {
+                continue;
+            }
+            let mut declarators = statement.walk();
+            for declarator in statement.named_children(&mut declarators) {
+                if declarator.kind() != "variable_declarator" {
+                    continue;
+                }
+                let (Some(name_node), Some(value)) =
+                    (declarator.child_by_field_name("name"), declarator.child_by_field_name("value"))
+                else {
+                    continue;
+                };
+                let value_text = self.text(value);
+                if name_node.kind() == "array_pattern" && value_text.trim().ends_with(".argv") {
+                    let mut elements = name_node.walk();
+                    let last = name_node
+                        .named_children(&mut elements)
+                        .filter(|element| element.kind() == "identifier")
+                        .last();
+                    if let Some(last) = last {
+                        return Some(self.text(last).trim().to_string());
+                    }
+                    continue;
+                }
+                if looks_like_argv(value_text) {
+                    let name = self.text(name_node).trim();
+                    if !name.is_empty() && name.chars().all(|held| held.is_alphanumeric() || held == '_') {
+                        return Some(name.to_string());
+                    }
+                }
+            }
+        }
+        None
     }
 
     fn variable_declaration(&mut self, node: Node, scope: &Scope) {
@@ -1837,4 +1988,41 @@ fn dispatched_on(condition: &str) -> Option<(String, String)> {
         }
     }
     Some((method, path?))
+}
+
+fn cli_dispatched_on(condition: &str, param: Option<&str>) -> Option<String> {
+    if let Some(param) = param {
+        let is_ident = |held: char| held.is_alphanumeric() || held == '_';
+        for (at, _) in condition.match_indices(param) {
+            let before_ok = condition[..at].chars().next_back().is_none_or(|held| !is_ident(held));
+            let after_at = at + param.len();
+            let after_ok = condition[after_at..].chars().next().is_none_or(|held| !is_ident(held));
+            if !before_ok || !after_ok {
+                continue;
+            }
+            let rest = condition[after_at..].trim_start();
+            let Some(stripped) = rest.strip_prefix("===").or_else(|| rest.strip_prefix("==")) else {
+                continue;
+            };
+            if let Some(label) = quoted_after(stripped, 0) {
+                return Some(label.to_string());
+            }
+        }
+    }
+    for (at, _) in condition.match_indices("argv[") {
+        let after = &condition[at + "argv[".len()..];
+        let digits = after.chars().take_while(|held| held.is_ascii_digit()).count();
+        if digits == 0 {
+            continue;
+        }
+        let Some(rest) = after[digits..].strip_prefix(']') else { continue };
+        let rest = rest.trim_start();
+        let Some(rest) = rest.strip_prefix("===").or_else(|| rest.strip_prefix("==")) else {
+            continue;
+        };
+        if let Some(label) = quoted_after(rest, 0) {
+            return Some(label.to_string());
+        }
+    }
+    None
 }
