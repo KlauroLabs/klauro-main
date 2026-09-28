@@ -244,6 +244,7 @@ fn only_relays_a_signal(flows: &[&Flow]) -> bool {
                 && flow.changes.is_empty()
                 && flow.reads.is_empty()
                 && flow.reaches.is_empty()
+                && flow.steps.iter().any(|step| matches!(step.kind, "raise" | "hand_off"))
                 && flow.steps.iter().all(|step| matches!(step.kind, "raise" | "hand_off" | "respond"))
         })
 }
@@ -1369,6 +1370,213 @@ pub(crate) fn of_the_whole(parts: &[Capability], spoken: &str, scope: &str, flow
     merged
 }
 
+const LISTED_AT_ONCE: usize = 120;
+const TOLD_IN_A_LINE: usize = 160;
+
+fn singular(word: &str) -> String {
+    if let Some(stem) = word.strip_suffix("ies").filter(|stem| stem.len() > 1) {
+        return format!("{stem}y");
+    }
+    if ["sses", "xes", "ches", "shes"].iter().any(|ending| word.ends_with(ending)) {
+        return word[..word.len() - 2].to_string();
+    }
+    match word.strip_suffix('s') {
+        Some(stem) if stem.len() > 2 && !stem.ends_with('s') && !stem.ends_with('u') && !stem.ends_with('i') => {
+            stem.to_string()
+        }
+        _ => word.to_string(),
+    }
+}
+
+pub(crate) fn name_key(name: &str) -> String {
+    name.to_lowercase()
+        .split(|letter: char| !letter.is_alphanumeric())
+        .filter(|word| !word.is_empty() && !matches!(*word, "a" | "an" | "the"))
+        .map(singular)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn in_a_line(told: &str) -> String {
+    let first = told.split_terminator(". ").next().unwrap_or(told).trim();
+    match first.char_indices().nth(TOLD_IN_A_LINE) {
+        Some((cut, _)) => first[..cut].to_string(),
+        None => first.to_string(),
+    }
+}
+
+fn asked_together(listed: &[usize]) -> Vec<Vec<usize>> {
+    if listed.len() <= LISTED_AT_ONCE {
+        return vec![listed.to_vec()];
+    }
+    let halves: Vec<&[usize]> = listed.chunks(LISTED_AT_ONCE / 2).collect();
+    let mut asked: Vec<Vec<usize>> = Vec::new();
+    for first in 0..halves.len() {
+        for second in first + 1..halves.len() {
+            asked.push(halves[first].iter().chain(halves[second].iter()).copied().collect());
+        }
+    }
+    asked
+}
+
+pub(crate) struct Joined {
+    pub(crate) members: Vec<usize>,
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) audience: String,
+}
+
+pub(crate) fn the_same_among(
+    listed: &[(String, String)],
+    ask: impl Fn(&BTreeMap<String, String>) -> Vec<crate::author::Same> + Sync,
+) -> Vec<Joined> {
+    let mut leader: Vec<usize> = (0..listed.len()).collect();
+    fn found(leader: &mut [usize], at: usize) -> usize {
+        let mut current = at;
+        while leader[current] != current {
+            leader[current] = leader[leader[current]];
+            current = leader[current];
+        }
+        current
+    }
+    let join = |leader: &mut Vec<usize>, first: usize, second: usize| {
+        let (left, right) = (found(leader, first), found(leader, second));
+        if left != right {
+            leader[left.max(right)] = left.min(right);
+        }
+    };
+    let mut first_named: BTreeMap<String, usize> = BTreeMap::new();
+    for (at, (name, _)) in listed.iter().enumerate() {
+        let key = name_key(name);
+        if key.is_empty() {
+            continue;
+        }
+        match first_named.get(&key).copied() {
+            Some(earlier) => join(&mut leader, earlier, at),
+            None => {
+                first_named.insert(key, at);
+            }
+        }
+    }
+    let shown: Vec<usize> = (0..listed.len()).filter(|at| found(&mut leader, *at) == *at).collect();
+    let answers: Vec<(Vec<usize>, Vec<crate::author::Same>)> = asked_together(&shown)
+        .into_par_iter()
+        .filter(|chunk| chunk.len() > 1)
+        .map(|chunk| {
+            let offered: BTreeMap<String, String> = chunk
+                .iter()
+                .map(|at| (format!("c{at}"), format!("{} | {}", listed[*at].0.trim(), in_a_line(&listed[*at].1))))
+                .collect();
+            let said = ask(&offered);
+            (chunk, said)
+        })
+        .collect();
+    let mut named: Vec<(Vec<usize>, String, String, String)> = Vec::new();
+    for (chunk, said) in answers {
+        for same in said {
+            let members: Vec<usize> = same
+                .of
+                .iter()
+                .filter_map(|id| id.trim().strip_prefix('c')?.parse::<usize>().ok())
+                .filter(|at| chunk.contains(at))
+                .collect::<BTreeSet<usize>>()
+                .into_iter()
+                .collect();
+            if members.len() < 2 {
+                continue;
+            }
+            for at in &members[1..] {
+                join(&mut leader, members[0], *at);
+            }
+            named.push((members, same.name.trim().to_string(), same.description.trim().to_string(), same.audience.trim().to_string()));
+        }
+    }
+    let mut components: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for at in 0..listed.len() {
+        let root = found(&mut leader, at);
+        components.entry(root).or_default().push(at);
+    }
+    components
+        .into_values()
+        .filter(|members| members.len() > 1)
+        .map(|members| {
+            let chosen = named
+                .iter()
+                .filter(|(held, name, _, _)| !name.is_empty() && held.iter().all(|at| members.contains(at)))
+                .max_by_key(|(held, _, _, _)| held.len());
+            match chosen {
+                Some((_, name, description, audience)) => Joined {
+                    members,
+                    name: name.clone(),
+                    description: description.clone(),
+                    audience: audience.clone(),
+                },
+                None => Joined { members, name: String::new(), description: String::new(), audience: String::new() },
+            }
+        })
+        .collect()
+}
+
+pub(crate) fn one_of_each(capabilities: &mut Vec<Capability>, said: &str) {
+    if capabilities.len() < 2 {
+        return;
+    }
+    let listed: Vec<(String, String)> = capabilities
+        .iter()
+        .map(|capability| {
+            (capability.name.clone().unwrap_or_default(), capability.description.clone().unwrap_or_default())
+        })
+        .collect();
+    let groups = the_same_among(&listed, |offered| crate::author::same_capability(said, offered));
+    if groups.is_empty() {
+        return;
+    }
+    let mut slots: Vec<Option<Capability>> = std::mem::take(capabilities).into_iter().map(Some).collect();
+    let mut kept: Vec<Capability> = Vec::new();
+    for group in groups {
+        let keeper = group
+            .members
+            .iter()
+            .copied()
+            .max_by_key(|at| (slots[*at].as_ref().map_or(0, |held| held.flows.len()), std::cmp::Reverse(*at)))
+            .unwrap_or(group.members[0]);
+        let Some(mut together) = slots[keeper].take() else { continue };
+        let mut merged_names: Vec<String> = vec![together.name.clone().unwrap_or_default()];
+        for at in &group.members {
+            if let Some(other) = slots[*at].take() {
+                merged_names.push(other.name.clone().unwrap_or_default());
+                crate::comprehend::joined(&mut together, other);
+            }
+        }
+        if !group.name.is_empty() {
+            together.id = format!("capability:{}", carved_name(&group.name));
+            together.name = Some(group.name.clone());
+        }
+        if !group.description.is_empty() {
+            together.description = Some(group.description.clone());
+        }
+        if !group.audience.is_empty() {
+            together.audience = Some(group.audience.to_ascii_lowercase());
+        }
+        eprintln!(
+            "  one of each: {} <- {}",
+            together.name.as_deref().unwrap_or(""),
+            merged_names.join(" | ")
+        );
+        kept.push(together);
+    }
+    kept.extend(slots.into_iter().flatten());
+    let mut unique: Vec<Capability> = Vec::new();
+    for capability in kept {
+        match unique.iter_mut().find(|held| held.id == capability.id) {
+            Some(held) => crate::comprehend::joined(held, capability),
+            None => unique.push(capability),
+        }
+    }
+    unique.sort_by(|left, right| left.id.cmp(&right.id));
+    *capabilities = unique;
+}
+
 #[cfg(test)]
 mod command_family_tests {
     use super::*;
@@ -1467,11 +1675,19 @@ mod command_family_tests {
     }
 
     #[test]
-    fn a_named_command_whose_paths_show_nothing_it_changes_is_eligible_for_plumbing() {
+    fn a_named_command_whose_steps_were_never_read_stays_terminal() {
         let family = Family { key: "asks:replace".to_string(), basis: "the command someone explicitly asked it to run" };
-        let bare = flow("flow:1", "ipc", None, "replace", &[], &[]);
-        assert_eq!(terminality_of(&family, &[&bare]), "proximal");
-        let told = evidence_of(&[&bare], &family, &Fields::new());
+        let unread = flow("flow:1", "ipc", None, "replace", &[], &[]);
+        assert_eq!(terminality_of(&family, &[&unread]), "terminal");
+        assert!(!evidence_of(&[&unread], &family, &Fields::new()).contains(ONLY_PASSES_A_SIGNAL));
+    }
+
+    #[test]
+    fn a_relay_command_carries_the_signal_note_in_its_evidence() {
+        let family = Family { key: "asks:relay:forward".to_string(), basis: "the command someone explicitly asked it to run" };
+        let mut relay = flow("flow:1", "ipc", None, "relay:forward", &[], &[]);
+        relay.steps.push(logical_step("hand_off", Some("channel")));
+        let told = evidence_of(&[&relay], &family, &Fields::new());
         assert!(told.contains("outcome (proximal)") && told.contains(ONLY_PASSES_A_SIGNAL), "{told}");
     }
 
@@ -1662,5 +1878,79 @@ mod command_family_tests {
         let covered: BTreeSet<usize> = clusters.iter().flatten().copied().collect();
         assert_eq!(covered.len(), held.len(), "no member may be dropped when a cluster is split");
         assert!(clusters.iter().all(|cluster| cluster.len() <= FAMILIES_PER_PROPOSAL), "each split cluster must stay bounded: {clusters:?}");
+    }
+}
+
+#[cfg(test)]
+mod one_of_each_tests {
+    use super::*;
+
+    fn listed(names: &[String]) -> Vec<(String, String)> {
+        names.iter().map(|name| (name.clone(), format!("Someone gets {name}."))).collect()
+    }
+
+    fn synonyms_asked(offered: &BTreeMap<String, String>) -> Vec<crate::author::Same> {
+        let links = offered.iter().find(|(_, told)| told.starts_with("Open external links |"));
+        let urls = offered.iter().find(|(_, told)| told.starts_with("Open external URLs |"));
+        match (links, urls) {
+            (Some((first, _)), Some((second, _))) => vec![crate::author::Same {
+                of: vec![first.clone(), second.clone()],
+                name: "Open external links".to_string(),
+                description: "Opens links outside the app.".to_string(),
+                audience: "user".to_string(),
+            }],
+            _ => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_name_key_ignores_case_punctuation_articles_and_plurals() {
+        assert_eq!(name_key("Open External Links."), name_key("open an external link"));
+        assert_eq!(name_key("Manage Categories"), name_key("manage category"));
+        assert_eq!(name_key("Track the process"), name_key("track processes"));
+        assert_ne!(name_key("Sign in"), name_key("Sign out"));
+    }
+
+    #[test]
+    fn the_same_normalized_name_is_merged_without_asking() {
+        let names = vec!["Configure engine environment".to_string(), "Delete a post".to_string(), "configure Engine environments!".to_string()];
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+        let groups = the_same_among(&listed(&names), |offered| {
+            asked.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            assert_eq!(offered.len(), 2, "a name already merged is listed once: {offered:?}");
+            Vec::new()
+        });
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].members, vec![0, 2]);
+    }
+
+    #[test]
+    fn a_synonym_pair_planted_in_different_chunks_comes_out_as_one() {
+        let mut names: Vec<String> = (0..300).map(|at| format!("Distinct capability {at}")).collect();
+        names[5] = "Open external links".to_string();
+        names[280] = "Open external URLs".to_string();
+        let items = listed(&names);
+        assert!(asked_together(&(0..300).collect::<Vec<_>>()).iter().all(|chunk| chunk.len() <= LISTED_AT_ONCE));
+        let groups = the_same_among(&items, synonyms_asked);
+        assert_eq!(groups.len(), 1, "exactly the planted pair merges");
+        assert_eq!(groups[0].members, vec![5, 280]);
+        assert_eq!(groups[0].name, "Open external links");
+    }
+
+    #[test]
+    fn every_pair_is_asked_together_at_least_once() {
+        let shown: Vec<usize> = (0..400).collect();
+        let chunks = asked_together(&shown);
+        for first in (0..400).step_by(37) {
+            for second in (0..400).step_by(41) {
+                assert!(chunks.iter().any(|chunk| chunk.contains(&first) && chunk.contains(&second)), "{first} and {second}");
+            }
+        }
+    }
+
+    #[test]
+    fn different_things_to_do_stay_apart_when_nothing_is_said_the_same() {
+        let names = vec!["Sign in".to_string(), "Sign out".to_string(), "Delete a post".to_string()];
+        assert!(the_same_among(&listed(&names), |_| Vec::new()).is_empty());
     }
 }
