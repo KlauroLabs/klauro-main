@@ -77,6 +77,78 @@ impl Scope {
                 || unit.ships.iter().any(|shipped| shipped == path)
         })
     }
+
+    pub fn ships_file_by_convention(&self, path: &str) -> bool {
+        if self.ships_file(path) {
+            return true;
+        }
+        self.deployables.iter().any(|unit| {
+            let targets = unit.runs.as_deref().map(|runs| join(&unit.root, unquote(runs))).into_iter().chain(unit.ships.iter().cloned());
+            targets.into_iter().any(|target| mirrors_a_built_source(&unit.root, &target, path))
+        })
+    }
+
+    pub fn part_has_shipping_evidence(&self, path: &str) -> bool {
+        self.deployables.iter().any(|unit| {
+            !unit.root.is_empty()
+                && contains(&unit.root, path)
+                && (unit.runs.is_some() || !unit.ships.is_empty())
+        })
+    }
+}
+
+fn looks_like_a_file_argument(token: &str) -> bool {
+    token.contains('/')
+        || token
+            .rsplit_once('.')
+            .is_some_and(|(stem, extension)| !stem.is_empty() && extension.chars().all(|letter| letter.is_ascii_alphanumeric()))
+}
+
+fn program_argument(command: &str) -> Option<String> {
+    let trimmed = command.trim();
+    let tokens: Vec<String> = match trimmed.starts_with('[') {
+        true => trimmed
+            .trim_matches(['[', ']'])
+            .split(',')
+            .map(|part| part.trim().trim_matches(['"', '\'']).to_string())
+            .filter(|part| !part.is_empty())
+            .collect(),
+        false => trimmed.split_whitespace().map(str::to_string).collect(),
+    };
+    tokens
+        .iter()
+        .skip(1)
+        .find(|token| !token.starts_with('-') && looks_like_a_file_argument(token))
+        .or_else(|| tokens.first().filter(|token| looks_like_a_file_argument(token)))
+        .cloned()
+}
+
+static BUILT_INTO_DIRECTORIES: &[&str] = &["build", "dist", "lib", "out"];
+static BUILT_FROM_EXTENSIONS: &[&str] = &["cjs", "js", "jsx", "mjs", "ts", "tsx"];
+
+fn mirrors_a_built_source(root: &str, target: &str, candidate: &str) -> bool {
+    let relative_target = match root.is_empty() {
+        true => target,
+        false => match target.strip_prefix(root).and_then(|rest| rest.strip_prefix('/')) {
+            Some(rest) => rest,
+            None => return false,
+        },
+    };
+    let Some((built_into, built_as)) = relative_target.split_once('/') else { return false };
+    if !BUILT_INTO_DIRECTORIES.contains(&built_into) {
+        return false;
+    }
+    let built_stem = built_as.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(built_as);
+    let relative_candidate = match root.is_empty() {
+        true => candidate,
+        false => match candidate.strip_prefix(root).and_then(|rest| rest.strip_prefix('/')) {
+            Some(rest) => rest,
+            None => return false,
+        },
+    };
+    let Some(source_file) = relative_candidate.strip_prefix("src/") else { return false };
+    let Some((source_stem, source_extension)) = source_file.rsplit_once('.') else { return false };
+    source_stem == built_stem && BUILT_FROM_EXTENSIONS.contains(&source_extension)
 }
 
 struct Candidate {
@@ -191,7 +263,7 @@ fn container(files: &Files, path: &str, context: &str) -> Option<Candidate> {
             .iter()
             .find(|member| CONTAINER_RUNNERS.contains(&member.name.as_str()));
         if let Some(runner) = runner {
-            runs = runner.type_annotation.clone();
+            runs = runner.type_annotation.as_deref().and_then(program_argument);
         }
         for member in members {
             if member.type_annotation.as_deref() == Some("COPY")
@@ -257,7 +329,8 @@ fn compose(files: &Files, path: &str) -> Vec<Candidate> {
                 ships: vec![context],
                 runs: files
                     .child(&service.id, "command")
-                    .and_then(|node| node.type_annotation.clone()),
+                    .and_then(|node| node.type_annotation.as_deref())
+                    .and_then(program_argument),
             })
         })
         .collect()
@@ -564,13 +637,23 @@ fn node_manifest(files: &Files, path: &str) -> Option<Candidate> {
 
     let mut declarations = Vec::new();
     let mut runs = None;
+    let mut ships = Vec::new();
     if let Some(binaries) = document.iter().find(|node| node.name == "bin") {
         declarations.push(Declaration {
             declares: Declares::Run,
             kind: "package-bin",
             at: format!("{path}:{}", binaries.span.line),
         });
-        runs = binaries.type_annotation.clone();
+        match binaries.type_annotation.clone() {
+            Some(single) => runs = Some(single),
+            None => {
+                for named_binary in files.of(&binaries.id).into_iter().flatten() {
+                    if let Some(value) = named_binary.type_annotation.as_deref() {
+                        ships.push(join(&root, unquote(value)));
+                    }
+                }
+            }
+        }
     }
     if let Some(scripts) = document.iter().find(|node| node.name == "scripts")
         && let Some(start) = files.child(&scripts.id, "start")
@@ -580,7 +663,18 @@ fn node_manifest(files: &Files, path: &str) -> Option<Candidate> {
             kind: "start-script",
             at: format!("{path}:{}", start.span.line),
         });
-        runs = runs.or_else(|| start.type_annotation.clone());
+        runs = runs.or_else(|| start.type_annotation.as_deref().and_then(program_argument));
+    }
+    if let Some(binaries) = document.iter().find(|node| node.name == "bin")
+        && let Some(main) = document.iter().find(|node| node.name == "main")
+        && let Some(value) = main.type_annotation.as_deref()
+    {
+        declarations.push(Declaration {
+            declares: Declares::Run,
+            kind: "package-main",
+            at: format!("{path}:{}", binaries.span.line),
+        });
+        ships.push(join(&root, unquote(value)));
     }
     if document.iter().any(|node| node.name == "workspaces") {
         return None;
@@ -590,7 +684,7 @@ fn node_manifest(files: &Files, path: &str) -> Option<Candidate> {
         kind: "package-identity",
         at: path.to_string(),
     });
-    Some(Candidate { name: named, root, declarations, ships: Vec::new(), runs })
+    Some(Candidate { name: named, root, declarations, ships, runs })
 }
 
 fn cargo_manifest(files: &Files, path: &str) -> Option<Candidate> {

@@ -61,7 +61,7 @@ fn in_a_test_directory(path: &str) -> bool {
 
 fn marked_as_a_test_file(path: &str) -> bool {
     let name = basename(path);
-    name.contains(".test.") || name.contains(".spec.")
+    name.contains(".test.") || name.contains(".spec.") || name.contains(".integration.")
 }
 
 fn named_like_a_test_by_convention_alone(path: &str) -> bool {
@@ -112,6 +112,19 @@ pub fn is_not_shipped(path: &str) -> bool {
 
 pub fn is_developer_script(path: &str) -> bool {
     path.starts_with("scripts/") || path.contains("/scripts/")
+}
+
+pub fn is_cargo_build_script(path: &str) -> bool {
+    basename(path) == "build.rs"
+}
+
+pub fn is_cargo_binary_entry(path: &str) -> bool {
+    path == "src/main.rs" || path.ends_with("/src/main.rs") || path.starts_with("src/bin/") || path.contains("/src/bin/")
+}
+
+pub fn is_shipping_evidence_mappable(path: &str) -> bool {
+    let extension = basename(path).rsplit_once('.').map(|(_, extension)| extension.to_ascii_lowercase()).unwrap_or_default();
+    matches!(extension.as_str(), "cjs" | "js" | "jsx" | "mjs" | "mts" | "ts" | "tsx" | "rs")
 }
 
 fn stem_words(stem: &str) -> Vec<String> {

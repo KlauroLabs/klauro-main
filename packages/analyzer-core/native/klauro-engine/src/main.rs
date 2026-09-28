@@ -694,11 +694,24 @@ fn read_it() {
         scope.unassigned_nodes
     );
     index.entry_points.retain(|entry| {
-        entry.kind == "test" || {
-            let path = &paths[entry.file as usize];
-            let needs_shipping_evidence = paths::is_developer_script(path) || paths::is_benchmark_named(path);
-            !needs_shipping_evidence || scope.ships_file(path)
+        if entry.kind == "test" {
+            return true;
         }
+        let path = &paths[entry.file as usize];
+        if entry.kind == "lifecycle" {
+            if paths::is_cargo_build_script(path) {
+                return false;
+            }
+            if !paths::is_cargo_binary_entry(path)
+                && paths::is_shipping_evidence_mappable(path)
+                && scope.part_has_shipping_evidence(path)
+                && !scope.ships_file_by_convention(path)
+            {
+                return false;
+            }
+        }
+        let needs_shipping_evidence = paths::is_developer_script(path) || paths::is_benchmark_named(path);
+        !needs_shipping_evidence || scope.ships_file(path)
     });
     index.scope = Some(scope);
 
