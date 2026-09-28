@@ -6,7 +6,7 @@ use serde::Serialize;
 use crate::model::*;
 use crate::names;
 use crate::resolve::Resolution;
-use crate::paths::is_test;
+use crate::paths::{is_not_shipped, is_test, is_unambiguously_test};
 
 #[derive(Debug, Serialize)]
 pub struct EntryPoint {
@@ -2332,7 +2332,19 @@ pub fn derive(
     exit_points.retain(|_| *keep.next().unwrap_or(&true));
 
     exit_points.sort_by(|left, right| left.id.cmp(&right.id));
-    entry_points.retain(|entry| entry.kind != "http" || !is_test(&files[entry.file as usize]));
+    entry_points.retain(|entry| {
+        if entry.kind == "test" {
+            return true;
+        }
+        let path = &files[entry.file as usize];
+        if is_not_shipped(path) {
+            return false;
+        }
+        match entry.kind {
+            "http" => !is_test(path),
+            _ => !is_unambiguously_test(path),
+        }
+    });
     for entry in entry_points.iter_mut() {
         if entry.kind != "http" {
             continue;

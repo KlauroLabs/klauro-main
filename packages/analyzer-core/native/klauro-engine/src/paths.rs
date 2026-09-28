@@ -55,18 +55,27 @@ pub fn join(root: &str, relative: &str) -> String {
     }
 }
 
-pub fn is_test(path: &str) -> bool {
+fn in_a_test_directory(path: &str) -> bool {
+    path.contains("test/") || path.contains("tests/") || path.contains("spec/") || path.contains("e2e/")
+}
+
+fn marked_as_a_test_file(path: &str) -> bool {
+    let name = basename(path);
+    name.contains(".test.") || name.contains(".spec.")
+}
+
+fn named_like_a_test_by_convention_alone(path: &str) -> bool {
     let name = basename(path);
     let stem = name.split('.').next().unwrap_or(name);
-    path.contains("test/")
-        || path.contains("tests/")
-        || path.contains("spec/")
-        || path.contains("e2e/")
-        || stem.starts_with("test_")
-        || stem.ends_with("_test")
-        || stem.ends_with("_spec")
-        || name.contains(".test.")
-        || name.contains(".spec.")
+    stem.starts_with("test_") || stem.ends_with("_test") || stem.ends_with("_spec")
+}
+
+pub fn is_test(path: &str) -> bool {
+    in_a_test_directory(path) || marked_as_a_test_file(path) || named_like_a_test_by_convention_alone(path)
+}
+
+pub fn is_unambiguously_test(path: &str) -> bool {
+    in_a_test_directory(path) || marked_as_a_test_file(path)
 }
 
 static NOT_PROGRAM_CODE: &[&str] = &["css", "scss", "sass", "less", "html", "htm", "json", "yaml", "yml", "toml", "xml", "md", "svg", "editorconfig", "ini", "cfg", "conf", "env", "properties", "gitignore", "gitattributes", "lock", "csv", "txt"];
@@ -81,6 +90,28 @@ pub fn is_schema_migration(path: &str) -> bool {
 pub fn is_hand_written_code(path: &str) -> bool {
     let extension = basename(path).rsplit_once('.').map(|(_, extension)| extension.to_ascii_lowercase()).unwrap_or_default();
     !is_test(path) && !is_schema_migration(path) && !NOT_PROGRAM_CODE.contains(&extension.as_str())
+}
+
+pub fn is_not_shipped(path: &str) -> bool {
+    static DIRECTORIES: &[&str] = &[
+        "bench/",
+        "benches/",
+        "benchmarks/",
+        "examples/",
+        "example/",
+        "fixtures/",
+        "testdata/",
+        "__tests__/",
+        "__mocks__/",
+        "mocks/",
+    ];
+    DIRECTORIES.iter().any(|directory| {
+        path.starts_with(directory) || path.contains(&format!("/{directory}"))
+    })
+}
+
+pub fn is_developer_script(path: &str) -> bool {
+    path.starts_with("scripts/") || path.contains("/scripts/")
 }
 
 pub fn is_continuous_integration(path: &str) -> bool {
