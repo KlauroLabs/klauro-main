@@ -695,7 +695,8 @@ fn read_it() {
     index.entry_points.retain(|entry| {
         entry.kind == "test" || {
             let path = &paths[entry.file as usize];
-            !paths::is_developer_script(path) || scope.ships_file(path)
+            let needs_shipping_evidence = paths::is_developer_script(path) || paths::is_benchmark_named(path);
+            !needs_shipping_evidence || scope.ships_file(path)
         }
     });
     index.scope = Some(scope);

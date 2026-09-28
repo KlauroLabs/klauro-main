@@ -74,7 +74,7 @@ impl Scope {
             unit.runs
                 .as_deref()
                 .is_some_and(|runs| join(&unit.root, unquote(runs)) == path)
-                || unit.ships.iter().any(|shipped| shipped == path || contains(shipped, path))
+                || unit.ships.iter().any(|shipped| shipped == path)
         })
     }
 }
