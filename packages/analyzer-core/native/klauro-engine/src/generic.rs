@@ -836,6 +836,17 @@ impl<'a> Extractor<'a> {
         self.walk(node, scope);
     }
 
+    fn decorators_within(&self, node: Node, found: &mut Vec<Decorator>) {
+        if self.spec.declares.decorator_kinds.contains(&node.kind()) {
+            found.push(self.decorator(node));
+        } else if self.spec.declares.decorator_container_kinds.contains(&node.kind()) {
+            let mut cursor = node.walk();
+            for entry in node.named_children(&mut cursor) {
+                self.decorators_within(entry, found);
+            }
+        }
+    }
+
     fn decorators_of(&self, node: Node) -> Vec<Decorator> {
         if self.spec.declares.decorator_kinds.is_empty() {
             return Vec::new();
@@ -843,16 +854,7 @@ impl<'a> Extractor<'a> {
         let mut found = Vec::new();
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
-            if self.spec.declares.decorator_kinds.contains(&child.kind()) {
-                found.push(self.decorator(child));
-            } else if self.spec.declares.decorator_container_kinds.contains(&child.kind()) {
-                let mut inner = child.walk();
-                for entry in child.named_children(&mut inner) {
-                    if self.spec.declares.decorator_kinds.contains(&entry.kind()) {
-                        found.push(self.decorator(entry));
-                    }
-                }
-            }
+            self.decorators_within(child, &mut found);
         }
         let mut preceding = node.prev_named_sibling();
         while let Some(written) = preceding.filter(|found| {
@@ -860,16 +862,6 @@ impl<'a> Extractor<'a> {
         }) {
             found.push(self.decorator(written));
             preceding = written.prev_named_sibling();
-        }
-        if let Some(parent) = node.parent()
-            && self.spec.declares.decorator_container_kinds.contains(&parent.kind())
-        {
-            let mut cursor = parent.walk();
-            for entry in parent.named_children(&mut cursor) {
-                if self.spec.declares.decorator_kinds.contains(&entry.kind()) {
-                    found.push(self.decorator(entry));
-                }
-            }
         }
         found
     }

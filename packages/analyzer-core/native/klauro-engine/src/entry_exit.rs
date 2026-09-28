@@ -312,7 +312,13 @@ fn decorator_entry(decorator: &Decorator) -> Option<(&'static str, String, Optio
         return None;
     }
     if matches!(lowered.as_str(), "controller" | "path" | "request" | "route") {
-        return Some(("http", "ANY".to_string(), path));
+        let method = decorator
+            .arguments
+            .iter()
+            .map(|argument| argument.value.trim().trim_matches(['"', '\'']).to_ascii_uppercase())
+            .find(|value| HTTP_METHODS.binary_search(&value.to_ascii_lowercase().as_str()).is_ok())
+            .unwrap_or_else(|| "ANY".to_string());
+        return Some(("http", method, path));
     }
     if verb == "expose" {
         let method = decorator
@@ -1707,7 +1713,7 @@ pub fn derive(
             .decorators
             .iter()
             .any(|decorator| matches!(decorator_entry(decorator), Some(("http", method, _)) if method != "ANY"));
-        for decorator in &node.decorators {
+        for (position, decorator) in node.decorators.iter().enumerate() {
             if has_a_verb && names_its_path(decorator) {
                 continue;
             }
@@ -1743,7 +1749,7 @@ pub fn derive(
                     continue;
                 }
                 entry_points.push(EntryPoint {
-                    id: format!("entry:{}:{}", node.id, decorator.name),
+                    id: format!("entry:{}:{}:{}", node.id, decorator.name, position),
                     kind,
                     name: path.clone().unwrap_or_else(|| node.name.clone()),
                     method: Some(method),
