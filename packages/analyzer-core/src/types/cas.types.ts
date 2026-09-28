@@ -737,6 +737,7 @@ export const ENTRY_POINT_TYPES = [
 
   'graphql',
   'ui',
+  'tool',
 ] as const;
 
 export type CASEntryPointType = typeof ENTRY_POINT_TYPES[number];
@@ -745,6 +746,7 @@ export const ENTRY_POINT_TYPE_REACH = {
   http: 'external', websocket: 'external', cli: 'external', event: 'unknown', schedule: 'internal', page: 'external', route: 'external',
   message: 'unknown', file: 'internal', test: 'internal', lifecycle: 'internal', api: 'external', task: 'internal', pipeline: 'internal',
   'notebook-cell': 'external', train: 'external', interrupt: 'internal', driver: 'internal', ipc: 'external', command: 'external', rpc: 'external', graphql: 'external', ui: 'external',
+  tool: 'external',
 } as const satisfies Record<CASEntryPointType, 'external' | 'internal' | 'unknown'>;
 
 export interface CASEntryPoint {

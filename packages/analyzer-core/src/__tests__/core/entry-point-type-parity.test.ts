@@ -48,7 +48,7 @@ describe('entry-point type parity', () => {
       'http', 'cli', 'websocket', 'message', 'event', 'schedule',
       'page', 'route', 'lifecycle', 'test', 'api', 'file',
       'task', 'pipeline', 'notebook-cell', 'train',
-      'interrupt', 'driver', 'ipc', 'command', 'rpc', 'graphql',
+      'interrupt', 'driver', 'ipc', 'command', 'rpc', 'graphql', 'tool',
     ];
 
     const source: CASContribution = {

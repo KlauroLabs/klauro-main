@@ -599,6 +599,7 @@ fn read_it() {
         &index.type_references,
         &resolution,
         &index.locals,
+        &index.imports,
     );
     let mut derived = derived;
     derived.exit_points.extend(entry_exit::kept_by_the_browser(&index.kept, &paths));

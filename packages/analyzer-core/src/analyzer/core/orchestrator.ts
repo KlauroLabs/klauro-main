@@ -18424,7 +18424,7 @@ export class AnalyzerOrchestrator {
 
   private static readonly BEHAVIOR_FAMILY_MIN_ENTRIES = 4;
   private static readonly BEHAVIOR_SURFACE_MIN_ENTRIES = 12;
-  private static readonly OUTWARD_FACING_BEHAVIOR_KINDS = new Set(['cli', 'ipc', 'command']);
+  private static readonly OUTWARD_FACING_BEHAVIOR_KINDS = new Set(['cli', 'ipc', 'command', 'tool']);
 
   private behaviorEntryModuleArea(ep: CASEntryPoint | undefined, nodesById: Map<string, CASNode>): string | undefined {
     const file = ep?.handler?.file || nodesById.get(ep?.source_node || '')?.source?.file || '';
@@ -18520,7 +18520,7 @@ export class AnalyzerOrchestrator {
     const behaviorEntryTypes = new Set([
       'message', 'websocket', 'ws_handler', 'event', 'cli', 'schedule',
       'scheduled', 'cron', 'rpc', 'ipc', 'command', 'task', 'pipeline', 'train',
-      'queue', 'grpc', 'interrupt', 'driver',
+      'queue', 'grpc', 'interrupt', 'driver', 'tool',
     ]);
 
     interface BehaviorEntry {

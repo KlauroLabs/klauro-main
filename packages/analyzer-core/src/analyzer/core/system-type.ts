@@ -1,6 +1,6 @@
 import { CASEntryPoint, DeployableEvidence } from '../../types/cas.types';
 
-const NETWORK_ENTRY_TYPES = new Set<CASEntryPoint['type']>(['http', 'websocket', 'rpc', 'graphql', 'api']);
+const NETWORK_ENTRY_TYPES = new Set<CASEntryPoint['type']>(['http', 'websocket', 'rpc', 'graphql', 'api', 'tool']);
 const NON_INVOCATION_ENTRY_TYPES = new Set<CASEntryPoint['type']>(['test', 'lifecycle']);
 
 const isIndependentlyDeployable = (evidence: DeployableEvidence): boolean =>

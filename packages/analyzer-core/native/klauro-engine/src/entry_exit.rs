@@ -129,12 +129,54 @@ fn split_label(label: &str) -> (Option<String>, String) {
 
 pub(crate) const DISPATCH_CONST_MARKER: &str = "\u{1}const:";
 
-fn classify_registration(registrar: &str, label: Option<&str>) -> Option<&'static str> {
+static MCP_TOOL_REGISTRARS: &[&str] = &["addtool", "registertool", "tool"];
+
+fn named_by_an_mcp_sdk(specifier: &str) -> bool {
+    let specifier = specifier.trim_start_matches("./").trim_start_matches("node:");
+    specifier == "@modelcontextprotocol/sdk"
+        || specifier.starts_with("@modelcontextprotocol/sdk/")
+        || specifier == "mcp"
+        || specifier.starts_with("mcp.")
+        || specifier == "fastmcp"
+        || specifier.starts_with("fastmcp.")
+        || specifier == "rmcp"
+        || specifier.starts_with("rmcp::")
+        || specifier.contains("mark3labs/mcp-go")
+        || specifier == "ModelContextProtocol"
+        || specifier.starts_with("ModelContextProtocol.")
+}
+
+fn files_that_speak_the_mcp_sdk(imports: &[crate::model::ImportFact]) -> HashSet<u32> {
+    imports
+        .iter()
+        .filter(|import| named_by_an_mcp_sdk(&import.specifier))
+        .map(|import| import.file)
+        .collect()
+}
+
+fn named_by_an_mcp_tool_decorator(decorator: &Decorator) -> bool {
+    let leaf = names::leaf(&decorator.name).to_ascii_lowercase();
+    matches!(leaf.as_str(), "tool" | "mcpservertool" | "call_tool" | "calltool")
+}
+
+fn overridden_by_the_decorator(decorator: &Decorator) -> Option<String> {
+    decorator
+        .arguments
+        .iter()
+        .find(|argument| argument.literal)
+        .map(|argument| argument.value.clone())
+}
+
+fn classify_registration(registrar: &str, label: Option<&str>, speaks_the_mcp_sdk: bool) -> Option<&'static str> {
     match registrar.strip_prefix("dispatch:") {
         Some("ui") => return Some("ui"),
         Some("event") => return Some("event"),
         Some("ipc") => return Some("ipc"),
+        Some("tool") => return Some("tool"),
         _ => {}
+    }
+    if speaks_the_mcp_sdk && MCP_TOOL_REGISTRARS.contains(&names::leaf(registrar).to_ascii_lowercase().as_str()) {
+        return Some("tool");
     }
     let verb = names::leaf(registrar);
     let lowered = verb.to_ascii_lowercase();
@@ -1610,6 +1652,7 @@ pub fn derive(
     type_references: &[TypeReferenceFact],
     resolution: &Resolution,
     locals: &[crate::model::LocalBinding],
+    imports: &[crate::model::ImportFact],
 ) -> Derived {
     let timing = std::env::var("KLAURO_TIME_EXITS").is_ok();
     let started = std::time::Instant::now();
@@ -1638,6 +1681,7 @@ pub fn derive(
             }
         }
     }
+    let mcp_files = files_that_speak_the_mcp_sdk(imports);
     lap("setup");
     let mut entry_points = Vec::new();
     let mounted = mounted_under(calls);
@@ -1672,12 +1716,13 @@ pub fn derive(
     for node in nodes {
         if let Some(registrar) = &node.callback_of {
             let label = node.registration_label.as_deref();
-            if let Some(kind) = classify_registration(registrar, label) {
+            if let Some(kind) = classify_registration(registrar, label, mcp_files.contains(&node.file)) {
                 let verb = names::leaf(registrar);
                 let spoken = match (label, kind) {
                     (_, "schedule") => running_within(node, &named_of)
                         .unwrap_or(registrar.as_str())
                         .to_string(),
+                    (None, "tool") => node.name.clone(),
                     (Some(label), _) => spoken_label(label),
                     (None, _) => registrar.clone(),
                 };
@@ -1720,6 +1765,25 @@ pub fn derive(
             .iter()
             .any(|decorator| matches!(decorator_entry(decorator), Some(("http", method, _)) if method != "ANY"));
         for (position, decorator) in node.decorators.iter().enumerate() {
+            if mcp_files.contains(&node.file)
+                && matches!(node.kind, NodeKind::Function | NodeKind::Method)
+                && named_by_an_mcp_tool_decorator(decorator)
+            {
+                let name = overridden_by_the_decorator(decorator).unwrap_or_else(|| node.name.clone());
+                entry_points.push(EntryPoint {
+                    id: format!("entry:{}:{}:{}", node.id, decorator.name, position),
+                    kind: "tool",
+                    name,
+                    method: None,
+                    path: None,
+                    handler: node.id.clone(),
+                    file: node.file,
+                    line: node.span.line,
+                    guards: Vec::new(),
+                    registrar: decorator.name.clone(),
+                });
+                continue;
+            }
             if has_a_verb && names_its_path(decorator) {
                 continue;
             }
@@ -1954,7 +2018,7 @@ pub fn derive(
             },
             None => std::borrow::Cow::Borrowed(registration.label.as_str()),
         };
-        let Some(kind) = classify_registration(&registration.registrar, Some(&label)) else {
+        let Some(kind) = classify_registration(&registration.registrar, Some(&label), mcp_files.contains(&registration.file)) else {
             continue;
         };
         let leaf = registration
@@ -2438,10 +2502,18 @@ mod tests {
 
     #[test]
     fn a_method_is_a_method_however_the_language_spells_it() {
-        assert_eq!(classify_registration("app.Get", Some("/users")), Some("http"));
-        assert_eq!(classify_registration("app.get", Some("/users")), Some("http"));
-        assert_eq!(classify_registration("e.GET", Some("/users")), Some("http"));
-        assert_eq!(classify_registration("api.MapPost", Some("/items")), Some("http"));
+        assert_eq!(classify_registration("app.Get", Some("/users"), false), Some("http"));
+        assert_eq!(classify_registration("app.get", Some("/users"), false), Some("http"));
+        assert_eq!(classify_registration("e.GET", Some("/users"), false), Some("http"));
+        assert_eq!(classify_registration("api.MapPost", Some("/items"), false), Some("http"));
+    }
+
+    #[test]
+    fn a_bare_tool_verb_is_only_an_mcp_tool_when_the_file_speaks_the_sdk() {
+        assert_eq!(classify_registration("server.tool", Some("find_tests"), false), None);
+        assert_eq!(classify_registration("server.tool", Some("find_tests"), true), Some("tool"));
+        assert_eq!(classify_registration("server.registerTool", Some("find_tests"), true), Some("tool"));
+        assert_eq!(classify_registration("dispatch:tool", Some("find_tests"), false), Some("tool"));
     }
 
     #[test]
