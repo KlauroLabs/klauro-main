@@ -66,8 +66,6 @@ fn a_match_arm_named_by_a_constant_resolves_through_the_constant_to_its_channel_
     let held = entries("dispatch-tauri");
     let ipc: Vec<&(String, String, Option<String>, Option<String>)> =
         held.iter().filter(|(kind, ..)| kind == "ipc").collect();
-    // ch::START / ch::STATE are constants, not literal strings at the match site;
-    // the entry must carry the resolved channel value, never the raw "ch::START" text.
     assert!(!ipc.iter().any(|(_, name, ..)| name.contains("ch::")), "{ipc:?}");
     assert!(ipc.iter().any(|(_, name, ..)| name == "klauro-analysis:start"), "{ipc:?}");
 }
@@ -83,9 +81,6 @@ fn plain_string_comparisons_outside_a_dispatcher_enter_nothing() {
 
 #[test]
 fn a_path_normalizing_helper_reached_by_nothing_external_enters_nothing() {
-    // fn normalize(path: &str) branches on `if path == "." { .. } match path { ".." => .. }`,
-    // which is exactly the shape of a hand-rolled router, but no #[tauri::command],
-    // http listener, or other request-carrying entry ever calls it.
     let index = common::read("dispatch-negative");
     let ipc: Vec<&serde_json::Value> = index["entry_points"]
         .as_array()

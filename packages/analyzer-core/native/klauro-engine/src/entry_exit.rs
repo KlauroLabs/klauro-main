@@ -276,9 +276,6 @@ fn classify_registration(registrar: &str, label: Option<&str>, speaks_the_mcp_sd
 
 pub(crate) const HAND_ROLLED_DISPATCH_REGISTRAR: &str = "dispatch:ipc";
 
-/// A Rust file's own module name: its file stem, unless the file is a
-/// `mod.rs`/`lib.rs`/`main.rs` that only stands in for its containing
-/// directory, in which case the directory names the module instead.
 fn rust_module_of(path: &str) -> &str {
     let mut segments: Vec<&str> = path.split('/').collect();
     let Some(file) = segments.pop() else { return path };
@@ -289,16 +286,6 @@ fn rust_module_of(path: &str) -> &str {
     }
 }
 
-/// Resolve a receiverless call the same way the rest of this module already
-/// resolves a registration's handler (`known` for an exact id, `unique_units`
-/// as a leaf-name fallback) — the general resolver only matches a call's
-/// callee verbatim, so a call written as a qualified path with no `use`
-/// import for it (`crate::x::y(..)`, `mod::func(..)`, the ordinary way Rust
-/// calls a sibling module) is otherwise left unresolved. An unqualified
-/// callee is first looked up in the caller's own file, and a qualified one
-/// by the module its path names, since many sibling dispatcher modules
-/// commonly share the same function name (`dispatch`) — a name so common
-/// that it is rarely globally unique, the one case `unique_units` covers.
 fn called_unit<'a>(
     call: &'a CallFact,
     known: &HashSet<&str>,
@@ -330,14 +317,6 @@ fn called_unit<'a>(
     unique_units.get(names::leaf(&call.callee)).map(String::as_str)
 }
 
-/// A hand-rolled dispatch branch (an `if`/`match` comparing a channel-like
-/// parameter against a literal or resolved constant) is ordinary code unless
-/// its dispatcher function is itself reached, through the call graph, from a
-/// request-carrying entry — a `#[tauri::command]`, an HTTP request listener,
-/// an Electron `ipcMain` handler, and so on. Drop any branch whose enclosing
-/// function the call graph never reaches from one of those entries, so an
-/// unrelated helper comparing a similarly-named string parameter is never
-/// read as a router.
 fn keep_hand_rolled_dispatch_only_when_served(
     entry_points: &mut Vec<EntryPoint>,
     calls: &[CallFact],
@@ -364,9 +343,6 @@ fn keep_hand_rolled_dispatch_only_when_served(
         let Some(target) = called_unit(call, known, unique_units, &by_file_and_name, &by_module_and_name) else { continue };
         calls_from.entry(caller).or_default().push(target);
     }
-    // A closure passed straight into a call (`spawn_blocking(move || dispatch(..))`)
-    // is its own callback node, held to its owner only by containment, never by a
-    // Calls edge — so reaching the owner must also reach every callback it holds.
     let mut children_of: HashMap<&str, Vec<&str>> = HashMap::default();
     for node in nodes {
         if let Some(parent) = node.parent.as_deref() {

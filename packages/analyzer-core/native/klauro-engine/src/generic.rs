@@ -1281,10 +1281,6 @@ impl<'a> Extractor<'a> {
     }
 
     fn dispatch_parameter(&self, node: Node) -> Option<String> {
-        // "channel" is the term IPC dispatch (Tauri, Electron) actually uses; "path"/"route"
-        // are common Rust router-internals parameter names (e.g. axum's `nest`) that compare
-        // against a literal for reasons that have nothing to do with a served entry, and
-        // HTTP path dispatch is already covered by the language-specific mechanism above.
         static DISPATCH_PARAMETER_NAMES: &[&str] = &["channel"];
         let parameters = match self.parameter_list(node) {
             Some(list) => self.parameters_in(list),
