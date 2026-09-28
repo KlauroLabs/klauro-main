@@ -306,12 +306,32 @@ fn sole_type_argument(annotation: &str) -> Option<&str> {
 }
 
 static HOLDERS: &[&str] = &["Lazy", "Provider"];
+static WRAPS_ITS_LAST_ARGUMENT: &[&str] = &[
+    "Arc", "Box", "Cell", "Cow", "Mutex", "MutexGuard", "Option", "Rc", "Ref", "RefCell", "RefMut", "RwLock",
+    "RwLockReadGuard", "RwLockWriteGuard",
+];
+static WRAPS_ITS_FIRST_ARGUMENT: &[&str] = &["Result"];
 const OUTER_TYPES_AT_MOST: usize = 3;
 static HOLDER_ACCESSORS: &[&str] = &["get", "value"];
 static CALLED_AS_A_FUNCTION: &[&str] = &["__call__", "callAsFunction", "invoke"];
 
 fn base_type_name(annotation: &str) -> &str {
-    let annotation = annotation.trim().trim_start_matches(['&', '*']);
+    let mut annotation = annotation.trim();
+    loop {
+        let stripped = annotation.trim_start_matches(['&', '*']).trim_start();
+        if let Some(rest) = stripped.strip_prefix('\'') {
+            annotation = rest.trim_start_matches(|letter: char| letter.is_alphanumeric() || letter == '_').trim_start();
+            continue;
+        }
+        if let Some(rest) = stripped.strip_prefix("mut ") {
+            annotation = rest.trim_start();
+            continue;
+        }
+        if stripped.len() == annotation.len() {
+            break;
+        }
+        annotation = stripped;
+    }
     let end = annotation
         .find(['<', '[', '(', ' ', '|', '?', ';'])
         .unwrap_or(annotation.len());
@@ -319,6 +339,7 @@ fn base_type_name(annotation: &str) -> &str {
     if annotation[end..].starts_with('[') {
         return "Array";
     }
+    let name = name.rsplit("::").next().unwrap_or(name);
     match name {
         "string" => "String",
         "number" => "Number",
@@ -328,6 +349,55 @@ fn base_type_name(annotation: &str) -> &str {
         "object" => "Object",
         other => other,
     }
+}
+
+fn first_type_argument(annotation: &str) -> Option<&str> {
+    let arguments = type_argument_span(annotation)?;
+    top_level_arguments(arguments).into_iter().next()
+}
+
+fn last_type_argument(annotation: &str) -> Option<&str> {
+    let arguments = type_argument_span(annotation)?;
+    top_level_arguments(arguments).into_iter().next_back()
+}
+
+fn type_argument_span(annotation: &str) -> Option<&str> {
+    let open = annotation.find(['<', '['])?;
+    let close = annotation.rfind(['>', ']'])?;
+    (close > open + 1).then(|| annotation[open + 1..close].trim())
+}
+
+fn top_level_arguments(inside: &str) -> Vec<&str> {
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    let mut found = Vec::new();
+    for (at, byte) in inside.char_indices() {
+        match byte {
+            '<' | '[' | '(' => depth += 1,
+            '>' | ']' | ')' => depth -= 1,
+            ',' if depth == 0 => {
+                found.push(inside[start..at].trim());
+                start = at + 1;
+            }
+            _ => {}
+        }
+    }
+    let tail = inside[start..].trim();
+    if !tail.is_empty() {
+        found.push(tail);
+    }
+    found.into_iter().filter(|argument| !argument.is_empty()).collect()
+}
+
+fn wrapped_type_argument(annotation: &str) -> Option<&str> {
+    let base = base_type_name(annotation);
+    if HOLDERS.contains(&base) || WRAPS_ITS_LAST_ARGUMENT.contains(&base) {
+        return last_type_argument(annotation);
+    }
+    if WRAPS_ITS_FIRST_ARGUMENT.contains(&base) {
+        return first_type_argument(annotation);
+    }
+    None
 }
 
 fn qualifier_of(annotation: &str) -> Option<&str> {
@@ -441,9 +511,7 @@ impl<'a> Resolver<'a> {
     }
 
     fn annotated(&self, file: u32, annotation: &'a str) -> Origin<'a> {
-        if HOLDERS.contains(&base_type_name(annotation))
-            && let Some(held) = sole_type_argument(annotation)
-        {
+        if let Some(held) = wrapped_type_argument(annotation) {
             return self.annotated(file, held);
         }
         if let Some(found) = self.named_type(file, annotation) {
@@ -970,6 +1038,32 @@ fn own_module(from: &str) -> String {
         "mod" | "lib" | "main" => folder.to_string(),
         _ => join(folder, stem),
     }
+}
+
+fn qualified_module_target(
+    by_path: &HashMap<&str, u32>,
+    aliases: &crate::alias::Aliases,
+    files: &[String],
+    languages: &[&str],
+    file: u32,
+    name: &str,
+) -> Option<u32> {
+    let _ = languages;
+    let from = files.get(file as usize)?.as_str();
+    if name == "super" {
+        let folder = directory_of(&own_module(from)).to_string();
+        return module_or_owner(by_path, name, &folder);
+    }
+    if let Some(path) = relative_module(from, name) {
+        return module_or_owner(by_path, name, &path);
+    }
+    if name == "crate" || name.starts_with("crate::") {
+        return aliases
+            .expand(from, name)
+            .iter()
+            .find_map(|candidate| module_or_owner(by_path, name, candidate));
+    }
+    None
 }
 
 fn without_suffix(path: &str) -> &str {
@@ -1676,6 +1770,16 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
     lap("before calls");
     let settled_edges = &edges;
     let resolve_call = |fact: &'a CallFact| -> Resolved {
+        let (receiver, callee): (Option<String>, String) = match fact.receiver.clone() {
+            Some(receiver) => (Some(receiver), fact.callee.clone()),
+            None => match fact.callee.rfind("::") {
+                Some(at) if at > 0 && at + 2 < fact.callee.len() && !fact.callee.contains('.') => (
+                    Some(fact.callee[..at].to_string()),
+                    fact.callee[at + 2..].to_string(),
+                ),
+                _ => (None, fact.callee.clone()),
+            },
+        };
         let Some(caller) = fact.caller.as_deref() else {
             return Resolved::NoCaller;
         };
@@ -1688,10 +1792,10 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
             EdgeKind::Calls
         };
 
-        if fact.receiver.is_none() && fact.callee == "import" {
+        if receiver.is_none() && callee == "import" {
             return Resolved::Dynamic;
         }
-        if fact.receiver.is_none() && fact.callee == "super"
+        if receiver.is_none() && callee == "super"
             && let Some(parent) = symbols
                 .owning_type(unit)
                 .and_then(|owner| parent_of(settled_edges, &symbols.nodes[owner as usize].id))
@@ -1703,15 +1807,25 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
                 return Resolved::Edge(symbols.nodes[target as usize].id.clone(), kind);
             }
 
-        let origin = match fact.receiver.as_deref() {
+        let origin = match receiver.as_deref() {
             Some(receiver) => resolver.origin(unit, fact.file, receiver),
-            None => resolver.root(unit, fact.file, &fact.callee),
+            None => resolver.root(unit, fact.file, &callee),
+        };
+        let origin = match (origin, receiver.as_deref()) {
+            (Origin::Unknown, Some(receiver))
+                if index.languages.get(fact.file as usize) == Some(&"rust") =>
+            {
+                qualified_module_target(&by_path, &aliases, index.files, index.languages, fact.file, receiver)
+                    .map(Origin::Module)
+                    .unwrap_or(Origin::Unknown)
+            }
+            (other, _) => other,
         };
 
-        match (origin, fact.receiver.as_deref()) {
+        match (origin, receiver.as_deref()) {
             (Origin::Declared(found), Some(_)) => {
                 let node = &symbols.nodes[found as usize];
-                match inherited(found, &fact.callee) {
+                match inherited(found, &callee) {
                     Some(member) => {
                         let target = match node.kind.is_type() {
                             true => overridden_within(member, found).unwrap_or(member),
@@ -1722,7 +1836,7 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
                     None if node.kind.is_unit() => {
                         return Resolved::Edge(node.id.clone(), kind);
                     }
-                    None if node.kind.is_type() && HOLDER_ACCESSORS.contains(&fact.callee.as_str()) => {
+                    None if node.kind.is_type() && HOLDER_ACCESSORS.contains(&callee.as_str()) => {
                         if let Some(called) = CALLED_AS_A_FUNCTION.iter().find_map(|named| inherited(found, named)) {
                             let target = overridden_within(called, found).unwrap_or(called);
                             return Resolved::Edge(symbols.nodes[target as usize].id.clone(), kind);
@@ -1733,7 +1847,7 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
             }
             (Origin::Declared(found), None) => {
                 let node = &symbols.nodes[found as usize];
-                let through_a_value = node.kind.is_type() && !fact.constructs && node.name != fact.callee;
+                let through_a_value = node.kind.is_type() && !fact.constructs && node.name != callee;
                 if through_a_value
                     && let Some(called) = CALLED_AS_A_FUNCTION.iter().find_map(|named| inherited(found, named))
                 {
@@ -1744,7 +1858,7 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
             }
             (Origin::Module(held), Some(_)) => {
                 if let Some(found) =
-                    symbols.file_scope.get(&(held, fact.callee.as_str())).copied()
+                    symbols.file_scope.get(&(held, callee.as_str())).copied()
                 {
                     return Resolved::Edge(symbols.nodes[found as usize].id.clone(), kind);
                 }
@@ -1755,16 +1869,16 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
             _ => {}
         }
 
-        let member = match fact.receiver.as_deref() {
-            Some(receiver) => format!("{}.{}", last_segment(receiver), fact.callee),
-            None => fact.callee.clone(),
+        let member = match receiver.as_deref() {
+            Some(receiver) => format!("{}.{}", last_segment(receiver), callee),
+            None => callee.clone(),
         };
 
-        if fact.receiver.is_some()
+        if receiver.is_some()
             && let Some(found) = resolver
                 .bindings
                 .imported
-                .get(&(fact.file, fact.callee.as_str()))
+                .get(&(fact.file, callee.as_str()))
                 .copied()
                 .filter(|found| {
                     symbols.nodes[*found as usize]
@@ -1781,49 +1895,49 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
             Origin::Runtime(name) => Some((
                 "runtime",
                 name.to_string(),
-                format!("{name}.{}", fact.callee),
+                format!("{name}.{}", callee),
             )),
-            _ => runtime_member(&fact.callee)
+            _ => runtime_member(&callee)
                 .filter(|entry| {
                     !entry.owner.is_empty()
-                        && !symbols.declared_members.contains(fact.callee.as_str())
+                        && !symbols.declared_members.contains(callee.as_str())
                 })
                 .map(|entry| {
                     (
                         "runtime",
                         entry.owner.to_string(),
-                        format!("{}.{}", entry.owner, fact.callee),
+                        format!("{}.{}", entry.owner, callee),
                     )
                 }),
         };
 
         if let Some((space, owner, member)) = external {
             let origin = (space == "package")
-                .then(|| fact.receiver.as_deref())
+                .then(|| receiver.as_deref())
                 .flatten()
                 .map(|receiver| (caller.to_string(), receiver.to_string()));
             return Resolved::External { space, owner, member, kind, origin };
         }
 
-        if fact.receiver.is_none()
+        if receiver.is_none()
             && let Some(extended) = extended_by(unit)
-            && let Some(member) = inherited(extended, &fact.callee)
+            && let Some(member) = inherited(extended, &callee)
         {
             return Resolved::Edge(symbols.nodes[member as usize].id.clone(), kind);
         }
-        if fact.receiver.is_none()
-            && let Some(found) = symbols.unique_unit.get(fact.callee.as_str()).copied()
+        if receiver.is_none()
+            && let Some(found) = symbols.unique_unit.get(callee.as_str()).copied()
         {
             return Resolved::Edge(symbols.nodes[found as usize].id.clone(), kind);
         }
-        if fact.receiver.is_none()
-            && let Some(found) = symbols.unique_type.get(fact.callee.as_str()).copied()
+        if receiver.is_none()
+            && let Some(found) = symbols.unique_type.get(callee.as_str()).copied()
         {
             let built = symbols.member(found, "constructor").unwrap_or(found);
             return Resolved::Edge(symbols.nodes[built as usize].id.clone(), EdgeKind::Instantiates);
         }
-        if let Some(receiver) = fact.receiver.as_deref()
-            && let Some(found) = symbols.unique_member.get(fact.callee.as_str()).copied()
+        if let Some(receiver) = receiver.as_deref()
+            && let Some(found) = symbols.unique_member.get(callee.as_str()).copied()
         {
             let target = symbols.nodes[found as usize].id.clone();
             let spoken = receiver
@@ -1841,7 +1955,7 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
                 false => Resolved::Guessed(target, kind),
             };
         }
-        if let Some(receiver) = fact.receiver.as_deref() {
+        if let Some(receiver) = receiver.as_deref() {
             let extended = match origin {
                 Origin::Declared(found) if symbols.nodes[found as usize].kind.is_type() => {
                     Some(symbols.nodes[found as usize].name.as_str())
@@ -1851,20 +1965,20 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
             let typed = extended.and_then(|owner| {
                 symbols
                     .extension
-                    .get(&(last_segment(owner), fact.callee.as_str()))
+                    .get(&(last_segment(owner), callee.as_str()))
                     .copied()
             });
             let language = index.languages.get(fact.file as usize).copied().unwrap_or("");
             let imported = resolver
                 .bindings
                 .modules
-                .get(&(fact.file, fact.callee.as_str()))
+                .get(&(fact.file, callee.as_str()))
                 .copied();
             let found = typed.or_else(|| {
-                if imported.is_some() || crate::builtins::is_builtin(language, &fact.callee) {
+                if imported.is_some() || crate::builtins::is_builtin(language, &callee) {
                     return None;
                 }
-                symbols.unique_extension.get(fact.callee.as_str()).copied()
+                symbols.unique_extension.get(callee.as_str()).copied()
             });
             if let Some(found) = found {
                 return Resolved::Edge(symbols.nodes[found as usize].id.clone(), kind);
@@ -1873,7 +1987,7 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
                 return Resolved::External {
                     space: "package",
                     owner: specifier.to_string(),
-                    member: format!("{specifier}.{}", fact.callee),
+                    member: format!("{specifier}.{}", callee),
                     kind,
                     origin: None,
                 };
@@ -1881,17 +1995,17 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         }
 
         let language = index.languages.get(fact.file as usize).copied().unwrap_or("");
-        if fact.receiver.is_none() && crate::builtins::is_builtin(language, &fact.callee) {
+        if receiver.is_none() && crate::builtins::is_builtin(language, &callee) {
             return Resolved::External {
                 space: "runtime",
                 owner: language.to_string(),
-                member: format!("{language}.{}", fact.callee),
+                member: format!("{language}.{}", callee),
                 kind,
                 origin: None,
             };
         }
-        if !crate::builtins::is_builtin(language, &fact.callee)
-            && !declared_anywhere.contains(fact.callee.as_str())
+        if !crate::builtins::is_builtin(language, &callee)
+            && !declared_anywhere.contains(callee.as_str())
             && let Some(specifier) = sole_package.get(&fact.file).copied()
             && !specifier.is_empty()
         {
