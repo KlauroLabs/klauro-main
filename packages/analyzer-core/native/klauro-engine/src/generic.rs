@@ -858,9 +858,11 @@ impl<'a> Extractor<'a> {
         }
         let mut preceding = node.prev_named_sibling();
         while let Some(written) = preceding.filter(|found| {
-            self.spec.declares.decorator_kinds.contains(&found.kind())
+            self.spec.declares.decorator_kinds.contains(&found.kind()) || found.kind().contains("comment")
         }) {
-            found.push(self.decorator(written));
+            if !written.kind().contains("comment") {
+                found.push(self.decorator(written));
+            }
             preceding = written.prev_named_sibling();
         }
         found
