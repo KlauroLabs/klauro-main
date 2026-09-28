@@ -169,6 +169,57 @@ impl<'a> Extractor<'a> {
         }
     }
 
+    fn registers_an_mcp_tool(&mut self, receiver: &Option<String>, callee: &str, children: &[Node]) -> bool {
+        if callee != "AddTool" || children.len() < 2 {
+            return false;
+        }
+        let Some(name) = self.named_by_a_new_tool_call(children[0]) else { return false };
+        let registrar = match receiver {
+            Some(receiver) => format!("{receiver}.{callee}"),
+            None => callee.to_string(),
+        };
+        if let Some(inline) = self.handled_inline(children[1]) {
+            self.labelled.insert(inline.id(), (registrar, name));
+            return true;
+        }
+        for handler in self.referenced_names(children[1], 0) {
+            self.facts.registrations.push(RegistrationFact {
+                file: self.file,
+                registrar: registrar.clone(),
+                label: name.clone(),
+                handler,
+                line: children[1].start_position().row as u32 + 1,
+            });
+        }
+        true
+    }
+
+    fn named_by_a_new_tool_call(&self, node: Node) -> Option<String> {
+        if !node.kind().contains("call") {
+            return None;
+        }
+        let function = node.child_by_field_name("function")?;
+        let member = function
+            .child_by_field_name("field")
+            .or_else(|| function.child_by_field_name("name"))
+            .or_else(|| function.child_by_field_name("property"))
+            .map(|found| self.text(found))
+            .unwrap_or_else(|| self.text(function));
+        if crate::names::leaf(member) != "NewTool" {
+            return None;
+        }
+        let arguments = node.child_by_field_name("arguments").or_else(|| {
+            let mut cursor = node.walk();
+            node.named_children(&mut cursor)
+                .find(|child| child.kind() == "arguments" || child.kind() == "argument_list")
+        })?;
+        let mut cursor = arguments.walk();
+        arguments
+            .named_children(&mut cursor)
+            .find(|argument| argument.kind().contains("string"))
+            .map(|argument| trim_quotes(self.text(argument)).to_string())
+    }
+
     fn mounted_route(&self, node: Node) -> Option<String> {
         let path = self.mounted_path(node)?;
         match self.mounted_method(node) {
@@ -2155,11 +2206,16 @@ impl<'a> Extractor<'a> {
         if let Some(arguments) = arguments {
             let mut cursor = arguments.walk();
             let children: Vec<Node> = arguments.named_children(&mut cursor).map(unwrapped).collect();
-            let nested = self.mounted_route(arguments);
-            let direct = children
-                .iter()
-                .find(|argument| argument.kind().contains("string"))
-                .map(|argument| trim_quotes(self.text(*argument)).to_string());
+            let already_an_mcp_tool = self.registers_an_mcp_tool(&receiver, &callee, &children);
+            let nested = if already_an_mcp_tool { None } else { self.mounted_route(arguments) };
+            let direct = (!already_an_mcp_tool)
+                .then(|| {
+                    children
+                        .iter()
+                        .find(|argument| argument.kind().contains("string"))
+                        .map(|argument| trim_quotes(self.text(*argument)).to_string())
+                })
+                .flatten();
             let label = match direct {
                 Some(path) => Some(match self.mounted_method(arguments) {
                     Some(method) if path.starts_with('/') => format!("{method} {path}"),
