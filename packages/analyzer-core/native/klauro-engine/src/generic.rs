@@ -52,11 +52,39 @@ fn settled(receiver: &str) -> Option<String> {
     }
 }
 
+static PASSES_ITS_VALUE_THROUGH: &[&str] = &[
+    "argument",
+    "await_expression",
+    "expression_list",
+    "parenthesized_expression",
+    "try_expression",
+];
+
 fn unwrapped(node: Node) -> Node {
     match matches!(node.kind(), "argument" | "expression_list") && node.named_child_count() == 1 {
         true => node.named_child(0).unwrap_or(node),
         false => node,
     }
+}
+
+fn unwrapped_for<'t>(node: Node<'t>, language: &str) -> Node<'t> {
+    let mut current = unwrapped(node);
+    if language != "rust" {
+        return current;
+    }
+    for _ in 0..8 {
+        if current.kind() == "reference_expression"
+            && let Some(value) = current.child_by_field_name("value")
+        {
+            current = value;
+            continue;
+        }
+        if !PASSES_ITS_VALUE_THROUGH.contains(&current.kind()) || current.named_child_count() != 1 {
+            break;
+        }
+        current = current.named_child(0).unwrap_or(current);
+    }
+    current
 }
 
 pub struct Extractor<'a> {
@@ -778,6 +806,9 @@ impl<'a> Extractor<'a> {
         }
         if self.spec.id == "rust" && kind == "const_item" {
             self.declare_rust_const(node, scope);
+        }
+        if self.spec.id == "rust" && kind == "mod_item" {
+            self.declare_module_alias(node);
         }
         if self.spec.declares.binding_kinds.contains(&kind) {
             if !self.declare_binding(node, scope) {
@@ -2043,6 +2074,30 @@ impl<'a> Extractor<'a> {
         });
     }
 
+    fn declare_module_alias(&mut self, node: Node) {
+        if node.child_by_field_name("body").is_some() {
+            return;
+        }
+        let Some(name_node) = node.child_by_field_name("name") else { return };
+        let name = self.text(name_node).trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        self.facts.imports.push(ImportFact {
+            file: self.file,
+            specifier: format!("self::{name}"),
+            line: node.start_position().row as u32 + 1,
+            type_only: false,
+            everywhere: false,
+            names: vec![ImportSpecifier {
+                local: name,
+                imported: None,
+                namespace: true,
+                default_import: false,
+            }],
+        });
+    }
+
     fn declare_taken_apart(&mut self, node: Node, scope: &Scope) {
         let Some(value) = node.child_by_field_name(self.spec.declares.binding_value_field) else {
             return;
@@ -2126,7 +2181,7 @@ impl<'a> Extractor<'a> {
                     })
                 })
             })
-            .map(unwrapped);
+            .map(|held| unwrapped_for(held, self.spec.id));
         let written_value = value
             .map(|held| self.text(held).trim())
             .filter(|raw| written_as_text(raw))
@@ -2228,12 +2283,51 @@ impl<'a> Extractor<'a> {
     }
 
     fn called_name(&self, node: Node) -> Option<String> {
-        let function = node
-            .child_by_field_name("function")
-            .or_else(|| node.child_by_field_name("name"))
-            .or_else(|| node.named_child(0))?;
-        let text = base_name(self.text(function)).trim();
-        (!text.is_empty()).then(|| text.to_string())
+        if self.spec.id != "rust" {
+            let function = node
+                .child_by_field_name("function")
+                .or_else(|| node.child_by_field_name("name"))
+                .or_else(|| node.named_child(0))?;
+            let text = base_name(self.text(function)).trim();
+            return (!text.is_empty()).then(|| text.to_string());
+        }
+        let mut current = node;
+        for _ in 0..6 {
+            let function = current
+                .child_by_field_name("function")
+                .or_else(|| current.child_by_field_name("name"))
+                .or_else(|| current.named_child(0))?;
+            let Some(receiver) = self
+                .spec
+                .calls.receiver_fields
+                .iter()
+                .find_map(|field| function.child_by_field_name(field))
+            else {
+                let text = base_name(self.text(function)).trim();
+                return (!text.is_empty()).then(|| text.to_string());
+            };
+            let member = function
+                .child_by_field_name("field")
+                .or_else(|| function.child_by_field_name("name"))
+                .or_else(|| function.child_by_field_name("property"));
+            let member_text = member.map(|found| self.text(found).trim()).unwrap_or_default();
+            if self.spec.calls.kinds.contains(&receiver.kind())
+                && HANDS_BACK_ITS_RECEIVER.contains(&member_text)
+            {
+                current = receiver;
+                continue;
+            }
+            let member_text = base_name(member_text).trim();
+            if member_text.is_empty() {
+                return None;
+            }
+            let root = settled(self.text(receiver).trim()).unwrap_or_default();
+            return Some(match root.is_empty() {
+                true => member_text.to_string(),
+                false => format!("{root}.{member_text}"),
+            });
+        }
+        None
     }
 
     fn mutating_its_own(&mut self, node: Node, scope: &Scope) {
@@ -2666,6 +2760,9 @@ static KEEPS_WHAT_IT_RETURNS: &[&str] = &[
 ];
 static INFERS_ITS_TYPE: &[&str] = &["auto", "dynamic", "let", "val", "var"];
 static CONSTRUCTS_A_VALUE: &[&str] = &["new_expression", "object_creation_expression"];
+static HANDS_BACK_ITS_RECEIVER: &[&str] = &[
+    "as_mut", "as_ref", "borrow", "borrow_mut", "clone", "deref", "expect", "to_owned", "unwrap", "unwrap_or_default",
+];
 static NAMES_A_VARIABLE: &[&str] = &["variable_declarator"];
 
 static INDEXES_A_HOLDER: &[&str] =
