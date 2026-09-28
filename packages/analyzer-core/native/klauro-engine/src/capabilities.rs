@@ -242,10 +242,14 @@ fn only_relays_a_signal(flows: &[&Flow]) -> bool {
         && flows.iter().all(|flow| {
             flow.writes.is_empty()
                 && flow.changes.is_empty()
-                && flow.steps.iter().any(|step| matches!(step.kind, "raise" | "hand_off"))
-                && !flow.steps.iter().any(|step| matches!(step.kind, "change" | "create" | "remove" | "call" | "do"))
+                && flow.reads.is_empty()
+                && flow.reaches.is_empty()
+                && flow.steps.iter().all(|step| matches!(step.kind, "raise" | "hand_off" | "respond"))
         })
 }
+
+const ONLY_PASSES_A_SIGNAL: &str =
+    "; its paths only pass a signal on or hand what arrives to another part, and change, call and keep nothing themselves";
 
 pub(crate) fn terminality_of(family: &Family, flows: &[&Flow]) -> &'static str {
     match family.key.split(':').next().unwrap_or_default() {
@@ -295,7 +299,10 @@ fn evidence_of(flows: &[&Flow], family: &Family, fields: &Fields) -> String {
         "  outcome ({}): {}, which is {}\n  {RECORDS_HOLD} {}\n  entered as: {}\n  reached through: {}{}\n  guarded by: {}\n  what its paths do:\n{}\n  writes: {}\n  reads: {}\n  reaches: {}\n  paths: {}",
         terminality_of(family, flows),
         object,
-        family.basis,
+        match family.key.starts_with("asks:") && only_relays_a_signal(flows) {
+            true => format!("{}{ONLY_PASSES_A_SIGNAL}", family.basis),
+            false => family.basis.to_string(),
+        },
         listed(&kept),
         kinds.join(", "),
         surfaces.join(", "),
@@ -599,45 +606,66 @@ fn could_repeat(held: &[Held], key_of: &BTreeMap<&str, &str>) -> Vec<Vec<usize>>
         }
         current
     }
-    let union = |leader: &mut Vec<usize>, first: usize, second: usize| {
-        let (left, right) = (found(leader, first), found(leader, second));
-        if left != right {
-            leader[right] = left;
-        }
-    };
-    let mut first_with: BTreeMap<String, usize> = BTreeMap::new();
-    for (at, other) in held.iter().enumerate() {
-        let all_asks = !other.families.is_empty()
-            && other.families.iter().all(|family| {
-                key_of.get(family.as_str()).copied().unwrap_or(family.as_str()).starts_with("asks:")
-            });
-        let mut keys: BTreeSet<String> = other
+    let keys_of = |other: &Held| -> BTreeSet<String> {
+        other
             .families
             .iter()
             .map(|family| record_key(key_of.get(family.as_str()).copied().unwrap_or(family.as_str())))
-            .collect();
-        if all_asks {
-            keys.extend(object_nouns(&other.name));
-        }
-        for key in keys {
+            .collect()
+    };
+    let mut first_with: BTreeMap<String, usize> = BTreeMap::new();
+    for (at, other) in held.iter().enumerate() {
+        for key in keys_of(other) {
             match first_with.get(&key).copied() {
-                Some(earlier) => union(&mut leader, earlier, at),
+                Some(earlier) => {
+                    let (left, right) = (found(&mut leader, earlier), found(&mut leader, at));
+                    if left != right {
+                        leader[right] = left;
+                    }
+                }
                 None => {
                     first_with.insert(key, at);
                 }
             }
         }
     }
-    let mut clusters: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    let mut components: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for at in 0..held.len() {
         let root = found(&mut leader, at);
-        clusters.entry(root).or_default().push(at);
+        components.entry(root).or_default().push(at);
     }
+    let asked_by_name = |at: &usize| asks_only_families(&held[*at].families, key_of);
+    let mut clusters: Vec<Vec<usize>> = Vec::new();
+    let mut by_key: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for component in components.into_values() {
+        if !component.iter().all(asked_by_name) {
+            if component.len() > 1 {
+                clusters.push(component);
+            }
+            continue;
+        }
+        for at in component {
+            let mut keys = keys_of(&held[at]);
+            keys.extend(object_nouns(&held[at].name));
+            for key in keys {
+                by_key.entry(key).or_default().push(at);
+            }
+        }
+    }
+    let mut grouped: Vec<Vec<usize>> = Vec::new();
+    let mut groups: Vec<Vec<usize>> = by_key.into_values().filter(|members| members.len() > 1).collect();
+    groups.sort_by_key(|members| std::cmp::Reverse(members.len()));
+    for members in groups {
+        for chunk in members.chunks(FAMILIES_PER_PROPOSAL) {
+            if chunk.len() < 2 || grouped.iter().any(|kept| chunk.iter().all(|at| kept.contains(at))) {
+                continue;
+            }
+            grouped.push(chunk.to_vec());
+        }
+    }
+    grouped.sort();
+    clusters.extend(grouped);
     clusters
-        .into_values()
-        .filter(|cluster| cluster.len() > 1)
-        .flat_map(|cluster| cluster.chunks(FAMILIES_PER_PROPOSAL).map(<[usize]>::to_vec).collect::<Vec<_>>())
-        .collect()
 }
 
 fn asks_only_families(families: &BTreeSet<String>, key_of: &BTreeMap<&str, &str>) -> bool {
@@ -1439,6 +1467,32 @@ mod command_family_tests {
     }
 
     #[test]
+    fn a_named_command_whose_paths_show_nothing_it_changes_is_eligible_for_plumbing() {
+        let family = Family { key: "asks:replace".to_string(), basis: "the command someone explicitly asked it to run" };
+        let bare = flow("flow:1", "ipc", None, "replace", &[], &[]);
+        assert_eq!(terminality_of(&family, &[&bare]), "proximal");
+        let told = evidence_of(&[&bare], &family, &Fields::new());
+        assert!(told.contains("outcome (proximal)") && told.contains(ONLY_PASSES_A_SIGNAL), "{told}");
+    }
+
+    #[test]
+    fn a_named_command_that_reads_what_it_shows_stays_terminal() {
+        let family = Family { key: "asks:usage:get".to_string(), basis: "the command someone explicitly asked it to run" };
+        let shows = flow("flow:1", "ipc", None, "usage:get", &[], &["usage"]);
+        assert_eq!(terminality_of(&family, &[&shows]), "terminal");
+        assert!(!evidence_of(&[&shows], &family, &Fields::new()).contains(ONLY_PASSES_A_SIGNAL));
+    }
+
+    #[test]
+    fn a_route_family_never_carries_the_signal_note() {
+        let family = Family { key: "hands on:close_event".to_string(), basis: "what it hands on to another part" };
+        let mut raised = flow("flow:1", "event", None, "close", &[], &[]);
+        raised.steps.push(logical_step("raise", Some("close_event")));
+        assert_eq!(terminality_of(&family, &[&raised]), "terminal");
+        assert!(!evidence_of(&[&raised], &family, &Fields::new()).contains(ONLY_PASSES_A_SIGNAL));
+    }
+
+    #[test]
     fn a_named_command_that_writes_a_record_stays_terminal() {
         let family = Family { key: "asks:archive:rename".to_string(), basis: "the command someone explicitly asked it to run" };
         let mut renamed = flow("flow:1", "ipc", None, "archive:rename", &["file"], &[]);
@@ -1525,6 +1579,49 @@ mod command_family_tests {
     }
 
     #[test]
+    fn a_widened_cluster_keeps_the_members_that_share_a_noun_together() {
+        let mut key_of: BTreeMap<&str, &str> = BTreeMap::new();
+        let names = ["Manage accounts", "Open files", "Browse files", "Manage subscription accounts", "Label accounts"];
+        let namespaces = ["asks:auth:list", "asks:fs:open", "asks:fs:list", "asks:auth:reorder", "asks:profile:label"];
+        let ids = ["f0", "f1", "f2", "f3", "f4"];
+        for at in 0..names.len() {
+            key_of.insert(ids[at], namespaces[at]);
+        }
+        let held: Vec<Held> = names
+            .iter()
+            .zip(ids)
+            .map(|(name, id)| Held {
+                name: name.to_string(),
+                description: String::new(),
+                audience: String::new(),
+                families: BTreeSet::from([id.to_string()]),
+            })
+            .collect();
+        let clusters = could_repeat(&held, &key_of);
+        assert!(clusters.contains(&vec![0, 3, 4]), "{clusters:?}");
+        assert!(clusters.contains(&vec![1, 2]), "{clusters:?}");
+    }
+
+    #[test]
+    fn non_asks_clusters_keep_their_old_shape() {
+        let mut key_of: BTreeMap<&str, &str> = BTreeMap::new();
+        key_of.insert("f0", "changes:orders");
+        key_of.insert("f1", "shows:order");
+        key_of.insert("f2", "changes:baskets");
+        let held: Vec<Held> = ["Place orders", "Track an order", "Fill a basket"]
+            .iter()
+            .enumerate()
+            .map(|(at, name)| Held {
+                name: name.to_string(),
+                description: String::new(),
+                audience: String::new(),
+                families: BTreeSet::from([format!("f{at}")]),
+            })
+            .collect();
+        assert_eq!(could_repeat(&held, &key_of), vec![vec![0, 1]]);
+    }
+
+    #[test]
     fn namespace_dashes_and_underscores_are_treated_the_same() {
         let mut key_of: BTreeMap<&str, &str> = BTreeMap::new();
         key_of.insert("f0", "asks:chat-session:list");
@@ -1562,8 +1659,8 @@ mod command_family_tests {
             });
         }
         let clusters = could_repeat(&held, &key_of);
-        let total: usize = clusters.iter().map(Vec::len).sum();
-        assert_eq!(total, held.len(), "no member may be dropped when a cluster is split");
+        let covered: BTreeSet<usize> = clusters.iter().flatten().copied().collect();
+        assert_eq!(covered.len(), held.len(), "no member may be dropped when a cluster is split");
         assert!(clusters.iter().all(|cluster| cluster.len() <= FAMILIES_PER_PROPOSAL), "each split cluster must stay bounded: {clusters:?}");
     }
 }
