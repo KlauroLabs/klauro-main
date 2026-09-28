@@ -21,7 +21,7 @@ const NAMED_PER_SPOKEN_CALL: usize = 40;
 
 pub fn reaching_at_once(over_a_network: usize) -> usize {
     match spoken_to().is_some() {
-        true => 12,
+        true => 6,
         false => over_a_network,
     }
 }
