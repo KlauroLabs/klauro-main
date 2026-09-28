@@ -1379,7 +1379,7 @@ pub fn derive(
     type_references: &[crate::model::TypeReferenceFact],
     metrics: &[crate::model::UnitMetricsEntry],
     events: &HashSet<&str>,
-    guessed: &HashSet<(String, String)>,
+    _guessed: &HashSet<(String, String)>,
 ) -> Comprehension {
     let position_of: HashMap<&str, u32> = nodes
         .iter()
@@ -1403,11 +1403,7 @@ pub fn derive(
             continue;
         };
         match edge.kind {
-            EdgeKind::Calls | EdgeKind::Instantiates
-                if !guessed.contains(&(edge.source.clone(), edge.target.clone())) =>
-            {
-                next.entry(source).or_default().push(target)
-            }
+            EdgeKind::Calls | EdgeKind::Instantiates => next.entry(source).or_default().push(target),
             EdgeKind::Contains | EdgeKind::HasMethod => {
                 members.entry(source).or_default().push(target)
             }
