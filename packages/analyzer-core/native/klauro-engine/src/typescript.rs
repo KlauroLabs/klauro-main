@@ -14,6 +14,7 @@ pub struct Extractor<'a> {
     metrics: rustc_hash::FxHashMap<String, UnitMetrics>,
     remembered: rustc_hash::FxHashMap<String, String>,
     placed: Option<Placed>,
+    speaks_the_mcp_sdk: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -29,6 +30,7 @@ struct Scope {
     exported: bool,
     inside_callable: bool,
     context: CallContext,
+    dispatches_mcp_tools: bool,
 }
 
 impl Scope {
@@ -40,6 +42,7 @@ impl Scope {
             exported: false,
             inside_callable: false,
             context: CallContext::default(),
+            dispatches_mcp_tools: false,
         }
     }
 
@@ -50,6 +53,7 @@ impl Scope {
             enclosing_callable: callable.or_else(|| self.enclosing_callable.clone()),
             class_name: self.class_name.clone(),
             exported: false,
+            dispatches_mcp_tools: self.dispatches_mcp_tools,
             context: CallContext {
                 in_try: self.context.in_try,
                 in_catch: self.context.in_catch,
@@ -87,6 +91,7 @@ impl<'a> Extractor<'a> {
             metrics: rustc_hash::FxHashMap::default(),
             remembered: rustc_hash::FxHashMap::default(),
             placed: None,
+            speaks_the_mcp_sdk: false,
         }
     }
 
@@ -281,6 +286,12 @@ impl<'a> Extractor<'a> {
                 if node.kind() == "if_statement" && self.routed_branch(node, scope) {
                     return;
                 }
+                if node.kind() == "switch_statement"
+                    && scope.dispatches_mcp_tools
+                    && self.mcp_tool_switch(node, scope)
+                {
+                    return;
+                }
                 let mut inner = scope.child(None, None);
                 inner.context.conditional_depth = scope.context.conditional_depth + 1;
                 inner.enclosing_callable = scope.enclosing_callable.clone();
@@ -311,6 +322,58 @@ impl<'a> Extractor<'a> {
             }
             _ => self.walk(node, scope),
         }
+    }
+
+    fn mcp_tool_switch(&mut self, node: Node, scope: &Scope) -> bool {
+        let Some(value) = node.child_by_field_name("value") else { return false };
+        let discriminant = value.named_child(0).unwrap_or(value);
+        let written = self.text(discriminant);
+        if !written.rsplit(['.', '?']).next().is_some_and(|last| last == "name") {
+            return false;
+        }
+        let Some(body) = node.child_by_field_name("body") else { return false };
+        let mut matched = false;
+        let mut cases = body.walk();
+        for case in body.named_children(&mut cases) {
+            if case.kind() != "switch_case" {
+                continue;
+            }
+            let Some(case_value) = case.child_by_field_name("value") else { continue };
+            if case_value.kind() != "string" {
+                continue;
+            }
+            let label = trim_quotes(self.text(case_value)).to_string();
+            matched = true;
+            let name = format!("tool.{label}");
+            let id = self.id("callback", &name, case);
+            let holder = scope.enclosing_callable.clone().or_else(|| scope.owner.clone());
+            self.facts.nodes.push(IndexNode {
+                id: id.clone(),
+                name,
+                kind: NodeKind::Function,
+                file: self.file,
+                span: span_of(case),
+                parent: holder.clone(),
+                signature: None,
+                modifiers: Modifiers::default(),
+                decorators: Vec::new(),
+                type_annotation: None,
+                documentation: None,
+                project: None,
+                callback_of: Some("dispatch:tool".to_string()),
+                registration_label: Some(label),
+            });
+            if let Some(owner) = holder.as_deref() {
+                self.push_edge(owner, &id, EdgeKind::Contains);
+            }
+            let mut inner = scope.child(Some(id.clone()), Some(id));
+            inner.dispatches_mcp_tools = false;
+            let mut statements = case.walk();
+            for statement in case.children_by_field_name("body", &mut statements) {
+                self.visit(statement, &inner);
+            }
+        }
+        matched
     }
 
     fn routed_branch(&mut self, node: Node, scope: &Scope) -> bool {
@@ -375,6 +438,9 @@ impl<'a> Extractor<'a> {
             return;
         };
         let specifier = trim_quotes(self.text(source)).to_string();
+        if specifier == "@modelcontextprotocol/sdk" || specifier.starts_with("@modelcontextprotocol/sdk/") {
+            self.speaks_the_mcp_sdk = true;
+        }
         let mut names = Vec::new();
         let type_only = self
             .text(node)
@@ -1354,7 +1420,10 @@ impl<'a> Extractor<'a> {
                 Some(receiver) => format!("{receiver}.{callee}"),
                 None => callee.clone(),
             };
-            self.callback_arguments(arguments, scope, &registrar);
+            let dispatches_mcp_tools = self.speaks_the_mcp_sdk
+                && callee == "setRequestHandler"
+                && self.text(arguments).contains("CallToolRequestSchema");
+            self.callback_arguments(arguments, scope, &registrar, dispatches_mcp_tools);
             let mut cursor = arguments.walk();
             for argument in arguments.named_children(&mut cursor) {
                 if !matches!(argument.kind(), "arrow_function" | "function_expression" | "function") {
@@ -1402,18 +1471,28 @@ impl<'a> Extractor<'a> {
         Some(trim_quotes(self.text(named)).to_string())
     }
 
-    fn callback_arguments(&mut self, arguments: Node, scope: &Scope, callee: &str) {
+    fn callback_arguments(&mut self, arguments: Node, scope: &Scope, callee: &str, dispatches_mcp_tools: bool) {
         let mut cursor = arguments.walk();
         let children: Vec<Node> = arguments.named_children(&mut cursor).collect();
-        let label = children
-            .iter()
-            .find(|argument| argument.kind() == "string")
+        let named_by_a_literal = children.iter().find(|argument| argument.kind() == "string");
+        let registered_as_an_mcp_tool = self.speaks_the_mcp_sdk
+            && matches!(crate::names::leaf(callee).to_ascii_lowercase().as_str(), "tool" | "registertool");
+        let named_by_a_remembered_constant = (named_by_a_literal.is_none() && registered_as_an_mcp_tool).then(|| {
+            children
+                .iter()
+                .find(|argument| argument.kind() == "identifier" && self.remembered.contains_key(self.text(**argument)))
+        }).flatten();
+        let label = named_by_a_literal
             .map(|argument| trim_quotes(self.text(*argument)).to_string())
+            .or_else(|| named_by_a_remembered_constant.and_then(|argument| self.remembered.get(self.text(*argument)).cloned()))
             .or_else(|| self.property_holding(arguments));
+        let label_argument_id = named_by_a_literal.or(named_by_a_remembered_constant).map(|argument| argument.id());
 
         if let Some(label) = label.as_deref() {
             for argument in children.iter() {
-                if !matches!(argument.kind(), "identifier" | "member_expression") {
+                if !matches!(argument.kind(), "identifier" | "member_expression")
+                    || Some(argument.id()) == label_argument_id
+                {
                     continue;
                 }
                 self.facts.registrations.push(RegistrationFact {
@@ -1459,7 +1538,8 @@ impl<'a> Extractor<'a> {
                 self.push_edge(&owner, &id, EdgeKind::Contains);
             }
 
-            let inner = scope.child(Some(id.clone()), Some(id));
+            let mut inner = scope.child(Some(id.clone()), Some(id));
+            inner.dispatches_mcp_tools = dispatches_mcp_tools;
             if let Some(body) = argument.child_by_field_name("body") {
                 self.visit(body, &inner);
             }
