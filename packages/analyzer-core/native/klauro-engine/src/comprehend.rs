@@ -1078,6 +1078,37 @@ fn addressed_by_version(segment: &str) -> bool {
         || (segment.starts_with('v') && segment[1..].chars().all(|letter| letter.is_ascii_digit()))
 }
 
+static BUILTIN_TYPE_NAMES: &[&str] = &[
+    "Array", "BigInt", "Boolean", "Bytes", "Dict", "Hash", "List", "Map", "Number", "Object", "Record", "Set",
+    "String", "Symbol", "Tuple", "Vec", "array", "bool", "boolean", "bytes", "dict", "double", "float", "int",
+    "list", "map", "number", "object", "set", "str", "string", "tuple", "vec",
+];
+
+fn guessed_callee_is_hand_written(
+    caller: &str,
+    callee: &str,
+    receiver_of: &HashMap<(&str, &str), &str>,
+    declared_as: &HashMap<(&str, &str), &str>,
+) -> bool {
+    let named = crate::names::leaf(callee);
+    if crate::resolve::is_runtime_member(named) {
+        return false;
+    }
+    let Some(receiver) = receiver_of.get(&(caller, named)).copied() else {
+        return true;
+    };
+    let receiver = receiver.trim();
+    if receiver.starts_with(['"', '\'', '`', '[', '{']) {
+        return false;
+    }
+    let Some(annotation) = declared_as.get(&(caller, crate::names::root(receiver))).copied() else {
+        return true;
+    };
+    let bare = annotation.trim_start_matches(['&', '*', ' ']);
+    let bare = bare.split(['<', '[']).next().unwrap_or(bare);
+    let bare = bare.rsplit(['.', ':']).next().unwrap_or(bare).trim();
+    !BUILTIN_TYPE_NAMES.contains(&bare)
+}
 
 pub fn author(
     held: &mut Comprehension,
@@ -1393,6 +1424,20 @@ pub fn derive(
         }
         played.entry(held.source.as_str()).or_insert(held.name.as_str());
     }
+    let mut guessed_receiver: HashMap<(&str, &str), &str> = HashMap::default();
+    for call in calls {
+        let (Some(caller), Some(receiver)) = (call.caller.as_deref(), call.receiver.as_deref()) else {
+            continue;
+        };
+        guessed_receiver.entry((caller, crate::names::leaf(&call.callee))).or_insert(receiver);
+    }
+    let mut declared_as: HashMap<(&str, &str), &str> = HashMap::default();
+    for node in nodes {
+        let (Some(parent), Some(annotation)) = (node.parent.as_deref(), node.type_annotation.as_deref()) else {
+            continue;
+        };
+        declared_as.entry((parent, node.name.as_str())).or_insert(annotation);
+    }
     let mut next: HashMap<u32, Vec<u32>> = HashMap::default();
     let mut members: HashMap<u32, Vec<u32>> = HashMap::default();
     for edge in edges {
@@ -1403,10 +1448,17 @@ pub fn derive(
             continue;
         };
         match edge.kind {
-            EdgeKind::Calls | EdgeKind::Instantiates
-                if !guessed.contains(&(edge.source.clone(), edge.target.clone())) =>
-            {
-                next.entry(source).or_default().push(target)
+            EdgeKind::Calls | EdgeKind::Instantiates => {
+                let trusted = !guessed.contains(&(edge.source.clone(), edge.target.clone()))
+                    || guessed_callee_is_hand_written(
+                        edge.source.as_str(),
+                        nodes[target as usize].name.as_str(),
+                        &guessed_receiver,
+                        &declared_as,
+                    );
+                if trusted {
+                    next.entry(source).or_default().push(target);
+                }
             }
             EdgeKind::Contains | EdgeKind::HasMethod => {
                 members.entry(source).or_default().push(target)

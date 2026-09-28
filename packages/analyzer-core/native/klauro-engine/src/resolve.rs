@@ -284,6 +284,10 @@ fn runtime_member(name: &str) -> Option<&'static RuntimeMember> {
         .map(|at| &RUNTIME_MEMBERS[at])
 }
 
+pub(crate) fn is_runtime_member(name: &str) -> bool {
+    runtime_member(name).is_some()
+}
+
 fn sole_type_argument(annotation: &str) -> Option<&str> {
     let open = annotation.find(['<', '['])?;
     let close = annotation.rfind(['>', ']'])?;
