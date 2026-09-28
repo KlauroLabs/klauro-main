@@ -1918,6 +1918,40 @@ impl<'a> Extractor<'a> {
         None
     }
 
+    fn declare_dispatch_arm(&mut self, handler: &str, label: &str, site: Node, body: Node) -> String {
+        let name = format!("{label}#{}", site.start_position().row + 1);
+        let id = self.id("callback", &name, body);
+        self.facts.nodes.push(IndexNode {
+            id: id.clone(),
+            name,
+            kind: NodeKind::Function,
+            file: self.file,
+            span: span_of(body),
+            parent: Some(handler.to_string()),
+            signature: None,
+            modifiers: Modifiers::default(),
+            decorators: Vec::new(),
+            type_annotation: None,
+            documentation: None,
+            project: None,
+            callback_of: None,
+            registration_label: None,
+        });
+        self.facts.edges.push(IndexEdge {
+            source: handler.to_string(),
+            target: id.clone(),
+            kind: EdgeKind::Contains,
+        });
+        self.facts.registrations.push(RegistrationFact {
+            file: self.file,
+            registrar: crate::entry_exit::HAND_ROLLED_DISPATCH_REGISTRAR.to_string(),
+            label: label.to_string(),
+            handler: id.clone(),
+            line: site.start_position().row as u32 + 1,
+        });
+        id
+    }
+
     fn declare_channel_dispatch_match(&mut self, node: Node, scope: &Scope) {
         let Some(handler) = scope.callable.clone().or_else(|| scope.owner.clone()) else {
             return;
@@ -1930,16 +1964,41 @@ impl<'a> Extractor<'a> {
                     pending.push(child);
                     continue;
                 };
+                let Some(value) = child.child_by_field_name("value") else { continue };
                 let Some(label) = self.first_channel_literal(pattern) else { continue };
-                self.facts.registrations.push(RegistrationFact {
-                    file: self.file,
-                    registrar: crate::entry_exit::HAND_ROLLED_DISPATCH_REGISTRAR.to_string(),
-                    label,
-                    handler: handler.clone(),
-                    line: child.start_position().row as u32 + 1,
-                });
+                let id = self.declare_dispatch_arm(&handler, &label, child, value);
+                let mut inner = scope.clone();
+                inner.callable = Some(id.clone());
+                inner.owner = Some(id);
+                inner.registrar = None;
+                self.visit(value, &inner);
             }
         }
+    }
+
+    fn channel_dispatch_condition<'t>(&self, condition: Node<'t>, dispatch_param: &str) -> Option<(Node<'t>, String)> {
+        let mut pending: Vec<Node> = vec![condition];
+        while let Some(held) = pending.pop() {
+            if held.kind() == "binary_expression"
+                && held.child_by_field_name("operator").is_some_and(|operator| self.text(operator) == "==")
+                && let (Some(left), Some(right)) = (held.child_by_field_name("left"), held.child_by_field_name("right"))
+            {
+                let named_by = |candidate: Node| self.text(candidate).trim() == dispatch_param;
+                let literal = if named_by(left) {
+                    Some(right)
+                } else if named_by(right) {
+                    Some(left)
+                } else {
+                    None
+                };
+                if let Some(label) = literal.and_then(|held| self.channel_literal(held)) {
+                    return Some((held, label));
+                }
+            }
+            let mut cursor = held.walk();
+            pending.extend(held.named_children(&mut cursor));
+        }
+        None
     }
 
     fn declare_channel_dispatch_if(&mut self, node: Node, scope: &Scope) {
@@ -1948,40 +2007,16 @@ impl<'a> Extractor<'a> {
             return;
         };
         let Some(condition) = node.child_by_field_name("condition") else { return };
-        let mut pending: Vec<Node> = vec![condition];
-        while let Some(held) = pending.pop() {
-            if held.kind() == "binary_expression" {
-                let operator = held
-                    .child_by_field_name("operator")
-                    .map(|operator| self.text(operator))
-                    .unwrap_or_default();
-                if operator == "==" {
-                    if let (Some(left), Some(right)) =
-                        (held.child_by_field_name("left"), held.child_by_field_name("right"))
-                    {
-                        let named_by = |candidate: Node| self.text(candidate).trim() == dispatch_param;
-                        let literal = if named_by(left) {
-                            Some(right)
-                        } else if named_by(right) {
-                            Some(left)
-                        } else {
-                            None
-                        };
-                        if let Some(label) = literal.and_then(|held| self.channel_literal(held)) {
-                            self.facts.registrations.push(RegistrationFact {
-                                file: self.file,
-                                registrar: crate::entry_exit::HAND_ROLLED_DISPATCH_REGISTRAR.to_string(),
-                                label,
-                                handler: handler.clone(),
-                                line: held.start_position().row as u32 + 1,
-                            });
-                        }
-                    }
-                }
-            }
-            let mut cursor = held.walk();
-            pending.extend(held.named_children(&mut cursor));
-        }
+        let Some(consequence) = node.child_by_field_name("consequence") else { return };
+        let Some((site, label)) = self.channel_dispatch_condition(condition, dispatch_param) else {
+            return;
+        };
+        let id = self.declare_dispatch_arm(&handler, &label, site, consequence);
+        let mut inner = scope.clone();
+        inner.callable = Some(id.clone());
+        inner.owner = Some(id);
+        inner.registrar = None;
+        self.visit(consequence, &inner);
     }
 
     fn declare_rust_const(&mut self, node: Node, scope: &Scope) {

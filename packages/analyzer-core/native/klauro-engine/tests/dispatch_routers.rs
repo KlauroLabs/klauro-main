@@ -79,6 +79,54 @@ fn plain_string_comparisons_outside_a_dispatcher_enter_nothing() {
     );
 }
 
+fn ipc_handler<'a>(index: &'a serde_json::Value, channel: &str) -> &'a str {
+    index["entry_points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["kind"] == "ipc" && entry["name"] == channel)
+        .unwrap_or_else(|| panic!("no ipc entry named {channel}"))["handler"]
+        .as_str()
+        .unwrap()
+}
+
+fn callees_from<'a>(index: &'a serde_json::Value, caller: &str) -> Vec<&'a str> {
+    index["calls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|call| call["caller"] == caller)
+        .filter_map(|call| call["callee"].as_str())
+        .collect()
+}
+
+#[test]
+fn two_channels_of_one_dispatcher_each_start_at_only_their_own_arm() {
+    let index = common::read("dispatch-tauri");
+    let start_handler = ipc_handler(&index, "klauro-analysis:start");
+    let state_handler = ipc_handler(&index, "klauro-analysis:state");
+    let dispatch_function = index["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| {
+            node["name"] == "dispatch" && node["id"].as_str().unwrap_or_default().contains("klauro_analysis.rs")
+        })
+        .map(|node| node["id"].as_str().unwrap().to_string())
+        .expect("klauro_analysis.rs declares its own dispatch function");
+
+    assert_ne!(start_handler, state_handler, "two different channels of one dispatcher must not share a flow start unit");
+    assert_ne!(start_handler, dispatch_function, "a channel's flow must start at its own arm, not the whole dispatcher");
+    assert_ne!(state_handler, dispatch_function, "a channel's flow must start at its own arm, not the whole dispatcher");
+
+    let start_calls = callees_from(&index, start_handler);
+    let state_calls = callees_from(&index, state_handler);
+    assert!(start_calls.iter().any(|held| *held == "start_analysis"), "{start_calls:?}");
+    assert!(!start_calls.iter().any(|held| *held == "analysis_state"), "{start_calls:?}");
+    assert!(state_calls.iter().any(|held| *held == "analysis_state"), "{state_calls:?}");
+    assert!(!state_calls.iter().any(|held| *held == "start_analysis"), "{state_calls:?}");
+}
+
 #[test]
 fn a_path_normalizing_helper_reached_by_nothing_external_enters_nothing() {
     let index = common::read("dispatch-negative");
