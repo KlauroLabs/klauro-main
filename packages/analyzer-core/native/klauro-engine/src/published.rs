@@ -99,9 +99,7 @@ pub fn published(
         .deployables
         .iter()
         .filter(|unit| {
-            unit.category == "library"
-                && unit.runs.is_none()
-                && (unit.bundled_into.is_none() || unit.offered_to_others)
+            unit.category == "library" && unit.runs.is_none() && unit.offered_to_others
         })
         .map(|unit| Publishes { root: unit.root.as_str() })
         .collect();

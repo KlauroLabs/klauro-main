@@ -267,8 +267,51 @@ static MODULE_MANIFESTS: &[&str] = &[
     "setup.py",
 ];
 
-static A_REGISTRY_ASKS_FOR: &[(&str, &[&[&str]])] =
-    &[("Cargo.toml", &[&["description"], &["license", "license-file"]])];
+static A_REGISTRY_ASKS_FOR: &[(&str, &[&[&str]])] = &[
+    ("Cargo.toml", &[&["description"], &["license", "license-file"]]),
+    ("package.json", &[&["name"], &["main", "module", "exports", "types", "typings"]]),
+];
+
+static KEPT_ON_THE_DEVICE: &[&str] = &[
+    "vite", "react-scripts", "react-native", "@tauri-apps/cli", "@tauri-apps/api",
+    "electron", "electron-builder", "expo", "@expo/cli",
+];
+
+static KEPT_ON_THE_DEVICE_CONFIGS: &[&str] =
+    &["vite.config", "next.config", "tauri.conf.json", "capacitor.config"];
+
+fn dependency_names(files: &Files, manifest: &str) -> Vec<String> {
+    let mut named = Vec::new();
+    for section in files.descendants(manifest) {
+        if section.kind != NodeKind::Class {
+            continue;
+        }
+        let leaf = section.name.rsplit('.').next().unwrap_or(section.name.as_str());
+        if leaf != "dependencies" && leaf != "devDependencies" {
+            continue;
+        }
+        if let Some(members) = files.of(&section.id) {
+            named.extend(members.iter().map(|member| member.name.clone()));
+        }
+    }
+    named
+}
+
+fn kept_on_the_device(files: &Files, manifest: &str) -> bool {
+    let root = directory_of(manifest);
+    if dependency_names(files, manifest)
+        .iter()
+        .any(|dep| KEPT_ON_THE_DEVICE.contains(&dep.as_str()))
+    {
+        return true;
+    }
+    files.paths.iter().any(|path| {
+        directory_of(path) == root
+            && KEPT_ON_THE_DEVICE_CONFIGS
+                .iter()
+                .any(|prefix| path.rsplit('/').next().unwrap_or(path).starts_with(prefix))
+    })
+}
 
 fn ready_to_be_published(files: &Files, manifest: &str) -> bool {
     let within: Vec<&IndexNode> = files
@@ -297,10 +340,14 @@ fn ready_to_be_published(files: &Files, manifest: &str) -> bool {
         })
     };
     let basename = manifest.rsplit('/').next().unwrap_or(manifest);
-    A_REGISTRY_ASKS_FOR
+    let asked_for = A_REGISTRY_ASKS_FOR
         .iter()
         .find(|(named, _)| *named == basename)
-        .is_none_or(|(_, asked)| asked.iter().all(|any_of| any_of.iter().any(|key| carries(key))))
+        .is_none_or(|(_, asked)| asked.iter().all(|any_of| any_of.iter().any(|key| carries(key))));
+    if !asked_for {
+        return false;
+    }
+    basename != "package.json" || !kept_on_the_device(files, manifest)
 }
 
 fn names_a_package(files: &Files, path: &str, basename: &str) -> bool {
