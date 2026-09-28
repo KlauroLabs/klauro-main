@@ -1,3 +1,4 @@
+import { AUTHOR_RELAY_ROUTE, relayAuthorAsk } from './author-relay';
 import { engineArtifactPath, engineReleaseAsked } from './engine-release-routes';
 import * as crypto from 'node:crypto';
 import * as http from 'node:http';
@@ -371,6 +372,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           });
           return;
         }
+        if (request.method === 'POST' && route === AUTHOR_RELAY_ROUTE) return relayAuthorAsk(request, response, apiAuthorization.userId);
         const accountResult = await handleAccountApi(accounts, apiAuthorization.userId, route, request, maxBodyBytes, apiAuthorization.sharedToken, dataDir, workspaceAnalyses);
         if (accountResult.stream) {
           response.writeHead(accountResult.statusCode, accountResult.stream.headers);
