@@ -85,6 +85,7 @@ struct Scope {
     conditional_depth: u16,
     loop_depth: u16,
     awaited: bool,
+    dispatch_param: Option<String>,
 }
 
 fn span_of(node: Node) -> Span {
@@ -586,6 +587,7 @@ impl<'a> Extractor<'a> {
             conditional_depth: 0,
             loop_depth: 0,
             awaited: false,
+            dispatch_param: None,
         };
         self.walk(root, &scope);
 
@@ -716,6 +718,15 @@ impl<'a> Extractor<'a> {
         if crate::language::taken_apart_kinds(self.spec.id).contains(&kind) {
             self.declare_taken_apart(node, scope);
             self.declare_routed_by_hand(node, scope);
+            if scope.dispatch_param.is_some() {
+                self.declare_channel_dispatch_match(node, scope);
+            }
+        }
+        if self.spec.id == "rust" && kind == "if_expression" && scope.dispatch_param.is_some() {
+            self.declare_channel_dispatch_if(node, scope);
+        }
+        if self.spec.id == "rust" && kind == "const_item" {
+            self.declare_rust_const(node, scope);
         }
         if self.spec.declares.binding_kinds.contains(&kind) {
             if !self.declare_binding(node, scope) {
@@ -1214,7 +1225,27 @@ impl<'a> Extractor<'a> {
         inner.owner = Some(id.clone());
         inner.callable = Some(id);
         inner.type_owner = None;
+        inner.dispatch_param = (self.spec.id == "rust").then(|| self.dispatch_parameter(node)).flatten();
         self.walk(node, &inner);
+    }
+
+    fn dispatch_parameter(&self, node: Node) -> Option<String> {
+        static DISPATCH_PARAMETER_NAMES: &[&str] = &["channel", "path", "pathname", "route"];
+        let parameters = match self.parameter_list(node) {
+            Some(list) => self.parameters_in(list),
+            None => return None,
+        };
+        parameters.into_iter().find_map(|parameter| {
+            let name = parameter.name.trim().to_string();
+            if !DISPATCH_PARAMETER_NAMES.contains(&name.as_str()) {
+                return None;
+            }
+            parameter
+                .type_annotation
+                .as_deref()
+                .is_some_and(|held| held.to_ascii_lowercase().contains("str"))
+                .then_some(name)
+        })
     }
 
     fn literals_of<'t>(&self, arguments: impl Iterator<Item = Node<'t>>) -> Vec<String> {
@@ -1803,6 +1834,127 @@ impl<'a> Extractor<'a> {
                 });
             }
         }
+    }
+
+    fn channel_literal(&self, pattern: Node) -> Option<String> {
+        if pattern.kind().contains("string") {
+            let value = trim_quotes(self.text(pattern)).trim().to_string();
+            return (!value.is_empty()).then_some(value);
+        }
+        if matches!(pattern.kind(), "identifier" | "scoped_identifier") {
+            let text = self.text(pattern).trim();
+            let leaf = text.rsplit("::").next().unwrap_or(text).trim();
+            let shouted = !leaf.is_empty()
+                && leaf.chars().any(|held| held.is_alphabetic())
+                && leaf
+                    .chars()
+                    .all(|held| held.is_ascii_uppercase() || held == '_' || held.is_ascii_digit());
+            return shouted.then(|| format!("{}{leaf}", crate::entry_exit::DISPATCH_CONST_MARKER));
+        }
+        None
+    }
+
+    fn first_channel_literal(&self, node: Node) -> Option<String> {
+        if let Some(value) = self.channel_literal(node) {
+            return Some(value);
+        }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if let Some(value) = self.first_channel_literal(child) {
+                return Some(value);
+            }
+        }
+        None
+    }
+
+    fn declare_channel_dispatch_match(&mut self, node: Node, scope: &Scope) {
+        let Some(handler) = scope.callable.clone().or_else(|| scope.owner.clone()) else {
+            return;
+        };
+        let mut pending: Vec<Node> = vec![node];
+        while let Some(held) = pending.pop() {
+            let mut cursor = held.walk();
+            for child in held.named_children(&mut cursor) {
+                let Some(pattern) = child.child_by_field_name("pattern") else {
+                    pending.push(child);
+                    continue;
+                };
+                let Some(label) = self.first_channel_literal(pattern) else { continue };
+                self.facts.registrations.push(RegistrationFact {
+                    file: self.file,
+                    registrar: "dispatch:ipc".to_string(),
+                    label,
+                    handler: handler.clone(),
+                    line: child.start_position().row as u32 + 1,
+                });
+            }
+        }
+    }
+
+    fn declare_channel_dispatch_if(&mut self, node: Node, scope: &Scope) {
+        let Some(dispatch_param) = scope.dispatch_param.as_deref() else { return };
+        let Some(handler) = scope.callable.clone().or_else(|| scope.owner.clone()) else {
+            return;
+        };
+        let Some(condition) = node.child_by_field_name("condition") else { return };
+        let mut pending: Vec<Node> = vec![condition];
+        while let Some(held) = pending.pop() {
+            if held.kind() == "binary_expression" {
+                let operator = held
+                    .child_by_field_name("operator")
+                    .map(|operator| self.text(operator))
+                    .unwrap_or_default();
+                if operator == "==" {
+                    if let (Some(left), Some(right)) =
+                        (held.child_by_field_name("left"), held.child_by_field_name("right"))
+                    {
+                        let named_by = |candidate: Node| self.text(candidate).trim() == dispatch_param;
+                        let literal = if named_by(left) {
+                            Some(right)
+                        } else if named_by(right) {
+                            Some(left)
+                        } else {
+                            None
+                        };
+                        if let Some(label) = literal.and_then(|held| self.channel_literal(held)) {
+                            self.facts.registrations.push(RegistrationFact {
+                                file: self.file,
+                                registrar: "dispatch:ipc".to_string(),
+                                label,
+                                handler: handler.clone(),
+                                line: held.start_position().row as u32 + 1,
+                            });
+                        }
+                    }
+                }
+            }
+            let mut cursor = held.walk();
+            pending.extend(held.named_children(&mut cursor));
+        }
+    }
+
+    fn declare_rust_const(&mut self, node: Node, scope: &Scope) {
+        let Some(name_node) = node.child_by_field_name("name") else { return };
+        let Some(value_node) = node.child_by_field_name("value") else { return };
+        if !value_node.kind().contains("string") {
+            return;
+        }
+        let value = trim_quotes(self.text(value_node)).trim().to_string();
+        if value.is_empty() {
+            return;
+        }
+        let _ = scope;
+        self.facts.locals.push(LocalBinding {
+            file: self.file,
+            unit: String::new(),
+            name: self.text(name_node).trim().to_string(),
+            annotation: None,
+            constructed: None,
+            from_call: None,
+            written: Some(value),
+            stands_for: None,
+            line: node.start_position().row as u32 + 1,
+        });
     }
 
     fn declare_taken_apart(&mut self, node: Node, scope: &Scope) {
