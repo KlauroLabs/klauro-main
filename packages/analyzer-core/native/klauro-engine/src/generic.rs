@@ -1281,7 +1281,11 @@ impl<'a> Extractor<'a> {
     }
 
     fn dispatch_parameter(&self, node: Node) -> Option<String> {
-        static DISPATCH_PARAMETER_NAMES: &[&str] = &["channel", "path", "pathname", "route"];
+        // "channel" is the term IPC dispatch (Tauri, Electron) actually uses; "path"/"route"
+        // are common Rust router-internals parameter names (e.g. axum's `nest`) that compare
+        // against a literal for reasons that have nothing to do with a served entry, and
+        // HTTP path dispatch is already covered by the language-specific mechanism above.
+        static DISPATCH_PARAMETER_NAMES: &[&str] = &["channel"];
         let parameters = match self.parameter_list(node) {
             Some(list) => self.parameters_in(list),
             None => return None,
@@ -1933,7 +1937,7 @@ impl<'a> Extractor<'a> {
                 let Some(label) = self.first_channel_literal(pattern) else { continue };
                 self.facts.registrations.push(RegistrationFact {
                     file: self.file,
-                    registrar: "dispatch:ipc".to_string(),
+                    registrar: crate::entry_exit::HAND_ROLLED_DISPATCH_REGISTRAR.to_string(),
                     label,
                     handler: handler.clone(),
                     line: child.start_position().row as u32 + 1,
@@ -1970,7 +1974,7 @@ impl<'a> Extractor<'a> {
                         if let Some(label) = literal.and_then(|held| self.channel_literal(held)) {
                             self.facts.registrations.push(RegistrationFact {
                                 file: self.file,
-                                registrar: "dispatch:ipc".to_string(),
+                                registrar: crate::entry_exit::HAND_ROLLED_DISPATCH_REGISTRAR.to_string(),
                                 label,
                                 handler: handler.clone(),
                                 line: held.start_position().row as u32 + 1,

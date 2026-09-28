@@ -80,3 +80,19 @@ fn plain_string_comparisons_outside_a_dispatcher_enter_nothing() {
         "a helper comparing an ordinary \"mode\" string must not be read as a router or ipc dispatcher: {held:?}"
     );
 }
+
+#[test]
+fn a_path_normalizing_helper_reached_by_nothing_external_enters_nothing() {
+    // fn normalize(path: &str) branches on `if path == "." { .. } match path { ".." => .. }`,
+    // which is exactly the shape of a hand-rolled router, but no #[tauri::command],
+    // http listener, or other request-carrying entry ever calls it.
+    let index = common::read("dispatch-negative");
+    let ipc: Vec<&serde_json::Value> = index["entry_points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["kind"] == "ipc" || entry["kind"] == "http")
+        .filter(|entry| common::names(entry["handler"].as_str().unwrap_or_default(), "normalize"))
+        .collect();
+    assert!(ipc.is_empty(), "normalize is not reachable from any entry, so it must serve nothing: {ipc:?}");
+}
