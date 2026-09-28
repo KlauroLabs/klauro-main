@@ -308,7 +308,7 @@ fn dependency_names(files: &Files, manifest: &str) -> Vec<String> {
     named
 }
 
-fn kept_on_the_device(files: &Files, manifest: &str) -> bool {
+fn builds_an_app(files: &Files, manifest: &str) -> bool {
     let root = directory_of(manifest);
     if dependency_names(files, manifest)
         .iter()
@@ -358,7 +358,7 @@ fn ready_to_be_published(files: &Files, manifest: &str) -> bool {
     if !asked_for {
         return false;
     }
-    basename != "package.json" || !kept_on_the_device(files, manifest)
+    basename != "package.json" || !builds_an_app(files, manifest)
 }
 
 fn names_a_package(files: &Files, path: &str, basename: &str) -> bool {
