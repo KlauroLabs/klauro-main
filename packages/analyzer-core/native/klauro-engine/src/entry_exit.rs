@@ -189,6 +189,126 @@ fn classify_registration(registrar: &str, label: Option<&str>) -> Option<&'stati
     None
 }
 
+pub(crate) const HAND_ROLLED_DISPATCH_REGISTRAR: &str = "dispatch:ipc";
+
+/// A Rust file's own module name: its file stem, unless the file is a
+/// `mod.rs`/`lib.rs`/`main.rs` that only stands in for its containing
+/// directory, in which case the directory names the module instead.
+fn rust_module_of(path: &str) -> &str {
+    let mut segments: Vec<&str> = path.split('/').collect();
+    let Some(file) = segments.pop() else { return path };
+    let stem = file.strip_suffix(".rs").unwrap_or(file);
+    match stem {
+        "mod" | "lib" | "main" => segments.last().copied().unwrap_or(stem),
+        _ => stem,
+    }
+}
+
+/// Resolve a receiverless call the same way the rest of this module already
+/// resolves a registration's handler (`known` for an exact id, `unique_units`
+/// as a leaf-name fallback) — the general resolver only matches a call's
+/// callee verbatim, so a call written as a qualified path with no `use`
+/// import for it (`crate::x::y(..)`, `mod::func(..)`, the ordinary way Rust
+/// calls a sibling module) is otherwise left unresolved. An unqualified
+/// callee is first looked up in the caller's own file, and a qualified one
+/// by the module its path names, since many sibling dispatcher modules
+/// commonly share the same function name (`dispatch`) — a name so common
+/// that it is rarely globally unique, the one case `unique_units` covers.
+fn called_unit<'a>(
+    call: &'a CallFact,
+    known: &HashSet<&str>,
+    unique_units: &'a HashMap<String, String>,
+    by_file_and_name: &HashMap<(u32, &'a str), &'a str>,
+    by_module_and_name: &HashMap<(&'a str, &'a str), &'a str>,
+) -> Option<&'a str> {
+    if call.receiver.is_some() {
+        return None;
+    }
+    if known.contains(call.callee.as_str()) {
+        return Some(call.callee.as_str());
+    }
+    match call.callee.rsplit_once("::") {
+        None => {
+            if let Some(found) = by_file_and_name.get(&(call.file, call.callee.as_str())) {
+                return Some(*found);
+            }
+        }
+        Some((held, leaf)) => {
+            let module = held.rsplit("::").next().filter(|held| !matches!(*held, "crate" | "self" | "super"));
+            if let Some(module) = module
+                && let Some(found) = by_module_and_name.get(&(module, leaf))
+            {
+                return Some(*found);
+            }
+        }
+    }
+    unique_units.get(names::leaf(&call.callee)).map(String::as_str)
+}
+
+/// A hand-rolled dispatch branch (an `if`/`match` comparing a channel-like
+/// parameter against a literal or resolved constant) is ordinary code unless
+/// its dispatcher function is itself reached, through the call graph, from a
+/// request-carrying entry — a `#[tauri::command]`, an HTTP request listener,
+/// an Electron `ipcMain` handler, and so on. Drop any branch whose enclosing
+/// function the call graph never reaches from one of those entries, so an
+/// unrelated helper comparing a similarly-named string parameter is never
+/// read as a router.
+fn keep_hand_rolled_dispatch_only_when_served(
+    entry_points: &mut Vec<EntryPoint>,
+    calls: &[CallFact],
+    nodes: &[IndexNode],
+    files: &[String],
+    known: &HashSet<&str>,
+    unique_units: &HashMap<String, String>,
+) {
+    if !entry_points.iter().any(|entry| entry.registrar == HAND_ROLLED_DISPATCH_REGISTRAR) {
+        return;
+    }
+    let module_of: Vec<&str> = files.iter().map(|path| rust_module_of(path)).collect();
+    let mut by_module_and_name: HashMap<(&str, &str), &str> = HashMap::default();
+    let mut by_file_and_name: HashMap<(u32, &str), &str> = HashMap::default();
+    for node in nodes {
+        if matches!(node.kind, NodeKind::Function | NodeKind::Method) {
+            by_module_and_name.entry((module_of[node.file as usize], node.name.as_str())).or_insert(node.id.as_str());
+            by_file_and_name.entry((node.file, node.name.as_str())).or_insert(node.id.as_str());
+        }
+    }
+    let mut calls_from: HashMap<&str, Vec<&str>> = HashMap::default();
+    for call in calls {
+        let Some(caller) = call.caller.as_deref() else { continue };
+        let Some(target) = called_unit(call, known, unique_units, &by_file_and_name, &by_module_and_name) else { continue };
+        calls_from.entry(caller).or_default().push(target);
+    }
+    // A closure passed straight into a call (`spawn_blocking(move || dispatch(..))`)
+    // is its own callback node, held to its owner only by containment, never by a
+    // Calls edge — so reaching the owner must also reach every callback it holds.
+    let mut children_of: HashMap<&str, Vec<&str>> = HashMap::default();
+    for node in nodes {
+        if let Some(parent) = node.parent.as_deref() {
+            children_of.entry(parent).or_default().push(node.id.as_str());
+        }
+    }
+    let seeds: Vec<String> = entry_points
+        .iter()
+        .filter(|entry| {
+            entry.registrar != HAND_ROLLED_DISPATCH_REGISTRAR && matches!(entry.kind, "http" | "ipc")
+        })
+        .map(|entry| entry.handler.clone())
+        .collect();
+    let mut frontier: Vec<&str> = seeds.iter().map(String::as_str).collect();
+    let mut served: HashSet<&str> = frontier.iter().copied().collect();
+    while let Some(current) = frontier.pop() {
+        let reached = calls_from.get(current).into_iter().flatten().chain(children_of.get(current).into_iter().flatten());
+        for callee in reached {
+            if served.insert(*callee) {
+                frontier.push(*callee);
+            }
+        }
+    }
+    entry_points
+        .retain(|entry| entry.registrar != HAND_ROLLED_DISPATCH_REGISTRAR || served.contains(entry.handler.as_str()));
+}
+
 fn normalize_annotation(name: &str) -> String {
     let name = names::leaf(name);
     let mut lowered = name.to_ascii_lowercase();
@@ -2325,6 +2445,7 @@ pub fn derive(
     }
     entry_points.sort_by(|left, right| left.id.cmp(&right.id));
     entry_points.dedup_by(|left, right| left.id == right.id);
+    keep_hand_rolled_dispatch_only_when_served(&mut entry_points, calls, nodes, files, &known, unique_units);
     let mut at_site: HashMap<(u32, u32), Vec<usize>> = HashMap::default();
     for (at, exit) in exit_points.iter().enumerate() {
         at_site.entry((exit.file, exit.line)).or_default().push(at);
