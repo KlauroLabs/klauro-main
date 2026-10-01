@@ -32,6 +32,10 @@ static CAPACITOR_EXTENSIONS: &[&str] = &["cjs", "js", "json", "mjs", "ts"];
 static FLUTTER_PLATFORMS: &[&str] = &["android", "ios", "linux", "macos", "windows"];
 static PYINSTALLER_CALLS: &[&str] = &["Analysis", "EXE", "PYZ"];
 static WINDOWS_INSTALLER_SUFFIXES: &[&str] = &[".appinstaller", ".appxmanifest", ".wapproj", ".wixproj", ".wxs"];
+static PACKAGE_MANIFEST_SUFFIXES: &[&str] = &[".appinstaller", ".appxmanifest"];
+static PROJECT_SUFFIXES: &[&str] = &[".csproj", ".fsproj", ".wapproj", ".wixproj"];
+static FLUTTER_RUNNER_MANIFESTS: &[(&str, &str)] =
+    &[("android", "androidmanifest.xml"), ("ios", "info.plist"), ("macos", "info.plist")];
 static JPACKAGE_PLUGINS: &[&str] = &["org.beryx.jlink", "org.beryx.runtime", "org.panteleyev.jpackageplugin"];
 
 pub(super) fn detect(files: &Files, path: &str, calls: &[CallFact], file: u32) -> Vec<Candidate> {
@@ -46,7 +50,11 @@ pub(super) fn detect(files: &Files, path: &str, calls: &[CallFact], file: u32) -
 }
 
 fn declared(path: &str, kind: &'static str, ships: Vec<String>) -> Candidate {
-    let root = directory_of(path).to_string();
+    declared_in(path, directory_of(path), kind, ships)
+}
+
+fn declared_in(path: &str, root: &str, kind: &'static str, ships: Vec<String>) -> Candidate {
+    let root = root.to_string();
     Candidate {
         name: display_name(&root),
         root,
@@ -205,7 +213,23 @@ fn flutter(files: &Files, path: &str, basename: &str, _: &[CallFact], _: u32) ->
         let folder = join(root, platform);
         files.paths.iter().any(|other| crate::paths::contains(&folder, other) && *other != folder)
     });
-    has_runner.then(|| declared(path, "flutter-application", Vec::new()))
+    let mut runners: Vec<String> = FLUTTER_RUNNER_MANIFESTS
+        .iter()
+        .flat_map(|(platform, manifest)| {
+            let folder = join(root, platform);
+            files
+                .paths
+                .iter()
+                .filter(move |other| {
+                    crate::paths::contains(&folder, other)
+                        && other.rsplit('/').next().is_some_and(|name| name.eq_ignore_ascii_case(manifest))
+                })
+                .map(|other| other.to_string())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    runners.sort();
+    has_runner.then(|| declared(path, "flutter-application", runners))
 }
 
 fn pyinstaller(files: &Files, path: &str, basename: &str, calls: &[CallFact], file: u32) -> Option<Candidate> {
@@ -254,11 +278,31 @@ fn briefcase(files: &Files, path: &str, basename: &str, _: &[CallFact], _: u32) 
     Some(declared(path, "briefcase", sources))
 }
 
-fn windows_installer(_: &Files, path: &str, basename: &str, _: &[CallFact], _: u32) -> Option<Candidate> {
-    WINDOWS_INSTALLER_SUFFIXES
-        .iter()
-        .any(|suffix| basename.ends_with(suffix))
-        .then(|| declared(path, "windows-installer", Vec::new()))
+fn project_directory_holding(files: &Files, path: &str) -> Option<String> {
+    let mut at = directory_of(path);
+    loop {
+        let holds_a_project = files.paths.iter().any(|other| {
+            directory_of(other) == at && PROJECT_SUFFIXES.iter().any(|suffix| other.to_ascii_lowercase().ends_with(suffix))
+        });
+        if holds_a_project {
+            return Some(at.to_string());
+        }
+        if at.is_empty() {
+            return None;
+        }
+        at = directory_of(at);
+    }
+}
+
+fn windows_installer(files: &Files, path: &str, basename: &str, _: &[CallFact], _: u32) -> Option<Candidate> {
+    if !WINDOWS_INSTALLER_SUFFIXES.iter().any(|suffix| basename.ends_with(suffix)) {
+        return None;
+    }
+    let root = match PACKAGE_MANIFEST_SUFFIXES.iter().any(|suffix| basename.ends_with(suffix)) {
+        true => project_directory_holding(files, path),
+        false => None,
+    };
+    Some(declared_in(path, root.as_deref().unwrap_or(directory_of(path)), "windows-installer", Vec::new()))
 }
 
 fn jpackage(_: &Files, path: &str, basename: &str, calls: &[CallFact], file: u32) -> Option<Candidate> {

@@ -81,3 +81,23 @@ fn a_bundle_section_that_is_not_active_stays_unshipped() {
     let index = common::read("appship");
     assert!(!is_shipped(&index, "tauri-inactive"));
 }
+
+#[test]
+fn a_flutter_app_carries_the_android_runner_it_ships_through() {
+    let index = common::read("appship");
+    let app = unit(&index, "flutter");
+    let members: Vec<&str> = app["members"].as_array().unwrap().iter().map(|member| member.as_str().unwrap()).collect();
+    assert!(members.contains(&"deployable:flutter/android/app"), "{members:?}");
+}
+
+#[test]
+fn a_package_manifest_deep_in_a_project_declares_the_project_not_its_folder() {
+    let index = common::read("appship");
+    let roots: Vec<&str> = index["scope"]["deployables"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|unit| unit["root"].as_str().unwrap())
+        .collect();
+    assert!(!roots.contains(&"wpf/Platforms/Windows"), "{roots:?}");
+}
