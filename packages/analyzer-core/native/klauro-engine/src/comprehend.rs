@@ -1130,6 +1130,17 @@ pub fn author(
     if !crate::author::asked() && std::env::var("KLAURO_FAMILY_DUMP").is_err() {
         return 0;
     }
+    if let Some(only) = std::env::var("KLAURO_ONLY_PARTS").ok().filter(|held| !held.trim().is_empty()) {
+        let wanted: Vec<&str> = only.split(',').map(str::trim).filter(|part| !part.is_empty()).collect();
+        let chosen = |project: &Option<String>| {
+            project.as_deref().is_some_and(|id| {
+                let bare = id.strip_prefix("subproject:").unwrap_or(id);
+                wanted.iter().any(|want| bare == *want || id == *want || bare.ends_with(&format!("/{want}")))
+            })
+        };
+        held.flows.retain(|flow| chosen(&flow.project));
+        held.entities.retain(|entity| chosen(&entity.project));
+    }
     let spoken = spoken_for(root, nodes, files);
     let root_path = root;
     let node_at: HashMap<&str, &IndexNode> = nodes.iter().map(|node| (node.id.as_str(), node)).collect();
