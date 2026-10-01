@@ -157,3 +157,10 @@ fn a_route_table_a_wrapper_a_loader_and_a_table_of_paths_all_name_screens() {
     );
     assert!(reaches_a_request(&index, flow_of(&index, "/welcome"), "/api/welcome"));
 }
+
+#[test]
+fn a_component_that_draws_the_routes_of_others_is_a_shell_and_not_a_screen() {
+    let index = common::read("screens-shell");
+    let held = screens(&index);
+    assert_eq!(held, vec![("/inbox".to_string(), "Inbox.tsx#Inbox".to_string())], "{held:?}");
+}

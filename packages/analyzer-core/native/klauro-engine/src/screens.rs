@@ -193,6 +193,16 @@ pub fn drawn(
         .map(|held| folder_of(files[held.file as usize].as_str()))
         .collect();
 
+    let mut routes_drawn_at: HashMap<u32, Vec<u32>> = HashMap::default();
+    for held in registrations.iter().filter(|held| held.registrar == ROUTED_SCREEN) {
+        routes_drawn_at.entry(held.file).or_default().push(held.line);
+    }
+    let hosts_routes = |handler: &IndexNode| -> bool {
+        routes_drawn_at.get(&handler.file).is_some_and(|lines| {
+            lines.iter().any(|line| *line >= handler.span.line && *line <= handler.span.end_line)
+        })
+    };
+
     let mut seen: HashSet<(String, String)> = HashSet::default();
     let mut found = Vec::new();
     let mut ordered: Vec<&RegistrationFact> = registrations
@@ -219,6 +229,9 @@ pub fn drawn(
             continue;
         }
         if mounting && routed_handlers.contains(&handler.id) {
+            continue;
+        }
+        if !mounting && hosts_routes(handler) {
             continue;
         }
         if !seen.insert((handler.id.clone(), registration.label.clone())) {
