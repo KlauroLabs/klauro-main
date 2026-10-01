@@ -1,0 +1,1 @@
+{ "name": "keyed", "version": "1.0.0", "main": "main.js", "build": { "appId": "com.example.keyed", "mac": { "target": "dmg" } } }

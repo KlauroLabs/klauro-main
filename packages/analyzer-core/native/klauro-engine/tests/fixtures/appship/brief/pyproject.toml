@@ -1,0 +1,10 @@
+[project]
+name = "brief-app"
+version = "1.0.0"
+
+[tool.briefcase]
+project_name = "Brief"
+
+[tool.briefcase.app.brief]
+formal_name = "Brief"
+sources = ["src/brief"]

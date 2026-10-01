@@ -1,0 +1,7 @@
+name: flutter_app
+version: 1.0.0
+dependencies:
+  flutter:
+    sdk: flutter
+flutter:
+  uses-material-design: true

@@ -1,0 +1,5 @@
+<?xml version='1.0' encoding='utf-8'?>
+<widget id="com.example.cordova" version="1.0.0" xmlns="http://www.w3.org/ns/widgets">
+    <name>Cordova</name>
+    <platform name="android"><allow-intent href="market:*" /></platform>
+</widget>

@@ -1,0 +1,6 @@
+{
+  "productName": "Desk",
+  "identifier": "com.example.desk",
+  "build": { "frontendDist": "../app/dist", "beforeBuildCommand": "npm run app:build" },
+  "bundle": { "active": true, "targets": "all" }
+}

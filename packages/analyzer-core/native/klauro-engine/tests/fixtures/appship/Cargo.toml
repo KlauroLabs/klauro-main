@@ -1,0 +1,2 @@
+[workspace]
+members = ["tauri/src-tauri", "crates/core", "rust-crate"]
