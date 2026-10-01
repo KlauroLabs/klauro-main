@@ -458,8 +458,8 @@ fn place(
     answered
 }
 
-pub(crate) fn is_proposable(_flow: &Flow) -> bool {
-    true
+pub(crate) fn is_proposable(flow: &Flow) -> bool {
+    flow.unshipped.is_none()
 }
 
 fn lines_of_outcomes(held: &Held, lanes: &BTreeMap<&str, (&Family, &Vec<&Flow>)>) -> Vec<(usize, String)> {
@@ -523,7 +523,6 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
         .iter()
         .copied()
         .filter(|flow| !served || flow.kind != "export")
-        .filter(|flow| flow.unshipped.is_none())
         .filter(|flow| !only_moves_the_screen(flow))
         .filter(|flow| is_proposable(flow))
         .collect();
@@ -1682,8 +1681,11 @@ mod command_family_tests {
     }
 
     #[test]
-    fn the_seam_for_tooling_proposes_every_flow_until_entries_are_tagged() {
-        assert!(is_proposable(&flow("flow:1", "cli", None, "build", &[], &[])));
+    fn a_flow_tagged_as_unshipped_is_never_proposed() {
+        let mut tooling = flow("flow:1", "cli", None, "build", &[], &[]);
+        assert!(is_proposable(&tooling));
+        tooling.unshipped = Some(crate::entry_exit::Unshipped { role: "tooling", basis: "a script", evidence: String::new() });
+        assert!(!is_proposable(&tooling));
     }
 }
 
