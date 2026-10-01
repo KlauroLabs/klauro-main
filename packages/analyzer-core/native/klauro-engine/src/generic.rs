@@ -2531,6 +2531,7 @@ impl<'a> Extractor<'a> {
                 conditional_depth: scope.conditional_depth,
                 loop_depth: scope.loop_depth,
             },
+            passes: Vec::new(),
         });
     }
 
@@ -2719,6 +2720,13 @@ impl<'a> Extractor<'a> {
         }
 
         let registrar = callee.clone();
+        let passes = match arguments {
+            Some(arguments) => {
+                let mut cursor = arguments.walk();
+                crate::entities::passed(arguments.named_children(&mut cursor).map(|argument| self.text(argument)))
+            }
+            None => Vec::new(),
+        };
         self.facts.calls.push(CallFact {
             file: self.file,
             caller: scope.callable.clone().or_else(|| scope.owner.clone()),
@@ -2739,6 +2747,7 @@ impl<'a> Extractor<'a> {
                 conditional_depth: scope.conditional_depth,
                 loop_depth: scope.loop_depth,
             },
+            passes,
         });
         Some(registrar)
     }

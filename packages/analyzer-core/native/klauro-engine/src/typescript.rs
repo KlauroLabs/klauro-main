@@ -1327,7 +1327,8 @@ impl<'a> Extractor<'a> {
                     let annotation = declarator
                         .child_by_field_name("type")
                         .and_then(|annotation| annotation.named_child(0))
-                        .map(|annotation| self.text_owned(annotation));
+                        .map(|annotation| self.text_owned(annotation))
+                        .or_else(|| value.and_then(|value| self.cast_to(value)));
                     let initializer = value.map(|value| unwrap_value(value));
                     let constructed = initializer
                         .filter(|value| value.kind() == "new_expression")
@@ -1434,6 +1435,23 @@ impl<'a> Extractor<'a> {
                 },
             }
         }
+    }
+
+    fn cast_to(&self, value: Node) -> Option<String> {
+        let mut current = value;
+        for _ in 0..4 {
+            match current.kind() {
+                "as_expression" | "satisfies_expression" => {
+                    let cast = self.text_owned(current.named_child(1)?);
+                    return (cast != "const").then_some(cast);
+                }
+                "await_expression" | "parenthesized_expression" | "non_null_expression" => {
+                    current = current.named_child(0)?;
+                }
+                _ => return None,
+            }
+        }
+        None
     }
 
     fn keep(&mut self, target: &str, writes: bool, node: Node, scope: &Scope) {
@@ -1546,6 +1564,12 @@ impl<'a> Extractor<'a> {
         let literals = arguments
             .map(|arguments| self.literal_arguments(arguments))
             .unwrap_or_default();
+        let passes = arguments
+            .map(|arguments| {
+                let mut cursor = arguments.walk();
+                crate::entities::passed(arguments.named_children(&mut cursor).map(|argument| self.text(argument)))
+            })
+            .unwrap_or_default();
 
         let (receiver, callee) = match function.kind() {
             "member_expression" => {
@@ -1596,7 +1620,13 @@ impl<'a> Extractor<'a> {
             argument_count,
             literals,
             constructs,
-            type_arguments: Vec::new(),
+            type_arguments: node
+                .child_by_field_name("type_arguments")
+                .map(|found| {
+                    let mut cursor = found.walk();
+                    found.named_children(&mut cursor).map(|held| self.text_owned(held)).collect()
+                })
+                .unwrap_or_default(),
             context: CallContext {
                 in_try: scope.context.in_try,
                 in_catch: scope.context.in_catch,
@@ -1606,6 +1636,7 @@ impl<'a> Extractor<'a> {
                 conditional_depth: scope.context.conditional_depth,
                 loop_depth: scope.context.loop_depth,
             },
+            passes,
         });
     }
 

@@ -257,6 +257,8 @@ pub struct CallFact {
     pub type_arguments: Vec<String>,
     #[serde(skip_serializing_if = "crate::facts_cache::empty_context")]
     pub context: CallContext,
+    #[serde(default, skip_serializing_if = "crate::facts_cache::hidden")]
+    pub passes: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
