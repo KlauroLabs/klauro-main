@@ -36,7 +36,6 @@ fn a_desktop_bundle_configuration_makes_the_project_shipped() {
         ("electron", "electron-builder"),
         ("electronkey", "electron-builder"),
         ("forge", "electron-forge"),
-        ("pyinst", "pyinstaller"),
         ("brief", "briefcase"),
         ("flutter", "flutter-application"),
         ("wpf", "windows-installer"),

@@ -69,10 +69,19 @@ static MODULE_MANIFESTS: &[&str] = &[
     "build.gradle",
     "build.gradle.kts",
     "build.sbt",
+    "build.zig.zon",
     "cargo.toml",
+    "composer.json",
+    "deno.json",
+    "deno.jsonc",
+    "dune-project",
     "go.mod",
+    "mix.exs",
     "package.json",
+    "package.swift",
+    "package.yaml",
     "pom.xml",
+    "pubspec.yaml",
     "pyproject.toml",
     "setup.py",
 ];
@@ -85,6 +94,8 @@ fn is_module_manifest(path: &str) -> bool {
     MODULE_MANIFESTS.binary_search(&name.as_str()).is_ok()
         || name.ends_with(".csproj")
         || name.ends_with(".fsproj")
+        || name.ends_with(".cabal")
+        || name.ends_with(".gemspec")
 }
 
 fn matches_pattern(pattern: &str, root: &str) -> bool {

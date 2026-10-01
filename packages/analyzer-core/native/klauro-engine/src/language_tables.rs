@@ -3,7 +3,6 @@ pub static SOURCE_EXTENSIONS: &[&str] = &[
     "ads",
     "agda",
     "apex",
-    "appxmanifest",
     "asd",
     "asm",
     "astro",
@@ -221,7 +220,6 @@ pub static SOURCE_EXTENSIONS: &[&str] = &[
     "sol",
     "sp",
     "sparql",
-    "spec",
     "sq",
     "sql",
     "sqm",
@@ -265,14 +263,11 @@ pub static SOURCE_EXTENSIONS: &[&str] = &[
     "vimrc",
     "vue",
     "w",
-    "wapproj",
     "wast",
     "wat",
     "wgsl",
-    "wixproj",
     "wren",
     "wsdl",
-    "wxs",
     "xaml",
     "xhtml",
     "xml",
@@ -365,6 +360,7 @@ pub static MANIFEST_NAMES: &[&str] = &[
 ];
 
 pub static MANIFEST_EXTENSIONS: &[&str] = &[
+    "appxmanifest",
     "cabal",
     "csproj",
     "fsproj",
@@ -373,6 +369,7 @@ pub static MANIFEST_EXTENSIONS: &[&str] = &[
     "vbproj",
     "wapproj",
     "wixproj",
+    "wxs",
 ];
 
 pub static MANIFEST_PATTERNS: &[&str] = &[
@@ -710,7 +707,6 @@ pub static LANGUAGE_BY_EXTENSION: &[(&str, &str)] = &[
     ("sol", "solidity"),
     ("sp", "sourcepawn"),
     ("sparql", "sparql"),
-    ("spec", "python"),
     ("sq", "sql"),
     ("sql", "sql"),
     ("sqm", "sql"),

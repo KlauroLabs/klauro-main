@@ -15,7 +15,6 @@ static PROVIDERS: &[Provider] = &[
     expo_build,
     expo_application,
     flutter,
-    pyinstaller,
     briefcase,
     windows_installer,
     jpackage,
@@ -30,7 +29,6 @@ static FORGE_CONFIG_EXTENSIONS: &[&str] = &["cjs", "js", "mjs", "ts"];
 static PACKAGED_EXECUTABLE_KEYS: &[&str] = &["targets", "assets", "outputPath", "scripts"];
 static CAPACITOR_EXTENSIONS: &[&str] = &["cjs", "js", "json", "mjs", "ts"];
 static FLUTTER_PLATFORMS: &[&str] = &["android", "ios", "linux", "macos", "windows"];
-static PYINSTALLER_CALLS: &[&str] = &["Analysis", "EXE", "PYZ"];
 static WINDOWS_INSTALLER_SUFFIXES: &[&str] = &[".appinstaller", ".appxmanifest", ".wapproj", ".wixproj", ".wxs"];
 static PACKAGE_MANIFEST_SUFFIXES: &[&str] = &[".appinstaller", ".appxmanifest"];
 static PROJECT_SUFFIXES: &[&str] = &[".csproj", ".fsproj", ".wapproj", ".wixproj"];
@@ -230,26 +228,6 @@ fn flutter(files: &Files, path: &str, basename: &str, _: &[CallFact], _: u32) ->
         .collect();
     runners.sort();
     has_runner.then(|| declared(path, "flutter-application", runners))
-}
-
-fn pyinstaller(files: &Files, path: &str, basename: &str, calls: &[CallFact], file: u32) -> Option<Candidate> {
-    if !basename.ends_with(".spec") {
-        return None;
-    }
-    let in_file = || calls.iter().filter(|call| call.file == file);
-    if !in_file().any(|call| PYINSTALLER_CALLS.contains(&call.callee.as_str())) {
-        return None;
-    }
-    let root = directory_of(path);
-    let mut scripts: Vec<String> = in_file()
-        .filter(|call| call.callee == "Analysis")
-        .flat_map(|call| call.literals.iter())
-        .map(|literal| join(root, super::unquote(literal)))
-        .filter(|candidate| files.exists(candidate))
-        .collect();
-    scripts.sort();
-    scripts.dedup();
-    Some(declared(path, "pyinstaller", scripts))
 }
 
 fn briefcase(files: &Files, path: &str, basename: &str, _: &[CallFact], _: u32) -> Option<Candidate> {
