@@ -314,6 +314,7 @@ pub fn derive(nodes: &[IndexNode], calls: &[CallFact], files: &[String]) -> Vec<
                 line: call.line,
                 guards: Vec::new(),
                 registrar: format!("rails {verb}"),
+                unshipped: None,
             });
         }
     }

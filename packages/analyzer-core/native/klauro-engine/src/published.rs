@@ -187,6 +187,7 @@ pub fn published(
                 line: node.span.line,
                 guards: Vec::new(),
                 registrar: "published".to_string(),
+                unshipped: None,
             });
         }
     }

@@ -18,9 +18,11 @@ fn handled_at<'a>(entries: &[&'a serde_json::Value], suffix: &str) -> Option<&'a
 fn a_directory_copy_does_not_ship_every_file_beneath_it() {
     let index = index();
     let entries = entries(&index);
+    let found = handled_at(&entries, "app/scripts/dev-tool.js")
+        .expect("the script stays an entry so its code is navigable");
     assert!(
-        handled_at(&entries, "app/scripts/dev-tool.js").is_none(),
-        "a whole-directory COPY is not evidence for a script the image's CMD never names: {entries:#?}"
+        found.get("unshipped").is_some(),
+        "a whole-directory COPY is not evidence for a script the image's CMD never names: {found:#?}"
     );
 }
 

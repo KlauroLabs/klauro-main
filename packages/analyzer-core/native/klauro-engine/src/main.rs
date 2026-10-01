@@ -55,6 +55,7 @@ mod dataset;
 mod rails_routes;
 mod structured;
 mod subproject;
+mod unshipped;
 mod typescript;
 mod verify;
 mod visibility;
@@ -633,6 +634,7 @@ fn read_it() {
         served,
         derived.exit_points.len()
     );
+    let continued = derived.continued;
     index.entry_points = derived.entry_points;
     index.exit_points = derived.exit_points;
 
@@ -682,13 +684,19 @@ fn read_it() {
                 )
         })
         .collect();
+    let scoped_entries: Vec<entry_exit::EntryPoint> = index
+        .entry_points
+        .iter()
+        .filter(|entry| !paths::is_not_shipped(&paths[entry.file as usize]))
+        .cloned()
+        .collect();
     let scope = scope::derive(
         &paths,
         &manifests,
         &code,
         &index.nodes,
         &index.edges,
-        &index.entry_points,
+        &scoped_entries,
         &index.calls,
         &index.bundler_builds,
         &index.imports,
@@ -704,26 +712,21 @@ fn read_it() {
         scope.shared_nodes,
         scope.unassigned_nodes
     );
-    index.entry_points.retain(|entry| {
-        if entry.kind == "test" {
-            return true;
-        }
-        let path = &paths[entry.file as usize];
-        if matches!(entry.kind, "lifecycle" | "cli") {
-            if paths::is_cargo_build_script(path) {
-                return false;
-            }
-            if !paths::is_cargo_binary_entry(path)
-                && paths::is_shipping_evidence_mappable(path)
-                && scope.part_has_shipping_evidence(path)
-                && !scope.ships_file_by_convention(path)
-            {
-                return false;
-            }
-        }
-        let needs_shipping_evidence = paths::is_developer_script(path) || paths::is_benchmark_named(path);
-        !needs_shipping_evidence || scope.ships_file(path)
-    });
+    let classify_started = Instant::now();
+    let (build_scripts, census) =
+        unshipped::classify(&mut index.entry_points, &paths, &index.nodes, &index.edges, &scope, &continued);
+    let build_script_ids: rustc_hash::FxHashSet<String> = build_scripts.into_iter().map(|entry| entry.id).collect();
+    index.entry_points.retain(|entry| !build_script_ids.contains(&entry.id));
+    eprintln!(
+        "unshipped {:?} | tagged {} | build scripts {} | continuations {} (reached through their starter {}, starter unreached {}, orphaned {})",
+        classify_started.elapsed(),
+        census.tagged,
+        build_script_ids.len(),
+        census.continuations,
+        census.continuations_held,
+        census.continuations_holder_unreached,
+        census.continuations_orphaned
+    );
     index.scope = Some(scope);
 
     let published_started = Instant::now();
@@ -744,11 +747,13 @@ fn read_it() {
     }
 
     let partition_started = Instant::now();
+    let partitioned_entries: Vec<entry_exit::EntryPoint> =
+        index.entry_points.iter().filter(|entry| entry.unshipped.is_none()).cloned().collect();
     let partition = subproject::derive(
         &paths,
         &index.nodes,
         &index.edges,
-        &index.entry_points,
+        &partitioned_entries,
         &index.nested_repositories,
         &code,
         index.scope.as_ref().map(|scope| scope.deployables.as_slice()).unwrap_or(&[]),

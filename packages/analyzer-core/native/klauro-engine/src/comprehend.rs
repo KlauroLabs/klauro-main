@@ -56,6 +56,8 @@ pub struct Flow {
     pub leads_into: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unshipped: Option<crate::entry_exit::Unshipped>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1912,6 +1914,7 @@ pub fn derive(
             changes: changing,
             leads_into: into,
             project: nodes[start as usize].project.clone(),
+            unshipped: entry.unshipped.clone(),
         });
     }
     flows.sort_by(|left, right| left.id.cmp(&right.id));

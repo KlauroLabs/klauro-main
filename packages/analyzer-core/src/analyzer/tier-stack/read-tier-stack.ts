@@ -33,6 +33,12 @@ export interface TierStackEdge {
   kind: string;
 }
 
+export interface TierStackUnshipped {
+  role: 'tooling' | 'example' | 'benchmark' | 'test-support' | 'standalone-program';
+  basis: 'shipping-evidence' | 'island' | 'name';
+  evidence: string;
+}
+
 export interface TierStackEntryPoint {
   id: string;
   kind: string;
@@ -43,6 +49,7 @@ export interface TierStackEntryPoint {
   file: number;
   line: number;
   registrar: string;
+  unshipped?: TierStackUnshipped;
 }
 
 export interface TierStackExitPoint {
@@ -225,6 +232,7 @@ export interface TierStackFlow {
   leads_into?: string[];
   reaches?: string[];
   project?: string;
+  unshipped?: TierStackUnshipped;
 }
 
 export interface TierStackIndex {
