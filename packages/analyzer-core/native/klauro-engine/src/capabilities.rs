@@ -475,8 +475,7 @@ fn lines_of_outcomes(held: &Held, lanes: &BTreeMap<&str, (&Family, &Vec<&Flow>)>
         lines.push((
             lane.len(),
             format!(
-                "    - {role}: {object} ({}), reached through {}{}",
-                family.basis,
+                "    - {role}: {object}, reached through {}{}",
                 surfaces.join(", "),
                 match more {
                     0 => String::new(),
@@ -490,7 +489,7 @@ fn lines_of_outcomes(held: &Held, lanes: &BTreeMap<&str, (&Family, &Vec<&Flow>)>
 }
 
 const OUTCOMES_LISTED: usize = 40;
-const OUTCOME_SURFACES: usize = 3;
+const OUTCOME_SURFACES: usize = 2;
 const OUTCOMES_DETAILED: usize = 2;
 
 fn evidence_of_capability(held: &Held, lanes: &BTreeMap<&str, (&Family, &Vec<&Flow>)>, fields: &Fields) -> String {
