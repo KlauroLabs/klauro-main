@@ -1585,6 +1585,7 @@ impl<'a> Extractor<'a> {
                         from_call: None,
                         written: Some(written),
                 stands_for: None,
+                from_values: Vec::new(),
                         line: node.start_position().row as u32 + 1,
                     });
                 }
@@ -2201,6 +2202,7 @@ impl<'a> Extractor<'a> {
             from_call: None,
             written: Some(value),
             stands_for: None,
+            from_values: Vec::new(),
             line: node.start_position().row as u32 + 1,
         });
     }
@@ -2258,6 +2260,7 @@ impl<'a> Extractor<'a> {
                             from_call: from_call.clone(),
                             written: None,
                 stands_for: None,
+                from_values: Vec::new(),
                             line: node.start_position().row as u32 + 1,
                         });
                     }
@@ -2343,7 +2346,15 @@ impl<'a> Extractor<'a> {
         let from_call = value
             .filter(|value| self.spec.calls.kinds.contains(&value.kind()))
             .and_then(|value| self.called_name(value));
-        if annotation.is_none() && constructed.is_none() && from_call.is_none() && written_value.is_none() {
+        let from_values = value
+            .map(|held| crate::entities::built_from(self.text(held)))
+            .unwrap_or_default();
+        if annotation.is_none()
+            && constructed.is_none()
+            && from_call.is_none()
+            && written_value.is_none()
+            && from_values.is_empty()
+        {
             return false;
         }
         for held in taken_apart.iter() {
@@ -2356,6 +2367,7 @@ impl<'a> Extractor<'a> {
                 from_call: from_call.clone(),
                 written: None,
                 stands_for: None,
+                from_values: from_values.clone(),
                 line: node.start_position().row as u32 + 1,
             });
         }
@@ -2374,6 +2386,7 @@ impl<'a> Extractor<'a> {
             from_call,
             written: written_value,
                 stands_for,
+            from_values: from_values.clone(),
             line: node.start_position().row as u32 + 1,
         });
         false
@@ -2531,6 +2544,7 @@ impl<'a> Extractor<'a> {
                 conditional_depth: scope.conditional_depth,
                 loop_depth: scope.loop_depth,
             },
+            passes: Vec::new(),
         });
     }
 
@@ -2719,6 +2733,13 @@ impl<'a> Extractor<'a> {
         }
 
         let registrar = callee.clone();
+        let passes = match arguments {
+            Some(arguments) => {
+                let mut cursor = arguments.walk();
+                crate::entities::passed(arguments.named_children(&mut cursor).map(|argument| self.text(argument)))
+            }
+            None => Vec::new(),
+        };
         self.facts.calls.push(CallFact {
             file: self.file,
             caller: scope.callable.clone().or_else(|| scope.owner.clone()),
@@ -2739,6 +2760,7 @@ impl<'a> Extractor<'a> {
                 conditional_depth: scope.conditional_depth,
                 loop_depth: scope.loop_depth,
             },
+            passes,
         });
         Some(registrar)
     }

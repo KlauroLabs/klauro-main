@@ -16,6 +16,7 @@ mod dependencies;
 mod discovery;
 mod dockerfile;
 mod language_tables;
+mod entities;
 mod entry_exit;
 mod generated;
 mod history;
@@ -1199,6 +1200,7 @@ fn read_it() {
             })
             .unwrap_or_default(),
         &guessed,
+        &index.locals,
     );
     if audit::asked() {
         let looked = audit::look(

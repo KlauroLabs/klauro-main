@@ -740,16 +740,19 @@ fn entry_base(name: &str) -> Option<&'static EntryBase> {
 }
 
 static FILE_OPERATIONS: &[&str] = &[
-    "appendalltext", "appendfile", "canonicalize", "contentsofdirectory", "copy", "copyfile",
-    "copyitem", "create", "create_dir", "create_dir_all", "createdirectory",
-    "createreadstream", "createwritestream", "delete", "deletefile", "enumeratefiles",
-    "exists", "exists_sync", "existssync", "getdirectories", "getfiles", "hard_link",
-    "metadata", "mkdir", "mkdirall", "move", "open", "openfile", "openread", "openwrite",
-    "read_dir", "read_link", "read_to_end", "read_to_string", "readall", "readallbytes",
-    "readalllines", "readalltext", "readalltextasync", "readdir", "readfile", "remove",
-    "remove_dir", "remove_dir_all", "remove_file", "removeall", "removeitem", "rename", "rm",
-    "rmdir", "set_permissions", "stat", "symlink_metadata", "unlink", "write_all",
-    "writeallbytes", "writealltext", "writealltextasync", "writefile",
+    "appendalltext", "appendfile", "appendfilesync", "canonicalize", "contentsofdirectory",
+    "copy", "copyfile", "copyitem", "copysync", "create", "create_dir", "create_dir_all",
+    "createdirectory", "createreadstream", "createwritestream", "delete", "deletefile",
+    "emptydir", "ensuredir", "ensurefile", "enumeratefiles", "exists", "exists_sync",
+    "existssync", "getdirectories", "getfiles", "hard_link", "lstat", "metadata", "mkdir",
+    "mkdirall", "move", "open", "openfile", "openread", "openwrite", "outputfile", "outputjson",
+    "outputjsonsync", "pathexists", "read_dir", "read_link", "read_to_end", "read_to_string",
+    "readall", "readallbytes", "readalllines", "readalltext", "readalltextasync", "readdir",
+    "readfile", "readfilesync", "readjson", "readjsonsync", "readlink", "remove", "remove_dir",
+    "remove_dir_all", "remove_file", "removeall", "removeitem", "rename", "rm", "rmdir",
+    "set_permissions", "stat", "symlink_metadata", "unlink", "write_all", "writeallbytes",
+    "writealltext", "writealltextasync", "writefile", "writefilesync", "writejson",
+    "writejsonsync",
 ];
 static NETWORK_OPERATIONS: &[&str] = &[
     "connect", "data", "datatask", "delete", "deleteasync", "do", "execute", "fetch", "get",
