@@ -1337,11 +1337,12 @@ pub fn author(
             capabilities.extend(whole);
             capabilities.sort_by(|left, right| left.id.cmp(&right.id));
             eprintln!(
-                "  author form {formed:?} across {} parts | describe {:?} | backend writes {} bytes/s | asked again {}",
+                "  author form {formed:?} across {} parts | describe {:?} | backend writes {} bytes/s | asked again {} | went unanswered {}",
                 parts.len(),
                 started.elapsed() - formed,
                 crate::author::writing_rate(),
-                crate::author::asked_again()
+                crate::author::asked_again(),
+                crate::author::went_unanswered()
             );
             (capabilities, products)
         },

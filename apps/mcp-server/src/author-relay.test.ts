@@ -55,3 +55,45 @@ test('the relay reports a backend that cannot be reached', async () => {
   assert.equal(answered.status, 502);
   await relay.close();
 });
+
+test('requests beyond an account\'s places wait their turn instead of being refused', async () => {
+  let inFlight = 0;
+  let mostAtOnce = 0;
+  const backend = await serving((request, response) => {
+    inFlight += 1;
+    mostAtOnce = Math.max(mostAtOnce, inFlight);
+    request.resume();
+    request.on('end', () => {
+      setTimeout(() => {
+        inFlight -= 1;
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end('{"ok":true}');
+      }, 60);
+    });
+  });
+  const relay = await serving((request, response) => { void relayAuthorAsk(request, response, 'user:queue', `${backend.url}/api/chat`, 2, 5000); });
+  const answers = await Promise.all(Array.from({ length: 6 }, () => fetch(relay.url, { method: 'POST', body: '{}' })));
+  assert.deepEqual(answers.map(held => held.status), [200, 200, 200, 200, 200, 200]);
+  assert.equal(mostAtOnce, 2);
+  await relay.close();
+  await backend.close();
+});
+
+test('a request that waits longer than allowed for a place is told to retry', async () => {
+  const backend = await serving((request, response) => {
+    request.resume();
+    request.on('end', () => {
+      setTimeout(() => { response.writeHead(200); response.end('{}'); }, 400);
+    });
+  });
+  const relay = await serving((request, response) => { void relayAuthorAsk(request, response, 'user:patience', `${backend.url}/api/chat`, 1, 50); });
+  const [first, second] = await Promise.all([
+    fetch(relay.url, { method: 'POST', body: '{}' }),
+    new Promise<Response>(resolve => setTimeout(() => resolve(fetch(relay.url, { method: 'POST', body: '{}' })), 30)),
+  ]);
+  assert.equal(first.status, 200);
+  assert.equal(second.status, 503);
+  assert.equal(second.headers.get('retry-after'), '30');
+  await relay.close();
+  await backend.close();
+});

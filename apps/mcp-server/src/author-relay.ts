@@ -5,8 +5,43 @@ export const AUTHOR_RELAY_ROUTE = '/api/author/api/chat';
 const MOST_ASKED_BYTES = 4 * 1024 * 1024;
 const MOST_AT_ONCE_PER_ACCOUNT = 24;
 const LONGEST_ANSWER_MS = 10 * 60 * 1000;
+const LONGEST_WAIT_FOR_A_PLACE_MS = 20 * 60 * 1000;
 
-const asking = new Map<string, number>();
+class Places {
+  private free: number;
+  private readonly waiting: Array<() => void> = [];
+
+  constructor(count: number) {
+    this.free = count;
+  }
+
+  async take(withinMs: number): Promise<(() => void) | null> {
+    if (this.free > 0) {
+      this.free -= 1;
+      return () => this.give();
+    }
+    return new Promise(resolve => {
+      const turn = (): void => {
+        clearTimeout(timer);
+        resolve(() => this.give());
+      };
+      const timer = setTimeout(() => {
+        const at = this.waiting.indexOf(turn);
+        if (at >= 0) this.waiting.splice(at, 1);
+        resolve(null);
+      }, withinMs);
+      this.waiting.push(turn);
+    });
+  }
+
+  private give(): void {
+    const next = this.waiting.shift();
+    if (next) next();
+    else this.free += 1;
+  }
+}
+
+const places = new Map<string, Places>();
 
 export function authorUpstream(): string | undefined {
   return process.env.KLAURO_AUTHOR_ENDPOINT?.trim() || undefined;
@@ -33,23 +68,30 @@ export async function relayAuthorAsk(
   response: http.ServerResponse,
   account: string,
   upstream = authorUpstream(),
+  placesPerAccount = MOST_AT_ONCE_PER_ACCOUNT,
+  longestWaitMs = LONGEST_WAIT_FOR_A_PLACE_MS,
 ): Promise<void> {
   if (!upstream) {
     answer(response, 503, { status: 'error', error: 'AI authoring is not configured on this server.' });
     return;
   }
-  const already = asking.get(account) ?? 0;
-  if (already >= MOST_AT_ONCE_PER_ACCOUNT) {
-    answer(response, 429, { status: 'error', error: 'Too many AI requests in flight for this account.' });
+  const body = await asked(request);
+  if (!body) {
+    answer(response, 413, { status: 'error', error: 'The AI request is too large.' });
     return;
   }
-  asking.set(account, already + 1);
+  let held = places.get(account);
+  if (!held) {
+    held = new Places(placesPerAccount);
+    places.set(account, held);
+  }
+  const release = await held.take(longestWaitMs);
+  if (!release) {
+    response.writeHead(503, { 'Content-Type': 'application/json', 'Retry-After': '30' });
+    response.end(JSON.stringify({ status: 'error', error: 'The AI backend is busy; try again shortly.' }));
+    return;
+  }
   try {
-    const body = await asked(request);
-    if (!body) {
-      answer(response, 413, { status: 'error', error: 'The AI request is too large.' });
-      return;
-    }
     const answered = await fetch(upstream, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -64,8 +106,6 @@ export async function relayAuthorAsk(
       answer(response, 502, { status: 'error', error: `The AI backend did not answer: ${error instanceof Error ? error.message : String(error)}` });
     }
   } finally {
-    const left = (asking.get(account) ?? 1) - 1;
-    if (left > 0) asking.set(account, left);
-    else asking.delete(account);
+    release();
   }
 }

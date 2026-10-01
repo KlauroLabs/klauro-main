@@ -30,6 +30,14 @@ static WRITTEN_PER_SECOND: AtomicU64 = AtomicU64::new(0);
 
 static ASKED_AGAIN: AtomicU64 = AtomicU64::new(0);
 
+static WENT_UNANSWERED: AtomicU64 = AtomicU64::new(0);
+
+const LONGEST_WAIT_FOR_AN_ANSWER: std::time::Duration = std::time::Duration::from_secs(600);
+
+pub fn went_unanswered() -> u64 {
+    WENT_UNANSWERED.load(Ordering::Relaxed)
+}
+
 static BEGAN: std::sync::LazyLock<std::time::Instant> = std::sync::LazyLock::new(std::time::Instant::now);
 
 pub fn asked_again() -> u64 {
@@ -1252,7 +1260,10 @@ fn answered<T: serde::de::DeserializeOwned>(
         {
             return Some(value);
         }
-        for attempt in 0..TRIES {
+        let mut rejected = 0usize;
+        let mut missed = 0u32;
+        let mut waited = std::time::Duration::ZERO;
+        while rejected < TRIES && waited < LONGEST_WAIT_FOR_AN_ANSWER {
             let answered = match &spoken_to {
                 Some(command) => spoken(command, prompt).map_or(
                     crate::reach::Answer::Missed,
@@ -1271,11 +1282,15 @@ fn answered<T: serde::de::DeserializeOwned>(
                         let shown: String = text.chars().take(600).collect();
                         eprintln!("    rejected answer ({} bytes): {shown}", text.len());
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(500 << attempt))
+                    std::thread::sleep(std::time::Duration::from_millis(500 << rejected.min(4)));
+                    rejected += 1;
                 }
                 crate::reach::Answer::Refused => break,
                 crate::reach::Answer::Missed => {
-                    std::thread::sleep(std::time::Duration::from_millis(500 << attempt))
+                    let pause = std::time::Duration::from_millis(500u64 << missed.min(5));
+                    std::thread::sleep(pause);
+                    waited += pause;
+                    missed += 1;
                 }
             }
         }
@@ -1286,6 +1301,7 @@ fn answered<T: serde::de::DeserializeOwned>(
         let _ = std::fs::write(format!("{folder}/{of}-{named}.txt"), format!("{prompt}\n\n=====\n\n{answer}"));
     }
     let Some((value, text, request)) = held else {
+        WENT_UNANSWERED.fetch_add(1, Ordering::Relaxed);
         eprintln!("  author no answer to a prompt of {} bytes", prompt.len());
         return None;
     };
