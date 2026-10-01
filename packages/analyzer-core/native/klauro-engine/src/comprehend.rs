@@ -1277,6 +1277,7 @@ pub fn author(
                     let mut found = crate::capabilities::of_a_part(&flows, &said, &remembered_as, &fields);
                     test_capabilities(&mut found, &said, if part.is_some() { "this part of the system" } else { "this system" }, &excerpt);
                     say_what_each_is_for(&mut found, &said);
+                    crate::capabilities::one_of_each(&mut found, &said);
                     let described = match (several, part.as_deref()) {
                         (true, Some(named)) if !found.is_empty() => {
                             describe_one(&found, &held.entities, &spoken, told, Some(named))
@@ -1332,6 +1333,7 @@ pub fn author(
                 || say_what_each_is_for(&mut whole, &spoken),
                 || describe_product(&together, &held.entities, &held.flows, &spoken, told, described),
             );
+            crate::capabilities::one_of_each(&mut whole, &spoken);
             capabilities.extend(whole);
             capabilities.sort_by(|left, right| left.id.cmp(&right.id));
             eprintln!(

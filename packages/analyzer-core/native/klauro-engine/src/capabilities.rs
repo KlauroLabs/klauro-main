@@ -237,8 +237,24 @@ pub(crate) fn surface_of(flow: &Flow) -> String {
     }
 }
 
-pub(crate) fn terminality_of(family: &Family) -> &'static str {
+fn only_relays_a_signal(flows: &[&Flow]) -> bool {
+    !flows.is_empty()
+        && flows.iter().all(|flow| {
+            flow.writes.is_empty()
+                && flow.changes.is_empty()
+                && flow.reads.is_empty()
+                && flow.reaches.is_empty()
+                && flow.steps.iter().any(|step| matches!(step.kind, "raise" | "hand_off"))
+                && flow.steps.iter().all(|step| matches!(step.kind, "raise" | "hand_off" | "respond"))
+        })
+}
+
+const ONLY_PASSES_A_SIGNAL: &str =
+    "; its paths only pass a signal on or hand what arrives to another part, and change, call and keep nothing themselves";
+
+pub(crate) fn terminality_of(family: &Family, flows: &[&Flow]) -> &'static str {
     match family.key.split(':').next().unwrap_or_default() {
+        "asks" if only_relays_a_signal(flows) => "proximal",
         "changes" | "hands on" | "calls" | "acts" | "keeps" | "asks" => "terminal",
         _ => "proximal",
     }
@@ -282,9 +298,12 @@ fn evidence_of(flows: &[&Flow], family: &Family, fields: &Fields) -> String {
         .collect();
     format!(
         "  outcome ({}): {}, which is {}\n  {RECORDS_HOLD} {}\n  entered as: {}\n  reached through: {}{}\n  guarded by: {}\n  what its paths do:\n{}\n  writes: {}\n  reads: {}\n  reaches: {}\n  paths: {}",
-        terminality_of(family),
+        terminality_of(family, flows),
         object,
-        family.basis,
+        match family.key.starts_with("asks:") && only_relays_a_signal(flows) {
+            true => format!("{}{ONLY_PASSES_A_SIGNAL}", family.basis),
+            false => family.basis.to_string(),
+        },
         listed(&kept),
         kinds.join(", "),
         surfaces.join(", "),
@@ -545,9 +564,37 @@ fn join_the_same(said: &str, held: &mut Vec<Held>) {
     *held = kept;
 }
 
+fn stemmed(word: &str) -> String {
+    let lowered = word.to_ascii_lowercase().replace(['-', '_'], "");
+    lowered.strip_suffix('s').filter(|stem| stem.len() > 2).map(str::to_string).unwrap_or(lowered)
+}
+
 fn record_key(family: &str) -> String {
-    let object = object_of(family).to_ascii_lowercase();
-    object.strip_suffix('s').filter(|stem| stem.len() > 2).map(str::to_string).unwrap_or(object)
+    match family.starts_with("asks:") {
+        true => stemmed(object_of(family)),
+        false => {
+            let object = object_of(family).to_ascii_lowercase();
+            object.strip_suffix('s').filter(|stem| stem.len() > 2).map(str::to_string).unwrap_or(object)
+        }
+    }
+}
+
+static NOT_AN_OBJECT_NOUN: &[&str] = &[
+    "a", "an", "and", "as", "at", "by", "for", "from", "in", "into", "is", "it", "its", "of", "on", "or", "someone",
+    "the", "their", "them", "they", "this", "to", "user", "users", "with",
+    "add", "authenticate", "cache", "check", "close", "compute", "configure", "create", "delete", "disable", "emit",
+    "enable", "execute", "fetch", "find", "forward", "get", "handle", "hide", "list", "load", "manage", "monitor",
+    "open", "organize", "parse", "read", "receive", "remove", "replace", "retrieve", "run", "save", "search", "send",
+    "set", "show", "sign", "start", "stop", "sync", "toggle", "track", "update", "view", "write",
+];
+
+fn object_nouns(name: &str) -> Vec<String> {
+    name.split_whitespace()
+        .map(|word| word.trim_matches(|letter: char| !letter.is_ascii_alphanumeric()).to_string())
+        .filter(|word| word.len() > 2)
+        .map(|word| stemmed(&word))
+        .filter(|word| word.len() > 2 && !NOT_AN_OBJECT_NOUN.contains(&word.as_str()))
+        .collect()
 }
 
 fn could_repeat(held: &[Held], key_of: &BTreeMap<&str, &str>) -> Vec<Vec<usize>> {
@@ -560,10 +607,16 @@ fn could_repeat(held: &[Held], key_of: &BTreeMap<&str, &str>) -> Vec<Vec<usize>>
         }
         current
     }
+    let keys_of = |other: &Held| -> BTreeSet<String> {
+        other
+            .families
+            .iter()
+            .map(|family| record_key(key_of.get(family.as_str()).copied().unwrap_or(family.as_str())))
+            .collect()
+    };
     let mut first_with: BTreeMap<String, usize> = BTreeMap::new();
     for (at, other) in held.iter().enumerate() {
-        for family in &other.families {
-            let key = record_key(key_of.get(family.as_str()).copied().unwrap_or(family.as_str()));
+        for key in keys_of(other) {
             match first_with.get(&key).copied() {
                 Some(earlier) => {
                     let (left, right) = (found(&mut leader, earlier), found(&mut leader, at));
@@ -577,12 +630,73 @@ fn could_repeat(held: &[Held], key_of: &BTreeMap<&str, &str>) -> Vec<Vec<usize>>
             }
         }
     }
-    let mut clusters: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    let mut components: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for at in 0..held.len() {
         let root = found(&mut leader, at);
-        clusters.entry(root).or_default().push(at);
+        components.entry(root).or_default().push(at);
     }
-    clusters.into_values().filter(|cluster| cluster.len() > 1).collect()
+    let asked_by_name = |at: &usize| asks_only_families(&held[*at].families, key_of);
+    let mut clusters: Vec<Vec<usize>> = Vec::new();
+    let mut by_key: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for component in components.into_values() {
+        if !component.iter().all(asked_by_name) {
+            if component.len() > 1 {
+                clusters.push(component);
+            }
+            continue;
+        }
+        for at in component {
+            let mut keys = keys_of(&held[at]);
+            keys.extend(object_nouns(&held[at].name));
+            for key in keys {
+                by_key.entry(key).or_default().push(at);
+            }
+        }
+    }
+    let mut grouped: Vec<Vec<usize>> = Vec::new();
+    let mut groups: Vec<Vec<usize>> = by_key.into_values().filter(|members| members.len() > 1).collect();
+    groups.sort_by_key(|members| std::cmp::Reverse(members.len()));
+    for members in groups {
+        for chunk in members.chunks(FAMILIES_PER_PROPOSAL) {
+            if chunk.len() < 2 || grouped.iter().any(|kept| chunk.iter().all(|at| kept.contains(at))) {
+                continue;
+            }
+            grouped.push(chunk.to_vec());
+        }
+    }
+    grouped.sort();
+    clusters.extend(grouped);
+    clusters
+}
+
+fn asks_only_families(families: &BTreeSet<String>, key_of: &BTreeMap<&str, &str>) -> bool {
+    !families.is_empty()
+        && families.iter().all(|id| key_of.get(id.as_str()).copied().unwrap_or(id.as_str()).starts_with("asks:"))
+}
+
+fn normalized_name(name: &str) -> String {
+    name.trim().to_ascii_lowercase().split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn merge_exact_asks_duplicates(held: &mut Vec<Held>, key_of: &BTreeMap<&str, &str>) {
+    let mut at = 0;
+    while at < held.len() {
+        if !asks_only_families(&held[at].families, key_of) {
+            at += 1;
+            continue;
+        }
+        let name = normalized_name(&held[at].name);
+        let mut other = at + 1;
+        while other < held.len() {
+            if asks_only_families(&held[other].families, key_of) && normalized_name(&held[other].name) == name {
+                let merged = held.remove(other);
+                held[at].families.extend(merged.families);
+            } else {
+                other += 1;
+            }
+        }
+        at += 1;
+    }
 }
 
 fn consolidate_within(said: &str, held: Vec<Held>, key_of: &BTreeMap<&str, &str>) -> Vec<Held> {
@@ -744,6 +858,7 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
         }
     };
     held.retain(|other| !other.families.is_empty());
+    merge_exact_asks_duplicates(&mut held, &key_of);
     plumbing.retain(|id| known.contains(id));
     if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
         eprintln!("  settled {} capabilities and {} plumbing of {} outcomes", held.len(), plumbing.len(), told.len());
@@ -890,8 +1005,9 @@ fn built(
     for family_id in &held.families {
         let Some((family, lane)) = lanes.get(family_id.as_str()) else { continue };
         told.push(evidence_of(lane, family, fields));
-        if terminality_of(family) == "terminal" || capability.terminality.is_none() {
-            capability.terminality = Some(terminality_of(family));
+        let terminality = terminality_of(family, lane);
+        if terminality == "terminal" || capability.terminality.is_none() {
+            capability.terminality = Some(terminality);
         }
         for flow in lane.iter().filter(|flow| delivers(family_id, &flow.id)) {
             capability.project = capability.project.take().or_else(|| flow.project.clone());
@@ -1254,6 +1370,213 @@ pub(crate) fn of_the_whole(parts: &[Capability], spoken: &str, scope: &str, flow
     merged
 }
 
+const LISTED_AT_ONCE: usize = 120;
+const TOLD_IN_A_LINE: usize = 160;
+
+fn singular(word: &str) -> String {
+    if let Some(stem) = word.strip_suffix("ies").filter(|stem| stem.len() > 1) {
+        return format!("{stem}y");
+    }
+    if ["sses", "xes", "ches", "shes"].iter().any(|ending| word.ends_with(ending)) {
+        return word[..word.len() - 2].to_string();
+    }
+    match word.strip_suffix('s') {
+        Some(stem) if stem.len() > 2 && !stem.ends_with('s') && !stem.ends_with('u') && !stem.ends_with('i') => {
+            stem.to_string()
+        }
+        _ => word.to_string(),
+    }
+}
+
+pub(crate) fn name_key(name: &str) -> String {
+    name.to_lowercase()
+        .split(|letter: char| !letter.is_alphanumeric())
+        .filter(|word| !word.is_empty() && !matches!(*word, "a" | "an" | "the"))
+        .map(singular)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn in_a_line(told: &str) -> String {
+    let first = told.split_terminator(". ").next().unwrap_or(told).trim();
+    match first.char_indices().nth(TOLD_IN_A_LINE) {
+        Some((cut, _)) => first[..cut].to_string(),
+        None => first.to_string(),
+    }
+}
+
+fn asked_together(listed: &[usize]) -> Vec<Vec<usize>> {
+    if listed.len() <= LISTED_AT_ONCE {
+        return vec![listed.to_vec()];
+    }
+    let halves: Vec<&[usize]> = listed.chunks(LISTED_AT_ONCE / 2).collect();
+    let mut asked: Vec<Vec<usize>> = Vec::new();
+    for first in 0..halves.len() {
+        for second in first + 1..halves.len() {
+            asked.push(halves[first].iter().chain(halves[second].iter()).copied().collect());
+        }
+    }
+    asked
+}
+
+pub(crate) struct Joined {
+    pub(crate) members: Vec<usize>,
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) audience: String,
+}
+
+pub(crate) fn the_same_among(
+    listed: &[(String, String)],
+    ask: impl Fn(&BTreeMap<String, String>) -> Vec<crate::author::Same> + Sync,
+) -> Vec<Joined> {
+    let mut leader: Vec<usize> = (0..listed.len()).collect();
+    fn found(leader: &mut [usize], at: usize) -> usize {
+        let mut current = at;
+        while leader[current] != current {
+            leader[current] = leader[leader[current]];
+            current = leader[current];
+        }
+        current
+    }
+    let join = |leader: &mut Vec<usize>, first: usize, second: usize| {
+        let (left, right) = (found(leader, first), found(leader, second));
+        if left != right {
+            leader[left.max(right)] = left.min(right);
+        }
+    };
+    let mut first_named: BTreeMap<String, usize> = BTreeMap::new();
+    for (at, (name, _)) in listed.iter().enumerate() {
+        let key = name_key(name);
+        if key.is_empty() {
+            continue;
+        }
+        match first_named.get(&key).copied() {
+            Some(earlier) => join(&mut leader, earlier, at),
+            None => {
+                first_named.insert(key, at);
+            }
+        }
+    }
+    let shown: Vec<usize> = (0..listed.len()).filter(|at| found(&mut leader, *at) == *at).collect();
+    let answers: Vec<(Vec<usize>, Vec<crate::author::Same>)> = asked_together(&shown)
+        .into_par_iter()
+        .filter(|chunk| chunk.len() > 1)
+        .map(|chunk| {
+            let offered: BTreeMap<String, String> = chunk
+                .iter()
+                .map(|at| (format!("c{at}"), format!("{} | {}", listed[*at].0.trim(), in_a_line(&listed[*at].1))))
+                .collect();
+            let said = ask(&offered);
+            (chunk, said)
+        })
+        .collect();
+    let mut named: Vec<(Vec<usize>, String, String, String)> = Vec::new();
+    for (chunk, said) in answers {
+        for same in said {
+            let members: Vec<usize> = same
+                .of
+                .iter()
+                .filter_map(|id| id.trim().strip_prefix('c')?.parse::<usize>().ok())
+                .filter(|at| chunk.contains(at))
+                .collect::<BTreeSet<usize>>()
+                .into_iter()
+                .collect();
+            if members.len() < 2 {
+                continue;
+            }
+            for at in &members[1..] {
+                join(&mut leader, members[0], *at);
+            }
+            named.push((members, same.name.trim().to_string(), same.description.trim().to_string(), same.audience.trim().to_string()));
+        }
+    }
+    let mut components: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for at in 0..listed.len() {
+        let root = found(&mut leader, at);
+        components.entry(root).or_default().push(at);
+    }
+    components
+        .into_values()
+        .filter(|members| members.len() > 1)
+        .map(|members| {
+            let chosen = named
+                .iter()
+                .filter(|(held, name, _, _)| !name.is_empty() && held.iter().all(|at| members.contains(at)))
+                .max_by_key(|(held, _, _, _)| held.len());
+            match chosen {
+                Some((_, name, description, audience)) => Joined {
+                    members,
+                    name: name.clone(),
+                    description: description.clone(),
+                    audience: audience.clone(),
+                },
+                None => Joined { members, name: String::new(), description: String::new(), audience: String::new() },
+            }
+        })
+        .collect()
+}
+
+pub(crate) fn one_of_each(capabilities: &mut Vec<Capability>, said: &str) {
+    if capabilities.len() < 2 {
+        return;
+    }
+    let listed: Vec<(String, String)> = capabilities
+        .iter()
+        .map(|capability| {
+            (capability.name.clone().unwrap_or_default(), capability.description.clone().unwrap_or_default())
+        })
+        .collect();
+    let groups = the_same_among(&listed, |offered| crate::author::same_capability(said, offered));
+    if groups.is_empty() {
+        return;
+    }
+    let mut slots: Vec<Option<Capability>> = std::mem::take(capabilities).into_iter().map(Some).collect();
+    let mut kept: Vec<Capability> = Vec::new();
+    for group in groups {
+        let keeper = group
+            .members
+            .iter()
+            .copied()
+            .max_by_key(|at| (slots[*at].as_ref().map_or(0, |held| held.flows.len()), std::cmp::Reverse(*at)))
+            .unwrap_or(group.members[0]);
+        let Some(mut together) = slots[keeper].take() else { continue };
+        let mut merged_names: Vec<String> = vec![together.name.clone().unwrap_or_default()];
+        for at in &group.members {
+            if let Some(other) = slots[*at].take() {
+                merged_names.push(other.name.clone().unwrap_or_default());
+                crate::comprehend::joined(&mut together, other);
+            }
+        }
+        if !group.name.is_empty() {
+            together.id = format!("capability:{}", carved_name(&group.name));
+            together.name = Some(group.name.clone());
+        }
+        if !group.description.is_empty() {
+            together.description = Some(group.description.clone());
+        }
+        if !group.audience.is_empty() {
+            together.audience = Some(group.audience.to_ascii_lowercase());
+        }
+        eprintln!(
+            "  one of each: {} <- {}",
+            together.name.as_deref().unwrap_or(""),
+            merged_names.join(" | ")
+        );
+        kept.push(together);
+    }
+    kept.extend(slots.into_iter().flatten());
+    let mut unique: Vec<Capability> = Vec::new();
+    for capability in kept {
+        match unique.iter_mut().find(|held| held.id == capability.id) {
+            Some(held) => crate::comprehend::joined(held, capability),
+            None => unique.push(capability),
+        }
+    }
+    unique.sort_by(|left, right| left.id.cmp(&right.id));
+    *capabilities = unique;
+}
+
 #[cfg(test)]
 mod command_family_tests {
     use super::*;
@@ -1326,6 +1649,308 @@ mod command_family_tests {
     #[test]
     fn a_named_command_is_terminal() {
         let family = Family { key: "asks:chat:run".to_string(), basis: "the command someone explicitly asked it to run" };
-        assert_eq!(terminality_of(&family), "terminal");
+        let acts = flow("flow:1", "ipc", None, "chat:run", &["chat"], &[]);
+        assert_eq!(terminality_of(&family, &[&acts]), "terminal");
+    }
+
+    fn logical_step(kind: &'static str, object: Option<&str>) -> crate::steps::LogicalStep {
+        crate::steps::LogicalStep {
+            id: "s1".to_string(),
+            kind,
+            label: kind.to_string(),
+            object: object.map(str::to_string),
+            doing: None,
+            when: "always",
+            regions: Vec::new(),
+            description: None,
+        }
+    }
+
+    #[test]
+    fn a_bare_signal_relay_command_is_not_forced_terminal() {
+        let family = Family { key: "asks:window:closeShortcut".to_string(), basis: "the command someone explicitly asked it to run" };
+        let mut relay = flow("flow:1", "ipc", None, "window:closeShortcut", &[], &[]);
+        relay.steps.push(logical_step("raise", Some("close_event")));
+        assert_eq!(terminality_of(&family, &[&relay]), "proximal");
+    }
+
+    #[test]
+    fn a_named_command_whose_steps_were_never_read_stays_terminal() {
+        let family = Family { key: "asks:replace".to_string(), basis: "the command someone explicitly asked it to run" };
+        let unread = flow("flow:1", "ipc", None, "replace", &[], &[]);
+        assert_eq!(terminality_of(&family, &[&unread]), "terminal");
+        assert!(!evidence_of(&[&unread], &family, &Fields::new()).contains(ONLY_PASSES_A_SIGNAL));
+    }
+
+    #[test]
+    fn a_relay_command_carries_the_signal_note_in_its_evidence() {
+        let family = Family { key: "asks:relay:forward".to_string(), basis: "the command someone explicitly asked it to run" };
+        let mut relay = flow("flow:1", "ipc", None, "relay:forward", &[], &[]);
+        relay.steps.push(logical_step("hand_off", Some("channel")));
+        let told = evidence_of(&[&relay], &family, &Fields::new());
+        assert!(told.contains("outcome (proximal)") && told.contains(ONLY_PASSES_A_SIGNAL), "{told}");
+    }
+
+    #[test]
+    fn a_named_command_that_reads_what_it_shows_stays_terminal() {
+        let family = Family { key: "asks:usage:get".to_string(), basis: "the command someone explicitly asked it to run" };
+        let shows = flow("flow:1", "ipc", None, "usage:get", &[], &["usage"]);
+        assert_eq!(terminality_of(&family, &[&shows]), "terminal");
+        assert!(!evidence_of(&[&shows], &family, &Fields::new()).contains(ONLY_PASSES_A_SIGNAL));
+    }
+
+    #[test]
+    fn a_route_family_never_carries_the_signal_note() {
+        let family = Family { key: "hands on:close_event".to_string(), basis: "what it hands on to another part" };
+        let mut raised = flow("flow:1", "event", None, "close", &[], &[]);
+        raised.steps.push(logical_step("raise", Some("close_event")));
+        assert_eq!(terminality_of(&family, &[&raised]), "terminal");
+        assert!(!evidence_of(&[&raised], &family, &Fields::new()).contains(ONLY_PASSES_A_SIGNAL));
+    }
+
+    #[test]
+    fn a_named_command_that_writes_a_record_stays_terminal() {
+        let family = Family { key: "asks:archive:rename".to_string(), basis: "the command someone explicitly asked it to run" };
+        let mut renamed = flow("flow:1", "ipc", None, "archive:rename", &["file"], &[]);
+        renamed.steps.push(logical_step("change", Some("file")));
+        assert_eq!(terminality_of(&family, &[&renamed]), "terminal");
+    }
+
+    #[test]
+    fn a_named_command_with_hand_written_logic_beyond_a_relay_stays_terminal() {
+        let family = Family { key: "asks:text:replace".to_string(), basis: "the command someone explicitly asked it to run" };
+        let mut replaces = flow("flow:1", "ipc", None, "text:replace", &[], &[]);
+        replaces.steps.push(logical_step("do", None));
+        assert_eq!(terminality_of(&family, &[&replaces]), "terminal");
+    }
+
+    #[test]
+    fn exact_duplicate_asks_only_capabilities_merge_without_asking_ai() {
+        let mut key_of: BTreeMap<&str, &str> = BTreeMap::new();
+        key_of.insert("f0", "asks:engine:configure");
+        key_of.insert("f1", "asks:engine:setup");
+        let mut held = vec![
+            Held {
+                name: "Configure engine environment".to_string(),
+                description: "Sets up the engine".to_string(),
+                audience: "developer".to_string(),
+                families: BTreeSet::from(["f0".to_string()]),
+            },
+            Held {
+                name: "  configure   engine environment ".to_string(),
+                description: "Sets up the engine".to_string(),
+                audience: "developer".to_string(),
+                families: BTreeSet::from(["f1".to_string()]),
+            },
+        ];
+        merge_exact_asks_duplicates(&mut held, &key_of);
+        assert_eq!(held.len(), 1, "identical-named asks-only capabilities must merge deterministically");
+        assert_eq!(held[0].families, BTreeSet::from(["f0".to_string(), "f1".to_string()]));
+    }
+
+    #[test]
+    fn duplicate_names_across_a_mixed_family_are_left_for_the_ai() {
+        let mut key_of: BTreeMap<&str, &str> = BTreeMap::new();
+        key_of.insert("f0", "asks:engine:configure");
+        key_of.insert("f1", "changes:engine");
+        let mut held = vec![
+            Held {
+                name: "Configure engine environment".to_string(),
+                description: "one".to_string(),
+                audience: "developer".to_string(),
+                families: BTreeSet::from(["f0".to_string()]),
+            },
+            Held {
+                name: "Configure engine environment".to_string(),
+                description: "two".to_string(),
+                audience: "developer".to_string(),
+                families: BTreeSet::from(["f1".to_string()]),
+            },
+        ];
+        merge_exact_asks_duplicates(&mut held, &key_of);
+        assert_eq!(held.len(), 2, "a non-asks family must not be merged deterministically");
+    }
+
+    #[test]
+    fn object_nouns_widen_clustering_for_asks_only_capabilities() {
+        let mut key_of: BTreeMap<&str, &str> = BTreeMap::new();
+        key_of.insert("f0", "asks:accounts:signIn");
+        key_of.insert("f1", "asks:auth:manage");
+        let held = vec![
+            Held {
+                name: "Sign in with subscription account".to_string(),
+                description: String::new(),
+                audience: String::new(),
+                families: BTreeSet::from(["f0".to_string()]),
+            },
+            Held {
+                name: "Authenticate with subscription accounts".to_string(),
+                description: String::new(),
+                audience: String::new(),
+                families: BTreeSet::from(["f1".to_string()]),
+            },
+        ];
+        let clusters = could_repeat(&held, &key_of);
+        assert_eq!(clusters, vec![vec![0, 1]], "a shared object noun must cluster two different asks namespaces");
+    }
+
+    #[test]
+    fn a_widened_cluster_keeps_the_members_that_share_a_noun_together() {
+        let mut key_of: BTreeMap<&str, &str> = BTreeMap::new();
+        let names = ["Manage accounts", "Open files", "Browse files", "Manage subscription accounts", "Label accounts"];
+        let namespaces = ["asks:auth:list", "asks:fs:open", "asks:fs:list", "asks:auth:reorder", "asks:profile:label"];
+        let ids = ["f0", "f1", "f2", "f3", "f4"];
+        for at in 0..names.len() {
+            key_of.insert(ids[at], namespaces[at]);
+        }
+        let held: Vec<Held> = names
+            .iter()
+            .zip(ids)
+            .map(|(name, id)| Held {
+                name: name.to_string(),
+                description: String::new(),
+                audience: String::new(),
+                families: BTreeSet::from([id.to_string()]),
+            })
+            .collect();
+        let clusters = could_repeat(&held, &key_of);
+        assert!(clusters.contains(&vec![0, 3, 4]), "{clusters:?}");
+        assert!(clusters.contains(&vec![1, 2]), "{clusters:?}");
+    }
+
+    #[test]
+    fn non_asks_clusters_keep_their_old_shape() {
+        let mut key_of: BTreeMap<&str, &str> = BTreeMap::new();
+        key_of.insert("f0", "changes:orders");
+        key_of.insert("f1", "shows:order");
+        key_of.insert("f2", "changes:baskets");
+        let held: Vec<Held> = ["Place orders", "Track an order", "Fill a basket"]
+            .iter()
+            .enumerate()
+            .map(|(at, name)| Held {
+                name: name.to_string(),
+                description: String::new(),
+                audience: String::new(),
+                families: BTreeSet::from([format!("f{at}")]),
+            })
+            .collect();
+        assert_eq!(could_repeat(&held, &key_of), vec![vec![0, 1]]);
+    }
+
+    #[test]
+    fn namespace_dashes_and_underscores_are_treated_the_same() {
+        let mut key_of: BTreeMap<&str, &str> = BTreeMap::new();
+        key_of.insert("f0", "asks:chat-session:list");
+        key_of.insert("f1", "asks:chat_sessions:create");
+        let held = vec![
+            Held {
+                name: "List chats".to_string(),
+                description: String::new(),
+                audience: String::new(),
+                families: BTreeSet::from(["f0".to_string()]),
+            },
+            Held {
+                name: "Start a chat".to_string(),
+                description: String::new(),
+                audience: String::new(),
+                families: BTreeSet::from(["f1".to_string()]),
+            },
+        ];
+        let clusters = could_repeat(&held, &key_of);
+        assert_eq!(clusters, vec![vec![0, 1]], "chat-session and chat_sessions must normalize to the same namespace");
+    }
+
+    #[test]
+    fn oversized_asks_clusters_split_into_bounded_groups_without_dropping_members() {
+        let mut key_of: BTreeMap<&str, &str> = BTreeMap::new();
+        let mut held = Vec::new();
+        for at in 0..(FAMILIES_PER_PROPOSAL * 2 + 3) {
+            let id = format!("f{at}");
+            key_of.insert(Box::leak(id.clone().into_boxed_str()), Box::leak(format!("asks:usage{at}:track").into_boxed_str()));
+            held.push(Held {
+                name: "Track API usage".to_string(),
+                description: String::new(),
+                audience: String::new(),
+                families: BTreeSet::from([id]),
+            });
+        }
+        let clusters = could_repeat(&held, &key_of);
+        let covered: BTreeSet<usize> = clusters.iter().flatten().copied().collect();
+        assert_eq!(covered.len(), held.len(), "no member may be dropped when a cluster is split");
+        assert!(clusters.iter().all(|cluster| cluster.len() <= FAMILIES_PER_PROPOSAL), "each split cluster must stay bounded: {clusters:?}");
+    }
+}
+
+#[cfg(test)]
+mod one_of_each_tests {
+    use super::*;
+
+    fn listed(names: &[String]) -> Vec<(String, String)> {
+        names.iter().map(|name| (name.clone(), format!("Someone gets {name}."))).collect()
+    }
+
+    fn synonyms_asked(offered: &BTreeMap<String, String>) -> Vec<crate::author::Same> {
+        let links = offered.iter().find(|(_, told)| told.starts_with("Open external links |"));
+        let urls = offered.iter().find(|(_, told)| told.starts_with("Open external URLs |"));
+        match (links, urls) {
+            (Some((first, _)), Some((second, _))) => vec![crate::author::Same {
+                of: vec![first.clone(), second.clone()],
+                name: "Open external links".to_string(),
+                description: "Opens links outside the app.".to_string(),
+                audience: "user".to_string(),
+            }],
+            _ => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_name_key_ignores_case_punctuation_articles_and_plurals() {
+        assert_eq!(name_key("Open External Links."), name_key("open an external link"));
+        assert_eq!(name_key("Manage Categories"), name_key("manage category"));
+        assert_eq!(name_key("Track the process"), name_key("track processes"));
+        assert_ne!(name_key("Sign in"), name_key("Sign out"));
+    }
+
+    #[test]
+    fn the_same_normalized_name_is_merged_without_asking() {
+        let names = vec!["Configure engine environment".to_string(), "Delete a post".to_string(), "configure Engine environments!".to_string()];
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+        let groups = the_same_among(&listed(&names), |offered| {
+            asked.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            assert_eq!(offered.len(), 2, "a name already merged is listed once: {offered:?}");
+            Vec::new()
+        });
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].members, vec![0, 2]);
+    }
+
+    #[test]
+    fn a_synonym_pair_planted_in_different_chunks_comes_out_as_one() {
+        let mut names: Vec<String> = (0..300).map(|at| format!("Distinct capability {at}")).collect();
+        names[5] = "Open external links".to_string();
+        names[280] = "Open external URLs".to_string();
+        let items = listed(&names);
+        assert!(asked_together(&(0..300).collect::<Vec<_>>()).iter().all(|chunk| chunk.len() <= LISTED_AT_ONCE));
+        let groups = the_same_among(&items, synonyms_asked);
+        assert_eq!(groups.len(), 1, "exactly the planted pair merges");
+        assert_eq!(groups[0].members, vec![5, 280]);
+        assert_eq!(groups[0].name, "Open external links");
+    }
+
+    #[test]
+    fn every_pair_is_asked_together_at_least_once() {
+        let shown: Vec<usize> = (0..400).collect();
+        let chunks = asked_together(&shown);
+        for first in (0..400).step_by(37) {
+            for second in (0..400).step_by(41) {
+                assert!(chunks.iter().any(|chunk| chunk.contains(&first) && chunk.contains(&second)), "{first} and {second}");
+            }
+        }
+    }
+
+    #[test]
+    fn different_things_to_do_stay_apart_when_nothing_is_said_the_same() {
+        let names = vec!["Sign in".to_string(), "Sign out".to_string(), "Delete a post".to_string()];
+        assert!(the_same_among(&listed(&names), |_| Vec::new()).is_empty());
     }
 }

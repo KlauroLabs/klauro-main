@@ -543,6 +543,42 @@ pub fn same_outcome(spoken_for: &str, listed: &BTreeMap<String, String>) -> Vec<
         .collect()
 }
 
+pub fn same_capability(spoken_for: &str, listed: &BTreeMap<String, String>) -> Vec<Same> {
+    if !asked() || listed.len() < 2 {
+        return Vec::new();
+    }
+    let prompt = format!(
+        "A software system describes itself like this:\n{spoken_for}\n\n\
+         That description may speak of the project rather than the software, such as its status, history or \
+         whether it is still maintained; what the software does is read from the code below, and that decides.\n\n\
+         Below is the complete list of capabilities read from it, each with an id, its name and what someone \
+         gets. The list was put together piece by piece, so one capability may appear twice under different \
+         words. Which of these name the same capability a user gets? Two are the same only when someone would \
+         say they are one thing to do, named two ways: opening external links and opening external URLs are \
+         one. Different things to do stay apart, even when they act on the same thing or sit on the same \
+         screen: signing in and signing out, creating and deleting a post, viewing usage and setting a \
+         spending limit are each their own. A capability that covers a whole area and one that is only a part \
+         of that area also stay apart. When unsure, keep them apart.\n\n\
+         List only groups of two or more ids, and leave every other id out. For each group give the name that \
+         says the shared capability best, keeping one of the names given when one says it, one sentence saying \
+         what someone gets, and the audience it is for.\n\
+         Return JSON only: {{\"groups\":[{{\"of\":[\"...\"],\"name\":\"...\",\"description\":\"...\",\"audience\":\"...\"}}]}}\n\n\
+         The capabilities:\n{}",
+        listed.iter().map(|(id, told)| format!("- {id}: {told}")).collect::<Vec<_>>().join("\n")
+    );
+    let Some(held) = answered::<serde_json::Value>(&prompt, 3000, &asking_of_models(model()), "groups", 0)
+    else {
+        return Vec::new();
+    };
+    held["groups"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|group| serde_json::from_value::<Same>(group.clone()).ok())
+        .filter(|group| group.of.len() > 1)
+        .collect()
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct Proposed {
     #[serde(default)]
