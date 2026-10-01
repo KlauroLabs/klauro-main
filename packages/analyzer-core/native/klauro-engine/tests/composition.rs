@@ -32,33 +32,35 @@ fn copy(from: &Path, to: &Path) {
     }
 }
 
-fn git(directory: &Path, arguments: &[&str]) {
+fn git(directory: &Path, date: &str, arguments: &[&str]) {
     let done = Command::new("git")
         .arg("-C")
         .arg(directory)
         .args(["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"])
         .args(arguments)
+        .env("GIT_AUTHOR_DATE", date)
+        .env("GIT_COMMITTER_DATE", date)
         .output()
         .unwrap();
     assert!(done.status.success(), "{arguments:?}: {}", String::from_utf8_lossy(&done.stderr));
 }
 
-fn with_history(name: &str, changed: &[&str], rounds: usize) -> Value {
+fn with_history(name: &str, rounds: &[(&str, &[&str])]) -> Value {
     let root = std::env::temp_dir().join(format!("composition-history-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     copy(&Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/composed"), &root);
-    git(&root, &["init", "-q"]);
-    git(&root, &["add", "."]);
-    git(&root, &["commit", "-q", "-m", "first"]);
-    for round in 0..rounds {
-        for file in changed {
+    git(&root, "2020-01-01T00:00:00Z", &["init", "-q"]);
+    git(&root, "2020-01-01T00:00:00Z", &["add", "."]);
+    git(&root, "2020-01-01T00:00:00Z", &["commit", "-q", "-m", "first"]);
+    for (round, (date, changed)) in rounds.iter().enumerate() {
+        for file in *changed {
             let path = root.join(file);
             let mut text = std::fs::read_to_string(&path).unwrap();
             text.push_str(&format!("// change {round}\n"));
             std::fs::write(path, text).unwrap();
         }
-        git(&root, &["add", "."]);
-        git(&root, &["commit", "-q", "-m", &format!("change {round}")]);
+        git(&root, date, &["add", "."]);
+        git(&root, date, &["commit", "-q", "-m", &format!("change {round}")]);
     }
     let binary = env!("CARGO_BIN_EXE_klauro-engine");
     let output = Command::new(binary).arg(&root).env("KLAURO_ENRICH", "0").output().unwrap();
@@ -66,6 +68,10 @@ fn with_history(name: &str, changed: &[&str], rounds: usize) -> Value {
     let _ = std::fs::remove_dir_all(&root);
     index["composition"].clone()
 }
+
+const LEGACY: &str = "packages/legacy-old/src/old.ts";
+const ORDERS: &str = "packages/orders/src/server.ts";
+const SHARED: &str = "packages/shared/src/format.ts";
 
 #[test]
 fn without_history_weights_follow_what_each_child_is() {
@@ -99,21 +105,48 @@ fn a_library_imported_by_a_shipped_child_is_substrate_and_outweighs_an_unconsume
 }
 
 #[test]
-fn an_inactive_module_falls_below_an_active_one_once_history_exists() {
-    let composition = with_history("quiet", &["packages/orders/src/server.ts"], 6);
-    let orders = child(&composition, "packages/orders");
+fn a_module_untouched_for_months_while_the_product_moves_is_legacy() {
+    let composition = with_history(
+        "quiet",
+        &[("2026-01-01T00:00:00Z", &[LEGACY]), ("2026-09-01T00:00:00Z", &[ORDERS]), ("2026-09-20T00:00:00Z", &[ORDERS])],
+    );
     let legacy = child(&composition, "packages/legacy-old");
-    assert_eq!(orders["weight_basis"]["activity"], 1.0);
-    let quiet = legacy["weight_basis"]["activity"].as_f64().unwrap();
-    assert!(quiet > 0.35 && quiet < 0.7, "only the first commit touched it: {quiet}");
-    assert!(legacy["weight"].as_f64().unwrap() < 0.25);
+    assert_eq!(legacy["weight_basis"]["activity"], 0.35);
+    assert_eq!(legacy["weight"], 0.122);
+    assert_eq!(child(&composition, "packages/orders")["weight"], 1.0);
     assert!(legacy["weight"].as_f64().unwrap() < weight(&composition, "packages/shared"));
     assert!(legacy["weight"].as_f64().unwrap() < weight(&composition, "packages/billing-worker"));
 }
 
 #[test]
+fn an_active_unshipped_module_clearly_outranks_legacy() {
+    let active = with_history("active", &[("2026-01-01T00:00:00Z", &[LEGACY]), ("2026-09-20T00:00:00Z", &[LEGACY, ORDERS])]);
+    let quiet = with_history("dormant", &[("2026-01-01T00:00:00Z", &[LEGACY]), ("2026-09-20T00:00:00Z", &[ORDERS])]);
+    assert_eq!(weight(&active, "packages/legacy-old"), 0.35);
+    assert_eq!(weight(&quiet, "packages/legacy-old"), 0.122);
+}
+
+#[test]
+fn a_stable_shipped_child_stays_high_however_long_it_is_quiet() {
+    let composition = with_history("stable", &[("2026-01-01T00:00:00Z", &[SHARED]), ("2026-09-20T00:00:00Z", &[LEGACY])]);
+    let orders = child(&composition, "packages/orders");
+    assert_eq!(orders["weight_basis"]["activity"], 0.35);
+    assert_eq!(orders["weight"], 0.85);
+    let shared = child(&composition, "packages/shared");
+    assert!(shared["weight"].as_f64().unwrap() >= 0.6 * 0.85 - 0.001, "substrate keeps its factor: {shared}");
+}
+
+#[test]
+fn the_first_import_is_not_a_change() {
+    let composition = with_history("import", &[("2026-09-20T00:00:00Z", &[ORDERS])]);
+    let legacy = child(&composition, "packages/legacy-old");
+    assert_eq!(legacy["weight_basis"]["days_since_change"].as_i64().unwrap() > 2000, true, "{legacy}");
+    assert_eq!(legacy["weight"], 0.122);
+}
+
+#[test]
 fn a_single_commit_is_no_history_and_changes_nothing() {
-    let composition = with_history("single", &[], 0);
+    let composition = with_history("single", &[]);
     assert_eq!(child(&composition, "packages/legacy-old")["weight_basis"]["activity"], 1.0);
 }
 
@@ -121,7 +154,7 @@ fn a_single_commit_is_no_history_and_changes_nothing() {
 fn a_client_call_that_hits_another_childs_route_is_an_http_seam() {
     let index = common::read("composed");
     let seams = index["composition"]["seams"].as_array().unwrap();
-    let http: Vec<&Value> = seams.iter().filter(|seam| seam["kind"] == "http").collect();
+    let http: Vec<&Value> = seams.iter().filter(|seam| seam["kind"] == "http" && seam["origin"] == "product").collect();
     assert_eq!(http.len(), 1, "{seams:?}");
     assert_eq!(http[0]["from"], "subproject:packages/web");
     assert_eq!(http[0]["to"], "subproject:packages/orders");
@@ -129,6 +162,18 @@ fn a_client_call_that_hits_another_childs_route_is_an_http_seam() {
     assert_eq!(http[0]["count"], 1);
     let evidence = http[0]["evidence"][0].as_str().unwrap();
     assert!(evidence.contains("client.ts") && evidence.contains("server.ts"), "{evidence}");
+}
+
+#[test]
+fn a_call_made_from_test_code_is_kept_but_marked_as_a_test_seam() {
+    let index = common::read("composed");
+    let seams = index["composition"]["seams"].as_array().unwrap();
+    let marked: Vec<&Value> = seams.iter().filter(|seam| seam["origin"] == "test").collect();
+    assert_eq!(marked.len(), 1, "{seams:?}");
+    assert_eq!(marked[0]["from"], "subproject:packages/web");
+    assert_eq!(marked[0]["to"], "subproject:packages/orders");
+    assert!(marked[0]["evidence"][0].as_str().unwrap().contains("orders.test.ts"));
+    assert!(seams.iter().all(|seam| seam["origin"] == "test" || !seam["evidence"][0].as_str().unwrap().contains(".test.")));
 }
 
 #[test]

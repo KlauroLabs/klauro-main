@@ -149,13 +149,14 @@ export interface TierStackComposition {
     name: string;
     status: 'deployable' | 'executable' | 'library' | 'module';
     weight: number;
-    weight_basis: { ship: number; activity: number; consumed_by_shipped: boolean; notes: string[] };
+    weight_basis: { ship: number; activity: number; consumed_by_shipped: boolean; days_since_change?: number; notes: string[] };
   }>;
   seams: Array<{
     from: string;
     to: string;
     kind: 'http' | 'process';
     communication: 'sync' | 'async' | 'passive';
+    origin: 'product' | 'test';
     count: number;
     evidence: string[];
   }>;

@@ -1141,6 +1141,7 @@ fn read_it() {
     let composition_started = Instant::now();
     index.composition = index.partition.as_ref().and_then(|partition| {
         composition::derive(
+            &root,
             partition,
             index.history.as_ref(),
             &paths,

@@ -1,18 +1,23 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use serde::Serialize;
 
 use crate::entry_exit::{EntryPoint, ExitPoint};
-use crate::history::History;
+use crate::history::{self, History};
 use crate::model::{CallFact, EdgeKind, IndexEdge};
-use crate::paths::basename;
+use crate::paths::{basename, is_test};
 use crate::scope::Deployable;
 use crate::subproject::{Partition, SubProject};
 
 const EVIDENCE_KEPT: usize = 5;
 const WEIGHT_FLOOR: f64 = 0.05;
 const QUIET_ACTIVITY: f64 = 0.35;
+const RECENT_DAYS: f64 = 30.0;
+const LEGACY_DAYS: f64 = 180.0;
+const STABLE_SHIPPED_FLOOR: f64 = 0.85;
+const SECONDS_PER_DAY: f64 = 86400.0;
 const MINIMUM_NAME: usize = 4;
 const MINIMUM_COMMITS: u32 = 2;
 
@@ -21,6 +26,8 @@ pub struct WeightBasis {
     pub ship: f64,
     pub activity: f64,
     pub consumed_by_shipped: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub days_since_change: Option<i64>,
     pub notes: Vec<String>,
 }
 
@@ -39,6 +46,7 @@ pub struct Seam {
     pub to: String,
     pub kind: &'static str,
     pub communication: &'static str,
+    pub origin: &'static str,
     pub count: u32,
     pub evidence: Vec<String>,
 }
@@ -82,12 +90,23 @@ pub fn ship_factor(status: &str, consumed_by_shipped: bool) -> f64 {
     }
 }
 
-pub fn activity_factor(changes: u64, busiest: u64) -> f64 {
-    if busiest == 0 {
+pub fn activity_factor(days_quiet: f64) -> f64 {
+    if days_quiet <= RECENT_DAYS {
         return 1.0;
     }
-    let share = changes as f64 / busiest as f64;
-    QUIET_ACTIVITY + (1.0 - QUIET_ACTIVITY) * share.clamp(0.0, 1.0).sqrt()
+    let aged = ((days_quiet - RECENT_DAYS) / (LEGACY_DAYS - RECENT_DAYS)).clamp(0.0, 1.0);
+    1.0 - (1.0 - QUIET_ACTIVITY) * aged
+}
+
+pub fn carried_by_a_shipped_product(status: &str, consumed_by_shipped: bool) -> bool {
+    status == "deployable" || consumed_by_shipped
+}
+
+pub fn modifier(activity: f64, shipped: bool) -> f64 {
+    match shipped {
+        true => STABLE_SHIPPED_FLOOR + (1.0 - STABLE_SHIPPED_FLOOR) * (activity - QUIET_ACTIVITY) / (1.0 - QUIET_ACTIVITY),
+        false => activity,
+    }
 }
 
 pub fn combined(ship: f64, activity: f64) -> f64 {
@@ -117,56 +136,68 @@ fn shipped_substrate(projects: &[&SubProject]) -> HashSet<String> {
     reached
 }
 
-fn recent_changes(
+fn days_quiet(
+    root: &Path,
     history: Option<&History>,
     projects: &[&SubProject],
     owner: &HashMap<&str, &str>,
-) -> Option<HashMap<String, u64>> {
+) -> Option<HashMap<String, f64>> {
     let history = history?;
-    if history.commits < MINIMUM_COMMITS {
+    if history.commits < MINIMUM_COMMITS || history.head <= 0 {
         return None;
     }
-    let mut counted: HashMap<String, u64> = projects.iter().map(|project| (project.id.clone(), 0)).collect();
-    for (path, commits) in &history.per_file {
-        if let Some(id) = owner.get(path.as_str())
-            && let Some(total) = counted.get_mut(*id)
-        {
-            *total += u64::from(*commits);
+    let mut newest: HashMap<&str, i64> = HashMap::default();
+    for (path, _, last) in &history.per_file {
+        if let Some(id) = owner.get(path.as_str()) {
+            let held = newest.entry(id).or_insert(0);
+            *held = (*held).max(*last);
         }
     }
-    (counted.values().sum::<u64>() > 0).then_some(counted)
+    let untouched = (history.head - history.oldest).max(0) as f64 / SECONDS_PER_DAY;
+    Some(
+        projects
+            .iter()
+            .map(|project| {
+                let days = match newest.get(project.id.as_str()) {
+                    Some(last) => (history.head - last).max(0) as f64 / SECONDS_PER_DAY,
+                    None => match history::newest_change(root, &project.root) {
+                        Some(last) => (history.head - last).max(0) as f64 / SECONDS_PER_DAY,
+                        None => untouched,
+                    },
+                };
+                (project.id.clone(), days)
+            })
+            .collect(),
+    )
 }
 
 fn weigh(
+    root: &Path,
     projects: &[&SubProject],
     history: Option<&History>,
     owner: &HashMap<&str, &str>,
 ) -> Vec<Child> {
     let substrate = shipped_substrate(projects);
-    let changes = recent_changes(history, projects, owner);
-    let busiest = changes
-        .as_ref()
-        .and_then(|counted| counted.values().copied().max())
-        .unwrap_or(0);
+    let quiet = days_quiet(root, history, projects, owner);
     let mut children: Vec<Child> = projects
         .iter()
         .map(|project| {
             let consumed = substrate.contains(&project.id);
             let ship = ship_factor(project.status, consumed);
             let mut notes = Vec::new();
-            let activity = match changes.as_ref() {
-                Some(counted) => {
-                    let own = counted.get(&project.id).copied().unwrap_or(0);
-                    if own == 0 {
-                        notes.push("no change in the recent history".to_string());
-                    }
-                    activity_factor(own, busiest)
+            let mut quiet_days = None;
+            let activity = match quiet.as_ref() {
+                Some(days) => {
+                    let own = days.get(&project.id).copied().unwrap_or(0.0);
+                    quiet_days = Some(own.round() as i64);
+                    activity_factor(own)
                 }
                 None => {
                     notes.push("no usable history, activity left neutral".to_string());
                     1.0
                 }
             };
+            let shipped = carried_by_a_shipped_product(project.status, consumed);
             if consumed {
                 notes.push("imported by a shipped sub-project, so it is substrate of that behaviour".to_string());
             }
@@ -177,10 +208,11 @@ fn weigh(
                 id: project.id.clone(),
                 name: project.name.clone(),
                 status: project.status,
-                weight: combined(ship, activity),
+                weight: combined(ship, modifier(activity, shipped)),
                 weight_basis: WeightBasis {
                     ship,
                     activity: rounded(activity),
+                    days_since_change: quiet_days,
                     consumed_by_shipped: consumed,
                     notes,
                 },
@@ -273,7 +305,7 @@ fn http_seams(
             served.entry(route_shape(path)).or_default().push((project, entry));
         }
     }
-    let mut found: BTreeMap<(&str, &str), (u32, Vec<String>)> = BTreeMap::new();
+    let mut found: BTreeMap<(&str, &str, bool), (u32, Vec<String>)> = BTreeMap::new();
     for exit in exit_points.iter().filter(|exit| exit.kind == "api") {
         let (Some(addressed), Some(file)) = (exit.addressed.as_deref(), files.get(exit.file as usize)) else {
             continue;
@@ -293,7 +325,7 @@ fn http_seams(
         }
         let (target, route) = matching[0];
         let route_file = files.get(route.file as usize).map(String::as_str).unwrap_or_default();
-        let entry = found.entry((caller, target)).or_insert((0, Vec::new()));
+        let entry = found.entry((caller, target, is_test(file))).or_insert((0, Vec::new()));
         entry.0 += 1;
         entry.1.push(format!(
             "{}:{} {} {} -> {}:{} {} {}",
@@ -313,15 +345,23 @@ fn http_seams(
 fn seams_of(
     kind: &'static str,
     communication: &'static str,
-    found: BTreeMap<(&str, &str), (u32, Vec<String>)>,
+    found: BTreeMap<(&str, &str, bool), (u32, Vec<String>)>,
 ) -> Vec<Seam> {
     found
         .into_iter()
-        .map(|((from, to), (count, mut evidence))| {
+        .map(|((from, to, in_test), (count, mut evidence))| {
             evidence.sort();
             evidence.dedup();
             evidence.truncate(EVIDENCE_KEPT);
-            Seam { from: from.to_string(), to: to.to_string(), kind, communication, count, evidence }
+            Seam {
+                from: from.to_string(),
+                to: to.to_string(),
+                kind,
+                communication,
+                origin: if in_test { "test" } else { "product" },
+                count,
+                evidence,
+            }
         })
         .collect()
 }
@@ -397,7 +437,7 @@ fn process_seams(
             .or_default()
             .extend(call.literals.iter().map(String::as_str));
     }
-    let mut found: BTreeMap<(&str, &str), (u32, Vec<String>)> = BTreeMap::new();
+    let mut found: BTreeMap<(&str, &str, bool), (u32, Vec<String>)> = BTreeMap::new();
     for exit in exit_points.iter().filter(|exit| exit.kind == "process") {
         let Some(file) = files.get(exit.file as usize) else { continue };
         let Some(caller) = owner.get(file.as_str()) else { continue };
@@ -409,7 +449,7 @@ fn process_seams(
             })
         });
         let Some((target, word)) = reached else { continue };
-        let entry = found.entry((caller, target)).or_insert((0, Vec::new()));
+        let entry = found.entry((caller, target, is_test(file))).or_insert((0, Vec::new()));
         entry.0 += 1;
         entry.1.push(format!("{}:{} starts {}", file, exit.line, word));
     }
@@ -417,6 +457,7 @@ fn process_seams(
 }
 
 pub fn derive(
+    root: &Path,
     partition: &Partition,
     history: Option<&History>,
     files: &[String],
@@ -448,7 +489,7 @@ pub fn derive(
     seams.extend(process_seams(files, exit_points, calls, &owner, &names));
     Some(Composition {
         mode: "derived",
-        children: weigh(&projects, history, &owner),
+        children: weigh(root, &projects, history, &owner),
         seams,
         dependencies: dependencies(edges, &owner, residue.map(|project| project.id.as_str())),
         orphan: residue.map(|project| Orphan {
@@ -481,11 +522,22 @@ mod tests {
 
     #[test]
     fn activity_axis_is_bounded_monotonic_and_neutral_without_history() {
-        assert_eq!(activity_factor(5, 0), 1.0);
-        assert_eq!(activity_factor(0, 10), 0.35);
-        assert_eq!(activity_factor(10, 10), 1.0);
-        assert!(activity_factor(2, 10) < activity_factor(5, 10));
-        assert!(activity_factor(5, 10) < activity_factor(10, 10));
+        assert_eq!(activity_factor(0.0), 1.0);
+        assert_eq!(activity_factor(RECENT_DAYS), 1.0);
+        assert_eq!(activity_factor(LEGACY_DAYS), 0.35);
+        assert_eq!(activity_factor(10_000.0), 0.35);
+        assert!(activity_factor(60.0) > activity_factor(100.0));
+        assert!(activity_factor(100.0) > activity_factor(150.0));
+    }
+
+    #[test]
+    fn a_stable_shipped_child_is_only_mildly_modified() {
+        assert_eq!(modifier(0.35, true), 0.85);
+        assert_eq!(modifier(1.0, true), 1.0);
+        assert_eq!(modifier(0.35, false), 0.35);
+        assert!(carried_by_a_shipped_product("deployable", false));
+        assert!(carried_by_a_shipped_product("library", true));
+        assert!(!carried_by_a_shipped_product("module", false));
     }
 
     #[test]
