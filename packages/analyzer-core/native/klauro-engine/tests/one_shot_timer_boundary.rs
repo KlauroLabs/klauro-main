@@ -32,3 +32,16 @@ fn a_recurring_timer_stays_an_entry() {
         "setInterval is a genuinely recurring schedule entry: {entries:#?}"
     );
 }
+
+#[test]
+fn a_one_shot_timers_callback_stays_inside_the_function_that_started_it() {
+    let index = index();
+    assert!(
+        index["edges"].as_array().unwrap().iter().any(|edge| {
+            edge["kind"] == "contains"
+                && edge["source"] == "src/ui.js:function:onClick"
+                && edge["target"] == "src/ui.js:callback:setTimeout"
+        }),
+        "the callback's code stays reachable from the code that scheduled it"
+    );
+}
