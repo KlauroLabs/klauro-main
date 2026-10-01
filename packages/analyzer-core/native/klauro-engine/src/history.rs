@@ -29,6 +29,8 @@ pub struct History {
     pub touched: u32,
     pub churn: Vec<Churn>,
     pub co_change: Vec<CoChange>,
+    #[serde(skip)]
+    pub per_file: Vec<(String, u32)>,
 }
 
 fn holds_itself(root: &Path) -> bool {
@@ -116,6 +118,9 @@ pub fn read(root: &Path, files: &[String]) -> Option<History> {
             .then(left.path.cmp(&right.path))
     });
     let counted = churn.len() as u32;
+    let mut per_file: Vec<(String, u32)> =
+        churn.iter().map(|held| (held.path.clone(), held.commits)).collect();
+    per_file.sort();
     churn.truncate(RANKED);
 
     let mut co_change: Vec<CoChange> = together
@@ -136,7 +141,7 @@ pub fn read(root: &Path, files: &[String]) -> Option<History> {
     });
     co_change.truncate(RANKED);
 
-    Some(History { commits, touched: counted, churn, co_change })
+    Some(History { commits, touched: counted, churn, co_change, per_file })
 }
 
 fn record<'a>(together: &mut HashMap<(&'a str, &'a str), u32>, changed: &[&'a str]) {

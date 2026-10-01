@@ -135,6 +135,27 @@ export interface TierStackSubProject {
   runnable?: boolean;
 }
 
+export interface TierStackComposition {
+  mode: 'derived';
+  children: Array<{
+    id: string;
+    name: string;
+    status: 'deployable' | 'executable' | 'library' | 'module';
+    weight: number;
+    weight_basis: { ship: number; activity: number; consumed_by_shipped: boolean; notes: string[] };
+  }>;
+  seams: Array<{
+    from: string;
+    to: string;
+    kind: 'http' | 'process';
+    communication: 'sync' | 'async' | 'passive';
+    count: number;
+    evidence: string[];
+  }>;
+  dependencies: Array<{ from: string; to: string; count: number; evidence: string[] }>;
+  orphan?: { project: string; files: number; declarations: number };
+}
+
 export interface TierStackDeployable {
   id: string;
   name: string;
@@ -240,6 +261,7 @@ export interface TierStackIndex {
   roles?: { roles?: Array<{ node: string; role: string }> };
   scope?: { deployables?: TierStackDeployable[] };
   partition?: { sub_projects?: TierStackSubProject[] };
+  composition?: TierStackComposition;
   verification?: { cases?: TierStackTestCase[] };
   comprehension?: {
     products?: TierStackProduct[];
