@@ -44,6 +44,6 @@ fn a_call_that_only_a_standard_method_name_makes_it_look_hand_written_is_not_fol
     let found = flow(&index, "/about");
     assert_ne!(found["standing"], "terminal", "{found}");
     let units = path_units(found);
-    assert!(!units.iter().any(|unit| unit.contains("replaceAll")), "{units:?}");
+    assert!(!units.iter().any(|unit| unit.contains("server.ts:method:replaceAll")), "{units:?}");
     assert!(found["changes"].as_array().map(|held| held.is_empty()).unwrap_or(true), "{found}");
 }

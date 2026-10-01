@@ -61,7 +61,7 @@ struct Symbols<'a> {
     unique_member: HashMap<&'a str, u32>,
     unique_extension: HashMap<&'a str, u32>,
     extension: HashMap<(&'a str, &'a str), u32>,
-    declared_members: HashSet<&'a str>,
+    declaring: HashMap<&'a str, Vec<u32>>,
     owner: Vec<Option<u32>>,
 }
 
@@ -97,7 +97,7 @@ impl<'a> Symbols<'a> {
             unique_member: HashMap::default(),
             unique_extension: HashMap::default(),
             extension: HashMap::default(),
-            declared_members: HashSet::default(),
+            declaring: HashMap::default(),
             owner: vec![None; nodes.len()],
         };
         for (at, node) in nodes.iter().enumerate() {
@@ -119,7 +119,7 @@ impl<'a> Symbols<'a> {
                 && holds_members(&nodes[owner as usize], node)
             {
                 symbols.members.entry((owner, node.name.as_str())).or_insert(at);
-                symbols.declared_members.insert(node.name.as_str());
+                symbols.declaring.entry(node.name.as_str()).or_default().push(owner);
                 let entry = member_names.entry(node.name.as_str()).or_insert((0, at));
                 entry.0 += 1;
                 if node.kind.is_unit() {
@@ -183,6 +183,27 @@ impl<'a> Symbols<'a> {
             current = *self.position.get(node.parent.as_deref()?)?;
         }
         None
+    }
+
+    fn spoken_as_owner(&self, receiver: &str, owner: u32) -> bool {
+        let spoken = receiver
+            .rsplit(['.', '>', ':'])
+            .next()
+            .unwrap_or(receiver)
+            .trim_start_matches(['$', '@', '_'])
+            .to_ascii_lowercase();
+        let owner = self.nodes[owner as usize].name.to_ascii_lowercase();
+        owner.len() >= 3 && spoken.contains(owner.trim_start_matches('i'))
+    }
+
+    fn written_for(&self, receiver: Option<&str>, name: &str) -> bool {
+        let Some(owners) = self.declaring.get(name) else {
+            return false;
+        };
+        match receiver {
+            Some(receiver) => owners.iter().any(|owner| self.spoken_as_owner(receiver, *owner)),
+            None => true,
+        }
     }
 
     fn member(&self, owner: u32, name: &str) -> Option<u32> {
@@ -1904,7 +1925,7 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
             _ => runtime_member(&callee)
                 .filter(|entry| {
                     !entry.owner.is_empty()
-                        && !symbols.declared_members.contains(callee.as_str())
+                        && !symbols.written_for(receiver.as_deref(), &callee)
                 })
                 .map(|entry| {
                     (
@@ -1944,16 +1965,9 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
             && let Some(found) = symbols.unique_member.get(callee.as_str()).copied()
         {
             let target = symbols.nodes[found as usize].id.clone();
-            let spoken = receiver
-                .rsplit(['.', '>', ':'])
-                .next()
-                .unwrap_or(receiver)
-                .trim_start_matches(['$', '@', '_'])
-                .to_ascii_lowercase();
-            let names_its_owner = symbols.owning_type(found).is_some_and(|owner| {
-                let owner = symbols.nodes[owner as usize].name.to_ascii_lowercase();
-                owner.len() >= 3 && spoken.contains(owner.trim_start_matches('i'))
-            });
+            let names_its_owner = symbols
+                .owning_type(found)
+                .is_some_and(|owner| symbols.spoken_as_owner(receiver, owner));
             return match names_its_owner {
                 true => Resolved::Edge(target, kind),
                 false => Resolved::Guessed(target, kind),
