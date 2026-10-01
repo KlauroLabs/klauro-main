@@ -110,8 +110,26 @@ pub fn is_not_shipped(path: &str) -> bool {
     })
 }
 
-pub fn is_developer_script(path: &str) -> bool {
-    path.starts_with("scripts/") || path.contains("/scripts/")
+pub fn role_named_by_path(path: &str) -> Option<&'static str> {
+    let segments: Vec<&str> = path.split('/').collect();
+    let directories = &segments[..segments.len().saturating_sub(1)];
+    let inside = |names: &[&str]| directories.iter().any(|segment| names.contains(segment));
+    if inside(&["bench", "benches", "benchmarks"]) {
+        return Some("benchmark");
+    }
+    if inside(&["examples", "example"]) {
+        return Some("example");
+    }
+    if inside(&["fixtures", "testdata", "__tests__", "__mocks__", "mocks"]) {
+        return Some("test-support");
+    }
+    if inside(&["scripts"]) {
+        return Some("tooling");
+    }
+    if is_benchmark_named(path) {
+        return Some("benchmark");
+    }
+    None
 }
 
 pub fn is_cargo_build_script(path: &str) -> bool {
