@@ -1585,6 +1585,7 @@ impl<'a> Extractor<'a> {
                         from_call: None,
                         written: Some(written),
                 stands_for: None,
+                from_values: Vec::new(),
                         line: node.start_position().row as u32 + 1,
                     });
                 }
@@ -2201,6 +2202,7 @@ impl<'a> Extractor<'a> {
             from_call: None,
             written: Some(value),
             stands_for: None,
+            from_values: Vec::new(),
             line: node.start_position().row as u32 + 1,
         });
     }
@@ -2258,6 +2260,7 @@ impl<'a> Extractor<'a> {
                             from_call: from_call.clone(),
                             written: None,
                 stands_for: None,
+                from_values: Vec::new(),
                             line: node.start_position().row as u32 + 1,
                         });
                     }
@@ -2343,7 +2346,15 @@ impl<'a> Extractor<'a> {
         let from_call = value
             .filter(|value| self.spec.calls.kinds.contains(&value.kind()))
             .and_then(|value| self.called_name(value));
-        if annotation.is_none() && constructed.is_none() && from_call.is_none() && written_value.is_none() {
+        let from_values = value
+            .map(|held| crate::entities::built_from(self.text(held)))
+            .unwrap_or_default();
+        if annotation.is_none()
+            && constructed.is_none()
+            && from_call.is_none()
+            && written_value.is_none()
+            && from_values.is_empty()
+        {
             return false;
         }
         for held in taken_apart.iter() {
@@ -2356,6 +2367,7 @@ impl<'a> Extractor<'a> {
                 from_call: from_call.clone(),
                 written: None,
                 stands_for: None,
+                from_values: from_values.clone(),
                 line: node.start_position().row as u32 + 1,
             });
         }
@@ -2374,6 +2386,7 @@ impl<'a> Extractor<'a> {
             from_call,
             written: written_value,
                 stands_for,
+            from_values: from_values.clone(),
             line: node.start_position().row as u32 + 1,
         });
         false

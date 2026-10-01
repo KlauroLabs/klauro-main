@@ -1349,7 +1349,10 @@ impl<'a> Extractor<'a> {
                             _ => None,
                         })
                         .map(|found| self.text_owned(found));
-                    if annotation.is_some() || constructed.is_some() || from_call.is_some() {
+                    let from_values = initializer
+                        .map(|held| crate::entities::built_from(self.text(held)))
+                        .unwrap_or_default();
+                    if annotation.is_some() || constructed.is_some() || from_call.is_some() || !from_values.is_empty() {
                         self.facts.locals.push(LocalBinding {
                             file: self.file,
                             unit,
@@ -1359,6 +1362,7 @@ impl<'a> Extractor<'a> {
                             from_call,
                             written: None,
                 stands_for: None,
+                            from_values,
                             line: node.start_position().row as u32 + 1,
                         });
                     }
@@ -1435,6 +1439,22 @@ impl<'a> Extractor<'a> {
                 },
             }
         }
+    }
+
+    fn cast_over(&self, call: Node) -> Option<String> {
+        let mut current = call;
+        for _ in 0..4 {
+            let parent = current.parent()?;
+            match parent.kind() {
+                "as_expression" | "satisfies_expression" => {
+                    let cast = self.text_owned(parent.named_child(1)?);
+                    return (parent.named_child(0)?.id() == current.id() && cast != "const").then_some(cast);
+                }
+                "await_expression" | "parenthesized_expression" | "non_null_expression" => current = parent,
+                _ => return None,
+            }
+        }
+        None
     }
 
     fn cast_to(&self, value: Node) -> Option<String> {
@@ -1626,7 +1646,7 @@ impl<'a> Extractor<'a> {
                     let mut cursor = found.walk();
                     found.named_children(&mut cursor).map(|held| self.text_owned(held)).collect()
                 })
-                .unwrap_or_default(),
+                .unwrap_or_else(|| self.cast_over(node).into_iter().collect()),
             context: CallContext {
                 in_try: scope.context.in_try,
                 in_catch: scope.context.in_catch,

@@ -7,11 +7,11 @@ use crate::model::{CallFact, EdgeKind, IndexEdge, IndexNode, LocalBinding, NodeK
 
 const ARGUMENTS_READ: usize = 4;
 const ELEMENTS_READ: usize = 3;
+const MEMBERS_READ: usize = 6;
 const DEPTH_READ: u8 = 4;
 const PATH_AT_MOST: usize = 80;
 const CLIMB_AT_MOST: usize = 8;
 const WRAPPER_ROUNDS: usize = 3;
-const SERIALIZED_WITHIN: u32 = 6;
 
 static STORES_A_VALUE: &[&str] = &[
     "add", "append", "commit", "dump", "emit", "insert", "output", "persist", "publish", "put",
@@ -25,6 +25,10 @@ static READS_A_VALUE: &[&str] = &[
 static SERIALIZES: &[&str] = &[
     "dump", "dumps", "encode", "marshal", "serialize", "stringify", "to_bytes", "to_json", "to_string",
     "to_string_pretty", "to_value", "to_vec", "to_vec_pretty", "to_yaml", "tojson", "tostring",
+];
+
+static DESERIALIZES: &[&str] = &[
+    "decode", "deserialize", "from_reader", "from_slice", "from_str", "from_value", "loads", "parse", "unmarshal",
 ];
 
 static NOT_A_CONTENT_READ: &[&str] = &["dir", "exists", "remove", "stat"];
@@ -54,6 +58,29 @@ fn top_level(text: &str) -> Vec<&str> {
             '(' | '[' | '{' => depth += 1,
             ')' | ']' | '}' => depth -= 1,
             ',' if depth == 0 => {
+                parts.push(&text[from..at]);
+                from = at + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&text[from..]);
+    parts
+}
+
+fn plus_parts(text: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0i32;
+    let mut quote: Option<char> = None;
+    let mut from = 0;
+    for (at, letter) in text.char_indices() {
+        match (quote, letter) {
+            (Some(open), _) if letter == open => quote = None,
+            (Some(_), _) => {}
+            (None, '\'' | '"' | '`') => quote = Some(letter),
+            (None, '(' | '[' | '{') => depth += 1,
+            (None, ')' | ']' | '}') => depth -= 1,
+            (None, '+') if depth == 0 => {
                 parts.push(&text[from..at]);
                 from = at + 1;
             }
@@ -120,6 +147,27 @@ fn roots_of(text: &str, depth: u8, held: &mut Vec<String>) {
     if text.is_empty() {
         return;
     }
+    let joined = plus_parts(text);
+    if joined.len() > 1 {
+        for part in joined.into_iter().take(ELEMENTS_READ) {
+            roots_of(part, depth + 1, held);
+        }
+        return;
+    }
+    if let Some(inner) = text.strip_prefix('{').and_then(|rest| rest.strip_suffix('}')) {
+        for member in top_level(inner).into_iter().take(MEMBERS_READ) {
+            let member = member.trim();
+            let value = match member.strip_prefix("...") {
+                Some(spread) => spread,
+                None => match member.split_once(':') {
+                    Some((_, value)) if !value.starts_with(':') => value,
+                    _ => member,
+                },
+            };
+            roots_of(value, depth + 1, held);
+        }
+        return;
+    }
     if let Some(inner) = text.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')) {
         for element in top_level(inner).into_iter().take(ELEMENTS_READ) {
             roots_of(element, depth + 1, held);
@@ -174,6 +222,27 @@ fn passing(held: &str) -> Option<(usize, &str)> {
     Some((at.parse().ok()?, path))
 }
 
+pub fn built_from(text: &str) -> Vec<String> {
+    let text = without_decoration(text);
+    let literal = text.starts_with('{');
+    let macro_call = text.find("!(").is_some_and(|at| text[..at].chars().all(|letter| letter.is_alphanumeric() || letter == '_'));
+    let serializing = SERIALIZES.iter().any(|word| {
+        text.match_indices(word).any(|(at, _)| {
+            let before = text[..at].chars().next_back();
+            let after = &text[at + word.len()..];
+            before.is_none_or(|letter| !(letter.is_alphanumeric() || letter == '_'))
+                && (after.starts_with('(') || after.starts_with("::<"))
+        })
+    });
+    if !(literal || macro_call || serializing) {
+        return Vec::new();
+    }
+    let mut held = Vec::new();
+    roots_of(text, 0, &mut held);
+    held.truncate(ARGUMENTS_READ);
+    held
+}
+
 pub fn tokens(annotation: &str) -> Vec<&str> {
     annotation
         .split(|letter: char| !(letter.is_alphanumeric() || letter == '_'))
@@ -211,7 +280,6 @@ struct Typing<'a> {
     units_named: HashMap<&'a str, Vec<&'a IndexNode>>,
     types_named: HashMap<&'a str, Vec<&'a IndexNode>>,
     variables: HashMap<(u32, &'a str), &'a IndexNode>,
-    calls_in: HashMap<(&'a str, &'a str), Vec<&'a CallFact>>,
 }
 
 type Named = Vec<(String, u32)>;
@@ -245,16 +313,7 @@ impl<'a> Typing<'a> {
                 variables.entry((node.file, node.name.as_str())).or_insert(node);
             }
         }
-        let mut calls_in: HashMap<(&str, &str), Vec<&CallFact>> = HashMap::default();
-        for call in sources.calls {
-            if let Some(caller) = call.caller.as_deref()
-                && !call.passes.is_empty()
-                && SERIALIZES.contains(&crate::names::leaf(&call.callee))
-            {
-                calls_in.entry((caller, crate::names::leaf(&call.callee))).or_default().push(call);
-            }
-        }
-        Typing { node_of, fields_of, locals_in, units_named, types_named, variables, calls_in }
+        Typing { node_of, fields_of, locals_in, units_named, types_named, variables }
     }
 
     fn enclosing_type(&self, unit: &IndexNode) -> Option<&'a IndexNode> {
@@ -297,26 +356,6 @@ impl<'a> Typing<'a> {
             .unwrap_or_default()
     }
 
-    fn serialized(&self, unit: &IndexNode, called: &str, line: u32, depth: u8) -> Named {
-        if depth >= DEPTH_READ {
-            return Vec::new();
-        }
-        let Some(calls) = self.calls_in.get(&(unit.id.as_str(), crate::names::leaf(called))) else { return Vec::new() };
-        let Some(call) = calls
-            .iter()
-            .filter(|call| call.line >= line && call.line <= line + SERIALIZED_WITHIN)
-            .min_by_key(|call| call.line)
-        else {
-            return Vec::new();
-        };
-        call.passes
-            .iter()
-            .filter_map(|held| passing(held))
-            .filter(|(at, _)| *at == 0)
-            .flat_map(|(_, path)| self.typed_within(unit, path, depth + 1))
-            .collect()
-    }
-
     fn root_type_within(&self, unit: &IndexNode, first: &str, depth: u8) -> Named {
         if matches!(first, "this" | "self" | "Self" | "cls") {
             return self
@@ -339,8 +378,10 @@ impl<'a> Typing<'a> {
                     && let Some(called) = local.from_call.as_deref()
                 {
                     found.extend(self.returned_by(called, node));
-                    if found.is_empty() {
-                        found.extend(self.serialized(node, called, local.line, depth));
+                }
+                if found.is_empty() && depth < DEPTH_READ {
+                    for path in &local.from_values {
+                        found.extend(self.typed_within(node, path, depth + 1));
                     }
                 }
                 return found;
@@ -434,6 +475,15 @@ pub fn gather(
         .collect();
     let mut wrappers: Vec<(&str, usize, &'static str)> = Vec::new();
     let mut readers: Vec<(&str, &'static str)> = Vec::new();
+    let mut deserializing: HashMap<&str, Vec<&CallFact>> = HashMap::default();
+    for call in sources.calls {
+        if let Some(caller) = call.caller.as_deref()
+            && !call.type_arguments.is_empty()
+            && DESERIALIZES.contains(&crate::names::leaf(&call.callee))
+        {
+            deserializing.entry(caller).or_default().push(call);
+        }
+    }
     let mut found = Sightings::default();
     let see = |into: &mut Vec<Sighting>, unit: &str, exit: Option<&str>, place: &'static str, named: Named| {
         for (name, site) in named {
@@ -499,6 +549,11 @@ pub fn gather(
                 }
                 if kept_away && !writing_units.contains(exit.source.as_str()) {
                     readers.push((unit.id.as_str(), exit.kind));
+                    for call in deserializing.get(exit.source.as_str()).into_iter().flatten() {
+                        for argument in &call.type_arguments {
+                            named.extend(typing.named(argument, unit.file));
+                        }
+                    }
                 }
                 if kept_away
                     && !writing_units.contains(exit.source.as_str())
@@ -734,7 +789,7 @@ pub fn mentions(
 
 #[cfg(test)]
 mod tests {
-    use super::passed;
+    use super::{passed, passing};
 
     fn roots(argument: &str) -> Vec<String> {
         passed(std::iter::once(argument))
@@ -756,6 +811,8 @@ mod tests {
         assert_eq!(roots("serde_json::to_string_pretty(&self.state)?"), vec!["serde_json", "self.state"]);
         assert_eq!(roots("toml::to_string(&cfg).unwrap()"), vec!["toml", "cfg"]);
         assert_eq!(roots("[row]"), vec!["row"]);
+        assert_eq!(roots("prefix + JSON.stringify(entry) + '\\n'"), vec!["prefix", "JSON", "entry"]);
+        assert_eq!(roots("{ version: 1, users: db.users, ...extra }"), vec!["db.users", "extra"]);
         assert_eq!(roots("this.items.clone()"), vec!["this.items"]);
         assert!(roots("'/tmp/file'").is_empty());
         assert!(roots("null").is_empty());

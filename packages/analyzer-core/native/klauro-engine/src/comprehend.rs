@@ -10,7 +10,7 @@ use crate::tables::{Column, Table};
 
 const STEPS_KEPT: usize = 16;
 const FLOWS_NAMED: usize = 40;
-const HISTORY_SHARE_OF_FILES: usize = 5;
+const HISTORY_SHARE_OF_FILES: usize = 20;
 const REACHING_AT_ONCE: usize = 24;
 
 #[derive(Debug, Serialize)]
@@ -2953,83 +2953,6 @@ fn entities(
                 .filter(|id| fields.get(id).copied().unwrap_or(0) >= 1),
         );
     }
-    let sources = crate::entities::Sources { nodes, edges, calls, locals, exit_points, entry_points };
-    let sightings = crate::entities::gather(&sources, &|named, site| {
-        denoting.named(named, site).into_iter().map(str::to_string).collect()
-    });
-    let methods: HashMap<&str, u32> = {
-        let mut counted: HashMap<&str, u32> = HashMap::default();
-        for edge in edges.iter().filter(|edge| edge.kind == EdgeKind::HasMethod) {
-            *counted.entry(edge.source.as_str()).or_insert(0) += 1;
-        }
-        counted
-    };
-    let data_fields = |id: &str| fields.get(id).copied().unwrap_or(0);
-    let carries_data = |id: &str| {
-        node_of.get(id).is_some_and(|node| {
-            matches!(node.kind, NodeKind::Interface | NodeKind::TypeAlias)
-                || methods.get(id).copied().unwrap_or(0) == 0
-                || node.decorators.iter().any(over_a_wire)
-        })
-    };
-    let kept_away = |place: &str| matches!(place, "cache" | "client_storage" | "file");
-    let stored_away: HashSet<&str> = sightings
-        .stored
-        .iter()
-        .filter(|sighting| kept_away(sighting.place))
-        .map(|sighting| sighting.node.as_str())
-        .collect();
-    let loaded_away: HashSet<&str> = sightings
-        .loaded
-        .iter()
-        .filter(|sighting| kept_away(sighting.place))
-        .map(|sighting| sighting.node.as_str())
-        .collect();
-    let mut round_trips: Vec<&str> = stored_away
-        .intersection(&loaded_away)
-        .copied()
-        .filter(|id| data_fields(id) >= 2)
-        .collect();
-    round_trips.sort();
-    let mut keeping = crate::entities::Keeping::default();
-    let mut document_ids: HashSet<&str> = HashSet::default();
-    for root in round_trips {
-        let Some(node) = node_of.get(root) else { continue };
-        let mut children: Vec<&str> = Vec::new();
-        for field in named_fields.get(root).into_iter().flatten() {
-            let Some((word, true)) = field.declared_as.as_deref().and_then(points_at) else { continue };
-            for id in denoting.named(&word, node.file) {
-                if id != root && data_fields(id) >= 1 && !children.contains(&id) {
-                    children.push(id);
-                }
-            }
-        }
-        let a_container = children.len() >= 2 && children.len() * 10 >= data_fields(root) as usize * 6;
-        match a_container {
-            true => {
-                admitted.extend(children.iter().copied());
-                keeping.documents.insert(
-                    unquoted(&node.name).to_string(),
-                    children.iter().filter_map(|id| node_of.get(id)).map(|child| unquoted(&child.name).to_string()).collect(),
-                );
-                document_ids.insert(root);
-            }
-            false => {
-                admitted.insert(root);
-            }
-        }
-    }
-    let wire_marked = |id: &str| node_of.get(id).is_some_and(|node| node.decorators.iter().any(over_a_wire));
-    for sighting in sightings.carried.iter().chain(sightings.stored.iter().filter(|sighting| matches!(sighting.place, "api" | "message" | "network"))) {
-        let id = sighting.node.as_str();
-        let exchanged = match sighting.place {
-            "api" | "network" => wire_marked(id),
-            _ => carries_data(id),
-        };
-        if data_fields(id) >= 2 && exchanged {
-            admitted.insert(id);
-        }
-    }
     let mut tabled: HashMap<&str, String> = HashMap::default();
     let mut accounted: HashSet<String> = HashSet::default();
     let candidate_ids: HashSet<&str> = candidates.iter().map(|node| node.id.as_str()).collect();
@@ -3065,6 +2988,125 @@ fn entities(
         }
         admitted.extend(denoted);
     }
+    let mut file_project: HashMap<u32, &str> = HashMap::default();
+    for node in nodes {
+        if let Some(project) = node.project.as_deref() {
+            file_project.entry(node.file).or_insert(project);
+        }
+    }
+    let sources = crate::entities::Sources { nodes, edges, calls, locals, exit_points, entry_points };
+    let sightings = crate::entities::gather(&sources, &|named, site| {
+        denoting.named(named, site).into_iter().map(str::to_string).collect()
+    });
+    let methods: HashMap<&str, u32> = {
+        let mut counted: HashMap<&str, u32> = HashMap::default();
+        for edge in edges.iter().filter(|edge| edge.kind == EdgeKind::HasMethod) {
+            *counted.entry(edge.source.as_str()).or_insert(0) += 1;
+        }
+        counted
+    };
+    let mut denoting_every: HashMap<&str, Vec<&IndexNode>> = HashMap::default();
+    for node in nodes.iter().filter(|node| node.kind.is_type()) {
+        denoting_every.entry(node.name.as_str()).or_default().push(node);
+    }
+    let data_fields = |id: &str| fields.get(id).copied().unwrap_or(0);
+    let behaves = |id: &str| {
+        methods.get(id).copied().unwrap_or(0) > 0
+            && node_of.get(id).is_some_and(|node| !node.decorators.iter().any(over_a_wire))
+    };
+    let holds_behaviour = |id: &str| {
+        let Some(node) = node_of.get(id) else { return false };
+        named_fields.get(id).into_iter().flatten().any(|field| {
+            crate::entities::tokens(field.declared_as.as_deref().unwrap_or_default())
+                .into_iter()
+                .any(|word| {
+                    denoting_every.get(word).into_iter().flatten().any(|other| {
+                        (other.file == node.file || other.project == node.project) && behaves(other.id.as_str())
+                    })
+                })
+        })
+    };
+    let carries_data = |id: &str| {
+        node_of.get(id).is_some_and(|node| {
+            (matches!(node.kind, NodeKind::Interface | NodeKind::TypeAlias)
+                || methods.get(id).copied().unwrap_or(0) == 0
+                || node.decorators.iter().any(over_a_wire))
+                && !holds_behaviour(id)
+        })
+    };
+    let kept_away = |place: &str| matches!(place, "cache" | "client_storage" | "file");
+    let stored_away: HashSet<&str> = sightings
+        .stored
+        .iter()
+        .filter(|sighting| kept_away(sighting.place))
+        .map(|sighting| sighting.node.as_str())
+        .collect();
+    let loaded_away: HashSet<&str> = sightings
+        .loaded
+        .iter()
+        .filter(|sighting| kept_away(sighting.place))
+        .map(|sighting| sighting.node.as_str())
+        .collect();
+    let mut round_trips: Vec<&str> = stored_away
+        .intersection(&loaded_away)
+        .copied()
+        .filter(|id| data_fields(id) >= 2)
+        .collect();
+    round_trips.sort();
+    let declared_by_a_model: HashSet<Option<&str>> = candidates
+        .iter()
+        .filter(|node| admitted.contains(node.id.as_str()))
+        .map(|node| node.project.as_deref())
+        .chain(declared_tables.iter().map(|table| file_project.get(&table.file).copied()))
+        .collect();
+    let modelled_around = |id: &str| {
+        let Some(node) = node_of.get(id) else { return false };
+        let project = node.project.as_deref();
+        declared_by_a_model.iter().any(|held| match (project, *held) {
+            (Some(project), Some(held)) => project == held || denoting.reaches.contains(&(project, held)),
+            (None, None) => true,
+            _ => false,
+        })
+    };
+    let mut keeping = crate::entities::Keeping::default();
+    let mut document_ids: HashSet<&str> = HashSet::default();
+    for root in round_trips {
+        let Some(node) = node_of.get(root) else { continue };
+        let mut children: Vec<&str> = Vec::new();
+        for field in named_fields.get(root).into_iter().flatten() {
+            let Some((word, true)) = field.declared_as.as_deref().and_then(points_at) else { continue };
+            for id in denoting.named(&word, node.file) {
+                if id != root && data_fields(id) >= 1 && !children.contains(&id) {
+                    children.push(id);
+                }
+            }
+        }
+        let a_container = children.len() >= 2 && children.len() * 10 >= data_fields(root) as usize * 6;
+        match a_container {
+            true => {
+                admitted.extend(children.iter().copied());
+                keeping.documents.insert(
+                    unquoted(&node.name).to_string(),
+                    children.iter().filter_map(|id| node_of.get(id)).map(|child| unquoted(&child.name).to_string()).collect(),
+                );
+                document_ids.insert(root);
+            }
+            false => {
+                admitted.insert(root);
+            }
+        }
+    }
+    let wire_marked = |id: &str| node_of.get(id).is_some_and(|node| node.decorators.iter().any(over_a_wire));
+    for sighting in sightings.carried.iter().chain(sightings.stored.iter().filter(|sighting| matches!(sighting.place, "api" | "message" | "network"))) {
+        let id = sighting.node.as_str();
+        let exchanged = match sighting.place {
+            "api" | "network" => wire_marked(id),
+            _ => carries_data(id),
+        };
+        if data_fields(id) >= 2 && exchanged && !modelled_around(id) {
+            admitted.insert(id);
+        }
+    }
     let by_name = |held: &HashMap<String, Vec<String>>| -> HashMap<String, Vec<String>> {
         let mut named: HashMap<String, Vec<String>> = HashMap::default();
         for (unit, names) in held {
@@ -3083,12 +3125,6 @@ fn entities(
         }
         units
     };
-    let mut file_project: HashMap<u32, &str> = HashMap::default();
-    for node in nodes {
-        if let Some(project) = node.project.as_deref() {
-            file_project.entry(node.file).or_insert(project);
-        }
-    }
     let mut sighted: HashMap<&str, u32> = HashMap::default();
     for (sightings, writing, reading) in [
         (&sightings.stored, Some(true), Some(false)),
