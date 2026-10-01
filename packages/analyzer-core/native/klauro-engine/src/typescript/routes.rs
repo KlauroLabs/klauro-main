@@ -2,7 +2,7 @@ use tree_sitter::Node;
 
 use super::{line_of, trim_quotes, Extractor, Scope};
 use crate::model::*;
-use crate::screens::{imported_handler, MOUNTED_SCREEN, ROUTED_SCREEN};
+use crate::screens::{imported_handler, DEFAULT_SCREEN, LOADED_SCREEN, MOUNTED_SCREEN, ROUTED_SCREEN};
 
 static COMPONENT_KEYS: &[&str] = &["Component", "component", "element", "lazy", "loadComponent"];
 static CHILD_KEYS: &[&str] = &["children", "routes"];
@@ -535,5 +535,152 @@ impl<'a> Extractor<'a> {
                 namespace: false,
             }],
         });
+    }
+}
+
+impl<'a> Extractor<'a> {
+    pub(super) fn loader_of(&mut self, callable: Node) {
+        let Some(body) = callable.child_by_field_name("body") else { return };
+        let returned = match body.kind() {
+            "statement_block" => {
+                let mut cursor = body.walk();
+                let statements: Vec<Node> = body.named_children(&mut cursor).collect();
+                match statements.as_slice() {
+                    [only] if only.kind() == "return_statement" => only.named_child(0),
+                    _ => None,
+                }
+            }
+            _ => Some(body),
+        };
+        let Some(expression) = returned.filter(|held| self.is_a_dynamic_import_chain(*held)) else { return };
+        let Some((specifier, wanted)) = self.dynamic_import_in(expression) else { return };
+        if let Some(wanted) = wanted {
+            self.facts.registrations.push(RegistrationFact {
+                file: self.file,
+                registrar: LOADED_SCREEN.to_string(),
+                label: specifier.clone(),
+                handler: wanted,
+                line: line_of(expression),
+            });
+        }
+        self.facts.imports.push(ImportFact {
+            file: self.file,
+            specifier,
+            line: line_of(expression),
+            type_only: false,
+            everywhere: false,
+            names: Vec::new(),
+        });
+    }
+
+    fn component_wrapped_by(&self, expression: Node) -> Option<String> {
+        match expression.kind() {
+            "identifier" => {
+                let named = self.text(expression);
+                names_a_component(named).then(|| named.to_string())
+            }
+            "call_expression" => {
+                let arguments = expression.child_by_field_name("arguments")?;
+                let mut cursor = arguments.walk();
+                let held: Vec<Node> = arguments.named_children(&mut cursor).collect();
+                held.into_iter().find_map(|argument| self.component_wrapped_by(argument)).or_else(|| {
+                    expression.child_by_field_name("function").filter(|inner| inner.kind() == "call_expression").and_then(|inner| self.component_wrapped_by(inner))
+                })
+            }
+            _ => None,
+        }
+    }
+
+    pub(super) fn remember_the_default_export(&mut self, statement: Node) {
+        let Some(value) = statement.child_by_field_name("value") else { return };
+        let Some(named) = self.component_wrapped_by(value) else { return };
+        self.facts.registrations.push(RegistrationFact {
+            file: self.file,
+            registrar: DEFAULT_SCREEN.to_string(),
+            label: named.clone(),
+            handler: named,
+            line: line_of(statement),
+        });
+    }
+
+    fn is_a_dynamic_import_chain(&self, expression: Node) -> bool {
+        let mut held = expression;
+        while held.kind() == "call_expression" {
+            let Some(function) = held.child_by_field_name("function") else { return false };
+            if function.kind() == "import" {
+                return true;
+            }
+            match function.child_by_field_name("object") {
+                Some(inner) => held = inner,
+                None => return false,
+            }
+        }
+        false
+    }
+
+    pub(super) fn remember_a_table_of_paths(&mut self, name: &str, value: Node, line: u32) {
+        let mut value = value;
+        while matches!(value.kind(), "as_expression" | "parenthesized_expression" | "satisfies_expression") {
+            let Some(inner) = value.named_child(0) else { return };
+            value = inner;
+        }
+        if value.kind() != "object" {
+            return;
+        }
+        let mut cursor = value.walk();
+        let pairs: Vec<Node> = value.named_children(&mut cursor).filter(|member| member.kind() == "pair").collect();
+        let mut held = Vec::new();
+        for pair in pairs {
+            let (Some(key), Some(written)) = (pair.child_by_field_name("key"), pair.child_by_field_name("value")) else { return };
+            let Some(path) = self.string_value(written).filter(|path| path.starts_with('/')) else { return };
+            held.push((trim_quotes(self.text(key)).to_string(), path));
+        }
+        for (key, path) in held {
+            self.facts.locals.push(LocalBinding {
+                file: self.file,
+                unit: String::new(),
+                name: format!("{name}.{key}"),
+                annotation: None,
+                constructed: None,
+                from_call: None,
+                written: Some(path),
+                stands_for: None,
+                line,
+            });
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parts(held: &[&str]) -> Vec<String> {
+        held.iter().map(|part| part.to_string()).collect()
+    }
+
+    #[test]
+    fn a_relative_path_joins_under_its_parents_and_an_absolute_one_starts_over() {
+        assert_eq!(joined(&parts(&["/", "orders/:id"])), "/orders/:id");
+        assert_eq!(joined(&parts(&["codebases/:id", "flows"])), "/codebases/:id/flows");
+        assert_eq!(joined(&parts(&["/admin", "/login"])), "/login");
+        assert_eq!(joined(&parts(&["/"])), "/");
+        assert_eq!(joined(&[]), "/");
+    }
+
+    #[test]
+    fn a_named_constant_stands_for_its_path_until_the_table_it_belongs_to_is_read() {
+        assert_eq!(joined(&parts(&["RoutePaths.Home"])), "RoutePaths.Home");
+        assert!(!names_a_constant("v1.0/items"));
+        assert!(!names_a_constant("settings"));
+    }
+
+    #[test]
+    fn only_a_capitalised_tag_is_a_component_and_only_prefixed_props_bind_a_handler() {
+        assert!(names_a_component("OrderPage"));
+        assert!(!names_a_component("div"));
+        assert!(names_an_event_prop("onClick"));
+        assert!(!names_an_event_prop("once"));
+        assert!(!names_an_event_prop("on"));
     }
 }

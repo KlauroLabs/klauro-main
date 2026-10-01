@@ -617,7 +617,7 @@ fn read_it() {
         .extend(convention::conventional(&index.nodes, &paths, &index.exports));
     derived
         .entry_points
-        .extend(screens::drawn(&index.nodes, &index.registrations, &index.exports, &paths, &resolution));
+        .extend(screens::drawn(&index.nodes, &index.registrations, &index.exports, &index.imports, &index.locals, &paths, &resolution));
     derived.entry_points.retain(|entry| {
         paths.get(entry.file as usize).is_none_or(|path| !path.split('/').any(|segment| segment.starts_with('.') && segment.len() > 1 && segment != ".well-known"))
     });

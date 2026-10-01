@@ -621,6 +621,7 @@ impl<'a> Extractor<'a> {
     }
 
     fn export_statement(&mut self, node: Node, scope: &Scope) {
+        self.remember_the_default_export(node);
         let reexport = node
             .child_by_field_name("source")
             .map(|source| trim_quotes(self.text(source)).to_string());
@@ -1254,6 +1255,7 @@ impl<'a> Extractor<'a> {
             self.push_edge(owner, &id, EdgeKind::Contains);
         }
 
+        self.loader_of(node);
         let mut inner = scope.child(Some(id.clone()), Some(id));
         if let Some(body) = node.child_by_field_name("body") {
             inner.argv_param = self.argv_local(body);
@@ -1327,6 +1329,9 @@ impl<'a> Extractor<'a> {
             if let Some(value) = value.filter(|_| name_node.kind() == "identifier") {
                 self.remember_a_root(&name, value);
                 self.lazy_screens(&name, declarator, value);
+                if !scope.inside_callable {
+                    self.remember_a_table_of_paths(&name, value, line_of(declarator));
+                }
             }
             if let Some(written) = value
                 .filter(|value| matches!(value.kind(), "string" | "template_string"))
@@ -1435,6 +1440,7 @@ impl<'a> Extractor<'a> {
             let inner = scope.child(Some(id.clone()), Some(id));
             match callable {
                 Some(callable) => {
+                    self.loader_of(callable);
                     if let Some(body) = callable.child_by_field_name("body") {
                         self.visit(body, &inner);
                     }

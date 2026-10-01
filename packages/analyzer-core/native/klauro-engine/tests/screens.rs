@@ -139,17 +139,21 @@ fn a_tanstack_route_names_the_component_it_draws_and_a_helper_beside_it_is_not_a
 }
 
 #[test]
-fn a_route_table_and_a_wrapper_around_a_route_both_name_screens() {
+fn a_route_table_a_wrapper_a_loader_and_a_table_of_paths_all_name_screens() {
     let index = common::read("screens-route-table");
     let held = screens(&index);
     assert_eq!(
         held,
         vec![
             ("/about".to_string(), "About.tsx#About".to_string()),
-            ("RoutePaths.Charts".to_string(), "ChartList.tsx#ChartList".to_string()),
-            ("RoutePaths.Home".to_string(), "Home.tsx#Home".to_string()),
+            ("/charts".to_string(), "ChartList.tsx#ChartList".to_string()),
+            ("/detail".to_string(), "DetailPage.tsx#DetailPage".to_string()),
+            ("/lists".to_string(), "ListsPage.tsx#ListsPage".to_string()),
+            ("/settings".to_string(), "SettingsPage.tsx#SettingsPage".to_string()),
+            ("/welcome".to_string(), "Home.tsx#Home".to_string()),
+            ("/wrapped".to_string(), "WrappedPage.tsx#WrappedBody".to_string()),
         ],
         "{held:?}"
     );
-    assert!(reaches_a_request(&index, flow_of(&index, "RoutePaths.Home"), "/api/welcome"));
+    assert!(reaches_a_request(&index, flow_of(&index, "/welcome"), "/api/welcome"));
 }

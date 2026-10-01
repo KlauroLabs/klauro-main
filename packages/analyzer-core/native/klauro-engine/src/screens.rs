@@ -7,8 +7,11 @@ use crate::resolve::Resolution;
 
 pub const ROUTED_SCREEN: &str = "screen_routed";
 pub const MOUNTED_SCREEN: &str = "screen_mounted";
+pub const DEFAULT_SCREEN: &str = "screen_default_export";
+pub const LOADED_SCREEN: &str = "screen_loaded";
 
 const IMPORT_MARK: &str = "import:";
+const LOADER_LINES: u32 = 6;
 
 pub fn imported_handler(specifier: &str, export: Option<&str>) -> String {
     match export {
@@ -47,6 +50,8 @@ pub fn drawn(
     nodes: &[IndexNode],
     registrations: &[RegistrationFact],
     exports: &[ExportFact],
+    imports: &[ImportFact],
+    locals: &[LocalBinding],
     files: &[String],
     resolution: &Resolution,
 ) -> Vec<EntryPoint> {
@@ -58,9 +63,46 @@ pub fn drawn(
     for export in exports.iter().filter(|held| held.default_export && held.reexport_from.is_none()) {
         default_export.entry(export.file).or_insert(export.name.as_str());
     }
+    let mut default_named: HashMap<u32, &str> = HashMap::default();
+    let mut hinted: HashMap<(u32, u32), &str> = HashMap::default();
+    for registration in registrations {
+        match registration.registrar.as_str() {
+            DEFAULT_SCREEN => {
+                default_named.entry(registration.file).or_insert(registration.handler.as_str());
+            }
+            LOADED_SCREEN => {
+                hinted.insert((registration.file, registration.line), registration.handler.as_str());
+            }
+            _ => {}
+        }
+    }
     let mut modules: HashMap<u32, &IndexNode> = HashMap::default();
     for node in nodes.iter().filter(|node| node.kind == NodeKind::Module) {
         modules.entry(node.file).or_insert(node);
+    }
+
+    let mut loaded_within: HashMap<u32, Vec<(u32, &str)>> = HashMap::default();
+    for fact in imports.iter().filter(|fact| fact.names.is_empty()) {
+        loaded_within.entry(fact.file).or_default().push((fact.line, fact.specifier.as_str()));
+    }
+    let mut paths_named: HashMap<&str, Option<&str>> = HashMap::default();
+    for local in locals.iter().filter(|local| local.unit.is_empty() && local.name.contains('.')) {
+        let Some(written) = local.written.as_deref().filter(|written| written.starts_with('/')) else { continue };
+        paths_named
+            .entry(local.name.as_str())
+            .and_modify(|held| {
+                if *held != Some(written) {
+                    *held = None;
+                }
+            })
+            .or_insert(Some(written));
+    }
+
+    let mut top_level: HashMap<u32, Vec<&IndexNode>> = HashMap::default();
+    for node in nodes.iter().filter(|node| (node.kind.is_unit() || node.kind == NodeKind::Class) && node.name.chars().next().is_some_and(char::is_uppercase)) {
+        if node.parent.as_deref().is_some_and(|parent| files.get(node.file as usize).is_some_and(|path| parent == path)) {
+            top_level.entry(node.file).or_default().push(node);
+        }
     }
 
     let in_file = |file: u32, name: &str| node_in_file(&by_id, &resolution.local, file, name);
@@ -70,17 +112,56 @@ pub fn drawn(
         {
             return Some(found);
         }
+        if let Some(named) = default_named.get(&file)
+            && let Some(found) = in_file(file, named)
+        {
+            return Some(found);
+        }
         if let Some(named) = default_export.get(&file).filter(|named| **named != "default")
             && let Some(found) = in_file(file, named)
         {
             return Some(found);
         }
-        let stem = crate::paths::basename(&files[file as usize]);
+        let path = files[file as usize].as_str();
+        let stem = crate::paths::basename(path);
         let stem = stem.split('.').next().unwrap_or(stem);
-        if let Some(found) = in_file(file, stem).filter(|found| found.kind.is_declaration()) {
-            return Some(found);
+        let folder = folder_of(path).rsplit('/').next().unwrap_or_default();
+        let named_like_its_place = [stem, folder]
+            .into_iter()
+            .filter(|held| !held.is_empty() && *held != "index")
+            .find_map(|held| in_file(file, held).filter(|found| found.kind.is_declaration()));
+        if named_like_its_place.is_some() {
+            return named_like_its_place;
+        }
+        let spoken_alike = |held: &str| -> String {
+            held.chars().filter(|letter| !matches!(letter, '_' | '-')).flat_map(char::to_lowercase).collect()
+        };
+        let place = spoken_alike(if stem == "index" { folder } else { stem });
+        let declared = top_level.get(&file).map(Vec::as_slice).unwrap_or(&[]);
+        let named_alike = declared.iter().copied().find(|held| spoken_alike(&held.name) == place);
+        if named_alike.is_some() {
+            return named_alike;
+        }
+        let exported: Vec<&&IndexNode> = declared.iter().filter(|held| held.modifiers.exported).collect();
+        if let [only] = exported.as_slice() {
+            return Some(**only);
+        }
+        if let [only] = declared {
+            return Some(*only);
         }
         modules.get(&file).copied()
+    };
+    let followed_through_its_loader = |found: &'_ IndexNode| -> Option<&IndexNode> {
+        if !found.kind.is_unit() || found.span.end_line.saturating_sub(found.span.line) > LOADER_LINES {
+            return None;
+        }
+        let (line, specifier) = *loaded_within
+            .get(&found.file)?
+            .iter()
+            .find(|(line, _)| *line >= found.span.line && *line <= found.span.end_line)?;
+        let reached = *resolution.reached.get(&(found.file, specifier.to_string()))?;
+        let wanted = hinted.get(&(found.file, line)).copied();
+        unit_of_file(reached, wanted).filter(|held| held.kind != NodeKind::Module)
     };
     let resolve = |registration: &RegistrationFact| -> Option<&IndexNode> {
         let file = registration.file;
@@ -133,6 +214,7 @@ pub fn drawn(
             }
         }
         let Some(handler) = resolve(registration) else { continue };
+        let handler = followed_through_its_loader(handler).unwrap_or(handler);
         if handler.kind == NodeKind::Module && handler.name == path {
             continue;
         }
@@ -145,10 +227,17 @@ pub fn drawn(
         if !mounting {
             routed_handlers.insert(handler.id.clone());
         }
+        let label = match paths_named.get(registration.label.as_str()) {
+            Some(Some(path)) => match path.len() > 1 {
+                true => path.trim_end_matches('/').to_string(),
+                false => path.to_string(),
+            },
+            _ => registration.label.clone(),
+        };
         found.push(EntryPoint {
-            id: format!("entry:{}:screen:{}", handler.id, registration.label),
+            id: format!("entry:{}:screen:{}", handler.id, label),
             kind: "ui",
-            name: registration.label.clone(),
+            name: label.clone(),
             method: None,
             path: None,
             handler: handler.id.clone(),
