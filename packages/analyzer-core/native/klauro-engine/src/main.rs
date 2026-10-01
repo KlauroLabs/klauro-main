@@ -43,6 +43,7 @@ mod patterns;
 mod practices;
 mod principles;
 mod scope;
+mod screens;
 mod sdk;
 mod shared;
 mod service_catalog;
@@ -614,6 +615,9 @@ fn read_it() {
     derived
         .entry_points
         .extend(convention::conventional(&index.nodes, &paths, &index.exports));
+    derived
+        .entry_points
+        .extend(screens::drawn(&index.nodes, &index.registrations, &index.exports, &paths, &resolution));
     derived.entry_points.retain(|entry| {
         paths.get(entry.file as usize).is_none_or(|path| !path.split('/').any(|segment| segment.starts_with('.') && segment.len() > 1 && segment != ".well-known"))
     });
@@ -912,6 +916,12 @@ fn read_it() {
         index.exit_points.dedup_by(|left, right| left.id == right.id);
     }
     addresses::fold(&mut index.exit_points, &index.calls, &index.locals, &index.nodes);
+    let asked_before = index.exit_points.len();
+    addresses::through_wrappers(&mut index.exit_points, &index.calls, &index.nodes, &paths);
+    if index.exit_points.len() > asked_before {
+        index.exit_points.sort_by(|left, right| left.id.cmp(&right.id));
+        index.exit_points.dedup_by(|left, right| left.id == right.id);
+    }
 
     let patterns_started = Instant::now();
     let pattern_paths: Vec<&str> = index.files.iter().map(|file| file.path.as_str()).collect();
