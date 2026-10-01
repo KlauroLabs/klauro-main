@@ -15,13 +15,12 @@ fn handled_at<'a>(entries: &[&'a serde_json::Value], suffix: &str) -> Option<&'a
 }
 
 #[test]
-fn a_benchmark_named_file_with_no_shipping_evidence_is_not_an_entry() {
+fn a_benchmark_named_file_with_no_shipping_evidence_stays_an_entry_tagged_as_a_benchmark() {
     let index = index();
     let entries = entries(&index);
-    assert!(
-        handled_at(&entries, "src/agent-benchmark.ts").is_none(),
-        "a file whose name is a benchmark is not product code by default: {entries:#?}"
-    );
+    let found = handled_at(&entries, "src/agent-benchmark.ts")
+        .expect("a file whose name is a benchmark is kept, and only marked");
+    assert_eq!(found["unshipped"]["role"], "benchmark", "{found:#?}");
 }
 
 #[test]

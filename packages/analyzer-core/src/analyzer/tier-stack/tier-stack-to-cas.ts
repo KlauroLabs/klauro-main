@@ -147,7 +147,7 @@ function entryPointsOf(index: TierStackIndex): CASEntryPoint[] {
       ...(entry.kind === 'event' ? { event: entry.name } : {}),
       ...(entry.kind === 'schedule' ? { schedule: entry.name } : {}),
     },
-    metadata: { registrar: entry.registrar },
+    metadata: { registrar: entry.registrar, ...(entry.unshipped ? { unshipped: entry.unshipped } : {}) },
   })) as CASEntryPoint[];
 }
 
