@@ -7,6 +7,7 @@ mod capabilities;
 mod audit;
 mod author;
 mod comprehend;
+mod composition;
 mod conform;
 mod convention;
 mod coverage;
@@ -131,6 +132,8 @@ struct Index {
     architecture: Option<architecture::Architecture>,
     scope: Option<scope::Scope>,
     partition: Option<subproject::Partition>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    composition: Option<composition::Composition>,
     skipped_directories: Vec<String>,
     nested_repositories: Vec<String>,
 }
@@ -474,6 +477,7 @@ fn read_it() {
         architecture: None,
         scope: None,
         partition: None,
+        composition: None,
         skipped_directories: found.skipped_directories,
         nested_repositories: found.nested_repositories,
     };
@@ -1134,6 +1138,29 @@ fn read_it() {
         );
     }
     index.history = history;
+    let composition_started = Instant::now();
+    index.composition = index.partition.as_ref().and_then(|partition| {
+        composition::derive(
+            &root,
+            partition,
+            index.history.as_ref(),
+            &paths,
+            &index.edges,
+            &index.entry_points,
+            &index.exit_points,
+            &index.calls,
+            index.scope.as_ref().map(|scope| scope.deployables.as_slice()).unwrap_or(&[]),
+        )
+    });
+    if let Some(found) = index.composition.as_ref() {
+        eprintln!(
+            "composition {:?} | children {} | seams {} | dependencies {}",
+            composition_started.elapsed(),
+            found.children.len(),
+            found.seams.len(),
+            found.dependencies.len()
+        );
+    }
 
     let health_started = Instant::now();
     let health = health::derive(

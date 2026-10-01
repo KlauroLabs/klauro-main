@@ -505,7 +505,7 @@ fn partition(
     for entry in entry_points {
         if let Some(at) = owner(file_of(&entry.handler)) {
             sub_projects[at].entry_points += 1;
-            if matches!(entry.kind, "lifecycle" | "cli" | "http" | "rpc" | "graphql") {
+            if matches!(entry.kind, "lifecycle" | "cli" | "http" | "rpc" | "graphql" | "ui") {
                 sub_projects[at].runnable = true;
             }
         }
