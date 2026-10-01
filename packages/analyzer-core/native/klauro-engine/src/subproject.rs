@@ -21,6 +21,7 @@ pub struct SubProject {
     pub imports_crossing: u32,
     pub ship_backed: bool,
     pub runnable: bool,
+    pub status: &'static str,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub ships_in: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -175,42 +176,6 @@ pub fn derive(
     let mut declared: Vec<Declared> = Vec::new();
     let mut claimed: HashSet<String> = HashSet::default();
 
-    let unit_named: HashMap<&str, &Deployable> = deployables.iter().map(|unit| (unit.id.as_str(), unit)).collect();
-    let shared = |unit: &Deployable| unit.consumers >= SHARED_BY;
-    let tops_what_is_shared = |unit: &Deployable| {
-        shared(unit)
-            && unit.bundled_into.as_deref().and_then(|above| unit_named.get(above)).is_some_and(|above| !shared(above))
-    };
-    let chain_of = |unit| bundled_chain(unit, &unit_named);
-    let mut beneath: HashMap<&str, usize> = HashMap::default();
-    for unit in deployables {
-        for held in chain_of(unit) {
-            *beneath.entry(held.id.as_str()).or_default() += 1;
-        }
-    }
-    let mut leading: HashMap<&str, (&Deployable, usize)> = HashMap::default();
-    for unit in deployables.iter().filter(|unit| shared(unit)) {
-        let chain = chain_of(unit);
-        let Some(depth) = chain.iter().position(|held| tops_what_is_shared(held)) else { continue };
-        let top = chain[depth];
-        let covers = beneath.get(unit.id.as_str()).copied().unwrap_or(0) * FUNNEL_SHARE_DENOMINATOR
-            >= beneath.get(top.id.as_str()).copied().unwrap_or(0) * FUNNEL_SHARE_NUMERATOR;
-        if !covers {
-            continue;
-        }
-        let best = leading.entry(top.id.as_str()).or_insert((top, 0));
-        if depth > best.1 {
-            *best = (unit, depth);
-        }
-    }
-    let leading: HashMap<&str, &Deployable> = leading.into_iter().map(|(top, (unit, _))| (top, unit)).collect();
-    let heads: HashSet<&str> = leading.values().map(|unit| unit.id.as_str()).collect();
-    for unit in deployables.iter().filter(|unit| {
-        unit.bundled_into.is_some() && unit.category == "library" && unit.runs.is_none() && !heads.contains(unit.id.as_str())
-    }) {
-        claimed.insert(unit.root.clone());
-    }
-
     for (at, pattern) in &patterns {
         for (root, manifest) in &manifests {
             if claimed.contains(root) || !matches_pattern(pattern, root) {
@@ -271,21 +236,6 @@ pub fn derive(
 
     partition(declared, files, nodes, edges, entry_points, code, deployables)
 }
-
-const SHARED_BY: u32 = 2;
-
-fn bundled_chain<'d>(unit: &'d Deployable, named: &HashMap<&str, &'d Deployable>) -> Vec<&'d Deployable> {
-    let mut chain = vec![unit];
-    let mut current = unit;
-    for _ in 0..32 {
-        let Some(above) = current.bundled_into.as_deref().and_then(|above| named.get(above).copied()) else { break };
-        chain.push(above);
-        current = above;
-    }
-    chain
-}
-const FUNNEL_SHARE_NUMERATOR: usize = 9;
-const FUNNEL_SHARE_DENOMINATOR: usize = 10;
 
 fn declares_workspace(children: &HashMap<&str, Vec<&IndexNode>>, manifest: &str) -> bool {
     let name = basename(manifest).to_ascii_lowercase();
@@ -420,39 +370,11 @@ fn partition(
     let mut order: Vec<usize> = (0..declared.len()).collect();
     order.sort_by_key(|at| std::cmp::Reverse(declared[*at].root.len()));
 
-    let declared_at: HashMap<&str, usize> =
-        declared.iter().enumerate().map(|(at, found)| (found.root.as_str(), at)).collect();
-    let unit_of: HashMap<&str, &Deployable> =
-        deployables.iter().map(|unit| (unit.id.as_str(), unit)).collect();
-    let mut bundled: Vec<&Deployable> = deployables
-        .iter()
-        .filter(|unit| unit.bundled_into.is_some() && !unit.root.is_empty() && !declared_at.contains_key(unit.root.as_str()))
-        .collect();
-    bundled.sort_by_key(|unit| std::cmp::Reverse(unit.root.len()));
-    let carried_to = |unit: &Deployable| -> Option<usize> {
-        let mut current = unit;
-        for _ in 0..32 {
-            let above = unit_of.get(current.bundled_into.as_deref()?).copied()?;
-            if let Some(at) = declared_at.get(above.root.as_str()).filter(|_| !above.root.is_empty()) {
-                return Some(*at);
-            }
-            current = above;
-        }
-        None
-    };
-    let nearest = |path: &str| -> Option<usize> {
+    let owner = |path: &str| -> Option<usize> {
         order
             .iter()
             .copied()
             .find(|at| contains(&declared[*at].root, path))
-    };
-    let owner = |path: &str| -> Option<usize> {
-        let found = nearest(path)?;
-        let inner = bundled.iter().find(|unit| contains(&unit.root, path));
-        match inner {
-            Some(unit) if unit.root.len() > declared[found].root.len() => carried_to(unit).or(Some(found)),
-            _ => Some(found),
-        }
     };
 
     let mut sub_projects: Vec<SubProject> = declared
@@ -477,6 +399,7 @@ fn partition(
             imports_crossing: 0,
             ship_backed: false,
             runnable: false,
+            status: "module",
             ships_in: Vec::new(),
             consumed_by: Vec::new(),
         })
@@ -588,24 +511,46 @@ fn partition(
         }
     }
 
-    for unit in deployables {
-        for project in sub_projects.iter_mut() {
-            let covered = unit.root == project.root
-                || unit
-                    .ships
-                    .iter()
-                    .any(|path| !project.root.is_empty() && contains(&project.root, path));
-            if unit.shipped && covered {
-                project.ship_backed = true;
-                if !project.ships_in.contains(&unit.id) {
-                    project.ships_in.push(unit.id.clone());
-                }
+    let roots: Vec<String> = sub_projects.iter().map(|project| project.root.clone()).collect();
+    let deepest_holding = |path: &str| -> Option<usize> {
+        roots
+            .iter()
+            .enumerate()
+            .filter(|(_, root)| !root.is_empty() && contains(root, path))
+            .max_by_key(|(_, root)| root.len())
+            .map(|(at, _)| at)
+    };
+    for unit in deployables.iter().filter(|unit| unit.shipped) {
+        let mut covered: HashSet<usize> = HashSet::default();
+        for (at, project) in sub_projects.iter().enumerate() {
+            let own_root = unit.root == project.root
+                && (!project.root.is_empty() || project.declared_by == "repository-root");
+            if own_root {
+                covered.insert(at);
+            }
+        }
+        for path in &unit.ships {
+            if let Some(at) = deepest_holding(path) {
+                covered.insert(at);
+            }
+        }
+        for at in covered {
+            let project = &mut sub_projects[at];
+            project.ship_backed = true;
+            if !project.ships_in.contains(&unit.id) {
+                project.ships_in.push(unit.id.clone());
             }
         }
     }
     for project in sub_projects.iter_mut() {
         project.consumed_by.sort();
         project.ships_in.sort();
+        project.status = match (project.ship_backed, project.runnable, !project.consumed_by.is_empty()) {
+            (true, _, _) => "deployable",
+            (false, true, _) => "executable",
+            (false, false, true) => "library",
+            (false, false, false) => "module",
+        };
     }
 
     let mut assignment: Vec<(String, String)> = assignment
