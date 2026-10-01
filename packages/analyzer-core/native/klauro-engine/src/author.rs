@@ -334,6 +334,8 @@ pub fn what_it_is_for(spoken_for: &str, listed: &BTreeMap<String, String>) -> BT
 
 const PATHS_PER_CALL: usize = 12;
 
+pub const IN_THE_USERS_WORDS: &str = "Write the name and the sentence in the words of the person who gets it: never name an internal command, message channel, handler or function, and never say that something is called through a command or a channel. A route that a client of a web API calls may be named when it is what the outcome offers.";
+
 pub const NAMING: &str = "Also give it a name of 2-5 words that says what someone gets done on this path, a verb and what it acts on, like \"Cancel an order\", \
     never a route, a function name or a topic. What a path is reached through says what it does as much as its steps do: \
     one reached through a delete removes something, a create adds one, an update changes one, so its name says that even when the steps only show a read.";
@@ -603,12 +605,14 @@ pub fn propose_capabilities(spoken_for: &str, families: &[(String, String)]) -> 
          the audience it is for, and the ids of the outcomes that deliver it. The name and the sentence say only what the code shown does: never an option, filter, step \
          or result it does not show. When it only checks, simulates or records something, say it \
          checks, simulates or records it rather than that it does it. \
+         {users_words} \
          Every id below \
          must appear exactly once, either in one capability or in plumbing, and no other id may \
          appear.\n\
          Return JSON only: {{\"capabilities\":[{{\"name\":\"...\",\"description\":\"...\",\"audience\":\"...\",\"families\":[\"...\"]}}],\"plumbing\":[\"...\"]}}\n\n\
          The outcomes:\n{}",
-        families.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect::<Vec<_>>().join("\n")
+        families.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect::<Vec<_>>().join("\n"),
+        users_words = IN_THE_USERS_WORDS
     );
     let Some(held) =
         answered::<serde_json::Value>(&prompt, 8000, &asking_of_models(model()), "capabilities", 0)
@@ -916,10 +920,12 @@ pub fn tighten_claims(spoken: &str, held: &[(String, String)]) -> Vec<Tightened>
                  - when the code and the part's setup show it can never be reached — no client, provider or \
                  route for it exists anywhere — nobody gets it: set drop to true. A feature that switches on \
                  once an outside service or key is configured is real: keep it and say what it needs;\n\
+                 - {users_words}\n\
                  - when the proposal is already exact, return it unchanged.\n\
                  Return JSON only: {{\"items\":[{{\"id\":\"...\",\"name\":\"...\",\"description\":\"...\",\"drop\":false}}]}}\n\n\
                  The items:\n{}",
-                listed.join("\n")
+                listed.join("\n"),
+                users_words = IN_THE_USERS_WORDS
             );
             answered::<serde_json::Value>(&prompt, 6000, &asking_of_models(model()), "items", 1)
                 .map(|held| {
