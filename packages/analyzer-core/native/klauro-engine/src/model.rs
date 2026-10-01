@@ -253,6 +253,8 @@ pub struct CallFact {
     pub literals: Vec<String>,
     #[serde(skip_serializing_if = "crate::facts_cache::not")]
     pub constructs: bool,
+    #[serde(default, skip_serializing_if = "crate::facts_cache::not")]
+    pub renders: bool,
     #[serde(skip_serializing_if = "crate::facts_cache::empty")]
     pub type_arguments: Vec<String>,
     #[serde(skip_serializing_if = "crate::facts_cache::empty_context")]

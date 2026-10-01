@@ -3422,6 +3422,7 @@ mod tests {
             argument_count: 1,
             literals: vec![literal.to_string()],
             constructs: false,
+            renders: false,
             type_arguments: Vec::new(),
             context: crate::model::CallContext::default(),
             passes: Vec::new(),

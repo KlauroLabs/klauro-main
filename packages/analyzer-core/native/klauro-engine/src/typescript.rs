@@ -2,6 +2,8 @@ use tree_sitter::{Node, Parser, Tree};
 
 use crate::model::*;
 
+mod routes;
+
 const LITERAL_LIMIT: usize = 4;
 
 const TEXT_REMEMBERED: usize = 400;
@@ -15,6 +17,8 @@ pub struct Extractor<'a> {
     remembered: rustc_hash::FxHashMap<String, String>,
     placed: Option<Placed>,
     speaks_the_mcp_sdk: bool,
+    roots: rustc_hash::FxHashSet<String>,
+    containers: rustc_hash::FxHashSet<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -95,6 +99,8 @@ impl<'a> Extractor<'a> {
             remembered: rustc_hash::FxHashMap::default(),
             placed: None,
             speaks_the_mcp_sdk: false,
+            roots: rustc_hash::FxHashSet::default(),
+            containers: rustc_hash::FxHashSet::default(),
         }
     }
 
@@ -327,6 +333,14 @@ impl<'a> Extractor<'a> {
             "subscript_expression" => {
                 let target = self.text_owned(node);
                 self.read_a_setting(&target, node, scope);
+                self.walk(node, scope);
+            }
+            "jsx_self_closing_element" | "jsx_opening_element" => {
+                self.jsx_tag(node, scope);
+                self.walk(node, scope);
+            }
+            "object" => {
+                self.route_object(node);
                 self.walk(node, scope);
             }
             _ => self.walk(node, scope),
@@ -607,6 +621,7 @@ impl<'a> Extractor<'a> {
     }
 
     fn export_statement(&mut self, node: Node, scope: &Scope) {
+        self.remember_the_default_export(node);
         let reexport = node
             .child_by_field_name("source")
             .map(|source| trim_quotes(self.text(source)).to_string());
@@ -1240,6 +1255,7 @@ impl<'a> Extractor<'a> {
             self.push_edge(owner, &id, EdgeKind::Contains);
         }
 
+        self.loader_of(node);
         let mut inner = scope.child(Some(id.clone()), Some(id));
         if let Some(body) = node.child_by_field_name("body") {
             inner.argv_param = self.argv_local(body);
@@ -1310,6 +1326,13 @@ impl<'a> Extractor<'a> {
             };
             let name = self.text_owned(name_node);
             let value = declarator.child_by_field_name("value");
+            if let Some(value) = value.filter(|_| name_node.kind() == "identifier") {
+                self.remember_a_root(&name, value);
+                self.lazy_screens(&name, declarator, value);
+                if !scope.inside_callable {
+                    self.remember_a_table_of_paths(&name, value, line_of(declarator));
+                }
+            }
             if let Some(written) = value
                 .filter(|value| matches!(value.kind(), "string" | "template_string"))
                 .map(|value| trim_quotes(self.text(value)).trim().to_string())
@@ -1422,6 +1445,7 @@ impl<'a> Extractor<'a> {
             let inner = scope.child(Some(id.clone()), Some(id));
             match callable {
                 Some(callable) => {
+                    self.loader_of(callable);
                     if let Some(body) = callable.child_by_field_name("body") {
                         self.visit(body, &inner);
                     }
@@ -1497,6 +1521,7 @@ impl<'a> Extractor<'a> {
     }
 
     fn object_members(&mut self, object: Node, scope: &Scope, owner: &str) {
+        self.route_object(object);
         let mut cursor = object.walk();
         for member in object.named_children(&mut cursor) {
             match member.kind() {
@@ -1547,6 +1572,7 @@ impl<'a> Extractor<'a> {
     }
 
     fn call_expression(&mut self, node: Node, scope: &Scope) {
+        self.mounted_screens(node);
         let constructs = node.kind() == "new_expression";
         let Some(function) = node
             .child_by_field_name("function")
@@ -1640,6 +1666,7 @@ impl<'a> Extractor<'a> {
             argument_count,
             literals,
             constructs,
+            renders: false,
             type_arguments: node
                 .child_by_field_name("type_arguments")
                 .map(|found| {
@@ -1774,7 +1801,8 @@ impl<'a> Extractor<'a> {
 
     fn addressed_in(&self, object: Node) -> Option<String> {
         let mut cursor = object.walk();
-        object.named_children(&mut cursor).filter(|pair| pair.kind() == "pair").find_map(|pair| {
+        let pairs: Vec<Node> = object.named_children(&mut cursor).filter(|pair| pair.kind() == "pair").collect();
+        let address = pairs.iter().find_map(|pair| {
             let key = trim_quotes(self.text(pair.child_by_field_name("key")?)).to_string();
             if !matches!(key.as_str(), "url" | "path" | "endpoint") {
                 return None;
@@ -1784,6 +1812,14 @@ impl<'a> Extractor<'a> {
                 .then(|| trim_quotes(self.text(value)).to_string())
                 .filter(|written| written.starts_with('/'))
                 .map(|written| format!("{key}={written}"))
+        });
+        address.or_else(|| {
+            pairs.iter().find_map(|pair| {
+                let key = trim_quotes(self.text(pair.child_by_field_name("key")?));
+                let value = pair.child_by_field_name("value").filter(|value| value.kind() == "string")?;
+                let verb = trim_quotes(self.text(value)).to_ascii_uppercase();
+                (key == "method" && ASKED_METHODS.contains(&verb.as_str())).then(|| format!("method={verb}"))
+            })
         })
     }
 

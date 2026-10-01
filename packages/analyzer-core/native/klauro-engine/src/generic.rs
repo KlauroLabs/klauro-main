@@ -2534,6 +2534,7 @@ impl<'a> Extractor<'a> {
             argument_count: 2,
             literals: vec![trim_quotes(key).to_string()],
             constructs: false,
+            renders: false,
             type_arguments: Vec::new(),
             context: CallContext {
                 in_try: scope.in_try,
@@ -2750,6 +2751,7 @@ impl<'a> Extractor<'a> {
             argument_count,
             literals,
             constructs: node.kind().contains("new") || node.kind().contains("creation"),
+            renders: false,
             type_arguments: self.type_arguments_of(node, function),
             context: CallContext {
                 in_try: scope.in_try,
