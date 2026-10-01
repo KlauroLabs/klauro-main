@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::author::{Placed, Proposal, Proposed};
+use crate::author::{Placed, Proposal, Proposed, Serving};
 use crate::comprehend::{carved_name, settle, Capability, Delivery, Family, Flow, PUBLISHED};
 
 const FAMILIES_PER_PROPOSAL: usize = 20;
@@ -30,7 +30,7 @@ fn most_detailed_reading(said: &str, listed: &[(String, String)]) -> Proposal {
             .capabilities
             .iter()
             .flat_map(|held| held.families.iter().map(String::as_str))
-            .chain(reading.plumbing.iter().map(String::as_str))
+            .chain(reading.unassigned.iter().map(String::as_str))
             .collect();
         listed.iter().filter(|(id, _)| named.contains(id.as_str())).count()
     };
@@ -38,7 +38,7 @@ fn most_detailed_reading(said: &str, listed: &[(String, String)]) -> Proposal {
         .into_iter()
         .enumerate()
         .max_by_key(|(at, reading)| {
-            (settled(reading), reading.capabilities.len(), std::cmp::Reverse(reading.plumbing.len()), std::cmp::Reverse(*at))
+            (settled(reading), std::cmp::Reverse(reading.capabilities.len()), std::cmp::Reverse(*at))
         })
         .map(|(_, reading)| reading)
         .unwrap_or_default()
@@ -51,13 +51,24 @@ struct Held {
     description: String,
     audience: String,
     families: BTreeSet<String>,
+    roles: BTreeMap<String, Serving>,
+}
+
+impl Held {
+    fn absorb(&mut self, other: Held) {
+        self.families.extend(other.families);
+        for (family, serving) in other.roles {
+            self.roles.entry(family).or_insert(serving);
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Default)]
 struct Remembered {
     digest: String,
     capabilities: Vec<RememberedCapability>,
-    plumbing: BTreeSet<String>,
+    #[serde(default, alias = "plumbing")]
+    unassigned: BTreeSet<String>,
     families: BTreeMap<String, String>,
 }
 
@@ -67,6 +78,8 @@ struct RememberedCapability {
     description: String,
     audience: String,
     families: BTreeSet<String>,
+    #[serde(default)]
+    roles: BTreeMap<String, (String, String)>,
 }
 
 pub(crate) type Fields = BTreeMap<String, String>;
@@ -324,373 +337,33 @@ fn evidence_of(flows: &[&Flow], family: &Family, fields: &Fields) -> String {
     )
 }
 
-fn outcome_key(name: &str) -> String {
-    name.trim().to_ascii_lowercase()
-}
-
-fn gather(proposals: Vec<Proposal>, held: &mut Vec<Held>, plumbing: &mut BTreeSet<String>, known: &BTreeSet<String>) {
+fn gather(proposals: Vec<Proposal>, held: &mut Vec<Held>, unassigned: &mut BTreeSet<String>, known: &BTreeSet<String>) {
     for proposal in proposals {
-        plumbing.extend(proposal.plumbing.into_iter().filter(|id| known.contains(id)));
-        for Proposed { name, description, audience, families } in proposal.capabilities {
+        unassigned.extend(proposal.unassigned.into_iter().filter(|id| known.contains(id)));
+        for Proposed { name, description, audience, families, roles } in proposal.capabilities {
             let families: BTreeSet<String> = families.into_iter().filter(|id| known.contains(id)).collect();
             if families.is_empty() {
                 continue;
             }
-            match held.iter_mut().find(|other| outcome_key(&other.name) == outcome_key(&name)) {
-                Some(other) => other.families.extend(families),
-                None => held.push(Held { name, description, audience, families }),
+            let roles = roles.into_iter().filter(|(id, _)| families.contains(id)).collect();
+            let incoming = Held { name, description, audience, families, roles };
+            match held.iter_mut().find(|other| name_key(&other.name) == name_key(&incoming.name)) {
+                Some(other) => other.absorb(incoming),
+                None => held.push(incoming),
             }
         }
     }
 }
 
-fn lumped(name: &str) -> bool {
-    let lowered = format!(" {} ", name.to_ascii_lowercase());
-    [" and ", " & ", ", "].iter().any(|joins| lowered.contains(joins))
-}
-
-fn split_what_was_lumped(said: &str, told: &BTreeMap<String, String>, held: &mut Vec<Held>) {
-    let lumps: Vec<usize> = held
-        .iter()
-        .enumerate()
-        .filter(|(_, other)| lumped(&other.name) && other.families.len() > 1)
-        .map(|(at, _)| at)
-        .collect();
-    let splits: Vec<(usize, Proposal)> = lumps
-        .par_iter()
-        .map(|at| {
-            let families: Vec<(String, String)> = held[*at]
-                .families
-                .iter()
-                .filter_map(|id| told.get(id).map(|evidence| (id.clone(), evidence.clone())))
-                .collect();
-            (*at, crate::author::propose_capabilities(said, &families))
-        })
-        .collect();
-    let mut replaced: BTreeSet<usize> = BTreeSet::new();
-    let mut added: Vec<Held> = Vec::new();
-    for (at, proposal) in splits {
-        let within = &held[at].families;
-        let parts: Vec<Held> = proposal
-            .capabilities
-            .into_iter()
-            .map(|Proposed { name, description, audience, families }| Held {
-                name,
-                description,
-                audience,
-                families: families.into_iter().filter(|id| within.contains(id)).collect(),
-            })
-            .filter(|part| !part.families.is_empty())
-            .collect();
-        let covered: BTreeSet<&String> = parts.iter().flat_map(|part| part.families.iter()).collect();
-        if parts.len() < 2 || covered.len() < within.len() {
-            continue;
-        }
-        replaced.insert(at);
-        added.extend(parts);
-    }
-    let mut at = 0;
-    held.retain(|_| {
-        let keep = !replaced.contains(&at);
-        at += 1;
-        keep
-    });
-    held.extend(added);
-}
-
-fn place(
-    said: &str,
-    told: &BTreeMap<String, String>,
-    held: &mut Vec<Held>,
-    plumbing: &mut BTreeSet<String>,
-) {
-    let placed: BTreeSet<String> = held.iter().flat_map(|other| other.families.iter().cloned()).collect();
-    let unplaced: Vec<(String, String)> = told
-        .iter()
-        .filter(|(id, _)| !placed.contains(*id) && !plumbing.contains(*id))
-        .map(|(id, evidence)| (id.clone(), evidence.clone()))
-        .collect();
-    if unplaced.is_empty() {
-        return;
-    }
-    let standing: Vec<(String, String)> =
-        held.iter().map(|other| (other.name.clone(), other.description.clone())).collect();
-    for Placed { family, capability, description, audience } in crate::author::place_families(said, &standing, &unplaced) {
-        if !told.contains_key(&family) || placed.contains(&family) {
-            continue;
-        }
-        if capability.trim().eq_ignore_ascii_case("plumbing") {
-            plumbing.insert(family);
-            continue;
-        }
-        match held.iter_mut().find(|other| outcome_key(&other.name) == outcome_key(&capability)) {
-            Some(other) => {
-                other.families.insert(family);
-            }
-            None => held.push(Held {
-                name: capability,
-                description,
-                audience,
-                families: BTreeSet::from([family]),
-            }),
-        }
-    }
-}
-
-const HELD_TOGETHER: f64 = 0.5;
-
-fn hold_together(said: &str, told: &BTreeMap<String, String>, held: &mut [Held]) {
-    let mut questions: BTreeMap<String, crate::jev::Question> = BTreeMap::new();
-    let mut asked_of: BTreeMap<String, (usize, String)> = BTreeMap::new();
-    for (at, other) in held.iter().enumerate() {
-        if other.families.len() < 2 {
-            continue;
-        }
-        for family in &other.families {
-            let Some(evidence) = told.get(family) else { continue };
-            let key = format!("h{at}-{family}");
-            questions.insert(
-                key.clone(),
-                crate::jev::Question {
-                    kind: "noul",
-                    instructions: format!(
-                        "CAPABILITY: {}, for {}: {}\n\nOUTCOME read from the code:\n{evidence}\n\nSomeone who comes for the capability above comes for this outcome as part of the same thing, rather than for a different reason or as a different person",
-                        other.name, other.audience, other.description
-                    ),
-                    criteria: BTreeMap::new().into(),
-                },
-            );
-            asked_of.insert(key, (at, family.clone()));
-        }
-    }
-    if questions.is_empty() {
-        return;
-    }
-    let answers = crate::jev::decide(&format!("A software system describes itself like this:\n{said}"), questions);
-    for (key, (at, family)) in asked_of {
-        let apart = answers.get(&key).map(crate::jev::Decision::settled).is_some_and(|held| held < HELD_TOGETHER);
-        if apart && held[at].families.len() > 1 {
-            held[at].families.remove(&family);
-        }
-    }
-}
-
-fn object_of(family: &str) -> &str {
-    let (prefix, object) = family.split_once(':').unwrap_or(("", family));
-    match prefix {
-        "asks" => object.split_once(':').map(|(namespace, _)| namespace).unwrap_or(object),
-        _ => object,
-    }
-}
-
-fn terminal_first(family: &str) -> bool {
-    matches!(family.split(':').next().unwrap_or_default(), "changes" | "hands on" | "calls" | "acts" | "asks")
-}
-
-fn join_the_same(said: &str, held: &mut Vec<Held>) {
-    let mut questions: BTreeMap<String, crate::jev::Question> = BTreeMap::new();
-    let mut pairs: BTreeMap<String, (usize, usize)> = BTreeMap::new();
-    for first in 0..held.len() {
-        for second in first + 1..held.len() {
-            let shared = held[first]
-                .families
-                .iter()
-                .any(|family| held[second].families.iter().any(|other| object_of(other) == object_of(family)));
-            if !shared {
-                continue;
-            }
-            let key = format!("j{first}-{second}");
-            let told = |other: &Held| format!("{}, for {}: {}", other.name, other.audience, other.description);
-            questions.insert(
-                key.clone(),
-                crate::jev::Question {
-                    kind: "noul",
-                    instructions: format!(
-                        "FIRST: {}\nSECOND: {}\n\nThese are one outcome for the same person: someone who comes for one of them would say they came for the other, rather than for a different reason",
-                        told(&held[first]),
-                        told(&held[second])
-                    ),
-                    criteria: BTreeMap::new().into(),
-                },
-            );
-            pairs.insert(key, (first, second));
-        }
-    }
-    if questions.is_empty() {
-        return;
-    }
-    let answers = crate::jev::decide(&format!("A software system describes itself like this:\n{said}"), questions);
-    let mut into: Vec<usize> = (0..held.len()).collect();
-    let root = |into: &Vec<usize>, mut at: usize| {
-        while into[at] != at {
-            at = into[at];
-        }
-        at
-    };
-    for (key, (first, second)) in pairs {
-        if answers.get(&key).map(crate::jev::Decision::settled).is_some_and(|held| held >= HELD_TOGETHER) {
-            let (left, right) = (root(&into, first), root(&into, second));
-            if left != right {
-                let keeper = match held[right].families.iter().any(|family| terminal_first(family))
-                    && !held[left].families.iter().any(|family| terminal_first(family))
-                {
-                    true => right,
-                    false => left,
-                };
-                let other = if keeper == left { right } else { left };
-                into[other] = keeper;
-            }
-        }
-    }
-    let mut kept: Vec<Held> = Vec::new();
-    let mut slot_of: BTreeMap<usize, usize> = BTreeMap::new();
-    let taken: Vec<Held> = std::mem::take(held);
-    let roots: Vec<usize> = (0..taken.len()).map(|at| root(&into, at)).collect();
-    let mut pending: Vec<(usize, Held)> = Vec::new();
-    for (at, other) in taken.into_iter().enumerate() {
-        match roots[at] == at {
-            true => {
-                slot_of.insert(at, kept.len());
-                kept.push(other);
-            }
-            false => pending.push((roots[at], other)),
-        }
-    }
-    for (keeper, other) in pending {
-        if let Some(slot) = slot_of.get(&keeper) {
-            kept[*slot].families.extend(other.families);
-        }
-    }
-    *held = kept;
-}
-
-fn stemmed(word: &str) -> String {
-    let lowered = word.to_ascii_lowercase().replace(['-', '_'], "");
-    lowered.strip_suffix('s').filter(|stem| stem.len() > 2).map(str::to_string).unwrap_or(lowered)
-}
-
-fn record_key(family: &str) -> String {
-    match family.starts_with("asks:") {
-        true => stemmed(object_of(family)),
-        false => {
-            let object = object_of(family).to_ascii_lowercase();
-            object.strip_suffix('s').filter(|stem| stem.len() > 2).map(str::to_string).unwrap_or(object)
-        }
-    }
-}
-
-static NOT_AN_OBJECT_NOUN: &[&str] = &[
-    "a", "an", "and", "as", "at", "by", "for", "from", "in", "into", "is", "it", "its", "of", "on", "or", "someone",
-    "the", "their", "them", "they", "this", "to", "user", "users", "with",
-    "add", "authenticate", "cache", "check", "close", "compute", "configure", "create", "delete", "disable", "emit",
-    "enable", "execute", "fetch", "find", "forward", "get", "handle", "hide", "list", "load", "manage", "monitor",
-    "open", "organize", "parse", "read", "receive", "remove", "replace", "retrieve", "run", "save", "search", "send",
-    "set", "show", "sign", "start", "stop", "sync", "toggle", "track", "update", "view", "write",
-];
-
-fn object_nouns(name: &str) -> Vec<String> {
-    name.split_whitespace()
-        .map(|word| word.trim_matches(|letter: char| !letter.is_ascii_alphanumeric()).to_string())
-        .filter(|word| word.len() > 2)
-        .map(|word| stemmed(&word))
-        .filter(|word| word.len() > 2 && !NOT_AN_OBJECT_NOUN.contains(&word.as_str()))
-        .collect()
-}
-
-fn could_repeat(held: &[Held], key_of: &BTreeMap<&str, &str>) -> Vec<Vec<usize>> {
-    let mut leader: Vec<usize> = (0..held.len()).collect();
-    fn found(leader: &mut [usize], at: usize) -> usize {
-        let mut current = at;
-        while leader[current] != current {
-            leader[current] = leader[leader[current]];
-            current = leader[current];
-        }
-        current
-    }
-    let keys_of = |other: &Held| -> BTreeSet<String> {
-        other
-            .families
-            .iter()
-            .map(|family| record_key(key_of.get(family.as_str()).copied().unwrap_or(family.as_str())))
-            .collect()
-    };
-    let mut first_with: BTreeMap<String, usize> = BTreeMap::new();
-    for (at, other) in held.iter().enumerate() {
-        for key in keys_of(other) {
-            match first_with.get(&key).copied() {
-                Some(earlier) => {
-                    let (left, right) = (found(&mut leader, earlier), found(&mut leader, at));
-                    if left != right {
-                        leader[right] = left;
-                    }
-                }
-                None => {
-                    first_with.insert(key, at);
-                }
-            }
-        }
-    }
-    let mut components: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-    for at in 0..held.len() {
-        let root = found(&mut leader, at);
-        components.entry(root).or_default().push(at);
-    }
-    let asked_by_name = |at: &usize| asks_only_families(&held[*at].families, key_of);
-    let mut clusters: Vec<Vec<usize>> = Vec::new();
-    let mut by_key: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-    for component in components.into_values() {
-        if !component.iter().all(asked_by_name) {
-            if component.len() > 1 {
-                clusters.push(component);
-            }
-            continue;
-        }
-        for at in component {
-            let mut keys = keys_of(&held[at]);
-            keys.extend(object_nouns(&held[at].name));
-            for key in keys {
-                by_key.entry(key).or_default().push(at);
-            }
-        }
-    }
-    let mut grouped: Vec<Vec<usize>> = Vec::new();
-    let mut groups: Vec<Vec<usize>> = by_key.into_values().filter(|members| members.len() > 1).collect();
-    groups.sort_by_key(|members| std::cmp::Reverse(members.len()));
-    for members in groups {
-        for chunk in members.chunks(FAMILIES_PER_PROPOSAL) {
-            if chunk.len() < 2 || grouped.iter().any(|kept| chunk.iter().all(|at| kept.contains(at))) {
-                continue;
-            }
-            grouped.push(chunk.to_vec());
-        }
-    }
-    grouped.sort();
-    clusters.extend(grouped);
-    clusters
-}
-
-fn asks_only_families(families: &BTreeSet<String>, key_of: &BTreeMap<&str, &str>) -> bool {
-    !families.is_empty()
-        && families.iter().all(|id| key_of.get(id.as_str()).copied().unwrap_or(id.as_str()).starts_with("asks:"))
-}
-
-fn normalized_name(name: &str) -> String {
-    name.trim().to_ascii_lowercase().split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn merge_exact_asks_duplicates(held: &mut Vec<Held>, key_of: &BTreeMap<&str, &str>) {
+fn merge_same_named(held: &mut Vec<Held>) {
     let mut at = 0;
     while at < held.len() {
-        if !asks_only_families(&held[at].families, key_of) {
-            at += 1;
-            continue;
-        }
-        let name = normalized_name(&held[at].name);
+        let key = name_key(&held[at].name);
         let mut other = at + 1;
         while other < held.len() {
-            if asks_only_families(&held[other].families, key_of) && normalized_name(&held[other].name) == name {
+            if !key.is_empty() && name_key(&held[other].name) == key {
                 let merged = held.remove(other);
-                held[at].families.extend(merged.families);
+                held[at].absorb(merged);
             } else {
                 other += 1;
             }
@@ -699,61 +372,144 @@ fn merge_exact_asks_duplicates(held: &mut Vec<Held>, key_of: &BTreeMap<&str, &st
     }
 }
 
-fn consolidate_within(said: &str, held: Vec<Held>, key_of: &BTreeMap<&str, &str>) -> Vec<Held> {
+fn consolidate_purposes(said: &str, held: Vec<Held>) -> Vec<Held> {
     if held.len() < 2 {
         return held;
     }
-    let clusters = could_repeat(&held, key_of);
-    let answers: Vec<(Vec<usize>, Vec<crate::author::Same>)> = clusters
-        .par_iter()
-        .map(|cluster| {
-            let listed: BTreeMap<String, String> = cluster
-                .iter()
-                .map(|at| {
-                    let other = &held[*at];
-                    (
-                        format!("c{at}"),
-                        format!(
-                            "  it is called: {}\n  for: {}\n  what someone gets: {}",
-                            other.name, other.audience, other.description
-                        ),
-                    )
-                })
-                .collect();
-            (cluster.clone(), crate::author::same_outcome(said, &listed))
-        })
-        .collect();
-    let mut taken: Vec<bool> = vec![false; held.len()];
+    let listed: Vec<(String, String)> =
+        held.iter().map(|other| (other.name.clone(), other.description.clone())).collect();
+    let groups = the_same_among(&listed, |offered| crate::author::same_capability(said, offered));
+    if groups.is_empty() {
+        return held;
+    }
     let mut slots: Vec<Option<Held>> = held.into_iter().map(Some).collect();
-    let mut joined: Vec<Held> = Vec::new();
-    for (cluster, groups) in answers {
-        for group in groups {
-            let members: Vec<usize> = group
-                .of
-                .iter()
-                .filter_map(|id| id.trim().strip_prefix('c')?.parse::<usize>().ok())
-                .filter(|at| cluster.contains(at) && !taken[*at])
-                .collect();
-            if members.len() < 2 {
-                continue;
+    let mut kept: Vec<Held> = Vec::new();
+    for group in groups {
+        let mut members = group.members.iter();
+        let Some(mut together) = members.next().and_then(|at| slots[*at].take()) else { continue };
+        for at in members {
+            if let Some(other) = slots[*at].take() {
+                together.absorb(other);
             }
-            let mut families = BTreeSet::new();
-            for at in &members {
-                taken[*at] = true;
-                if let Some(other) = slots[*at].take() {
-                    families.extend(other.families);
-                }
-            }
-            joined.push(Held {
-                name: group.name.trim().to_string(),
-                description: group.description.trim().to_string(),
-                audience: group.audience.trim().to_string(),
-                families,
-            });
+        }
+        if !group.name.is_empty() {
+            together.name = group.name;
+        }
+        if !group.description.is_empty() {
+            together.description = group.description;
+        }
+        if !group.audience.is_empty() {
+            together.audience = group.audience;
+        }
+        kept.push(together);
+    }
+    kept.extend(slots.into_iter().flatten());
+    kept
+}
+
+fn is_unassigned_word(said: &str) -> bool {
+    matches!(said.trim().to_ascii_lowercase().as_str(), "unassigned" | "plumbing" | "none")
+}
+
+fn place(
+    said: &str,
+    told: &BTreeMap<String, String>,
+    held: &mut Vec<Held>,
+    unassigned: &mut BTreeSet<String>,
+) -> bool {
+    let placed: BTreeSet<String> = held.iter().flat_map(|other| other.families.iter().cloned()).collect();
+    let unplaced: Vec<(String, String)> = told
+        .iter()
+        .filter(|(id, _)| !placed.contains(*id) && !unassigned.contains(*id))
+        .map(|(id, evidence)| (id.clone(), evidence.clone()))
+        .collect();
+    if unplaced.is_empty() {
+        return false;
+    }
+    let standing: Vec<(String, String)> =
+        held.iter().map(|other| (other.name.clone(), other.description.clone())).collect();
+    let answers = crate::author::place_families(said, &standing, &unplaced);
+    let answered = !answers.is_empty();
+    for Placed { family, capability, description, audience, role, why } in answers {
+        if !told.contains_key(&family) || placed.contains(&family) {
+            continue;
+        }
+        if is_unassigned_word(&capability) {
+            unassigned.insert(family);
+            continue;
+        }
+        let roles: BTreeMap<String, Serving> = crate::author::role_named(&role)
+            .map(|role| BTreeMap::from([(family.clone(), Serving { role: role.to_string(), why: why.trim().to_string() })]))
+            .unwrap_or_default();
+        match held.iter_mut().find(|other| name_key(&other.name) == name_key(&capability)) {
+            Some(other) => other.absorb(Held {
+                name: capability,
+                description,
+                audience,
+                families: BTreeSet::from([family]),
+                roles,
+            }),
+            None => held.push(Held { name: capability, description, audience, families: BTreeSet::from([family]), roles }),
         }
     }
-    joined.extend(slots.into_iter().flatten());
-    joined
+    answered
+}
+
+pub(crate) fn is_proposable(_flow: &Flow) -> bool {
+    true
+}
+
+fn lines_of_outcomes(held: &Held, lanes: &BTreeMap<&str, (&Family, &Vec<&Flow>)>) -> Vec<(usize, String)> {
+    let mut lines: Vec<(usize, String)> = Vec::new();
+    for family_id in &held.families {
+        let Some((family, lane)) = lanes.get(family_id.as_str()) else { continue };
+        let (_, object) = family.key.split_once(':').unwrap_or(("", family.key.as_str()));
+        let role = held.roles.get(family_id).map(|serving| serving.role.as_str()).unwrap_or("primary");
+        let mut surfaces: Vec<String> = lane.iter().map(|flow| surface_of(flow)).collect();
+        settle(&mut surfaces);
+        let more = surfaces.len().saturating_sub(OUTCOME_SURFACES);
+        surfaces.truncate(OUTCOME_SURFACES);
+        lines.push((
+            lane.len(),
+            format!(
+                "    - {role}: {object} ({}), reached through {}{}",
+                family.basis,
+                surfaces.join(", "),
+                match more {
+                    0 => String::new(),
+                    more => format!(" and {more} more"),
+                }
+            ),
+        ));
+    }
+    lines.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+    lines
+}
+
+const OUTCOMES_LISTED: usize = 40;
+const OUTCOME_SURFACES: usize = 3;
+const OUTCOMES_DETAILED: usize = 2;
+
+fn evidence_of_capability(held: &Held, lanes: &BTreeMap<&str, (&Family, &Vec<&Flow>)>, fields: &Fields) -> String {
+    let lines = lines_of_outcomes(held, lanes);
+    let more = lines.len().saturating_sub(OUTCOMES_LISTED);
+    let mut told = format!(
+        "  it is served by {} outcomes, each with its role in it:\n{}{}",
+        lines.len(),
+        lines.iter().take(OUTCOMES_LISTED).map(|(_, line)| line.as_str()).collect::<Vec<_>>().join("\n"),
+        match more {
+            0 => String::new(),
+            more => format!("\n    - and {more} more outcomes"),
+        }
+    );
+    let mut main: Vec<(&Family, &Vec<&Flow>)> =
+        held.families.iter().filter_map(|id| lanes.get(id.as_str()).copied()).collect();
+    main.sort_by(|left, right| right.1.len().cmp(&left.1.len()).then_with(|| left.0.key.cmp(&right.0.key)));
+    for (family, lane) in main.into_iter().take(OUTCOMES_DETAILED) {
+        told.push('\n');
+        told.push_str(&evidence_of(lane, family, fields));
+    }
+    told
 }
 
 pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields: &Fields) -> Vec<Capability> {
@@ -766,6 +522,7 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
         .copied()
         .filter(|flow| !served || flow.kind != "export")
         .filter(|flow| !only_moves_the_screen(flow))
+        .filter(|flow| is_proposable(flow))
         .collect();
     if std::env::var("KLAURO_FAMILY_DUMP").is_ok() {
         for family in outcomes_of(&kept).keys() {
@@ -792,9 +549,14 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
     let id_of: BTreeMap<&str, &str> = key_of.iter().map(|(id, key)| (*key, *id)).collect();
     let evidence_of_key: BTreeMap<String, String> = told
         .iter()
-        .map(|(id, evidence)| (key_of[id.as_str()].to_string(), crate::jev::named(&format!("{said}\u{1}{evidence}"))))
+        .map(|(id, evidence)| {
+            (
+                key_of[id.as_str()].to_string(),
+                crate::jev::named(&format!("{}\u{1}{said}\u{1}{evidence}", crate::author::PURPOSE_CONTRACT_VERSION)),
+            )
+        })
         .collect();
-    let digest = crate::jev::named(&format!("{said}\u{1}{:?}", evidence_of_key));
+    let digest = crate::jev::named(&format!("{}\u{1}{said}\u{1}{:?}", crate::author::PURPOSE_CONTRACT_VERSION, evidence_of_key));
     if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
         eprintln!("said of {}: {said}", remembered_as.replace('\u{1}', "/"));
         for (id, evidence) in &told {
@@ -805,14 +567,14 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
         let carried = evidence_of_key.iter().filter(|(key, evidence)| memory.families.get(*key) == Some(*evidence)).count();
         carried * 2 >= evidence_of_key.len()
     });
-    let (mut held, mut plumbing) = match memory {
+    let (mut held, mut unassigned) = match memory {
         Some(memory) if memory.digest == digest => recollected(&memory, &id_of, |_| true),
         Some(memory) => {
-            let (mut held, mut plumbing) = recollected(&memory, &id_of, |key| {
+            let (mut held, mut unassigned) = recollected(&memory, &id_of, |key| {
                 memory.families.get(key).is_some_and(|was| evidence_of_key.get(key) == Some(was))
             });
-            place(said, &told, &mut held, &mut plumbing);
-            (held, plumbing)
+            place(said, &told, &mut held, &mut unassigned);
+            (held, unassigned)
         }
         None => {
             let listed: Vec<(String, String)> =
@@ -827,14 +589,14 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
             };
             let chunked = proposals.len() > 1;
             let mut held: Vec<Held> = Vec::new();
-            let mut plumbing: BTreeSet<String> = BTreeSet::new();
+            let mut unassigned: BTreeSet<String> = BTreeSet::new();
             if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
                 eprintln!("  proposing {} outcomes took {:?}", listed.len(), proposing.elapsed());
             }
             let proposed: usize = proposals.iter().map(|proposal| proposal.capabilities.len()).sum();
-            gather(proposals, &mut held, &mut plumbing, &known);
+            gather(proposals, &mut held, &mut unassigned, &known);
             if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
-                eprintln!("  proposed {proposed} capabilities, {} held after gathering, {} plumbing", held.len(), plumbing.len());
+                eprintln!("  proposed {proposed} capabilities, {} held after gathering, {} unassigned", held.len(), unassigned.len());
             }
             let clock = std::time::Instant::now();
             let counted = |step: &str, held: &Vec<Held>| {
@@ -843,28 +605,27 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
                 }
             };
             if chunked {
-                held = consolidate_within(said, held, &key_of);
-                counted("consolidating", &held);
+                held = consolidate_purposes(said, held);
+                counted("consolidating purposes", &held);
             }
-            hold_together(said, &told, &mut held);
-            counted("holding together", &held);
-            place(said, &told, &mut held, &mut plumbing);
+            if place(said, &told, &mut held, &mut unassigned) {
+                let placed: BTreeSet<&String> = held.iter().flat_map(|other| other.families.iter()).collect();
+                let left: Vec<String> =
+                    known.iter().filter(|id| !placed.contains(id) && !unassigned.contains(*id)).cloned().collect();
+                unassigned.extend(left);
+            }
             counted("placing", &held);
-            join_the_same(said, &mut held);
-            counted("joining the same", &held);
-            split_what_was_lumped(said, &told, &mut held);
-            counted("splitting", &held);
-            (held, plumbing)
+            (held, unassigned)
         }
     };
     held.retain(|other| !other.families.is_empty());
-    merge_exact_asks_duplicates(&mut held, &key_of);
-    plumbing.retain(|id| known.contains(id));
+    merge_same_named(&mut held);
+    unassigned.retain(|id| known.contains(id) && !held.iter().any(|other| other.families.contains(id)));
     if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
-        eprintln!("  settled {} capabilities and {} plumbing of {} outcomes", held.len(), plumbing.len(), told.len());
+        eprintln!("  settled {} capabilities and {} unassigned of {} outcomes", held.len(), unassigned.len(), told.len());
     }
     let settled_every_family = told.keys().all(|id| {
-        plumbing.contains(id) || held.iter().any(|other| other.families.contains(id))
+        unassigned.contains(id) || held.iter().any(|other| other.families.contains(id))
     });
     if crate::author::asked() && settled_every_family && !held.is_empty() {
         keep_in_memory(
@@ -878,25 +639,22 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
                         description: other.description.clone(),
                         audience: other.audience.clone(),
                         families: other.families.iter().map(|id| key_of[id.as_str()].to_string()).collect(),
+                        roles: other
+                            .roles
+                            .iter()
+                            .filter(|(id, _)| key_of.contains_key(id.as_str()))
+                            .map(|(id, serving)| (key_of[id.as_str()].to_string(), (serving.role.clone(), serving.why.clone())))
+                            .collect(),
                     })
                     .collect(),
-                plumbing: plumbing.iter().map(|id| key_of[id.as_str()].to_string()).collect(),
+                unassigned: unassigned.iter().map(|id| key_of[id.as_str()].to_string()).collect(),
                 families: evidence_of_key.clone(),
             },
         );
     }
     let lanes: BTreeMap<&str, (&Family, &Vec<&Flow>)> =
         keyed.iter().map(|(id, family, lane)| (id.as_str(), (*family, *lane))).collect();
-    let assigned = split_shared(said, &held, &lanes);
-    let mut formed: Vec<Capability> = held
-        .into_iter()
-        .filter_map(|other| {
-            let name = other.name.clone();
-            built(other, &lanes, fields, |family, flow| {
-                assigned.get(family).and_then(|by_flow| by_flow.get(flow)).is_none_or(|owners| owners.contains(&name))
-            })
-        })
-        .collect();
+    let mut formed: Vec<Capability> = held.into_iter().filter_map(|other| built(other, &lanes, fields)).collect();
     formed.sort_by(|left, right| left.id.cmp(&right.id));
     formed
 }
@@ -919,15 +677,23 @@ fn recollected(
                 .filter(|key| still_holds(key))
                 .filter_map(|key| id_of.get(key.as_str()).map(|id| id.to_string()))
                 .collect(),
+            roles: was
+                .roles
+                .iter()
+                .filter(|(key, _)| still_holds(key))
+                .filter_map(|(key, (role, why))| {
+                    Some((id_of.get(key.as_str())?.to_string(), Serving { role: role.clone(), why: why.clone() }))
+                })
+                .collect(),
         })
         .collect();
-    let plumbing = memory
-        .plumbing
+    let unassigned = memory
+        .unassigned
         .iter()
         .filter(|key| still_holds(key))
         .filter_map(|key| id_of.get(key.as_str()).map(|id| id.to_string()))
         .collect();
-    (held, plumbing)
+    (held, unassigned)
 }
 
 static SCREEN_EVENTS: &[&str] = &[
@@ -944,43 +710,12 @@ fn only_moves_the_screen(flow: &Flow) -> bool {
         && !flow.steps.iter().any(|step| matches!(step.kind, "call" | "hand_off" | "raise" | "change" | "create" | "remove"))
 }
 
-fn split_shared(said: &str, held: &[Held], lanes: &BTreeMap<&str, (&Family, &Vec<&Flow>)>) -> BTreeMap<String, BTreeMap<String, Vec<String>>> {
-    let mut claimed: BTreeMap<&str, Vec<&Held>> = BTreeMap::new();
-    for other in held {
-        for family in &other.families {
-            claimed.entry(family.as_str()).or_default().push(other);
-        }
-    }
-    let mut assigned: BTreeMap<String, BTreeMap<String, Vec<String>>> = BTreeMap::new();
-    for (family, claimants) in claimed.into_iter().filter(|(_, claimants)| claimants.len() > 1) {
-        let Some((_, lane)) = lanes.get(family) else { continue };
-        let choices: Vec<(String, String)> =
-            claimants.iter().map(|other| (other.name.trim().to_string(), other.description.trim().to_string())).collect();
-        let paths: Vec<(String, String)> = lane
-            .iter()
-            .map(|flow| (flow.id.clone(), format!("  reached through: {}\n  steps: {}", surface_of(flow), told_steps(flow))))
-            .collect();
-        let context = format!(
-            "{said}\u{1}{}",
-            choices.iter().map(|(name, description)| format!("{name}: {description}")).collect::<Vec<_>>().join("\n")
-        );
-        let by_flow: BTreeMap<String, Vec<String>> =
-            crate::memory::each("delivered by", &context, &paths, |missing| crate::author::assign_paths(said, &choices, missing));
-        assigned.insert(family.to_string(), by_flow);
-    }
-    assigned
-}
-
-fn built(
-    held: Held,
-    lanes: &BTreeMap<&str, (&Family, &Vec<&Flow>)>,
-    fields: &Fields,
-    delivers: impl Fn(&str, &str) -> bool,
-) -> Option<Capability> {
+fn built(held: Held, lanes: &BTreeMap<&str, (&Family, &Vec<&Flow>)>, fields: &Fields) -> Option<Capability> {
     let name = held.name.trim().to_string();
     if name.is_empty() {
         return None;
     }
+    let evidence = evidence_of_capability(&held, lanes, fields);
     let mut capability = Capability {
         id: format!("capability:{}", carved_name(&name)),
         audience: Some(held.audience.trim().to_ascii_lowercase()).filter(|audience| !audience.is_empty()),
@@ -999,25 +734,29 @@ fn built(
         touches: Vec::new(),
         terminality: None,
         confidence: None,
-        evidence: String::new(),
+        evidence,
     };
-    let mut told: Vec<String> = Vec::new();
     for family_id in &held.families {
         let Some((family, lane)) = lanes.get(family_id.as_str()) else { continue };
-        told.push(evidence_of(lane, family, fields));
         let terminality = terminality_of(family, lane);
         if terminality == "terminal" || capability.terminality.is_none() {
             capability.terminality = Some(terminality);
         }
-        for flow in lane.iter().filter(|flow| delivers(family_id, &flow.id)) {
+        let serving = held.roles.get(family_id);
+        for flow in lane.iter() {
             capability.project = capability.project.take().or_else(|| flow.project.clone());
             capability.delivered.push(Delivery {
                 flow: flow.id.clone(),
-                role: match flow.standing {
-                    "terminal" | "proximal" => "primary",
-                    _ => "supporting",
+                role: serving
+                    .and_then(|serving| crate::author::role_named(&serving.role))
+                    .unwrap_or(match flow.standing {
+                        "terminal" | "proximal" => "primary",
+                        _ => "supporting",
+                    }),
+                rationale: match serving.map(|serving| serving.why.as_str()).filter(|why| !why.is_empty()) {
+                    Some(why) => why.to_string(),
+                    None => format!("{} belongs here by {}", flow.operation, family.basis),
                 },
-                rationale: format!("{} belongs here by {}", flow.operation, family.basis),
             });
             capability.surfaces.push(match flow.method.as_deref() {
                 Some(method) => format!("{method} {}", flow.operation),
@@ -1032,13 +771,7 @@ fn built(
     if capability.delivered.is_empty() {
         return None;
     }
-    if capability.delivered.iter().all(|held| held.role != "primary") {
-        for held in capability.delivered.iter_mut() {
-            held.role = "primary";
-        }
-    }
-    capability.evidence = told.join("\n");
-    capability.delivered.sort_by(|left, right| left.flow.cmp(&right.flow));
+    capability.delivered.sort_by(|left, right| left.flow.cmp(&right.flow).then_with(|| role_rank(left.role).cmp(&role_rank(right.role))));
     capability.delivered.dedup_by(|left, right| left.flow == right.flow);
     capability.flows = capability.delivered.iter().map(|held| held.flow.clone()).collect();
     settle(&mut capability.surfaces);
@@ -1046,6 +779,73 @@ fn built(
     settle(&mut capability.touches);
     settle(&mut capability.changes);
     Some(capability)
+}
+
+fn role_rank(role: &str) -> usize {
+    crate::author::SERVING_ROLES.iter().position(|held| *held == role).unwrap_or(usize::MAX)
+}
+
+#[derive(Debug, Serialize, Clone, Default)]
+pub struct PartCoverage {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    pub flows: u32,
+    pub related: u32,
+    pub unmapped: u32,
+    pub flows_to_capabilities: f64,
+}
+
+#[derive(Debug, Serialize, Clone, Default)]
+pub struct Coverage {
+    pub flows: u32,
+    pub related: u32,
+    pub unmapped: u32,
+    pub flows_to_capabilities: f64,
+    pub parts: Vec<PartCoverage>,
+    pub unmapped_flows: Vec<String>,
+}
+
+fn share_of(related: u32, flows: u32) -> f64 {
+    match flows {
+        0 => 0.0,
+        flows => (f64::from(related) / f64::from(flows) * 1000.0).round() / 1000.0,
+    }
+}
+
+pub(crate) fn coverage_of(flows: &[Flow], capabilities: &[Capability]) -> Coverage {
+    let related: BTreeSet<&str> =
+        capabilities.iter().flat_map(|capability| capability.flows.iter().map(String::as_str)).collect();
+    let mut parts: BTreeMap<Option<&str>, PartCoverage> = BTreeMap::new();
+    let mut unmapped_flows: Vec<String> = Vec::new();
+    let mut count = 0u32;
+    let mut mapped = 0u32;
+    for flow in flows {
+        let part = parts
+            .entry(flow.project.as_deref())
+            .or_insert_with(|| PartCoverage { project: flow.project.clone(), ..PartCoverage::default() });
+        part.flows += 1;
+        count += 1;
+        if related.contains(flow.id.as_str()) {
+            part.related += 1;
+            mapped += 1;
+        } else {
+            part.unmapped += 1;
+            unmapped_flows.push(flow.id.clone());
+        }
+    }
+    let mut parts: Vec<PartCoverage> = parts.into_values().collect();
+    for part in parts.iter_mut() {
+        part.flows_to_capabilities = share_of(part.related, part.flows);
+    }
+    unmapped_flows.sort();
+    Coverage {
+        flows: count,
+        related: mapped,
+        unmapped: count - mapped,
+        flows_to_capabilities: share_of(mapped, count),
+        parts,
+        unmapped_flows,
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1091,7 +891,7 @@ fn continued_together(
                 crate::jev::Question {
                     kind: "noul",
                     instructions: format!(
-                        "FIRST:\n{using}\n\nSECOND:\n{reached}\n\nSomeone using the first is getting the second done through it: they are one outcome for the same person, reached two ways, rather than two things someone would come for separately"
+                        "FIRST:\n{using}\n\nSECOND:\n{reached}\n\nThe first continues into the second, so they serve one purpose reached from two parts of the system, and the product's description would list them as one thing rather than as two separate purposes"
                     ),
                     criteria: BTreeMap::new().into(),
                 },
@@ -1260,6 +1060,7 @@ fn grouped(
 }
 
 pub(crate) fn of_the_whole(parts: &[Capability], spoken: &str, scope: &str, flows: &[Flow]) -> Vec<Capability> {
+    let scope = &format!("{scope}\u{1}{}", crate::author::PURPOSE_CONTRACT_VERSION);
     let projects: BTreeSet<Option<&str>> = parts.iter().map(|capability| capability.project.as_deref()).collect();
     if parts.len() < 2 || projects.len() < 2 {
         return Vec::new();
@@ -1639,14 +1440,6 @@ mod command_family_tests {
     }
 
     #[test]
-    fn command_namespaces_share_an_object_for_join_the_same() {
-        assert_eq!(object_of("asks:archive:rename"), "archive");
-        assert_eq!(object_of("asks:archive:delete"), "archive");
-        assert_ne!(object_of("asks:archive:rename"), object_of("asks:chat:run"));
-        assert_eq!(object_of("changes:orders"), "orders");
-    }
-
-    #[test]
     fn a_named_command_is_terminal() {
         let family = Family { key: "asks:chat:run".to_string(), basis: "the command someone explicitly asked it to run" };
         let acts = flow("flow:1", "ipc", None, "chat:run", &["chat"], &[]);
@@ -1724,160 +1517,160 @@ mod command_family_tests {
         assert_eq!(terminality_of(&family, &[&replaces]), "terminal");
     }
 
-    #[test]
-    fn exact_duplicate_asks_only_capabilities_merge_without_asking_ai() {
-        let mut key_of: BTreeMap<&str, &str> = BTreeMap::new();
-        key_of.insert("f0", "asks:engine:configure");
-        key_of.insert("f1", "asks:engine:setup");
-        let mut held = vec![
-            Held {
-                name: "Configure engine environment".to_string(),
-                description: "Sets up the engine".to_string(),
-                audience: "developer".to_string(),
-                families: BTreeSet::from(["f0".to_string()]),
-            },
-            Held {
-                name: "  configure   engine environment ".to_string(),
-                description: "Sets up the engine".to_string(),
-                audience: "developer".to_string(),
-                families: BTreeSet::from(["f1".to_string()]),
-            },
-        ];
-        merge_exact_asks_duplicates(&mut held, &key_of);
-        assert_eq!(held.len(), 1, "identical-named asks-only capabilities must merge deterministically");
-        assert_eq!(held[0].families, BTreeSet::from(["f0".to_string(), "f1".to_string()]));
-    }
-
-    #[test]
-    fn duplicate_names_across_a_mixed_family_are_left_for_the_ai() {
-        let mut key_of: BTreeMap<&str, &str> = BTreeMap::new();
-        key_of.insert("f0", "asks:engine:configure");
-        key_of.insert("f1", "changes:engine");
-        let mut held = vec![
-            Held {
-                name: "Configure engine environment".to_string(),
-                description: "one".to_string(),
-                audience: "developer".to_string(),
-                families: BTreeSet::from(["f0".to_string()]),
-            },
-            Held {
-                name: "Configure engine environment".to_string(),
-                description: "two".to_string(),
-                audience: "developer".to_string(),
-                families: BTreeSet::from(["f1".to_string()]),
-            },
-        ];
-        merge_exact_asks_duplicates(&mut held, &key_of);
-        assert_eq!(held.len(), 2, "a non-asks family must not be merged deterministically");
-    }
-
-    #[test]
-    fn object_nouns_widen_clustering_for_asks_only_capabilities() {
-        let mut key_of: BTreeMap<&str, &str> = BTreeMap::new();
-        key_of.insert("f0", "asks:accounts:signIn");
-        key_of.insert("f1", "asks:auth:manage");
-        let held = vec![
-            Held {
-                name: "Sign in with subscription account".to_string(),
-                description: String::new(),
-                audience: String::new(),
-                families: BTreeSet::from(["f0".to_string()]),
-            },
-            Held {
-                name: "Authenticate with subscription accounts".to_string(),
-                description: String::new(),
-                audience: String::new(),
-                families: BTreeSet::from(["f1".to_string()]),
-            },
-        ];
-        let clusters = could_repeat(&held, &key_of);
-        assert_eq!(clusters, vec![vec![0, 1]], "a shared object noun must cluster two different asks namespaces");
-    }
-
-    #[test]
-    fn a_widened_cluster_keeps_the_members_that_share_a_noun_together() {
-        let mut key_of: BTreeMap<&str, &str> = BTreeMap::new();
-        let names = ["Manage accounts", "Open files", "Browse files", "Manage subscription accounts", "Label accounts"];
-        let namespaces = ["asks:auth:list", "asks:fs:open", "asks:fs:list", "asks:auth:reorder", "asks:profile:label"];
-        let ids = ["f0", "f1", "f2", "f3", "f4"];
-        for at in 0..names.len() {
-            key_of.insert(ids[at], namespaces[at]);
+    fn held_of(name: &str, families: &[&str]) -> Held {
+        Held {
+            name: name.to_string(),
+            description: String::new(),
+            audience: String::new(),
+            families: families.iter().map(|id| id.to_string()).collect(),
+            roles: BTreeMap::new(),
         }
-        let held: Vec<Held> = names
-            .iter()
-            .zip(ids)
-            .map(|(name, id)| Held {
-                name: name.to_string(),
-                description: String::new(),
-                audience: String::new(),
-                families: BTreeSet::from([id.to_string()]),
-            })
-            .collect();
-        let clusters = could_repeat(&held, &key_of);
-        assert!(clusters.contains(&vec![0, 3, 4]), "{clusters:?}");
-        assert!(clusters.contains(&vec![1, 2]), "{clusters:?}");
     }
 
     #[test]
-    fn non_asks_clusters_keep_their_old_shape() {
-        let mut key_of: BTreeMap<&str, &str> = BTreeMap::new();
-        key_of.insert("f0", "changes:orders");
-        key_of.insert("f1", "shows:order");
-        key_of.insert("f2", "changes:baskets");
-        let held: Vec<Held> = ["Place orders", "Track an order", "Fill a basket"]
-            .iter()
-            .enumerate()
-            .map(|(at, name)| Held {
-                name: name.to_string(),
-                description: String::new(),
-                audience: String::new(),
-                families: BTreeSet::from([format!("f{at}")]),
-            })
-            .collect();
-        assert_eq!(could_repeat(&held, &key_of), vec![vec![0, 1]]);
+    fn a_proposal_names_a_role_per_family_and_leaves_some_unassigned() {
+        let said = serde_json::json!({
+            "capabilities": [
+                {"name": "Trade assets", "description": "d", "audience": "traders", "serves": [
+                    {"id": "f0", "role": "primary", "why": "places the trade"},
+                    {"id": "f1", "role": "Prerequisite", "why": "signs in first"},
+                    {"id": "f2", "role": "nonsense", "why": "x"},
+                    "f3"
+                ]},
+                {"name": "", "serves": [{"id": "f9", "role": "primary"}]},
+                {"name": "Empty", "serves": []}
+            ],
+            "unassigned": ["f4"],
+            "plumbing": ["f5"]
+        });
+        let proposal = crate::author::proposal_of(&said, 6);
+        assert_eq!(proposal.capabilities.len(), 1);
+        let trade = &proposal.capabilities[0];
+        assert_eq!(trade.families, vec!["f0", "f1", "f2", "f3"]);
+        assert_eq!(trade.roles["f0"].role, "primary");
+        assert_eq!(trade.roles["f0"].why, "places the trade");
+        assert_eq!(trade.roles["f1"].role, "prerequisite");
+        assert!(!trade.roles.contains_key("f2"), "an unknown role is not kept");
+        assert!(!trade.roles.contains_key("f3"));
+        assert_eq!(proposal.unassigned, vec!["f4", "f5"]);
     }
 
     #[test]
-    fn namespace_dashes_and_underscores_are_treated_the_same() {
-        let mut key_of: BTreeMap<&str, &str> = BTreeMap::new();
-        key_of.insert("f0", "asks:chat-session:list");
-        key_of.insert("f1", "asks:chat_sessions:create");
-        let held = vec![
-            Held {
-                name: "List chats".to_string(),
-                description: String::new(),
-                audience: String::new(),
-                families: BTreeSet::from(["f0".to_string()]),
-            },
-            Held {
-                name: "Start a chat".to_string(),
-                description: String::new(),
-                audience: String::new(),
-                families: BTreeSet::from(["f1".to_string()]),
-            },
+    fn a_proposal_that_names_only_unassigned_outcomes_is_still_an_answer() {
+        let said = serde_json::json!({"capabilities": [], "unassigned": ["f0", "f1"]});
+        assert_eq!(crate::author::proposal_of(&said, 2).unassigned.len(), 2);
+        assert!(crate::author::proposal_of(&said, 3).unassigned.is_empty(), "a partial answer with nothing named is no answer");
+    }
+
+    #[test]
+    fn the_legacy_families_list_of_ids_still_parses() {
+        let said = serde_json::json!({"capabilities": [{"name": "Browse the catalog", "families": ["f0", "f1"]}], "plumbing": []});
+        let proposal = crate::author::proposal_of(&said, 2);
+        assert_eq!(proposal.capabilities[0].families, vec!["f0", "f1"]);
+        assert!(proposal.capabilities[0].roles.is_empty());
+    }
+
+    #[test]
+    fn gathering_groups_many_families_under_one_purpose_and_keeps_unassigned_ones_out() {
+        let known: BTreeSet<String> = ["f0", "f1", "f2", "f3"].iter().map(|id| id.to_string()).collect();
+        let one = crate::author::proposal_of(
+            &serde_json::json!({"capabilities": [{"name": "Manage photo albums", "serves": [
+                {"id": "f0", "role": "primary"}, {"id": "f9", "role": "primary"}]}], "unassigned": ["f3", "f8"]}),
+            4,
+        );
+        let two = crate::author::proposal_of(
+            &serde_json::json!({"capabilities": [{"name": "manage photo album", "serves": [
+                {"id": "f1", "role": "supporting", "why": "lists them"}, {"id": "f2", "role": "recovery"}]}]}),
+            4,
+        );
+        let mut held: Vec<Held> = Vec::new();
+        let mut unassigned: BTreeSet<String> = BTreeSet::new();
+        gather(vec![one, two], &mut held, &mut unassigned, &known);
+        assert_eq!(held.len(), 1, "the same purpose named twice is one capability");
+        assert_eq!(held[0].families, BTreeSet::from(["f0".to_string(), "f1".to_string(), "f2".to_string()]));
+        assert_eq!(held[0].roles["f1"].role, "supporting");
+        assert_eq!(held[0].roles["f2"].role, "recovery");
+        assert_eq!(unassigned, BTreeSet::from(["f3".to_string()]));
+    }
+
+    #[test]
+    fn capabilities_with_the_same_name_merge_at_any_level_without_asking() {
+        let mut held = vec![
+            held_of("Configure engine environment", &["f0"]),
+            held_of("Delete a post", &["f1"]),
+            held_of("  configure   Engine environments ", &["f2"]),
         ];
-        let clusters = could_repeat(&held, &key_of);
-        assert_eq!(clusters, vec![vec![0, 1]], "chat-session and chat_sessions must normalize to the same namespace");
+        merge_same_named(&mut held);
+        assert_eq!(held.len(), 2);
+        assert_eq!(held[0].families, BTreeSet::from(["f0".to_string(), "f2".to_string()]));
     }
 
     #[test]
-    fn oversized_asks_clusters_split_into_bounded_groups_without_dropping_members() {
-        let mut key_of: BTreeMap<&str, &str> = BTreeMap::new();
-        let mut held = Vec::new();
-        for at in 0..(FAMILIES_PER_PROPOSAL * 2 + 3) {
-            let id = format!("f{at}");
-            key_of.insert(Box::leak(id.clone().into_boxed_str()), Box::leak(format!("asks:usage{at}:track").into_boxed_str()));
-            held.push(Held {
-                name: "Track API usage".to_string(),
-                description: String::new(),
-                audience: String::new(),
-                families: BTreeSet::from([id]),
-            });
-        }
-        let clusters = could_repeat(&held, &key_of);
-        let covered: BTreeSet<usize> = clusters.iter().flatten().copied().collect();
-        assert_eq!(covered.len(), held.len(), "no member may be dropped when a cluster is split");
-        assert!(clusters.iter().all(|cluster| cluster.len() <= FAMILIES_PER_PROPOSAL), "each split cluster must stay bounded: {clusters:?}");
+    fn a_family_serving_two_purposes_delivers_its_flows_to_both_with_a_role_each() {
+        let sign_in = flow("flow:1", "http", Some("POST"), "/session", &["session"], &[]);
+        let place = flow("flow:2", "http", Some("POST"), "/orders", &["orders"], &[]);
+        let sign_in_family = Family { key: "changes:session".to_string(), basis: "the record it changes" };
+        let place_family = Family { key: "changes:orders".to_string(), basis: "the record it changes" };
+        let (a, b) = (vec![&sign_in], vec![&place]);
+        let lanes: BTreeMap<&str, (&Family, &Vec<&Flow>)> =
+            BTreeMap::from([("f0", (&sign_in_family, &a)), ("f1", (&place_family, &b))]);
+        let mut trade = held_of("Place orders", &["f0", "f1"]);
+        trade.roles.insert("f0".to_string(), Serving { role: "prerequisite".to_string(), why: "signs in first".to_string() });
+        trade.roles.insert("f1".to_string(), Serving { role: "primary".to_string(), why: String::new() });
+        let mut account = held_of("Manage an account", &["f0"]);
+        account.roles.insert("f0".to_string(), Serving { role: "primary".to_string(), why: String::new() });
+        let placed = built(trade, &lanes, &Fields::new()).expect("built");
+        let managed = built(account, &lanes, &Fields::new()).expect("built");
+        let role_of = |capability: &Capability, flow: &str| capability.delivered.iter().find(|held| held.flow == flow).map(|held| held.role);
+        assert_eq!(role_of(&placed, "flow:1"), Some("prerequisite"));
+        assert_eq!(role_of(&placed, "flow:2"), Some("primary"));
+        assert_eq!(role_of(&managed, "flow:1"), Some("primary"));
+        assert_eq!(placed.flows, vec!["flow:1", "flow:2"]);
+        assert!(placed.evidence.contains("it is served by 2 outcomes"), "{}", placed.evidence);
+        assert!(placed.evidence.contains("- prerequisite: session"), "{}", placed.evidence);
+        assert_eq!(placed.delivered.iter().find(|held| held.flow == "flow:1").map(|held| held.rationale.as_str()), Some("signs in first"));
+    }
+
+    #[test]
+    fn flows_that_no_capability_serves_are_counted_and_listed_as_unmapped() {
+        let mut first = flow("flow:1", "http", Some("GET"), "/a", &[], &[]);
+        first.project = Some("subproject:web".to_string());
+        let mut second = flow("flow:2", "http", Some("GET"), "/b", &[], &[]);
+        second.project = Some("subproject:web".to_string());
+        let third = flow("flow:3", "cli", None, "tool", &[], &[]);
+        let capability = Capability {
+            id: "capability:x".to_string(),
+            audience: None,
+            delivered: Vec::new(),
+            records: Vec::new(),
+            changes: Vec::new(),
+            flows: vec!["flow:1".to_string(), "flow:3".to_string()],
+            surfaces: Vec::new(),
+            project: None,
+            also_in: Vec::new(),
+            place: None,
+            name: Some("X".to_string()),
+            description: None,
+            grounding: None,
+            standing: PUBLISHED,
+            touches: Vec::new(),
+            terminality: None,
+            confidence: None,
+            evidence: String::new(),
+        };
+        let covered = coverage_of(&[first, second, third], &[capability]);
+        assert_eq!((covered.flows, covered.related, covered.unmapped), (3, 2, 1));
+        assert_eq!(covered.flows_to_capabilities, 0.667);
+        assert_eq!(covered.unmapped_flows, vec!["flow:2"]);
+        let web = covered.parts.iter().find(|part| part.project.as_deref() == Some("subproject:web")).expect("web part");
+        assert_eq!((web.flows, web.related, web.unmapped), (2, 1, 1));
+        let root = covered.parts.iter().find(|part| part.project.is_none()).expect("root part");
+        assert_eq!(root.flows_to_capabilities, 1.0);
+    }
+
+    #[test]
+    fn the_seam_for_tooling_proposes_every_flow_until_entries_are_tagged() {
+        assert!(is_proposable(&flow("flow:1", "cli", None, "build", &[], &[])));
     }
 }
 
@@ -1949,7 +1742,7 @@ mod one_of_each_tests {
     }
 
     #[test]
-    fn different_things_to_do_stay_apart_when_nothing_is_said_the_same() {
+    fn names_that_are_not_the_same_stay_apart_when_nothing_is_said_the_same() {
         let names = vec!["Sign in".to_string(), "Sign out".to_string(), "Delete a post".to_string()];
         assert!(the_same_among(&listed(&names), |_| Vec::new()).is_empty());
     }

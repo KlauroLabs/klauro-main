@@ -401,52 +401,6 @@ fn tell_a_batch(spoken_for: &str, listed: &[(String, String)], again: bool) -> B
     held
 }
 
-pub fn assign_paths(spoken_for: &str, choices: &[(String, String)], paths: &[(String, String)]) -> BTreeMap<String, Vec<String>> {
-    if !asked() || paths.is_empty() || choices.len() < 2 {
-        return BTreeMap::new();
-    }
-    let offered = choices.iter().map(|(name, description)| format!("- {name}: {description}")).collect::<Vec<_>>().join("\n");
-    paths
-        .par_chunks(PATHS_PER_CALL)
-        .map(|chunk| {
-            let prompt = format!(
-                "A software system describes itself like this:\n{spoken_for}\n\n\
-         That description may speak of the project rather than the software, such as its status, history or \
-         whether it is still maintained; what the software does is read from the code below, and that decides.\n\n\
-                 These capabilities share the same record, so which one a path delivers has to be read from the path itself:\n{offered}\n\n\
-                 For each path below, say which of the capabilities above it delivers, by their exact names, from what the path does. \
-                 A path can deliver more than one; name every one it delivers and none it does not. \
-                 Echo each id back exactly as given.\n\
-                 Return JSON only: {{\"items\":[{{\"id\":\"...\",\"capabilities\":[\"...\"]}}]}}\n\n\
-                 The paths:\n{}",
-                chunk.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect::<Vec<_>>().join("\n")
-            );
-            let mut held = BTreeMap::new();
-            let Some(answer) = answered::<serde_json::Value>(&prompt, 2000, &asking_of_models(model()), "items", chunk.len()) else {
-                return held;
-            };
-            for item in answer["items"].as_array().into_iter().flatten() {
-                let Some(id) = item["id"].as_str() else { continue };
-                let named: Vec<String> = item["capabilities"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|held| held.as_str())
-                    .filter_map(|said| choices.iter().find(|(name, _)| name.trim().eq_ignore_ascii_case(said.trim())))
-                    .map(|(name, _)| name.clone())
-                    .collect();
-                if !named.is_empty() {
-                    held.insert(id.to_string(), named);
-                }
-            }
-            held
-        })
-        .reduce(BTreeMap::new, |mut into, held| {
-            into.extend(held);
-            into
-        })
-}
-
 fn place_a_batch(spoken_for: &str, listed: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     let mut held = BTreeMap::new();
     let prompt = format!(
@@ -500,36 +454,62 @@ pub struct Same {
     pub audience: String,
 }
 
+pub const SERVING_ROLES: &[&str] = &[
+    "primary",
+    "supporting",
+    "prerequisite",
+    "operational",
+    "administrative",
+    "recovery",
+    "observability",
+    "compliance",
+    "maintenance",
+];
+
+pub const PURPOSE: &str = "A capability is a purpose: why the system was built, something its product description, \
+a user's objective, a business offering or an operational responsibility would list. A flow is a behavior that serves \
+a purpose, such as one command, route, screen or job, and many flows serve one purpose: creating, renaming, listing and \
+deleting a thing are all behaviors of the one purpose of managing it, not four capabilities. Supporting concerns — \
+signing in, permissions, settings, health, telemetry, generic create, read, update and delete of records — are never \
+capabilities of their own; they are flows that support the capabilities they serve, unless what the product says of itself \
+shows that it is that kind of product. Not every flow serves a purpose the product states, and a flow left out of every \
+capability is an honest answer.";
+
+pub const ROLES_TOLD: &str = "primary: it carries out the purpose itself; supporting: it helps carry it out; \
+prerequisite: it has to happen first, such as signing in or connecting an account; operational: it runs or keeps the \
+purpose running, such as scheduled and background work; administrative: it configures or controls who may; recovery: \
+it undoes, retries, restores or repairs; observability: it reports on it, such as status, logs, metrics or audit; \
+compliance: consent, retention or other obligations; maintenance: upkeep, clean-up or migration.";
+
+pub const PURPOSE_CONTRACT_VERSION: &str = "purpose-3";
+
+const OWN_WORDS: &str = "That description may speak of the project rather than the software, such as its status, \
+history or whether it is still maintained; what the software does is read from the code below, and that decides. \
+When it does say what the software is for, the purposes below are the ones it names in its own words. When it says \
+nothing about itself, name a purpose only when the outcomes below jointly deliver it.";
+
 pub fn same_outcome(spoken_for: &str, listed: &BTreeMap<String, String>) -> Vec<Same> {
     if !asked() || listed.is_empty() {
         return Vec::new();
     }
     let prompt = format!(
-        "A software system describes itself like this:\n{spoken_for}\n\n\
-         That description may speak of the project rather than the software, such as its status, history or \
-         whether it is still maintained; what the software does is read from the code below, and that decides.\n\n\
-         Below are capabilities read from it one part at a time, so the same thing can appear \
-         more than once: reached from a page and from the route behind it, from a phone and from \
-         a command line, or split into steps of one thing. Find those repeats and put each set \
-         together; leave everything else on its own.\n\n\
-         When one capability's paths continue into another's, a person using the first is \
-         using the second without seeing it, so they are one outcome unless someone comes to \
-         each on its own. Put together the ones that are the same outcome, by these rules:\n{RULES}\n\n\
-         Two are the same outcome when a person would say they did the same thing, just reached \
-         a different way: placing an order from the web shop and from the phone app is one \
-         outcome; reading a photo's metadata and its statistics are both reading about it. Keep \
-         two apart whenever someone would name them as different things to do, even when they \
-         touch the same records or sit on the same screen: saving a post for later, following \
-         a tag, muting an account and reporting it are four capabilities, not one. A group \
-         whose name needs \"and\" to cover what its members do is two groups. Stages of one process \
-         are the exception: handlers that each move the same record one stage along, such as \
-         checking stock, taking payment and advancing a status, are one outcome together.\n\n\
-         For each group give the name of the outcome in 2-6 words — a verb and what it acts on, like \"Share posts with followers\", never a topic like \"Posting\" — one sentence saying what \
-         someone gets, and the audience it is for. Name what the person ends up with, never the \
+        "A software system describes itself like this:\n{spoken_for}\n\n{OWN_WORDS}\n\n\
+         Below are capabilities read from it one part at a time, so the same purpose can appear more than \
+         once: reached from a page and from the route behind it, from a phone and from a command line, \
+         or split into narrower pieces of one thing. Find the ones that serve the same purpose and put each \
+         set together; leave everything else on its own.\n\n{PURPOSE}\n\n\
+         Put capabilities together when the product's description would list them as one thing: one is a part, \
+         a stage, a way in or a narrower view of the other, or both are the same purpose reached from \
+         different parts of the system. Managing a thing and listing it, and placing an order from the web shop \
+         and from the phone app, are one purpose each. Keep two apart when the product's description would list \
+         them separately: they serve different purposes, even when they touch the same records or are used by the \
+         same person. A group whose name would need a list of unrelated things to cover its members is not one \
+         purpose; leave those apart.\n\n\
+         For each group give the name of the purpose in 2-6 words — a verb and what it is for, like \"Share posts with followers\", never a bare topic like \"Posting\" — one sentence saying what someone gets, and the audience it is for. Name what the person ends up with, never the \
          way in and never what it is built on: a group reached through web routes is not called \
          an API, one reached through pages is not called a web interface, and one that keeps \
          records is not called a database. Where the ones you put together were already called \
-         something between them that says the outcome, keep saying it that way. The name and the sentence say only what the code shown does: never an option, filter, step \
+         something between them that says the purpose, keep saying it that way. The name and the sentence say only what the code shown does: never an option, filter, step \
          or result it does not show. When it only checks, simulates or records something, say it \
          checks, simulates or records it rather than that it does it. \
          Every id below must appear in exactly one \
@@ -556,19 +536,19 @@ pub fn same_capability(spoken_for: &str, listed: &BTreeMap<String, String>) -> V
         return Vec::new();
     }
     let prompt = format!(
-        "A software system describes itself like this:\n{spoken_for}\n\n\
-         That description may speak of the project rather than the software, such as its status, history or \
-         whether it is still maintained; what the software does is read from the code below, and that decides.\n\n\
+        "A software system describes itself like this:\n{spoken_for}\n\n{OWN_WORDS}\n\n\
          Below is the complete list of capabilities read from it, each with an id, its name and what someone \
-         gets. The list was put together piece by piece, so one capability may appear twice under different \
-         words. Which of these name the same capability a user gets? Two are the same only when someone would \
-         say they are one thing to do, named two ways: opening external links and opening external URLs are \
-         one. Different things to do stay apart, even when they act on the same thing or sit on the same \
-         screen: signing in and signing out, creating and deleting a post, viewing usage and setting a \
-         spending limit are each their own. A capability that covers a whole area and one that is only a part \
-         of that area also stay apart. When unsure, keep them apart.\n\n\
+         gets. The list was put together piece by piece, so one purpose may appear more than once under different \
+         words, or be split into narrower pieces.\n\n{PURPOSE}\n\n\
+         Which of these serve the same purpose? Two are the same when the product's description would list them \
+         as one thing: they are the same purpose named two ways, or one is a part, a stage, a way in or a narrower \
+         view of the other. Opening external links and opening external URLs are one; managing a thing and listing \
+         it are one. Keep two apart when the product's description would list them as separate purposes, even when \
+         they act on the same thing or are used by the same person. A group whose name would need a list of \
+         unrelated things to cover its members is not one purpose. A capability that covers a whole area and one \
+         that is only a part of it are one purpose: the part goes into the area.\n\n\
          List only groups of two or more ids, and leave every other id out. For each group give the name that \
-         says the shared capability best, keeping one of the names given when one says it, one sentence saying \
+         says the shared purpose best, keeping one of the names given when one says it, one sentence saying \
          what someone gets, and the audience it is for.\n\
          Return JSON only: {{\"groups\":[{{\"of\":[\"...\"],\"name\":\"...\",\"description\":\"...\",\"audience\":\"...\"}}]}}\n\n\
          The capabilities:\n{}",
@@ -587,22 +567,72 @@ pub fn same_capability(spoken_for: &str, listed: &BTreeMap<String, String>) -> V
         .collect()
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Clone, Default)]
+pub struct Serving {
+    pub role: String,
+    pub why: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct Proposed {
-    #[serde(default)]
     pub name: String,
-    #[serde(default)]
     pub description: String,
-    #[serde(default)]
     pub audience: String,
-    #[serde(default)]
     pub families: Vec<String>,
+    pub roles: BTreeMap<String, Serving>,
 }
 
 #[derive(Debug, Default)]
 pub struct Proposal {
     pub capabilities: Vec<Proposed>,
-    pub plumbing: Vec<String>,
+    pub unassigned: Vec<String>,
+}
+
+pub fn role_named(said: &str) -> Option<&'static str> {
+    let said = said.trim().to_ascii_lowercase();
+    SERVING_ROLES.iter().copied().find(|role| *role == said)
+}
+
+pub fn proposed_of(item: &serde_json::Value) -> Option<Proposed> {
+    let text = |key: &str| item[key].as_str().unwrap_or_default().to_string();
+    let mut families: Vec<String> = Vec::new();
+    let mut roles: BTreeMap<String, Serving> = BTreeMap::new();
+    for key in ["serves", "families"] {
+        for served in item[key].as_array().into_iter().flatten() {
+            let (id, role, why) = match served {
+                serde_json::Value::String(id) => (id.trim().to_string(), String::new(), String::new()),
+                serde_json::Value::Object(_) => (
+                    served["id"].as_str().or(served["family"].as_str()).unwrap_or_default().trim().to_string(),
+                    served["role"].as_str().unwrap_or_default().to_string(),
+                    served["why"].as_str().unwrap_or_default().trim().to_string(),
+                ),
+                _ => continue,
+            };
+            if id.is_empty() || families.contains(&id) {
+                continue;
+            }
+            if let Some(role) = role_named(&role) {
+                roles.insert(id.clone(), Serving { role: role.to_string(), why });
+            }
+            families.push(id);
+        }
+    }
+    let proposed = Proposed { name: text("name"), description: text("description"), audience: text("audience"), families, roles };
+    (!proposed.name.trim().is_empty() && !proposed.families.is_empty()).then_some(proposed)
+}
+
+pub fn proposal_of(held: &serde_json::Value, offered: usize) -> Proposal {
+    let ids = |key: &str| -> Vec<String> {
+        held[key].as_array().into_iter().flatten().filter_map(|item| item.as_str().map(str::to_string)).collect()
+    };
+    let mut unassigned = ids("unassigned");
+    unassigned.extend(ids("plumbing"));
+    let capabilities: Vec<Proposed> =
+        held["capabilities"].as_array().into_iter().flatten().filter_map(proposed_of).collect();
+    if capabilities.is_empty() && unassigned.len() < offered {
+        return Proposal::default();
+    }
+    Proposal { capabilities, unassigned }
 }
 
 pub fn propose_capabilities(spoken_for: &str, families: &[(String, String)]) -> Proposal {
@@ -610,50 +640,42 @@ pub fn propose_capabilities(spoken_for: &str, families: &[(String, String)]) -> 
         return Proposal::default();
     }
     let prompt = format!(
-        "A software system describes itself like this:\n{spoken_for}\n\n\
-         That description may speak of the project rather than the software, such as its status, history or \
-         whether it is still maintained; what the software does is read from the code below, and that decides.\n\n\
-         Below is every outcome one part of it delivers, read from the code: the record a path \
-         changes, what it hands on to another part, the service it acts through, the command a \
-         person or another program explicitly asked it to run, or what it shows someone. When an \
-         outcome is a named command, the name is what was asked for; take it at face value as the \
-         reason someone reaches this part, over whatever it happens to do underneath. Each \
-         outcome lists the paths that end in it and the steps each path takes. Outcomes that \
-         change something are terminal; outcomes that only show something are one step short of \
-         terminal, and are just as real: seeing your orders is something you come for.\n\n\
-         Read them as a whole and say which capabilities this part delivers, by these rules:\n{RULES}\n\n\
-         A capability is what someone ends up with. Put outcomes together when a person would \
-         say they did one thing: placing an order is one capability whether it creates the \
-         order, reserves its items or hands the order on. Keep outcomes apart, and split one, when \
-         different people come for them: a shopper checking out and a merchant fulfilling orders \
-         are two capabilities even though both change orders. Keep them apart too when the same person \
-         comes for different reasons: searching for one thing and browsing what is popular are two \
-         capabilities, and so are signing in, changing preferences and managing what you have saved. \
-         A capability whose name needs \"and\" to cover what it does is two capabilities. \
-         The opposite holds for stages of one process: several handlers that each move the same record \
-         one stage along — checking stock, taking payment, advancing a status — make up one capability, \
-         the process someone relies on, named for what it gets done for them. \
-         Name the capability for what the person gets, \
-         never for the way in or what it is built on: nothing is called an API, a page, an \
-         endpoint, a screen, a form, a database or a table.\n\n\
-         Work the system does without being asked — on a timer, in the background, or when a \
-         message from another part arrives — is a capability whenever it moves forward something \
-         someone relies on: settling a payment, advancing an order, renewing a subscription. Its \
-         audience is whoever relies on it.\n\n\
-         A few outcomes are the system keeping track of itself: a record of requests already \
-         handled, a log of messages sent, health, static files, the building blocks of a page. \
-         List only those as plumbing.\n\n\
-         For each capability give a name of 2-6 words that says what someone gets done — a verb and \
-         what it acts on, like \"Share posts with followers\" or \"Track an order\", never a topic or a \
-         category like \"Posting\", \"Orders\" or \"Engagement\" —, one sentence saying what someone gets, \
-         the audience it is for, and the ids of the outcomes that deliver it. The name and the sentence say only what the code shown does: never an option, filter, step \
+        "A software system describes itself like this:\n{spoken_for}\n\n{OWN_WORDS}\n\n\
+         Below is every outcome one part of it delivers, or some of them when the part has many: the record a path \
+         changes, what it hands on to another part, the service it acts through, the command a person or another \
+         program explicitly asked it to run, or what it shows someone. Each outcome lists the paths that end in \
+         it and the steps each path takes. A named command is one behavior someone can ask for; it is a flow that \
+         serves a purpose, not a purpose by itself. Outcomes that change something are terminal; outcomes that only \
+         show something are one step short of terminal and are just as real: seeing your orders is something you \
+         come for.\n\n{PURPOSE}\n\n\
+         Read the outcomes as a whole and say which capabilities this part delivers, by these rules:\n{RULES}\n\n\
+         Take what the product's description would list for a system like this: those are the capabilities, \
+         and the outcomes below are the behaviors that serve them. Group many outcomes under one purpose when \
+         they are different behaviors of it: the ways in, the stages, the views of it and the actions on it. \
+         Keep two purposes apart when different people come for them or when the same person comes for \
+         different reasons: a shopper checking out and a merchant fulfilling orders are two purposes even though \
+         both change orders. When the outcomes are only some of the part, name purposes the way the whole \
+         product's description would, not narrowed to this selection.\n\n\
+         For each capability list every outcome that serves it, each with a role: {ROLES_TOLD} \
+         Give each a few words on why. An outcome may serve more than one capability, with a different role in each; \
+         list it under each. Work the system does without being asked — on a timer, in the background, or when a \
+         message from another part arrives — serves the purpose it moves forward, with the operational role, \
+         whenever someone relies on it.\n\n\
+         An outcome that serves no purpose the product states is left out of every capability and listed as \
+         unassigned. That is expected and honest, not a failure: tooling, scaffolding, the system keeping track of \
+         itself (requests already handled, a log of messages sent, health, static files, the building blocks of a \
+         page), and supporting concerns that serve nothing the product names are all unassigned. Never force an \
+         outcome into a capability to place it.\n\n\
+         For each capability give a name of 2-6 words that says what the purpose is — a verb and what it is for, \
+         like \"Share posts with followers\" or \"Track an order\", never a bare topic or category like \
+         \"Posting\", \"Orders\" or \"Engagement\", and never the name of one command or one screen —, one \
+         sentence saying what someone gets, and the audience it is for. The name and the sentence say only what the code shown does: never an option, filter, step \
          or result it does not show. When it only checks, simulates or records something, say it \
-         checks, simulates or records it rather than that it does it. \
-         {users_words} \
-         Every id below \
-         must appear exactly once, either in one capability or in plumbing, and no other id may \
-         appear.\n\
-         Return JSON only: {{\"capabilities\":[{{\"name\":\"...\",\"description\":\"...\",\"audience\":\"...\",\"families\":[\"...\"]}}],\"plumbing\":[\"...\"]}}\n\n\
+         checks, simulates or records it rather than that it does it. Name the capability for what the person gets, \
+         never for the way in or what it is built on: nothing is called an API, a page, an endpoint, a screen, a \
+         form, a database or a table. {users_words} \
+         Every id below must appear in at least one capability or in unassigned, and no other id may appear.\n\
+         Return JSON only: {{\"capabilities\":[{{\"name\":\"...\",\"description\":\"...\",\"audience\":\"...\",\"serves\":[{{\"id\":\"...\",\"role\":\"primary\",\"why\":\"...\"}}]}}],\"unassigned\":[\"...\"]}}\n\n\
          The outcomes:\n{}",
         families.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect::<Vec<_>>().join("\n"),
         users_words = IN_THE_USERS_WORDS
@@ -663,26 +685,7 @@ pub fn propose_capabilities(spoken_for: &str, families: &[(String, String)]) -> 
     else {
         return Proposal::default();
     };
-    let named_nothing = held["capabilities"].as_array().is_none_or(Vec::is_empty);
-    let all_plumbing = held["plumbing"].as_array().is_some_and(|plumbing| plumbing.len() >= families.len());
-    if named_nothing && !all_plumbing {
-        return Proposal::default();
-    }
-    Proposal {
-        capabilities: held["capabilities"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|item| serde_json::from_value::<Proposed>(item.clone()).ok())
-            .filter(|item| !item.name.trim().is_empty() && !item.families.is_empty())
-            .collect(),
-        plumbing: held["plumbing"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|item| item.as_str().map(str::to_string))
-            .collect(),
-    }
+    proposal_of(&held, families.len())
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -695,6 +698,10 @@ pub struct Placed {
     pub description: String,
     #[serde(default)]
     pub audience: String,
+    #[serde(default)]
+    pub role: String,
+    #[serde(default)]
+    pub why: String,
 }
 
 pub fn place_families(
@@ -706,18 +713,17 @@ pub fn place_families(
         return Vec::new();
     }
     let prompt = format!(
-        "A software system describes itself like this:\n{spoken_for}\n\n\
-         That description may speak of the project rather than the software, such as its status, history or \
-         whether it is still maintained; what the software does is read from the code below, and that decides.\n\n\
+        "A software system describes itself like this:\n{spoken_for}\n\n{OWN_WORDS}\n\n\
          These capabilities were already read from it:\n{}\n\n\
-         These outcomes were not placed yet. For each, say which capability above it \
-         delivers, by its exact name; or give a new capability name of 2-6 words — a verb and what it acts on, like \"Share posts with followers\", never a topic like \"Posting\" — with one \
-         sentence saying what someone gets and its audience when none fits; or say plumbing when \
-         it delivers nothing on its own. Work the system does by itself — on a timer, in the \
-         background, or when a message arrives — is not plumbing when it moves forward something \
-         someone relies on. By these rules:\n{RULES}\n\n\
+         These outcomes were not placed yet. {PURPOSE}\n\n\
+         For each, say which capability above it serves, by its exact name, with a role ({ROLES_TOLD}) and a few \
+         words on why; or give a new capability name of 2-6 words — a verb and what it is for, like \"Share posts with followers\", never a bare topic like \"Posting\" — with one \
+         sentence saying what someone gets and its audience, only when the product's description would list that \
+         purpose and none above fits; or say unassigned when it serves no purpose the product states, which is an \
+         honest answer. Work the system does by itself — on a timer, in the background, or when a message arrives — \
+         serves the purpose it moves forward. By these rules:\n{RULES}\n\n\
          Echo each group id back exactly as given.\n\
-         Return JSON only: {{\"assigned\":[{{\"family\":\"...\",\"capability\":\"...\",\"description\":\"...\",\"audience\":\"...\"}}]}}\n\n\
+         Return JSON only: {{\"assigned\":[{{\"family\":\"...\",\"capability\":\"...\",\"role\":\"primary\",\"why\":\"...\",\"description\":\"...\",\"audience\":\"...\"}}]}}\n\n\
          The groups:\n{}",
         standing.iter().map(|(name, told)| format!("- {name}: {told}")).collect::<Vec<_>>().join("\n"),
         unplaced.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect::<Vec<_>>().join("\n")
@@ -735,15 +741,16 @@ pub fn place_families(
         .collect()
 }
 
-pub const RULES: &str = "A capability is an outcome someone gets from the system. It is judged by \
-two tests. The audience test, which is audience-relative: would this product's own audience \
-recognise it as something they came for? Not would a passer-by nod — that rejects every correct \
-capability of a developer library. Identify the audience first, then apply the test to them; the \
+pub const RULES: &str = "A capability is a purpose of the system: something someone gets from it that the \
+product's own description would list. It is judged by two tests. The audience test, which is audience-relative: \
+would this product's own audience recognise it as something they came for? Not would a passer-by nod — that rejects \
+every correct capability of a developer library. Identify the audience first, then apply the test to them; the \
 audience binds to the capability, not to the system, so one product may serve an end user, an \
 operator, a developer and an analyst at once. The universality test: would this be true of most \
 codebases? Then it is infrastructure, not a capability. Supporting concepts — connecting a wallet, \
 authenticating users, recording telemetry — are not capabilities unless the product itself is that \
-kind of product. Count is an output, not a target: a focused tool legitimately has one.";
+kind of product. Count is an output, not a target: a focused tool legitimately has one, and a large product has as \
+many as its description lists.";
 
 #[derive(Debug, Deserialize)]
 struct Told {
@@ -949,18 +956,22 @@ pub fn tighten_claims(spoken: &str, held: &[(String, String)]) -> Vec<Tightened>
                 "A software system describes itself like this:\n{spoken}\n\n\
                  That description may speak of the project rather than the software; the facts below decide.\n\n\
                  Each item below is a capability someone proposed, with the facts read from the code about what \
-                 delivers it. A careful reviewer will read the code and mark a capability wrong when its name or \
-                 sentence claims more than the code does. For each item, give the name (2-6 words, a verb and \
-                 what it acts on) and one sentence that say exactly what the facts show someone gets:\n\
+                 serves it: several outcomes, each with a role in it. A capability is a purpose, so its name and \
+                 sentence say what the product is for here, and the several behaviors that serve it stand behind \
+                 that purpose without being listed in it. A careful reviewer will read the code and mark a \
+                 capability wrong when its name or sentence claims more than the code does. For each item, give \
+                 the name (2-6 words, a verb and what it is for) and one sentence that say exactly what the facts \
+                 show someone gets:\n\
                  - drop any option, filter, step, provider or result the facts do not show, and any adjective, \
                  example or attribute they do not name (detailed, specifications, categories, recommendations);\n\
-                 - a name joined by \"and\" names only the part the facts show most;\n\
+                 - the name states one purpose: it may cover the several behaviors that serve it, but it never \
+                 lists them, and it is never narrowed to one command or one screen of those behaviors;\n\
                  - when the code only checks, simulates, records or shows something, say that rather than that \
                  it does it;\n\
                  - when the code where it starts shows it is a stub, a sample, a switch set in configuration, or \
                  wired to nothing configured, say exactly that;\n\
-                 - when the name covers two different things to do, name the one the facts show most and leave \
-                 the other out;\n\
+                 - when the name or sentence claims a behavior that none of the outcomes shown delivers, remove \
+                 that claim, and keep every claim they do deliver;\n\
                  - when the code and the part's setup show it can never be reached — no client, provider or \
                  route for it exists anywhere — nobody gets it: set drop to true. A feature that switches on \
                  once an outside service or key is configured is real: keep it and say what it needs;\n\

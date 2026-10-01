@@ -165,6 +165,8 @@ pub struct Comprehension {
     pub entities: Vec<Entity>,
     pub terminal: u32,
     pub chained: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub semantic_coverage: Option<crate::capabilities::Coverage>,
 }
 
 static GENERIC: &[&str] = &[
@@ -922,8 +924,8 @@ fn say_what_each_is_for(held: &mut [Capability], spoken: &str) {
     }
 }
 
-const EVIDENCE_HELD: usize = 6000;
-const EVIDENCE_TESTED: usize = 2500;
+const EVIDENCE_HELD: usize = 9000;
+const EVIDENCE_TESTED: usize = 6000;
 
 pub(crate) fn joined(into: &mut Capability, other: Capability) {
     if let Some(part) = other.project
@@ -1359,6 +1361,7 @@ pub fn author(
         None => work(),
     };
     held.capabilities = capabilities;
+    held.semantic_coverage = Some(crate::capabilities::coverage_of(&held.flows, &held.capabilities));
     held.products = products;
     say_what_happens(held, &spoken);
     let by_id: std::collections::BTreeMap<String, (&crate::author::Written, crate::author::Grounding)> =
@@ -1979,7 +1982,7 @@ pub fn derive(
     }
     let terminal = flows.iter().filter(|flow| flow.standing == "terminal").count() as u32;
     let chained = flows.iter().filter(|flow| !flow.leads_into.is_empty()).count() as u32;
-    Comprehension { products: Vec::new(), capabilities: Vec::new(), flows, entities, terminal, chained }
+    Comprehension { products: Vec::new(), capabilities: Vec::new(), flows, entities, terminal, chained, semantic_coverage: None }
 }
 
 static OVER_A_WIRE: &[&str] = &[
