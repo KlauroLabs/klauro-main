@@ -1,5 +1,7 @@
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
+mod app_bundles;
+
 use serde::Serialize;
 
 use crate::entry_exit::EntryPoint;
@@ -999,6 +1001,7 @@ pub fn derive(
             continue;
         }
         let basename = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
+        candidates.extend(app_bundles::detect(&index, path, calls, at as u32));
         if crate::dockerfile::is_dockerfile(path) {
             candidates.extend(container(&index, path, ""));
             continue;

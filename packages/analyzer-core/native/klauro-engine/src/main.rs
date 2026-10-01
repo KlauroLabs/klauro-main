@@ -7,6 +7,7 @@ mod capabilities;
 mod audit;
 mod author;
 mod comprehend;
+mod composition;
 mod conform;
 mod convention;
 mod coverage;
@@ -15,6 +16,7 @@ mod dependencies;
 mod discovery;
 mod dockerfile;
 mod language_tables;
+mod entities;
 mod entry_exit;
 mod generated;
 mod history;
@@ -43,6 +45,7 @@ mod patterns;
 mod practices;
 mod principles;
 mod scope;
+mod screens;
 mod sdk;
 mod shared;
 mod service_catalog;
@@ -54,6 +57,7 @@ mod dataset;
 mod rails_routes;
 mod structured;
 mod subproject;
+mod unshipped;
 mod typescript;
 mod verify;
 mod visibility;
@@ -130,6 +134,8 @@ struct Index {
     architecture: Option<architecture::Architecture>,
     scope: Option<scope::Scope>,
     partition: Option<subproject::Partition>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    composition: Option<composition::Composition>,
     skipped_directories: Vec<String>,
     nested_repositories: Vec<String>,
 }
@@ -473,6 +479,7 @@ fn read_it() {
         architecture: None,
         scope: None,
         partition: None,
+        composition: None,
         skipped_directories: found.skipped_directories,
         nested_repositories: found.nested_repositories,
     };
@@ -613,6 +620,9 @@ fn read_it() {
     derived
         .entry_points
         .extend(convention::conventional(&index.nodes, &paths, &index.exports));
+    derived
+        .entry_points
+        .extend(screens::drawn(&index.nodes, &index.registrations, &index.exports, &index.imports, &index.locals, &paths, &resolution));
     derived.entry_points.retain(|entry| {
         paths.get(entry.file as usize).is_none_or(|path| !path.split('/').any(|segment| segment.starts_with('.') && segment.len() > 1 && segment != ".well-known"))
     });
@@ -629,6 +639,7 @@ fn read_it() {
         served,
         derived.exit_points.len()
     );
+    let continued = derived.continued;
     index.entry_points = derived.entry_points;
     index.exit_points = derived.exit_points;
 
@@ -678,13 +689,19 @@ fn read_it() {
                 )
         })
         .collect();
+    let scoped_entries: Vec<entry_exit::EntryPoint> = index
+        .entry_points
+        .iter()
+        .filter(|entry| !paths::is_not_shipped(&paths[entry.file as usize]))
+        .cloned()
+        .collect();
     let scope = scope::derive(
         &paths,
         &manifests,
         &code,
         &index.nodes,
         &index.edges,
-        &index.entry_points,
+        &scoped_entries,
         &index.calls,
         &index.bundler_builds,
         &index.imports,
@@ -700,26 +717,21 @@ fn read_it() {
         scope.shared_nodes,
         scope.unassigned_nodes
     );
-    index.entry_points.retain(|entry| {
-        if entry.kind == "test" {
-            return true;
-        }
-        let path = &paths[entry.file as usize];
-        if matches!(entry.kind, "lifecycle" | "cli") {
-            if paths::is_cargo_build_script(path) {
-                return false;
-            }
-            if !paths::is_cargo_binary_entry(path)
-                && paths::is_shipping_evidence_mappable(path)
-                && scope.part_has_shipping_evidence(path)
-                && !scope.ships_file_by_convention(path)
-            {
-                return false;
-            }
-        }
-        let needs_shipping_evidence = paths::is_developer_script(path) || paths::is_benchmark_named(path);
-        !needs_shipping_evidence || scope.ships_file(path)
-    });
+    let classify_started = Instant::now();
+    let (build_scripts, census) =
+        unshipped::classify(&mut index.entry_points, &paths, &index.nodes, &index.edges, &scope, &continued);
+    let build_script_ids: rustc_hash::FxHashSet<String> = build_scripts.into_iter().map(|entry| entry.id).collect();
+    index.entry_points.retain(|entry| !build_script_ids.contains(&entry.id));
+    eprintln!(
+        "unshipped {:?} | tagged {} | build scripts {} | continuations {} (reached through their starter {}, starter unreached {}, orphaned {})",
+        classify_started.elapsed(),
+        census.tagged,
+        build_script_ids.len(),
+        census.continuations,
+        census.continuations_held,
+        census.continuations_holder_unreached,
+        census.continuations_orphaned
+    );
     index.scope = Some(scope);
 
     let published_started = Instant::now();
@@ -740,11 +752,13 @@ fn read_it() {
     }
 
     let partition_started = Instant::now();
+    let partitioned_entries: Vec<entry_exit::EntryPoint> =
+        index.entry_points.iter().filter(|entry| entry.unshipped.is_none()).cloned().collect();
     let partition = subproject::derive(
         &paths,
         &index.nodes,
         &index.edges,
-        &index.entry_points,
+        &partitioned_entries,
         &index.nested_repositories,
         &code,
         index.scope.as_ref().map(|scope| scope.deployables.as_slice()).unwrap_or(&[]),
@@ -907,6 +921,12 @@ fn read_it() {
         index.exit_points.dedup_by(|left, right| left.id == right.id);
     }
     addresses::fold(&mut index.exit_points, &index.calls, &index.locals, &index.nodes);
+    let asked_before = index.exit_points.len();
+    addresses::through_wrappers(&mut index.exit_points, &index.calls, &index.nodes, &paths);
+    if index.exit_points.len() > asked_before {
+        index.exit_points.sort_by(|left, right| left.id.cmp(&right.id));
+        index.exit_points.dedup_by(|left, right| left.id == right.id);
+    }
 
     let patterns_started = Instant::now();
     let pattern_paths: Vec<&str> = index.files.iter().map(|file| file.path.as_str()).collect();
@@ -1129,6 +1149,29 @@ fn read_it() {
         );
     }
     index.history = history;
+    let composition_started = Instant::now();
+    index.composition = index.partition.as_ref().and_then(|partition| {
+        composition::derive(
+            &root,
+            partition,
+            index.history.as_ref(),
+            &paths,
+            &index.edges,
+            &index.entry_points,
+            &index.exit_points,
+            &index.calls,
+            index.scope.as_ref().map(|scope| scope.deployables.as_slice()).unwrap_or(&[]),
+        )
+    });
+    if let Some(found) = index.composition.as_ref() {
+        eprintln!(
+            "composition {:?} | children {} | seams {} | dependencies {}",
+            composition_started.elapsed(),
+            found.children.len(),
+            found.seams.len(),
+            found.dependencies.len()
+        );
+    }
 
     let health_started = Instant::now();
     let health = health::derive(
@@ -1167,6 +1210,7 @@ fn read_it() {
             })
             .unwrap_or_default(),
         &guessed,
+        &index.locals,
     );
     if audit::asked() {
         let looked = audit::look(

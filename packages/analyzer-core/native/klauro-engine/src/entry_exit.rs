@@ -6,9 +6,16 @@ use serde::Serialize;
 use crate::model::*;
 use crate::names;
 use crate::resolve::Resolution;
-use crate::paths::{is_not_shipped, is_test, is_unambiguously_test};
+use crate::paths::{is_test, is_unambiguously_test};
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Unshipped {
+    pub role: &'static str,
+    pub basis: &'static str,
+    pub evidence: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct EntryPoint {
     pub id: String,
     pub kind: &'static str,
@@ -23,6 +30,8 @@ pub struct EntryPoint {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub guards: Vec<Guard>,
     pub registrar: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unshipped: Option<Unshipped>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -602,6 +611,7 @@ fn conventional_actions(
                 line: node.span.line,
                 guards: Vec::new(),
                 registrar: "convention".to_string(),
+                unshipped: None,
             })
         })
         .collect()
@@ -665,6 +675,7 @@ fn served_over_grpc(nodes: &[IndexNode], type_references: &[TypeReferenceFact], 
                 line: member.span.line,
                 guards: Vec::new(),
                 registrar: reference.name.clone(),
+                unshipped: None,
             });
         }
     }
@@ -729,16 +740,19 @@ fn entry_base(name: &str) -> Option<&'static EntryBase> {
 }
 
 static FILE_OPERATIONS: &[&str] = &[
-    "appendalltext", "appendfile", "canonicalize", "contentsofdirectory", "copy", "copyfile",
-    "copyitem", "create", "create_dir", "create_dir_all", "createdirectory",
-    "createreadstream", "createwritestream", "delete", "deletefile", "enumeratefiles",
-    "exists", "exists_sync", "existssync", "getdirectories", "getfiles", "hard_link",
-    "metadata", "mkdir", "mkdirall", "move", "open", "openfile", "openread", "openwrite",
-    "read_dir", "read_link", "read_to_end", "read_to_string", "readall", "readallbytes",
-    "readalllines", "readalltext", "readalltextasync", "readdir", "readfile", "remove",
-    "remove_dir", "remove_dir_all", "remove_file", "removeall", "removeitem", "rename", "rm",
-    "rmdir", "set_permissions", "stat", "symlink_metadata", "unlink", "write_all",
-    "writeallbytes", "writealltext", "writealltextasync", "writefile",
+    "appendalltext", "appendfile", "appendfilesync", "canonicalize", "contentsofdirectory",
+    "copy", "copyfile", "copyitem", "copysync", "create", "create_dir", "create_dir_all",
+    "createdirectory", "createreadstream", "createwritestream", "delete", "deletefile",
+    "emptydir", "ensuredir", "ensurefile", "enumeratefiles", "exists", "exists_sync",
+    "existssync", "getdirectories", "getfiles", "hard_link", "lstat", "metadata", "mkdir",
+    "mkdirall", "move", "open", "openfile", "openread", "openwrite", "outputfile", "outputjson",
+    "outputjsonsync", "pathexists", "read_dir", "read_link", "read_to_end", "read_to_string",
+    "readall", "readallbytes", "readalllines", "readalltext", "readalltextasync", "readdir",
+    "readfile", "readfilesync", "readjson", "readjsonsync", "readlink", "remove", "remove_dir",
+    "remove_dir_all", "remove_file", "removeall", "removeitem", "rename", "rm", "rmdir",
+    "set_permissions", "stat", "symlink_metadata", "unlink", "write_all", "writeallbytes",
+    "writealltext", "writealltextasync", "writefile", "writefilesync", "writejson",
+    "writejsonsync",
 ];
 static NETWORK_OPERATIONS: &[&str] = &[
     "connect", "data", "datatask", "delete", "deleteasync", "do", "execute", "fetch", "get",
@@ -1783,6 +1797,7 @@ pub fn kept_by_the_browser(kept: &[crate::model::Kept], files: &[String]) -> Vec
 pub struct Derived {
     pub entry_points: Vec<EntryPoint>,
     pub exit_points: Vec<ExitPoint>,
+    pub continued: Vec<String>,
 }
 
 pub fn derive(
@@ -1829,6 +1844,7 @@ pub fn derive(
     let mcp_files = files_that_speak_the_mcp_sdk(imports);
     lap("setup");
     let mut entry_points = Vec::new();
+    let mut continued: Vec<String> = Vec::new();
     let mounted = mounted_under(calls);
     let mut base_paths: HashMap<&str, String> = HashMap::default();
     let mut written_in: HashMap<&str, Vec<&crate::model::LocalBinding>> = HashMap::default();
@@ -1868,6 +1884,9 @@ pub fn derive(
                     node.parent.as_deref().unwrap_or(""),
                     &locals_by_unit,
                 );
+            if continuation {
+                continued.push(node.id.clone());
+            }
             if let Some(kind) = classify_registration(registrar, label, mcp_files.contains(&node.file)).filter(|_| !continuation) {
                 let verb = names::leaf(registrar);
                 let spoken = match (label, kind) {
@@ -1905,6 +1924,7 @@ pub fn derive(
                     line: node.span.line,
                     guards: Vec::new(),
                     registrar: registrar.clone(),
+                    unshipped: None,
                 });
             }
         }
@@ -1933,6 +1953,7 @@ pub fn derive(
                     line: node.span.line,
                     guards: Vec::new(),
                     registrar: decorator.name.clone(),
+                    unshipped: None,
                 });
                 continue;
             }
@@ -1981,6 +2002,7 @@ pub fn derive(
                     line: node.span.line,
                     guards: Vec::new(),
                     registrar: decorator.name.clone(),
+                    unshipped: None,
                 });
             }
         }
@@ -2085,6 +2107,7 @@ pub fn derive(
                 line: node.span.line,
                 guards: Vec::new(),
                 registrar: found.base.to_string(),
+                unshipped: None,
             });
             continue;
         }
@@ -2103,6 +2126,7 @@ pub fn derive(
                 line: member.span.line,
                 guards: Vec::new(),
                 registrar: found.base.to_string(),
+                unshipped: None,
             });
         }
     }
@@ -2266,6 +2290,7 @@ pub fn derive(
             line: registration.line,
             guards: Vec::new(),
             registrar: registration.registrar.clone(),
+            unshipped: None,
         });
     }
 
@@ -2292,6 +2317,7 @@ pub fn derive(
                 line: node.span.line,
                 guards: Vec::new(),
                 registrar: node.name.clone(),
+                unshipped: None,
             });
         }
     }
@@ -2314,6 +2340,7 @@ pub fn derive(
             line: node.span.line,
             guards: Vec::new(),
             registrar: node.name.clone(),
+            unshipped: None,
         });
     }
 
@@ -2345,6 +2372,7 @@ pub fn derive(
             line: screen.span.line,
             guards: Vec::new(),
             registrar: "dispatch:ui".to_string(),
+            unshipped: None,
         });
     }
 
@@ -2571,14 +2599,15 @@ pub fn derive(
             return true;
         }
         let path = &files[entry.file as usize];
-        if is_not_shipped(path) {
-            return false;
-        }
         let survives_test_screen = match entry.kind {
             "http" => !is_test(path),
             _ => !is_unambiguously_test(path),
         };
-        survives_test_screen && (entry.kind != "schedule" || recurring(&entry.registrar))
+        let recurs = entry.kind != "schedule" || recurring(&entry.registrar);
+        if !recurs {
+            continued.push(entry.handler.clone());
+        }
+        survives_test_screen && recurs
     });
     for entry in entry_points.iter_mut() {
         if entry.kind != "http" {
@@ -2594,7 +2623,7 @@ pub fn derive(
         }
     }
     lap("exits");
-    Derived { entry_points, exit_points }
+    Derived { entry_points, exit_points, continued }
 }
 
 #[cfg(test)]

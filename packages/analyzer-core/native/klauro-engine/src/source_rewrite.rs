@@ -27,6 +27,9 @@ fn qualified_type_imports(source: &mut [u8]) -> u32 {
         if after >= source.len() || source[after] != b'.' {
             continue;
         }
+        if continues_a_promise(source, after + 1) {
+            continue;
+        }
         for byte in &mut source[found..=after] {
             if *byte != b'\n' && *byte != b'\r' {
                 *byte = b' ';
@@ -36,6 +39,16 @@ fn qualified_type_imports(source: &mut [u8]) -> u32 {
         at = after + 1;
     }
     rewritten
+}
+
+static PROMISE_METHODS: &[&[u8]] = &[b"catch", b"finally", b"then"];
+
+fn continues_a_promise(source: &[u8], from: usize) -> bool {
+    let mut end = from;
+    while end < source.len() && is_identifier_byte(source[end]) {
+        end += 1;
+    }
+    PROMISE_METHODS.contains(&&source[from..end])
 }
 
 fn is_identifier_byte(byte: u8) -> bool {
@@ -366,5 +379,19 @@ mod razor {
         }
         assert!(!renders.contains("EditForm();"), "{renders}");
         assert!(!renders.contains("true"), "{renders}");
+    }
+}
+
+#[cfg(test)]
+mod loaded_modules {
+    use super::grammar_limitations;
+
+    #[test]
+    fn a_module_loaded_then_used_is_left_whole_and_a_type_taken_from_one_is_not() {
+        let mut loaded = b"const load = () => import('./page').then((held) => held.Page);".to_vec();
+        assert_eq!(grammar_limitations(&mut loaded), 0);
+        assert_eq!(loaded, b"const load = () => import('./page').then((held) => held.Page);".to_vec());
+        let mut typed = b"let page: import('./page').Page;".to_vec();
+        assert_eq!(grammar_limitations(&mut typed), 1);
     }
 }

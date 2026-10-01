@@ -30,6 +30,8 @@ pub struct Resolution {
     pub method_owners: HashMap<String, String>,
     pub internal_specifiers: HashSet<String>,
     pub through: HashMap<(u32, String), String>,
+    pub imported: HashMap<(u32, String), String>,
+    pub reached: HashMap<(u32, String), u32>,
     pub package_calls: u32,
     pub runtime_calls: u32,
     pub indirect_calls: u32,
@@ -1205,6 +1207,7 @@ enum Resolved {
     NoCaller,
     Dynamic,
     Indirect,
+    Library,
     Unresolved(String),
     Edge(String, EdgeKind),
     Guessed(String, EdgeKind),
@@ -1432,6 +1435,7 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         }
         None
     };
+    let mut reached_files: HashMap<(u32, String), u32> = HashMap::default();
     for (fact, reached) in index.imports.iter().zip(reached_by_import) {
         let from = index.files[fact.file as usize].as_str();
         let language = index.languages[fact.file as usize];
@@ -1476,6 +1480,7 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         }
         internal_specifiers.insert(fact.specifier.clone());
         if let Some(first) = reached.first() {
+            reached_files.entry((fact.file, fact.specifier.clone())).or_insert(*first);
             let holding = index.files[*first as usize].as_str();
             for name in &fact.names {
                 let wanted = name.imported.as_deref().unwrap_or(name.local.as_str());
@@ -2084,12 +2089,14 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
                 Some(carried) => Resolved::Edge(carried, kind),
                 None => Resolved::Edge(target, kind),
             },
+            Resolved::External { .. } if fact.renders => Resolved::Library,
             other => other,
         };
         match outcome {
             Resolved::NoCaller => no_caller += 1,
             Resolved::Dynamic => dynamic_calls += 1,
             Resolved::Indirect => indirect_calls += 1,
+            Resolved::Library => {}
             Resolved::Unresolved(member) => {
                 *unresolved_names.entry(member).or_insert(0) += 1;
                 unresolved_calls += 1;
@@ -2132,6 +2139,13 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
                 ((*file, (*name).to_string()), symbols.nodes[*at as usize].id.clone())
             })
             .collect(),
+        imported: resolver
+            .bindings
+            .imported
+            .iter()
+            .map(|((file, name), at)| ((*file, (*name).to_string()), symbols.nodes[*at as usize].id.clone()))
+            .collect(),
+        reached: reached_files,
         unique_units: symbols
             .unique_unit
             .iter()

@@ -24,11 +24,11 @@ fn a_bundler_entry_whose_output_is_the_published_bin_stays_an_entry() {
 }
 
 #[test]
-fn a_bundler_entry_whose_output_nothing_ships_is_not_an_entry() {
+fn a_bundler_entry_whose_output_nothing_ships_stays_an_entry_tagged_by_shipping_evidence() {
     let index = index();
     let entries = entries(&index);
-    assert!(
-        handled_at(&entries, "src/other-tool.ts").is_none(),
-        "dist/other-tool.cjs is built but never named by any shipping evidence: {entries:#?}"
-    );
+    let found = handled_at(&entries, "src/other-tool.ts")
+        .expect("dist/other-tool.cjs is built but never named by any shipping evidence, so it is kept and tagged");
+    assert_eq!(found["unshipped"]["basis"], "shipping-evidence", "{found:#?}");
+    assert_eq!(found["unshipped"]["role"], "standalone-program", "{found:#?}");
 }

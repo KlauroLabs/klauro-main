@@ -15,13 +15,12 @@ fn handled_at<'a>(entries: &[&'a serde_json::Value], suffix: &str) -> Option<&'a
 }
 
 #[test]
-fn a_developer_script_that_nothing_ships_is_not_an_entry() {
+fn a_developer_script_that_nothing_ships_stays_an_entry_tagged_as_tooling() {
     let index = index();
     let entries = entries(&index);
-    assert!(
-        handled_at(&entries, "scripts/unshipped.js").is_none(),
-        "a script no manifest runs or ships must not become a flow: {entries:#?}"
-    );
+    let found = handled_at(&entries, "scripts/unshipped.js")
+        .expect("a script no manifest runs or ships is kept so its code stays navigable");
+    assert_eq!(found["unshipped"]["role"], "tooling", "{found:#?}");
 }
 
 #[test]
@@ -31,16 +30,15 @@ fn a_developer_script_a_manifest_ships_stays_an_entry() {
     let found = handled_at(&entries, "scripts/shipped.js")
         .expect("package.json's bin names this script, so it still ships");
     assert_eq!(found["kind"], "lifecycle");
+    assert!(found.get("unshipped").is_none(), "{found:#?}");
 }
 
 #[test]
-fn a_main_under_examples_is_not_an_entry() {
+fn a_main_under_examples_stays_an_entry_tagged_as_an_example() {
     let index = index();
     let entries = entries(&index);
-    assert!(
-        handled_at(&entries, "examples/demo.py").is_none(),
-        "example code is not product code: {entries:#?}"
-    );
+    let found = handled_at(&entries, "examples/demo.py").expect("example code is kept and tagged, not hidden");
+    assert_eq!(found["unshipped"]["role"], "example", "{found:#?}");
 }
 
 #[test]

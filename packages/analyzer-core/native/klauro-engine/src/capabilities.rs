@@ -523,6 +523,7 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
         .iter()
         .copied()
         .filter(|flow| !served || flow.kind != "export")
+        .filter(|flow| flow.unshipped.is_none())
         .filter(|flow| !only_moves_the_screen(flow))
         .filter(|flow| is_proposable(flow))
         .collect();
@@ -1417,6 +1418,7 @@ mod command_family_tests {
             changes: Vec::new(),
             leads_into: Vec::new(),
             project: None,
+            unshipped: None,
         }
     }
 

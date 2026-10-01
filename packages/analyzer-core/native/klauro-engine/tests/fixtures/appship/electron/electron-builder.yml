@@ -1,0 +1,6 @@
+appId: com.example.app
+productName: Electron App
+files:
+  - main.js
+mac:
+  target: dmg

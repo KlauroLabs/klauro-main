@@ -15,13 +15,13 @@ fn handled_at<'a>(entries: &[&'a serde_json::Value], suffix: &str) -> Option<&'a
 }
 
 #[test]
-fn an_unshipped_standalone_program_is_not_an_entry() {
+fn an_unshipped_standalone_program_stays_an_entry_tagged_by_shipping_evidence() {
     let index = index();
     let entries = entries(&index);
-    assert!(
-        handled_at(&entries, "apps/tool/src/gauntlet-tool.ts").is_none(),
-        "a main-guarded program nothing ships is not a product entry point: {entries:#?}"
-    );
+    let found = handled_at(&entries, "apps/tool/src/gauntlet-tool.ts")
+        .expect("a main-guarded program nothing ships is kept and tagged");
+    assert_eq!(found["unshipped"]["basis"], "shipping-evidence", "{found:#?}");
+    assert_eq!(found["unshipped"]["role"], "standalone-program", "{found:#?}");
 }
 
 #[test]

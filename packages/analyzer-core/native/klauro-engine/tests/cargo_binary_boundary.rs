@@ -39,3 +39,11 @@ fn a_src_bin_file_stays_an_entry() {
     let found = handled_at(&entries, "src/bin/extra_tool.rs").expect("src/bin/*.rs is a real Cargo binary target");
     assert_eq!(found["kind"], "lifecycle");
 }
+
+#[test]
+fn a_build_rs_with_no_manifest_beside_it_is_kept_and_tagged_as_tooling() {
+    let index = common::read("cargo_build_script_without_manifest");
+    let entries: Vec<&serde_json::Value> = index["entry_points"].as_array().unwrap().iter().collect();
+    let found = handled_at(&entries, "build.rs").expect("nothing declares it a build script, so it is kept");
+    assert_eq!(found["unshipped"]["role"], "tooling", "{found:#?}");
+}

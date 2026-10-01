@@ -541,6 +541,7 @@ pub fn subscribed(messages: &[Message], calls: &[CallFact], graph: &crate::share
                 line: node.span.line,
                 guards: Vec::new(),
                 registrar: "raised in process".to_string(),
+                unshipped: None,
             });
         }
     }
@@ -568,6 +569,7 @@ pub fn subscribed(messages: &[Message], calls: &[CallFact], graph: &crate::share
                 line: node.span.line,
                 guards: Vec::new(),
                 registrar: by.get(message.message.as_str()).copied().unwrap_or("subscribe").to_string(),
+                unshipped: None,
             });
         }
     }

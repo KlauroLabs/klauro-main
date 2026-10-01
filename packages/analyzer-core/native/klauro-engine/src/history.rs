@@ -29,6 +29,12 @@ pub struct History {
     pub touched: u32,
     pub churn: Vec<Churn>,
     pub co_change: Vec<CoChange>,
+    #[serde(skip)]
+    pub per_file: Vec<(String, u32, i64)>,
+    #[serde(skip)]
+    pub head: i64,
+    #[serde(skip)]
+    pub oldest: i64,
 }
 
 fn holds_itself(root: &Path) -> bool {
@@ -49,6 +55,21 @@ fn holds_itself(root: &Path) -> bool {
         (Ok(held), Ok(root)) => held == root,
         _ => false,
     }
+}
+
+pub fn newest_change(root: &Path, directory: &str) -> Option<i64> {
+    let log = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["log", "-1", "--no-merges", "--format=%at", "--"])
+        .arg(match directory.is_empty() {
+            true => ".",
+            false => directory,
+        })
+        .output()
+        .ok()
+        .filter(|output| output.status.success())?;
+    String::from_utf8_lossy(&log.stdout).trim().parse().ok()
 }
 
 pub fn read(root: &Path, files: &[String]) -> Option<History> {
@@ -75,6 +96,8 @@ pub fn read(root: &Path, files: &[String]) -> Option<History> {
     let mut touched: HashMap<&str, (u32, HashSet<&str>, i64)> = HashMap::default();
     let mut together: HashMap<(&str, &str), u32> = HashMap::default();
     let mut when = 0;
+    let mut head = 0;
+    let mut oldest = i64::MAX;
     let mut author = "";
     let mut pending: Vec<&str> = Vec::new();
     for line in text.lines() {
@@ -85,6 +108,8 @@ pub fn read(root: &Path, files: &[String]) -> Option<History> {
             let mut parts = header.split('\u{1}');
             when = parts.next().and_then(|at| at.parse().ok()).unwrap_or(0);
             author = parts.next().unwrap_or("");
+            head = head.max(when);
+            oldest = oldest.min(when);
             continue;
         }
         let path = line.trim();
@@ -116,6 +141,18 @@ pub fn read(root: &Path, files: &[String]) -> Option<History> {
             .then(left.path.cmp(&right.path))
     });
     let counted = churn.len() as u32;
+    let first_import: HashSet<&str> = match commits > 1 && (commits as usize) < COMMITS_READ {
+        true => pending.iter().copied().collect(),
+        false => HashSet::default(),
+    };
+    let mut per_file: Vec<(String, u32, i64)> = churn
+        .iter()
+        .filter_map(|held| {
+            let dropped = u32::from(first_import.contains(held.path.as_str()));
+            (held.commits > dropped).then(|| (held.path.clone(), held.commits - dropped, held.last))
+        })
+        .collect();
+    per_file.sort();
     churn.truncate(RANKED);
 
     let mut co_change: Vec<CoChange> = together
@@ -136,7 +173,7 @@ pub fn read(root: &Path, files: &[String]) -> Option<History> {
     });
     co_change.truncate(RANKED);
 
-    Some(History { commits, touched: counted, churn, co_change })
+    Some(History { commits, touched: counted, churn, co_change, per_file, head, oldest: oldest.min(head) })
 }
 
 fn record<'a>(together: &mut HashMap<(&'a str, &'a str), u32>, changed: &[&'a str]) {

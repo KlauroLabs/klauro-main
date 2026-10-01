@@ -360,12 +360,16 @@ pub static MANIFEST_NAMES: &[&str] = &[
 ];
 
 pub static MANIFEST_EXTENSIONS: &[&str] = &[
+    "appxmanifest",
     "cabal",
     "csproj",
     "fsproj",
     "gemspec",
     "sln",
     "vbproj",
+    "wapproj",
+    "wixproj",
+    "wxs",
 ];
 
 pub static MANIFEST_PATTERNS: &[&str] = &[
@@ -483,6 +487,7 @@ pub static LANGUAGE_BY_EXTENSION: &[(&str, &str)] = &[
     ("ads", "ada"),
     ("agda", "agda"),
     ("apex", "apex_page"),
+    ("appxmanifest", "xml"),
     ("asd", "commonlisp"),
     ("asm", "nasm"),
     ("astro", "astro_lang"),
@@ -748,11 +753,14 @@ pub static LANGUAGE_BY_EXTENSION: &[(&str, &str)] = &[
     ("vimrc", "vim"),
     ("vue", "vue"),
     ("w", "wing"),
+    ("wapproj", "xml"),
     ("wast", "wat"),
     ("wat", "wat"),
     ("wgsl", "wgsl"),
+    ("wixproj", "xml"),
     ("wren", "wren"),
     ("wsdl", "soap-contract"),
+    ("wxs", "xml"),
     ("xaml", "csharp"),
     ("xhtml", "html"),
     ("xml", "xml"),

@@ -56,3 +56,15 @@ fn a_servers_own_request_event_stays_an_entry() {
         "a server listening for its own inbound requests is not a continuation: {events:#?}"
     );
 }
+
+#[test]
+fn a_continuations_callback_stays_inside_the_function_that_started_it() {
+    let index = index();
+    let held = |source: &str, target: &str| {
+        index["edges"].as_array().unwrap().iter().any(|edge| {
+            edge["kind"] == "contains" && edge["source"] == source && edge["target"] == target
+        })
+    };
+    assert!(held("src/worker-manager.js:function:runTask", "src/worker-manager.js:callback:child.on"));
+    assert!(held("src/worker-manager.js:function:runTask", "src/worker-manager.js:callback:child.stdout.on"));
+}
