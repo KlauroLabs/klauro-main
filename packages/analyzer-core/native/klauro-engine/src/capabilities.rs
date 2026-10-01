@@ -428,7 +428,10 @@ fn place(
     }
     let standing: Vec<(String, String)> =
         held.iter().map(|other| (other.name.clone(), other.description.clone())).collect();
-    let answers = crate::author::place_families(said, &standing, &unplaced);
+    let answers: Vec<Placed> = unplaced
+        .par_chunks(FAMILIES_PER_PROPOSAL)
+        .flat_map(|chunk| crate::author::place_families(said, &standing, chunk))
+        .collect();
     let answered = !answers.is_empty();
     for Placed { family, capability, description, audience, role, why } in answers {
         if !told.contains_key(&family) || placed.contains(&family) {
@@ -608,7 +611,13 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
                 held = consolidate_purposes(said, held);
                 counted("consolidating purposes", &held);
             }
-            if place(said, &told, &mut held, &mut unassigned) {
+            let first_look = unassigned.clone();
+            if chunked {
+                unassigned.clear();
+            }
+            if !place(said, &told, &mut held, &mut unassigned) {
+                unassigned.extend(first_look);
+            } else {
                 let placed: BTreeSet<&String> = held.iter().flat_map(|other| other.families.iter()).collect();
                 let left: Vec<String> =
                     known.iter().filter(|id| !placed.contains(id) && !unassigned.contains(*id)).cloned().collect();
@@ -623,6 +632,9 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
     unassigned.retain(|id| known.contains(id) && !held.iter().any(|other| other.families.contains(id)));
     if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
         eprintln!("  settled {} capabilities and {} unassigned of {} outcomes", held.len(), unassigned.len(), told.len());
+        for id in &unassigned {
+            eprintln!("  unassigned {}", key_of[id.as_str()]);
+        }
     }
     let settled_every_family = told.keys().all(|id| {
         unassigned.contains(id) || held.iter().any(|other| other.families.contains(id))

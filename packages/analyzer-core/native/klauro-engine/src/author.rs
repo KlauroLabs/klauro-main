@@ -665,7 +665,9 @@ pub fn propose_capabilities(spoken_for: &str, families: &[(String, String)]) -> 
          unassigned. That is expected and honest, not a failure: tooling, scaffolding, the system keeping track of \
          itself (requests already handled, a log of messages sent, health, static files, the building blocks of a \
          page), and supporting concerns that serve nothing the product names are all unassigned. Never force an \
-         outcome into a capability to place it.\n\n\
+         outcome into a capability to place it. But most outcomes of a real product do serve some purpose: a command, \
+         a route or a handler that is one of the many behaviors of a purpose serves it, whatever its role, and being \
+         one of many is not a reason to leave it unassigned.\n\n\
          For each capability give a name of 2-6 words that says what the purpose is — a verb and what it is for, \
          like \"Share posts with followers\" or \"Track an order\", never a bare topic or category like \
          \"Posting\", \"Orders\" or \"Engagement\", and never the name of one command or one screen —, one \
@@ -715,7 +717,11 @@ pub fn place_families(
     let prompt = format!(
         "A software system describes itself like this:\n{spoken_for}\n\n{OWN_WORDS}\n\n\
          These capabilities were already read from it:\n{}\n\n\
-         These outcomes were not placed yet. {PURPOSE}\n\n\
+         These outcomes were not placed yet, or were left aside when only some of the outcomes could be seen \
+         together. {PURPOSE}\n\n\
+         Most outcomes of a real product serve some purpose above: a command, a route or a handler that is one of \
+         the many behaviors of a purpose serves it, and a purpose with many outcomes is the usual case. Do not \
+         leave one aside because it is only one of many.\n\n\
          For each, say which capability above it serves, by its exact name, with a role ({ROLES_TOLD}) and a few \
          words on why; or give a new capability name of 2-6 words — a verb and what it is for, like \"Share posts with followers\", never a bare topic like \"Posting\" — with one \
          sentence saying what someone gets and its audience, only when the product's description would list that \
