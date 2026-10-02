@@ -228,6 +228,21 @@ STAMP
 fi
 $SSH "$DEST" "cp /opt/klauro/source/apps/mcp-server/.klauro-build-stamp.json /opt/klauro/devgate/apps/mcp-server/.klauro-build-stamp.json"
 
+echo "==> Checking disk headroom on $VPS_HOST"
+$SSH "$DEST" '
+  used() { df --output=pcent / | tail -1 | tr -dc 0-9; }
+  if [ "$(used)" -ge 85 ]; then
+    echo "    disk $(used)% used; freeing unused Docker images and build cache older than a week"
+    docker image prune -af >/dev/null
+    docker builder prune -af --filter until=168h >/dev/null
+    echo "    disk now $(used)% used"
+  fi
+  if [ "$(used)" -ge 95 ]; then
+    echo "    !! disk still $(used)% used after cleanup; refusing to build" >&2
+    exit 1
+  fi
+'
+
 echo "==> Rebuilding + restarting containers on $VPS_HOST"
 $SSH "$DEST" "install -d -m 700 /opt/klauro/data /opt/klauro/redis-data && chmod -R go-rwx /opt/klauro/data /opt/klauro/redis-data"
 $SSH "$DEST" "cd /opt/klauro && KLAURO_GIT_SHA='$GIT_SHA' KLAURO_BUILD_TIME='$BUILD_TIME' docker compose up -d --build --remove-orphans"
