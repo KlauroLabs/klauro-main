@@ -262,3 +262,51 @@ test('a part whose flows reach an outside service has a seam to that service', (
   assert.equal(seams?.seams[0].target, 'weather');
   assert.equal(seams?.seams[0].modality, 'sync');
 });
+
+test('a whole-system capability carries the child capabilities it was derived from as composition provenance', () => {
+  const derived = {
+    ...INDEX,
+    partition: {
+      sub_projects: [
+        { id: 'subproject:api', name: 'api', root: 'api' },
+        { id: 'subproject:web', name: 'web', root: 'web' },
+      ],
+    },
+    entry_points: [
+      { id: 'entry:place', kind: 'http', name: '/orders', method: 'POST', path: '/orders', handler: 'api/order.ts:function:place:1', file: 0, line: 1, registrar: 'router.post' },
+    ],
+    comprehension: {
+      flows: [
+        { id: 'flow:place', entry_point: 'entry:place', kind: 'http', operation: '/orders', standing: 'terminal', project: 'subproject:api' },
+      ],
+      capabilities: [
+        { id: 'capability:place-an-order', name: 'Place an order', project: 'subproject:api', flows: ['flow:place'] },
+        {
+          id: 'capability:order-goods',
+          name: 'Order goods',
+          also_in: ['subproject:api'],
+          flows: ['flow:place'],
+          composition_provenance: [
+            { source_child: 'subproject:api', source_capability_id: 'capability:place-an-order', disposition: 'promoted', weight: 0.9 },
+          ],
+          parent_originated: { kind: 'seam', evidence: ['web to api (http, sync)'] },
+        },
+      ],
+    },
+  } as TierStackIndex;
+  const tree = tierStackToCas(derived, 'shop');
+  const whole = tree.capabilities.find(held => held.id === 'capability:order-goods');
+  assert.ok(whole);
+  assert.deepEqual(whole.composition_provenance, [
+    {
+      source_child_id: 'cas:shop:subproject:api',
+      source_capability_id: 'capability:place-an-order',
+      source_node_ids: ['api/order.ts:function:place:1'],
+      source_flow_ids: ['flow:place'],
+      relation_path: [],
+      confidence: 0.9,
+      disposition: 'promoted',
+    },
+  ]);
+  assert.deepEqual(whole.parent_originated, { kind: 'seam', evidence: ['web to api (http, sync)'] });
+});

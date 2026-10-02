@@ -114,6 +114,16 @@ export interface TierStackCapability {
   grounding?: TierStackGrounding;
   confidence?: number;
   delivered?: Array<{ flow: string; role: string; rationale: string }>;
+  also_in?: string[];
+  composition_provenance?: TierStackCompositionSource[];
+  parent_originated?: { kind: 'seam' | 'orphan'; evidence: string[] };
+}
+
+export interface TierStackCompositionSource {
+  source_child: string;
+  source_capability_id: string;
+  disposition: 'promoted' | 'absorbed';
+  weight?: number;
 }
 
 export interface TierStackShipDeclaration {
@@ -162,6 +172,13 @@ export interface TierStackComposition {
   }>;
   dependencies: Array<{ from: string; to: string; count: number; evidence: string[] }>;
   orphan?: { project: string; files: number; declarations: number };
+  promoted?: Array<{
+    capability: string;
+    name: string;
+    from: TierStackCompositionSource[];
+    parent_originated?: { kind: 'seam' | 'orphan'; evidence: string[] };
+  }>;
+  not_promoted?: Array<{ child: string; capability: string; reason: string }>;
 }
 
 export interface TierStackDeployable {

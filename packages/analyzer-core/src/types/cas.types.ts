@@ -3618,6 +3618,7 @@ export interface SystemCapability {
   criticality_factors: string[];
   confidence?: number;
   composition_provenance?: CASComposedClaimProvenance[];
+  parent_originated?: { kind: 'seam' | 'orphan'; evidence: string[] };
 
 
 

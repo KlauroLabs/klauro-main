@@ -15,6 +15,7 @@ import {
   type CASEntryPoint,
   type CASExitPoint,
   type CASAnalyzerContribution,
+  type CASComposedClaimProvenance,
   type CASArchitectureSummary,
   type CASNode,
   type CASOutput,
@@ -342,7 +343,7 @@ function entitiesOf(index: TierStackIndex): CASDataEntity[] {
   }));
 }
 
-function capabilitiesOf(index: TierStackIndex): CASOutput['capabilities'] {
+function capabilitiesOf(index: TierStackIndex, name: string): CASOutput['capabilities'] {
   const reached = new Map((index.entry_points ?? []).map(entry => [entry.id, entry]));
   const operationsOf = (surfaces: string[]) =>
     surfaces.flatMap(surface => {
@@ -357,7 +358,33 @@ function capabilitiesOf(index: TierStackIndex): CASOutput['capabilities'] {
             trigger: { method: entry.method, path: entry.path },
           }];
     });
+  const childCapabilities = new Map(
+    (index.comprehension?.capabilities ?? [])
+      .filter(held => held.project !== undefined && held.project !== null)
+      .map(held => [`${held.project}\u0001${held.id}`, held]),
+  );
+  const flowEntries = new Map((index.comprehension?.flows ?? []).map(flow => [flow.id, flow.entry_point]));
+  const handlers = new Map((index.entry_points ?? []).map(entry => [entry.id, entry.handler]));
+  const provenanceOf = (capability: TierStackCapability): CASComposedClaimProvenance[] =>
+    (capability.composition_provenance ?? []).map(claim => {
+      const source = childCapabilities.get(`${claim.source_child}\u0001${claim.source_capability_id}`);
+      const flows = source?.flows ?? [];
+      const nodes = flows.flatMap(flow => {
+        const handler = handlers.get(flowEntries.get(flow) ?? '');
+        return handler === undefined ? [] : [handler];
+      });
+      return {
+        source_child_id: casIdOf(name, claim.source_child),
+        source_capability_id: claim.source_capability_id,
+        source_node_ids: [...new Set(nodes)],
+        source_flow_ids: flows,
+        relation_path: [],
+        confidence: claim.weight ?? 1,
+        disposition: claim.disposition,
+      };
+    });
   return whatTheSystemDelivers(index).map(capability => {
+    const provenance = provenanceOf(capability);
     return {
       id: capability.id,
       name: capability.name ?? capability.id,
@@ -371,6 +398,8 @@ function capabilitiesOf(index: TierStackIndex): CASOutput['capabilities'] {
       criticality: (capability.changes ?? []).length > 0 ? ('high' as const) : ('medium' as const),
       criticality_factors: (capability.changes ?? []).map(held => `changes ${held}`),
       ...(capability.confidence === undefined ? {} : { confidence: capability.confidence }),
+      ...(provenance.length === 0 ? {} : { composition_provenance: provenance }),
+      ...(capability.parent_originated === undefined ? {} : { parent_originated: capability.parent_originated }),
       evidence_role: 'product-outcome' as const,
       evidence_role_reasons: reasonsFor(capability),
     };
@@ -692,7 +721,7 @@ function casOf(index: TierStackIndex, displayName?: string): CASOutput {
     entry_points,
     exit_points: exitPointsOf(index),
     entities: entitiesOf(index),
-    capabilities: capabilitiesOf(index),
+    capabilities: capabilitiesOf(index, name),
     deployable_evidence: deployablesOf(index),
     enhanced_system_purpose: purposeOf(index),
     flows: flowsOf(index),
