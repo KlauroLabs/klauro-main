@@ -6,7 +6,7 @@ use crate::comprehend::{Capability, Flow};
 use crate::composition::{Composition, Seam};
 
 pub const PARENT_CONTRACT_VERSION: &str = "parent-1";
-pub const LOW_WEIGHT: f64 = 0.15;
+pub const LOW_WEIGHT: f64 = 0.25;
 const INPUT_LIMIT: usize = 48_000;
 const LINKS_SHOWN: usize = 24;
 const LINK_EVIDENCE_SHOWN: usize = 2;
