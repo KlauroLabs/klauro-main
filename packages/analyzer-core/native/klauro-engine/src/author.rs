@@ -483,7 +483,7 @@ compliance: consent, retention or other obligations; maintenance: upkeep, clean-
 
 pub const PURPOSE_CONTRACT_VERSION: &str = "purpose-3";
 
-const OWN_WORDS: &str = "That description may speak of the project rather than the software, such as its status, \
+pub const OWN_WORDS: &str = "That description may speak of the project rather than the software, such as its status, \
 history or whether it is still maintained; what the software does is read from the code below, and that decides. \
 When it does say what the software is for, the purposes below are the ones it names in its own words. When it says \
 nothing about itself, name a purpose only when the outcomes below jointly deliver it.";
@@ -529,6 +529,13 @@ pub fn same_outcome(spoken_for: &str, listed: &BTreeMap<String, String>) -> Vec<
         .filter_map(|group| serde_json::from_value::<Same>(group.clone()).ok())
         .filter(|group| !group.of.is_empty() && !group.name.trim().is_empty())
         .collect()
+}
+
+pub fn derive_parent(prompt: &str) -> Option<serde_json::Value> {
+    if !asked() {
+        return None;
+    }
+    answered::<serde_json::Value>(prompt, 3000, &asking_of_models(model()), "derived", 1)
 }
 
 pub fn same_capability(spoken_for: &str, listed: &BTreeMap<String, String>) -> Vec<Same> {
@@ -1175,6 +1182,33 @@ fn shaped(of: &str) -> serde_json::Value {
                 "required": ["family", "capability", "description", "audience"],
             }}},
             "required": ["assigned"],
+        }),
+        "derived" => serde_json::json!({
+            "type": "object",
+            "properties": {
+                "derived": {"type": "array", "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": text,
+                        "description": text,
+                        "audience": text,
+                        "from": {"type": "array", "items": {
+                            "type": "object",
+                            "properties": {"id": text, "as": {"type": "string", "enum": ["promoted", "absorbed"]}},
+                            "required": ["id", "as"],
+                        }},
+                        "link": {"type": "array", "items": text},
+                        "stated": {"type": "boolean"},
+                    },
+                    "required": ["name", "description", "audience", "from", "link", "stated"],
+                }},
+                "left": {"type": "array", "items": {
+                    "type": "object",
+                    "properties": {"id": text, "why": text},
+                    "required": ["id", "why"],
+                }},
+            },
+            "required": ["derived", "left"],
         }),
         "groups" => serde_json::json!({
             "type": "object",

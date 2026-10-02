@@ -745,6 +745,8 @@ fn built(held: Held, lanes: &BTreeMap<&str, (&Family, &Vec<&Flow>)>, fields: &Fi
         touches: Vec::new(),
         terminality: None,
         confidence: None,
+        composition_provenance: Vec::new(),
+        parent_originated: None,
         evidence,
     };
     for family_id in &held.families {
@@ -1668,6 +1670,8 @@ mod command_family_tests {
             touches: Vec::new(),
             terminality: None,
             confidence: None,
+            composition_provenance: Vec::new(),
+            parent_originated: None,
             evidence: String::new(),
         };
         let covered = coverage_of(&[first, second, third], &[capability]);

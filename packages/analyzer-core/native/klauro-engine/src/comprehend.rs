@@ -152,6 +152,10 @@ pub struct Capability {
     pub terminality: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub composition_provenance: Vec<crate::parent::Source>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_originated: Option<crate::parent::Originated>,
     #[serde(skip)]
     pub evidence: String,
 }
@@ -175,6 +179,8 @@ pub struct Comprehension {
     pub chained: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub semantic_coverage: Option<crate::capabilities::Coverage>,
+    #[serde(skip)]
+    pub derivation: Option<crate::parent::Summary>,
 }
 
 static GENERIC: &[&str] = &[
@@ -337,6 +343,7 @@ pub struct Telling<'a> {
     pub within: Vec<String>,
     pub languages: Vec<(String, u32)>,
     pub frameworks: Vec<String>,
+    pub composition: Option<&'a crate::composition::Composition>,
 }
 
 const SPOKEN_TO_BY: f64 = 0.15;
@@ -971,6 +978,25 @@ pub(crate) fn joined(into: &mut Capability, other: Capability) {
     settle(&mut into.touches);
     into.also_in.sort();
     into.also_in.dedup();
+    for source in other.composition_provenance {
+        if !into.composition_provenance.contains(&source) {
+            into.composition_provenance.push(source);
+        }
+    }
+    into.composition_provenance.sort_by(|left, right| {
+        (&left.source_child, &left.source_capability_id).cmp(&(&right.source_child, &right.source_capability_id))
+    });
+    match (into.parent_originated.as_mut(), other.parent_originated) {
+        (None, other) => into.parent_originated = other,
+        (Some(held), Some(more)) if held.kind == more.kind => {
+            for told in more.evidence {
+                if !held.evidence.contains(&told) {
+                    held.evidence.push(told);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 
@@ -1335,11 +1361,24 @@ pub fn author(
                 .filter(|capability| capability.grounding.is_some())
                 .map(|capability| capability.id.as_str())
                 .collect();
-            let (carried, mut whole): (Vec<Capability>, Vec<Capability>) = crate::capabilities::of_the_whole(&served, &spoken, told.scope, &held.flows)
-                .into_iter()
-                .partition(|capability| judged_in_a_part.contains(capability.id.as_str()) && capability.also_in.len() <= 1);
-            test_capabilities(&mut whole, &spoken, "this system as a whole", &excerpt);
-            whole.extend(carried);
+            let derived = told
+                .composition
+                .and_then(|composition| crate::parent::derive(composition, &served, &held.flows, &spoken, told.scope));
+            let (mut whole, listed_parts, reasons) = match derived {
+                Some((listed, derivation)) => {
+                    let mut whole = derivation.capabilities;
+                    test_capabilities(&mut whole, &spoken, "this system as a whole", &excerpt);
+                    (whole, Some(listed), derivation.reasons)
+                }
+                None => {
+                    let (carried, mut whole): (Vec<Capability>, Vec<Capability>) = crate::capabilities::of_the_whole(&served, &spoken, told.scope, &held.flows)
+                        .into_iter()
+                        .partition(|capability| judged_in_a_part.contains(capability.id.as_str()) && capability.also_in.len() <= 1);
+                    test_capabilities(&mut whole, &spoken, "this system as a whole", &excerpt);
+                    whole.extend(carried);
+                    (whole, None, std::collections::BTreeMap::new())
+                }
+            };
             whole.sort_by(|left, right| left.id.cmp(&right.id));
             eprintln!(
                 "  author read {} capabilities across the parts into {} for the whole",
@@ -1355,6 +1394,13 @@ pub fn author(
                 || describe_product(&together, &held.entities, &held.flows, &spoken, told, described),
             );
             crate::capabilities::one_of_each(&mut whole, &spoken);
+            let summary = match (told.composition, listed_parts) {
+                (Some(composition), Some(listed)) => {
+                    crate::parent::enforce(&mut whole);
+                    Some(crate::parent::summarise(&whole, &listed, &reasons, composition))
+                }
+                _ => None,
+            };
             capabilities.extend(whole);
             capabilities.sort_by(|left, right| left.id.cmp(&right.id));
             eprintln!(
@@ -1365,7 +1411,7 @@ pub fn author(
                 crate::author::asked_again(),
                 crate::author::went_unanswered()
             );
-            (capabilities, products)
+            (capabilities, products, summary)
         },
         || {
             let written = crate::author::name_them("records this system keeps", &spoken, &evidence);
@@ -1375,13 +1421,14 @@ pub fn author(
             (written, grounded)
         },
     );
-    let ((capabilities, products), (written, grounded)) = match &reaching {
+    let ((capabilities, products, summary), (written, grounded)) = match &reaching {
         Some(pool) => pool.install(work),
         None => work(),
     };
     held.capabilities = capabilities;
     held.semantic_coverage = Some(crate::capabilities::coverage_of(&held.flows, &held.capabilities));
     held.products = products;
+    held.derivation = summary;
     say_what_happens(held, &spoken);
     let by_id: std::collections::BTreeMap<String, (&crate::author::Written, crate::author::Grounding)> =
         owner
@@ -2064,7 +2111,7 @@ pub fn derive(
     }
     let terminal = flows.iter().filter(|flow| flow.standing == "terminal").count() as u32;
     let chained = flows.iter().filter(|flow| !flow.leads_into.is_empty()).count() as u32;
-    Comprehension { products: Vec::new(), capabilities: Vec::new(), flows, entities, terminal, chained, semantic_coverage: None }
+    Comprehension { products: Vec::new(), capabilities: Vec::new(), flows, entities, terminal, chained, semantic_coverage: None, derivation: None }
 }
 
 static OVER_A_WIRE: &[&str] = &[

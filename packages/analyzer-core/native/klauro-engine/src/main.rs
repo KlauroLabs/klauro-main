@@ -8,6 +8,7 @@ mod audit;
 mod author;
 mod comprehend;
 mod composition;
+mod parent;
 mod conform;
 mod convention;
 mod coverage;
@@ -1281,6 +1282,7 @@ fn read_it() {
             .unwrap_or_default(),
         languages,
         frameworks,
+        composition: index.composition.as_ref(),
     };
     let named = comprehend::author(&mut comprehension, &root, &index.nodes, &paths, &told);
     eprintln!(
@@ -1305,6 +1307,10 @@ fn read_it() {
                 entity.declared_in.as_deref().unwrap_or("")
             );
         }
+    }
+    if let (Some(composition), Some(summary)) = (index.composition.as_mut(), comprehension.derivation.take()) {
+        composition.promoted = summary.promoted;
+        composition.not_promoted = summary.not_promoted;
     }
     index.comprehension = Some(comprehension);
 
