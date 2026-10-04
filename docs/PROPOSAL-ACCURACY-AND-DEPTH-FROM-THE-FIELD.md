@@ -1,102 +1,85 @@
 # Proposal: speed, accuracy, depth and breadth, from a survey of the field
 
-Status: proposal, revised 2026-10-04 after an audit of what the repository already has. Nothing here is built. Open-source code-understanding tools were surveyed from their public documentation; none was run. This document is generic by design (see `docs/KLAURO-PRODUCT-MODEL.md`) and names no outside product. It complements `docs/PROPOSAL-ANALYSIS-TRUST-AND-REVIEW.md`, which holds the rules these proposals must respect (determinism boundary, output contract, read-through local store, unshipped-is-tagged, four repositories across three language families).
+Status: proposal, revised 2026-10-04 after an audit of what the repository already has, and after a correction from the owner: the goal is a good analysis, not layers of validation and verification; gates are tests, not product. Nothing here is built. Open-source code-understanding tools were surveyed from their public documentation; none was run. This document is generic by design (see `docs/KLAURO-PRODUCT-MODEL.md`) and names no outside product. It complements `docs/PROPOSAL-ANALYSIS-TRUST-AND-REVIEW.md`.
 
 ## Why this matters for the differentiator
 
-Every surveyed tool indexes structure and sells token savings. None derives purpose-level capabilities, flows with terminality, or a parent analysis derived from child sub-projects. That comprehension layer is the differentiator, and it sits on top of the index: a call resolved wrongly, a framework entry point missed, or a flow cut short by a silent bound becomes a wrong terminality, a wrong capability and a wrong parent. So improving the foundation is improving the differentiator. The field's real gap is that almost none of it measures accuracy against an independent answer key; we can be the one that does, at the structural layer and at the comprehension layer.
+Every surveyed tool indexes structure and sells token savings. None derives purpose-level capabilities, flows with terminality, or a parent analysis derived from child sub-projects. That comprehension layer is the differentiator, and it sits on the index: a call resolved wrongly, a framework entry point missed, or a flow cut short becomes a wrong terminality, a wrong capability and a wrong parent. Improving the foundation improves the differentiator.
 
-Everything below extends an existing mechanism, named in each item. Items that already exist were cut; items that would weaken an existing rule were reshaped.
+## How this proposal is shaped
+
+Every item improves what the engine computes: a resolver that finds more of the right edges, an extractor that covers more frameworks, a query that answers more, a run that finishes sooner. No item adds a pass to the pipeline. Measurement against independent answer keys is offline development testing that tells us where to improve; it is not part of the product and does not run in the analysis. Everything extends something that exists.
 
 ## Speed to result
 
-What exists: the structural layer serves in seconds (the index, scope, sub-project partition and flows run in tens of milliseconds to seconds); AI answers are memoized on the facts text (`memory.rs`), with `KLAURO_AI_CACHE_PATH` and `KLAURO_ONLY_PARTS`; a cgroup-aware parse worker pool (`parse-worker-pool-size.ts`), cgroup-aware analysis memory (`analysis-memory.ts`), a peak-memory gate (`scale-survivability-gate.sh`); freshness checks (`docs/SPEC-FRESHNESS.md`, implemented); stage fingerprints; response budgets.
+What exists: the structural layer serves in seconds; AI answers are memoized on the facts text (`memory.rs`) with a shared cache and a part filter; the facts cache; stage fingerprints; response budgets; freshness (`docs/SPEC-FRESHNESS.md`, implemented); a cgroup-aware worker pool and memory limit on the Node side.
 
-Additions:
-
-- **Time to first useful answer, measured and gated.** The latency budgets are already a release gate; add the figure that matters to a person: seconds from a cold start to the first correct answer to a navigational question, per stack, published with commit and hardware. The comprehension layer is bound by AI generation rate, so show the structural-first order explicitly: the structural answer is served while capabilities are still being asked for.
-- **Resumable engine batches.** Analysis layers already checkpoint and retry (`docs/ANALYSIS-EXECUTION-ARCHITECTURE.md`); add per-batch checkpoints inside the Rust engine's indexing so a killed run resumes instead of restarting, and bound memory per batch. The engine's parallelism is rayon with its default pool, which takes its thread count from the standard library's available-parallelism, and that honors a container's CPU quota on Linux; memory is not bounded by anything in the engine, so batch size should come from the container's memory limit.
-- **Memory trajectory in the ledger.** Record resident memory, descriptors and page faults every few seconds on large runs, as internal state beside the analysis, so a bug report carries the trajectory.
-- **Publish large-repository time and peak memory** with the commit and hardware, alongside the existing survivability log. Others publish hours and tens of GiB for the largest repositories; we need our own honest number, not a target to match.
-- **Freshness stays as designed.** An earlier idea of a stat-and-hash pass on every query and a stored graph snapshot bootstrapped from the repository was dropped: it is lower than the hotness-adaptive read-through design and would put analysis state in the repository. Two small additions fit: a per-file staleness line in a response that touches a file whose update is pending (the per-node `may_be_stale` already planned in `docs/SPEC-FRESHNESS.md`), and a cheap hash compare on connect, only if it stays cheap.
+- **Serve the structural answer first.** The comprehension layer is bound by AI generation rate, so the structural answer should be usable while capabilities are still being asked for. Measure and publish the time to the first useful answer per stack, with commit and hardware.
+- **Resumable indexing.** Add per-batch checkpoints inside the engine's indexing, extending `facts_cache.rs`, so a killed run resumes instead of restarting. The engine's parallelism is rayon with its default pool, which honors a container's CPU quota on Linux; nothing bounds memory, so batch size should come from the container's memory limit.
+- **Publish our own large-repository time and peak memory** next to the survivability log. Others publish hours and tens of GiB for the largest repositories; we need our own honest number, not a target.
+- **Freshness stays as designed.** A per-query hash pass and a stored graph snapshot were dropped: they are below the hotness-adaptive read-through design and would put analysis state in the repository. One small addition fits: a staleness line in a response that touches a file whose update is pending (the per-node `may_be_stale` already planned).
 
 ## Accuracy
 
-What exists: truth fixtures and the audit loop (`KLAURO_AUDIT`, the vetting step, missed-fixture proposals, 101 fixture directories); `rust_call_resolution.rs`; measured accuracy in `docs/ANALYSIS-NORTH-STAR.md`; type-aware resolution for TypeScript, on by default; a `guessed` set of name-only edges that comprehension already distrusts; a gate image that already installs a compiler-grade indexer for TypeScript and a benchmark (`gauntlet/primitive-bench.ts`, `real-camp-arms.ts`) that already scores file-level callers against it, plus a scope-graph arm.
+What exists: truth fixtures and the audit loop (`KLAURO_AUDIT`, missed-fixture proposals, 101 fixture directories); `rust_call_resolution.rs`; type-aware resolution for TypeScript; a `guessed` set of name-only edges; a development benchmark (`gauntlet/primitive-bench.ts`, `real-camp-arms.ts`) that scores callers against a compiler-grade TypeScript indexer already installed on the gate image, with a scope-graph arm.
 
-Additions:
-
-1. **Edge-level precision and recall against independent answer keys.** Extend the existing benchmark from file-level callers on fixtures to edge-level scoring on real repositories, add Go and Java, and then C#, C and C++, Rust and Python through their compiler indexers and type resolvers. Precision and recall are reported together, per stack, with 95% confidence intervals, and an edge matches when caller and callee land on the same declaration line. Ground truth is never derived from our own graph (a recall scored against the graph that produced it proves nothing). Hand-labelled per-feature call-graph datasets for Python and Rust (decorators, inheritance, imports, dynamic features) add per-feature numbers where indexers are weak. Run on the VPS, honor the four repositories across three language families rule, split repositories into development and held-out sets before tuning, and publish losses beside wins.
-2. **The same discipline for the comprehension layer.** Score what others cannot: entry-point and route extraction against our labelled corpus (no public dataset exists, so publishing ours is an asset), flow terminality against hand-checked flows, and capability descriptions by decomposing each into atomic claims and verifying each against its evidence (the extension of `Grounding` and the vetting step described in section 2 of the trust proposal).
-3. **Persist edge provenance.** Promote the `guessed` set to a persisted authority field per edge, with the resolving strategy and a confidence tier, and split resolved calls from uses with no uniquely proven target as different edge kinds (sections 8 and 10 of the trust proposal). This is cheap, needs no type system, and gives the benchmark in item 1 something to score by tier.
-4. **Evaluation hygiene for every published claim.** Fix the sampling frame before the run and commit it (one survey found four defensible samplings gave 21% to 67% on the same build). Block the control arm from the tool under test and prove it held (the live trial uses a separate control directory and command template; no enforcement check was found). Score mechanically where a mechanical check exists. Report answer quality beside cost. Fix the competitor scorecard's boolean-only verdicts, which report "0 loss" from a validator that counts an uncontested scenario as a win, before claiming that losses are published.
-5. **A self-check after every index.** Compare the highest-risk files against the repository's own history: how many of the top twenty had a recent bug fix, against the base rate. It is cheap and catches silent breakage. The engine's history layer has churn and co-change but no bug-fix classification yet; classify fixes by commit message and exclude documentation, test and configuration commits.
+- **Find the misses, then fix the resolver.** Extend that development benchmark from file-level callers on fixtures to edge-level scores on real repositories, add Go and Java, then C#, C and C++, Rust and Python through their compiler indexers and type resolvers. Report precision and recall together, per stack, with confidence intervals, split into development and held-out repositories before tuning. Ground truth never comes from our own graph. Hand-labelled per-feature call-graph datasets for Python and Rust add detail where indexers are weak. This runs offline on the VPS; its value is the list of resolver misses it produces.
+- **Type-aware resolution for more languages**, one stack at a time, where the benchmark shows resolution is the limiter: generics, return-type propagation, narrowing, trait and extension calls, with textual resolution as the fallback. This is the largest accuracy gain and the most work.
+- **Resolver kind on every edge** (section 2 of the companion): the cheapest accuracy gain, because terminality can then trust what it should.
+- **Route prefixes across files.** Router and mount handling exists in `entry_exit.rs`; verify and extend it for a prefix passed across files into another function (Express routers, FastAPI routers, Axum nests, Rails scopes, Swift route groups).
+- **Keep the claims honest.** One line of process: fix the sampling frame before a benchmark run, block the control arm from the tool under test, and fix the competitor scorecard's boolean-only verdicts, which count an uncontested scenario as a win.
 
 ## Depth
 
-What exists: flows, steps, terminality, entities and data lineage; reach and blast radius (`get_callers`, `get_callees`, `getAffectedSet`, `get_interface_signature`, `assess_change_risk`); `find_tests`, `get_dead_code`, `get_hot_spots`, `get_stability`, `get_communities`, change history in `history.rs`; the delta tools and fabric collision tools; schema and ORM entities in TypeScript analyzers.
+What exists: flows, steps, terminality, entities and data lineage; reach and blast radius; `find_tests`, `get_dead_code`, `get_hot_spots`, `get_stability`, `get_communities`, `history.rs`; the comparison and fabric tools.
 
-Additions:
-
-- **Open ends** (section 8 of the trust proposal) are the biggest depth gain: a flow stops being "read-only" merely because its trail ran out.
-- **A route query** between two steps, with per-hop evidence and bounds (trust proposal, section 4).
-- **Entity-matched change analysis.** Build on `diff_behavior` and the change tools: match changed entities by name, kind and scope including renames; report impacted entities and tests; produce a review certificate listing static callers a change does not touch. Public-surface certification (each changed export breaking, non-breaking or potentially breaking, with named consumers, and a flag when a diff opens a path into a declared sensitive boundary) gives `BreakingChange` its missing producer. Pin a baseline and report only regressions introduced since the pin; treat missing evidence as unknown.
-- **Deterministic merge gates for concurrent agents.** Refuse a merge that drops either side's changes, undoes them, duplicates a key or case, or no longer parses. `plan_intent_merge` is intent-based and `fab_check_collision` is advisory; a deterministic gate is new and is directly relevant to several agents in one checkout.
-- **Tier stamps on analytics.** Extend `find_tests`, `get_dead_code` and `assess_change_risk` rather than adding parallel tools: stamp each answer measured or inferred (an empty answer is unknown), give dead code a confidence tier with its evidence, express change risk as a percentile against the repository's own recent commits, and surface unexpected coupling (cross-community, cross-language, a peripheral module reaching a hub). Calibrate any risk weights on a real defect corpus scored at a commit before the bug window, with file size as a control, or they are opinions.
-- **Entities from migrations and declarative ORM schema files** in the engine's entity layer, which today has no migration or schema-file inference. A SQL parser with column-level lineage is the candidate component; a standard lineage vocabulary can name the relations.
-- **Runtime evidence.** Calls recorded from a test run, merged into the graph, expose dynamic dispatch that static analysis cannot see. `ingest_telemetry` and `get_runtime_static_links` are the starting point; defer the full overlay.
+- **Open ends** (section 1 of the companion): a flow stops being "read-only" merely because its trail ran out. This is the largest depth gain.
+- **A route query** between two steps (companion, section 4).
+- **Change impact by entity.** Extend the existing comparison so changed entities are matched by name, kind and scope including renames, and report the impacted entities and tests. Give `BreakingChange` its producer: each changed export breaking or not, with named consumers.
+- **Better answers from existing analytics, not new tools.** Dead code with the reason it is dead; test selection from the graph (this test reaches that file); change risk relative to the repository's own recent commits, with documentation, test and configuration commits excluded from the bug-fix history; coupling that is surprising (cross-community, cross-language, a peripheral module reaching a hub). The history layer has churn and co-change but no bug-fix classification yet.
+- **Entities from migrations and declarative ORM schema files** in the engine's entity layer, which today has no such inference. A SQL parser with column-level lineage is the candidate component.
+- **Later:** calls recorded from a test run, merged into the graph, to expose dynamic dispatch (`ingest_telemetry` and `get_runtime_static_links` are the starting point).
 
 ## Breadth
 
-What exists: a language registry and tables (`language.rs`, `language_tables.rs`), data tables for services and frameworks (`tables.rs`, `service_catalog.rs`), router and mount-prefix handling (`entry_exit.rs`), ten stacks perfected on a corpus, the entry-point labelled corpus and audit loop, the paradigm conformance check (`conform.rs`).
+What exists: a language registry and tables (`language.rs`, `language_tables.rs`), data tables for services and frameworks (`tables.rs`, `service_catalog.rs`), ten stacks perfected on a corpus, the labelled entry-point corpus, the paradigm conformance check.
 
-Additions:
-
-- **Per-sub-project link coverage.** Report, per sub-project, calls detected, resolved and unresolved (today `get_communication_seams` and `get_semantic_coverage` give unmapped lists with reasons but no figure), so an isolated service looks different from one whose links were never followed. The known seam gaps are the same class: base-URL calls from the UI, spawn through a resolved path constant, and Tauri IPC invokes. Verify and extend route-prefix resolution for a prefix passed across files into another function.
-- **Framework rules as data.** Express per-framework entry-point rules as declarative rules over the syntax tree, so adding a framework is data, not code; the existing tables are the seed. Verify against the corpus per stack.
-- **A maintained language table** (extensions, filenames, heuristics) as a feed into the registry, and a record of where a compiler-grade indexer exists for a language, which also says where a higher-authority source is available.
-- **Standard exports and declared units.** Export sub-projects as container and component diagrams in a model-as-code format, and read or emit a service catalog descriptor as a declared-unit signal, consistent with the rule that a sub-project is a declared unit. User-declared layers with violations as first-class output extend the conformance check; verify whether declared layers already exist.
-- **Runtime topology as validation.** Traffic-derived service maps validate static topology on a demonstration system.
-
-## Tool surface
-
-Already in place and not to be weakened: the core profile with gateway, `get_agent_tool_plan`, `get_agent_start_context`, `orient_capsule`, the summary to flow to coding-context ladder, response budgets and the start hook. Remaining gaps (a reason per hidden tool, a list-changed notification) are in section 11 of the trust proposal. A policy-gated source window as the last rung of the ladder is to be verified.
+- **Seams between sub-projects, completed.** The known gaps are base-URL calls from the UI, spawn through a resolved path constant, and Tauri IPC invokes. Report, per sub-project, the calls detected, resolved and unresolved, so an isolated service looks different from one whose links were never followed (today the seam tools list unmapped items with reasons but no figure).
+- **Framework rules as data.** Express per-framework entry-point rules as declarative rules over the syntax tree, so adding a framework is data, not code. The existing tables are the seed.
+- **A maintained language table** (extensions, filenames, heuristics) feeding the registry.
+- **Standard exports and declared units.** Export sub-projects as container and component diagrams in a model-as-code format, and read a service catalog descriptor as a declared-unit signal, consistent with the rule that a sub-project is a declared unit.
 
 ## Fit with the Rust engine
 
-The engine is one Rust binary: about 43,000 lines in `packages/analyzer-core/native/klauro-engine`, tree-sitter 0.26 with some seventy grammars, rayon for parallelism, serde and MessagePack for the wire format. Every item above must land inside that, so:
+The engine is one Rust binary, about 43,000 lines, tree-sitter 0.26 with some seventy grammars, rayon, serde and MessagePack.
 
-- **Compute stays in the engine; Python and JVM tools stay in the harness.** Compiler indexers, the Python type resolver, the SQL lineage parser, the claim-grounding models and the benchmark datasets are used as oracles in the offline harness on the VPS, which is a blackbox client. None of them becomes an engine dependency; the engine stays a single binary with no runtime.
-- **Rust components worth evaluating** (permissive licenses per the survey, to be verified before adoption): the structural-search crates from the syntax-tree rule tool, whose rule format is a natural fit for framework entry-point rules as data over the tree-sitter trees the engine already holds; a Rust SQL lineage engine for the entity layer; the scope-graph and tree-sitter-graph crates as references for rule-based name resolution. A Datalog-style derived-fact engine is also plausible in Rust, but none was surveyed, so it is a research item.
-- **The tree-sitter version wall.** The engine pins one tree-sitter, and a crate that depends on a different version cannot link beside it (the native `links` rule). The scope-graph crates predate the engine's version and are archived, so adopting the idea may mean reimplementing it over the engine's own trees rather than depending on them. Check this first for any crate before it is evaluated.
-- **Edge authority lands in `model.rs`.** `IndexEdge` gains an authority field and a resolver tag; the wire contract in `wire.rs` takes a version bump, and each new output field takes a stocktake line. The existing `guessed` set in `resolve.rs` is the seed.
-- **Open ends land in `resolve.rs`, `steps.rs` and `comprehend.rs`:** persist the unresolved and dynamic counts, record bound hits at the step and `leads_into` limits, and add the standing in the match in `capabilities.rs`.
-- **Per-batch checkpoints** extend the facts cache (`facts_cache.rs`), keyed on the facts text as the AI memo is.
-- **The engine is also a benchmark subject.** A Rust analyzer is a compiler-grade oracle for Rust call edges, and the engine's own repository is a Rust corpus entry, so the harness scores us on our own language too.
-- **Build and test constraints.** Engine builds and the harness run on the VPS, not on a developer machine, and production source stays comment-free. A change to the index layer is measured on four repositories across three language families.
+- **Compute stays in the engine; Python and JVM tools stay in offline testing.** Compiler indexers, the Python type resolver, the SQL lineage parser and the datasets are oracles for development. None becomes an engine dependency.
+- **Rust components worth evaluating** (permissive licenses per the survey, to be verified first): the structural-search crates from the syntax-tree rule tool, whose rule format fits framework rules as data over the trees the engine already holds; a Rust SQL lineage engine for the entity layer; the scope-graph crates as references for rule-based name resolution.
+- **The tree-sitter version wall.** The engine pins one tree-sitter, and a crate built against another version cannot link beside it. The scope-graph crates are older and archived, so adopting the idea may mean reimplementing it over our own trees. Check this before evaluating any crate.
+- **Where changes land:** edge kind on `IndexEdge` in `model.rs` with a version bump in `wire.rs` and a stocktake line; open ends in `resolve.rs`, `steps.rs`, `comprehend.rs` and the standing match in `capabilities.rs`; checkpoints in `facts_cache.rs`.
+- **The engine is also a benchmark subject:** a Rust analyzer is a compiler-grade oracle for Rust call edges, and our own repository is a Rust corpus entry.
+- **Build and test on the VPS, not a developer machine; production source stays comment-free;** a change to the index layer is measured on four repositories across three language families.
 
 ## Leave alone
 
-- Per-file model-written indexes committed to the repository: too slow, and against the compute-once design and the read-through local store.
+- Per-file model-written indexes committed to the repository.
 - Token-saving headlines without a stated sampling frame or a quality result.
-- Heavy database or vector-store requirements; take the batching and checkpoint ideas, not the stack.
-- Any "degraded but published" analysis (see the trust proposal's first section).
-- Copying code from copyleft or commercial-licensed projects: take ideas and permissively licensed data only, and verify the license of anything with unclear terms.
-- Building a second comparison, reach or test-selection tool beside the ones that exist.
+- Heavy database or vector-store requirements.
+- New validation or verification passes, run ledgers, confidence scores and readiness stages (see the companion's "Not doing").
+- A second comparison, reach or test-selection tool beside the ones that exist.
+- Copying code from copyleft or commercial-licensed projects; take ideas and permissively licensed data only.
 
 ## Order
 
-1. Edge-level answer keys (accuracy 1), with evaluation hygiene (accuracy 4) fixed first so the numbers can be trusted. It makes every later change measurable and is mostly an extension of the existing benchmark.
-2. Edge provenance (accuracy 3), open ends and link coverage: cheap, and they feed everything above them.
-3. Comprehension-layer scoring (accuracy 2) and the self-check (accuracy 5).
-4. Time to first useful answer and the memory trajectory (speed), so speed claims have numbers.
-5. Entity-matched change analysis, tier stamps and deterministic merge gates (depth).
-6. Framework rules as data, migration and schema entities, standard exports (breadth), driven by the corpus misses the benchmark reveals.
-7. Type-aware resolution for more languages and compiler-index ingestion, only for the stacks where the benchmark shows resolution recall is the limiter; scope-graph resolution only if the numbers demand it (an arm already exists to compare it).
+1. Open ends and edge kinds: more correct analysis for little work.
+2. The edge-level development benchmark, which says which resolver to improve first.
+3. Type-aware resolution, route prefixes and seams, stack by stack, driven by the benchmark and the corpus misses.
+4. Time to first useful answer and resumable indexing.
+5. Change impact by entity, the analytics answers and entities from migrations.
+6. Framework rules as data, the language table and standard exports.
 
 ## Open questions
 
-- Which stacks the first held-out set covers, and who chooses it.
-- Where link coverage and edge-tier counts live in the stored analysis, with the stocktake line each needs.
-- Whether the compiler-index toolchains run in the existing gate image or a separate verification image.
-- Which of the audit's UNVERIFIED items are already built (cross-file route prefixes, declared layers, a policy-gated source window, a per-node staleness field).
+- Which stacks the first held-out set covers.
+- Whether the compiler-index toolchains run in the existing gate image or a separate one.
+- Which audit items are already built (cross-file route prefixes, a per-node staleness field).

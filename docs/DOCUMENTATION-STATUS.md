@@ -37,8 +37,8 @@ The customer path is the published CLI/MCP plus hosted analyzer. Source-checkout
 - `docs/cas/README.md`, `VERSIONING.md`, and versioned CAS documents explain schema history. Versioned RFPs are historical snapshots, not current implementation claims.
 - `docs/SPEC-ANALYZER-PACKS.md`, coverage specifications, entity/deployable specifications, and other `SPEC-*` documents may contain explicitly planned sections. Their status labels must not be read as shipped product evidence.
 - `docs/cas/CAS_ROADMAP.md` contains only active priorities and implemented foundations; `docs/PRODUCT-READINESS.md` decides completion.
-- `docs/PROPOSAL-ANALYSIS-TRUST-AND-REVIEW.md` is a proposal (2026-10-04): analysis receipts, claims with evidence and unknowns, analysis delta, reach and route queries, evidence-keyed refresh, a plain-file export, and a proof gallery. Nothing in it is built.
-- `docs/PROPOSAL-ACCURACY-AND-DEPTH-FROM-THE-FIELD.md` is a proposal (2026-10-04): an independent answer key for call accuracy, evaluation hygiene, edge confidence and provenance, link coverage, freshness, entity-level change analysis, health analytics and scale measurements, drawn from a survey of open-source tools. Nothing in it is built.
+- `docs/PROPOSAL-ANALYSIS-TRUST-AND-REVIEW.md` is a proposal (2026-10-04): open ends in flow standing, resolver kind on edges, failed AI asks fail the run, a route query and rename-safe comparison. It explicitly adds no validation passes. Nothing in it is built.
+- `docs/PROPOSAL-ACCURACY-AND-DEPTH-FROM-THE-FIELD.md` is a proposal (2026-10-04): improving speed, accuracy, depth and breadth of the engine's own output, with offline answer-key testing to find resolver misses. Nothing in it is built.
 
 ## Evidence and historical documents
 
