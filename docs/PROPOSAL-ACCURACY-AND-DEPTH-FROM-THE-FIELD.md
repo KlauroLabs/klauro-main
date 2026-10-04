@@ -109,3 +109,44 @@ One tool reports, per service, the calls it detected, resolved and left unresolv
 - Which stacks the first held-out set covers, and who chooses it.
 - Where link coverage and edge-tier counts live in the stored analysis and how they are versioned.
 - Whether the compiler-index toolchains run in the existing analysis image or a separate verification image.
+
+## 11. Second survey: engines, datasets and checks
+
+A second pass looked at static-analysis engines, benchmark datasets, architecture recovery, data lineage, test impact and claim verification. Licenses were checked: nothing recommended is AGPL or source-available; a few engines are weak copyleft or have unclear terms and are ideas only (verify before any use).
+
+### Datasets and external yardsticks
+
+- **Call-graph ground truth.** Hand-labelled micro-benchmarks exist for Python and Rust call graphs, with per-feature precision and recall (decorators, inheritance, imports, dynamic features); a type-inference micro-benchmark exists for Python. They are old but canonical. Score the engine per feature, not only in aggregate, and publish per-feature numbers. They complement the compiler answer key in section 1 for languages whose indexers are weak.
+- **Repo-level question answering.** Public benchmarks pin questions and reference answers to commits across a dozen mainstream projects, and one filters for questions that cannot be answered without exploring the code. The second property is exactly what proves that serving a precomputed analysis helps: report accuracy and tool calls with and without the analysis on the questions that need exploration. Check each dataset's license before redistributing.
+- **Issue-resolution suites.** A with-and-without-the-analysis arm on a continuously refreshed issue suite gives an end-to-end outcome metric. It needs container time, so run it on the VPS and apply the control-arm block from section 2.
+- **Entry-point and route extraction has no public dataset.** The labelled corpus we already keep is the best that exists. Publishing it, with labels and per-stack scores, is an asset.
+
+### Techniques
+
+- **Rule-based incremental name resolution** (scope-graph style, per file, build-free, cacheable) is the main technique our syntax-level resolver lacks. The reference implementation is archived and covers few languages, so this is a research item to start only if the harness (section 1) shows resolution recall is the limiter.
+- **A language-neutral graph schema** with syntax, control-flow and data-flow overlays gives a vocabulary for our entities, flows and steps, and a model for data-flow slicing. Take the schema ideas, not the engines.
+- **Framework models as data.** Sources, sinks and route handlers per framework, expressed as declarative rules over the syntax tree, are how mature analyzers cover frameworks. Express our per-framework entry-point rules the same way, so adding a framework is data, not code.
+- **Derived-fact queries** (a small Datalog over tree-derived facts) match the shape of our flow and parent derivation. Idea only for now.
+- **Boundary rules and standard exports.** User-declared layers with violations as first-class output; export of sub-projects as container and component diagrams in a standard model-as-code format; and reading or emitting a service catalog descriptor as a declared-unit signal, consistent with the rule that a sub-project is a declared unit.
+- **Runtime topology as validation.** Traffic-derived service maps are not static, but they are ground truth against which the static service topology can be validated on a demo system.
+
+### Data and schema
+
+- A SQL parser with column-level lineage across many dialects, and a Rust and WebAssembly lineage engine, are candidates for the data-entity layer. Entities should also be inferred from migrations and from declarative ORM schema files (the small, declarative formats of the common ORMs), with a standard lineage-event vocabulary for naming relations.
+
+### Test impact
+
+Mature test-selection tools need an instrumented run to build their map. Static reachability from a changed entity to the tests that exercise it is a real differentiator and needs no run; present it with the measured-or-inferred stamp from section 7.
+
+### Language breadth
+
+A maintained, permissively licensed language table (extensions, filenames, heuristics) can feed the language registry. Compiler-indexer coverage per language also tells us where a high-authority source exists.
+
+### Checking AI-written claims
+
+- Decompose each capability description into atomic claims, and verify each against its cited evidence spans with a small grounding model, run in an evaluation harness. This is the mechanical evidence check of section 2 of the trust proposal, with a method.
+- Take metric definitions (faithfulness, groundedness) from evaluation frameworks without their dependencies.
+
+### Updated order
+
+Add to the order above: the per-feature call-graph datasets with the answer-key harness (step 1); the claim-decomposition grounding check with the evidence check (step 2); declarative framework rules whenever a framework is next added; the repo-QA and issue-suite arms when the with-and-without benchmark is next run; stack-graph-style resolution only if the harness says it is needed.
