@@ -56,13 +56,49 @@ A documented export of an analysis as human-diffable Markdown or JSON files, wit
 
 A gallery of navigable analyses of well-known open-source projects, each with its receipt and its evidence links, built from the existing corpus. It demonstrates the product, and it exposes weaknesses early.
 
+## 9. Unresolved is not a leaf
+
+Today a flow's standing comes only from the effects found along its resolved path: terminal when it changes something or hands something off, proximal when it leads into other flows, otherwise reading. A path that ends in a call the engine could not resolve, with no effect found, is labeled reading, as though it were proven read-only. That is a claim the facts do not support, and it flows into terminality, capability weights, absorption decisions and every "what does this change" answer.
+
+Distinguish three kinds of path end:
+
+- **proven end**: no further calls;
+- **known boundary**: a call into library, runtime or external-service code that is not ours, classified and stated;
+- **open**: a call in our own code that could not be resolved, or a traversal cut by a bound (depth, cycle, size).
+
+A flow with any open end carries an `open` count and the first few unresolved callees. Its standing is reading only when no end is open; otherwise it is reported as open, not read-only. Terminality, weights and absorption treat open as unknown, never as zero. Trace and reach results (section 4) list unresolved paths and any traversal bound explicitly, and a comparison never reads an open end as the absence of an effect. Report, per project, the share of flows with open ends, so resolver work has a number to drive down.
+
+## 10. Three-valued results
+
+Every check, verifier, comparison and gauntlet outcome is pass, fail or unknown, kept distinct. Empty or insufficient input returns unknown, never pass. Absence of evidence is never evidence of absence: missing data does not read as "no change" or "no difference", and an incomplete comparison is unknown. A contradiction or an unknown keeps an obligation open. Audit the verify stage, the conformance stage, truth evaluation and the delta (section 3) for places where "nothing found" is reported as success.
+
+## 11. Authority per fact
+
+Facts differ in how much they can be trusted, and the analysis already knows the ranks implicitly. State them:
+
+1. deterministic extraction from source;
+2. an edge resolved by structure (imports, types, declared receivers);
+3. an edge guessed by name alone;
+4. an AI interpretation grounded in the facts above;
+5. an AI interpretation the grounding step did not hold.
+
+Each claim and edge records its authority and its limitations. When sources disagree the higher authority wins and the conflict is recorded; a lower-authority claim is never silently promoted. Authority is shown per item in MCP results, in the receipt (section 1) and in clients. For runtime telemetry laid over the static graph, exact captured observations outrank declared mappings, and co-change is never presented as causation.
+
+## 12. Further ideas, noted and not yet designed
+
+- **A task-shaped tool contract.** Describe every MCP tool as inspect, search, trace, compare or workflow, each returning facet-level availability, typed edges with evidence, unresolved paths and stated limits. Advertise only the tools callable right now, with the reason each other tool is hidden and a notification when the list changes. Audit the current surface against this shape; coordination and telemetry tools can appear only once configured.
+- **A readiness verifier.** One command runs staged end-to-end checks on fixtures and prints a compact summary, keeping the full report. Include fail-closed stages: the AI backend killed mid-run must produce a degraded receipt; a declared project must never disappear into the root; stale or tampered memory must be rejected; truncation and unsupported syntax must be reported, not hidden.
+- **Obligation closure for progress measurement.** To measure how much of a specification is done, an obligation closes only when evidence of comparable authority passes; contradictions, duplicate owners and unknowns keep it open; empty input yields unknown.
+
 ## Order
 
 1. The receipt (section 1): small, and it closes a real failure mode.
-2. Claim unknowns and the mechanical evidence check (section 2).
-3. Analysis delta (section 3).
-4. Reach and route (section 4), then the export (section 7), then the gallery (section 8).
-5. Evidence-keyed refresh (section 5) alongside the next incremental-analysis work.
+2. Open ends (section 9), three-valued results (section 10) and authority per fact (section 11): they change what the analysis is allowed to claim, so they come before more features.
+3. Claim unknowns and the mechanical evidence check (section 2).
+4. Analysis delta (section 3), which depends on sections 9 and 10 to treat missing data as unknown.
+5. Reach and route (section 4), then the export (section 7), then the gallery (section 8).
+6. Evidence-keyed refresh (section 5) alongside the next incremental-analysis work.
+7. The ideas in section 12 as the tool surface and test suite are next touched.
 
 ## Open questions
 
