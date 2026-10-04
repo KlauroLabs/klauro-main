@@ -15,7 +15,7 @@ What exists: the structural layer serves in seconds (the index, scope, sub-proje
 Additions:
 
 - **Time to first useful answer, measured and gated.** The latency budgets are already a release gate; add the figure that matters to a person: seconds from a cold start to the first correct answer to a navigational question, per stack, published with commit and hardware. The comprehension layer is bound by AI generation rate, so show the structural-first order explicitly: the structural answer is served while capabilities are still being asked for.
-- **Resumable engine batches.** Analysis layers already checkpoint and retry (`docs/ANALYSIS-EXECUTION-ARCHITECTURE.md`); add per-batch checkpoints inside the Rust engine's indexing so a killed run resumes instead of restarting, and size its thread pool from the container limit as the Node side already does (verify the engine does).
+- **Resumable engine batches.** Analysis layers already checkpoint and retry (`docs/ANALYSIS-EXECUTION-ARCHITECTURE.md`); add per-batch checkpoints inside the Rust engine's indexing so a killed run resumes instead of restarting, and bound memory per batch. The engine's parallelism is rayon with its default pool, which takes its thread count from the standard library's available-parallelism, and that honors a container's CPU quota on Linux; memory is not bounded by anything in the engine, so batch size should come from the container's memory limit.
 - **Memory trajectory in the ledger.** Record resident memory, descriptors and page faults every few seconds on large runs, as internal state beside the analysis, so a bug report carries the trajectory.
 - **Publish large-repository time and peak memory** with the commit and hardware, alongside the existing survivability log. Others publish hours and tens of GiB for the largest repositories; we need our own honest number, not a target to match.
 - **Freshness stays as designed.** An earlier idea of a stat-and-hash pass on every query and a stored graph snapshot bootstrapped from the repository was dropped: it is lower than the hotness-adaptive read-through design and would put analysis state in the repository. Two small additions fit: a per-file staleness line in a response that touches a file whose update is pending (the per-node `may_be_stale` already planned in `docs/SPEC-FRESHNESS.md`), and a cheap hash compare on connect, only if it stays cheap.
@@ -61,6 +61,19 @@ Additions:
 ## Tool surface
 
 Already in place and not to be weakened: the core profile with gateway, `get_agent_tool_plan`, `get_agent_start_context`, `orient_capsule`, the summary to flow to coding-context ladder, response budgets and the start hook. Remaining gaps (a reason per hidden tool, a list-changed notification) are in section 11 of the trust proposal. A policy-gated source window as the last rung of the ladder is to be verified.
+
+## Fit with the Rust engine
+
+The engine is one Rust binary: about 43,000 lines in `packages/analyzer-core/native/klauro-engine`, tree-sitter 0.26 with some seventy grammars, rayon for parallelism, serde and MessagePack for the wire format. Every item above must land inside that, so:
+
+- **Compute stays in the engine; Python and JVM tools stay in the harness.** Compiler indexers, the Python type resolver, the SQL lineage parser, the claim-grounding models and the benchmark datasets are used as oracles in the offline harness on the VPS, which is a blackbox client. None of them becomes an engine dependency; the engine stays a single binary with no runtime.
+- **Rust components worth evaluating** (permissive licenses per the survey, to be verified before adoption): the structural-search crates from the syntax-tree rule tool, whose rule format is a natural fit for framework entry-point rules as data over the tree-sitter trees the engine already holds; a Rust SQL lineage engine for the entity layer; the scope-graph and tree-sitter-graph crates as references for rule-based name resolution. A Datalog-style derived-fact engine is also plausible in Rust, but none was surveyed, so it is a research item.
+- **The tree-sitter version wall.** The engine pins one tree-sitter, and a crate that depends on a different version cannot link beside it (the native `links` rule). The scope-graph crates predate the engine's version and are archived, so adopting the idea may mean reimplementing it over the engine's own trees rather than depending on them. Check this first for any crate before it is evaluated.
+- **Edge authority lands in `model.rs`.** `IndexEdge` gains an authority field and a resolver tag; the wire contract in `wire.rs` takes a version bump, and each new output field takes a stocktake line. The existing `guessed` set in `resolve.rs` is the seed.
+- **Open ends land in `resolve.rs`, `steps.rs` and `comprehend.rs`:** persist the unresolved and dynamic counts, record bound hits at the step and `leads_into` limits, and add the standing in the match in `capabilities.rs`.
+- **Per-batch checkpoints** extend the facts cache (`facts_cache.rs`), keyed on the facts text as the AI memo is.
+- **The engine is also a benchmark subject.** A Rust analyzer is a compiler-grade oracle for Rust call edges, and the engine's own repository is a Rust corpus entry, so the harness scores us on our own language too.
+- **Build and test constraints.** Engine builds and the harness run on the VPS, not on a developer machine, and production source stays comment-free. A change to the index layer is measured on four repositories across three language families.
 
 ## Leave alone
 
