@@ -1,107 +1,112 @@
 # Proposal: analysis trust and review
 
-Status: proposal, 2026-10-04. Nothing here is built. These ideas come from comparing Klauro with adjacent tools in which an agent re-reads a repository and authors a diagram or map each time. Klauro starts ahead on truth because it computes the graph once. The aim here is to make that advantage visible and checkable. This document is generic by design (see `docs/KLAURO-PRODUCT-MODEL.md`); it names no outside product.
+Status: proposal, revised 2026-10-04 after an audit of what the repository already has. Nothing here is built. The ideas come from comparing Klauro with adjacent tools in which an agent re-reads a repository and authors a map each time. Klauro starts ahead on truth because it computes the graph once; the aim is to make that advantage visible and checkable. This document is generic by design (see `docs/KLAURO-PRODUCT-MODEL.md`) and names no outside product.
 
-## 1. An analysis receipt
+Every item below extends an existing mechanism, named in its section. Where an earlier draft proposed something that already exists, or that would weaken an existing rule, it was cut or reshaped. The companion document is `docs/PROPOSAL-ACCURACY-AND-DEPTH-FROM-THE-FIELD.md`.
 
-Every analysis carries a receipt saying what it is and what it is not. Today a degraded run can look complete: a run once lost several hundred AI answers to a rate limit and still published normally; a provenance rule can drop capabilities without a trace.
+## Rules these proposals must respect
 
-The receipt records, per analysis and per sub-project:
+- `docs/cas/DETERMINISM-BOUNDARY.md`: a failed comprehension call is a thrown exception, not a degraded artifact. Nothing here may publish a degraded analysis as complete.
+- `docs/ANALYSIS-NORTH-STAR.md`, "What the output contains": the output never carries cache keys, hit rates, stage timings or per-analyzer ledgers; those live in internal state beside the analysis. Every new output field needs a line in `docs/ANALYSIS-OUTPUT-STOCKTAKE.md`, and a build gate enforces it.
+- The same document: any change to these layers is measured on at least four repositories across at least three language families, with the spread recorded.
+- `docs/KLAURO-PRODUCT-MODEL.md`: the local store is a read-through cache over the hosted source of truth; freshness is lazy and hotness-adaptive, with no background poller; nothing of Klauro's is kept in the repository except configuration.
+- Unshipped code is tagged and kept, never hidden (`unshipped.rs`, `docs/SPEC-DEPLOYABLE-DETECTION.md`). Structure and delivery status stay separate: the analysis says where a capability touches the code and how it ships, not whether work on it is planned, active or done.
+- The core tool profile plus gateway is the mechanism behind unprompted agent adoption; nothing may shrink it.
 
-- the revision analyzed and which paths were dirty;
-- AI requests asked, answered from memory, answered fresh, and unanswered after all retries;
-- capabilities, flows or entities dropped by an invariant, with the reason;
-- sub-projects that fell back to a default;
-- the engine, contract and prompt-contract versions;
-- a single `complete` flag that is false whenever anything above is non-zero.
+## 1. Run ledger and publish gate
 
-Consumers (CLI, desktop, MCP) show a degraded analysis as degraded and never present it as complete. A failed gate returns a structured repair report, not a silent partial result. Publication is atomic: nothing is stored until the checks pass. This extends the honest-degradation rule in `docs/ANALYSIS-NORTH-STAR.md` and the existing "went unanswered" counter.
+Today the counters exist but are not kept: `author::went_unanswered` and the per-run counts print to stderr, and `parent::enforce` drops capabilities with no provenance with one stderr line. A run once lost several hundred AI answers to a rate limit and still published normally.
 
-## 2. Claims next to evidence, with unknowns
+Persist a ledger as internal state beside the analysis, extending those two functions: AI asks, answered from memory, answered fresh, unanswered after all retries; capabilities, flows or entities dropped by an invariant, with the reason; sub-projects that fell back to a default; engine, contract and prompt-contract versions. Reuse the existing `description_generation.status` vocabulary and `layers_ready`.
 
-Every AI-written sentence about code is a claim. Each claim should sit beside:
+The output carries only a `complete` flag and the list of dropped items, each with a stocktake line. The ledger makes the boundary rule enforceable: an unanswered ask or an invariant drop that leaves a hole means the run fails and nothing is stored, instead of a partial result that looks whole. Publication stays atomic. Consumers (CLI, desktop, MCP) show the ledger's outcome and never present a failed run as complete.
 
-- **evidence**: the code regions it rests on (path and line range at the analyzed revision), checked mechanically for existence and for membership in the facts handed to the model;
-- **unknowns**: what the facts did not settle, written next to the claim they limit (for example, "a file write exists here; durability is not established");
-- **kind**: whether the thing is observed, configured, stubbed, or only declared. A configured provider, an injected adapter, a local stub and a durable service are different claims. A function exported but never called on any normal path is an optional capability, not a runtime edge.
+Decision needed: whether an invariant drop (as opposed to an unanswered ask) fails the run or publishes with the dropped item listed. The first matches the boundary rule; the second matches how `parent::enforce` behaves today.
 
-A claim with no supporting evidence is rejected, not softened. A label, a package description or a config value never becomes an observed service. This builds on the grounding step and the stub and configuration rules already in the tighten pass, and adds the missing explicit unknowns and the mechanical check.
+## 2. A mechanical evidence check for AI claims
 
-## 3. Analysis delta
+The grounding step already exists: `tighten_claims` carries the stub, sample, configured and unreachable rules, `Grounding` records supported and invented claims and an outcome, and `jev.rs` vets answers. What is missing is a check that does not rely on the model grading itself.
 
-A first-class comparison of two analyses of the same project: which capabilities, flows, steps, entities, seams and sub-projects were added, removed or changed, matched by stable identity, with a receipt naming both revisions. This serves pull-request review, Fabric (what a participant's in-flight work changes), and release notes. It reuses stable identifiers and the incremental machinery; the new part is the comparison and its review surface.
+Extend those, with two additions:
 
-## 4. Reach and route as read operations
+- a mechanical check that every cited evidence id exists among the index facts handed to the model, and that no sentence names an entity that is not among them. It runs against index facts, never against source, because no pass after the first index reads source (`docs/ANALYSIS-TIERS.md`);
+- a way for the model to say what the facts did not settle, kept as internal state and shown on request, not stamped on every output claim.
 
-Two queries over the analysis graph, available through MCP and every client:
+A claim with no supporting evidence is rejected, not softened. A configured provider, an injected adapter, a local stub and a durable service stay different claims, as `tighten_claims` already says.
 
-- **reach**: everything downstream (or upstream) of a step, flow or entity, with minimum depth per item and a hop bound recorded;
-- **route**: the path or paths between two steps, with the evidence on each hop.
+Decision needed first: `docs/ANALYSIS-NORTH-STAR.md` says there is no confidence score and no validation pass for capabilities, while `docs/SEMANTIC-MODEL.md` ("Evidence and confidence, everywhere") says the opposite, and the code follows the second. Pick one stance in the documents before this lands. This proposal assumes the model-facing check stays internal and the output keeps its current vocabulary.
 
-Results state their bounds so a reader knows when a result is complete. These are natural views for flow navigation and impact review.
+## 3. Rename-safe identity and a delta over the engine's output
 
-## 5. Refresh keyed on cited evidence
+A comparison of analyses already exists: `compare_analysis_iterations`, `diff_behavior` (journeys matched by entry signature and terminal entities), `get_changes_between`, `get_changes_for_*`, `get_analysis_at`, `get_analysis_snapshots`, and the fabric tools `fab_check_collision`, `check_conceptual_conflicts` and `plan_intent_merge`. Identifiers survive line shifts (`stable_ids.rs`). Do not build a second comparison.
 
-An analysis refreshes a part only when something it cites changed: files added, removed or renamed, or a source that one of its answers rests on. Edits to prose, specs or documents that nothing cites cost nothing. The memo already keys on prompt content; the refinement is to key each answer on the evidence it used and to expose the reason a part refreshed. An optional repository hook on branch movement can trigger the check without polling.
+What is genuinely new:
 
-## 6. Structure and status stay separate
+- a delta over the Rust engine's capabilities, flows, steps, entities, seams and sub-projects, with a receipt naming both revisions, built on the existing tools;
+- identity that survives renames: today `docs/SPEC-FRESHNESS.md` and the incremental tests treat rename pairs as fail-closed;
+- a producer for `BreakingChange`, which is declared in `cas.types.ts` and has no code that emits it (see section 6 of the companion proposal).
 
-The analysis states where a capability touches the code and how it is delivered. It does not state whether the work is planned, active or done; that belongs to whatever tracks work. Keep status fields out of capabilities, flows and entities.
+## 4. Route between two nodes
 
-## 7. A plain-file export
+Reach already exists: `get_callers` and `get_callees` take `maxDepth` and `limit` and report `truncated`; `getAffectedSet` uses the reachability index and reports `truncated` and `method`; `get_interface_signature` gives blast radius at function, flow, capability, project and workspace level; `assess_change_risk` and `get_call_chain` (entry to end) exist. Extend them rather than add reach.
 
-A documented export of an analysis as human-diffable Markdown or JSON files, with a written contract, so any agent or tool can read it without Klauro running. It also makes the analysis easy to attach to a ticket or review.
+The missing piece is **route**: the path or paths between two arbitrary steps, with evidence on each hop and a statement of the bound applied. Every result states its bounds, so a reader knows when it is complete.
 
-## 8. A public proof gallery
+## 5. A reason for every refresh
 
-A gallery of navigable analyses of well-known open-source projects, each with its receipt and its evidence links, built from the existing corpus. It demonstrates the product, and it exposes weaknesses early.
+Refresh already keys on cited facts: `memory.rs` memoizes answers on the facts text in the prompt, so edits to uncited prose cost nothing, and `KLAURO_AI_CACHE_PATH`, `KLAURO_ONLY_PARTS`, `facts_cache.rs` and the stage fingerprints exist. Freshness itself is `docs/SPEC-FRESHNESS.md`, implemented. The gap is small: report why a part refreshed (which evidence changed) in the ledger of section 1.
 
-## 9. Unresolved is not a leaf
+## 6. Plain-file export
 
-Today a flow's standing comes only from the effects found along its resolved path: terminal when it changes something or hands something off, proximal when it leads into other flows, otherwise reading. A path that ends in a call the engine could not resolve, with no effect found, is labeled reading, as though it were proven read-only. That is a claim the facts do not support, and it flows into terminality, capability weights, absorption decisions and every "what does this change" answer.
+The machine export exists (`analysis-export-process.ts`, `cas-export-decoder.ts`, compressed JSON). Add a documented, human-diffable Markdown contract on top of it, with a written schema, so any agent or tool can read an analysis without Klauro running and it can be attached to a ticket. Every field needs a stocktake line.
 
-Distinguish three kinds of path end:
+## 7. A public proof gallery
 
-- **proven end**: no further calls;
-- **known boundary**: a call into library, runtime or external-service code that is not ours, classified and stated;
-- **open**: a call in our own code that could not be resolved, or a traversal cut by a bound (depth, cycle, size).
+A pinned-corpus mechanism and a receipt pattern exist: `gauntlet/fixtures/terminality-public-corpus.json` pins archives by checksum, source and license, `generate-terminal-public-corpus-receipts.ts` and `release-proof-receipt.mjs` produce receipts, and `docs/COMPETITIVE-PROOF.md` and `docs/CORPUS-VALIDATION.md` hold the sweeps. A navigable public gallery of well-known open-source projects, each with its receipt and evidence links, is built from those. It demonstrates the product and exposes weaknesses early.
 
-A flow with any open end carries an `open` count and the first few unresolved callees. Its standing is reading only when no end is open; otherwise it is reported as open, not read-only. Terminality, weights and absorption treat open as unknown, never as zero. Trace and reach results (section 4) list unresolved paths and any traversal bound explicitly, and a comparison never reads an open end as the absence of an effect. Report, per project, the share of flows with open ends, so resolver work has a number to drive down.
+## 8. Unresolved is not a leaf
 
-## 10. Three-valued results
+A flow's `standing` is terminal, proximal or reading, derived only from effects along the resolved path (`comprehend.rs`). A path that ends in a call the engine could not resolve, with no effect found, is labeled reading, as though proven read-only. That claim is not supported, and it flows into terminality, capability weights and absorption.
 
-Every check, verifier, comparison and gauntlet outcome is pass, fail or unknown, kept distinct. Empty or insufficient input returns unknown, never pass. Absence of evidence is never evidence of absence: missing data does not read as "no change" or "no difference", and an incomplete comparison is unknown. A contradiction or an unknown keeps an obligation open. Audit the verify stage, the conformance stage, truth evaluation and the delta (section 3) for places where "nothing found" is reported as success.
+The pieces already exist but are not kept. `resolve.rs` counts `unresolved_calls`, `dynamic_calls` and `unresolved_names`, only to stderr. A `guessed` set of name-only edges exists and `comprehend.rs` already distrusts guessed edges unless the callee is hand-written. `steps.rs` stops silently at its depth and action limits, and `leads_into` is truncated silently.
 
-## 11. Authority per fact
+Distinguish three path ends: **proven** (no further calls), **known boundary** (library, runtime or external-service code, classified and stated) and **open** (an unresolved call in our own code, or a traversal cut by a bound). Then:
 
-Facts differ in how much they can be trusted, and the analysis already knows the ranks implicitly. State them:
+- persist the unresolved and dynamic call counts per flow, and record when a bound was hit;
+- add `open` as a fourth standing, updating the standing match in `capabilities.rs` and the serialization; standing is reading only when no end is open;
+- terminality, weights and absorption treat open as unknown, never as zero;
+- report, per project, the share of flows with open ends, so resolver work has a number to drive down;
+- keep `tests/guessed_callee_terminal.rs` green: a guessed edge that is trusted for a hand-written callee stays terminal.
 
-1. deterministic extraction from source;
-2. an edge resolved by structure (imports, types, declared receivers);
-3. an edge guessed by name alone;
-4. an AI interpretation grounded in the facts above;
-5. an AI interpretation the grounding step did not hold.
+## 9. Three-valued results
 
-Each claim and edge records its authority and its limitations. When sources disagree the higher authority wins and the conflict is recorded; a lower-authority claim is never silently promoted. Authority is shown per item in MCP results, in the receipt (section 1) and in clients. For runtime telemetry laid over the static graph, exact captured observations outrank declared mappings, and co-change is never presented as causation.
+Prior art exists: `tool-surface-dogfood` already distinguishes OK, EMPTY and not-applicable, `get_flow_concepts` omits facets and gives reasons in `gaps`, and data lineage carries `external_transfer_unresolved`. Other gates are two or three valued in a different way (`competitor-readiness.ts` and `agent-adoption.ts` use pass, warn, fail).
 
-## 12. Further ideas, noted and not yet designed
+Make every check, verifier and comparison return pass, fail or unknown, kept distinct, with empty or insufficient input returning unknown. Known audit targets: `win-validator.ts` returns an efficiency win for a scenario nobody contested, and the invariant results in `verify.rs` are two-valued. Check `evaluate_analysis_truth` the same way.
 
-- **A task-shaped tool contract.** Describe every MCP tool as inspect, search, trace, compare or workflow, each returning facet-level availability, typed edges with evidence, unresolved paths and stated limits. Advertise only the tools callable right now, with the reason each other tool is hidden and a notification when the list changes. Audit the current surface against this shape; coordination and telemetry tools can appear only once configured.
-- **A readiness verifier.** One command runs staged end-to-end checks on fixtures and prints a compact summary, keeping the full report. Include fail-closed stages: the AI backend killed mid-run must produce a degraded receipt; a declared project must never disappear into the root; stale or tampered memory must be rejected; truncation and unsupported syntax must be reported, not hidden.
-- **Obligation closure for progress measurement.** To measure how much of a specification is done, an obligation closes only when evidence of comparable authority passes; contradictions, duplicate owners and unknowns keep it open; empty input yields unknown.
+## 10. Authority per fact
+
+Pieces exist: `EntryPoint.registrar`, `Guard.via`, the `parent.rs` provenance invariant, the in-memory `guessed` set, `Grounding.confidence()`, and `evidence_source` and `signal_quality` on the change-validation findings. What is missing is the edge itself: `IndexEdge` carries only source, target and kind.
+
+Promote the `guessed` set into a persisted authority field on each edge, ranked: deterministic extraction; an edge resolved by structure (imports, types, declared receivers); an edge guessed by name alone; an AI interpretation grounded in those; an AI interpretation the grounding step did not hold. When sources disagree the higher authority wins and the conflict is recorded; a lower claim is never silently promoted. Authority on edges is index data, surfaced through MCP results; it is not a capability-level confidence score (see the decision in section 2). Runtime telemetry laid over the static graph follows the same ranks: exact captured observations outrank declared mappings, and co-change is never presented as causation (`ingest_telemetry` and `get_runtime_static_links` are the starting point).
+
+## 11. What remains after the audit
+
+- **Hidden-tool reasons and list-changed notifications.** The tool profiles (`core`, `core-no-pillars`, `full`) and the gateway exist, as do response budgets and `orient_capsule`. Missing: a stated reason per hidden tool and a notification when the list changes. These are additions to the existing profiles and must not shrink the core profile.
+- **A fail-closed readiness stage.** The readiness tooling exists (`evaluate_agent_readiness`, `tool-surface-dogfood`, `scale-survivability-gate.sh`, `prove-release-candidate.sh`). Add: the AI backend killed mid-run must fail the run with a ledger entry; a declared project must never disappear into the root; truncation and unsupported syntax must be reported.
+- **Obligation closure** for measuring how much of a specification is done: genuinely new. An obligation closes only when evidence of comparable authority passes; contradictions, duplicate owners and unknowns keep it open; empty input yields unknown.
 
 ## Order
 
-1. The receipt (section 1): small, and it closes a real failure mode.
-2. Open ends (section 9), three-valued results (section 10) and authority per fact (section 11): they change what the analysis is allowed to claim, so they come before more features.
-3. Claim unknowns and the mechanical evidence check (section 2).
-4. Analysis delta (section 3), which depends on sections 9 and 10 to treat missing data as unknown.
-5. Reach and route (section 4), then the export (section 7), then the gallery (section 8).
-6. Evidence-keyed refresh (section 5) alongside the next incremental-analysis work.
-7. The ideas in section 12 as the tool surface and test suite are next touched.
+1. The run ledger and publish gate (section 1): small, closes a real failure mode, and every later item reports through it.
+2. Open ends, three-valued results and authority per fact (sections 8, 9, 10): they change what the analysis may claim.
+3. The documentation decision in section 2, then the mechanical evidence check.
+4. Rename-safe identity and the engine delta (section 3), which needs sections 8 and 9 to treat missing data as unknown.
+5. Route (section 4), the plain-file export (section 6), then the gallery (section 7).
+6. Refresh reasons (section 5) alongside the next incremental work, and section 11 as those surfaces are next touched.
 
 ## Open questions
 
-- Where the receipt lives in the stored analysis and how it is versioned.
-- Whether the unknowns are AI-authored, deterministic, or both.
-- The identity scheme that survives renames for the delta.
+- The two decisions marked above (invariant drops fail or publish; the documented stance on evidence and confidence).
+- Whether unknowns are model-authored, deterministic or both.
+- The identity scheme that survives renames.
