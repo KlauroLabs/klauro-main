@@ -2067,31 +2067,6 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
             && !node.id.contains(":key:")
             && !crate::paths::is_test(&index.files[node.file as usize])
     };
-    let mut own_names: HashMap<&str, Vec<u32>> = HashMap::default();
-    let mut free_names: HashMap<&str, Vec<u32>> = HashMap::default();
-    for node in index.nodes.iter().filter(authored) {
-        if node.kind.is_unit() || node.kind.is_type() {
-            own_names.entry(node.name.as_str()).or_default().push(node.file);
-        }
-        if matches!(node.kind, NodeKind::Function) || node.kind.is_type() {
-            free_names.entry(node.name.as_str()).or_default().push(node.file);
-        }
-    }
-    let qualifiers: HashSet<&str> = index
-        .nodes
-        .iter()
-        .filter(authored)
-        .filter(|node| node.kind.is_type() || node.kind == NodeKind::Module)
-        .map(|node| node.name.as_str())
-        .collect();
-    let enum_names: HashSet<&str> = index
-        .nodes
-        .iter()
-        .filter(authored)
-        .filter(|node| node.kind == NodeKind::Enum)
-        .map(|node| node.name.as_str())
-        .collect();
-
     let mut unresolved_names: HashMap<String, u32> = HashMap::default();
     let bound: HashSet<(&str, &str)> = index.locals.iter().map(|local| (local.unit.as_str(), local.name.as_str())).collect();
     let mut open_calls: HashMap<String, u32> = HashMap::default();
@@ -2488,6 +2463,7 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         }
     }
     let visible = &resolver.visible;
+    let open_ends = OpenEnds::declared(index, authored, visible);
     let carried_out = |target: &str, from_file: u32| -> Option<String> {
         let at = symbols.position.get(target).copied()?;
         let member = &symbols.nodes[at as usize];
@@ -2549,7 +2525,7 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
                 let generated = language == "ruby" && generated_members.contains(fact.callee.as_str());
                 if !foreign
                     && !generated
-                    && is_open_end(&fact.callee, fact.receiver.is_some(), language, fact.file, &own_names, &free_names, &qualifiers, &enum_names, visible)
+                    && open_ends.contains(&fact.callee, fact.receiver.is_some(), language, fact.file)
                 {
                     *open_calls.entry(caller.to_string()).or_insert(0) += 1;
                 }
@@ -2623,38 +2599,64 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn is_open_end(
-    callee: &str,
-    has_receiver: bool,
-    language: &str,
-    from_file: u32,
-    own_names: &HashMap<&str, Vec<u32>>,
-    free_names: &HashMap<&str, Vec<u32>>,
-    qualifiers: &HashSet<&str>,
-    enum_names: &HashSet<&str>,
-    visible: &crate::visibility::Visibility,
-) -> bool {
-    let named = crate::names::leaf(callee);
-    let declared = match (has_receiver || callee.contains("::"), language) {
-        (false, "rust" | "python" | "javascript" | "typescript" | "go" | "php") => free_names,
-        _ => own_names,
-    };
-    let Some(declaring) = declared.get(named) else { return false };
-    if !declaring.iter().any(|file| visible.can_see(from_file, *file))
-        || crate::builtins::is_builtin(language, named)
-        || crate::builtins::is_standard_member(language, named)
-        || is_runtime_member(named)
-    {
-        return false;
+struct OpenEnds<'a> {
+    own_names: HashMap<&'a str, Vec<u32>>,
+    free_names: HashMap<&'a str, Vec<u32>>,
+    qualifiers: HashSet<&'a str>,
+    enum_names: HashSet<&'a str>,
+    visible: &'a crate::visibility::Visibility,
+}
+
+impl<'a> OpenEnds<'a> {
+    fn declared(
+        index: &'a Index,
+        authored: impl Fn(&&IndexNode) -> bool,
+        visible: &'a crate::visibility::Visibility,
+    ) -> Self {
+        let mut own_names: HashMap<&str, Vec<u32>> = HashMap::default();
+        let mut free_names: HashMap<&str, Vec<u32>> = HashMap::default();
+        for node in index.nodes.iter().filter(|node| authored(node)) {
+            if node.kind.is_unit() || node.kind.is_type() {
+                own_names.entry(node.name.as_str()).or_default().push(node.file);
+            }
+            if matches!(node.kind, NodeKind::Function) || node.kind.is_type() {
+                free_names.entry(node.name.as_str()).or_default().push(node.file);
+            }
+        }
+        let names_where = |keep: fn(&IndexNode) -> bool| -> HashSet<&str> {
+            index.nodes.iter().filter(|node| authored(node)).filter(|node| keep(node)).map(|node| node.name.as_str()).collect()
+        };
+        OpenEnds {
+            own_names,
+            free_names,
+            qualifiers: names_where(|node| node.kind.is_type() || node.kind == NodeKind::Module),
+            enum_names: names_where(|node| node.kind == NodeKind::Enum),
+            visible,
+        }
     }
-    let Some((qualifier, _)) = callee.rsplit_once("::") else { return true };
-    let root = qualifier.split("::").next().unwrap_or(qualifier);
-    let owner = qualifier.rsplit("::").next().unwrap_or(qualifier);
-    if enum_names.contains(owner) || matches!(root, "std" | "core" | "alloc") {
-        return false;
+
+    fn contains(&self, callee: &str, has_receiver: bool, language: &str, from_file: u32) -> bool {
+        let named = crate::names::leaf(callee);
+        let declared = match (has_receiver || callee.contains("::"), language) {
+            (false, "rust" | "python" | "javascript" | "typescript" | "go" | "php") => &self.free_names,
+            _ => &self.own_names,
+        };
+        let Some(declaring) = declared.get(named) else { return false };
+        if !declaring.iter().any(|file| self.visible.can_see(from_file, *file))
+            || crate::builtins::is_builtin(language, named)
+            || crate::builtins::is_standard_member(language, named)
+            || is_runtime_member(named)
+        {
+            return false;
+        }
+        let Some((qualifier, _)) = callee.rsplit_once("::") else { return true };
+        let root = qualifier.split("::").next().unwrap_or(qualifier);
+        let owner = qualifier.rsplit("::").next().unwrap_or(qualifier);
+        if self.enum_names.contains(owner) || matches!(root, "std" | "core" | "alloc") {
+            return false;
+        }
+        matches!(root, "crate" | "self" | "super" | "Self") || self.qualifiers.contains(root) || self.qualifiers.contains(owner)
     }
-    matches!(root, "crate" | "self" | "super" | "Self") || qualifiers.contains(root) || qualifiers.contains(owner)
 }
 
 fn snake_case(name: &str) -> String {

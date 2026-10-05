@@ -20,7 +20,7 @@ export interface SubProjectLinkCoverage {
   unlinked: string[];
 }
 
-export const UNLINKED_SAMPLE = 5;
+const UNLINKED_SAMPLE = 5;
 
 export function linkCoverageOf(
   links: EngineLinkCoverage[] | undefined,

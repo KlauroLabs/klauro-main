@@ -2,8 +2,8 @@ import type { CASEdge, CASOutput } from '../../../packages/analyzer-core/src/typ
 import { getAffectedSet } from './query';
 import { getQueryTraversalIndex, type QueryTraversalIndex } from './query-traversal-index';
 
-export const ROUTE_DEFAULT_MAX_DEPTH = 8;
-export const ROUTE_DEFAULT_MAX_PATHS = 3;
+const ROUTE_DEFAULT_MAX_DEPTH = 8;
+const ROUTE_DEFAULT_MAX_PATHS = 3;
 const ROUTE_EXPANSION_BUDGET = 50000;
 const ROUTE_EDGE_TYPES = new Set(['calls', 'invokes']);
 const CANDIDATE_LIMIT = 10;
@@ -81,7 +81,7 @@ function neighborsOf(index: QueryTraversalIndex, id: string, direction: 'out' | 
   return [...found.values()];
 }
 
-export function resolveRouteEndpoint(cas: CASOutput, index: QueryTraversalIndex, spec: string): Endpoint {
+function resolveRouteEndpoint(cas: CASOutput, index: QueryTraversalIndex, spec: string): Endpoint {
   const wanted = spec.trim();
   if (index.nodesById.has(wanted)) return { ok: true, ids: [wanted], kind: 'node', label: wanted };
   const entry = (cas.entry_points ?? []).find(point => point.id === wanted);

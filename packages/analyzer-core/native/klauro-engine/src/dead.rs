@@ -133,6 +133,7 @@ pub fn derive(
         }
     }
 
+    let path_of = |file: u32| files.get(file as usize).map(String::as_str).or_else(|| mentions.extra_path(file, files.len()));
     let mut found = Vec::new();
     for (position, reason) in candidates {
         let node = &nodes[position];
@@ -144,7 +145,7 @@ pub fn derive(
             if *count <= known {
                 continue;
             }
-            let slot = if files.get(*file as usize).map(String::as_str).or_else(|| mentions.extra_path(*file, files.len())).is_some_and(crate::paths::is_test) { &mut in_tests } else { &mut elsewhere };
+            let slot = if path_of(*file).is_some_and(crate::paths::is_test) { &mut in_tests } else { &mut elsewhere };
             if slot.is_none_or(|(held, _)| held > *file) {
                 *slot = Some((*file, *line));
             }
@@ -175,11 +176,7 @@ pub fn derive(
             unlinked,
             mention: elsewhere
                 .or(in_tests)
-                .and_then(|(file, line)| files
-                        .get(file as usize)
-                        .map(String::as_str)
-                        .or_else(|| mentions.extra_path(file, files.len()))
-                        .map(|path| format!("{path}:{line}"))),
+                .and_then(|(file, line)| path_of(file).map(|path| format!("{path}:{line}"))),
         });
     }
     found

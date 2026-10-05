@@ -14,7 +14,7 @@ export interface GraphView {
   callers(id: string): string[];
 }
 
-export function isDeclaration(node: CASNode): boolean {
+function isDeclaration(node: CASNode): boolean {
   return DECLARATION_TYPES.has(node.type) && node.source?.file !== undefined;
 }
 

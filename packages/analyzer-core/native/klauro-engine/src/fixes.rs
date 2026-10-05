@@ -46,7 +46,7 @@ pub fn is_aside(path: &str) -> bool {
         || lowered.contains("/docs/")
         || lowered.starts_with(".github/")
         || lowered.starts_with(".circleci/")
-        || (name.starts_with('.') && !name.contains('/') && extension.is_empty())
+        || (name.starts_with('.') && extension.is_empty())
 }
 
 #[cfg(test)]
