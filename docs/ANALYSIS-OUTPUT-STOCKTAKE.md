@@ -19,6 +19,11 @@ Status: decided 2026-09-13.
 **The graph**
 `nodes`, `edges`, `method_calls`, `call_chains`, `decorators`, `reachability_index`
 
+`edges[].via` records how the engine found a call: absent when it was proven from structure (imports,
+declared types, a typed receiver), `name` when it was matched on the name alone, and `rule` when a
+framework or dispatch rule supplied it. It tells a customer whether "A calls B" was shown or
+inferred from a shared name, and it is what the engine itself uses to decide which calls to follow.
+
 **Data**
 `entities`, `data_summary`, `data_lineage`, `database_schema`, `domain_concepts`
 
@@ -39,6 +44,19 @@ command was being reported as spawning network tunnels that belong to a differen
 four to seven hops away through shared runtime setup. The effects are still listed, because they are
 genuinely reachable, but a reader can now see which ones the flow reaches on its own. On the
 measured repository 102 of 158 flows have a primary effect they reach directly and 56 inherit one.
+
+`flows[].standing` gains a fourth value, `open`. A flow is `terminal` when its trail reaches something
+that changes the outside world, `proximal` when it only leads into another flow, `reading` when the
+trail was followed to its end and found nothing that changes anything, and `open` when the trail
+runs out in our own code the engine could not follow, or was cut at the depth it follows. It tells a
+customer that nothing was found, which is not the same as nothing being there: an `open` flow is
+unknown, never read-only. A call into a library or the language's own runtime is a known boundary and
+does not make a flow open.
+
+`flows[].open` is the number of calls along the flow's trail that name something declared in this
+repository but could not be resolved to one place, and `flows[].cut` is set when the trail was cut
+at the depth or length the engine follows. Both are omitted when zero or false. They tell a customer
+how much of a flow's trail is unfollowed and why, so a reader knows which flows to check by hand.
 
 **What ships**
 
