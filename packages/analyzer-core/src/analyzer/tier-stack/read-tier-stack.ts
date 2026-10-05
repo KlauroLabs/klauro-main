@@ -31,6 +31,7 @@ export interface TierStackEdge {
   source: string;
   target: string;
   kind: string;
+  via?: 'name' | 'rule';
 }
 
 export interface TierStackUnshipped {
@@ -239,6 +240,8 @@ export interface TierStackFlow {
   method?: string;
   operation: string;
   standing: string;
+  open?: number;
+  cut?: boolean;
   name?: string;
   description?: string;
   path?: TierStackStep[];
