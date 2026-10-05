@@ -740,6 +740,7 @@ fn read_it() {
         unshipped::classify(&mut index.entry_points, &paths, &index.nodes, &index.edges, &scope, &continued);
     let build_script_ids: rustc_hash::FxHashSet<String> = build_scripts.into_iter().map(|entry| entry.id).collect();
     index.entry_points.retain(|entry| !build_script_ids.contains(&entry.id));
+    entry_exit::follow_their_program(&mut index.entry_points, &index.edges, &index.calls, &paths);
     eprintln!(
         "unshipped {:?} | tagged {} | build scripts {} | continuations {} (reached through their starter {}, starter unreached {}, orphaned {})",
         classify_started.elapsed(),
@@ -881,6 +882,8 @@ fn read_it() {
         &index.type_references,
         &index.entry_points,
         &declared,
+        &index.calls,
+        &paths,
     );
     eprintln!(
         "roles {:?} | {} across {} kinds",

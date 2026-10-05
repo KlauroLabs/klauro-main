@@ -55,7 +55,24 @@ static SUFFIXES: &[(&str, &str)] = &[
     ("Repository", "repository"),
     ("Schema", "model"),
     ("Service", "service"),
+    ("Store", "repository"),
 ];
+
+fn module_role(path: &str) -> Option<&'static str> {
+    let stem = crate::paths::basename(path).split('.').next().unwrap_or_default().to_ascii_lowercase();
+    let stem = stem.trim_end_matches(['s', '_', '-']);
+    if stem.ends_with("store") || stem.ends_with("repository") || stem.ends_with("repo") {
+        Some("repository")
+    } else if stem.ends_with("service") {
+        Some("service")
+    } else {
+        None
+    }
+}
+
+fn is_a_hook(name: &str) -> bool {
+    name.strip_prefix("use").and_then(|rest| rest.chars().next()).is_some_and(|held| held.is_ascii_uppercase())
+}
 
 fn annotation_role(name: &str) -> Option<&'static str> {
     let leaf = name.rsplit('.').next().unwrap_or(name).to_ascii_lowercase();
@@ -89,6 +106,8 @@ pub fn derive(
     type_references: &[TypeReferenceFact],
     entry_points: &[EntryPoint],
     declared: &[bool],
+    calls: &[CallFact],
+    files: &[String],
 ) -> Roles {
     let named: HashMap<&str, &IndexNode> = nodes.iter().map(|node| (node.id.as_str(), node)).collect();
     let mut roles: Vec<Role> = Vec::new();
@@ -145,7 +164,8 @@ pub fn derive(
     for entry in entry_points {
         let Some(node) = named.get(entry.handler.as_str()) else { continue };
         let role = match entry.kind {
-            "http" | "rpc" | "graphql" => "handler",
+            "http" | "rpc" | "graphql" | "ipc" => "handler",
+            "ui" => "component",
             "event" | "message" => "listener",
             "schedule" => "scheduled",
             "cli" => "command",
@@ -153,6 +173,25 @@ pub fn derive(
             _ => continue,
         };
         record(node, role, format!("{}:{}", entry.kind, entry.registrar));
+    }
+
+    let drawn: rustc_hash::FxHashSet<&str> = calls
+        .iter()
+        .filter(|call| call.renders)
+        .flat_map(|call| [Some(call.callee.as_str()), call.caller.as_deref().and_then(|caller| caller.rsplit(':').next())])
+        .flatten()
+        .collect();
+    for node in nodes.iter().filter(|node| matches!(node.kind, NodeKind::Function | NodeKind::Method)) {
+        let Some(path) = files.get(node.file as usize) else { continue };
+        let markup = path.ends_with(".tsx") || path.ends_with(".jsx");
+        let leaf = node.name.as_str();
+        if markup && leaf.starts_with(|held: char| held.is_ascii_uppercase()) && drawn.contains(leaf) {
+            record(node, "component", format!("renders:{leaf}"));
+        } else if is_a_hook(leaf) && (markup || path.ends_with(".ts")) && !node.id.contains(":callback:") {
+            record(node, "service", format!("hook:{leaf}"));
+        } else if let Some(role) = module_role(path).filter(|_| node.parent.as_deref() == Some(path.as_str())) {
+            record(node, role, format!("module:{path}"));
+        }
     }
 
     for node in nodes {

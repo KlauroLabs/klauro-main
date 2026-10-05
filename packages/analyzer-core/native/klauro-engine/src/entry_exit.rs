@@ -212,7 +212,11 @@ fn overridden_by_the_decorator(decorator: &Decorator) -> Option<String> {
         .map(|argument| argument.value.clone())
 }
 
-fn classify_registration(registrar: &str, label: Option<&str>, speaks_the_mcp_sdk: bool) -> Option<&'static str> {
+fn speaks_a_routing_dsl(path: &str) -> bool {
+    path.ends_with(".rb")
+}
+
+fn classify_registration(registrar: &str, label: Option<&str>, speaks_the_mcp_sdk: bool, in_a_routing_dsl: bool) -> Option<&'static str> {
     match registrar.strip_prefix("dispatch:") {
         Some("ui") => return Some("ui"),
         Some("event") => return Some("event"),
@@ -224,7 +228,7 @@ fn classify_registration(registrar: &str, label: Option<&str>, speaks_the_mcp_sd
     if speaks_the_mcp_sdk && MCP_TOOL_REGISTRARS.contains(&names::leaf(registrar).to_ascii_lowercase().as_str()) {
         return Some("tool");
     }
-    crate::rules::registrar_kind(registrar, label)
+    crate::rules::registrar_kind(registrar, label, in_a_routing_dsl)
 }
 
 pub(crate) const HAND_ROLLED_DISPATCH_REGISTRAR: &str = "dispatch:ipc";
@@ -1820,6 +1824,116 @@ fn lets_anyone_in(node: &IndexNode) -> bool {
     })
 }
 
+static STANDS_IN_FOR_A_PROGRAM: &[&str] = &["dummy", "fake", "mock", "stub"];
+
+fn program_name(path: &str) -> String {
+    let stem = crate::paths::basename(path).split('.').next().unwrap_or_default();
+    stem.to_ascii_lowercase().replace('_', "-")
+}
+
+fn set_aside_test_programs(entry_points: &mut [EntryPoint], calls: &[CallFact], files: &[String]) {
+    let mut named: HashMap<String, (u32, u32)> = HashMap::default();
+    for entry in entry_points.iter().filter(|entry| entry.kind == "lifecycle" && entry.unshipped.is_none()) {
+        let Some(path) = files.get(entry.file as usize).filter(|path| !is_test(path)) else { continue };
+        let name = program_name(path);
+        if name.len() > 3 && name != "main" && name != "index" {
+            named.entry(name).or_insert((0, 0));
+        }
+    }
+    if named.is_empty() {
+        return;
+    }
+    for call in calls {
+        let from_a_test = files.get(call.file as usize).is_some_and(|path| is_test(path) || crate::paths::is_not_shipped(path));
+        for literal in &call.literals {
+            let spoken = literal.to_ascii_lowercase().replace('_', "-");
+            for (name, (tests, product)) in named.iter_mut() {
+                if spoken.contains(name.as_str()) {
+                    match from_a_test {
+                        true => *tests += 1,
+                        false => *product += 1,
+                    }
+                }
+            }
+        }
+    }
+    for entry in entry_points.iter_mut().filter(|entry| entry.kind == "lifecycle" && entry.unshipped.is_none()) {
+        let Some(path) = files.get(entry.file as usize) else { continue };
+        let Some((tests, product)) = named.get(&program_name(path)).copied() else { continue };
+        let name = program_name(path);
+        let says_so = STANDS_IN_FOR_A_PROGRAM.iter().any(|word| name.contains(word));
+        if product == 0 && (tests > 0 || says_so) {
+            entry.unshipped = Some(Unshipped {
+                role: "tooling",
+                basis: "test-only-reach",
+                evidence: format!("{path} is started only by tests ({tests} references) and by no shipped code, or says so by name"),
+            });
+        }
+    }
+}
+
+pub fn follow_their_program(entry_points: &mut [EntryPoint], edges: &[IndexEdge], calls: &[CallFact], files: &[String]) {
+    set_aside_test_programs(entry_points, calls, files);
+    let mut set_aside: HashMap<&str, Unshipped> = HashMap::default();
+    for entry in entry_points.iter().filter(|entry| matches!(entry.kind, "lifecycle" | "cli")) {
+        if let (Some(held), Some(path)) = (entry.unshipped.as_ref(), files.get(entry.file as usize)) {
+            set_aside.entry(path.as_str()).or_insert_with(|| held.clone());
+        }
+    }
+    if set_aside.is_empty() {
+        return;
+    }
+    let mut importers: HashMap<&str, Vec<&str>> = HashMap::default();
+    for edge in edges.iter().filter(|edge| edge.kind == EdgeKind::Imports) {
+        if !is_test(&edge.source) {
+            importers.entry(edge.target.as_str()).or_default().push(edge.source.as_str());
+        }
+    }
+    let mut held_by: HashMap<&str, Unshipped> = set_aside.clone();
+    loop {
+        let mut joined = false;
+        for (target, sources) in &importers {
+            if held_by.contains_key(target) || sources.is_empty() {
+                continue;
+            }
+            let owners: Option<Vec<&Unshipped>> = sources.iter().map(|source| held_by.get(source)).collect();
+            let Some(first) = owners.and_then(|owners| owners.first().map(|held| (*held).clone())) else { continue };
+            held_by.insert(target, Unshipped {
+                role: first.role,
+                basis: "program-only-reach",
+                evidence: format!("{target} is imported only by code that belongs to {} programs, never by a shipped one", first.role),
+            });
+            joined = true;
+        }
+        if !joined {
+            break;
+        }
+    }
+    for entry in entry_points.iter_mut().filter(|entry| entry.unshipped.is_none() && entry.kind != "test") {
+        if let Some(held) = files.get(entry.file as usize).and_then(|path| held_by.get(path.as_str())) {
+            entry.unshipped = Some(held.clone());
+        }
+    }
+    let mut called_files: HashMap<&str, Vec<&str>> = HashMap::default();
+    for edge in edges.iter().filter(|edge| edge.kind == EdgeKind::Calls) {
+        let (Some(from), Some(to)) = (edge.source.split(':').next(), edge.target.split(':').next()) else { continue };
+        if from != to && !is_test(to) {
+            called_files.entry(edge.source.as_str()).or_default().push(to);
+        }
+    }
+    for entry in entry_points.iter_mut().filter(|entry| entry.unshipped.is_none() && matches!(entry.kind, "tool" | "http" | "ipc" | "cli")) {
+        let Some(reached) = called_files.get(entry.handler.as_str()).filter(|reached| !reached.is_empty()) else { continue };
+        let owners: Option<Vec<&Unshipped>> = reached.iter().map(|file| held_by.get(file)).collect();
+        if let Some(first) = owners.and_then(|owners| owners.first().map(|held| (*held).clone())) {
+            entry.unshipped = Some(Unshipped {
+                role: first.role,
+                basis: "reaches-only-program-code",
+                evidence: format!("everything this entry calls outside its own file belongs to {} programs", first.role),
+            });
+        }
+    }
+}
+
 pub fn guard(entry_points: &mut [EntryPoint], nodes: &[IndexNode]) {
     let by_id: HashMap<&str, &IndexNode> = nodes.iter().map(|node| (node.id.as_str(), node)).collect();
     for entry in entry_points.iter_mut() {
@@ -1986,7 +2100,7 @@ pub fn derive(
                 },
                 None => held_label,
             };
-            let continuation = classify_registration(registrar, label, mcp_files.contains(&node.file)) == Some("event")
+            let continuation = classify_registration(registrar, label, mcp_files.contains(&node.file), speaks_a_routing_dsl(&files[node.file as usize])) == Some("event")
                 && continues_a_started_operation(
                     registrar,
                     node.file,
@@ -1996,7 +2110,7 @@ pub fn derive(
             if continuation {
                 continued.push(node.id.clone());
             }
-            if let Some(kind) = classify_registration(registrar, label, mcp_files.contains(&node.file)).filter(|_| !continuation) {
+            if let Some(kind) = classify_registration(registrar, label, mcp_files.contains(&node.file), speaks_a_routing_dsl(&files[node.file as usize])).filter(|_| !continuation) {
                 let verb = names::leaf(registrar);
                 let spoken = match (label, kind) {
                     (_, "schedule") => running_within(node, &named_of)
@@ -2304,7 +2418,7 @@ pub fn derive(
             },
             None => std::borrow::Cow::Borrowed(registration.label.as_str()),
         };
-        let Some(kind) = classify_registration(&registration.registrar, Some(&label), mcp_files.contains(&registration.file)) else {
+        let Some(kind) = classify_registration(&registration.registrar, Some(&label), mcp_files.contains(&registration.file), speaks_a_routing_dsl(&files[registration.file as usize])) else {
             continue;
         };
         let leaf = registration
@@ -2806,18 +2920,23 @@ mod tests {
 
     #[test]
     fn a_method_is_a_method_however_the_language_spells_it() {
-        assert_eq!(classify_registration("app.Get", Some("/users"), false), Some("http"));
-        assert_eq!(classify_registration("app.get", Some("/users"), false), Some("http"));
-        assert_eq!(classify_registration("e.GET", Some("/users"), false), Some("http"));
-        assert_eq!(classify_registration("api.MapPost", Some("/items"), false), Some("http"));
+        assert_eq!(classify_registration("app.Get", Some("/users"), false, false), Some("http"));
+        assert_eq!(classify_registration("app.get", Some("/users"), false, false), Some("http"));
+        assert_eq!(classify_registration("e.GET", Some("/users"), false, false), Some("http"));
+        assert_eq!(classify_registration("api.MapPost", Some("/items"), false, false), Some("http"));
     }
 
     #[test]
     fn a_bare_tool_verb_is_only_an_mcp_tool_when_the_file_speaks_the_sdk() {
-        assert_eq!(classify_registration("server.tool", Some("find_tests"), false), None);
-        assert_eq!(classify_registration("server.tool", Some("find_tests"), true), Some("tool"));
-        assert_eq!(classify_registration("server.registerTool", Some("find_tests"), true), Some("tool"));
-        assert_eq!(classify_registration("dispatch:tool", Some("find_tests"), false), Some("tool"));
+        assert_eq!(classify_registration("server.tool", Some("find_tests"), false, false), None);
+        assert_eq!(classify_registration("server.tool", Some("find_tests"), true, false), Some("tool"));
+        assert_eq!(classify_registration("server.registerTool", Some("find_tests"), true, false), Some("tool"));
+        assert_eq!(classify_registration("dispatch:tool", Some("find_tests"), false, false), Some("tool"));
+        assert_eq!(classify_registration("put", Some("x"), false, false), None);
+        assert_eq!(classify_registration("put", Some("<Project/>"), false, false), None);
+        assert_eq!(classify_registration("delete", Some("Content-Type"), false, false), None);
+        assert_eq!(classify_registration("get", Some("health"), false, true), Some("http"));
+        assert_eq!(classify_registration("get", Some("/health"), false, false), Some("http"));
     }
 
     #[test]

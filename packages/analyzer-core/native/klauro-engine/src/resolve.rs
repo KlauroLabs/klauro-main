@@ -1369,6 +1369,10 @@ enum Resolved {
     },
 }
 
+fn is_a_bare_name(held: &str) -> bool {
+    held.starts_with(|first: char| first.is_alphabetic() || first == '_') && held.chars().all(|letter| letter.is_alphanumeric() || letter == '_')
+}
+
 pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
     let timing = std::env::var("KLAURO_TIME_RESOLVE").is_ok();
     let started = std::time::Instant::now();
@@ -2546,6 +2550,37 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
                     "package" => package_calls += 1,
                     _ => runtime_calls += 1,
                 }
+            }
+        }
+    }
+
+    let mut handed_over: HashSet<(&str, u32)> = HashSet::default();
+    let top_level_units: HashMap<(u32, &str), u32> = index
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| node.kind.is_unit() && node.parent.as_deref() == index.files.get(node.file as usize).map(String::as_str))
+        .map(|(at, node)| ((node.file, node.name.as_str()), at as u32))
+        .collect();
+    for call in index.calls.iter() {
+        let Some(caller) = call.caller.as_deref().filter(|caller| symbols.position.contains_key(caller)) else { continue };
+        for passed in &call.passes {
+            let Some(name) = passed.split_once('=').map(|(_, root)| root).filter(|root| is_a_bare_name(root)) else { continue };
+            let target = top_level_units
+                .get(&(call.file, name))
+                .or_else(|| symbols.file_scope.get(&(call.file, name)))
+                .or_else(|| resolver.bindings.imported.get(&(call.file, name)))
+                .copied()
+                .filter(|at| symbols.nodes[*at as usize].kind.is_unit() && symbols.nodes[*at as usize].id != caller);
+            if let Some(at) = target
+                && handed_over.insert((caller, at))
+            {
+                edges.push(IndexEdge {
+                    via: Via::Structure,
+                    source: caller.to_string(),
+                    target: symbols.nodes[at as usize].id.clone(),
+                    kind: EdgeKind::Calls,
+                });
             }
         }
     }

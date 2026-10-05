@@ -6,7 +6,7 @@ use crate::screens::{imported_handler, DEFAULT_SCREEN, LOADED_SCREEN, MOUNTED_SC
 
 static COMPONENT_KEYS: &[&str] = &["Component", "component", "element", "lazy", "loadComponent"];
 static CHILD_KEYS: &[&str] = &["children", "routes"];
-const ROUTE_REGISTRAR: &str = "route";
+pub(super) const ROUTE_REGISTRAR: &str = "route";
 const ANY_METHOD: &str = "*";
 
 fn names_a_component(tag: &str) -> bool {

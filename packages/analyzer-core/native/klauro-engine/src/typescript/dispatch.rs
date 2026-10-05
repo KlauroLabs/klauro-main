@@ -289,7 +289,23 @@ impl Extractor<'_> {
         true
     }
 
+    fn handed_to_a_route_call(&self, object: Node) -> bool {
+        let mut held = object.parent();
+        for _ in 0..3 {
+            let Some(ancestor) = held else { return false };
+            if ancestor.kind() == "call_expression" {
+                let callee = ancestor.child_by_field_name("function").map(|function| self.text(function)).unwrap_or("");
+                return crate::names::leaf(callee) == super::routes::ROUTE_REGISTRAR;
+            }
+            held = ancestor.parent();
+        }
+        false
+    }
+
     pub(super) fn tabulated_route(&mut self, object: Node) {
+        if self.handed_to_a_route_call(object) {
+            return;
+        }
         let Some(path) = ADDRESS_KEYS
             .iter()
             .find_map(|key| self.pair_value(object, key).and_then(|value| self.literal_of(value)))

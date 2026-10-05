@@ -102,6 +102,7 @@ pub struct Extractor<'a> {
     remembered: HashMap<String, String>,
     labelled: HashMap<usize, (String, String)>,
     last_receiver: Option<String>,
+    visited_as_an_arm: rustc_hash::FxHashSet<usize>,
 }
 
 #[derive(Clone)]
@@ -145,6 +146,7 @@ impl<'a> Extractor<'a> {
             remembered: HashMap::default(),
             labelled: HashMap::default(),
             last_receiver: None,
+            visited_as_an_arm: rustc_hash::FxHashSet::default(),
         }
     }
 
@@ -729,7 +731,7 @@ impl<'a> Extractor<'a> {
     }
 
     fn visit(&mut self, node: Node, scope: &Scope) {
-        if !node.is_named() {
+        if !node.is_named() || self.visited_as_an_arm.contains(&node.id()) {
             return;
         }
         let kind = node.kind();
@@ -2115,6 +2117,19 @@ impl<'a> Extractor<'a> {
         None
     }
 
+    fn visit_as_an_arm(&mut self, body: Node, inner: &Scope, handler: &str) {
+        let first = self.facts.calls.len();
+        self.visit(body, inner);
+        self.visited_as_an_arm.insert(body.id());
+        let arm = inner.callable.as_deref();
+        let handed_up: Vec<CallFact> = self.facts.calls[first..]
+            .iter()
+            .filter(|call| call.caller.as_deref() == arm)
+            .map(|call| CallFact { caller: Some(handler.to_string()), ..call.clone() })
+            .collect();
+        self.facts.calls.extend(handed_up);
+    }
+
     fn declare_dispatch_arm(&mut self, handler: &str, label: &str, site: Node, body: Node) -> String {
         self.declare_dispatch_arm_registered_as(handler, label, site, body, crate::entry_exit::HAND_ROLLED_DISPATCH_REGISTRAR)
     }
@@ -2180,7 +2195,7 @@ impl<'a> Extractor<'a> {
                 inner.callable = Some(id.clone());
                 inner.owner = Some(id);
                 inner.registrar = None;
-                self.visit(value, &inner);
+                self.visit_as_an_arm(value, &inner, &handler);
             }
         }
     }
@@ -2225,7 +2240,7 @@ impl<'a> Extractor<'a> {
         inner.callable = Some(id.clone());
         inner.owner = Some(id);
         inner.registrar = None;
-        self.visit(consequence, &inner);
+        self.visit_as_an_arm(consequence, &inner, &handler);
     }
 
     fn leading_quoted_literal(text: &str) -> Option<String> {
@@ -2295,7 +2310,7 @@ impl<'a> Extractor<'a> {
         inner.callable = Some(id.clone());
         inner.owner = Some(id);
         inner.registrar = None;
-        self.visit(consequence, &inner);
+        self.visit_as_an_arm(consequence, &inner, &handler);
     }
 
     fn declare_rust_const(&mut self, node: Node, scope: &Scope) {
@@ -2751,8 +2766,9 @@ impl<'a> Extractor<'a> {
             Some(bare) if !bare.is_empty() => bare.to_string(),
             _ => callee,
         };
+        let qualified = receiver.is_some() || callee.contains(['.', ':']);
         let callee = base_name(&callee).to_string();
-        if callee.is_empty() || STATEMENT_KEYWORDS.binary_search(&callee.as_str()).is_ok() {
+        if callee.is_empty() || (!qualified && STATEMENT_KEYWORDS.binary_search(&callee.as_str()).is_ok()) {
             return None;
         }
         let (receiver, callee) = match (&receiver, callee.rfind('.')) {

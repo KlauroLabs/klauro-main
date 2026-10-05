@@ -224,7 +224,7 @@ pub struct ExportFact {
     pub reexport_from: Option<String>,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CallContext {
     #[serde(skip_serializing_if = "crate::facts_cache::not")]
     pub in_try: bool,
@@ -254,7 +254,7 @@ impl CallContext {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallFact {
     pub file: u32,
     #[serde(skip_serializing_if = "crate::facts_cache::none")]

@@ -99,7 +99,7 @@ fn receiver_fits(receivers: &[Receiver], registrar: &str) -> bool {
     })
 }
 
-fn label_fits(shape: &Label, registrar: &str, verb: &str, label: Option<&str>) -> bool {
+fn label_fits(shape: &Label, registrar: &str, verb: &str, label: Option<&str>, in_a_routing_dsl: bool) -> bool {
     let route = |held: &str| crate::entry_exit::looks_like_route(&crate::entry_exit::split_label(held).1);
     match (shape, label) {
         (Label::Any, _) => true,
@@ -112,7 +112,7 @@ fn label_fits(shape: &Label, registrar: &str, verb: &str, label: Option<&str>) -
             let path = crate::entry_exit::split_label(held).1;
             let addresses_a_path = match through_receiver {
                 true => on_a_router || path.contains('/'),
-                false => path.starts_with('/'),
+                false => in_a_routing_dsl || path.contains('/'),
             };
             route(held) && addresses_a_path && spells_a_path(&path)
         }
@@ -123,7 +123,7 @@ fn spells_a_path(path: &str) -> bool {
     !path.contains(['<', '>', '"', '\'', '\\', '`']) && !crate::entry_exit::names_an_http_method(path)
 }
 
-pub fn registrar_kind(registrar: &str, label: Option<&str>) -> Option<&'static str> {
+pub fn registrar_kind(registrar: &str, label: Option<&str>, in_a_routing_dsl: bool) -> Option<&'static str> {
     let verb = names::leaf(registrar);
     let lowered = verb.to_ascii_lowercase();
     for rule in registrars() {
@@ -135,7 +135,7 @@ pub fn registrar_kind(registrar: &str, label: Option<&str>) -> Option<&'static s
         if !verb_fits || !receiver_fits(&rule.receivers, registrar) {
             continue;
         }
-        if label_fits(&rule.label, registrar, verb, label) {
+        if label_fits(&rule.label, registrar, verb, label, in_a_routing_dsl) {
             return Some(rule.kind);
         }
         if rule.stop {
