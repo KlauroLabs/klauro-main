@@ -29,9 +29,14 @@ export interface BoundedEnvelope {
   truncated_path_count: number;
   truncated_paths: TruncatedPath[];
   continuation: string[];
+  next_page?: { tool: string; args: { offset: number } };
   data: unknown;
   payload_omitted?: true;
 }
+
+const OFFSET_PAGED_TOOLS = new Set([
+  'get_user_journeys', 'get_data_entities', 'get_codebase_idioms', 'get_behavioral_invariants', 'find_tests',
+]);
 
 function byteLength(text: string): number {
   return Buffer.byteLength(text, 'utf8');
@@ -211,6 +216,17 @@ export function buildContinuation(options: BoundOptions, truncatedPaths: Truncat
   return lines;
 }
 
+function nextPageOf(data: unknown, truncatedPaths: TruncatedPath[], options: BoundOptions): BoundedEnvelope['next_page'] {
+  if (!OFFSET_PAGED_TOOLS.has(options.tool) || data === null || typeof data !== 'object') return undefined;
+  const offset = (data as Record<string, unknown>).offset;
+  if (typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0) return undefined;
+  const collection = truncatedPaths
+    .filter(item => item.kind === 'array' && /^[A-Za-z_]+$/.test(item.path) && item.returned < item.total)
+    .sort((a, b) => b.total - a.total)[0];
+  if (!collection) return undefined;
+  return { tool: options.tool, args: { offset: offset + collection.returned } };
+}
+
 function buildBoundedEnvelope(root: { data: unknown }, trims: Map<string, TrimRecord>, fullSize: number, budget: number, options: BoundOptions): BoundedEnvelope {
   const allTruncatedPaths: TruncatedPath[] = [...trims.entries()].map(([path, record]) => ({
     path: path || '(root)',
@@ -227,6 +243,9 @@ function buildBoundedEnvelope(root: { data: unknown }, trims: Map<string, TrimRe
     })
     .slice(0, MAX_REPORTED_TRUNCATED_PATHS);
 
+  const nextPage = nextPageOf(root.data, allTruncatedPaths, options);
+  const continuation = buildContinuation(options, truncatedPaths);
+  if (nextPage) continuation.push(`Next page: call '${nextPage.tool}' again with offset ${nextPage.args.offset}, keeping the other arguments.`);
   return {
     truncated: true,
     has_more: true,
@@ -234,7 +253,8 @@ function buildBoundedEnvelope(root: { data: unknown }, trims: Map<string, TrimRe
     budget_bytes: budget,
     truncated_path_count: allTruncatedPaths.length,
     truncated_paths: truncatedPaths,
-    continuation: buildContinuation(options, truncatedPaths),
+    continuation,
+    ...(nextPage ? { next_page: nextPage } : {}),
     data: root.data,
   };
 

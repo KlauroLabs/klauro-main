@@ -597,3 +597,23 @@ test('every core-profile tool response stays within the byte budget on the large
     else process.env.KLAURO_TOOL_PROFILE = previousProfile;
   }
 });
+
+test('a truncated offset-paged tool names the exact next offset to continue from', () => {
+  const journeys = Array.from({ length: 25 }, (_, index) => ({ id: `journey-${index}`, headline: 'x'.repeat(900) }));
+  const bounded = boundToolPayload(
+    { total: 25, offset: 5, limit: 25, journeys },
+    { tool: 'get_user_journeys', parameterNames: ['path'] },
+  ) as BoundedEnvelope;
+  const returned = (bounded.data as { journeys: unknown[] }).journeys.length;
+  assert.ok(returned > 0 && returned < 25);
+  assert.deepEqual(bounded.next_page, { tool: 'get_user_journeys', args: { offset: 5 + returned } });
+  assert.ok(bounded.continuation.some(line => line.includes(`offset ${5 + returned}`)));
+});
+
+test('tools without offset paging get no next_page', () => {
+  const bounded = boundToolPayload(
+    { offset: 0, items: Array.from({ length: 40 }, () => 'y'.repeat(900)) },
+    { tool: 'get_semantic_map' },
+  ) as BoundedEnvelope;
+  assert.equal(bounded.next_page, undefined);
+});
