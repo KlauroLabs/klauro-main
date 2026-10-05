@@ -20,6 +20,7 @@ mod mentions;
 mod dependencies;
 mod discovery;
 mod dockerfile;
+mod language_hints;
 mod language_tables;
 mod elements;
 mod entities;

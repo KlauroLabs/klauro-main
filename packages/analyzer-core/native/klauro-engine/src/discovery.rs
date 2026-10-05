@@ -8,6 +8,7 @@ use rayon::prelude::*;
 use regex::RegexSet;
 use serde::Serialize;
 
+use crate::language_hints;
 use crate::language_tables::{
     LANGUAGE_BY_EXTENSION, LANGUAGE_BY_MANIFEST, MANIFEST_EXTENSIONS, MANIFEST_NAMES, MANIFEST_PATTERNS,
     SKIPPED_DIRECTORIES, SOURCE_EXTENSIONS,
@@ -43,10 +44,6 @@ pub struct Discovery {
 
 static NOTEBOOK_EXTENSIONS: &[&str] = &["ipynb"];
 
-static EXTENSIONLESS_SOURCE: &[&str] = &[
-    "Jenkinsfile", "artisan", "console", "Procfile", "Vagrantfile", "Rakefile",
-];
-
 static CONFIG_EXTENSIONS: &[&str] = &[
     "json", "jsonc", "json5", "yaml", "yml", "toml", "ini", "cfg", "conf",
     "properties", "env", "editorconfig",
@@ -75,7 +72,6 @@ struct Tables {
     manifest_patterns: RegexSet,
     skipped: HashSet<&'static str>,
     notebooks: HashSet<&'static str>,
-    extensionless_source: HashSet<&'static str>,
     config_extensions: HashSet<&'static str>,
     lock_files: HashSet<&'static str>,
     media_extensions: HashSet<&'static str>,
@@ -91,7 +87,6 @@ fn tables() -> &'static Tables {
             .expect("generated manifest patterns are valid"),
         skipped: set(SKIPPED_DIRECTORIES),
         notebooks: set(NOTEBOOK_EXTENSIONS),
-        extensionless_source: set(EXTENSIONLESS_SOURCE),
         config_extensions: set(CONFIG_EXTENSIONS),
         lock_files: set(LOCK_FILES),
         media_extensions: set(MEDIA_EXTENSIONS),
@@ -154,8 +149,8 @@ pub fn classify(basename: &str, absolute: &Path) -> Option<FileKind> {
     if !extension.is_empty() && tables.source_extensions.contains(extension) {
         return Some(FileKind::Source);
     }
-    if tables.extensionless_source.contains(basename) {
-        return Some(FileKind::Source);
+    if let Some(hint) = language_hints::for_name(&lower).or_else(|| language_hints::for_extension(extension)) {
+        return Some(hint.kind);
     }
     if tables.notebooks.contains(extension) {
         return Some(FileKind::Source);
@@ -195,18 +190,7 @@ pub fn interpreter_of(path: &Path) -> Option<&'static str> {
     let interpreter = line
         .rsplit(['/', ' '])
         .find(|part| !part.is_empty() && *part != "-S")?;
-    Some(match interpreter {
-        "sh" | "bash" | "zsh" | "ksh" | "dash" => "shell",
-        "python" | "python2" | "python3" => "python",
-        "node" | "nodejs" | "bun" | "deno" => "javascript",
-        "ruby" => "ruby",
-        "perl" => "perl",
-        "php" => "php",
-        "lua" => "lua",
-        "Rscript" => "r",
-        "pwsh" | "powershell" => "powershell",
-        _ => return None,
-    })
+    language_hints::for_shebang(interpreter)?.language
 }
 
 pub fn language_of(basename: &str) -> Option<&'static str> {
@@ -215,13 +199,15 @@ pub fn language_of(basename: &str) -> Option<&'static str> {
         return Some(language);
     }
     let extension = extension_of(&lower);
-    if extension.is_empty() {
-        return None;
-    }
-    LANGUAGE_BY_EXTENSION
+    let by_extension = LANGUAGE_BY_EXTENSION
         .binary_search_by(|(key, _)| (*key).cmp(extension))
         .ok()
-        .map(|found| LANGUAGE_BY_EXTENSION[found].1)
+        .map(|found| LANGUAGE_BY_EXTENSION[found].1);
+    by_extension.or_else(|| {
+        language_hints::for_name(&lower)
+            .or_else(|| language_hints::for_extension(extension))
+            .and_then(|hint| hint.language)
+    })
 }
 
 struct Level {
