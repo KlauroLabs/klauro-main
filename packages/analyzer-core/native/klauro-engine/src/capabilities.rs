@@ -459,7 +459,7 @@ fn place(
 }
 
 pub(crate) fn is_proposable(flow: &Flow) -> bool {
-    flow.unshipped.is_none()
+    !crate::unshipped::is_set_aside(flow.unshipped.as_ref())
 }
 
 fn lines_of_outcomes(held: &Held, lanes: &BTreeMap<&str, (&Family, &Vec<&Flow>)>) -> Vec<(usize, String)> {
@@ -1726,11 +1726,20 @@ mod command_family_tests {
     }
 
     #[test]
-    fn a_flow_tagged_as_unshipped_is_never_proposed() {
+    fn a_flow_tagged_as_unshipped_by_evidence_is_never_proposed() {
         let mut tooling = flow("flow:1", "cli", None, "build", &[], &[]);
         assert!(is_proposable(&tooling));
-        tooling.unshipped = Some(crate::entry_exit::Unshipped { role: "tooling", basis: "a script", evidence: String::new() });
-        assert!(!is_proposable(&tooling));
+        for basis in ["shipping-evidence", "island"] {
+            tooling.unshipped = Some(crate::entry_exit::Unshipped { role: "tooling", basis, evidence: String::new() });
+            assert!(!is_proposable(&tooling), "{basis}");
+        }
+    }
+
+    #[test]
+    fn a_flow_tagged_as_unshipped_only_by_its_name_is_still_proposed() {
+        let mut named = flow("flow:1", "cli", None, "build", &[], &[]);
+        named.unshipped = Some(crate::entry_exit::Unshipped { role: "tooling", basis: "name", evidence: String::new() });
+        assert!(is_proposable(&named));
     }
 }
 

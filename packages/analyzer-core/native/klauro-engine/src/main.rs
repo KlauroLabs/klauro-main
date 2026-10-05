@@ -771,7 +771,7 @@ fn read_it() {
 
     let partition_started = Instant::now();
     let partitioned_entries: Vec<entry_exit::EntryPoint> =
-        index.entry_points.iter().filter(|entry| entry.unshipped.is_none()).cloned().collect();
+        index.entry_points.iter().filter(|entry| !unshipped::is_set_aside(entry.unshipped.as_ref())).cloned().collect();
     let partition = subproject::derive(
         &paths,
         &index.nodes,

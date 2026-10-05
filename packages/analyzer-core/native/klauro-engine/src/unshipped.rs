@@ -18,6 +18,16 @@ pub struct Census {
     pub continuations_orphaned: usize,
 }
 
+impl Unshipped {
+    pub fn is_established(&self) -> bool {
+        matches!(self.basis, "shipping-evidence" | "island")
+    }
+}
+
+pub fn is_set_aside(tag: Option<&Unshipped>) -> bool {
+    tag.is_some_and(Unshipped::is_established)
+}
+
 struct Graph {
     position_of: HashMap<String, u32>,
     next: Vec<Vec<u32>>,
