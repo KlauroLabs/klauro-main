@@ -178,6 +178,9 @@ export interface TierStackSubProject {
   imports_crossing?: number;
   ship_backed?: boolean;
   runnable?: boolean;
+  owner?: string;
+  system?: string;
+  depends_on?: string[];
 }
 
 export interface TierStackComposition {

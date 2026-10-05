@@ -26,6 +26,7 @@ import {
   type CASTestSummary,
   type DeployableEvidence,
   type CASSystem,
+  type CASSystemCatalogEntry,
 } from '../../types/cas.types';
 import type {
   TierStackCapability,
@@ -35,6 +36,7 @@ import type {
   TierStackIndex,
   TierStackLogicalStep,
   TierStackNode,
+  TierStackSubProject,
 } from './read-tier-stack';
 
 const EVIDENCE: Record<TierStackDeclaration, CASRelationEvidence> = {
@@ -675,6 +677,16 @@ function casIdOf(name: string, part?: string): string {
   return part === undefined ? `cas:${name}` : `cas:${name}:${part}`;
 }
 
+function catalogOf(part: TierStackSubProject): CASSystemCatalogEntry | undefined {
+  const dependsOn = part.depends_on ?? [];
+  if (part.owner === undefined && part.system === undefined && dependsOn.length === 0) return undefined;
+  return {
+    ...(part.owner === undefined ? {} : { owner: part.owner }),
+    ...(part.system === undefined ? {} : { system: part.system }),
+    ...(dependsOn.length === 0 ? {} : { depends_on: dependsOn }),
+  };
+}
+
 function borneBy(index: TierStackIndex, name: string): CASOutput[] {
   const parts = index.partition?.sub_projects ?? [];
   if (parts.length < 2) return [];
@@ -684,6 +696,8 @@ function borneBy(index: TierStackIndex, name: string): CASOutput[] {
     if (held.nodes.length === 0) continue;
     const child = casOf(held, part.name);
     child.system.root_path = part.root === '' ? index.root : `${index.root}/${part.root}`;
+    const catalog = catalogOf(part);
+    if (catalog) child.system.catalog = catalog;
     child.id = casIdOf(name, part.id);
     built.set(part.root, child);
   }

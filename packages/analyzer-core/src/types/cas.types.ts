@@ -423,12 +423,19 @@ export interface CASNestedRepository {
   note: string;
 }
 
+export interface CASSystemCatalogEntry {
+  owner?: string;
+  system?: string;
+  depends_on?: string[];
+}
+
 export interface CASSystem {
   id: string;
   name: string;
   description?: string;
   type: 'monorepo' | 'application' | 'library' | 'service' | 'package';
   root_path: string;
+  catalog?: CASSystemCatalogEntry;
   analysis_focus?: 'agent-fast' | 'ui-overview' | 'deep-context' | 'full';
   repository?: {
     url?: string;

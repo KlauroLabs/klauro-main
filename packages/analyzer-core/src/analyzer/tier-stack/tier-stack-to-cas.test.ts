@@ -366,3 +366,29 @@ test('the history the engine read becomes the stability of the files it names', 
   assert.equal(cas.stability_summary?.by_stability_class.fragile, 1);
   assert.equal(tierStackToCas(INDEX, 'shop').temporal_stability, undefined);
 });
+
+test('a part carries the owner, system and dependencies its catalog descriptor declared', () => {
+  const described = {
+    ...INDEX,
+    files: [
+      { path: 'api/order.ts', kind: 'source', language: 'typescript', extracted: true },
+      { path: 'web/cart.ts', kind: 'source', language: 'typescript', extracted: true },
+    ],
+    nodes: [
+      { id: 'api/order.ts', name: 'order.ts', kind: 'module', file: 0, span: { line: 1 }, project: 'subproject:api' },
+      { id: 'web/cart.ts', name: 'cart.ts', kind: 'module', file: 1, span: { line: 1 }, project: 'subproject:web' },
+    ],
+    edges: [],
+    partition: {
+      sub_projects: [
+        { id: 'subproject:api', name: 'api', root: 'api', owner: 'group:default/payments', system: 'checkout', depends_on: ['component:default/web'] },
+        { id: 'subproject:web', name: 'web', root: 'web' },
+      ],
+    },
+  } as TierStackIndex;
+  const parts = tierStackToCas(described, 'shop').children ?? [];
+  const api = parts.find(part => part.system.name === 'api');
+  const web = parts.find(part => part.system.name === 'web');
+  assert.deepEqual(api?.system.catalog, { owner: 'group:default/payments', system: 'checkout', depends_on: ['component:default/web'] });
+  assert.equal(web?.system.catalog, undefined);
+});
