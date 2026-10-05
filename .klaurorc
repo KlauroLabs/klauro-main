@@ -3,9 +3,9 @@
   "kind": "project",
   "project": {
     "name": "proof-of-concept",
-    "id": "prj_8scPywYdaglrer3Z",
-    "workspaceId": "wsp_KwVkofBL-GVKOuaa",
-    "organizationId": "wsp_KwVkofBL-GVKOuaa"
+    "id": "prj_wbW33m-wfETn1N41",
+    "workspaceId": "wsp_PWXpXfnPgDnf6lBC",
+    "organizationId": "wsp_PWXpXfnPgDnf6lBC"
   },
   "analyzer": {
     "serverUrl": "https://mcp.klauro.com",
