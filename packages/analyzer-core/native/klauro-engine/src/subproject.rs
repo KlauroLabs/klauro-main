@@ -8,6 +8,8 @@ use crate::model::*;
 use crate::paths::{basename, contains, directory_of, display_name, file_of};
 use crate::scope::{Declares, Deployable};
 
+pub mod identity;
+
 #[derive(Debug, Serialize)]
 pub struct SubProject {
     pub id: String,
@@ -33,6 +35,10 @@ pub struct SubProject {
     pub system: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<String>,
+    pub display_name: String,
+    pub role: &'static str,
+    pub role_basis: String,
+    pub summary: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -472,6 +478,10 @@ fn partition(
             owner: None,
             system: None,
             depends_on: Vec::new(),
+            display_name: found.name.clone(),
+            role: "",
+            role_basis: String::new(),
+            summary: String::new(),
         })
         .collect();
 

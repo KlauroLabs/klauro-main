@@ -8,6 +8,10 @@ use crate::entry_exit::{EntryPoint, ExitPoint};
 use crate::model::*;
 use crate::tables::{Column, Table};
 
+mod stages;
+
+pub use stages::Stage;
+
 const STEPS_KEPT: usize = 16;
 const FLOWS_NAMED: usize = 40;
 const HISTORY_SHARE_OF_FILES: usize = 20;
@@ -59,6 +63,9 @@ pub struct Flow {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub step_edges: Vec<crate::steps::StepEdge>,
     pub units: u32,
+    pub rank: u32,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub stages: Vec<Stage>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub changes: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -1843,6 +1850,10 @@ pub fn derive(
     let mut flows = Vec::with_capacity(served.len());
     let mut through_units: HashMap<String, (Vec<String>, Vec<String>)> = HashMap::default();
     let mut carried: HashMap<String, Vec<Shared>> = HashMap::default();
+    let mut product_reach: HashSet<u32> = HashSet::default();
+    let mut product_count: HashMap<u32, u32> = HashMap::default();
+    let mut tooling_reach: HashMap<u32, &'static str> = HashMap::default();
+    let mut delegates: Vec<(usize, Vec<u32>)> = Vec::new();
     for entry in &served {
         let Some(start) = position_of.get(entry.handler.as_str()).copied() else { continue };
         let mut seen: HashSet<u32> = HashSet::from_iter([start]);
@@ -2058,6 +2069,27 @@ pub fn derive(
             cut,
             standing,
         });
+        match entry.unshipped.as_ref().filter(|held| held.is_established()) {
+            Some(held) => tooling_reach.extend(seen.iter().map(|unit| (*unit, held.role))),
+            None => {
+                product_reach.extend(seen.iter().copied());
+                for unit in &seen {
+                    *product_count.entry(*unit).or_default() += 1;
+                }
+                if matches!(entry.kind, "tool" | "http" | "ipc" | "cli") {
+                    let handed_to: Vec<u32> = std::iter::once(&start)
+                        .chain(members.get(&start).into_iter().flatten())
+                        .flat_map(|unit| next.get(unit).into_iter().flatten())
+                        .copied()
+                        .filter(|target| {
+                            let held = &nodes[*target as usize];
+                            held.kind != crate::model::NodeKind::External && held.file != nodes[start as usize].file
+                        })
+                        .collect();
+                    delegates.push((flows.len(), handed_to));
+                }
+            }
+        }
         flows.push(Flow {
             confidence,
             unsettled: None,
@@ -2089,12 +2121,24 @@ pub fn derive(
             open,
             cut,
             units: seen.len() as u32,
+            rank: 0,
+            stages: stages::of_reach(
+                &queue.iter().map(|(unit, _)| *unit).collect::<Vec<u32>>(),
+                nodes[start as usize].project.as_deref(),
+                matches!(entry.kind, "lifecycle" | "cli"),
+                nodes,
+                files,
+                &leaving,
+            ),
             changes: changing,
             leads_into: into,
             project: nodes[start as usize].project.clone(),
             unshipped: entry.unshipped.clone(),
         });
     }
+    set_aside_what_only_programs_run(&mut flows, &delegates, &product_count, &tooling_reach);
+    let pointed_to = pointed_to_by_the_product(&flows, calls, files, &served);
+    rank_flows(&mut flows, &pointed_to);
     flows.sort_by(|left, right| left.id.cmp(&right.id));
     link_across_parts(&mut flows, &carried);
     let mut received: HashMap<&str, Vec<String>> = HashMap::default();
@@ -2180,7 +2224,7 @@ pub fn derive(
             _ => None,
         };
     }
-    set_aside_tooling_entities(&mut entities, &flows);
+    set_aside_tooling_entities(&mut entities, &flows, &Reach { position_of: &position_of, product: &product_reach, tooling: &tooling_reach });
     let terminal = flows.iter().filter(|flow| flow.standing == "terminal").count() as u32;
     let chained = flows.iter().filter(|flow| !flow.leads_into.is_empty()).count() as u32;
     Comprehension { products: Vec::new(), capabilities: Vec::new(), flows, entities, terminal, chained, semantic_coverage: None, derivation: None }
@@ -2194,7 +2238,129 @@ fn directory_of_flow(flow: &Flow) -> Option<&str> {
     flow.path.first().map(|step| crate::paths::directory_of(file_of_unit(&step.unit)))
 }
 
-fn set_aside_tooling_entities(entities: &mut [Entity], flows: &[Flow]) {
+const POINTED_TO_BY_AT_LEAST: usize = 2;
+
+fn names_a_command(operation: &str) -> bool {
+    operation.len() >= 4 && operation.chars().all(|held| held.is_ascii_alphanumeric() || matches!(held, '_' | '-' | '.'))
+}
+
+fn pointed_to_by_the_product(flows: &[Flow], calls: &[CallFact], files: &[String], served: &[&EntryPoint]) -> HashMap<String, usize> {
+    let tooling_files: HashSet<u32> = served
+        .iter()
+        .filter(|entry| crate::unshipped::is_set_aside(entry.unshipped.as_ref()))
+        .map(|entry| entry.file)
+        .collect();
+    let mut asked_for: HashMap<&str, Vec<usize>> = HashMap::default();
+    for (at, flow) in flows.iter().enumerate() {
+        if matches!(flow.kind, "tool" | "cli") && names_a_command(&flow.operation) {
+            asked_for.entry(flow.operation.as_str()).or_default().push(at);
+        }
+    }
+    fn own_file(flow: &Flow) -> &str {
+        flow.path.first().map(|step| file_of_unit(&step.unit)).unwrap_or_default()
+    }
+    let mut mentioned_in: HashMap<usize, HashSet<u32>> = HashMap::default();
+    for call in calls {
+        if tooling_files.contains(&call.file) {
+            continue;
+        }
+        let Some(path) = files.get(call.file as usize) else { continue };
+        if crate::paths::is_test(path) {
+            continue;
+        }
+        for literal in call.literals.iter().filter(|literal| literal.len() <= 400) {
+            for token in literal.split(|held: char| !(held.is_ascii_alphanumeric() || matches!(held, '_' | '-' | '.'))) {
+                for at in asked_for.get(token).into_iter().flatten() {
+                    if own_file(&flows[*at]) != path.as_str() {
+                        mentioned_in.entry(*at).or_default().insert(call.file);
+                    }
+                }
+            }
+        }
+    }
+    mentioned_in.into_iter().map(|(at, held)| (flows[at].id.clone(), held.len())).collect()
+}
+
+fn standing_tier(flow: &Flow, pointed_to: &HashMap<String, usize>) -> u8 {
+    if crate::unshipped::is_set_aside(flow.unshipped.as_ref()) {
+        return 4;
+    }
+    match flow.kind {
+        "http" | "rpc" | "graphql" | "ui" | "ipc" => 0,
+        "tool" | "cli" => match pointed_to.get(&flow.id).copied().unwrap_or(0) >= POINTED_TO_BY_AT_LEAST {
+            true => 0,
+            false => 1,
+        },
+        "lifecycle" | "schedule" | "event" | "message" | "background" => 2,
+        _ => 3,
+    }
+}
+
+pub(crate) fn rank_flows(flows: &mut [Flow], pointed_to: &HashMap<String, usize>) {
+    let mut order: Vec<usize> = (0..flows.len()).collect();
+    order.sort_by(|left, right| {
+        let (left, right) = (&flows[*left], &flows[*right]);
+        standing_tier(left, pointed_to)
+            .cmp(&standing_tier(right, pointed_to))
+            .then(right.units.cmp(&left.units))
+            .then(left.id.cmp(&right.id))
+    });
+    for (position, at) in order.into_iter().enumerate() {
+        flows[at].rank = position as u32 + 1;
+    }
+}
+
+fn set_aside_what_only_programs_run(
+    flows: &mut [Flow],
+    delegates: &[(usize, Vec<u32>)],
+    product_count: &HashMap<u32, u32>,
+    tooling_reach: &HashMap<u32, &'static str>,
+) {
+    let mut handing: HashMap<u32, u32> = HashMap::default();
+    for (_, handed_to) in delegates {
+        let mut distinct = handed_to.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        for unit in distinct {
+            *handing.entry(unit).or_default() += 1;
+        }
+    }
+    for (at, handed_to) in delegates {
+        let mut distinct = handed_to.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        let its_own: Vec<u32> = distinct.iter().copied().filter(|unit| product_count.get(unit) == handing.get(unit)).collect();
+        let only_programs: Vec<&'static str> = its_own.iter().filter_map(|unit| tooling_reach.get(unit).copied()).collect();
+        if only_programs.is_empty() || only_programs.len() * 2 <= its_own.len() {
+            continue;
+        }
+        flows[*at].unshipped = Some(crate::entry_exit::Unshipped {
+            role: only_programs[0],
+            basis: "reaches-only-program-code",
+            evidence: format!(
+                "{} of the {} units this entry alone hands its work to also run from programs nothing ships",
+                only_programs.len(),
+                its_own.len()
+            ),
+        });
+    }
+}
+
+struct Reach<'a> {
+    position_of: &'a HashMap<&'a str, u32>,
+    product: &'a HashSet<u32>,
+    tooling: &'a HashMap<u32, &'static str>,
+}
+
+impl Reach<'_> {
+    fn only_tooling_runs(&self, unit: &str) -> bool {
+        self.position_of
+            .get(unit)
+            .is_some_and(|at| self.tooling.contains_key(at) && !self.product.contains(at))
+    }
+}
+
+fn set_aside_tooling_entities(entities: &mut [Entity], flows: &[Flow], reach: &Reach<'_>) {
     let product_directories: HashSet<&str> = flows
         .iter()
         .filter(|flow| !crate::unshipped::is_set_aside(flow.unshipped.as_ref()))
@@ -2226,16 +2392,26 @@ fn set_aside_tooling_entities(entities: &mut [Entity], flows: &[Flow]) {
         let verdicts: Vec<Option<(&'static str, &'static str)>> =
             declared.into_iter().chain(users.iter().copied()).map(|path| aside(path)).collect();
         let declared_aside = declared.is_some_and(|path| aside(path).is_some());
-        let only_tooling_uses =
-            !users.is_empty() && users.iter().all(|path| aside(path).is_some());
-        if declared_aside || only_tooling_uses {
-            if let Some((role, basis)) = verdicts.into_iter().flatten().next() {
+        let used_by: Vec<&String> = entity.written_by.iter().chain(entity.read_by.iter()).collect();
+        let only_tooling_uses = !users.is_empty()
+            && used_by.iter().zip(users.iter()).all(|(unit, path)| aside(path).is_some() || reach.only_tooling_runs(unit));
+        let named = verdicts.into_iter().flatten().next();
+        match (declared_aside || only_tooling_uses, named) {
+            (true, Some((role, basis))) => {
                 entity.unshipped = Some(crate::entry_exit::Unshipped {
                     role,
                     basis,
                     evidence: "every file that declares or uses this record is tooling, benchmark or test code".to_string(),
                 });
             }
+            (true, None) => {
+                entity.unshipped = Some(crate::entry_exit::Unshipped {
+                    role: "tooling",
+                    basis: "shipping-evidence",
+                    evidence: "every unit that writes or reads this record runs only from programs nothing ships".to_string(),
+                });
+            }
+            _ => {}
         }
     }
 }

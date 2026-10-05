@@ -21,7 +21,16 @@ fn an_unshipped_standalone_program_stays_an_entry_tagged_by_shipping_evidence() 
     let found = handled_at(&entries, "apps/tool/src/gauntlet-tool.ts")
         .expect("a main-guarded program nothing ships is kept and tagged");
     assert_eq!(found["unshipped"]["basis"], "shipping-evidence", "{found:#?}");
-    assert_eq!(found["unshipped"]["role"], "standalone-program", "{found:#?}");
+    assert_eq!(found["unshipped"]["role"], "tooling", "{found:#?}");
+}
+
+#[test]
+fn a_standalone_program_that_times_its_own_run_is_a_benchmark() {
+    let index = index();
+    let entries = entries(&index);
+    let found = handled_at(&entries, "apps/tool/src/timed-run.ts")
+        .expect("a main-guarded program nothing ships is kept and tagged");
+    assert_eq!(found["unshipped"]["role"], "benchmark", "{found:#?}");
 }
 
 #[test]

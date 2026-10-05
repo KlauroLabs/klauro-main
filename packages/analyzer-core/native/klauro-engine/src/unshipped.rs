@@ -20,7 +20,10 @@ pub struct Census {
 
 impl Unshipped {
     pub fn is_established(&self) -> bool {
-        matches!(self.basis, "shipping-evidence" | "island")
+        matches!(
+            self.basis,
+            "shipping-evidence" | "island" | "program-only-reach" | "reaches-mostly-program-code" | "reaches-only-program-code" | "test-only-reach"
+        )
     }
 }
 
@@ -80,6 +83,20 @@ impl Graph {
         }
         queue.len()
     }
+}
+
+fn measures_time(graph: &Graph, nodes: &[IndexNode], file: u32) -> bool {
+    graph.nodes_of_file.get(&file).is_some_and(|own| {
+        own.iter().any(|unit| {
+            graph.next[*unit as usize].iter().any(|target| {
+                let held = &nodes[*target as usize];
+                held.kind == NodeKind::External && held.id.starts_with("runtime:") && {
+                    let leaf = held.id.rsplit(':').next().unwrap_or_default();
+                    leaf.ends_with(".now") || leaf.contains(".hrtime")
+                }
+            })
+        })
+    })
 }
 
 fn owns_a_build_script(path: &str, held: &HashSet<&str>) -> bool {
@@ -155,8 +172,12 @@ pub fn classify(
             continue;
         }
         if standalone {
+            let role = match measures_time(&graph, nodes, entry.file) {
+                true => "benchmark",
+                false => "tooling",
+            };
             signals[at] = Some((
-                "standalone-program",
+                role,
                 "shipping-evidence",
                 format!("the part that holds {path} has shipping artifacts and none of them names this program"),
             ));

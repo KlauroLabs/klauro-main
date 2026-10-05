@@ -207,6 +207,36 @@ fn outcome_of(flow: &Flow, bookkeeping: &BTreeSet<&str>) -> Family {
 }
 
 const WORKS_IN: &str = "within:";
+const STAGE: &str = "stage:";
+const FUNCTIONS_TOLD: usize = 14;
+const SPLIT_FROM_FLOWS: usize = 40;
+const SPLIT_FROM_STAGES: usize = 12;
+const SPLIT_OUTCOMES_SHOWN: usize = 80;
+const SPLIT_LINES_PER_OUTCOME: usize = 4;
+const STAGES_AT_LEAST: usize = 6;
+const STAGED_PART_FLOWS_AT_MOST: usize = 6;
+
+fn is_a_program_with_stages(flow: &Flow, flows_in_part: usize) -> bool {
+    matches!(flow.kind, "lifecycle" | "cli") && flow.stages.len() >= STAGES_AT_LEAST && flows_in_part <= STAGED_PART_FLOWS_AT_MOST
+}
+
+fn evidence_of_stage(flow: &Flow, module: &str) -> String {
+    let Some(stage) = flow.stages.iter().find(|stage| stage.module == module) else {
+        return format!("  outcome (proximal): {module}, which is the stage of its work done there");
+    };
+    format!(
+        "  outcome (terminal): the work {} does in {}, which is a stage of what it carries out\n  the functions it runs there: {}\n  it reaches out through: {}\n  units of its {} that run there: {}",
+        surface_of(flow),
+        stage.module,
+        stage.names.join(", "),
+        match stage.leaves.is_empty() {
+            true => "nothing outside this program".to_string(),
+            false => stage.leaves.join(", "),
+        },
+        flow.units,
+        stage.units
+    )
+}
 
 fn module_of(flow: &Flow) -> &str {
     let unit = flow.path.first().map(|step| step.unit.as_str()).unwrap_or(flow.entry_point.as_str());
@@ -221,6 +251,13 @@ pub(crate) fn outcomes_of<'a>(flows: &[&'a Flow]) -> BTreeMap<Family, Vec<&'a Fl
     let bookkeeping = kept_for_itself(flows);
     let mut grouped: BTreeMap<Family, Vec<&'a Flow>> = BTreeMap::new();
     for flow in flows {
+        if is_a_program_with_stages(flow, flows.len()) {
+            for stage in &flow.stages {
+                let family = Family { key: format!("{STAGE}{}", stage.module), basis: "the stage of its work done in that module" };
+                grouped.entry(family).or_default().push(flow);
+            }
+            continue;
+        }
         grouped.entry(outcome_of(flow, &bookkeeping)).or_default().push(flow);
     }
     if grouped.keys().any(|family| !is_only_a_trigger(family)) {
@@ -308,12 +345,15 @@ const ONLY_PASSES_A_SIGNAL: &str =
 pub(crate) fn terminality_of(family: &Family, flows: &[&Flow]) -> &'static str {
     match family.key.split(':').next().unwrap_or_default() {
         "asks" if only_relays_a_signal(flows) => "proximal",
-        "changes" | "hands on" | "calls" | "acts" | "keeps" | "asks" => "terminal",
+        "changes" | "hands on" | "calls" | "acts" | "keeps" | "asks" | "stage" => "terminal",
         _ => "proximal",
     }
 }
 
 fn evidence_of(flows: &[&Flow], family: &Family, fields: &Fields) -> String {
+    if let (Some(module), [flow]) = (family.key.strip_prefix(STAGE), flows) {
+        return evidence_of_stage(flow, module);
+    }
     let mut surfaces: Vec<String> = flows.iter().map(|flow| surface_of(flow)).collect();
     settle(&mut surfaces);
     let more = surfaces.len().saturating_sub(SURFACES_SHOWN);
@@ -343,6 +383,12 @@ fn evidence_of(flows: &[&Flow], family: &Family, fields: &Fields) -> String {
         false => held.join(", "),
     };
     let (_, object) = family.key.split_once(':').unwrap_or(("", family.key.as_str()));
+    let functions_run: Vec<&str> = match flows {
+        [flow] if matches!(flow.kind, "lifecycle" | "cli") => {
+            flow.stages.iter().flat_map(|stage| stage.names.iter().map(String::as_str)).take(FUNCTIONS_TOLD).collect()
+        }
+        _ => Vec::new(),
+    };
     let kept: Vec<String> = writes
         .iter()
         .chain(reads.iter())
@@ -350,7 +396,7 @@ fn evidence_of(flows: &[&Flow], family: &Family, fields: &Fields) -> String {
         .take(RECORDS_DESCRIBED)
         .collect();
     format!(
-        "  outcome ({}): {}, which is {}\n  {RECORDS_HOLD} {}\n  entered as: {}\n  reached through: {}{}\n  guarded by: {}\n  what its paths do:\n{}\n  writes: {}\n  reads: {}\n  reaches: {}\n  paths: {}",
+        "  outcome ({}): {}, which is {}\n  {RECORDS_HOLD} {}\n  entered as: {}\n  reached through: {}{}\n  guarded by: {}\n  what its paths do:\n{}{}\n  writes: {}\n  reads: {}\n  reaches: {}\n  paths: {}",
         terminality_of(family, flows),
         object,
         match family.key.starts_with("asks:") && only_relays_a_signal(flows) {
@@ -370,6 +416,10 @@ fn evidence_of(flows: &[&Flow], family: &Family, fields: &Fields) -> String {
             .map(|flow| format!("    - {}: {}", surface_of(flow), told_steps(flow)))
             .collect::<Vec<_>>()
             .join("\n"),
+        match functions_run.is_empty() {
+            true => String::new(),
+            false => format!("\n  the functions it runs: {}", functions_run.join(", ")),
+        },
         listed(&writes),
         listed(&reads),
         listed(&reaches),
@@ -554,6 +604,58 @@ fn evidence_of_capability(held: &Held, lanes: &BTreeMap<&str, (&Family, &Vec<&Fl
     told
 }
 
+fn flows_held(held: &Held, lanes: &BTreeMap<&str, &Vec<&Flow>>) -> usize {
+    held.families
+        .iter()
+        .filter_map(|id| lanes.get(id.as_str()))
+        .flat_map(|lane| lane.iter().map(|flow| flow.id.as_str()))
+        .collect::<BTreeSet<&str>>()
+        .len()
+}
+
+fn split_the_broad(
+    said: &str,
+    told: &BTreeMap<String, String>,
+    lanes: &BTreeMap<&str, &Vec<&Flow>>,
+    key_of: &BTreeMap<&str, &str>,
+    held: Vec<Held>,
+    unassigned: &mut BTreeSet<String>,
+) -> Vec<Held> {
+    let stages_held = |held: &Held| {
+        held.families.iter().filter(|id| key_of.get(id.as_str()).is_some_and(|key| key.starts_with(STAGE))).count()
+    };
+    let (broad, mut kept): (Vec<Held>, Vec<Held>) = held
+        .into_iter()
+        .partition(|other| flows_held(other, lanes) > SPLIT_FROM_FLOWS || stages_held(other) > SPLIT_FROM_STAGES);
+    if broad.is_empty() {
+        return kept;
+    }
+    let mut split_any = false;
+    for wide in broad {
+        let listed: Vec<(String, String)> = wide
+            .families
+            .iter()
+            .filter_map(|id| told.get(id).map(|evidence| (id.clone(), evidence.lines().take(SPLIT_LINES_PER_OUTCOME).collect::<Vec<_>>().join("\n"))))
+            .take(SPLIT_OUTCOMES_SHOWN)
+            .collect();
+        let proposal = crate::author::split_purpose(said, &wide.name, &wide.description, &listed);
+        if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
+            eprintln!("  split {} over {} outcomes into {} capabilities", wide.name, listed.len(), proposal.capabilities.len());
+        }
+        if proposal.capabilities.len() < 2 {
+            kept.push(wide);
+            continue;
+        }
+        split_any = true;
+        let known: BTreeSet<String> = wide.families.clone();
+        gather(vec![proposal], &mut kept, unassigned, &known);
+    }
+    if split_any {
+        place(said, told, &mut kept, unassigned);
+    }
+    kept
+}
+
 pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields: &Fields) -> Vec<Capability> {
     if flows.is_empty() {
         return Vec::new();
@@ -672,6 +774,9 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
     };
     held.retain(|other| !other.families.is_empty());
     merge_same_named(&mut held);
+    let lane_flows: BTreeMap<&str, &Vec<&Flow>> = keyed.iter().map(|(id, _, lane)| (id.as_str(), *lane)).collect();
+    held = split_the_broad(said, &told, &lane_flows, &key_of, held, &mut unassigned);
+    merge_same_named(&mut held);
     unassigned.retain(|id| known.contains(id) && !held.iter().any(|other| other.families.contains(id)));
     if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
         eprintln!("  settled {} capabilities and {} unassigned of {} outcomes", held.len(), unassigned.len(), told.len());
@@ -712,7 +817,7 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
     let mut unanswered: Vec<Held> = known
         .iter()
         .filter(|id| !unassigned.contains(*id) && !held.iter().any(|other| other.families.contains(*id)))
-        .filter(|id| !key_of.get(id.as_str()).is_some_and(|key| key.starts_with(WORKS_IN)))
+        .filter(|id| !key_of.get(id.as_str()).is_some_and(|key| key.starts_with(WORKS_IN) || key.starts_with(STAGE)))
         .map(|id| structural(id, &key_of))
         .collect();
     merge_same_named(&mut unanswered);
@@ -772,9 +877,13 @@ static SCREEN_EVENTS: &[&str] = &[
     "scroll", "touchend", "touchmove", "touchstart", "visibilitychange", "wheel",
 ];
 
+pub(crate) fn is_a_screen_event(operation: &str) -> bool {
+    SCREEN_EVENTS.contains(&operation.to_ascii_lowercase().as_str())
+}
+
 fn only_moves_the_screen(flow: &Flow) -> bool {
     flow.kind == "event"
-        && SCREEN_EVENTS.contains(&flow.operation.to_ascii_lowercase().as_str())
+        && is_a_screen_event(&flow.operation)
         && flow.writes.is_empty()
         && !flow.steps.iter().any(|step| matches!(step.kind, "call" | "hand_off" | "raise" | "change" | "create" | "remove"))
 }
@@ -876,6 +985,8 @@ pub struct PartCoverage {
     pub flows: u32,
     pub related: u32,
     pub unmapped: u32,
+    pub set_aside: u32,
+    pub inert: u32,
     pub flows_to_capabilities: f64,
 }
 
@@ -884,6 +995,8 @@ pub struct Coverage {
     pub flows: u32,
     pub related: u32,
     pub unmapped: u32,
+    pub set_aside: u32,
+    pub inert: u32,
     pub flows_to_capabilities: f64,
     pub parts: Vec<PartCoverage>,
     pub unmapped_flows: Vec<String>,
@@ -896,6 +1009,16 @@ fn share_of(related: u32, flows: u32) -> f64 {
     }
 }
 
+pub(crate) fn delivers_nothing(flow: &Flow) -> bool {
+    matches!(flow.kind, "event" | "schedule" | "background")
+        && flow.writes.is_empty()
+        && flow.reads.is_empty()
+        && flow.reaches.is_empty()
+        && flow.changes.is_empty()
+        && flow.leads_into.is_empty()
+        && flow.steps.iter().all(|step| step.kind == "respond" && step.object.is_none())
+}
+
 pub(crate) fn coverage_of(flows: &[Flow], capabilities: &[Capability]) -> Coverage {
     let related: BTreeSet<&str> =
         capabilities.iter().flat_map(|capability| capability.flows.iter().map(String::as_str)).collect();
@@ -903,13 +1026,26 @@ pub(crate) fn coverage_of(flows: &[Flow], capabilities: &[Capability]) -> Covera
     let mut unmapped_flows: Vec<String> = Vec::new();
     let mut count = 0u32;
     let mut mapped = 0u32;
+    let mut set_aside = 0u32;
+    let mut inert = 0u32;
     for flow in flows {
         let part = parts
             .entry(flow.project.as_deref())
             .or_insert_with(|| PartCoverage { project: flow.project.clone(), ..PartCoverage::default() });
+        if crate::unshipped::is_set_aside(flow.unshipped.as_ref()) {
+            part.set_aside += 1;
+            set_aside += 1;
+            continue;
+        }
+        let held = related.contains(flow.id.as_str());
+        if !held && delivers_nothing(flow) {
+            part.inert += 1;
+            inert += 1;
+            continue;
+        }
         part.flows += 1;
         count += 1;
-        if related.contains(flow.id.as_str()) {
+        if held {
             part.related += 1;
             mapped += 1;
         } else {
@@ -926,6 +1062,8 @@ pub(crate) fn coverage_of(flows: &[Flow], capabilities: &[Capability]) -> Covera
         flows: count,
         related: mapped,
         unmapped: count - mapped,
+        set_aside,
+        inert,
         flows_to_capabilities: share_of(mapped, count),
         parts,
         unmapped_flows,
@@ -1491,6 +1629,8 @@ mod command_family_tests {
             steps: Vec::new(),
             step_edges: Vec::new(),
             units: 1,
+            rank: 0,
+            stages: Vec::new(),
             changes: Vec::new(),
             leads_into: Vec::new(),
             project: None,
@@ -1758,6 +1898,61 @@ mod command_family_tests {
         assert!(placed.evidence.contains("it is served by 2 outcomes"), "{}", placed.evidence);
         assert!(placed.evidence.contains("- prerequisite: session"), "{}", placed.evidence);
         assert_eq!(placed.delivered.iter().find(|held| held.flow == "flow:1").map(|held| held.rationale.as_str()), Some("signs in first"));
+    }
+
+    #[test]
+    fn a_small_part_with_one_program_that_runs_through_many_modules_is_read_stage_by_stage() {
+        let mut program = flow("flow:main", "lifecycle", None, "main", &[], &[]);
+        program.stages = (0..7)
+            .map(|at| crate::comprehend::Stage {
+                module: format!("src/stage{at}.rs"),
+                units: 9,
+                names: vec![format!("run{at}")],
+                leaves: Vec::new(),
+            })
+            .collect();
+        let families = outcomes_of(&[&program]);
+        assert_eq!(families.len(), 7);
+        assert!(families.keys().all(|family| family.key.starts_with("stage:src/stage")));
+        let first = families.iter().next().expect("a stage");
+        assert_eq!(terminality_of(first.0, first.1), "terminal");
+        assert!(evidence_of(first.1, first.0, &Fields::new()).contains("run0"));
+    }
+
+    #[test]
+    fn product_surfaces_rank_before_programs_and_what_programs_alone_run() {
+        let mut route = flow("flow:route", "http", Some("POST"), "/v1/analyze", &[], &[]);
+        route.units = 10;
+        let mut program = flow("flow:main", "lifecycle", None, "main", &[], &[]);
+        program.units = 500;
+        let mut benchmark = flow("flow:bench", "tool", None, "run_benchmark", &[], &[]);
+        benchmark.units = 900;
+        benchmark.unshipped = Some(crate::entry_exit::Unshipped { role: "benchmark", basis: "reaches-only-program-code", evidence: String::new() });
+        let mut orient = flow("flow:orient", "tool", None, "get_start_context", &[], &[]);
+        orient.units = 50;
+        let mut obscure = flow("flow:obscure", "tool", None, "do_something_rare", &[], &[]);
+        obscure.units = 400;
+        let pointed_to: rustc_hash::FxHashMap<String, usize> = [("flow:orient".to_string(), 5)].into_iter().collect();
+        let mut flows = vec![benchmark, program, route, obscure, orient];
+        crate::comprehend::rank_flows(&mut flows, &pointed_to);
+        let rank_of = |id: &str| flows.iter().find(|held| held.id == id).map(|held| held.rank);
+        assert_eq!(
+            (rank_of("flow:route"), rank_of("flow:orient"), rank_of("flow:obscure"), rank_of("flow:main"), rank_of("flow:bench")),
+            (Some(2), Some(1), Some(3), Some(4), Some(5))
+        );
+    }
+
+    #[test]
+    fn coverage_leaves_out_flows_set_aside_and_runtime_hooks_that_deliver_nothing() {
+        let served = flow("flow:1", "http", Some("GET"), "/a", &[], &[]);
+        let hook = flow("flow:2", "event", None, "SIGTERM", &[], &[]);
+        let mut tooling = flow("flow:3", "lifecycle", None, "main", &[], &[]);
+        tooling.unshipped = Some(crate::entry_exit::Unshipped { role: "benchmark", basis: "shipping-evidence", evidence: String::new() });
+        let mut reading = flow("flow:4", "event", None, "data", &[], &["orders"]);
+        reading.project = None;
+        let covered = coverage_of(&[served, hook, tooling, reading], &[]);
+        assert_eq!((covered.flows, covered.set_aside, covered.inert), (2, 1, 1));
+        assert_eq!(covered.unmapped_flows, vec!["flow:1", "flow:4"]);
     }
 
     #[test]

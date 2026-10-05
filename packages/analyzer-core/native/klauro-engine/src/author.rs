@@ -695,6 +695,66 @@ pub fn propose_capabilities(spoken_for: &str, families: &[(String, String)]) -> 
     proposal_of(&held, families.len())
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PartNamed {
+    pub name: String,
+    pub summary: String,
+}
+
+pub fn name_a_part(facts: &str) -> Option<PartNamed> {
+    if !asked() {
+        return None;
+    }
+    let prompt = format!(
+        "These are the facts read from one part of a software system.\n\n{facts}\n\n\
+         Give the part a plain display name of 1-4 words that a person on the team would say aloud, \
+         never the package name, never a path, never prefixed with the repository's name, and one line of \
+         at most 14 words saying what the part is and what it is for, such as \"Tauri backend: engine host, \
+         IPC commands, remote server\". Say only what the facts show. Never name a product, vendor or \
+         technology the facts do not name.\n\n\
+         Return JSON only: {{\"name\":\"...\",\"summary\":\"...\"}}"
+    );
+    let named: PartNamed = answered(&prompt, 400, &proposing(), "summary", 1)?;
+    let (name, summary) = (named.name.trim().to_string(), named.summary.trim().to_string());
+    (!name.is_empty() && !summary.is_empty()).then_some(PartNamed { name, summary })
+}
+
+pub fn split_purpose(spoken_for: &str, name: &str, description: &str, families: &[(String, String)]) -> Proposal {
+    if !asked() || families.len() < 2 {
+        return Proposal::default();
+    }
+    let prompt = format!(
+        "A software system describes itself like this:\n{spoken_for}\n\n{OWN_WORDS}\n\n\
+         One capability was read from it as \"{name}\", described as: {description}\n\
+         It holds {} of the outcomes below, far more than one purpose in a product's own description \
+         holds, so it is two or more things that were read as one: the reason someone comes for them differs, \
+         or the person who comes differs.\n\n{PURPOSE}\n\n\
+         Split it into the purposes it contains, each one something the product's description would list on \
+         its own. Split by what someone comes for and who comes, never by the way in, the technology or the \
+         kind of path. A purpose that would need a list of unrelated things to name its members is not one \
+         purpose. When the outcomes are the stages one program carries out, each distinct result the program \
+         gives someone, what it finds, connects, groups, explains or keeps, is a purpose, not each module that \
+         does a share of the work. If, read carefully, it really is one purpose, return it as a single \
+         capability.\n\n\
+         Rules for what counts:\n{RULES}\n\n\
+         For each capability list every outcome that serves it, each with a role: {ROLES_TOLD} Give each a few \
+         words on why. An outcome that serves no purpose the product states is listed as unassigned. Give each \
+         capability a name of 2-6 words that says what the person gets — a verb and what it is for, never a bare \
+         topic and never the name of one command or screen —, one sentence saying what someone gets, and the \
+         audience it is for. {users_words} Every id below must appear in at least one capability or in \
+         unassigned, and no other id may appear.\n\
+         Return JSON only: {{\"capabilities\":[{{\"name\":\"...\",\"description\":\"...\",\"audience\":\"...\",\"serves\":[{{\"id\":\"...\",\"role\":\"primary\",\"why\":\"...\"}}]}}],\"unassigned\":[\"...\"]}}\n\n\
+         The outcomes:\n{}",
+        families.len(),
+        families.iter().map(|(id, told)| format!("- id: {id}\n{told}")).collect::<Vec<_>>().join("\n"),
+        users_words = IN_THE_USERS_WORDS
+    );
+    let Some(held) = answered::<serde_json::Value>(&prompt, 8000, &asking_of_models(model()), "capabilities", 0) else {
+        return Proposal::default();
+    };
+    proposal_of(&held, families.len())
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct Placed {
     #[serde(default)]
@@ -1169,6 +1229,11 @@ fn shaped(of: &str) -> serde_json::Value {
                 "plumbing": {"type": "array", "items": text},
             },
             "required": ["capabilities", "plumbing"],
+        }),
+        "summary" => serde_json::json!({
+            "type": "object",
+            "properties": {"name": text, "summary": text},
+            "required": ["name", "summary"],
         }),
         "placed" => serde_json::json!({
             "type": "object",

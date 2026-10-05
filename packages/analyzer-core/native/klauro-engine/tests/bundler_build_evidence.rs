@@ -30,5 +30,5 @@ fn a_bundler_entry_whose_output_nothing_ships_stays_an_entry_tagged_by_shipping_
     let found = handled_at(&entries, "src/other-tool.ts")
         .expect("dist/other-tool.cjs is built but never named by any shipping evidence, so it is kept and tagged");
     assert_eq!(found["unshipped"]["basis"], "shipping-evidence", "{found:#?}");
-    assert_eq!(found["unshipped"]["role"], "standalone-program", "{found:#?}");
+    assert_eq!(found["unshipped"]["role"], "tooling", "{found:#?}");
 }
