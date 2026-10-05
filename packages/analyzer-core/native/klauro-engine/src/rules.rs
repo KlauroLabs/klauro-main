@@ -107,10 +107,20 @@ fn label_fits(shape: &Label, registrar: &str, verb: &str, label: Option<&str>) -
         (Label::Route, Some(held)) => route(held),
         (Label::Path, Some(held)) => crate::entry_exit::looks_like_path(held),
         (Label::RouteOrSlash, Some(held)) => {
-            let through_receiver = verb.len() != registrar.len() && !crate::entry_exit::registered_on_a_router(registrar);
-            route(held) && !(through_receiver && !held.contains('/'))
+            let through_receiver = verb.len() != registrar.len();
+            let on_a_router = crate::entry_exit::registered_on_a_router(registrar);
+            let path = crate::entry_exit::split_label(held).1;
+            let addresses_a_path = match through_receiver {
+                true => on_a_router || path.contains('/'),
+                false => path.starts_with('/'),
+            };
+            route(held) && addresses_a_path && spells_a_path(&path)
         }
     }
+}
+
+fn spells_a_path(path: &str) -> bool {
+    !path.contains(['<', '>', '"', '\'', '\\', '`']) && !crate::entry_exit::names_an_http_method(path)
 }
 
 pub fn registrar_kind(registrar: &str, label: Option<&str>) -> Option<&'static str> {

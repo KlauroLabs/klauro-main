@@ -46,12 +46,21 @@ fn folded(template: &str, known: &impl Fn(&str) -> Option<String>) -> String {
     written
 }
 
+fn without_a_leading_base(path: &str) -> &str {
+    let Some(open) = path.strip_prefix('$').or(Some(path)).filter(|held| held.starts_with('{')) else { return path };
+    match open.find('}').map(|close| &open[close + 1..]) {
+        Some(rest) if rest.starts_with('/') => rest,
+        _ => path,
+    }
+}
+
 fn as_a_path(written: &str) -> Option<String> {
     let path = written.split(['?', '#']).next()?.trim();
     let path = match path.find("://") {
         Some(at) => &path[at + 3..][path[at + 3..].find('/')?..],
         None => path,
     };
+    let path = without_a_leading_base(path);
     if !path.contains('/') || path.starts_with('{') || path.contains(char::is_whitespace) {
         return None;
     }
@@ -296,6 +305,7 @@ pub fn through_wrappers(
         return;
     }
     let mut made = Vec::new();
+    let mut relayed: rustc_hash::FxHashSet<&str> = rustc_hash::FxHashSet::default();
     for (position, call) in calls.iter().enumerate() {
         let Some((at, base)) = asking.get(crate::names::leaf(&call.callee).split('<').next().unwrap_or_default()).map(|(at, base)| (*at, base.as_str())) else {
             continue;
@@ -315,6 +325,7 @@ pub fn through_wrappers(
             .find_map(|literal| literal.strip_prefix("method="))
             .unwrap_or("GET")
             .to_string();
+        relayed.insert(crate::names::leaf(&call.callee).split('<').next().unwrap_or_default());
         made.push(ExitPoint {
             id: format!("exit:{}:{}:request", files[call.file as usize], position),
             kind: "api",
@@ -329,6 +340,12 @@ pub fn through_wrappers(
             service: None,
         });
     }
+    exits.retain(|exit| {
+        let relays = exit.kind == "api"
+            && exit.addressed.is_none()
+            && node_of.get(exit.source.as_str()).is_some_and(|unit| relayed.contains(unit.name.as_str()) && asking.contains_key(unit.name.as_str()));
+        !relays
+    });
     exits.extend(made);
 }
 

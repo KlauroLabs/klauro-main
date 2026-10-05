@@ -83,7 +83,7 @@ impl<'a> Extractor<'a> {
         }
     }
 
-    fn pair_value<'t>(&self, object: Node<'t>, wanted: &str) -> Option<Node<'t>> {
+    pub(super) fn pair_value<'t>(&self, object: Node<'t>, wanted: &str) -> Option<Node<'t>> {
         let mut cursor = object.walk();
         object
             .named_children(&mut cursor)
@@ -311,6 +311,7 @@ impl<'a> Extractor<'a> {
     }
 
     pub(super) fn route_object(&mut self, object: Node) {
+        self.tabulated_route(object);
         let path = self.route_path_of_object(object);
         let indexed = self.pair_value(object, "index").is_some_and(|value| value.kind() == "true");
         if path.is_none() && !indexed {

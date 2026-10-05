@@ -84,3 +84,65 @@ fn each_part_reports_the_calls_it_made_and_how_many_were_followed_to_another_par
     assert_eq!(web["http"]["linked"], 5, "{web}");
     assert!(links.iter().all(|held| held["project"] != "subproject:server"), "{links:?}");
 }
+
+fn routes(fixture: &str) -> Vec<(String, String)> {
+    let index = common::read(fixture);
+    index["entry_points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["kind"] == "http")
+        .map(|entry| {
+            (
+                entry["method"].as_str().unwrap_or("").to_string(),
+                entry["path"].as_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_server_that_reads_the_request_path_by_hand_declares_the_routes_it_branches_on() {
+    let found = routes("seam-dispatch");
+    for (method, path) in [
+        ("ALL", "/health"),
+        ("ALL", "/version"),
+        ("ALL", "/status"),
+        ("GET", "/api/reports/daily"),
+        ("GET", "/api/engine/*"),
+        ("POST", "/api/projects/{param}/query"),
+        ("GET", "/api/projects"),
+        ("DELETE", "/api/projects/:id"),
+    ] {
+        assert!(found.iter().any(|(held, route)| held == method && route == path), "{method} {path} in {found:?}");
+    }
+    assert!(!found.iter().any(|(_, route)| route == "/internal/*"), "a bare prefix guard is not a route: {found:?}");
+}
+
+#[test]
+fn a_client_reaches_a_hand_written_route_through_a_joined_path_a_prefix_or_a_pattern() {
+    let index = common::read("seam-dispatch");
+    let reached = |from: &str| -> u64 {
+        index["composition"]["seams"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|seam| seam["kind"] == "http" && seam["from"] == from && seam["to"] == "subproject:server")
+            .map(|seam| seam["count"].as_u64().unwrap())
+            .sum()
+    };
+    assert_eq!(reached("subproject:web"), 7);
+    assert_eq!(reached("subproject:tool"), 1);
+}
+
+#[test]
+fn every_call_that_reached_a_route_counts_as_linked() {
+    let index = common::read("seam-dispatch");
+    let web = index["composition"]["links"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|link| link["project"] == "subproject:web")
+        .expect("web has link coverage");
+    assert_eq!(web["http"]["detected"], web["http"]["linked"], "{web}");
+}

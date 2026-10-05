@@ -3,6 +3,7 @@ use tree_sitter::{Node, Parser, Tree};
 use crate::model::*;
 
 mod addressing;
+mod dispatch;
 mod routes;
 
 const LITERAL_LIMIT: usize = 4;
@@ -20,6 +21,7 @@ pub struct Extractor<'a> {
     speaks_the_mcp_sdk: bool,
     roots: rustc_hash::FxHashSet<String>,
     containers: rustc_hash::FxHashSet<String>,
+    returned_paths: std::cell::OnceCell<rustc_hash::FxHashMap<String, String>>,
 }
 
 #[derive(Clone, Copy)]
@@ -102,6 +104,7 @@ impl<'a> Extractor<'a> {
             speaks_the_mcp_sdk: false,
             roots: rustc_hash::FxHashSet::default(),
             containers: rustc_hash::FxHashSet::default(),
+            returned_paths: std::cell::OnceCell::new(),
         }
     }
 
@@ -309,6 +312,9 @@ impl<'a> Extractor<'a> {
                 if node.kind() == "switch_statement" && scope.argv_param.is_some() && self.cli_switch(node, scope) {
                     return;
                 }
+                if node.kind() == "switch_statement" && self.routed_switch(node, scope) {
+                    return;
+                }
                 let mut inner = scope.child(None, None);
                 inner.context.conditional_depth = scope.context.conditional_depth + 1;
                 inner.enclosing_callable = scope.enclosing_callable.clone();
@@ -451,48 +457,6 @@ impl<'a> Extractor<'a> {
             }
         }
         matched
-    }
-
-    fn routed_branch(&mut self, node: Node, scope: &Scope) -> bool {
-        let (Some(condition), Some(consequence)) =
-            (node.child_by_field_name("condition"), node.child_by_field_name("consequence"))
-        else {
-            return false;
-        };
-        let asked = self.text_owned(condition);
-        let Some((method, path)) = dispatched_on(&asked) else { return false };
-        let name = format!("{method} {path}#{}", line_of(node));
-        let id = self.id("callback", &name, consequence);
-        let registrar = format!("route.{}", method.to_ascii_lowercase());
-        self.facts.nodes.push(IndexNode {
-            id: id.clone(),
-            name,
-            kind: NodeKind::Function,
-            file: self.file,
-            span: span_of(consequence),
-            parent: scope.enclosing_callable.clone().or_else(|| scope.owner.clone()),
-            signature: None,
-            modifiers: Modifiers::default(),
-            decorators: Vec::new(),
-            type_annotation: None,
-            documentation: None,
-            project: None,
-            callback_of: Some(registrar),
-            registration_label: Some(path),
-        });
-        if let Some(owner) = scope.enclosing_callable.clone().or_else(|| scope.owner.clone()) {
-            self.push_edge(&owner, &id, EdgeKind::Contains);
-        }
-        let mut conditioned = scope.child(None, None);
-        conditioned.enclosing_callable = scope.enclosing_callable.clone();
-        conditioned.context.conditional_depth = scope.context.conditional_depth + 1;
-        self.visit(condition, &conditioned);
-        let inner = scope.child(Some(id.clone()), Some(id));
-        self.visit(consequence, &inner);
-        if let Some(alternative) = node.child_by_field_name("alternative") {
-            self.visit(alternative, &conditioned);
-        }
-        true
     }
 
     fn cli_routed_branch(&mut self, node: Node, scope: &Scope) -> bool {
@@ -1465,7 +1429,8 @@ impl<'a> Extractor<'a> {
                     let from_values = initializer
                         .map(|held| crate::entities::built_from(self.text(held)))
                         .unwrap_or_default();
-                    if annotation.is_some() || constructed.is_some() || from_call.is_some() || !from_values.is_empty() || written_here.is_some() {
+                    let stands_for = initializer.filter(|held| self.reads_the_global_fetch(*held)).map(|_| crate::entry_exit::FETCH_FUNCTION.to_string());
+                    if annotation.is_some() || constructed.is_some() || from_call.is_some() || !from_values.is_empty() || written_here.is_some() || stands_for.is_some() {
                         self.facts.locals.push(LocalBinding {
                             file: self.file,
                             unit,
@@ -1474,7 +1439,7 @@ impl<'a> Extractor<'a> {
                             constructed,
                             from_call,
                             written: written_here,
-                stands_for: None,
+                            stands_for,
                             from_values,
                             line: node.start_position().row as u32 + 1,
                             ..Default::default()
@@ -1655,7 +1620,10 @@ impl<'a> Extractor<'a> {
         self.push_edge(owner, &id, EdgeKind::HasMethod);
         let inner = scope.child(Some(id.clone()), Some(id));
         if let Some(body) = callable.child_by_field_name("body") {
-            self.walk(body, &inner);
+            match body.kind() {
+                "statement_block" => self.walk(body, &inner),
+                _ => self.visit(body, &inner),
+            }
         }
         if let Some(parameters) = callable.child_by_field_name("parameters") {
             self.parameter_initializers(parameters, &inner);
@@ -1931,7 +1899,14 @@ impl<'a> Extractor<'a> {
             .filter(|argument| {
                 matches!(
                     argument.kind(),
-                    "string" | "template_string" | "number" | "identifier" | "binary_expression" | "object"
+                    "string"
+                        | "template_string"
+                        | "number"
+                        | "identifier"
+                        | "binary_expression"
+                        | "object"
+                        | "call_expression"
+                        | "new_expression"
                 )
             })
             .take(LITERAL_LIMIT)
@@ -1942,6 +1917,7 @@ impl<'a> Extractor<'a> {
                     .get(self.text(argument))
                     .cloned()
                     .or_else(|| addressing::a_named_constant(self.text(argument).trim()))],
+                "call_expression" | "new_expression" => vec![self.path_given_to(argument)],
                 "binary_expression" => vec![self
                     .text_it_begins_with(argument)
                     .map(|begins| format!("{begins}${{}}"))
@@ -1951,6 +1927,87 @@ impl<'a> Extractor<'a> {
             .flatten()
             .filter(|value| !value.is_empty() && value.len() <= TEXT_REMEMBERED)
             .collect()
+    }
+
+    fn reads_the_global_fetch(&self, expression: Node) -> bool {
+        match unwrap_value(expression).kind() {
+            "identifier" => self.text(expression).trim() == crate::entry_exit::FETCH_FUNCTION,
+            "member_expression" => {
+                let object = expression.child_by_field_name("object").map(|held| self.text(held).trim());
+                let property = expression.child_by_field_name("property").map(|held| self.text(held).trim());
+                property == Some(crate::entry_exit::FETCH_FUNCTION) && matches!(object, Some("globalThis" | "window" | "self" | "global"))
+            }
+            "binary_expression" => {
+                let operator = expression.child_by_field_name("operator").map(|held| self.text(held)).unwrap_or("");
+                matches!(operator, "||" | "??")
+                    && [expression.child_by_field_name("left"), expression.child_by_field_name("right")]
+                        .into_iter()
+                        .flatten()
+                        .any(|operand| self.reads_the_global_fetch(operand))
+            }
+            "parenthesized_expression" => expression.named_child(0).is_some_and(|inner| self.reads_the_global_fetch(inner)),
+            _ => false,
+        }
+    }
+
+    fn path_given_to(&self, call: Node) -> Option<String> {
+        let arguments = call.child_by_field_name("arguments")?;
+        let mut cursor = arguments.walk();
+        let given = arguments
+            .named_children(&mut cursor)
+            .filter(|argument| matches!(argument.kind(), "string" | "template_string"))
+            .map(|argument| trim_quotes(self.text(argument)).to_string())
+            .find(|written| written.starts_with('/'));
+        given.or_else(|| self.path_returned_by(call))
+    }
+
+    fn path_returned_by(&self, call: Node) -> Option<String> {
+        let function = call.child_by_field_name("function")?;
+        let named = match function.kind() {
+            "identifier" => self.text(function),
+            "member_expression" if self.text(function.child_by_field_name("object")?) == "this" => {
+                self.text(function.child_by_field_name("property")?)
+            }
+            _ => return None,
+        };
+        let mut root = call;
+        while let Some(parent) = root.parent() {
+            root = parent;
+        }
+        self.returned_paths.get_or_init(|| self.paths_returned_in(root)).get(named).cloned()
+    }
+
+    fn paths_returned_in(&self, root: Node) -> rustc_hash::FxHashMap<String, String> {
+        let mut found: rustc_hash::FxHashMap<String, String> = rustc_hash::FxHashMap::default();
+        let mut pending = vec![root];
+        while let Some(held) = pending.pop() {
+            let named = match held.kind() {
+                "method_definition" | "function_declaration" => held.child_by_field_name("name"),
+                _ => None,
+            };
+            let returned = named.and_then(|name| {
+                let body = held.child_by_field_name("body")?;
+                let mut cursor = body.walk();
+                let mut statements = body.named_children(&mut cursor);
+                let only = statements.next().filter(|_| statements.next().is_none())?;
+                let value = match only.kind() {
+                    "return_statement" => only.named_child(0)?,
+                    _ => return None,
+                };
+                let written = match value.kind() {
+                    "template_string" | "string" => trim_quotes(self.text(value)).to_string(),
+                    "binary_expression" => self.concatenated(value)?,
+                    _ => return None,
+                };
+                Some((self.text(name).to_string(), written))
+            });
+            if let Some((name, written)) = returned.filter(|(_, written)| written.contains('/')) {
+                found.entry(name).or_insert(written);
+            }
+            let mut cursor = held.walk();
+            pending.extend(held.named_children(&mut cursor));
+        }
+        found
     }
 
     fn addressed_in(&self, object: Node) -> Option<String> {
@@ -2204,31 +2261,6 @@ fn quoted_after(text: &str, at: usize) -> Option<&str> {
     let inner = &rest[1..];
     let end = inner.find(quote)?;
     Some(&inner[..end])
-}
-
-fn dispatched_on(condition: &str) -> Option<(String, String)> {
-    let method = condition.match_indices("method").find_map(|(at, _)| {
-        let rest = &condition[at + "method".len()..];
-        let rest = rest.trim_start().strip_prefix("===").or_else(|| rest.trim_start().strip_prefix("=="))?;
-        let asked = quoted_after(rest, 0)?;
-        ASKED_METHODS.contains(&asked).then(|| asked.to_string())
-    })?;
-    let mut path: Option<String> = None;
-    for (at, _) in condition.match_indices("===") {
-        if let Some(held) = quoted_after(condition, at + 3).filter(|held| held.starts_with('/')) {
-            path = Some(held.to_string());
-            break;
-        }
-    }
-    if path.is_none() {
-        for (at, _) in condition.match_indices("startsWith(") {
-            if let Some(held) = quoted_after(condition, at + "startsWith(".len()).filter(|held| held.starts_with('/')) {
-                path = Some(format!("{}*", held.trim_end_matches('*')));
-                break;
-            }
-        }
-    }
-    Some((method, path?))
 }
 
 fn cli_dispatched_on(condition: &str, param: Option<&str>) -> Option<String> {

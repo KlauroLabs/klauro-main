@@ -1,0 +1,1 @@
+{ "name": "seam-dispatch", "private": true, "workspaces": ["server", "web", "tool"] }

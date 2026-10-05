@@ -307,11 +307,67 @@ fn verb_of(operation: &str) -> Option<&'static str> {
     HTTP_VERBS.iter().copied().find(|verb| *verb == spoken)
 }
 
+fn names_an_http_request(operation: &str) -> bool {
+    verb_of(operation).is_some() || matches!(operation.to_ascii_lowercase().as_str(), "fetch" | "request" | "http.request" | "https.request")
+}
+
 fn answers(route_method: Option<&str>, asked: Option<&str>) -> bool {
     let Some(asked) = asked else { return true };
     match route_method.map(str::to_ascii_lowercase).as_deref() {
         None | Some("all") | Some("any") | Some("*") => true,
         Some(held) => held == asked,
+    }
+}
+
+fn wildcard_prefix(shape: &str) -> Option<&str> {
+    shape.strip_suffix('*').filter(|prefix| prefix.ends_with('/'))
+}
+
+struct ServedRoutes<'a> {
+    exact: HashMap<String, Vec<(&'a str, &'a EntryPoint)>>,
+    prefixed: Vec<(String, &'a str, &'a EntryPoint)>,
+}
+
+impl<'a> ServedRoutes<'a> {
+    fn new(files: &'a [String], entry_points: &'a [EntryPoint], owner: &HashMap<&'a str, &'a str>) -> Self {
+        let mut served = ServedRoutes { exact: HashMap::default(), prefixed: Vec::new() };
+        for entry in entry_points.iter().filter(|entry| entry.kind == "http") {
+            let (Some(path), Some(file)) = (entry.path.as_deref(), files.get(entry.file as usize)) else {
+                continue;
+            };
+            let Some(project) = owner.get(file.as_str()) else { continue };
+            let shape = route_shape(path);
+            match wildcard_prefix(&shape) {
+                Some(prefix) => served.prefixed.push((prefix.to_string(), project, entry)),
+                None => served.exact.entry(shape).or_default().push((project, entry)),
+            }
+        }
+        served
+    }
+
+    fn answering(&self, shape: &str, asked: Option<&str>) -> Vec<(&'a str, &'a EntryPoint)> {
+        let exact: Vec<(&str, &EntryPoint)> = self
+            .exact
+            .get(shape)
+            .into_iter()
+            .flatten()
+            .filter(|(_, entry)| answers(entry.method.as_deref(), asked))
+            .copied()
+            .collect();
+        if !exact.is_empty() {
+            return exact;
+        }
+        let covering: Vec<&(String, &str, &EntryPoint)> = self
+            .prefixed
+            .iter()
+            .filter(|(prefix, _, entry)| shape.starts_with(prefix.as_str()) && answers(entry.method.as_deref(), asked))
+            .collect();
+        let longest = covering.iter().map(|(prefix, _, _)| prefix.len()).max().unwrap_or(0);
+        covering
+            .into_iter()
+            .filter(|(prefix, _, _)| prefix.len() == longest)
+            .map(|(_, project, entry)| (*project, *entry))
+            .collect()
     }
 }
 
@@ -322,15 +378,7 @@ fn http_seams(
     owner: &HashMap<&str, &str>,
     linked: &mut HashSet<(u32, u32)>,
 ) -> Vec<Seam> {
-    let mut served: HashMap<String, Vec<(&str, &EntryPoint)>> = HashMap::default();
-    for entry in entry_points.iter().filter(|entry| entry.kind == "http") {
-        let (Some(path), Some(file)) = (entry.path.as_deref(), files.get(entry.file as usize)) else {
-            continue;
-        };
-        if let Some(project) = owner.get(file.as_str()) {
-            served.entry(route_shape(path)).or_default().push((project, entry));
-        }
-    }
+    let served = ServedRoutes::new(files, entry_points, owner);
     let mut found: BTreeMap<(&str, &str, bool), (u32, Vec<String>)> = BTreeMap::new();
     for exit in exit_points.iter().filter(|exit| exit.kind == "api") {
         let (Some(addressed), Some(file)) = (exit.addressed.as_deref(), files.get(exit.file as usize)) else {
@@ -338,19 +386,16 @@ fn http_seams(
         };
         let Some(caller) = owner.get(file.as_str()) else { continue };
         let asked = verb_of(&exit.operation);
-        let shape = route_shape(addressed);
-        let Some(routes) = served.get(&shape) else { continue };
-        let matching: Vec<&(&str, &EntryPoint)> = routes
-            .iter()
-            .filter(|(_, entry)| answers(entry.method.as_deref(), asked))
-            .collect();
+        let matching = served.answering(&route_shape(addressed), asked);
+        if matching.is_empty() || (asked.is_none() && matching.len() != 1) {
+            continue;
+        }
+        linked.insert((exit.file, exit.line));
         let targets: HashSet<&str> = matching.iter().map(|(project, _)| *project).collect();
-        let unambiguous = asked.is_some() || matching.len() == 1;
-        if targets.len() != 1 || targets.contains(caller) || !unambiguous {
+        if targets.len() != 1 || targets.contains(caller) {
             continue;
         }
         let (target, route) = matching[0];
-        linked.insert((exit.file, exit.line));
         let route_file = files.get(route.file as usize).map(String::as_str).unwrap_or_default();
         let entry = found.entry((caller, target, is_test(file))).or_insert((0, Vec::new()));
         entry.0 += 1;
@@ -408,11 +453,12 @@ fn link_coverage(
     files: &[String],
     exit_points: &[ExitPoint],
     owner: &HashMap<&str, &str>,
-    seams: &[Seam],
     reached: &HashSet<(u32, u32)>,
 ) -> Vec<LinkCoverage> {
     let mut held: BTreeMap<&str, LinkCoverage> = BTreeMap::new();
-    for exit in exit_points.iter().filter(|exit| matches!(exit.kind, "api" | "process")) {
+    let mut outbound: Vec<&ExitPoint> = exit_points.iter().filter(|exit| matches!(exit.kind, "api" | "process")).collect();
+    outbound.sort_by_key(|exit| exit.kind == "process");
+    for exit in outbound {
         let Some(file) = files.get(exit.file as usize).filter(|file| !is_test(file)) else { continue };
         let Some(project) = owner.get(file.as_str()) else { continue };
         let entry = held.entry(project).or_insert_with(|| LinkCoverage {
@@ -430,21 +476,17 @@ fn link_coverage(
                 exit.addressed.as_deref().filter(|_| exit.kind == "api").unwrap_or(&exit.operation)
             ));
         }
-        match (exit.kind, exit.addressed.as_deref()) {
-            ("process", _) => entry.process.detected += 1,
-            ("api", Some(address)) if address.starts_with(crate::entry_exit::IPC_SCHEME) => entry.ipc.detected += 1,
-            ("api", Some(_)) => entry.http.detected += 1,
-            _ => {}
-        }
-    }
-    for seam in seams.iter().filter(|seam| seam.origin == "product") {
-        let Some(entry) = held.get_mut(seam.from.as_str()) else { continue };
-        let followed = match seam.kind {
-            "http" => &mut entry.http,
-            "process" => &mut entry.process,
-            _ => &mut entry.ipc,
+        let followed = match (exit.kind, exit.addressed.as_deref()) {
+            ("process", _) => &mut entry.process,
+            ("api", Some(address)) if address.starts_with(crate::entry_exit::IPC_SCHEME) => &mut entry.ipc,
+            ("api", Some(_)) => &mut entry.http,
+            ("api", None) if names_an_http_request(&exit.operation) => &mut entry.http,
+            _ => continue,
         };
-        followed.linked += seam.count;
+        followed.detected += 1;
+        if reached.contains(&(exit.file, exit.line)) {
+            followed.linked += 1;
+        }
     }
     held.into_values().collect()
 }
@@ -600,12 +642,15 @@ fn process_seams(
                 .into_iter()
                 .find_map(|word| {
                     let target = names.get(&word)?.as_deref()?;
-                    (target != *caller).then(|| (target, word))
+                    Some((target, word))
                 })
                 .or_else(|| reached_through_a_path(&spelled, rooted, caller))
         });
         let Some((target, word)) = reached else { continue };
         linked.insert((exit.file, exit.line));
+        if target == *caller {
+            continue;
+        }
         let entry = found.entry((caller, target, is_test(file))).or_insert((0, Vec::new()));
         entry.0 += 1;
         entry.1.push(format!("{}:{} starts {}", file, exit.line, word));
@@ -649,7 +694,7 @@ pub fn derive(
     let rooted = rooted_projects(&projects);
     seams.extend(ipc_seams(files, entry_points, exit_points, &owner, &mut reached));
     seams.extend(process_seams(files, exit_points, calls, &owner, &names, &rooted, &constants, &mut reached));
-    let links = link_coverage(files, exit_points, &owner, &seams, &reached);
+    let links = link_coverage(files, exit_points, &owner, &reached);
     Some(Composition {
         mode: "derived",
         children: weigh(root, &projects, history, &owner),

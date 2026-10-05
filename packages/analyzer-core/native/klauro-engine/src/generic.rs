@@ -2034,9 +2034,17 @@ impl<'a> Extractor<'a> {
     fn declare_routed_by_hand(&mut self, node: Node, scope: &Scope) {
         static SPOKEN_METHODS: &[&str] =
             &["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"];
+        static ASKS_ABOUT_A_REQUEST: &[&str] = &["path", "request", "route", "uri", "url"];
         let Some(handler) = scope.callable.clone().or_else(|| scope.owner.clone()) else {
             return;
         };
+        let written = self.text(node);
+        let subject = written.split('{').next().unwrap_or(written).to_ascii_lowercase();
+        let asks_about_a_request = ASKS_ABOUT_A_REQUEST.iter().any(|word| subject.contains(word))
+            || subject.split(|held: char| !held.is_alphanumeric()).any(|word| word == "req");
+        if !asks_about_a_request {
+            return;
+        }
         let mut pending: Vec<Node> = vec![node];
         while let Some(held) = pending.pop() {
             let mut cursor = held.walk();

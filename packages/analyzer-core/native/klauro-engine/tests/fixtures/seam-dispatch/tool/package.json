@@ -1,0 +1,1 @@
+{ "name": "gateway-tool", "dependencies": { "node-fetch": "3.0.0" } }

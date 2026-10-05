@@ -157,6 +157,10 @@ pub(crate) fn looks_like_path(label: &str) -> bool {
     label.starts_with('/') || label.starts_with("./") || label.contains("/:")
 }
 
+pub(crate) fn names_an_http_method(word: &str) -> bool {
+    HTTP_METHODS.binary_search(&word.to_ascii_lowercase().as_str()).is_ok()
+}
+
 pub(crate) fn split_label(label: &str) -> (Option<String>, String) {
     let trimmed = label.trim();
     if let Some((head, rest)) = trimmed.split_once(char::is_whitespace) {
@@ -1652,6 +1656,20 @@ fn fetch_is_the_web(path: &str) -> bool {
         .is_some_and(|(_, spoken)| WHERE_FETCH_IS_THE_WEB.binary_search(&spoken).is_ok())
 }
 
+pub(crate) const FETCH_FUNCTION: &str = "fetch";
+
+fn fetched_through_an_alias(
+    call: &CallFact,
+    path: &str,
+    locals_by_unit: &HashMap<(u32, &str, &str), &crate::model::LocalBinding>,
+) -> Option<&'static str> {
+    let caller = call.caller.as_deref()?;
+    let alias = [caller, ""]
+        .into_iter()
+        .find_map(|unit| locals_by_unit.get(&(call.file, unit, call.callee.as_str())))?;
+    (alias.stands_for.as_deref() == Some(FETCH_FUNCTION) && fetch_is_the_web(path)).then_some("api")
+}
+
 fn bare_exit(
     call: &CallFact,
     modules: &rustc_hash::FxHashMap<(u32, String), String>,
@@ -1949,13 +1967,25 @@ pub fn derive(
 
     let named_of: HashMap<&str, &IndexNode> =
         nodes.iter().map(|node| (node.id.as_str(), node)).collect();
+    let const_values: HashMap<&str, &str> = locals
+        .iter()
+        .filter(|local| local.unit.is_empty())
+        .filter_map(|local| Some((local.name.as_str(), local.written.as_deref()?)))
+        .collect();
     let spoken_as_dotnet = |file: u32| files.get(file as usize).is_some_and(|path| path.ends_with(".cs"));
     let routed_by_convention = calls
         .iter()
         .any(|call| spoken_as_dotnet(call.file) && ROUTES_BY_CONVENTION.contains(&names::leaf(&call.callee)));
     for node in nodes {
         if let Some(registrar) = &node.callback_of {
-            let label = node.registration_label.as_deref();
+            let held_label = node.registration_label.as_deref();
+            let label = match held_label.and_then(|held| held.strip_prefix(DISPATCH_CONST_MARKER)) {
+                Some(leaf) => match const_values.get(leaf) {
+                    Some(value) => Some(*value),
+                    None => continue,
+                },
+                None => held_label,
+            };
             let continuation = classify_registration(registrar, label, mcp_files.contains(&node.file)) == Some("event")
                 && continues_a_started_operation(
                     registrar,
@@ -2266,11 +2296,6 @@ pub fn derive(
         units_in_file.entry((node.file, node.name.as_str())).or_default().push(node.id.as_str());
     }
     let mut registered: HashSet<(u32, u32, String)> = HashSet::default();
-    let const_values: HashMap<&str, &str> = locals
-        .iter()
-        .filter(|local| local.unit.is_empty())
-        .filter_map(|local| Some((local.name.as_str(), local.written.as_deref()?)))
-        .collect();
     for registration in registrations {
         let label: std::borrow::Cow<str> = match registration.label.strip_prefix(DISPATCH_CONST_MARKER) {
             Some(leaf) => match const_values.get(leaf) {
@@ -2554,6 +2579,7 @@ pub fn derive(
         }
         let Some(receiver) = call.receiver.as_deref() else {
             let Some(kind) = bare_exit(call, modules, &files[call.file as usize])
+                .or_else(|| fetched_through_an_alias(call, &files[call.file as usize], &locals_by_unit))
                 .or_else(|| built_into_the_language(call, &files[call.file as usize]))
                 .or_else(|| requested_by_url(call))
                 .or_else(|| kept_by_toucan(call))
