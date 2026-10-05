@@ -370,7 +370,19 @@ impl<'a> Resolver<'a> {
 
     pub(super) fn element_binding(&self, unit: u32, file: u32, name: &str, in_parameters: bool) -> Origin<'a> {
         let node = &self.symbols.nodes[unit as usize];
-        let Some(expression) = self.bindings.elements.get(&(node.id.as_str(), name)).copied() else {
+        let from_the_registrar = || -> Option<&'a str> {
+            let (receiver, method) = node.callback_of.as_deref()?.rsplit_once('.')?;
+            let position = crate::elements::adapter_position(method)?;
+            let parameter = node.signature.as_ref()?.parameters.get(position)?;
+            (parameter.name == name && parameter.type_annotation.is_none()).then_some(receiver)
+        };
+        let Some(expression) = self
+            .bindings
+            .elements
+            .get(&(node.id.as_str(), name))
+            .copied()
+            .or_else(|| if in_parameters { from_the_registrar() } else { None })
+        else {
             return Origin::Unknown;
         };
         let evaluated_in = match in_parameters {

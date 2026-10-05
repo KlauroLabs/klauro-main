@@ -119,7 +119,7 @@ struct Scope {
     awaited: bool,
     dispatch_param: Option<String>,
     argv_param: Option<String>,
-    registrar_receiver: Option<String>,
+    registrar_receiver: Option<std::sync::Arc<str>>,
 }
 
 fn span_of(node: Node) -> Span {
@@ -868,7 +868,7 @@ impl<'a> Extractor<'a> {
             let registrar = self.record_call(node, scope);
             let mut inner = scope.clone();
             inner.registrar = registrar;
-            inner.registrar_receiver = self.last_receiver.take();
+            inner.registrar_receiver = self.last_receiver.take().map(std::sync::Arc::from);
             self.walk(node, &inner);
             return;
         }

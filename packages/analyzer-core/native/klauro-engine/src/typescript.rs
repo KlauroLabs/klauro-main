@@ -1865,7 +1865,6 @@ impl<'a> Extractor<'a> {
             if let Some(owner) = scope.enclosing_callable.clone().or_else(|| scope.owner.clone()) {
                 self.push_edge(&owner, &id, EdgeKind::Contains);
             }
-            self.element_parameter(&id, *argument, callee);
 
             let mut inner = scope.child(Some(id.clone()), Some(id));
             inner.dispatches_mcp_tools = dispatches_mcp_tools;
@@ -1900,24 +1899,6 @@ impl<'a> Extractor<'a> {
             name: name.to_string(),
             element_of: Some(expression.to_string()),
             line: line_of(node),
-            ..Default::default()
-        });
-    }
-
-    fn element_parameter(&mut self, id: &str, argument: Node, callee: &str) {
-        let Some((receiver, name)) = callee.rsplit_once('.') else { return };
-        let Some(position) = crate::elements::adapter_position(name) else { return };
-        let signature = self.signature_of(argument);
-        let Some(parameter) = signature.parameters.get(position) else { return };
-        if parameter.type_annotation.is_some() || !parameter.name.chars().all(|letter| letter.is_alphanumeric() || letter == '_' || letter == '$') {
-            return;
-        }
-        self.facts.locals.push(LocalBinding {
-            file: self.file,
-            unit: id.to_string(),
-            name: parameter.name.clone(),
-            element_of: Some(receiver.to_string()),
-            line: line_of(argument),
             ..Default::default()
         });
     }

@@ -118,7 +118,7 @@ impl Prefixes {
 pub fn plugin_prefixes(nodes: &[IndexNode], calls: &[CallFact], files: &[String]) -> HashMap<String, String> {
     let mut found: HashMap<String, String> = HashMap::default();
     for call in calls {
-        if names::leaf(&call.callee) != "register" {
+        if !call.callee.ends_with("register") || names::leaf(&call.callee) != "register" {
             continue;
         }
         let caller = call.caller.as_deref().unwrap_or(files[call.file as usize].as_str());
@@ -181,7 +181,7 @@ pub fn composed(
     };
     let mut mounted_by: HashMap<u32, Vec<Mount>> = HashMap::default();
     for call in calls {
-        if !MOUNTERS.contains(&names::leaf(&call.callee)) {
+        if !MOUNTERS.iter().any(|mounter| call.callee.ends_with(mounter)) || !MOUNTERS.contains(&names::leaf(&call.callee)) {
             continue;
         }
         let prefix = prefix_of(call, &defaults);

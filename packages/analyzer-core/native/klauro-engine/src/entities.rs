@@ -617,6 +617,12 @@ pub fn gather(
             see(&mut found.loaded, &edge.source, None, "file", typing.named(returned, caller.file));
         }
     }
+    let mut bound_from_calls: HashMap<&str, Vec<&crate::model::LocalBinding>> = HashMap::default();
+    for local in sources.locals {
+        if let Some(called) = local.from_call.as_deref() {
+            bound_from_calls.entry(crate::names::leaf(called)).or_default().push(local);
+        }
+    }
     for (reader, place) in readers {
         let Some(node) = typing.node_of.get(reader).copied() else { continue };
         for call in by_callee.get(node.name.as_str()).into_iter().flatten() {
@@ -628,7 +634,7 @@ pub fn gather(
             let named: Named = call.type_arguments.iter().flat_map(|argument| typing.named(argument, unit.file)).collect();
             see(&mut found.loaded, caller, None, place, named);
         }
-        for local in sources.locals.iter().filter(|local| local.from_call.as_deref().map(crate::names::leaf) == Some(node.name.as_str())) {
+        for local in bound_from_calls.get(node.name.as_str()).into_iter().flatten().copied() {
             if !reaches.contains(&(local.unit.as_str(), reader)) {
                 continue;
             }

@@ -1537,7 +1537,8 @@ fn a_route_prefix(literal: &str) -> Option<String> {
 fn groups_of<'a>(calls: &'a [CallFact], locals: &'a [crate::model::LocalBinding]) -> Groups<'a> {
     let mut on_line: HashMap<(u32, u32), Vec<&CallFact>> = HashMap::default();
     for call in calls {
-        if GATHERS_ROUTES.contains(&names::leaf(&call.callee).to_ascii_lowercase().as_str()) {
+        let leaf = names::leaf(&call.callee);
+        if GATHERS_ROUTES.iter().any(|gathers| leaf.eq_ignore_ascii_case(gathers)) {
             on_line.entry((call.file, call.line)).or_default().push(call);
         }
     }
@@ -1576,25 +1577,50 @@ fn prefix_of(groups: &Groups, file: u32, unit: &str, name: &str, depth: u8) -> O
 }
 
 fn handed_to_functions<'a>(groups: &mut Groups<'a>, calls: &'a [CallFact], nodes: &'a [IndexNode]) {
-    let mut units: HashMap<(u32, &str), Vec<&IndexNode>> = HashMap::default();
-    let mut methods: HashMap<&str, &IndexNode> = HashMap::default();
-    for node in nodes.iter().filter(|node| node.kind.is_unit()) {
-        units.entry((node.file, node.name.as_str())).or_default().push(node);
-        if node.name == "boot" {
-            if let Some(parent) = node.parent.as_deref() {
-                methods.insert(parent, node);
-            }
+    let group_names: HashSet<&str> = groups.keys().map(|(_, _, name)| *name).collect();
+    let handing = |call: &CallFact| {
+        (call.callee == "register" && call.receiver.is_some())
+            || call.passes.iter().any(|passed| {
+                passed.split_once('=').is_some_and(|(_, root)| group_names.contains(names::root(root)))
+            })
+    };
+    let candidates: Vec<&CallFact> = calls.iter().filter(|call| handing(call)).collect();
+    if candidates.is_empty() {
+        return;
+    }
+    let registering: HashSet<(u32, u32)> = candidates
+        .iter()
+        .filter(|call| call.callee == "register")
+        .map(|call| (call.file, call.line))
+        .collect();
+    let mut built_on: HashMap<(u32, u32), Vec<&CallFact>> = HashMap::default();
+    if !registering.is_empty() {
+        for call in calls.iter().filter(|call| call.callee != "register" && registering.contains(&(call.file, call.line))) {
+            built_on.entry((call.file, call.line)).or_default().push(call);
         }
     }
-    let types: HashMap<&str, &IndexNode> =
-        nodes.iter().filter(|node| node.kind.is_type()).map(|node| (node.name.as_str(), node)).collect();
+    let mut units: HashMap<(u32, &str), Vec<&IndexNode>> = HashMap::default();
+    let mut methods: HashMap<&str, &IndexNode> = HashMap::default();
+    let mut types: HashMap<&str, &IndexNode> = HashMap::default();
+    for node in nodes {
+        if node.kind.is_unit() {
+            units.entry((node.file, node.name.as_str())).or_default().push(node);
+            if node.name == "boot"
+                && let Some(parent) = node.parent.as_deref()
+            {
+                methods.insert(parent, node);
+            }
+        } else if node.kind.is_type() {
+            types.insert(node.name.as_str(), node);
+        }
+    }
     let mut found: HashMap<(u32, &str, &str), Vec<String>> = HashMap::default();
-    for call in calls {
+    for call in candidates {
         let Some(caller) = call.caller.as_deref() else { continue };
         let receiver = call.receiver.as_deref().map(names::root);
         let mut handed: Vec<(&IndexNode, usize, Option<&str>)> = Vec::new();
         if call.callee == "register" && receiver.is_some() {
-            for built in calls.iter().filter(|held| held.file == call.file && held.line == call.line && held.callee != "register") {
+            for built in built_on.get(&(call.file, call.line)).into_iter().flatten() {
                 let Some(owner) = types.get(names::leaf(&built.callee)) else { continue };
                 if let Some(boot) = methods.get(owner.id.as_str()) {
                     handed.push((boot, 0, receiver));
@@ -1629,9 +1655,9 @@ fn handed_to_functions<'a>(groups: &mut Groups<'a>, calls: &'a [CallFact], nodes
 
 type CallsByLine<'a> = HashMap<(u32, u32, String), &'a CallFact>;
 
-fn calls_by_line(calls: &[CallFact]) -> CallsByLine<'_> {
+fn calls_by_line<'a>(calls: &'a [CallFact], wanted: &HashSet<(u32, u32)>) -> CallsByLine<'a> {
     let mut held: CallsByLine = HashMap::default();
-    for call in calls {
+    for call in calls.iter().filter(|call| wanted.contains(&(call.file, call.line))) {
         held.entry((call.file, call.line, names::leaf(&call.callee).to_ascii_lowercase()))
             .or_insert(call);
     }
@@ -1915,14 +1941,23 @@ pub fn derive(
     let mut entry_points = Vec::new();
     let mut continued: Vec<String> = Vec::new();
     let mounts = crate::mounts::composed(mounted_under(calls), calls, locals, files, nodes, through, imported);
+    lap("mounts");
     let mounted = &mounts.files;
-    let parent_of: HashMap<&str, &str> =
-        nodes.iter().filter_map(|node| Some((node.id.as_str(), node.parent.as_deref()?))).collect();
+    let parent_of: HashMap<&str, &str> = match mounts.units.is_empty() {
+        true => HashMap::default(),
+        false => nodes.iter().filter_map(|node| Some((node.id.as_str(), node.parent.as_deref()?))).collect(),
+    };
     let mut groups = groups_of(calls, locals);
-    let by_line = if groups.is_empty() { HashMap::default() } else { calls_by_line(calls) };
+    let route_lines: HashSet<(u32, u32)> = registrations
+        .iter()
+        .map(|registration| (registration.file, registration.line))
+        .chain(nodes.iter().filter(|node| node.callback_of.is_some()).map(|node| (node.file, node.span.line)))
+        .collect();
+    let by_line = if groups.is_empty() { HashMap::default() } else { calls_by_line(calls, &route_lines) };
     if !groups.is_empty() {
         handed_to_functions(&mut groups, calls, nodes);
     }
+    lap("route groups");
     let prefix_for = |registrar: &str, file: u32, unit: Option<&str>| -> Option<String> {
         let of_the_file = (registered_on_a_router_like(registrar) || mounts.children.contains(&file))
             .then(|| mounted.get(&file).cloned())
@@ -2269,7 +2304,7 @@ pub fn derive(
         .collect();
 
     lap("registrations owned");
-    let calls_by_registration = if mounts.units.is_empty() { HashMap::default() } else { calls_by_line(calls) };
+    let calls_by_registration = if mounts.units.is_empty() { HashMap::default() } else { calls_by_line(calls, &route_lines) };
     let mut units_in_file: HashMap<(u32, &str), Vec<&str>> = HashMap::default();
     for node in nodes.iter().filter(|node| node.kind.is_unit()) {
         units_in_file.entry((node.file, node.name.as_str())).or_default().push(node.id.as_str());
