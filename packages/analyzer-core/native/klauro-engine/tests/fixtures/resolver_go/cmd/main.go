@@ -33,6 +33,11 @@ func ranged(carts []*cart.Cart) int {
 	return sum
 }
 
+func failing() string {
+	_, err := cart.Load("x")
+	return err.Error()
+}
+
 func main() {
 	fill()
 	loaded()

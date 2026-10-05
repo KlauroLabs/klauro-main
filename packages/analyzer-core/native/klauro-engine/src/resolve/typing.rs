@@ -122,7 +122,7 @@ fn tuple_element(annotation: &str, slot: u8) -> Option<&str> {
 }
 
 impl<'a> Resolver<'a> {
-    pub(super) fn annotated_from(&self, owner: u32, annotation: &'a str) -> Origin<'a> {
+    pub(super) fn annotated_from(&self, owner: u32, declared_in: u32, annotation: &'a str) -> Origin<'a> {
         let annotation = match self.element_of_tuple(annotation) {
             Ok(held) => held,
             Err(()) => return Origin::Unknown,
@@ -130,7 +130,31 @@ impl<'a> Resolver<'a> {
         if names_itself(annotation) {
             return Origin::Declared(owner);
         }
-        self.annotated(self.symbols.nodes[owner as usize].file, annotation)
+        self.annotated(self.symbols.nodes[declared_in as usize].file, annotation)
+    }
+
+    pub(super) fn inherited_member_type(&self, owner: u32, name: &str) -> Option<(&'a str, u32)> {
+        if let Some(found) = self.symbols.member_type(owner, name) {
+            return Some((found, owner));
+        }
+        let above = self.inherits.get()?;
+        let mut pending = vec![owner];
+        let mut seen: Vec<u32> = Vec::new();
+        while let Some(at) = pending.pop() {
+            if seen.contains(&at) || seen.len() > 16 {
+                continue;
+            }
+            seen.push(at);
+            if at != owner
+                && let Some(found) = self.symbols.member_type(at, name)
+            {
+                return Some((found, at));
+            }
+            if let Some(parents) = above.get(&at) {
+                pending.extend(parents.iter().rev().copied());
+            }
+        }
+        None
     }
 
     fn element_of_tuple(&self, annotation: &'a str) -> Result<&'a str, ()> {
@@ -230,6 +254,12 @@ impl<'a> Resolver<'a> {
         };
         let mut held_file = file;
         for part in opening.into_iter().chain(parts) {
+            if let Origin::Declared(owner) = origin
+                && self.symbols.nodes[owner as usize].kind.is_unit()
+            {
+                origin = self.returned_by(owner);
+                held = None;
+            }
             origin = match origin {
                 Origin::Declared(owner) if self.symbols.nodes[owner as usize].kind.is_type() && part == "new" => {
                     Origin::Declared(owner)
@@ -246,16 +276,13 @@ impl<'a> Resolver<'a> {
                         origin = Origin::Declared(owner);
                         continue;
                     }
-                    held = self.symbols.member_type(owner, part);
-                    held_file = self.symbols.nodes[owner as usize].file;
-                    match held {
-                        Some(annotation) => self.annotated_from(owner, annotation),
+                    let found = self.inherited_member_type(owner, part);
+                    held = found.map(|(annotation, _)| annotation);
+                    held_file = found.map(|(_, at)| self.symbols.nodes[at as usize].file).unwrap_or(held_file);
+                    match found {
+                        Some((annotation, at)) => self.annotated_from(owner, at, annotation),
                         None => Origin::Unknown,
                     }
-                }
-                Origin::Declared(owner) if self.symbols.nodes[owner as usize].kind.is_unit() => {
-                    held = None;
-                    self.returned_by(owner)
                 }
                 Origin::Module(held_file) => {
                     held = None;

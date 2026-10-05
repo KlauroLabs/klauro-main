@@ -19,3 +19,7 @@ func (c *Cart) Add(item string) {
 func discount(count int) int {
 	return count * 2
 }
+
+func (c *Cart) Error() string {
+	return "wishlist"
+}

@@ -5,11 +5,17 @@ const ELEMENT_FIRST: &[&str] = &[
     "position", "reject", "retain", "select", "skip_while", "some", "sort_by", "sort_by_key", "sum", "take_while",
 ];
 
+const ELEMENT_PASCAL: &[&str] = &[
+    "All", "Any", "Count", "Exists", "Find", "FindAll", "FindIndex", "First", "FirstOrDefault", "ForEach", "GroupBy", "Last",
+    "LastOrDefault", "Max", "Min", "OrderBy", "OrderByDescending", "RemoveAll", "Select", "SelectMany", "Single",
+    "SingleOrDefault", "SkipWhile", "Sum", "TakeWhile", "ThenBy", "TrueForAll", "Where",
+];
+
 const ELEMENT_SECOND: &[&str] = &["fold", "inject", "reduce", "reduceRight"];
 
 pub fn adapter_position(callee: &str) -> Option<usize> {
     let name = crate::names::leaf(callee);
-    if ELEMENT_FIRST.binary_search(&name).is_ok() {
+    if ELEMENT_FIRST.binary_search(&name).is_ok() || ELEMENT_PASCAL.contains(&name) {
         return Some(0);
     }
     ELEMENT_SECOND.contains(&name).then_some(1)
@@ -29,7 +35,8 @@ const COLLECTIONS: &[&str] = &[
     "Array", "ArrayList", "BTreeSet", "Collection", "Deque", "HashSet", "IEnumerable", "IList", "Iterable", "IterableIterator",
     "Iterator", "LinkedList", "List", "Queue", "ReadonlyArray", "ReadonlyList", "Sequence", "Set", "Slice", "Stack", "Vec",
     "VecDeque", "ICollection", "IReadOnlyList", "IReadOnlyCollection", "ISet", "Option", "Optional", "Result", "Seq",
-    "Stream", "Flow", "Observable", "Promise",
+    "Stream", "Flow", "Observable", "Promise", "IQueryable", "IOrderedQueryable", "IReadOnlySet", "ImmutableList",
+    "ImmutableArray", "ObservableCollection", "HashSet", "SortedSet", "Collection", "IAsyncEnumerable",
 ];
 
 pub fn element_of(annotation: &str) -> Option<&str> {

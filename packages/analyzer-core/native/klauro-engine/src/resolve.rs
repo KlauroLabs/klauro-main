@@ -412,6 +412,7 @@ fn base_type_name(annotation: &str) -> &str {
         "boolean" => "Boolean",
         "symbol" => "Symbol",
         "bigint" => "BigInt",
+        "str" => "String",
         "object" => "Object",
         other => other,
     }
@@ -515,6 +516,7 @@ struct Resolver<'a> {
     files: &'a [String],
     by_path: &'a HashMap<&'a str, u32>,
     aliases: &'a crate::alias::Aliases,
+    inherits: std::sync::OnceLock<HashMap<u32, Vec<u32>>>,
 }
 
 impl<'a> Resolver<'a> {
@@ -671,6 +673,9 @@ impl<'a> Resolver<'a> {
         let name = base_type_name(annotation);
         if self.runtime.binary_search(&name).is_ok() {
             return Origin::Runtime(name);
+        }
+        if let Some(standard) = externals::standard_type(self.languages.get(file as usize).copied().unwrap_or(""), name) {
+            return Origin::Runtime(standard);
         }
         if let Some(qualifier) = qualifier_of(annotation) {
             if let Some(held) = self.bindings.module_files.get(&(file, qualifier))
@@ -1775,6 +1780,7 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         files: index.files,
         by_path: &by_path,
         aliases: &aliases,
+        inherits: std::sync::OnceLock::new(),
     };
     let symbols = &resolver.symbols;
 
@@ -1830,6 +1836,7 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
             }
         }
     }
+    let _ = resolver.inherits.set(supertypes.clone());
     let columns: Vec<&str> = index
         .calls
         .iter()
@@ -2195,7 +2202,14 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
             return Resolved::Edge(symbols.nodes[found as usize].id.clone(), kind);
         }
 
+        let known_type_without_it = receiver.is_some()
+            && matches!(origin, Origin::Declared(found) if symbols.nodes[found as usize].kind.is_type())
+            && crate::builtins::is_standard_member(index.languages.get(fact.file as usize).copied().unwrap_or(""), &callee);
         let external = match origin {
+            Origin::Declared(_) if known_type_without_it => {
+                let language = index.languages.get(fact.file as usize).copied().unwrap_or("");
+                Some(("runtime", language.to_string(), format!("{language}.{callee}")))
+            }
             Origin::Package(specifier) => Some(("package", specifier.to_string(), member.clone())),
             Origin::Runtime(name) => Some((
                 "runtime",

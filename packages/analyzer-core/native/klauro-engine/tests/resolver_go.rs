@@ -55,3 +55,15 @@ fn a_range_variable_takes_the_element_type_of_the_slice() {
     assert!(calls(&index, "cmd/main.go:function:ranged", "pkg/cart/methods.go:function:Total"));
     assert!(!calls(&index, "cmd/main.go:function:ranged", "pkg/wishlist/wishlist.go:function:Total"));
 }
+
+#[test]
+fn the_second_result_of_a_multiple_return_that_is_the_error_type_is_standard_library() {
+    let index = index();
+    let reaches_the_standard_library = index["edges"].as_array().unwrap().iter().any(|edge| {
+        edge["kind"] == "calls"
+            && common::names(edge["source"].as_str().unwrap(), "cmd/main.go:function:failing")
+            && edge["target"].as_str().unwrap().contains("error.Error")
+    });
+    assert!(reaches_the_standard_library, "err.Error() belongs to the error interface, not to a repository type");
+    assert!(!calls(&index, "cmd/main.go:function:failing", "pkg/wishlist/wishlist.go:function:Error"));
+}

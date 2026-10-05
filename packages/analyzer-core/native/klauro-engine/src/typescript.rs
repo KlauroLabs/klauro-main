@@ -1033,7 +1033,8 @@ impl<'a> Extractor<'a> {
         let return_type = node
             .child_by_field_name("return_type")
             .and_then(|annotation| annotation.named_child(0))
-            .map(|annotation| self.text_owned(annotation));
+            .map(|annotation| self.text_owned(annotation))
+            .or_else(|| self.inferred_return(node));
         let type_parameters = type_parameters_of(node)
             .map(|parameters| self.type_parameter_names(parameters))
             .unwrap_or_default();
@@ -1042,6 +1043,85 @@ impl<'a> Extractor<'a> {
             return_type,
             type_parameters,
             receiver: None,
+        }
+    }
+
+    fn returned_value(&self, expression: Node) -> Option<String> {
+        let expression = unwrap_value(expression);
+        match expression.kind() {
+            "this" => Some("Self".to_string()),
+            "new_expression" => {
+                let constructor = expression.child_by_field_name("constructor")?;
+                let written = self.text(constructor).trim();
+                (!written.is_empty() && written.chars().all(|letter| letter.is_alphanumeric() || matches!(letter, '_' | '$' | '.')))
+                    .then(|| written.to_string())
+            }
+            _ => None,
+        }
+    }
+
+    fn inferred_return(&self, node: Node) -> Option<String> {
+        if node.children(&mut node.walk()).any(|child| child.kind() == "async") {
+            return None;
+        }
+        let body = node.child_by_field_name("body")?;
+        if body.kind() != "statement_block" {
+            return self.returned_value(body);
+        }
+        let mut agreed: Option<String> = None;
+        let mut pending: Vec<Node> = vec![body];
+        while let Some(held) = pending.pop() {
+            let mut cursor = held.walk();
+            for child in held.named_children(&mut cursor) {
+                match child.kind() {
+                    "function_declaration" | "function_expression" | "arrow_function" | "method_definition" | "class_declaration"
+                    | "class" | "function" | "generator_function" | "generator_function_declaration" => {}
+                    "return_statement" => {
+                        let value = self.returned_value(child.named_child(0)?)?;
+                        match agreed.as_deref() {
+                            Some(existing) if existing != value => return None,
+                            _ => agreed = Some(value),
+                        }
+                    }
+                    _ => pending.push(child),
+                }
+            }
+        }
+        agreed
+    }
+
+    fn destructured(&mut self, pattern: Node, value: Node, scope: &Scope) {
+        let initializer = unwrap_value(value);
+        if !matches!(initializer.kind(), "identifier" | "member_expression" | "call_expression" | "this") {
+            return;
+        }
+        let expression = self.text(initializer).trim().to_string();
+        if expression.is_empty() || expression.len() > 200 {
+            return;
+        }
+        let mut cursor = pattern.walk();
+        for child in pattern.named_children(&mut cursor) {
+            let (property, local) = match child.kind() {
+                "shorthand_property_identifier_pattern" => (self.text_owned(child), self.text_owned(child)),
+                "pair_pattern" => {
+                    let (Some(key), Some(bound)) = (child.child_by_field_name("key"), child.child_by_field_name("value")) else {
+                        continue;
+                    };
+                    if bound.kind() != "identifier" {
+                        continue;
+                    }
+                    (self.text_owned(key), self.text_owned(bound))
+                }
+                _ => continue,
+            };
+            self.facts.locals.push(LocalBinding {
+                file: self.file,
+                unit: scope.enclosing_callable.clone().unwrap_or_default(),
+                name: local,
+                stands_for: Some(format!("{expression}.{property}")),
+                line: line_of(pattern),
+                ..Default::default()
+            });
         }
     }
 
@@ -1338,6 +1418,9 @@ impl<'a> Extractor<'a> {
             };
             let name = self.text_owned(name_node);
             let value = declarator.child_by_field_name("value");
+            if let Some(value) = value.filter(|_| name_node.kind() == "object_pattern") {
+                self.destructured(name_node, value, scope);
+            }
             if let Some(value) = value.filter(|_| name_node.kind() == "identifier") {
                 self.remember_a_root(&name, value);
                 self.lazy_screens(&name, declarator, value);

@@ -52,3 +52,32 @@ pub fn sorted_runtime_globals() -> Vec<&'static str> {
     sorted.dedup();
     sorted
 }
+
+static STANDARD_TYPES: &[(&str, &[&str])] = &[
+    ("csharp", &["DateTime", "Dictionary", "Exception", "Guid", "HashSet", "IDictionary", "IEnumerable", "IList", "List",
+        "Nullable", "String", "StringBuilder", "Task", "TimeSpan", "object"]),
+    ("go", &["String", "bool", "byte", "error", "float64", "int", "int64", "rune", "uint8"]),
+    ("java", &["ArrayList", "Boolean", "Collection", "Date", "Double", "HashMap", "HashSet", "Integer", "LinkedList", "List",
+        "Long", "Map", "Object", "Optional", "Set", "String", "StringBuilder"]),
+    ("python", &["String", "bytes", "dict", "float", "int", "list", "set", "tuple"]),
+    ("rust", &["Arc", "BTreeMap", "BTreeSet", "BinaryHeap", "Box", "BufReader", "BufWriter", "Cell", "Cow", "Duration", "File",
+        "HashMap", "HashSet", "Instant", "Mutex", "Option", "OsStr", "OsString", "Path", "PathBuf", "Rc", "RefCell", "Result",
+        "RwLock", "String", "SystemTime", "Vec", "VecDeque"]),
+];
+
+pub fn standard_type(language: &str, name: &str) -> Option<&'static str> {
+    let (_, names) = STANDARD_TYPES.iter().find(|(id, _)| *id == language)?;
+    names.binary_search(&name).ok().map(|at| names[at])
+}
+
+#[cfg(test)]
+mod standard {
+    use super::STANDARD_TYPES;
+
+    #[test]
+    fn every_list_of_standard_types_is_sorted() {
+        for (language, names) in STANDARD_TYPES {
+            assert!(names.windows(2).all(|pair| pair[0] < pair[1]), "{language}");
+        }
+    }
+}

@@ -23,10 +23,14 @@ impl<'a> Extractor<'a> {
     }
 
     pub(super) fn lambda_parameters(&self, lambda: Node) -> Option<Vec<Parameter>> {
-        let container = self.parameter_container(lambda)?;
-        if IDENTIFIERS.contains(&container.kind()) {
+        let Some(container) = self.parameter_container(lambda) else { return Some(Vec::new()) };
+        let word = self.text(container).trim();
+        let single = container.named_child_count() == 0
+            && !word.is_empty()
+            && word.chars().all(|letter| letter.is_alphanumeric() || letter == '_');
+        if IDENTIFIERS.contains(&container.kind()) || single {
             return Some(vec![Parameter {
-                name: self.text(container).trim().to_string(),
+                name: word.to_string(),
                 type_annotation: None,
                 optional: false,
                 default_value: None,
