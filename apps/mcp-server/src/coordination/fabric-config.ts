@@ -92,6 +92,14 @@ export function detectWorkspaceIdentity(root: string, projectId?: string): Works
   return { workspace: path.basename(path.resolve(root)), source: 'repo-basename' };
 }
 
+const HOSTED_COORDINATION_ID = /^(prj|wsp)_/;
+
+export function hostedCoordinationWorkspace(configuredWorkspace: string, projectId?: string): string {
+  const bound = projectId?.trim();
+  if (!bound || HOSTED_COORDINATION_ID.test(configuredWorkspace)) return configuredWorkspace;
+  return bound;
+}
+
 function gitRemoteUrl(root: string): string | undefined {
   try {
     const out = execFileSync('git', ['-C', root, 'config', '--get', 'remote.origin.url'], {

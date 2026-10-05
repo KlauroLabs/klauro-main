@@ -40,7 +40,7 @@ import { selectWorkspaceAnalysisDetail, summarizeCrossCodebaseSystemGraph, type 
 import { buildIncrementalCrossCodebaseSystemGraph } from './incremental-workspace-analysis';
 import { clearStoredConnectorSession, connectorToken, findStoredAccountOwningProject, isNetworkUnreachableError, listStoredAccounts, loadStoredConnectorAuth, normalizeServerUrl, requireConnectorEntitlement, resolveAuthStatus, saveStoredConnectorSession, switchStoredAccount, unreachableServerError } from './connector-auth';
 import { detectRemoteProvider } from './remote-provider';
-import { detectWorkspaceIdentity, findFabricProjectRoot, resolveFabricSettings, resolveFabricToken, writeFabricSection } from './coordination/fabric-config';
+import { detectWorkspaceIdentity, findFabricProjectRoot, hostedCoordinationWorkspace, resolveFabricSettings, resolveFabricToken, writeFabricSection } from './coordination/fabric-config';
 import { remoteActive } from './coordination/remote-transport';
 import { getActiveClaims } from './coordination/local-store';
 import * as fs from 'fs-extra';
@@ -983,7 +983,7 @@ async function runFabricCommand(argv: string[]): Promise<void> {
     let claimsNote: string | undefined;
     if (settings.remote) {
       try {
-        const active = await remoteActive(settings.remote, settings.workspace);
+        const active = await remoteActive(settings.remote, hostedCoordinationWorkspace(settings.workspace, (await loadKlauroConfig(startDir).catch(() => undefined))?.config.project.id));
         claims = active.active.map(c => ({ agent_id: c.agent_id, intent: c.intent, paths: c.paths }));
       } catch (err) {
         claimsNote = `remote fabric unreachable (${err instanceof Error ? err.message : String(err)}) — active claims unavailable; fab commands will degrade to the local fabric.`;

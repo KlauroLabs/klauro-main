@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
 import { loadKlauroConfig } from './klauro-config';
 import { connectorToken, isNetworkUnreachableError, loadStoredConnectorAuth, normalizeServerUrl, resolveAuthStatus, unreachableServerError } from './connector-auth';
-import { detectWorkspaceIdentity, resolveFabricSettings } from './coordination/fabric-config';
+import { detectWorkspaceIdentity, hostedCoordinationWorkspace, resolveFabricSettings } from './coordination/fabric-config';
 import { remoteActive } from './coordination/remote-transport';
 import { getActiveClaims } from './coordination/local-store';
 import { fetchReleaseManifest } from './self-update';
@@ -217,7 +217,7 @@ export async function buildConnectionReport(
   let fabricNote: string | undefined;
   if (settings.remote) {
     try {
-      activeClaims = (await remoteActive(settings.remote, settings.workspace)).count;
+      activeClaims = (await remoteActive(settings.remote, hostedCoordinationWorkspace(settings.workspace, loaded?.config.project.id))).count;
     } catch (error) {
       fabricNote = `remote fabric unreachable (${error instanceof Error ? error.message : String(error)})`;
     }

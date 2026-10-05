@@ -17,6 +17,7 @@ import {
   DEFAULT_FABRIC_WORKSPACE,
   detectWorkspaceIdentity,
   findFabricProjectRoot,
+  hostedCoordinationWorkspace,
   normalizeGitRemote,
   resolveFabricSettings,
   resolveFabricToken,
@@ -226,4 +227,13 @@ test('normalizeGitRemote converges ssh/https/trailing-.git forms', () => {
   assert.equal(normalizeGitRemote('https://github.com/acme/my-app'), expected);
   assert.equal(normalizeGitRemote('https://github.com/Acme/My-App.git'), expected);
   assert.equal(normalizeGitRemote('ssh://git@github.com/acme/my-app.git'), expected);
+});
+
+test('remote probes address the bound project id unless the configured workspace is already a hosted id', () => {
+  assert.strictEqual(hostedCoordinationWorkspace('Klauro', 'prj_abc'), 'prj_abc');
+  assert.strictEqual(hostedCoordinationWorkspace('poc', 'prj_abc'), 'prj_abc');
+  assert.strictEqual(hostedCoordinationWorkspace('wsp_team', 'prj_abc'), 'wsp_team');
+  assert.strictEqual(hostedCoordinationWorkspace('prj_other', 'prj_abc'), 'prj_other');
+  assert.strictEqual(hostedCoordinationWorkspace('Klauro', undefined), 'Klauro');
+  assert.strictEqual(hostedCoordinationWorkspace('Klauro', '  '), 'Klauro');
 });
