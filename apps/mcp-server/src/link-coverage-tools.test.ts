@@ -39,3 +39,17 @@ test('an analysis with no engine links answers an empty list', () => {
   assert.deepEqual(getCommunicationSeams(bare).link_coverage, []);
   assert.deepEqual(getSemanticCoverage(bare).link_coverage, []);
 });
+
+test('get_communication_seams lists the sub-projects a catalog descriptor describes', () => {
+  const described = {
+    ...cas,
+    children: [
+      { system: { name: 'api', root_path: '/repo/api', catalog: { owner: 'group:default/payments', system: 'checkout', depends_on: ['component:default/ui'] } } },
+      { system: { name: 'ui', root_path: '/repo/ui' } },
+    ],
+  } as unknown as CASOutput;
+  assert.deepEqual(getCommunicationSeams(described).sub_projects, [
+    { name: 'api', root_path: '/repo/api', owner: 'group:default/payments', system: 'checkout', depends_on: ['component:default/ui'] },
+  ]);
+  assert.equal('sub_projects' in getCommunicationSeams(cas), false);
+});

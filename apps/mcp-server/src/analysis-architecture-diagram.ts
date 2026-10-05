@@ -1,5 +1,5 @@
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
-import { architectureModelOf, type Relation } from './analysis-architecture-model';
+import { architectureModelOf, type Container, type Relation } from './analysis-architecture-model';
 
 const INDENT = '  ';
 const ASYNC_MODALITY = 'async';
@@ -26,6 +26,23 @@ function dslQuoted(text: string): string {
   return `"${singleLine(text).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
 
+function containerDetails(container: Container): string {
+  const details = [
+    ...(container.owner === undefined ? [] : [`owner: ${container.owner}`]),
+    ...(container.system === undefined ? [] : [`system: ${container.system}`]),
+  ];
+  return details.length === 0 ? container.name : `${container.name} (${details.join('; ')})`;
+}
+
+function containerProperties(container: Container): string[] {
+  const properties = [
+    ...(container.owner === undefined ? [] : [`${dslQuoted('owner')} ${dslQuoted(container.owner)}`]),
+    ...(container.system === undefined ? [] : [`${dslQuoted('system')} ${dslQuoted(container.system)}`]),
+  ];
+  if (properties.length === 0) return [];
+  return [`${INDENT.repeat(4)}properties {`, ...properties.map(line => `${INDENT.repeat(5)}${line}`), `${INDENT.repeat(4)}}`];
+}
+
 function mermaidArrow(relation: Relation): string {
   const label = relation.label === '' ? '' : `|${quoted(relation.label)}|`;
   return relation.modality === ASYNC_MODALITY ? `-.->${label}` : `-->${label}`;
@@ -35,7 +52,7 @@ export function architectureToMermaid(cas: CASOutput): string {
   const model = architectureModelOf(cas);
   const lines = ['flowchart LR', `${INDENT}subgraph system[${quoted(model.system)}]`];
   for (const container of model.containers) {
-    lines.push(`${INDENT}${INDENT}${container.key}[${quoted(container.name)}]`);
+    lines.push(`${INDENT}${INDENT}${container.key}[${quoted(containerDetails(container))}]`);
   }
   lines.push(`${INDENT}end`);
   for (const external of model.externals) {
@@ -52,7 +69,9 @@ export function architectureToModelAsCode(cas: CASOutput): string {
   const lines = [`workspace ${dslQuoted(model.system)} {`, `${INDENT}model {`];
   lines.push(`${INDENT}${INDENT}system = softwareSystem ${dslQuoted(model.system)} {`);
   for (const container of model.containers) {
-    lines.push(`${INDENT.repeat(3)}${container.key} = container ${dslQuoted(container.name)} "" ${dslQuoted(container.root)}`);
+    const properties = containerProperties(container);
+    const head = `${INDENT.repeat(3)}${container.key} = container ${dslQuoted(container.name)} "" ${dslQuoted(container.root)}`;
+    lines.push(...(properties.length === 0 ? [head] : [`${head} {`, ...properties, `${INDENT.repeat(3)}}`]));
   }
   lines.push(`${INDENT}${INDENT}}`);
   for (const external of model.externals) {

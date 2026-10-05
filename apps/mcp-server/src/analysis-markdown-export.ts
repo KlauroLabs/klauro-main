@@ -23,9 +23,19 @@ function subProjects(cas: CASOutput): string[] {
   const model = architectureModelOf(cas);
   const rows = model.containers.map(container => {
     const part = parts.find(held => held.system.name === container.name) ?? cas;
-    return [container.name, container.root, part.nodes.length, (part.entry_points ?? []).length, (part.capabilities ?? []).length, (part.flows ?? []).length];
+    return [
+      container.name,
+      container.root,
+      container.owner,
+      container.system,
+      [...(part.system.catalog?.depends_on ?? [])].sort().join(', '),
+      part.nodes.length,
+      (part.entry_points ?? []).length,
+      (part.capabilities ?? []).length,
+      (part.flows ?? []).length,
+    ];
   });
-  return table(['name', 'root', 'nodes', 'entry points', 'capabilities', 'flows'], rows);
+  return table(['name', 'root', 'owner', 'system', 'depends on', 'nodes', 'entry points', 'capabilities', 'flows'], rows);
 }
 
 function capabilities(cas: CASOutput): string[] {

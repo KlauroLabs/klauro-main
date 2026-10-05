@@ -474,10 +474,6 @@ export interface CASSystem {
 
 
 
-
-
-
-
     framework_identities?: CASFrameworkIdentity[];
     runtime?: string;
     databases?: string[];
@@ -497,9 +493,6 @@ export interface CASSystem {
     complexity_score?: number;
     maintainability_index?: number;
   };
-
-
-
 
 
 

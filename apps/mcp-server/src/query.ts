@@ -58,6 +58,7 @@ import {
   compareCasVersions,
   describeAnalysisVersion,
 } from './storage';
+import { describedSubProjectsField } from './sub-project-catalog';
 
 export const PILLAR_ATTESTED_CAS_VERSION = '1.11.0';
 
@@ -838,6 +839,7 @@ export function getCommunicationSeams(
       inventory: { level: 'node', counts: { sync: 0, async: 0, passive: 0, total: 0 }, component_seams: [] },
       seams: [],
       link_coverage: [],
+      ...describedSubProjectsField(cas),
     };
   }
   const level = opts.level || 'node';
@@ -858,6 +860,7 @@ export function getCommunicationSeams(
 
     inventory,
     link_coverage: seamsResult.link_coverage ?? [],
+    ...describedSubProjectsField(cas),
     seams: seams.slice(offset, offset + limit),
   };
 }

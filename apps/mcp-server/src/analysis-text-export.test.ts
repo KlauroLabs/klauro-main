@@ -90,3 +90,34 @@ test('mermaid labels carry no raw markup characters from repository names', () =
     assert.doesNotMatch(label.slice(1, -1), /[<>&`]/);
   }
 });
+
+function describedSystem(): CASOutput {
+  const whole = system();
+  const [orders, billing] = whole.children as CASOutput[];
+  orders.system.catalog = { owner: 'group:default/checkout', system: 'shop', depends_on: ['component:default/billing', 'resource:default/ledger'] };
+  billing.system.catalog = { owner: 'group:default/payments' };
+  return whole;
+}
+
+test('a described sub-project shows its owner and system in every export', () => {
+  const whole = describedSystem();
+  assert.match(exportAnalysisText(whole, 'mermaid').text, /c1\["orders \(owner: group:default\/checkout; system: shop\)"\]/);
+  const code = exportAnalysisText(whole, 'c4').text;
+  assert.match(code, /c1 = container "orders" "" "services\/orders" \{\n\s+properties \{\n\s+"owner" "group:default\/checkout"\n\s+"system" "shop"/);
+  assert.match(code, /c0 = container "billing" "" "services\/billing" \{\n\s+properties \{\n\s+"owner" "group:default\/payments"\n\s+\}\n\s+\}/);
+  const markdown = exportAnalysisText(whole, 'markdown').text;
+  assert.match(markdown, /\| orders \| services\/orders \| group:default\/checkout \| shop \| component:default\/billing, resource:default\/ledger \| 2 \| 1 \| 0 \| 0 \|/);
+});
+
+test('a declared dependency is a relation unless a seam already joins the two', () => {
+  const mermaid = exportAnalysisText(describedSystem(), 'mermaid').text;
+  assert.match(mermaid, /c1 -->\|"POST \/charge"\| c0/);
+  assert.doesNotMatch(mermaid, /"depends on"\| c0/);
+  assert.match(mermaid, /e1\[\("resource:default\/ledger"\)\]/);
+  assert.match(mermaid, /c1 -->\|"depends on"\| e1/);
+  const lone = describedSystem();
+  lone.communication_seams = { seams: [] } as unknown as CASOutput['communication_seams'];
+  const code = exportAnalysisText(lone, 'c4').text;
+  assert.match(code, /c1 -> c0 "depends on" "declared"/);
+  assert.match(exportAnalysisText(lone, 'markdown').text, /\| orders \| billing \| declared \| depends on \|/);
+});
