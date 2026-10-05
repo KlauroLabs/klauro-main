@@ -4,12 +4,26 @@ import { architectureModelOf, type Relation } from './analysis-architecture-mode
 const INDENT = '  ';
 const ASYNC_MODALITY = 'async';
 
+const LINE_BREAKS_AND_CONTROLS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g;
+const MERMAID_ENTITIES: Record<string, string> = {
+  '#': '#35;',
+  '"': '#quot;',
+  '<': '#lt;',
+  '>': '#gt;',
+  '&': '#amp;',
+  '`': '#96;',
+};
+
+function singleLine(text: string): string {
+  return text.replace(LINE_BREAKS_AND_CONTROLS, ' ').trim();
+}
+
 function quoted(text: string): string {
-  return `"${text.replace(/"/g, '#quot;')}"`;
+  return `"${singleLine(text).replace(/[#"<>&`]/g, mark => MERMAID_ENTITIES[mark])}"`;
 }
 
 function dslQuoted(text: string): string {
-  return `"${text.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  return `"${singleLine(text).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
 
 function mermaidArrow(relation: Relation): string {

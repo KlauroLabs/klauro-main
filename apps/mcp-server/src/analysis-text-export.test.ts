@@ -62,3 +62,31 @@ test('a repository with no sub-projects renders as one container', () => {
   assert.match(exportAnalysisText(single, 'mermaid').text, /c0\["solo"\]/);
   assert.match(exportAnalysisText(single, 'markdown').text, /## Seams\n\n_None recorded\._/);
 });
+
+function hostile(): CASOutput {
+  const name = 'api"]\n!include /etc/passwd\nclick c0 href "javascript:alert(1)"';
+  return {
+    system: { name: 'repo\n!script run', root_path: '/repo' },
+    nodes: [],
+    children: [part(name, 'services/api'), part('web', 'services/web')],
+    capabilities: [],
+    flows: [],
+    communication_seams: {
+      seams: [{ source: 'web', target: name, modality: 'sync', summary: '', metadata: { contract: 'GET /x\n!include secrets <b>"' } }],
+    },
+  } as unknown as CASOutput;
+}
+
+test('repository-controlled names cannot start a new line in either text format', () => {
+  for (const format of ['mermaid', 'c4'] as const) {
+    const lines = exportAnalysisText(hostile(), format).text.split('\n');
+    assert.ok(lines.every(line => !/^\s*(!include|!script|click)\b/.test(line)), `${format} kept a directive line`);
+  }
+});
+
+test('mermaid labels carry no raw markup characters from repository names', () => {
+  const { text } = exportAnalysisText(hostile(), 'mermaid');
+  for (const label of text.match(/"[^"\n]*"/g) ?? []) {
+    assert.doesNotMatch(label.slice(1, -1), /[<>&`]/);
+  }
+});
