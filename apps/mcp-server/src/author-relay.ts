@@ -95,7 +95,7 @@ export async function relayAuthorAsk(
     const answered = await fetch(upstream, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body,
+      body: new Uint8Array(body),
       signal: AbortSignal.timeout(LONGEST_ANSWER_MS),
     });
     const text = await answered.text();
