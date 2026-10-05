@@ -20,6 +20,7 @@ If these documents disagree, resolve the conflict in source and update the less 
 
 | Document | Coverage |
 | --- | --- |
+| `docs/ANALYSIS-MARKDOWN-EXPORT.md` | Schema of the human-diffable Markdown export of an analysis, returned by `export_analysis`. |
 | `docs/mcp/GETTING-STARTED.md` | Hosted installation, authentication, MCP registration, analysis, first agent context, and troubleshooting. |
 | `docs/mcp/CUSTOMER-ONBOARDING.md` | First-ten-minutes journey, hosted and self-hosted options, implemented versus planned integrations, and buyer proof. |
 | `docs/mcp/CONFIGURATION.md` | Native/npm customer install distinction, contributor requirements, provider configuration, MCP configuration, storage, and remote analysis. |

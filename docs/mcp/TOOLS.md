@@ -431,6 +431,17 @@ MVC/MVVM/repository/service/mediator/unit-of-work/singleton patterns and which
 owner categories/examples to follow, `pattern_balance`, and agent rules for
 preserving local architecture.
 
+### `export_analysis`
+
+Text exports of the stored analysis, for diagrams and for review by diff. Nothing is re-extracted.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `format` | `mermaid` \| `c4` \| `markdown` | yes | `mermaid`: a flowchart with the sub-projects as containers and the seams between them as arrows (dashed for asynchronous seams). `c4`: the same containers and relations as C4-style model-as-code text. `markdown`: the document described in `docs/ANALYSIS-MARKDOWN-EXPORT.md`. |
+
+**Returns:** `format` and `text`. A repository without sub-projects is one container. Seams to a service outside the repository draw that service as an external system. Sections with nothing recorded, such as capabilities when no AI interpretation ran, say so.
+
 ---
 
 ## Product Understanding

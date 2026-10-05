@@ -15,6 +15,7 @@ import { findRoutes } from './route-query';
 import { ROUTE_SECTIONS, ROUTE_TOOL_CONFIG } from './route-tool';
 import { getAnalysisEntry, getStorageHealth, listAgenticBenchmarkReports, listAnalyses, listCrossCodebaseSystemGraphs, listWorkspaceGraphs, loadAgenticBenchmarkReport, loadCrossCodebaseSystemGraph, loadGoldenSnapshot, loadLatestAgenticBenchmarkReportByType, loadRuntimeObservations, loadWorkspaceGraph, saveAgenticBenchmarkReport, saveCrossCodebaseSystemGraph, saveGoldenSnapshot, saveRuntimeObservation, saveWorkspaceGraph } from './storage';
 import * as query from './query';
+import { ANALYSIS_EXPORT_TOOL_CONFIG, exportAnalysisText } from './analysis-text-export';
 import * as adrStore from './adr-store';
 import { queryGraph } from './graph-query';
 import * as watcher from './watcher';
@@ -160,10 +161,6 @@ async function getFreshAnalysisForAgent(projectPath: string, sections?: readonly
     ...(subCasNodeId ? { cas_id: subCasNodeId } : {}),
   });
 }
-
-
-
-
 
 
 
@@ -6872,6 +6869,9 @@ function registerTools(server: McpServer) {
   );
 
 
+
+  server.registerTool('export_analysis', ANALYSIS_EXPORT_TOOL_CONFIG as any, async ({ path, format }: any) => withErrorHandling(async () =>
+    json(exportAnalysisText(await getAnalysis(path), format))));
 
   server.registerTool(
     'get_implementation_health',
