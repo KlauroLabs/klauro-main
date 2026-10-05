@@ -310,3 +310,36 @@ test('a whole-system capability carries the child capabilities it was derived fr
   ]);
   assert.deepEqual(whole.parent_originated, { kind: 'seam', evidence: ['web to api (http, sync)'] });
 });
+
+test('signature, exported, edge via and the flow standing reach the stored analysis', () => {
+  const index = {
+    root: '/tmp/shop',
+    files: [{ path: 'src/a.ts', kind: 'source', language: 'typescript', extracted: true }],
+    nodes: [
+      { id: 'src/a.ts', name: 'a.ts', kind: 'module', file: 0, span: { line: 1 } },
+      {
+        id: 'src/a.ts:function:f:1', name: 'f', kind: 'function', file: 0, span: { line: 1, end_line: 3 }, parent: 'src/a.ts',
+        signature: { parameters: [{ name: 'n', type_annotation: 'number', optional: true }], return_type: 'string' },
+        modifiers: { exported: true },
+      },
+      { id: 'src/a.ts:method:K.m:5', name: 'm', kind: 'method', file: 0, span: { line: 5 }, parent: 'src/a.ts', modifiers: { private_member: true } },
+    ],
+    edges: [
+      { source: 'src/a.ts:function:f:1', target: 'src/a.ts:method:K.m:5', kind: 'calls', via: 'name' },
+      { source: 'src/a.ts:method:K.m:5', target: 'src/a.ts:function:f:1', kind: 'calls' },
+    ],
+    comprehension: {
+      flows: [{ id: 'flow:x', entry_point: 'entry:x', kind: 'http', operation: 'GET /x', standing: 'open', open: 2, cut: true }],
+    },
+  } as unknown as TierStackIndex;
+  const cas = tierStackToCas(index, 'shop');
+  const held = cas.nodes.find(node => node.id === 'src/a.ts:function:f:1');
+  assert.deepEqual(held?.signature, { parameters: [{ name: 'n', type: 'number', optional: true }], return_type: 'string' });
+  assert.equal(held?.metadata?.is_exported, true);
+  assert.equal(cas.nodes.find(node => node.name === 'm')?.metadata?.access_modifier, 'private');
+  assert.equal(cas.edges[0].metadata?.attributes?.via, 'name');
+  assert.equal(cas.edges[1].metadata, undefined);
+  assert.equal(cas.flows?.[0].standing, 'open');
+  assert.equal(cas.flows?.[0].open, 2);
+  assert.equal(cas.flows?.[0].cut, true);
+});

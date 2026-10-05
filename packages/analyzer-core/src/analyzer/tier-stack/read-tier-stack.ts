@@ -15,6 +15,30 @@ export interface TierStackSpan {
   end_column?: number;
 }
 
+export interface TierStackParameter {
+  name: string;
+  type_annotation?: string;
+  optional?: boolean;
+  default_value?: string;
+}
+
+export interface TierStackSignature {
+  parameters?: TierStackParameter[];
+  return_type?: string;
+  type_parameters?: string[];
+  receiver?: string;
+}
+
+export interface TierStackModifiers {
+  exported?: boolean;
+  default_export?: boolean;
+  is_async?: boolean;
+  is_static?: boolean;
+  abstract_member?: boolean;
+  private_member?: boolean;
+  protected_member?: boolean;
+}
+
 export interface TierStackNode {
   id: string;
   name: string;
@@ -22,6 +46,8 @@ export interface TierStackNode {
   file: number;
   span: TierStackSpan;
   parent?: string;
+  signature?: TierStackSignature;
+  modifiers?: TierStackModifiers;
   type_annotation?: string;
   documentation?: string;
   project?: string;

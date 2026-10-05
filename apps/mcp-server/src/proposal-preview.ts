@@ -3,11 +3,14 @@ import * as crypto from 'node:crypto';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as fs from 'fs-extra';
-import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
+import type { BreakingChange, CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { getAnalysis } from './analyzer';
 import { analyzeForBench } from './gauntlet/product-analysis';
 import { validateBehavioralInvariants } from './invariant-validation';
 import { validateCodebaseIdioms } from './idiom-query';
+import { breakingChangesBetween } from './analysis-breaking-changes';
+import { engineDeltaBetween, type EngineDelta } from './analysis-engine-delta';
+import { matchRenames, type AmbiguousRename, type MatchedRename } from './analysis-rename-match';
 import {
   loadProposalPreviewPayload,
   saveProposalPreviewArtifact,
@@ -55,6 +58,10 @@ interface AnalysisComparison {
   required_checks: string[];
   idiom_validation?: unknown;
   invariant_validation?: unknown;
+  renames?: MatchedRename[];
+  ambiguous_renames?: AmbiguousRename[];
+  breaking_changes?: BreakingChange[];
+  engine_delta?: EngineDelta;
 }
 
 export async function previewCodebaseIteration(options: ProposalPreviewOptions) {
@@ -157,6 +164,8 @@ export async function compareAnalysisIterations(options: {
   previewId?: string;
   diffText?: string;
   files?: string[];
+  baselineLabel?: string;
+  proposedLabel?: string;
 }) {
   if (options.previewId) {
     const payload = await getPreviewAnalysis(options.previewId);
@@ -169,13 +178,15 @@ export async function compareAnalysisIterations(options: {
     diffText: options.diffText,
     changedFiles: options.files,
     projectPath: options.baselinePath,
+    baselineLabel: options.baselineLabel,
+    proposedLabel: options.proposedLabel,
   });
 }
 
 export function compareAnalyses(
   baseline: CASOutput | undefined,
   proposed: CASOutput,
-  context: { diffText?: string; changedFiles?: string[]; projectPath?: string } = {}
+  context: { diffText?: string; changedFiles?: string[]; projectPath?: string; baselineLabel?: string; proposedLabel?: string } = {}
 ): AnalysisComparison {
   const baselineNodeIds = new Set((baseline?.nodes || []).map(node => node.id));
   const proposedNodeIds = new Set(proposed.nodes.map(node => node.id));
@@ -218,9 +229,16 @@ export function compareAnalyses(
     ...((invariantValidation as any)?.required_checks || []),
   ]);
 
+  const identity = baseline === undefined ? undefined : matchRenames(baseline, proposed);
   return {
     baseline_analysis_id: baseline?.analysis_id,
     proposed_analysis_id: proposed.analysis_id,
+    ...(baseline === undefined || identity === undefined ? {} : {
+      renames: identity.renames,
+      ambiguous_renames: identity.ambiguous,
+      breaking_changes: breakingChangesBetween(baseline, proposed, identity),
+      engine_delta: engineDeltaBetween(baseline, proposed, identity, { baseline: context.baselineLabel, proposed: context.proposedLabel }),
+    }),
     graph_delta: {
       nodes_added: countDifference(proposedNodeIds, baselineNodeIds),
       nodes_removed: countDifference(baselineNodeIds, proposedNodeIds),

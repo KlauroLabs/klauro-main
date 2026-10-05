@@ -122,8 +122,27 @@ function nodesOf(index: TierStackIndex): CASNode[] {
     analyzers: [TIER_STACK_ANALYZER],
     primaryAnalyzer: TIER_STACK_ANALYZER,
     source: sourceOf(index, node),
-    metadata: { language: index.files[node.file]?.language },
+    ...(node.signature === undefined ? {} : { signature: signatureOf(node.signature) }),
+    metadata: {
+      language: index.files[node.file]?.language,
+      ...(node.modifiers?.exported ? { is_exported: true } : {}),
+      ...(node.modifiers?.private_member ? { access_modifier: 'private' as const } : {}),
+      ...(node.modifiers?.protected_member ? { access_modifier: 'protected' as const } : {}),
+    },
   }));
+}
+
+function signatureOf(signature: NonNullable<TierStackNode['signature']>): NonNullable<CASNode['signature']> {
+  return {
+    parameters: (signature.parameters ?? []).map(parameter => ({
+      name: parameter.name,
+      ...(parameter.type_annotation === undefined ? {} : { type: parameter.type_annotation }),
+      ...(parameter.optional ? { optional: true } : {}),
+      ...(parameter.default_value === undefined ? {} : { default_value: parameter.default_value }),
+    })),
+    ...(signature.return_type === undefined ? {} : { return_type: signature.return_type }),
+    ...((signature.type_parameters ?? []).length === 0 ? {} : { type_parameters: signature.type_parameters }),
+  };
 }
 
 function edgesOf(index: TierStackIndex): CASEdge[] {
@@ -132,6 +151,7 @@ function edgesOf(index: TierStackIndex): CASEdge[] {
     source: edge.source,
     target: edge.target,
     type: EDGE_TYPES[edge.kind] ?? edge.kind,
+    ...(edge.via === undefined ? {} : { metadata: { attributes: { via: edge.via } } }),
   }));
 }
 
@@ -276,6 +296,9 @@ function flowsOf(index: TierStackIndex): CASOutput['flows'] {
     intent: flow.operation,
     description: flow.description,
     entry_point: flow.entry_point,
+    standing: flow.standing,
+    ...(flow.open === undefined ? {} : { open: flow.open }),
+    ...(flow.cut === undefined ? {} : { cut: flow.cut }),
     entities: [...(flow.writes ?? []), ...(flow.reads ?? [])],
     contract: contractOf(flow),
     steps: stepsOf(flow),

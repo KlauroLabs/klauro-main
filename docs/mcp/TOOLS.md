@@ -268,8 +268,14 @@ Compare two ordinary CAS analyses, or return the comparison for a preview. This 
 | `proposed_path` | string | no | Path for proposed stored analysis |
 | `diff_text` | string | no | Optional diff used to focus impact checks |
 | `files` | string[] | no | Optional changed files used to focus impact checks |
+| `baseline_label` | string | no | Name of the baseline revision (a commit or tag), echoed in `engine_delta.revisions` |
+| `proposed_label` | string | no | Name of the proposed revision, echoed in `engine_delta.revisions` |
 
-**Returns:** Graph delta, changed contracts, impacted files, required checks, idiom validation, and behavioral invariant validation.
+**Returns:** Graph delta, changed contracts, impacted files, required checks, idiom validation, and behavioral invariant validation. With two analyses it also returns:
+
+- `renames`: an entity removed in one revision and added in the other, matched only when unambiguous. The rule: same kind, same container (or the container itself renamed), and the same signature shape with the same callee set; a leaf function with no callees needs the same signature, the same size and the same non-empty callers; a class or type needs the same member names; a member of a renamed container follows it by name. A fingerprint shared by more than one candidate on either side is reported in `ambiguous_renames` and stays removed plus added. Each rename names its `basis`.
+- `breaking_changes`: for each exported entity whose signature or visibility changed, or that was removed or renamed, a `BreakingChange` with `verdict` (`breaking`, `potentially-breaking` or `non-breaking`), the named `consumers` (callers in the graph that still exist) and a migration hint. Added optional parameters and renamed parameters in positional languages are `non-breaking`; a type that appears or disappears on one side only, or a removed export with no known consumer, is `potentially-breaking`. `behavior-change` is not produced.
+- `engine_delta`: capabilities, flows, steps, entities, seams and sub-projects as `added`, `removed`, `changed` (with the facets that changed) and `renamed`, with both revisions named. Flows follow a renamed entry function; changed flows show standing, `open` and `cut` movement.
 
 ### `list_analyses`
 
@@ -1529,6 +1535,20 @@ Complete call chains from entry to exit. Behavior depends on parameters:
 - **With `chain_id`:** Returns the full chain with all steps, characteristics, risk analysis, business context, criticality, runtime stats, test coverage.
 - **With `entry_point_id`:** Returns all chains for that entry point (full detail).
 - **Without filters:** Returns paginated **chain summaries** (`id`, `chain_type`, `entry_point`, `exit_point`, `call_path_length`, `characteristics`, `criticality`, `risk_level`) -- not full chain data.
+
+### `get_route`
+
+The path, or up to `max_paths` shortest distinct paths, between two arbitrary functions, steps, flows, entry points or nodes.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Project path |
+| `from` | string | yes | Start: node id, unique name, entry point id, flow id or step id (`flowId:stepId`) |
+| `to` | string | yes | End, same forms as `from` |
+| `max_depth` | number | no | Longest route in hops (default 8) |
+| `max_paths` | number | no | Most distinct paths to return, shortest first (default 3) |
+
+**Returns:** `{ found, from, to, direction, paths: [{ length, hops: [{ from, to, edge, via, at? }] }], bound }`. Each hop carries its edge kind and `via` (`structure` proven from imports and types, `name` matched on the name alone, `rule` supplied by a framework rule) and the file and line of the caller. `bound` states the max depth, max paths, whether the search was truncated and in plain words what was searched. When nothing is found, `no_path.reason` says why: `open_end` (the code reached from the start runs through flows whose trail ends in calls the analysis could not resolve, or was cut), `beyond_depth_bound` (a path exists but is longer than `max_depth`), `disconnected_within_analysis` (every call was followed and the two are not connected) or `search_limit`. If only a path from `to` to `from` exists it is returned with `direction: "reverse"`. An ambiguous name returns `candidates` instead of guessing.
 
 ### `get_method_calls`
 

@@ -4368,6 +4368,9 @@ export interface FlowConcept {
   description?: string;
   description_source?: 'ai';
   entry_point: string;
+  standing?: string;
+  open?: number;
+  cut?: boolean;
   capability_id?: string;
   capability_relationships?: CapabilityFlowRelationship[];
   entities: string[];
@@ -4619,10 +4622,12 @@ export interface SuggestedAction {
 }
 
 export interface BreakingChange {
-  type: 'signature-change' | 'removed-export' | 'type-change' | 'behavior-change';
+  type: 'signature-change' | 'removed-export' | 'renamed-export' | 'visibility-change' | 'type-change' | 'behavior-change';
+  verdict?: 'breaking' | 'potentially-breaking' | 'non-breaking';
   nodeId: string;
   description: string;
   affectedConsumers: string[];
+  consumers?: Array<{ id: string; name: string; file?: string; line?: number }>;
   suggestedMigration?: string;
 }
 

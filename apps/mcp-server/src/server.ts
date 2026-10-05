@@ -11,6 +11,8 @@ import * as nodePath from 'path';
 import { getAnalysis as getStoredAnalysis } from './analyzer';
 import { compareHostedFreshness, currentAnalysisSourceStamp, hostedSummaryPayload, resolutionIsStaleDegraded, resolveBoundAnalysis, resolveHostedProjectBinding } from './hosted-analysis';
 import { CAS_SECTION_PROFILES, type CasSectionName } from './cas-sections';
+import { findRoutes } from './route-query';
+import { ROUTE_SECTIONS, ROUTE_TOOL_CONFIG } from './route-tool';
 import { getAnalysisEntry, getStorageHealth, listAgenticBenchmarkReports, listAnalyses, listCrossCodebaseSystemGraphs, listWorkspaceGraphs, loadAgenticBenchmarkReport, loadCrossCodebaseSystemGraph, loadGoldenSnapshot, loadLatestAgenticBenchmarkReportByType, loadRuntimeObservations, loadWorkspaceGraph, saveAgenticBenchmarkReport, saveCrossCodebaseSystemGraph, saveGoldenSnapshot, saveRuntimeObservation, saveWorkspaceGraph } from './storage';
 import * as query from './query';
 import * as adrStore from './adr-store';
@@ -142,16 +144,7 @@ Trust, then verify: every result is stamped to a commit/branch. If get_file_node
 
 Watch for silent server staleness: \`klauro update\` overwrites the installed MCP server on disk, but an ALREADY-RUNNING server process keeps executing the OLD build in memory until the client restarts — MCP servers do not hot-reload, and this happens with no error, just missing tools or stale behavior. Every get_summary / get_system_overview response (and anything else on the freshness-stamped orient path) carries a server_update field once it becomes known (empty on the very first call of a session, populated from the second call onward) whenever a newer build is installed or available; get_server_version is the direct, always-fresh way to check on demand and returns the same finding as running_stale/server_update plus installed_version. If you see server_update or a get_server_version note asking for a restart, relay it to the human verbatim — restarting the MCP client (Claude Code / IDE) is the only way to pick up the new build.`;
 
-
-
-
-
 async function getFreshAnalysisForAgent(projectPath: string, sections?: readonly CasSectionName[], subCasNodeId?: string) {
-
-
-
-
-
 
 
   const binding = await resolveHostedProjectBinding(projectPath).catch(() => null);
@@ -486,7 +479,7 @@ const GATEWAY_TOOL_GROUPS: Array<{ label: string; tools: string[] }> = [
   { label: 'Analysis management', tools: ['analyze_codebase', 'get_analysis_focus_profiles', 'get_description_enrichment_targets', 'generate_element_description', 'get_element_description', 'get_analysis_phases', 'run_analysis_layer', 'initialize_klauro_project', 'get_klauro_project_config', 'declare_convention', 'get_upload_manifest', 'get_agent_revision_tracks', 'get_github_import_plan', 'analyze_codebase_remote', 'sync_codebase_remote', 'list_analyses', 'validate_cas_contract', 'get_storage_health', 'get_storage_maintenance_report', 'prune_storage_artifacts', 'preview_codebase_iteration', 'get_greenfield_architecture_guidance', 'get_greenfield_build_context', 'preview_greenfield_codebase', 'get_preview_analysis', 'compare_analysis_iterations', 'get_analysis_freshness', 'get_test_discovery_evidence', 'save_cas_golden_snapshot', 'compare_cas_golden_snapshot'] },
   { label: 'System understanding and agent workflow', tools: ['get_summary', 'get_system_overview', 'get_architecture_context', 'list_answer_packs', 'get_mcp_demo_flow', 'get_cross_repo_links', 'run_workspace_analysis', 'resolve_workspace_analysis', 'get_workspace_summary', 'get_workspace_analysis', 'get_workspace_agent_context', 'get_workspace_freshness', 'validate_was_contract', 'get_workspace_health', 'get_workspace_risk_context', 'get_workspace_capability_map', 'get_workspace_entity_map', 'get_workspace_workflow', 'list_workspace_analyses', 'run_cross_codebase_analysis', 'get_cross_codebase_analysis', 'list_cross_codebase_analyses', 'save_workspace_graph', 'get_workspace_graph', 'list_workspace_graphs', 'verify_workspace_link', 'get_agent_bootstrap', 'get_agent_context', 'get_agent_project_map', 'get_agent_doctor', 'get_server_version', 'get_agent_default_config', 'install_agent_default_config', 'get_capability_memory', 'get_idiom_aware_agent_context', 'open_agent_workbench', 'preflight_agent_change', 'get_codebase_agent_rules', 'explain_change_shape', 'evaluate_analysis_truth', 'get_semantic_map', 'get_framework_depth_report', 'get_integration_depth_report', 'get_cross_repo_contracts', 'get_runtime_instrumentation_plan', 'get_runtime_event_contract', 'get_runtime_sdk_package', 'evaluate_agent_task_proof', 'evaluate_agent_readiness', 'run_agentic_benchmark', 'get_agentic_benchmark_report', 'get_agent_performance_proof', 'run_agent_quality_benchmark', 'run_agent_idiom_benchmark', 'run_machine_agent_proof', 'run_incremental_value_benchmark', 'get_patterns', 'get_codebase_idioms', 'get_idiom_examples', 'validate_codebase_idioms', 'get_pattern_instances', 'get_perspectives'] },
   { label: 'Navigation and search', tools: ['semantic_search', 'get_embedding_status', 'get_node', 'get_file_nodes', 'get_level'] },
-  { label: 'Entry points, routes, and call graph', tools: ['get_entry_points', 'get_exit_points', 'get_communication_seams', 'get_route_table', 'get_cicd_pipelines', 'get_external_services', 'get_callers', 'get_callees', 'get_call_chain', 'get_method_calls', 'get_interface_signature', 'get_flow_concepts'] },
+  { label: 'Entry points, routes, and call graph', tools: ['get_entry_points', 'get_exit_points', 'get_communication_seams', 'get_route_table', 'get_cicd_pipelines', 'get_external_services', 'get_callers', 'get_callees', 'get_call_chain', 'get_route', 'get_method_calls', 'get_interface_signature', 'get_flow_concepts'] },
   { label: 'Component hierarchy', tools: ['get_component_parents', 'get_component_children', 'get_component_metrics', 'get_shared_components'] },
   { label: 'Coding context and conventions', tools: ['get_conventions', 'get_modification_guide', 'get_pattern_examples', 'find_similar_code', 'get_comments', 'get_error_contracts', 'get_framework_guidance', 'get_usage_examples', 'get_configuration'] },
   { label: 'Intent, data, and risk', tools: ['get_intent', 'get_data_entities', 'get_security_overview', 'get_behavioral_invariants', 'validate_behavioral_invariants', 'get_stability', 'get_flow_coverage', 'get_semantic_coverage'] },
@@ -1924,22 +1917,26 @@ function registerTools(server: McpServer) {
     'compare_analysis_iterations',
     {
       title: 'Compare Analysis Iterations',
-      description: 'Compare two normal CAS analyses or return the comparison payload for a proposal preview.',
+      description: 'Compare two normal CAS analyses or return the comparison payload for a proposal preview. With two analyses it also reports renames (an entity removed and added with the same kind, container and signature plus callee set, matched only when unambiguous), breaking_changes (each exported entity whose signature or visibility changed or that was removed or renamed, marked breaking, potentially-breaking or non-breaking with its named consumers) and engine_delta (capabilities, flows, steps, entities, seams and sub-projects added, removed, changed or renamed, with both revisions named).',
       inputSchema: {
         preview_id: z.string().optional().describe('Existing preview id to compare'),
         baseline_path: z.string().optional().describe('Path for baseline stored analysis'),
         proposed_path: z.string().optional().describe('Path for proposed stored analysis'),
         diff_text: z.string().optional().describe('Optional diff used to focus impact checks'),
         files: z.array(z.string()).optional().describe('Optional changed files used to focus impact checks'),
+        baseline_label: z.string().optional().describe('Name of the baseline revision (a commit or tag) echoed in the result'),
+        proposed_label: z.string().optional().describe('Name of the proposed revision (a commit or tag) echoed in the result'),
       } as any,
     } as any,
-    async ({ preview_id, baseline_path, proposed_path, diff_text, files }: any) => withErrorHandling(async () => {
+    async ({ preview_id, baseline_path, proposed_path, diff_text, files, baseline_label, proposed_label }: any) => withErrorHandling(async () => {
       return json(await proposalPreview.compareAnalysisIterations({
         previewId: preview_id,
         baselinePath: baseline_path,
         proposedPath: proposed_path,
         diffText: diff_text,
         files,
+        baselineLabel: baseline_label,
+        proposedLabel: proposed_label,
       }));
     })
   );
@@ -4401,6 +4398,9 @@ function registerTools(server: McpServer) {
       return json(query.getCallChain(cas, { chainId: chain_id, entryPointId: entry_point_id, limit, offset }));
     })
   );
+
+  server.registerTool('get_route', ROUTE_TOOL_CONFIG as any, async ({ path, from, to, max_depth, max_paths }: any) => withErrorHandling(async () =>
+    json(findRoutes(await getAnalysis(path, { sections: ROUTE_SECTIONS }), from, to, { maxDepth: max_depth, maxPaths: max_paths }))));
 
   server.registerTool(
     'get_method_calls',

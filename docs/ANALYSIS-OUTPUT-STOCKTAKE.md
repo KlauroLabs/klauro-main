@@ -24,6 +24,10 @@ declared types, a typed receiver), `name` when it was matched on the name alone,
 framework or dispatch rule supplied it. It tells a customer whether "A calls B" was shown or
 inferred from a shared name, and it is what the engine itself uses to decide which calls to follow.
 
+`nodes[].signature` and `nodes[].metadata.is_exported` and `access_modifier` now carry what the engine read: the parameters with their declared types, whether each is optional or has a default, the return type, and whether the declaration is exported or narrowed to private or protected. They tell a customer what an entity's contract is, and they are what a comparison of two revisions reads to say whether an exported change breaks its callers.
+
+`edges[].metadata.attributes.via` carries the engine's `edges[].via` onto the stored analysis, and `flows[].standing`, `flows[].open` and `flows[].cut` carry the flow standing described below. They tell a reader of a route between two functions how each hop was found and where a trail ran out.
+
 **Data**
 `entities`, `data_summary`, `data_lineage`, `database_schema`, `domain_concepts`
 
