@@ -1921,14 +1921,32 @@ pub fn follow_their_program(entry_points: &mut [EntryPoint], edges: &[IndexEdge]
             called_files.entry(edge.source.as_str()).or_default().push(to);
         }
     }
+    let mut held_inside: HashMap<&str, Vec<&str>> = HashMap::default();
+    for edge in edges.iter().filter(|edge| edge.kind == EdgeKind::Contains) {
+        held_inside.entry(edge.source.as_str()).or_default().push(edge.target.as_str());
+    }
     for entry in entry_points.iter_mut().filter(|entry| entry.unshipped.is_none() && matches!(entry.kind, "tool" | "http" | "ipc" | "cli")) {
-        let Some(reached) = called_files.get(entry.handler.as_str()).filter(|reached| !reached.is_empty()) else { continue };
-        let owners: Option<Vec<&Unshipped>> = reached.iter().map(|file| held_by.get(file)).collect();
-        if let Some(first) = owners.and_then(|owners| owners.first().map(|held| (*held).clone())) {
+        let mut units = vec![entry.handler.as_str()];
+        let mut at = 0;
+        while at < units.len() && units.len() < 64 {
+            if let Some(inner) = held_inside.get(units[at]) {
+                units.extend(inner.iter().copied());
+            }
+            at += 1;
+        }
+        let reached: Vec<&str> = units.iter().filter_map(|unit| called_files.get(unit)).flatten().copied().collect();
+        if reached.is_empty() {
+            continue;
+        }
+        let mut distinct: Vec<&str> = reached;
+        distinct.sort_unstable();
+        distinct.dedup();
+        let owners: Vec<&Unshipped> = distinct.iter().filter_map(|file| held_by.get(file)).filter(|held| held.role == "benchmark").collect();
+        if let Some(first) = owners.first().filter(|_| owners.len() * 2 > distinct.len()) {
             entry.unshipped = Some(Unshipped {
                 role: first.role,
-                basis: "reaches-only-program-code",
-                evidence: format!("everything this entry calls outside its own file belongs to {} programs", first.role),
+                basis: "reaches-mostly-program-code",
+                evidence: format!("{} of the {} files this entry calls into belong to {} programs", owners.len(), distinct.len(), first.role),
             });
         }
     }
