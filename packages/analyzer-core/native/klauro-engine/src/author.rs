@@ -719,7 +719,7 @@ pub fn name_a_part(facts: &str) -> Option<PartNamed> {
     (!name.is_empty() && !summary.is_empty()).then_some(PartNamed { name, summary })
 }
 
-pub fn split_purpose(spoken_for: &str, name: &str, description: &str, families: &[(String, String)]) -> Proposal {
+pub fn split_purpose(spoken_for: &str, name: &str, description: &str, families: &[(String, String)], at_least: usize) -> Proposal {
     if !asked() || families.len() < 2 {
         return Proposal::default();
     }
@@ -734,8 +734,9 @@ pub fn split_purpose(spoken_for: &str, name: &str, description: &str, families: 
          kind of path. A purpose that would need a list of unrelated things to name its members is not one \
          purpose. When the outcomes are the stages one program carries out, each distinct result the program \
          gives someone, what it finds, connects, groups, explains or keeps, is a purpose, not each module that \
-         does a share of the work. If, read carefully, it really is one purpose, return it as a single \
-         capability.\n\n\
+         does a share of the work, and a product that does one thing overall still gives several results. \
+         Return at least {at_least} capabilities, each holding a handful of the outcomes, and never one \
+         capability holding most of them.\n\n\
          Rules for what counts:\n{RULES}\n\n\
          For each capability list every outcome that serves it, each with a role: {ROLES_TOLD} Give each a few \
          words on why. An outcome that serves no purpose the product states is listed as unassigned. Give each \

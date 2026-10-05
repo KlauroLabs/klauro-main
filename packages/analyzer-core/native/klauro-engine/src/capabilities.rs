@@ -213,6 +213,7 @@ const SPLIT_FROM_FLOWS: usize = 40;
 const SPLIT_FROM_STAGES: usize = 12;
 const SPLIT_OUTCOMES_SHOWN: usize = 80;
 const SPLIT_LINES_PER_OUTCOME: usize = 4;
+const OUTCOMES_PER_SPLIT: usize = 12;
 const STAGES_AT_LEAST: usize = 6;
 const STAGED_PART_FLOWS_AT_MOST: usize = 6;
 
@@ -638,7 +639,7 @@ fn split_the_broad(
             .filter_map(|id| told.get(id).map(|evidence| (id.clone(), evidence.lines().take(SPLIT_LINES_PER_OUTCOME).collect::<Vec<_>>().join("\n"))))
             .take(SPLIT_OUTCOMES_SHOWN)
             .collect();
-        let proposal = crate::author::split_purpose(said, &wide.name, &wide.description, &listed);
+        let proposal = crate::author::split_purpose(said, &wide.name, &wide.description, &listed, listed.len().div_ceil(OUTCOMES_PER_SPLIT).max(2));
         if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
             eprintln!("  split {} over {} outcomes into {} capabilities", wide.name, listed.len(), proposal.capabilities.len());
         }
