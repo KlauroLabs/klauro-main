@@ -30,6 +30,8 @@ pub struct WeightBasis {
     pub consumed_by_shipped: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub days_since_change: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contributors_90d: Option<u32>,
     pub notes: Vec<String>,
 }
 
@@ -204,6 +206,15 @@ fn weigh(
 ) -> Vec<Child> {
     let substrate = shipped_substrate(projects);
     let quiet = days_quiet(root, history, projects, owner);
+    let contributors: Option<HashMap<&str, u32>> = history.filter(|held| held.commits >= MINIMUM_COMMITS && held.head > 0).map(|held| {
+        projects
+            .iter()
+            .map(|project| {
+                let files = owner.iter().filter(|(_, id)| **id == project.id).map(|(path, _)| *path);
+                (project.id.as_str(), held.quarter_contributors(files))
+            })
+            .collect()
+    });
     let mut children: Vec<Child> = projects
         .iter()
         .map(|project| {
@@ -238,6 +249,7 @@ fn weigh(
                     ship,
                     activity: rounded(activity),
                     days_since_change: quiet_days,
+                    contributors_90d: contributors.as_ref().and_then(|held| held.get(project.id.as_str()).copied()),
                     consumed_by_shipped: consumed,
                     notes,
                 },

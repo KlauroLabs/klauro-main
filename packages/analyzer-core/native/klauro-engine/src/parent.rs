@@ -595,7 +595,7 @@ mod tests {
             name: id.to_string(),
             status,
             weight,
-            weight_basis: WeightBasis { ship: 1.0, activity: 1.0, consumed_by_shipped: false, days_since_change: Some(400), notes: Vec::new() },
+            weight_basis: WeightBasis { ship: 1.0, activity: 1.0, consumed_by_shipped: false, days_since_change: Some(400), contributors_90d: None, notes: Vec::new() },
         }
     }
 

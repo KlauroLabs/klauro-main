@@ -109,6 +109,8 @@ pub struct History {
     #[serde(skip)]
     pub per_file: Vec<(String, u32, i64)>,
     #[serde(skip)]
+    pub quarter_authors_of: HashMap<String, Vec<String>>,
+    #[serde(skip)]
     pub head: i64,
     #[serde(skip)]
     pub oldest: i64,
@@ -131,6 +133,18 @@ fn holds_itself(root: &Path) -> bool {
     match (held.canonicalize(), root.canonicalize()) {
         (Ok(held), Ok(root)) => held == root,
         _ => false,
+    }
+}
+
+impl History {
+    pub fn quarter_contributors<'a>(&self, files: impl IntoIterator<Item = &'a str>) -> u32 {
+        let mut distinct: HashSet<&str> = HashSet::default();
+        for path in files {
+            if let Some(authors) = self.quarter_authors_of.get(path) {
+                distinct.extend(authors.iter().map(String::as_str));
+            }
+        }
+        distinct.len() as u32
     }
 }
 
@@ -253,6 +267,15 @@ pub fn read(root: &Path, files: &[String]) -> Option<History> {
         })
         .collect();
     per_file.sort();
+    let quarter_authors_of: HashMap<String, Vec<String>> = touched
+        .iter()
+        .filter(|(_, stat)| !stat.quarter_authors.is_empty())
+        .map(|(path, stat)| {
+            let mut authors: Vec<String> = stat.quarter_authors.iter().map(|author| (*author).to_string()).collect();
+            authors.sort();
+            ((*path).to_string(), authors)
+        })
+        .collect();
     churn.truncate(RANKED);
 
     let mut co_change: Vec<CoChange> = together
@@ -273,7 +296,7 @@ pub fn read(root: &Path, files: &[String]) -> Option<History> {
     });
     co_change.truncate(RANKED);
 
-    Some(History { commits, touched: counted, fix_commits, churn, co_change, files: ranked, per_file, head, oldest: oldest.min(head) })
+    Some(History { commits, touched: counted, fix_commits, churn, co_change, files: ranked, per_file, quarter_authors_of, head, oldest: oldest.min(head) })
 }
 
 fn record<'a>(together: &mut HashMap<(&'a str, &'a str), u32>, changed: &[&'a str]) {
@@ -327,5 +350,30 @@ mod tests {
         let touched: HashMap<&str, Stat> = [("src/a.rs", stat)].into_iter().collect();
         let ranked = rank_files(&touched);
         assert_eq!((ranked[0].recent_authors, ranked[0].quarter_authors), (1, 2));
+    }
+
+    #[test]
+    fn a_part_counts_each_author_once_across_its_files_within_ninety_days() {
+        let held = History {
+            commits: 3,
+            touched: 3,
+            fix_commits: 0,
+            churn: Vec::new(),
+            co_change: Vec::new(),
+            files: Vec::new(),
+            per_file: Vec::new(),
+            quarter_authors_of: [
+                ("src/a.rs".to_string(), vec!["a@x".to_string(), "b@x".to_string()]),
+                ("src/b.rs".to_string(), vec!["b@x".to_string(), "c@x".to_string()]),
+                ("docs/c.md".to_string(), vec!["d@x".to_string()]),
+            ]
+            .into_iter()
+            .collect(),
+            head: 0,
+            oldest: 0,
+        };
+        assert_eq!(held.quarter_contributors(["src/a.rs", "src/b.rs", "src/none.rs"]), 3);
+        assert_eq!(held.quarter_contributors(["docs/c.md"]), 1);
+        assert_eq!(held.quarter_contributors([]), 0);
     }
 }
