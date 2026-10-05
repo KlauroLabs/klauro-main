@@ -708,13 +708,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
                 state: 'succeeded',
                 finished_at: attemptFinishedAt,
                 duration_ms: Date.parse(attemptFinishedAt) - Date.parse(attemptStartedAt),
-                phase_timings: buildPhaseTimings({
-                  queuedAt: attemptQueuedAt,
-                  startedAt: attemptSnapshot.started_at,
-                  workerFinishedAtMs,
-                  finishedAtMs: Date.parse(attemptFinishedAt),
-                  stageTimingsMs: summary.stageTimingsMs,
-                }),
+                phase_timings: buildPhaseTimings({ queuedAt: attemptQueuedAt, startedAt: attemptSnapshot.started_at, workerFinishedAtMs, finishedAtMs: Date.parse(attemptFinishedAt), stageTimingsMs: summary.stageTimingsMs }),
               });
             } catch (error) {
               const detail = error instanceof Error ? error.message : String(error);
