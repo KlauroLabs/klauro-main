@@ -1,0 +1,1 @@
+{ "name": "seam-base-url", "private": true, "workspaces": ["server", "web"] }

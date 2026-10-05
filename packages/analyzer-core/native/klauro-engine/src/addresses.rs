@@ -1,5 +1,6 @@
 use rustc_hash::FxHashMap as HashMap;
 
+use crate::constants::{Constants, Standing};
 use crate::entry_exit::ExitPoint;
 use crate::model::{CallFact, IndexNode, LocalBinding};
 
@@ -25,14 +26,14 @@ fn folded(template: &str, known: &impl Fn(&str) -> Option<String>) -> String {
         let mut rest = written.as_str();
         while let Some(open) = rest.find('{') {
             let Some(close) = rest[open..].find('}').map(|at| open + at) else { break };
-            out.push_str(&rest[..open]);
             let named = rest[open + 1..close].trim();
             match known(named) {
                 Some(value) => {
+                    out.push_str(&rest[..open].trim_end_matches('$'));
                     out.push_str(&value);
                     changed = true;
                 }
-                None => out.push_str(&rest[open..=close]),
+                None => out.push_str(&rest[..=close]),
             }
             rest = &rest[close + 1..];
         }
@@ -129,21 +130,136 @@ fn plainly_placed(template: &str) -> String {
     written
 }
 
+#[cfg(test)]
 fn parameter_named_in(template: &str, unit: &IndexNode) -> Option<usize> {
+    parameter_standing_in(template, unit).map(|(at, _)| at)
+}
+
+fn parameter_standing_in(template: &str, unit: &IndexNode) -> Option<(usize, usize)> {
     let parameters = &unit.signature.as_ref()?.parameters;
+    let mut taken = 0;
     let mut rest = template;
     while let Some(open) = rest.find('{') {
         let close = rest[open..].find('}').map(|at| open + at)?;
         let named = rest[open + 1..close].trim();
         if let Some(at) = parameters.iter().position(|held| held.name == named) {
-            return Some(at);
+            return Some((at, taken + open));
         }
+        taken += close + 1;
         rest = &rest[close + 1..];
     }
     None
 }
 
-pub fn through_wrappers(exits: &mut Vec<ExitPoint>, calls: &[CallFact], nodes: &[IndexNode], files: &[String]) {
+fn carries_the_address(template: &str, unit: &IndexNode) -> bool {
+    let Some((_, at)) = parameter_standing_in(template, unit) else { return false };
+    let before = &template[..at];
+    let after = template[at..].find('}').map(|close| &template[at + close + 1..]).unwrap_or_default();
+    let whole_segment = before.ends_with('/') && (after.is_empty() || after.starts_with(['/', '?', '#']));
+    !whole_segment || before.trim_matches('/').is_empty()
+}
+
+fn path_of_a_base(written: &str) -> Option<String> {
+    let written = written.split(['?', '#']).next()?.trim();
+    let path = match written.find("://") {
+        Some(at) => {
+            let rest = &written[at + 3..];
+            rest.find('/').map(|slash| &rest[slash..]).unwrap_or("")
+        }
+        None => written,
+    };
+    if path.contains(['{', '$']) || path.contains(char::is_whitespace) {
+        return None;
+    }
+    let bare = path.trim_end_matches('/');
+    Some(match (bare.is_empty(), bare.starts_with('/')) {
+        (true, _) => String::new(),
+        (false, true) => bare.to_string(),
+        (false, false) => format!("/{bare}"),
+    })
+}
+
+fn joined_under(base: &str, path: &str) -> String {
+    match base.is_empty() || path == base || path.starts_with(&format!("{base}/")) {
+        true => path.to_string(),
+        false => format!("{base}{path}"),
+    }
+}
+
+static BASE_KEYS: &[&str] = &["base=", "base_url=", "baseurl=", "prefixurl="];
+
+fn base_named(call: &CallFact) -> Option<&str> {
+    call.literals.iter().find_map(|literal| {
+        let lowered = literal.to_ascii_lowercase();
+        BASE_KEYS
+            .iter()
+            .find(|key| lowered.starts_with(**key))
+            .map(|key| literal[key.len()..].trim().trim_matches(['"', '\'']))
+    })
+}
+
+fn path_asked_in(held: &str) -> &str {
+    match held.split_once('=') {
+        Some((key, value)) if matches!(key.trim(), "endpoint" | "path" | "url") => value.trim(),
+        _ => held,
+    }
+}
+
+pub fn rebase(exits: &mut [ExitPoint], calls: &[CallFact], locals: &[LocalBinding], nodes: &[IndexNode], constants: &Constants) {
+    let node_of: HashMap<&str, &IndexNode> = nodes.iter().map(|node| (node.id.as_str(), node)).collect();
+    let mut calls_at: HashMap<(u32, u32), Vec<&CallFact>> = HashMap::default();
+    for call in calls {
+        calls_at.entry((call.file, call.line)).or_default().push(call);
+    }
+    let mut built_at: HashMap<(u32, &str, &str), u32> = HashMap::default();
+    for local in locals.iter().filter(|local| local.from_call.is_some() || local.constructed.is_some()) {
+        built_at.entry((local.file, local.unit.as_str(), local.name.as_str())).or_insert(local.line);
+    }
+    for exit in exits.iter_mut().filter(|exit| exit.kind == "api" && !exit.id.ends_with(":request")) {
+        let unit = exit.source.as_str();
+        let owner = owner_of(unit, &node_of);
+        let standing = Standing { file: exit.file, unit, owner, node: node_of.get(unit).copied() };
+        let Some(called) = calls_at.get(&(exit.file, exit.line)) else { continue };
+        let asked: Vec<&&CallFact> = called
+            .iter()
+            .filter(|call| crate::names::leaf(&call.callee).split('<').next() == exit.operation.split('<').next())
+            .collect();
+        let spelled = asked.iter().flat_map(|call| call.literals.iter()).find_map(|literal| {
+            let held = path_asked_in(literal);
+            if !held.contains('{') {
+                return None;
+            }
+            let expanded = plainly_placed(&constants.expand(&standing, held));
+            let wrapped = standing.node.is_some_and(|node| carries_the_address(&expanded, node));
+            (expanded != plainly_placed(held) && !wrapped).then(|| as_a_path(&expanded)).flatten()
+        });
+        if let Some(path) = spelled {
+            exit.addressed = Some(path);
+            continue;
+        }
+        let Some(current) = exit.addressed.clone() else { continue };
+        let through_an_instance = asked.iter().find_map(|call| {
+            let receiver = call.receiver.as_deref()?.trim_start_matches("this.");
+            let named = crate::names::root(receiver);
+            let line = [unit, owner.unwrap_or_default(), ""]
+                .into_iter()
+                .find_map(|held| built_at.get(&(exit.file, held, named)).copied())?;
+            let base = calls_at.get(&(exit.file, line))?.iter().find_map(|made| base_named(made))?;
+            path_of_a_base(&constants.expand(&standing, base))
+        });
+        if let Some(base) = through_an_instance {
+            exit.addressed = Some(joined_under(&base, &current));
+        }
+    }
+}
+
+pub fn through_wrappers(
+    exits: &mut Vec<ExitPoint>,
+    calls: &[CallFact],
+    nodes: &[IndexNode],
+    files: &[String],
+    constants: &Constants,
+) {
     let node_of: HashMap<&str, &IndexNode> = nodes.iter().map(|node| (node.id.as_str(), node)).collect();
     let mut declared: HashMap<&str, u32> = HashMap::default();
     for node in nodes.iter().filter(|node| node.kind.is_unit()) {
@@ -153,7 +269,7 @@ pub fn through_wrappers(exits: &mut Vec<ExitPoint>, calls: &[CallFact], nodes: &
     for call in calls {
         calls_at.entry((call.file, call.line)).or_default().push(call);
     }
-    let mut asking: HashMap<&str, usize> = HashMap::default();
+    let mut asking: HashMap<&str, (usize, String)> = HashMap::default();
     for exit in exits.iter().filter(|exit| exit.kind == "api" && exit.addressed.is_none()) {
         let Some(unit) = node_of.get(exit.source.as_str()).filter(|node| node.kind.is_unit()) else { continue };
         if declared.get(unit.name.as_str()) != Some(&1) {
@@ -164,9 +280,16 @@ pub fn through_wrappers(exits: &mut Vec<ExitPoint>, calls: &[CallFact], nodes: &
             .iter()
             .filter(|call| crate::names::leaf(&call.callee).split('<').next() == exit.operation.split('<').next())
             .flat_map(|call| call.literals.iter())
-            .find_map(|literal| parameter_named_in(literal, unit));
-        if let Some(position) = position {
-            asking.entry(unit.name.as_str()).or_insert(position);
+            .find_map(|literal| parameter_standing_in(literal, unit).map(|(at, offset)| (at, &literal[..offset])));
+        if let Some((position, before)) = position {
+            let standing = Standing {
+                file: exit.file,
+                unit: exit.source.as_str(),
+                owner: owner_of(exit.source.as_str(), &node_of),
+                node: Some(unit),
+            };
+            let base = path_of_a_base(&constants.expand(&standing, before.trim_end_matches('$'))).unwrap_or_default();
+            asking.entry(unit.name.as_str()).or_insert((position, base));
         }
     }
     if asking.is_empty() {
@@ -174,7 +297,7 @@ pub fn through_wrappers(exits: &mut Vec<ExitPoint>, calls: &[CallFact], nodes: &
     }
     let mut made = Vec::new();
     for (position, call) in calls.iter().enumerate() {
-        let Some(at) = asking.get(crate::names::leaf(&call.callee).split('<').next().unwrap_or_default()).copied() else {
+        let Some((at, base)) = asking.get(crate::names::leaf(&call.callee).split('<').next().unwrap_or_default()).map(|(at, base)| (*at, base.as_str())) else {
             continue;
         };
         let Some(caller) = call.caller.as_deref().filter(|caller| node_of.get(caller).is_some_and(|node| node.kind.is_unit())) else {
@@ -185,7 +308,7 @@ pub fn through_wrappers(exits: &mut Vec<ExitPoint>, calls: &[CallFact], nodes: &
             true => call.literals.get(at),
             false => call.literals.first().filter(|first| at == 0 && held(first).is_some()),
         };
-        let Some(path) = template.and_then(held) else { continue };
+        let Some(path) = template.and_then(held).map(|path| joined_under(base, &path)) else { continue };
         let method = call
             .literals
             .iter()

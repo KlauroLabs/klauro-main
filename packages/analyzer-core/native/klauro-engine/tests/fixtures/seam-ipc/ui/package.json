@@ -1,0 +1,1 @@
+{ "name": "desk-ui", "dependencies": { "@tauri-apps/api": "2.0.0", "react": "18.0.0" } }

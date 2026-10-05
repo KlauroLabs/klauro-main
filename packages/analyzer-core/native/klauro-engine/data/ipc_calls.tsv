@@ -1,0 +1,2 @@
+-	invoke	@tauri-apps/api
+ipcRenderer	invoke,send,sendSync	-

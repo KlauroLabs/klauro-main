@@ -6,6 +6,7 @@ use crate::language::LanguageSpec;
 use crate::model::*;
 
 mod lambdas;
+mod programs;
 mod swift_routes;
 
 static COLUMNS_OF: &[&str] = &[
@@ -836,6 +837,9 @@ impl<'a> Extractor<'a> {
         }
         if self.spec.id == "rust" && kind == "const_item" {
             self.declare_rust_const(node, scope);
+        }
+        if self.spec.id == "go" && kind == "const_spec" {
+            self.declare_go_const(node);
         }
         if self.spec.id == "rust" && kind == "mod_item" {
             self.declare_module_alias(node);
@@ -2421,6 +2425,7 @@ impl<'a> Extractor<'a> {
             .map(|held| self.text(held).trim())
             .filter(|raw| written_as_text(raw))
             .map(|raw| trim_quotes(raw).trim().to_string())
+            .or_else(|| value.and_then(|held| self.joined_written(held)))
             .filter(|written: &String| !written.is_empty() && written.len() <= TEXT_AT_MOST);
         if let Some(written) = written_value.clone() {
             self.remembered.insert(name.clone(), written);
@@ -2895,6 +2900,8 @@ impl<'a> Extractor<'a> {
             }
         };
         let mut literals = literals;
+        let listed = self.listed_program_words(&callee, arguments);
+        literals.extend(listed);
         let member_named = node.prev_named_sibling().and_then(|held| match held.kind() {
             "name_equals" => held.named_child(0),
             "identifier" if node.parent().is_some_and(|parent| parent.kind() == "anonymous_object_creation_expression") => {

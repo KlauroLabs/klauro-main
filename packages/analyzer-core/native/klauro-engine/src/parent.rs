@@ -594,6 +594,7 @@ mod tests {
                 count: 4,
                 evidence: vec!["GET /orders".to_string()],
             }],
+            links: Vec::new(),
             dependencies: vec![Dependency {
                 from: "subproject:api".to_string(),
                 to: "subproject:kit".to_string(),

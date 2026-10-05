@@ -4,9 +4,10 @@ use std::path::Path;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use serde::Serialize;
 
+use crate::constants::{Constants, Standing};
 use crate::entry_exit::{EntryPoint, ExitPoint};
 use crate::history::{self, History};
-use crate::model::{CallFact, EdgeKind, IndexEdge};
+use crate::model::{CallFact, EdgeKind, IndexEdge, LocalBinding};
 use crate::paths::{basename, is_test};
 use crate::scope::Deployable;
 use crate::subproject::{Partition, SubProject};
@@ -20,6 +21,7 @@ const STABLE_SHIPPED_FLOOR: f64 = 0.85;
 const SECONDS_PER_DAY: f64 = 86400.0;
 const MINIMUM_NAME: usize = 4;
 const MINIMUM_COMMITS: u32 = 2;
+const MINIMUM_ROOT_SEGMENTS: usize = 2;
 
 #[derive(Debug, Serialize)]
 pub struct WeightBasis {
@@ -66,11 +68,26 @@ pub struct Orphan {
     pub declarations: u32,
 }
 
+#[derive(Debug, Default, Serialize)]
+pub struct Followed {
+    pub detected: u32,
+    pub linked: u32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LinkCoverage {
+    pub project: String,
+    pub http: Followed,
+    pub process: Followed,
+    pub ipc: Followed,
+}
+
 #[derive(Debug, Serialize)]
 pub struct Composition {
     pub mode: &'static str,
     pub children: Vec<Child>,
     pub seams: Vec<Seam>,
+    pub links: Vec<LinkCoverage>,
     pub dependencies: Vec<Dependency>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub orphan: Option<Orphan>,
@@ -346,6 +363,74 @@ fn http_seams(
     seams_of("http", "sync", found)
 }
 
+fn ipc_seams(
+    files: &[String],
+    entry_points: &[EntryPoint],
+    exit_points: &[ExitPoint],
+    owner: &HashMap<&str, &str>,
+) -> Vec<Seam> {
+    let mut served: HashMap<&str, Vec<(&str, &EntryPoint)>> = HashMap::default();
+    for entry in entry_points.iter().filter(|entry| entry.kind == "ipc") {
+        let Some(file) = files.get(entry.file as usize) else { continue };
+        if let Some(project) = owner.get(file.as_str()) {
+            served.entry(entry.name.as_str()).or_default().push((project, entry));
+        }
+    }
+    let mut found: BTreeMap<(&str, &str, bool), (u32, Vec<String>)> = BTreeMap::new();
+    for exit in exit_points.iter().filter(|exit| exit.kind == "api") {
+        let Some(channel) = exit.addressed.as_deref().and_then(|held| held.strip_prefix(crate::entry_exit::IPC_SCHEME)) else {
+            continue;
+        };
+        let Some(file) = files.get(exit.file as usize) else { continue };
+        let (Some(caller), Some(handlers)) = (owner.get(file.as_str()), served.get(channel)) else { continue };
+        let targets: HashSet<&str> = handlers.iter().map(|(project, _)| *project).collect();
+        if targets.len() != 1 || targets.contains(caller) {
+            continue;
+        }
+        let (target, handler) = handlers[0];
+        let handler_file = files.get(handler.file as usize).map(String::as_str).unwrap_or_default();
+        let entry = found.entry((caller, target, is_test(file))).or_insert((0, Vec::new()));
+        entry.0 += 1;
+        entry.1.push(format!("{}:{} {} {} -> {}:{}", file, exit.line, exit.operation, channel, handler_file, handler.line));
+    }
+    seams_of("ipc", "sync", found)
+}
+
+fn link_coverage(
+    files: &[String],
+    exit_points: &[ExitPoint],
+    owner: &HashMap<&str, &str>,
+    seams: &[Seam],
+) -> Vec<LinkCoverage> {
+    let mut held: BTreeMap<&str, LinkCoverage> = BTreeMap::new();
+    for exit in exit_points.iter().filter(|exit| matches!(exit.kind, "api" | "process")) {
+        let Some(file) = files.get(exit.file as usize).filter(|file| !is_test(file)) else { continue };
+        let Some(project) = owner.get(file.as_str()) else { continue };
+        let entry = held.entry(project).or_insert_with(|| LinkCoverage {
+            project: project.to_string(),
+            http: Followed::default(),
+            process: Followed::default(),
+            ipc: Followed::default(),
+        });
+        match (exit.kind, exit.addressed.as_deref()) {
+            ("process", _) => entry.process.detected += 1,
+            ("api", Some(address)) if address.starts_with(crate::entry_exit::IPC_SCHEME) => entry.ipc.detected += 1,
+            ("api", Some(_)) => entry.http.detected += 1,
+            _ => {}
+        }
+    }
+    for seam in seams.iter().filter(|seam| seam.origin == "product") {
+        let Some(entry) = held.get_mut(seam.from.as_str()) else { continue };
+        let followed = match seam.kind {
+            "http" => &mut entry.http,
+            "process" => &mut entry.process,
+            _ => &mut entry.ipc,
+        };
+        followed.linked += seam.count;
+    }
+    held.into_values().collect()
+}
+
 fn seams_of(
     kind: &'static str,
     communication: &'static str,
@@ -419,12 +504,55 @@ fn command_words(literal: &str) -> Vec<String> {
         .collect()
 }
 
+fn path_segments(written: &str) -> Vec<String> {
+    written
+        .trim_matches(['"', '\''])
+        .split(['/', '\\'])
+        .filter(|segment| !segment.is_empty() && *segment != "." && *segment != "..")
+        .map(|segment| segment.to_ascii_lowercase())
+        .collect()
+}
+
+fn rooted_projects(projects: &[&SubProject]) -> Vec<(Vec<String>, String)> {
+    projects
+        .iter()
+        .map(|project| (path_segments(&project.root), project.id.clone()))
+        .filter(|(segments, _)| segments.len() >= MINIMUM_ROOT_SEGMENTS)
+        .collect()
+}
+
+fn reached_through_a_path<'a>(
+    spelled: &str,
+    rooted: &'a [(Vec<String>, String)],
+    caller: &str,
+) -> Option<(&'a str, String)> {
+    let mut found: Vec<(usize, &str)> = Vec::new();
+    for word in spelled.split_whitespace() {
+        let segments = path_segments(word);
+        for (root, id) in rooted.iter().filter(|(_, id)| id != caller) {
+            if segments.windows(root.len()).any(|window| window == root.as_slice()) {
+                found.push((root.len(), id.as_str()));
+            }
+        }
+    }
+    let longest = found.iter().map(|(length, _)| *length).max()?;
+    let mut leading: Vec<&str> = found.into_iter().filter(|(length, _)| *length == longest).map(|(_, id)| id).collect();
+    leading.sort_unstable();
+    leading.dedup();
+    match leading.as_slice() {
+        [only] => Some((*only, spelled.trim().to_string())),
+        _ => None,
+    }
+}
+
 fn process_seams(
     files: &[String],
     exit_points: &[ExitPoint],
     calls: &[CallFact],
     owner: &HashMap<&str, &str>,
     names: &HashMap<String, Option<String>>,
+    rooted: &[(Vec<String>, String)],
+    constants: &Constants,
 ) -> Vec<Seam> {
     let spawning: HashSet<(u32, u32)> = exit_points
         .iter()
@@ -446,11 +574,16 @@ fn process_seams(
         let Some(file) = files.get(exit.file as usize) else { continue };
         let Some(caller) = owner.get(file.as_str()) else { continue };
         let Some(literals) = spoken.get(&(exit.file, exit.line)) else { continue };
+        let standing = Standing { file: exit.file, unit: exit.source.as_str(), owner: None, node: None };
         let reached: Option<(&str, String)> = literals.iter().find_map(|literal| {
-            command_words(literal).into_iter().find_map(|word| {
-                let target = names.get(&word)?.as_deref()?;
-                (target != *caller).then(|| (target, word))
-            })
+            let spelled = constants.spell(&standing, literal);
+            command_words(&spelled)
+                .into_iter()
+                .find_map(|word| {
+                    let target = names.get(&word)?.as_deref()?;
+                    (target != *caller).then(|| (target, word))
+                })
+                .or_else(|| reached_through_a_path(&spelled, rooted, caller))
         });
         let Some((target, word)) = reached else { continue };
         let entry = found.entry((caller, target, is_test(file))).or_insert((0, Vec::new()));
@@ -469,6 +602,7 @@ pub fn derive(
     entry_points: &[EntryPoint],
     exit_points: &[ExitPoint],
     calls: &[CallFact],
+    locals: &[LocalBinding],
     deployables: &[Deployable],
 ) -> Option<Composition> {
     if !partition.sub_cas_nodes.promoted {
@@ -490,11 +624,16 @@ pub fn derive(
         .collect();
     let names = spawnable_names(&projects, deployables);
     let mut seams = http_seams(files, entry_points, exit_points, &owner);
-    seams.extend(process_seams(files, exit_points, calls, &owner, &names));
+    let constants = Constants::new(locals);
+    let rooted = rooted_projects(&projects);
+    seams.extend(ipc_seams(files, entry_points, exit_points, &owner));
+    seams.extend(process_seams(files, exit_points, calls, &owner, &names, &rooted, &constants));
+    let links = link_coverage(files, exit_points, &owner, &seams);
     Some(Composition {
         mode: "derived",
         children: weigh(root, &projects, history, &owner),
         seams,
+        links,
         dependencies: dependencies(edges, &owner, residue.map(|project| project.id.as_str())),
         orphan: residue.map(|project| Orphan {
             project: project.id.clone(),

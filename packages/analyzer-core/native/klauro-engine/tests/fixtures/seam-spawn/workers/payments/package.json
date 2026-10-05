@@ -1,0 +1,1 @@
+{ "name": "payments", "version": "1.0.0", "bin": { "payments": "run.js" } }

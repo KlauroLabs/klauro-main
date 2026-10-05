@@ -67,7 +67,7 @@ static LIFECYCLE_NAMES: &[&str] = &["Main", "main", "wmain"];
 
 static ROUTERS: &[&str] = &["Route", "Router", "blueprint", "bp", "mux", "route", "router"];
 
-fn registered_on_a_router(registrar: &str) -> bool {
+pub(crate) fn registered_on_a_router(registrar: &str) -> bool {
     match registrar.rfind('.') {
         Some(at) => ROUTERS.binary_search(&&registrar[..at]).is_ok(),
         None => false,
@@ -84,23 +84,12 @@ fn registered_on_a_router_like(registrar: &str) -> bool {
     root.to_ascii_lowercase().contains("router")
 }
 
-static PATH_REGISTRARS: &[&str] = &[
-    "handle", "handlefunc", "handler", "handlerfunc", "mount", "nest", "path", "re_path",
-    "resource", "route", "service",
-];
 
-static EVENT_REGISTRARS: &[&str] = &["addEventListener", "on", "once", "prependListener"];
-static TEST_REGISTRARS: &[&str] = &["bench", "describe", "it", "suite", "test"];
-static SCHEDULE_REGISTRARS: &[&str] = &["cron", "schedule", "setInterval", "setTimeout"];
 static RECURRING: &[&str] = &["cron", "schedule", "setInterval"];
 
 pub fn recurring(registrar: &str) -> bool {
     RECURRING.binary_search(&names::leaf(registrar)).is_ok()
 }
-static MESSAGE_REGISTRARS: &[&str] = &["consume", "process", "subscribe", "worker"];
-static COMMAND_REGISTRARS: &[&str] = &["action", "command", "handler"];
-static IPC_REGISTRARS: &[&str] = &["handle", "handleOnce", "invoke"];
-static PROCEDURE_REGISTRARS: &[&str] = &["mutation", "query", "subscription"];
 
 static STARTS_A_CONTINUATION: &[&str] = &[
     "connect",
@@ -164,21 +153,11 @@ fn running_within<'a>(node: &'a IndexNode, named_of: &HashMap<&str, &'a IndexNod
     (!holder.name.is_empty()).then_some(holder.name.as_str())
 }
 
-fn declared_by_a_command(registrar: &str) -> bool {
-    let Some((held, _)) = registrar.rsplit_once('.') else { return false };
-    let leaf = held.rsplit(['.', ':']).next().unwrap_or(held).to_ascii_lowercase();
-    leaf.ends_with("command") || leaf.ends_with("cmd")
-}
-
-fn registered_on_a_procedure(registrar: &str) -> bool {
-    names::root(registrar).to_ascii_lowercase().ends_with("procedure")
-}
-
-fn looks_like_path(label: &str) -> bool {
+pub(crate) fn looks_like_path(label: &str) -> bool {
     label.starts_with('/') || label.starts_with("./") || label.contains("/:")
 }
 
-fn split_label(label: &str) -> (Option<String>, String) {
+pub(crate) fn split_label(label: &str) -> (Option<String>, String) {
     let trimmed = label.trim();
     if let Some((head, rest)) = trimmed.split_once(char::is_whitespace) {
         let verb = head.to_ascii_lowercase();
@@ -241,57 +220,7 @@ fn classify_registration(registrar: &str, label: Option<&str>, speaks_the_mcp_sd
     if speaks_the_mcp_sdk && MCP_TOOL_REGISTRARS.contains(&names::leaf(registrar).to_ascii_lowercase().as_str()) {
         return Some("tool");
     }
-    let verb = names::leaf(registrar);
-    let lowered = verb.to_ascii_lowercase();
-    if PATH_REGISTRARS.binary_search(&lowered.as_str()).is_ok()
-        || HTTP_METHODS.binary_search(&lowered.as_str()).is_ok()
-    {
-        let through_receiver = verb.len() != registrar.len() && !registered_on_a_router(registrar);
-        return match label {
-            Some(label) if !looks_like_route(&split_label(label).1) => None,
-            Some(label) if through_receiver && !label.contains('/') => None,
-            Some(_) => Some("http"),
-            None => None,
-        };
-    }
-    if declared_by_a_command(registrar)
-        && matches!(lowered.as_str(), "run" | "rune" | "runfunc" | "action" | "execute" | "handler")
-    {
-        return Some("cli");
-    }
-    if PROCEDURE_REGISTRARS.binary_search(&lowered.as_str()).is_ok()
-        && registered_on_a_procedure(registrar)
-    {
-        return Some("rpc");
-    }
-    if let Some(_) = mapped_method(verb) {
-        return match label {
-            Some(label) if looks_like_route(&split_label(label).1) => Some("http"),
-            _ => None,
-        };
-    }
-    if verb == "use" && label.is_some_and(looks_like_path) {
-        return Some("http");
-    }
-    if TEST_REGISTRARS.binary_search(&verb).is_ok() {
-        return Some("test");
-    }
-    if SCHEDULE_REGISTRARS.binary_search(&verb).is_ok() {
-        return Some("schedule");
-    }
-    if EVENT_REGISTRARS.binary_search(&verb).is_ok() {
-        return Some("event");
-    }
-    if MESSAGE_REGISTRARS.binary_search(&verb).is_ok() {
-        return Some("message");
-    }
-    if IPC_REGISTRARS.binary_search(&verb).is_ok() {
-        return Some("ipc");
-    }
-    if COMMAND_REGISTRARS.binary_search(&verb).is_ok() {
-        return Some("cli");
-    }
-    None
+    crate::rules::registrar_kind(registrar, label)
 }
 
 pub(crate) const HAND_ROLLED_DISPATCH_REGISTRAR: &str = "dispatch:ipc";
@@ -417,7 +346,7 @@ fn names_a_test(name: &str) -> bool {
     rest.is_empty() || rest.starts_with('_') || rest.starts_with(char::is_uppercase)
 }
 
-fn mapped_method(verb: &str) -> Option<String> {
+pub(crate) fn mapped_method(verb: &str) -> Option<String> {
     let rest = verb.strip_prefix("Map").or_else(|| verb.strip_prefix("map"))?;
     let lowered = rest.to_ascii_lowercase();
     HTTP_METHODS
@@ -426,7 +355,7 @@ fn mapped_method(verb: &str) -> Option<String> {
         .then(|| lowered.to_ascii_uppercase())
 }
 
-fn looks_like_route(value: &str) -> bool {
+pub(crate) fn looks_like_route(value: &str) -> bool {
     !value.is_empty() && !value.contains(' ') && (value.contains('/') || !value.contains('.'))
 }
 
@@ -1427,6 +1356,27 @@ fn requested_by_url(call: &CallFact) -> Option<&'static str> {
     .then_some("api")
 }
 
+pub(crate) const IPC_SCHEME: &str = "ipc://";
+
+fn reaches_an_ipc_channel(call: &CallFact, modules: &rustc_hash::FxHashMap<(u32, String), String>) -> Option<String> {
+    let leaf = names::leaf(&call.callee);
+    let channel = call.literals.first()?.trim().trim_matches(['"', '\'', '`']);
+    if channel.is_empty() || channel.contains(char::is_whitespace) || channel.contains("${") {
+        return None;
+    }
+    crate::rules::ipc_calls()
+        .iter()
+        .filter(|rule| rule.verbs.iter().any(|verb| verb == leaf))
+        .any(|rule| match (&rule.receiver, call.receiver.as_deref()) {
+            (Some(named), Some(receiver)) => names::leaf(receiver) == named,
+            (None, None) => rule.imported_from.as_deref().is_some_and(|from| {
+                modules.get(&(call.file, call.callee.clone())).is_some_and(|specifier| specifier.contains(from))
+            }),
+            _ => false,
+        })
+        .then(|| channel.to_string())
+}
+
 fn addressed_at(call: &CallFact) -> Option<String> {
     for held in call.literals.iter() {
         let held = plainly_written(keyed_address(held).unwrap_or(held));
@@ -1712,6 +1662,12 @@ fn bare_exit(
     }
     if let Some(specifier) = modules.get(&(call.file, call.callee.clone())) {
         return classify_exit(&call.callee, specifier, &call.callee);
+    }
+    if let Some(program) = call.callee.strip_suffix("::new").filter(|held| names::leaf(held) == "Command") {
+        let spoken = modules.get(&(call.file, program.to_string())).map(String::as_str).unwrap_or(program);
+        if matches!(module_kind(spoken), Some(kinds) if kinds.contains(&"process")) {
+            return Some("process");
+        }
     }
     let at = call.callee.rfind("::").map(|at| at + 2).or_else(|| {
         call.callee.rfind('.').map(|at| at + 1)
@@ -2543,6 +2499,23 @@ pub fn derive(
             });
             return (found, reach);
         }
+        if let Some(channel) = reaches_an_ipc_channel(call, modules) {
+            reach.push(String::new());
+            found.push(ExitPoint {
+                id: format!("exit:{}:{}:ipc", files[call.file as usize], position),
+                kind: "api",
+                name: format!("{} {channel}", names::leaf(&call.callee)),
+                source: source.clone(),
+                target: channel.clone(),
+                operation: names::leaf(&call.callee).to_string(),
+                file: call.file,
+                line: call.line,
+                awaited: call.context.awaited,
+                addressed: Some(format!("{IPC_SCHEME}{channel}")),
+                service: None,
+            });
+            return (found, reach);
+        }
         if let Some((operation, over)) = over_a_connection(call, source, &connected) {
             reach.push(call.receiver.clone().unwrap_or_default());
             found.push(ExitPoint {
@@ -2764,27 +2737,19 @@ mod tests {
         let tables: &[(&str, &[&str])] = &[
             ("CACHE_OPERATIONS", CACHE_OPERATIONS),
             ("CLIENT_STORAGE_GLOBALS", CLIENT_STORAGE_GLOBALS),
-            ("COMMAND_REGISTRARS", COMMAND_REGISTRARS),
             ("DATABASE_OPERATIONS", DATABASE_OPERATIONS),
             ("DATA_MEMBERS", DATA_MEMBERS),
-            ("EVENT_REGISTRARS", EVENT_REGISTRARS),
             ("FILE_OPERATIONS", FILE_OPERATIONS),
             ("HTTP_METHODS", HTTP_METHODS),
             ("IO_GLOBALS", IO_GLOBALS),
-            ("IPC_REGISTRARS", IPC_REGISTRARS),
             ("LIFECYCLE_NAMES", LIFECYCLE_NAMES),
             ("MESSAGE_OPERATIONS", MESSAGE_OPERATIONS),
-            ("MESSAGE_REGISTRARS", MESSAGE_REGISTRARS),
             ("NETWORK_OPERATIONS", NETWORK_OPERATIONS),
-            ("PATH_REGISTRARS", PATH_REGISTRARS),
             ("PROCESS_OPERATIONS", PROCESS_OPERATIONS),
             ("KEPT_OPERATIONS", KEPT_OPERATIONS),
-            ("PROCEDURE_REGISTRARS", PROCEDURE_REGISTRARS),
             ("RECURRING", RECURRING),
-            ("SCHEDULE_REGISTRARS", SCHEDULE_REGISTRARS),
             ("SESSION_OPERATIONS", SESSION_OPERATIONS),
             ("STARTS_A_CONTINUATION", STARTS_A_CONTINUATION),
-            ("TEST_REGISTRARS", TEST_REGISTRARS),
         ];
         for (name, table) in tables {
             assert!(table.is_sorted(), "{name} is not sorted, so binary_search cannot find it");

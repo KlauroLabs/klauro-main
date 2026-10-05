@@ -95,6 +95,8 @@ answer at the repository level. It replaces artifact scanning as the definition 
 **Composition (workspace analyses)**
 `id`, `label`, `children`, `member_reference`
 
+`composition.links[]` is new: for each sub-project, the outbound calls detected and the calls linked to another sub-project, for each of `http`, `process` and `ipc`, counting product code only. A sub-project whose calls were detected but not linked is one whose links were never followed, which reads differently from an isolated one that makes no such calls. `exit_points[].addressed` now carries `ipc://<channel>` for a call across a desktop or webview bridge, and `composition.seams[].kind` may be `ipc`.
+
 ---
 
 ## Pipeline talking about itself — move to internal state

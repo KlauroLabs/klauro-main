@@ -10,6 +10,7 @@ mod comprehend;
 mod composition;
 mod parent;
 mod conform;
+mod constants;
 mod convention;
 mod coverage;
 mod bundler;
@@ -43,6 +44,7 @@ mod reach;
 mod published;
 mod resolve;
 mod roles;
+mod rules;
 mod route;
 mod rust_use;
 mod layers;
@@ -934,7 +936,9 @@ fn read_it() {
     }
     addresses::fold(&mut index.exit_points, &index.calls, &index.locals, &index.nodes);
     let asked_before = index.exit_points.len();
-    addresses::through_wrappers(&mut index.exit_points, &index.calls, &index.nodes, &paths);
+    let constants = constants::Constants::new(&index.locals);
+    addresses::through_wrappers(&mut index.exit_points, &index.calls, &index.nodes, &paths, &constants);
+    addresses::rebase(&mut index.exit_points, &index.calls, &index.locals, &index.nodes, &constants);
     if index.exit_points.len() > asked_before {
         index.exit_points.sort_by(|left, right| left.id.cmp(&right.id));
         index.exit_points.dedup_by(|left, right| left.id == right.id);
@@ -1173,6 +1177,7 @@ fn read_it() {
             &index.entry_points,
             &index.exit_points,
             &index.calls,
+            &index.locals,
             index.scope.as_ref().map(|scope| scope.deployables.as_slice()).unwrap_or(&[]),
         )
     });

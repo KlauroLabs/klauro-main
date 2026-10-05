@@ -1,0 +1,1 @@
+{ "name": "seam-spawn", "private": true, "workspaces": ["host", "workers/payments"] }

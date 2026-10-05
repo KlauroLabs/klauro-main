@@ -2,6 +2,7 @@ use tree_sitter::{Node, Parser, Tree};
 
 use crate::model::*;
 
+mod addressing;
 mod routes;
 
 const LITERAL_LIMIT: usize = 4;
@@ -1428,11 +1429,8 @@ impl<'a> Extractor<'a> {
                     self.remember_a_table_of_paths(&name, value, line_of(declarator));
                 }
             }
-            if let Some(written) = value
-                .filter(|value| matches!(value.kind(), "string" | "template_string"))
-                .map(|value| trim_quotes(self.text(value)).trim().to_string())
-                .filter(|written| !written.is_empty() && written.len() <= TEXT_REMEMBERED)
-            {
+            let written_here = value.and_then(|value| self.constant_value(value));
+            if let Some(written) = written_here.clone() {
                 self.remembered.insert(name.clone(), written);
             }
             let callable = value.filter(|value| {
@@ -1467,7 +1465,7 @@ impl<'a> Extractor<'a> {
                     let from_values = initializer
                         .map(|held| crate::entities::built_from(self.text(held)))
                         .unwrap_or_default();
-                    if annotation.is_some() || constructed.is_some() || from_call.is_some() || !from_values.is_empty() {
+                    if annotation.is_some() || constructed.is_some() || from_call.is_some() || !from_values.is_empty() || written_here.is_some() {
                         self.facts.locals.push(LocalBinding {
                             file: self.file,
                             unit,
@@ -1475,7 +1473,7 @@ impl<'a> Extractor<'a> {
                             annotation,
                             constructed,
                             from_call,
-                            written: None,
+                            written: written_here,
                 stands_for: None,
                             from_values,
                             line: node.start_position().row as u32 + 1,
@@ -1729,6 +1727,7 @@ impl<'a> Extractor<'a> {
         {
             literals.push(format!("prefix={prefix}"));
         }
+        literals.extend(self.listed_program_words(&callee, arguments));
 
         let optional_chained = function.kind() == "member_expression"
             && function
@@ -1935,12 +1934,20 @@ impl<'a> Extractor<'a> {
                 )
             })
             .take(LITERAL_LIMIT)
-            .filter_map(|argument| match argument.kind() {
-                "object" => self.addressed_in(argument),
-                "identifier" => self.remembered.get(self.text(argument)).cloned(),
-                "binary_expression" => self.text_it_begins_with(argument).map(|begins| format!("{begins}${{}}")),
-                _ => Some(trim_quotes(self.text(argument)).to_string()),
+            .flat_map(|argument| match argument.kind() {
+                "object" => vec![self.addressed_in(argument), self.base_in(argument)],
+                "identifier" => vec![self
+                    .remembered
+                    .get(self.text(argument))
+                    .cloned()
+                    .or_else(|| addressing::a_named_constant(self.text(argument).trim()))],
+                "binary_expression" => vec![self
+                    .text_it_begins_with(argument)
+                    .map(|begins| format!("{begins}${{}}"))
+                    .or_else(|| self.concatenated(argument))],
+                _ => vec![Some(trim_quotes(self.text(argument)).to_string())],
             })
+            .flatten()
             .filter(|value| !value.is_empty() && value.len() <= TEXT_REMEMBERED)
             .collect()
     }

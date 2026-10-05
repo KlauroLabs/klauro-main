@@ -1608,6 +1608,11 @@ pub fn derive(
         }
     }
 
+    for entry in entry_points.iter().filter(|entry| entry.kind == "ipc") {
+        let address = format!("{}{}", crate::entry_exit::IPC_SCHEME, entry.name);
+        served_at.entry(Box::leak(address.into_boxed_str())).or_insert(entry.id.as_str());
+    }
+
     let (entities_first, keeping) = entities(
         nodes,
         files,
