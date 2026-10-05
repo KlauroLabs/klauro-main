@@ -1542,6 +1542,13 @@ pub(crate) fn the_same_among(
 }
 
 pub(crate) fn one_of_each(capabilities: &mut Vec<Capability>, said: &str) {
+    one_of_each_asking(capabilities, |offered| crate::author::same_capability(said, offered));
+}
+
+fn one_of_each_asking(
+    capabilities: &mut Vec<Capability>,
+    ask: impl Fn(&BTreeMap<String, String>) -> Vec<crate::author::Same> + Sync,
+) {
     if capabilities.len() < 2 {
         return;
     }
@@ -1551,13 +1558,22 @@ pub(crate) fn one_of_each(capabilities: &mut Vec<Capability>, said: &str) {
             (capability.name.clone().unwrap_or_default(), capability.description.clone().unwrap_or_default())
         })
         .collect();
-    let groups = the_same_among(&listed, |offered| crate::author::same_capability(said, offered));
+    let groups = the_same_among(&listed, ask);
     if groups.is_empty() {
         return;
     }
     let mut slots: Vec<Option<Capability>> = std::mem::take(capabilities).into_iter().map(Some).collect();
     let mut kept: Vec<Capability> = Vec::new();
     for group in groups {
+        let together_flows: BTreeSet<&str> = group
+            .members
+            .iter()
+            .filter_map(|at| slots[*at].as_ref())
+            .flat_map(|held| held.flows.iter().map(String::as_str))
+            .collect();
+        if together_flows.len() > SPLIT_FROM_FLOWS {
+            continue;
+        }
         let keeper = group
             .members
             .iter()
@@ -1899,6 +1915,51 @@ mod command_family_tests {
         assert!(placed.evidence.contains("it is served by 2 outcomes"), "{}", placed.evidence);
         assert!(placed.evidence.contains("- prerequisite: session"), "{}", placed.evidence);
         assert_eq!(placed.delivered.iter().find(|held| held.flow == "flow:1").map(|held| held.rationale.as_str()), Some("signs in first"));
+    }
+
+    fn capability_of(name: &str, flows: usize) -> Capability {
+        Capability {
+            id: format!("capability:{}", carved_name(name)),
+            audience: None,
+            delivered: Vec::new(),
+            records: Vec::new(),
+            changes: Vec::new(),
+            flows: (0..flows).map(|at| format!("flow:{name}:{at}")).collect(),
+            surfaces: Vec::new(),
+            project: None,
+            also_in: Vec::new(),
+            place: None,
+            name: Some(name.to_string()),
+            description: None,
+            grounding: None,
+            standing: PUBLISHED,
+            touches: Vec::new(),
+            terminality: None,
+            confidence: None,
+            unsettled: None,
+            composition_provenance: Vec::new(),
+            parent_originated: None,
+            evidence: String::new(),
+        }
+    }
+
+    fn all_one(offered: &BTreeMap<String, String>) -> Vec<crate::author::Same> {
+        vec![crate::author::Same {
+            of: offered.keys().cloned().collect(),
+            name: "Do it all".to_string(),
+            description: String::new(),
+            audience: String::new(),
+        }]
+    }
+
+    #[test]
+    fn a_merge_that_would_make_one_capability_of_most_of_a_part_is_refused() {
+        let mut narrow = vec![capability_of("Share files", 6), capability_of("Send files", 5)];
+        one_of_each_asking(&mut narrow, all_one);
+        assert_eq!(narrow.len(), 1);
+        let mut broad = vec![capability_of("Share files", 25), capability_of("Send files", 25)];
+        one_of_each_asking(&mut broad, all_one);
+        assert_eq!(broad.len(), 2);
     }
 
     #[test]
