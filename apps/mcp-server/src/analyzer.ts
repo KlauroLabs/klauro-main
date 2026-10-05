@@ -1680,6 +1680,7 @@ export interface LayeredRunSummary {
   errors: number;
   casVersion?: string;
   failedLayers: Array<{ layer: string; error?: string }>;
+  stageTimingsMs?: Record<string, number>;
 }
 
 export function summarizeLayeredAnalysis(projectPath: string, output: CASOutput): LayeredRunSummary {
@@ -1695,6 +1696,7 @@ export function summarizeLayeredAnalysis(projectPath: string, output: CASOutput)
     failedLayers: (output.layers_ready?.layers || [])
       .filter(layer => layer.status === 'error')
       .map(layer => ({ layer: layer.layer, ...(layer.error ? { error: layer.error } : {}) })),
+    ...(output.timings?.stages ? { stageTimingsMs: output.timings.stages } : {}),
   };
 }
 

@@ -1,6 +1,7 @@
 import * as fs from 'fs-extra';
 import * as path from 'node:path';
 import { writeJsonAtomic } from './json-storage-writer';
+import type { AnalysisPhaseTimings } from './analysis-phase-timings';
 
 export type AnalysisAttemptState = 'in-progress' | 'succeeded' | 'failed';
 
@@ -18,6 +19,7 @@ export interface AnalysisAttemptRecord {
   heartbeat_at?: string;
   stored_version?: string;
   current_version?: string;
+  phase_timings?: AnalysisPhaseTimings;
 }
 
 export function projectAttemptRecordPath(workspace: string): string {

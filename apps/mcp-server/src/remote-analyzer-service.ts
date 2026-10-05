@@ -81,6 +81,7 @@ async function throwSubCasScopeError(workspace: string, subCasNodeId: string, fa
 }
 import { completedAnalysisLandedAfterAttempt, failedAttemptHasQueryableAnalysis, isStructuralAnalysisLayer, paginateCapabilityReconciliation, paginateConceptualCatalog, parseConceptualCatalogPage, unavailableComprehensionResponse, unavailableFailedAttemptWithStaleAnalysis, unavailableLatestAnalyzeAttempt, unavailableStructuralAnalysisResponse, unavailableStructuralQueryResponse } from './analysis-response-readiness';
 import { analysisAttemptFenceResponse } from './analysis-attempt-fence';
+import { buildPhaseTimings } from './analysis-phase-timings';
 import { projectAttemptRecordPath, readAttemptRecord, writeAttemptRecord, type AnalysisAttemptRecord } from './analysis-attempt-record';
 import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
 import { getStageFingerprints } from '../../../packages/analyzer-core/src/analyzer/core/stage-fingerprint';
@@ -672,6 +673,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
               if (failedStructuralLayer) {
                 throw new Error(failedStructuralLayer.error || 'Structural analysis did not reach readiness.');
               }
+              const workerFinishedAtMs = Date.now();
               if (l0Attach) await l0Attach;
               await appendProjectRevision(dataDir, {
                 status: 'success',
@@ -706,6 +708,13 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
                 state: 'succeeded',
                 finished_at: attemptFinishedAt,
                 duration_ms: Date.parse(attemptFinishedAt) - Date.parse(attemptStartedAt),
+                phase_timings: buildPhaseTimings({
+                  queuedAt: attemptQueuedAt,
+                  startedAt: attemptSnapshot.started_at,
+                  workerFinishedAtMs,
+                  finishedAtMs: Date.parse(attemptFinishedAt),
+                  stageTimingsMs: summary.stageTimingsMs,
+                }),
               });
             } catch (error) {
               const detail = error instanceof Error ? error.message : String(error);
