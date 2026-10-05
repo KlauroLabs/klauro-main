@@ -176,16 +176,25 @@ function resolveLimits(overrides: Partial<CompactCASGraphLimits>): CompactCASGra
   return limits;
 }
 
-function canonicalizeNodes(nodes: CASNode[], limits: CompactCASGraphLimits): CASNode[] {
-  assertCount('node count', nodes.length, limits.maxNodes);
-  const sorted = [...nodes].sort((left, right) => compareStrings(left.id, right.id));
-  for (let index = 0; index < sorted.length; index += 1) {
-    const node = sorted[index];
-    if (!node.id) throw new Error(`CAS node at canonical index ${index} has an empty id`);
-    if (index > 0 && sorted[index - 1].id === node.id) {
-      throw new Error(`CAS contains duplicate node id ${node.id}`);
-    }
+function firstOccurrences(nodes: CASNode[]): Map<string, { node: CASNode; ordinal: number }> {
+  const byId = new Map<string, { node: CASNode; ordinal: number }>();
+  for (const node of nodes) {
+    if (!byId.has(node.id)) byId.set(node.id, { node, ordinal: byId.size });
   }
+  return byId;
+}
+
+function originalOrdinals(nodes: CASNode[]): Map<string, number> {
+  return new Map([...firstOccurrences(nodes)].map(([id, held]) => [id, held.ordinal]));
+}
+
+function canonicalizeNodes(nodes: CASNode[], limits: CompactCASGraphLimits): CASNode[] {
+  const unique = [...firstOccurrences(nodes).values()].map(held => held.node);
+  assertCount('node count', unique.length, limits.maxNodes);
+  const sorted = unique.sort((left, right) => compareStrings(left.id, right.id));
+  sorted.forEach((node, index) => {
+    if (!node.id) throw new Error(`CAS node at canonical index ${index} has an empty id`);
+  });
   return sorted;
 }
 
@@ -713,7 +722,7 @@ export function encodeCompactCASGraph(
 ): CompactCASGraph {
   const limits = resolveLimits(limitOverrides);
   const nodes = canonicalizeNodes(cas.nodes, limits);
-  const originalOrdinalById = new Map(cas.nodes.map((node, ordinal) => [node.id, ordinal]));
+  const originalOrdinalById = originalOrdinals(cas.nodes);
   const entryIds = new Set((cas.entry_points || []).map(entry => entry.id));
   const exitIds = new Set((cas.exit_points || []).map(exit => exit.id));
   const vertexIds = [...new Set([
@@ -837,7 +846,7 @@ export function validateCompactCASParity(
   if (graph.nodeCount !== nodes.length) addError(`node count ${graph.nodeCount} does not match ${nodes.length}`);
   if (graph.vertexCount !== vertexIds.length) addError(`vertex count ${graph.vertexCount} does not match ${vertexIds.length}`);
   if (graph.edgeCount !== edges.length) addError(`edge count ${graph.edgeCount} does not match ${edges.length}`);
-  const originalOrdinalById = new Map(cas.nodes.map((node, ordinal) => [node.id, ordinal]));
+  const originalOrdinalById = originalOrdinals(cas.nodes);
   for (let denseId = 0; denseId < Math.min(graph.nodeCount, nodes.length) && errors.length < maxErrors; denseId += 1) {
     const actual = graph.nodeAt(denseId);
     const expected = nodes[denseId];

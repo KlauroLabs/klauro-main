@@ -52,6 +52,14 @@ describe('compact CAS graph', () => {
     expect(graph.incomingEdges(3, { limit: 10 })).toEqual({ items: [], total: 0, nextOffset: undefined });
   });
 
+  test('keeps the first occurrence of a node emitted twice and stays parity-clean', () => {
+    const twice: CASNode[] = [...nodes, { id: 'node-b', name: 'Middle again', type: 'function' }];
+    const graph = encodeCompactCASGraph(cas(twice, edges));
+    expect(graph.nodeCount).toBe(4);
+    expect(graph.nodeById('node-b')).toMatchObject({ name: 'Middle' });
+    expect(validateCompactCASParity(graph, cas(twice, edges))).toEqual({ ok: true, errors: [] });
+  });
+
   test('preserves multiedges and exact CSR and CSC adjacency', () => {
     const graph = encodeCompactCASGraph(cas(nodes, edges));
     expect(Array.from(graph.outgoing.offsets)).toEqual([0, 2, 3, 4, 4]);
