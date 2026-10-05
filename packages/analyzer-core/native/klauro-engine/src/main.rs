@@ -16,6 +16,7 @@ mod coverage;
 mod bundler;
 mod budget;
 mod dead;
+mod mentions;
 mod dependencies;
 mod discovery;
 mod dockerfile;
@@ -1089,7 +1090,8 @@ fn read_it() {
         graph.reachable_units,
         graph.unreachable_units
     );
-    index.dead = dead::derive(&index.nodes, &paths, &index.edges, &index.entry_points, &index.calls, &graph);
+    let index_root = index.root.clone();
+    index.dead = dead::derive(&index.nodes, &paths, &index.edges, &index.entry_points, &index.calls, &graph, &|wanted| mentions::scan(std::path::Path::new(&index_root), &paths, wanted));
     index.graph = Some(graph);
 
     if std::env::var("KLAURO_REPORT_UNRESOLVED").is_ok() {

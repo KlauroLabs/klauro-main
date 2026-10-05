@@ -6,6 +6,7 @@ export interface DeadCodeFact {
   callers: number;
   open?: string;
   unlinked?: number;
+  mention?: string;
 }
 
 export interface DeadCodeFinding {
@@ -43,9 +44,21 @@ function openEvidence(fact: DeadCodeFact, name: string): string | undefined {
       return `its name is handed to a call as a value elsewhere, so it may be invoked through that value`;
     case 'dynamic-dispatch':
       return 'another type declares a method of the same name, or its type extends or implements another, so it may be called through dynamic dispatch';
+    case 'name-referenced':
+      return `its name appears outside its own declaration at ${fact.mention ?? 'another place in the repository'}, so it may be reached by reference, reflection, a template or configuration`;
+    case 'name-in-tests':
+      return `its name appears only in test code at ${fact.mention ?? 'a test file'}`;
     default:
-      return undefined;
+      return chainEvidence(fact);
   }
+}
+
+const DIRECT_REASONS = new Set(['no-inbound', 'exported-unused']);
+
+function chainEvidence(fact: DeadCodeFact): string | undefined {
+  return DIRECT_REASONS.has(fact.reason)
+    ? undefined
+    : 'whether its callers are unreachable depends on every entry point having been found, so this is a lead to verify rather than a finding';
 }
 
 export function deadCodeFinding(node: CASNode, fact: DeadCodeFact): DeadCodeFinding {
