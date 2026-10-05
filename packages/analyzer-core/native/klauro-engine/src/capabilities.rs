@@ -206,14 +206,31 @@ fn outcome_of(flow: &Flow, bookkeeping: &BTreeSet<&str>) -> Family {
     crate::comprehend::family_of(flow)
 }
 
+const WORKS_IN: &str = "within:";
+
+fn module_of(flow: &Flow) -> &str {
+    let unit = flow.path.first().map(|step| step.unit.as_str()).unwrap_or(flow.entry_point.as_str());
+    unit.strip_prefix("entry:").unwrap_or(unit).split(':').next().unwrap_or_default()
+}
+
+fn is_only_a_trigger(family: &Family) -> bool {
+    family.key.starts_with("trigger:")
+}
+
 pub(crate) fn outcomes_of<'a>(flows: &[&'a Flow]) -> BTreeMap<Family, Vec<&'a Flow>> {
     let bookkeeping = kept_for_itself(flows);
     let mut grouped: BTreeMap<Family, Vec<&'a Flow>> = BTreeMap::new();
     for flow in flows {
         grouped.entry(outcome_of(flow, &bookkeeping)).or_default().push(flow);
     }
-    if grouped.keys().any(|family| !family.key.starts_with("trigger:")) {
-        grouped.retain(|family, _| !family.key.starts_with("trigger:"));
+    if grouped.keys().any(|family| !is_only_a_trigger(family)) {
+        grouped.retain(|family, _| !is_only_a_trigger(family));
+    } else {
+        grouped = BTreeMap::new();
+        for flow in flows {
+            let family = Family { key: format!("{WORKS_IN}{}", module_of(flow)), basis: "the module it works in" };
+            grouped.entry(family).or_default().push(flow);
+        }
     }
     for lane in grouped.values_mut() {
         lane.sort_by(|left, right| left.id.cmp(&right.id));
@@ -238,9 +255,32 @@ pub(crate) fn told_steps(flow: &Flow) -> String {
         told.push_str(&format!(" -> and {more} more"));
     }
     if told.is_empty() {
-        told = "no steps read".to_string();
+        told = touched_by(flow);
     }
     told
+}
+
+fn touched_by(flow: &Flow) -> String {
+    let mut touched: Vec<&str> = Vec::new();
+    for step in &flow.path {
+        let name = step.unit.rsplit(':').next().unwrap_or_default();
+        if !name.is_empty() && touched.last() != Some(&name) && !touched.contains(&name) {
+            touched.push(name);
+        }
+    }
+    let more = touched.len().saturating_sub(STEPS_TOLD);
+    touched.truncate(STEPS_TOLD);
+    match touched.is_empty() {
+        true => "no steps read".to_string(),
+        false => format!(
+            "no steps read; it runs through {}{}",
+            touched.join(" -> "),
+            match more {
+                0 => String::new(),
+                more => format!(" -> and {more} more"),
+            }
+        ),
+    }
 }
 
 pub(crate) fn surface_of(flow: &Flow) -> String {
@@ -518,7 +558,10 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
     if flows.is_empty() {
         return Vec::new();
     }
-    let served = flows.iter().any(|flow| SERVED_KINDS.contains(&flow.kind));
+    let bookkeeping = kept_for_itself(flows);
+    let served = flows
+        .iter()
+        .any(|flow| SERVED_KINDS.contains(&flow.kind) && !is_only_a_trigger(&outcome_of(flow, &bookkeeping)));
     let kept: Vec<&Flow> = flows
         .iter()
         .copied()
@@ -535,9 +578,6 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
         return Vec::new();
     }
     let families = outcomes_of(&kept);
-    if families.keys().all(|family| family.key.starts_with("trigger:")) {
-        return Vec::new();
-    }
     let keyed: Vec<(String, &Family, &Vec<&Flow>)> = families
         .iter()
         .enumerate()
@@ -668,7 +708,7 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
     let mut unanswered: Vec<Held> = known
         .iter()
         .filter(|id| !unassigned.contains(*id) && !held.iter().any(|other| other.families.contains(*id)))
-        .filter(|id| !key_of.get(id.as_str()).is_some_and(|key| key.starts_with("trigger:")))
+        .filter(|id| !key_of.get(id.as_str()).is_some_and(|key| key.starts_with(WORKS_IN)))
         .map(|id| structural(id, &key_of))
         .collect();
     merge_same_named(&mut unanswered);
@@ -1473,6 +1513,37 @@ mod command_family_tests {
         let grouped = outcomes_of(&flows);
         let keys: BTreeSet<&str> = grouped.keys().map(|family| family.key.as_str()).collect();
         assert_eq!(keys, BTreeSet::from(["asks:deploy", "asks:find_tests"]));
+    }
+
+    fn starting_in(mut flow: Flow, unit: &str) -> Flow {
+        flow.path = vec![crate::comprehend::Step { unit: unit.to_string(), depth: 0, leaves: Vec::new() }];
+        flow
+    }
+
+    #[test]
+    fn flows_that_only_trigger_are_grouped_by_the_module_they_work_in() {
+        let accept = starting_in(flow("flow:6", "event", None, "click", &[], &[]), "site/consent.js:callback:accept");
+        let reject = starting_in(flow("flow:7", "event", None, "click", &[], &[]), "site/consent.js:callback:reject");
+        let menu = starting_in(flow("flow:8", "event", None, "click", &[], &[]), "site/menu.js:callback:toggle");
+        let flows = vec![&accept, &reject, &menu];
+        let grouped = outcomes_of(&flows);
+        let keys: BTreeSet<&str> = grouped.keys().map(|family| family.key.as_str()).collect();
+        assert_eq!(keys, BTreeSet::from(["within:site/consent.js", "within:site/menu.js"]));
+    }
+
+    #[test]
+    fn a_trigger_beside_a_real_outcome_is_left_out() {
+        let order = flow("flow:9", "http", Some("POST"), "/orders", &["orders"], &[]);
+        let signal = flow("flow:10", "event", None, "SIGTERM", &[], &[]);
+        let flows = vec![&order, &signal];
+        let grouped = outcomes_of(&flows);
+        assert_eq!(grouped.len(), 1);
+    }
+
+    #[test]
+    fn a_flow_with_no_steps_is_told_by_the_units_it_runs_through() {
+        let started = starting_in(flow("flow:11", "event", None, "click", &[], &[]), "site/main.js:callback:menuButton.addEventListener");
+        assert_eq!(told_steps(&started), "no steps read; it runs through menuButton.addEventListener");
     }
 
     #[test]

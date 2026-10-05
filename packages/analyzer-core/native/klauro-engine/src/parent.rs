@@ -536,7 +536,13 @@ pub fn mark_parent_originated(whole: &mut [Capability]) {
     }
 }
 
-pub fn summarise(whole: &[Capability], parts: &[Capability], reasons: &BTreeMap<(String, String), String>, composition: &Composition) -> Summary {
+pub fn summarise(
+    whole: &[Capability],
+    parts: &[Capability],
+    reasons: &BTreeMap<(String, String), String>,
+    composition: &Composition,
+    offered_only: &BTreeSet<&str>,
+) -> Summary {
     let cited: BTreeSet<(&str, &str)> = whole
         .iter()
         .flat_map(|capability| capability.composition_provenance.iter())
@@ -558,9 +564,14 @@ pub fn summarise(whole: &[Capability], parts: &[Capability], reasons: &BTreeMap<
             let (child, id) = key_of(capability);
             (!cited.contains(&(child.as_str(), id.as_str()))).then(|| NotPromoted {
                 reason: reasons.get(&(child.clone(), id.clone())).cloned().unwrap_or_else(|| {
-                    match weight_of(composition, &child).is_some_and(|weight| weight < LOW_WEIGHT) {
-                        true => "its part has very low weight, so it is left visible under that part".to_string(),
-                        false => "it serves no purpose the product states, so it is left under its part".to_string(),
+                    let only_offered = !capability.flows.is_empty()
+                        && capability.flows.iter().all(|flow| offered_only.contains(flow.as_str()));
+                    match (weight_of(composition, &child).is_some_and(|weight| weight < LOW_WEIGHT), only_offered) {
+                        (true, _) => "its part has very low weight, so it is left visible under that part".to_string(),
+                        (false, true) => {
+                            "it is offered as a library surface that no served surface of the product reaches, so it is left under its part".to_string()
+                        }
+                        (false, false) => "it serves no purpose the product states, so it is left under its part".to_string(),
                     }
                 }),
                 child,
@@ -790,7 +801,7 @@ mod tests {
         let whole = &built.capabilities[0];
         assert_eq!(whole.flows, vec!["flow:b1"]);
         assert!(whole.composition_provenance.iter().all(|held| held.source_child != "subproject:legacy"));
-        let summary = summarise(&built.capabilities, &parts, &built.reasons, &world());
+        let summary = summarise(&built.capabilities, &parts, &built.reasons, &world(), &BTreeSet::new());
         let left: Vec<&str> = summary
             .not_promoted
             .iter()
@@ -807,11 +818,27 @@ mod tests {
             vec![derived("Order goods", &[("k0", "promoted")], &[], false)],
             vec![Left { id: "k2".into(), why: "only feeds other parts".into() }],
         );
-        let summary = summarise(&built.capabilities, &parts, &built.reasons, &world());
+        let summary = summarise(&built.capabilities, &parts, &built.reasons, &world(), &BTreeSet::new());
         let kit = summary.not_promoted.iter().find(|held| held.child == "subproject:kit").unwrap();
         assert_eq!(kit.reason, "only feeds other parts");
         assert_eq!(summary.promoted.len(), 1);
         assert_eq!(summary.promoted[0].from[0].source_capability_id, "capability:place-an-order");
+    }
+
+    #[test]
+    fn a_capability_only_offered_as_a_library_surface_still_has_a_stated_disposition() {
+        let (built, parts) = assembled(vec![derived("Order goods", &[("k0", "promoted")], &[], false)], Vec::new());
+        let offered: BTreeSet<&str> = BTreeSet::from(["flow:c1"]);
+        let summary = summarise(&built.capabilities, &parts, &built.reasons, &world(), &offered);
+        let kit = summary.not_promoted.iter().find(|held| held.child == "subproject:kit").unwrap();
+        assert!(kit.reason.contains("library surface"), "{}", kit.reason);
+        let stated: BTreeSet<(String, String)> = summary
+            .promoted
+            .iter()
+            .flat_map(|held| held.from.iter().map(|source| (source.source_child.clone(), source.source_capability_id.clone())))
+            .chain(summary.not_promoted.iter().map(|held| (held.child.clone(), held.capability.clone())))
+            .collect();
+        assert_eq!(stated.len(), parts.len());
     }
 
     #[test]
@@ -856,7 +883,7 @@ mod tests {
         assert!(lacking_provenance(&built.capabilities).is_empty());
         assert_eq!(built.capabilities.len(), 4);
         assert!(built.capabilities.iter().all(|held| held.composition_provenance.iter().all(|source| source.source_child != "subproject:legacy")));
-        let summary = summarise(&built.capabilities, &parts, &built.reasons, &world);
+        let summary = summarise(&built.capabilities, &parts, &built.reasons, &world, &BTreeSet::new());
         assert_eq!(summary.not_promoted.len(), 2);
         assert!(summary.not_promoted.iter().all(|held| held.reason.contains("low-weight")));
     }

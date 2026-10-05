@@ -1376,7 +1376,7 @@ pub fn author(
             }
             described.sort_by(|left, right| left.project.cmp(&right.project));
             capabilities.sort_by(|left, right| left.id.cmp(&right.id));
-            let offered_only: HashSet<&str> = held
+            let offered_only: std::collections::BTreeSet<&str> = held
                 .flows
                 .iter()
                 .filter(|flow| flow.kind == "export")
@@ -1426,9 +1426,10 @@ pub fn author(
             );
             crate::capabilities::one_of_each(&mut whole, &spoken);
             let summary = match (told.composition, listed_parts) {
-                (Some(composition), Some(listed)) => {
+                (Some(composition), Some(_)) => {
                     crate::parent::mark_parent_originated(&mut whole);
-                    Some(crate::parent::summarise(&whole, &listed, &reasons, composition))
+                    let every_part = crate::parent::parts_within(composition, &capabilities);
+                    Some(crate::parent::summarise(&whole, &every_part, &reasons, composition, &offered_only))
                 }
                 _ => None,
             };
