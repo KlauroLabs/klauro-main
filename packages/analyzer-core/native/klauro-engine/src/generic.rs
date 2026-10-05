@@ -6,6 +6,7 @@ use crate::language::LanguageSpec;
 use crate::model::*;
 
 mod lambdas;
+mod swift_routes;
 
 static COLUMNS_OF: &[&str] = &[
     "appends", "attributes", "casts", "columns", "dates", "fields", "fillable", "guarded",
@@ -2756,11 +2757,24 @@ impl<'a> Extractor<'a> {
             }
             _ => receiver.clone(),
         };
-        let arguments = node.child_by_field_name("arguments").or_else(|| {
-            let mut cursor = node.walk();
-            node.named_children(&mut cursor)
-                .find(|child| child.kind() == "arguments" || child.kind() == "argument_list")
-        });
+        let arguments = node
+            .child_by_field_name("arguments")
+            .or_else(|| {
+                let mut cursor = node.walk();
+                node.named_children(&mut cursor)
+                    .find(|child| child.kind() == "arguments" || child.kind() == "argument_list")
+            })
+            .or_else(|| self.swift_arguments(node));
+        if arguments.is_none()
+            && self.swift_names_a_verb(&callee)
+            && let Some(closure) = self.swift_trailing_closure(node)
+        {
+            let registrar = match &receiver {
+                Some(receiver) => format!("{receiver}.{callee}"),
+                None => callee.clone(),
+            };
+            self.labelled.insert(closure.id(), (registrar, "/".to_string()));
+        }
         if let Some(arguments) = arguments {
             let mut cursor = arguments.walk();
             let children: Vec<Node> = arguments.named_children(&mut cursor).map(unwrapped).collect();
@@ -2774,6 +2788,10 @@ impl<'a> Extractor<'a> {
                         .map(|argument| trim_quotes(self.text(*argument)).to_string())
                 })
                 .flatten();
+            let direct = match self.swift_names_a_verb(&callee) && !already_an_mcp_tool {
+                true => Some(self.swift_path(Some(arguments))),
+                false => direct,
+            };
             let label = match direct {
                 Some(path) => Some(match self.mounted_method(arguments) {
                     Some(method) if path.starts_with('/') => format!("{method} {path}"),
@@ -2786,6 +2804,9 @@ impl<'a> Extractor<'a> {
                     Some(receiver) => format!("{receiver}.{callee}"),
                     None => callee.clone(),
                 };
+                if let Some(closure) = self.swift_trailing_closure(node) {
+                    self.labelled.insert(closure.id(), (registrar.clone(), label.clone()));
+                }
                 let mut handlers: Vec<(String, Node)> = Vec::new();
                 let mut chained_handlers: Vec<(String, Node, String)> = Vec::new();
                 for argument in children.iter() {

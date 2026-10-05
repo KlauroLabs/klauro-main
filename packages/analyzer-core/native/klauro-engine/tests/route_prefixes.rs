@@ -72,3 +72,14 @@ fn a_fastify_plugin_registered_with_a_prefix_serves_its_routes_under_it() {
     assert!(serves(&found, "POST", "/users", "post"), "{found:?}");
     assert!(serves(&found, "GET", "/health", "get"), "the app's own route keeps its path: {found:?}");
 }
+
+#[test]
+fn swift_route_groups_prefix_their_routes_within_a_function_across_functions_and_through_a_collection() {
+    let found = routes("prefix_vapor");
+    assert!(serves(&found, "GET", "/health", "get"), "{found:?}");
+    assert!(serves(&found, "GET", "/api/v1/ping", "get"), "a group made in the same function: {found:?}");
+    assert!(serves(&found, "GET", "/api/v1/todos", "get"), "a group handed to another function: {found:?}");
+    assert!(serves(&found, "POST", "/api/v1/todos", "post"), "{found:?}");
+    assert!(serves(&found, "GET", "/api/v1/items", "index"), "a collection registered on a group: {found:?}");
+    assert!(serves(&found, "GET", "/api/v1/items/:id", "show"), "{found:?}");
+}

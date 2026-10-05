@@ -1519,7 +1519,7 @@ fn a_cookie_kept(call: &CallFact) -> Option<&'static str> {
     READS_A_COOKIE.contains(&spoken.as_str()).then_some("read")
 }
 
-static GATHERS_ROUTES: &[&str] = &["basepath", "group", "mapgroup", "prefix"];
+static GATHERS_ROUTES: &[&str] = &["basepath", "group", "grouped", "mapgroup", "prefix"];
 
 type Groups<'a> = HashMap<(u32, &'a str, &'a str), (String, Option<&'a str>)>;
 
@@ -1546,7 +1546,14 @@ fn groups_of<'a>(calls: &'a [CallFact], locals: &'a [crate::model::LocalBinding]
         let Some(found) = on_line.get(&(held.file, held.line)) else { continue };
         let Some((call, prefix)) = found
             .iter()
-            .find_map(|call| call.literals.iter().find_map(|literal| a_route_prefix(literal)).map(|prefix| (call, prefix)))
+            .find_map(|call| {
+                let spoken: Vec<String> = call.literals.iter().filter_map(|literal| a_route_prefix(literal)).collect();
+                let prefix = match names::leaf(&call.callee).eq_ignore_ascii_case("grouped") {
+                    true => spoken.iter().fold(String::new(), |base, next| join_paths(&base, next)),
+                    false => spoken.into_iter().next().unwrap_or_default(),
+                };
+                (!prefix.is_empty()).then_some((call, prefix))
+            })
         else {
             continue;
         };
@@ -1566,6 +1573,58 @@ fn prefix_of(groups: &Groups, file: u32, unit: &str, name: &str, depth: u8) -> O
         Some(above) => join_paths(&above, prefix),
         None => prefix.clone(),
     })
+}
+
+fn handed_to_functions<'a>(groups: &mut Groups<'a>, calls: &'a [CallFact], nodes: &'a [IndexNode]) {
+    let mut units: HashMap<(u32, &str), Vec<&IndexNode>> = HashMap::default();
+    let mut methods: HashMap<&str, &IndexNode> = HashMap::default();
+    for node in nodes.iter().filter(|node| node.kind.is_unit()) {
+        units.entry((node.file, node.name.as_str())).or_default().push(node);
+        if node.name == "boot" {
+            if let Some(parent) = node.parent.as_deref() {
+                methods.insert(parent, node);
+            }
+        }
+    }
+    let types: HashMap<&str, &IndexNode> =
+        nodes.iter().filter(|node| node.kind.is_type()).map(|node| (node.name.as_str(), node)).collect();
+    let mut found: HashMap<(u32, &str, &str), Vec<String>> = HashMap::default();
+    for call in calls {
+        let Some(caller) = call.caller.as_deref() else { continue };
+        let receiver = call.receiver.as_deref().map(names::root);
+        let mut handed: Vec<(&IndexNode, usize, Option<&str>)> = Vec::new();
+        if call.callee == "register" && receiver.is_some() {
+            for built in calls.iter().filter(|held| held.file == call.file && held.line == call.line && held.callee != "register") {
+                let Some(owner) = types.get(names::leaf(&built.callee)) else { continue };
+                if let Some(boot) = methods.get(owner.id.as_str()) {
+                    handed.push((boot, 0, receiver));
+                }
+            }
+        } else if let Some([only]) = units.get(&(call.file, call.callee.as_str())).map(Vec::as_slice) {
+            for passed in &call.passes {
+                let Some((at, root)) = passed.split_once('=') else { continue };
+                if let Ok(position) = at.parse::<usize>() {
+                    handed.push((only, position, Some(names::root(root))));
+                }
+            }
+        }
+        for (target, position, variable) in handed {
+            let (Some(variable), Some(parameter)) =
+                (variable, target.signature.as_ref().and_then(|signature| signature.parameters.get(position)))
+            else {
+                continue;
+            };
+            let Some(prefix) = prefix_of(groups, call.file, caller, variable, 0) else { continue };
+            found.entry((target.file, target.id.as_str(), parameter.name.as_str())).or_default().push(prefix);
+        }
+    }
+    for ((file, unit, name), mut prefixes) in found {
+        prefixes.sort();
+        prefixes.dedup();
+        if let [only] = prefixes.as_slice() {
+            groups.insert((file, unit, name), (only.clone(), None));
+        }
+    }
 }
 
 type CallsByLine<'a> = HashMap<(u32, u32, String), &'a CallFact>;
@@ -1859,6 +1918,11 @@ pub fn derive(
     let mounted = &mounts.files;
     let parent_of: HashMap<&str, &str> =
         nodes.iter().filter_map(|node| Some((node.id.as_str(), node.parent.as_deref()?))).collect();
+    let mut groups = groups_of(calls, locals);
+    let by_line = if groups.is_empty() { HashMap::default() } else { calls_by_line(calls) };
+    if !groups.is_empty() {
+        handed_to_functions(&mut groups, calls, nodes);
+    }
     let prefix_for = |registrar: &str, file: u32, unit: Option<&str>| -> Option<String> {
         let of_the_file = (registered_on_a_router_like(registrar) || mounts.children.contains(&file))
             .then(|| mounted.get(&file).cloned())
@@ -1931,7 +1995,16 @@ pub fn derive(
                         None
                     },
                     path: if kind == "http" {
-                        let base = prefix_for(registrar, node.file, node.parent.as_deref());
+                        let grouped = by_line
+                            .get(&(node.file, node.span.line, names::leaf(registrar).to_ascii_lowercase()))
+                            .and_then(|call| {
+                                prefix_of(&groups, node.file, call.caller.as_deref()?, names::root(call.receiver.as_deref()?), 0)
+                            });
+                        let base = match (prefix_for(registrar, node.file, node.parent.as_deref()), grouped) {
+                            (Some(base), Some(grouped)) => Some(join_paths(&base, &grouped)),
+                            (base, None) => base,
+                            (None, grouped) => grouped,
+                        };
                         let label = label.map(|held| split_label(held).1);
                         match (base, label) {
                             (Some(base), Some(label)) => Some(join_paths(&base, &label)),
@@ -2196,8 +2269,6 @@ pub fn derive(
         .collect();
 
     lap("registrations owned");
-    let groups = groups_of(calls, locals);
-    let by_line = if groups.is_empty() { HashMap::default() } else { calls_by_line(calls) };
     let calls_by_registration = if mounts.units.is_empty() { HashMap::default() } else { calls_by_line(calls) };
     let mut units_in_file: HashMap<(u32, &str), Vec<&str>> = HashMap::default();
     for node in nodes.iter().filter(|node| node.kind.is_unit()) {
