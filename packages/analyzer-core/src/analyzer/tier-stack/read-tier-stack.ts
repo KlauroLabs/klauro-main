@@ -27,7 +27,7 @@ export interface TierStackJourney {
 }
 
 export interface TierStackCrossing {
-  kind: 'ipc' | 'event' | 'network';
+  kind: 'ipc' | 'event' | 'network' | 'queue';
   communication: 'sync' | 'message';
   channel: string;
   from: string;

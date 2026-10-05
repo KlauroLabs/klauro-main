@@ -1,4 +1,5 @@
 import { createHash } from 'crypto';
+import type { CASCausalJourney } from '../../types/causal-journey.types';
 import { conformanceOf, patternsOf, projectsOfFound, violationsOf } from './tier-stack-structure';
 import * as path from 'path';
 import { seamsOf } from './tier-stack-seams';
@@ -631,11 +632,29 @@ function architectureOf(index: TierStackIndex, nodes: CASNode[]): CASArchitectur
   };
 }
 
+function causalJourneysOf(index: TierStackIndex): CASCausalJourney[] {
+  return (index.journeys ?? []).map(journey => ({
+    id: journey.id,
+    label: journey.label,
+    does: journey.does,
+    rank: journey.rank,
+    representative: journey.representative,
+    steps: journey.steps.map(step => ({
+      file: step.file,
+      symbol: step.symbol,
+      does: step.does,
+      ...(step.via === undefined ? {} : { via: step.via }),
+      ...(step.effect === undefined ? {} : { effect: step.effect }),
+    })),
+  }));
+}
+
 function within(index: TierStackIndex, project: string): TierStackIndex {
   const nodes = index.nodes.filter(node => node.project === project);
   const held = new Set(nodes.map(node => node.id));
   const comprehension = index.comprehension;
   const ownFiles = new Set(nodes.map(node => node.file));
+  const ownPaths = new Set([...ownFiles].map(at => index.files[at]?.path));
   return {
     ...index,
     files: index.files.map((file, at) => (ownFiles.has(at) ? file : { ...file, language: undefined })),
@@ -660,6 +679,7 @@ function within(index: TierStackIndex, project: string): TierStackIndex {
     edges: (index.edges ?? []).filter(edge => held.has(edge.source) && held.has(edge.target)),
     entry_points: (index.entry_points ?? []).filter(entry => held.has(entry.handler)),
     exit_points: (index.exit_points ?? []).filter(exit => held.has(exit.source)),
+    journeys: (index.journeys ?? []).filter(journey => journey.steps.length > 0 && ownPaths.has(journey.steps[0].file)),
     ...(comprehension === undefined ? {} : {
       comprehension: {
         ...comprehension,
@@ -769,6 +789,7 @@ function casOf(index: TierStackIndex, displayName?: string): CASOutput {
     deployable_evidence: deployablesOf(index),
     enhanced_system_purpose: purposeOf(index),
     flows: flowsOf(index),
+    causal_journeys: causalJourneysOf(index),
     communication_seams: seamsOf(index),
     test_suites: suites,
     test_summary: testSummaryOf(suites),

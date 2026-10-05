@@ -21,6 +21,7 @@ import { buildCasTerminality } from '../../../packages/analyzer-core/src/analyze
 import { linkedCapabilities, partBornAt } from './engine-part';
 import { deployableAnalysisCache } from './deployable-analysis-cache';
 import { projectCasChild, type CASChildProjectedValues } from './cas-child-projection';
+import { scopeCausalJourneys } from './causal-journeys';
 
 
 
@@ -1338,6 +1339,7 @@ export function sliceDeployableAnalysis(cas: CASOutput, deployable: DeployableEv
     steps: ownFlows.length > 0 ? ownFlows.flatMap(flow => flow.steps) : undefined,
     flow_graph: scopedFlowGraph.graph,
     user_journeys: undefined,
+    causal_journeys: scopeCausalJourneys(cas.causal_journeys, reachableFiles),
     communication_seams: filterCommunicationSeams(cas.communication_seams, includedEntryPointIds, includedExitPointIds, includedEntityIds),
     method_calls: methodCalls.length > 0 ? methodCalls : undefined,
     call_chains: callChains.length > 0 ? callChains : undefined,

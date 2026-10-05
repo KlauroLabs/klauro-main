@@ -20,6 +20,7 @@ import { RISKABLE_NODE_TYPES, hasStructuralSecurityEvidence } from '../../../pac
 import { buildTerminalSignal } from '../../../packages/analyzer-core/src/analyzer/core/terminal-signal';
 import { selectProductFrameworkNames, analyzerTypeMap } from '../../../packages/analyzer-core/src/analyzer/core/framework-comprehension';
 import { computeFlowConcepts, rankMaterializedFlows, attachTelemetryToFlows, telemetryForNode, overlayRuntimeTelemetry, computeCapabilityTelemetry, unexercisedFlows, applyFlowRoleToCapabilityRelationships, type ComputeFlowConceptsOptions, type RuntimeMetricLike } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';
+import { getCausalJourneys, hasCausalJourneys } from './causal-journeys';
 import { projectUserJourneysFromCas } from '../../../packages/analyzer-core/src/analyzer/core/journey-projection';
 import { computeSemanticCoverage, toCompactSemanticCoverage } from '../../../packages/analyzer-core/src/analyzer/core/semantic-coverage';
 import { computeFlowStructuralLinks, computeConflictBehavioralLinks } from '../../../packages/analyzer-core/src/analyzer/core/structural-cross-links';
@@ -1754,6 +1755,7 @@ export function getUserJourneys(
   cas: CASOutput,
   opts: { journeyId?: string; kind?: string; limit?: number; offset?: number; format?: 'json' | 'markdown'; includeSteps?: boolean } = {}
 ) {
+  if (hasCausalJourneys(cas)) return getCausalJourneys(cas, opts);
   const journeysNotice = cas.flows === undefined && cas.user_journeys === undefined
     ? analysisVersionNotice(cas, 'user journeys')
     : undefined;

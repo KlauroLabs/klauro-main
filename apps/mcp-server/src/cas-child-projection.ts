@@ -82,6 +82,7 @@ export const CAS_CHILD_FIELD_POLICY = {
   system_purpose: { mode: 'inherit' },
   data_lineage: { mode: 'scope' },
   user_journeys: { mode: 'scope' },
+  causal_journeys: { mode: 'scope' },
   user_journey_summary: { mode: 'inherit' },
   domain_concepts: { mode: 'inherit' },
   enhanced_system_purpose: { mode: 'inherit' },

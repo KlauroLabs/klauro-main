@@ -85,6 +85,7 @@ export interface CASOutput extends CASSourceInputCatalog {
   system_purpose?: SystemPurpose;
 
   user_journeys?: CASUserJourney[];
+  causal_journeys?: import('./causal-journey.types').CASCausalJourney[];
   user_journey_summary?: CASUserJourneySummary;
   data_lineage?: CASEntityLineage[];
   domain_concepts?: CASDomainConcept[];
@@ -105,8 +106,6 @@ export interface CASOutput extends CASSourceInputCatalog {
   paradigm_conformance?: CASParadigmConformance[];
   architectural_conflicts?: CASArchitecturalConflict[];
   principle_violations?: CASPrincipleViolation[];
-
-
 
 
   module_health?: CASModuleHealth;

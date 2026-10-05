@@ -411,3 +411,27 @@ test('a part carries the owner, system and dependencies its catalog descriptor d
   assert.deepEqual(api?.system.catalog, { owner: 'group:default/payments', system: 'checkout', depends_on: ['component:default/web'] });
   assert.equal(web?.system.catalog, undefined);
 });
+
+test('the engine journeys reach the stored analysis with their ordered steps, crossings and effects', () => {
+  const index = {
+    ...INDEX,
+    journeys: [
+      {
+        id: 'journey:a',
+        label: 'Run chat',
+        does: 'Run chat through ipc chat:run',
+        rank: 1,
+        representative: true,
+        steps: [
+          { file: 'src/order.ts', symbol: 'runChat', does: 'Run chat: sends chat:run over the ipc bridge' },
+          { file: 'src/order.ts', symbol: 'spawn', does: 'Spawn: starts an external process', via: 'ipc', effect: 'process:Command::new' },
+        ],
+      },
+    ],
+  } as unknown as TierStackIndex;
+  const cas = tierStackToCas(index, 'shop');
+  assert.equal(cas.causal_journeys?.length, 1);
+  assert.equal(cas.causal_journeys?.[0].representative, true);
+  assert.deepEqual(cas.causal_journeys?.[0].steps.map(step => step.via), [undefined, 'ipc']);
+  assert.equal(cas.causal_journeys?.[0].steps[1].effect, 'process:Command::new');
+});
