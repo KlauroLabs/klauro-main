@@ -46,15 +46,6 @@ impl<'a> Extractor<'a> {
         }
     }
 
-    pub(super) fn swift_grouping(&self, call: Node) -> Option<String> {
-        if self.spec.id != "swift" {
-            return None;
-        }
-        let arguments = self.swift_arguments(call)?;
-        let path = self.swift_path(Some(arguments));
-        (path != "/").then_some(path)
-    }
-
     pub(super) fn swift_names_a_verb(&self, callee: &str) -> bool {
         self.spec.id == "swift" && REQUEST_METHODS.binary_search(&callee.to_ascii_lowercase().as_str()).is_ok()
     }
