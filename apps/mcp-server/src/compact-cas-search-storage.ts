@@ -11,6 +11,7 @@ import {
   validatePosting,
 } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-search';
 import type { CasRawColumnDescriptor } from './cas-sections';
+import { writeStorageDiagnostic } from './storage-diagnostics';
 
 const DEFAULT_RUN_BYTES = 64 * 1024 * 1024;
 const MIN_RUN_BYTES = 1024 * 1024;
@@ -402,13 +403,13 @@ export async function buildCompactCASPostingArtifacts(
   const singleRunPostings = runPaths.length === 0 && bufferedRecords > 0 ? postings : undefined;
   if (!singleRunPostings) await flushRun();
   const runCount = singleRunPostings ? 1 : runPaths.length;
-  process.stderr.write(`${JSON.stringify({ event: 'compact_cas_postings_emitted', records: recordCount, runs: runCount, direct: Boolean(singleRunPostings), ...phaseSnapshot(startedAt) })}\n`);
+  writeStorageDiagnostic({ event: 'compact_cas_postings_emitted', records: recordCount, runs: runCount, direct: Boolean(singleRunPostings), ...phaseSnapshot(startedAt) });
 
   const mergeStartedAt = Date.now();
   const columns = singleRunPostings
     ? await writePostingMaps(shardPostingMap(singleRunPostings, shardCount), directory)
     : await mergeRuns(runPaths, directory);
-  process.stderr.write(`${JSON.stringify({ event: 'compact_cas_postings_merged', runs: runCount, direct: Boolean(singleRunPostings), ...phaseSnapshot(mergeStartedAt) })}\n`);
+  writeStorageDiagnostic({ event: 'compact_cas_postings_merged', runs: runCount, direct: Boolean(singleRunPostings), ...phaseSnapshot(mergeStartedAt) });
   await fs.remove(runDir);
   return { columns, shardCount, recordCount, runCount };
 }

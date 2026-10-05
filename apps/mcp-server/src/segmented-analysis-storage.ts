@@ -32,6 +32,7 @@ import {
 import { decodeCompactCASPostingShard } from './compact-cas-search-storage';
 import { buildSegmentedSidecar } from './segmented-sidecar';
 import { compressionCodecForPath, writeCompressedChunksAtomic, writeCompressedJsonAtomic, writeCompressedJsonFieldsAtomic } from './json-storage-writer';
+import { writeStorageDiagnostic } from './storage-diagnostics';
 
 interface SegmentedAnalysisPointerV1 {
   manifest_version: 1;
@@ -248,7 +249,7 @@ async function writeSegmentedAnalysisUnlocked(
       }
       validateCasTreeProjection(recursiveProjection);
     }
-    process.stderr.write(`${JSON.stringify({ event: 'segmented_cas_sections_written', sections: sectionMetrics.sort((left, right) => left.name.localeCompare(right.name)) })}\n`);
+    writeStorageDiagnostic({ event: 'segmented_cas_sections_written', sections: sectionMetrics.sort((left, right) => left.name.localeCompare(right.name)) });
     await buildSegmentedSidecar(tmpDir, output, manifest);
     const manifestPath = path.join(tmpDir, 'manifest.json');
     await writeJson(manifestPath, manifest, { spaces: 2 });

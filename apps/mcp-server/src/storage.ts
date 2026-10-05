@@ -52,6 +52,7 @@ import {
   writeJsonAtomic,
   type JsonStorageCodec,
 } from './json-storage-writer';
+import { writeStorageDiagnostic } from './storage-diagnostics';
 export { writeJsonAtomic } from './json-storage-writer';
 export { MINIMUM_COMPATIBLE_CAS_VERSION, parseCasVersion, compareCasVersions, describeAnalysisVersion } from './analysis-version';
 export type { AnalysisVersionInfo, AnalysisVersionStatus } from './analysis-version';
@@ -700,14 +701,14 @@ export async function saveAnalysis(
   const segmentedMs = Date.now() - segmentedStartedAt;
 
   if ((wholeMs ?? 0) + segmentedMs >= 1000) {
-    process.stderr.write(`${JSON.stringify({
+    writeStorageDiagnostic({
       event: 'analysis_save_slow',
       track,
       whole_ms: wholeMs,
       segmented_ms: segmentsWorthWriting ? segmentedMs : null,
       nodes: (canonicalOutput.nodes || []).length,
       edges: (canonicalOutput.edges || []).length,
-    })}\n`);
+    });
   }
 
   if (track === 'main') {
