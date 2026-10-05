@@ -356,6 +356,23 @@ pub struct RegistrationFact {
     pub line: u32,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Said {
+    Sent,
+    Handled,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MessageFact {
+    pub file: u32,
+    pub unit: String,
+    pub tag: String,
+    pub said: Said,
+    pub line: u32,
+    pub end_line: u32,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BundlerBuild {
     pub file: u32,
@@ -466,6 +483,8 @@ pub struct FileFacts {
     pub forwards: Vec<Forward>,
     #[serde(default, skip_serializing_if = "crate::facts_cache::hidden")]
     pub bundler_builds: Vec<BundlerBuild>,
+    #[serde(default, skip_serializing_if = "crate::facts_cache::hidden")]
+    pub messages: Vec<MessageFact>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -490,5 +509,6 @@ impl FileFacts {
         self.tables.iter_mut().for_each(|held| held.file = file);
         self.forwards.iter_mut().for_each(|held| held.file = file);
         self.bundler_builds.iter_mut().for_each(|held| held.file = file);
+        self.messages.iter_mut().for_each(|held| held.file = file);
     }
 }

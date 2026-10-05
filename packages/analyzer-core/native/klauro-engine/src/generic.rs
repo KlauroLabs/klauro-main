@@ -6,6 +6,7 @@ use crate::language::LanguageSpec;
 use crate::model::*;
 
 mod lambdas;
+mod messages;
 mod programs;
 mod swift_routes;
 
@@ -823,6 +824,9 @@ impl<'a> Extractor<'a> {
                 self.keyword_declaration(node, scope, NodeKind::Function);
                 return;
             }
+        }
+        if self.spec.id == "rust" {
+            self.note_rust_messages(node, scope);
         }
         if crate::language::taken_apart_kinds(self.spec.id).contains(&kind) {
             self.declare_taken_apart(node, scope);

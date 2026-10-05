@@ -4,6 +4,7 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use serde::Serialize;
 
 use crate::model::*;
+use crate::constants::Standing;
 use crate::names;
 use crate::resolve::Resolution;
 use crate::paths::{is_test, is_unambiguously_test};
@@ -1385,6 +1386,18 @@ fn reaches_an_ipc_channel(call: &CallFact, modules: &rustc_hash::FxHashMap<(u32,
         .then(|| channel.to_string())
 }
 
+static CHANNEL_FIELDS: &[&str] = &["channel", "event", "kind", "topic", "type"];
+
+fn channel_chosen_by(call: &CallFact, source: &str, constants: &crate::constants::Constants) -> Option<String> {
+    let written = call.literals.iter().find_map(|held| {
+        let (key, value) = held.split_once('=')?;
+        CHANNEL_FIELDS.contains(&key).then_some(value)
+    })?;
+    let standing = Standing { file: call.file, unit: source, owner: None, node: None };
+    let spelled = constants.spell(&standing, written);
+    crate::messages::a_tag(&spelled).map(str::to_string)
+}
+
 fn addressed_at(call: &CallFact) -> Option<String> {
     for held in call.literals.iter() {
         let held = plainly_written(keyed_address(held).unwrap_or(held));
@@ -2619,6 +2632,7 @@ pub fn derive(
     }
 
     lap("conventional entries");
+    let channels = crate::constants::Constants::new(locals);
     let exits_of = |(position, call): (usize, &CallFact)| -> (Vec<ExitPoint>, Vec<String>) {
         let mut found: Vec<ExitPoint> = Vec::new();
         let mut reach: Vec<String> = Vec::new();
@@ -2656,14 +2670,15 @@ pub fn derive(
             });
             return (found, reach);
         }
-        if let Some(channel) = reaches_an_ipc_channel(call, modules) {
+        if let Some(command) = reaches_an_ipc_channel(call, modules) {
+            let channel = channel_chosen_by(call, source, &channels).unwrap_or_else(|| command.clone());
             reach.push(String::new());
             found.push(ExitPoint {
                 id: format!("exit:{}:{}:ipc", files[call.file as usize], position),
                 kind: "api",
                 name: format!("{} {channel}", names::leaf(&call.callee)),
                 source: source.clone(),
-                target: channel.clone(),
+                target: command,
                 operation: names::leaf(&call.callee).to_string(),
                 file: call.file,
                 line: call.line,

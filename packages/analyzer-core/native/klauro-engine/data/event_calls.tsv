@@ -1,0 +1,6 @@
+send	emit,emit_all,emit_filter,emit_to,emitTo	*	called
+send	send	webContents,webview,window	called
+listen	listen,listen_global,once	*	called
+listen	on	ipcRenderer	called
+send	broadcast,dispatch,emit,emit_all,emit_filter,emit_to,notify,post,publish,send	*	wrapped
+listen	addEventListener,addListener,listen,listen_global,on,once,subscribe	*	wrapped

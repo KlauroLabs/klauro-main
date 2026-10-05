@@ -12,12 +12,14 @@ mod confidence;
 mod parent;
 mod conform;
 mod constants;
+mod crossings;
 mod convention;
 mod coverage;
 mod bundler;
 mod budget;
 mod dead;
 mod mentions;
+mod messages;
 mod dependencies;
 mod discovery;
 mod dockerfile;
@@ -31,6 +33,7 @@ mod generated;
 mod fixes;
 mod history;
 mod jev;
+mod journeys;
 mod gomod;
 mod generic;
 mod externals;
@@ -121,6 +124,8 @@ struct Index {
     forwards: Vec<model::Forward>,
     #[serde(skip)]
     bundler_builds: Vec<model::BundlerBuild>,
+    #[serde(skip)]
+    messages: Vec<model::MessageFact>,
     settings: Vec<model::SettingRead>,
     locals: Vec<model::LocalBinding>,
     entry_points: Vec<entry_exit::EntryPoint>,
@@ -152,6 +157,10 @@ struct Index {
     partition: Option<subproject::Partition>,
     #[serde(skip_serializing_if = "Option::is_none")]
     composition: Option<composition::Composition>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    crossings: Vec<crossings::Crossing>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    journeys: Vec<journeys::Journey>,
     skipped_directories: Vec<String>,
     nested_repositories: Vec<String>,
 }
@@ -476,6 +485,7 @@ fn read_it() {
         kept: Vec::new(),
         forwards: Vec::new(),
         bundler_builds: Vec::new(),
+        messages: Vec::new(),
         settings: Vec::new(),
         locals: Vec::new(),
         entry_points: Vec::new(),
@@ -498,6 +508,8 @@ fn read_it() {
         scope: None,
         partition: None,
         composition: None,
+        crossings: Vec::new(),
+        journeys: Vec::new(),
         skipped_directories: found.skipped_directories,
         nested_repositories: found.nested_repositories,
     };
@@ -523,6 +535,7 @@ fn read_it() {
         index.kept.extend(file.kept);
         index.forwards.extend(file.forwards);
         index.bundler_builds.extend(file.bundler_builds);
+        index.messages.extend(file.messages);
         index.settings.extend(file.settings);
         index.locals.extend(file.locals);
         declared_tables.extend(file.tables);
@@ -1174,6 +1187,26 @@ fn read_it() {
         );
     }
     index.history = history;
+    let crossings_started = Instant::now();
+    index.crossings = crossings::derive(
+        &paths,
+        &index.nodes,
+        &index.calls,
+        &index.locals,
+        &index.entry_points,
+        &index.exit_points,
+        &index.messages,
+    );
+    eprintln!(
+        "crossings {:?} | ipc {} | event {} | network {}",
+        crossings_started.elapsed(),
+        index.crossings.iter().filter(|held| held.kind == "ipc").count(),
+        index.crossings.iter().filter(|held| held.kind == "event").count(),
+        index.crossings.iter().filter(|held| held.kind == "network").count()
+    );
+    let journeys_started = Instant::now();
+    index.journeys = journeys::derive(&paths, &index.nodes, &index.edges, &index.crossings, &index.exit_points);
+    eprintln!("journeys {:?} | {}", journeys_started.elapsed(), index.journeys.len());
     let composition_started = Instant::now();
     index.composition = index.partition.as_ref().and_then(|partition| {
         composition::derive(
@@ -1184,6 +1217,7 @@ fn read_it() {
             &index.edges,
             &index.entry_points,
             &index.exit_points,
+            &index.crossings,
             &index.calls,
             &index.locals,
             index.scope.as_ref().map(|scope| scope.deployables.as_slice()).unwrap_or(&[]),
@@ -1336,6 +1370,22 @@ fn read_it() {
     if let (Some(composition), Some(summary)) = (index.composition.as_mut(), comprehension.derivation.take()) {
         composition.promoted = summary.promoted;
         composition.not_promoted = summary.not_promoted;
+    }
+    if let Some(partition) = index.partition.as_mut() {
+        let repository = root.file_name().and_then(|held| held.to_str()).unwrap_or_default();
+        let facts = subproject::identity::Facts {
+            files: index.files.iter().map(|file| (file.path.as_str(), file.language)).collect(),
+            entry_points: &index.entry_points,
+            exit_points: &index.exit_points,
+            products: &comprehension.products,
+            capabilities: &comprehension.capabilities,
+            repository,
+            scope: &scope,
+        };
+        subproject::identity::assign(partition, &facts);
+        for project in &partition.sub_projects {
+            eprintln!("  part {} | {} | {} | {}", project.id, project.display_name, project.role, project.summary);
+        }
     }
     index.comprehension = Some(comprehension);
 

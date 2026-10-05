@@ -4,6 +4,7 @@ use crate::model::*;
 
 mod addressing;
 mod dispatch;
+mod messages;
 mod routes;
 
 const LITERAL_LIMIT: usize = 4;
@@ -297,6 +298,7 @@ impl<'a> Extractor<'a> {
                 if let Some(unit) = self.unit(scope) {
                     unit.branches += 1;
                 }
+                self.note_handled_tags(node, scope);
                 if node.kind() == "if_statement" && self.routed_branch(node, scope) {
                     return;
                 }
@@ -1690,6 +1692,12 @@ impl<'a> Extractor<'a> {
             _ => (None, self.text_owned(function)),
         };
 
+        if let Some(arguments) = arguments.filter(|_| crate::messages::a_delivery(&callee)) {
+            let mut cursor = arguments.walk();
+            for object in arguments.named_children(&mut cursor).filter(|argument| argument.kind() == "object") {
+                self.note_sent_tag(object, scope);
+            }
+        }
         if callee == "register"
             && let Some(prefix) = arguments.and_then(|held| self.prefix_option(held))
         {
@@ -1911,7 +1919,7 @@ impl<'a> Extractor<'a> {
             })
             .take(LITERAL_LIMIT)
             .flat_map(|argument| match argument.kind() {
-                "object" => vec![self.addressed_in(argument), self.base_in(argument)],
+                "object" => vec![self.addressed_in(argument), self.base_in(argument), self.channel_in(argument)],
                 "identifier" => vec![self
                     .remembered
                     .get(self.text(argument))

@@ -5,6 +5,7 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use serde::Serialize;
 
 use crate::constants::{Constants, Standing};
+use crate::crossings::Crossing;
 use crate::entry_exit::{EntryPoint, ExitPoint};
 use crate::history::{self, History};
 use crate::model::{CallFact, EdgeKind, IndexEdge, LocalBinding};
@@ -426,39 +427,59 @@ fn http_seams(
     seams_of("http", "sync", found)
 }
 
-fn ipc_seams(
+fn crossing_seams(
     files: &[String],
-    entry_points: &[EntryPoint],
-    exit_points: &[ExitPoint],
+    crossings: &[Crossing],
     owner: &HashMap<&str, &str>,
     linked: &mut HashSet<(u32, u32)>,
 ) -> Vec<Seam> {
-    let mut served: HashMap<&str, Vec<(&str, &EntryPoint)>> = HashMap::default();
-    for entry in entry_points.iter().filter(|entry| entry.kind == "ipc") {
-        let Some(file) = files.get(entry.file as usize) else { continue };
-        if let Some(project) = owner.get(file.as_str()) {
-            served.entry(entry.name.as_str()).or_default().push((project, entry));
+    let mut answered: BTreeMap<(u32, u32, &str), Vec<&Crossing>> = BTreeMap::new();
+    let mut messaged: Vec<&Crossing> = Vec::new();
+    for crossing in crossings {
+        match crossing.kind {
+            "ipc" => answered.entry((crossing.from_file, crossing.from_line, crossing.channel.as_str())).or_default().push(crossing),
+            _ => messaged.push(crossing),
         }
     }
-    let mut found: BTreeMap<(&str, &str, bool), (u32, Vec<String>)> = BTreeMap::new();
-    for exit in exit_points.iter().filter(|exit| exit.kind == "api") {
-        let Some(channel) = exit.addressed.as_deref().and_then(|held| held.strip_prefix(crate::entry_exit::IPC_SCHEME)) else {
-            continue;
-        };
-        let Some(file) = files.get(exit.file as usize) else { continue };
-        let (Some(caller), Some(handlers)) = (owner.get(file.as_str()), served.get(channel)) else { continue };
-        let targets: HashSet<&str> = handlers.iter().map(|(project, _)| *project).collect();
+    let mut commands: BTreeMap<(&str, &str, bool), (u32, Vec<String>)> = BTreeMap::new();
+    for ((from_file, from_line, channel), handlers) in answered {
+        let Some(file) = files.get(from_file as usize) else { continue };
+        let Some(caller) = owner.get(file.as_str()) else { continue };
+        let targets: HashSet<&str> = handlers
+            .iter()
+            .filter_map(|handler| files.get(handler.to_file as usize).and_then(|path| owner.get(path.as_str()).copied()))
+            .collect();
         if targets.len() != 1 || targets.contains(caller) {
             continue;
         }
-        let (target, handler) = handlers[0];
-        linked.insert((exit.file, exit.line));
-        let handler_file = files.get(handler.file as usize).map(String::as_str).unwrap_or_default();
-        let entry = found.entry((caller, target, is_test(file))).or_insert((0, Vec::new()));
+        let handler = handlers[0];
+        let (Some(target), Some(handler_file)) = (targets.iter().next(), files.get(handler.to_file as usize)) else { continue };
+        linked.insert((from_file, from_line));
+        let entry = commands.entry((caller, target, is_test(file))).or_insert((0, Vec::new()));
         entry.0 += 1;
-        entry.1.push(format!("{}:{} {} {} -> {}:{}", file, exit.line, exit.operation, channel, handler_file, handler.line));
+        entry.1.push(format!("{}:{} {} -> {}:{}", file, from_line, channel, handler_file, handler.to_line));
     }
-    seams_of("ipc", "sync", found)
+    let mut seams = seams_of("ipc", "sync", commands);
+    for kind in ["event", "network"] {
+        let mut found: BTreeMap<(&str, &str, bool), (u32, Vec<String>)> = BTreeMap::new();
+        for crossing in messaged.iter().filter(|crossing| crossing.kind == kind) {
+            let (Some(from_file), Some(to_file)) = (files.get(crossing.from_file as usize), files.get(crossing.to_file as usize)) else {
+                continue;
+            };
+            let (Some(from), Some(to)) = (owner.get(from_file.as_str()), owner.get(to_file.as_str())) else { continue };
+            if from == to {
+                continue;
+            }
+            let entry = found.entry((from, to, is_test(from_file) || is_test(to_file))).or_insert((0, Vec::new()));
+            entry.0 += 1;
+            entry.1.push(format!(
+                "{}:{} {} -> {}:{}",
+                from_file, crossing.from_line, crossing.channel, to_file, crossing.to_line
+            ));
+        }
+        seams.extend(seams_of(kind, "message", found));
+    }
+    seams
 }
 
 fn link_coverage(
@@ -678,6 +699,7 @@ pub fn derive(
     edges: &[IndexEdge],
     entry_points: &[EntryPoint],
     exit_points: &[ExitPoint],
+    crossings: &[Crossing],
     calls: &[CallFact],
     locals: &[LocalBinding],
     deployables: &[Deployable],
@@ -704,7 +726,7 @@ pub fn derive(
     let mut seams = http_seams(files, entry_points, exit_points, &owner, &mut reached);
     let constants = Constants::new(locals);
     let rooted = rooted_projects(&projects);
-    seams.extend(ipc_seams(files, entry_points, exit_points, &owner, &mut reached));
+    seams.extend(crossing_seams(files, crossings, &owner, &mut reached));
     seams.extend(process_seams(files, exit_points, calls, &owner, &names, &rooted, &constants, &mut reached));
     let links = link_coverage(files, exit_points, &owner, &reached);
     Some(Composition {

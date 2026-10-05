@@ -4,6 +4,7 @@ use crate::names;
 
 static REGISTRARS: &str = include_str!("../data/registrars.tsv");
 static IPC_CALLS: &str = include_str!("../data/ipc_calls.tsv");
+static EVENT_CALLS: &str = include_str!("../data/event_calls.tsv");
 
 enum Fold {
     Lower,
@@ -38,6 +39,19 @@ pub struct IpcCall {
     pub receiver: Option<String>,
     pub verbs: Vec<String>,
     pub imported_from: Option<String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Role {
+    Send,
+    Listen,
+}
+
+pub struct EventCall {
+    pub role: Role,
+    pub verbs: Vec<String>,
+    pub receivers: Vec<String>,
+    pub wrapped: bool,
 }
 
 fn fields(line: &str) -> Vec<&str> {
@@ -157,6 +171,25 @@ pub fn ipc_calls() -> &'static [IpcCall] {
                     receiver: Some(held[0].to_string()).filter(|named| named != "-"),
                     verbs: held[1].split(',').map(str::to_string).collect(),
                     imported_from: Some(held[2].to_string()).filter(|named| named != "-"),
+                }
+            })
+            .collect()
+    })
+}
+
+pub fn event_calls() -> &'static [EventCall] {
+    static HELD: OnceLock<Vec<EventCall>> = OnceLock::new();
+    HELD.get_or_init(|| {
+        EVENT_CALLS
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                let held = fields(line);
+                EventCall {
+                    role: if held[0] == "send" { Role::Send } else { Role::Listen },
+                    verbs: held[1].split(',').map(str::to_string).collect(),
+                    receivers: held[2].split(',').filter(|named| *named != "*").map(str::to_string).collect(),
+                    wrapped: held[3] == "wrapped",
                 }
             })
             .collect()
