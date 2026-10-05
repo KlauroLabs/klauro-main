@@ -332,6 +332,17 @@ fn sole_type_argument(annotation: &str) -> Option<&str> {
     (!inside.is_empty()).then_some(inside)
 }
 
+static COLUMN_TYPES: &[&str] = &[
+    "bigint", "binary", "boolean", "date", "datetime", "decimal", "float", "inet", "integer", "json", "jsonb", "string",
+    "text", "timestamp", "uuid",
+];
+
+static GENERATES_MEMBERS: &[&str] = &[
+    "alias_method", "attr_accessor", "attr_reader", "attr_writer", "attribute", "belongs_to", "cattr_accessor",
+    "class_attribute", "delegate", "has_and_belongs_to_many", "has_attached_file", "has_many", "has_many_attached",
+    "has_one", "has_one_attached", "mattr_accessor", "scope", "store_accessor",
+];
+
 static HOLDERS: &[&str] = &["Lazy", "Provider"];
 static WRAPS_ITS_LAST_ARGUMENT: &[&str] = &[
     "Arc", "Box", "Cell", "Cow", "Mutex", "MutexGuard", "Option", "Rc", "Ref", "RefCell", "RefMut", "RwLock",
@@ -436,9 +447,24 @@ fn qualifier_of(annotation: &str) -> Option<&str> {
 }
 
 fn segments(path: &str) -> impl Iterator<Item = &str> {
-    path.split('.').map(|segment| {
+    let mut parts: Vec<&str> = Vec::new();
+    let mut depth = 0usize;
+    let mut begin = 0usize;
+    for (at, letter) in path.char_indices() {
+        match letter {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            '.' if depth == 0 => {
+                parts.push(&path[begin..at]);
+                begin = at + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&path[begin..]);
+    parts.into_iter().map(|segment| {
         let end = segment.find(['[', '(', '!', '?']).unwrap_or(segment.len());
-        &segment[..end]
+        segment[..end].trim_end_matches('&')
     })
 }
 
@@ -457,6 +483,8 @@ struct Resolver<'a> {
     runtime: Vec<&'static str>,
     visible: crate::visibility::Visibility,
     types_named: HashMap<&'a str, Vec<u32>>,
+    languages: &'a [&'a str],
+    files: &'a [String],
 }
 
 impl<'a> Resolver<'a> {
@@ -533,6 +561,72 @@ impl<'a> Resolver<'a> {
             .filter(|found| self.visible.can_see(file, self.symbols.nodes[*found as usize].file));
         match (seen.next(), seen.next()) {
             (Some(only), None) => Some(only),
+            _ => None,
+        }
+    }
+
+    fn ruby_type(&self, file: u32, name: &str) -> Option<u32> {
+        let (namespace, leaf) = match name.rsplit_once("::") {
+            Some((qualifier, leaf)) => (Some(qualifier.rsplit("::").next().unwrap_or(qualifier)), leaf),
+            None => (None, name),
+        };
+        let written_in_ruby: Vec<u32> = self
+            .types_named
+            .get(leaf)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|found| self.languages.get(self.symbols.nodes[*found as usize].file as usize) == Some(&"ruby"))
+            .collect();
+        let narrow = |candidates: Vec<u32>, keep: &dyn Fn(u32) -> bool| -> Vec<u32> {
+            let kept: Vec<u32> = candidates.iter().copied().filter(|found| keep(*found)).collect();
+            if kept.is_empty() { candidates } else { kept }
+        };
+        if let Some(namespace) = namespace {
+            let directory = format!("{}/", snake_case(namespace));
+            let within: Vec<u32> = written_in_ruby
+                .into_iter()
+                .filter(|found| self.files[self.symbols.nodes[*found as usize].file as usize].contains(directory.as_str()))
+                .collect();
+            return match within.as_slice() {
+                [only] => Some(*only),
+                _ => None,
+            };
+        }
+        let candidates = narrow(written_in_ruby, &|found| {
+            let path = self.files[self.symbols.nodes[found as usize].file as usize].as_str();
+            !crate::paths::is_test(path) && !path.starts_with("db/") && !path.contains("/migrate/")
+        });
+        let mut candidates = narrow(candidates, &|found| {
+            let nested = self.symbols.nodes[found as usize]
+                .parent
+                .as_deref()
+                .and_then(|parent| self.symbols.position.get(parent))
+                .is_some_and(|parent| self.symbols.nodes[*parent as usize].kind.is_type());
+            !nested || self.symbols.nodes[found as usize].file == file
+        });
+        if candidates.len() > 1 {
+            let here: Vec<&str> = self.files[file as usize].split('/').collect();
+            let shared = |found: u32| {
+                let path = self.files[self.symbols.nodes[found as usize].file as usize].as_str();
+                let mut parts: Vec<&str> = path.split('/').collect();
+                parts.pop();
+                parts.iter().skip(2).filter(|part| here.contains(part)).count()
+            };
+            let best = candidates.iter().map(|found| shared(*found)).max().unwrap_or(0);
+            if best > 0 {
+                candidates = narrow(candidates, &|found| shared(found) == best);
+            } else {
+                candidates = narrow(candidates, &|found| {
+                    let path = self.files[self.symbols.nodes[found as usize].file as usize].as_str();
+                    let mut parts: Vec<&str> = path.split('/').collect();
+                    parts.pop();
+                    parts.iter().skip(2).all(|part| *part == "concerns")
+                });
+            }
+        }
+        match candidates.as_slice() {
+            [only] => Some(*only),
             _ => None,
         }
     }
@@ -649,6 +743,12 @@ impl<'a> Resolver<'a> {
         }
         if self.runtime.binary_search(&name).is_ok() {
             return Origin::Runtime(name);
+        }
+        if self.languages.get(file as usize) == Some(&"ruby")
+            && name.starts_with(char::is_uppercase)
+            && let Some(only) = self.ruby_type(file, name)
+        {
+            return Origin::Declared(only);
         }
         Origin::Unknown
     }
@@ -1647,12 +1747,15 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         runtime: externals::sorted_runtime_globals(),
         visible: crate::visibility::Visibility::build(index.files, index.nodes),
         types_named,
+        languages: index.languages,
+        files: index.files,
     };
     let symbols = &resolver.symbols;
 
     let mut external_nodes: HashMap<String, IndexNode> = HashMap::default();
 
     let mut supertypes: HashMap<u32, Vec<u32>> = HashMap::default();
+    let mut inherits_from_outside: HashSet<u32> = HashSet::default();
     for fact in index.type_references {
         if !matches!(fact.kind, EdgeKind::Extends | EdgeKind::Implements) {
             continue;
@@ -1660,12 +1763,107 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         let Some(source) = symbols.position.get(fact.source.as_str()).copied() else {
             continue;
         };
-        if let Origin::Declared(found) = resolver.annotated(fact.file, &fact.name)
-            && found != source
-        {
-            supertypes.entry(source).or_default().push(found);
+        if index.languages.get(fact.file as usize) == Some(&"ruby") && fact.name.contains("::") {
+            match resolver.ruby_type(fact.file, &fact.name) {
+                Some(only) if only != source => supertypes.entry(source).or_default().push(only),
+                Some(_) => {}
+                None => {
+                    inherits_from_outside.insert(source);
+                }
+            }
+            continue;
+        }
+        match resolver.annotated(fact.file, &fact.name) {
+            Origin::Declared(found) if found != source => supertypes.entry(source).or_default().push(found),
+            Origin::Declared(_) => {}
+            _ => {
+                inherits_from_outside.insert(source);
+            }
         }
     }
+    for call in index.calls.iter() {
+        if call.receiver.is_some()
+            || !matches!(call.callee.as_str(), "include" | "extend" | "prepend")
+            || index.languages.get(call.file as usize) != Some(&"ruby")
+        {
+            continue;
+        }
+        let Some(source) = call.caller.as_deref().and_then(|caller| symbols.position.get(caller).copied()) else {
+            continue;
+        };
+        if !symbols.nodes[source as usize].kind.is_type() {
+            continue;
+        }
+        for literal in call.literals.iter().filter(|literal| literal.starts_with(char::is_uppercase)) {
+            match resolver.ruby_type(call.file, literal) {
+                Some(only) if only != source => supertypes.entry(source).or_default().push(only),
+                Some(_) => {}
+                None => {
+                    inherits_from_outside.insert(source);
+                }
+            }
+        }
+    }
+    let columns: Vec<&str> = index
+        .calls
+        .iter()
+        .filter(|call| {
+            call.receiver.as_deref() == Some("t")
+                && COLUMN_TYPES.contains(&call.callee.as_str())
+                && index.files[call.file as usize].ends_with("schema.rb")
+        })
+        .filter_map(|call| call.literals.first().map(String::as_str))
+        .filter(|named| !named.contains('='))
+        .collect();
+    let generated_members: HashSet<String> = index
+        .calls
+        .iter()
+        .filter(|call| call.receiver.is_none() && index.languages.get(call.file as usize) == Some(&"ruby"))
+        .filter(|call| GENERATES_MEMBERS.contains(&call.callee.as_str()))
+        .flat_map(|call| {
+            call.literals
+                .iter()
+                .take_while(|literal| !literal.contains('='))
+                .filter_map(|literal| literal.strip_prefix(':'))
+                .map(|named| named.trim_matches('"'))
+                .filter(|named| !named.is_empty() && !named.contains('#'))
+                .flat_map(|named| {
+                    let identifier = format!("{named}_id");
+                    [named.to_string(), format!("{named}="), format!("{named}?"), identifier]
+                })
+                .collect::<Vec<_>>()
+        })
+        .chain(columns.iter().flat_map(|named| {
+            [named.to_string(), format!("{named}="), format!("{named}?")]
+        }))
+        .collect();
+    let mut mixed_into: HashMap<u32, Vec<u32>> = HashMap::default();
+    for (below, above) in supertypes.iter() {
+        for held in above {
+            mixed_into.entry(*held).or_default().push(*below);
+        }
+    }
+    let reaches_outside = |owner: u32| -> bool {
+        let mut seen = HashSet::default();
+        let mut pending = vec![owner];
+        while let Some(at) = pending.pop() {
+            if !seen.insert(at) {
+                continue;
+            }
+            if inherits_from_outside.contains(&at) {
+                return true;
+            }
+            if let Some(above) = supertypes.get(&at) {
+                pending.extend(above.iter().copied());
+            }
+            if symbols.nodes[at as usize].kind == NodeKind::Interface
+                && let Some(hosts) = mixed_into.get(&at)
+            {
+                pending.extend(hosts.iter().copied());
+            }
+        }
+        false
+    };
 
     let inherited = |owner: u32, name: &str| -> Option<u32> {
         let mut seen = HashSet::default();
@@ -1901,6 +2099,13 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
                     None if node.kind.is_unit() => {
                         return Resolved::Edge(node.id.clone(), kind);
                     }
+                    None if node.kind.is_type()
+                        && callee == "new"
+                        && index.languages.get(fact.file as usize) == Some(&"ruby") =>
+                    {
+                        let built = symbols.member(found, "constructor").unwrap_or(found);
+                        return Resolved::Edge(symbols.nodes[built as usize].id.clone(), EdgeKind::Instantiates);
+                    }
                     None if node.kind.is_type() && HOLDER_ACCESSORS.contains(&callee.as_str()) => {
                         if let Some(called) = CALLED_AS_A_FUNCTION.iter().find_map(|named| inherited(found, named)) {
                             let target = overridden_within(called, found).unwrap_or(called);
@@ -1932,6 +2137,17 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
                 return Resolved::Indirect;
             }
             _ => {}
+        }
+
+        if index.languages.get(fact.file as usize) == Some(&"ruby")
+            && let Some(receiver) = receiver.as_deref()
+            && receiver.starts_with(char::is_uppercase)
+            && let Some((root, _)) = receiver.split_once('.')
+            && let Some(owner) = resolver.ruby_type(fact.file, root)
+            && reaches_outside(owner)
+            && let Some(found) = inherited(owner, &callee)
+        {
+            return Resolved::Edge(symbols.nodes[found as usize].id.clone(), kind);
         }
 
         let member = match receiver.as_deref() {
@@ -2084,7 +2300,41 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
             }
             held
         });
-        let foreign = handed_in || receiver.as_deref().is_some_and(|receiver| {
+        let inherited_from_a_library = index.languages.get(fact.file as usize) == Some(&"ruby")
+            && match (&origin, receiver.as_deref()) {
+                (Origin::Declared(found), Some(_)) => symbols.nodes[*found as usize].kind.is_type(),
+                (_, None | Some("self")) => symbols.owning_type(unit).is_none_or(&reaches_outside),
+                _ => false,
+            };
+        let foreign = handed_in || inherited_from_a_library || receiver.as_deref().is_some_and(|receiver| {
+            if index.languages.get(fact.file as usize) == Some(&"ruby") && receiver.starts_with(char::is_uppercase) {
+                let first = receiver.split(['.', ':']).next().unwrap_or(receiver);
+                if !resolver.types_named.contains_key(first) && !declared_anywhere.contains(first) {
+                    return true;
+                }
+                if let Some((qualifier, rest)) = receiver.split_once("::") {
+                    let mut segments: Vec<&str> = std::iter::once(qualifier)
+                        .chain(rest.split("::"))
+                        .map(|segment| segment.split(['.', '(']).next().unwrap_or(segment))
+                        .collect();
+                    let leaf = segments.pop().unwrap_or_default();
+                    let namespace = segments.pop().unwrap_or(leaf);
+                    let directory = format!("{}/", snake_case(namespace));
+                    let ours = resolver.types_named.get(leaf).into_iter().flatten().any(|found| {
+                        index.files[symbols.nodes[*found as usize].file as usize].contains(directory.as_str())
+                    });
+                    if !ours {
+                        return true;
+                    }
+                } else if let Some((root, link)) = receiver.split_once('.')
+                    && let Some(type_found) = resolver.ruby_type(fact.file, root)
+                {
+                    let link = link.split(['.', '(']).next().unwrap_or(link);
+                    if inherited(type_found, link).is_none() && !generated_members.contains(link) {
+                        return true;
+                    }
+                }
+            }
             if matches!(index.languages.get(fact.file as usize), Some(&("javascript" | "typescript")))
                 && externals::NODE_MODULES.contains(&crate::names::root(receiver))
             {
@@ -2174,7 +2424,9 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
             Resolved::Library => {}
             Resolved::Unresolved(member, foreign) => {
                 let language = index.languages.get(fact.file as usize).copied().unwrap_or("");
+                let generated = language == "ruby" && generated_members.contains(fact.callee.as_str());
                 if !foreign
+                    && !generated
                     && is_open_end(&fact.callee, fact.receiver.is_some(), language, fact.file, &own_names, &free_names, &qualifiers, &enum_names, visible)
                 {
                     *open_calls.entry(caller.to_string()).or_insert(0) += 1;
@@ -2280,6 +2532,21 @@ fn is_open_end(
     matches!(root, "crate" | "self" | "super" | "Self") || qualifiers.contains(root) || qualifiers.contains(owner)
 }
 
+fn snake_case(name: &str) -> String {
+    let mut spelled = String::with_capacity(name.len() + 4);
+    for (at, letter) in name.chars().enumerate() {
+        if letter.is_uppercase() {
+            if at > 0 {
+                spelled.push('_');
+            }
+            spelled.extend(letter.to_lowercase());
+        } else {
+            spelled.push(letter);
+        }
+    }
+    spelled
+}
+
 fn last_segment(receiver: &str) -> &str {
     segments(receiver).last().unwrap_or(receiver)
 }
@@ -2289,6 +2556,29 @@ fn parent_of(edges: &[IndexEdge], owner: &str) -> Option<String> {
         .iter()
         .find(|edge| edge.kind == EdgeKind::Extends && edge.source == owner)
         .map(|edge| edge.target.clone())
+}
+
+#[cfg(test)]
+mod receivers {
+    use super::{segments, snake_case};
+
+    #[test]
+    fn a_dot_inside_arguments_does_not_split_the_receiver() {
+        let parts: Vec<&str> = segments("Report.new(Account.find(id), year).tally").collect();
+        assert_eq!(parts, ["Report", "new", "tally"]);
+    }
+
+    #[test]
+    fn a_safe_navigation_marker_is_not_part_of_the_name() {
+        let parts: Vec<&str> = segments("refresh&.status").collect();
+        assert_eq!(parts, ["refresh", "status"]);
+    }
+
+    #[test]
+    fn a_constant_namespace_is_spelled_as_its_directory() {
+        assert_eq!(snake_case("ActionController"), "action_controller");
+        assert_eq!(snake_case("Api"), "api");
+    }
 }
 
 #[cfg(test)]
