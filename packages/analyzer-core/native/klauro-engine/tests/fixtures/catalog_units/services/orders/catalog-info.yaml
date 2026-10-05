@@ -1,0 +1,11 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: orders-service
+spec:
+  type: service
+  owner: team-commerce
+  system: checkout
+  dependsOn:
+    - component:billing-service
+    - resource:orders-db

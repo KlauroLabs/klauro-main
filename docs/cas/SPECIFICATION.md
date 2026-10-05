@@ -151,7 +151,10 @@ A single connected repo can itself contain more than one project. What a reposit
 - **Workspace membership.** The repository states its own partition: `pnpm-workspace.yaml` packages, a `package.json` `workspaces` field, Cargo `[workspace] members`, `go.work` use. This is the repository telling you what it is made of; nothing outranks it.
 - **A module manifest.** A `package.json`, `Cargo.toml` `[package]`, `go.mod`, `pyproject.toml`, `pom.xml`, `*.csproj` or Gradle build naming an addressable unit.
 - **A connected repository.** A nested git repo, or a declared workspace member one level up.
+- **A service catalog descriptor.** A `catalog-info.yaml` (or `.yml`) below the repository root whose `kind` is `Component`, `API` or `Resource` declares the directory holding it as a project named by `metadata.name`. A `System` descriptor groups units and declares none. The descriptor's `spec.owner`, `spec.system` and `spec.dependsOn` are carried onto the project as `owner`, `system` and `depends_on`, including on a project a stronger signal declared.
 - **Import cohesion.** For a repository that declares nothing, a directory whose imports are dense inside it and sparse across it.
+
+A directory is declared once, by the strongest signal that names it: workspace membership, then a connected repository, then a module manifest, then a service catalog descriptor, then a ship declaration. Import cohesion is consulted only when none of these declares a project.
 
 A repository that declares no boundary at all is one project: itself.
 

@@ -34,6 +34,8 @@ inferred from a shared name, and it is what the engine itself uses to decide whi
 
 `find_tests` matches carry `basis` (`exact-by-graph`, `graph-with-name-guess`, `explicit-coverage`, `name-based`) and the resolution carries `answer_basis`. They tell a reader whether a selected test reaches the unit through resolved calls or was matched on a name. `get_communities` carries `surprising_links`: a member of a small community reaching a hub of another through one of very few links.
 
+`partition.sub_projects[].owner`, `system` and `depends_on` come from a service catalog descriptor (`catalog-info.yaml`) in the project's directory: `spec.owner`, `spec.system` and the `spec.dependsOn` references as written. They tell a reader who a repository's own metadata says owns a unit, which system groups it and what it declares it depends on. Absent when the project has no descriptor.
+
 **Data**
 `entities`, `data_summary`, `data_lineage`, `database_schema`, `domain_concepts`
 

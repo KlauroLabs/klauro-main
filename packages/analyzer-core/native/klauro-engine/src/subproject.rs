@@ -2,6 +2,7 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use serde::Serialize;
 
+use crate::catalog_descriptor::{self, Descriptor};
 use crate::entry_exit::EntryPoint;
 use crate::model::*;
 use crate::paths::{basename, contains, directory_of, display_name, file_of};
@@ -26,6 +27,12 @@ pub struct SubProject {
     pub ships_in: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub consumed_by: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -219,6 +226,18 @@ pub fn derive(
         });
     }
 
+    let descriptors = catalog_descriptor::all(files, &children);
+    for descriptor in &descriptors {
+        if claimed.insert(descriptor.root.clone()) {
+            declared.push(Declared {
+                name: descriptor.name.clone(),
+                root: descriptor.root.clone(),
+                declared_by: "catalog-descriptor",
+                at: descriptor.at.clone(),
+            });
+        }
+    }
+
     for unit in deployables.iter().filter(|unit| {
         !unit.root.is_empty() && unit.declarations.iter().any(|held| held.kind == "apple-application")
     }) {
@@ -245,7 +264,19 @@ pub fn derive(
         });
     }
 
-    partition(declared, files, nodes, edges, entry_points, code, deployables)
+    let mut derived = partition(declared, files, nodes, edges, entry_points, code, deployables);
+    describe(&mut derived.sub_projects, descriptors);
+    derived
+}
+
+fn describe(sub_projects: &mut [SubProject], descriptors: Vec<Descriptor>) {
+    for descriptor in descriptors {
+        if let Some(project) = sub_projects.iter_mut().find(|project| project.root == descriptor.root) {
+            project.owner = descriptor.owner;
+            project.system = descriptor.system;
+            project.depends_on = descriptor.depends_on;
+        }
+    }
 }
 
 fn declares_workspace(children: &HashMap<&str, Vec<&IndexNode>>, manifest: &str) -> bool {
@@ -350,8 +381,11 @@ fn manifest_name(children: &HashMap<&str, Vec<&IndexNode>>, manifest: &str) -> O
                         .find(|node| node.name == "name")
                 })
         })?;
-    named
-        .type_annotation
+    scalar(named)
+}
+
+pub fn scalar(node: &IndexNode) -> Option<String> {
+    node.type_annotation
         .as_deref()
         .map(|value| value.trim().trim_matches(['"', '\'']).to_string())
         .filter(|value| !value.is_empty())
@@ -413,6 +447,9 @@ fn partition(
             status: "module",
             ships_in: Vec::new(),
             consumed_by: Vec::new(),
+            owner: None,
+            system: None,
+            depends_on: Vec::new(),
         })
         .collect();
 
