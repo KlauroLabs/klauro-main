@@ -191,4 +191,11 @@ else
 fi
 mark_step "tag(v$VERSION)"
 
+echo "==> Rebuilding the local entry point bundle"
+if (cd "$APP_DIR" && node scripts/build-bundle.mjs >/dev/null); then
+  mark_step "local-bundle(v$VERSION)"
+else
+  echo "    WARNING: local bundle rebuild failed; run \`npm run build\` in apps/mcp-server before using dist/index.cjs." >&2
+fi
+
 echo "==> Done. v$VERSION released."

@@ -16,6 +16,7 @@ import * as watcher from './watcher';
 import { summarizeUploadManifest } from './upload-manifest-summary';
 import { boundToolPayload } from './response-budget';
 import { isInstalledToolName } from './installed-tool-registry';
+import { INSTALLED_CLIENT_INSTRUCTIONS } from './installed-client-instructions';
 import { executeDurableRemoteOperation, type RemoteOperationKind } from './coordination/durable-remote-operations';
 export { summarizeUploadManifest } from './upload-manifest-summary';
 export { INSTALLED_TOOL_NAMES } from './installed-tool-registry';
@@ -375,7 +376,7 @@ export function normalizeConceptualAnalysisParams(params: Record<string, unknown
 
 export function createServer(): McpServer {
   const server = new McpServer({ name: 'klauro', version: getBuildIdentity().version }, {
-    instructions: 'Klauro installed client. Upload source and diffs for hosted analysis, query hosted slices, and watch in-flight changes. No analysis, CAS construction at any level, graph construction, proposal materialization, or embeddings execute on this machine.',
+    instructions: INSTALLED_CLIENT_INSTRUCTIONS,
   });
   const registerWithErrors = withTransparentErrors(server.registerTool.bind(server) as any);
   const register = ((name: string, ...args: any[]) => {
