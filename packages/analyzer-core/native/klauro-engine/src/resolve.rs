@@ -6,6 +6,8 @@ use crate::language_tables::SOURCE_EXTENSIONS;
 use crate::model::*;
 use crate::paths::{directory_of, join, normalize};
 
+mod typing;
+
 const FORWARDED_AT_MOST: u8 = 6;
 
 pub struct Index<'a> {
@@ -58,6 +60,7 @@ struct Symbols<'a> {
     file_scope: HashMap<(u32, &'a str), u32>,
     exported: HashMap<(u32, &'a str), u32>,
     members: HashMap<(u32, &'a str), u32>,
+    callables: HashMap<(u32, &'a str), u32>,
     unique_type: HashMap<&'a str, u32>,
     unique_unit: HashMap<&'a str, u32>,
     unique_member: HashMap<&'a str, u32>,
@@ -65,6 +68,8 @@ struct Symbols<'a> {
     extension: HashMap<(&'a str, &'a str), u32>,
     declaring: HashMap<&'a str, Vec<u32>>,
     owner: Vec<Option<u32>>,
+    package_of: Vec<u32>,
+    package_scope: HashMap<(u32, &'a str), u32>,
 }
 
 struct Bindings<'a> {
@@ -76,6 +81,8 @@ struct Bindings<'a> {
     file_locals: HashMap<(u32, &'a str), &'a str>,
     opened: HashMap<u32, Vec<&'a str>>,
     stands_for: HashMap<(&'a str, &'a str), &'a str>,
+    called: HashMap<(&'a str, &'a str), (&'a str, u8)>,
+    file_called: HashMap<(u32, &'a str), (&'a str, u8)>,
 }
 
 fn unique(counts: HashMap<&str, (u32, u32)>) -> HashMap<&str, u32> {
@@ -94,6 +101,7 @@ impl<'a> Symbols<'a> {
             file_scope: HashMap::default(),
             exported: HashMap::default(),
             members: HashMap::default(),
+            callables: HashMap::default(),
             unique_type: HashMap::default(),
             unique_unit: HashMap::default(),
             unique_member: HashMap::default(),
@@ -101,6 +109,8 @@ impl<'a> Symbols<'a> {
             extension: HashMap::default(),
             declaring: HashMap::default(),
             owner: vec![None; nodes.len()],
+            package_of: Vec::new(),
+            package_scope: HashMap::default(),
         };
         for (at, node) in nodes.iter().enumerate() {
             symbols.position.insert(node.id.as_str(), at as u32);
@@ -121,6 +131,9 @@ impl<'a> Symbols<'a> {
                 && holds_members(&nodes[owner as usize], node)
             {
                 symbols.members.entry((owner, node.name.as_str())).or_insert(at);
+                if node.kind.is_unit() {
+                    symbols.callables.entry((owner, node.name.as_str())).or_insert(at);
+                }
                 symbols.declaring.entry(node.name.as_str()).or_default().push(owner);
                 let entry = member_names.entry(node.name.as_str()).or_insert((0, at));
                 entry.0 += 1;
@@ -210,6 +223,10 @@ impl<'a> Symbols<'a> {
 
     fn member(&self, owner: u32, name: &str) -> Option<u32> {
         self.members.get(&(owner, name)).copied()
+    }
+
+    fn callable(&self, owner: u32, name: &str) -> Option<u32> {
+        self.callables.get(&(owner, name)).copied().or_else(|| self.member(owner, name))
     }
 
     fn member_type(&self, owner: u32, name: &str) -> Option<&'a str> {
@@ -361,7 +378,7 @@ fn base_type_name(annotation: &str) -> &str {
             annotation = rest.trim_start_matches(|letter: char| letter.is_alphanumeric() || letter == '_').trim_start();
             continue;
         }
-        if let Some(rest) = stripped.strip_prefix("mut ") {
+        if let Some(rest) = stripped.strip_prefix("mut ").or_else(|| stripped.strip_prefix("dyn ")).or_else(|| stripped.strip_prefix("impl ")) {
             annotation = rest.trim_start();
             continue;
         }
@@ -485,6 +502,8 @@ struct Resolver<'a> {
     types_named: HashMap<&'a str, Vec<u32>>,
     languages: &'a [&'a str],
     files: &'a [String],
+    by_path: &'a HashMap<&'a str, u32>,
+    aliases: &'a crate::alias::Aliases,
 }
 
 impl<'a> Resolver<'a> {
@@ -496,8 +515,8 @@ impl<'a> Resolver<'a> {
         self.bindings
             .imported
             .get(&(file, name))
-            .or_else(|| self.symbols.file_scope.get(&(file, name)))
             .copied()
+            .or_else(|| self.symbols.in_scope(file, name))
             .or_else(|| self.symbols.unique_type.get(name).copied())
             .or_else(|| self.seen_from(file, name))
             .filter(|found| self.symbols.nodes[*found as usize].kind.is_type())
@@ -668,7 +687,7 @@ impl<'a> Resolver<'a> {
             return Origin::Declared(found);
         }
         let bare = name.strip_prefix('$').unwrap_or(name);
-        if bare == "this" || bare == "self" {
+        if bare == "this" || bare == "self" || bare == "Self" {
             return match self.symbols.owning_type(unit) {
                 Some(owner) => Origin::Declared(owner),
                 None => Origin::Unknown,
@@ -680,6 +699,10 @@ impl<'a> Resolver<'a> {
                 signature.parameters.iter().find(|p| p.name == name || p.name == bare)
         {
             return match parameter.type_annotation.as_deref() {
+                Some(annotation) if typing::names_itself(annotation) => match self.symbols.owning_type(unit) {
+                    Some(owner) => Origin::Declared(owner),
+                    None => Origin::Indirect,
+                },
                 Some(annotation) => match self.annotated(file, annotation) {
                     Origin::Unknown => Origin::Indirect,
                     known => known,
@@ -695,7 +718,14 @@ impl<'a> Resolver<'a> {
             .annotation(&holder.id, file, name)
             .or_else(|| self.bindings.annotation(&holder.id, file, bare))
         {
-            return self.annotated(file, annotation);
+            return match self.annotated(file, annotation) {
+                Origin::Unknown => self.from_a_call(unit, file, name),
+                known => known,
+            };
+        }
+        match self.from_a_call(unit, file, name) {
+            Origin::Unknown => {}
+            known => return known,
         }
         if let Some(owner) = self.symbols.owning_type(unit)
             && let Some(annotation) = self.handed_to_an_enclosing_type(owner, name, bare)
@@ -724,8 +754,8 @@ impl<'a> Resolver<'a> {
             .bindings
             .imported
             .get(&(file, name))
-            .or_else(|| self.symbols.file_scope.get(&(file, name)))
             .copied()
+            .or_else(|| self.symbols.in_scope(file, name))
         {
             let node = &self.symbols.nodes[found as usize];
             if node.kind.is_type() || node.kind.is_unit() {
@@ -758,65 +788,6 @@ impl<'a> Resolver<'a> {
             Some(entry) if !entry.returns.is_empty() => Origin::Runtime(entry.returns),
             _ => Origin::Unknown,
         }
-    }
-
-    fn origin(&self, unit: u32, file: u32, path: &'a str) -> Origin<'a> {
-        let bare = path.trim().trim_start_matches('(').trim_end_matches(')').trim();
-        if let Some(built) = bare.strip_prefix("new ") {
-            let named = built.split(['(', ')', ' ', '<', '{']).next().unwrap_or(built).trim();
-            if !named.is_empty() {
-                return self.annotated(file, named);
-            }
-        }
-        let mut parts = segments(path);
-        let Some(first) = parts.next() else {
-            return Origin::Unknown;
-        };
-        let mut origin = self.root(unit, file, first);
-        let mut held = self.held(unit, file, first);
-        for part in parts {
-            origin = match origin {
-                Origin::Declared(owner) if self.symbols.nodes[owner as usize].kind.is_type() && part == "new" => {
-                    Origin::Declared(owner)
-                }
-                Origin::Declared(owner) if self.symbols.nodes[owner as usize].kind.is_type() => {
-                    let unwrapped = held
-                        .filter(|annotation| HOLDERS.contains(&base_type_name(annotation)))
-                        .filter(|_| HOLDER_ACCESSORS.contains(&part))
-                        .and_then(sole_type_argument);
-                    if let Some(inner) = unwrapped
-                        && self.symbols.member_type(owner, part).is_none()
-                    {
-                        held = Some(inner);
-                        origin = Origin::Declared(owner);
-                        continue;
-                    }
-                    held = self.symbols.member_type(owner, part);
-                    match held {
-                        Some(annotation) => {
-                            self.annotated(self.symbols.nodes[owner as usize].file, annotation)
-                        }
-                        None => Origin::Unknown,
-                    }
-                }
-                Origin::Package(specifier) => Origin::Package(specifier),
-                _ if part == "value" => match held.and_then(sole_type_argument) {
-                    Some(inner) => {
-                        held = Some(inner);
-                        self.annotated(file, inner)
-                    }
-                    None => {
-                        held = None;
-                        self.returned(part)
-                    }
-                },
-                _ => {
-                    held = None;
-                    self.returned(part)
-                }
-            };
-        }
-        origin
     }
 
     fn held(&self, unit: u32, file: u32, name: &'a str) -> Option<&'a str> {
@@ -1329,6 +1300,7 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         }
     };
     let mut symbols = Symbols::build(index.nodes);
+    symbols.scope_packages(index.files, index.languages, index.namespaces);
     lap("symbols");
     let by_path: HashMap<&str, u32> = index
         .files
@@ -1427,6 +1399,8 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         file_locals: HashMap::default(),
         opened: HashMap::default(),
         stands_for: HashMap::default(),
+        called: HashMap::default(),
+        file_called: HashMap::default(),
     };
 
     lap("aliases");
@@ -1661,9 +1635,7 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         }
         let name = base_type_name(&fact.name);
         let Some(owner) = symbols
-            .file_scope
-            .get(&(fact.file, name))
-            .copied()
+            .in_scope(fact.file, name)
             .or_else(|| symbols.unique_type.get(name).copied())
         else {
             continue;
@@ -1672,6 +1644,10 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
             symbols.owner[method as usize] = Some(owner);
             symbols
                 .members
+                .entry((owner, index.nodes[method as usize].name.as_str()))
+                .or_insert(method);
+            symbols
+                .callables
                 .entry((owner, index.nodes[method as usize].name.as_str()))
                 .or_insert(method);
             let owner = index.nodes[owner as usize].id.clone();
@@ -1701,6 +1677,16 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
             && expression.split('.').next() != Some(binding.name.as_str())
         {
             bindings.stands_for.insert((binding.unit.as_str(), binding.name.as_str()), expression);
+        }
+        if binding.annotation.is_none()
+            && binding.constructed.is_none()
+            && let Some(call) = binding.from_call.as_deref()
+        {
+            if binding.unit.is_empty() {
+                bindings.file_called.insert((binding.file, binding.name.as_str()), (call, binding.slot));
+            } else {
+                bindings.called.insert((binding.unit.as_str(), binding.name.as_str()), (call, binding.slot));
+            }
         }
         let annotation = binding
             .annotation
@@ -1749,6 +1735,8 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         types_named,
         languages: index.languages,
         files: index.files,
+        by_path: &by_path,
+        aliases: &aliases,
     };
     let symbols = &resolver.symbols;
 
@@ -1872,7 +1860,7 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
             if !seen.insert(at) {
                 continue;
             }
-            if let Some(found) = symbols.member(at, name) {
+            if let Some(found) = symbols.callable(at, name) {
                 return Some(found);
             }
             if let Some(above) = supertypes.get(&at) {
@@ -2127,9 +2115,7 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
                 return Resolved::Edge(node.id.clone(), kind);
             }
             (Origin::Module(held), Some(_)) => {
-                if let Some(found) =
-                    symbols.file_scope.get(&(held, callee.as_str())).copied()
-                {
+                if let Some(found) = symbols.in_scope(held, callee.as_str()) {
                     return Resolved::Edge(symbols.nodes[found as usize].id.clone(), kind);
                 }
             }
@@ -2407,6 +2393,8 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
             _ => None,
         }
     };
+    let dump_to = std::env::var("KLAURO_REPORT_CALLS").ok();
+    let mut dumped: Vec<String> = Vec::new();
     for (fact, outcome) in index.calls.iter().zip(resolved) {
         let caller = fact.caller.as_deref().unwrap_or_default();
         let outcome = match outcome {
@@ -2417,6 +2405,30 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
             Resolved::External { .. } if fact.renders => Resolved::Library,
             other => other,
         };
+        if dump_to.is_some() {
+            let label = match &outcome {
+                Resolved::Edge(target, _) => format!("structure\t{target}"),
+                Resolved::Guessed(target, _) => format!("name\t{target}"),
+                Resolved::External { owner, member, .. } => format!("external\t{owner}\t{member}"),
+                Resolved::Unresolved(_, foreign) => format!(
+                    "unresolved\t{foreign}\t{}",
+                    declared_anywhere.contains(fact.callee.as_str()) && !crate::paths::is_test(&index.files[fact.file as usize])
+                ),
+                Resolved::NoCaller => "nocaller".to_string(),
+                Resolved::Dynamic => "dynamic".to_string(),
+                Resolved::Indirect => "indirect".to_string(),
+                Resolved::Library => "library".to_string(),
+            };
+            dumped.push(format!(
+                "{}:{}\t{}\t{}\t{}\t{}",
+                index.files[fact.file as usize],
+                fact.line,
+                caller,
+                fact.receiver.as_deref().unwrap_or("").replace('\n', " "),
+                fact.callee.replace('\n', " "),
+                label
+            ));
+        }
         match outcome {
             Resolved::NoCaller => no_caller += 1,
             Resolved::Dynamic => dynamic_calls += 1,
@@ -2452,6 +2464,9 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         }
     }
 
+    if let Some(path) = dump_to {
+        let _ = std::fs::write(path, dumped.join("\n"));
+    }
     let mut external_nodes: Vec<IndexNode> = external_nodes.into_values().collect();
     external_nodes.sort_by(|left, right| left.id.cmp(&right.id));
 

@@ -1590,6 +1590,7 @@ impl<'a> Extractor<'a> {
                 stands_for: None,
                 from_values: Vec::new(),
                         line: node.start_position().row as u32 + 1,
+                        ..Default::default()
                     });
                 }
             }
@@ -1656,7 +1657,44 @@ impl<'a> Extractor<'a> {
         }
     }
 
+    fn declare_rust_use(&mut self, node: Node) -> bool {
+        let Some(declared) = crate::rust_use::parse(self.text(node)) else { return false };
+        let line = node.start_position().row as u32 + 1;
+        for leaf in declared.leaves {
+            let Some(last) = leaf.path.last().cloned() else { continue };
+            let module = &leaf.path[..leaf.path.len() - 1];
+            let specifier = leaf.path.join("::");
+            let local = leaf.alias.clone().unwrap_or_else(|| last.clone());
+            self.facts.imports.push(ImportFact {
+                file: self.file,
+                specifier,
+                line,
+                type_only: false,
+                everywhere: false,
+                names: vec![ImportSpecifier {
+                    local: local.clone(),
+                    imported: leaf.alias.is_some().then(|| last.clone()),
+                    namespace: true,
+                    default_import: false,
+                }],
+            });
+            if !declared.public {
+                continue;
+            }
+            let (name, original, from) = match (leaf.glob, module.is_empty()) {
+                (true, _) => ("*".to_string(), "*".to_string(), leaf.path.join("::")),
+                (false, true) => continue,
+                (false, false) => (local, last, module.join("::")),
+            };
+            self.facts.forwards.push(crate::model::Forward { file: self.file, name, original, from });
+        }
+        true
+    }
+
     fn declare_import(&mut self, node: Node) {
+        if self.spec.id == "rust" && self.declare_rust_use(node) {
+            return;
+        }
         let text = self.text(node);
         let literals = string_literals(text);
         if literals.len() > 1 {
@@ -1900,6 +1938,22 @@ impl<'a> Extractor<'a> {
         inner.callable = Some(id);
         inner.registrar = None;
         self.walk(node, &inner);
+    }
+
+    fn slots_of(&self, pattern: Node) -> std::collections::HashMap<String, u8> {
+        let mut found = std::collections::HashMap::new();
+        let mut cursor = pattern.walk();
+        let children: Vec<Node> = pattern.named_children(&mut cursor).collect();
+        if children.len() < 2 {
+            return found;
+        }
+        for (at, child) in children.iter().enumerate() {
+            let word = self.text(*child).trim();
+            if word != "_" && word.chars().all(|letter| letter.is_alphanumeric() || letter == '_') {
+                found.insert(word.to_string(), (at + 1).min(255) as u8);
+            }
+        }
+        found
     }
 
     fn bound_by(&self, pattern: Node) -> Vec<String> {
@@ -2211,6 +2265,7 @@ impl<'a> Extractor<'a> {
             stands_for: None,
             from_values: Vec::new(),
             line: node.start_position().row as u32 + 1,
+            ..Default::default()
         });
     }
 
@@ -2257,8 +2312,10 @@ impl<'a> Extractor<'a> {
             let mut cursor = held.walk();
             for child in held.named_children(&mut cursor) {
                 if let Some(pattern) = child.child_by_field_name("pattern") {
+                    let slots = self.slots_of(pattern);
                     for name in self.bound_by(pattern) {
                         self.facts.locals.push(LocalBinding {
+                            slot: slots.get(&name).copied().unwrap_or(0),
                             file: self.file,
                             unit: scope.callable.clone().unwrap_or_default(),
                             name,
@@ -2269,6 +2326,7 @@ impl<'a> Extractor<'a> {
                 stands_for: None,
                 from_values: Vec::new(),
                             line: node.start_position().row as u32 + 1,
+                            ..Default::default()
                         });
                     }
                     continue;
@@ -2364,8 +2422,10 @@ impl<'a> Extractor<'a> {
         {
             return false;
         }
+        let slots = pattern.map(|held| self.slots_of(held)).unwrap_or_default();
         for held in taken_apart.iter() {
             self.facts.locals.push(LocalBinding {
+                slot: slots.get(held).copied().unwrap_or(0),
                 file: self.file,
                 unit: scope.callable.clone().unwrap_or_default(),
                 name: held.clone(),
@@ -2376,6 +2436,7 @@ impl<'a> Extractor<'a> {
                 stands_for: None,
                 from_values: from_values.clone(),
                 line: node.start_position().row as u32 + 1,
+                ..Default::default()
             });
         }
         if !taken_apart.is_empty() {
@@ -2395,6 +2456,7 @@ impl<'a> Extractor<'a> {
                 stands_for,
             from_values: from_values.clone(),
             line: node.start_position().row as u32 + 1,
+            ..Default::default()
         });
         false
     }

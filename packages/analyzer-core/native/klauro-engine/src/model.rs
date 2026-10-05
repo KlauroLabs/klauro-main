@@ -322,7 +322,7 @@ pub fn type_arguments(written: &str) -> Vec<String> {
         .collect()
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct LocalBinding {
     pub file: u32,
     pub unit: String,
@@ -341,6 +341,10 @@ pub struct LocalBinding {
     pub from_values: Vec<String>,
     #[serde(default, skip_serializing_if = "crate::facts_cache::hidden")]
     pub line: u32,
+    #[serde(default, skip_serializing_if = "crate::facts_cache::hidden")]
+    pub slot: u8,
+    #[serde(default, skip_serializing_if = "crate::facts_cache::hidden")]
+    pub element_of: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -39,6 +39,7 @@ mod published;
 mod resolve;
 mod roles;
 mod route;
+mod rust_use;
 mod layers;
 mod memory;
 mod design_patterns;

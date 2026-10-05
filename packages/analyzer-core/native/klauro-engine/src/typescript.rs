@@ -1388,6 +1388,7 @@ impl<'a> Extractor<'a> {
                 stands_for: None,
                             from_values,
                             line: node.start_position().row as u32 + 1,
+                            ..Default::default()
                         });
                     }
                 }

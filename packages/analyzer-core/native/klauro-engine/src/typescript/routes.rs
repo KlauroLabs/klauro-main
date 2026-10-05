@@ -648,6 +648,7 @@ impl<'a> Extractor<'a> {
                 stands_for: None,
                 from_values: Vec::new(),
                 line,
+                ..Default::default()
             });
         }
     }
