@@ -343,3 +343,26 @@ test('signature, exported, edge via and the flow standing reach the stored analy
   assert.equal(cas.flows?.[0].open, 2);
   assert.equal(cas.flows?.[0].cut, true);
 });
+
+test('the history the engine read becomes the stability of the files it names', () => {
+  const index = {
+    ...INDEX,
+    history: {
+      commits: 40,
+      fix_commits: 9,
+      files: [
+        { path: 'src/order.ts', commits: 12, fixes: 6, recent: 2, quarter: 8, recent_authors: 1, last: 1_790_000_000, fix_percentile: 97, churn_percentile: 90 },
+        { path: 'src/gone.ts', commits: 5, fixes: 1, recent: 0, quarter: 0, recent_authors: 0, last: 1_780_000_000, fix_percentile: 50, churn_percentile: 50 },
+      ],
+    },
+  } as TierStackIndex;
+  const cas = tierStackToCas(index, 'shop');
+  assert.equal(cas.temporal_stability?.length, 1);
+  const held = cas.temporal_stability?.[0];
+  assert.equal(held?.node_id, 'src/order.ts');
+  assert.equal(held?.stability_class, 'fragile');
+  assert.equal(held?.quality_signals.bug_fix_commits, 6);
+  assert.equal(held?.quality_signals.bug_fix_percentile, 97);
+  assert.equal(cas.stability_summary?.by_stability_class.fragile, 1);
+  assert.equal(tierStackToCas(INDEX, 'shop').temporal_stability, undefined);
+});

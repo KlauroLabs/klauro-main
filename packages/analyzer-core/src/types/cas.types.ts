@@ -9,6 +9,7 @@ export type { CASCoverageGap, CASCoverageGapKind } from './cas-coverage.types';
 import type { CASComposedClaimProvenance, CASTerminalityProvenance } from './cas-composition.types';
 export type { CASComposedClaimProvenance, CASTerminalityEdge, CASTerminalityProvenance, CASTerminalityRelationEvidence } from './cas-composition.types';
 import type { CASFirstPartyProductEvidence } from './cas-product-evidence.types';
+import type { CASHistoryPercentiles } from './cas-history.types';
 export type { CASFirstPartyProductEvidence, CASFirstPartyProductEvidenceValue, CASFirstPartyProductStatement } from './cas-product-evidence.types';
 export interface CASOutput extends CASSourceInputCatalog {
   id?: string;
@@ -3130,7 +3131,7 @@ export interface CASChangeRisk {
     commit_count_30d: number;
     bug_fix_density: number;
     last_refactor?: string;
-  };
+  } & CASHistoryPercentiles;
 
   recommendations?: string[];
 }
@@ -3543,7 +3544,7 @@ export interface CASTemporalStability {
     bug_fix_rate: number;
     refactor_frequency: 'frequent' | 'occasional' | 'rare';
     has_recent_regression: boolean;
-  };
+  } & CASHistoryPercentiles & { bug_fix_commits?: number };
 
   age_context: {
     file_age_days: number;

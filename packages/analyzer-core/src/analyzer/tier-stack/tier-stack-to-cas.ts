@@ -2,6 +2,7 @@ import { createHash } from 'crypto';
 import { conformanceOf, patternsOf, projectsOfFound, violationsOf } from './tier-stack-structure';
 import * as path from 'path';
 import { seamsOf } from './tier-stack-seams';
+import { temporalStabilityOf } from './tier-stack-history';
 
 import {
   CAS_VERSION,
@@ -111,6 +112,7 @@ function depths(nodes: TierStackNode[]): Map<string, number> {
 
 function nodesOf(index: TierStackIndex): CASNode[] {
   const depth = depths(index.nodes);
+  const dead = new Map((index.dead ?? []).map(held => [held.node, held]));
   return index.nodes.map(node => ({
     id: node.id,
     name: node.name,
@@ -128,6 +130,7 @@ function nodesOf(index: TierStackIndex): CASNode[] {
       ...(node.modifiers?.exported ? { is_exported: true } : {}),
       ...(node.modifiers?.private_member ? { access_modifier: 'private' as const } : {}),
       ...(node.modifiers?.protected_member ? { access_modifier: 'protected' as const } : {}),
+      ...(dead.has(node.id) ? { attributes: { dead_code: dead.get(node.id) } } : {}),
     },
   }));
 }
@@ -719,6 +722,7 @@ function casOf(index: TierStackIndex, displayName?: string): CASOutput {
   const edges = edgesOf(index);
   const entry_points = entryPointsOf(index);
   const suites = testSuitesOf(index);
+  const stable = temporalStabilityOf(index, new Set(nodes.filter(node => node.type === 'file').map(node => node.id)));
   const analysis_id = createHash('sha256')
     .update(`${index.root}:${nodes.length}:${edges.length}`)
     .digest('hex')
@@ -751,6 +755,7 @@ function casOf(index: TierStackIndex, displayName?: string): CASOutput {
     communication_seams: seamsOf(index),
     test_suites: suites,
     test_summary: testSummaryOf(suites),
+    ...(stable.stability.length === 0 ? {} : { temporal_stability: stable.stability, stability_summary: stable.summary }),
     dependencies: dependenciesOf(index),
     analyzer_contributions: [contributionOf(index, nodes, edges, entry_points)],
     progressive_levels: levelsOf(nodes),

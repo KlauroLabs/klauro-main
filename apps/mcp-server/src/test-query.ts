@@ -1,4 +1,19 @@
 import type { CASOutput, CASNode, CASTestSuite } from '../../../packages/analyzer-core/src/types/cas.types';
+import { testsReaching, type GraphTestMatch } from './graph-test-selection';
+
+type Basis = 'exact-by-graph' | 'graph-with-name-guess' | 'explicit-coverage' | 'name-based';
+
+function targetsOf(cas: CASOutput, node?: CASNode): string[] {
+  if (!node) return [];
+  const file = node.source?.file;
+  const held = cas.nodes.filter(other => other.id === node.id || other.parent === node.id || (node.type === 'file' && file !== undefined && other.source?.file === file));
+  return held.map(other => other.id);
+}
+
+function answerBasis(matches: Array<{ basis: Basis }>): 'exact-by-graph' | 'includes-name-based-matches' | 'no-match' {
+  if (matches.length === 0) return 'no-match';
+  return matches.every(match => match.basis === 'exact-by-graph' || match.basis === 'explicit-coverage') ? 'exact-by-graph' : 'includes-name-based-matches';
+}
 
 function testSupportForQuery(cas: CASOutput, suites: CASTestSuite[], nodeId?: string) {
   const references = new Set(suites.flatMap(suite => [
@@ -54,17 +69,20 @@ export function findTests(cas: CASOutput, opts: { nodeId?: string; filePath?: st
     const node = cas.nodes.find(n => n.id === opts.nodeId);
     const rankedSuites = rankTestSuitesForNode(cas, suites, opts.nodeId, node);
     const relevantSuites = rankedSuites.map(match => match.suite);
+    const page = rankedSuites.slice(offset, offset + limit);
     return {
       total_suites: relevantSuites.length,
       suites: relevantSuites.slice(offset, offset + limit),
       ...testSupportForQuery(cas, relevantSuites.slice(offset, offset + limit), opts.nodeId),
       resolution: {
-        strategy: 'explicit-coverage-plus-related-test-files',
+        strategy: 'graph-reach-plus-explicit-coverage-plus-related-test-files',
+        answer_basis: answerBasis(rankedSuites),
         node_file: node?.source?.file || null,
-        matches: rankedSuites.slice(offset, offset + limit).map(match => ({
+        matches: page.map(match => ({
           file_path: match.suite.file_path,
           reason: match.reason,
           score: match.score,
+          basis: match.basis,
         })),
       },
     };
@@ -72,15 +90,22 @@ export function findTests(cas: CASOutput, opts: { nodeId?: string; filePath?: st
 
   if (opts.filePath) {
     const normalized = normalizeProjectPathForQuery(opts.filePath);
+    const inFile = cas.nodes.filter(node => node.source?.file !== undefined && normalizeProjectPathForQuery(node.source.file) === normalized).map(node => node.id);
+    const reaching = new Map(testsReaching(cas, inFile).map(match => [normalizeProjectPathForQuery(match.file), match]));
     const rankedSuites = uniqueSuitesForQuery(suites
       .map(suite => {
         const testFile = normalizeProjectPathForQuery(suite.file_path);
-        const score = testFile.includes(normalized)
+        const graph = reaching.get(testFile);
+        const score = graph
+          ? graph.basis === 'exact-by-graph' ? 100 : 95
+          : testFile.includes(normalized)
           ? 100
           : relatedTestCandidates(normalized).some(candidate => projectPathsMatchForQuery(testFile, candidate)) ? 90
             : pathStemForQuery(testFile) === pathStemForQuery(normalized) ? 65
               : 0;
-        return { suite, score, reason: score >= 90 ? 'file path match' : score > 0 ? 'related test filename' : '' };
+        const basis: Basis = graph ? graph.basis : 'name-based';
+        const reason = graph ? graphReason(graph) : score >= 90 ? 'file path match' : score > 0 ? 'related test filename' : '';
+        return { suite, score, reason, basis };
       })
       .filter(match => match.score > 0)
       .sort((left, right) => right.score - left.score));
@@ -90,12 +115,14 @@ export function findTests(cas: CASOutput, opts: { nodeId?: string; filePath?: st
       suites: relevantSuites.slice(offset, offset + limit),
       ...testSupportForQuery(cas, relevantSuites.slice(offset, offset + limit)),
       resolution: {
-        strategy: 'file-path-plus-related-test-files',
+        strategy: 'graph-reach-plus-file-path-plus-related-test-files',
+        answer_basis: answerBasis(rankedSuites),
         file_path: opts.filePath,
         matches: rankedSuites.slice(offset, offset + limit).map(match => ({
           file_path: match.suite.file_path,
           reason: match.reason,
           score: match.score,
+          basis: match.basis,
         })),
       },
     };
@@ -117,23 +144,34 @@ function rankTestSuitesForNode(cas: CASOutput, suites: CASTestSuite[], nodeId: s
   const nodeFile = node?.source?.file ? normalizeProjectPathForQuery(node.source.file) : '';
   const candidates = nodeFile ? relatedTestCandidates(nodeFile) : [];
   const nodeStem = nodeFile ? pathStemForQuery(nodeFile) : '';
+  const reaching = new Map(testsReaching(cas, targetsOf(cas, node)).map(match => [normalizeProjectPathForQuery(match.file), match]));
   return uniqueSuitesForQuery(suites
     .map(suite => {
       const testFile = normalizeProjectPathForQuery(suite.file_path);
+      const graph = reaching.get(testFile);
       const coversNode = suite.coverage?.nodes_tested?.includes(nodeId) || suite.tests.some(test => test.targets?.includes(nodeId));
       const colocated = candidates.some(candidate => projectPathsMatchForQuery(testFile, candidate));
       const sameStem = Boolean(nodeStem && pathStemForQuery(testFile) === nodeStem);
-      const score = coversNode ? 100 : colocated ? 90 : sameStem ? 65 : 0;
-      const reason = coversNode ? 'explicit CAS coverage' : colocated ? 'co-located test file' : sameStem ? 'matching test filename' : '';
-      return { suite, score, reason };
+      const score = graph?.basis === 'exact-by-graph' || coversNode ? 100 : graph ? 95 : colocated ? 90 : sameStem ? 65 : 0;
+      const basis: Basis = graph?.basis === 'exact-by-graph' ? 'exact-by-graph' : coversNode ? 'explicit-coverage' : graph ? 'graph-with-name-guess' : 'name-based';
+      const reason = graph?.basis === 'exact-by-graph' || (graph && !coversNode) ? graphReason(graph)
+        : coversNode ? 'explicit CAS coverage' : colocated ? 'co-located test file' : sameStem ? 'matching test filename' : '';
+      return { suite, score, reason, basis };
     })
     .filter(match => match.score > 0)
     .sort((left, right) => right.score - left.score));
 }
 
-function uniqueSuitesForQuery(matches: Array<{ suite: CASTestSuite; score: number; reason: string }>) {
+function graphReason(match: GraphTestMatch): string {
+  const hops = `${match.hops} call${match.hops === 1 ? '' : 's'} away`;
+  return match.basis === 'exact-by-graph'
+    ? `test '${match.test}' reaches it through resolved calls, ${hops}`
+    : `test '${match.test}' reaches it ${hops}, but at least one hop was matched on the name alone`;
+}
+
+function uniqueSuitesForQuery<T extends { suite: CASTestSuite }>(matches: T[]) {
   const seen = new Set<string>();
-  const unique: Array<{ suite: CASTestSuite; score: number; reason: string }> = [];
+  const unique: T[] = [];
   for (const match of matches) {
     if (seen.has(match.suite.file_path)) continue;
     seen.add(match.suite.file_path);

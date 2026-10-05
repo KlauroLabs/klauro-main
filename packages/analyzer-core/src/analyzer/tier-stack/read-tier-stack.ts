@@ -282,6 +282,18 @@ export interface TierStackFlow {
   unshipped?: TierStackUnshipped;
 }
 
+export interface TierStackFileHistory {
+  path: string;
+  commits: number;
+  fixes: number;
+  recent: number;
+  quarter: number;
+  recent_authors: number;
+  last: number;
+  fix_percentile: number;
+  churn_percentile: number;
+}
+
 export interface TierStackIndex {
   root: string;
   files: Array<{ path: string; kind: string; language?: string; extracted?: boolean; generated?: boolean }>;
@@ -318,6 +330,8 @@ export interface TierStackIndex {
   partition?: { sub_projects?: TierStackSubProject[] };
   composition?: TierStackComposition;
   verification?: { cases?: TierStackTestCase[] };
+  dead?: Array<{ node: string; reason: string; callers: number; open?: string; unlinked?: number }>;
+  history?: { commits?: number; fix_commits?: number; files?: TierStackFileHistory[] };
   comprehension?: {
     products?: TierStackProduct[];
     capabilities?: TierStackCapability[];

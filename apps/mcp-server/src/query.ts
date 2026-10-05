@@ -6,6 +6,9 @@ import type {
   CASUserJourney,
 } from '../../../packages/analyzer-core/src/types/cas.types';
 import { findTests } from './test-query';
+import { surprisingCoupling } from './surprising-coupling';
+import { deadCodeFinding, factOf, ordered } from './dead-code-evidence';
+import { hotSpotsFromHistory, recentBugsFactor, stabilityFor } from './file-stability';
 export { findTests } from './test-query';
 import { diffBehavior } from '../../../packages/analyzer-core/src/analyzer/core/behavior-diff';
 import { ReachabilityIndex, reachabilityEdgePairs } from '../../../packages/analyzer-core/src/analyzer/core/reachability-index';
@@ -1465,10 +1468,9 @@ function scoreChangeRiskOnDemand(cas: CASOutput, node: CASNode): CASChangeRisk {
   if (hasSecurityEvidence) {
     riskFactors.push({ factor: 'security-sensitive', severity: 'high', details: 'Handles security-sensitive operations' });
   }
-  const stability = (cas.temporal_stability || []).find(s => s.node_id === node.id);
-  if (stability && stability.quality_signals.bug_fix_rate > 0.3) {
-    riskFactors.push({ factor: 'recent-bugs', severity: 'high', details: `Bug fix density: ${Math.round(stability.quality_signals.bug_fix_rate * 100)}% of commits are bug fixes` });
-  }
+  const stability = stabilityFor(cas, node);
+  const recentBugs = recentBugsFactor(stability);
+  if (recentBugs) riskFactors.push(recentBugs);
   if (!hasDirectTestCoverage) {
     riskFactors.push({ factor: 'no-tests', severity: 'high', details: 'No direct test coverage detected' });
   }
@@ -1506,6 +1508,8 @@ function scoreChangeRiskOnDemand(cas: CASOutput, node: CASNode): CASChangeRisk {
       commit_count_30d: stability?.churn_metrics.commits_30d || 0,
       bug_fix_density: stability?.quality_signals.bug_fix_rate || 0,
       last_refactor: stability?.age_context.last_major_change,
+      ...(stability?.quality_signals.bug_fix_percentile === undefined ? {} : { bug_fix_percentile: stability.quality_signals.bug_fix_percentile }),
+      ...(stability?.quality_signals.churn_percentile === undefined ? {} : { churn_percentile: stability.quality_signals.churn_percentile }),
     },
     recommendations: recommendations.slice(0, 5),
   };
@@ -2539,15 +2543,14 @@ export function getPatterns(cas: CASOutput) {
 
 
 export function getCommunities(cas: CASOutput) {
-  const communities = detectCommunities(
-    (cas.nodes || []).map(n => n.id),
-    (cas.edges || [])
-      .filter(e => e.type === 'calls' || e.type === 'uses' || e.type === 'depends_on')
-      .map(e => ({ source: e.source, target: e.target })),
-  );
+  const linked = (cas.edges || [])
+    .filter(e => e.type === 'calls' || e.type === 'uses' || e.type === 'depends_on')
+    .map(e => ({ source: e.source, target: e.target }));
+  const communities = detectCommunities((cas.nodes || []).map(n => n.id), linked);
   const byId = new Map((cas.nodes || []).map(n => [n.id, n]));
   return {
     total: communities.length,
+    surprising_links: surprisingCoupling(communities, linked.filter(e => byId.get(e.source)?.type !== 'external' && byId.get(e.target)?.type !== 'external'), id => byId.get(id)?.name || id),
     communities: communities.map(c => ({
       id: c.id,
       size: c.members.length,
@@ -2580,6 +2583,20 @@ export function getClones(cas: CASOutput, opts: { threshold?: number } = {}) {
 
 
 export function getDeadCode(cas: CASOutput) {
+  const reported = (cas.nodes || []).flatMap(node => {
+    const fact = factOf(node);
+    return fact === undefined ? [] : [deadCodeFinding(node, fact)];
+  });
+  if (reported.length > 0) {
+    const findings = ordered(reported);
+    const dead = findings.filter(finding => finding.status === 'dead').length;
+    return {
+      total: findings.length,
+      dead,
+      possibly_dead: findings.length - dead,
+      functions: findings.slice(0, 500),
+    };
+  }
   const called = new Set(
     (cas.edges || [])
       .filter(e => e.type === 'calls' || e.type === 'uses' || e.type === 'depends_on')
@@ -2603,6 +2620,9 @@ export function getDeadCode(cas: CASOutput) {
       type: n.type,
       file: n.source?.file,
       line: n.source?.line,
+      status: 'dead' as const,
+      reason: 'no-inbound',
+      evidence: ['no call, use or dependency edge reaches it and it is not an entry point'],
     })),
   };
 }
@@ -5741,6 +5761,7 @@ export async function getHotSpots(
   }
 
   const data: Array<{ id: string; value: number; raw: number; label: string }> = [];
+  if (history.length === 0) data.push(...hotSpotsFromHistory(cas, metric));
 
   for (const [filePath, stats] of fileStats) {
     let raw: number;
