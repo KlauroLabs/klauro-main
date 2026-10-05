@@ -1,3 +1,4 @@
+import { localizeHostedWorkspacePath } from './hosted-path-localization';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -167,7 +168,7 @@ async function hostedProjectQuery(projectPath: string, tool: string, args: Recor
     throw new Error(`Klauro's hosted server reported an error for ${operation}. Target: ${redactUrl(url)}. Detail: ${payload.error || 'no detail provided'}.`);
   }
   if (payload?.status !== 'ready' && payload?.status !== 'queryable') return payload;
-  return payload.result;
+  return localizeHostedWorkspacePath(payload.result, path.resolve(projectPath));
 }
 
 
