@@ -1461,12 +1461,9 @@ impl<'a> Extractor<'a> {
                     let from_call = initializer
                         .filter(|value| value.kind() == "call_expression")
                         .and_then(|value| value.child_by_field_name("function"))
-                        .and_then(|function| match function.kind() {
-                            "identifier" => Some(function),
-                            "member_expression" => function.child_by_field_name("property"),
-                            _ => None,
-                        })
-                        .map(|found| self.text_owned(found));
+                        .filter(|function| matches!(function.kind(), "identifier" | "member_expression"))
+                        .map(|found| self.text_owned(found))
+                        .filter(|written| written.len() <= 200);
                     let from_values = initializer
                         .map(|held| crate::entities::built_from(self.text(held)))
                         .unwrap_or_default();

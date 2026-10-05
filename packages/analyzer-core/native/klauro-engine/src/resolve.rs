@@ -79,6 +79,8 @@ struct Bindings<'a> {
     modules: HashMap<(u32, &'a str), &'a str>,
     locals: HashMap<(&'a str, &'a str), &'a str>,
     file_locals: HashMap<(u32, &'a str), &'a str>,
+    guessed: HashMap<(&'a str, &'a str), &'a str>,
+    file_guessed: HashMap<(u32, &'a str), &'a str>,
     opened: HashMap<u32, Vec<&'a str>>,
     stands_for: HashMap<(&'a str, &'a str), &'a str>,
     elements: HashMap<(&'a str, &'a str), &'a str>,
@@ -201,25 +203,29 @@ impl<'a> Symbols<'a> {
         None
     }
 
+    fn spoken_names(receiver: &str) -> Vec<String> {
+        let clean = |held: &str| held.trim_start_matches(['$', '@', '_']).to_ascii_lowercase();
+        let last = receiver.rsplit(['.', '>', ':']).next().unwrap_or(receiver);
+        let mut found = vec![clean(last)];
+        if last.contains('(') || receiver.contains('(') {
+            let root = crate::names::root(receiver.trim_start_matches(['(', '*', '&']));
+            let root = clean(root);
+            if !root.is_empty() && !found.contains(&root) {
+                found.push(root);
+            }
+        }
+        found
+    }
+
     fn spoken_as_owner(&self, receiver: &str, owner: u32) -> bool {
-        let spoken = receiver
-            .rsplit(['.', '>', ':'])
-            .next()
-            .unwrap_or(receiver)
-            .trim_start_matches(['$', '@', '_'])
-            .to_ascii_lowercase();
         let owner = self.nodes[owner as usize].name.to_ascii_lowercase();
-        owner.len() >= 3 && spoken.contains(owner.trim_start_matches('i'))
+        owner.len() >= 3
+            && Self::spoken_names(receiver).iter().any(|spoken| spoken.contains(owner.trim_start_matches('i')))
     }
 
     fn spoken_within_owner(&self, receiver: &str, owner: u32) -> bool {
-        let spoken = receiver
-            .rsplit(['.', '>', ':'])
-            .next()
-            .unwrap_or(receiver)
-            .trim_start_matches(['$', '@', '_'])
-            .to_ascii_lowercase();
-        spoken.len() >= 4 && self.nodes[owner as usize].name.to_ascii_lowercase().contains(spoken.as_str())
+        let owner = self.nodes[owner as usize].name.to_ascii_lowercase();
+        Self::spoken_names(receiver).iter().any(|spoken| spoken.len() >= 4 && owner.contains(spoken.as_str()))
     }
 
     fn written_for(&self, receiver: Option<&str>, name: &str) -> bool {
@@ -498,11 +504,22 @@ fn segments(path: &str) -> impl Iterator<Item = &str> {
 }
 
 impl<'a> Bindings<'a> {
-    fn annotation(&self, unit: &str, file: u32, name: &'a str) -> Option<&'a str> {
+    fn explicit(&self, unit: &str, file: u32, name: &'a str) -> Option<&'a str> {
         self.locals
             .get(&(unit, name))
             .or_else(|| self.file_locals.get(&(file, name)))
             .copied()
+    }
+
+    fn guessed(&self, unit: &str, file: u32, name: &'a str) -> Option<&'a str> {
+        self.guessed
+            .get(&(unit, name))
+            .or_else(|| self.file_guessed.get(&(file, name)))
+            .copied()
+    }
+
+    fn annotation(&self, unit: &str, file: u32, name: &'a str) -> Option<&'a str> {
+        self.explicit(unit, file, name).or_else(|| self.guessed(unit, file, name))
     }
 }
 
@@ -744,8 +761,8 @@ impl<'a> Resolver<'a> {
             let level = &self.symbols.nodes[at as usize];
             if let Some(annotation) = self
                 .bindings
-                .annotation(&level.id, file, name)
-                .or_else(|| self.bindings.annotation(&level.id, file, bare))
+                .explicit(&level.id, file, name)
+                .or_else(|| self.bindings.explicit(&level.id, file, bare))
             {
                 return match self.annotated(file, annotation) {
                     Origin::Unknown => self.from_a_call(unit, file, name),
@@ -760,6 +777,16 @@ impl<'a> Resolver<'a> {
         match self.from_a_call(unit, file, name) {
             Origin::Unknown => {}
             known => return known,
+        }
+        for at in chain.iter().copied() {
+            let level = &self.symbols.nodes[at as usize];
+            if let Some(annotation) = self
+                .bindings
+                .guessed(&level.id, file, name)
+                .or_else(|| self.bindings.guessed(&level.id, file, bare))
+            {
+                return self.annotated(file, annotation);
+            }
         }
         if let Some(owner) = self.symbols.owning_type(unit)
             && let Some(annotation) = self.handed_to_an_enclosing_type(owner, name, bare)
@@ -1436,6 +1463,8 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         modules: HashMap::default(),
         locals: HashMap::default(),
         file_locals: HashMap::default(),
+        guessed: HashMap::default(),
+        file_guessed: HashMap::default(),
         opened: HashMap::default(),
         stands_for: HashMap::default(),
         elements: HashMap::default(),
@@ -1731,32 +1760,34 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
                 bindings.called.insert((binding.unit.as_str(), binding.name.as_str()), (call, binding.slot));
             }
         }
-        let annotation = binding
-            .annotation
-            .as_deref()
-            .or(binding.constructed.as_deref())
-            .or_else(|| {
-                let callee = crate::names::leaf(binding.from_call.as_deref()?);
-                match symbols.unique_unit.get(callee) {
-                    Some(unit) => index.nodes[*unit as usize]
-                        .signature
-                        .as_ref()?
-                        .return_type
-                        .as_deref(),
-                    None => runtime_member(callee)
-                        .map(|entry| entry.returns)
-                        .filter(|returns| !returns.is_empty()),
-                }
-            });
-        let Some(annotation) = annotation else { continue };
-        if binding.unit.is_empty() {
-            bindings
-                .file_locals
-                .insert((binding.file, binding.name.as_str()), annotation);
-        } else {
-            bindings
-                .locals
-                .insert((binding.unit.as_str(), binding.name.as_str()), annotation);
+        let explicit = binding.annotation.as_deref().or(binding.constructed.as_deref());
+        let guess = || {
+            let callee = crate::names::leaf(binding.from_call.as_deref()?);
+            match symbols.unique_unit.get(callee) {
+                Some(unit) => index.nodes[*unit as usize].signature.as_ref()?.return_type.as_deref(),
+                None => runtime_member(callee).map(|entry| entry.returns).filter(|returns| !returns.is_empty()),
+            }
+        };
+        let (annotation, guessed) = match explicit {
+            Some(held) => (held, false),
+            None => match guess() {
+                Some(held) => (held, true),
+                None => continue,
+            },
+        };
+        match (binding.unit.is_empty(), guessed) {
+            (true, false) => {
+                bindings.file_locals.insert((binding.file, binding.name.as_str()), annotation);
+            }
+            (false, false) => {
+                bindings.locals.insert((binding.unit.as_str(), binding.name.as_str()), annotation);
+            }
+            (true, true) => {
+                bindings.file_guessed.insert((binding.file, binding.name.as_str()), annotation);
+            }
+            (false, true) => {
+                bindings.guessed.insert((binding.unit.as_str(), binding.name.as_str()), annotation);
+            }
         }
     }
 
@@ -2276,7 +2307,7 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
             if names_its_owner {
                 return Resolved::Edge(target, kind);
             }
-            if loose_language || !standard {
+            if !standard {
                 return Resolved::Guessed(target, kind);
             }
         }

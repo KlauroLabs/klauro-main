@@ -2449,11 +2449,16 @@ impl<'a> Extractor<'a> {
         let from_values = value
             .map(|held| crate::entities::built_from(self.text(held)))
             .unwrap_or_default();
+        let stands_for_a_path = match (annotation.is_none() && constructed.is_none() && from_call.is_none(), value) {
+            (true, Some(held)) if taken_apart.is_empty() => self.simple_path(held, &name),
+            _ => None,
+        };
         if annotation.is_none()
             && constructed.is_none()
             && from_call.is_none()
             && written_value.is_none()
             && from_values.is_empty()
+            && stands_for_a_path.is_none()
         {
             return false;
         }
@@ -2480,6 +2485,7 @@ impl<'a> Extractor<'a> {
         let stands_for = value
             .filter(|_| from_call.as_deref().is_some_and(|called| KEEPS_WHAT_IT_RETURNS.contains(&crate::names::leaf(called))))
             .and_then(|value| self.returned_by_its_lambda(value));
+        let stands_for = stands_for.or(stands_for_a_path);
         self.facts.locals.push(LocalBinding {
             file: self.file,
             unit: scope.callable.clone().unwrap_or_default(),
@@ -2494,6 +2500,27 @@ impl<'a> Extractor<'a> {
             ..Default::default()
         });
         false
+    }
+
+    fn simple_path(&self, value: Node, name: &str) -> Option<String> {
+        let mut held = value;
+        for _ in 0..4 {
+            if matches!(held.kind(), "reference_expression" | "parenthesized_expression") {
+                held = held.named_child((held.named_child_count() as u32).checked_sub(1)?)?;
+                continue;
+            }
+            break;
+        }
+        if !(held.kind().contains("identifier") || held.kind().contains("field") || held.kind().contains("selector")
+            || held.kind().contains("attribute") || held.kind().contains("member") || held.kind() == "scoped_identifier")
+        {
+            return None;
+        }
+        let text = self.text(held).trim().trim_start_matches(['&', '*']).trim_start_matches("mut ").trim();
+        let spoken = !text.is_empty()
+            && text.len() <= 120
+            && text.chars().all(|letter| letter.is_alphanumeric() || matches!(letter, '_' | '.' | ':' | '$' | '@'));
+        (spoken && crate::names::root(text) != name && !text.starts_with(|first: char| first.is_ascii_digit())).then(|| text.to_string())
     }
 
     fn returned_by_its_lambda(&self, call: Node) -> Option<String> {

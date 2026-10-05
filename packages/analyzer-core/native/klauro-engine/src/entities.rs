@@ -628,7 +628,7 @@ pub fn gather(
             let named: Named = call.type_arguments.iter().flat_map(|argument| typing.named(argument, unit.file)).collect();
             see(&mut found.loaded, caller, None, place, named);
         }
-        for local in sources.locals.iter().filter(|local| local.from_call.as_deref() == Some(node.name.as_str())) {
+        for local in sources.locals.iter().filter(|local| local.from_call.as_deref().map(crate::names::leaf) == Some(node.name.as_str())) {
             if !reaches.contains(&(local.unit.as_str(), reader)) {
                 continue;
             }
