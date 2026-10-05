@@ -312,10 +312,16 @@ impl<'a> Resolver<'a> {
                 }
             };
         }
+        if let Origin::Declared(owner) = origin
+            && self.symbols.nodes[owner as usize].kind.is_unit()
+            && path.trim_end().ends_with(')')
+        {
+            return (self.returned_by(owner), None);
+        }
         (origin, held.map(|annotation| (annotation, held_file)))
     }
 
-    fn returned_by(&self, function: u32) -> Origin<'a> {
+    pub(super) fn returned_by(&self, function: u32) -> Origin<'a> {
         let node = &self.symbols.nodes[function as usize];
         let Some(returned) = node.signature.as_ref().and_then(|signature| signature.return_type.as_deref()) else {
             return Origin::Unknown;

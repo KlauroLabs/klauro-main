@@ -9,6 +9,10 @@ use crate::paths::{directory_of, join, normalize};
 mod typing;
 
 const FORWARDED_AT_MOST: u8 = 6;
+const TOO_GENERIC_TO_NAME_A_TYPE: &[&str] = &[
+    "args", "config", "data", "error", "event", "input", "message", "options", "output", "params", "props", "request",
+    "response", "result", "state", "value",
+];
 
 pub struct Index<'a> {
     pub files: &'a [String],
@@ -225,7 +229,7 @@ impl<'a> Symbols<'a> {
 
     fn spoken_within_owner(&self, receiver: &str, owner: u32) -> bool {
         let owner = self.nodes[owner as usize].name.to_ascii_lowercase();
-        Self::spoken_names(receiver).iter().any(|spoken| spoken.len() >= 4 && owner.contains(spoken.as_str()))
+        Self::spoken_names(receiver).iter().any(|spoken| spoken.len() >= 4 && !TOO_GENERIC_TO_NAME_A_TYPE.contains(&spoken.as_str()) && owner.ends_with(spoken.as_str()))
     }
 
     fn written_for(&self, receiver: Option<&str>, name: &str) -> bool {
@@ -755,7 +759,15 @@ impl<'a> Resolver<'a> {
             };
         }
         if let Some(expression) = self.stood_for(unit, name) {
-            return self.origin(unit, file, expression);
+            let found = self.origin(unit, file, expression);
+            return match found {
+                Origin::Declared(called)
+                    if self.languages.get(file as usize) == Some(&"ruby") && self.symbols.nodes[called as usize].kind.is_unit() =>
+                {
+                    self.returned_by(called)
+                }
+                other => other,
+            };
         }
         for at in chain.iter().copied() {
             let level = &self.symbols.nodes[at as usize];
@@ -2160,7 +2172,9 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
                         };
                         return Resolved::Edge(symbols.nodes[target as usize].id.clone(), kind);
                     }
-                    None if node.kind.is_unit() => {
+                    None if node.kind.is_unit()
+                        && matches!(callee.as_str(), "call" | "apply" | "bind" | "invoke" | "Invoke" | "DynamicInvoke" | "__call__") =>
+                    {
                         return Resolved::Edge(node.id.clone(), kind);
                     }
                     None if node.kind.is_type()
