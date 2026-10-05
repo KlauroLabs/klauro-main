@@ -6,7 +6,7 @@ use crate::catalog_descriptor::{self, Descriptor};
 use crate::entry_exit::EntryPoint;
 use crate::model::*;
 use crate::paths::{basename, contains, directory_of, display_name, file_of};
-use crate::scope::Deployable;
+use crate::scope::{Declares, Deployable};
 
 #[derive(Debug, Serialize)]
 pub struct SubProject {
@@ -394,6 +394,14 @@ pub fn scalar(node: &IndexNode) -> Option<String> {
 
 
 
+fn is_run_by_what_carries_it(member: &Deployable) -> bool {
+    member.declarations.iter().any(|declared| match declared.declares {
+        Declares::Ship => true,
+        Declares::Run => declared.kind != "cargo-bin",
+        Declares::Identity => false,
+    })
+}
+
 fn partition(
     declared: Vec<Declared>,
     files: &[String],
@@ -415,11 +423,25 @@ fn partition(
     let mut order: Vec<usize> = (0..declared.len()).collect();
     order.sort_by_key(|at| std::cmp::Reverse(declared[*at].root.len()));
 
+    let enclosed_project = |path: &str| -> Option<usize> {
+        let mut directory = directory_of(path);
+        while !directory.is_empty() {
+            let inside: Vec<usize> = (0..residue).filter(|at| contains(directory, &declared[*at].root)).collect();
+            match inside.as_slice() {
+                [] => {}
+                [only] => return Some(*only),
+                _ => return None,
+            }
+            directory = directory_of(directory);
+        }
+        None
+    };
     let owner = |path: &str| -> Option<usize> {
-        order
-            .iter()
-            .copied()
-            .find(|at| contains(&declared[*at].root, path))
+        let found = order.iter().copied().find(|at| contains(&declared[*at].root, path))?;
+        match found == residue {
+            true => enclosed_project(path).or(Some(found)),
+            false => Some(found),
+        }
     };
 
     let mut sub_projects: Vec<SubProject> = declared
@@ -472,7 +494,7 @@ fn partition(
             (Some(from), Some(to)) if from == to => sub_projects[from].imports_within += 1,
             (Some(from), to) => {
                 sub_projects[from].imports_crossing += 1;
-                if let Some(to) = to {
+                if let Some(to) = to.filter(|_| !crate::paths::is_test(&edge.source)) {
                     let consumer = sub_projects[from].id.clone();
                     let consumed = &mut sub_projects[to].consumed_by;
                     if !consumed.contains(&consumer) {
@@ -568,25 +590,55 @@ fn partition(
             .max_by_key(|(_, root)| root.len())
             .map(|(at, _)| at)
     };
+    let unit_of: HashMap<&str, &Deployable> = deployables.iter().map(|unit| (unit.id.as_str(), unit)).collect();
     for unit in deployables.iter().filter(|unit| unit.shipped) {
-        let mut covered: HashSet<usize> = HashSet::default();
+        let mut run: HashSet<usize> = HashSet::default();
         for (at, project) in sub_projects.iter().enumerate() {
             let own_root = unit.root == project.root
                 && (!project.root.is_empty() || project.declared_by == "repository-root");
             if own_root {
-                covered.insert(at);
+                run.insert(at);
             }
         }
+        let mut named: HashSet<usize> = HashSet::default();
         for path in &unit.ships {
             if let Some(at) = deepest_holding(path) {
-                covered.insert(at);
+                named.insert(at);
             }
         }
-        for at in covered {
+        match unit.members.is_empty() {
+            true => run.extend(named.iter().copied()),
+            false => {
+                for member in unit.members.iter().filter_map(|member| unit_of.get(member.as_str())) {
+                    let Some(at) = deepest_holding(&member.root) else { continue };
+                    match is_run_by_what_carries_it(member) {
+                        true => run.insert(at),
+                        false => named.insert(at),
+                    };
+                }
+            }
+        }
+        if run.is_empty() {
+            run = std::mem::take(&mut named);
+        }
+        let runners: Vec<String> = {
+            let mut ids: Vec<String> = run.iter().map(|at| sub_projects[*at].id.clone()).collect();
+            ids.sort();
+            ids
+        };
+        for at in run.iter().copied().chain(named.iter().copied()) {
+            let carried = !run.contains(&at);
             let project = &mut sub_projects[at];
-            project.ship_backed = true;
+            project.ship_backed |= !carried;
             if !project.ships_in.contains(&unit.id) {
                 project.ships_in.push(unit.id.clone());
+            }
+            if carried {
+                for runner in &runners {
+                    if *runner != project.id && !project.consumed_by.contains(runner) {
+                        project.consumed_by.push(runner.clone());
+                    }
+                }
             }
         }
     }

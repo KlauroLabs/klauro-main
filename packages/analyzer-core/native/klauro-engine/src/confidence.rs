@@ -2,13 +2,19 @@ use crate::author::Grounding;
 
 pub const AI_UNANSWERED: &str = "ai-unanswered";
 
-const NAME_RESOLVED_HOP: f64 = 0.5;
-const RESOLUTION_SHARE: f64 = 0.5;
-const COMPLETENESS_SHARE: f64 = 0.3;
-const STANDING_SHARE: f64 = 0.2;
-const CUT_FLOW: f64 = 0.85;
-const GROUNDING_SHARE: f64 = 0.5;
-const UNGRADED: f64 = 0.85;
+const NAME_RESOLVED_HOP: f64 = 0.35;
+const OPEN_END_PENALTY: f64 = 2.0;
+const MASS_HALF_AT: f64 = 6.0;
+const MASS_FULL: f64 = 30.0;
+const STORY_FULL_AT: f64 = 4.0;
+const FLOW_SHARE: f64 = 0.2;
+const CUT_FLOW: f64 = 0.8;
+const GROUNDING_SHARE: f64 = 0.45;
+const MEMBER_FLOWS_SHARE: f64 = 0.35;
+const MEMBER_COUNT_SHARE: f64 = 0.2;
+const MEMBER_COUNT_HALF_AT: f64 = 2.0;
+const UNGRADED_GROUNDING: f64 = 0.5;
+const UNGRADED_CEILING: f64 = 0.75;
 const PARENT_ORIGINATED: f64 = 0.85;
 const UNSETTLED: f64 = 0.5;
 const NO_FLOW_EVIDENCE: f64 = 0.5;
@@ -18,6 +24,7 @@ pub struct Reach {
     pub by_name: u32,
     pub units: u32,
     pub open: u32,
+    pub steps: u32,
     pub cut: bool,
     pub standing: &'static str,
 }
@@ -36,10 +43,14 @@ fn rounded(score: f64) -> f64 {
 fn standing_weight(standing: &str) -> f64 {
     match standing {
         "terminal" => 1.0,
-        "proximal" => 0.85,
-        "reading" => 0.7,
-        _ => 0.4,
+        "proximal" => 0.8,
+        "reading" => 0.55,
+        _ => 0.3,
     }
+}
+
+fn saturating(amount: f64, half_at: f64) -> f64 {
+    amount / (amount + half_at)
 }
 
 pub fn of_flow(reach: &Reach) -> f64 {
@@ -48,13 +59,16 @@ pub fn of_flow(reach: &Reach) -> f64 {
         hops => f64::from(reach.by_name) / f64::from(hops),
     };
     let resolution = 1.0 - (1.0 - NAME_RESOLVED_HOP) * named;
+    let units = f64::from(reach.units);
+    let open = f64::from(reach.open);
     let completeness = match reach.units + reach.open {
         0 => 1.0,
-        total => f64::from(reach.units) / f64::from(total),
+        _ => (1.0 - OPEN_END_PENALTY * open / (units + open)).max(0.0),
     };
-    let score = RESOLUTION_SHARE * resolution
-        + COMPLETENESS_SHARE * completeness
-        + STANDING_SHARE * standing_weight(reach.standing);
+    let mass = saturating(units, MASS_HALF_AT) / saturating(MASS_FULL, MASS_HALF_AT);
+    let story = (f64::from(reach.steps) / STORY_FULL_AT).min(1.0);
+    let score = FLOW_SHARE
+        * (resolution + completeness + standing_weight(reach.standing) + mass.min(1.0) + story);
     rounded(match reach.cut {
         true => score * CUT_FLOW,
         false => score,
@@ -70,10 +84,13 @@ pub fn of_capability(backing: &Backing) -> f64 {
         true => NO_FLOW_EVIDENCE,
         false => backing.flows.iter().sum::<f64>() / backing.flows.len() as f64,
     };
-    let mut score = match backing.grounding.filter(|grounding| grounding.graded) {
-        Some(grounding) => GROUNDING_SHARE * grounding.confidence() + (1.0 - GROUNDING_SHARE) * flows,
-        None => UNGRADED * flows,
-    };
+    let members = saturating(backing.flows.len() as f64, MEMBER_COUNT_HALF_AT);
+    let graded = backing.grounding.filter(|grounding| grounding.graded);
+    let grounding = graded.map_or(UNGRADED_GROUNDING, Grounding::confidence);
+    let mut score = GROUNDING_SHARE * grounding + MEMBER_FLOWS_SHARE * flows + MEMBER_COUNT_SHARE * members;
+    if graded.is_none() {
+        score = score.min(UNGRADED_CEILING);
+    }
     if backing.parent_originated_alone {
         score *= PARENT_ORIGINATED;
     }
@@ -88,7 +105,7 @@ mod tests {
     use super::*;
 
     fn reach() -> Reach {
-        Reach { hops: 10, by_name: 0, units: 11, open: 0, cut: false, standing: "terminal" }
+        Reach { hops: 10, by_name: 0, units: 40, open: 0, steps: 5, cut: false, standing: "terminal" }
     }
 
     fn grounding(supported: f64, invented: f64, graded: bool) -> Grounding {
@@ -105,8 +122,12 @@ mod tests {
         }
     }
 
+    fn backing<'a>(grounding: Option<&'a Grounding>, flows: &'a [f64]) -> Backing<'a> {
+        Backing { grounding, flows, parent_originated_alone: false, unsettled: false }
+    }
+
     #[test]
-    fn a_flow_resolved_wholly_by_structure_and_ending_in_a_change_is_certain() {
+    fn a_flow_resolved_wholly_by_structure_read_deeply_and_ending_in_a_change_is_certain() {
         assert_eq!(of_flow(&reach()), 1.0);
     }
 
@@ -114,59 +135,93 @@ mod tests {
     fn hops_resolved_by_name_lower_a_flow_in_proportion() {
         let some = of_flow(&Reach { by_name: 4, ..reach() });
         let all = of_flow(&Reach { by_name: 10, ..reach() });
-        assert_eq!(some, 0.9);
-        assert_eq!(all, 0.75);
+        assert_eq!(some, 0.95);
+        assert_eq!(all, 0.87);
     }
 
     #[test]
     fn open_ends_a_cut_and_a_weak_standing_each_lower_a_flow() {
-        let open = of_flow(&Reach { open: 11, ..reach() });
+        let open = of_flow(&Reach { open: 40, ..reach() });
         let cut = of_flow(&Reach { cut: true, ..reach() });
-        let reading = of_flow(&Reach { standing: "open", ..reach() });
-        assert_eq!(open, 0.85);
-        assert_eq!(cut, 0.85);
-        assert_eq!(reading, 0.88);
+        let weak = of_flow(&Reach { standing: "open", ..reach() });
+        assert_eq!(open, 0.8);
+        assert_eq!(cut, 0.8);
+        assert_eq!(weak, 0.86);
+    }
+
+    #[test]
+    fn open_ends_weigh_by_how_many_there_are_beside_what_was_reached() {
+        let few = of_flow(&Reach { open: 2, ..reach() });
+        let many = of_flow(&Reach { open: 20, ..reach() });
+        assert!(few > many, "{few} {many}");
+        assert!(few > 0.95 && many < 0.9, "{few} {many}");
+    }
+
+    #[test]
+    fn a_flow_that_reached_almost_nothing_and_told_no_story_reads_far_below_a_well_read_one() {
+        let thin = of_flow(&Reach { hops: 1, units: 2, steps: 0, standing: "reading", ..reach() });
+        assert!(thin < 0.6, "{thin}");
+        assert!(of_flow(&reach()) - thin > 0.35);
     }
 
     #[test]
     fn a_flow_with_no_hops_still_scores_from_what_it_holds() {
-        let alone = of_flow(&Reach { hops: 0, units: 1, ..reach() });
-        assert_eq!(alone, 1.0);
+        let alone = of_flow(&Reach { hops: 0, units: 1, steps: 0, ..reach() });
+        assert!(alone > 0.0 && alone < 0.8, "{alone}");
     }
 
     #[test]
-    fn a_capability_blends_what_the_grounding_found_with_what_its_flows_resolved() {
+    fn a_well_evidenced_capability_reads_high_and_a_thin_one_reads_low() {
+        let strong = grounding(1.0, 0.0, true);
+        let weak = grounding(0.4, 0.5, true);
+        let well = of_capability(&backing(Some(&strong), &[0.9, 0.9, 0.9, 0.9]));
+        let thin = of_capability(&backing(Some(&weak), &[0.55]));
+        assert_eq!(well, 0.9);
+        assert_eq!(thin, 0.54);
+    }
+
+    #[test]
+    fn an_invented_capability_scores_below_a_supported_one_on_the_same_flows() {
+        let supported = grounding(1.0, 0.0, true);
+        let invented = grounding(0.5, 0.6, true);
+        let flows = [0.9, 0.9];
+        assert!(of_capability(&backing(Some(&supported), &flows)) > of_capability(&backing(Some(&invented), &flows)) + 0.1);
+    }
+
+    #[test]
+    fn more_member_flows_raise_a_capability() {
         let held = grounding(1.0, 0.0, true);
-        let score = of_capability(&Backing { grounding: Some(&held), flows: &[0.8, 1.0], parent_originated_alone: false, unsettled: false });
-        assert_eq!(score, 0.95);
+        assert!(of_capability(&backing(Some(&held), &[0.9; 6])) > of_capability(&backing(Some(&held), &[0.9])));
     }
 
     #[test]
-    fn an_ungraded_capability_rests_on_its_flows_alone_and_is_capped() {
+    fn an_ungraded_capability_rests_on_its_flows_and_is_capped() {
         let held = grounding(1.0, 0.0, false);
-        let score = of_capability(&Backing { grounding: Some(&held), flows: &[1.0], parent_originated_alone: false, unsettled: false });
-        assert_eq!(score, 0.85);
+        let score = of_capability(&backing(Some(&held), &[1.0; 100]));
+        assert_eq!(score, 0.75);
     }
 
     #[test]
     fn a_parent_originated_capability_with_no_child_behind_it_is_lowered() {
         let held = grounding(1.0, 0.0, true);
-        let child_backed = of_capability(&Backing { grounding: Some(&held), flows: &[1.0], parent_originated_alone: false, unsettled: false });
-        let alone = of_capability(&Backing { grounding: Some(&held), flows: &[1.0], parent_originated_alone: true, unsettled: false });
-        assert_eq!(child_backed, 1.0);
-        assert_eq!(alone, 0.85);
+        let flows = [1.0; 8];
+        let child_backed = of_capability(&backing(Some(&held), &flows));
+        let alone = of_capability(&Backing { parent_originated_alone: true, ..backing(Some(&held), &flows) });
+        assert_eq!(child_backed, 0.96);
+        assert_eq!(alone, 0.82);
     }
 
     #[test]
     fn an_unsettled_capability_scores_half_of_what_it_would_have() {
-        let score = of_capability(&Backing { grounding: None, flows: &[0.8], parent_originated_alone: false, unsettled: true });
-        assert_eq!(score, 0.34);
+        let settled = of_capability(&backing(None, &[0.8]));
+        let unsettled = of_capability(&Backing { unsettled: true, ..backing(None, &[0.8]) });
+        assert!((unsettled - settled * 0.5).abs() < 0.011, "{unsettled} {settled}");
     }
 
     #[test]
     fn a_capability_with_no_flow_evidence_scores_from_the_neutral_middle() {
-        let none = of_capability(&Backing { grounding: None, flows: &[], parent_originated_alone: false, unsettled: false });
-        let middle = of_capability(&Backing { grounding: None, flows: &[0.5], parent_originated_alone: false, unsettled: false });
-        assert_eq!(none, middle);
+        let none = of_capability(&backing(None, &[]));
+        let one_neutral = of_capability(&backing(None, &[0.5]));
+        assert!((one_neutral - none - MEMBER_COUNT_SHARE * saturating(1.0, MEMBER_COUNT_HALF_AT)).abs() < 0.011);
     }
 }

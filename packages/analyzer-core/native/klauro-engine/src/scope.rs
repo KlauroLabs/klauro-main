@@ -644,6 +644,12 @@ static DEPLOY_MANIFESTS: &[(&str, &str)] = &[
     ("procfile", "procfile"),
     ("render.yaml", "render"),
     ("railway.json", "railway"),
+    ("wrangler.toml", "cloudflare"),
+    ("wrangler.json", "cloudflare"),
+    ("wrangler.jsonc", "cloudflare"),
+    ("firebase.json", "firebase"),
+    ("amplify.yml", "amplify"),
+    ("staticwebapp.config.json", "static-web-app"),
 ];
 
 fn deploy_manifest(path: &str) -> Option<Candidate> {

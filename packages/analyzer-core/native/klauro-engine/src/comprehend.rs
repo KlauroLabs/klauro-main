@@ -119,6 +119,8 @@ pub struct Entity {
     pub project: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terminality: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unshipped: Option<crate::entry_exit::Unshipped>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -2052,6 +2054,7 @@ pub fn derive(
             by_name: hops_by_name,
             units: seen.len() as u32,
             open,
+            steps: logical.len() as u32,
             cut,
             standing,
         });
@@ -2177,9 +2180,64 @@ pub fn derive(
             _ => None,
         };
     }
+    set_aside_tooling_entities(&mut entities, &flows);
     let terminal = flows.iter().filter(|flow| flow.standing == "terminal").count() as u32;
     let chained = flows.iter().filter(|flow| !flow.leads_into.is_empty()).count() as u32;
     Comprehension { products: Vec::new(), capabilities: Vec::new(), flows, entities, terminal, chained, semantic_coverage: None, derivation: None }
+}
+
+fn file_of_unit(unit: &str) -> &str {
+    unit.split(':').next().unwrap_or(unit)
+}
+
+fn directory_of_flow(flow: &Flow) -> Option<&str> {
+    flow.path.first().map(|step| crate::paths::directory_of(file_of_unit(&step.unit)))
+}
+
+fn set_aside_tooling_entities(entities: &mut [Entity], flows: &[Flow]) {
+    let product_directories: HashSet<&str> = flows
+        .iter()
+        .filter(|flow| !crate::unshipped::is_set_aside(flow.unshipped.as_ref()))
+        .filter_map(directory_of_flow)
+        .collect();
+    let tooling_directories: HashSet<&str> = flows
+        .iter()
+        .filter(|flow| crate::unshipped::is_set_aside(flow.unshipped.as_ref()))
+        .filter_map(directory_of_flow)
+        .filter(|directory| !product_directories.contains(directory))
+        .collect();
+    let aside = |path: &str| -> Option<(&'static str, &'static str)> {
+        if crate::paths::is_test(path) {
+            return Some(("test-support", "name"));
+        }
+        if let Some(role) = crate::paths::role_named_by_path(path) {
+            return Some((role, "name"));
+        }
+        let directory = crate::paths::directory_of(path);
+        tooling_directories
+            .iter()
+            .any(|held| directory == *held)
+            .then_some(("tooling", "shipping-evidence"))
+    };
+    for entity in entities.iter_mut() {
+        let users: Vec<&str> =
+            entity.written_by.iter().chain(entity.read_by.iter()).map(|unit| file_of_unit(unit)).collect();
+        let declared = entity.declared_in.as_deref().map(file_of_unit);
+        let verdicts: Vec<Option<(&'static str, &'static str)>> =
+            declared.into_iter().chain(users.iter().copied()).map(|path| aside(path)).collect();
+        let declared_aside = declared.is_some_and(|path| aside(path).is_some());
+        let only_tooling_uses =
+            !users.is_empty() && users.iter().all(|path| aside(path).is_some());
+        if declared_aside || only_tooling_uses {
+            if let Some((role, basis)) = verdicts.into_iter().flatten().next() {
+                entity.unshipped = Some(crate::entry_exit::Unshipped {
+                    role,
+                    basis,
+                    evidence: "every file that declares or uses this record is tooling, benchmark or test code".to_string(),
+                });
+            }
+        }
+    }
 }
 
 static OVER_A_WIRE: &[&str] = &[
@@ -3344,6 +3402,7 @@ fn entities(
             },
             project: node.project.clone(),
             terminality: None,
+            unshipped: None,
         })
         .map(|mut entity| {
             let kept: HashSet<&str> = entity.named_fields.iter().map(|field| field.name.as_str()).collect();
@@ -3465,6 +3524,7 @@ fn entities(
                 .and_then(|file| file_project.get(file))
                 .map(|project| (*project).to_string()),
             terminality: None,
+            unshipped: None,
         });
     }
     for (named, table) in created {
@@ -3494,6 +3554,7 @@ fn entities(
                 })
                 .collect(),
             terminality: None,
+            unshipped: None,
         });
     }
     let known: HashMap<String, String> = entities
@@ -3573,9 +3634,9 @@ mod tests {
         orphan.parent_originated = Some(crate::parent::Originated { kind: "orphan", evidence: vec!["flow:a".into()] });
         let mut capabilities = vec![capability_of(&["flow:a", "flow:b"]), unsettled, orphan];
         super::score_capabilities(&mut capabilities, &confidence_of);
-        assert_eq!(capabilities[0].confidence, Some(0.68));
-        assert_eq!(capabilities[1].confidence, Some(0.34));
-        assert_eq!(capabilities[2].confidence, Some(0.58));
+        assert_eq!(capabilities[0].confidence, Some(0.61));
+        assert_eq!(capabilities[1].confidence, Some(0.3));
+        assert_eq!(capabilities[2].confidence, Some(0.51));
     }
 
     #[test]

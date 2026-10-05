@@ -29,6 +29,7 @@ struct Stat<'a> {
     recent: u32,
     recent_authors: HashSet<&'a str>,
     quarter: u32,
+    quarter_authors: HashSet<&'a str>,
     aside: bool,
 }
 
@@ -40,6 +41,7 @@ pub struct FileHistory {
     pub recent: u32,
     pub quarter: u32,
     pub recent_authors: u32,
+    pub quarter_authors: u32,
     pub last: i64,
     pub fix_percentile: u8,
     pub churn_percentile: u8,
@@ -68,6 +70,7 @@ fn rank_files(touched: &HashMap<&str, Stat>) -> Vec<FileHistory> {
             recent: stat.recent,
             quarter: stat.quarter,
             recent_authors: stat.recent_authors.len() as u32,
+            quarter_authors: stat.quarter_authors.len() as u32,
             last: stat.last,
             fix_percentile: percentile(&fixes, stat.fixes),
             churn_percentile: percentile(&commits, stat.commits),
@@ -215,6 +218,7 @@ pub fn read(root: &Path, files: &[String]) -> Option<History> {
             }
             if head - commit.when <= QUARTER_DAYS * SECONDS_PER_DAY {
                 entry.quarter += 1;
+                entry.quarter_authors.insert(commit.author);
             }
         }
     }
@@ -313,5 +317,15 @@ mod tests {
         let paths: Vec<&str> = ranked.iter().map(|file| file.path.as_str()).collect();
         assert_eq!(paths, vec!["a.rs", "b.rs"]);
         assert_eq!(ranked[0].fix_percentile, 66);
+    }
+
+    #[test]
+    fn a_files_quarter_authors_count_everyone_who_touched_it_within_ninety_days() {
+        let mut stat = Stat { commits: 3, quarter: 3, ..Stat::default() };
+        stat.quarter_authors.extend(["a@x", "b@x"]);
+        stat.recent_authors.insert("a@x");
+        let touched: HashMap<&str, Stat> = [("src/a.rs", stat)].into_iter().collect();
+        let ranked = rank_files(&touched);
+        assert_eq!((ranked[0].recent_authors, ranked[0].quarter_authors), (1, 2));
     }
 }

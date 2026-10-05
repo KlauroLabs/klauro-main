@@ -130,7 +130,7 @@ None of the following properties are stored. Each is computed at read time from 
 | `has_children` | true iff `children` is present and non-empty | whether a system map is renderable for this CAS |
 | is a leaf | `has_children === false` | whether an architecture map is renderable for this CAS |
 | source-backed | this CAS has its own file set (`tier1.nodes` etc. computed from source, not composed) | whether Tier 1-3 are computed from source (§0.6) or composed from children |
-| ship-backed | a ship unit's root is this project's root, or a ship unit names this project among the paths it bundles. An ancestor container that copies the whole repository does NOT make its every project ship-backed | whether this project is presented as "ships as a unit" |
+| ship-backed | a ship unit's root is this project's root, or a ship unit names this project among the paths it bundles. An ancestor container that copies the whole repository does NOT make its every project ship-backed: when the unit bundles several projects, only those it runs (a start script, package bin or ship artifact of their own) are ship-backed, and the rest are carried by the unit and read as consumed by what it runs. A deploy manifest at a project root (wrangler, fly, vercel, netlify, firebase, Procfile, Expo app and eas configs, a Dockerfile) is ship evidence for that project. Imports from test files do not make a project consumed | whether this project is presented as "ships as a unit" |
 | runnable | this project owns an entry point that starts it: a lifecycle, cli, http, rpc or graphql entry | whether this project can be started on its own |
 | consumed | another project imports across the boundary into this one | whether this project exists to be used by others |
 
