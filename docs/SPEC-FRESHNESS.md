@@ -245,6 +245,38 @@ calls" workload.
 
 ---
 
+### (f) Renames: matched in comparison, fail-closed in incremental analysis
+
+Freshness and comparison treat a rename differently, and the two must not be confused.
+
+**Comparing two analyses is rename-safe.** When a comparison (the two-analysis form of the
+comparison tool, the proposal preview, the breaking-change report and the engine delta) finds a
+declaration removed and another added, it pairs them as one rename instead of reporting a removal
+and an addition (`analysis-rename-match.ts`). A pair is accepted only when it is unambiguous:
+
+- the two declarations have the same kind and the same container (a container that was itself
+  renamed counts as the same container once it is paired);
+- they have the same fingerprint: for a callable, its signature shape plus the set of declarations
+  it calls, or, when it calls nothing, its signature shape, size and callers; for a container, its
+  set of members;
+- exactly one declaration on each side carries that fingerprint, or exactly one member of a renamed
+  container keeps its name.
+
+Matching repeats for a few passes so members follow a renamed container. Declarations whose
+fingerprint is shared by several candidates are never paired; they are listed as ambiguous (a
+bounded sample) and stay reported as removed and added. Each matched pair names the basis it was
+matched on, and the pairing is carried into flows, steps and breaking-change consumers so a renamed
+function keeps its history.
+
+**Incremental analysis does not pair renames.** A renamed file reaches incremental analysis as a
+deleted path and a new path. The deletion still propagates to every tracked dependent of the old
+path. The new path is not tracked, so ownership of it cannot be proven and the propagation falls
+back to a full re-analysis instead of guessing that the two files are the same. Nothing in the
+incremental path matches a rename; only the comparison above does, and only between two completed
+analyses.
+
+---
+
 ## 3. Implementation plan (ordered)
 
 1. **`apps/mcp-server/src/server.ts`**: rename `getFreshAnalysisForAgent` → `getFreshAnalysis`
