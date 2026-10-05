@@ -9,6 +9,7 @@ use crate::paths::{directory_of, join, normalize};
 mod typing;
 
 const FORWARDED_AT_MOST: u8 = 6;
+const IMPLEMENTERS_AT_MOST: usize = 12;
 const TOO_GENERIC_TO_NAME_A_TYPE: &[&str] = &[
     "args", "config", "data", "error", "event", "input", "message", "options", "output", "params", "props", "request",
     "response", "result", "state", "value",
@@ -1360,6 +1361,7 @@ enum Resolved {
     Unresolved(String, bool),
     Edge(String, EdgeKind),
     Guessed(String, EdgeKind),
+    Implemented(Vec<String>, EdgeKind),
     External {
         space: &'static str,
         owner: String,
@@ -2082,6 +2084,19 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
     let mut runtime_calls = 0;
     let mut indirect_calls = 0;
     let mut dynamic_calls = 0;
+    let mut implemented_by: HashMap<u32, Vec<u32>> = HashMap::default();
+    for (below, above) in supertypes.iter() {
+        let path = index.files.get(symbols.nodes[*below as usize].file as usize).map(String::as_str).unwrap_or("");
+        if crate::paths::is_test(path) {
+            continue;
+        }
+        for held in above {
+            implemented_by.entry(*held).or_default().push(*below);
+        }
+    }
+    for below in implemented_by.values_mut() {
+        below.sort_unstable();
+    }
     let mut unresolved_calls = 0;
     let mut no_caller = 0;
 
@@ -2150,6 +2165,20 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
                             false => member,
                         };
                         return Resolved::Edge(symbols.nodes[target as usize].id.clone(), kind);
+                    }
+                    None if node.kind == NodeKind::Interface => {
+                        let targets: Vec<String> = implemented_by
+                            .get(&found)
+                            .into_iter()
+                            .flatten()
+                            .filter(|below| resolver.visible.can_see(fact.file, symbols.nodes[**below as usize].file))
+                            .filter_map(|below| inherited(*below, &callee))
+                            .map(|member| symbols.nodes[member as usize].id.clone())
+                            .take(IMPLEMENTERS_AT_MOST)
+                            .collect();
+                        if !targets.is_empty() {
+                            return Resolved::Implemented(targets, kind);
+                        }
                     }
                     None if node.kind.is_unit()
                         && matches!(callee.as_str(), "call" | "apply" | "bind" | "invoke" | "Invoke" | "DynamicInvoke" | "__call__") =>
@@ -2456,16 +2485,6 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
             eprintln!("  unresolved ours {count:6} {name}");
         }
     }
-    let mut implemented_by: HashMap<u32, Vec<u32>> = HashMap::default();
-    for (below, above) in supertypes.iter() {
-        let path = index.files.get(symbols.nodes[*below as usize].file as usize).map(String::as_str).unwrap_or("");
-        if crate::paths::is_test(path) {
-            continue;
-        }
-        for held in above {
-            implemented_by.entry(*held).or_default().push(*below);
-        }
-    }
     let visible = &resolver.visible;
     let open_ends = OpenEnds::declared(index, authored, visible);
     let carried_out = |target: &str, from_file: u32| -> Option<String> {
@@ -2499,6 +2518,7 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
             let label = match &outcome {
                 Resolved::Edge(target, _) => format!("structure\t{target}"),
                 Resolved::Guessed(target, _) => format!("name\t{target}"),
+                Resolved::Implemented(targets, _) => format!("implemented\t{}", targets.join(",")),
                 Resolved::External { owner, member, .. } => format!("external\t{owner}\t{member}"),
                 Resolved::Unresolved(_, foreign) => format!(
                     "unresolved\t{foreign}\t{}",
@@ -2539,6 +2559,11 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
             Resolved::Edge(target, kind) => edges.push(IndexEdge { via: Via::Structure, source: caller.to_string(), target, kind }),
             Resolved::Guessed(target, kind) => {
                 edges.push(IndexEdge { via: Via::Name, source: caller.to_string(), target, kind });
+            }
+            Resolved::Implemented(targets, kind) => {
+                for target in targets {
+                    edges.push(IndexEdge { via: Via::Rule, source: caller.to_string(), target, kind });
+                }
             }
             Resolved::External { space, owner, member, kind, origin } => {
                 if let Some(origin) = origin {

@@ -9,6 +9,10 @@ thread_local! {
 
 const RESULTS_WITHIN: u8 = 5;
 
+static KEYED_COLLECTIONS: &[&str] = &["BTreeMap", "Dictionary", "FxHashMap", "HashMap", "IndexMap", "Map", "SortedMap"];
+static VALUE_ACCESSORS: &[&str] = &["get", "get_mut", "or_default", "or_insert", "or_insert_with", "remove"];
+static KEEPS_ITS_VALUE: &[&str] = &["as_mut", "as_ref", "borrow", "borrow_mut", "clone", "expect", "lock", "unwrap", "unwrap_or_else"];
+
 struct Depth;
 
 impl Depth {
@@ -279,6 +283,13 @@ impl<'a> Resolver<'a> {
             origin = self.returned_by(owner);
             held = None;
         }
+        if let Some(annotation) = held
+            && KEYED_COLLECTIONS.contains(&base_type_name(annotation))
+            && VALUE_ACCESSORS.contains(&part)
+            && let Some(value) = last_type_argument(annotation)
+        {
+            return Trail { origin: self.annotated(held_file, value), held: Some(value), held_file };
+        }
         match origin {
             Origin::Declared(owner) if self.symbols.nodes[owner as usize].kind.is_type() && part == "new" => {
                 Trail { origin, held, held_file }
@@ -317,6 +328,9 @@ impl<'a> Resolver<'a> {
             return Trail { origin: Origin::Declared(owner), held: Some(inner), held_file };
         }
         let found = self.inherited_member_type(owner, part);
+        if found.is_none() && KEEPS_ITS_VALUE.contains(&part) {
+            return Trail { origin: Origin::Declared(owner), held, held_file };
+        }
         Trail {
             origin: match found {
                 Some((annotation, at)) => self.annotated_from(owner, at, annotation),

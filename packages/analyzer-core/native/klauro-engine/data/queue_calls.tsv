@@ -1,0 +1,3 @@
+send	send,try_send,send_timeout,blocking_send,send_blocking,send_async,force_send,unbounded_send	Sender,SyncSender,UnboundedSender,WeakSender
+receive	recv,try_recv,recv_timeout,blocking_recv,recv_blocking,recv_async,recv_deadline,recv_many,iter,try_iter,into_iter	Receiver,UnboundedReceiver
+create	channel,sync_channel,unbounded,bounded,unbounded_channel,broadcast	*

@@ -20,6 +20,7 @@ mod budget;
 mod dead;
 mod mentions;
 mod messages;
+mod queues;
 mod dependencies;
 mod discovery;
 mod dockerfile;
@@ -1196,16 +1197,24 @@ fn read_it() {
         &index.entry_points,
         &index.exit_points,
         &index.messages,
+        &index.imports,
     );
     eprintln!(
-        "crossings {:?} | ipc {} | event {} | network {}",
+        "crossings {:?} | ipc {} | event {} | network {} | queue {}",
         crossings_started.elapsed(),
         index.crossings.iter().filter(|held| held.kind == "ipc").count(),
         index.crossings.iter().filter(|held| held.kind == "event").count(),
-        index.crossings.iter().filter(|held| held.kind == "network").count()
+        index.crossings.iter().filter(|held| held.kind == "network").count(),
+        index.crossings.iter().filter(|held| held.kind == "queue").count()
     );
     let journeys_started = Instant::now();
-    index.journeys = journeys::derive(&paths, &index.nodes, &index.edges, &index.crossings, &index.exit_points);
+    let set_aside: rustc_hash::FxHashSet<u32> = index
+        .entry_points
+        .iter()
+        .filter(|entry| unshipped::is_set_aside(entry.unshipped.as_ref()))
+        .map(|entry| entry.file)
+        .collect();
+    index.journeys = journeys::derive(&paths, &index.nodes, &index.edges, &index.crossings, &index.exit_points, &set_aside);
     eprintln!("journeys {:?} | {}", journeys_started.elapsed(), index.journeys.len());
     let composition_started = Instant::now();
     index.composition = index.partition.as_ref().and_then(|partition| {
@@ -1387,6 +1396,7 @@ fn read_it() {
             eprintln!("  part {} | {} | {} | {}", project.id, project.display_name, project.role, project.summary);
         }
     }
+    journeys::phrase(&mut index.journeys, &comprehension.flows);
     index.comprehension = Some(comprehension);
 
     if std::env::var("KLAURO_REPORT_COVERAGE").is_ok() {

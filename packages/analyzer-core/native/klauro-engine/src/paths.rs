@@ -175,6 +175,17 @@ pub fn is_benchmark_named(path: &str) -> bool {
     stem_words(stem).iter().any(|word| word == "bench" || word == "benchmark")
 }
 
+pub fn is_scaffolding(path: &str) -> bool {
+    static STAND_INS: &[&str] = &["fake", "mock", "stub", "dummy", "fixture"];
+    static EXERCISES: &[&str] = &["e2e", "tests", "harness", "sandbox", "demo", "scratch"];
+    if is_test(path) || is_not_shipped(path) || is_benchmark_named(path) {
+        return true;
+    }
+    let name = basename(path);
+    let stem = name.split('.').next().unwrap_or(name);
+    stem_words(stem).iter().any(|word| EXERCISES.contains(&word.as_str()) || STAND_INS.iter().any(|held| word.contains(held)))
+}
+
 pub fn is_continuous_integration(path: &str) -> bool {
     static DIRECTORIES: &[&str] =
         &[".azure/", ".buildkite/", ".circleci/", ".github/", ".gitlab/", ".woodpecker/", "ci/"];

@@ -6,7 +6,7 @@ use serde::Serialize;
 use crate::constants::{Constants, Standing};
 use crate::entry_exit::{EntryPoint, ExitPoint, IPC_SCHEME};
 use crate::messages::a_tag;
-use crate::model::{CallFact, IndexNode, LocalBinding, MessageFact, Said};
+use crate::model::{CallFact, ImportFact, IndexNode, LocalBinding, MessageFact, Said};
 use crate::names;
 use crate::paths::is_test;
 use crate::rules::{event_calls, EventCall, Role};
@@ -246,10 +246,12 @@ pub fn derive(
     entry_points: &[EntryPoint],
     exit_points: &[ExitPoint],
     held_messages: &[MessageFact],
+    imports: &[ImportFact],
 ) -> Vec<Crossing> {
     let constants = Constants::new(locals);
     let mut found = commands(entry_points, exit_points, files);
     found.extend(events(files, nodes, calls, &constants));
     found.extend(messages(files, held_messages));
+    found.extend(crate::queues::derive(files, nodes, calls, locals, imports));
     found
 }

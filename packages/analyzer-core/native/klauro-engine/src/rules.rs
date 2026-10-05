@@ -5,6 +5,7 @@ use crate::names;
 static REGISTRARS: &str = include_str!("../data/registrars.tsv");
 static IPC_CALLS: &str = include_str!("../data/ipc_calls.tsv");
 static EVENT_CALLS: &str = include_str!("../data/event_calls.tsv");
+static QUEUE_CALLS: &str = include_str!("../data/queue_calls.tsv");
 
 enum Fold {
     Lower,
@@ -190,6 +191,41 @@ pub fn event_calls() -> &'static [EventCall] {
                     verbs: held[1].split(',').map(str::to_string).collect(),
                     receivers: held[2].split(',').filter(|named| *named != "*").map(str::to_string).collect(),
                     wrapped: held[3] == "wrapped",
+                }
+            })
+            .collect()
+    })
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum QueueRole {
+    Send,
+    Receive,
+    Create,
+}
+
+pub struct QueueCall {
+    pub role: QueueRole,
+    pub verbs: Vec<String>,
+    pub endpoints: Vec<String>,
+}
+
+pub fn queue_calls() -> &'static [QueueCall] {
+    static HELD: OnceLock<Vec<QueueCall>> = OnceLock::new();
+    HELD.get_or_init(|| {
+        QUEUE_CALLS
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                let held = fields(line);
+                QueueCall {
+                    role: match held[0] {
+                        "send" => QueueRole::Send,
+                        "receive" => QueueRole::Receive,
+                        _ => QueueRole::Create,
+                    },
+                    verbs: held[1].split(',').map(str::to_string).collect(),
+                    endpoints: held[2].split(',').filter(|named| *named != "*").map(str::to_string).collect(),
                 }
             })
             .collect()

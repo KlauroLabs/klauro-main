@@ -780,6 +780,21 @@ impl<'a> Extractor<'a> {
                 .child_by_field_name(self.spec.declares.impl_type_field)
                 .map(|found| self.text(found).to_string())
                 .and_then(|name| self.owner_for_type_name(&name));
+            if self.spec.id == "rust"
+                && let Some(owner) = owner.as_deref()
+                && let Some(written) = node.child_by_field_name("trait").map(|found| self.text(found).to_string())
+            {
+                let name = base_name(&written).to_string();
+                if !name.is_empty() {
+                    self.facts.type_references.push(TypeReferenceFact {
+                        file: self.file,
+                        source: owner.to_string(),
+                        name,
+                        kind: EdgeKind::Implements,
+                        arguments: crate::model::type_arguments(&written),
+                    });
+                }
+            }
             let mut inner = scope.clone();
             if owner.is_some() {
                 inner.owner = owner.clone();
