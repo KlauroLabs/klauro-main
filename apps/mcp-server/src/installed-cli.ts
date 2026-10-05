@@ -10,7 +10,8 @@ import { assessUploadScope, confirmUploadScope } from './upload-scope-guard';
 import { clearStoredConnectorSession, connectorToken, listStoredAccounts, loadStoredConnectorAuth, normalizeServerUrl, resolveAuthStatus, saveStoredConnectorSession, switchStoredAccount, warnIfSessionExpiringSoon } from './connector-auth';
 import { isUnboundHostedProjectId, loadKlauroConfig, writeDefaultKlauroConfig, writeProjectBindingIntoConfig } from './klauro-config';
 import { formatBuildIdentity, getBuildIdentity, resolveManifestProjectName } from './installed-client-runtime';
-import { KLAURO_INSTALL_ONELINER, SELF_UPDATE_COMMANDS, runSelfUpdate } from './self-update';
+import { SELF_UPDATE_COMMANDS, runSelfUpdate } from './self-update';
+import { usageText } from './installed-cli-help';
 import { renderStatusReport } from './status-report';
 import { formatClientDoctor, runClientDoctor } from './client-doctor';
 import { buildSupportBundle, formatSupportBundleResult } from './support-bundle';
@@ -196,52 +197,8 @@ function validateTargetPath(command: string, rawArg: string | undefined, resolve
   if (!statSync(resolved).isDirectory()) throw new Error(`\`klauro ${command}\`: path is not a directory: ${resolved}`);
 }
 
-const USAGE_TEXT = [
-  'Usage: klauro <command> [path] [options]', '',
-  '  init [path]                 Configure a project for hosted Klauro analysis',
-  '  install                     Register the lightweight MCP with Claude and Codex',
-  '  uninstall [--no-deregister] Remove Klauro MCP registrations; keep account and analysis data',
-  '  analyze [path] [--server-url url] [--analysis-id id] [--analysis-focus agent-fast|ui-overview|deep-context|full] [--json] [--quiet] [--force] [--yes] [--wait]',
-  '                               Upload a committed source snapshot for hosted analysis',
-  '                               --force bypasses BOTH the server\'s reuse-of-unchanged-snapshot shortcut AND the',
-  '                               AI response cache, so structure and AI-generated names/descriptions are freshly',
-  '                               produced instead of served from a prior run.',
-  '                               --yes confirms uploading a root that looks like it contains several unrelated',
-  '                               projects instead of one (no Git repo/manifest of its own, multiple nested repos',
-  '                               beneath it) — without it this refuses (scripted) or prompts (interactive).',
-  '                               --wait blocks until the hosted analysis is complete and returns its CAS.',
-  '                               Alias: remote-analyze',
-  '  remote-sync [path] [--yes] [--wait]',
-  '                               Upload in-flight changes; --wait returns the completed incremental CAS',
-  '                               Alias: sync',
-  '  upload-manifest [path]      Preview source files selected for upload',
-  '  status [path] [--server-url URL]',
-  '                               One-glance report: account, release, project connection, analysis, MCP',
-  '  doctor [path] [--server-url URL]',
-  '                               Diagnose node version, auth/token age, server reachability, MCP registration',
-  '  support-bundle [path] [--output FILE]',
-  '                               Package redacted environment + run-log diagnostics to send to support',
-  '  update [--check] [--force]  Install the latest hosted klauro release over this one',
-  '  login [--email EMAIL] [--password-stdin | --register]',
-  '                               Prompts for email/password (no echo) if not given; --password-stdin for scripts',
-  '  auth-status | whoami | logout | version',
-  '  accounts [--server-url URL] [--use EMAIL]',
-  '                               List every account signed into this server on this machine, or switch the active one (no password needed if already logged in as EMAIL)',
-  '  change-password [--current-password-stdin] [--new-password-stdin]',
-  '                               Requires an existing session + current password; invalidates every other session',
-  '  reset-password --token TOKEN [--token-stdin] [--new-password-stdin]',
-  '                               Redeems a single-use token an operator minted with admin-mint-reset-token',
-  '  admin-mint-reset-token --email EMAIL [--data-dir PATH] [--minted-by LABEL]',
-  '                               OPERATOR-ONLY: mints a 30-minute single-use reset token directly against the account store',
-  '',
-  `If \`klauro update\` cannot run, reinstall from scratch: ${KLAURO_INSTALL_ONELINER}`, '',
-  'Analysis, CAS construction at every level, graphs, proposals, embeddings, and AI execute only on Klauro infrastructure.',
-  '',
-  'Every subcommand accepts --help/-h to print this usage instead of running.',
-].join('\n') + '\n';
-
-function printUsage(): void {
-  process.stdout.write(USAGE_TEXT);
+function printUsage(command?: string): void {
+  process.stdout.write(usageText(command));
 }
 
 
@@ -266,8 +223,12 @@ async function main() {
 
 
 
-  if (HELP_FLAGS.has(command) || process.argv.slice(3).some(arg => HELP_FLAGS.has(arg))) {
+  if (HELP_FLAGS.has(command)) {
     printUsage();
+    return;
+  }
+  if (process.argv.slice(3).some(arg => HELP_FLAGS.has(arg))) {
+    printUsage(command);
     return;
   }
   validateFlags(command, process.argv);

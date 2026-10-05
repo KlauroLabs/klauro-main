@@ -357,7 +357,7 @@ test('the SHIPPED cli entry point implements `admin-mint-reset-token` and it rea
 test('`klauro analyze --help` prints usage and performs no analysis (the incident this class caused)', async () => {
   const result = await runInstalledCli(['analyze', '--help']);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /Usage: klauro <command>/);
+  assert.match(result.stdout, /Usage: klauro analyze/);
   // The regression signature: a real run prints an `accepted`/`success`
   // status JSON-ish payload or a network/binding error, never bare usage.
   assert.doesNotMatch(result.stdout, /"status"/, 'a real analysis ran instead of printing help');
@@ -367,7 +367,8 @@ test('--help/-h prints usage for every subcommand instead of running it', async 
   for (const args of [['init', '--help'], ['status', '-h'], ['doctor', '--help'], ['upload-manifest', '-h'], ['login', '--help'], ['--help'], ['-h']]) {
     const result = await runInstalledCli(args);
     assert.equal(result.status, 0, `\`klauro ${args.join(' ')}\` exited ${result.status}: ${result.stderr}`);
-    assert.match(result.stdout, /Usage: klauro <command>/, `\`klauro ${args.join(' ')}\` did not print usage`);
+    const expected = args[0].startsWith('-') ? /Usage: klauro <command>/ : new RegExp(`Usage: klauro ${args[0]}`);
+    assert.match(result.stdout, expected, `\`klauro ${args.join(' ')}\` did not print usage`);
   }
 });
 
