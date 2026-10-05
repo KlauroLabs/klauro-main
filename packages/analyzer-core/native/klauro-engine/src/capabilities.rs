@@ -562,13 +562,17 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
     let served = flows
         .iter()
         .any(|flow| SERVED_KINDS.contains(&flow.kind) && !is_only_a_trigger(&outcome_of(flow, &bookkeeping)));
-    let kept: Vec<&Flow> = flows
+    let proposable: Vec<&Flow> = flows
         .iter()
         .copied()
         .filter(|flow| !served || flow.kind != "export")
-        .filter(|flow| !only_moves_the_screen(flow))
         .filter(|flow| is_proposable(flow))
         .collect();
+    let behaving: Vec<&Flow> = proposable.iter().copied().filter(|flow| !only_moves_the_screen(flow)).collect();
+    let kept = match behaving.is_empty() {
+        true => proposable,
+        false => behaving,
+    };
     if std::env::var("KLAURO_FAMILY_DUMP").is_ok() {
         for family in outcomes_of(&kept).keys() {
             eprintln!("family[{remembered_as}]: {}", family.key);
