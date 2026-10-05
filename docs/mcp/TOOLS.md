@@ -392,7 +392,9 @@ The first tool to call when orienting on a codebase. Returns a condensed intelli
 - `enhanced_system_purpose` - Primary domain, core concepts, inferred description
 - `flow_graph` summary - Capabilities count, dependencies count, primary flow (core capability, value chain), system insights (detected patterns, entry type, data flow type), layers (name, type, count per layer), topology (root/leaf counts, critical path, max depth), top 15 capabilities sorted by score with operations
 - `architecture_summary` - System type, total files, layers breakdown, API surface, external dependencies, security
-- `database_entities` - Entity names from schema
+- `database_entities` - The first 15 entity names from schema, with `database_entities_total`; `get_data_entities` pages the rest
+- `product_map_overview` (hosted) - Counts of capabilities, journeys, entities, paradigms and open deviations plus health; `get_product_map` returns the map itself
+- `sub_cas_nodes` (hosted) - The 20 largest sub-projects with `units_total`; pass a unit id as `scope.sub_cas_node_id` for one sub-project
 - `entry_point_count` and breakdown by type
 - `node_counts` - Total + by type
 - `edge_counts` - Total + by type
