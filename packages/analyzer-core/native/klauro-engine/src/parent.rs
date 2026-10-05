@@ -428,6 +428,7 @@ pub fn assemble(parts: &[Capability], composition: &Composition, links: &[(Strin
         whole.audience = Some(derived.audience.trim().to_ascii_lowercase()).filter(|held| !held.is_empty()).or(whole.audience);
         whole.grounding = None;
         whole.confidence = None;
+        whole.unsettled = None;
         whole.composition_provenance = cited
             .iter()
             .map(|(at, disposition)| Source {
@@ -520,13 +521,19 @@ pub fn lacking_provenance(whole: &[Capability]) -> Vec<&Capability> {
         .collect()
 }
 
-pub fn enforce(whole: &mut Vec<Capability>) {
+pub fn mark_parent_originated(whole: &mut [Capability]) {
     let lacking: Vec<String> = lacking_provenance(whole).iter().map(|capability| capability.id.clone()).collect();
     if lacking.is_empty() {
         return;
     }
-    eprintln!("  parent dropped {} capabilities that trace to no child capability and no seam or orphan", lacking.len());
-    whole.retain(|capability| !lacking.contains(&capability.id));
+    eprintln!("  parent kept {} capabilities that trace to no child capability, marked as orphan source", lacking.len());
+    for capability in whole.iter_mut().filter(|capability| lacking.contains(&capability.id)) {
+        let evidence = match capability.flows.is_empty() {
+            true => vec![capability.id.clone()],
+            false => capability.flows.clone(),
+        };
+        capability.parent_originated = Some(Originated { kind: "orphan", evidence });
+    }
 }
 
 pub fn summarise(whole: &[Capability], parts: &[Capability], reasons: &BTreeMap<(String, String), String>, composition: &Composition) -> Summary {
@@ -629,6 +636,7 @@ mod tests {
             touches: Vec::new(),
             terminality: None,
             confidence: None,
+            unsettled: None,
             composition_provenance: Vec::new(),
             parent_originated: None,
             evidence: String::new(),
@@ -739,7 +747,7 @@ mod tests {
     }
 
     #[test]
-    fn the_invariant_check_names_and_enforcement_drops_a_capability_with_no_trace() {
+    fn the_invariant_check_names_a_capability_with_no_trace_and_marking_keeps_it_as_orphan_source() {
         let mut orphan = capability("api", "Floating purpose", &["flow:z"]);
         orphan.project = None;
         let mut traced = capability("api", "Traced purpose", &["flow:y"]);
@@ -748,9 +756,14 @@ mod tests {
             vec![Source { source_child: "subproject:api".into(), source_capability_id: "x".into(), disposition: "promoted", weight: Some(1.0) }];
         let mut whole = vec![orphan, traced];
         assert_eq!(lacking_provenance(&whole).len(), 1);
-        enforce(&mut whole);
-        assert_eq!(whole.len(), 1);
+        mark_parent_originated(&mut whole);
+        assert_eq!(whole.len(), 2);
         assert!(lacking_provenance(&whole).is_empty());
+        let marked = whole.iter().find(|held| held.id == "capability:floating-purpose").unwrap();
+        let origin = marked.parent_originated.as_ref().expect("marked");
+        assert_eq!(origin.kind, "orphan");
+        assert_eq!(origin.evidence, vec!["flow:z"]);
+        assert!(whole.iter().find(|held| held.id == "capability:traced-purpose").unwrap().parent_originated.is_none());
     }
 
     #[test]

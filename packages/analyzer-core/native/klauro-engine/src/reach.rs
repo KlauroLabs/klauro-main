@@ -20,17 +20,23 @@ fn agent() -> &'static ureq::Agent {
     })
 }
 
+const LONGEST_WAIT_FOR_AN_ANSWER: Duration = Duration::from_secs(600);
+
+pub fn longest_wait() -> Duration {
+    std::env::var("KLAURO_AI_WAIT_SECONDS")
+        .ok()
+        .and_then(|held| held.parse::<u64>().ok())
+        .map_or(LONGEST_WAIT_FOR_AN_ANSWER, Duration::from_secs)
+}
+
+pub fn pause_after(missed: u32) -> Duration {
+    Duration::from_millis(500u64 << missed.min(5))
+}
+
 pub enum Answer {
     Held(String),
     Refused,
     Missed,
-}
-
-pub fn post(endpoint: &str, key: &str, request: &str) -> Option<String> {
-    match asking(endpoint, key, request) {
-        Answer::Held(text) => Some(text),
-        _ => None,
-    }
 }
 
 pub fn asking(endpoint: &str, key: &str, request: &str) -> Answer {

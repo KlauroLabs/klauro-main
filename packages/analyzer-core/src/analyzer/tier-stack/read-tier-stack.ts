@@ -141,6 +141,7 @@ export interface TierStackCapability {
   project?: string;
   grounding?: TierStackGrounding;
   confidence?: number;
+  unsettled?: string;
   delivered?: Array<{ flow: string; role: string; rationale: string }>;
   also_in?: string[];
   composition_provenance?: TierStackCompositionSource[];
@@ -271,6 +272,8 @@ export interface TierStackFlow {
   method?: string;
   operation: string;
   standing: string;
+  confidence?: number;
+  unsettled?: string;
   open?: number;
   cut?: boolean;
   name?: string;

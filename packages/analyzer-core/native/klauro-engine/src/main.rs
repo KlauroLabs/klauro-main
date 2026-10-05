@@ -8,6 +8,7 @@ mod audit;
 mod author;
 mod comprehend;
 mod composition;
+mod confidence;
 mod parent;
 mod conform;
 mod constants;
@@ -1363,11 +1364,6 @@ fn read_it() {
             Some(id) => eprintln!("  unattached edges {dangling} first {id}"),
             None => eprintln!("  unattached edges {dangling}"),
         }
-    }
-
-    if let Some(message) = author::failed_for_unanswered() {
-        eprintln!("{message}");
-        std::process::exit(2);
     }
 
     let emit_started = Instant::now();

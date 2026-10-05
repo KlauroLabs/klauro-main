@@ -3607,9 +3607,6 @@ export interface SystemCapability {
 
 
 
-
-
-
     trigger?: { method?: string; path?: string };
   }>;
 
@@ -3618,6 +3615,7 @@ export interface SystemCapability {
   criticality: 'critical' | 'high' | 'medium' | 'low';
   criticality_factors: string[];
   confidence?: number;
+  unsettled?: string;
   composition_provenance?: CASComposedClaimProvenance[];
   parent_originated?: { kind: 'seam' | 'orphan'; evidence: string[] };
 
@@ -4370,6 +4368,8 @@ export interface FlowConcept {
   description_source?: 'ai';
   entry_point: string;
   standing?: string;
+  confidence?: number;
+  unsettled?: string;
   open?: number;
   cut?: boolean;
   capability_id?: string;

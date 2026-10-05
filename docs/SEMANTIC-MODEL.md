@@ -183,6 +183,23 @@ walkable. Models/passes may ABSTAIN; low-confidence results route to a
 stronger model or honest absence, never a fabricated answer (boundary doc
 rules apply).
 
+### Confidence
+
+Every capability and every flow carries `confidence`, a number in 0..1 at two decimals, computed from
+signals the engine already holds. It reads how well the engine can stand behind the item; it never
+removes one. The code is `confidence.rs`.
+
+A flow starts from three signals: resolution = 1 - 0.5 x (hops resolved by name / hops), where a hop is
+one call followed from the entry point and its edge `via` says whether it was proven by structure or
+matched on a name; completeness = units / (units + open calls); standing = 1.0 for terminal, 0.85
+proximal, 0.7 reading, 0.4 open. The score is 0.5 x resolution + 0.3 x completeness + 0.2 x standing,
+times 0.85 when the trail was cut.
+
+A capability blends the grounding result with its flows: 0.5 x grounding confidence + 0.5 x the mean
+confidence of the flows it delivers. When the grounding was not graded, only its flows count, scaled by
+0.85. A capability marked parent-originated with no child capability behind it is multiplied by 0.85.
+Any item whose AI ask stayed unanswered is multiplied by 0.5 and carries `unsettled: "ai-unanswered"`.
+
 ## Implementation map (packets)
 
 - B1 CapabilityFlowRelationship M:N + relational roles — replaces single

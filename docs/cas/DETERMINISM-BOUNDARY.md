@@ -15,11 +15,13 @@ There are exactly two kinds of output and they never cross:
   deterministic comprehension**: no template description, no keyword domain
   label, no deterministic narrative, no "heuristic fallback." 
 
-**AI is always available.** If a comprehension model call fails, that is a
-**thrown exception**, not a degraded artifact and not a substituted string. We
-never emit a deterministically-authored description/domain/narrative "because AI
-was unavailable" — that situation does not exist as a supported mode. Remove the
-fallback code; it is not a safety net, it is a defect.
+**An analysis never fails.** AI is the only author of comprehension, and the
+analysis keeps asking until each ask is answered or its wait budget is spent. An
+item whose ask is still unanswered is not authored by anything else: it is
+emitted with its structural content, marked `unsettled`, and scored with a low
+`confidence`. We never emit a deterministically-authored
+description/domain/narrative in its place, and we never abort the run or drop
+the item because a call went unanswered.
 
 This retires: `description_source: 'deterministic'`, `domain_source:
 'deterministic'`, the keyword domain classifier (`orchestrator.ts` ~9095–11267),

@@ -20,9 +20,9 @@ Keep them. Per flow, keep the unresolved and dynamic counts and note when a limi
 
 `IndexEdge` carries only source, target and kind. The resolver already knows whether it found an edge by structure (imports, types, declared receivers), by name alone, or through a framework rule, and `resolve.rs` keeps a `guessed` set in memory that comprehension already distrusts. Keep that knowledge on the edge. A resolved call and a use with no uniquely proven target become different edge kinds. This costs one field, needs no type system, and lets terminality trust what it should, lets the accuracy benchmark score by kind, and lets a reader of an MCP result tell "calls this" from "refers to something like this". It is not a confidence score on capabilities.
 
-## 3. A failed AI ask fails the run
+## 3. An analysis never fails: incomplete items are kept, marked and scored
 
-A run once lost several hundred AI answers to a rate limit and published normally. The rule already exists: a failed ask throws. Make it hold: an ask that is still unanswered after its retries fails the run and nothing is stored. The ask counter exists (`author::went_unanswered`); the change is to act on it, not to build a ledger or a receipt. Open question: when `parent::enforce` drops a capability for lacking provenance, should that fail the run too, or publish without it as it does today?
+Decided: we never fail, and we need accuracy and completeness. A run once lost several hundred AI answers to a rate limit; failing the run was the wrong answer, and so was publishing it silently. Every ask is retried within its wait budget, jev asks included. An item whose ask is still unanswered after that is emitted with its structural content, marked `unsettled: "ai-unanswered"`, and given a low `confidence`. A capability that lacks provenance in a parent is kept, marked as an orphan (parent-originated) fact, and given a lowered `confidence`; it is never dropped. A non-zero exit remains an error and means the repository could not be read. `confidence` is computed from signals the engine already holds, with no extra pass and no extra ask (`SEMANTIC-MODEL.md`, Confidence).
 
 ## 4. Route between two steps
 

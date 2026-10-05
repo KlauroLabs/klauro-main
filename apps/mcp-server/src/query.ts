@@ -446,6 +446,8 @@ export function getSystemOverview(cas: CASOutput, opts: SystemOverviewFilter = {
       description_generation: capability.description_generation,
       category: capability.category,
       criticality: capability.criticality,
+      ...(capability.confidence === undefined ? {} : { confidence: capability.confidence }),
+      ...(capability.unsettled === undefined ? {} : { unsettled: capability.unsettled }),
       operation_count: capability.operations?.length || 0,
       related_entities: capability.related_entities,
       related_domains: capability.related_domains,

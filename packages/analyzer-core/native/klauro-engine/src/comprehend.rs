@@ -41,6 +41,9 @@ pub struct Flow {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plays: Option<String>,
     pub standing: &'static str,
+    pub confidence: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unsettled: Option<&'static str>,
     #[serde(skip_serializing_if = "crate::facts_cache::nothing")]
     pub open: u32,
     #[serde(skip_serializing_if = "crate::facts_cache::not")]
@@ -156,6 +159,8 @@ pub struct Capability {
     pub terminality: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unsettled: Option<&'static str>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub composition_provenance: Vec<crate::parent::Source>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -273,7 +278,7 @@ fn changes(exit: &ExitPoint) -> bool {
 }
 
 pub(crate) const PUBLISHED: &str = "published";
-const PROVISIONAL: &str = "provisional";
+pub(crate) const PROVISIONAL: &str = "provisional";
 
 fn spoken_within(spoken: &str, part: Option<&str>) -> String {
     match part {
@@ -787,8 +792,10 @@ fn say_what_happens(held: &mut Comprehension, spoken: &str) {
         return;
     }
     let context = format!("{spoken}\u{1}{}", crate::author::NAMING);
+    let mut unanswered: Vec<String> = Vec::new();
     let said = crate::memory::each("what happens, named", &context, &told, |missing| {
         let written = crate::author::what_happens(spoken, missing);
+        unanswered.extend(missing.iter().map(|(id, _)| id.clone()).filter(|id| !written.contains_key(id)));
         let evidence: BTreeMap<String, String> = missing.iter().cloned().collect();
         let grounded = crate::author::ground(&written, &evidence);
         written
@@ -802,7 +809,24 @@ fn say_what_happens(held: &mut Comprehension, spoken: &str) {
             if !written.name.is_empty() {
                 flow.name = Some(written.name.clone());
             }
+        } else if unanswered.contains(&flow.id) {
+            flow.unsettled = Some(crate::confidence::AI_UNANSWERED);
+            flow.confidence = crate::confidence::left_unsettled(flow.confidence);
         }
+    }
+}
+
+fn score_capabilities(capabilities: &mut [Capability], confidence_of: &HashMap<&str, f64>) {
+    for capability in capabilities.iter_mut() {
+        let flows: Vec<f64> =
+            capability.flows.iter().filter_map(|id| confidence_of.get(id.as_str()).copied()).collect();
+        capability.confidence = Some(crate::confidence::of_capability(&crate::confidence::Backing {
+            grounding: capability.grounding.as_ref(),
+            flows: &flows,
+            parent_originated_alone: capability.parent_originated.is_some()
+                && capability.composition_provenance.is_empty(),
+            unsettled: capability.unsettled.is_some(),
+        }));
     }
 }
 
@@ -841,7 +865,11 @@ fn test_capabilities(capabilities: &mut Vec<Capability>, spoken: &str, level: &s
     });
     let facts_of: HashMap<String, String> = tests.iter().cloned().collect();
     capabilities.retain_mut(|capability| {
-        let Some(grounding) = judged.get(&capability.id).copied() else { return false };
+        let Some(grounding) = judged.get(&capability.id).copied() else {
+            capability.unsettled = Some(crate::confidence::AI_UNANSWERED);
+            capability.standing = PROVISIONAL;
+            return true;
+        };
         crate::dataset::record(
             "capability",
             serde_json::json!({
@@ -856,7 +884,6 @@ fn test_capabilities(capabilities: &mut Vec<Capability>, spoken: &str, level: &s
                 "delivered": grounding.delivers(),
             }),
         );
-        capability.confidence = Some(grounding.confidence());
         capability.grounding = Some(grounding);
         capability.standing = match grounding.stands() {
             true => PUBLISHED,
@@ -1400,7 +1427,7 @@ pub fn author(
             crate::capabilities::one_of_each(&mut whole, &spoken);
             let summary = match (told.composition, listed_parts) {
                 (Some(composition), Some(listed)) => {
-                    crate::parent::enforce(&mut whole);
+                    crate::parent::mark_parent_originated(&mut whole);
                     Some(crate::parent::summarise(&whole, &listed, &reasons, composition))
                 }
                 _ => None,
@@ -1413,7 +1440,7 @@ pub fn author(
                 started.elapsed() - formed,
                 crate::author::writing_rate(),
                 crate::author::asked_again(),
-                crate::author::went_unanswered()
+                crate::author::went_unanswered() + crate::jev::went_unanswered()
             );
             (capabilities, products, summary)
         },
@@ -1434,6 +1461,8 @@ pub fn author(
     held.products = products;
     held.derivation = summary;
     say_what_happens(held, &spoken);
+    let confidence_of: HashMap<&str, f64> = held.flows.iter().map(|flow| (flow.id.as_str(), flow.confidence)).collect();
+    score_capabilities(&mut held.capabilities, &confidence_of);
     let by_id: std::collections::BTreeMap<String, (&crate::author::Written, crate::author::Grounding)> =
         owner
             .iter()
@@ -1516,6 +1545,8 @@ pub fn derive(
         declared_as.entry((parent, node.name.as_str())).or_insert(annotation);
     }
     let mut next: HashMap<u32, Vec<u32>> = HashMap::default();
+    let mut by_name: HashSet<(u32, u32)> = HashSet::default();
+    let mut by_structure: HashSet<(u32, u32)> = HashSet::default();
     let mut members: HashMap<u32, Vec<u32>> = HashMap::default();
     for edge in edges {
         let (Some(source), Some(target)) = (
@@ -1535,6 +1566,10 @@ pub fn derive(
                     );
                 if trusted {
                     next.entry(source).or_default().push(target);
+                    match edge.via {
+                        Via::Name => by_name.insert((source, target)),
+                        _ => by_structure.insert((source, target)),
+                    };
                 }
             }
             EdgeKind::Contains | EdgeKind::HasMethod => {
@@ -1827,6 +1862,8 @@ pub fn derive(
         let mut into: Vec<String> = Vec::new();
         let mut carrying: Vec<Shared> = Vec::new();
         let mut reaching: Vec<String> = Vec::new();
+        let mut hops = 0u32;
+        let mut hops_by_name = 0u32;
         let mut head = 0;
         while head < queue.len() {
             let (current, depth) = queue[head];
@@ -1883,6 +1920,10 @@ pub fn derive(
             for target in next.get(&current).into_iter().flatten() {
                 if seen.insert(*target) {
                     queue.push((*target, depth + 1));
+                    hops += 1;
+                    if by_name.contains(&(current, *target)) && !by_structure.contains(&(current, *target)) {
+                        hops_by_name += 1;
+                    }
                 }
             }
             for inner in members.get(&current).into_iter().flatten() {
@@ -2005,7 +2046,17 @@ pub fn derive(
             (false, false) if open > 0 || cut => "open",
             (false, false) => "reading",
         };
+        let confidence = crate::confidence::of_flow(&crate::confidence::Reach {
+            hops,
+            by_name: hops_by_name,
+            units: seen.len() as u32,
+            open,
+            cut,
+            standing,
+        });
         flows.push(Flow {
+            confidence,
+            unsettled: None,
             path: steps,
             steps: logical,
             step_edges,
@@ -3484,6 +3535,53 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    fn capability_of(flows: &[&str]) -> super::Capability {
+        super::Capability {
+            id: "capability:place-an-order".to_string(),
+            audience: None,
+            delivered: Vec::new(),
+            records: Vec::new(),
+            changes: Vec::new(),
+            flows: flows.iter().map(|flow| flow.to_string()).collect(),
+            surfaces: Vec::new(),
+            project: None,
+            also_in: Vec::new(),
+            place: None,
+            name: None,
+            description: None,
+            grounding: None,
+            standing: super::PUBLISHED,
+            touches: Vec::new(),
+            terminality: None,
+            confidence: None,
+            unsettled: None,
+            composition_provenance: Vec::new(),
+            parent_originated: None,
+            evidence: String::new(),
+        }
+    }
+
+    #[test]
+    fn capabilities_are_scored_from_their_flows_and_lowered_when_unsettled_or_parent_originated() {
+        let confidence_of: super::HashMap<&str, f64> = super::HashMap::from_iter([("flow:a", 1.0), ("flow:b", 0.6)]);
+        let mut unsettled = capability_of(&["flow:a", "flow:b"]);
+        unsettled.unsettled = Some(crate::confidence::AI_UNANSWERED);
+        let mut orphan = capability_of(&["flow:a", "flow:b"]);
+        orphan.parent_originated = Some(crate::parent::Originated { kind: "orphan", evidence: vec!["flow:a".into()] });
+        let mut capabilities = vec![capability_of(&["flow:a", "flow:b"]), unsettled, orphan];
+        super::score_capabilities(&mut capabilities, &confidence_of);
+        assert_eq!(capabilities[0].confidence, Some(0.68));
+        assert_eq!(capabilities[1].confidence, Some(0.34));
+        assert_eq!(capabilities[2].confidence, Some(0.58));
+    }
+
+    #[test]
+    fn a_capability_whose_flows_are_unknown_still_gets_a_score() {
+        let mut capabilities = vec![capability_of(&["flow:gone"])];
+        super::score_capabilities(&mut capabilities, &super::HashMap::default());
+        assert!(capabilities[0].confidence.is_some());
     }
 
     #[test]

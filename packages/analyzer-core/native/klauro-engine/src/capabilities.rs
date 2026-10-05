@@ -665,7 +665,21 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
     }
     let lanes: BTreeMap<&str, (&Family, &Vec<&Flow>)> =
         keyed.iter().map(|(id, family, lane)| (id.as_str(), (*family, *lane))).collect();
+    let mut unanswered: Vec<Held> = known
+        .iter()
+        .filter(|id| !unassigned.contains(*id) && !held.iter().any(|other| other.families.contains(*id)))
+        .filter(|id| !key_of.get(id.as_str()).is_some_and(|key| key.starts_with("trigger:")))
+        .map(|id| structural(id, &key_of))
+        .collect();
+    merge_same_named(&mut unanswered);
     let mut formed: Vec<Capability> = held.into_iter().filter_map(|other| built(other, &lanes, fields)).collect();
+    formed.extend(unanswered.into_iter().filter_map(|other| {
+        built(other, &lanes, fields).map(|capability| Capability {
+            unsettled: Some(crate::confidence::AI_UNANSWERED),
+            standing: crate::comprehend::PROVISIONAL,
+            ..capability
+        })
+    }));
     formed.sort_by(|left, right| left.id.cmp(&right.id));
     formed
 }
@@ -721,6 +735,18 @@ fn only_moves_the_screen(flow: &Flow) -> bool {
         && !flow.steps.iter().any(|step| matches!(step.kind, "call" | "hand_off" | "raise" | "change" | "create" | "remove"))
 }
 
+fn structural(family: &str, key_of: &BTreeMap<&str, &str>) -> Held {
+    let key = key_of.get(family).copied().unwrap_or(family);
+    let (_, object) = key.split_once(':').unwrap_or(("", key));
+    Held {
+        name: object.to_string(),
+        description: String::new(),
+        audience: String::new(),
+        families: BTreeSet::from([family.to_string()]),
+        roles: BTreeMap::new(),
+    }
+}
+
 fn built(held: Held, lanes: &BTreeMap<&str, (&Family, &Vec<&Flow>)>, fields: &Fields) -> Option<Capability> {
     let name = held.name.trim().to_string();
     if name.is_empty() {
@@ -745,6 +771,7 @@ fn built(held: Held, lanes: &BTreeMap<&str, (&Family, &Vec<&Flow>)>, fields: &Fi
         touches: Vec::new(),
         terminality: None,
         confidence: None,
+        unsettled: None,
         composition_provenance: Vec::new(),
         parent_originated: None,
         evidence,
@@ -1409,6 +1436,8 @@ mod command_family_tests {
             surface: None,
             plays: None,
             standing: "terminal",
+            confidence: 1.0,
+            unsettled: None,
             open: 0,
             cut: false,
             name: None,
@@ -1610,6 +1639,15 @@ mod command_family_tests {
     }
 
     #[test]
+    fn a_family_no_answer_covered_becomes_a_capability_named_for_what_it_handles() {
+        let key_of = BTreeMap::from([("f3", "records:Order,Item")]);
+        let held = structural("f3", &key_of);
+        assert_eq!(held.name, "Order,Item");
+        assert_eq!(held.families, BTreeSet::from(["f3".to_string()]));
+        assert!(held.description.is_empty());
+    }
+
+    #[test]
     fn capabilities_with_the_same_name_merge_at_any_level_without_asking() {
         let mut held = vec![
             held_of("Configure engine environment", &["f0"]),
@@ -1672,6 +1710,7 @@ mod command_family_tests {
             touches: Vec::new(),
             terminality: None,
             confidence: None,
+            unsettled: None,
             composition_provenance: Vec::new(),
             parent_originated: None,
             evidence: String::new(),

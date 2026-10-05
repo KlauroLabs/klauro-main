@@ -344,6 +344,25 @@ test('signature, exported, edge via and the flow standing reach the stored analy
   assert.equal(cas.flows?.[0].cut, true);
 });
 
+test('the confidence of a capability or a flow, and an unsettled mark, reach the stored analysis', () => {
+  const index = {
+    ...INDEX,
+    comprehension: {
+      flows: [
+        { id: 'flow:a', entry_point: 'entry:a', kind: 'http', operation: '/a', standing: 'terminal', confidence: 0.9 },
+        { id: 'flow:b', entry_point: 'entry:b', kind: 'http', operation: '/b', standing: 'reading', confidence: 0.35, unsettled: 'ai-unanswered' },
+      ],
+      capabilities: [
+        { id: 'capability:place-an-order', name: 'Place an order', flows: ['flow:a'], confidence: 0.86 },
+        { id: 'capability:look-up', name: 'Look up', flows: ['flow:b'], confidence: 0.17, unsettled: 'ai-unanswered' },
+      ],
+    },
+  } as unknown as TierStackIndex;
+  const cas = tierStackToCas(index, 'shop');
+  assert.deepEqual(cas.flows?.map(flow => [flow.confidence, flow.unsettled]), [[0.9, undefined], [0.35, 'ai-unanswered']]);
+  assert.deepEqual(cas.capabilities.map(held => [held.confidence, held.unsettled]), [[0.86, undefined], [0.17, 'ai-unanswered']]);
+});
+
 test('the history the engine read becomes the stability of the files it names', () => {
   const index = {
     ...INDEX,

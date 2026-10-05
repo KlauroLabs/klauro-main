@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 const ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
 const MODEL: &str = "jev-latest";
 const BYTES_PER_CALL: usize = 60_000;
-const TRIES: usize = 5;
 
 #[derive(Debug, Serialize)]
 pub struct Question {
@@ -144,12 +143,23 @@ pub fn decide(state: &str, questions: BTreeMap<String, Question>) -> BTreeMap<St
                 return BTreeMap::new();
             };
             let mut held = None;
-            for attempt in 0..TRIES {
-                held = ask(&request);
-                if held.is_some() {
-                    break;
+            let mut waited = std::time::Duration::ZERO;
+            let longest_wait = crate::reach::longest_wait();
+            let mut missed = 0u32;
+            while waited < longest_wait {
+                match ask(&request) {
+                    Reply::Answered(answered) => {
+                        held = Some(answered);
+                        break;
+                    }
+                    Reply::Refused => break,
+                    Reply::Missed => {
+                        let pause = crate::reach::pause_after(missed);
+                        std::thread::sleep(pause);
+                        waited += pause;
+                        missed += 1;
+                    }
                 }
-                std::thread::sleep(std::time::Duration::from_millis(500 << attempt));
             }
             match held {
                 Some(answered) => answered.answers,
@@ -171,19 +181,31 @@ pub fn decide(state: &str, questions: BTreeMap<String, Question>) -> BTreeMap<St
     answers
 }
 
-fn ask(request: &str) -> Option<Answered> {
-    if let Some(held) = remembered(request) {
-        return serde_json::from_str(&held).ok();
+enum Reply {
+    Answered(Answered),
+    Missed,
+    Refused,
+}
+
+fn ask(request: &str) -> Reply {
+    if let Some(held) = remembered(request)
+        && let Ok(answered) = serde_json::from_str(&held)
+    {
+        return Reply::Answered(answered);
     }
-    let key = std::env::var("TYPESAFE_API_KEY").ok()?;
+    let Ok(key) = std::env::var("TYPESAFE_API_KEY") else { return Reply::Refused };
     let started = std::time::Instant::now();
-    let text = crate::reach::post(ENDPOINT, &key, request)?;
+    let text = match crate::reach::asking(ENDPOINT, &key, request) {
+        crate::reach::Answer::Held(text) => text,
+        crate::reach::Answer::Refused => return Reply::Refused,
+        crate::reach::Answer::Missed => return Reply::Missed,
+    };
     if std::env::var("KLAURO_AUTHOR_TRACE").is_ok() {
         eprintln!("jev took {:>6}ms in {:>6} out {:>6}", started.elapsed().as_millis(), request.len(), text.len());
     }
-    let held: Answered = serde_json::from_str(&text).ok()?;
+    let Ok(held) = serde_json::from_str::<Answered>(&text) else { return Reply::Missed };
     remember(request, &text);
-    Some(held)
+    Reply::Answered(held)
 }
 
 pub fn kept() -> Option<PathBuf> {

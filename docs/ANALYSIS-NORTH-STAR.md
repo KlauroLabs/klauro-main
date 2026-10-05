@@ -138,8 +138,9 @@ full of genuinely executable things that are simply not the product.
 
 ## The vocabulary, because it kept producing the wrong machinery
 
-We do not deal in evidence, claims, candidates, validation, arguments, confidence scores, approval
-cycles or grounding checks. None of those words describe what this is.
+We do not deal in candidates, validation, arguments, approval cycles or grounding checks as
+machinery that gates the output. None of those words describe what this is. A confidence score is not
+one of them: it is a reading carried on each capability and flow, never a gate (see Capabilities).
 
 Every one of them belongs to a world where something might be wrong and has to be justified. That is
 not this world. The code is read, not argued with. A function calls another function; a flow ends
@@ -148,8 +149,8 @@ there is nothing to weigh them against because the thing we would check them aga
 source we already read.
 
 The machinery follows the vocabulary. Believe you are making claims from evidence and you will build
-candidate lists, approval cycles, repair loops, grounding checks and a confidence number on every
-answer, because claims need all of that. Every one of those has been built here and every one has had
+candidate lists, approval cycles, repair loops and grounding checks that decide what is allowed to
+be said, because claims need all of that. Every one of those has been built here and every one has had
 to be removed.
 
 So: the lower layers produce facts. The comprehension layer, which is the last stage, states what
@@ -596,7 +597,9 @@ The field-by-field stocktake, with the reason each field exists and its verdict,
 
 Capabilities come from terminality. The terminal and proximal-terminal flows, entities and outcomes are submitted to the model as one batched request, and the capabilities come back.
 
-There is no candidate stage, no approval cycle, no repair loop, no confidence score and no validation pass, and no intermediate capability artifact reaches the output. Those mechanisms all presuppose that a capability is a claim that might be wrong. It is not. The code is read, not argued with, so what the model produces is an expression of what is there rather than a conclusion drawn from support for it.
+There is no candidate stage, no approval cycle, no repair loop and no validation pass that decides what is allowed out, and no intermediate capability artifact reaches the output. The code is read, not argued with, so what the model produces is an expression of what is there.
+
+An analysis never fails and never withholds. Every capability and every flow is emitted, and each carries a `confidence` between 0 and 1 saying how well the engine could stand behind it: how many hops of a flow were resolved by structure rather than by name, whether its trail ran out, whether the AI's reading of a capability was supported by the code it cites, and whether a capability traces to a child capability or only to the parent. An item whose AI ask stayed unanswered after its retries is kept with its structural content, marked `unsettled: "ai-unanswered"` and scored low. A capability that traces to no child is kept, marked as parent-originated, and scored lower. The score informs a reader; it never removes anything.
 
 ## Speed
 

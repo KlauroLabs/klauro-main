@@ -32,23 +32,8 @@ static ASKED_AGAIN: AtomicU64 = AtomicU64::new(0);
 
 static WENT_UNANSWERED: AtomicU64 = AtomicU64::new(0);
 
-const LONGEST_WAIT_FOR_AN_ANSWER: std::time::Duration = std::time::Duration::from_secs(600);
-
 pub fn went_unanswered() -> u64 {
     WENT_UNANSWERED.load(Ordering::Relaxed)
-}
-
-pub fn unanswered_failure(requested: bool, unanswered: u64) -> Option<String> {
-    (requested && unanswered > 0).then(|| {
-        format!("analysis failed: {unanswered} AI asks went unanswered after their retries; nothing was emitted")
-    })
-}
-
-pub fn failed_for_unanswered() -> Option<String> {
-    unanswered_failure(
-        asked() || crate::jev::asked(),
-        went_unanswered() + crate::jev::went_unanswered(),
-    )
 }
 
 static BEGAN: std::sync::LazyLock<std::time::Instant> = std::sync::LazyLock::new(std::time::Instant::now);
@@ -1041,8 +1026,15 @@ pub fn test_capabilities(spoken: &str, held: &[(String, String)], level: &str) -
         );
     }
     let answers = crate::jev::decide(&format!("{RULES}\n\n{spoken}"), questions);
+    let answered = |at: usize| {
+        !crate::jev::asked()
+            || ["supported", "invented", "outcome", "scope"]
+                .iter()
+                .all(|named| answers.contains_key(&format!("c{at}-{named}")))
+    };
     held.iter()
         .enumerate()
+        .filter(|(at, _)| answered(*at))
         .map(|(at, (id, _))| {
             let settled = |named: &str, fallback: f64| {
                 answers
@@ -1327,7 +1319,8 @@ fn answered<T: serde::de::DeserializeOwned>(
         let mut rejected = 0usize;
         let mut missed = 0u32;
         let mut waited = std::time::Duration::ZERO;
-        while rejected < TRIES && waited < LONGEST_WAIT_FOR_AN_ANSWER {
+        let longest_wait = crate::reach::longest_wait();
+        while rejected < TRIES && waited < longest_wait {
             let answered = match &spoken_to {
                 Some(command) => spoken(command, prompt).map_or(
                     crate::reach::Answer::Missed,
@@ -1351,7 +1344,7 @@ fn answered<T: serde::de::DeserializeOwned>(
                 }
                 crate::reach::Answer::Refused => break,
                 crate::reach::Answer::Missed => {
-                    let pause = std::time::Duration::from_millis(500u64 << missed.min(5));
+                    let pause = crate::reach::pause_after(missed);
                     std::thread::sleep(pause);
                     waited += pause;
                     missed += 1;
@@ -1598,26 +1591,5 @@ mod batches {
         assert_eq!(listed_id("- id: m4\n  fields: a, b"), Some("m4"));
         assert_eq!(listed_id("fields"), None);
         assert_eq!(most_of(5), 3);
-    }
-}
-
-#[cfg(test)]
-mod unanswered_tests {
-    use super::unanswered_failure;
-
-    #[test]
-    fn requested_with_unanswered_asks_fails_naming_the_count() {
-        let message = unanswered_failure(true, 37).expect("a failure");
-        assert!(message.contains("37"));
-    }
-
-    #[test]
-    fn requested_with_every_ask_answered_succeeds() {
-        assert!(unanswered_failure(true, 0).is_none());
-    }
-
-    #[test]
-    fn enrichment_off_never_fails() {
-        assert!(unanswered_failure(false, 500).is_none());
     }
 }
