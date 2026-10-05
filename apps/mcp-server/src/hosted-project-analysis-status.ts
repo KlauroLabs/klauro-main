@@ -1,6 +1,7 @@
-import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
+import type { CASOutput, CASProductMap } from '../../../packages/analyzer-core/src/types/cas.types';
 import { isStructuralAnalysisLayer, unavailableComprehensionResponse } from './analysis-response-readiness';
 import { getCachedDeployableAnalyses, type SubCasNodeIndex } from './deployable-analysis';
+import { compactSubCasNodes, productMapOverview } from './hosted-summary-compaction';
 import { buildSummary, getProductMap } from './query';
 
 export function buildHostedProjectAnalysisStatus(
@@ -10,7 +11,7 @@ export function buildHostedProjectAnalysisStatus(
   subCasNodes?: SubCasNodeIndex,
 ): Record<string, unknown> {
   const summary = buildSummary(cas, { detail: 'compact' }) as Record<string, unknown>;
-  summary.sub_cas_nodes = subCasNodes || getCachedDeployableAnalyses(cas).sub_cas_nodes;
+  summary.sub_cas_nodes = compactSubCasNodes(subCasNodes || getCachedDeployableAnalyses(cas).sub_cas_nodes);
   const layers = cas.layers_ready?.layers || [];
   const readinessManifestMissing = layers.length === 0;
   const pending = layers.some(layer => layer.status === 'pending');
@@ -71,6 +72,6 @@ export function buildHostedProjectAnalysisStatus(
     project_id: projectId,
     analysis_id: analysisId,
     summary,
-    ...(!unavailable ? { product_map: getProductMap(cas) } : {}),
+    ...(!unavailable ? { product_map_overview: productMapOverview(getProductMap(cas) as CASProductMap) } : {}),
   };
 }

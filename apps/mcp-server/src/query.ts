@@ -155,6 +155,8 @@ function entityKindNodeNames(nodes: CASOutput['nodes']): string[] {
   return names;
 }
 
+const SUMMARY_DATABASE_ENTITY_LIMIT = 15;
+
 export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'; excludeSeams?: boolean } = {}) {
   const diagnostics = partitionAnalysisDiagnostics(cas.analysis_errors);
   const detail = opts.detail || 'compact';
@@ -175,6 +177,11 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
   const versionInfo = describeAnalysisVersion(cas.cas_version);
 
 
+  const databaseEntityNames = (cas.entities?.length
+    ? cas.entities.map(e => e.name)
+    : cas.database_schema?.entities?.length
+      ? cas.database_schema.entities.map(e => e.name)
+      : entityKindNodeNames(cas.nodes)) || [];
   const seamSummary = opts.excludeSeams ? null : buildCommunicationSeamSummary(cas);
 
 
@@ -276,11 +283,8 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
     ...(casProjectionSummary(cas) ? { projection: casProjectionSummary(cas) } : {}),
     entry_points: cas.entry_points?.length || 0,
     entry_points_by_type: entryPointsByType,
-    database_entities: (cas.entities?.length
-      ? cas.entities.map(e => e.name)
-      : cas.database_schema?.entities?.length
-        ? cas.database_schema.entities.map(e => e.name)
-        : entityKindNodeNames(cas.nodes)) || [],
+    database_entities: databaseEntityNames.slice(0, detail === 'full' ? undefined : SUMMARY_DATABASE_ENTITY_LIMIT),
+    database_entities_total: databaseEntityNames.length,
     capabilities: cas.capabilities?.length || 0,
     structural_capability_candidates: cas.flow_graph?.capability_candidates?.length || 0,
     top_capabilities: cas.capabilities?.length

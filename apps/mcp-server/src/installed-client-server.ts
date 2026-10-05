@@ -442,7 +442,7 @@ export function createServer(): McpServer {
   register('get_summary', {
     description: 'Retrieve the compact hosted analysis summary. The client does not download or construct CAS.',
     inputSchema: { path: z.string() },
-  }, async ({ path }: any) => json(await hostedProjectGet(path, '/analysis')));
+  }, async ({ path }: any) => json(boundToolPayload(await hostedProjectGet(path, '/analysis'), { tool: 'get_summary' })));
 
   register('get_product_map', {
     description: 'Retrieve a hosted product-map slice.',
@@ -457,7 +457,7 @@ export function createServer(): McpServer {
       ...(analysis.failed_layers ? { failed_layers: analysis.failed_layers } : {}),
       ...(analysis.analysis_error ? { error: analysis.analysis_error } : {}),
       ...(analysis.comprehension?.partial ? { error: analysis.comprehension.detail || 'Analysis comprehension is partial.' } : {}),
-      ...(unavailable ? {} : { product_map: analysis.product_map }),
+      ...(unavailable ? {} : { product_map: await hostedProjectQuery(path, 'get_product_map', {}) }),
     });
   });
 
