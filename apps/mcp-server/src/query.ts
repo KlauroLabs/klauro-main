@@ -21,7 +21,7 @@ import { buildTerminalSignal } from '../../../packages/analyzer-core/src/analyze
 import { selectProductFrameworkNames, analyzerTypeMap } from '../../../packages/analyzer-core/src/analyzer/core/framework-comprehension';
 import { computeFlowConcepts, rankMaterializedFlows, attachTelemetryToFlows, telemetryForNode, overlayRuntimeTelemetry, computeCapabilityTelemetry, unexercisedFlows, applyFlowRoleToCapabilityRelationships, type ComputeFlowConceptsOptions, type RuntimeMetricLike } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';
 import { projectUserJourneysFromCas } from '../../../packages/analyzer-core/src/analyzer/core/journey-projection';
-import { computeSemanticCoverage, toCompactSemanticCoverage, type SemanticCoverage } from '../../../packages/analyzer-core/src/analyzer/core/semantic-coverage';
+import { computeSemanticCoverage, toCompactSemanticCoverage } from '../../../packages/analyzer-core/src/analyzer/core/semantic-coverage';
 import { computeFlowStructuralLinks, computeConflictBehavioralLinks } from '../../../packages/analyzer-core/src/analyzer/core/structural-cross-links';
 import { partitionAnalysisDiagnostics } from '../../../packages/analyzer-core/src/analyzer/core/analysis-diagnostics';
 import { isCASSearchContentWord } from '../../../packages/analyzer-core/src/analyzer/core/compact-cas-search';
@@ -366,9 +366,9 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
 
 
 
-export function getSemanticCoverage(cas: CASOutput): SemanticCoverage {
+export function getSemanticCoverage(cas: CASOutput) {
   const flows = computeFlowConcepts(cas);
-  return computeSemanticCoverage(cas, flows);
+  return { ...computeSemanticCoverage(cas, flows), link_coverage: cas.communication_seams?.link_coverage ?? [] };
 }
 
 export interface SystemOverviewFilter {
@@ -833,6 +833,7 @@ export function getCommunicationSeams(
       total: 0,
       inventory: { level: 'node', counts: { sync: 0, async: 0, passive: 0, total: 0 }, component_seams: [] },
       seams: [],
+      link_coverage: [],
     };
   }
   const level = opts.level || 'node';
@@ -852,6 +853,7 @@ export function getCommunicationSeams(
     level,
 
     inventory,
+    link_coverage: seamsResult.link_coverage ?? [],
     seams: seams.slice(offset, offset + limit),
   };
 }

@@ -1,3 +1,4 @@
+import type { EngineLinkCoverage } from '../core/link-coverage';
 import * as buffer from 'buffer';
 import { execFile } from 'child_process';
 import * as fs from 'fs';
@@ -191,12 +192,13 @@ export interface TierStackComposition {
   seams: Array<{
     from: string;
     to: string;
-    kind: 'http' | 'process';
+    kind: 'http' | 'process' | 'ipc';
     communication: 'sync' | 'async' | 'passive';
     origin: 'product' | 'test';
     count: number;
     evidence: string[];
   }>;
+  links?: EngineLinkCoverage[];
   dependencies: Array<{ from: string; to: string; count: number; evidence: string[] }>;
   orphan?: { project: string; files: number; declarations: number };
   promoted?: Array<{

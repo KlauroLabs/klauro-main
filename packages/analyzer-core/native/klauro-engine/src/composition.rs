@@ -80,7 +80,11 @@ pub struct LinkCoverage {
     pub http: Followed,
     pub process: Followed,
     pub ipc: Followed,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unlinked: Vec<String>,
 }
+
+const UNLINKED_KEPT: usize = 5;
 
 #[derive(Debug, Serialize)]
 pub struct Composition {
@@ -316,6 +320,7 @@ fn http_seams(
     entry_points: &[EntryPoint],
     exit_points: &[ExitPoint],
     owner: &HashMap<&str, &str>,
+    linked: &mut HashSet<(u32, u32)>,
 ) -> Vec<Seam> {
     let mut served: HashMap<String, Vec<(&str, &EntryPoint)>> = HashMap::default();
     for entry in entry_points.iter().filter(|entry| entry.kind == "http") {
@@ -345,6 +350,7 @@ fn http_seams(
             continue;
         }
         let (target, route) = matching[0];
+        linked.insert((exit.file, exit.line));
         let route_file = files.get(route.file as usize).map(String::as_str).unwrap_or_default();
         let entry = found.entry((caller, target, is_test(file))).or_insert((0, Vec::new()));
         entry.0 += 1;
@@ -368,6 +374,7 @@ fn ipc_seams(
     entry_points: &[EntryPoint],
     exit_points: &[ExitPoint],
     owner: &HashMap<&str, &str>,
+    linked: &mut HashSet<(u32, u32)>,
 ) -> Vec<Seam> {
     let mut served: HashMap<&str, Vec<(&str, &EntryPoint)>> = HashMap::default();
     for entry in entry_points.iter().filter(|entry| entry.kind == "ipc") {
@@ -388,6 +395,7 @@ fn ipc_seams(
             continue;
         }
         let (target, handler) = handlers[0];
+        linked.insert((exit.file, exit.line));
         let handler_file = files.get(handler.file as usize).map(String::as_str).unwrap_or_default();
         let entry = found.entry((caller, target, is_test(file))).or_insert((0, Vec::new()));
         entry.0 += 1;
@@ -401,6 +409,7 @@ fn link_coverage(
     exit_points: &[ExitPoint],
     owner: &HashMap<&str, &str>,
     seams: &[Seam],
+    reached: &HashSet<(u32, u32)>,
 ) -> Vec<LinkCoverage> {
     let mut held: BTreeMap<&str, LinkCoverage> = BTreeMap::new();
     for exit in exit_points.iter().filter(|exit| matches!(exit.kind, "api" | "process")) {
@@ -411,7 +420,16 @@ fn link_coverage(
             http: Followed::default(),
             process: Followed::default(),
             ipc: Followed::default(),
+            unlinked: Vec::new(),
         });
+        if !reached.contains(&(exit.file, exit.line)) && entry.unlinked.len() < UNLINKED_KEPT {
+            entry.unlinked.push(format!(
+                "{}:{} {}",
+                file,
+                exit.line,
+                exit.addressed.as_deref().filter(|_| exit.kind == "api").unwrap_or(&exit.operation)
+            ));
+        }
         match (exit.kind, exit.addressed.as_deref()) {
             ("process", _) => entry.process.detected += 1,
             ("api", Some(address)) if address.starts_with(crate::entry_exit::IPC_SCHEME) => entry.ipc.detected += 1,
@@ -553,6 +571,7 @@ fn process_seams(
     names: &HashMap<String, Option<String>>,
     rooted: &[(Vec<String>, String)],
     constants: &Constants,
+    linked: &mut HashSet<(u32, u32)>,
 ) -> Vec<Seam> {
     let spawning: HashSet<(u32, u32)> = exit_points
         .iter()
@@ -586,6 +605,7 @@ fn process_seams(
                 .or_else(|| reached_through_a_path(&spelled, rooted, caller))
         });
         let Some((target, word)) = reached else { continue };
+        linked.insert((exit.file, exit.line));
         let entry = found.entry((caller, target, is_test(file))).or_insert((0, Vec::new()));
         entry.0 += 1;
         entry.1.push(format!("{}:{} starts {}", file, exit.line, word));
@@ -623,12 +643,13 @@ pub fn derive(
         .map(|(path, id)| (path.as_str(), id.as_str()))
         .collect();
     let names = spawnable_names(&projects, deployables);
-    let mut seams = http_seams(files, entry_points, exit_points, &owner);
+    let mut reached: HashSet<(u32, u32)> = HashSet::default();
+    let mut seams = http_seams(files, entry_points, exit_points, &owner, &mut reached);
     let constants = Constants::new(locals);
     let rooted = rooted_projects(&projects);
-    seams.extend(ipc_seams(files, entry_points, exit_points, &owner));
-    seams.extend(process_seams(files, exit_points, calls, &owner, &names, &rooted, &constants));
-    let links = link_coverage(files, exit_points, &owner, &seams);
+    seams.extend(ipc_seams(files, entry_points, exit_points, &owner, &mut reached));
+    seams.extend(process_seams(files, exit_points, calls, &owner, &names, &rooted, &constants, &mut reached));
+    let links = link_coverage(files, exit_points, &owner, &seams, &reached);
     Some(Composition {
         mode: "derived",
         children: weigh(root, &projects, history, &owner),

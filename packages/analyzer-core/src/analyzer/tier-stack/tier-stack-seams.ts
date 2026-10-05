@@ -1,4 +1,5 @@
 import type { TierStackFlow, TierStackIndex } from './read-tier-stack';
+import { linkCoverageOf } from '../core/link-coverage';
 import { buildSeamInventory, type CommunicationSeam, type CommunicationSeamsResult } from '../core/communication-seams';
 
 const HANDED_OVER = new Set(['event', 'message', 'background', 'schedule']);
@@ -64,7 +65,8 @@ export function seamsOf(index: TierStackIndex): CommunicationSeamsResult | undef
       });
     }
   }
-  if (seams.length === 0) return undefined;
+  const link_coverage = linkCoverageOf(index.composition?.links, project => named.get(project) ?? project);
+  if (seams.length === 0 && link_coverage === undefined) return undefined;
   const inventory = buildSeamInventory(seams, 'deployable');
-  return { seams, inventory, deployable_inventory: inventory };
+  return { seams, inventory, deployable_inventory: inventory, ...(link_coverage === undefined ? {} : { link_coverage }) };
 }

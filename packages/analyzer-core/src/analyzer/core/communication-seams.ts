@@ -1,3 +1,4 @@
+import type { SubProjectLinkCoverage } from './link-coverage';
 import type {
   CASOutput,
   CASExitPoint,
@@ -84,6 +85,7 @@ export interface CommunicationSeamInventory {
 }
 
 export interface CommunicationSeamsResult {
+  link_coverage?: SubProjectLinkCoverage[];
   seams: CommunicationSeam[];
 
   inventory: CommunicationSeamInventory;

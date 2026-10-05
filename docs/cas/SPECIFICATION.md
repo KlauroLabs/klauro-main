@@ -287,7 +287,7 @@ Every seam carries a `modality` — exactly one of three:
 
 A seam that cannot cite one of these evidence classes MUST NOT be emitted — an asserted seam with no evidence is the fabrication class this product has spent real effort purging elsewhere, and communication seams are not exempt.
 
-Additional implemented kinds include `cross_repo_contract`, `shared_dependency`, and `device_io`. Workspace composition emits cross-repository seams from resolved application links; shared runtime dependencies form passive seams; hardware boundaries are classified `sync` or `async` from evidence.
+Additional implemented kinds include `cross_repo_contract`, `shared_dependency`, and `device_io`. A call across a desktop or webview bridge (`ipc`) is a `sync` seam: an exit point addressed to a named channel is matched to the entry point that handles the same channel in another sub-project, and an unmatched channel emits no seam. For each sub-project, link coverage reports how many outbound `http`, `process` and `ipc` calls were detected, how many were linked to another sub-project, and a short sample of the unlinked call sites, so a sub-project whose calls were never followed reads differently from one that makes none. Workspace composition emits cross-repository seams from resolved application links; shared runtime dependencies form passive seams; hardware boundaries are classified `sync` or `async` from evidence.
 
 ### 0.8.2 Seams between sub-CAS nodes specifically
 
