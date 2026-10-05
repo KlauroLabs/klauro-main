@@ -1344,6 +1344,11 @@ fn read_it() {
         }
     }
 
+    if let Some(message) = author::failed_for_unanswered() {
+        eprintln!("{message}");
+        std::process::exit(2);
+    }
+
     let emit_started = Instant::now();
     let strings = std::cell::RefCell::new(wire::Strings::default());
     let body = rmp_serde::to_vec(&wire::Interned::new(&index, &strings)).unwrap();

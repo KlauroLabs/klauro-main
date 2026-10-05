@@ -96,6 +96,12 @@ struct Answered {
     answers: BTreeMap<String, Decision>,
 }
 
+static UNANSWERED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn went_unanswered() -> u64 {
+    UNANSWERED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub fn asked() -> bool {
     std::env::var("KLAURO_ENRICH").map(|held| held != "0").unwrap_or(true)
         && std::env::var("TYPESAFE_API_KEY").is_ok_and(|key| !key.is_empty())
@@ -148,6 +154,7 @@ pub fn decide(state: &str, questions: BTreeMap<String, Question>) -> BTreeMap<St
             match held {
                 Some(answered) => answered.answers,
                 None => {
+                    UNANSWERED.fetch_add(batch.len() as u64, std::sync::atomic::Ordering::Relaxed);
                     eprintln!(
                         "  jev unanswered: {} questions in a request of {} bytes",
                         batch.len(),

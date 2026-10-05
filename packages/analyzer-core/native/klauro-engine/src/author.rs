@@ -38,6 +38,19 @@ pub fn went_unanswered() -> u64 {
     WENT_UNANSWERED.load(Ordering::Relaxed)
 }
 
+pub fn unanswered_failure(requested: bool, unanswered: u64) -> Option<String> {
+    (requested && unanswered > 0).then(|| {
+        format!("analysis failed: {unanswered} AI asks went unanswered after their retries; nothing was emitted")
+    })
+}
+
+pub fn failed_for_unanswered() -> Option<String> {
+    unanswered_failure(
+        asked() || crate::jev::asked(),
+        went_unanswered() + crate::jev::went_unanswered(),
+    )
+}
+
 static BEGAN: std::sync::LazyLock<std::time::Instant> = std::sync::LazyLock::new(std::time::Instant::now);
 
 pub fn asked_again() -> u64 {
@@ -1585,5 +1598,26 @@ mod batches {
         assert_eq!(listed_id("- id: m4\n  fields: a, b"), Some("m4"));
         assert_eq!(listed_id("fields"), None);
         assert_eq!(most_of(5), 3);
+    }
+}
+
+#[cfg(test)]
+mod unanswered_tests {
+    use super::unanswered_failure;
+
+    #[test]
+    fn requested_with_unanswered_asks_fails_naming_the_count() {
+        let message = unanswered_failure(true, 37).expect("a failure");
+        assert!(message.contains("37"));
+    }
+
+    #[test]
+    fn requested_with_every_ask_answered_succeeds() {
+        assert!(unanswered_failure(true, 0).is_none());
+    }
+
+    #[test]
+    fn enrichment_off_never_fails() {
+        assert!(unanswered_failure(false, 500).is_none());
     }
 }
