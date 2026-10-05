@@ -28,6 +28,12 @@ inferred from a shared name, and it is what the engine itself uses to decide whi
 
 `edges[].metadata.attributes.via` carries the engine's `edges[].via` onto the stored analysis, and `flows[].standing`, `flows[].open` and `flows[].cut` carry the flow standing described below. They tell a reader of a route between two functions how each hop was found and where a trail ran out.
 
+`temporal_stability[]` now also arrives from the engine's history read, one entry per source file that was fixed or changed more than once, with `quality_signals.bug_fix_commits`, `bug_fix_percentile` and `churn_percentile`. A commit counts as a fix when its subject says it fixes something and it changed something other than documentation, tests or configuration; the percentiles place the file among this repository's own files, so change risk reads against the repository's own recent commits rather than a fixed rate. `change_risks[].stability_context` carries the same two percentiles. They tell a reader how unusual a file's bug history is here.
+
+`nodes[].metadata.attributes.dead_code` is set on a function or method the engine found unreached, with `reason` (`no-inbound`, `exported-unused`, `only-from-tests`, `only-from-dead-callers`), the number of `callers`, and `open` when a call may still reach it (`unlinked-calls`, `passed-as-value`, `dynamic-dispatch`) with the count of `unlinked` calls. `get_dead_code` reads it and reports each unit as `dead` or `possibly-dead` with plain evidence strings. They tell a reader why a unit is called dead and whether an open end could still reach it.
+
+`find_tests` matches carry `basis` (`exact-by-graph`, `graph-with-name-guess`, `explicit-coverage`, `name-based`) and the resolution carries `answer_basis`. They tell a reader whether a selected test reaches the unit through resolved calls or was matched on a name. `get_communities` carries `surprising_links`: a member of a small community reaching a hub of another through one of very few links.
+
 **Data**
 `entities`, `data_summary`, `data_lineage`, `database_schema`, `domain_concepts`
 
