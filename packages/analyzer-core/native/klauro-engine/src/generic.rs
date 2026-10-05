@@ -1873,6 +1873,13 @@ impl<'a> Extractor<'a> {
         });
     }
 
+    fn route_block<'t>(&self, call: Node<'t>, callee: &str) -> Option<Node<'t>> {
+        if self.spec.id != "ruby" || REQUEST_METHODS.binary_search(&callee.to_ascii_lowercase().as_str()).is_err() {
+            return None;
+        }
+        call.child_by_field_name("block")
+    }
+
     fn handled_inline<'t>(&self, argument: Node<'t>) -> Option<Node<'t>> {
         let lambdas = self.spec.declares.lambda_kinds;
         if lambdas.contains(&argument.kind()) {
@@ -2809,7 +2816,7 @@ impl<'a> Extractor<'a> {
                     Some(receiver) => format!("{receiver}.{callee}"),
                     None => callee.clone(),
                 };
-                if let Some(closure) = self.swift_trailing_closure(node) {
+                if let Some(closure) = self.swift_trailing_closure(node).or_else(|| self.route_block(node, &callee)) {
                     self.labelled.insert(closure.id(), (registrar.clone(), label.clone()));
                 }
                 let mut handlers: Vec<(String, Node)> = Vec::new();
