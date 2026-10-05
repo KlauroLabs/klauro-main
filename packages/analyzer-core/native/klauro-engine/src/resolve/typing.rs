@@ -29,6 +29,12 @@ impl Drop for Depth {
     }
 }
 
+struct Trail<'a> {
+    origin: Origin<'a>,
+    held: Option<&'a str>,
+    held_file: u32,
+}
+
 const SHARES_ONE_SCOPE: &[&str] = &["go", "java", "kotlin", "scala", "csharp"];
 
 impl<'a> Symbols<'a> {
@@ -248,77 +254,77 @@ impl<'a> Resolver<'a> {
         let Some(first) = parts.next() else {
             return (Origin::Unknown, None);
         };
-        let (mut origin, mut held, opening) = match self.static_path(unit, file, first) {
+        let (origin, held, opening) = match self.static_path(unit, file, first) {
             Some((origin, tail)) => (origin, None, Some(tail)),
             None => (self.root(unit, file, first), self.held(unit, file, first), None),
         };
-        let mut held_file = file;
+        let mut trail = Trail { origin, held, held_file: file };
         for part in opening.into_iter().chain(parts) {
-            if let Origin::Declared(owner) = origin
-                && self.symbols.nodes[owner as usize].kind.is_unit()
-            {
-                origin = self.returned_by(owner);
-                held = None;
-            }
-            origin = match origin {
-                Origin::Declared(owner) if self.symbols.nodes[owner as usize].kind.is_type() && part == "new" => {
-                    Origin::Declared(owner)
-                }
-                Origin::Declared(owner) if self.symbols.nodes[owner as usize].kind.is_type() => {
-                    let unwrapped = held
-                        .filter(|annotation| HOLDERS.contains(&base_type_name(annotation)))
-                        .filter(|_| HOLDER_ACCESSORS.contains(&part))
-                        .and_then(sole_type_argument);
-                    if let Some(inner) = unwrapped
-                        && self.symbols.member_type(owner, part).is_none()
-                    {
-                        held = Some(inner);
-                        origin = Origin::Declared(owner);
-                        continue;
-                    }
-                    let found = self.inherited_member_type(owner, part);
-                    held = found.map(|(annotation, _)| annotation);
-                    held_file = found.map(|(_, at)| self.symbols.nodes[at as usize].file).unwrap_or(held_file);
-                    match found {
-                        Some((annotation, at)) => self.annotated_from(owner, at, annotation),
-                        None => Origin::Unknown,
-                    }
-                }
-                Origin::Module(held_file) => {
-                    held = None;
-                    match self.symbols.in_scope(held_file, part) {
-                        Some(found) => self.declared_value(found),
-                        None => Origin::Unknown,
-                    }
-                }
-                Origin::Package(specifier) => Origin::Package(specifier),
-                Origin::Runtime(name) if !path.contains('(') && matches!(self.returned(part), Origin::Unknown) => {
-                    held = None;
-                    Origin::Runtime(name)
-                }
-                _ if part == "value" => match held.and_then(sole_type_argument) {
-                    Some(inner) => {
-                        held = Some(inner);
-                        self.annotated(file, inner)
-                    }
-                    None => {
-                        held = None;
-                        self.returned(part)
-                    }
-                },
-                _ => {
-                    held = None;
-                    self.returned(part)
-                }
-            };
+            trail = self.follow(trail, part, file, path);
         }
-        if let Origin::Declared(owner) = origin
+        if let Origin::Declared(owner) = trail.origin
             && self.symbols.nodes[owner as usize].kind.is_unit()
             && path.trim_end().ends_with(')')
         {
             return (self.returned_by(owner), None);
         }
-        (origin, held.map(|annotation| (annotation, held_file)))
+        (trail.origin, trail.held.map(|annotation| (annotation, trail.held_file)))
+    }
+
+    fn follow(&self, trail: Trail<'a>, part: &'a str, file: u32, path: &str) -> Trail<'a> {
+        let Trail { mut origin, mut held, held_file } = trail;
+        if let Origin::Declared(owner) = origin
+            && self.symbols.nodes[owner as usize].kind.is_unit()
+        {
+            origin = self.returned_by(owner);
+            held = None;
+        }
+        match origin {
+            Origin::Declared(owner) if self.symbols.nodes[owner as usize].kind.is_type() && part == "new" => {
+                Trail { origin, held, held_file }
+            }
+            Origin::Declared(owner) if self.symbols.nodes[owner as usize].kind.is_type() => {
+                self.through_member(owner, held, held_file, part)
+            }
+            Origin::Module(module) => Trail {
+                origin: match self.symbols.in_scope(module, part) {
+                    Some(found) => self.declared_value(found),
+                    None => Origin::Unknown,
+                },
+                held: None,
+                held_file,
+            },
+            Origin::Package(_) => Trail { origin, held, held_file },
+            Origin::Runtime(_) if !path.contains('(') && matches!(self.returned(part), Origin::Unknown) => {
+                Trail { origin, held: None, held_file }
+            }
+            _ if part == "value" => match held.and_then(sole_type_argument) {
+                Some(inner) => Trail { origin: self.annotated(file, inner), held: Some(inner), held_file },
+                None => Trail { origin: self.returned(part), held: None, held_file },
+            },
+            _ => Trail { origin: self.returned(part), held: None, held_file },
+        }
+    }
+
+    fn through_member(&self, owner: u32, held: Option<&'a str>, held_file: u32, part: &'a str) -> Trail<'a> {
+        let unwrapped = held
+            .filter(|annotation| HOLDERS.contains(&base_type_name(annotation)))
+            .filter(|_| HOLDER_ACCESSORS.contains(&part))
+            .and_then(sole_type_argument);
+        if let Some(inner) = unwrapped
+            && self.symbols.member_type(owner, part).is_none()
+        {
+            return Trail { origin: Origin::Declared(owner), held: Some(inner), held_file };
+        }
+        let found = self.inherited_member_type(owner, part);
+        Trail {
+            origin: match found {
+                Some((annotation, at)) => self.annotated_from(owner, at, annotation),
+                None => Origin::Unknown,
+            },
+            held: found.map(|(annotation, _)| annotation),
+            held_file: found.map(|(_, at)| self.symbols.nodes[at as usize].file).unwrap_or(held_file),
+        }
     }
 
     pub(super) fn returned_by(&self, function: u32) -> Origin<'a> {
