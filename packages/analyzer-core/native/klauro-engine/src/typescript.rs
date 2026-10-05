@@ -1620,7 +1620,7 @@ impl<'a> Extractor<'a> {
                 arguments.named_children(&mut cursor).count() as u16
             })
             .unwrap_or(0);
-        let literals = arguments
+        let mut literals = arguments
             .map(|arguments| self.literal_arguments(arguments))
             .unwrap_or_default();
         let passes = arguments
@@ -1643,6 +1643,12 @@ impl<'a> Extractor<'a> {
             }
             _ => (None, self.text_owned(function)),
         };
+
+        if callee == "register"
+            && let Some(prefix) = arguments.and_then(|held| self.prefix_option(held))
+        {
+            literals.push(format!("prefix={prefix}"));
+        }
 
         let optional_chained = function.kind() == "member_expression"
             && function
@@ -1834,6 +1840,27 @@ impl<'a> Extractor<'a> {
             line: line_of(argument),
             ..Default::default()
         });
+    }
+
+    fn prefix_option(&self, arguments: Node) -> Option<String> {
+        let mut cursor = arguments.walk();
+        for argument in arguments.named_children(&mut cursor) {
+            if argument.kind() != "object" {
+                continue;
+            }
+            let mut inner = argument.walk();
+            for pair in argument.named_children(&mut inner) {
+                let Some(key) = pair.child_by_field_name("key") else { continue };
+                if trim_quotes(self.text(key)) != "prefix" {
+                    continue;
+                }
+                let Some(value) = pair.child_by_field_name("value") else { continue };
+                if value.kind() == "string" || (value.kind() == "template_string" && !self.text(value).contains("${")) {
+                    return Some(trim_quotes(self.text(value)).to_string());
+                }
+            }
+        }
+        None
     }
 
     fn literal_arguments(&self, arguments: Node) -> Vec<String> {

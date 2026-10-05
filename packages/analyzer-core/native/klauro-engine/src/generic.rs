@@ -298,6 +298,24 @@ impl<'a> Extractor<'a> {
         None
     }
 
+    fn verb_chain<'t>(&self, node: Node<'t>) -> Vec<(String, Node<'t>)> {
+        if !self.spec.calls.kinds.contains(&node.kind()) {
+            return Vec::new();
+        }
+        let Some(function) = node.child_by_field_name("function") else { return Vec::new() };
+        let verb = crate::names::leaf(self.text(function)).to_ascii_lowercase();
+        let mut found = match self.spec.calls.receiver_fields.iter().find_map(|field| function.child_by_field_name(field)) {
+            Some(inner) => self.verb_chain(inner),
+            None => Vec::new(),
+        };
+        if REQUEST_METHODS.binary_search(&verb.as_str()).is_ok()
+            && let Some(arguments) = node.child_by_field_name("arguments")
+        {
+            found.push((verb.to_ascii_uppercase(), arguments));
+        }
+        found
+    }
+
     fn referenced_names(&self, node: Node, depth: u8) -> Vec<String> {
         if self.spec.names.leaf_kinds.contains(&node.kind()) || node.kind().contains("selector") {
             return vec![self.text(node).to_string()];
@@ -2742,12 +2760,22 @@ impl<'a> Extractor<'a> {
                     None => callee.clone(),
                 };
                 let mut handlers: Vec<(String, Node)> = Vec::new();
+                let mut chained_handlers: Vec<(String, Node, String)> = Vec::new();
                 for argument in children.iter() {
                     if argument.kind().contains("string") || configures_the_call(argument.kind()) {
                         continue;
                     }
                     if let Some(handler) = self.handled_inline(*argument) {
                         self.labelled.insert(handler.id(), (registrar.clone(), label.clone()));
+                        continue;
+                    }
+                    let chained = self.verb_chain(*argument);
+                    if chained.len() > 1 {
+                        for (verb, arguments) in chained {
+                            for handler in self.referenced_names(arguments, 0) {
+                                chained_handlers.push((handler, *argument, verb.clone()));
+                            }
+                        }
                         continue;
                     }
                     for handler in self.referenced_names(*argument, 0) {
@@ -2776,11 +2804,22 @@ impl<'a> Extractor<'a> {
                 if nested.is_some() {
                     self.handed_over(arguments, &mut handlers);
                 }
+                handlers.retain(|(handler, _)| !chained_handlers.iter().any(|(chained, _, _)| chained == handler));
                 for (handler, at) in handlers {
                     self.facts.registrations.push(RegistrationFact {
                         file: self.file,
                         registrar: registrar.clone(),
                         label: label.clone(),
+                        handler,
+                        line: at.start_position().row as u32 + 1,
+                    });
+                }
+                let bare_path = label.split_once(' ').map(|(_, path)| path).unwrap_or(label.as_str()).to_string();
+                for (handler, at, verb) in chained_handlers {
+                    self.facts.registrations.push(RegistrationFact {
+                        file: self.file,
+                        registrar: registrar.clone(),
+                        label: format!("{verb} {bare_path}"),
                         handler,
                         line: at.start_position().row as u32 + 1,
                     });

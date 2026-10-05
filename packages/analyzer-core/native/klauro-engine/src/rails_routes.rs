@@ -280,7 +280,7 @@ pub fn derive(nodes: &[IndexNode], calls: &[CallFact], files: &[String]) -> Vec<
     let mut classes: HashMap<String, &IndexNode> = HashMap::default();
     for node in nodes.iter().filter(|node| node.kind.is_type()) {
         let path = &files[node.file as usize];
-        if path.ends_with("_controller.rb") {
+        if path.ends_with("_controller.rb") && node.name.ends_with("Controller") {
             classes.entry(path.clone()).or_insert(node);
         }
     }

@@ -1,0 +1,1 @@
+{ "name": "prefix-fastify", "dependencies": { "fastify": "^5.0.0" } }

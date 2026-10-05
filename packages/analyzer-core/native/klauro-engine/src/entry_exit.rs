@@ -74,6 +74,16 @@ fn registered_on_a_router(registrar: &str) -> bool {
     }
 }
 
+fn registered_on_a_router_like(registrar: &str) -> bool {
+    let Some(at) = registrar.rfind('.') else { return false };
+    let receiver = &registrar[..at];
+    if ROUTERS.binary_search(&receiver).is_ok() {
+        return true;
+    }
+    let root = receiver.split(['.', '(']).next().unwrap_or(receiver).trim();
+    root.to_ascii_lowercase().contains("router")
+}
+
 static PATH_REGISTRARS: &[&str] = &[
     "handle", "handlefunc", "handler", "handlerfunc", "mount", "nest", "path", "re_path",
     "resource", "route", "service",
@@ -1829,7 +1839,7 @@ pub fn derive(
         .iter()
         .map(|held| ((held.file, held.unit.as_str(), held.name.as_str()), held))
         .collect();
-    let Resolution { modules, local, unique_units, call_origins, through, .. } = resolution;
+    let Resolution { modules, local, unique_units, call_origins, through, imported, .. } = resolution;
     let known: HashSet<&str> = nodes.iter().map(|node| node.id.as_str()).collect();
     let mut stands_in: HashMap<&str, Vec<&'static str>> = HashMap::default();
     for ((file, _), specifier) in modules {
@@ -1845,7 +1855,21 @@ pub fn derive(
     lap("setup");
     let mut entry_points = Vec::new();
     let mut continued: Vec<String> = Vec::new();
-    let mounted = mounted_under(calls);
+    let mounts = crate::mounts::composed(mounted_under(calls), calls, locals, files, nodes, through, imported);
+    let mounted = &mounts.files;
+    let parent_of: HashMap<&str, &str> =
+        nodes.iter().filter_map(|node| Some((node.id.as_str(), node.parent.as_deref()?))).collect();
+    let prefix_for = |registrar: &str, file: u32, unit: Option<&str>| -> Option<String> {
+        let of_the_file = (registered_on_a_router_like(registrar) || mounts.children.contains(&file))
+            .then(|| mounted.get(&file).cloned())
+            .flatten();
+        let of_the_unit = unit.and_then(|unit| mounts.within(unit, &parent_of));
+        match (of_the_file, of_the_unit) {
+            (Some(file), Some(unit)) => Some(join_paths(&file, &unit)),
+            (file, None) => file,
+            (None, unit) => unit,
+        }
+    };
     let mut base_paths: HashMap<&str, String> = HashMap::default();
     let mut written_in: HashMap<&str, Vec<&crate::model::LocalBinding>> = HashMap::default();
     for local in locals.iter().filter(|local| local.written.is_some() && !local.unit.is_empty()) {
@@ -1907,13 +1931,11 @@ pub fn derive(
                         None
                     },
                     path: if kind == "http" {
-                        let base = registered_on_a_router(registrar)
-                            .then(|| mounted.get(&node.file))
-                            .flatten();
+                        let base = prefix_for(registrar, node.file, node.parent.as_deref());
                         let label = label.map(|held| split_label(held).1);
                         match (base, label) {
-                            (Some(base), Some(label)) => Some(join_paths(base, &label)),
-                            (Some(base), None) => Some(base.clone()),
+                            (Some(base), Some(label)) => Some(join_paths(&base, &label)),
+                            (Some(base), None) => Some(base),
                             (None, label) => label,
                         }
                     } else {
@@ -1973,7 +1995,7 @@ pub fn derive(
                     .as_deref()
                     .and_then(|parent| base_paths.get(parent))
                     .or_else(|| {
-                        registered_on_a_router(&decorator.name)
+                        (registered_on_a_router_like(&decorator.name) || mounts.children.contains(&node.file))
                             .then(|| mounted.get(&node.file))
                             .flatten()
                     });
@@ -2176,11 +2198,12 @@ pub fn derive(
     lap("registrations owned");
     let groups = groups_of(calls, locals);
     let by_line = if groups.is_empty() { HashMap::default() } else { calls_by_line(calls) };
+    let calls_by_registration = if mounts.units.is_empty() { HashMap::default() } else { calls_by_line(calls) };
     let mut units_in_file: HashMap<(u32, &str), Vec<&str>> = HashMap::default();
     for node in nodes.iter().filter(|node| node.kind.is_unit()) {
         units_in_file.entry((node.file, node.name.as_str())).or_default().push(node.id.as_str());
     }
-    let mut registered: HashSet<(u32, u32)> = HashSet::default();
+    let mut registered: HashSet<(u32, u32, String)> = HashSet::default();
     let const_values: HashMap<&str, &str> = locals
         .iter()
         .filter(|local| local.unit.is_empty())
@@ -2235,7 +2258,7 @@ pub fn derive(
         else {
             continue;
         };
-        if !registered.insert((registration.file, registration.line)) {
+        if !registered.insert((registration.file, registration.line, label.to_string())) {
             continue;
         }
         let verb = names::leaf(&registration.registrar);
@@ -2244,11 +2267,11 @@ pub fn derive(
             Some(prefix) => join_paths(&prefix, &path),
             None => path,
         };
-        let path = match registered_on_a_router(&registration.registrar)
-            .then(|| mounted.get(&registration.file))
-            .flatten()
-        {
-            Some(base) => join_paths(base, &path),
+        let called_from = calls_by_registration
+            .get(&(registration.file, registration.line, verb.to_ascii_lowercase()))
+            .and_then(|call| call.caller.as_deref());
+        let path = match prefix_for(&registration.registrar, registration.file, called_from) {
+            Some(base) => join_paths(&base, &path),
             None => path,
         };
         if kind == "http" && handler == files[registration.file as usize] {
