@@ -265,8 +265,8 @@ and an addition (`analysis-rename-match.ts`). A pair is accepted only when it is
 Matching repeats for a few passes so members follow a renamed container. Declarations whose
 fingerprint is shared by several candidates are never paired; they are listed as ambiguous (a
 bounded sample) and stay reported as removed and added. Each matched pair names the basis it was
-matched on, and the pairing is carried into flows, steps and breaking-change consumers so a renamed
-function keeps its history.
+matched on, and the pairing is carried into the flow, step and breaking-change sections of the
+report.
 
 **Incremental analysis does not pair renames.** A renamed file reaches incremental analysis as a
 deleted path and a new path. The deletion still propagates to every tracked dependent of the old
