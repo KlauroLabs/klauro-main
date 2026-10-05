@@ -339,9 +339,10 @@ async function runWithConcurrency<T>(
   await Promise.all(runners);
   if (firstError !== undefined) throw firstError;
 }
+const DEFAULT_AI_CONCURRENCY = 16;
 function aiConcurrencyLimit(): number {
   const configured = Number(process.env.KLAURO_AI_CONCURRENCY || '');
-  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 5;
+  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : DEFAULT_AI_CONCURRENCY;
 }
 function writeAnalyzerStatus(...values: unknown[]): void {
   const line = values.map(value => typeof value === 'string' ? value : JSON.stringify(value)).join(' ');
