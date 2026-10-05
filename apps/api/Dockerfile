@@ -17,6 +17,7 @@ COPY packages/analyzer-core/native/klauro-engine/Cargo.toml packages/analyzer-co
 COPY packages/analyzer-core/native/klauro-engine/build.rs ./build.rs
 COPY packages/analyzer-core/native/klauro-engine/grammars ./grammars
 COPY packages/analyzer-core/native/klauro-engine/src ./src
+COPY packages/analyzer-core/native/klauro-engine/data ./data
 RUN cargo build --release --locked
 
 FROM node:${NODE_VERSION}-bookworm-slim AS runtime
