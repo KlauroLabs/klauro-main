@@ -6,6 +6,8 @@ use crate::screens::{imported_handler, DEFAULT_SCREEN, LOADED_SCREEN, MOUNTED_SC
 
 static COMPONENT_KEYS: &[&str] = &["Component", "component", "element", "lazy", "loadComponent"];
 static CHILD_KEYS: &[&str] = &["children", "routes"];
+const ROUTE_REGISTRAR: &str = "route";
+const ANY_METHOD: &str = "*";
 
 fn names_a_component(tag: &str) -> bool {
     tag.chars().next().is_some_and(char::is_uppercase)
@@ -238,6 +240,47 @@ impl<'a> Extractor<'a> {
             handler,
             line: line_of(node),
         });
+    }
+
+    fn route_objects<'t>(&self, argument: Node<'t>) -> Vec<Node<'t>> {
+        match argument.kind() {
+            "object" => vec![argument],
+            "array" => {
+                let mut cursor = argument.walk();
+                argument.named_children(&mut cursor).filter(|element| element.kind() == "object").collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    pub(super) fn declared_route_objects(&mut self, callee: &str, arguments: &[Node]) {
+        if crate::names::leaf(callee) != ROUTE_REGISTRAR {
+            return;
+        }
+        let objects: Vec<Node> = arguments.iter().flat_map(|argument| self.route_objects(*argument)).collect();
+        for object in objects {
+            let Some(path) = self.pair_value(object, "path").and_then(|value| self.string_value(value)) else { continue };
+            let Some(handler) = self
+                .pair_value(object, "handler")
+                .filter(|value| matches!(value.kind(), "identifier" | "member_expression"))
+            else {
+                continue;
+            };
+            let method = self
+                .pair_value(object, "method")
+                .and_then(|value| self.string_value(value))
+                .filter(|method| method != ANY_METHOD);
+            self.facts.registrations.push(RegistrationFact {
+                file: self.file,
+                registrar: callee.to_string(),
+                label: match method {
+                    Some(method) => format!("{} {path}", method.to_ascii_uppercase()),
+                    None => path,
+                },
+                handler: self.text_owned(handler),
+                line: line_of(object),
+            });
+        }
     }
 
     fn route_path_of_object(&self, object: Node) -> Option<String> {
