@@ -48,3 +48,10 @@ fn the_first_result_of_a_multiple_return_is_the_declared_first_type() {
         "c, err := cart.Load(..) binds c to *Cart"
     );
 }
+
+#[test]
+fn a_range_variable_takes_the_element_type_of_the_slice() {
+    let index = index();
+    assert!(calls(&index, "cmd/main.go:function:ranged", "pkg/cart/methods.go:function:Total"));
+    assert!(!calls(&index, "cmd/main.go:function:ranged", "pkg/wishlist/wishlist.go:function:Total"));
+}

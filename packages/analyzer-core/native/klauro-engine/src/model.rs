@@ -55,7 +55,7 @@ pub enum EdgeKind {
     Instantiates,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Parameter {
     pub name: String,
     #[serde(skip_serializing_if = "crate::facts_cache::none")]

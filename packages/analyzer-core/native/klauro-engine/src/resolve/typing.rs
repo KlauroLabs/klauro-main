@@ -88,6 +88,17 @@ pub(super) fn names_itself(annotation: &str) -> bool {
     base_type_name(held) == "Self"
 }
 
+fn literal_type(written: &str) -> Option<&'static str> {
+    let first = written.chars().next()?;
+    match first {
+        '"' | '\'' | '`' => Some("String"),
+        '[' => Some("Array"),
+        '/' if written[1..].contains('/') && !written.starts_with("//") => Some("RegExp"),
+        digit if digit.is_ascii_digit() => Some("Number"),
+        _ => None,
+    }
+}
+
 fn is_tuple(annotation: &str) -> bool {
     annotation.trim_start().starts_with('(')
 }
@@ -195,21 +206,29 @@ impl<'a> Resolver<'a> {
     }
 
     pub(super) fn origin(&self, unit: u32, file: u32, path: &'a str) -> Origin<'a> {
+        self.origin_held(unit, file, path).0
+    }
+
+    pub(super) fn origin_held(&self, unit: u32, file: u32, path: &'a str) -> (Origin<'a>, Option<(&'a str, u32)>) {
         let bare = path.trim().trim_start_matches('(').trim_end_matches(')').trim();
+        if let Some(name) = literal_type(bare) {
+            return (Origin::Runtime(name), None);
+        }
         if let Some(built) = bare.strip_prefix("new ") {
             let named = built.split(['(', ')', ' ', '<', '{']).next().unwrap_or(built).trim();
             if !named.is_empty() {
-                return self.annotated(file, named);
+                return (self.annotated(file, named), None);
             }
         }
         let mut parts = segments(path);
         let Some(first) = parts.next() else {
-            return Origin::Unknown;
+            return (Origin::Unknown, None);
         };
         let (mut origin, mut held, opening) = match self.static_path(unit, file, first) {
             Some((origin, tail)) => (origin, None, Some(tail)),
             None => (self.root(unit, file, first), self.held(unit, file, first), None),
         };
+        let mut held_file = file;
         for part in opening.into_iter().chain(parts) {
             origin = match origin {
                 Origin::Declared(owner) if self.symbols.nodes[owner as usize].kind.is_type() && part == "new" => {
@@ -228,6 +247,7 @@ impl<'a> Resolver<'a> {
                         continue;
                     }
                     held = self.symbols.member_type(owner, part);
+                    held_file = self.symbols.nodes[owner as usize].file;
                     match held {
                         Some(annotation) => self.annotated_from(owner, annotation),
                         None => Origin::Unknown,
@@ -245,6 +265,10 @@ impl<'a> Resolver<'a> {
                     }
                 }
                 Origin::Package(specifier) => Origin::Package(specifier),
+                Origin::Runtime(name) if !path.contains('(') && matches!(self.returned(part), Origin::Unknown) => {
+                    held = None;
+                    Origin::Runtime(name)
+                }
                 _ if part == "value" => match held.and_then(sole_type_argument) {
                     Some(inner) => {
                         held = Some(inner);
@@ -261,7 +285,7 @@ impl<'a> Resolver<'a> {
                 }
             };
         }
-        origin
+        (origin, held.map(|annotation| (annotation, held_file)))
     }
 
     fn returned_by(&self, function: u32) -> Origin<'a> {
@@ -288,6 +312,73 @@ impl<'a> Resolver<'a> {
         }
         match node.type_annotation.as_deref() {
             Some(annotation) => self.annotated(node.file, annotation),
+            None => Origin::Unknown,
+        }
+    }
+}
+
+impl<'a> Resolver<'a> {
+    pub(super) fn enclosing(&self, unit: u32) -> Vec<u32> {
+        let mut chain = vec![unit];
+        let mut current = unit;
+        for _ in 0..8 {
+            let node = &self.symbols.nodes[current as usize];
+            if !node.id.contains(":callback:") || node.signature.is_none() {
+                break;
+            }
+            let Some(parent) = node.parent.as_deref().and_then(|parent| self.symbols.position.get(parent)).copied() else {
+                break;
+            };
+            chain.push(parent);
+            current = parent;
+        }
+        chain
+    }
+
+    pub(super) fn element_binding(&self, unit: u32, file: u32, name: &str, in_parameters: bool) -> Origin<'a> {
+        let node = &self.symbols.nodes[unit as usize];
+        let Some(expression) = self.bindings.elements.get(&(node.id.as_str(), name)).copied() else {
+            return Origin::Unknown;
+        };
+        let evaluated_in = match in_parameters {
+            true => match node.parent.as_deref().and_then(|parent| self.symbols.position.get(parent)) {
+                Some(parent) => *parent,
+                None => return Origin::Unknown,
+            },
+            false => unit,
+        };
+        self.element_origin(evaluated_in, file, expression)
+    }
+
+    fn element_origin(&self, unit: u32, file: u32, expression: &'a str) -> Origin<'a> {
+        let Some(_depth) = Depth::enter() else {
+            return Origin::Unknown;
+        };
+        let mut parts: Vec<&str> = segments(expression).collect();
+        while parts.len() > 1 {
+            match parts.last() {
+                Some(last) if crate::elements::keeps_its_elements(last) => {
+                    parts.pop();
+                }
+                _ => break,
+            }
+        }
+        let Some(first) = parts.first().copied() else {
+            return Origin::Unknown;
+        };
+        let held = match parts.len() {
+            1 => self.held(unit, file, first).map(|annotation| (annotation, file)),
+            _ => {
+                let end = expression.find(parts[parts.len() - 1]).map(|at| at + parts[parts.len() - 1].len());
+                let Some(end) = end else { return Origin::Unknown };
+                self.origin_held(unit, file, &expression[..end]).1
+            }
+        };
+        let Some((annotation, declared_in)) = held else {
+            return Origin::Unknown;
+        };
+        match crate::elements::element_of(annotation) {
+            Some(element) => self.annotated(declared_in, element),
             None => Origin::Unknown,
         }
     }

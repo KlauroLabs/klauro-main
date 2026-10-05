@@ -25,6 +25,14 @@ func other() int {
 	return w.Total()
 }
 
+func ranged(carts []*cart.Cart) int {
+	sum := 0
+	for _, c := range carts {
+		sum += c.Total()
+	}
+	return sum
+}
+
 func main() {
 	fill()
 	loaded()

@@ -5,6 +5,8 @@ use tree_sitter::{Node, Tree};
 use crate::language::LanguageSpec;
 use crate::model::*;
 
+mod lambdas;
+
 static COLUMNS_OF: &[&str] = &[
     "appends", "attributes", "casts", "columns", "dates", "fields", "fillable", "guarded",
     "hidden", "visible",
@@ -97,6 +99,7 @@ pub struct Extractor<'a> {
     types_by_name: HashMap<String, String>,
     remembered: HashMap<String, String>,
     labelled: HashMap<usize, (String, String)>,
+    last_receiver: Option<String>,
 }
 
 #[derive(Clone)]
@@ -115,6 +118,7 @@ struct Scope {
     awaited: bool,
     dispatch_param: Option<String>,
     argv_param: Option<String>,
+    registrar_receiver: Option<String>,
 }
 
 fn span_of(node: Node) -> Span {
@@ -138,6 +142,7 @@ impl<'a> Extractor<'a> {
             types_by_name: HashMap::default(),
             remembered: HashMap::default(),
             labelled: HashMap::default(),
+            last_receiver: None,
         }
     }
 
@@ -669,6 +674,7 @@ impl<'a> Extractor<'a> {
             awaited: false,
             dispatch_param: None,
             argv_param: None,
+            registrar_receiver: None,
         };
         self.walk(root, &scope);
 
@@ -838,10 +844,12 @@ impl<'a> Extractor<'a> {
                 });
             }
         }
+        self.declare_loop_element(node, scope);
         if self.spec.calls.kinds.contains(&kind) {
             let registrar = self.record_call(node, scope);
             let mut inner = scope.clone();
             inner.registrar = registrar;
+            inner.registrar_receiver = self.last_receiver.take();
             self.walk(node, &inner);
             return;
         }
@@ -1873,6 +1881,7 @@ impl<'a> Extractor<'a> {
             self.walk(node, scope);
             return;
         }
+        let parameters = self.lambda_parameters(node);
         self.facts.nodes.push(IndexNode {
             id: id.clone(),
             name,
@@ -1880,7 +1889,12 @@ impl<'a> Extractor<'a> {
             file: self.file,
             span: span_of(node),
             parent: scope.callable.clone().or_else(|| scope.owner.clone()),
-            signature: None,
+            signature: parameters.clone().map(|parameters| Signature {
+                parameters,
+                return_type: None,
+                type_parameters: Vec::new(),
+                receiver: None,
+            }),
             modifiers: Modifiers::default(),
             decorators: Vec::new(),
             type_annotation: None,
@@ -1889,6 +1903,9 @@ impl<'a> Extractor<'a> {
             callback_of: scope.registrar.clone(),
             registration_label: None,
         });
+        if let Some(parameters) = parameters.as_deref() {
+            self.declare_callback_elements(&id, parameters, scope, node.start_position().row as u32 + 1);
+        }
         if let Some((registrar, label)) = self.labelled.remove(&node.id()) {
             self.facts.registrations.push(RegistrationFact {
                 file: self.file,
@@ -2810,6 +2827,7 @@ impl<'a> Extractor<'a> {
             }
             None => Vec::new(),
         };
+        self.last_receiver = receiver.clone();
         self.facts.calls.push(CallFact {
             file: self.file,
             caller: scope.callable.clone().or_else(|| scope.owner.clone()),

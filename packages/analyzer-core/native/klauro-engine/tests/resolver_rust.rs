@@ -39,3 +39,15 @@ fn a_returned_self_is_the_owning_type() {
         "Builder::new() returns Builder, so .build() belongs to Builder"
     );
 }
+
+#[test]
+fn a_for_loop_variable_takes_the_element_type_of_the_collection() {
+    let index = index();
+    assert!(calls(&index, "app/src/main.rs:function:each_printer", "builder.rs:function:sink"));
+}
+
+#[test]
+fn a_closure_parameter_of_an_iterator_adapter_takes_the_element_type() {
+    let index = index();
+    assert!(calls(&index, "app/src/main.rs:callback:map", "builder.rs:function:width@Printer"));
+}

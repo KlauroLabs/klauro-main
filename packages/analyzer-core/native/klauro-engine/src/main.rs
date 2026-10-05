@@ -17,6 +17,7 @@ mod dependencies;
 mod discovery;
 mod dockerfile;
 mod language_tables;
+mod elements;
 mod entities;
 mod entry_exit;
 mod generated;

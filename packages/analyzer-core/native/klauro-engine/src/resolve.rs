@@ -81,6 +81,7 @@ struct Bindings<'a> {
     file_locals: HashMap<(u32, &'a str), &'a str>,
     opened: HashMap<u32, Vec<&'a str>>,
     stands_for: HashMap<(&'a str, &'a str), &'a str>,
+    elements: HashMap<(&'a str, &'a str), &'a str>,
     called: HashMap<(&'a str, &'a str), (&'a str, u8)>,
     file_called: HashMap<(u32, &'a str), (&'a str, u8)>,
 }
@@ -209,6 +210,16 @@ impl<'a> Symbols<'a> {
             .to_ascii_lowercase();
         let owner = self.nodes[owner as usize].name.to_ascii_lowercase();
         owner.len() >= 3 && spoken.contains(owner.trim_start_matches('i'))
+    }
+
+    fn spoken_within_owner(&self, receiver: &str, owner: u32) -> bool {
+        let spoken = receiver
+            .rsplit(['.', '>', ':'])
+            .next()
+            .unwrap_or(receiver)
+            .trim_start_matches(['$', '@', '_'])
+            .to_ascii_lowercase();
+        spoken.len() >= 4 && self.nodes[owner as usize].name.to_ascii_lowercase().contains(spoken.as_str())
     }
 
     fn written_for(&self, receiver: Option<&str>, name: &str) -> bool {
@@ -661,10 +672,16 @@ impl<'a> Resolver<'a> {
         if self.runtime.binary_search(&name).is_ok() {
             return Origin::Runtime(name);
         }
-        if let Some(qualifier) = qualifier_of(annotation)
-            && let Some(specifier) = self.bindings.modules.get(&(file, qualifier))
-        {
-            return Origin::Package(specifier);
+        if let Some(qualifier) = qualifier_of(annotation) {
+            if let Some(held) = self.bindings.module_files.get(&(file, qualifier))
+                && let Some(found) = self.symbols.in_scope(*held, name.rsplit('.').next().unwrap_or(name))
+                && self.symbols.nodes[found as usize].kind.is_type()
+            {
+                return Origin::Declared(found);
+            }
+            if let Some(specifier) = self.bindings.modules.get(&(file, qualifier)) {
+                return Origin::Package(specifier);
+            }
         }
         if let Some(specifier) = self.bindings.modules.get(&(file, name)) {
             return Origin::Package(specifier);
@@ -693,13 +710,15 @@ impl<'a> Resolver<'a> {
                 None => Origin::Unknown,
             };
         }
-        let holder = &self.symbols.nodes[unit as usize];
-        if let Some(signature) = holder.signature.as_ref()
-            && let Some(parameter) =
-                signature.parameters.iter().find(|p| p.name == name || p.name == bare)
-        {
+        let chain = self.enclosing(unit);
+        for at in chain.iter().copied() {
+            let level = &self.symbols.nodes[at as usize];
+            let Some(signature) = level.signature.as_ref() else { continue };
+            let Some(parameter) = signature.parameters.iter().find(|p| p.name == name || p.name == bare) else {
+                continue;
+            };
             return match parameter.type_annotation.as_deref() {
-                Some(annotation) if typing::names_itself(annotation) => match self.symbols.owning_type(unit) {
+                Some(annotation) if typing::names_itself(annotation) => match self.symbols.owning_type(at) {
                     Some(owner) => Origin::Declared(owner),
                     None => Origin::Indirect,
                 },
@@ -707,21 +726,31 @@ impl<'a> Resolver<'a> {
                     Origin::Unknown => Origin::Indirect,
                     known => known,
                 },
-                None => Origin::Indirect,
+                None => match self.element_binding(at, file, name, true) {
+                    Origin::Unknown => Origin::Indirect,
+                    known => known,
+                },
             };
         }
         if let Some(expression) = self.stood_for(unit, name) {
             return self.origin(unit, file, expression);
         }
-        if let Some(annotation) = self
-            .bindings
-            .annotation(&holder.id, file, name)
-            .or_else(|| self.bindings.annotation(&holder.id, file, bare))
-        {
-            return match self.annotated(file, annotation) {
-                Origin::Unknown => self.from_a_call(unit, file, name),
-                known => known,
-            };
+        for at in chain.iter().copied() {
+            let level = &self.symbols.nodes[at as usize];
+            if let Some(annotation) = self
+                .bindings
+                .annotation(&level.id, file, name)
+                .or_else(|| self.bindings.annotation(&level.id, file, bare))
+            {
+                return match self.annotated(file, annotation) {
+                    Origin::Unknown => self.from_a_call(unit, file, name),
+                    known => known,
+                };
+            }
+            match self.element_binding(at, file, name, false) {
+                Origin::Unknown => {}
+                known => return known,
+            }
         }
         match self.from_a_call(unit, file, name) {
             Origin::Unknown => {}
@@ -791,15 +820,20 @@ impl<'a> Resolver<'a> {
     }
 
     fn held(&self, unit: u32, file: u32, name: &'a str) -> Option<&'a str> {
-        let holder = &self.symbols.nodes[unit as usize];
-        if let Some(signature) = holder.signature.as_ref()
-            && let Some(parameter) = signature.parameters.iter().find(|p| p.name == name)
-            && let Some(annotation) = parameter.type_annotation.as_deref()
-        {
-            return Some(annotation);
-        }
-        if let Some(annotation) = self.bindings.annotation(&holder.id, file, name) {
-            return Some(annotation);
+        let chain = self.enclosing(unit);
+        for at in chain.iter().copied() {
+            let holder = &self.symbols.nodes[at as usize];
+            if let Some(signature) = holder.signature.as_ref()
+                && let Some(parameter) = signature.parameters.iter().find(|p| p.name == name)
+            {
+                match parameter.type_annotation.as_deref() {
+                    Some(annotation) => return Some(annotation),
+                    None => break,
+                }
+            }
+            if let Some(annotation) = self.bindings.annotation(&holder.id, file, name) {
+                return Some(annotation);
+            }
         }
         let owner = self.symbols.owning_type(unit)?;
         if let Some(signature) = self.symbols.nodes[owner as usize].signature.as_ref()
@@ -1399,6 +1433,7 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         file_locals: HashMap::default(),
         opened: HashMap::default(),
         stands_for: HashMap::default(),
+        elements: HashMap::default(),
         called: HashMap::default(),
         file_called: HashMap::default(),
     };
@@ -1677,6 +1712,9 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
             && expression.split('.').next() != Some(binding.name.as_str())
         {
             bindings.stands_for.insert((binding.unit.as_str(), binding.name.as_str()), expression);
+        }
+        if let Some(expression) = binding.element_of.as_deref() {
+            bindings.elements.insert((binding.unit.as_str(), binding.name.as_str()), expression);
         }
         if binding.annotation.is_none()
             && binding.constructed.is_none()
@@ -2192,28 +2230,41 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         {
             return Resolved::Edge(symbols.nodes[member as usize].id.clone(), kind);
         }
+        let language = index.languages.get(fact.file as usize).copied().unwrap_or("");
+        let in_language = |found: u32| {
+            family(index.languages.get(symbols.nodes[found as usize].file as usize).copied().unwrap_or("")) == family(language)
+        };
         if receiver.is_none()
-            && let Some(found) = symbols.unique_unit.get(callee.as_str()).copied()
+            && let Some(found) = symbols.unique_unit.get(callee.as_str()).copied().filter(|found| in_language(*found))
         {
             return Resolved::Edge(symbols.nodes[found as usize].id.clone(), kind);
         }
         if receiver.is_none()
-            && let Some(found) = symbols.unique_type.get(callee.as_str()).copied()
+            && let Some(found) = symbols.unique_type.get(callee.as_str()).copied().filter(|found| in_language(*found))
         {
             let built = symbols.member(found, "constructor").unwrap_or(found);
             return Resolved::Edge(symbols.nodes[built as usize].id.clone(), EdgeKind::Instantiates);
         }
+        let language = index.languages.get(fact.file as usize).copied().unwrap_or("");
+        let in_language = |found: u32| {
+            family(index.languages.get(symbols.nodes[found as usize].file as usize).copied().unwrap_or("")) == family(language)
+        };
+        let loose_language = matches!(language, "javascript" | "typescript");
         if let Some(receiver) = receiver.as_deref()
-            && let Some(found) = symbols.unique_member.get(callee.as_str()).copied()
+            && let Some(found) = symbols.unique_member.get(callee.as_str()).copied().filter(|found| in_language(*found))
         {
             let target = symbols.nodes[found as usize].id.clone();
-            let names_its_owner = symbols
-                .owning_type(found)
-                .is_some_and(|owner| symbols.spoken_as_owner(receiver, owner));
-            return match names_its_owner {
-                true => Resolved::Edge(target, kind),
-                false => Resolved::Guessed(target, kind),
-            };
+            let standard = crate::builtins::is_standard_member(language, &callee);
+            let names_its_owner = symbols.owning_type(found).is_some_and(|owner| {
+                symbols.spoken_as_owner(receiver, owner)
+                    || ((loose_language || !standard) && symbols.spoken_within_owner(receiver, owner))
+            });
+            if names_its_owner {
+                return Resolved::Edge(target, kind);
+            }
+            if loose_language || !standard {
+                return Resolved::Guessed(target, kind);
+            }
         }
         if let Some(receiver) = receiver.as_deref() {
             let extended = match origin {

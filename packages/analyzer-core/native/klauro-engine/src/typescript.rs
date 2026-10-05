@@ -317,6 +317,7 @@ impl<'a> Extractor<'a> {
                 if let Some(unit) = self.unit(scope) {
                     unit.loops += 1;
                 }
+                self.loop_element(node, scope);
                 let mut inner = scope.child(None, None);
                 inner.context.loop_depth = scope.context.loop_depth + 1;
                 inner.enclosing_callable = scope.enclosing_callable.clone();
@@ -1018,6 +1019,16 @@ impl<'a> Extractor<'a> {
         let parameters = node
             .child_by_field_name("parameters")
             .map(|parameters| self.parameters_of(parameters))
+            .or_else(|| {
+                node.child_by_field_name("parameter").map(|single| {
+                    vec![Parameter {
+                        name: self.text_owned(single),
+                        type_annotation: None,
+                        optional: false,
+                        default_value: None,
+                    }]
+                })
+            })
             .unwrap_or_default();
         let return_type = node
             .child_by_field_name("return_type")
@@ -1768,6 +1779,7 @@ impl<'a> Extractor<'a> {
             if let Some(owner) = scope.enclosing_callable.clone().or_else(|| scope.owner.clone()) {
                 self.push_edge(&owner, &id, EdgeKind::Contains);
             }
+            self.element_parameter(&id, *argument, callee);
 
             let mut inner = scope.child(Some(id.clone()), Some(id));
             inner.dispatches_mcp_tools = dispatches_mcp_tools;
@@ -1778,6 +1790,50 @@ impl<'a> Extractor<'a> {
                 self.parameter_initializers(parameters, &inner);
             }
         }
+    }
+
+    fn loop_element(&mut self, node: Node, scope: &Scope) {
+        if node.kind() != "for_in_statement" {
+            return;
+        }
+        let (Some(left), Some(right)) = (node.child_by_field_name("left"), node.child_by_field_name("right")) else {
+            return;
+        };
+        let over = node.child_by_field_name("operator").map(|held| self.text(held)).unwrap_or("");
+        let name = self.text(left).trim();
+        if over != "of" || left.kind() != "identifier" || name.is_empty() {
+            return;
+        }
+        let expression = self.text(right).trim();
+        if expression.is_empty() || expression.len() > 200 {
+            return;
+        }
+        self.facts.locals.push(LocalBinding {
+            file: self.file,
+            unit: scope.enclosing_callable.clone().unwrap_or_default(),
+            name: name.to_string(),
+            element_of: Some(expression.to_string()),
+            line: line_of(node),
+            ..Default::default()
+        });
+    }
+
+    fn element_parameter(&mut self, id: &str, argument: Node, callee: &str) {
+        let Some((receiver, name)) = callee.rsplit_once('.') else { return };
+        let Some(position) = crate::elements::adapter_position(name) else { return };
+        let signature = self.signature_of(argument);
+        let Some(parameter) = signature.parameters.get(position) else { return };
+        if parameter.type_annotation.is_some() || !parameter.name.chars().all(|letter| letter.is_alphanumeric() || letter == '_' || letter == '$') {
+            return;
+        }
+        self.facts.locals.push(LocalBinding {
+            file: self.file,
+            unit: id.to_string(),
+            name: parameter.name.clone(),
+            element_of: Some(receiver.to_string()),
+            line: line_of(argument),
+            ..Default::default()
+        });
     }
 
     fn literal_arguments(&self, arguments: Node) -> Vec<String> {

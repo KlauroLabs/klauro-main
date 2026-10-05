@@ -1,4 +1,4 @@
-use render_core::{make_printer, Builder, Sink};
+use render_core::{make_printer, Builder, Printer, Sink};
 
 fn chained() -> usize {
     let printer = Builder::new().width(4).build();
@@ -14,6 +14,18 @@ fn from_a_function() -> bool {
 fn through_a_static_path() -> bool {
     let mut sink = Sink::open(2);
     sink.flush()
+}
+
+fn each_printer(printers: Vec<Printer>) -> usize {
+    let mut total = 0;
+    for printer in printers {
+        total += printer.sink().flush() as usize;
+    }
+    total
+}
+
+fn mapped(printers: &[Printer]) -> Vec<usize> {
+    printers.iter().map(|printer| printer.width()).collect()
 }
 
 fn main() {
