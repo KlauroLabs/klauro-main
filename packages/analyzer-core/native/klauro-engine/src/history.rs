@@ -7,6 +7,78 @@ use serde::Serialize;
 const COMMITS_READ: usize = 2000;
 const WIDE_COMMIT: usize = 50;
 const RANKED: usize = 50;
+const FILES_REPORTED: usize = 2000;
+const RECENT_DAYS: i64 = 30;
+const QUARTER_DAYS: i64 = 90;
+const SECONDS_PER_DAY: i64 = 86_400;
+
+struct Commit<'a> {
+    when: i64,
+    author: &'a str,
+    subject: &'a str,
+    held: Vec<(&'a str, bool)>,
+    source: bool,
+}
+
+#[derive(Default)]
+struct Stat<'a> {
+    commits: u32,
+    authors: HashSet<&'a str>,
+    last: i64,
+    fixes: u32,
+    recent: u32,
+    recent_authors: HashSet<&'a str>,
+    quarter: u32,
+    aside: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FileHistory {
+    pub path: String,
+    pub commits: u32,
+    pub fixes: u32,
+    pub recent: u32,
+    pub quarter: u32,
+    pub recent_authors: u32,
+    pub last: i64,
+    pub fix_percentile: u8,
+    pub churn_percentile: u8,
+}
+
+fn percentile(sorted: &[u32], value: u32) -> u8 {
+    if sorted.is_empty() {
+        return 0;
+    }
+    let below = sorted.partition_point(|held| *held < value);
+    (below * 100 / sorted.len()) as u8
+}
+
+fn rank_files(touched: &HashMap<&str, Stat>) -> Vec<FileHistory> {
+    let mut commits: Vec<u32> = touched.values().filter(|stat| !stat.aside).map(|stat| stat.commits).collect();
+    let mut fixes: Vec<u32> = touched.values().filter(|stat| !stat.aside).map(|stat| stat.fixes).collect();
+    commits.sort_unstable();
+    fixes.sort_unstable();
+    let mut ranked: Vec<FileHistory> = touched
+        .iter()
+        .filter(|(_, stat)| !stat.aside && (stat.fixes > 0 || stat.commits > 1))
+        .map(|(path, stat)| FileHistory {
+            path: (*path).to_string(),
+            commits: stat.commits,
+            fixes: stat.fixes,
+            recent: stat.recent,
+            quarter: stat.quarter,
+            recent_authors: stat.recent_authors.len() as u32,
+            last: stat.last,
+            fix_percentile: percentile(&fixes, stat.fixes),
+            churn_percentile: percentile(&commits, stat.commits),
+        })
+        .collect();
+    ranked.sort_by(|left, right| {
+        right.fixes.cmp(&left.fixes).then(right.commits.cmp(&left.commits)).then(left.path.cmp(&right.path))
+    });
+    ranked.truncate(FILES_REPORTED);
+    ranked
+}
 
 #[derive(Debug, Serialize)]
 pub struct Churn {
@@ -27,8 +99,10 @@ pub struct CoChange {
 pub struct History {
     pub commits: u32,
     pub touched: u32,
+    pub fix_commits: u32,
     pub churn: Vec<Churn>,
     pub co_change: Vec<CoChange>,
+    pub files: Vec<FileHistory>,
     #[serde(skip)]
     pub per_file: Vec<(String, u32, i64)>,
     #[serde(skip)]
@@ -84,7 +158,7 @@ pub fn read(root: &Path, files: &[String]) -> Option<History> {
             "log",
             "--no-merges",
             "--name-only",
-            "--pretty=format:\u{1}%at\u{1}%ae",
+            "--pretty=format:\u{1}%at\u{1}%ae\u{1}%s",
             &format!("-n{COMMITS_READ}"),
         ])
         .output()
@@ -92,46 +166,68 @@ pub fn read(root: &Path, files: &[String]) -> Option<History> {
         .filter(|output| output.status.success())?;
     let text = String::from_utf8_lossy(&log.stdout);
 
-    let mut commits = 0;
-    let mut touched: HashMap<&str, (u32, HashSet<&str>, i64)> = HashMap::default();
-    let mut together: HashMap<(&str, &str), u32> = HashMap::default();
-    let mut when = 0;
-    let mut head = 0;
-    let mut oldest = i64::MAX;
-    let mut author = "";
-    let mut pending: Vec<&str> = Vec::new();
+    let mut log: Vec<Commit> = Vec::new();
     for line in text.lines() {
         if let Some(header) = line.strip_prefix('\u{1}') {
-            record(&mut together, &pending);
-            pending.clear();
-            commits += 1;
-            let mut parts = header.split('\u{1}');
-            when = parts.next().and_then(|at| at.parse().ok()).unwrap_or(0);
-            author = parts.next().unwrap_or("");
-            head = head.max(when);
-            oldest = oldest.min(when);
+            let mut parts = header.splitn(3, '\u{1}');
+            log.push(Commit {
+                when: parts.next().and_then(|at| at.parse().ok()).unwrap_or(0),
+                author: parts.next().unwrap_or(""),
+                subject: parts.next().unwrap_or(""),
+                held: Vec::new(),
+                source: false,
+            });
             continue;
         }
         let path = line.trim();
-        if path.is_empty() || !held.contains(path) {
+        let Some(commit) = log.last_mut() else { continue };
+        if path.is_empty() {
             continue;
         }
-        let Some(held) = held.get(path) else { continue };
-        let entry = touched.entry(held).or_insert((0, HashSet::default(), 0));
-        entry.0 += 1;
-        entry.1.insert(author);
-        entry.2 = entry.2.max(when);
-        pending.push(held);
+        let aside = crate::fixes::is_aside(path);
+        commit.source |= !aside;
+        if let Some(held) = held.get(path) {
+            commit.held.push((held, aside));
+        }
     }
-    record(&mut together, &pending);
+
+    let commits = log.len() as u32;
+    let head = log.iter().map(|commit| commit.when).max().unwrap_or(0);
+    let oldest = log.iter().map(|commit| commit.when).min().unwrap_or(i64::MAX);
+    let mut touched: HashMap<&str, Stat> = HashMap::default();
+    let mut together: HashMap<(&str, &str), u32> = HashMap::default();
+    let mut fix_commits = 0;
+    for commit in &log {
+        let changed: Vec<&str> = commit.held.iter().map(|(path, _)| *path).collect();
+        record(&mut together, &changed);
+        let fix = commit.source && crate::fixes::is_fix(commit.subject);
+        fix_commits += u32::from(fix);
+        for (path, aside) in &commit.held {
+            let entry = touched.entry(path).or_default();
+            entry.commits += 1;
+            entry.authors.insert(commit.author);
+            entry.last = entry.last.max(commit.when);
+            entry.fixes += u32::from(fix && !aside);
+            entry.aside = *aside;
+            if head - commit.when <= RECENT_DAYS * SECONDS_PER_DAY {
+                entry.recent += 1;
+                entry.recent_authors.insert(commit.author);
+            }
+            if head - commit.when <= QUARTER_DAYS * SECONDS_PER_DAY {
+                entry.quarter += 1;
+            }
+        }
+    }
+    let pending: Vec<&str> = log.last().map(|commit| commit.held.iter().map(|(path, _)| *path).collect()).unwrap_or_default();
+    let ranked = rank_files(&touched);
 
     let mut churn: Vec<Churn> = touched
         .iter()
-        .map(|(path, (commits, authors, last))| Churn {
+        .map(|(path, stat)| Churn {
             path: (*path).to_string(),
-            commits: *commits,
-            authors: authors.len() as u32,
-            last: *last,
+            commits: stat.commits,
+            authors: stat.authors.len() as u32,
+            last: stat.last,
         })
         .collect();
     churn.sort_by(|left, right| {
@@ -173,7 +269,7 @@ pub fn read(root: &Path, files: &[String]) -> Option<History> {
     });
     co_change.truncate(RANKED);
 
-    Some(History { commits, touched: counted, churn, co_change, per_file, head, oldest: oldest.min(head) })
+    Some(History { commits, touched: counted, fix_commits, churn, co_change, files: ranked, per_file, head, oldest: oldest.min(head) })
 }
 
 fn record<'a>(together: &mut HashMap<(&'a str, &'a str), u32>, changed: &[&'a str]) {
@@ -188,5 +284,34 @@ fn record<'a>(together: &mut HashMap<(&'a str, &'a str), u32>, changed: &[&'a st
             };
             *together.entry(pair).or_insert(0) += 1;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_percentile_is_the_share_of_files_with_fewer() {
+        let held = [0, 0, 0, 1, 2, 2, 5, 9, 9, 40];
+        assert_eq!(percentile(&held, 40), 90);
+        assert_eq!(percentile(&held, 0), 0);
+        assert_eq!(percentile(&held, 2), 40);
+        assert_eq!(percentile(&[], 3), 0);
+    }
+
+    #[test]
+    fn files_set_aside_never_rank_and_a_file_is_ranked_by_its_own_fixes() {
+        let mut touched: HashMap<&str, Stat> = HashMap::default();
+        for (path, commits, fixes, aside) in [("a.rs", 5, 3, false), ("b.rs", 2, 0, false), ("README.md", 9, 0, true), ("c.rs", 1, 0, false)] {
+            let stat = touched.entry(path).or_default();
+            stat.commits = commits;
+            stat.fixes = fixes;
+            stat.aside = aside;
+        }
+        let ranked = rank_files(&touched);
+        let paths: Vec<&str> = ranked.iter().map(|file| file.path.as_str()).collect();
+        assert_eq!(paths, vec!["a.rs", "b.rs"]);
+        assert_eq!(ranked[0].fix_percentile, 66);
     }
 }

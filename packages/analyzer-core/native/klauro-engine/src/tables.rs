@@ -25,19 +25,69 @@ fn going_forward(text: &str) -> &str {
 }
 
 pub fn declared(source: &[u8], path: &str, file: u32) -> Vec<Table> {
-    if only_prose(path) || crate::paths::is_test(path) || reverses(path) || !holds_a_creation(source) {
+    if only_prose(path) || crate::paths::is_test(path) || reverses(path) || !(holds_a_creation(source) || crate::schema_files::is_declarative(path, source)) {
         return Vec::new();
     }
     let Ok(text) = std::str::from_utf8(source) else {
         return Vec::new();
     };
     let text = going_forward(text);
+    let plain;
+    let text = match path.to_ascii_lowercase().ends_with(".sql") {
+        true => {
+            plain = without_sql_comments(text);
+            plain.as_str()
+        }
+        false => text,
+    };
     let mut found = creating(text);
     found.extend(retiring(text));
+    found.extend(adding(text));
+    found.extend(crate::schema_files::declared(text, path));
     for table in found.iter_mut() {
         table.file = file;
     }
     found
+}
+
+fn without_sql_comments(text: &str) -> String {
+    let mut kept = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    let mut quote: Option<char> = None;
+    while let Some(letter) = chars.next() {
+        match (quote, letter) {
+            (Some(open), _) => {
+                kept.push(letter);
+                if letter == open {
+                    quote = None;
+                }
+            }
+            (None, '\'' | '"') => {
+                quote = Some(letter);
+                kept.push(letter);
+            }
+            (None, '-') if chars.peek() == Some(&'-') => {
+                while chars.peek().is_some_and(|next| *next != '\n') {
+                    chars.next();
+                }
+            }
+            (None, '/') if chars.peek() == Some(&'*') => {
+                chars.next();
+                let mut previous = ' ';
+                for next in chars.by_ref() {
+                    if previous == '*' && next == '/' {
+                        break;
+                    }
+                    if next == '\n' {
+                        kept.push('\n');
+                    }
+                    previous = next;
+                }
+            }
+            _ => kept.push(letter),
+        }
+    }
+    kept
 }
 
 fn holds_a_creation(source: &[u8]) -> bool {
@@ -92,6 +142,73 @@ fn retiring(statement: &str) -> Vec<Table> {
     found
 }
 
+fn clauses(text: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0i32;
+    let mut from = 0;
+    for (at, letter) in text.char_indices() {
+        match letter {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(&text[from..at]);
+                from = at + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&text[from..]);
+    parts
+}
+
+fn adding(statement: &str) -> Vec<Table> {
+    let lowered = statement.to_ascii_lowercase();
+    let mut found = Vec::new();
+    let mut from = 0usize;
+    while let Some(at) = lowered[from..].find("alter table") {
+        let after = from + at + "alter table".len();
+        from = after;
+        let end = lowered[after..].find(';').map_or(statement.len(), |stop| after + stop);
+        let body = &statement[after..end];
+        let mut words = body.split_whitespace().peekable();
+        while words.peek().is_some_and(|word| matches!(word.to_ascii_lowercase().as_str(), "if" | "exists" | "only")) {
+            words.next();
+        }
+        let Some(named) = words.next().and_then(spoken) else { continue };
+        let Some(named_at) = body.find(named.as_str()) else { continue };
+        let line = statement[..after].matches('\n').count() as u32;
+        let mut columns = Vec::new();
+        let mut points_at = Vec::new();
+        for clause in clauses(&body[named_at + named.len()..]) {
+            let clause = clause.trim_start();
+            let head = clause.to_ascii_lowercase();
+            let Some(rest) = head.strip_prefix("add").filter(|rest| rest.starts_with(char::is_whitespace)) else { continue };
+            let mut adds = clause[clause.len() - rest.len()..].trim_start();
+            for skipped in ["column", "if not exists"] {
+                if adds.to_ascii_lowercase().starts_with(skipped) {
+                    adds = adds[skipped.len()..].trim_start();
+                }
+            }
+            let lead = adds.to_ascii_lowercase();
+            if ["constraint", "primary", "foreign", "unique", "index", "check", "key"].iter().any(|word| lead.starts_with(word)) {
+                continue;
+            }
+            let Some(column) = leading(adds) else { continue };
+            if column.declared_as.is_none() {
+                continue;
+            }
+            if let Some(table) = pointing(adds) {
+                points_at.push((column.named.clone(), table));
+            }
+            columns.push(column);
+        }
+        if !columns.is_empty() {
+            found.push(Table { named, columns, points_at, file: 0, line, declared_by: None, change: Change::Added });
+        }
+    }
+    found
+}
+
 static FRAMEWORK_BOOKKEEPING: &[&str] = &[
     "__diesel_schema_migrations",
     "__efmigrationshistory",
@@ -133,6 +250,16 @@ pub fn standing(mut tables: Vec<Table>, paths: &[&str]) -> Vec<Table> {
         let replayed = table.declared_by.is_none();
         match table.change.clone() {
             Change::Created => held.push(table),
+            Change::Added if replayed => {
+                if let Some(kept) = held.iter_mut().rev().find(|kept| kept.declared_by.is_none() && key(&kept.named) == named) {
+                    for column in table.columns {
+                        if !kept.columns.iter().any(|known| known.named == column.named) {
+                            kept.columns.push(column);
+                        }
+                    }
+                    kept.points_at.extend(table.points_at);
+                }
+            }
             Change::Dropped if replayed => {
                 held.retain(|kept| kept.declared_by.is_some() || key(&kept.named) != named)
             }
@@ -169,6 +296,7 @@ pub struct Table {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Change {
     Created,
+    Added,
     Dropped,
     RenamedTo(String),
 }
@@ -542,3 +670,26 @@ pub fn created_by_calls(
 }
 
 pub static NAMES_ITS_TABLE: &[&str] = &["$table", "__tablename__", "_table_name", "db_table", "table_name"];
+
+#[cfg(test)]
+mod adding_tests {
+    use super::*;
+
+    #[test]
+    fn words_in_a_sql_comment_are_not_columns() {
+        let held = declared(b"CREATE TABLE nodes (\n  kind VARCHAR(5) NOT NULL, -- function, method, class\n  /* a, b */ name TEXT\n);", "sql/1.sql", 0);
+        let names: Vec<&str> = held[0].columns.iter().map(|column| column.named.as_str()).collect();
+        assert_eq!(names, vec!["kind", "name"]);
+    }
+
+    #[test]
+    fn an_alter_statement_adds_a_column_to_the_table_it_created() {
+        let mut first = declared(b"CREATE TABLE accounts (id INT, email TEXT);", "sql/1.sql", 0);
+        let mut second = declared(b"ALTER TABLE accounts ADD COLUMN nickname TEXT,\nADD COLUMN IF NOT EXISTS plan VARCHAR(8) DEFAULT 'free';\nALTER TABLE accounts ADD CONSTRAINT x UNIQUE (email);", "sql/2.sql", 1);
+        assert_eq!(second.len(), 1);
+        first.append(&mut second);
+        let held = standing(first, &["sql/1.sql", "sql/2.sql"]);
+        let names: Vec<&str> = held[0].columns.iter().map(|column| column.named.as_str()).collect();
+        assert_eq!(names, vec!["id", "email", "nickname", "plan"]);
+    }
+}

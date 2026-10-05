@@ -3356,6 +3356,17 @@ fn entities(
         if entity.named_fields.is_empty() {
             entity.fields = table.columns.len() as u32;
             entity.named_fields = table.columns.into_iter().map(Field::from).collect();
+        } else {
+            let spelled = |name: &str| name.chars().filter(|letter| *letter != '_').flat_map(char::to_lowercase).collect::<String>();
+            let held: HashSet<String> = entity.named_fields.iter().map(|field| spelled(&field.name)).collect();
+            for column in table.columns {
+                let named = spelled(&column.named);
+                let a_key_of_a_field = held.iter().any(|field| named == format!("{field}id"));
+                if !held.contains(&named) && !a_key_of_a_field {
+                    entity.fields += 1;
+                    entity.named_fields.push(Field::from(column));
+                }
+            }
         }
         entity.references.extend(table.points_at.into_iter().map(|(field, pointed)| Reference {
             field,

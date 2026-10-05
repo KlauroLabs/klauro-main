@@ -13,6 +13,8 @@ mod conform;
 mod convention;
 mod coverage;
 mod bundler;
+mod budget;
+mod dead;
 mod dependencies;
 mod discovery;
 mod dockerfile;
@@ -21,6 +23,7 @@ mod elements;
 mod entities;
 mod entry_exit;
 mod generated;
+mod fixes;
 mod history;
 mod jev;
 mod gomod;
@@ -48,6 +51,7 @@ mod design_patterns;
 mod patterns;
 mod practices;
 mod principles;
+mod schema_files;
 mod scope;
 mod screens;
 mod sdk;
@@ -117,6 +121,8 @@ struct Index {
     exit_points: Vec<entry_exit::ExitPoint>,
     icelot: Vec<icelot::Icelot>,
     graph: Option<graph::GraphFacts>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    dead: Vec<dead::Dead>,
     dependencies: Option<dependencies::Dependencies>,
     services: Vec<services::Service>,
     layering: Vec<layers::Layering>,
@@ -377,6 +383,7 @@ const ROOM_TO_DESCEND: usize = 256 << 20;
 
 fn main() {
     rayon::ThreadPoolBuilder::new()
+        .num_threads(budget::pool_size())
         .stack_size(ROOM_TO_DESCEND)
         .build_global()
         .ok();
@@ -469,6 +476,7 @@ fn read_it() {
         exit_points: Vec::new(),
         icelot: Vec::new(),
         graph: None,
+        dead: Vec::new(),
         dependencies: None,
         services: Vec::new(),
         layering: Vec::new(),
@@ -1077,6 +1085,7 @@ fn read_it() {
         graph.reachable_units,
         graph.unreachable_units
     );
+    index.dead = dead::derive(&index.nodes, &paths, &index.edges, &index.entry_points, &index.calls, &graph);
     index.graph = Some(graph);
 
     if std::env::var("KLAURO_REPORT_UNRESOLVED").is_ok() {
@@ -1355,8 +1364,10 @@ fn read_it() {
     let emit_started = Instant::now();
     let strings = std::cell::RefCell::new(wire::Strings::default());
     let body = rmp_serde::to_vec(&wire::Interned::new(&index, &strings)).unwrap();
-    let mut serialized = rmp_serde::to_vec(&strings.into_inner().into_values()).unwrap();
-    serialized.extend_from_slice(&body);
-    std::io::stdout().write_all(&serialized).unwrap();
-    eprintln!("emit {:?} | {} bytes", emit_started.elapsed(), serialized.len());
+    let table = rmp_serde::to_vec(&strings.into_inner().into_values()).unwrap();
+    let mut out = std::io::stdout().lock();
+    out.write_all(&table).unwrap();
+    out.write_all(&body).unwrap();
+    out.flush().unwrap();
+    eprintln!("emit {:?} | {} bytes", emit_started.elapsed(), table.len() + body.len());
 }
