@@ -175,6 +175,7 @@ export function probeMcpBoot(options: {
 
     let settled = false;
     let stderrBuffer = '';
+    let stdoutBuffer = '';
 
 
 
@@ -197,7 +198,7 @@ export function probeMcpBoot(options: {
     };
 
     const timer = setTimeout(() => {
-      finish(classifyBootOutput(stderrBuffer, 'timeout'));
+      finish(classifyBootOutput(stderrBuffer, 'timeout', answeredInitialize(stdoutBuffer)));
     }, maxMs);
 
     child.on('error', error => {
@@ -207,12 +208,19 @@ export function probeMcpBoot(options: {
     child.stderr.on('data', chunk => {
       stderrBuffer += chunk.toString();
       if (/grammars available|grammar self-check failed|tree-sitter grammars/.test(stderrBuffer)) {
-        finish(classifyBootOutput(stderrBuffer, 'stderr-signal'));
+        finish(classifyBootOutput(stderrBuffer, 'stderr-signal', answeredInitialize(stdoutBuffer)));
       }
     });
 
+    child.stdout.on('data', chunk => {
+      stdoutBuffer += chunk.toString();
+    });
+
+    child.stdin.on('error', () => undefined);
+    child.stdin.write(`${JSON.stringify(INITIALIZE_REQUEST)}\n`);
+
     child.on('exit', code => {
-      finish(classifyBootOutput(stderrBuffer, `exit-${code}`));
+      finish(classifyBootOutput(stderrBuffer, `exit-${code}`, answeredInitialize(stdoutBuffer)));
     });
 
 
@@ -232,7 +240,25 @@ export function probeMcpBoot(options: {
   });
 }
 
-function classifyBootOutput(stderrBuffer: string, reason: string): BootProbeResult {
+const INITIALIZE_REQUEST = {
+  jsonrpc: '2.0',
+  id: 1,
+  method: 'initialize',
+  params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'klauro-doctor', version: '1' } },
+};
+
+function answeredInitialize(stdoutBuffer: string): boolean {
+  return stdoutBuffer.split('\n').some(line => {
+    try {
+      const message = JSON.parse(line);
+      return message?.id === INITIALIZE_REQUEST.id && message.result !== undefined;
+    } catch {
+      return false;
+    }
+  });
+}
+
+function classifyBootOutput(stderrBuffer: string, reason: string, answeredMcp = false): BootProbeResult {
   const trimmed = stderrBuffer.trim();
   if (/grammar self-check failed/.test(trimmed)) {
     return { status: 'fail', detail: `Entry point threw during grammar self-check: ${trimmed.slice(0, 300)}` };
@@ -245,6 +271,9 @@ function classifyBootOutput(stderrBuffer: string, reason: string): BootProbeResu
   }
   if (/\d+ tree-sitter grammars available/.test(trimmed)) {
     return { status: 'ok', detail: trimmed.slice(0, 300) };
+  }
+  if (answeredMcp) {
+    return { status: 'ok', detail: 'Entry point answered the MCP initialize handshake.' };
   }
   if (reason === 'timeout') {
     return {
