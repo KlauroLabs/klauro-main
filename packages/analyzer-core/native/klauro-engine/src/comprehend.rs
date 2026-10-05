@@ -41,6 +41,10 @@ pub struct Flow {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plays: Option<String>,
     pub standing: &'static str,
+    #[serde(skip_serializing_if = "crate::facts_cache::nothing")]
+    pub open: u32,
+    #[serde(skip_serializing_if = "crate::facts_cache::not")]
+    pub cut: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -389,7 +393,7 @@ fn carries(
         .filter(|flow| within(flow.project.as_ref()))
         .map(|flow| match flow.standing {
             "terminal" => 3.0,
-            "proximal" => 2.0,
+            "proximal" | "open" => 2.0,
             _ => 1.0,
         })
         .sum();
@@ -1482,7 +1486,7 @@ pub fn derive(
     type_references: &[crate::model::TypeReferenceFact],
     metrics: &[crate::model::UnitMetricsEntry],
     events: &HashSet<&str>,
-    guessed: &HashSet<(String, String)>,
+    open_calls: &HashMap<String, u32>,
     locals: &[LocalBinding],
 ) -> Comprehension {
     let position_of: HashMap<&str, u32> = nodes
@@ -1522,7 +1526,7 @@ pub fn derive(
         };
         match edge.kind {
             EdgeKind::Calls | EdgeKind::Instantiates => {
-                let trusted = !guessed.contains(&(edge.source.clone(), edge.target.clone()))
+                let trusted = edge.via != Via::Name
                     || guessed_callee_is_hand_written(
                         edge.source.as_str(),
                         nodes[target as usize].name.as_str(),
@@ -1960,7 +1964,11 @@ pub fn derive(
         reads.sort();
         reads.dedup();
         reaching.sort();
-        let (logical, step_edges) = reader.read(entry);
+        let (logical, step_edges, cut) = reader.read(entry);
+        let open: u32 = seen
+            .iter()
+            .filter_map(|unit| open_calls.get(nodes[*unit as usize].id.as_str()))
+            .sum();
         let stores_something = logical
             .iter()
             .any(|step| matches!(step.kind, "change" | "remove") && step.doing.is_none());
@@ -1989,6 +1997,7 @@ pub fn derive(
         let standing = match (!changing.is_empty() || !writes.is_empty() || hands_on, !into.is_empty()) {
             (true, _) => "terminal",
             (false, true) => "proximal",
+            (false, false) if open > 0 || cut => "open",
             (false, false) => "reading",
         };
         flows.push(Flow {
@@ -2017,6 +2026,8 @@ pub fn derive(
             description: None,
             grounding: None,
             standing,
+            open,
+            cut,
             units: seen.len() as u32,
             changes: changing,
             leads_into: into,
@@ -2329,7 +2340,7 @@ fn link_across_parts(
         flow.leads_into.sort();
         flow.leads_into.dedup();
         flow.leads_into.truncate(LINKED_AT_MOST);
-        if flow.standing == "reading" {
+        if matches!(flow.standing, "reading" | "open") {
             flow.standing = "proximal";
         }
     }

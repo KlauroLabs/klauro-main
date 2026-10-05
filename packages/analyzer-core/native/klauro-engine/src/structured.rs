@@ -289,6 +289,7 @@ impl<'a> Extractor<'a> {
             registration_label: None,
         });
         self.facts.edges.push(IndexEdge {
+            via: Via::Structure,
             source: owner.to_string(),
             target: id.clone(),
             kind: edge,

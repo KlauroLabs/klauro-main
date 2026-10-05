@@ -130,7 +130,7 @@ pub fn stabilize(facts: &mut FileFacts) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{IndexEdge, IndexNode, Modifiers, Span, EdgeKind};
+    use crate::model::{IndexEdge, IndexNode, Modifiers, Span, EdgeKind, Via};
 
     fn node(id: &str, name: &str, line: u32, parent: Option<&str>) -> IndexNode {
         IndexNode {
@@ -169,6 +169,7 @@ mod tests {
         facts.nodes.push(node("a.ts:callback:test#20:20:5", "test#20", 20, None));
         facts.nodes.push(node("a.ts:callback:test#25:25:5", "test#25", 25, None));
         facts.edges.push(IndexEdge {
+            via: Via::Structure,
             source: "a.ts:type:Shop:1:5".to_string(),
             target: "a.ts:method:render:3:5".to_string(),
             kind: EdgeKind::HasMethod,

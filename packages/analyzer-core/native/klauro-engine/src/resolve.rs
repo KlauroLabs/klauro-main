@@ -39,7 +39,7 @@ pub struct Resolution {
     pub unresolved_calls: u32,
     pub no_caller: u32,
     pub unresolved_names: HashMap<String, u32>,
-    pub guessed: HashSet<(String, String)>,
+    pub open_calls: HashMap<String, u32>,
 }
 
 #[derive(Clone, Copy)]
@@ -1208,7 +1208,7 @@ enum Resolved {
     Dynamic,
     Indirect,
     Library,
-    Unresolved(String),
+    Unresolved(String, bool),
     Edge(String, EdgeKind),
     Guessed(String, EdgeKind),
     External {
@@ -1500,6 +1500,7 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         }
         for target in &reached {
             edges.push(IndexEdge {
+                via: Via::Structure,
                 source: from.to_string(),
                 target: index.files[*target as usize].clone(),
                 kind: EdgeKind::Imports,
@@ -1575,6 +1576,7 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
                 .or_insert(method);
             let owner = index.nodes[owner as usize].id.clone();
             edges.push(IndexEdge {
+                via: Via::Structure,
                 source: owner.clone(),
                 target: fact.source.clone(),
                 kind: EdgeKind::HasMethod,
@@ -1758,6 +1760,7 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         };
         if let Some(target) = target {
             edges.push(IndexEdge {
+                via: Via::Structure,
                 source: fact.source.clone(),
                 target,
                 kind: fact.kind,
@@ -1783,9 +1786,41 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
     }
     let declared_anywhere: HashSet<&str> =
         index.nodes.iter().map(|node| node.name.as_str()).collect();
+    let authored = |node: &&IndexNode| {
+        index.languages.get(node.file as usize).is_some_and(|language| {
+            !language.is_empty() && !matches!(*language, "markdown" | "configuration" | "dockerfile")
+        }) && !node.id.contains(":section:")
+            && !node.id.contains(":key:")
+            && !crate::paths::is_test(&index.files[node.file as usize])
+    };
+    let mut own_names: HashMap<&str, Vec<u32>> = HashMap::default();
+    let mut free_names: HashMap<&str, Vec<u32>> = HashMap::default();
+    for node in index.nodes.iter().filter(authored) {
+        if node.kind.is_unit() || node.kind.is_type() {
+            own_names.entry(node.name.as_str()).or_default().push(node.file);
+        }
+        if matches!(node.kind, NodeKind::Function) || node.kind.is_type() {
+            free_names.entry(node.name.as_str()).or_default().push(node.file);
+        }
+    }
+    let qualifiers: HashSet<&str> = index
+        .nodes
+        .iter()
+        .filter(authored)
+        .filter(|node| node.kind.is_type() || node.kind == NodeKind::Module)
+        .map(|node| node.name.as_str())
+        .collect();
+    let enum_names: HashSet<&str> = index
+        .nodes
+        .iter()
+        .filter(authored)
+        .filter(|node| node.kind == NodeKind::Enum)
+        .map(|node| node.name.as_str())
+        .collect();
 
     let mut unresolved_names: HashMap<String, u32> = HashMap::default();
-    let mut guessed: HashSet<(String, String)> = HashSet::default();
+    let bound: HashSet<(&str, &str)> = index.locals.iter().map(|local| (local.unit.as_str(), local.name.as_str())).collect();
+    let mut open_calls: HashMap<String, u32> = HashMap::default();
     let mut call_origins: HashMap<(String, String), String> = HashMap::default();
     for (unit, name, root) in made_by {
         call_origins.entry((unit, name)).or_insert(root);
@@ -2035,13 +2070,53 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
             return Resolved::External { space: "package", owner: specifier.to_string(), member, kind, origin: None };
         }
 
-        Resolved::Unresolved(member)
+        let handed_in = receiver.is_none() && (bound.contains(&(caller, callee.as_str())) || {
+            let mut held = false;
+            let mut current = Some(unit);
+            for _ in 0..8 {
+                let Some(at) = current else { break };
+                let node = &symbols.nodes[at as usize];
+                if node.signature.as_ref().is_some_and(|signature| signature.parameters.iter().any(|parameter| parameter.name == callee)) {
+                    held = true;
+                    break;
+                }
+                current = node.parent.as_deref().and_then(|parent| symbols.position.get(parent).copied());
+            }
+            held
+        });
+        let foreign = handed_in || receiver.as_deref().is_some_and(|receiver| {
+            if matches!(index.languages.get(fact.file as usize), Some(&("javascript" | "typescript")))
+                && externals::NODE_MODULES.contains(&crate::names::root(receiver))
+            {
+                return true;
+            }
+            let receiver = receiver.trim_start_matches(['(', '*', '&']);
+            if let Some((first, _)) = receiver.split_once("::") {
+                return !matches!(first, "crate" | "self" | "super" | "Self")
+                    && !resolver.types_named.contains_key(first)
+                    && !declared_anywhere.contains(first);
+            }
+            let held = match receiver.strip_prefix("self.").or_else(|| receiver.strip_prefix("this.")) {
+                Some(rest) => symbols
+                    .owning_type(unit)
+                    .and_then(|owner| symbols.member_type(owner, crate::names::root(rest))),
+                None => resolver.bindings.annotation(caller, fact.file, crate::names::root(receiver)),
+            };
+            held.is_some_and(|annotation| {
+                let mut words = annotation
+                    .split(|letter: char| !letter.is_alphanumeric() && letter != '_')
+                    .filter(|word| !word.is_empty())
+                    .peekable();
+                words.peek().is_some() && !words.any(|word| declared_anywhere.contains(word))
+            })
+        });
+        Resolved::Unresolved(member, foreign)
     };
     let resolved: Vec<Resolved> = index.calls.par_iter().map(resolve_call).collect();
     lap("calls resolved");
     let mut ours: HashMap<&str, u32> = HashMap::default();
     for (fact, outcome) in index.calls.iter().zip(&resolved) {
-        if matches!(outcome, Resolved::Unresolved(_))
+        if matches!(outcome, Resolved::Unresolved(..))
             && declared_anywhere.contains(fact.callee.as_str())
             && !crate::paths::is_test(&index.files[fact.file as usize])
         {
@@ -2097,21 +2172,26 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
             Resolved::Dynamic => dynamic_calls += 1,
             Resolved::Indirect => indirect_calls += 1,
             Resolved::Library => {}
-            Resolved::Unresolved(member) => {
+            Resolved::Unresolved(member, foreign) => {
+                let language = index.languages.get(fact.file as usize).copied().unwrap_or("");
+                if !foreign
+                    && is_open_end(&fact.callee, fact.receiver.is_some(), language, fact.file, &own_names, &free_names, &qualifiers, &enum_names, visible)
+                {
+                    *open_calls.entry(caller.to_string()).or_insert(0) += 1;
+                }
                 *unresolved_names.entry(member).or_insert(0) += 1;
                 unresolved_calls += 1;
             }
-            Resolved::Edge(target, kind) => edges.push(IndexEdge { source: caller.to_string(), target, kind }),
+            Resolved::Edge(target, kind) => edges.push(IndexEdge { via: Via::Structure, source: caller.to_string(), target, kind }),
             Resolved::Guessed(target, kind) => {
-                guessed.insert((caller.to_string(), target.clone()));
-                edges.push(IndexEdge { source: caller.to_string(), target, kind });
+                edges.push(IndexEdge { via: Via::Name, source: caller.to_string(), target, kind });
             }
             Resolved::External { space, owner, member, kind, origin } => {
                 if let Some(origin) = origin {
                     call_origins.insert(origin, owner.clone());
                 }
                 let target = declare_external(&mut external_nodes, space, &owner, &member);
-                edges.push(IndexEdge { source: caller.to_string(), target, kind });
+                edges.push(IndexEdge { via: Via::Structure, source: caller.to_string(), target, kind });
                 match space {
                     "package" => package_calls += 1,
                     _ => runtime_calls += 1,
@@ -2152,7 +2232,7 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
             .map(|(name, at)| ((*name).to_string(), symbols.nodes[*at as usize].id.clone()))
             .collect(),
         call_origins,
-        guessed,
+        open_calls,
         method_owners: owners,
         internal_specifiers,
         through,
@@ -2164,6 +2244,40 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
         no_caller,
         unresolved_names,
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn is_open_end(
+    callee: &str,
+    has_receiver: bool,
+    language: &str,
+    from_file: u32,
+    own_names: &HashMap<&str, Vec<u32>>,
+    free_names: &HashMap<&str, Vec<u32>>,
+    qualifiers: &HashSet<&str>,
+    enum_names: &HashSet<&str>,
+    visible: &crate::visibility::Visibility,
+) -> bool {
+    let named = crate::names::leaf(callee);
+    let declared = match (has_receiver || callee.contains("::"), language) {
+        (false, "rust" | "python" | "javascript" | "typescript" | "go" | "php") => free_names,
+        _ => own_names,
+    };
+    let Some(declaring) = declared.get(named) else { return false };
+    if !declaring.iter().any(|file| visible.can_see(from_file, *file))
+        || crate::builtins::is_builtin(language, named)
+        || crate::builtins::is_standard_member(language, named)
+        || is_runtime_member(named)
+    {
+        return false;
+    }
+    let Some((qualifier, _)) = callee.rsplit_once("::") else { return true };
+    let root = qualifier.split("::").next().unwrap_or(qualifier);
+    let owner = qualifier.rsplit("::").next().unwrap_or(qualifier);
+    if enum_names.contains(owner) || matches!(root, "std" | "core" | "alloc") {
+        return false;
+    }
+    matches!(root, "crate" | "self" | "super" | "Self") || qualifiers.contains(root) || qualifiers.contains(owner)
 }
 
 fn last_segment(receiver: &str) -> &str {

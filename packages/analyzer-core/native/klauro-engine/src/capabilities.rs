@@ -1409,6 +1409,8 @@ mod command_family_tests {
             surface: None,
             plays: None,
             standing: "terminal",
+            open: 0,
+            cut: false,
             name: None,
             description: None,
             grounding: None,

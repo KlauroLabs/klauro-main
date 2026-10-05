@@ -28,6 +28,10 @@ pub fn not(held: &bool) -> bool {
     !whole() && !*held
 }
 
+pub fn nothing(held: &u32) -> bool {
+    *held == 0
+}
+
 pub fn zero(held: &u16) -> bool {
     !whole() && *held == 0
 }

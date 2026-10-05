@@ -258,6 +258,7 @@ pub fn derive(sources: &Sources) -> Derived {
             for handler in handlers {
                 if handler != caller {
                     dispatched.push(IndexEdge {
+                        via: Via::Rule,
                         source: caller.to_string(),
                         target: handler.clone(),
                         kind: EdgeKind::Calls,
@@ -269,6 +270,7 @@ pub fn derive(sources: &Sources) -> Derived {
     for (declared, implementations) in graph.overriding() {
         for implementation in implementations.into_iter().filter(|held| !tested(nodes[*held].file)) {
             dispatched.push(IndexEdge {
+                via: Via::Rule,
                 source: nodes[declared].id.clone(),
                 target: nodes[implementation].id.clone(),
                 kind: EdgeKind::Calls,

@@ -1036,7 +1036,7 @@ impl<'a> Extractor<'a> {
             registration_label: Some(path),
         });
         if let Some(owner) = owner.as_deref() {
-            self.facts.edges.push(IndexEdge { source: owner.to_string(), target: id.clone(), kind: EdgeKind::Contains });
+            self.facts.edges.push(IndexEdge { via: Via::Structure, source: owner.to_string(), target: id.clone(), kind: EdgeKind::Contains });
         }
         let mut inner = scope.clone();
         inner.owner = Some(id.clone());
@@ -1079,6 +1079,7 @@ impl<'a> Extractor<'a> {
         });
         if let Some(owner) = owner.as_deref() {
             self.facts.edges.push(IndexEdge {
+                via: Via::Structure,
                 source: owner.to_string(),
                 target: id.clone(),
                 kind: if member { EdgeKind::HasMethod } else { EdgeKind::Contains },
@@ -1148,6 +1149,7 @@ impl<'a> Extractor<'a> {
         });
         if let Some(owner) = owner.as_deref() {
             self.facts.edges.push(IndexEdge {
+                via: Via::Structure,
                 source: owner.to_string(),
                 target: id.clone(),
                 kind: EdgeKind::Contains,
@@ -1287,6 +1289,7 @@ impl<'a> Extractor<'a> {
         });
         if let Some(owner) = owner.as_deref() {
             self.facts.edges.push(IndexEdge {
+                via: Via::Structure,
                 source: owner.to_string(),
                 target: id.clone(),
                 kind: if scope.type_owner.is_some() {
@@ -1615,6 +1618,7 @@ impl<'a> Extractor<'a> {
             registration_label: None,
         });
         self.facts.edges.push(IndexEdge {
+            via: Via::Structure,
             source: owner.clone(),
             target: id,
             kind: EdgeKind::HasField,
@@ -1644,6 +1648,7 @@ impl<'a> Extractor<'a> {
                 registration_label: None,
             });
             self.facts.edges.push(IndexEdge {
+                via: Via::Structure,
                 source: owner.clone(),
                 target: held,
                 kind: EdgeKind::HasField,
@@ -1857,6 +1862,7 @@ impl<'a> Extractor<'a> {
         }
         if let Some(owner) = scope.callable.clone().or_else(|| scope.owner.clone()) {
             self.facts.edges.push(IndexEdge {
+                via: Via::Structure,
                 source: owner,
                 target: id.clone(),
                 kind: EdgeKind::Contains,
@@ -1888,7 +1894,7 @@ impl<'a> Extractor<'a> {
             registration_label: Some(arm.label),
         });
         if let Some(owner) = holder {
-            self.facts.edges.push(IndexEdge { source: owner, target: id.clone(), kind: EdgeKind::Contains });
+            self.facts.edges.push(IndexEdge { via: Via::Structure, source: owner, target: id.clone(), kind: EdgeKind::Contains });
         }
         let mut inner = scope.clone();
         inner.callable = Some(id);
@@ -2031,6 +2037,7 @@ impl<'a> Extractor<'a> {
             registration_label: None,
         });
         self.facts.edges.push(IndexEdge {
+            via: Via::Structure,
             source: handler.to_string(),
             target: id.clone(),
             kind: EdgeKind::Contains,

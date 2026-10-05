@@ -118,6 +118,7 @@ pub fn extract(source: &str, file: u32, path: &str) -> FileFacts {
                     None,
                 ));
                 facts.edges.push(IndexEdge {
+                    via: Via::Structure,
                     source: module.clone(),
                     target: stage.clone(),
                     kind: EdgeKind::Contains,
@@ -147,6 +148,7 @@ pub fn extract(source: &str, file: u32, path: &str) -> FileFacts {
                         Some(instruction.keyword.clone()),
                     ));
                     facts.edges.push(IndexEdge {
+                        via: Via::Structure,
                         source: stage.clone(),
                         target: id,
                         kind: EdgeKind::HasField,
@@ -165,6 +167,7 @@ pub fn extract(source: &str, file: u32, path: &str) -> FileFacts {
                     Some(instruction.argument.to_string()),
                 ));
                 facts.edges.push(IndexEdge {
+                    via: Via::Structure,
                     source: stage.clone(),
                     target: id,
                     kind: EdgeKind::HasField,

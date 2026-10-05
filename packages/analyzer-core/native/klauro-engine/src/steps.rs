@@ -61,6 +61,7 @@ pub struct Reader<'a> {
     events: &'a HashSet<&'a str>,
     member_of: HashMap<(&'a str, &'a str), u32>,
     callers: HashMap<u32, u32>,
+    cut: std::cell::Cell<bool>,
 }
 
 static HANDS_ON: &[&str] = &["dispatch", "emit", "execute", "handle", "invoke", "publish", "raise", "send", "sendasync", "publishasync", "dispatchasync", "trigger"];
@@ -289,7 +290,7 @@ impl<'a> Reader<'a> {
                 }
             }
         }
-        Reader { nodes, position_of, next, calls_of, leaving, exit_records, held, writes_fields, events, member_of, callers }
+        Reader { nodes, position_of, next, calls_of, leaving, exit_records, held, writes_fields, events, member_of, callers, cut: std::cell::Cell::new(false) }
     }
 
     fn records_touched(&self, exit: &ExitPoint) -> Option<String> {
@@ -436,6 +437,7 @@ impl<'a> Reader<'a> {
 
     fn walk(&self, unit: u32, depth: u32, when: &'static str, visited: &mut HashSet<u32>, actions: &mut Vec<Action>) {
         if actions.len() >= ACTIONS_AT_MOST || depth > DEEPEST {
+            self.cut.set(true);
             return;
         }
         let node = &self.nodes[unit as usize];
@@ -591,10 +593,11 @@ impl<'a> Reader<'a> {
         }
     }
 
-    pub fn read(&self, entry: &EntryPoint) -> (Vec<LogicalStep>, Vec<StepEdge>) {
+    pub fn read(&self, entry: &EntryPoint) -> (Vec<LogicalStep>, Vec<StepEdge>, bool) {
         let Some(start) = self.position_of.get(entry.handler.as_str()).copied() else {
-            return (Vec::new(), Vec::new());
+            return (Vec::new(), Vec::new(), false);
         };
+        self.cut.set(false);
         let mut actions: Vec<Action> = Vec::new();
         let first_line = self.nodes[start as usize].span.line;
         if !entry.guards.is_empty() {
@@ -651,6 +654,7 @@ impl<'a> Reader<'a> {
                 continue;
             }
             if steps.len() >= STEPS_AT_MOST {
+                self.cut.set(true);
                 break;
             }
             last_when.push(action.when);
@@ -681,7 +685,7 @@ impl<'a> Reader<'a> {
                 },
             })
             .collect();
-        (steps, edges)
+        (steps, edges, self.cut.get())
     }
 }
 

@@ -130,6 +130,7 @@ impl<'a> Extractor<'a> {
 
     fn push_edge(&mut self, source: &str, target: &str, kind: EdgeKind) {
         self.facts.edges.push(IndexEdge {
+            via: Via::Structure,
             source: source.to_string(),
             target: target.to_string(),
             kind,

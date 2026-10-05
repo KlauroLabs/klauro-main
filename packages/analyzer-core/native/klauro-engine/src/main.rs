@@ -579,7 +579,7 @@ fn read_it() {
         .iter()
         .filter(|edge| matches!(edge.kind, model::EdgeKind::Imports))
         .count();
-    let guessed = std::mem::take(&mut resolution.guessed);
+    let open_calls = std::mem::take(&mut resolution.open_calls);
     index.edges.extend(std::mem::take(&mut resolution.edges));
     index.nodes.extend(std::mem::take(&mut resolution.external_nodes));
     for node in index.nodes.iter_mut() {
@@ -1210,7 +1210,7 @@ fn read_it() {
                 found.messages.iter().filter(|message| message.kind == "event").map(|message| message.message.as_str()).collect()
             })
             .unwrap_or_default(),
-        &guessed,
+        &open_calls,
         &index.locals,
     );
     if audit::asked() {

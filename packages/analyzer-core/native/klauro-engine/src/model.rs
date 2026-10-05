@@ -165,11 +165,28 @@ pub struct IndexNode {
     pub registration_label: Option<String>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Via {
+    #[default]
+    Structure,
+    Name,
+    Rule,
+}
+
+impl Via {
+    pub fn is_structure(&self) -> bool {
+        *self == Via::Structure
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct IndexEdge {
     pub source: String,
     pub target: String,
     pub kind: EdgeKind,
+    #[serde(default, skip_serializing_if = "Via::is_structure")]
+    pub via: Via,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

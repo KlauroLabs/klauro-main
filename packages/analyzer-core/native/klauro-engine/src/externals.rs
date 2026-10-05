@@ -39,6 +39,13 @@ pub static RUNTIME_GLOBALS: &[&str] = &[
     "history", "alert", "confirm", "prompt", "requestAnimationFrame", "cancelAnimationFrame",
 ];
 
+pub static NODE_MODULES: &[&str] = &[
+    "assert", "async_hooks", "buffer", "child_process", "cluster", "crypto", "dgram", "diagnostics_channel",
+    "dns", "events", "fs", "http", "http2", "https", "net", "os", "path", "perf_hooks", "querystring",
+    "readline", "stream", "string_decoder", "timers", "tls", "url", "util", "v8", "vm", "worker_threads",
+    "zlib",
+];
+
 pub fn sorted_runtime_globals() -> Vec<&'static str> {
     let mut sorted = RUNTIME_GLOBALS.to_vec();
     sorted.sort_unstable();
