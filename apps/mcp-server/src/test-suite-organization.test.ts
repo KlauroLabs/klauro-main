@@ -94,7 +94,7 @@ test('suite derives exclusive external-daemon scheduling from test semantics', a
   assert.ok(files.every(item => typeof item.exclusiveExternalDaemon === 'boolean'));
   assert.ok(files.some(item => item.exclusiveExternalDaemon));
   assert.ok(files.some(item => !item.exclusiveExternalDaemon));
-  assert.equal(files.find(item => item.file === 'src/gauntlet/camps-bench.test.ts')?.exclusiveExternalDaemon, true);
+  assert.equal(files.find(item => item.file === 'src/gauntlet/camp-c-routes-cbm.test.ts')?.exclusiveExternalDaemon, true);
   assert.equal(files.find(item => item.file === 'src/gauntlet/minhash-clone-detection.test.ts')?.exclusiveExternalDaemon, false);
 });
 
