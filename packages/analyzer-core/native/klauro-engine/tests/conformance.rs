@@ -35,7 +35,7 @@ fn health_rolls_up_what_each_project_serves_and_what_reaches_it() {
 
 #[test]
 fn the_commit_log_is_read_where_a_repository_holds_one() {
-    let root = std::env::temp_dir().join("klauro-history-fixture");
+    let root = std::env::temp_dir().join(format!("klauro-history-fixture-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("src")).unwrap();
     let git = |args: &[&str]| {
