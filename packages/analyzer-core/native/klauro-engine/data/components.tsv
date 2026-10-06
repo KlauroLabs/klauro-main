@@ -1,0 +1,13 @@
+base	Component
+base	PureComponent
+base	LitElement
+base	ComponentBase
+base	StatelessWidget
+base	StatefulWidget
+base	ConsumerWidget
+base	ConsumerStatefulWidget
+base	HookWidget
+base	HookConsumerWidget
+base	View
+marker	Composable
+marker	Component

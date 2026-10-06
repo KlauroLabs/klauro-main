@@ -53,6 +53,8 @@ pub enum EdgeKind {
     Calls,
     Imports,
     Instantiates,
+    Renders,
+    ResolvedBy,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]

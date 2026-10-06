@@ -1,0 +1,3 @@
+schema { query: Query mutation: Mutation }
+type Query { product(id: ID): String }
+type Mutation { productCreate(name: String): String }

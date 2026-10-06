@@ -1,0 +1,2 @@
+type Query { user(id: String): String users: String }
+type Mutation { createUser(email: String): String }

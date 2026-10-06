@@ -59,6 +59,10 @@ async function sourceBytes(dir: string): Promise<number> {
   return total;
 }
 
+function componentName(node: any): string {
+  return node.type === 'file' ? String(node.name).replace(/\.[^.]+$/, '') : node.name;
+}
+
 async function klauroTree(dir: string): Promise<{ tree: string[]; bytes: number; time_ms: number }> {
   const t0 = Date.now();
   const cas: any = await analyzeForBench(dir);
@@ -69,7 +73,7 @@ async function klauroTree(dir: string): Promise<{ tree: string[]; bytes: number;
     .map((e: any) => {
       const s: any = byId.get(e.source);
       const t: any = byId.get(e.target);
-      return s && t ? `${s.name} renders ${t.name}` : '';
+      return s && t ? `${componentName(s)} renders ${componentName(t)}` : '';
     })
     .filter(Boolean);
   return { tree: [...new Set(tree)], bytes: Buffer.byteLength(tree.join('\n'), 'utf8'), time_ms };

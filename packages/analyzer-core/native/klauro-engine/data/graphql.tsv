@@ -1,0 +1,34 @@
+evidence	graphql
+evidence	strawberry
+evidence	ariadne
+evidence	graphene
+evidence	hotchocolate
+evidence	juniper
+evidence	pothos
+evidence	nexus
+operation	query	Query
+operation	querymapping	Query
+operation	mutation	Mutation
+operation	mutationmapping	Mutation
+operation	subscription	Subscription
+operation	subscriptionmapping	Subscription
+field	resolvefield
+field	fieldresolver
+field	resolveproperty
+field	schemamapping
+field	batchmapping
+class_operation	querytype	Query
+class_operation	mutationtype	Mutation
+class_operation	subscriptiontype	Subscription
+class_extends	extendobjecttype
+object_base	objecttype
+object_base	mutation
+object_base	subscription
+object_base	interface
+mutation_member	perform_mutation
+mutation_member	mutate_and_get_payload
+mutation_member	mutate
+binder	querytype	Query
+binder	mutationtype	Mutation
+binder	subscriptiontype	Subscription
+binder	objecttype

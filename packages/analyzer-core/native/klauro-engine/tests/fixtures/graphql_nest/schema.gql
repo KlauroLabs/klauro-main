@@ -1,0 +1,3 @@
+type Query { user(id: ID!): User }
+type Mutation { makeUser: String }
+type User { id: ID! posts: [String] }
