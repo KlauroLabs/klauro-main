@@ -604,8 +604,12 @@ const SHIPS_AS: Record<string, { tier: 1 | 2 | 3; kind: DeployableEvidence['kind
   'package-identity': { tier: 3, kind: 'package' },
 };
 
+const TIER_OF_DECLARATION: Record<string, 1 | 2 | 3> = { ship: 1, run: 2, identity: 3 };
+
 function shipsAs(declared: TierStackShipDeclaration): { tier: 1 | 2 | 3; kind: DeployableEvidence['kind'] } {
-  return SHIPS_AS[declared.kind] ?? { tier: 3, kind: 'package' };
+  const known = SHIPS_AS[declared.kind];
+  const tier = TIER_OF_DECLARATION[declared.declares] ?? known?.tier ?? 3;
+  return { tier, kind: known?.kind ?? (tier === 1 ? 'bin' : 'package') };
 }
 
 function deployablesOf(index: TierStackIndex): DeployableEvidence[] {
