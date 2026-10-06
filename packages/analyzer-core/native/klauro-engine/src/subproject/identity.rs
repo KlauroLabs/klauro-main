@@ -87,8 +87,9 @@ fn role_of(project: &SubProject, tally: &Tally) -> (&'static str, String) {
         return ("tooling", "it holds the files that sit outside every declared part".to_string());
     }
     let screens = tally.of_kinds(&["ui"]) + tally.screen_events;
-    if screens * 2 > entered {
-        return ("presentation", format!("{screens} of its {entered} entry points are screens or reactions to what someone does on one"));
+    let strongest_elsewhere = tally.entries.iter().filter(|(kind, _)| **kind != "ui" && **kind != "event").map(|(_, count)| *count).max().unwrap_or(0);
+    if screens * 2 > entered || (screens > strongest_elsewhere && tally.of_kinds(SERVING_KINDS) == 0 && tally.of_kinds(&["ipc"]) == 0) {
+        return ("presentation", format!("{screens} of its {entered} entry points are screens or reactions to what someone does on one, and no other kind of entry point is as common"));
     }
     let serving = tally.of_kinds(SERVING_KINDS);
     let commands = tally.of_kinds(&["ipc"]);
@@ -177,25 +178,12 @@ fn surfaces_told(tally: &Tally) -> Vec<String> {
 }
 
 fn plain_name(project: &SubProject, repository: &str) -> String {
-    let package = project.name.rsplit('/').next().unwrap_or(&project.name);
-    let root = crate::paths::display_name(&project.root);
-    let base = match package.eq_ignore_ascii_case(repository) || package.is_empty() || project.root.is_empty() && project.declared_by == "repository-residue" {
-        true if project.root.is_empty() => repository.to_string(),
-        true => root,
-        false => package.to_string(),
-    };
-    let words: Vec<String> = base.split(|held: char| !held.is_alphanumeric()).filter(|word| !word.is_empty()).map(str::to_ascii_lowercase).collect();
-    let mut named: Vec<String> = words
-        .iter()
-        .map(|word| match word.len() <= 3 && word.chars().all(|held| held.is_ascii_alphabetic() && !"aeiouy".contains(held)) {
-            true => word.to_ascii_uppercase(),
-            false => word.clone(),
-        })
-        .collect();
-    if let Some(first) = named.first_mut() {
-        *first = capitalised(first);
+    let declared = project.name.rsplit('/').next().unwrap_or(&project.name);
+    match (declared.is_empty(), project.root.is_empty()) {
+        (false, false) => declared.to_string(),
+        (_, true) => repository.to_string(),
+        (true, false) => crate::paths::display_name(&project.root),
     }
-    named.join(" ")
 }
 
 fn capitalised(word: &str) -> String {
@@ -417,10 +405,11 @@ mod tests {
     }
 
     #[test]
-    fn a_name_drops_the_repository_prefix_and_reads_plainly() {
-        assert_eq!(plain_name(&project("src-tauri", "agent-desktop", "deployable"), "agent-desktop"), "SRC tauri");
-        assert_eq!(plain_name(&project("packages/remote-client", "@agent-desktop/remote-client", "library"), "agent-desktop"), "Remote client");
-        assert_eq!(plain_name(&project("apps/mcp-server", "mcp-server", "deployable"), "klauro"), "MCP server");
+    fn a_name_is_the_one_the_manifest_declares_without_its_scope() {
+        assert_eq!(plain_name(&project("src-tauri", "agent-desktop", "deployable"), "agent-desktop"), "agent-desktop");
+        assert_eq!(plain_name(&project("packages/remote-client", "@agent-desktop/remote-client", "library"), "agent-desktop"), "remote-client");
+        assert_eq!(plain_name(&project("apps/mcp-server", "", "deployable"), "klauro"), "mcp-server");
+        assert_eq!(plain_name(&project("", "", "deployable"), "klauro"), "klauro");
     }
 
     #[test]
@@ -471,6 +460,14 @@ mod tests {
         let mut library = project("packages/sdk", "sdk", "library");
         library.consumed_by = vec!["subproject:apps/app".to_string()];
         assert_eq!(role_of(&library, &tally(&[("export", 8)])).0, "library");
+    }
+
+    #[test]
+    fn a_part_whose_screens_outnumber_every_other_kind_of_entry_point_is_presentation() {
+        let held = tally(&[("ui", 16), ("event", 9), ("lifecycle", 6), ("schedule", 3)]);
+        assert_eq!(role_of(&project("mobile", "mobile", "deployable"), &held).0, "presentation");
+        let serving = tally(&[("ui", 10), ("http", 3), ("lifecycle", 8), ("schedule", 3)]);
+        assert_ne!(role_of(&project("mobile", "mobile", "deployable"), &serving).0, "presentation");
     }
 
     #[test]
