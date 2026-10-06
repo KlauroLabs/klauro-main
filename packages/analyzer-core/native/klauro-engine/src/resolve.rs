@@ -987,9 +987,10 @@ fn dotted_module(files: &HashMap<&str, u32>, from: &str, specifier: &str) -> Opt
     for _ in 1..depth {
         folder = directory_of(folder);
     }
-    let base = match rest.is_empty() {
-        true => folder.to_string(),
-        false => format!("{folder}/{rest}"),
+    let base = match (rest.is_empty(), folder.is_empty()) {
+        (true, _) => folder.to_string(),
+        (false, true) => rest,
+        (false, false) => format!("{folder}/{rest}"),
     };
     for candidate in [format!("{base}.py"), format!("{base}/__init__.py")] {
         if let Some(found) = files.get(candidate.as_str()) {
@@ -998,6 +999,8 @@ fn dotted_module(files: &HashMap<&str, u32>, from: &str, specifier: &str) -> Opt
     }
     None
 }
+
+const PYTHON_ROOTS_AT_MOST: usize = 6;
 
 static INTERNAL_ROOTS: &[&str] = &["crate", "self", "super"];
 
@@ -1588,6 +1591,15 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
                     .expand(from, &fact.specifier)
                     .iter()
                     .find_map(|path| module_or_owner(&by_path, &fact.specifier, path))
+            })
+            .or_else(|| {
+                (language == "python" && !fact.specifier.starts_with('.'))
+                    .then(|| {
+                        (1..=PYTHON_ROOTS_AT_MOST).find_map(|depth| {
+                            dotted_module(&by_path, from, &format!("{}{}", ".".repeat(depth), fact.specifier))
+                        })
+                    })
+                    .flatten()
             });
         let reached: Vec<u32> = match declared {
             Some(found) => vec![found],
