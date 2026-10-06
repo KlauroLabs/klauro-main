@@ -89,47 +89,22 @@ fn manifest_files(
     found
 }
 
-fn nearest<'a>(every: &[&'a str], path: &str) -> Option<&'a str> {
-    every.iter().copied().find(|root| under(path, root))
-}
-
-fn imported_across(edges: &[IndexEdge], every: &[&str]) -> std::collections::BTreeSet<String> {
-    let mut crossed = std::collections::BTreeSet::new();
-    for edge in edges.iter().filter(|edge| edge.kind == EdgeKind::Imports) {
-        let from = edge.source.split(':').next().unwrap_or_default();
-        let to = edge.target.split(':').next().unwrap_or_default();
-        if is_test(from) || is_not_shipped(from) {
-            continue;
-        }
-        let (Some(user), Some(owner)) = (nearest(every, from), nearest(every, to)) else { continue };
-        if user != owner {
-            crossed.insert(owner.to_string());
-        }
-    }
-    crossed
-}
-
 pub fn published(
     files: &[String],
     nodes: &[IndexNode],
-    edges: &[IndexEdge],
     scope: &crate::scope::Scope,
 ) -> Vec<EntryPoint> {
     let children = held_by(nodes);
-    let mut every: Vec<&str> = scope.deployables.iter().map(|unit| unit.root.as_str()).collect();
-    every.sort_by_key(|root| std::cmp::Reverse(root.len()));
-    let imported = imported_across(edges, &every);
     let publishing: Vec<Publishes> = scope
         .deployables
         .iter()
         .filter(|unit| {
-            unit.category == "library"
-                && unit.runs.is_none()
-                && unit.bundled_into.is_none()
-                && (unit.offered_to_others || unit.consumers > 0 || imported.contains(unit.root.as_str()))
+            unit.category == "library" && unit.runs.is_none() && (unit.offered_to_others || unit.consumers > 0)
         })
         .map(|unit| Publishes { root: unit.root.as_str() })
         .collect();
+    let mut every: Vec<&str> = scope.deployables.iter().map(|unit| unit.root.as_str()).collect();
+    every.sort_by_key(|root| std::cmp::Reverse(root.len()));
 
     if publishing.is_empty() {
         return Vec::new();

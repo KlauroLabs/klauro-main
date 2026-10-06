@@ -781,7 +781,6 @@ fn read_it() {
     let published = published::published(
         &paths,
         &index.nodes,
-        &index.edges,
         index.scope.as_ref().expect("scope precedes what it publishes"),
     );
     if !published.is_empty() {
