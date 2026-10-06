@@ -32,6 +32,8 @@ pub struct Crossing {
     pub to: String,
     pub to_file: u32,
     pub to_line: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to_end_line: Option<u32>,
 }
 
 struct Site<'a> {
@@ -150,6 +152,7 @@ fn events(files: &[String], nodes: &[IndexNode], calls: &[CallFact], constants: 
                 to: to.unit.to_string(),
                 to_file: to.file,
                 to_line: to.line,
+                to_end_line: None,
             });
         }
     }
@@ -185,6 +188,7 @@ fn messages(files: &[String], messages: &[MessageFact]) -> Vec<Crossing> {
                 to: to.unit.clone(),
                 to_file: to.file,
                 to_line: to.line,
+                to_end_line: Some(to.end_line),
             });
         }
     }
@@ -232,6 +236,7 @@ fn commands(entry_points: &[EntryPoint], exit_points: &[ExitPoint], files: &[Str
                 to: handler.handler.clone(),
                 to_file: handler.file,
                 to_line: handler.line,
+                to_end_line: None,
             });
         }
     }

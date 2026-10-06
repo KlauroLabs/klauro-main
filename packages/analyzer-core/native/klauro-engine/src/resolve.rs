@@ -27,12 +27,36 @@ pub struct Index<'a> {
     pub forwards: &'a [crate::model::Forward],
 }
 
+impl Resolution {
+    pub fn unit_named(&self, name: &str, file: u32, files: &[String]) -> Option<&str> {
+        let family = self.file_families.get(file as usize)?;
+        let mut candidates = self
+            .named_units
+            .get(name)?
+            .iter()
+            .filter(|(home, _)| self.file_families.get(*home as usize) == Some(family));
+        let here = directory_of(files.get(file as usize)?);
+        let beside: Vec<&(u32, String)> = candidates
+            .clone()
+            .filter(|(home, _)| files.get(*home as usize).is_some_and(|path| directory_of(path) == here))
+            .collect();
+        match beside.as_slice() {
+            [only] => return Some(only.1.as_str()),
+            [] => {}
+            _ => return None,
+        }
+        let first = candidates.next()?;
+        candidates.next().is_none().then_some(first.1.as_str())
+    }
+}
+
 pub struct Resolution {
     pub edges: Vec<IndexEdge>,
     pub external_nodes: Vec<IndexNode>,
     pub modules: HashMap<(u32, String), String>,
     pub local: HashMap<(u32, String), String>,
-    pub unique_units: HashMap<String, String>,
+    pub named_units: HashMap<String, Vec<(u32, String)>>,
+    pub file_families: Vec<String>,
     pub call_origins: HashMap<(String, String), String>,
     pub method_owners: HashMap<String, String>,
     pub internal_specifiers: HashSet<String>,
@@ -2652,11 +2676,14 @@ pub fn resolve<'a>(index: &Index<'a>) -> Resolution {
             .map(|((file, name), at)| ((*file, (*name).to_string()), symbols.nodes[*at as usize].id.clone()))
             .collect(),
         reached: reached_files,
-        unique_units: symbols
-            .unique_unit
-            .iter()
-            .map(|(name, at)| ((*name).to_string(), symbols.nodes[*at as usize].id.clone()))
-            .collect(),
+        named_units: {
+            let mut named: HashMap<String, Vec<(u32, String)>> = HashMap::default();
+            for node in symbols.nodes.iter().filter(|node| node.kind.is_unit()) {
+                named.entry(node.name.clone()).or_default().push((node.file, node.id.clone()));
+            }
+            named
+        },
+        file_families: index.languages.iter().map(|language| family(language).to_string()).collect(),
         call_origins,
         open_calls,
         method_owners: owners,

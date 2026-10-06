@@ -256,7 +256,8 @@ fn rust_module_of(path: &str) -> &str {
 fn called_unit<'a>(
     call: &'a CallFact,
     known: &HashSet<&str>,
-    unique_units: &'a HashMap<String, String>,
+    resolution: &'a Resolution,
+    files: &[String],
     by_file_and_name: &HashMap<(u32, &'a str), &'a str>,
     by_module_and_name: &HashMap<(&'a str, &'a str), &'a str>,
 ) -> Option<&'a str> {
@@ -281,7 +282,7 @@ fn called_unit<'a>(
             }
         }
     }
-    unique_units.get(names::leaf(&call.callee)).map(String::as_str)
+    resolution.unit_named(names::leaf(&call.callee), call.file, files)
 }
 
 fn keep_hand_rolled_dispatch_only_when_served(
@@ -290,7 +291,7 @@ fn keep_hand_rolled_dispatch_only_when_served(
     nodes: &[IndexNode],
     files: &[String],
     known: &HashSet<&str>,
-    unique_units: &HashMap<String, String>,
+    resolution: &Resolution,
 ) {
     if !entry_points.iter().any(|entry| entry.registrar == HAND_ROLLED_DISPATCH_REGISTRAR) {
         return;
@@ -307,7 +308,7 @@ fn keep_hand_rolled_dispatch_only_when_served(
     let mut calls_from: HashMap<&str, Vec<&str>> = HashMap::default();
     for call in calls {
         let Some(caller) = call.caller.as_deref() else { continue };
-        let Some(target) = called_unit(call, known, unique_units, &by_file_and_name, &by_module_and_name) else { continue };
+        let Some(target) = called_unit(call, known, resolution, files, &by_file_and_name, &by_module_and_name) else { continue };
         calls_from.entry(caller).or_default().push(target);
     }
     let mut children_of: HashMap<&str, Vec<&str>> = HashMap::default();
@@ -2051,7 +2052,7 @@ pub fn derive(
         .iter()
         .map(|held| ((held.file, held.unit.as_str(), held.name.as_str()), held))
         .collect();
-    let Resolution { modules, local, unique_units, call_origins, through, imported, .. } = resolution;
+    let Resolution { modules, local, call_origins, through, imported, .. } = resolution;
     let known: HashSet<&str> = nodes.iter().map(|node| node.id.as_str()).collect();
     let mut stands_in: HashMap<&str, Vec<&'static str>> = HashMap::default();
     for ((file, _), specifier) in modules {
@@ -2479,8 +2480,8 @@ pub fn derive(
                 Some([only]) => Some((*only).to_string()),
                 _ => None,
             })
-            .or_else(|| unique_units.get(leaf)
-            .cloned()
+            .or_else(|| resolution.unit_named(leaf, registration.file, files)
+            .map(str::to_string)
             .or_else(|| {
                 unique_type
                     .get(leaf)
@@ -2852,7 +2853,7 @@ pub fn derive(
     }
     entry_points.sort_by(|left, right| left.id.cmp(&right.id));
     entry_points.dedup_by(|left, right| left.id == right.id);
-    keep_hand_rolled_dispatch_only_when_served(&mut entry_points, calls, nodes, files, &known, unique_units);
+    keep_hand_rolled_dispatch_only_when_served(&mut entry_points, calls, nodes, files, &known, resolution);
     let mut at_site: HashMap<(u32, u32), Vec<usize>> = HashMap::default();
     for (at, exit) in exit_points.iter().enumerate() {
         at_site.entry((exit.file, exit.line)).or_default().push(at);

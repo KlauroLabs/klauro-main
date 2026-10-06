@@ -6,7 +6,7 @@ use serde::Serialize;
 use crate::comprehend::Flow;
 use crate::crossings::Crossing;
 use crate::entry_exit::{EntryPoint, ExitPoint, USER_FACING};
-use crate::model::{EdgeKind, IndexEdge, IndexNode, Via};
+use crate::model::{CallFact, EdgeKind, IndexEdge, IndexNode, Via};
 use crate::paths::is_scaffolding;
 use crate::unshipped;
 
@@ -50,10 +50,28 @@ pub struct Journey {
     pub entered: bool,
 }
 
+#[derive(Clone, Copy)]
+struct Window<'a> {
+    unit: &'a str,
+    from: u32,
+    to: u32,
+}
+
+impl Window<'_> {
+    fn holds(&self, line: u32) -> bool {
+        (self.from..=self.to).contains(&line)
+    }
+}
+
+fn window_of(crossing: &Crossing) -> Option<Window<'_>> {
+    crossing.to_end_line.map(|to| Window { unit: crossing.to.as_str(), from: crossing.to_line, to })
+}
+
 struct Graph<'a> {
     files: &'a [String],
     nodes: HashMap<&'a str, &'a IndexNode>,
     calls: HashMap<&'a str, Vec<&'a str>>,
+    sites: HashMap<&'a str, Vec<(u32, &'a str)>>,
     exits: HashMap<&'a str, Vec<&'a ExitPoint>>,
 }
 
@@ -85,7 +103,13 @@ fn humanized(symbol: &str) -> String {
 }
 
 impl<'a> Graph<'a> {
-    fn new(files: &'a [String], nodes: &'a [IndexNode], edges: &'a [IndexEdge], exit_points: &'a [ExitPoint]) -> Self {
+    fn new(files: &'a [String], nodes: &'a [IndexNode], edges: &'a [IndexEdge], call_facts: &'a [CallFact], exit_points: &'a [ExitPoint]) -> Self {
+        let mut sites: HashMap<&str, Vec<(u32, &str)>> = HashMap::default();
+        for call in call_facts {
+            if let Some(caller) = call.caller.as_deref() {
+                sites.entry(caller).or_default().push((call.line, crate::names::leaf(&call.callee)));
+            }
+        }
         let mut calls: HashMap<&str, Vec<&str>> = HashMap::default();
         for edge in edges.iter().filter(|edge| edge.kind == EdgeKind::Calls && edge.via != Via::Name) {
             calls.entry(edge.source.as_str()).or_default().push(edge.target.as_str());
@@ -94,7 +118,7 @@ impl<'a> Graph<'a> {
         for exit in exit_points.iter().filter(|exit| EFFECT_KINDS.contains(&exit.kind)) {
             exits.entry(exit.source.as_str()).or_default().push(exit);
         }
-        Graph { files, nodes: nodes.iter().map(|node| (node.id.as_str(), node)).collect(), calls, exits }
+        Graph { files, nodes: nodes.iter().map(|node| (node.id.as_str(), node)).collect(), calls, sites, exits }
     }
 
     fn named_unit(&self, unit: &str) -> Option<&'a IndexNode> {
@@ -112,6 +136,15 @@ impl<'a> Graph<'a> {
     }
 
     fn within(&self, from: &'a str, reach: usize) -> HashMap<&'a str, Option<&'a str>> {
+        self.within_window(from, reach, None)
+    }
+
+    fn called_in(&self, window: Window, target: &str) -> bool {
+        let Some(name) = self.nodes.get(target).map(|node| crate::names::leaf(&node.name)) else { return false };
+        self.sites.get(window.unit).into_iter().flatten().any(|(line, callee)| window.holds(*line) && *callee == name)
+    }
+
+    fn within_window(&self, from: &'a str, reach: usize, window: Option<Window<'a>>) -> HashMap<&'a str, Option<&'a str>> {
         let mut seen: HashMap<&str, Option<&str>> = HashMap::default();
         seen.insert(from, None);
         let mut queue: VecDeque<(&str, usize)> = VecDeque::from([(from, 0)]);
@@ -119,7 +152,11 @@ impl<'a> Graph<'a> {
             if depth == reach {
                 continue;
             }
+            let held = window.filter(|held| held.unit == unit);
             for next in self.calls.get(unit).into_iter().flatten() {
+                if held.is_some_and(|held| !self.called_in(held, next)) {
+                    continue;
+                }
                 if !seen.contains_key(next) {
                     seen.insert(next, Some(unit));
                     queue.push_back((next, depth + 1));
@@ -145,10 +182,11 @@ impl<'a> Graph<'a> {
         Some(Step { unit: node.id.clone(), file: self.files.get(node.file as usize)?.clone(), symbol: node.name.clone(), does, via, effect: None })
     }
 
-    fn effect_near(&self, reached: &HashMap<&'a str, Option<&'a str>>) -> Option<(&'a str, String)> {
+    fn effect_near(&self, reached: &HashMap<&'a str, Option<&'a str>>, window: Option<Window>) -> Option<(&'a str, String)> {
         let mut found: Vec<(usize, usize, &str, &ExitPoint)> = Vec::new();
         for unit in reached.keys() {
-            for exit in self.exits.get(unit).into_iter().flatten() {
+            let held = window.filter(|held| held.unit == *unit);
+            for exit in self.exits.get(unit).into_iter().flatten().filter(|exit| held.is_none_or(|held| held.holds(exit.line))) {
                 let rank = EFFECT_KINDS.iter().position(|kind| *kind == exit.kind).unwrap_or(EFFECT_KINDS.len());
                 found.push((rank, self.path(reached, unit).len(), unit, exit));
             }
@@ -237,15 +275,16 @@ struct Walk<'a> {
 }
 
 impl<'a> Walk<'a> {
-    fn successors(&self, at: &'a str, used: &[&Crossing], visited: &[&str]) -> Vec<(usize, &'a Crossing, Vec<&'a str>)> {
-        let reached = self.graph.within(at, BETWEEN_REACH);
+    fn successors(&self, at: &'a str, window: Option<Window<'a>>, used: &[&Crossing], visited: &[&str]) -> Vec<(usize, &'a Crossing, Vec<&'a str>)> {
+        let reached = self.graph.within_window(at, BETWEEN_REACH, window);
         let seen = |unit: &str| self.graph.named_unit(unit).is_some_and(|node| visited.contains(&node.id.as_str()));
         let mut found: Vec<(usize, &Crossing, Vec<&str>)> = self
             .crossings
             .iter()
             .copied()
-            .filter(|held| !used.contains(held) && !seen(&held.to) && !seen(&held.from))
+            .filter(|held| !used.contains(held) && !seen(&held.to) && (!seen(&held.from) || window.is_some_and(|within| within.unit == held.from)))
             .filter(|held| reached.contains_key(held.from.as_str()))
+            .filter(|held| window.is_none_or(|within| within.unit != held.from || within.holds(held.from_line)))
             .map(|held| {
                 let path = self.graph.path(&reached, held.from.as_str());
                 (path.len(), held, path)
@@ -303,7 +342,7 @@ impl<'a> Walk<'a> {
             steps.push(step);
         }
         self.crossing_steps(carrier.send, steps);
-        let reached = self.graph.within(&carrier.send.to, BETWEEN_REACH);
+        let reached = self.graph.within_window(&carrier.send.to, BETWEEN_REACH, window_of(carrier.send));
         let onward = self.graph.path(&reached, &carrier.forward.from);
         for unit in onward.iter().skip(1) {
             self.passing(unit, None, steps);
@@ -320,7 +359,7 @@ impl<'a> Walk<'a> {
     fn from_entry(&self, entry: &EntryPoint) -> Option<Journey> {
         let handler = self.graph.nodes.get(entry.handler.as_str())?;
         let reached = self.graph.within(handler.id.as_str(), EFFECT_REACH);
-        let (unit, effect) = self.graph.effect_near(&reached)?;
+        let (unit, effect) = self.graph.effect_near(&reached, None)?;
         let mut steps: Vec<Step> = Vec::new();
         for held in self.graph.path(&reached, unit) {
             self.passing(held, None, &mut steps);
@@ -353,16 +392,17 @@ impl<'a> Walk<'a> {
         }
         let mut visited: Vec<&str> = places.iter().filter_map(|unit| self.graph.named_unit(unit).map(|node| node.id.as_str())).collect();
         let mut at = root.to.as_str();
+        let mut window = window_of(root);
         for _ in 0..MOST_CROSSINGS {
             if used.last().is_some_and(|last| last.kind == "event") {
                 break;
             }
-            let effect = self.graph.effect_near(&self.graph.within(at, EFFECT_REACH));
+            let effect = self.graph.effect_near(&self.graph.within_window(at, EFFECT_REACH, window), window);
             if effect.as_ref().is_some_and(|(_, held)| held.starts_with(EFFECT_KINDS[0])) {
                 break;
             }
             let effect_ahead = effect.is_some();
-            let choices: Vec<_> = self.successors(at, &used, &visited).into_iter().filter(|(_, next, _)| !(effect_ahead && next.kind == "event")).collect();
+            let choices: Vec<_> = self.successors(at, window, &used, &visited).into_iter().filter(|(_, next, _)| !(effect_ahead && next.kind == "event")).collect();
             let Some((_, next, path)) = choices.into_iter().nth(if used.len() == 1 { branch } else { 0 }) else { break };
             for unit in path {
                 self.passing(unit, None, &mut steps);
@@ -375,12 +415,13 @@ impl<'a> Walk<'a> {
             told.push(next);
             visited.extend([next.from.as_str(), next.to.as_str()].iter().filter_map(|unit| self.graph.named_unit(unit).map(|node| node.id.as_str())));
             at = next.to.as_str();
+            window = window_of(next);
         }
         if used.len() == 1 && branch > 0 {
             return None;
         }
-        let reached = self.graph.within(at, EFFECT_REACH);
-        if let Some((unit, effect)) = self.graph.effect_near(&reached) {
+        let reached = self.graph.within_window(at, EFFECT_REACH, window);
+        if let Some((unit, effect)) = self.graph.effect_near(&reached, window) {
             for held in self.graph.path(&reached, unit).into_iter().skip(1) {
                 self.passing(held, None, &mut steps);
             }
@@ -423,9 +464,10 @@ pub fn derive(
     crossings: &[Crossing],
     exit_points: &[ExitPoint],
     entry_points: &[EntryPoint],
+    call_facts: &[CallFact],
     set_aside: &HashSet<u32>,
 ) -> Vec<Journey> {
-    let graph = Graph::new(files, nodes, edges, exit_points);
+    let graph = Graph::new(files, nodes, edges, call_facts, exit_points);
     let held: Vec<&Crossing> = crossings
         .iter()
         .filter(|crossing| {
@@ -434,7 +476,7 @@ pub fn derive(
         .collect();
     let mut followed: HashSet<&str> = HashSet::default();
     for crossing in &held {
-        followed.extend(graph.within(crossing.to.as_str(), BETWEEN_REACH).keys().copied().filter(|unit| *unit != crossing.to.as_str()));
+        followed.extend(graph.within_window(crossing.to.as_str(), BETWEEN_REACH, window_of(crossing)).keys().copied().filter(|unit| *unit != crossing.to.as_str()));
     }
     let served = served_entries(entry_points);
     let walk = &Walk {
@@ -442,7 +484,7 @@ pub fn derive(
         entries: entries_by_unit(&graph, &served),
         served: &served,
         crossings: &held,
-        carriers: carry::pairs(&held, |send, forward| graph.within(send.to.as_str(), BETWEEN_REACH).contains_key(forward.from.as_str())),
+        carriers: carry::pairs(&held, |send, forward| graph.within_window(send.to.as_str(), BETWEEN_REACH, window_of(send)).contains_key(forward.from.as_str())),
         imports: Imports::new(files, edges),
     };
     let mut journeys: Vec<Journey> = held

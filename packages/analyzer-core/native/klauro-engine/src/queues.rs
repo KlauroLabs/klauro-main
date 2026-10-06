@@ -282,6 +282,7 @@ pub fn derive(files: &[String], nodes: &[IndexNode], calls: &[CallFact], locals:
                 to: to.unit.to_string(),
                 to_file: to.file,
                 to_line: to.line,
+                to_end_line: None,
             });
         }
     }
