@@ -454,18 +454,30 @@ fn declared_methods(decorator: &Decorator) -> Vec<String> {
     found
 }
 
-fn crate_root(path: &str) -> &str {
-    match path.rfind("/src/") {
-        Some(at) => &path[..at],
-        None => "",
+fn mounted_handler<'r>(resolution: &'r Resolution, files: &[String], file: u32, written: &str) -> Option<&'r str> {
+    let mut modules: Vec<&str> = written.split("::").collect();
+    let name = modules.pop().filter(|held| !held.is_empty())?;
+    let mut at = file;
+    for (index, module) in modules.iter().enumerate() {
+        if index == 0 && *module == "self" {
+            continue;
+        }
+        let through = resolution.through.get(&(at, module.to_string()))?;
+        at = files.iter().position(|path| path == through)? as u32;
     }
+    let key = (at, name.to_string());
+    let held = resolution.local.get(&key);
+    match modules.is_empty() {
+        true => held.or_else(|| resolution.imported.get(&key)),
+        false => held,
+    }
+    .map(String::as_str)
 }
 
 fn mount_attribute_routes(
     entry_points: &mut Vec<EntryPoint>,
     named_of: &HashMap<&str, &IndexNode>,
-    files: &[String],
-    mounted_at: &mut HashMap<(&str, &str), Vec<String>>,
+    mounted_at: &mut HashMap<&str, Vec<String>>,
 ) {
     if mounted_at.is_empty() {
         return;
@@ -481,7 +493,7 @@ fn mount_attribute_routes(
             .then(|| named_of.get(entry.handler.as_str()))
             .flatten()
             .filter(|node| node.file == entry.file && node.decorators.iter().any(|held| names::leaf(&held.name) == entry.registrar))
-            .and_then(|node| mounted_at.get(&(crate_root(files.get(node.file as usize)?), node.name.as_str())))
+            .and_then(|node| mounted_at.get(node.id.as_str()))
         else {
             return true;
         };
@@ -493,6 +505,10 @@ fn mount_attribute_routes(
         false
     });
     entry_points.extend(mounted);
+}
+
+fn is_a_rust_tests_module(path: &str) -> bool {
+    path.strip_suffix(".rs").is_some_and(|stem| crate::paths::basename(stem) == "tests")
 }
 
 static DEFAULT_VERBS: &[(&str, &str, &str)] = &[("route", ".jl", "GET")];
@@ -1613,6 +1629,9 @@ type Groups<'a> = HashMap<(u32, &'a str, &'a str), (String, Option<&'a str>)>;
 
 fn a_route_prefix(literal: &str) -> Option<String> {
     let bare = literal.trim().trim_end_matches('/');
+    if !bare.starts_with('/') && (bare.starts_with(':') || bare.split_once('.').is_some_and(|(owner, _)| !owner.is_empty())) {
+        return None;
+    }
     let spoken = bare
         .chars()
         .all(|letter| letter.is_alphanumeric() || matches!(letter, '/' | '-' | '_' | '.' | '{' | '}' | ':'));
@@ -1851,7 +1870,9 @@ type Used<'a> = HashMap<(u32, &'a str, &'a str), Vec<(u32, &'a str)>>;
 
 fn used_guards<'a>(calls: &'a [CallFact], locals: &'a [crate::model::LocalBinding]) -> Used<'a> {
     let mut used: Used = HashMap::default();
-    let guard_like = |literal: &&String| !literal.starts_with('/') && guarding(literal).is_some();
+    let guard_like = |literal: &&String| {
+        !literal.starts_with('/') && !literal.contains(|letter: char| letter.is_whitespace() || matches!(letter, '=' | '(' | '{')) && guarding(literal).is_some()
+    };
     let defined: HashMap<(u32, u32), Vec<&crate::model::LocalBinding>> =
         locals.iter().filter(|held| held.from_call.is_some()).fold(HashMap::default(), |mut held, local| {
             held.entry((local.file, local.line)).or_default().push(local);
@@ -2277,7 +2298,13 @@ fn listed_in<'a>(call: &'a CallFact, key: &str) -> Option<Vec<&'a str>> {
     })
 }
 
-fn guard_by_filters(entry_points: &mut [EntryPoint], nodes: &[IndexNode], calls: &[CallFact]) {
+fn guard_by_filters<'a>(
+    entry_points: &mut [EntryPoint],
+    nodes: &'a [IndexNode],
+    calls: &'a [CallFact],
+    above: &'a HashMap<&'a str, Vec<&'a str>>,
+    types: &'a HashMap<&'a str, &'a IndexNode>,
+) {
     let mut filters: HashMap<&str, Vec<&CallFact>> = HashMap::default();
     for call in calls.iter().filter(|call| RUNS_BEFORE_AN_ACTION.contains(&call.callee.as_str())) {
         if let Some(owner) = call.caller.as_deref() {
@@ -2287,11 +2314,13 @@ fn guard_by_filters(entry_points: &mut [EntryPoint], nodes: &[IndexNode], calls:
     if filters.is_empty() {
         return;
     }
+    let callbacks = crate::callbacks::Callbacks::new(nodes, calls, above, types);
     let by_id: HashMap<&str, &IndexNode> = nodes.iter().map(|node| (node.id.as_str(), node)).collect();
     for entry in entry_points.iter_mut().filter(|entry| entry.kind == "http") {
         let Some(handler) = by_id.get(entry.handler.as_str()) else { continue };
-        let Some(before) = handler.parent.as_deref().and_then(|owner| filters.get(owner)) else { continue };
-        for held in guards_run_before(before, &handler.name) {
+        let Some(owner) = handler.parent.as_deref() else { continue };
+        let Some(before) = filters.get(owner) else { continue };
+        for held in guards_run_before(before, &handler.name, owner, &callbacks) {
             if !entry.guards.contains(&held) {
                 entry.guards.push(held);
             }
@@ -2299,14 +2328,16 @@ fn guard_by_filters(entry_points: &mut [EntryPoint], nodes: &[IndexNode], calls:
     }
 }
 
-fn guards_run_before(filters: &[&CallFact], action: &str) -> Vec<Guard> {
+fn guards_run_before(filters: &[&CallFact], action: &str, owner: &str, callbacks: &crate::callbacks::Callbacks) -> Vec<Guard> {
     filters
         .iter()
         .filter(|call| listed_in(call, "only").is_none_or(|only| only.contains(&action)))
         .filter(|call| listed_in(call, "except").is_none_or(|except| !except.contains(&action)))
         .filter_map(|call| {
             let written = call.literals.first()?.trim_start_matches(':');
-            Some(Guard { name: written.to_string(), kind: guarding(written)?, via: "filter" })
+            let kind = guarding(written)?;
+            let halts = callbacks.denies(owner, written).unwrap_or_else(|| crate::callbacks::is_a_framework_gate(written));
+            halts.then(|| Guard { name: written.to_string(), kind, via: "filter" })
         })
         .collect()
 }
@@ -2669,9 +2700,10 @@ pub fn derive(
     }
     entry_points.extend(served_over_grpc(nodes, type_references, files));
     let drawn = crate::rails_routes::derive(nodes, calls, files);
-    if !drawn.is_empty() {
+    let rails_drew = !drawn.is_empty();
+    if rails_drew {
         entry_points.retain(|entry| {
-            entry.kind != "http" || !crate::rails_routes::draws_routes(entry.handler.split(':').next().unwrap_or_default())
+            entry.kind != "http" || !crate::rails_routes::draws_routes(&files[entry.file as usize])
         });
         entry_points.extend(drawn);
     }
@@ -2846,8 +2878,11 @@ pub fn derive(
         units_in_file.entry((node.file, node.name.as_str())).or_default().push(node.id.as_str());
     }
     let mut registered: HashSet<(u32, u32, String)> = HashSet::default();
-    let mut mounted_at: HashMap<(&str, &str), Vec<String>> = HashMap::default();
+    let mut mounted_at: HashMap<&str, Vec<String>> = HashMap::default();
     for registration in registrations {
+        if rails_drew && crate::rails_routes::draws_routes(&files[registration.file as usize]) {
+            continue;
+        }
         let label: std::borrow::Cow<str> = match registration.label.strip_prefix(DISPATCH_CONST_MARKER) {
             Some(leaf) => match const_values.get(leaf) {
                 Some(value) => std::borrow::Cow::Borrowed(*value),
@@ -2859,8 +2894,9 @@ pub fn derive(
             && files[registration.file as usize].ends_with(".rs")
             && let Some(base) = a_route_prefix(&label).or_else(|| (label.trim() == "/").then(String::new))
         {
-            let routed = names::leaf(registration.handler.rsplit("::").next().unwrap_or(&registration.handler));
-            mounted_at.entry((crate_root(&files[registration.file as usize]), routed)).or_default().push(base);
+            if let Some(handler) = mounted_handler(resolution, files, registration.file, &registration.handler) {
+                mounted_at.entry(handler).or_default().push(base);
+            }
             continue;
         }
         let Some(kind) = classify_registration(&registration.registrar, Some(&label), mcp_files.contains(&registration.file), speaks_a_routing_dsl(&files[registration.file as usize])) else {
@@ -3025,7 +3061,7 @@ pub fn derive(
         }
     }
 
-    mount_attribute_routes(&mut entry_points, &named_of, files, &mut mounted_at);
+    mount_attribute_routes(&mut entry_points, &named_of, &mut mounted_at);
     lap("registered routes");
     let declared_cases: HashSet<String> = entry_points
         .iter()
@@ -3108,7 +3144,7 @@ pub fn derive(
         });
     }
 
-    guard_by_filters(&mut entry_points, nodes, calls);
+    guard_by_filters(&mut entry_points, nodes, calls, &above, &unique_type);
     lap("conventional entries");
     let channels = crate::constants::Constants::new(locals);
     let exits_of = |(position, call): (usize, &CallFact)| -> (Vec<ExitPoint>, Vec<String>) {
@@ -3353,7 +3389,7 @@ pub fn derive(
         }
         let path = &files[entry.file as usize];
         let survives_test_screen = match entry.kind {
-            "http" => !is_test(path),
+            "http" => !is_test(path) && !is_a_rust_tests_module(path),
             _ => !is_unambiguously_test(path),
         };
         let recurs = entry.kind != "schedule" || recurring(&entry.registrar);
@@ -3379,8 +3415,78 @@ pub fn derive(
     Derived { entry_points, exit_points, continued }
 }
 
+const DOCUMENT_HEAD_READ: usize = 65536;
+
+fn is_a_whole_document(text: &str) -> bool {
+    let head: String = text.chars().take(DOCUMENT_HEAD_READ).collect::<String>().to_ascii_lowercase();
+    (head.contains("<!doctype html") || head.contains("<html")) && head.contains("<body")
+}
+
+fn document_route(path: &str) -> String {
+    let stem = crate::paths::basename(path).rsplit_once('.').map_or(path, |(stem, _)| stem);
+    match stem {
+        "index" => "/".to_string(),
+        stem => format!("/{stem}"),
+    }
+}
+
+pub fn served_documents(root: &std::path::Path, files: &[String], nodes: &[IndexNode]) -> Vec<EntryPoint> {
+    let mut module_of: HashMap<u32, &IndexNode> = HashMap::default();
+    for node in nodes.iter().filter(|node| node.kind == NodeKind::Module) {
+        module_of.entry(node.file).or_insert(node);
+    }
+    let mut found = Vec::new();
+    for (at, path) in files.iter().enumerate() {
+        let lowered = path.to_ascii_lowercase();
+        if !(lowered.ends_with(".html") || lowered.ends_with(".htm")) || is_test(path) {
+            continue;
+        }
+        let Some(module) = module_of.get(&(at as u32)) else { continue };
+        let Some(text) = crate::paths::read_inside(root, path) else { continue };
+        if !is_a_whole_document(&text) {
+            continue;
+        }
+        let route = document_route(path);
+        found.push(EntryPoint {
+            id: format!("entry:{}:document:{route}", module.id),
+            kind: "ui",
+            name: route,
+            method: None,
+            path: None,
+            handler: module.id.clone(),
+            file: at as u32,
+            line: module.span.line,
+            guards: Vec::new(),
+            registrar: "served_document".to_string(),
+            unshipped: None,
+        });
+    }
+    found
+}
+
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
+    #[test]
+    fn a_complete_html_document_is_a_page_a_visitor_reaches_and_a_fragment_is_not() {
+        assert!(is_a_whole_document("<!DOCTYPE html><html><head></head><body><h1>Hello</h1></body></html>"));
+        assert!(!is_a_whole_document("<div class=\"card\"><p>partial</p></div>"));
+        assert_eq!(document_route("src/index.html"), "/");
+        assert_eq!(document_route("site/pricing.html"), "/pricing");
+    }
+
+    #[test]
+    fn a_document_reached_through_a_link_leaving_the_root_is_no_page() {
+        let base = std::env::temp_dir().join(format!("klauro-documents-{}", std::process::id()));
+        let root = base.join("repo");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(base.join("outside.html"), "<html><body>secret</body></html>").unwrap();
+        std::os::unix::fs::symlink(base.join("outside.html"), root.join("index.html")).unwrap();
+        let held = crate::paths::read_inside(&root, "index.html");
+        fs::remove_dir_all(&base).ok();
+        assert!(held.is_none());
+    }
     use super::*;
 
     #[test]

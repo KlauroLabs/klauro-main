@@ -300,14 +300,14 @@ then set \"stated\" to true. Its capabilities stay visible under that part.\n\
 listed below shows it: put that connection's id in \"link\" and cite the capabilities of the parts it joins. Otherwise leave \"link\" empty.\n\
 - A part people do not come to is substrate: one that other parts use and that no person enters, or one that only keeps the product \
 running, ships it or measures it. Its capabilities are folded into the purposes of the parts that use it (cite them as \
-\"absorbed\") or listed in \"left\"; they are never a purpose of the product on their own. Remembering a visitor's consent, installing \
+\"absorbed\"); they are never a purpose of the product on their own. Remembering a visitor's consent, installing \
 or updating the software, checking that the system is up, running maintenance or diagnostic commands, storing the system's own records \
 and reporting its own usage are things the product does to keep itself going, not what anyone comes to it for.\n\
 - One capability is one purpose that a single sentence of what someone gets can name. Never join different purposes into one broad \
 capability because they share a topic or a part: when the capabilities you would cite give people different things, write one \
 capability for each. How many capabilities the product has is whatever the parts show, never a number to reach.\n\
-- Capabilities of a part that serve no purpose of the product stay with their part: do not cite them, and list them in \"left\" with a \
-short reason.";
+- Every capability of every part is cited by at least one capability you write, as \"promoted\" or \"absorbed\" into the purpose it \
+serves: none is left out, and \"left\" is an empty list.";
 
 const NAMING_THE_WHOLE: &str = "For each capability give a name of 2-6 words, a verb and what it is for, like \"Share posts with followers\", \
 never a bare topic; one sentence saying what someone gets; and the audience it is for. Name what the person ends up with, never the way in \

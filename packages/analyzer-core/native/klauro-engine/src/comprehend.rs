@@ -440,6 +440,18 @@ fn spoken_of_part(
         .filter(|held| Some(held.from.as_str()) == part && held.from != held.to)
         .map(|held| held.to.strip_prefix("subproject:").unwrap_or(&held.to))
         .collect();
+    let consumers: std::collections::BTreeSet<&str> = composition
+        .into_iter()
+        .flat_map(|composition| composition.dependencies.iter())
+        .filter(|held| held.to.as_str() == part.unwrap_or_default() && held.from != held.to)
+        .map(|held| held.from.strip_prefix("subproject:").unwrap_or(&held.from))
+        .collect();
+    if !consumers.is_empty() {
+        said.push_str(&format!(
+            "\nOther parts of the repository import from that part, so it also serves them: {}",
+            consumers.into_iter().collect::<Vec<_>>().join(", ")
+        ));
+    }
     if !used.is_empty() {
         said.push_str(&format!(
             "\nThat part imports from these other parts of the repository, so what they serve can be reached through it: {}",
@@ -1129,13 +1141,7 @@ fn test_capabilities(
             clock.elapsed()
         );
     }
-    let dropped: HashSet<&str> = tightened_all
-        .iter()
-        .filter(|held| held.drop)
-        .map(|held| held.id.as_str())
-        .collect();
-    capabilities.retain(|capability| !dropped.contains(capability.id.as_str()));
-    for tightened in tightened_all.iter().filter(|held| !held.drop) {
+    for tightened in tightened_all.iter() {
         if let Some(capability) = capabilities
             .iter_mut()
             .find(|capability| capability.id == tightened.id)

@@ -186,6 +186,7 @@ pub fn drawn(root: &Path, files: &[String], nodes: &[IndexNode]) -> Vec<EntryPoi
             }
         }
     }
+    found.extend(crate::entry_exit::served_documents(root, files, nodes));
     found
 }
 

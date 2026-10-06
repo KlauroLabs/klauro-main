@@ -7,6 +7,7 @@ use crate::author::{Placed, Proposal, Proposed, Serving};
 use crate::comprehend::{carved_name, settle, Capability, Delivery, Family, Flow, PUBLISHED};
 
 const FAMILIES_PER_PROPOSAL: usize = 20;
+const PLACING_ROUNDS: usize = 2;
 const READINGS: usize = 3;
 
 fn most_detailed_reading(said: &str, listed: &[(String, String)]) -> Proposal {
@@ -30,12 +31,8 @@ fn most_detailed_reading(said: &str, listed: &[(String, String)]) -> Proposal {
             .collect()
     });
     let settled = |reading: &Proposal| {
-        let named: BTreeSet<&str> = reading
-            .capabilities
-            .iter()
-            .flat_map(|held| held.families.iter().map(String::as_str))
-            .chain(reading.unassigned.iter().map(String::as_str))
-            .collect();
+        let named: BTreeSet<&str> =
+            reading.capabilities.iter().flat_map(|held| held.families.iter().map(String::as_str)).collect();
         listed.iter().filter(|(id, _)| named.contains(id.as_str())).count()
     };
     readings
@@ -71,8 +68,6 @@ impl Held {
 struct Remembered {
     digest: String,
     capabilities: Vec<RememberedCapability>,
-    #[serde(default, alias = "plumbing")]
-    unassigned: BTreeSet<String>,
     families: BTreeMap<String, String>,
 }
 
@@ -251,12 +246,28 @@ fn outcomes_reached(flow: &Flow, bookkeeping: &BTreeSet<&str>) -> BTreeSet<Famil
     reached
 }
 
+fn only_passes_work_on(flow: &Flow) -> bool {
+    flow.kind != "export" && only_relays_a_signal(&[flow])
+}
+
 pub(crate) fn outcomes_of<'a>(flows: &[&'a Flow]) -> BTreeMap<Family, Vec<&'a Flow>> {
     let bookkeeping = kept_for_itself(flows);
     let mut grouped: BTreeMap<Family, Vec<&'a Flow>> = BTreeMap::new();
+    let mut traversed: Vec<&'a Flow> = Vec::new();
     for flow in flows {
+        if only_passes_work_on(flow) {
+            traversed.push(flow);
+            continue;
+        }
         for family in outcomes_reached(flow, &bookkeeping) {
             grouped.entry(family).or_default().push(flow);
+        }
+    }
+    if grouped.is_empty() {
+        for flow in traversed {
+            for family in outcomes_reached(flow, &bookkeeping) {
+                grouped.entry(family).or_default().push(flow);
+            }
         }
     }
     if grouped.keys().any(|family| !is_only_a_trigger(family)) {
@@ -417,9 +428,8 @@ fn evidence_of(flows: &[&Flow], family: &Family, fields: &Fields) -> String {
     )
 }
 
-fn gather(proposals: Vec<Proposal>, held: &mut Vec<Held>, unassigned: &mut BTreeSet<String>, known: &BTreeSet<String>) {
+fn gather(proposals: Vec<Proposal>, held: &mut Vec<Held>, known: &BTreeSet<String>) {
     for proposal in proposals {
-        unassigned.extend(proposal.unassigned.into_iter().filter(|id| known.contains(id)));
         for Proposed { name, description, audience, families, roles } in proposal.capabilities {
             let families: BTreeSet<String> = families.into_iter().filter(|id| known.contains(id)).collect();
             if families.is_empty() {
@@ -487,18 +497,21 @@ fn consolidate_purposes(said: &str, held: Vec<Held>) -> Vec<Held> {
     kept
 }
 
+fn unseated<'a>(known: impl Iterator<Item = &'a String>, held: &[Held]) -> Vec<String> {
+    let seated: BTreeSet<&String> = held.iter().flat_map(|other| other.families.iter()).collect();
+    known.filter(|id| !seated.contains(id)).cloned().collect()
+}
+
 fn place(
     said: &str,
     told: &BTreeMap<String, String>,
     held: &mut Vec<Held>,
-    unassigned: &mut BTreeSet<String>,
 ) -> bool {
-    let placed: BTreeSet<String> = held.iter().flat_map(|other| other.families.iter().cloned()).collect();
-    let unplaced: Vec<(String, String)> = told
-        .iter()
-        .filter(|(id, _)| !placed.contains(*id) && !unassigned.contains(*id))
-        .map(|(id, evidence)| (id.clone(), evidence.clone()))
+    let unplaced: Vec<(String, String)> = unseated(told.keys(), held)
+        .into_iter()
+        .filter_map(|id| told.get(&id).map(|evidence| (id, evidence.clone())))
         .collect();
+    let placed: BTreeSet<String> = held.iter().flat_map(|other| other.families.iter().cloned()).collect();
     if unplaced.is_empty() {
         return false;
     }
@@ -517,7 +530,6 @@ fn place(
             continue;
         }
         if name_key(&capability) == name_key(crate::author::UNASSIGNED) {
-            unassigned.insert(family);
             continue;
         }
         let roles: BTreeMap<String, Serving> = crate::author::role_named(&role)
@@ -607,7 +619,6 @@ fn split_the_broad(
     told: &BTreeMap<String, String>,
     lanes: &BTreeMap<&str, &Vec<&Flow>>,
     held: Vec<Held>,
-    unassigned: &mut BTreeSet<String>,
 ) -> Vec<Held> {
     let (broad, mut kept): (Vec<Held>, Vec<Held>) =
         held.into_iter().partition(|other| flows_held(other, lanes) > SPLIT_FROM_FLOWS);
@@ -645,10 +656,10 @@ fn split_the_broad(
         }
         split_any = true;
         let known: BTreeSet<String> = wide.families.clone();
-        gather(vec![proposal], &mut kept, unassigned, &known);
+        gather(vec![proposal], &mut kept, &known);
     }
     if split_any {
-        place(said, told, &mut kept, unassigned);
+        place(said, told, &mut kept);
     }
     kept
 }
@@ -744,14 +755,14 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
         let carried = evidence_of_key.iter().filter(|(key, evidence)| memory.families.get(*key) == Some(*evidence)).count();
         carried * 2 >= evidence_of_key.len()
     });
-    let (mut held, mut unassigned) = match memory {
+    let mut held = match memory {
         Some(memory) if memory.digest == digest => recollected(&memory, &id_of, |_| true),
         Some(memory) => {
-            let (mut held, mut unassigned) = recollected(&memory, &id_of, |key| {
+            let mut held = recollected(&memory, &id_of, |key| {
                 memory.families.get(key).is_some_and(|was| evidence_of_key.get(key) == Some(was))
             });
-            place(said, &told, &mut held, &mut unassigned);
-            (held, unassigned)
+            place(said, &told, &mut held);
+            held
         }
         None => {
             let listed: Vec<(String, String)> =
@@ -769,14 +780,13 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
             };
             let chunked = proposals.len() > 1;
             let mut held: Vec<Held> = Vec::new();
-            let mut unassigned: BTreeSet<String> = BTreeSet::new();
             if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
                 eprintln!("  proposing {} outcomes took {:?}", listed.len(), proposing.elapsed());
             }
             let proposed: usize = proposals.iter().map(|proposal| proposal.capabilities.len()).sum();
-            gather(proposals, &mut held, &mut unassigned, &known);
+            gather(proposals, &mut held, &known);
             if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
-                eprintln!("  proposed {proposed} capabilities, {} held after gathering, {} unassigned", held.len(), unassigned.len());
+                eprintln!("  proposed {proposed} capabilities, {} held after gathering", held.len());
             }
             let clock = std::time::Instant::now();
             let counted = |step: &str, held: &Vec<Held>| {
@@ -788,26 +798,20 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
                 held = consolidate_purposes(said, held);
                 counted("consolidating purposes", &held);
             }
-            let first_look = unassigned.clone();
-            if chunked {
-                unassigned.clear();
-            }
-            if !place(said, &told, &mut held, &mut unassigned) {
-                unassigned.extend(first_look);
-            } else {
-                let placed: BTreeSet<&String> = held.iter().flat_map(|other| other.families.iter()).collect();
-                let left: Vec<String> =
-                    known.iter().filter(|id| !placed.contains(id) && !unassigned.contains(*id)).cloned().collect();
-                unassigned.extend(left);
-            }
+            place(said, &told, &mut held);
             counted("placing", &held);
-            (held, unassigned)
+            held
         }
     };
     held.retain(|other| !other.families.is_empty());
-    if held.is_empty() {
-        let listed: Vec<(String, String)> = told.iter().map(|(id, evidence)| (id.clone(), evidence.clone())).collect();
-        unassigned.clear();
+    for again in [false, true] {
+        if !held.is_empty() {
+            break;
+        }
+        let mut listed: Vec<(String, String)> = told.iter().map(|(id, evidence)| (id.clone(), evidence.clone())).collect();
+        if again {
+            listed.reverse();
+        }
         let proposals: Vec<Proposal> = crate::author::asking(|| {
             let weight = crate::author::weight();
             listed
@@ -815,22 +819,25 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
                 .map(|chunk| crate::author::weighing(weight, || crate::author::propose_capabilities(said, chunk, true)))
                 .collect()
         });
-        gather(proposals, &mut held, &mut unassigned, &known);
+        gather(proposals, &mut held, &known);
+    }
+    for _ in 0..PLACING_ROUNDS {
+        if unseated(known.iter(), &held).is_empty() || !place(said, &told, &mut held) {
+            break;
+        }
     }
     merge_same_named(&mut held);
     let lane_flows: BTreeMap<&str, &Vec<&Flow>> = keyed.iter().map(|(id, _, lane)| (id.as_str(), *lane)).collect();
-    held = split_the_broad(said, &told, &lane_flows, held, &mut unassigned);
+    held = split_the_broad(said, &told, &lane_flows, held);
     merge_same_named(&mut held);
-    unassigned.retain(|id| known.contains(id) && !held.iter().any(|other| other.families.contains(id)));
     if std::env::var("KLAURO_AUTHOR_DEBUG").is_ok() {
-        eprintln!("  settled {} capabilities and {} unassigned of {} outcomes", held.len(), unassigned.len(), told.len());
-        for id in &unassigned {
+        let unseated = unseated(known.iter(), &held);
+        eprintln!("  settled {} capabilities and {} unassigned of {} outcomes", held.len(), unseated.len(), told.len());
+        for id in &unseated {
             eprintln!("  unassigned {}", key_of[id.as_str()]);
         }
     }
-    let settled_every_family = told.keys().all(|id| {
-        unassigned.contains(id) || held.iter().any(|other| other.families.contains(id))
-    });
+    let settled_every_family = unseated(known.iter(), &held).is_empty();
     if crate::author::asked() && settled_every_family && !held.is_empty() {
         keep_in_memory(
             remembered_as,
@@ -851,7 +858,6 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
                             .collect(),
                     })
                     .collect(),
-                unassigned: unassigned.iter().map(|id| key_of[id.as_str()].to_string()).collect(),
                 families: evidence_of_key.clone(),
             },
         );
@@ -861,7 +867,7 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
     let unanswered: BTreeSet<&str> = known
         .iter()
         .map(String::as_str)
-        .filter(|id| !unassigned.contains(*id) && !held.iter().any(|other| other.families.contains(*id)))
+        .filter(|id| !held.iter().any(|other| other.families.contains(*id)))
         .collect();
     let pending: BTreeSet<String> = unanswered
         .iter()
@@ -873,8 +879,8 @@ pub(crate) fn of_a_part(flows: &[&Flow], said: &str, remembered_as: &str, fields
     let state = match (unanswered.is_empty(), formed.is_empty()) {
         (true, false) => PartState { capabilities: SETTLED, reason: None },
         (true, true) => PartState {
-            capabilities: ABSENT,
-            reason: Some("the AI found no purpose the product states among its outcomes".to_string()),
+            capabilities: PENDING,
+            reason: Some("the AI named no purpose for this part after being asked twice".to_string()),
         },
         (false, _) => PartState {
             capabilities: PENDING,
@@ -888,8 +894,8 @@ fn recollected(
     memory: &Remembered,
     id_of: &BTreeMap<&str, &str>,
     still_holds: impl Fn(&str) -> bool,
-) -> (Vec<Held>, BTreeSet<String>) {
-    let held = memory
+) -> Vec<Held> {
+    memory
         .capabilities
         .iter()
         .map(|was| Held {
@@ -911,14 +917,7 @@ fn recollected(
                 })
                 .collect(),
         })
-        .collect();
-    let unassigned = memory
-        .unassigned
-        .iter()
-        .filter(|key| still_holds(key))
-        .filter_map(|key| id_of.get(key.as_str()).map(|id| id.to_string()))
-        .collect();
-    (held, unassigned)
+        .collect()
 }
 
 static SCREEN_EVENTS: &[&str] = &[
@@ -1364,12 +1363,14 @@ pub(crate) fn of_the_whole(parts: &[Capability], spoken: &str, scope: &str, flow
             (
                 format!("c{at}"),
                 format!(
-                    "  it is called: {}\n  for: {}\n  what someone gets: {}\n  found in the part: {}\n  reached through: {}{}",
+                    "  it is called: {}\n  for: {}\n  what someone gets: {}\n  found in the part: {}\n  reached through: {}\n  records it changes: {}\n  entities it works on: {}{}",
                     capability.name.as_deref().unwrap_or(""),
                     capability.audience.as_deref().unwrap_or("someone"),
                     capability.description.as_deref().unwrap_or(""),
                     capability.project.as_deref().unwrap_or("the repository root"),
                     surfaces.join(", "),
+                    in_few(&capability.records),
+                    in_few(&capability.touches),
                     match continues[at].is_empty() {
                         true => String::new(),
                         false => format!(
@@ -1442,6 +1443,14 @@ pub(crate) fn of_the_whole(parts: &[Capability], spoken: &str, scope: &str, flow
 
 const LISTED_AT_ONCE: usize = 120;
 const TOLD_IN_A_LINE: usize = 160;
+const ENTITIES_SHOWN: usize = 6;
+
+fn in_few(held: &[String]) -> String {
+    match held.is_empty() {
+        true => "none".to_string(),
+        false => held.iter().take(ENTITIES_SHOWN).cloned().collect::<Vec<_>>().join(", "),
+    }
+}
 
 fn singular(word: &str) -> String {
     if let Some(stem) = word.strip_suffix("ies").filter(|stem| stem.len() > 1) {
@@ -2017,7 +2026,7 @@ mod command_family_tests {
     }
 
     #[test]
-    fn a_proposal_names_a_role_per_family_and_leaves_some_unassigned() {
+    fn a_proposal_names_a_role_per_family_() {
         let said = serde_json::json!({
             "capabilities": [
                 {"name": "Trade assets", "description": "d", "audience": "traders", "serves": [
@@ -2029,10 +2038,9 @@ mod command_family_tests {
                 {"name": "", "serves": [{"id": "f9", "role": "primary"}]},
                 {"name": "Empty", "serves": []}
             ],
-            "unassigned": ["f4"],
-            "plumbing": ["f5"]
+            "unassigned": ["f4"]
         });
-        let proposal = crate::author::proposal_of(&said, 6);
+        let proposal = crate::author::proposal_of(&said);
         assert_eq!(proposal.capabilities.len(), 1);
         let trade = &proposal.capabilities[0];
         assert_eq!(trade.families, vec!["f0", "f1", "f2", "f3"]);
@@ -2041,45 +2049,34 @@ mod command_family_tests {
         assert_eq!(trade.roles["f1"].role, "prerequisite");
         assert!(!trade.roles.contains_key("f2"), "an unknown role is not kept");
         assert!(!trade.roles.contains_key("f3"));
-        assert_eq!(proposal.unassigned, vec!["f4", "f5"]);
-    }
-
-    #[test]
-    fn a_proposal_that_names_only_unassigned_outcomes_is_still_an_answer() {
-        let said = serde_json::json!({"capabilities": [], "unassigned": ["f0", "f1"]});
-        assert_eq!(crate::author::proposal_of(&said, 2).unassigned.len(), 2);
-        assert!(crate::author::proposal_of(&said, 3).unassigned.is_empty(), "a partial answer with nothing named is no answer");
     }
 
     #[test]
     fn the_legacy_families_list_of_ids_still_parses() {
         let said = serde_json::json!({"capabilities": [{"name": "Browse the catalog", "families": ["f0", "f1"]}], "plumbing": []});
-        let proposal = crate::author::proposal_of(&said, 2);
+        let proposal = crate::author::proposal_of(&said);
         assert_eq!(proposal.capabilities[0].families, vec!["f0", "f1"]);
         assert!(proposal.capabilities[0].roles.is_empty());
     }
 
     #[test]
-    fn gathering_groups_many_families_under_one_purpose_and_keeps_unassigned_ones_out() {
+    fn gathering_groups_many_families_under_one_purpose_and_reports_what_it_left_out() {
         let known: BTreeSet<String> = ["f0", "f1", "f2", "f3"].iter().map(|id| id.to_string()).collect();
         let one = crate::author::proposal_of(
             &serde_json::json!({"capabilities": [{"name": "Manage photo albums", "serves": [
                 {"id": "f0", "role": "primary"}, {"id": "f9", "role": "primary"}]}], "unassigned": ["f3", "f8"]}),
-            4,
         );
         let two = crate::author::proposal_of(
             &serde_json::json!({"capabilities": [{"name": "manage photo album", "serves": [
                 {"id": "f1", "role": "supporting", "why": "lists them"}, {"id": "f2", "role": "recovery"}]}]}),
-            4,
         );
         let mut held: Vec<Held> = Vec::new();
-        let mut unassigned: BTreeSet<String> = BTreeSet::new();
-        gather(vec![one, two], &mut held, &mut unassigned, &known);
+        gather(vec![one, two], &mut held, &known);
         assert_eq!(held.len(), 1, "the same purpose named twice is one capability");
         assert_eq!(held[0].families, BTreeSet::from(["f0".to_string(), "f1".to_string(), "f2".to_string()]));
         assert_eq!(held[0].roles["f1"].role, "supporting");
         assert_eq!(held[0].roles["f2"].role, "recovery");
-        assert_eq!(unassigned, BTreeSet::from(["f3".to_string()]));
+        assert_eq!(unseated(known.iter(), &held), vec!["f3".to_string()], "an outcome the AI left out is still unplaced, to be attached");
     }
 
     #[test]
