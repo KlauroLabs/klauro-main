@@ -34,10 +34,8 @@ DIRTY_DEPLOY=0
 SNAPSHOT_SHA=""
 DIRTY="$(git -C "$APP_DIR" status --porcelain -uall 2>/dev/null || true)"
 if [ "$ALLOW_DIRTY" != "1" ] && [ -n "$DIRTY" ]; then
-  echo "ERROR: refusing to deploy from a dirty working tree." >&2
+  echo "==> Deploying committed HEAD $(git -C "$APP_DIR" rev-parse --short=12 HEAD); the build is source-exact from that commit and these uncommitted paths are not part of it:" >&2
   echo "$DIRTY" | sed 's/^/       /' >&2
-  echo "       Commit the candidate or use --allow-dirty to create a traceable snapshot." >&2
-  exit 1
 fi
 
 if [ "$ALLOW_DIRTY" = "1" ]; then

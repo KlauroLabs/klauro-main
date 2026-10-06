@@ -2,7 +2,15 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-CRATE="$REPO_ROOT/packages/analyzer-core/native/klauro-engine"
+CRATE_PATH="packages/analyzer-core/native/klauro-engine"
+export CARGO_TARGET_DIR="$REPO_ROOT/$CRATE_PATH/target"
+EXPORT="$CARGO_TARGET_DIR/committed-source"
+STAGE="$(mktemp -d)"
+trap 'rm -rf "$STAGE"' EXIT
+rm -rf "$EXPORT"
+mkdir -p "$EXPORT"
+git -C "$REPO_ROOT" archive HEAD "$CRATE_PATH" | tar -x -C "$EXPORT"
+CRATE="$EXPORT/$CRATE_PATH"
 PLATFORM="${1:-}"
 TARGET="${2:-}"
 
@@ -14,8 +22,8 @@ case "$PLATFORM" in
   *) echo "usage: release-engine.sh <darwin-arm64|darwin-x64|linux-x64|win32-x64> [rust-target]" >&2; exit 2 ;;
 esac
 
-VERSION="$(node -p "require('$REPO_ROOT/apps/mcp-server/package.json').version")"
-echo "==> Releasing klauro-engine $VERSION for $PLATFORM ($TARGET)"
+VERSION="$(git -C "$REPO_ROOT" show HEAD:apps/mcp-server/package.json | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).version")"
+echo "==> Releasing klauro-engine $VERSION for $PLATFORM ($TARGET) from committed HEAD $(git -C "$REPO_ROOT" rev-parse --short=12 HEAD)"
 
 cd "$CRATE"
 echo "==> Test gate (this host)"
@@ -23,7 +31,7 @@ cargo test --release
 
 echo "==> Build"
 cargo build --release --locked --target "$TARGET"
-BINARY="$CRATE/target/$TARGET/release/klauro-engine"
+BINARY="$CARGO_TARGET_DIR/$TARGET/release/klauro-engine"
 [ "$PLATFORM" = "win32-x64" ] && BINARY="$BINARY.exe"
 [ -f "$BINARY" ] || { echo "ERROR: $BINARY was not produced." >&2; exit 1; }
 
@@ -41,8 +49,6 @@ else
   exit 1
 fi
 
-STAGE="$(mktemp -d)"
-trap 'rm -rf "$STAGE"' EXIT
 ARTIFACT="$STAGE/klauro-engine.zst"
 zstd -19 -q -o "$ARTIFACT" "$BINARY"
 

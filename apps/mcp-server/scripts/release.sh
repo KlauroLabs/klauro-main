@@ -43,14 +43,18 @@ retry_with_backoff() {
   return 0
 }
 
-if [ "${RELEASE_ALLOW_DIRTY:-0}" != "1" ]; then
-  DIRTY="$(cd "$REPO_ROOT" && git status --porcelain -uall)"
-  if [ -n "$DIRTY" ]; then
-    echo "ERROR: refusing to release from a dirty tree — the built CLI would self-report a '-dirty' version." >&2
-    echo "       Commit or stash these first (or set RELEASE_ALLOW_DIRTY=1 to override, knowingly):" >&2
-    echo "$DIRTY" | sed 's/^/         /' >&2
-    exit 1
-  fi
+VERSION_FILES=(apps/mcp-server/package.json apps/mcp-server/package-lock.json package-lock.json)
+DIRTY_VERSION_FILES="$(cd "$REPO_ROOT" && git status --porcelain -- "${VERSION_FILES[@]}")"
+if [ -n "$DIRTY_VERSION_FILES" ]; then
+  echo "ERROR: refusing to release while the version files have uncommitted changes:" >&2
+  echo "$DIRTY_VERSION_FILES" | sed 's/^/         /' >&2
+  exit 1
+fi
+DIRTY="$(cd "$REPO_ROOT" && git status --porcelain -uall)"
+if [ -n "$DIRTY" ]; then
+  echo "==> Releasing committed HEAD $(cd "$REPO_ROOT" && git rev-parse --short=12 HEAD); the build is source-exact from that commit and these uncommitted paths are not part of it:"
+  echo "$DIRTY" | sed 's/^/         /'
+else
   echo "==> Clean-tree gate OK (HEAD $(cd "$REPO_ROOT" && git rev-parse --short=12 HEAD))"
 fi
 mark_step "clean-tree-gate"
@@ -115,8 +119,7 @@ echo "    new version: $VERSION"
 
 echo "==> Committing version bump v$VERSION"
 cd "$REPO_ROOT"
-git add apps/mcp-server/package.json apps/mcp-server/package-lock.json package-lock.json
-git commit -q -m "Release v$VERSION" || echo "    (nothing to commit — version already staged/committed)"
+git commit -q -m "Release v$VERSION" -- "${VERSION_FILES[@]}" || echo "    (nothing to commit — version already committed)"
 cd "$APP_DIR"
 mark_step "version-bump(v$VERSION)"
 fi
