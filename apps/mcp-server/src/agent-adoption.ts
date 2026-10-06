@@ -1214,7 +1214,8 @@ function buildProductOrientationLine(cas: CASOutput): string | null {
   const capabilities = (map.capabilities || []).slice(0, 3).map(capability => capability.name).filter(Boolean);
   const parts = [
     capabilities.length > 0 ? `Top capabilities: ${capabilities.join(', ')}` : '',
-    typeof map.journeys?.total === 'number' ? `${map.journeys.total} journeys` : '',
+    typeof map.journeys?.total === 'number' ? `${map.journeys.total} entry-point flows` : '',
+    (cas.causal_journeys?.length || 0) > 0 ? `${cas.causal_journeys!.length} cross-boundary journeys` : '',
     Array.isArray(map.data?.sensitive) ? `${map.data.sensitive.length} sensitive entities` : '',
   ].filter(Boolean);
   if (parts.length === 0) return null;
@@ -1264,6 +1265,7 @@ export function buildJourneyContextForAgent(
   }).sort((a, b) => (CRITICALITY_RANK[a.criticality] ?? 4) - (CRITICALITY_RANK[b.criticality] ?? 4));
   if (matching.length === 0) return null;
   return {
+    unit: ENTRY_POINT_FLOW_UNIT,
     total_matching: matching.length,
     journeys: trimToPillarTokenBudget(matching.slice(0, 5).map(journey => ({
       id: journey.id,
@@ -1275,6 +1277,8 @@ export function buildJourneyContextForAgent(
     }))),
   };
 }
+
+const ENTRY_POINT_FLOW_UNIT = 'entry-point flows: each item follows one entry point to its effects inside one program; cross-boundary journeys are listed under causal_journeys';
 
 const SENSITIVE_EXPOSURE_INSTRUCTION = 'Address or verify these sensitive-data exposure paths before answering security or data-exposure questions.';
 
@@ -1419,6 +1423,7 @@ function compactPillarWorkContext(
   }
   if (context.journey_context?.journeys?.length) {
     result.journey_context = {
+      unit: context.journey_context.unit,
       total_matching: context.journey_context.total_matching,
       journeys: context.journey_context.journeys.slice(0, limits.journeys).map((journey: any) => ({
         id: journey.id,
@@ -5610,7 +5615,8 @@ function storedFlowCoverageSummary(cas: CASOutput): Record<string, unknown> {
   return {
     total_call_chains: cas.call_chains?.length || 0,
     measured_call_chains: cas.flow_coverage?.length || 0,
-    user_journeys: projectUserJourneysFromCas(cas).journeys.length,
+    entry_point_flows: projectUserJourneysFromCas(cas).journeys.length,
+    causal_journeys: cas.causal_journeys?.length || 0,
     critical_flows: cas.flow_summary?.total_critical_flows || 0,
     by_coverage_status: byStatus,
   };
