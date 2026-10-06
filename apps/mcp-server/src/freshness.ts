@@ -107,7 +107,18 @@ function runGit(projectPath: string, args: string[]): string {
   });
 }
 
-function collectGitCandidates(projectPath: string, analyzedAtIso: string): { changed: Set<string>; deleted: Set<string> } {
+class GitWorkTreeAbsent extends Error {}
+
+export function resolveGitWorkTreeRoot(projectPath: string): string | null {
+  try {
+    const root = runGit(projectPath, ['rev-parse', '--show-toplevel']).trim();
+    return root.length > 0 ? root : null;
+  } catch {
+    return null;
+  }
+}
+
+function collectGitCandidates(projectPath: string, workTreeRoot: string, analyzedAtIso: string): { changed: Set<string>; deleted: Set<string> } {
   const changed = new Set<string>();
   const deleted = new Set<string>();
 
@@ -120,22 +131,22 @@ function collectGitCandidates(projectPath: string, analyzedAtIso: string): { cha
 
 
 
-  for (const line of runGit(projectPath, ['status', '--porcelain', '-uall']).split('\n')) {
+  for (const line of runGit(projectPath, ['status', '--porcelain', '-uall', '--', '.']).split('\n')) {
     if (line.length < 4) continue;
     const status = line.slice(0, 2);
     let filePath = line.slice(3).trim();
     if (status.startsWith('R') && filePath.includes(' -> ')) {
       const [oldPath, newPath] = filePath.split(' -> ');
-      deleted.add(stripGitQuoting(oldPath));
+      deleted.add(relativeToProject(projectPath, workTreeRoot, stripGitQuoting(oldPath)));
       filePath = newPath;
     }
-    filePath = stripGitQuoting(filePath);
+    filePath = relativeToProject(projectPath, workTreeRoot, stripGitQuoting(filePath));
     if (!isSourceLikeFile(filePath)) continue;
     if (status.includes('D')) deleted.add(filePath);
     else changed.add(filePath);
   }
 
-  for (const line of runGit(projectPath, ['log', `--since=${analyzedAtIso}`, '--name-status', '--format=']).split('\n')) {
+  for (const line of runGit(projectPath, ['log', `--since=${analyzedAtIso}`, '--name-status', '--format=', '--relative', '--', '.']).split('\n')) {
     const parts = line.split('\t');
     if (parts.length < 2) continue;
     const status = parts[0];
@@ -152,6 +163,10 @@ function collectGitCandidates(projectPath: string, analyzedAtIso: string): { cha
 
   for (const filePath of deleted) changed.delete(filePath);
   return { changed, deleted };
+}
+
+function relativeToProject(projectPath: string, workTreeRoot: string, rootRelative: string): string {
+  return path.relative(fs.realpathSync(projectPath), path.join(workTreeRoot, rootRelative));
 }
 
 function stripGitQuoting(filePath: string): string {
@@ -255,20 +270,25 @@ export function summarizeAnalysisFreshness(projectPath: string, analyzedAt: stri
   let changed: string[] = [];
   let deleted: string[] = [];
 
+  const workTreeRoot = resolveGitWorkTreeRoot(projectPath);
+  let gitFailure: string | undefined;
   try {
-    if (!fs.existsSync(path.join(projectPath, '.git'))) throw new Error('not a git repository');
-    const candidates = collectGitCandidates(projectPath, new Date(analyzedAtMs).toISOString());
+    if (!workTreeRoot) throw new GitWorkTreeAbsent();
+    const candidates = collectGitCandidates(projectPath, workTreeRoot, new Date(analyzedAtMs).toISOString());
     const verified = verifyCandidatesByMtime(projectPath, candidates, analyzedAtMs);
     changed = verified.changed;
     deleted = verified.deleted;
     bounded = verified.bounded;
-  } catch {
+  } catch (error) {
+    if (!(error instanceof GitWorkTreeAbsent)) gitFailure = error instanceof Error ? error.message.split('\n')[0] : String(error);
     method = 'walk';
     if (!fs.existsSync(projectPath)) return null;
     const walked = walkChangedSourceFiles(projectPath, analyzedAtMs);
     changed = walked.changed;
     bounded = walked.bounded;
-    note = 'Non-git directory: bounded mtime walk; deletions since analysis are not detectable in this mode.';
+    note = gitFailure
+      ? `Git history unavailable (${gitFailure}): bounded mtime walk; deletions since analysis are not detectable in this mode.`
+      : 'Non-git directory: bounded mtime walk; deletions since analysis are not detectable in this mode.';
   }
 
   changed.sort();

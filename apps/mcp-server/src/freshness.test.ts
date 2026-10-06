@@ -456,3 +456,27 @@ test('resolve_agent_analysis refreshes stale customer analysis through hosted in
     }
   });
 });
+
+test('summarizeAnalysisFreshness uses git for a subdirectory of a repository and for a gitfile worktree', () => withTempDir('klauro-fresh-subdir-', (root) => {
+  const files = writeSourceFixture(root);
+  initGitRepo(root);
+  const analyzedAt = new Date(Date.now() - HOUR_MS).toISOString();
+  setMtime(files[3], Date.now());
+  clearFreshnessSummaryCache();
+  const atRoot = summarizeAnalysisFreshness(root, analyzedAt);
+  assert.equal(atRoot?.scan.method, 'git');
+  const subdirectory = path.join(root, 'src');
+  clearFreshnessSummaryCache();
+  const atSubdirectory = summarizeAnalysisFreshness(subdirectory, analyzedAt);
+  assert.equal(atSubdirectory?.scan.method, 'git');
+  assert.equal(atSubdirectory?.scan.note, undefined);
+  const worktree = `${root}-linked`;
+  execFileSync('git', ['-c', 'user.email=t@k.dev', '-c', 'user.name=T', 'worktree', 'add', '-b', 'linked', worktree], { cwd: root, stdio: 'ignore' });
+  try {
+    assert.ok(fs.statSync(path.join(worktree, '.git')).isFile());
+    clearFreshnessSummaryCache();
+    assert.equal(summarizeAnalysisFreshness(worktree, analyzedAt)?.scan.method, 'git');
+  } finally {
+    fs.rmSync(worktree, { recursive: true, force: true });
+  }
+}));
