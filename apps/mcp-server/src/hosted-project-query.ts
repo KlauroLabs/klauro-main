@@ -165,7 +165,9 @@ export function hostedProjectQuerySections(tool: string, args: HostedQuerySectio
     case 'find_tests': return args.node_id ? ['graph', 'tests'] : ['tests'];
     case 'assess_change_risk': return ['graph', 'calls', 'tests', 'quality'];
     case 'get_coding_context': return codingContextSections(args.include);
-    case 'get_agent_start_context':
+    case 'get_agent_start_context': return args.task?.target || args.task?.related_paths?.length
+      ? ['graph', ...ORIENTATION_SECTIONS]
+      : ORIENTATION_SECTIONS;
     case 'get_agent_tool_plan': return ORIENTATION_SECTIONS;
     case 'get_agent_context': return !args.task?.target && !args.task?.related_paths?.length
       ? ORIENTATION_SECTIONS

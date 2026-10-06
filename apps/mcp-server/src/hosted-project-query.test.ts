@@ -281,3 +281,9 @@ test('find_tests accepts an optional suite_id and still rejects unknown keys', (
   assert.equal(schema.safeParse({ suite_id: 42 }).success, false);
   assert.equal(schema.safeParse({ suite: 'suite-1' }).success, false);
 });
+
+test('start context loads the graph only when the task names a target or related paths', () => {
+  assert.equal(hostedProjectQuerySections('get_agent_start_context').includes('graph'), false);
+  assert.equal(hostedProjectQuerySections('get_agent_start_context', { task: { target: 'edit designs' } }).includes('graph'), true);
+  assert.equal(hostedProjectQuerySections('get_agent_start_context', { task: { related_paths: ['a.ts'] } }).includes('graph'), true);
+});

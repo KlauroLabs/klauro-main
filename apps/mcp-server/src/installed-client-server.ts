@@ -1,5 +1,6 @@
 import { localizeHostedWorkspacePath } from './hosted-path-localization';
 import { overlayLocalFreshness } from './hosted-freshness-overlay';
+import { overlayLocalPathStatus } from './hosted-focus-overlay';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -170,7 +171,7 @@ async function hostedProjectQuery(projectPath: string, tool: string, args: Recor
   }
   if (payload?.status !== 'ready' && payload?.status !== 'queryable') return payload;
   const localPath = path.resolve(projectPath);
-  return overlayLocalFreshness(localizeHostedWorkspacePath(payload.result, localPath), localPath);
+  return overlayLocalPathStatus(overlayLocalFreshness(localizeHostedWorkspacePath(payload.result, localPath), localPath), localPath);
 }
 
 

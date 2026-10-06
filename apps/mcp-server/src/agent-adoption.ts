@@ -59,6 +59,7 @@ import {
   compactSmallRepoValidationPlan,
 } from './agent-small-context';
 import { adaptAgentStartContext } from './agent-start-context-budget';
+import { resolveStartFocus } from './agent-start-focus';
 import { buildComprehensionGate, evaluateComprehensionReadiness, type ComprehensionReadiness } from './comprehension-readiness';
 import { isInstalledToolName } from './installed-tool-registry';
 import { TIER_STACK_ANALYZER } from '../../../packages/analyzer-core/src/analyzer/tier-stack/tier-stack-to-cas';
@@ -192,6 +193,8 @@ export function getAgentStartContext(cas: CASOutput, path: string, task: AgentTa
   const productOrientation = buildProductOrientationLine(cas);
   const sensitiveDataExposure = buildSensitiveExposureDigest(cas);
   const analysisFreshness = summarizeAnalysisFreshness(path, cas.analysis_timestamp);
+  const focus = resolveStartFocus(cas, task);
+  const focused = focus !== null && focus.status !== 'unresolved';
   const context = {
     path,
     generated_at: new Date().toISOString(),
@@ -233,22 +236,24 @@ export function getAgentStartContext(cas: CASOutput, path: string, task: AgentTa
       analysis_warnings: summary.warnings,
       analysis_information: summary.information,
     },
+    ...(focus ? { focus } : {}),
     starting_points: {
-      entry_points: rankOrientationEntryPoints(cas, entryPoints.entry_points, entry => isNonProductEntryPoint(cas, entry)).slice(0, 8).map(entry => ({
+      scope: focused ? 'task-focused' : 'system-wide',
+      entry_points: focused ? focus.entry_points : rankOrientationEntryPoints(cas, entryPoints.entry_points, entry => isNonProductEntryPoint(cas, entry)).slice(0, 8).map(entry => ({
         id: entry.id,
         name: entry.name,
         type: entry.type,
         trigger: entry.trigger,
         handler: entry.handler,
       })),
-      exit_points: exitPoints.exit_points.map(exitPoint => ({
+      exit_points: focused ? focus.exit_points : exitPoints.exit_points.map(exitPoint => ({
         id: exitPoint.id,
         name: exitPoint.name,
         type: exitPoint.type,
         source_node: exitPoint.source_node,
         target: exitPoint.target,
       })),
-      connected_nodes: topNodes,
+      connected_nodes: focused ? focus.connected_nodes : topNodes,
       ...(runtimeLinks ? { runtime_static_links: runtimeLinks.links } : {}),
     },
     idiom_summary: cas.idiom_summary || null,

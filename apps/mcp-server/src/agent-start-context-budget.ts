@@ -11,6 +11,7 @@ export function adaptAgentStartContext<T extends Record<string, any>>(context: T
     default_rule: context.default_rule,
     task: context.task,
     ...(context.analysis_freshness ? { analysis_freshness: context.analysis_freshness } : {}),
+    ...(context.focus ? { focus: context.focus } : {}),
     readiness: {
       ...context.readiness,
       gaps: readinessGaps.slice(0, 5),
@@ -28,6 +29,7 @@ export function adaptAgentStartContext<T extends Record<string, any>>(context: T
       database_entities: Array.isArray(databaseEntities) ? databaseEntities.length : databaseEntities,
     },
     starting_points: {
+      ...(start.scope ? { scope: start.scope } : {}),
       entry_points: Array.isArray(start.entry_points) ? start.entry_points.slice(0, 3) : [],
       exit_points: Array.isArray(start.exit_points) ? start.exit_points.slice(0, 3) : [],
       connected_nodes: Array.isArray(start.connected_nodes) ? start.connected_nodes.slice(0, 4) : [],
@@ -46,6 +48,7 @@ export function adaptAgentStartContext<T extends Record<string, any>>(context: T
   return {
     context_profile: 'capsule-only',
     path: compact.path,
+    ...(compact.focus ? { focus: compact.focus } : {}),
     readiness: compact.readiness,
     system: compact.system,
     starting_points: compact.starting_points,
