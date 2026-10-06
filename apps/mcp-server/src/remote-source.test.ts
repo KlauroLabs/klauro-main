@@ -262,3 +262,25 @@ test('committed-head snapshots report files excluded only by source.maxFileBytes
     assert.ok((snapshot.manifest.excluded_oversize_files?.[0].bytes || 0) > 4096);
   });
 });
+
+test('a committed-head upload keeps reading the snapshot commit while the working tree and HEAD move on', async () => {
+  await withTempDir(async dir => {
+    initGitRepo(dir);
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'parts.ts'), 'export const parts = 1;\n');
+    git(dir, ['add', '.']);
+    commitAt(dir, '2026-09-07T00:00:00Z', 'fixture');
+    fs.writeFileSync(path.join(dir, 'src', 'parts.ts'), 'export const parts = 2;\n');
+
+    const snapshot = await buildStreamingSourceSnapshot(dir);
+    assert.equal(snapshot.snapshot_source, 'committed-head');
+    const file = snapshot.files.find(item => item.path === 'src/parts.ts');
+    assert.ok(file);
+
+    git(dir, ['add', '.']);
+    commitAt(dir, '2026-09-08T00:00:00Z', 'concurrent session commit');
+    fs.writeFileSync(path.join(dir, 'src', 'parts.ts'), 'export const parts = 3;\n');
+
+    assert.equal(await file.readContent(), 'export const parts = 1;\n');
+  });
+});

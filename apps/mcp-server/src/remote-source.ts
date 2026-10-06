@@ -402,8 +402,8 @@ async function buildStreamingHeadSnapshot(
   loaded: LoadedKlauroConfig,
   head: string,
 ): Promise<StreamingSourceSnapshotPlan> {
-  const trackedPaths = listGitTrackedPathsAtHead(root).map(normalizeRelativePath).filter(Boolean);
-  const objectSizes = readFileSizesAtRef(root, 'HEAD', trackedPaths);
+  const trackedPaths = listGitTrackedPathsAtHead(root, head).map(normalizeRelativePath).filter(Boolean);
+  const objectSizes = readFileSizesAtRef(root, head, trackedPaths);
   const included: string[] = [];
   const oversize: Array<{ path: string; bytes: number }> = [];
   for (const relativePath of trackedPaths) {
@@ -417,11 +417,11 @@ async function buildStreamingHeadSnapshot(
   const files: StreamingSourceFile[] = [];
   for (let offset = 0; offset < included.length; offset += STREAMING_GIT_BATCH_FILES) {
     const batch = included.slice(offset, offset + STREAMING_GIT_BATCH_FILES);
-    const contents = readFilesAtRef(root, 'HEAD', batch);
+    const contents = readFilesAtRef(root, head, batch);
     for (const relativePath of batch) {
       const rawContent = contents.get(relativePath);
       if (rawContent === undefined) continue;
-      const content = readFirstPartyDocumentAtRef(root, 'HEAD', relativePath, rawContent);
+      const content = readFirstPartyDocumentAtRef(root, head, relativePath, rawContent);
       if (content === null) continue;
       const bytes = Buffer.byteLength(content, 'utf8');
       if (loaded.config.source.maxFileBytes > 0 && bytes > loaded.config.source.maxFileBytes) continue;
@@ -430,9 +430,9 @@ async function buildStreamingHeadSnapshot(
         hash: hashContent(content),
         bytes,
         readContent: async () => {
-          const current = readFileAtRef(root, 'HEAD', relativePath);
+          const current = readFileAtRef(root, head, relativePath);
           if (current === null) throw new Error(`Unable to reread ${relativePath} from committed HEAD during upload`);
-          const resolved = readFirstPartyDocumentAtRef(root, 'HEAD', relativePath, current);
+          const resolved = readFirstPartyDocumentAtRef(root, head, relativePath, current);
           if (resolved === null) throw new Error(`Unable to resolve ${relativePath} within committed HEAD during upload`);
           return resolved;
         },
@@ -543,10 +543,10 @@ export async function buildHeadSourceSnapshot(
   if (!head) {
     throw new Error('Cannot build a committed-HEAD snapshot: this repository has no HEAD commit.');
   }
-  const trackedPaths = listGitTrackedPathsAtHead(root)
+  const trackedPaths = listGitTrackedPathsAtHead(root, head)
     .map(normalizeRelativePath)
     .filter(Boolean);
-  const objectSizes = readFileSizesAtRef(root, 'HEAD', trackedPaths);
+  const objectSizes = readFileSizesAtRef(root, head, trackedPaths);
   const includedPaths: string[] = [];
   const oversize: Array<{ path: string; bytes: number }> = [];
   for (const normalized of trackedPaths) {
@@ -556,12 +556,12 @@ export async function buildHeadSourceSnapshot(
     if (verdict.included) includedPaths.push(normalized);
     else if (verdict.reason === OVERSIZE_REASON) oversize.push({ path: normalized, bytes: byteSize });
   }
-  const contents = readFilesAtRef(root, 'HEAD', includedPaths);
+  const contents = readFilesAtRef(root, head, includedPaths);
   const files: RemoteSourceFile[] = [];
   for (const normalized of includedPaths) {
     const rawContent = contents.get(normalized);
     if (rawContent == null) continue;
-    const content = readFirstPartyDocumentAtRef(root, 'HEAD', normalized, rawContent);
+    const content = readFirstPartyDocumentAtRef(root, head, normalized, rawContent);
     if (content == null) continue;
     if (loaded.config.source.maxFileBytes > 0 && Buffer.byteLength(content, 'utf8') > loaded.config.source.maxFileBytes) continue;
     files.push({ path: normalized, content, hash: hashContent(content) });
@@ -998,9 +998,9 @@ async function shouldIncludeRelativePathVerbose(
   return { included: false, reason: 'not a registered source/manifest file type' };
 }
 
-function listGitTrackedPathsAtHead(root: string): string[] {
+function listGitTrackedPathsAtHead(root: string, ref = 'HEAD'): string[] {
   try {
-    const output = execFileSync('git', ['ls-tree', '-r', '--name-only', '-z', 'HEAD'], {
+    const output = execFileSync('git', ['ls-tree', '-r', '--name-only', '-z', ref], {
       cwd: root,
       encoding: 'utf8',
       maxBuffer: 1024 * 1024 * 64,
