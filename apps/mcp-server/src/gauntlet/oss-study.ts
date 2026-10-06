@@ -53,6 +53,7 @@ import { devDataRoot } from './dev-data';
 import {
   codebaseMemoryCli,
   codebaseMemoryPath,
+  codebaseMemorySearchRows,
   ctagsAvailable,
   indexCodebaseMemory,
   scipCliPath,
@@ -170,12 +171,12 @@ function codebaseMemoryNames(dir: string): string[] | null {
   const project = indexCodebaseMemory(bin, dir, 180_000);
   if (!project) return null;
   const found = codebaseMemoryCli(bin, 'search_graph', { project, limit: 100000 }, 60_000);
-  if (!found || !Array.isArray(found.results)) return null;
+  const rows = codebaseMemorySearchRows(found);
+  if (!rows) return null;
   const names = new Set<string>();
-  for (const item of found.results) {
-    if (!isRepositorySourceFile(dir, String(item.file_path || ''))) continue;
-    const label = String(item.label || '');
-    if (item.name && (label === 'Function' || label === 'Method')) names.add(String(item.name));
+  for (const item of rows) {
+    if (!isRepositorySourceFile(dir, item.file_path)) continue;
+    if (item.name && (item.label === 'Function' || item.label === 'Method')) names.add(item.name);
   }
   return [...names];
 }

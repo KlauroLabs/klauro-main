@@ -90,10 +90,18 @@ test(
 test(
   'codebase-memory (LSP knowledge graph): TS who-calls is measured against the current released tool',
   { skip: codebaseMemoryReady ? false : 'codebase-memory-mcp not installed' },
-  () => {
-    const cm = codebaseMemoryCallers(path.join(ROOT, 'callers-ts'), 'Account', 'save');
+  async () => {
+    const dir = path.join(ROOT, 'callers-ts');
+    const cm = codebaseMemoryCallers(dir, 'Account', 'save');
     assert.ok(cm, 'codebase-memory must resolve the TS fixture');
-    assert.deepEqual([...cm!.files].sort(), ['aliased.ts', 'service.ts'], 'current release resolves the direct and the aliased call and excludes the decoy');
+    const truth = ['aliased.ts', 'service.ts'];
+    const found = [...cm!.files].sort();
+    assert.ok(!found.includes('decoy.ts'), `codebase-memory must exclude the decoy, got ${JSON.stringify(found)}`);
+    const hits = found.filter(file => truth.includes(file)).length;
+    const cmF1 = found.length && hits ? (2 * hits) / (found.length + truth.length) : 0;
+    const r = await runCallersBench(dir, { heavyArms: false });
+    const klauro = r.detail.find(d => d.arm === 'klauro')!;
+    assert.ok(klauro.f1 >= cmF1, `Klauro F1 ${klauro.f1} must tie or beat codebase-memory F1 ${cmF1} (${JSON.stringify(found)})`);
   },
 );
 

@@ -323,11 +323,13 @@ export function startCodebaseMemoryDaemon(bin = codebaseMemoryPath()): CodebaseM
 export function codebaseMemoryCli(bin: string, tool: string, params: Record<string, unknown>, timeout = 120_000): any | null {
   let out = '';
   try {
-    out = execFileSync(bin, ['cli', tool, JSON.stringify(params)], {
+    const args = tool === 'query_graph' || tool === 'search_graph' ? { ...params, format: 'json' } : params;
+    out = execFileSync(bin, ['cli', tool], {
       encoding: 'utf8',
+      input: JSON.stringify(args),
       maxBuffer: 64 * 1024 * 1024,
       timeout,
-      stdio: ['ignore', 'pipe', 'ignore'],
+      stdio: ['pipe', 'pipe', 'ignore'],
     });
   } catch {
     return null;
@@ -339,6 +341,36 @@ export function codebaseMemoryCli(bin: string, tool: string, params: Record<stri
   } catch {
     return null;
   }
+}
+
+export interface CodebaseMemorySearchRow {
+  name: string;
+  label: string;
+  file_path: string;
+}
+
+export function codebaseMemorySearchRows(found: any): CodebaseMemorySearchRow[] | null {
+  if (!found) return null;
+  if (Array.isArray(found.groups)) {
+    const columns: string[] = Array.isArray(found.cols) ? found.cols : [];
+    const nameAt = columns.indexOf('name');
+    const labelAt = columns.indexOf('label');
+    const rows: CodebaseMemorySearchRow[] = [];
+    for (const group of found.groups) {
+      for (const row of group.rows || []) {
+        rows.push({ name: String(row[nameAt]), label: String(row[labelAt]), file_path: String(group.file || '') });
+      }
+    }
+    return rows;
+  }
+  if (Array.isArray(found.results)) {
+    return found.results.map((item: any) => ({
+      name: String(item.name),
+      label: String(item.label || ''),
+      file_path: String(item.file_path || ''),
+    }));
+  }
+  return null;
 }
 
 export function indexCodebaseMemory(bin: string, dir: string, timeout = 120_000): string | null {
@@ -409,8 +441,9 @@ export function codebaseMemoryNodesByLabel(
   const project = indexCodebaseMemory(bin, dir);
   if (!project) return null;
   const found = codebaseMemoryCli(bin, 'search_graph', { project, label, limit: 100000 });
-  if (!found || !Array.isArray(found.results)) return null;
-  return { names: found.results.map((item: { name: unknown }) => String(item.name)), ms: Date.now() - t0 };
+  const rows = codebaseMemorySearchRows(found);
+  if (!rows) return null;
+  return { names: rows.map(item => item.name), ms: Date.now() - t0 };
 }
 
 export function codebaseMemoryEdgeTypes(dir: string): { types: string[]; ms: number } | null {
